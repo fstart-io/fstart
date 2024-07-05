@@ -10,7 +10,7 @@
 - Simplicity of use: board ports are just a few FDT files, building is just one command
 - Push as much as possible into build time, to reduce binary complexity
 - Scope is strictly hardware initialization after which hand-off to a payload happens. This also means a runtime is out of scope
-- Unit tests are not an afterthought
+- Unit tests are not an afterthought: development tools for both host as target
 
 Rust plays a crucial role in realizing some of these goals, which is why most things are written in Rust. This is on top of the usual arguments like great tooling (rustup/cargo) and Rust being a memory-safe language.
 
@@ -65,6 +65,14 @@ The initial code block, which is often the ROT, could have those public keys emb
 In some systems, it's desirable to change a few options without recompiling the build. This is exactly what the bulked mode or combo can be used for.
 This is of course optional.
 
+** Unit tests both on host as firmware unit tests
+
+Running unit tests is a powerful tool for developing firmware incrementally. For common tasks like parsing FDT into data structures, these tests can be executed on the host that generates the firmware. Testing on real hardware often presents challenges: in a fully functional build, many interdependent processes occur. Booting to the point where you can reach the necessary code with the correct settings to debug the issue can be impractical or impossible.
+
+With a driverized flow, creating a binary that contains a suite of tests, rather than one that reaches a payload, should be straightforward.
+
+These kind of on target unit tests can be hooked to CI and give more insight in what is going. It might even give people that don't own hardware the possibility run very limited code on remote  hardware.
+
 * Build
 ** Build Flow
 For the execution flow, we use dependencies declared via device tree + some heuristics. Building binaries tends to be rather similar! So the idea is to reuse the same configuration format (FDT) and flow of looping over nodes that are bound to drivers.
@@ -78,6 +86,7 @@ The build flow FDT contains a lot of information about what components are wante
 *TODO*: can change
 
 On top of rust code, all dirs can contain FDT snippets to make code reuse easy.
+The same applies to test for host and target.
 
 - /arch/: architecture-specific
 - /builder/: Puts the image together based on build FDT
