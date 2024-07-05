@@ -1,4 +1,8 @@
-#+title: Design Document
+#+title: Fstart: Design Document
+
+This will describe the goals and design decisions of fstart.
+Fstart is a firmware solution written in rust, where Flattened Device Tree (FDT) is extensively used.
+Fstart is written in rust.
 
 * Goals
 
