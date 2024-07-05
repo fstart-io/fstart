@@ -1,0 +1,90 @@
+#+title: Design Document
+
+* Goals
+
+- Security is on by default
+- Portable and reusable
+- One tree to rule them all: all boards are supported in one tree
+- Be declaration-driven: both features and code flow are instructed by data
+- One configuration mechanism: Flattened Device Tree (FDT) can be used as a universal format for describing hardware, setting up build parameters, file system, etc.
+- Simplicity of use: board ports are just a few FDT files, building is just one command
+- Push as much as possible into build time, to reduce binary complexity
+- Scope is strictly hardware initialization after which hand-off to a payload happens. This also means a runtime is out of scope
+- Unit tests are not an afterthought
+
+Rust plays a crucial role in realizing some of these goals, which is why most things are written in Rust. This is on top of the usual arguments like great tooling (rustup/cargo) and Rust being a memory-safe language.
+
+* Rust
+** Procedural Macros
+Rust procedural macros allow us to generate code at compile time using Rust code. This comes in handy in many ways when writing code where you want to do as much as possible at compile time. Traditionally, C needs external tooling and/or some makefile glue to achieve this. This property of Rust will/might come in handy to optimize firmware. For instance, if we have nodes in a device tree that need to be bound to a driver and iterated over to initialize the hardware. Both U-Boot and Linux do this. Most often it happens at runtime, except U-Boot has some tooling to generate C code at compile time to bind FDT nodes. With Rust, this can potentially all be dramatically simplified.
+
+** Tooling: cargo & rustup
+
+Cargo is Rust's package manager and it's great. It makes pulling libraries effortless. It's very easy to run and debug tests, which eases development. build.rs can replace the need for makefile glue code/scripts for doing things at build time. Cargo workspace makes it easy to organize code and use/not use it. Cargo makes inline documentation easy among a lot of other features it has.
+
+rustup makes getting the right toolchain a bliss. This includes things like a linter, LSP helper, etc.
+
+** Zero Cost Abstraction
+
+Rust's zero-cost abstractions mean that you can write higher-level abstractions in code, but still expect an optimized binary. This means that the compiler can often resolve things at compile time without the need for special code to make it happen. This results in smaller binaries.
+
+** const fn
+
+In line with zero-cost abstraction where the compiler can evaluate things at build time, it is possible to help the Rust compiler a bit further to do more things at compile time with const fn if the function arguments are also constant expressions. This can again be used to do certain things at compile time without too much afterthought.
+
+* Binary
+** Code Flow: a lot of drivers, guided by data declared in FDT
+
+In firmware, peripheral initialization and other duties need to happen in a certain order. Some operations have dependencies on each other. Rather than putting this flow in code, it's better to put it in a declarative format that describes the requirement. One goal of this project is to make code reuse really easy without actually needing to write code to port a mainboard. Therefore, it's likely possible to abstract the code pieces using drivers. These drivers would then bind to a node from a device. So the device tree and some heuristic would then determine the code flow. For instance, let's consider the start of a boot process. After some initial assembly that sets up the environment for a higher-level language, one of the first things to do is set up a console on UART. This UART might need a clock and some GPIO setup, which can be easily encoded in the device tree. So after nodes are bound to drivers, we need to figure out an order in which everything needs to happen. Now the advantage with Rust is that we have a lot of flexibility here: we can run the same code at build time or at runtime. For instance, that build time resolution results in small efficient binaries where we know all nodes will properly bind to a driver. But doing this at runtime might also be interesting. Consider the Linux model: One kernel that works on a wide variety of hardware. Firmware typically means one binary, one board. This does not have to be the case. Multiple boards could use the same binary with different device trees.
+
+** Inclusion of Data that Drives Code Flow
+The previous section already alluded to two modes in which the firmware could be built (stolen from gym/fitness terminology).
+
+*** Shredded Build
+In this mode, Rust's compile-time optimization and capabilities are used to bind drivers to nodes. The FDT is parsed at build time into data structures. The dependencies and the order in which things need to happen can be determined at build time. The build will discard all drivers not used.
+
+*** Bulked Build
+The parsing of FDT and binding of nodes happens at runtime. A different mechanism is used (also based on FDT though) to select all drivers to be included in the build. This allows for a lot of flexibility on the binary side. One binary could support multiple boards or even multiple platforms with the board-specific part being just an FDT. This suits certain kinds of development like validation of similar boards on a platform.
+
+*** Combo
+A combination of the above is possible. This might, for instance, come in handy if fetching the right FDT from flash needs some 'always-used' code.
+
+** File System
+Just like oreboot, FDT is used both at runtime to find things. FDT is incredibly flexible and allows for nested structures. Unlike coreboot's FMAP + CBFS, just one data structure can be used for everything. For A/B + RO schemes, multiple (secondary) FDTs can be employed with RO (primary) one holding pointers to RW ones.
+
+All FS FDTs (primary/secondary) are by default hashed and signed. The FDT has a digest for all files.
+*TODO* is it meaningful to have a signature of all files too?
+To avoid TOCTOU attacks (mostly on memory-mapped boot medium), the FS FDT is put in memory or cache. The same applies to files.
+
+The user can provide their own key. Maybe in a later stage, AWS signing is implemented. If no key is provided by the user, by default, random new keys are generated as using hardcoded default keys is just too common a mistake.
+
+The initial code block, which is often the ROT, could have those public keys embedded inside it.
+
+** Post Build Configuration
+
+In some systems, it's desirable to change a few options without recompiling the build. This is exactly what the bulked mode or combo can be used for.
+This is of course optional.
+
+* Build
+** Build Flow
+For the execution flow, we use dependencies declared via device tree + some heuristics. Building binaries tends to be rather similar! So the idea is to reuse the same configuration format (FDT) and flow of looping over nodes that are bound to drivers.
+
+** File System
+The build flow FDT contains a lot of information about what components are wanted in flash. This information can again be used to determine appropriate and optimized locations in flash. The FS FDT is therefore also generated based on the build FDT.
+
+
+* Repository Organization
+
+*TODO*: can change
+
+On top of rust code, all dirs can contain FDT snippets to make code reuse easy.
+
+- /arch/: architecture-specific
+- /builder/: Puts the image together based on build FDT
+- /common/: non-hardware-specific drivers
+- /console/: console drivers TODO is this needed or can it go in common?
+- /cpu/: CPU specific
+- /drivers/: aggregate file of drivers for build flow and code flow. Basically a big list of imports, possibly guarded by cargo features
+- /fs/: File system driver, also implements security
+- /handoff/: Handoff to next stage/payload: ACPI, SMBIOS, Linux_FDT, UPL, coreboot table,... basically creates data
+- /mainboard/: Contains mainboard FDT, ideally no data
