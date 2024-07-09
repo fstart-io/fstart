@@ -1,0 +1,17 @@
+#+title: Fstart: uncategorized ideas
+
+* A little bit of state
+
+** Problem statement: local reusable state is sometimes desirable... probably
+Initializing state at a higher level and passing it down the call tree is idiomatic in Rust to avoid global variables.
+However, in firmware, this approach may not be convenient for exposing APIs as it would necessitate using a large state struct everywhere.
+Consider consoles as an example: they should be initialized once and then used repeatedly without explicitly passing them as arguments.
+As an example maintaining initialized consoles at a higher level may not be ideal as one expects to use print! macros without the need to provide a list of consoles.
+This scenario is common with boot devices, timestamps, and other similar cases. Therefore, having some form of local reusable state is preferable.
+
+** Solution
+https://docs.rs/lazy_static/latest/lazy_static/ lazy_static allows for lazy evaluation of a global variables.
+This can then be used to do certain things once, like initialize all consoles.
+The crate does use syncing primitives from what I can tell.
+
+
