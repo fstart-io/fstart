@@ -10,8 +10,11 @@ As an example maintaining initialized consoles at a higher level may not be idea
 This scenario is common with boot devices, timestamps, and other similar cases. Therefore, having some form of local reusable state is preferable.
 
 ** Solution
+*** lazy_static
 https://docs.rs/lazy_static/latest/lazy_static/ lazy_static allows for lazy evaluation of a global variables.
 This can then be used to do certain things once, like initialize all consoles.
 The crate does use syncing primitives from what I can tell.
-
+*** once_cell
+https://docs.rs/once_cell/latest/once_cell/ allows for local initialize once variables like C static.
+This is probably more useful.
 
