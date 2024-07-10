@@ -1,0 +1,79 @@
+#+title: Devicetree file system
+
+* Terminology
+CODE0: First RW updatable code run by the SoC. Other projects all have their own terminology for this: BOOT0, SPL, bootblock, BL2, Stage 1A.
+DTFS: Device tree file system
+RoT: Root of Trust
+RoTT: Root of Trust Technology
+
+* One source of thruth the Device Tree File system blob
+
+To simplify security fstart uses *one source of truth* to know the location of all other firmware components on the boot medium.
+The source of truth is in the FDT format, called the DTFS blob.
+We also don't want the DTFS blob to be part of the RoT, but rather an element in the chain of trust.
+The reason is that often the RoTT uses a different key as the one used for signing the rest. We can have one BOOT0 code that
+is validated by some form of HW RoT that is able to load further component while foregoing the need to be updated itself.
+
+
+* Possible nodes
+
+** Areas
+
+The DTFS blob contains areas, which are simply regions in flash described by a start address in flash offset and a size.
+
+** Area content: files
+
+Inside areas there is a file. By default the file is of the size of the area unless otherwise specified.
+If a file is smaller than an area, the remainder of the area gets padded with 0xff.
+These are the following file properties:
+- *name*: mandatory
+- *type*: mandatory
+- *file-size*: optional, if absent use area size
+- *mem-size*: if encrypted, mandatory
+- *hash-x*: Optional. contains algo and value properties. Files are hashed rather than Areas as areas can contain meaningless 0xff.
+
+Files can be of a different types.
+
+*** Blob
+Blobs. Can be data or other SOC components that need to be at a certain place in flash.
+No extra descriptors.
+
+Optional:
+- *compression-type*: none, lzma, lz4, ...
+
+*** Code
+Code gets parsed at build time and gets put into flash in a DTFS code file.
+Code has the following properties:
+- *entry*: mandatory
+- *segments*: either { offset, size, loadaddr, compression-type }, { is_bss, size, loadaddr }, { xip, offset, size }
+
+*** DTFS
+Pointer to itself or secondary DTFS.
+
+*** DTFS signature
+Contains pointers to external signatures and digests, while also which algos are used.
+Signatures and digests need to be external as including them inside the DTFS would alter the digest.
+
+*** FIT image
+Commonly used format for Linux + FDT + InitRD images.
+
+* Bootflow: anchor of trust in CODE0
+
+CODE0 has a public key embedded along with the location of the DTFS.
+CODE0 validates that the DTFS blob is valid.
+CODE0 finds the DTFS signature node and finds the signatures properties and validates that the DTFS.
+Other nodes in the DTFS contain a hash.
+Before other nodes are used they are validated with that hash.
+
+
+* RO + A/B
+To support RO + A/B schemes like the coreboot chromeos ones, we need to be able to chain DTFS's together.
+The primary DTFS would then contain a pointer secondary ones which would have a similar flow to the primary one.
+
+* Post build validation
+To support post BUILD validation the DTFS blob has a header with a MAGIC keyword so that tooling can find it.
+That header would then also hold the public key used for the DTFS signing.
+
+* Generating DTFS
+
+DTFS gets generated based on the build requirements layed out in the build FDT. DTFS should not be written manually.
