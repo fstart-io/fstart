@@ -18,3 +18,9 @@ The crate does use syncing primitives from what I can tell.
 https://docs.rs/once_cell/latest/once_cell/ allows for local initialize once variables like C static.
 This is probably more useful.
 
+
+* Tree data structures
+Multiple linked lists are not a good data structure in rust.
+
+The following implements a no_std way to implement trees.
+https://docs.rs/tree-ds/latest/tree_ds/
