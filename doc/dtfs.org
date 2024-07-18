@@ -65,6 +65,11 @@ CODE0 finds the DTFS signature node and finds the signatures properties and vali
 Other nodes in the DTFS contain a hash.
 Before other nodes are used they are validated with that hash.
 
+** Digital signatures on by default
+Use both elliptic curve and post quantum cryptography to be feature proof.
+
+- Use ed25519 and fips204 by default
+- Use sha2 and fips205 for digest
 
 * RO + A/B
 To support RO + A/B schemes like the coreboot chromeos ones, we need to be able to chain DTFS's together.
