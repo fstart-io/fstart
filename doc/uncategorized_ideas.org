@@ -24,3 +24,11 @@ Multiple linked lists are not a good data structure in rust.
 
 The following implements a no_std way to implement trees.
 https://docs.rs/tree-ds/latest/tree_ds/
+
+* Parse devicetree into cargo cfg
+
+https://doc.rust-lang.org/cargo/reference/build-scripts.html#rustc-cfg
+
+Using the build.rs it is possible to parse properties from a FDT into regular cargo configuration option.
+This makes the conditional configuration comfortable using existing rust mechanisms.
+
