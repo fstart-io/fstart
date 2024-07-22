@@ -1,0 +1,33 @@
+/dts-v1/;
+
+/ {
+  #address-cells = <1>;
+  #size-cells = <1>;
+
+  flash-info {
+    compatible = "fstart-flash";
+    board-name = "test";
+    category = "test";
+    board-url = "";
+    size = <0x1000000>; // 16MiB
+    areas {
+      area@0 {
+        compatible = "raw-bin";
+        description = "test binary";
+        file = "builder/testdata/test_blob.bin";
+        // No size means to use the size of the blob
+      };
+      area@1 {
+        compatible = "raw-bin";
+        description = "test binary";
+        file = "builder/testdata/test_blob.bin";
+        size = <0x100000>; // Pad size
+      };
+      area@2 {
+        compatible = "fstart-dtfs";
+        description = "dtfs";
+        size = <0x400>; // 1K
+      };
+    };
+  };
+};

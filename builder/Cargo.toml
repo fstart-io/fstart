@@ -1,0 +1,12 @@
+# Licensed under the Apache-2.0 license
+
+[package]
+name = "fstart-builder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tempfile.workspace = true
+fdt.workspace = true
+
+[features]
