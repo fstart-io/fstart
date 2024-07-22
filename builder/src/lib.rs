@@ -15,6 +15,7 @@ File contains exports for fstart Library.
 use std::io::Error;
 use std::process::Command;
 
+#[allow(dead_code)]
 fn dtb_from_dts(dts_path: &str) -> Result<Vec<u8>, Error> {
     let output = Command::new("dtc")
         .args(["-I", "dts"])
