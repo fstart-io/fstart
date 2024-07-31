@@ -42,6 +42,7 @@ version = "0.1.0"
 dependencies = [
  "fdt",
  "tempfile",
+ "vm-fdt",
 ]
 
 [[package]]
@@ -84,6 +85,12 @@ dependencies = [
  "rustix",
  "windows-sys",
 ]
+
+[[package]]
+name = "vm-fdt"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e21282841a059bb62627ce8441c491f09603622cd5a21c43bfedc85a2952f23"
 
 [[package]]
 name = "windows-sys"

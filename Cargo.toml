@@ -27,3 +27,4 @@ members = [
 [workspace.dependencies]
 tempfile = "3.10.1"
 fdt = "0.1.5"
+vm-fdt = "0.3.0"
