@@ -32,3 +32,7 @@ https://doc.rust-lang.org/cargo/reference/build-scripts.html#rustc-cfg
 Using the build.rs it is possible to parse properties from a FDT into regular cargo configuration option.
 This makes the conditional configuration comfortable using existing rust mechanisms.
 
+
+* Crate for making buildtime constants easy
+https://crates.io/crates/const-gen
+
