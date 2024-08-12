@@ -16,13 +16,16 @@ File contains exports for fstart Library.
 #![allow(unused_imports)]
 
 use core::fmt;
+use core::mem::size_of;
 use fdt::Fdt;
+use std::cmp::Ordering;
 use std::default;
 use std::fs::File;
 use std::io::Error;
 use std::io::Write;
 use std::process::Command;
 use vm_fdt::FdtWriter;
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 fn dtb_from_dts(dts_path: &str) -> Result<Vec<u8>, Error> {
     let output = Command::new("dtc")
@@ -55,11 +58,12 @@ fn build_image_with_1_raw_bin_fail() {
     assert!(result.is_err());
 }
 
-#[derive(PartialEq, PartialOrd, Default)]
+#[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
 struct FlashAddress(u32);
-#[derive(PartialEq, PartialOrd, Default)]
+#[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
 struct MappedAddress(u64);
 
+#[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
 struct MemoryMap {
     flash_address: FlashAddress,
     mapped_address: MappedAddress,
@@ -81,6 +85,7 @@ impl MemoryMap {
     }
 }
 
+#[derive(PartialEq, PartialOrd, Eq, Debug, Clone)]
 enum BoardCategory {
     Client,
     Embedded,
@@ -99,6 +104,7 @@ impl BoardCategory {
     }
 }
 
+#[derive(PartialEq, PartialOrd, Eq, Debug, Clone)]
 enum MediumType {
     SpiFlash,
     Mmc,
@@ -115,6 +121,7 @@ impl MediumType {
     }
 }
 
+#[derive(PartialEq, PartialOrd, Eq, Debug, Clone)]
 struct DtfsFlashinfo {
     board_name: String,
     category: BoardCategory,
@@ -124,6 +131,7 @@ struct DtfsFlashinfo {
     medium_size: u32,
 }
 
+#[derive(PartialEq, PartialOrd, Eq, Debug, Clone)]
 enum HashAlgo {
     //    Sha256,
     //    Sha384,
@@ -143,11 +151,13 @@ impl HashAlgo {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct DtfsDigest {
     algo: HashAlgo,
     digest: Vec<u8>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum CompressionAlgo {
     Lz4,
     Lzma,
@@ -164,7 +174,7 @@ impl CompressionAlgo {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct DtfsArea {
     description: String,
     compatible: String,
@@ -176,13 +186,64 @@ struct DtfsArea {
     compression_type: Option<CompressionAlgo>,
 }
 
+#[derive(Default, AsBytes, FromBytes, FromZeroes)]
+#[repr(C)]
+struct DtfsHeader {
+    magic: [u8; 16],
+    dtfs_offset: u32,
+    signatures_offset: u32,
+    _reserved: [u8; 8],
+}
+
+impl Ord for DtfsArea {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.offset.0.cmp(&other.offset.0)
+    }
+}
+
+impl PartialOrd for DtfsArea {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug)]
 struct Dtfs {
     flashinfo: DtfsFlashinfo,
     areas: Vec<DtfsArea>,
 }
 
+#[derive(Debug)]
+enum DtfsError {
+    Missing,
+    OverlappingAreas,
+    VmFdtError(vm_fdt::Error),
+}
+
 impl Dtfs {
-    fn generate_fdt(&self) -> Result<Vec<u8>, vm_fdt::Error> {
+    const DTFS_MAGIC: [u8; 16] = [
+        0x46, 0x53, 0x54, 0x41, 0x52, 0x54, 0x5f, 0x44, 0x54, 0x46, 0x53, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+
+    // move this in the generate function and map the vm_fdt output
+    fn validate_dtfs(&mut self) -> Result<(), DtfsError> {
+        self.areas.sort();
+
+        // Check for no overlap
+        for i in 1..self.areas.len() {
+            let prev_start = self.areas[i - 1].offset.0;
+            let prev_end = prev_start + self.areas[i - 1].area_size - 1;
+            let cur_start = self.areas[i].offset.0;
+
+            if prev_end > cur_start {
+                return Err(DtfsError::OverlappingAreas);
+            }
+        }
+        Ok(())
+    }
+
+    fn generate_fdt(&mut self) -> Result<Vec<u8>, vm_fdt::Error> {
         let mut fdt = FdtWriter::new()?;
 
         let root = fdt.begin_node("")?;
@@ -204,6 +265,7 @@ impl Dtfs {
             });
             fdt.property_array_u64("memory-map", &memory_maps)?;
         }
+        self.areas.sort();
         for (n, area) in self.areas.iter().enumerate() {
             let name = format!("area{}", n);
             let fdt_area = fdt.begin_node(&name)?;
@@ -227,16 +289,65 @@ impl Dtfs {
 
         fdt.end_node(flash_info)?;
         fdt.end_node(root)?;
-
-        let fdt = fdt.finish().unwrap();
-
+        let fdt = fdt.finish()?;
         Ok(fdt)
+    }
+
+    fn generate_fdt_area(&mut self) -> Result<(), DtfsError> {
+        let fdt_bin = self.generate_fdt().map_err(DtfsError::VmFdtError)?;
+
+        const SINGATURE_ALIGNMENT: usize = 16;
+        let signatures_offset = (size_of::<DtfsHeader>() + fdt_bin.len() + SINGATURE_ALIGNMENT - 1)
+            & !(SINGATURE_ALIGNMENT - 1);
+        let signatures_offset = signatures_offset.try_into().unwrap();
+
+        // TODO Add signatures & struct pointing to signatures & MAGIC
+        let header = DtfsHeader {
+            magic: Self::DTFS_MAGIC,
+            dtfs_offset: size_of::<DtfsHeader>().try_into().unwrap(),
+            signatures_offset,
+            ..Default::default()
+        };
+
+        let dtfs_area = self
+            .areas
+            .iter_mut()
+            .find(|x| x.compatible == "fstart-primary-dtfs")
+            .unwrap();
+
+        let mut bin = vec![0xff; dtfs_area.area_size.try_into().unwrap()];
+        bin[..size_of::<DtfsHeader>()].copy_from_slice(header.as_bytes());
+        bin[size_of::<DtfsHeader>()..][..fdt_bin.len()].copy_from_slice(&fdt_bin);
+
+        dtfs_area.file = Some(bin);
+
+        Ok(())
+    }
+
+    fn generate_bin(&self) -> Vec<u8> {
+        let mut bin = vec![0xff; self.flashinfo.medium_size.try_into().unwrap()];
+        for area in &self.areas {
+            if let Some(file) = &area.file {
+                if file.len() > area.area_size.try_into().unwrap() {
+                    panic!(
+                        "File ({}) for area {} is larger than area size",
+                        file.len(),
+                        area.description
+                    );
+                }
+
+                bin[area.offset.0.try_into().unwrap()..][..file.len()].copy_from_slice(file);
+            }
+        }
+        bin
     }
 }
 
 #[test]
 fn test_generate_test_dtfs() {
-    let dtfs = Dtfs {
+    const DTFS_BASE: u32 = 0x1000;
+
+    let mut dtfs = Dtfs {
         flashinfo: DtfsFlashinfo {
             board_name: String::from("test"),
             category: BoardCategory::Other,
@@ -249,13 +360,30 @@ fn test_generate_test_dtfs() {
             medium_type: MediumType::Other,
             medium_size: 0x1_0000,
         },
-        areas: vec![DtfsArea {
-            description: String::from("DTFS"),
-            compatible: String::from("fstart-primary-dtfs"),
-            offset: FlashAddress(0x1000),
-            area_size: 0x5000,
-            ..Default::default()
-        }],
+        areas: vec![
+            DtfsArea {
+                description: String::from("DTFS"),
+                compatible: String::from("fstart-primary-dtfs"),
+                offset: FlashAddress(DTFS_BASE),
+                area_size: 0x5000,
+                ..Default::default()
+            },
+            DtfsArea {
+                description: String::from("ZEROS"),
+                compatible: String::from("fstart-raw-bin"),
+                offset: FlashAddress(0),
+                area_size: 0x1000,
+                file: Some(vec![0u8; 0x1000]),
+                ..Default::default()
+            },
+        ],
     };
-    dtfs.generate_fdt().unwrap();
+    dtfs.validate_dtfs().unwrap();
+    dtfs.generate_fdt_area().unwrap();
+    let bin = dtfs.generate_bin();
+
+    // Look for magic
+    assert_eq!(bin[DTFS_BASE as usize..][..0x10], Dtfs::DTFS_MAGIC);
+    // Make sure the FDT is valid
+    let _fdt = Fdt::new(&bin[0x1020..]).unwrap();
 }
