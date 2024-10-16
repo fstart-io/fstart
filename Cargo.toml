@@ -24,8 +24,9 @@ members = [
 #  "vendorcode", # Integration of vendorcode components. Focus on this later after fully open POC
 ]
 
+# keep alphabetical
 [workspace.dependencies]
-tempfile = "3.10.1"
 fdt = "0.1.5"
+tempfile = "3.10.1"
 vm-fdt = "0.3.0"
 zerocopy = "0.7"
