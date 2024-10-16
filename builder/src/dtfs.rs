@@ -42,22 +42,6 @@ fn dtb_from_dts(dts_path: &str) -> Result<Vec<u8>, Error> {
     Ok(output.stdout)
 }
 
-#[test]
-fn build_image_with_1_raw_bin() {
-    let dts_path = concat!(env!("CARGO_MANIFEST_DIR"), "/test-data/raw_bin_test.dts");
-
-    let dtb = dtb_from_dts(dts_path).unwrap();
-    let _parsed_fdt = fdt::Fdt::new(dtb.as_slice()).unwrap();
-}
-
-#[test]
-fn build_image_with_1_raw_bin_fail() {
-    let dts_path = concat!(env!("CARGO_MANIFEST_DIR"), "/FILE_DOES_NOT_EXIST");
-
-    let result = dtb_from_dts(dts_path);
-    assert!(result.is_err());
-}
-
 #[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
 struct FlashAddress(u32);
 #[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
@@ -343,47 +327,69 @@ impl Dtfs {
     }
 }
 
-#[test]
-fn test_generate_test_dtfs() {
-    const DTFS_BASE: u32 = 0x1000;
+#[cfg(test)]
+mod tests {
 
-    let mut dtfs = Dtfs {
-        flashinfo: DtfsFlashinfo {
-            board_name: String::from("test"),
-            category: BoardCategory::Other,
-            board_url: String::from("https://fstart.io/"),
-            memory_mapping: Some(vec![MemoryMap {
-                flash_address: FlashAddress(0),
-                mapped_address: MappedAddress(0x1000),
-                size: 0x1_0000,
-            }]),
-            medium_type: MediumType::Other,
-            medium_size: 0x1_0000,
-        },
-        areas: vec![
-            DtfsArea {
-                description: String::from("DTFS"),
-                compatible: String::from("fstart-primary-dtfs"),
-                offset: FlashAddress(DTFS_BASE),
-                area_size: 0x5000,
-                ..Default::default()
-            },
-            DtfsArea {
-                description: String::from("ZEROS"),
-                compatible: String::from("fstart-raw-bin"),
-                offset: FlashAddress(0),
-                area_size: 0x1000,
-                file: Some(vec![0u8; 0x1000]),
-                ..Default::default()
-            },
-        ],
-    };
-    dtfs.validate_dtfs().unwrap();
-    dtfs.generate_fdt_area().unwrap();
-    let bin = dtfs.generate_bin();
+    use super::*;
 
-    // Look for magic
-    assert_eq!(bin[DTFS_BASE as usize..][..0x10], Dtfs::DTFS_MAGIC);
-    // Make sure the FDT is valid
-    let _fdt = Fdt::new(&bin[0x1020..]).unwrap();
+    #[test]
+    fn build_image_with_1_raw_bin() {
+        let dts_path = concat!(env!("CARGO_MANIFEST_DIR"), "/test-data/raw_bin_test.dts");
+
+        let dtb = dtb_from_dts(dts_path).unwrap();
+        let _parsed_fdt = fdt::Fdt::new(dtb.as_slice()).unwrap();
+    }
+
+    #[test]
+    fn build_image_with_1_raw_bin_fail() {
+        let dts_path = concat!(env!("CARGO_MANIFEST_DIR"), "/FILE_DOES_NOT_EXIST");
+
+        let result = dtb_from_dts(dts_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_test_dtfs() {
+        const DTFS_BASE: u32 = 0x1000;
+
+        let mut dtfs = Dtfs {
+            flashinfo: DtfsFlashinfo {
+                board_name: String::from("test"),
+                category: BoardCategory::Other,
+                board_url: String::from("https://fstart.io/"),
+                memory_mapping: Some(vec![MemoryMap {
+                    flash_address: FlashAddress(0),
+                    mapped_address: MappedAddress(0x1000),
+                    size: 0x1_0000,
+                }]),
+                medium_type: MediumType::Other,
+                medium_size: 0x1_0000,
+            },
+            areas: vec![
+                DtfsArea {
+                    description: String::from("DTFS"),
+                    compatible: String::from("fstart-primary-dtfs"),
+                    offset: FlashAddress(DTFS_BASE),
+                    area_size: 0x5000,
+                    ..Default::default()
+                },
+                DtfsArea {
+                    description: String::from("ZEROS"),
+                    compatible: String::from("fstart-raw-bin"),
+                    offset: FlashAddress(0),
+                    area_size: 0x1000,
+                    file: Some(vec![0u8; 0x1000]),
+                    ..Default::default()
+                },
+            ],
+        };
+        dtfs.validate_dtfs().unwrap();
+        dtfs.generate_fdt_area().unwrap();
+        let bin = dtfs.generate_bin();
+
+        // Look for magic
+        assert_eq!(bin[DTFS_BASE as usize..][..0x10], Dtfs::DTFS_MAGIC);
+        // Make sure the FDT is valid
+        let _fdt = Fdt::new(&bin[0x1020..]).unwrap();
+    }
 }
