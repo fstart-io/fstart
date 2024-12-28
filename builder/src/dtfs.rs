@@ -17,29 +17,20 @@ File contains exports for the DTFS builder
 
 use core::fmt;
 use core::mem::size_of;
+use devicetree_tool::DeviceTree;
 use fdt::Fdt;
 use std::cmp::Ordering;
 use std::default;
-use std::fs::File;
-use std::io::Error;
-use std::io::Write;
+use std::fs;
 use std::process::Command;
 use vm_fdt::FdtWriter;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-fn dtb_from_dts(dts_path: &str) -> Result<Vec<u8>, Error> {
-    let output = Command::new("dtc")
-        .args(["-I", "dts"])
-        .arg(dts_path)
-        .args(["-O", "dtb"])
-        .arg("-Wno-unit_address_vs_reg")
-        .output()?;
-
-    if !output.status.success() {
-        let msg = format!("dtc failed: {:?}", String::from_utf8(output.stderr));
-        return Err(Error::new(std::io::ErrorKind::InvalidInput, msg));
-    }
-    Ok(output.stdout)
+fn dtb_from_dts(dts_path: &str) -> Vec<u8> {
+    let dts = std::fs::read_to_string(dts_path).expect("Unable to read input file");
+    // This panics on wrong input
+    let tree = DeviceTree::from_dts_bytes(dts.as_bytes());
+    tree.generate_dtb()
 }
 
 #[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
@@ -336,16 +327,8 @@ mod tests {
     fn build_image_with_1_raw_bin() {
         let dts_path = concat!(env!("CARGO_MANIFEST_DIR"), "/test-data/raw_bin_test.dts");
 
-        let dtb = dtb_from_dts(dts_path).unwrap();
+        let dtb = dtb_from_dts(dts_path);
         let _parsed_fdt = fdt::Fdt::new(dtb.as_slice()).unwrap();
-    }
-
-    #[test]
-    fn build_image_with_1_raw_bin_fail() {
-        let dts_path = concat!(env!("CARGO_MANIFEST_DIR"), "/FILE_DOES_NOT_EXIST");
-
-        let result = dtb_from_dts(dts_path);
-        assert!(result.is_err());
     }
 
     #[test]
