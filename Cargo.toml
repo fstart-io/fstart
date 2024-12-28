@@ -26,6 +26,7 @@ members = [
 
 # keep alphabetical
 [workspace.dependencies]
+devicetree-tool = "0.1.2"
 fdt = "0.1.5"
 tempfile = "3.10.1"
 vm-fdt = "0.3.0"
