@@ -1,6 +1,9 @@
 #![cfg_attr(not(test), no_std)]
-#![cfg_attr(not(any(test, feature = "thread-unsafe")),
+#![cfg_attr(not(any(test, feature = "fun-con", feature = "thread-unsafe")),
             forbid(unsafe_code))]
+
+#[cfg(all(feature = "block-con", feature = "fun-con"))]
+compile_error!("Blocking console and fun console are mutually exclusive!");
 
 #[cfg(feature = "thread-unsafe")]
 use embassy_sync::blocking_mutex::raw::NoopRawMutex as RawMutex;
@@ -10,6 +13,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as RawMutex;
 use embassy_sync::mutex::Mutex;
 
 #[cfg_attr(feature = "block-con", path = "block-con.rs")]
+#[cfg_attr(feature = "fun-con", path = "fun-con.rs")]
 mod logger;
 pub use logger::init;
 pub use logger::add_sink;

@@ -28,6 +28,7 @@ members = [
 [workspace.dependencies]
 critical-section = "1.2.0"
 devicetree-tool = "0.1.2"
+embassy-executor = "0.7.0"
 embassy-sync = "0.6.2"
 fdt = "0.1.5"
 heapless = "0.8.0"
