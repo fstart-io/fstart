@@ -8,7 +8,10 @@ license = "MIT OR Apache-2.0"
 critical-section = { workspace = true, optional = true }
 embassy-sync.workspace = true
 heapless.workspace = true
+log.workspace = true
 
 [features]
+default = [ "block-con" ]
+block-con = [ ]
 test = [ "critical-section/std" ]
 thread-unsafe = [ ]

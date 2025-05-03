@@ -9,6 +9,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as RawMutex;
 
 use embassy_sync::mutex::Mutex;
 
+#[cfg_attr(feature = "block-con", path = "block-con.rs")]
+mod logger;
+pub use logger::init;
+pub use logger::add_sink;
 
 mod sink;
 pub use sink::Sink;
@@ -16,6 +20,11 @@ pub use sink::Sink;
 mod hub;
 
 const MAX_SINKS: usize = 8;
+
+fn format(writer : &mut dyn core::fmt::Write, record : &log::Record) {
+    let _ = write!(writer, "[{:-5}] ", record.metadata().level());
+    let _ = core::fmt::write(writer, *record.args());
+}
 
 struct Guard<T> {
     inner: Mutex<RawMutex, T>
@@ -49,7 +58,6 @@ mod tests {
     use std::vec::Vec;
     use super::*;
 
-    static HUB: Guard<hub::Hub<MAX_SINKS>> = Guard::new(hub::Hub::new());
     static mut SINK: VecSink = VecSink { data: Vec::new() };
 
     struct VecSink {
@@ -64,26 +72,23 @@ mod tests {
 
     #[test]
     fn log_nowhere() {
-        HUB.lock_mut(|hub| {
-            hub.write("No sinks added, this warning goes nowhere!".as_bytes());
-            hub.flush();
-        });
+        logger::init();
+        log::set_max_level(log::LevelFilter::Trace);
+        log::warn!("No sinks added, this warning goes nowhere!");
+        log::logger().flush();
     }
 
     #[test]
     fn say_hello() {
         unsafe {
             #![allow(static_mut_refs)]
+            add_sink(&mut SINK);
+
             let hello = "Say hello through a vector!";
+            log::info!("{hello}");
+            log::logger().flush();
 
-            HUB.lock_mut(|hub| {
-                hub.add(&mut SINK);
-
-                hub.write(hello.as_bytes());
-                hub.flush();
-            });
-
-            assert_eq!(hello.as_bytes(), SINK.data);
+            assert_eq!((String::from("[INFO ] ") + hello).as_bytes(), SINK.data);
         }
     }
 }
