@@ -5,4 +5,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+critical-section = { workspace = true, optional = true }
+embassy-sync.workspace = true
 heapless.workspace = true
+
+[features]
+test = [ "critical-section/std" ]
+thread-unsafe = [ ]
