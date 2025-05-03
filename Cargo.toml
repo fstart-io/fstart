@@ -13,7 +13,7 @@ members = [
 #  "arch", # arch drivers
   "builder", # Puts image together based on build_fdt
 #  "common", # non hardware specific drivers
-#  "console", # console drivers
+  "console", # console drivers
 #  "cpu", # cpu drivers
 #  "drivers", # Aggregated files of drivers for build and code. Basically imports other code. Together with orchestrator core of project
   "fs", # file system, also does security of dealing with multiple components.
