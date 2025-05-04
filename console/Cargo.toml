@@ -5,15 +5,16 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-critical-section = { workspace = true, optional = true }
 embassy-executor = { workspace = true, optional = true }
 embassy-sync.workspace = true
 heapless.workspace = true
 log.workspace = true
 
+[dev-dependencies]
+critical-section = { workspace = true, features = [ "std" ] }
+
 [features]
 default = [ "block-con" ]
 block-con = [ ]
 fun-con = [ "dep:embassy-executor" ]
-test = [ "critical-section/std" ]
 thread-unsafe = [ ]
