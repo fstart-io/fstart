@@ -5,16 +5,16 @@ pub trait Sink {
 
     fn write(&mut self, bytes: &[u8]);
 
-    fn as_write(&mut self) -> SinkWrite where Self: Sized {
+    fn as_write(&mut self) -> SinkWrite<Self> where Self: Sized {
         SinkWrite { sink: self }
     }
 }
 
-pub struct SinkWrite<'a> {
-    sink: &'a mut dyn Sink
+pub struct SinkWrite<'a, S: Sink> {
+    sink: &'a mut S
 }
 
-impl Write for SinkWrite<'_> {
+impl<S: Sink> Write for SinkWrite<'_, S> {
     fn write_str(&mut self, s: &str) -> Result {
         self.sink.write(s.as_bytes());
         Ok(())
