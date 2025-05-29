@@ -207,6 +207,7 @@ version = "0.1.0"
 dependencies = [
  "devicetree-tool",
  "fdt",
+ "fstart-fs",
  "tempfile",
  "vm-fdt",
  "zerocopy",
@@ -225,6 +226,7 @@ dependencies = [
  "ml-dsa",
  "sha2",
  "signature",
+ "zerocopy",
 ]
 
 [[package]]

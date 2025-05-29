@@ -26,74 +26,13 @@ use std::process::Command;
 use vm_fdt::FdtWriter;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+use fstart_fs::metadata::*;
+
 fn dtb_from_dts(dts_path: &str) -> Vec<u8> {
     let dts = std::fs::read_to_string(dts_path).expect("Unable to read input file");
     // This panics on wrong input
     let tree = DeviceTree::from_dts_bytes(dts.as_bytes());
     tree.generate_dtb()
-}
-
-#[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
-struct FlashAddress(u32);
-#[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
-struct MappedAddress(u64);
-
-#[derive(PartialEq, PartialOrd, Default, Eq, Debug, Clone)]
-struct MemoryMap {
-    flash_address: FlashAddress,
-    mapped_address: MappedAddress,
-    size: u32,
-}
-
-impl MemoryMap {
-    fn is_mapped(&self, base: MappedAddress, size: u32) -> bool {
-        let begin = base.0;
-        let end = base.0 + u64::from(size);
-
-        if begin < self.mapped_address.0 {
-            return false;
-        }
-        if end > self.mapped_address.0 + u64::from(self.size) {
-            return false;
-        }
-        true
-    }
-}
-
-#[derive(PartialEq, PartialOrd, Eq, Debug, Clone)]
-enum BoardCategory {
-    Client,
-    Embedded,
-    Server,
-    Other,
-}
-
-impl BoardCategory {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Client => "client",
-            Self::Embedded => "embedded",
-            Self::Server => "server",
-            Self::Other => "other",
-        }
-    }
-}
-
-#[derive(PartialEq, PartialOrd, Eq, Debug, Clone)]
-enum MediumType {
-    SpiFlash,
-    Mmc,
-    Other,
-}
-
-impl MediumType {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::SpiFlash => "spi-flash",
-            Self::Mmc => "mmc",
-            Self::Other => "other",
-        }
-    }
 }
 
 #[derive(PartialEq, PartialOrd, Eq, Debug, Clone)]
@@ -106,47 +45,10 @@ struct DtfsFlashinfo {
     medium_size: u32,
 }
 
-#[derive(PartialEq, PartialOrd, Eq, Debug, Clone)]
-enum HashAlgo {
-    //    Sha256,
-    //    Sha384,
-    Sha512,
-    // TODO are these good targets??
-    //    SlhDsaShake128s,
-    //    SlhDsaShake196s,
-    SlhDsaShake256s,
-}
-
-impl HashAlgo {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Sha512 => "sha512",
-            Self::SlhDsaShake256s => "slh_dsa_shake_256s",
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct DtfsDigest {
     algo: HashAlgo,
     digest: Vec<u8>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-enum CompressionAlgo {
-    Lz4,
-    Lzma,
-    Zstd,
-}
-
-impl CompressionAlgo {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Lz4 => "lz4",
-            Self::Lzma => "lzma",
-            Self::Zstd => "zstd",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -159,15 +61,6 @@ struct DtfsArea {
     mem_size: Option<u32>,
     digests: Option<Vec<DtfsDigest>>,
     compression_type: Option<CompressionAlgo>,
-}
-
-#[derive(Default, AsBytes, FromBytes, FromZeroes)]
-#[repr(C)]
-struct DtfsHeader {
-    magic: [u8; 16],
-    dtfs_offset: u32,
-    signatures_offset: u32,
-    _reserved: [u8; 8],
 }
 
 impl Ord for DtfsArea {
@@ -196,11 +89,6 @@ enum DtfsError {
 }
 
 impl Dtfs {
-    const DTFS_MAGIC: [u8; 16] = [
-        0x46, 0x53, 0x54, 0x41, 0x52, 0x54, 0x5f, 0x44, 0x54, 0x46, 0x53, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ];
-
     // move this in the generate function and map the vm_fdt output
     fn validate_dtfs(&mut self) -> Result<(), DtfsError> {
         self.areas.sort();
@@ -277,12 +165,7 @@ impl Dtfs {
         let signatures_offset = signatures_offset.try_into().unwrap();
 
         // TODO Add signatures & struct pointing to signatures & MAGIC
-        let header = DtfsHeader {
-            magic: Self::DTFS_MAGIC,
-            dtfs_offset: size_of::<DtfsHeader>().try_into().unwrap(),
-            signatures_offset,
-            ..Default::default()
-        };
+        let header = DtfsHeader::new(signatures_offset);
 
         let dtfs_area = self
             .areas
@@ -371,7 +254,7 @@ mod tests {
         let bin = dtfs.generate_bin();
 
         // Look for magic
-        assert_eq!(bin[DTFS_BASE as usize..][..0x10], Dtfs::DTFS_MAGIC);
+        assert_eq!(bin[DTFS_BASE as usize..][..0x10], *DtfsHeader::DTFS_MAGIC);
         // Make sure the FDT is valid
         let _fdt = Fdt::new(&bin[0x1020..]).unwrap();
     }

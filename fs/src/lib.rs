@@ -18,6 +18,7 @@ File contains exports for fstart Library.
 mod test;
 
 pub mod crypto;
+pub mod metadata;
 
 use embedded_io_async::{ErrorKind::*, ReadExactError};
 

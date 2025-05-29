@@ -15,6 +15,7 @@ generic-array.workspace = true
 ml-dsa = { workspace = true, default-features = false }
 sha2.workspace = true
 signature.workspace = true
+zerocopy = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 hex_lit.workspace = true
