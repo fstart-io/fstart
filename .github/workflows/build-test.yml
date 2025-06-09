@@ -74,3 +74,17 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
+  tombi:
+    name: TOML Validation
+    needs: generate-matrix
+    strategy:
+      matrix:
+        commit: ${{ fromJson(needs.generate-matrix.outputs.commits) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.commit }}
+      - uses: tombi-toml/setup-tombi@v1
+      - name: Validate TOML files
+        run: tombi lint

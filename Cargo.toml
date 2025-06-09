@@ -1,27 +1,24 @@
 # Licensed under the #INSERT_LICENCE# license
 
 [workspace]
-
 # Use dependency resolver v2 to allow [dev-dependencies] to have different
 # features from [dependencies]. See
 # https://doc.rust-lang.org/cargo/reference/resolver.html#feature-resolver-version-2
 resolver = "2"
-
 excludes = []
-
 members = [
-#  "arch", # arch drivers
-  "builder", # Puts image together based on build_fdt
-#  "common", # non hardware specific drivers
-#  "console", # console drivers
-#  "cpu", # cpu drivers
-#  "drivers", # Aggregated files of drivers for build and code. Basically imports other code. Together with orchestrator core of project
-  "fs", # file system, also does security of dealing with multiple components.
-#  "handoff", # ACPI SMBIOS, Linux_FDT, UPL, coreboot table, ... data
-#  "mainboard", # contains FDT. Design no code.
-#  "orchestrator", # Parses FDT, binds to drivers to nodes and iterates over them. Used by builder and code
-#  "periph", # Everything else
-#  "vendorcode", # Integration of vendorcode components. Focus on this later after fully open POC
+  # "arch", # arch drivers
+  "builder",  # Puts image together based on build_fdt
+  # "common", # non hardware specific drivers
+  #  "console", # console drivers
+  #  "cpu", # cpu drivers
+  #  "drivers", # Aggregated files of drivers for build and code. Basically imports other code. Together with orchestrator core of project
+  "fs",  # file system, also does security of dealing with multiple components.
+  # "handoff", # ACPI SMBIOS, Linux_FDT, UPL, coreboot table, ... data
+  #  "mainboard", # contains FDT. Design no code.
+  #  "orchestrator", # Parses FDT, binds to drivers to nodes and iterates over them. Used by builder and code
+  #  "periph", # Everything else
+  #  "vendorcode", # Integration of vendorcode components. Focus on this later after fully open POC
 ]
 
 # keep alphabetical
