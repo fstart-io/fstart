@@ -6,9 +6,9 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 devicetree-tool.workspace = true
-tempfile.workspace = true
 fdt.workspace = true
+tempfile.workspace = true
 vm-fdt.workspace = true
-zerocopy= { workspace = true, features = ["derive"] }
+zerocopy = { workspace = true, features = ["derive"] }
 
 [features]
