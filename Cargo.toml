@@ -5,7 +5,7 @@
 # features from [dependencies]. See
 # https://doc.rust-lang.org/cargo/reference/resolver.html#feature-resolver-version-2
 resolver = "2"
-excludes = []
+exclude = []
 members = [
   # "arch", # arch drivers
   "builder",  # Puts image together based on build_fdt
