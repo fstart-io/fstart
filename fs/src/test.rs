@@ -1,30 +1,83 @@
 use embassy_futures::block_on;
-use crate::crypto::{ParseSignature,
+use ed25519_dalek::{VerifyingKey as EdVerifyingKey, Signature as EdSignature};
+use crate::crypto::{double,
+                    ParseSignature,
                     SignatureVerify,
                     VerifiedFullRead};
 
 use self::compat::Read;
 
+type MlSignature = ml_dsa::Signature<ml_dsa::MlDsa44>;
+type MlVerifyingKey = ml_dsa::VerifyingKey<ml_dsa::MlDsa44>;
+
+type DoubleSignature = (EdSignature, MlSignature);
+type DoubleVerifyingKey = double::VerifyingKey<EdVerifyingKey, MlVerifyingKey>;
+
 #[test]
 fn test_ed25519_verification() {
-    use ed25519_dalek::VerifyingKey as EdVerifyingKey;
+    let (pubkey, sig) = read_ed25519("dtfs.dtb".into());
+    test_dtfs(&pubkey, &sig);
+}
 
-    let pubkey = read("ed25519.pub").try_into().unwrap();
-    let pubkey = EdVerifyingKey::from_bytes(&pubkey).unwrap();
-    let mut sig = Read::from(read("dtfs.dtb.ed25519.sig"));
-    let sig = block_on(EdVerifyingKey::try_parse_signature(&mut sig))
-        .expect("signature parsing error");
+#[test]
+fn test_double_verification() {
+    let (pubkey, sig) = read_double("dtfs.dtb".into());
+    test_dtfs(&pubkey, &sig);
+}
 
+#[test]
+fn test_ed25519_ml_dsa44_verification() {
+    let (ed_pub, ed_sig) = read_ed25519("dtfs.dtb".into());
+    let (ml_pub, ml_sig) = read_ml_dsa44("dtfs.dtb".into());
+    test_dtfs(&double::VerifyingKey(ed_pub, ml_pub), &(ed_sig, ml_sig));
+}
+
+fn test_dtfs<V, S>(pubkey: &V, sig: &S)
+where
+    V: signature::Verifier<S>,
+{
     let dtb = read("dtfs.dtb");
     let input = Read::from(dtb.clone());
 
-    let verify = SignatureVerify::new(&pubkey, &sig);
+    let verify = SignatureVerify::new(pubkey, sig);
 
     let mut dest = vec![0u8; dtb.len()];
     let read = VerifiedFullRead::new(&mut dest, input, verify);
 
     block_on(read.read_and_verify()).expect("signature verification failed");
     assert_eq!(dest, dtb);
+}
+
+fn read_double(stem: String) -> (DoubleVerifyingKey, DoubleSignature) {
+    let pubkey = double::VerifyingKey(read_ed_pub(), read_ml_pub());
+    let mut sig = Read::from(read(&(stem + ".ed25519+ml_dsa44.sig")));
+    let sig = block_on(DoubleVerifyingKey::try_parse_signature(&mut sig))
+                                            .expect("signature parsing error");
+    (pubkey, sig)
+}
+
+fn read_ed25519(stem: String) -> (EdVerifyingKey, EdSignature) {
+    let mut sig = Read::from(read(&(stem + ".ed25519.sig")));
+    let sig = block_on(EdVerifyingKey::try_parse_signature(&mut sig))
+                                        .expect("signature parsing error");
+    (read_ed_pub(), sig)
+}
+
+fn read_ed_pub() -> EdVerifyingKey {
+    let pubkey = read("ed25519.pub").try_into().unwrap();
+    EdVerifyingKey::from_bytes(&pubkey).unwrap()
+}
+
+fn read_ml_dsa44(stem: String) -> (MlVerifyingKey, MlSignature) {
+    let mut sig = Read::from(read(&(stem + ".ml_dsa44.sig")));
+    let sig = block_on(MlVerifyingKey::try_parse_signature(&mut sig))
+                                        .expect("signature parsing error");
+    (read_ml_pub(), sig)
+}
+
+fn read_ml_pub() -> MlVerifyingKey {
+    let pubkey = read("ml_dsa44.pub").as_slice().try_into().unwrap();
+    MlVerifyingKey::decode(&pubkey)
 }
 
 fn read(file: &str) -> Vec<u8> {
