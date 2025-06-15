@@ -24,6 +24,7 @@ members = [
 # keep alphabetical
 [workspace.dependencies]
 devicetree-tool = "0.1.2"
+digest = "0.10.7"
 ed25519-dalek = { version = "2.1.1", default-features = false }
 embassy-futures = "0.1.1"
 embedded-io-async = "0.6.1"

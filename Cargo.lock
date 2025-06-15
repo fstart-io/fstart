@@ -216,6 +216,7 @@ dependencies = [
 name = "fstart-fs"
 version = "0.1.0"
 dependencies = [
+ "digest",
  "ed25519-dalek",
  "embassy-futures",
  "embedded-io-async",

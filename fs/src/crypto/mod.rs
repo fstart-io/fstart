@@ -7,7 +7,8 @@ pub mod ml_dsa;
 pub mod ed25519;
 
 use embedded_io_async::Read;
-use signature::{Verifier, Result};
+use digest::{Update, FixedOutputReset, Output, OutputSizeUser};
+use signature::{Verifier, Result, Error};
 
 pub trait ParseSignature<S> {
     #[allow(async_fn_in_trait)]
@@ -30,5 +31,29 @@ where
     #[must_use]
     pub fn verify(&self, msg: &[u8]) -> Result<()> {
         self.verifier.verify(msg, self.signature)
+    }
+}
+
+pub struct HashVerify<'a, D: OutputSizeUser> {
+    digest: D,
+    expected: &'a Output<D>,
+}
+
+impl<'a, D> HashVerify<'a, D>
+where
+    D: Update + FixedOutputReset,
+{
+    pub fn new(digest: D, expected: &'a Output<D>) -> Self {
+        Self { digest, expected }
+    }
+
+    #[must_use]
+    pub fn verify(&mut self) -> Result<()> {
+        (self.digest.finalize_fixed_reset() == *self.expected)
+            .then_some(()).ok_or(Error::new())
+    }
+
+    fn update(&mut self, input: &[u8]) {
+        self.digest.update(input)
     }
 }
