@@ -27,6 +27,7 @@ use vm_fdt::FdtWriter;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use fstart_fs::metadata::*;
+use crate::signing::{self, sign};
 
 fn dtb_from_dts(dts_path: &str) -> Vec<u8> {
     let dts = std::fs::read_to_string(dts_path).expect("Unable to read input file");
@@ -85,6 +86,7 @@ struct Dtfs {
 enum DtfsError {
     Missing,
     OverlappingAreas,
+    SigningError(signing::Error),
     VmFdtError(vm_fdt::Error),
 }
 
@@ -164,7 +166,7 @@ impl Dtfs {
             & !(SINGATURE_ALIGNMENT - 1);
         let signatures_offset = signatures_offset.try_into().unwrap();
 
-        // TODO Add signatures & struct pointing to signatures & MAGIC
+        // TODO Add struct pointing to signatures & MAGIC
         let header = DtfsHeader::new(signatures_offset);
 
         let dtfs_area = self
@@ -176,6 +178,10 @@ impl Dtfs {
         let mut bin = vec![0xff; dtfs_area.area_size.try_into().unwrap()];
         bin[..size_of::<DtfsHeader>()].copy_from_slice(header.as_bytes());
         bin[size_of::<DtfsHeader>()..][..fdt_bin.len()].copy_from_slice(&fdt_bin);
+
+        let sig = sign(&bin[..signatures_offset as usize])
+            .map_err(DtfsError::SigningError)?;
+        bin[signatures_offset as usize..][..sig.len()].copy_from_slice(&sig);
 
         dtfs_area.file = Some(bin);
 
