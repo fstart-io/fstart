@@ -24,9 +24,10 @@ pub mod metadata;
 use zerocopy::AsBytes;
 use embedded_io_async::{ErrorType, ErrorKind::{self, *}, ReadExactError,
                         Read, Seek, SeekFrom};
+use digest::Digest as _;
 use fdt::{Fdt, node::FdtNode};
 
-use crate::crypto::{VerifiedFullRead, SignatureVerify};
+use crate::crypto::{VerifiedFullRead, SignatureVerify, HashVerify, FindDigest};
 use crate::metadata::DtfsHeader;
 
 pub type Error = embedded_io_async::ErrorKind;
@@ -46,6 +47,27 @@ impl<'a, F, V> FileSystem<'a, F, V>
 where
     F: Read + Seek + ErrorType<Error = ErrorKind>,
 {
+    pub async fn verified_load(&mut self, buf: &mut [u8],
+                               compat: &str, name: &str)
+        -> Result<()>
+    {
+        let area = self.lookup(compat, name).ok_or(InvalidInput)?;
+        let size = get_usize(&area, "area-size").ok_or(InvalidData)?;
+        if size > buf.len() {
+            return Err(InvalidInput);
+        }
+
+        let digest = config::Digest::find(&area).ok_or(InvalidData)?;
+
+        let offset = get_usize(&area, "offset").ok_or(InvalidData)?;
+        self.flash.seek(SeekFrom::Start(offset as u64)).await?;
+
+        let verify = VerifiedFullRead::new(
+            &mut buf[..size], &mut self.flash,
+            HashVerify::new(config::Digest::new(), &digest));
+        verify.read_and_verify().await
+    }
+
     pub async fn load_fs<S>(&'a mut self, offset: u32) -> Result<()>
     where
         V: signature::Verifier<S> + crate::crypto::ParseSignature<S>,
