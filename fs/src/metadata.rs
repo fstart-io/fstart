@@ -105,9 +105,9 @@ impl CompressionAlgo {
 #[derive(Default, AsBytes, FromBytes, FromZeroes)]
 #[repr(C)]
 pub struct DtfsHeader {
-    magic: [u8; 16],
-    dtfs_offset: u32,
-    signatures_offset: u32,
+    pub(crate) magic: [u8; 16],
+    pub(crate) dtfs_offset: u32,
+    pub(crate) signatures_offset: u32,
     _reserved: [u8; 8],
 }
 
