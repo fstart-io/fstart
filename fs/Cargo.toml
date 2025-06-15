@@ -11,6 +11,7 @@ digest.workspace = true
 ed25519-dalek = { workspace = true, default-features = false }
 embassy-futures.workspace = true
 embedded-io-async.workspace = true
+fdt.workspace = true
 generic-array.workspace = true
 ml-dsa = { workspace = true, default-features = false }
 sha2.workspace = true

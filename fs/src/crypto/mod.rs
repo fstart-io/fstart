@@ -11,7 +11,26 @@ use digest::{Update, FixedOutputReset, Output, OutputSizeUser};
 use signature::{Verifier, Result, Error};
 use sha2::Sha512;
 use sha3::Sha3_256;
+use fdt::node::FdtNode;
 use crate::metadata;
+
+pub trait FindDigest: OutputSizeUser {
+    fn find_into(out: &mut Output<Self>, fdt: &FdtNode) -> crate::Result<()>;
+
+    fn find(fdt: &FdtNode) -> Option<Output<Self>> {
+        let mut out = Output::<Self>::default();
+        Self::find_into(&mut out, fdt).ok().map(|_| out)
+    }
+}
+
+impl<D: OutputSizeUser + AssociatedAlgo> FindDigest for D {
+    fn find_into(out: &mut Output<Self>, fdt: &FdtNode) -> crate::Result<()> {
+        fdt.property(Self::algo().name()).ok_or(crate::Error::NotFound)
+            .and_then(|prop| (prop.value.len() == Self::output_size())
+                                .then(|| out.clone_from_slice(prop.value))
+                                .ok_or(crate::Error::InvalidData))
+    }
+}
 
 pub trait AssociatedAlgo {
     fn algo() -> metadata::HashAlgo;

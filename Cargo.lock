@@ -221,6 +221,7 @@ dependencies = [
  "ed25519-dalek",
  "embassy-futures",
  "embedded-io-async",
+ "fdt",
  "generic-array",
  "hex_lit",
  "ml-dsa",

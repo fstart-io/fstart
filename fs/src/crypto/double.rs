@@ -4,7 +4,9 @@ use generic_array::ArrayLength;
 use digest::{Update, HashMarker, OutputSizeUser,
              Output, FixedOutput, Reset, FixedOutputReset};
 use signature::{Error, Result, Signer, Verifier};
-use super::ParseSignature;
+use fdt::node::FdtNode;
+
+use super::{FindDigest, ParseSignature};
 
 #[derive(Default)]
 pub struct Digest<D1, D2>(pub D1, pub D2);
@@ -60,6 +62,20 @@ impl<D1: Update, D2: Update> Update for Digest<D1, D2> {
 }
 
 impl<D1, D2> HashMarker for Digest<D1, D2> { }
+
+impl<D1, D2> FindDigest for Digest<D1, D2>
+where
+    D1: FindDigest,
+    D2: FindDigest,
+    D1::OutputSize: Add<D2::OutputSize>,
+    <D1::OutputSize as Add<D2::OutputSize>>::Output: ArrayLength<u8>,
+{
+    fn find_into(out: &mut Output<Self>, fdt: &FdtNode) -> crate::Result<()> {
+        let (d1, d2) = out.split_at_mut(D1::output_size());
+        D1::find_into(Output::<D1>::from_mut_slice(d1), fdt)?;
+        D2::find_into(Output::<D2>::from_mut_slice(d2), fdt)
+    }
+}
 
 pub struct VerifyingKey<V1, V2>(pub V1, pub V2);
 
