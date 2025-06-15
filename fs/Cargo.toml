@@ -8,5 +8,6 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 embedded-io-async.workspace = true
+signature.workspace = true
 
 [features]

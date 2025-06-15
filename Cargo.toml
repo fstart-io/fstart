@@ -26,6 +26,7 @@ members = [
 devicetree-tool = "0.1.2"
 embedded-io-async = "0.6.1"
 fdt = "0.1.5"
+signature = "2.2.0"
 tempfile = "3.10.1"
 vm-fdt = "0.3.0"
 zerocopy = "0.7"
