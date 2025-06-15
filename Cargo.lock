@@ -225,6 +225,7 @@ dependencies = [
  "hex_lit",
  "ml-dsa",
  "sha2",
+ "sha3",
  "signature",
  "zerocopy",
 ]

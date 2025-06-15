@@ -9,6 +9,19 @@ pub mod ed25519;
 use embedded_io_async::Read;
 use digest::{Update, FixedOutputReset, Output, OutputSizeUser};
 use signature::{Verifier, Result, Error};
+use sha2::Sha512;
+use sha3::Sha3_256;
+use crate::metadata;
+
+pub trait AssociatedAlgo {
+    fn algo() -> metadata::HashAlgo;
+}
+impl AssociatedAlgo for Sha512 {
+    fn algo() -> metadata::HashAlgo { metadata::HashAlgo::Sha512 }
+}
+impl AssociatedAlgo for Sha3_256 {
+    fn algo() -> metadata::HashAlgo { metadata::HashAlgo::Sha3_256 }
+}
 
 pub trait ParseSignature<S> {
     #[allow(async_fn_in_trait)]

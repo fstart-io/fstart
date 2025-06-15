@@ -68,6 +68,7 @@ pub enum HashAlgo {
     //    Sha256,
     //    Sha384,
     Sha512,
+    Sha3_256,
     // TODO are these good targets??
     //    SlhDsaShake128s,
     //    SlhDsaShake196s,
@@ -78,6 +79,7 @@ impl HashAlgo {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Sha512 => "sha512",
+            Self::Sha3_256 => "sha3_256",
             Self::SlhDsaShake256s => "slh_dsa_shake_256s",
         }
     }
