@@ -219,6 +219,7 @@ dependencies = [
  "ed25519-dalek",
  "embassy-futures",
  "embedded-io-async",
+ "generic-array",
  "ml-dsa",
  "signature",
 ]

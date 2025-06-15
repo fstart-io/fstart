@@ -1,6 +1,8 @@
 pub mod fullread;
 pub use fullread::*;
 
+pub mod double;
+
 pub mod ml_dsa;
 pub mod ed25519;
 

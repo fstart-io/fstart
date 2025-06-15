@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 ed25519-dalek = { workspace = true, default-features = false }
 embassy-futures.workspace = true
 embedded-io-async.workspace = true
+generic-array.workspace = true
 ml-dsa = { workspace = true, default-features = false }
 signature.workspace = true
 
