@@ -13,6 +13,10 @@ embassy-futures.workspace = true
 embedded-io-async.workspace = true
 generic-array.workspace = true
 ml-dsa = { workspace = true, default-features = false }
+sha2.workspace = true
 signature.workspace = true
+
+[dev-dependencies]
+hex_lit.workspace = true
 
 [features]

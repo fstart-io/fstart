@@ -1,8 +1,10 @@
+use hex_lit::hex;
 use embassy_futures::block_on;
+use sha2::{Sha256, Digest};
 use ed25519_dalek::{VerifyingKey as EdVerifyingKey, Signature as EdSignature};
 use crate::crypto::{double,
                     ParseSignature,
-                    SignatureVerify,
+                    SignatureVerify, HashVerify,
                     VerifiedFullRead};
 
 use self::compat::Read;
@@ -12,6 +14,24 @@ type MlVerifyingKey = ml_dsa::VerifyingKey<ml_dsa::MlDsa44>;
 
 type DoubleSignature = (EdSignature, MlSignature);
 type DoubleVerifyingKey = double::VerifyingKey<EdVerifyingKey, MlVerifyingKey>;
+
+const DATA: [u8; 1234] = [0xa5u8; 1234];
+
+#[test]
+fn test_sha256_verification() {
+    let hash = &hex!(
+        "cb0bbb4bc2d3be60bbde9dde593dc69537b447292f4a71e555eac1c68004a272")
+        .into();
+
+    let input = Read::from(&DATA[..]);
+    let verify = HashVerify::new(Sha256::new(), hash);
+
+    let mut dest = vec![0u8; DATA.len()];
+    let read = VerifiedFullRead::new(&mut dest, input, verify);
+
+    block_on(read.read_and_verify()).expect("hash verification failed");
+    assert_eq!(dest, DATA);
+}
 
 #[test]
 fn test_ed25519_verification() {
@@ -100,6 +120,10 @@ mod compat {
     use crate::{Error, Result};
 
     pub struct Read<R>(R);
+
+    impl From<&[u8]> for Read<VecDeque<u8>> {
+        fn from(value: &[u8]) -> Self { Read(VecDeque::from(Vec::from(value))) }
+    }
 
     impl From<Vec<u8>> for Read<VecDeque<u8>> {
         fn from(value: Vec<u8>) -> Self { Read(VecDeque::from(value)) }
