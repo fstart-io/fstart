@@ -24,7 +24,7 @@ pub mod metadata;
 use zerocopy::AsBytes;
 use embedded_io_async::{ErrorType, ErrorKind::{self, *}, ReadExactError,
                         Read, Seek, SeekFrom};
-use fdt::Fdt;
+use fdt::{Fdt, node::FdtNode};
 
 use crate::crypto::{VerifiedFullRead, SignatureVerify};
 use crate::metadata::DtfsHeader;
@@ -72,6 +72,25 @@ where
         self.verified_len = dtfs_len;
         Ok(())
     }
+
+    pub async fn load_subfs<S>(&'a mut self, name: &str) -> Result<()>
+    where
+        V: signature::Verifier<S> + crate::crypto::ParseSignature<S>,
+    {
+        let offset = self.lookup("fstart-dtfs", name)
+                            .and_then(|area| get_usize(&area, "offset"))
+                            .ok_or(InvalidInput)?;
+        self.load_fs(offset as u32).await
+    }
+
+    fn lookup(&self, compat: &str, name: &str) -> Option<FdtNode> {
+        self.dtfs.as_ref()?.all_nodes().find(
+            |node| node.compatible()
+                        .map_or(false, |comp| comp.all().any(|s| s == compat))
+                        .then(|| node.property("description")).flatten()
+                        .map_or(false, |desc| desc.value == name.as_bytes())
+        )
+    }
 }
 
 // Returns absolute offsets of DTFS and signatures.
@@ -100,6 +119,10 @@ where
 
     Ok(((offset + header.dtfs_offset) as u64,
         (offset + header.signatures_offset) as u64))
+}
+
+fn get_usize(node: &FdtNode, prop: &str) -> Option<usize> {
+    node.property(prop).and_then(|prop| prop.as_usize())
 }
 
 pub(crate) fn rex_to_error(err: ReadExactError<Error>) -> Error {
