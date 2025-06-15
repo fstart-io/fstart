@@ -17,6 +17,7 @@ File contains exports for fstart Library.
 #[cfg(test)]
 mod test;
 
+pub mod config;
 pub mod crypto;
 pub mod metadata;
 
