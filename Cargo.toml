@@ -24,8 +24,11 @@ members = [
 # keep alphabetical
 [workspace.dependencies]
 devicetree-tool = "0.1.2"
+ed25519-dalek = { version = "2.1.1", default-features = false }
+embassy-futures = "0.1.1"
 embedded-io-async = "0.6.1"
 fdt = "0.1.5"
+ml-dsa = { version = "0.0.4", default-features = false }
 signature = "2.2.0"
 tempfile = "3.10.1"
 vm-fdt = "0.3.0"

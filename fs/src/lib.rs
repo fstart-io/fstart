@@ -12,6 +12,8 @@ File contains exports for fstart Library.
 
 --*/
 
+pub mod crypto;
+
 use embedded_io_async::{ErrorKind::*, ReadExactError};
 
 pub type Error = embedded_io_async::ErrorKind;

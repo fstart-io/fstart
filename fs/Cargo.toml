@@ -7,7 +7,10 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+ed25519-dalek = { workspace = true, default-features = false }
+embassy-futures.workspace = true
 embedded-io-async.workspace = true
+ml-dsa = { workspace = true, default-features = false }
 signature.workspace = true
 
 [features]
