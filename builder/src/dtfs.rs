@@ -27,7 +27,7 @@ use vm_fdt::FdtWriter;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use fstart_fs::metadata::*;
-use crate::signing::{self, sign};
+use crate::{hashing::hash, signing::{self, sign}};
 
 fn dtb_from_dts(dts_path: &str) -> Vec<u8> {
     let dts = std::fs::read_to_string(dts_path).expect("Unable to read input file");
@@ -47,9 +47,9 @@ struct DtfsFlashinfo {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct DtfsDigest {
-    algo: HashAlgo,
-    digest: Vec<u8>,
+pub struct DtfsDigest {
+    pub algo: HashAlgo,
+    pub digest: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -223,6 +223,7 @@ mod tests {
     #[test]
     fn test_generate_test_dtfs() {
         const DTFS_BASE: u32 = 0x1000;
+        let zeros: Vec<u8> = vec![0u8; 0x1000];
 
         let mut dtfs = Dtfs {
             flashinfo: DtfsFlashinfo {
@@ -250,7 +251,8 @@ mod tests {
                     compatible: String::from("fstart-raw-bin"),
                     offset: FlashAddress(0),
                     area_size: 0x1000,
-                    file: Some(vec![0u8; 0x1000]),
+                    digests: Some(hash(&zeros)),
+                    file: Some(zeros),
                     ..Default::default()
                 },
             ],

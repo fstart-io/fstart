@@ -12,4 +12,5 @@ File contains exports for fstart Library.
 
 --*/
 mod dtfs;
+mod hashing;
 mod signing;
