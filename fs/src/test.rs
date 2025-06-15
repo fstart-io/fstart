@@ -1,6 +1,6 @@
 use hex_lit::hex;
 use embassy_futures::block_on;
-use sha2::{Sha256, Digest};
+use sha2::{Sha256, Sha224, Digest};
 use ed25519_dalek::{VerifyingKey as EdVerifyingKey, Signature as EdSignature};
 use crate::crypto::{double,
                     ParseSignature,
@@ -25,6 +25,25 @@ fn test_sha256_verification() {
 
     let input = Read::from(&DATA[..]);
     let verify = HashVerify::new(Sha256::new(), hash);
+
+    let mut dest = vec![0u8; DATA.len()];
+    let read = VerifiedFullRead::new(&mut dest, input, verify);
+
+    block_on(read.read_and_verify()).expect("hash verification failed");
+    assert_eq!(dest, DATA);
+}
+
+#[test]
+fn test_sha256_224_verification() {
+    let hash = &hex!(concat!(
+        "cb0bbb4bc2d3be60bbde9dde593dc69537b447292f4a71e555eac1c68004a272",
+        "b2359b2d74cfeb45abde60513651d6c2ae932aa33dd9225fec44951b"))
+        .into();
+
+    let input = Read::from(&DATA[..]);
+    let verify = HashVerify::new(
+        double::Digest(Sha256::new(), Sha224::new()),
+        hash);
 
     let mut dest = vec![0u8; DATA.len()];
     let read = VerifiedFullRead::new(&mut dest, input, verify);
