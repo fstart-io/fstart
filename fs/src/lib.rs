@@ -12,6 +12,11 @@ File contains exports for fstart Library.
 
 --*/
 
+#![cfg_attr(not(test), no_std)]
+
+#[cfg(test)]
+mod test;
+
 pub mod crypto;
 
 use embedded_io_async::{ErrorKind::*, ReadExactError};
