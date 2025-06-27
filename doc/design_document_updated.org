@@ -1,0 +1,178 @@
+#+title: Design Document Updated
+
+This will go in depth in how to achieve certain things.
+
+* Build input format
+
+The previous idea was that all the build inputs would be of the FDT type.
+FDT has properties like the ability to use C preprocessor and the ability to override existing nodes.
+This comes in handy if you have a default like a SOC default and you want to override a few board specific values.
+
+However rust has really powerful frameworks for serialization and deserialization: [[https://serde.rs/][serde]].
+It would be a shame to not use it as it makes writing verification of the input much more manageable.
+Also some data formats map much more closely to native rust types like the all-powerful enum.
+
+Therefore [[https://docs.rs/ron/latest/ron/][RON]] is to be considered as a human written format for the build input.
+
+What about splitting the configuration into multiple files, one overriding the other?
+This is not natively supported by RON.
+The way to work with this is to have a top level RON file that includes all the defaults plus overrides.
+
+*config.ron* (top-level):
+#+begin_src ron
+TopLevelIncludes(
+    includes: [
+        "build.ron",
+        "soc.ron",
+        "board.ron",
+    ]
+)
+#+end_src
+Then the build tool would parse that to get the filenames to build the final RON file.
+The order of inclusion and overriding would be the order of includes.
+This can potentially be done with a smart merging: [[https://docs.rs/merge2/latest/merge2/][merge2]]
+
+* File system
+** SERDE
+We already touched a bit on serialization and deserialization in rust.
+We basically just need to write the structs we intend to use and with [[https://serde.rs/][serde]] we have both RON
+be used as an input or an output. Now RON is nice for humans, but not so much for machines.
+As an external format to the firmware code we'd prefer a self describing binary format.
+A few options are [[https://docs.rs/serde-brief/latest/serde_brief/][serde_brief]], [[https://docs.rs/postcard/latest/postcard/][postcard]] and [[https://docs.rs/pot/latest/pot/][pot]].
+Only serde_brief is self describing and no_std compatible with heapless so despite it being young and not stable
+it's likely a solid bet.
+** Data structures
+*** In the beginning there was...
+In the simplest use case we want all the file information to be in place that is signed and verified by the first code running *code0*.
+The code0 has some public keys embedded and verifies the initial file system manifest. This manifest can then have pointers
+to other manifest that also need to be verified with a set of public keys. This allows for a RO + RW A/B scheme. The first
+manifest holds the RO files + pointers to RW A/B manifest which describe where the A/B files are.
+*** File system anchor
+What does the top level manifest need to contain:
+- MAGIC to find it if you don't have a pointer (16 bytes magic)
+- compressed size (u32)
+- decompressed size (u32)
+- compression algo (u32)
+- reserved (u32)
+
+*** File system header
+We achieve parsing the signatures and the fs via a two-step deserialization procedure.
+#+begin_src rust
+struct FstartFSHeader {
+    signatures: Vec<u8>, // <- serialized signatures
+    fs: Vec<u8>, // <- serialized fs
+}
+#+end_src
+So during the build first the fs gets serialized. Then signatures are created and also serialized.
+Then both binaries are put into a struct as Vec<u8> which again can be serialized.
+The final result can be compressed.
+
+The *code0* code then just has to deserialize (preferably with zerocopy!) the FstartFSHeader.
+Then deserialize the signatures, verify the FS and then deserialize the FS.
+
+Safety concerns:
+- we trust that both the decompression and the deserialization fails gracefully on wrong input.
+- We trust that the header gets placed into memory before deserialization, avoiding TOCTOU issues.
+
+*** File system
+#+begin_src rust
+
+enum CompressionAlgo {
+    Lz4,
+    Lzma,
+    // ...
+}
+
+struct Compression {
+    algo: CompressionAlgo,
+    real_size: u32,
+}
+
+struct RawFileNoDigest {
+    name: String,
+    base: u32,
+    size: u32,
+    compression: Option<Compression>
+}
+
+enum FstartDigests {
+    Sha256([u8; 32]),
+    Sha512([u8; 64]),
+    // etc
+}
+
+struct RawFile {
+    name: String,
+    base: u32,
+    size: u32,
+    compression: Option<Compression>
+    digests: Vec<FstartDigests>, // Size must be > 0
+}
+
+// TODO coreboot has per segment optional compression?
+struct Segment {
+    load_base: u64,
+    size: u32,
+//     file_offset: u32 Assume all the segments follow each other in the file?
+}
+
+enum SegmentType {
+    Bss(Segment),
+    Data(Segment),
+    Text(Segment),
+}
+
+struct Executable {
+    name: String,
+    base: u32,
+    size: u32,
+    compression: Option<Compression>
+    entry_point: u32,
+    segments: Vec<SegmentType>,
+    digests: Vec<FstartDigests>, // Size must be > 0
+}
+
+struct Relocation {
+    // TODO
+}
+
+struct RelocExecutable {
+    name: String,
+    base: u32,
+    size: u32,
+    compression: Option<Compression>
+    entry_point: u32,
+    segments: Vec<SegmentType>,
+    relocations: Vec<Relocation>,
+    digests: Vec<FstartDigests>, // Size must be > 0
+}
+
+struct FstartFSChain {
+    // No name? it can be part of the chain
+    offset: u32,
+    size: u32,
+}
+
+enum FstartFiles {
+    RawFileNoDigest(RawFileNoDigest),
+    RawFile(RawFile),
+    Executable(Executable),
+    RelocExecutable(RelocExecutable), // Side note: this might not be needed on some arch where PIE is available
+    FstartFSChain(FstartFSChain),
+}
+
+struct FstartFS {
+    board_name: String,
+    memory_map: Option<Vec<Map>>,
+    files: Vec<FstartFiles>,
+}
+#+end_src
+
+Some questions:
+- Do we care about overlapping files?
+
+* State machine driving build time and runtime
+todo!()
+
+* Device driver model
+todo!()
