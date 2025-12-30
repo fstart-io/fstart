@@ -1,0 +1,350 @@
+#+title: fstart Implementation Plan v2: Detailed Specification
+#+date: 2025-12-14
+#+author: opencode
+
+* 1. Architecture Overview
+
+fstart is a type-safe, asynchronous firmware bootloader designed for reliability and determinism. This document outlines the concrete implementation details, code structures, and crate organization required to build the system.
+
+**Key Technical Decisions:**
+- **Language**: Rust (stable channel preferred).
+- **Configuration**: RON (Rust Object Notation) is the sole configuration format.
+- **Hardware Definition**: Hardware structs are defined in SoC driver crates. `fstart-tool` extracts these definitions via feature flags to validate config at build time.
+- **Concurrency**: A custom, "minimal" async executor handles boot sequencing. It uses a strict polling loop (no interrupts, no sleeping) to manage dependencies in SPL.
+- **Payloads**: Linux and other rich OS kernels are booted via FIT (Flattened Image Tree) images, which provide the OS-required FDT.
+
+* 2. Project Workspace Structure
+
+The workspace is organized to separate build-time tooling from runtime firmware while sharing strong types.
+
+#+begin_src text
+fstart/
+├── fstart-tool/           # Host CLI: Parses RON, generates Rust code, builds images
+├── fstart-config/         # Shared configuration structs (serde + postcard)
+├── fstart-driver/         # Core traits, DeviceGraph, and Error types
+├── fstart-executor/       # Minimal async executor for SPL/Main stages
+├── fstart-fs/             # Filesystem logic (Reader for firmware, Writer for tool)
+├── fstart-crypto/         # Crypto primitives (Ed25519, SHA-512)
+├── soc/
+│   └── aspeed/
+│       ├── ast2600/       # SoC crate (Config + Driver logic)
+│       └── ast2500/
+├── arch/                  # Architecture support (ARMv7, AArch64)
+├── stages/
+│   ├── spl/               # SPL Stage binary
+│   └── main/              # Main Stage binary
+└── boards/                # RON Configuration files
+#+end_src
+
+* 3. SoC Definitions & Shared Types
+
+To ensure the build tool validates configuration against the exact types used by the firmware, we use **feature-gated structs** within the SoC crates. This avoids maintaining a separate database of SoC definitions.
+
+**SoC Crate Structure (`soc/aspeed/ast2600/Cargo.toml`)**
+
+#+begin_src toml
+[package]
+name = "fstart-soc-ast2600"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["driver"]
+config = ["serde"]         # Exposes Config structs (for fstart-tool)
+driver = ["config"]        # Exposes HW logic + Configs (for firmware)
+
+[dependencies]
+serde = { version = "1.0", optional = true, features = ["derive"] }
+tock-registers = { version = "0.8", optional = true } # Only for driver
+#+end_src
+
+**Feature-Gated Config Pattern (`soc/aspeed/ast2600/src/uart.rs`)**
+
+#+begin_src rust
+#![no_std]
+
+#[cfg(feature = "config")]
+use serde::{Deserialize, Serialize};
+
+/// Configuration struct shared by Tool and Firmware
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "config", derive(Deserialize, Serialize))]
+pub struct UartConfig {
+    pub base_addr: usize,
+    pub baud_rate: u32,
+    pub clock_source: UartClockSource,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "config", derive(Deserialize, Serialize))]
+pub enum UartClockSource {
+    HuxClk, // 24MHz
+    UxClk,  // Variable
+}
+
+/// Driver logic available only in Firmware
+#[cfg(feature = "driver")]
+pub struct UartDriver {
+    base: usize,
+}
+
+#[cfg(feature = "driver")]
+impl UartDriver {
+    /// Initialize the hardware. 
+    /// Note: 'clk' is a handle to a running dependency
+    pub fn init(config: &UartConfig, _clk: &super::scu::ClockHandle) -> Result<Self, ()> {
+        let driver = Self { base: config.base_addr };
+        // ... write to registers ...
+        Ok(driver)
+    }
+}
+#+end_src
+
+* 4. Device Model: Hierarchical Config, Flat Runtime
+
+**Design Principle**: Humans think in trees (Controller -> Bus -> Device), but firmware runs fastest on flat arrays.
+
+**RON Configuration (Human Readable)**
+
+Configuration uses natural nesting. Usage of enum variants (like `Ast2600Scu`) is validated against the Rust types from the SoC crate.
+
+#+begin_src ron
+// boards/aspeed/ast2600-evb.ron
+(
+    // Global board info
+    name: "AST2600 EVB",
+    
+    // Device Hierarchy
+    devices: [
+        // 1. System Control Unit (Root)
+        ( id: "scu", kind: Ast2600Scu(
+            base_addr: 0x1E6E2000,
+            cpu_freq: 800, // MHz
+        )),
+
+        // 2. UART Console (Dependent on SCU implicitly via code-gen logic or explicity)
+        ( id: "uart5", kind: Uart(
+            base_addr: 0x1E784000,
+            baud_rate: 115200,
+            clock_source: HuxClk, 
+        )),
+
+        // 3. SPI Controller with Child Flash
+        ( id: "fmc", kind: Ast2600Fmc(
+            base_addr: 0x1E620000,
+            mode: SpiMode0,
+        ),
+        children: [
+            ( id: "boot_flash", kind: SpiNorFlash(
+                cs: 0,
+                capacity: 0x04000000, // 64MB
+            )),
+        ]),
+    ]
+)
+#+end_src
+
+**Runtime Representation (`FlatDevice`)**
+
+`fstart-tool` flattens the RON tree into a `Vec<FlatDevice>` and generates a generic `generated.rs` file. This removes recursion and string lookups from the firmware runtime.
+
+#+begin_src rust
+// fstart-driver/src/device.rs
+
+pub type DeviceIdx = u16;
+pub const NO_DEVICE: DeviceIdx = 0xFFFF;
+
+pub struct FlatDevice {
+    pub id: &'static str,       // For debug logging
+    pub parent: DeviceIdx,      // Index into global device array
+    pub first_child: DeviceIdx, 
+    pub next_sibling: DeviceIdx,
+    pub kind: DeviceKind,       // Enum containing specific Config structs
+}
+
+// Generated at build time in 'stages/spl/src/generated.rs'
+pub static DEVICES: [FlatDevice; 4] = [
+    // 0: SCU
+    FlatDevice { id: "scu", parent: NO_DEVICE, kind: DeviceKind::Ast2600Scu(...) },
+    // 1: UART5
+    FlatDevice { id: "uart5", parent: NO_DEVICE, kind: DeviceKind::Uart(...) },
+    // 2: FMC
+    FlatDevice { id: "fmc", parent: NO_DEVICE, kind: DeviceKind::Ast2600Fmc(...) },
+    // 3: Boot Flash (Parent is 2)
+    FlatDevice { id: "boot_flash", parent: 2, kind: DeviceKind::SpiNorFlash(...) },
+];
+#+end_src
+
+* 5. The Async Boot Engine
+
+A minimal async executor drives the boot process. It solves the "init order" problem dynamically based on data availability, rather than manually defined steps.
+
+**Minimal Executor (`fstart-executor/src/lib.rs`)**
+
+This executor is specialized for SPL:
+1.  **Poll Loop**: Spins continuously.
+2.  **No Wakers**: `Waker` is a no-op; we just poll everything in a round-robin fashion until completion or timeout.
+
+#+begin_src rust
+#![no_std]
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+// Safe no-op waker boilerplate (omitted for brevity)
+fn noop_waker() -> Waker { ... }
+
+pub fn block_on_all<const N: usize>(
+    mut futures: [Pin<&mut dyn Future<Output = Result<(), Error>>>; N]
+) -> Result<(), Error> {
+    let waker = noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    let mut done = [false; N];
+    
+    // Spin loop
+    loop {
+        let mut all_done = true;
+        let mut progress = false;
+
+        for i in 0..N {
+            if !done[i] {
+                match futures[i].as_mut().poll(&mut cx) {
+                    Poll::Ready(res) => {
+                        res?; // Propagate error immediately
+                        done[i] = true;
+                        progress = true;
+                    }
+                    Poll::Pending => {
+                        all_done = false;
+                    }
+                }
+            }
+        }
+
+        if all_done { return Ok(()); }
+        
+        // Optional: Panic on deadlock (no progress in X cycles)
+        // ensure_progress(progress); 
+    }
+}
+#+end_src
+
+**Service Registry**
+
+Drivers publish themselves to a registry. Consumers await them.
+
+#+begin_src rust
+pub struct ServiceRegistry {
+    // UnsafeCell used because we have a single-threaded cooperative executor
+    services: UnsafeCell<[Option<*const ()>; MAX_SERVICES]>,
+}
+
+impl ServiceRegistry {
+    pub fn publish<T>(&self, id: u16, service: &T) {
+        unsafe {
+             (*self.services.get())[id] = Some(service as *const _ as *const ());
+        }
+    }
+
+    // Returns a Future that resolves when the service is published
+    pub fn get<T>(&self, id: u16) -> WaitForService<T> { ... }
+}
+#+end_src
+
+* 6. Code Generation & Boot Flow
+
+`fstart-tool` generates the async entry points for every device defined in the RON.
+
+**Generated `init` Functions**
+
+Dependencies are implied by the generated code. For example, if `uart::init` takes a `&ClockHandle`, the generator emits an `.await` on the SCU service.
+
+#+begin_src rust
+// stages/spl/src/generated.rs
+
+async fn init_uart5(reg: &ServiceRegistry) -> Result<(), Error> {
+    // Dependency: Wait for SCU to be ready
+    let clk_handle = reg.get::<scu::ClockHandle>(dev::SCU).await;
+
+    // Config is static data from the flat array
+    let config = match &DEVICES[dev::UART5].kind {
+        DeviceKind::Uart(c) => c,
+        _ => unreachable!(),
+    };
+
+    // Init driver
+    let driver = uart::init(config, clk_handle)?;
+
+    // Publish self
+    reg.publish(dev::UART5, &driver);
+    Ok(())
+}
+#+end_src
+
+**Main Boot Routine**
+
+The main entry point simply collects all these futures and runs them.
+
+#+begin_src rust
+// stages/spl/src/main.rs
+
+#[entry]
+fn main() -> ! {
+    let registry = ServiceRegistry::new();
+
+    // Create futures for all defined devices
+    let mut f_scu = core::pin::pin!(generated::init_scu(&registry));
+    let mut f_uart = core::pin::pin!(generated::init_uart5(&registry));
+    let mut f_flash = core::pin::pin!(generated::init_fmc(&registry));
+
+    // Run them
+    fstart_executor::block_on_all([
+        f_scu.as_mut(),
+        f_uart.as_mut(),
+        f_flash.as_mut(),
+    ]).expect("Boot failed");
+
+    // Load next stage...
+}
+#+end_src
+
+* 7. Payload Handoff (Linux & FIT)
+
+fstart focuses on the *boot* hardware. It does not synthesize FDTs for the OS. Instead, it relies on the **FIT (Flattened Image Tree)** standard.
+
+**FIT Logic**
+
+1.  **Loading**: fstart loads the FIT image from storage (Flash/Network) into RAM.
+2.  **Verification**: Iterates over the FIT structure to verify signatures against the `fstart` public key (Ed25519).
+3.  **Handoff**:
+    -   Locates the kernel image node.
+    -   Locates the FDT node matching the current board's compatible string.
+    -   Loads both to their target addresses.
+    -   Jumps to the kernel, passing the pointer to the *FIT-provided* FDT.
+
+**Example FIT Structure (Conceptual)**
+
+The FIT image is built by `fstart-tool` or standard `mkimage`, wrapping the vendor-provided `.dtb`.
+
+#+begin_src dts
+/ {
+    images {
+        kernel-1 { ... };
+        fdt-1 {
+            description = "ast2600-evb device tree";
+            data = /incbin/("ast2600-evb.dtb");
+            hash-1 { algo = "sha512"; };
+        };
+    };
+    configurations {
+        default = "conf-1";
+        conf-1 {
+            kernel = "kernel-1";
+            fdt = "fdt-1";
+            signature-1 { algo = "ed25519,sha512"; key-name-hint = "prod_key"; };
+        };
+    };
+};
+#+end_src
+
+This separation ensures `fstart` does not need to maintain the immense complexity of an OS-compatible device tree, delegating that to the build system and the payload itself.

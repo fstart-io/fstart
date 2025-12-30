@@ -1,0 +1,41 @@
+#+title: Plan Prompt
+
+This is a document to prompt LLM to help design fstart.
+
+* Principles
+- fstart is inspired by coreboot. It should do just the hardware initialization and load a payload
+- fstart is written in rust. No other languages or glue code are allowed
+- security is on by default. Signatures checks happen over every input. Every file gets hashed. PQC and ECC are used by default as well as sha2 for hashes. Everything also gets measured to TPM if available
+- fstart supports multiple arch/soc/boards all in the same tree
+- fstart is declaration driven, there should be one configuration file which contains build options and have a declarative device tree
+- The configuration format uses https://docs.rs/ron/latest/ron/ as it makes serializing and deserializing the data to code easy and powerful as it maps 1 to 1 to rust types
+- fstart should be flexible. It should be possible to make an image with multiple devicetree. i.e. figure out which device we are at runtime. Also for updating settings post build this dataformat should be used. It should also be possible to have everything very static: i.e. provide the configuration statically at buildtime. In that case it is important that unused code get removed.
+* config input file
+- should be written in RON
+- Might source other RON files
+- Might use other RON files defaults, only some of which need an overwrite. It's important that porting a new mainboard should be smooth with as little boilerplate as possible
+* Boot flow
+- In the bootflow all of the hardware gets initialized in the right order.
+- The bootflow should be constructed based on dependencies that are entirely captured in the input dataformat/devicetree and should look like an iterator over all states. So for instance if the input dataformat specifies console should be initialized at some point, it will look at its dependencies like uart, memconsole or other hw methods of outputting a log and make sure that all of those are already initialized. Some of these states provide services that others can consume like a console.
+- It might make sense to leverage rust async here but still make sure all dependencies of checkpoints are reached before continuing.
+- The bootflow might need to be spread out over multiple stages which are separate programs. Similar to how u-boot has SPL and u-boot, or coreboot has bootblock, romstage and ramstage. This should be highly flexible. For instance it should be trivial to put everything in one program if conditions allow it as well as spread out over multiple stages in some conditions.
+- There should be a driver model, that binds to nodes from the devicetree. It should be possible to do runtime binding of drivers as well as buildtime.
+- What abstractions make sense? Checkpoints, drivers, devicetree nodes, services? What else might be needed?
+* Build flow
+- Build flow captures requirements from one input file and output is reproducible
+- Build flow generates multiple programs and possible data input and puts it all together
+- The build flow gathers all the requirements from the input data. It needs to know what kind of checkpoints, drivers, nodes will be present to generate the binary.
+- It should be a tool that just takes this data in and the output is a usable image. No further user interaction should be required. Ideally using fstart is just one "cargo run ..." command.``
+
+
+* file system
+- Since we have at least 2 stages: our own code and payload we need a filesystem
+- first code that runs on CPU has a hardcoded pointer to file system descriptor. The file system descriptor signature needs to be verified against cryptographic keys that are embedded in this initial code
+- The descriptor needs to be deserialized. A self describing format is used.
+- The descriptor contains a layout of the flash chip.
+- Each node in the descriptor is a file. It has a digest when it makes sense as well as some metadata. What kind of file is? Like executable, data, cached data, ... For executables it contains information on how to load the binary like load sections, compressed sections, entry point, ... For data it's likely just compress info. Note that XIP might also be the case here.
+- It should be possible to have chainloaded filesystems, where a subfilesystem gets defined. This one has a pointer in the first filesystem which points to some fixed metadata which contains size and of course also a crypto signature. The chainloaded filesystem is only a fixed part of the flash. All the offsets are still absolute but there should still be some verification that everything in there is contained to that part of the flash. This is because we want to have a RO and RW parts in flash just like in coreboot.
+- The file system descriptor also has a MAGIC value so that it can be found post build to add more files post build
+* Payload
+ - The payload is just any other executable that the filesystem supports with compressed sections, an entry point, load information etc.
+ - The buildtime code parses for instance ELF, gets out the sections that we'll need to load and puts that info in the file system

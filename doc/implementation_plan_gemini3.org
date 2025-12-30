@@ -1,0 +1,123 @@
+#+title: Critique of fstart Implementation Plan
+#+date: 2025-12-14
+
+* Executive Summary
+
+The proposed implementation plan is a bold, modern re-imagining of firmware development that leverages Rust's strengths (type safety, zero-cost abstractions, strong compile-time guarantees) effectively.
+
+However, three primary risks stand out:
+1.  **Isolationism**: complete discarding of FDT ignores the reality that payloads (Linux) require it.
+2.  **Complexity Overhead**: using `async`/`await` for boot sequencing may incur unacceptable binary size penalties in SRAM-limited environments (SPL) for minimal functional gain.
+3.  **Maintenance Burden**: manual translation of vendor DTS definitions to RON is a massive, ongoing maintenance sink.
+
+* Detailed Critique
+
+** The "Discard FDT" Decision
+
+*** The Gap: Payload Handoff
+The plan states "FDT is fully discarded." While using RON for internal configuration is excellent for Rust ergonomics, bootloaders have two jobs:
+1.  Initialize hardware.
+2.  *Describe* hardware to the OS.
+
+Linux /requires/ a Device Tree. If fstart does not use FDT internally, it must *generate* one to pass to the kernel. This implies:
+- Maintaining a RON -> FDT serializer (complex).
+- Or duplicating data: RON for fstart, static `.dtb` blob for Linux.
+
+*Recommendation*: Explicitly define the strategy for OShandoff. If the plan is "static .dtb blob appended to image", state it. If the plan is "RON -> FDT generation", scope that effort (it is non-trivial).
+
+*** The Migration Barrier
+SoC vendors provide DTS files. Manually translating 10,000+ lines of register definitions, clocks, and pinmux configurations from standard DTS to proprietary RON is:
+- Error-prone (human transcription errors).
+- High friction (upstreaming vendor changes is manual).
+
+*Recommendation*: Do not discard `dtc` entirely. Consider a `build.rs` tool that ingests specific `.dts` nodes (like clocks/pinctrl) and generates the RON or Rust structs. "Pure RON" is an idealistic end-state, but a bridge is needed.
+
+** Async/Await for Boot Sequencing
+
+*** Binary Size Audit
+The plan proposes a "minimal executor" (~50 lines). However, the *compiler* generates state machines for every `async fn`.
+- In an SPL context (often < 64KB SRAM total for code + data + stack), the overhead of `Future` state machines, potential vtables, and panicking infrastructure for `unwrap`/`expect` inside futures can be significant compared to a simple function pointer array.
+- "No sleeping, just spin" negates the primary throughput benefit of async.
+
+*** Complexity vs Benefit
+The problem being solved is "topological sort of initialization."
+- *Async approach*: Compiler generates state machines, runtime polls them. Implicit dependency resolution.
+- *DAG approach*: Build tool calculates integer order (0, 1, 2...), generates `fn init_sequence() { init_a(); init_b(); }`.
+
+The DAG approach (Option B in the plan) offers:
+- Zero runtime overhead (just function calls).
+- Smaller binary.
+- Deterministic, linear debug trace.
+
+*Recommendation*: For SPL, prefer Option B (Build-time DAG resolution). Keep `async` reserved for the "Main" stage where DRAM is available and concurrency (loading from network/disk while checking hashes) provides actual speedups.
+
+** Driver Model & Type System
+
+*** `Any` and `downcast` in `no_std`
+The plan uses `core::any::Any` with `downcast_ref`.
+- This often requires `'static` bounds.
+- It introduces runtime type checking (checking TypeIds).
+- It complicates the `ServiceRegistry` with `unsafe` interactions.
+
+Given the boot flow is static and known at compile time (generated `generated.rs`), why use dynamic dispatch at all?
+
+*Recommendation*: The `generated.rs` example in `run_boot_flow` shows direct calls (`scu::init`, `uart::init`). This is superior to the `ServiceRegistry` pattern. Stick to the generated, statically dispatched code. Pass references explicitly (`uart::init(..., &clock)`). Avoid the global `ServiceRegistry` generic lookup map if possible—it's a pseudo-dynamic solution to a static problem.
+
+** Security & Cryptography
+
+*** Post-Quantum Cryptography (PQC) in SPL
+The plan suggests "ML-DSA-65 (Dilithium)".
+- **Key/Sig Sizes**: Dilithium signatures are ~2.4KB. Public keys are ~1.3KB.
+- **Verification**: Verification is computationally intensive and requires significant stack/scratchpad memory.
+- **Impact**: In an SPL constrained to 32KB-64KB, burning 5-10% of memory just to hold one signature is aggressive.
+
+*Recommendation*:
+- Use Ed25519 (64-byte sigs) for SPL verification (fast, small).
+- Use PQC only in the "Main" stage (DRAM available) for verifying the OS payload.
+- Don't try to cram PQC into the SRAM-limited boot stages unless absolutely mandated.
+
+* Specific Implementation Improvements
+
+** Refined Architecture Recommendation
+
+1.  **Split Configuration**:
+    - *SoC definitions* (addresses, clocks): Keep close to hardware docs. If possible, generate from SVD or ingest DTS.
+    - *Board Config*: RON is perfect here.
+
+2.  **Hybrid Boot Flow**:
+    - **SPL (SRAM)**: Linear execution. No async. Build-tool sorts the DAG and emits a linear functions list: `init_clocks(); init_ram(); load_main();`.
+    - **Main (DRAM)**: Async enabled. Load filesystem, verify hashes, network boot, display splash screen in parallel.
+
+3.  **Payload Handoff**:
+    - Add a `PayloadConfig` field: `fdt_source: PathBuf`.
+    - The build tool compiles this FDT and places it in the `Reserved` or a dedicated `DtBlob` filesystem region.
+    - fstart loads this blob to RAM and passes the pointer to the kernel.
+
+** Code Snippet Fixes
+
+*** Simplified `no_std` Service Registry (Static)
+Instead of `UnsafeCell` and `Any`, use a generated struct that holds specific types.
+
+#+begin_src rust
+// Generated struct - precise types, no Any, no overhead
+pub struct SystemServices {
+    pub clock: scu::ClockService,
+    pub pinctrl: pinctrl::Service,
+    pub uart: uart::UartService,
+}
+
+// Passed explicitly to drivers
+let mem = sdram::init(&config.dram, &services.clock)?;
+#+end_src
+
+*** Error Handling
+The plan mentions `Option A: Panic` vs `Option B: Result`.
+- For SPL, `Panic` is often the *only* option. If RAM init fails, you can't log (needs UART, maybe RAM), you can't reboot safely (maybe). You just hang or blink an LED.
+- Define a `PanicHandler` that writes a distinct pattern to a debug register or UART FIFO before spinning.
+
+* Conclusion
+
+The plan is 80% solid. The move to Rust, RON, and `postcard` is excellent. The remaining 20% needs to pragmatically address the constraints of embedded bootloaders:
+1.  **Drop Async in SPL**: It's too heavy. Use codegen for linear ordering.
+2.  **Solve the Linux/FDT interface**: Don't ignore it.
+3.  **Automate SoC definitions**: Don't hand-write 5000 lines of RON for register mapsc. Use `svd2rust` or similar for base addresses.

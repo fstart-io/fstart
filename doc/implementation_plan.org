@@ -1,0 +1,2830 @@
+#+title: fstart Implementation Plan: Scoped Ideas with Concrete Guidance
+#+date: 2025-12-14
+
+* Overview
+
+This document takes the ideas from [[file:plan_prompt.org]] and [[file:gpt5_2_plan.org]], critiques them, and provides concrete implementation guidance with specific crate recommendations, code snippets, and considerations for porting AST2600 (Aspeed BMC SoC) from U-Boot to fstart.
+
+*Key decision*: RON is the sole configuration format. FDT is fully discarded. Any future FDT-to-RON translation tooling is out of scope for this document.
+
+* Critique of Original Ideas
+
+** RON as Sole Configuration Format
+
+*** Original Proposal (plan_prompt.org)
+Use RON because it maps 1:1 to Rust types.
+
+*** Analysis
+This is the right call. The advantages:
+
+1. *Type safety at build time*: RON deserializes directly into Rust structs. Errors are caught immediately.
+2. *Human-friendly authoring*: RON is only for humans to read and write. Clean syntax, comments, readable diffs.
+3. *Build tool works with native structs*: Once RON is parsed, the build tool operates on Rust structs directly - no further serialization needed.
+4. *Firmware gets binary blob*: Only firmware needs to deserialize (via postcard) when runtime config is required.
+5. *Composition via Rust*: Instead of FDT overlays or includes, use Rust's module system and serde's flatten/default mechanisms.
+6. *Strongly typed references*: Instead of FDT phandles (opaque u32), use Rust enums or string identifiers that the compiler validates.
+
+*** What We Lose (and Why It's OK)
+- *Existing DTS files*: Must be manually translated. This is one-time work per SoC.
+- *dtc tooling*: Replaced by cargo + fstart-tool.
+
+** Device Graph: Native Rust Types
+
+*** Original Proposal (gpt5_2_plan.org)
+Define a minimal, fstart-specific device graph in RON with strongly-typed NodeKind enums.
+
+*** Fully Endorsed
+This is correct. The device graph should be:
+- Strongly typed Rust enums for node kinds
+- Explicit typed references (not phandles)
+- Validated at build time
+
+Example evolution from FDT thinking to native RON:
+
+#+begin_src dts
+// OLD: FDT style (discarded)
+uart0: serial@1e783000 {
+    compatible = "aspeed,ast2600-uart";
+    reg = <0x1e783000 0x20>;
+    clocks = <&syscon 42>;  // Magic number phandle
+};
+#+end_src
+
+#+begin_src ron
+// NEW: Native RON
+(
+    devices: [
+        Uart(UartConfig(
+            name: "uart0",
+            base: 0x1e783000,
+            size: 0x20,
+            clock: ClockRef(Scu, Gate(UartClk1)),  // Typed reference
+            pins: PinRef(Pinctrl, Group(Txd1Default)),
+        )),
+    ],
+)
+#+end_src
+
+** Dependency-Driven Boot Flow
+
+*** Original Proposal
+Build a DAG of driver init tasks, topologically sort, iterate.
+
+*** Critique
+Sound, but with native Rust types we can do better than runtime DAG resolution:
+
+1. *Option A: Explicit ordering in config* - User specifies init order
+2. *Option B: Build-time DAG resolution* - Tool computes order, generates static array
+3. *Option C: Type-system enforced* - Services are typed; can't call UART without ClockService existing
+4. *Option D: Async with implicit ordering* - Generate async init functions that await dependencies
+
+*** Recommendation: Option D - Async with Minimal Executor
+
+Instead of computing topological order at build time, generate async init functions where dependencies are expressed as =.await= calls. A minimal executor polls all futures until done - no sleeping, no interrupts, just spin until dependencies resolve.
+
+*Benefits*:
+- Simpler codegen (no topological sort)
+- Dependencies explicit in generated code
+- Natural parallelism where possible
+- Easier to debug (can see what's waiting on what)
+
+*Implementation*: Minimal executor that never sleeps - just polls futures in a loop:
+
+#+begin_src rust
+//! fstart-executor/src/lib.rs - Minimal async executor for boot
+
+#![no_std]
+
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+/// Noop waker - we poll in a loop, never actually wake
+fn noop_waker() -> Waker {
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(core::ptr::null(), &VTABLE), // clone
+        |_| {},  // wake
+        |_| {},  // wake_by_ref
+        |_| {},  // drop
+    );
+    unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) }
+}
+
+/// Run multiple futures to completion by polling in a loop
+/// No sleeping - pure spin until all done
+pub fn block_on_all<const N: usize>(
+    mut futures: [Pin<&mut dyn Future<Output = Result<(), Error>>>; N]
+) -> Result<(), Error> {
+    let waker = noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    
+    let mut done = [false; N];
+    let mut results = [None; N];
+    
+    while !done.iter().all(|&d| d) {
+        for i in 0..N {
+            if !done[i] {
+                match futures[i].as_mut().poll(&mut cx) {
+                    Poll::Ready(result) => {
+                        done[i] = true;
+                        results[i] = Some(result);
+                    }
+                    Poll::Pending => {}
+                }
+            }
+        }
+    }
+    
+    // Check for errors
+    for result in results.into_iter().flatten() {
+        result?;
+    }
+    Ok(())
+}
+#+end_src
+
+*Service registry* - futures poll until their dependency is published:
+
+#+begin_src rust
+//! Service registry for dependency resolution
+
+use core::cell::UnsafeCell;
+use core::future::Future;
+use core::marker::PhantomData;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+
+/// Maximum number of services (devices) - sized for typical SoC
+pub const MAX_SERVICES: usize = 64;
+
+/// Registry of initialized services
+pub struct ServiceRegistry {
+    /// Pointers to services, None if not yet initialized
+    services: UnsafeCell<[Option<*const ()>; MAX_SERVICES]>,
+}
+
+// Safety: single-threaded boot environment
+unsafe impl Sync for ServiceRegistry {}
+
+impl ServiceRegistry {
+    pub const fn new() -> Self {
+        Self {
+            services: UnsafeCell::new([None; MAX_SERVICES]),
+        }
+    }
+    
+    /// Publish a service once initialized
+    pub fn publish<T>(&self, id: u16, service: &T) {
+        unsafe {
+            (*self.services.get())[id as usize] = Some(service as *const T as *const ());
+        }
+    }
+    
+    /// Get a future that resolves when service is available
+    pub fn get<T>(&self, id: u16) -> GetService<'_, T> {
+        GetService {
+            registry: self,
+            id,
+            _phantom: PhantomData,
+        }
+    }
+    
+    /// Try to get service immediately (non-async)
+    pub fn try_get<T>(&self, id: u16) -> Option<&T> {
+        unsafe {
+            (*self.services.get())[id as usize]
+                .map(|ptr| &*(ptr as *const T))
+        }
+    }
+}
+
+/// Future that polls until a service is available
+pub struct GetService<'a, T> {
+    registry: &'a ServiceRegistry,
+    id: u16,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> Future for GetService<'_, T> {
+    type Output = &T;
+    
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.registry.try_get::<T>(self.id) {
+            Some(service) => Poll::Ready(service),
+            None => Poll::Pending,
+        }
+    }
+}
+#+end_src
+
+*Generated init code* - each device gets an async function:
+
+#+begin_src rust
+//! Generated by fstart-tool
+//! stages/spl/src/generated.rs
+
+use fstart_executor::{block_on_all, ServiceRegistry};
+use fstart_soc_ast2600::{scu, uart, sdram, spi};
+
+// Device indices (from flattened hierarchy)
+mod dev {
+    pub const SCU: u16 = 0;
+    pub const UART5: u16 = 1;
+    pub const SDRAM: u16 = 2;
+    pub const FMC: u16 = 3;
+    pub const FLASH0: u16 = 4;
+}
+
+static SERVICES: ServiceRegistry = ServiceRegistry::new();
+
+async fn init_scu() -> Result<(), Error> {
+    // No dependencies - init immediately
+    let service = scu::init(&scu::Config {
+        revision: scu::Revision::A3,
+        cpu_freq_mhz: 800,
+    })?;
+    SERVICES.publish(dev::SCU, &service);
+    Ok(())
+}
+
+async fn init_uart5() -> Result<(), Error> {
+    // Wait for SCU (clock controller)
+    let scu = SERVICES.get::<scu::ClockService>(dev::SCU).await;
+    
+    let service = uart::init(&uart::Config {
+        id: uart::Id::Uart5,
+        baud: 115200,
+    }, scu)?;
+    SERVICES.publish(dev::UART5, &service);
+    
+    log::info!("Console ready");
+    Ok(())
+}
+
+async fn init_sdram() -> Result<(), Error> {
+    // Wait for SCU
+    let scu = SERVICES.get::<scu::ClockService>(dev::SCU).await;
+    
+    let service = sdram::init(&sdram::Config {
+        size_mb: 512,
+        kind: sdram::DramKind::Ddr4_2400,
+    }, scu)?;
+    SERVICES.publish(dev::SDRAM, &service);
+    
+    log::info!("DRAM initialized: 512 MB");
+    Ok(())
+}
+
+async fn init_fmc() -> Result<(), Error> {
+    // Wait for SCU
+    let scu = SERVICES.get::<scu::ClockService>(dev::SCU).await;
+    
+    let service = spi::init_controller(&spi::ControllerConfig {
+        base: 0x1e620000,
+        max_speed_hz: 50_000_000,
+    }, scu)?;
+    SERVICES.publish(dev::FMC, &service);
+    Ok(())
+}
+
+async fn init_flash0() -> Result<(), Error> {
+    // Wait for parent (FMC controller)
+    let fmc = SERVICES.get::<spi::Controller>(dev::FMC).await;
+    
+    let service = spi::init_flash(&spi::FlashConfig {
+        cs: 0,
+        size_bytes: 0x4000000,
+    }, fmc)?;
+    SERVICES.publish(dev::FLASH0, &service);
+    Ok(())
+}
+
+/// Main boot entry point
+pub fn run_boot() -> Result<(), Error> {
+    // Pin futures on stack
+    let mut f_scu = core::pin::pin!(init_scu());
+    let mut f_uart5 = core::pin::pin!(init_uart5());
+    let mut f_sdram = core::pin::pin!(init_sdram());
+    let mut f_fmc = core::pin::pin!(init_fmc());
+    let mut f_flash0 = core::pin::pin!(init_flash0());
+    
+    // Run all - executor handles ordering via dependency awaits
+    block_on_all([
+        f_scu.as_mut() as Pin<&mut dyn Future<Output = _>>,
+        f_uart5.as_mut(),
+        f_sdram.as_mut(),
+        f_fmc.as_mut(),
+        f_flash0.as_mut(),
+    ])?;
+    
+    // All services ready - load next stage
+    let flash = SERVICES.try_get::<spi::Flash>(dev::FLASH0).unwrap();
+    load_next_stage(flash)?;
+    
+    Ok(())
+}
+#+end_src
+
+The executor just spins, polling all futures. When =init_flash0= polls, it returns =Pending= until =init_fmc= completes and publishes the FMC service. No explicit ordering needed in config or codegen - dependencies are naturally expressed as awaits.
+
+*Why not full embassy?*
+- Embassy includes timers, interrupts, wakers that actually wake
+- We don't need any of that - boot is single-threaded, no sleeping
+- Our executor is ~50 lines, embassy-executor is much larger
+- If we later need timers (e.g., DRAM training timeouts), we can add targeted support
+
+** Filesystem Descriptor Format
+
+*** Original Proposal (gpt5_2_plan.org)
+Use =serde-brief= for a compact self-describing format.
+
+*** Analysis
+Since we use serde throughout, the same Rust types used for RON configs can be serialized to any serde-compatible binary format. The firmware doesn't parse RON - it parses whatever binary format we choose.
+
+Self-describing format options:
+
+| Format         | Crate            | Size overhead | Parse complexity | no_std | Self-describing |
+|----------------+------------------+---------------+------------------+--------+-----------------|
+| postcard       | =postcard=       | Minimal       | Very simple      | Yes    | With schema     |
+| CBOR           | =minicbor=       | Low           | Moderate         | Yes    | Yes             |
+| MessagePack    | =rmp-serde=      | Low           | Moderate         | Yes*   | Partial         |
+| bincode        | =bincode=        | Minimal       | Simple           | Yes*   | No              |
+
+*** Recommendation: postcard for Firmware
+=postcard= is the best fit for firmware-side deserialization:
+- Designed for embedded/no_std from the start
+- Minimal overhead
+- =postcard-schema= crate provides self-description when needed
+- Same Rust types as RON config
+
+Layout:
+1. *Header*: Fixed =zerocopy= struct (magic, version, offsets) - trivial to parse in early boot
+2. *File table*: =postcard=-serialized - firmware deserializes this
+3. *Embedded config* (optional): =postcard=-serialized config for runtime binding
+4. *Validation*: Signatures appended after table
+
+The build tool reads RON into structs, works with those structs directly, and only serializes to postcard when writing the final image for firmware consumption.
+
+** Build-time vs Runtime Binding
+
+*** Original Proposal
+Support both via features.
+
+*** Critique
+For the AST2600 BMC use case, runtime binding adds complexity with little benefit. The "bulked" build mode from design_document.org is interesting for development but not critical path.
+
+*** Recommendation: Build-time Only (Initially)
+- Build tool generates all bindings as Rust code
+- Runtime binding can be added later as a feature if needed
+- Simplifies the mental model significantly
+
+* Driver Config Struct Pattern
+
+** Problem
+The build tool needs to parse RON containing driver-specific configuration (UART baud rates, DRAM timings, etc.), but shouldn't need to compile actual hardware drivers (which require no_std, target-specific code).
+
+** Solution: Feature-Gated Config Structs
+Each driver crate exposes its config structs behind a =config= feature:
+
+#+begin_src toml
+# soc/aspeed/ast2600/Cargo.toml
+[package]
+name = "fstart-soc-ast2600"
+
+[features]
+default = ["driver"]      # Full driver code
+config = ["serde"]        # Just config structs, for build tool
+driver = ["config"]       # Driver implies config
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+# These only needed for actual driver code
+tock-registers = { version = "0.8", optional = true }
+#+end_src
+
+#+begin_src rust
+//! soc/aspeed/ast2600/src/uart.rs
+
+use serde::{Deserialize, Serialize};
+
+/// UART configuration - always available with "config" feature
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "config", derive(/* any additional derives */))]
+pub struct UartConfig {
+    pub id: UartId,
+    pub baud: u32,
+    #[serde(default)]
+    pub flow_control: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum UartId {
+    Uart1,
+    Uart2,
+    Uart3,
+    Uart4,
+    Uart5,
+}
+
+/// Actual driver code - only with "driver" feature
+#[cfg(feature = "driver")]
+mod driver {
+    use super::*;
+    
+    pub struct UartDriver {
+        base: usize,
+    }
+    
+    impl UartDriver {
+        pub fn init(config: &UartConfig, clk: &ClockService) -> Result<Self, Error> {
+            // Actual hardware init code
+            // ...
+        }
+        
+        pub fn write(&self, data: &[u8]) {
+            // ...
+        }
+    }
+}
+
+#[cfg(feature = "driver")]
+pub use driver::*;
+#+end_src
+
+** Build Tool Dependency
+
+#+begin_src toml
+# fstart-tool/Cargo.toml
+[dependencies]
+# Only config structs, no driver code
+fstart-soc-ast2600 = { path = "../soc/aspeed/ast2600", default-features = false, features = ["config"] }
+fstart-soc-ast2500 = { path = "../soc/aspeed/ast2500", default-features = false, features = ["config"] }
+# ... other SoCs
+
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }
+#+end_src
+
+** Firmware Dependency
+
+#+begin_src toml
+# stages/spl/Cargo.toml
+[dependencies]
+# Full driver code
+fstart-soc-ast2600 = { path = "../../soc/aspeed/ast2600" }  # default features = driver
+#+end_src
+
+** Benefits
+1. *Single source of truth*: Config structs defined once in driver crate
+2. *Build tool stays lightweight*: No target-specific or no_std code
+3. *Type safety*: RON parsing uses exact same types as driver code
+4. *Compile-time validation*: If config struct changes, both tool and driver see it
+
+** Generated Code Uses Same Types
+
+#+begin_src rust
+//! Generated by fstart-tool
+//! stages/spl/src/generated.rs
+
+use fstart_soc_ast2600::uart::{UartConfig, UartId};
+use fstart_soc_ast2600::scu::ScuConfig;
+
+pub fn init_console() -> Result<(), Error> {
+    // Config struct is the same type the driver expects!
+    let config = UartConfig {
+        id: UartId::Uart5,
+        baud: 115200,
+        flow_control: false,
+    };
+    
+    let uart = fstart_soc_ast2600::uart::UartDriver::init(&config, &clock_service)?;
+    // ...
+}
+#+end_src
+
+* Workspace Layout
+
+#+begin_src
+fstart/
+  # Build tooling (runs on host)
+  fstart-tool/              # CLI: parses RON, generates code, builds image
+    Cargo.toml              # depends on SoC crates with features=["config"]
+    src/
+      main.rs
+      codegen.rs            # generates stage bindings
+      image.rs              # creates flash image
+  
+  # Shared config types
+  fstart-config/            # Common config types (BoardConfig, SecurityConfig, etc.)
+    Cargo.toml              # serde, no target-specific code
+    src/lib.rs
+  
+  # Driver framework  
+  fstart-driver/            # Driver traits, Error types, DeviceGraph
+    Cargo.toml              # no_std compatible
+    src/lib.rs
+    src/device.rs           # FlatDevice, DeviceGraph, hierarchy APIs
+  
+  # Minimal async executor
+  fstart-executor/          # Async executor for dependency-driven init
+    Cargo.toml              # no_std, no deps except core
+    src/lib.rs              # ~50 lines: poll loop, noop waker
+    src/registry.rs         # ServiceRegistry, GetService future
+  
+  # Filesystem
+  fstart-fs/                # FS header structs, parser
+    Cargo.toml              # no_std compatible, zerocopy
+    src/lib.rs
+  
+  # Crypto primitives
+  fstart-crypto/            # Signing, hashing, verification
+    Cargo.toml              # no_std compatible
+    src/lib.rs
+  
+  # SoC crates (config + drivers)
+  soc/
+    aspeed/
+      ast2600/
+        Cargo.toml          # features = ["config", "driver"]
+        src/
+          lib.rs
+          scu.rs            # ClockService + ScuConfig
+          uart.rs           # UartDriver + UartConfig  
+          sdram.rs          # SdramDriver + DramConfig
+          spi.rs            # SpiDriver + SpiConfig
+      ast2500/
+        Cargo.toml
+        src/...
+  
+  # Architecture support
+  arch/
+    arm/
+      Cargo.toml            # no_std, target-specific
+      src/
+        lib.rs
+        entry.rs            # Entry point, stack setup
+        cache.rs            # Cache operations
+  
+  # Stage binaries (firmware)
+  stages/
+    spl/
+      Cargo.toml            # depends on SoC crates with features=["driver"]
+      src/
+        main.rs
+        generated.rs        # Generated by fstart-tool
+      link.ld
+    main/
+      Cargo.toml
+      src/...
+      link.ld
+  
+  # Board configs
+  boards/
+    aspeed/
+      ast2600-evb.ron
+      ast2600-base.ron      # Shared base for AST2600 boards
+    # ... other vendors
+  
+  # Keys (gitignored, or test keys only)
+  keys/
+    test-ed25519.key
+    test-ed25519.pub
+#+end_src
+
+** Dependency Graph
+
+#+begin_example
+                        fstart-tool (host)
+                              |
+           +------------------+------------------+
+           |                  |                  |
+           v                  v                  v
+    fstart-config      soc/ast2600         fstart-fs
+           |          (config only)             |
+           |                                    |
+           +------------------------------------+
+                              |
+                              v
+                          serde
+                              
+                              
+                        stages/spl (firmware)
+                              |
+      +----------+------------+------------+------------+
+      |          |            |            |            |
+      v          v            v            v            v
+  fstart-    fstart-     soc/ast2600   fstart-fs   fstart-
+  driver     executor    (full driver)             crypto
+      |          |            |            |
+      +----------+------------+------------+
+                              |
+                              v
+                           core
+                    (no external deps)
+#+end_example
+
+* Native RON Schema Design
+
+** Top-Level Config Structure
+
+#+begin_src rust
+//! fstart-config/src/lib.rs
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::collections::HashMap;
+
+/// Root configuration - entry point for a board
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FstartConfig {
+    /// Optional: inherit from base configs
+    #[serde(default)]
+    pub extends: Vec<PathBuf>,
+    
+    /// Board identification
+    pub board: BoardConfig,
+    
+    /// Hardware description (replaces device tree)
+    pub hardware: HardwareConfig,
+    
+    /// Boot flow configuration
+    pub boot: BootConfig,
+    
+    /// Security settings  
+    pub security: SecurityConfig,
+    
+    /// Filesystem layout
+    pub filesystem: FilesystemConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BoardConfig {
+    pub name: String,
+    pub vendor: String,
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub url: String,
+}
+#+end_src
+
+** Hardware Description (Replaces Device Tree)
+
+#+begin_src rust
+/// Hardware configuration - the "device tree" replacement
+#[derive(Debug, Deserialize, Serialize)]
+pub struct HardwareConfig {
+    /// SoC/platform selection (for SoC-specific driver selection)
+    pub platform: Platform,
+    
+    /// All devices: flat list + hierarchy tree
+    pub devices: DeviceConfig,
+}
+
+/// Platform identifier - determines which drivers are available
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum Platform {
+    AspeedAst2600 { revision: Ast2600Rev },
+    AspeedAst2500,
+    X86Generic,
+    // Future platforms
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub enum Ast2600Rev {
+    #[default]
+    A3,
+    A2,
+    A1,
+    A0,
+}
+#+end_src
+
+** Device Model: Hierarchical Config, Flat Firmware Representation
+
+*** Design Principles
+1. *RON config uses natural hierarchy*: Devices nested under their parents - intuitive for humans
+2. *Firmware uses flat representation*: Build tool flattens to array + separate parent/child indices
+3. *Nice firmware APIs*: Wrapper functions for =parent()=, =children()=, =ancestors()= traversal
+4. *String IDs in config*: Human-readable, validated at build time
+5. *Integer indices in firmware*: Efficient, no string comparisons at runtime
+
+This gives the best of both worlds: intuitive configuration and efficient runtime.
+
+*** RON Config Types (Hierarchical)
+
+#+begin_src rust
+/// Hardware configuration - devices in natural hierarchy
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct DeviceConfig {
+    /// Root-level devices (may contain children)
+    pub devices: Vec<DeviceNode>,
+    
+    /// Console device ID
+    #[serde(default)]
+    pub console: Option<DeviceId>,
+}
+
+/// Unique device identifier (string in config)
+pub type DeviceId = String;
+
+/// A device node with optional children - used in RON config
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeviceNode {
+    /// Unique identifier for this device
+    pub id: DeviceId,
+    
+    /// Device type and configuration
+    pub kind: DeviceKind,
+    
+    /// Child devices (e.g., SPI flash under SPI controller)
+    #[serde(default)]
+    pub children: Vec<DeviceNode>,
+}
+
+/// Device types - each variant contains its config
+/// 
+/// Three categories:
+/// 1. Static devices - fully configured at build time
+/// 2. Enumerable buses - bus config static, children discovered at runtime  
+/// 3. Enumerated devices - matched at runtime, config specifies match criteria + driver
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum DeviceKind {
+    // ========================================
+    // Generic static devices (portable across SoCs)
+    // ========================================
+    
+    /// 16550-compatible UART
+    Uart(UartConfig),
+    
+    /// SPI controller (children are SPI devices)
+    SpiController(SpiControllerConfig),
+    
+    /// SPI flash (child of SpiController)
+    SpiFlash(SpiFlashConfig),
+    
+    /// I2C controller (children are I2C devices)
+    I2cController(I2cControllerConfig),
+    
+    /// GPIO controller
+    Gpio(GpioConfig),
+    
+    /// eMMC controller
+    Emmc(EmmcConfig),
+    
+    // ========================================
+    // AST2600-specific devices
+    // ========================================
+    
+    /// AST2600 System Control Unit (clock, reset, pinmux)
+    Ast2600Scu(Ast2600ScuConfig),
+    
+    /// AST2600 SDRAM controller
+    Ast2600Sdmc(Ast2600SdmcConfig),
+    
+    /// AST2600 FMC (Firmware Memory Controller - SPI flash)
+    Ast2600Fmc(Ast2600FmcConfig),
+    
+    /// AST2600 Hash/Crypto engine
+    Ast2600Hace(Ast2600HaceConfig),
+    
+    // ========================================
+    // Enumerable buses (static config, runtime discovery)
+    // ========================================
+    
+    /// PCIe Root Complex - children discovered via enumeration
+    PcieRootComplex(PcieRcConfig),
+    
+    /// USB Host Controller - children discovered via enumeration
+    UsbHostController(UsbHcConfig),
+    
+    // ========================================
+    // Enumerated devices (matched at runtime)
+    // These specify match criteria; actual binding happens during bus enumeration
+    // ========================================
+    
+    /// PCIe/NVMe device - matched by class code 0x010802
+    Nvme(NvmeConfig),
+    
+    /// PCIe device - matched by vid:did or class
+    PcieDevice(PcieDeviceConfig),
+    
+    /// I2C device - matched by address (or probed)
+    I2cDevice(I2cDeviceConfig),
+    
+    /// SPI device (non-flash) - matched by CS
+    SpiDevice(SpiDeviceConfig),
+    
+    /// TPM - can be SPI, I2C, or MMIO; matched accordingly
+    Tpm(TpmConfig),
+    
+    /// USB device - matched by vid:pid or class
+    UsbDevice(UsbDeviceConfig),
+    
+    // ========================================
+    // Fallback
+    // ========================================
+    
+    /// Generic device for platform-specific or unknown devices
+    Generic(GenericDeviceConfig),
+}
+
+// ============================================================================
+// Generic device configs
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UartConfig {
+    pub base: u64,
+    pub baud: u32,
+    #[serde(default)]
+    pub reg_shift: u8,      // Register spacing (0 = byte, 2 = dword)
+    #[serde(default)]
+    pub reg_width: u8,      // Register width in bytes (1 or 4)
+    #[serde(default)]
+    pub flow_control: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SpiControllerConfig {
+    pub base: u64,
+    #[serde(default)]
+    pub max_speed_hz: u32,
+    #[serde(default)]
+    pub num_cs: u8,         // Number of chip selects
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SpiFlashConfig {
+    pub cs: u8,
+    pub size_bytes: u32,
+    #[serde(default)]
+    pub speed_hz: u32,
+    #[serde(default)]
+    pub mmap_base: Option<u64>,  // Memory-mapped address if supported
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct I2cControllerConfig {
+    pub base: u64,
+    #[serde(default = "default_i2c_speed")]
+    pub speed_khz: u32,
+}
+
+fn default_i2c_speed() -> u32 { 100 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GpioConfig {
+    pub base: u64,
+    pub num_pins: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EmmcConfig {
+    pub base: u64,
+    #[serde(default)]
+    pub max_speed_hz: u32,
+    #[serde(default)]
+    pub bus_width: u8,      // 1, 4, or 8
+}
+
+// ============================================================================
+// AST2600-specific configs (only valid when platform = AspeedAst2600)
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Ast2600ScuConfig {
+    /// SCU base (usually 0x1e6e2000)
+    pub base: u64,
+    #[serde(default)]
+    pub cpu_freq_mhz: u32,
+    #[serde(default)]
+    pub uart_clock_source: Ast2600UartClockSource,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub enum Ast2600UartClockSource {
+    #[default]
+    Huxclk,     // 24MHz from HUXCLK
+    Uxclk,      // From UXCLK (configurable)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Ast2600SdmcConfig {
+    /// SDMC base (usually 0x1e6e0000)
+    pub base: u64,
+    pub size_mb: u32,
+    pub kind: DramKind,
+    #[serde(default)]
+    pub ecc: bool,
+    #[serde(default)]
+    pub timing: Option<Ast2600DramTiming>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum DramKind {
+    Ddr4_3200,
+    Ddr4_2400,
+    Ddr4_2133,
+    Ddr4_1600,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Ast2600DramTiming {
+    // Detailed timing parameters from SPD or manual config
+    pub cl: u8,
+    pub trcd: u8,
+    pub trp: u8,
+    pub tras: u8,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Ast2600FmcConfig {
+    /// FMC base (usually 0x1e620000)
+    pub base: u64,
+    /// Memory-mapped window base (usually 0x20000000)  
+    pub mmap_base: u64,
+    #[serde(default)]
+    pub max_speed_hz: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Ast2600HaceConfig {
+    /// HACE base (usually 0x1e6d0000)
+    pub base: u64,
+}
+
+// ============================================================================
+// Enumerable bus configs
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PcieRcConfig {
+    /// ECAM base address for config space access
+    pub ecam_base: u64,
+    /// MMIO window for BAR allocation
+    pub mmio_base: u64,
+    pub mmio_size: u64,
+    /// Optional prefetchable MMIO window
+    #[serde(default)]
+    pub mmio_pref_base: Option<u64>,
+    #[serde(default)]
+    pub mmio_pref_size: Option<u64>,
+    /// Optional I/O window (legacy x86)
+    #[serde(default)]
+    pub io_base: Option<u64>,
+    #[serde(default)]
+    pub io_size: Option<u64>,
+    /// Segment number (usually 0)
+    #[serde(default)]
+    pub segment: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UsbHcConfig {
+    pub base: u64,
+    pub kind: UsbHcKind,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum UsbHcKind {
+    Ehci,
+    Xhci,
+    Ohci,
+}
+
+// ============================================================================
+// Enumerated device configs (matched at runtime)
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NvmeConfig {
+    /// Match by specific vid:did (optional - default matches any NVMe)
+    #[serde(default)]
+    pub vid_did: Option<(u16, u16)>,
+    /// Which namespace to use (default 1)
+    #[serde(default = "default_ns")]
+    pub namespace: u32,
+}
+
+fn default_ns() -> u32 { 1 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PcieDeviceConfig {
+    /// Match by vendor:device ID
+    #[serde(default)]
+    pub vid_did: Option<(u16, u16)>,
+    /// Match by class code (e.g., 0x010802 for NVMe)
+    #[serde(default)]
+    pub class_code: Option<u32>,
+    /// Driver to bind (if not auto-detected from class)
+    #[serde(default)]
+    pub driver: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct I2cDeviceConfig {
+    /// I2C address (7-bit)
+    pub addr: u8,
+    /// Driver to bind
+    pub driver: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SpiDeviceConfig {
+    /// Chip select
+    pub cs: u8,
+    /// Max SPI speed
+    #[serde(default)]
+    pub max_speed_hz: u32,
+    /// SPI mode (0-3)
+    #[serde(default)]
+    pub mode: u8,
+    /// Driver to bind
+    pub driver: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TpmConfig {
+    pub interface: TpmInterface,
+    #[serde(default)]
+    pub vid_did: Option<(u16, u16)>,  // For PCIe TPMs
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum TpmInterface {
+    /// SPI TPM (TIS over SPI)
+    Spi { cs: u8 },
+    /// I2C TPM  
+    I2c { addr: u8 },
+    /// Memory-mapped (MMIO TIS)
+    Mmio { base: u64 },
+    /// PCIe TPM (matched during enumeration)
+    Pcie,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UsbDeviceConfig {
+    /// Match by vendor:product ID
+    #[serde(default)]
+    pub vid_pid: Option<(u16, u16)>,
+    /// Match by class code
+    #[serde(default)]
+    pub class: Option<u8>,
+    /// Driver to bind
+    #[serde(default)]
+    pub driver: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GenericDeviceConfig {
+    /// Compatible string (for matching)
+    pub compatible: String,
+    #[serde(default)]
+    pub base: Option<u64>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    /// Arbitrary properties
+    #[serde(default)]
+    pub properties: std::collections::HashMap<String, String>,
+}
+#+end_src
+
+*** Platform Validation
+
+The build tool validates that device types match the platform:
+
+#+begin_src rust
+//! fstart-tool/src/validate.rs
+
+pub fn validate_devices(config: &FstartConfig) -> Result<(), Error> {
+    let platform = &config.hardware.platform;
+    
+    for device in flatten_devices(&config.hardware.devices.devices) {
+        validate_device_for_platform(&device.kind, platform)?;
+    }
+    
+    Ok(())
+}
+
+fn validate_device_for_platform(kind: &DeviceKind, platform: &Platform) -> Result<(), Error> {
+    use DeviceKind::*;
+    use Platform::*;
+    
+    match (kind, platform) {
+        // Generic devices valid everywhere
+        (Uart(_) | SpiController(_) | SpiFlash(_) | I2cController(_) | 
+         Gpio(_) | Emmc(_) | PcieRootComplex(_) | Nvme(_) | Tpm(_), _) => Ok(()),
+        
+        // AST2600-specific devices
+        (Ast2600Scu(_) | Ast2600Sdmc(_) | Ast2600Fmc(_) | Ast2600Hace(_), 
+         AspeedAst2600 { .. }) => Ok(()),
+        
+        (Ast2600Scu(_) | Ast2600Sdmc(_) | Ast2600Fmc(_) | Ast2600Hace(_), other) => {
+            Err(Error::InvalidDeviceForPlatform {
+                device: format!("{:?}", kind),
+                platform: format!("{:?}", other),
+            })
+        }
+        
+        // Generic fallback always OK
+        (Generic(_), _) => Ok(()),
+        
+        // Enumerated devices valid if parent bus exists
+        (PcieDevice(_) | I2cDevice(_) | SpiDevice(_) | UsbDevice(_), _) => Ok(()),
+        
+        _ => Ok(()),
+    }
+}
+#+end_src
+
+*** Firmware Types (Flat with Hierarchy Indices)
+
+The build tool flattens the hierarchical config into efficient firmware structures:
+
+#+begin_src rust
+//! fstart-driver/src/device.rs - Firmware-side device representation
+
+/// Index into the device array
+pub type DeviceIdx = u16;
+
+/// Sentinel value for "no parent" or "no more children"
+pub const NO_DEVICE: DeviceIdx = DeviceIdx::MAX;
+
+/// Flattened device entry for firmware
+#[derive(Debug, Clone)]
+pub struct FlatDevice {
+    /// Device ID (interned string index or small inline)
+    pub id: DeviceId,
+    
+    /// Index of parent device, or NO_DEVICE if root
+    pub parent: DeviceIdx,
+    
+    /// Index of first child, or NO_DEVICE if leaf
+    pub first_child: DeviceIdx,
+    
+    /// Index of next sibling, or NO_DEVICE if last
+    pub next_sibling: DeviceIdx,
+    
+    /// Device-specific config (enum discriminant + data)
+    pub kind: DeviceKind,
+}
+
+/// Device graph - flat array with hierarchy via indices
+pub struct DeviceGraph {
+    devices: &'static [FlatDevice],
+}
+
+impl DeviceGraph {
+    /// Get device by index
+    pub fn get(&self, idx: DeviceIdx) -> Option<&FlatDevice> {
+        self.devices.get(idx as usize)
+    }
+    
+    /// Find device by ID
+    pub fn find(&self, id: &str) -> Option<(DeviceIdx, &FlatDevice)> {
+        self.devices.iter()
+            .enumerate()
+            .find(|(_, d)| d.id == id)
+            .map(|(i, d)| (i as DeviceIdx, d))
+    }
+    
+    /// Get parent of device
+    pub fn parent(&self, idx: DeviceIdx) -> Option<(DeviceIdx, &FlatDevice)> {
+        let dev = self.get(idx)?;
+        if dev.parent == NO_DEVICE {
+            None
+        } else {
+            Some((dev.parent, self.get(dev.parent)?))
+        }
+    }
+    
+    /// Iterate over children of device
+    pub fn children(&self, idx: DeviceIdx) -> ChildIter<'_> {
+        let first = self.get(idx)
+            .map(|d| d.first_child)
+            .unwrap_or(NO_DEVICE);
+        ChildIter { graph: self, current: first }
+    }
+    
+    /// Iterate over ancestors (parent, grandparent, etc.)
+    pub fn ancestors(&self, idx: DeviceIdx) -> AncestorIter<'_> {
+        AncestorIter { graph: self, current: idx }
+    }
+    
+    /// Check if `ancestor_idx` is an ancestor of `idx`
+    pub fn is_ancestor(&self, idx: DeviceIdx, ancestor_idx: DeviceIdx) -> bool {
+        self.ancestors(idx).any(|(i, _)| i == ancestor_idx)
+    }
+}
+
+/// Iterator over children of a device
+pub struct ChildIter<'a> {
+    graph: &'a DeviceGraph,
+    current: DeviceIdx,
+}
+
+impl<'a> Iterator for ChildIter<'a> {
+    type Item = (DeviceIdx, &'a FlatDevice);
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current == NO_DEVICE {
+            return None;
+        }
+        let dev = self.graph.get(self.current)?;
+        let idx = self.current;
+        self.current = dev.next_sibling;
+        Some((idx, dev))
+    }
+}
+
+/// Iterator over ancestors of a device
+pub struct AncestorIter<'a> {
+    graph: &'a DeviceGraph,
+    current: DeviceIdx,
+}
+
+impl<'a> Iterator for AncestorIter<'a> {
+    type Item = (DeviceIdx, &'a FlatDevice);
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        let dev = self.graph.get(self.current)?;
+        if dev.parent == NO_DEVICE {
+            return None;
+        }
+        self.current = dev.parent;
+        let parent = self.graph.get(self.current)?;
+        Some((self.current, parent))
+    }
+}
+#+end_src
+
+*** Build Tool: Flattening Hierarchy
+
+#+begin_src rust
+//! fstart-tool/src/flatten.rs - Convert hierarchical config to flat representation
+
+use fstart_config::{DeviceConfig, DeviceNode};
+
+pub struct FlattenedDevices {
+    pub devices: Vec<FlatDevice>,
+    pub id_to_idx: HashMap<String, u16>,
+}
+
+pub fn flatten_devices(config: &DeviceConfig) -> FlattenedDevices {
+    let mut devices = Vec::new();
+    let mut id_to_idx = HashMap::new();
+    
+    // First pass: assign indices via depth-first traversal
+    fn collect_indices(
+        node: &DeviceNode,
+        id_to_idx: &mut HashMap<String, u16>,
+        counter: &mut u16,
+    ) {
+        id_to_idx.insert(node.id.clone(), *counter);
+        *counter += 1;
+        for child in &node.children {
+            collect_indices(child, id_to_idx, counter);
+        }
+    }
+    
+    let mut counter = 0u16;
+    for root in &config.devices {
+        collect_indices(root, &mut id_to_idx, &mut counter);
+    }
+    
+    // Second pass: build flat devices with parent/child/sibling indices
+    fn build_flat(
+        node: &DeviceNode,
+        parent_idx: u16,
+        next_sibling_idx: u16,
+        id_to_idx: &HashMap<String, u16>,
+        devices: &mut Vec<FlatDevice>,
+    ) {
+        let my_idx = id_to_idx[&node.id];
+        
+        // Calculate first_child index
+        let first_child = node.children.first()
+            .map(|c| id_to_idx[&c.id])
+            .unwrap_or(NO_DEVICE);
+        
+        devices.push(FlatDevice {
+            id: node.id.clone(),
+            parent: parent_idx,
+            first_child,
+            next_sibling: next_sibling_idx,
+            kind: node.kind.clone(),
+        });
+        
+        // Process children with correct sibling links
+        for (i, child) in node.children.iter().enumerate() {
+            let next_sib = node.children.get(i + 1)
+                .map(|c| id_to_idx[&c.id])
+                .unwrap_or(NO_DEVICE);
+            build_flat(child, my_idx, next_sib, id_to_idx, devices);
+        }
+    }
+    
+    // Process root nodes
+    for (i, root) in config.devices.iter().enumerate() {
+        let next_sib = config.devices.get(i + 1)
+            .map(|r| id_to_idx[&r.id])
+            .unwrap_or(NO_DEVICE);
+        build_flat(root, NO_DEVICE, next_sib, &id_to_idx, &mut devices);
+    }
+    
+    // Sort by index for correct ordering
+    devices.sort_by_key(|d| id_to_idx[&d.id]);
+    
+    FlattenedDevices { devices, id_to_idx }
+}
+#+end_src
+
+*** AST2600 Example (Hierarchical RON)
+
+#+begin_src ron
+devices: (
+    // Devices in natural hierarchy - children nested under parents
+    devices: [
+        // AST2600-specific: SCU (clock/reset/pinmux)
+        ( id: "scu", kind: Ast2600Scu((base: 0x1e6e2000, cpu_freq_mhz: 800)) ),
+        
+        // Generic UART (16550-compatible)
+        ( id: "uart5", kind: Uart((base: 0x1e784000, baud: 115200)) ),
+        
+        // AST2600-specific: SDRAM controller  
+        ( id: "sdmc", kind: Ast2600Sdmc((
+            base: 0x1e6e0000,
+            size_mb: 512,
+            kind: Ddr4_2400,
+        ))),
+        
+        // AST2600-specific: FMC (boot flash controller) with flash child
+        ( id: "fmc", kind: Ast2600Fmc((
+            base: 0x1e620000,
+            mmap_base: 0x20000000,
+            max_speed_hz: 50_000_000,
+          )),
+          children: [
+              // Generic SPI flash
+              ( id: "flash0", kind: SpiFlash((
+                  cs: 0,
+                  size_bytes: 0x4000000,
+                  mmap_base: Some(0x20000000),
+              ))),
+          ],
+        ),
+        
+        // Generic SPI controller for peripherals
+        ( id: "spi1", kind: SpiController((base: 0x1e630000, max_speed_hz: 10_000_000)),
+          children: [
+              // TPM attached via SPI
+              ( id: "tpm0", kind: Tpm((interface: Spi(cs: 0))) ),
+          ],
+        ),
+        
+        // I2C controller with enumerated devices
+        ( id: "i2c0", kind: I2cController((base: 0x1e78a000, speed_khz: 400)),
+          children: [
+              // I2C device matched by address
+              ( id: "eeprom0", kind: I2cDevice((addr: 0x50, driver: "at24")) ),
+              ( id: "temp0", kind: I2cDevice((addr: 0x48, driver: "tmp102")) ),
+          ],
+        ),
+    ],
+    console: Some("uart5"),
+)
+#+end_src
+
+This gets flattened by the build tool into:
+
+#+begin_src rust
+// Generated firmware code
+static DEVICES: [FlatDevice; 9] = [
+    FlatDevice { id: "scu",     parent: NO_DEVICE, first_child: NO_DEVICE, next_sibling: 1, kind: Ast2600Scu(...) },
+    FlatDevice { id: "uart5",   parent: NO_DEVICE, first_child: NO_DEVICE, next_sibling: 2, kind: Uart(...) },
+    FlatDevice { id: "sdmc",    parent: NO_DEVICE, first_child: NO_DEVICE, next_sibling: 3, kind: Ast2600Sdmc(...) },
+    FlatDevice { id: "fmc",     parent: NO_DEVICE, first_child: 4,         next_sibling: 5, kind: Ast2600Fmc(...) },
+    FlatDevice { id: "flash0",  parent: 3,         first_child: NO_DEVICE, next_sibling: NO_DEVICE, kind: SpiFlash(...) },
+    FlatDevice { id: "spi1",    parent: NO_DEVICE, first_child: 6,         next_sibling: 7, kind: SpiController(...) },
+    FlatDevice { id: "tpm0",    parent: 5,         first_child: NO_DEVICE, next_sibling: NO_DEVICE, kind: Tpm(...) },
+    FlatDevice { id: "i2c0",    parent: NO_DEVICE, first_child: 8,         next_sibling: NO_DEVICE, kind: I2cController(...) },
+    FlatDevice { id: "eeprom0", parent: 7,         first_child: NO_DEVICE, next_sibling: 9, kind: I2cDevice(...) },
+    // ... etc
+];
+#+end_src
+
+*** x86 Example (PCIe with Runtime Enumeration)
+
+#+begin_src ron
+// x86 platform with PCIe
+// BDFs are NOT in config - assigned at runtime during enumeration
+(
+    hardware: (
+        platform: X86Generic,
+        
+        devices: (
+            // Hierarchy expressed naturally - PCIe endpoints under root complex
+            devices: [
+                // Generic UART for early console
+                ( id: "uart0", kind: Uart((base: 0x3f8, baud: 115200, reg_shift: 0)) ),
+                
+                // PCIe root complex - enumerable bus
+                ( id: "pcie0", kind: PcieRootComplex((
+                    ecam_base: 0xe0000000,
+                    mmio_base: 0xc0000000,
+                    mmio_size: 0x20000000,
+                  )),
+                  children: [
+                      // Enumerated: NVMe - matched by class code 0x010802
+                      ( id: "nvme0", kind: Nvme((namespace: 1)) ),
+                      
+                      // Enumerated: specific PCIe device by vid:did
+                      ( id: "tpm0", kind: PcieDevice((
+                          vid_did: Some((0x1234, 0x5678)),
+                          driver: Some("tpm_crb"),
+                      ))),
+                      
+                      // Enumerated: GPU by class code
+                      ( id: "gpu0", kind: PcieDevice((
+                          class_code: Some(0x030000),  // VGA controller
+                          driver: Some("simple_fb"),
+                      ))),
+                  ],
+                ),
+                
+                // USB host controller - also enumerable
+                ( id: "xhci0", kind: UsbHostController((base: 0xfed90000, kind: Xhci)),
+                  children: [
+                      // Enumerated: USB mass storage
+                      ( id: "usb_storage0", kind: UsbDevice((
+                          class: Some(0x08),  // Mass storage class
+                          driver: Some("usb_storage"),
+                      ))),
+                  ],
+                ),
+            ],
+            
+            console: Some("uart0"),
+        ),
+    ),
+    
+    boot: (
+        stages: [
+            (
+                name: "main",
+                execution: LoadTo(load_addr: 0x100000, entry_offset: 0),
+                features: ["x86", "pcie", "usb"],
+            ),
+        ],
+        payload: Some((
+            name: "os-kernel",
+            path: "payloads/kernel.bin",
+            load_addr: 0x1000000,
+        )),
+    ),
+)
+#+end_src
+
+*** Runtime Enumeration Flow
+
+For enumerable buses (PCIe, USB), the hierarchy in config declares *expected* devices. The async init flow:
+
+1. Bus controller init (=PcieRootComplex=, =UsbHostController=) runs first
+2. Bus enumeration discovers actual devices on the bus
+3. Discovered devices are matched against config entries by vid:did, class code, etc.
+4. Matched devices get their =PciBinding= or =UsbBinding= published to the registry
+5. Child device inits (=Nvme=, =PcieDevice=, =UsbDevice=) await their binding, then init
+
+#+begin_src rust
+// Generated async init for pcie0 (enumerable bus)
+async fn init_pcie0(services: &ServiceRegistry, graph: &DeviceGraph) -> Result<(), Error> {
+    // Init the root complex hardware
+    let rc = pcie::init_root_complex(&CONFIG.pcie0)?;
+    
+    // Enumerate the bus - discover all devices
+    let discovered = pcie::enumerate(&rc)?;
+    
+    // Match discovered devices to config entries
+    let (pcie_idx, _) = graph.find("pcie0").unwrap();
+    for (child_idx, child) in graph.children(pcie_idx) {
+        let binding = match &child.kind {
+            DeviceKind::Nvme(cfg) => {
+                // NVMe always matches by class 0x010802
+                discovered.find_by_class(0x010802)
+            }
+            DeviceKind::PcieDevice(cfg) => {
+                // Match by vid:did or class
+                cfg.vid_did.and_then(|(v, d)| discovered.find_by_vid_did(v, d))
+                    .or_else(|| cfg.class_code.and_then(|c| discovered.find_by_class(c)))
+            }
+            _ => None,
+        };
+        
+        if let Some(pci_dev) = binding {
+            services.publish_pci_binding(child_idx, pci_dev);
+        }
+    }
+    
+    services.publish(dev::PCIE0, &rc);
+    Ok(())
+}
+
+// Generated async init for nvme0 - waits for enumeration to bind it
+async fn init_nvme0(services: &ServiceRegistry) -> Result<(), Error> {
+    // Wait for pcie0's enumeration to find and bind us
+    let pci_dev = services.get_pci_binding(dev::NVME0).await;
+    
+    let nvme = nvme::init(&CONFIG.nvme0, pci_dev)?;
+    services.publish(dev::NVME0, &nvme);
+    Ok(())
+}
+#+end_src
+
+This keeps the config declarative ("I expect an NVMe and a TPM on pcie0") while letting runtime handle actual discovery and binding.
+
+*** Build Tool: Codegen for Async Init
+
+The build tool generates async init functions from the device hierarchy:
+
+#+begin_src rust
+//! fstart-tool/src/codegen.rs
+
+pub fn generate_async_init(config: &FstartConfig) -> String {
+    let mut code = String::new();
+    
+    // Generate device index constants
+    code.push_str("mod dev {\n");
+    for (idx, device) in flatten_devices(&config.hardware.devices).iter().enumerate() {
+        code.push_str(&format!("    pub const {}: u16 = {};\n", 
+            device.id.to_uppercase(), idx));
+    }
+    code.push_str("}\n\n");
+    
+    // Generate async init function for each device
+    for device in &flattened.devices {
+        code.push_str(&generate_device_init(device, &flattened));
+    }
+    
+    // Generate main boot function
+    code.push_str(&generate_boot_main(&flattened));
+    
+    code
+}
+
+fn generate_device_init(device: &FlatDevice, all: &FlattenedDevices) -> String {
+    let mut code = format!("async fn init_{}(services: &ServiceRegistry) -> Result<(), Error> {{\n", 
+        device.id);
+    
+    // If has parent, await it
+    if device.parent != NO_DEVICE {
+        let parent = &all.devices[device.parent as usize];
+        let parent_type = service_type_for(&parent.kind);
+        code.push_str(&format!(
+            "    let {} = services.get::<{}>(dev::{}).await;\n",
+            parent.id, parent_type, parent.id.to_uppercase()
+        ));
+    }
+    
+    // Generate init call based on device kind
+    code.push_str(&generate_init_call(device));
+    
+    // Publish service
+    let service_type = service_type_for(&device.kind);
+    code.push_str(&format!(
+        "    services.publish(dev::{}, &service);\n    Ok(())\n}}\n\n",
+        device.id.to_uppercase()
+    ));
+    
+    code
+}
+#+end_src
+
+** Boot Flow Configuration
+
+With async-based init, we no longer need explicit operation ordering in config. The device hierarchy already implies dependencies, and the async executor handles ordering automatically.
+
+#+begin_src rust
+/// Boot flow configuration
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BootConfig {
+    /// Boot stages
+    pub stages: Vec<StageConfig>,
+    
+    /// Payload to load after fstart completes
+    #[serde(default)]
+    pub payload: Option<PayloadConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StageConfig {
+    /// Stage identifier
+    pub name: String,
+    
+    /// Where this stage runs from
+    pub execution: ExecutionMode,
+    
+    /// Cargo features for this stage
+    #[serde(default)]
+    pub features: Vec<String>,
+    
+    /// Which devices to initialize in this stage
+    /// If empty, initializes all devices (for single-stage boot)
+    /// Ordering is automatic via async dependencies
+    #[serde(default)]
+    pub devices: Vec<DeviceId>,
+    
+    /// Devices to re-attach from previous stage (already initialized)
+    #[serde(default)]
+    pub attach: Vec<DeviceId>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum ExecutionMode {
+    /// Execute in place from flash
+    Xip { base: u64 },
+    /// Load to memory and execute
+    LoadTo { load_addr: u64, entry_offset: u64 },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PayloadConfig {
+    pub name: String,
+    /// Path to payload binary (build-time)
+    pub path: PathBuf,
+    pub load_addr: u64,
+    #[serde(default)]
+    pub compression: Option<Compression>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum Compression {
+    Lz4,
+    Zstd,
+}
+#+end_src
+
+*** How Ordering Works Without Explicit Ops
+
+The device hierarchy in config implies dependencies:
+- Child devices depend on their parent
+- All devices implicitly depend on the clock controller (SCU)
+- Console devices are initialized as soon as their deps are ready
+
+Generated async code expresses these as =.await= calls:
+
+#+begin_src rust
+// flash0 is child of fmc in config hierarchy
+async fn init_flash0(services: &ServiceRegistry) -> Result<(), Error> {
+    // Automatically waits for parent
+    let fmc = services.get::<SpiController>(dev::FMC).await;
+    
+    let flash = spi::init_flash(&CONFIG.flash0, fmc)?;
+    services.publish(dev::FLASH0, &flash);
+    Ok(())
+}
+#+end_src
+
+The minimal executor polls all futures. When =init_flash0= is polled before =init_fmc= completes, it returns =Pending=. Once =init_fmc= publishes its service, the next poll of =init_flash0= succeeds.
+
+No topological sort needed. No explicit ordering in config. Dependencies are natural.
+
+** Security Configuration
+
+#+begin_src rust
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SecurityConfig {
+    /// Signing configuration
+    pub signing: SigningConfig,
+    
+    /// Hash algorithm for integrity
+    #[serde(default = "default_hash")]
+    pub hash: HashAlgorithm,
+    
+    /// TPM measurement policy
+    #[serde(default)]
+    pub measurement: MeasurementPolicy,
+}
+
+fn default_hash() -> HashAlgorithm {
+    HashAlgorithm::Sha512
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SigningConfig {
+    /// Algorithms to use (can specify multiple for hybrid)
+    pub algorithms: Vec<SignAlgorithm>,
+    
+    /// Public key paths for verification (embedded in image)
+    #[serde(default)]
+    pub public_keys: Vec<PathBuf>,
+    
+    /// Private key for signing (build-time only, not in image!)
+    #[serde(default)]
+    pub signing_key: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum SignAlgorithm {
+    /// Ed25519 - fast, small signatures (64 bytes)
+    Ed25519,
+    /// ECDSA P-256 - NIST approved
+    EcdsaP256,
+    /// ML-DSA-65 (Dilithium) - post-quantum
+    MlDsa65,
+    /// SLH-DSA (SPHINCS+) - stateless post-quantum
+    SlhDsaShake256s,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum HashAlgorithm {
+    Sha256,
+    Sha384,
+    Sha512,
+    Sha3_256,
+    Sha3_512,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct MeasurementPolicy {
+    /// Enable TPM measurements
+    pub enabled: bool,
+    
+    /// PCR allocation
+    #[serde(default)]
+    pub pcr_map: HashMap<String, u8>,
+}
+#+end_src
+
+** Filesystem Configuration
+
+#+begin_src rust
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FilesystemConfig {
+    /// Flash layout regions
+    pub regions: Vec<FlashRegion>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FlashRegion {
+    pub name: String,
+    pub offset: u32,
+    pub size: u32,
+    pub content: RegionContent,
+    
+    /// Is this region writable at runtime?
+    #[serde(default)]
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum RegionContent {
+    /// fstart filesystem descriptor (generated)
+    FsDescriptor,
+    /// Stage binary
+    Stage { name: String },
+    /// Payload binary
+    Payload,
+    /// Raw binary file
+    RawBinary { path: PathBuf },
+    /// Empty/reserved
+    Reserved,
+    /// Secondary filesystem (for RW region)
+    SecondaryFs,
+}
+#+end_src
+
+* Example: Complete AST2600 EVB Config
+
+#+begin_src ron
+// boards/aspeed/ast2600-evb.ron
+(
+    board: (
+        name: "AST2600 EVB",
+        vendor: "Aspeed",
+        revision: "1.0",
+        url: "https://www.aspeedtech.com/",
+    ),
+    
+    hardware: (
+        platform: AspeedAst2600(revision: A3),
+        
+        devices: (
+            // Devices in natural hierarchy - children nested under parents
+            devices: [
+                // AST2600-specific: SCU (clock/reset/pinmux) - must init first
+                ( id: "scu", kind: Ast2600Scu((
+                    base: 0x1e6e2000,
+                    cpu_freq_mhz: 800,
+                ))),
+                
+                // Generic 16550 UART for console
+                ( id: "uart5", kind: Uart((
+                    base: 0x1e784000,
+                    baud: 115200,
+                ))),
+                
+                // AST2600-specific: SDRAM controller
+                ( id: "sdmc", kind: Ast2600Sdmc((
+                    base: 0x1e6e0000,
+                    size_mb: 512,
+                    kind: Ddr4_2400,
+                ))),
+                
+                // AST2600-specific: FMC (boot flash controller) with flash child
+                ( id: "fmc", kind: Ast2600Fmc((
+                    base: 0x1e620000,
+                    mmap_base: 0x20000000,
+                    max_speed_hz: 50_000_000,
+                  )),
+                  children: [
+                      ( id: "flash0", kind: SpiFlash((
+                          cs: 0,
+                          size_bytes: 0x4000000,
+                          mmap_base: Some(0x20000000),
+                      ))),
+                  ],
+                ),
+                
+                // Generic SPI controller for peripherals
+                ( id: "spi1", kind: SpiController((
+                    base: 0x1e630000,
+                    max_speed_hz: 10_000_000,
+                  )),
+                  children: [
+                      ( id: "tpm0", kind: Tpm((
+                          interface: Spi(cs: 0),
+                      ))),
+                  ],
+                ),
+                
+                // I2C for board management
+                ( id: "i2c0", kind: I2cController((base: 0x1e78a000, speed_khz: 400)),
+                  children: [
+                      ( id: "eeprom0", kind: I2cDevice((addr: 0x50, driver: "at24")) ),
+                  ],
+                ),
+            ],
+            
+            console: Some("uart5"),
+        ),
+    ),
+    
+    boot: (
+        stages: [
+            (
+                name: "spl",
+                execution: Xip(base: 0x20000000),
+                features: ["minimal"],
+                // Devices to init in SPL - ordering automatic via async deps
+                devices: ["scu", "uart5", "sdmc", "fmc", "flash0"],
+            ),
+            (
+                name: "main", 
+                execution: LoadTo(load_addr: 0x80000000, entry_offset: 0),
+                features: ["full"],
+                // Re-attach devices from SPL, init new ones
+                attach: ["uart5", "flash0"],
+                devices: ["spi1", "tpm0", "i2c0", "eeprom0"],
+            ),
+        ],
+        payload: Some((
+            name: "u-boot",
+            path: "payloads/u-boot.bin",
+            load_addr: 0x83000000,
+            compression: Some(Lz4),
+        )),
+    ),
+    
+    security: (
+        signing: (
+            algorithms: [Ed25519],
+            public_keys: ["keys/evb-ed25519.pub"],
+        ),
+        hash: Sha512,
+        measurement: (
+            enabled: true,
+            pcr_map: {
+                "spl": 0,
+                "main": 1,
+                "payload": 2,
+            },
+        ),
+    ),
+    
+    filesystem: (
+        regions: [
+            ( name: "spl",        offset: 0x000000, size: 0x040000, content: Stage(name: "spl") ),
+            ( name: "fs-ro",      offset: 0x040000, size: 0x010000, content: FsDescriptor ),
+            ( name: "main",       offset: 0x050000, size: 0x0B0000, content: Stage(name: "main") ),
+            ( name: "payload",    offset: 0x100000, size: 0x300000, content: Payload ),
+            ( name: "rw-fs",      offset: 0x400000, size: 0x100000, content: SecondaryFs, writable: true ),
+            ( name: "reserved",   offset: 0x500000, size: 0x3B00000, content: Reserved ),
+        ],
+    ),
+)
+#+end_src
+
+* Config Composition and Inheritance
+
+** Merge Semantics
+
+When =extends= is specified, configs are merged in order:
+
+#+begin_src rust
+/// Load and merge configs
+pub fn load_config(path: &Path) -> Result<FstartConfig, ConfigError> {
+    let mut config: FstartConfig = load_ron(path)?;
+    
+    // Process extends in order (base configs first)
+    let mut merged = FstartConfig::default();
+    for base_path in &config.extends {
+        let base = load_config(base_path)?;  // Recursive
+        merged = merge_configs(merged, base);
+    }
+    
+    // Final config overrides everything
+    merged = merge_configs(merged, config);
+    Ok(merged)
+}
+
+/// Merge two configs (b overrides a)
+fn merge_configs(a: FstartConfig, b: FstartConfig) -> FstartConfig {
+    // For Option fields: b.field.or(a.field)
+    // For Vec fields: b.field (replace, not append)
+    // For struct fields: recursive merge
+    // ...
+}
+#+end_src
+
+** Example: SoC Base Config
+
+#+begin_src ron
+// soc/aspeed/ast2600-base.ron
+// Base config for all AST2600 boards
+(
+    hardware: (
+        soc: AspeedAst2600((
+            revision: A3,
+            cpu_freq_mhz: 800,
+        )),
+        memory: (
+            dram: (
+                size_mb: 512,
+                kind: Ddr4_2400,
+            ),
+            sram: [
+                ( name: "sram0", base: 0x10000000, size: 0x10000 ),
+            ],
+        ),
+        flash: (
+            kind: SpiNor(bus: 0, cs: 0, speed_mhz: 50),
+            size_bytes: 0x4000000,
+            mmap_base: Some(0x20000000),
+        ),
+    ),
+    
+    security: (
+        signing: ( algorithms: [Ed25519] ),
+        hash: Sha512,
+    ),
+)
+#+end_src
+
+#+begin_src ron
+// boards/aspeed/my-custom-board.ron
+(
+    extends: ["soc/aspeed/ast2600-base.ron"],
+    
+    board: (
+        name: "My Custom Board",
+        vendor: "ACME",
+    ),
+    
+    // Only override what's different
+    hardware: (
+        memory: (
+            dram: (
+                size_mb: 1024,  // More RAM
+                kind: Ddr4_2400,
+            ),
+        ),
+        peripherals: (
+            console: Some((uart: Uart1, baud: 115200)),
+        ),
+    ),
+    
+    // ... rest of config
+)
+#+end_src
+
+* Driver API Design (FDT-Free)
+
+** Core Traits
+
+#+begin_src rust
+//! fstart-driver/src/lib.rs
+
+#![no_std]
+
+use core::any::Any;
+
+/// Boot phase - determines init order
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(u8)]
+pub enum Phase {
+    /// First: clock and reset controllers
+    Clock = 0,
+    /// Pin multiplexing
+    Pinctrl = 1,
+    /// Console for debug output  
+    Console = 2,
+    /// Memory controller
+    Memory = 3,
+    /// Storage controllers
+    Storage = 4,
+    /// Everything else
+    Late = 5,
+}
+
+/// Driver error type
+#[derive(Debug)]
+pub enum Error {
+    InitFailed,
+    HwError(i32),
+    NotPresent,
+    InvalidConfig,
+}
+
+/// A service provided by a driver
+pub trait Service: Any {
+    fn name(&self) -> &'static str;
+}
+
+// Helper for downcasting
+impl dyn Service {
+    pub fn downcast_ref<T: Service + 'static>(&self) -> Option<&T> {
+        (self as &dyn Any).downcast_ref::<T>()
+    }
+}
+#+end_src
+
+** Generated Driver Bindings
+
+Instead of runtime compatible string matching, the build tool generates explicit bindings:
+
+#+begin_src rust
+//! Generated by fstart-tool in build.rs
+//! stages/spl/src/generated.rs
+
+use fstart_driver::{Phase, Error};
+use fstart_soc_ast2600::{scu, uart, sdram, spi};
+
+/// Services available after each phase
+pub struct Services {
+    pub clock: Option<scu::ClockService>,
+    pub console: Option<uart::UartService>,
+    pub memory: Option<sdram::MemoryService>,
+}
+
+/// Execute boot flow - generated from config
+pub fn run_boot_flow() -> Result<Services, Error> {
+    let mut services = Services {
+        clock: None,
+        console: None, 
+        memory: None,
+    };
+    
+    // Phase: Clock
+    // Config: soc.AspeedAst2600 with revision A3
+    let clock = scu::init(&scu::Config {
+        revision: scu::Revision::A3,
+        cpu_freq_mhz: 800,
+    })?;
+    services.clock = Some(clock);
+    
+    // Phase: Pinctrl
+    // Config: console.uart = Uart5
+    scu::configure_uart5_pins(services.clock.as_ref().unwrap())?;
+    
+    // Phase: Console  
+    // Config: console.uart = Uart5, baud = 115200
+    let console = uart::init(&uart::Config {
+        id: uart::Id::Uart5,
+        baud: 115200,
+        clock: services.clock.as_ref().unwrap(),
+    })?;
+    services.console = Some(console);
+    
+    log::info!("fstart SPL starting");
+    
+    // Phase: Memory
+    // Config: dram.size_mb = 512, dram.kind = Ddr4_2400
+    let memory = sdram::init(&sdram::Config {
+        size_mb: 512,
+        kind: sdram::DramKind::Ddr4_2400,
+        clock: services.clock.as_ref().unwrap(),
+    })?;
+    services.memory = Some(memory);
+    
+    log::info!("DRAM initialized: {} MB", 512);
+    
+    Ok(services)
+}
+#+end_src
+
+** AST2600 SCU Driver (Concrete Example)
+
+#+begin_src rust
+//! soc/aspeed/ast2600/src/scu.rs
+
+use core::ptr::{read_volatile, write_volatile};
+use fstart_driver::{Error, Service};
+
+/// SCU base address (fixed for AST2600)
+const SCU_BASE: usize = 0x1E6E_2000;
+const SCU_UNLOCK_KEY: u32 = 0x1688_A8A8;
+
+/// SCU register offsets
+mod reg {
+    pub const PROTECTION: usize = 0x000;
+    pub const SILICON_REV: usize = 0x004;
+    pub const CLK_SEL1: usize = 0x300;
+    pub const CLK_SEL2: usize = 0x304;
+    pub const CLK_STOP1: usize = 0x080;
+    pub const CLK_STOP2: usize = 0x084;
+    pub const RESET_CTRL1: usize = 0x040;
+    pub const RESET_CTRL2: usize = 0x050;
+    pub const HPLL_PARAM: usize = 0x200;
+    pub const MPLL_PARAM: usize = 0x220;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Revision {
+    A0,
+    A1, 
+    A2,
+    A3,
+}
+
+pub struct Config {
+    pub revision: Revision,
+    pub cpu_freq_mhz: u32,
+}
+
+pub struct ClockService {
+    base: usize,
+}
+
+impl Service for ClockService {
+    fn name(&self) -> &'static str { "ast2600-scu" }
+}
+
+impl ClockService {
+    /// Get HCLK frequency in Hz
+    pub fn hclk_hz(&self) -> u32 {
+        // Read HPLL config and calculate
+        let hpll = self.read(reg::HPLL_PARAM);
+        // ... calculation based on PLL settings
+        200_000_000  // Simplified: 200MHz
+    }
+    
+    /// Enable a clock gate
+    pub fn enable_clock(&self, gate: ClockGate) {
+        let (reg_offset, bit) = gate.reg_and_bit();
+        let val = self.read(reg_offset);
+        self.write(reg_offset, val & !(1 << bit));  // Clear bit to enable
+    }
+    
+    /// Assert/deassert reset
+    pub fn reset(&self, reset: ResetLine, assert: bool) {
+        let (reg_offset, bit) = reset.reg_and_bit();
+        let val = self.read(reg_offset);
+        if assert {
+            self.write(reg_offset, val | (1 << bit));
+        } else {
+            self.write(reg_offset, val & !(1 << bit));
+        }
+    }
+    
+    fn read(&self, offset: usize) -> u32 {
+        unsafe { read_volatile((self.base + offset) as *const u32) }
+    }
+    
+    fn write(&self, offset: usize, val: u32) {
+        unsafe { write_volatile((self.base + offset) as *mut u32, val) }
+    }
+}
+
+/// Clock gates (directly from AST2600 datasheet)
+#[derive(Clone, Copy)]
+pub enum ClockGate {
+    Uart1,
+    Uart2,
+    Uart3,
+    Uart4,
+    Uart5,
+    Sdram,
+    Fmc,    // SPI flash controller
+    // ... many more
+}
+
+impl ClockGate {
+    fn reg_and_bit(self) -> (usize, u8) {
+        match self {
+            Self::Uart1 => (reg::CLK_STOP1, 6),
+            Self::Uart5 => (reg::CLK_STOP2, 14),
+            Self::Sdram => (reg::CLK_STOP1, 0),
+            Self::Fmc => (reg::CLK_STOP1, 16),
+            // ...
+            _ => (reg::CLK_STOP1, 0),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ResetLine {
+    Uart1,
+    Uart5,
+    Sdram,
+    Fmc,
+    // ...
+}
+
+impl ResetLine {
+    fn reg_and_bit(self) -> (usize, u8) {
+        match self {
+            Self::Uart1 => (reg::RESET_CTRL1, 6),
+            Self::Uart5 => (reg::RESET_CTRL2, 14),
+            Self::Sdram => (reg::RESET_CTRL1, 0),
+            Self::Fmc => (reg::RESET_CTRL1, 16),
+            // ...
+            _ => (reg::RESET_CTRL1, 0),
+        }
+    }
+}
+
+/// Initialize SCU and return clock service
+pub fn init(config: &Config) -> Result<ClockService, Error> {
+    let scu = ClockService { base: SCU_BASE };
+    
+    // Unlock SCU
+    scu.write(reg::PROTECTION, SCU_UNLOCK_KEY);
+    
+    // Verify silicon revision
+    let rev = scu.read(reg::SILICON_REV);
+    let expected = match config.revision {
+        Revision::A0 => 0x0600_0000,
+        Revision::A1 => 0x0600_0001,
+        Revision::A2 => 0x0600_0002,
+        Revision::A3 => 0x0600_0003,
+    };
+    
+    if (rev & 0xFFFF_00FF) != expected {
+        return Err(Error::NotPresent);
+    }
+    
+    // Configure PLL if needed
+    // ... (complex PLL setup from U-Boot)
+    
+    Ok(scu)
+}
+
+/// Configure UART5 pins (for EVB console)
+pub fn configure_uart5_pins(scu: &ClockService) -> Result<(), Error> {
+    // Multi-function pin control registers
+    const PINCTRL1: usize = 0x410;
+    
+    // Enable UART5 TXD5/RXD5 function
+    let val = scu.read(PINCTRL1);
+    scu.write(PINCTRL1, val | (0b11 << 16));  // Bits for UART5
+    
+    // Enable UART5 clock
+    scu.enable_clock(ClockGate::Uart5);
+    
+    // Deassert UART5 reset
+    scu.reset(ResetLine::Uart5, false);
+    
+    Ok(())
+}
+#+end_src
+
+* Filesystem Implementation
+
+** Overview
+
+The filesystem stores:
+1. *Fixed header* (=zerocopy=): Magic, version, offsets - parsed with zero overhead
+2. *File table* (=postcard=): List of file entries with hashes - same structs as RON config
+3. *Embedded config* (=postcard=): Optional runtime config blob - the =FstartConfig= struct serialized
+4. *Signatures*: Cryptographic signatures over the above
+
+The key point: =postcard= serializes the same Rust structs that =ron= deserializes. Build tool reads RON, firmware reads postcard, both use identical types.
+
+** Binary Format
+
+#+begin_src rust
+//! fstart-fs/src/lib.rs
+
+#![no_std]
+
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
+
+pub const MAGIC: [u8; 8] = *b"FSTARTFS";
+pub const VERSION: u32 = 1;
+
+/// Fixed header at start of filesystem region
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Copy)]
+#[repr(C)]
+pub struct FsHeader {
+    /// Magic bytes: "FSTARTFS"
+    pub magic: [u8; 8],
+    /// Format version
+    pub version: u32,
+    /// Number of file entries
+    pub file_count: u32,
+    /// Offset to file table (from start of header)
+    pub file_table_offset: u32,
+    /// Size of file table in bytes
+    pub file_table_size: u32,
+    /// Offset to signature block
+    pub signature_offset: u32,
+    /// Hash algorithm used (enum as u8)
+    pub hash_algo: u8,
+    /// Signature algorithm used (enum as u8)  
+    pub sign_algo: u8,
+    pub _reserved: [u8; 6],
+    /// SHA-512 hash of file table (for quick integrity check)
+    pub file_table_hash: [u8; 64],
+}
+
+/// File entry in file table
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Copy)]
+#[repr(C)]
+pub struct FileEntry {
+    /// File name (null-padded)
+    pub name: [u8; 32],
+    /// Offset in flash (absolute)
+    pub offset: u32,
+    /// Size in flash (compressed if applicable)
+    pub stored_size: u32,
+    /// Size when decompressed (0 if not compressed)
+    pub real_size: u32,
+    /// File type
+    pub file_type: u8,
+    /// Compression type (0 = none)
+    pub compression: u8,
+    pub _reserved: [u8; 2],
+    /// SHA-512 hash of file contents
+    pub hash: [u8; 64],
+}
+
+#[repr(u8)]
+pub enum FileType {
+    Stage = 1,
+    Payload = 2,
+    Config = 3,
+    RawBinary = 4,
+}
+
+#[repr(u8)]  
+pub enum CompressionType {
+    None = 0,
+    Lz4 = 1,
+    Zstd = 2,
+}
+
+/// Signature block (variable size depending on algorithm)
+#[derive(AsBytes, FromBytes, FromZeroes)]
+#[repr(C)]
+pub struct SignatureHeader {
+    /// Number of signatures
+    pub count: u32,
+    pub _reserved: [u8; 4],
+    // Followed by: SignatureEntry[]
+}
+
+#[derive(AsBytes, FromBytes, FromZeroes)]
+#[repr(C)]
+pub struct SignatureEntry {
+    /// Algorithm (matches SignAlgorithm enum)
+    pub algorithm: u8,
+    pub _reserved: [u8; 3],
+    /// Size of signature data
+    pub size: u32,
+    // Followed by: signature bytes
+}
+#+end_src
+
+** Filesystem Parser (for firmware)
+
+#+begin_src rust
+//! fstart-fs/src/parser.rs
+
+use crate::{FsHeader, FileEntry, MAGIC, VERSION};
+use fstart_driver::Error;
+
+pub struct Filesystem<'a> {
+    base: &'a [u8],
+    header: &'a FsHeader,
+    files: &'a [FileEntry],
+}
+
+impl<'a> Filesystem<'a> {
+    /// Parse filesystem from memory-mapped flash
+    pub fn from_bytes(data: &'a [u8]) -> Result<Self, Error> {
+        if data.len() < core::mem::size_of::<FsHeader>() {
+            return Err(Error::InvalidConfig);
+        }
+        
+        // Safety: FsHeader is repr(C) and FromBytes
+        let header = unsafe {
+            &*(data.as_ptr() as *const FsHeader)
+        };
+        
+        // Validate magic
+        if header.magic != MAGIC {
+            return Err(Error::InvalidConfig);
+        }
+        
+        if header.version != VERSION {
+            return Err(Error::InvalidConfig);
+        }
+        
+        // Get file table
+        let table_start = header.file_table_offset as usize;
+        let table_end = table_start + header.file_table_size as usize;
+        
+        if table_end > data.len() {
+            return Err(Error::InvalidConfig);
+        }
+        
+        let file_count = header.file_count as usize;
+        let files = unsafe {
+            core::slice::from_raw_parts(
+                data[table_start..].as_ptr() as *const FileEntry,
+                file_count,
+            )
+        };
+        
+        Ok(Self { base: data, header, files })
+    }
+    
+    /// Find a file by name
+    pub fn find(&self, name: &str) -> Option<&FileEntry> {
+        self.files.iter().find(|f| {
+            let fname = core::str::from_utf8(&f.name)
+                .unwrap_or("")
+                .trim_end_matches('\0');
+            fname == name
+        })
+    }
+    
+    /// Get file contents
+    pub fn read(&self, entry: &FileEntry) -> &[u8] {
+        let start = entry.offset as usize;
+        let end = start + entry.stored_size as usize;
+        &self.base[start..end]
+    }
+    
+    /// Verify file hash
+    pub fn verify_hash(&self, entry: &FileEntry) -> bool {
+        use sha2::{Sha512, Digest};
+        
+        let data = self.read(entry);
+        let mut hasher = Sha512::new();
+        hasher.update(data);
+        let computed = hasher.finalize();
+        
+        computed.as_slice() == &entry.hash
+    }
+}
+#+end_src
+
+** Loading Config at Runtime (postcard)
+
+For "bulked" builds where config is determined at runtime, firmware deserializes the embedded config blob:
+
+#+begin_src rust
+//! Firmware: loading embedded config blob
+use fstart_config::FstartConfig;  // Same struct as RON uses!
+
+impl<'a> Filesystem<'a> {
+    /// Load embedded config (postcard-serialized)
+    pub fn load_config(&self) -> Result<FstartConfig, Error> {
+        let entry = self.find("config.bin")
+            .ok_or(Error::InvalidConfig)?;
+        
+        // Verify integrity first
+        if !self.verify_hash(entry) {
+            return Err(Error::InvalidConfig);
+        }
+        
+        let data = self.read(entry);
+        
+        // Firmware deserializes the binary blob
+        postcard::from_bytes(data)
+            .map_err(|_| Error::InvalidConfig)
+    }
+}
+#+end_src
+
+The build tool writes this blob only when runtime config is needed - for static/"shredded" builds, the config is baked into generated code and no runtime deserialization occurs.
+
+* Build Tool Implementation
+
+** CLI Structure
+
+#+begin_src rust
+//! fstart-tool/src/main.rs
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "fstart")]
+#[command(about = "fstart firmware build tool", version)]
+struct Cli {
+    /// Verbose output
+    #[arg(short, long, global = true)]
+    verbose: bool,
+    
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Build firmware image from config
+    Build {
+        /// Path to board config (.ron)
+        #[arg(short, long)]
+        config: PathBuf,
+        
+        /// Output image path
+        #[arg(short, long, default_value = "fstart.bin")]
+        output: PathBuf,
+        
+        /// Signing key (optional, generates random if not provided)
+        #[arg(short, long)]
+        key: Option<PathBuf>,
+        
+        /// Skip cargo build (use existing binaries)
+        #[arg(long)]
+        no_build: bool,
+    },
+    
+    /// Validate configuration without building
+    Check {
+        config: PathBuf,
+    },
+    
+    /// Inspect existing firmware image
+    Inspect {
+        image: PathBuf,
+        
+        /// Dump file contents
+        #[arg(long)]
+        dump: Option<String>,
+    },
+    
+    /// Generate signing keypair
+    Keygen {
+        /// Output path prefix (creates .pub and .key files)
+        output: PathBuf,
+        
+        /// Algorithm
+        #[arg(short, long, default_value = "ed25519")]
+        algorithm: String,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    
+    if cli.verbose {
+        env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("info")
+        ).init();
+    }
+    
+    match cli.command {
+        Commands::Build { config, output, key, no_build } => {
+            cmd::build(&config, &output, key.as_deref(), no_build)
+        }
+        Commands::Check { config } => {
+            cmd::check(&config)
+        }
+        Commands::Inspect { image, dump } => {
+            cmd::inspect(&image, dump.as_deref())
+        }
+        Commands::Keygen { output, algorithm } => {
+            cmd::keygen(&output, &algorithm)
+        }
+    }
+}
+#+end_src
+
+** Build Command Implementation
+
+#+begin_src rust
+//! fstart-tool/src/cmd/build.rs
+
+use anyhow::{Context, Result, bail};
+use fstart_config::FstartConfig;
+use std::path::Path;
+use std::process::Command;
+
+pub fn build(
+    config_path: &Path,
+    output: &Path,
+    key_path: Option<&Path>,
+    no_build: bool,
+) -> Result<()> {
+    // 1. Load and validate config
+    println!("Loading config: {}", config_path.display());
+    let config = load_config(config_path)?;
+    
+    println!("Board: {} ({})", config.board.name, config.board.vendor);
+    
+    // 2. Generate code for each stage
+    for stage in &config.boot.stages {
+        println!("Generating bindings for stage: {}", stage.name);
+        generate_stage_bindings(&config, stage)?;
+    }
+    
+    // 3. Build stages
+    if !no_build {
+        for stage in &config.boot.stages {
+            println!("Building stage: {}", stage.name);
+            build_stage(&config, stage)?;
+        }
+    }
+    
+    // 4. Create filesystem image
+    println!("Creating filesystem...");
+    let mut image = create_image(&config)?;
+    
+    // 5. Sign
+    let key = match key_path {
+        Some(path) => {
+            println!("Loading signing key: {}", path.display());
+            load_signing_key(path)?
+        }
+        None => {
+            println!("Generating ephemeral signing key");
+            generate_ephemeral_key()?
+        }
+    };
+    
+    sign_image(&mut image, &key, &config.security)?;
+    
+    // 6. Write output
+    std::fs::write(output, &image)?;
+    println!("Wrote: {} ({} bytes)", output.display(), image.len());
+    
+    Ok(())
+}
+
+fn generate_stage_bindings(config: &FstartConfig, stage: &StageConfig) -> Result<()> {
+    // Generate stages/{name}/src/generated.rs
+    let gen_path = format!("stages/{}/src/generated.rs", stage.name);
+    
+    let code = codegen::generate_boot_flow(config, stage)?;
+    std::fs::write(&gen_path, code)?;
+    
+    Ok(())
+}
+
+fn build_stage(config: &FstartConfig, stage: &StageConfig) -> Result<()> {
+    let target = match &config.hardware.soc {
+        SocType::AspeedAst2600(_) => "armv7a-none-eabi",
+        _ => bail!("Unsupported SoC"),
+    };
+    
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("--release")
+        .arg("--target").arg(target)
+        .arg("-p").arg(format!("fstart-stage-{}", stage.name));
+    
+    for feature in &stage.features {
+        cmd.arg("--features").arg(feature);
+    }
+    
+    let status = cmd.status()?;
+    if !status.success() {
+        bail!("Cargo build failed for stage {}", stage.name);
+    }
+    
+    Ok(())
+}
+#+end_src
+
+* Crate Recommendations Summary
+
+** Data Flow
+#+begin_example
+Human writes RON  -->  Build tool parses (ron crate)  -->  Rust structs in memory
+                                                                  |
+                                 +--------------------------------+--------------------------------+
+                                 |                                |                                |
+                                 v                                v                                v
+                          Code generation               Write postcard blob              Direct use for
+                          (generated.rs)                to flash image                   image layout
+                                                        (only if runtime                 calculations
+                                                        config needed)
+#+end_example
+
+Build tool works entirely with Rust structs. Serialization to postcard only happens when writing binary blobs that firmware will read at runtime.
+
+** Crate Table
+
+| Purpose                | Crate              | Used By      | Notes                                    |
+|------------------------+--------------------+--------------+------------------------------------------|
+| Human config format    | =ron=              | Build tool   | Parse once, work with structs            |
+| Binary deserialization | =postcard=         | Firmware     | Only firmware deserializes, no_std       |
+| Serde framework        | =serde=            | Both         | Derive once, use everywhere              |
+| Fixed struct layout    | =zerocopy=         | Both         | FS header, guaranteed layout             |
+| CLI                    | =clap=             | Build tool   | Derive-based, great UX                   |
+| Hashing                | =sha2=             | Both         | SHA-512, no_std compatible               |
+| Signing                | =ed25519-dalek=    | Both         | Fast, small sigs, well-audited           |
+| PQC signing            | =ml-dsa=           | Both         | When stabilized                          |
+| Compression            | =lz4_flex=         | Both         | Pure Rust LZ4, no_std                    |
+| Register access        | =tock-registers=   | Firmware     | Type-safe MMIO (optional)                |
+| Error handling         | =anyhow=           | Build tool   | Convenient for CLI                       |
+| Logging                | =log= + custom     | Firmware     | Facade with UART backend                 |
+| Async executor         | =fstart-executor=  | Firmware     | Custom ~50 lines, no sleep, just poll    |
+
+* Implementation Milestones (AST2600)
+
+** Milestone 0: Infrastructure (1-2 weeks)
+- [x] RON config schema defined
+- [ ] =fstart-config= crate with serde derives
+- [ ] =fstart-executor= crate (minimal async executor)
+- [ ] =fstart-driver= crate with DeviceGraph APIs
+- [ ] =fstart-tool= CLI skeleton
+- [ ] =fstart-tool check= validates config
+
+** Milestone 1: Hello World (2-3 weeks)  
+- [ ] =stages/spl= crate structure
+- [ ] ARM entry point (minimal asm)
+- [ ] AST2600 SCU driver (unlock, clock gate)
+- [ ] UART5 driver  
+- [ ] Async init working (SCU -> UART dependency)
+- [ ] Print "Hello from fstart"
+
+** Milestone 2: DRAM (3-4 weeks)
+- [ ] SDRAM controller driver
+- [ ] Single DDR4 config working
+- [ ] Memory test
+- [ ] Jump to DRAM and continue
+
+** Milestone 3: Filesystem (2 weeks)
+- [ ] =fstart-fs= binary format
+- [ ] Build tool creates filesystem
+- [ ] Ed25519 signing
+- [ ] SPL parses and verifies filesystem
+
+** Milestone 4: Multi-stage (2 weeks)
+- [ ] SPI flash driver (with parent/child hierarchy)
+- [ ] Load main stage to DRAM
+- [ ] Verify and execute main stage
+- [ ] Load and boot payload
+
+** Milestone 5: Polish (ongoing)
+- [ ] Compression support
+- [ ] TPM measurement
+- [ ] Additional drivers as needed
+- [ ] QEMU testing in CI
+
+* Open Questions
+
+1. *Allocator*: Do we need heap allocation in firmware stages?
+   - Option A: Static only (no Box, no Vec) - simplest
+   - Option B: Bump allocator with fixed buffer - moderate
+   - Option C: Full allocator - most flexible
+   - *Recommendation*: Start with A, add B if needed
+
+2. *Async executor details*:
+   - Decided: Yes, use async for dependency-driven init ordering
+   - Minimal executor (~50 lines) that just polls, never sleeps
+   - No embassy dependency - we don't need timers/interrupts/wakers
+   - If we later need timeouts (e.g., DRAM training), add targeted support
+
+3. *Error handling in firmware*:
+   - Option A: Panic on error (simplest, catches bugs)
+   - Option B: Return errors, handle gracefully
+   - *Recommendation*: A for development, B for production
+
+4. *Config embedding*: How does firmware access config?
+   - Option A: Generate Rust consts from config
+   - Option B: Embed serialized config blob
+   - *Recommendation*: A for shredded builds (current focus)
+
+5. *Service lifetime management*:
+   - Services are published to a global registry
+   - Currently using raw pointers (single-threaded boot, no races)
+   - May need to revisit for multi-core init if that becomes relevant

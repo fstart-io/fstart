@@ -1,0 +1,380 @@
+#+title: fstart plan (evaluation + architecture + build/bind strategy)
+#+date: 2025-12-14
+
+* Goal
+Turn the ideas in [[file:plan_prompt.org]] into an implementable plan for *fstart*: a Rust-only, coreboot-like firmware framework that:
+- initializes hardware in dependency order
+- verifies/measures everything by default
+- supports multiple arch/soc/boards in one tree
+- is driven from one declarative RON configuration (build options + device tree)
+- can produce a *single flashable image* via one command
+
+This document (1) evaluates the ideas, (2) proposes concrete architectural pieces, and (3) explains *how “one tool takes input and generates an image”* could work in Rust—including *how drivers are selected* and how *build-time binding* from nodes to drivers can be achieved.
+
+* Evaluation of the ideas (what looks solid / what needs sharpening)
+** Strong / coherent ideas
+- *Coreboot-like scope*: “HW init + load payload” keeps surface area controlled.
+- *Rust-only*: feasible if you avoid external code generators and instead use `build.rs`, proc-macros, and normal Rust crates.
+- *Security-by-default*: hashing/signature verification, measurements to TPM. This aligns well with a staged boot flow.
+- *One declarative input*: using RON is practical because it maps to Rust types and can be deserialized both at build-time and run-time.
+- *Multi-stage but flexible*: SPL/bootblock/romstage/ramstage style is a known-good pattern; the key is designing interfaces between stages.
+- *FS descriptor with MAGIC + signed metadata*: good approach for discoverability and post-build augmentation.
+
+** Needs explicit decisions
+- *What exactly is the device-tree representation?*
+  - You say “declarative device tree” but not whether it is DTS-like, Devicetree blob, or your own “graph of nodes”.
+  - Recommendation: define a *minimal, fstart-specific* device graph in RON (not Linux DTS), because you want 1:1 Rust mapping and strong typing.
+
+- *Dependency-driven bootflow*: great, but you must pick:
+  - the dependency model (DAG of “checkpoints” vs “services” vs “drivers”),
+  - whether ordering is decided at build-time, run-time, or hybrid.
+
+- *Runtime vs build-time binding*: you want both.
+  - That means your driver API must support dynamic discovery *and* allow dead-code elimination when a static config is used.
+
+- *Reproducible build*: implies careful control of timestamps, tool versions, and deterministic file layout.
+  - The “one command” tool should likely be a Rust binary in this repo (not an external script).
+
+* Proposed architecture (crates + concepts)
+A workable design is to split into a *workspace* with a small set of foundational crates.
+
+** Crate layout (suggestion)
+- `crates/fstart-config`:
+  - Rust types for the RON schema (board selection, stages, node graph)
+  - serialization/deserialization
+  - schema validation and defaulting
+
+- `crates/fstart-device-graph`:
+  - generic node model + typed properties
+  - helper queries (find by path, compatible, phandle-like references)
+
+- `crates/fstart-driver-api`:
+  - `Driver` trait(s)
+  - `Service` trait(s) and service registry
+  - error types, logging hooks
+
+- `crates/fstart-drivers/*`:
+  - actual drivers (uart, spi, gpio, dram init, tpm, etc.)
+  - each driver declares:
+    - which nodes it binds to (match rules)
+    - dependencies (what it needs)
+    - what services it provides
+
+- `crates/fstart-bootflow`:
+  - builds an execution plan from (config + device graph + driver registry)
+  - supports multiple stages
+
+- `crates/fstart-image`:
+  - filesystem descriptor format
+  - signing, hashing, measurement metadata
+  - packing/unpacking + post-build append
+
+- `crates/fstart-tool` (binary):
+  - the “one tool” UX: reads RON input, produces image(s)
+  - optionally runs `cargo build` for stage programs
+
+- `stages/*` (binaries):
+  - `bootblock`, `romstage`, `ramstage` etc. as normal Rust `bin` crates
+
+This aligns with your “drivers are rust workspaces/crates” intuition.
+
+** Core runtime abstractions
+1) *Node* (from your RON devicetree)
+- Contains:
+  - `id` / `path` (stable identifier)
+  - *Strongly-typed kind / compatibility*: prefer an enum (not Linux `compatible` strings) so the build tool can do fully-deterministic, build-time driver binding.
+    - Example shape: `kind: NodeKind` where `NodeKind` is a Rust `enum` mirrored 1:1 in RON.
+    - Optional escape hatch: `extra_compat: Vec<String>` for experimental/out-of-tree drivers, but keep it off the critical path.
+  - properties: strongly-typed fields per node type, or a typed map
+  - references to other nodes (power domain, clock, reset, bus)
+
+2) *Driver*
+- “Binds” to a node when its match rules apply.
+- Implements some init hooks.
+
+3) *Services*
+- Capabilities produced by drivers and consumed by others, e.g.:
+  - `Console`, `Clock`, `ResetCtl`, `SpiBus`, `I2cBus`, `Tpm`, `MemoryMap`, `Allocator`, `Flash`, `VerifiedFs`
+
+4) *Checkpoints / phases*
+- Named milestones (bootblock entry, “console ready”, “dram ready”, “payload ready”).
+- Drivers declare what checkpoint they require and what they unlock.
+
+5) *Plan executor*
+- Builds a DAG or topological order of driver init tasks.
+- Enforces that dependencies are met before a step runs.
+
+* Boot flow plan (how to construct the dependency-ordered iterator)
+** Model the init work as a DAG
+Each “task” is something like:
+- `Bind(node, driver)` → produces a `DeviceHandle`
+- `InitEarly(handle)`
+- `Init(handle)`
+- `InitLate(handle)`
+
+Dependencies come from:
+- explicit node references (e.g. UART depends on clock + pinmux)
+- declared service requirements (e.g. “I need `Clock`”)
+- stage constraints (some tasks must run before DRAM)
+
+Then the executor topologically sorts tasks into an ordered list (the iterator you want). The iterator yields “steps” that can be logged and measured.
+
+** Async: optional, but keep deterministic ordering
+Rust async can help represent “wait until service available”, but firmware often wants deterministic ordering and minimal runtime.
+- Recommendation: implement planning as *synchronous* graph resolution + topo sort.
+- If you later want async, keep the same plan but allow some tasks to be `async fn` under a feature.
+
+** Multi-stage support
+Represent stages as separate binaries with explicit “handoff contracts”. Example:
+- `bootblock`: minimal CPU bring-up + verify FS descriptor + load next stage
+- `romstage`: init console, init DRAM
+- `ramstage`: richer drivers, payload selection, payload load
+
+Each stage binary:
+- embeds (or is passed) a stage-specific subset of configuration
+- includes only drivers needed for that stage
+- verifies and measures inputs before using them
+
+* Build flow: “one tool takes input and generates an image”
+This is feasible in pure Rust, using a single workspace binary (e.g. `fstart-tool`).
+
+** Inputs
+- Single *entry* configuration file (e.g. `fstart.ron`). This is the only file the user has to point the tool at.
+- That entry file *may compose other RON files* (SoC defaults, board defaults, optional feature bundles) so that porting a new board is mostly “override a few fields”.
+
+*** Configuration input: composition, defaults, and overrides
+RON itself doesn’t have an `include` directive, so composition must be implemented by *fstart’s build tool*.
+
+A practical approach is:
+- The entry config contains an ordered list of `imports` (other RON files).
+- The build tool loads them and performs a deterministic merge to produce one *canonical* `Config` value.
+
+Proposed merge semantics (keep these simple and explicit):
+- *Structs*: recursively merge fields; “missing” fields keep the previous value.
+- *Scalars/enums*: last one wins.
+- *Maps*: union by key; collisions resolved by “last one wins”.
+- *Lists*: default to “replace” (to avoid accidental duplication). If you need list extension, add an explicit wrapper type like `Append(Vec<T>)` (so intent is visible in config).
+
+This gives you:
+- Low boilerplate: `board/foo.ron` can import `soc/bar.ron` and override only what differs.
+- Reproducibility: the canonical merged config can be serialized in a stable way (sorted keys, stable ordering) and hashed/measured.
+
+*** Suggested top-level config shape
+At minimum, the merged `Config` should include:
+- `build`: target triple, stage layout, reproducibility knobs
+- `security`: keys/policies, measurement policy
+- `platform`: arch/soc/board identifiers (and optional runtime-probe rules)
+- `device_tree`: your node graph (nodes + properties + references)
+- `payloads`: payload inputs and selection policies
+
+One possible *entry file* shape:
+- `imports: ["configs/soc/rk3399.ron", "configs/board/pinebook-pro.ron"]`
+- `config: ( ... overrides ... )`
+
+(You can also omit the nested `config:` and just treat the entry file as the config, but having an explicit `imports` field tends to make the composition intent clearer.)
+
+*** Static (build-time) vs dynamic (runtime) configuration
+This composition step is also where you decide between:
+- *Static build-time embedding*: tool emits a canonical merged config blob, and stage crates include it (or a stage-specific subset) via `include_bytes!`/generated Rust. This maximizes dead-code elimination.
+- *Dynamic/runtime config*: tool embeds one or more configs in the image filesystem; early stages select which config applies (probe), then proceed with the same planner/binder logic.
+
+If you support “multiple devicetrees in one image”, consider making the entry config produce:
+- `profiles: Vec<Profile>` where each profile has `{ probe, config }` (or `{ probe, imports, overrides }`).
+
+The build tool can still merge each profile into a canonical config, hash it, and embed it as a separate file.
+
+** Outputs
+- stage ELF binaries (built by Cargo)
+- a filesystem descriptor + packed files
+- final flash image (a single binary blob)
+
+** What does the tool do?
+1) Parse + validate RON
+- validate node references, ensure no cycles in required dependencies, ensure stage partitioning is possible
+
+2) Determine *driver set* and *stage assignment*
+- from the device graph + required checkpoints, compute which drivers are needed in each stage
+
+3) Build stage binaries via Cargo
+- the tool can invoke cargo with controlled env vars / features. Two practical strategies:
+
+*** Strategy A: Feature-gated driver inclusion (simple)
+- Each driver crate is behind a Cargo feature, e.g. `driver_uart_ns16550`.
+- The tool computes needed features per stage and invokes:
+  - `cargo build -p romstage --features "driver_uart_ns16550 driver_spi_xyz" ...`
+- Pros: straightforward, no custom codegen.
+- Cons: too many features can get unwieldy; doesn’t by itself bind a specific node instance.
+
+*** Strategy B: Build-time generated registry (stronger binding)
+- The tool (or each stage’s `build.rs`) generates a Rust source file under `OUT_DIR` with:
+  - a static list of nodes (or a compact representation)
+  - a static list of drivers to consider
+  - a static “match table” mapping node → driver
+- Then the stage binary compiles with that included: `include!(concat!(env!("OUT_DIR"), "/generated.rs"))`.
+- This yields strong dead-code elimination, and “binding” can be effectively done at compile-time.
+
+In practice you can combine A + B:
+- A decides which driver crates are even compiled in.
+- B decides which of those drivers are actually instantiated/bound.
+
+4) Produce filesystem descriptor
+- Descriptor encoding: use a compact *serde-serializable* format such as `serde-brief` ([[https://docs.rs/serde-brief/latest/serde_brief/][docs]]).
+  - This keeps it self-describing in the “Rust type” sense (serde schema), without inventing a bespoke TLV.
+  - It also keeps parsing simple and Rust-only across all stages.
+
+- Descriptor generation should be *smart* and policy-driven:
+  - the user generally specifies *what* needs to be included (stages, payloads, configs, RO/RW policy), not exact offsets.
+  - the tool computes a deterministic layout (alignment, region constraints, packing order) and emits the descriptor + image.
+
+- The tool parses stage ELFs, extracts loadable segments, and records per executable:
+  - entry point, load addresses, compression, integrity digests, and verification/measured policy.
+- Then signs the descriptor and includes verification metadata.
+
+- Inspection/debug:
+  - provide a tool mode to decode the descriptor back into a human-readable form (RON output is fine) for auditing and reproducibility checks.
+
+5) Pack image
+- Place descriptor at fixed offset or discoverable via MAGIC scan rules.
+- Place stage binaries + payload binaries + config blobs as files.
+- Emit final flash image.
+
+6) (Optional) Post-build augmentation
+- Because descriptor has MAGIC and a signed “table of contents”, a later tool could:
+  - locate descriptor
+  - verify signature
+  - append new files (e.g. RW payload)
+  - update TOC and resign RW region
+
+* The key question: how does “binding nodes to drivers” happen?
+You want both runtime and buildtime options.
+
+** Runtime binding (dynamic)
+At runtime, you have:
+- device graph (from embedded config blob or discovered)
+- driver registry: a list of drivers with match functions
+
+Binding algorithm:
+1) iterate nodes
+2) for each node, find first/best matching driver by `compatible` + optional properties
+3) create driver instance and register provided services
+
+This requires that the driver registry be available at runtime (e.g. via `inventory`-style registration or a static list).
+
+** Build-time binding (static)
+Build-time binding means: *the compiled binary already “knows” exactly which driver is used for each node instance*, so:
+- unused drivers are not linked
+- unused code paths are optimized away
+
+There are two main Rust-native ways to do it.
+
+*** Option 1: Generated Rust code (recommended)
+- The build tool reads RON, resolves matches, then writes `generated_bindings.rs` containing something like:
+  - `pub const NODES: ...` (or a compact representation)
+  - `pub fn bind_all(...) { ... }` that instantiates the exact driver types for exact node IDs
+
+Then the stage uses that exact function. This is truly “buildtime binding”.
+
+This answers your question “would it generate a Cargo.toml?”
+- *Usually no.* It can, but it doesn’t need to.
+- It’s more idiomatic to generate *Rust source* via `build.rs` or by the external tool writing into a known path, then including it.
+
+Cargo.toml generation is possible but tends to fight Cargo’s model (workspaces prefer static manifests). Prefer features + generated code.
+
+*** Option 2: Trait-object registry but config is `const`
+- Embed the config as `const` data and use a registry that is compiled in.
+- You still do runtime matching, but because the config is static and the set of drivers is feature-limited, LTO can remove some code.
+- This is weaker than codegen for dead-code elimination.
+
+** How to represent “drivers provided as rust workspaces”
+Yes: each driver is a crate (workspace member). Binding is not “magical”; it comes from:
+- driver crates exporting match metadata
+- a top-level stage crate depending on a set of driver crates (directly or via features)
+
+Two patterns:
+- `fstart-drivers` as an umbrella crate re-exporting selected drivers (behind features)
+- or each stage crate depends on the specific driver crates (also behind features)
+
+* Reproducibility + security integration
+** Reproducible builds
+- Tool should:
+  - pin rust toolchain (via `rust-toolchain.toml`)
+  - set `SOURCE_DATE_EPOCH`
+  - avoid embedding timestamps into the image unless explicitly desired
+  - ensure deterministic file ordering in the FS descriptor
+
+** Verification policy
+- Define a policy in config:
+  - which keys are trusted in RO stage
+  - which regions are measured vs verified vs both
+- Ensure each stage verifies the next stage and the descriptor it consumes.
+
+** TPM measurement
+- Add a service `Tpm` (optional) with a “null TPM” implementation.
+- Measurement calls become no-ops if not available, but the call sites stay consistent.
+
+* Concrete implementation milestones
+** Milestone 0: Schema + minimal tool skeleton
+- Create `fstart-config` types and RON schema
+- Write `fstart-tool` that:
+  - reads RON
+  - validates
+  - prints resolved driver set + stage partitioning
+
+** Milestone 1: Driver API + tiny runtime binder
+- Implement `Driver` trait and `ServiceRegistry`
+- Implement runtime binding for a couple drivers (e.g. `memconsole`, `uart`)
+- Implement basic topo-sort plan executor
+
+** Milestone 2: Multi-stage loader + FS descriptor
+- Implement `fstart-image` with descriptor, hashing, signature
+- Build two stage binaries and pack them into an image
+- Stage0 verifies descriptor + loads stage1
+
+** Milestone 3: Build-time binding (codegen)
+- Add codegen that emits stage-specific `generated.rs`
+- Ensure unused drivers disappear from binary with LTO
+
+** Milestone 4: Multiple devicetrees / runtime board detection
+- Support multiple configs embedded:
+  - either multiple device graphs in the image
+  - or a “board probe” phase that selects one
+- Ensure the selected config still goes through the same bootflow planner
+
+** Milestone 5: Payload pipeline
+- Add ELF payload parsing at build time
+- Store segments + metadata in FS
+- Add payload selection policy and chainload logic
+
+* Open design questions to settle early
+1) *Node identification for binding*: strongly-typed enum is preferred (decision) to enable robust build-time binding + reduce ambiguity.
+2) How do you specify dependencies in RON?
+   - explicit edges (node references), or implicit (driver declares needs based on properties)?
+3) Where do keys live for development vs production?
+4) FS descriptor encoding + inspection: prefer `serde-brief` (decision) and support decoding to RON for human inspection.
+5) How strict should stage partitioning be (hard barrier at DRAM-init)?
+
+* Direct answers to your specific questions
+** “I don’t know how it would look like to have one tool that takes input generate an image.”
+- It’s a Rust binary (e.g. `fstart-tool`) that:
+  1) parses the single RON file
+  2) computes required drivers + stage layout
+  3) invokes Cargo to build stage binaries with the right feature set
+  4) packs outputs into a signed filesystem descriptor + flash image
+
+** “How would it generate an image with just all the provided drivers (which are rust workspaces I presume).”
+- Drivers are crates. The image tool chooses which driver crates to compile into each stage using Cargo features (or explicit dependencies per stage).
+- Then the stage binary either does runtime binding (registry) or uses build-time generated bindings.
+
+** “Would it generate a Cargo.toml or something like that.”
+- Prefer *not* generating `Cargo.toml`.
+- Instead:
+  - keep workspace manifests static
+  - use features to include/exclude drivers
+  - generate Rust source (`generated.rs`) for build-time binding and stage-specific configuration embedding
+
+** “How would the buildtime binding of some nodes to drivers happen?”
+- By code generation:
+  - tool reads config + resolves node→driver matches
+  - emits Rust code that constructs exactly the driver instances for exactly the nodes
+  - stage crate includes that code during compilation
+- This yields deterministic binding and maximizes dead-code elimination.

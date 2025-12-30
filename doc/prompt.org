@@ -1,0 +1,4 @@
+#+title: Prompt
+
+
+@plan_prompt.org @doc/gpt5_2_plan.org One was the prompt for the other. Critise the ideas and make a new documents where each of the ideas are scoped out, with some concrete ideas with regards to what crates to use, some code snippets where meaningful. It's ok to provide multiple dependency crate options. Also keep in mind that the first target would be porting the AST2600 code from u-boot to fstart.
