@@ -1,0 +1,15 @@
+[package]
+name = "fstart-drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+ns16550 = []
+pl011 = []
+sifive-uart = []
+
+[dependencies]
+fstart-types = { workspace = true }
+fstart-services = { workspace = true }

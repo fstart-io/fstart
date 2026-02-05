@@ -1,0 +1,19 @@
+[package]
+name = "fstart-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+ed25519 = ["dep:ed25519-dalek"]
+ecdsa-p256 = ["dep:p256"]
+sha2-digest = ["dep:sha2"]
+sha3-digest = ["dep:sha3"]
+all = ["ed25519", "ecdsa-p256", "sha2-digest", "sha3-digest"]
+
+[dependencies]
+sha2 = { workspace = true, optional = true }
+sha3 = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }

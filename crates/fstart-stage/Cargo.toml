@@ -1,0 +1,27 @@
+[package]
+name = "fstart-stage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Platform selection (exactly one must be enabled)
+riscv64 = ["dep:fstart-platform-riscv64"]
+aarch64 = ["dep:fstart-platform-aarch64"]
+# Driver selection (enabled based on board.ron)
+ns16550 = ["fstart-drivers/ns16550"]
+pl011 = ["fstart-drivers/pl011"]
+sifive-uart = ["fstart-drivers/sifive-uart"]
+
+[dependencies]
+fstart-services = { workspace = true }
+fstart-drivers = { workspace = true }
+fstart-capabilities = { workspace = true }
+fstart-runtime = { workspace = true }
+fstart-platform-riscv64 = { workspace = true, optional = true }
+fstart-platform-aarch64 = { workspace = true, optional = true }
+
+[build-dependencies]
+fstart-codegen = { workspace = true }
+fstart-types = { workspace = true, features = ["std"] }

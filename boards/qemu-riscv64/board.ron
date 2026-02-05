@@ -1,0 +1,57 @@
+// Board definition for QEMU RISC-V 64 virt machine.
+//
+// This RON file is the single source of truth for this board.
+// The build system reads it and generates:
+// - Stage entry point (fstart_main) with capability call sequence
+// - Static driver instantiation
+// - Linker script from memory map
+// - (future) FDT for OS handoff
+
+(
+    name: "qemu-riscv64",
+    platform: "riscv64",
+
+    memory: (
+        regions: [
+            ( name: "rom",  base: 0x20000000, size: 0x02000000, kind: Rom  ),
+            ( name: "ram",  base: 0x80000000, size: 0x08000000, kind: Ram  ),
+            ( name: "uart", base: 0x10000000, size: 0x00000100, kind: Mmio ),
+        ],
+        stack_size: 0x10000,
+    ),
+
+    devices: [
+        (
+            name: "uart0",
+            compatible: "ns16550a",
+            driver: "ns16550",
+            services: ["Console"],
+            resources: (
+                mmio_base: Some(0x10000000),
+                io_base: None,
+                size: Some(0x100),
+                clock_freq: Some(3686400),
+                baud_rate: Some(115200),
+                irq: Some(10),
+                bus_addr: None,
+            ),
+        ),
+    ],
+
+    stages: Monolithic((
+        capabilities: [
+            ConsoleInit( device: "uart0" ),
+        ],
+        load_addr: 0x80000000,
+    )),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256, Sha3_256],
+    ),
+
+    mode: Rigid,
+
+    payload: None,
+)
