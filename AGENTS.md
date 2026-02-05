@@ -15,6 +15,9 @@ payload/stage architecture) and `~/src/u-boot` (C, device-tree-driven board defs
   by coreboot's device tree and U-Boot's uclass/ops model, redesigned for Rust's type
   system. Covers the `Device` trait, associated `Config` types, codegen-produced
   `Devices`/`StageContext` structs, bus hierarchies, and Rigid vs Flexible dispatch.
+- **[Continuation Plan](docs/continuation-plan.md)** — what has been built, what
+  remains, and the recommended order of work. Includes phase-by-phase status and
+  detailed next-step descriptions.
 
 ## Environment
 
@@ -39,6 +42,7 @@ cargo xtask build --board qemu-riscv64 --release
 
 # Build and launch in QEMU
 cargo xtask run --board qemu-riscv64
+cargo xtask run --board qemu-aarch64
 
 # Clippy — host crates only (fstart-stage needs the board env var)
 cargo clippy --workspace --exclude fstart-stage -- -D warnings
@@ -47,7 +51,7 @@ cargo clippy --workspace --exclude fstart-stage -- -D warnings
 cargo fmt --all
 cargo fmt --all -- --check   # CI-style check
 
-# Run tests (currently no unit tests exist; add them with #[cfg(test)])
+# Run tests (8 codegen unit tests; add more with #[cfg(test)])
 cargo test --workspace --exclude fstart-stage --exclude fstart-runtime \
     --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64
 
@@ -72,7 +76,7 @@ via `fstart-types` or `fstart-codegen` (which are `std`-capable).
 | `fstart-ffs` | both (`std` feature) | Firmware filesystem reader/builder |
 | `fstart-stage` | target | Final binary — `include!`s generated code |
 | `fstart-runtime` | target | `#[panic_handler]` |
-| `fstart-services` | target | Trait defs: `Console`, `BlockDevice`, `Timer` |
+| `fstart-services` | target | Trait defs: `Console`, `BlockDevice`, `Timer`, `Device`, `BusDevice` |
 | `fstart-drivers` | target | Driver impls (feature-gated: `ns16550`, `pl011`) |
 | `fstart-capabilities` | target | `StageContext`, capability impls |
 | `fstart-crypto` | target | Signature verify, hashing (skeleton) |
@@ -174,6 +178,7 @@ boards/qemu-riscv64/board.ron
               • link.ld             (memory regions from RON)
         ──► fstart-stage/src/main.rs does include!(generated_stage.rs)
   ──► final ELF: platform _start → fstart_main → halt
+  ──► (AArch64 only) llvm-objcopy -O binary → .bin for QEMU -bios
 ```
 
 ## Feature Flags

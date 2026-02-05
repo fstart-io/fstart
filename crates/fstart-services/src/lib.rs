@@ -18,7 +18,7 @@ pub mod timer;
 
 pub use block::BlockDevice;
 pub use console::Console;
-pub use device::{Device, DeviceError};
+pub use device::{BusDevice, Device, DeviceError};
 pub use timer::Timer;
 
 /// Common error type for service operations.

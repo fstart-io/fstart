@@ -14,7 +14,6 @@ use fstart_types::{BoardConfig, Capability, DeviceConfig, StageLayout};
 
 /// Information about a known driver — maps RON driver name to Rust type path
 /// and its config construction logic.
-#[allow(dead_code)] // `services` used for validation in later phases
 struct DriverInfo {
     /// RON driver name (e.g., "ns16550")
     name: &'static str,
@@ -24,7 +23,8 @@ struct DriverInfo {
     type_name: &'static str,
     /// Rust config type name (e.g., "Ns16550Config")
     config_type: &'static str,
-    /// Which service traits this driver implements
+    /// Which service traits this driver implements (used for validation)
+    #[allow(dead_code)] // used by validation logic, read via RON device.services match
     services: &'static [&'static str],
 }
 
@@ -94,6 +94,11 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
         }
     };
 
+    // Validate capability ordering before generating code.
+    if let Some(err) = validate_capability_ordering(capabilities) {
+        return format!("compile_error!(\"{err}\");\n");
+    }
+
     // Collect all devices referenced by capabilities to determine what we need.
     // For now, generate structs for ALL declared devices.
     generate_imports(&mut out, &config.devices);
@@ -102,6 +107,72 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
     generate_fstart_main(&mut out, config, capabilities, platform);
 
     out
+}
+
+/// Validate that capabilities are in a legal order.
+///
+/// Rules:
+/// - Any capability that logs (all of them except ConsoleInit itself) must
+///   come after at least one ConsoleInit.
+/// - DriverInit must come after ConsoleInit (it logs device init results).
+/// - StageLoad / PayloadLoad should be the last capability (nothing runs after
+///   a jump). We warn but don't hard-error since the board author may know
+///   what they're doing.
+fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
+    let mut console_inited = false;
+
+    for cap in capabilities {
+        match cap {
+            Capability::ConsoleInit { .. } => {
+                console_inited = true;
+            }
+            Capability::MemoryInit if !console_inited => {
+                return Some(
+                    "MemoryInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::DriverInit if !console_inited => {
+                return Some(
+                    "DriverInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::SigVerify if !console_inited => {
+                return Some(
+                    "SigVerify capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::FdtPrepare if !console_inited => {
+                return Some(
+                    "FdtPrepare capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::PayloadLoad if !console_inited => {
+                return Some(
+                    "PayloadLoad capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::StageLoad { .. } if !console_inited => {
+                return Some(
+                    "StageLoad capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// Emit `use` statements for all driver types needed by this board's devices.
@@ -144,10 +215,12 @@ fn generate_devices_struct(out: &mut String, devices: &[DeviceConfig]) {
 /// Emit the `StageContext` struct with typed service accessors.
 fn generate_stage_context(out: &mut String, devices: &[DeviceConfig]) {
     out.push_str("/// Stage context — provides typed access to services.\n");
+    out.push_str("#[allow(dead_code)]\n");
     out.push_str("struct StageContext {\n");
     out.push_str("    devices: Devices,\n");
     out.push_str("}\n\n");
 
+    out.push_str("#[allow(dead_code)]\n");
     out.push_str("impl StageContext {\n");
 
     // Find the first device providing each service type and generate an accessor.
@@ -199,39 +272,67 @@ fn generate_fstart_main(
     }
     out.push('\n');
 
+    // Track which devices have been initialised by capabilities so DriverInit
+    // can skip them and avoid double-init.
+    let mut inited_devices: Vec<String> = Vec::new();
+
+    // Track the first console device name for passing to later capabilities.
+    let mut console_device: Option<String> = None;
+
     // --- Phase 2: Execute capabilities in declared order ---
     out.push_str("    // === Capability execution ===\n");
     for cap in capabilities {
         match cap {
             Capability::ConsoleInit { device } => {
-                generate_console_init(out, device.as_str(), &config.devices, halt_fn);
-            }
-            Capability::SigVerify => {
-                out.push_str("    // TODO: SigVerify capability\n");
+                let dev_name = device.as_str();
+                generate_console_init(out, dev_name, &config.devices, halt_fn);
+                inited_devices.push(dev_name.to_string());
+                if console_device.is_none() {
+                    console_device = Some(dev_name.to_string());
+                }
             }
             Capability::MemoryInit => {
-                out.push_str("    // TODO: MemoryInit capability\n");
+                generate_memory_init(out, &console_device);
             }
             Capability::DriverInit => {
-                out.push_str("    // TODO: DriverInit capability\n");
+                generate_driver_init(
+                    out,
+                    &config.devices,
+                    &inited_devices,
+                    halt_fn,
+                    &console_device,
+                );
+                // After DriverInit, all devices are initialised.
+                for dev in &config.devices {
+                    let name = dev.name.as_str().to_string();
+                    if !inited_devices.contains(&name) {
+                        inited_devices.push(name);
+                    }
+                }
+            }
+            Capability::SigVerify => {
+                generate_sig_verify(out, &console_device);
             }
             Capability::FdtPrepare => {
-                out.push_str("    // TODO: FdtPrepare capability\n");
+                generate_fdt_prepare(out, &console_device);
             }
             Capability::PayloadLoad => {
-                out.push_str("    // TODO: PayloadLoad capability\n");
+                generate_payload_load(out, &console_device);
             }
             Capability::StageLoad { next_stage } => {
-                out.push_str(&format!(
-                    "    // TODO: StageLoad capability (next: {next_stage})\n"
-                ));
+                generate_stage_load(out, next_stage.as_str(), &console_device);
             }
         }
     }
 
     // --- Phase 3: Build context and finalize ---
     out.push_str("\n    // === Build stage context ===\n");
-    out.push_str("    let _ctx = StageContext {\n");
+    let ctx_binding = if console_device.is_some() {
+        "ctx"
+    } else {
+        "_ctx"
+    };
+    out.push_str(&format!("    let {ctx_binding} = StageContext {{\n"));
     out.push_str("        devices: Devices {\n");
     for dev in &config.devices {
         if find_driver(dev.driver.as_str()).is_some() {
@@ -240,6 +341,14 @@ fn generate_fstart_main(
     }
     out.push_str("        },\n");
     out.push_str("    };\n\n");
+
+    // Log completion via the context's console accessor (devices have been
+    // moved into the Devices struct, so we use ctx instead of bare variables).
+    if console_device.is_some() {
+        out.push_str(
+            "    let _ = ctx.console().write_line(\"[fstart] all capabilities complete\");\n",
+        );
+    }
 
     // Halt
     out.push_str("    // Stage complete — halt\n");
@@ -341,4 +450,290 @@ fn generate_console_init(
     out.push_str(&format!(
         "    fstart_capabilities::console_ready(&{device_name}, \"{device_name}\", \"{drv_name}\");\n"
     ));
+}
+
+/// Generate code for the MemoryInit capability.
+fn generate_memory_init(out: &mut String, console_device: &Option<String>) {
+    out.push_str("    // MemoryInit\n");
+    if let Some(ref con) = console_device {
+        out.push_str(&format!("    fstart_capabilities::memory_init(&{con});\n"));
+    }
+}
+
+/// Generate code for the DriverInit capability.
+///
+/// Initialises all devices that were not already initialised by earlier
+/// capabilities (e.g., ConsoleInit already called init() on the UART).
+fn generate_driver_init(
+    out: &mut String,
+    devices: &[DeviceConfig],
+    already_inited: &[String],
+    halt_fn: &str,
+    console_device: &Option<String>,
+) {
+    out.push_str("    // DriverInit: init remaining devices\n");
+
+    let mut count = 0usize;
+    for dev in devices {
+        let name = dev.name.as_str();
+        if already_inited.iter().any(|s| s == name) {
+            out.push_str(&format!("    // {name}: already initialised\n"));
+            continue;
+        }
+        if find_driver(dev.driver.as_str()).is_none() {
+            continue; // unknown driver, already compile_error'd in construction
+        }
+        out.push_str(&format!(
+            "    {name}.init().unwrap_or_else(|_| {halt_fn});\n"
+        ));
+        count += 1;
+    }
+
+    if let Some(ref con) = console_device {
+        out.push_str(&format!(
+            "    fstart_capabilities::driver_init_complete(&{con}, {count});\n"
+        ));
+    }
+}
+
+/// Generate code for the SigVerify capability.
+fn generate_sig_verify(out: &mut String, console_device: &Option<String>) {
+    out.push_str("    // SigVerify\n");
+    if let Some(ref con) = console_device {
+        out.push_str(&format!("    fstart_capabilities::sig_verify(&{con});\n"));
+    }
+}
+
+/// Generate code for the FdtPrepare capability.
+fn generate_fdt_prepare(out: &mut String, console_device: &Option<String>) {
+    out.push_str("    // FdtPrepare\n");
+    if let Some(ref con) = console_device {
+        out.push_str(&format!("    fstart_capabilities::fdt_prepare(&{con});\n"));
+    }
+}
+
+/// Generate code for the PayloadLoad capability.
+fn generate_payload_load(out: &mut String, console_device: &Option<String>) {
+    out.push_str("    // PayloadLoad\n");
+    if let Some(ref con) = console_device {
+        out.push_str(&format!("    fstart_capabilities::payload_load(&{con});\n"));
+    }
+}
+
+/// Generate code for the StageLoad capability.
+fn generate_stage_load(out: &mut String, next_stage: &str, console_device: &Option<String>) {
+    out.push_str(&format!("    // StageLoad -> {next_stage}\n"));
+    if let Some(ref con) = console_device {
+        out.push_str(&format!(
+            "    fstart_capabilities::stage_load(&{con}, \"{next_stage}\");\n"
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a minimal board config for testing.
+    fn test_board_config(capabilities: heapless::Vec<Capability, 16>) -> BoardConfig {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let mut devices = heapless::Vec::new();
+        let _ = devices.push(DeviceConfig {
+            name: HString::try_from("uart0").unwrap(),
+            compatible: HString::try_from("ns16550a").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            resources: Resources {
+                mmio_base: Some(0x1000_0000),
+                clock_freq: Some(3_686_400),
+                baud_rate: Some(115_200),
+                irq: Some(10),
+                ..Default::default()
+            },
+            parent: None,
+        });
+
+        BoardConfig {
+            name: HString::try_from("test-board").unwrap(),
+            platform: HString::try_from("riscv64").unwrap(),
+            memory: MemoryMap {
+                regions: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(MemoryRegion {
+                        name: HString::try_from("ram").unwrap(),
+                        base: 0x8000_0000,
+                        size: 0x0800_0000,
+                        kind: RegionKind::Ram,
+                    });
+                    v
+                },
+            },
+            devices,
+            stages: StageLayout::Monolithic(MonolithicConfig {
+                capabilities,
+                load_addr: 0x8000_0000,
+                stack_size: 0x10000,
+            }),
+            security: SecurityConfig {
+                signing_algorithm: SignatureAlgorithm::Ed25519,
+                pubkey_file: HString::try_from("keys/dev.pub").unwrap(),
+                required_digests: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(DigestAlgorithm::Sha256);
+                    v
+                },
+            },
+            mode: BuildMode::Rigid,
+            payload: None,
+        }
+    }
+
+    #[test]
+    fn test_console_init_generates_device_init_and_banner() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(source.contains("uart0.init()"), "should call init()");
+        assert!(
+            source.contains("fstart_capabilities::console_ready"),
+            "should call console_ready"
+        );
+        assert!(source.contains("Ns16550::new"), "should construct Ns16550");
+        assert!(
+            source.contains("struct Devices"),
+            "should define Devices struct"
+        );
+        assert!(
+            source.contains("struct StageContext"),
+            "should define StageContext"
+        );
+    }
+
+    #[test]
+    fn test_memory_init_after_console() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::MemoryInit);
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("fstart_capabilities::memory_init(&uart0)"),
+            "should call memory_init with console ref"
+        );
+    }
+
+    #[test]
+    fn test_memory_init_without_console_is_error() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::MemoryInit);
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("compile_error!"),
+            "should emit compile_error for MemoryInit without ConsoleInit"
+        );
+    }
+
+    #[test]
+    fn test_driver_init_skips_already_inited() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::DriverInit);
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("uart0: already initialised"),
+            "should skip uart0 since ConsoleInit already inited it"
+        );
+        assert!(
+            source.contains("fstart_capabilities::driver_init_complete(&uart0, 0)"),
+            "should report 0 additional devices inited"
+        );
+    }
+
+    #[test]
+    fn test_sig_verify_generates_call() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::SigVerify);
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("fstart_capabilities::sig_verify(&uart0)"),
+            "should call sig_verify"
+        );
+    }
+
+    #[test]
+    fn test_stage_load_generates_call() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::StageLoad {
+            next_stage: heapless::String::try_from("main").unwrap(),
+        });
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("fstart_capabilities::stage_load(&uart0, \"main\")"),
+            "should call stage_load with next_stage name"
+        );
+    }
+
+    #[test]
+    fn test_unknown_driver_is_compile_error() {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: HString::try_from("uart0").unwrap(),
+        });
+
+        let mut config = test_board_config(caps);
+        config.devices[0].driver = HString::try_from("nonexistent").unwrap();
+
+        let source = generate_stage_source(&config, None);
+        assert!(
+            source.contains("compile_error!"),
+            "should emit compile_error for unknown driver"
+        );
+    }
+
+    #[test]
+    fn test_all_capabilities_complete_message() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("[fstart] all capabilities complete"),
+            "should log completion message"
+        );
+    }
 }

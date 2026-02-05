@@ -8,3 +8,6 @@ license.workspace = true
 fstart-types = { workspace = true, features = ["std"] }
 ron = { workspace = true }
 serde = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+heapless = { workspace = true }
