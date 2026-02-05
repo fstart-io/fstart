@@ -9,6 +9,23 @@ driver instantiation, and linker scripts. No hand-written stage code.
 For domain inspiration, reference codebases are available at `~/src/coreboot` (C,
 payload/stage architecture) and `~/src/u-boot` (C, device-tree-driven board defs).
 
+## Design Documents
+
+- **[Driver Model](docs/driver-model.md)** — typed device/driver architecture inspired
+  by coreboot's device tree and U-Boot's uclass/ops model, redesigned for Rust's type
+  system. Covers the `Device` trait, associated `Config` types, codegen-produced
+  `Devices`/`StageContext` structs, bus hierarchies, and Rigid vs Flexible dispatch.
+
+## Environment
+
+This is a NixOS system. Tools not on `$PATH` (e.g., `qemu`, `file`, `objdump`) must
+be run via `nix-shell`:
+
+```bash
+nix-shell -p qemu file --run "qemu-system-riscv64 -M virt -bios firmware.bin"
+nix-shell -p binutils --run "objdump -d target/.../fstart-stage"
+```
+
 ## Build / Run / Check Commands
 
 ```bash
@@ -97,9 +114,10 @@ use crate::stage::StageLayout;
 - `#![no_std]` everywhere except `xtask` and `fstart-codegen`
 - Bounded containers only: `heapless::Vec<T, N>`, `HString<N>` — never `alloc::Vec`
   in firmware crates
-- MMIO: raw pointers (`*mut u8` or `*mut u32`) + `read_volatile`/`write_volatile`
+- MMIO registers: use the `tock-registers` crate (`register_structs!`, `register_bitfields!`)
+  for all new drivers — never raw `read_volatile`/`write_volatile`
 - `unsafe impl Send + Sync` on MMIO driver structs with a `// SAFETY:` comment
-- Drivers have `pub const fn new(base_addr: u64) -> Self` (separate from `init`)
+- Drivers implement the `Device` trait with `type Config`, `fn new(&Config)`, `fn init()`
 - Serde derives on all config types: `#[derive(Debug, Clone, Serialize, Deserialize)]`
 - Enums also derive `Copy, PartialEq, Eq` when small/fieldless
 
@@ -108,7 +126,7 @@ use crate::stage::StageLayout;
 |---|---|
 | Host tools (xtask) | `Result<T, String>` with `.map_err(\|e\| format!(...))` |
 | `no_std` services | `Result<T, ServiceError>` (enum: `Timeout`, `HardwareError`, …) |
-| Drivers | `Result<Self, DriverError>` for construction (`MissingResource`, `InitFailed`) |
+| Drivers | `Result<Self, DeviceError>` for construction (`MissingResource`, `InitFailed`) |
 | `build.rs` | `unwrap_or_else(\|_\| panic!("..."))` |
 | Codegen errors | Emit `compile_error!("...")` in generated source |
 
@@ -124,10 +142,15 @@ Never use `.unwrap()` silently in firmware code. In host-side code, prefer
 ### Driver Pattern
 Every driver struct:
 1. Lives in `fstart-drivers/src/<category>/<name>.rs` (feature-gated)
-2. Implements `Driver` trait: `const NAME`, `const COMPATIBLE`, `fn from_resources()`
-3. Implements one or more service traits (`Console`, `BlockDevice`, `Timer`)
-4. Register constants are module-level `const` (not in impl block)
-5. Spin-waits use `core::hint::spin_loop()`
+2. Defines registers with `register_structs!` / `register_bitfields!` (tock-registers)
+3. Stores `regs: &'static <Regs>` constructed from base address in `new()`
+4. Defines a typed `Config` struct (e.g., `Ns16550Config`) with only the fields it needs
+5. Implements `Device` trait: `const NAME`, `const COMPATIBLE`, `type Config`,
+   `fn new(&Config)`, `fn init()`
+6. Implements one or more service traits (`Console`, `BlockDevice`, `Timer`)
+7. Spin-waits use `core::hint::spin_loop()`
+
+See [docs/driver-model.md](docs/driver-model.md) for the full architecture.
 
 ### Board RON Files
 - Located at `boards/<board-name>/board.ron`
@@ -135,6 +158,9 @@ Every driver struct:
 - Deserializes to `fstart_types::board::BoardConfig`
 - Always has: `name`, `platform`, `memory`, `devices`, `stages`, `security`, `mode`, `payload`
 - Comments use `//` (RON supports them)
+- `memory.regions` contains only ROM and RAM — device MMIO addresses go in
+  `devices[].resources.mmio_base`, not in the memory map
+- `stack_size` is per-stage (in `stages`), not in `memory`
 
 ## Architecture: How a Build Works
 

@@ -1,16 +1,21 @@
 // Board definition for QEMU AArch64 virt machine.
+//
+// Memory map from QEMU hw/arm/virt.c (confirmed via coreboot):
+//   Flash:  0x0000_0000 .. 0x0800_0000 (128 MiB, two 64 MiB banks)
+//   UART:   0x0900_0000 (PL011, 4 KiB)
+//   RAM:    0x4000_0000 onwards
 
 (
     name: "qemu-aarch64",
     platform: "aarch64",
 
+    // Memory regions: only ROM and RAM.
+    // Device MMIO addresses are in the device resources, not here.
     memory: (
         regions: [
-            ( name: "flash", base: 0x00000000, size: 0x04000000, kind: Rom  ),
-            ( name: "ram",   base: 0x40000000, size: 0x08000000, kind: Ram  ),
-            ( name: "uart",  base: 0x09000000, size: 0x00001000, kind: Mmio ),
+            ( name: "flash", base: 0x00000000, size: 0x08000000, kind: Rom ),
+            ( name: "ram",   base: 0x40000000, size: 0x08000000, kind: Ram ),
         ],
-        stack_size: 0x10000,
     ),
 
     devices: [
@@ -23,7 +28,9 @@
                 mmio_base: Some(0x09000000),
                 io_base: None,
                 size: Some(0x1000),
-                clock_freq: Some(24000000),
+                // QEMU virt PL011 ignores baud rate, but we match coreboot's
+                // default refclk of 115200 * 16 = 1843200 Hz.
+                clock_freq: Some(1843200),
                 baud_rate: Some(115200),
                 irq: Some(33),
                 bus_addr: None,
@@ -35,7 +42,8 @@
         capabilities: [
             ConsoleInit( device: "uart0" ),
         ],
-        load_addr: 0x40000000,
+        load_addr: 0x00000000,
+        stack_size: 0x10000,
     )),
 
     security: (

@@ -11,13 +11,12 @@
     name: "qemu-riscv64",
     platform: "riscv64",
 
+    // Memory regions: only ROM and RAM.
+    // Device MMIO addresses are in the device resources, not here.
     memory: (
         regions: [
-            ( name: "rom",  base: 0x20000000, size: 0x02000000, kind: Rom  ),
-            ( name: "ram",  base: 0x80000000, size: 0x08000000, kind: Ram  ),
-            ( name: "uart", base: 0x10000000, size: 0x00000100, kind: Mmio ),
+            ( name: "ram", base: 0x80000000, size: 0x08000000, kind: Ram ),
         ],
-        stack_size: 0x10000,
     ),
 
     devices: [
@@ -43,6 +42,7 @@
             ConsoleInit( device: "uart0" ),
         ],
         load_addr: 0x80000000,
+        stack_size: 0x10000,
     )),
 
     security: (

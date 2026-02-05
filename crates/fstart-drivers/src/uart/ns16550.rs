@@ -1,30 +1,104 @@
 //! NS16550(A) UART driver.
 //!
 //! Used by QEMU virt (RISC-V), many x86 platforms, and others.
+//! Register access uses the `tock-registers` crate for type-safe MMIO.
 
-use crate::{Driver, DriverError};
+use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::register_bitfields;
+use tock_registers::register_structs;
+use tock_registers::registers::{ReadOnly, ReadWrite, WriteOnly};
+
+use fstart_services::device::{Device, DeviceError};
 use fstart_services::{Console, ServiceError};
-use fstart_types::device::Resources;
 
-// Register offsets
-const THR: usize = 0; // Transmitter Holding Register (write)
-const RBR: usize = 0; // Receiver Buffer Register (read)
-const IER: usize = 1; // Interrupt Enable Register
-const FCR: usize = 2; // FIFO Control Register
-const LCR: usize = 3; // Line Control Register
-const LSR: usize = 5; // Line Status Register
+register_bitfields! [u8,
+    /// Interrupt Enable Register
+    IER [
+        /// Received Data Available Interrupt
+        ERBFI OFFSET(0) NUMBITS(1) [],
+        /// Transmitter Holding Register Empty Interrupt
+        ETBEI OFFSET(1) NUMBITS(1) [],
+        /// Receiver Line Status Interrupt
+        ELSI OFFSET(2) NUMBITS(1) [],
+        /// Modem Status Interrupt
+        EDSSI OFFSET(3) NUMBITS(1) []
+    ],
+    /// FIFO Control Register
+    FCR [
+        /// FIFO Enable
+        FIFOE OFFSET(0) NUMBITS(1) [],
+        /// Receiver FIFO Reset
+        RFIFOR OFFSET(1) NUMBITS(1) [],
+        /// Transmitter FIFO Reset
+        XFIFOR OFFSET(2) NUMBITS(1) []
+    ],
+    /// Line Control Register
+    LCR [
+        /// Word Length Select
+        WLS OFFSET(0) NUMBITS(2) [
+            Bits5 = 0b00,
+            Bits6 = 0b01,
+            Bits7 = 0b10,
+            Bits8 = 0b11
+        ],
+        /// Number of Stop Bits
+        STB OFFSET(2) NUMBITS(1) [],
+        /// Parity Enable
+        PEN OFFSET(3) NUMBITS(1) [],
+        /// Divisor Latch Access Bit
+        DLAB OFFSET(7) NUMBITS(1) []
+    ],
+    /// Line Status Register
+    LSR [
+        /// Data Ready
+        DR OFFSET(0) NUMBITS(1) [],
+        /// Transmitter Holding Register Empty
+        THRE OFFSET(5) NUMBITS(1) []
+    ]
+];
 
-// LSR bits
-const LSR_DATA_READY: u8 = 0x01;
-const LSR_THR_EMPTY: u8 = 0x20;
+register_structs! {
+    /// NS16550 register block (byte-addressable registers).
+    Ns16550Regs {
+        /// Transmit Holding / Receive Buffer / Divisor Latch Low
+        (0x00 => pub thr_rbr_dll: ReadWrite<u8>),
+        /// Interrupt Enable / Divisor Latch High
+        (0x01 => pub ier_dlh: ReadWrite<u8, IER::Register>),
+        /// FIFO Control (write-only) / Interrupt Identification (read-only)
+        (0x02 => pub fcr_iir: WriteOnly<u8, FCR::Register>),
+        /// Line Control Register
+        (0x03 => pub lcr: ReadWrite<u8, LCR::Register>),
+        /// Modem Control Register
+        (0x04 => pub mcr: ReadWrite<u8>),
+        /// Line Status Register
+        (0x05 => pub lsr: ReadOnly<u8, LSR::Register>),
+        /// Modem Status Register
+        (0x06 => pub msr: ReadOnly<u8>),
+        /// Scratch Register
+        (0x07 => pub scr: ReadWrite<u8>),
+        (0x08 => @END),
+    }
+}
 
-// LCR bits
-const LCR_8N1: u8 = 0x03; // 8 data bits, no parity, 1 stop bit
-const LCR_DLAB: u8 = 0x80; // Divisor Latch Access Bit
+/// Typed configuration for the NS16550 driver.
+///
+/// Contains exactly the fields this driver needs — no optional grab-bag.
+/// Codegen maps the RON `Resources` to this struct at build time.
+#[derive(Debug, Clone, Copy)]
+pub struct Ns16550Config {
+    /// MMIO base address of the register block.
+    pub base_addr: u64,
+    /// Input clock frequency in Hz.
+    pub clock_freq: u32,
+    /// Desired baud rate.
+    pub baud_rate: u32,
+}
 
 /// NS16550A UART driver (MMIO variant).
 pub struct Ns16550 {
-    base: *mut u8,
+    regs: &'static Ns16550Regs,
+    clock_freq: u32,
+    baud_rate: u32,
 }
 
 // SAFETY: MMIO registers are hardware-fixed addresses; access is safe
@@ -32,74 +106,58 @@ pub struct Ns16550 {
 unsafe impl Send for Ns16550 {}
 unsafe impl Sync for Ns16550 {}
 
-impl Ns16550 {
-    /// Create a new driver with the given MMIO base address.
-    pub const fn new(base_addr: u64) -> Self {
-        Self {
-            base: base_addr as *mut u8,
-        }
-    }
-
-    /// Initialize the UART with the given clock frequency and baud rate.
-    pub fn init(&self, clock_freq: u32, baud_rate: u32) {
-        let divisor = clock_freq / (16 * baud_rate);
-
-        // Disable interrupts
-        self.write_reg(IER, 0x00);
-
-        // Set baud rate via divisor latch
-        self.write_reg(LCR, LCR_DLAB);
-        self.write_reg(0, (divisor & 0xFF) as u8); // DLL
-        self.write_reg(1, ((divisor >> 8) & 0xFF) as u8); // DLM
-
-        // 8N1, disable DLAB
-        self.write_reg(LCR, LCR_8N1);
-
-        // Enable and reset FIFOs
-        self.write_reg(FCR, 0x07);
-    }
-
-    fn read_reg(&self, offset: usize) -> u8 {
-        unsafe { core::ptr::read_volatile(self.base.add(offset)) }
-    }
-
-    fn write_reg(&self, offset: usize, value: u8) {
-        unsafe { core::ptr::write_volatile(self.base.add(offset), value) }
-    }
-}
-
-impl Driver for Ns16550 {
+impl Device for Ns16550 {
     const NAME: &'static str = "ns16550";
     const COMPATIBLE: &'static [&'static str] = &["ns16550a", "ns16550"];
+    type Config = Ns16550Config;
 
-    fn from_resources(resources: &Resources) -> Result<Self, DriverError> {
-        let base = resources
-            .mmio_base
-            .ok_or(DriverError::MissingResource("mmio_base"))?;
-        let uart = Self::new(base);
+    fn new(config: &Ns16550Config) -> Result<Self, DeviceError> {
+        Ok(Self {
+            // SAFETY: base_addr comes from the board RON and is validated
+            // by codegen at build time.
+            regs: unsafe { &*(config.base_addr as *const Ns16550Regs) },
+            clock_freq: config.clock_freq,
+            baud_rate: config.baud_rate,
+        })
+    }
 
-        // Initialize if clock and baud are specified
-        if let (Some(clock), Some(baud)) = (resources.clock_freq, resources.baud_rate) {
-            uart.init(clock, baud);
-        }
+    fn init(&self) -> Result<(), DeviceError> {
+        // Use u64 to avoid overflow in intermediate calculations
+        let divisor = (self.clock_freq as u64 / (16 * self.baud_rate as u64)) as u8;
 
-        Ok(uart)
+        // Disable interrupts
+        self.regs.ier_dlh.set(0);
+
+        // Set baud rate via divisor latch
+        self.regs.lcr.write(LCR::DLAB::SET);
+        self.regs.thr_rbr_dll.set(divisor); // DLL
+        self.regs.ier_dlh.set(0); // DLH
+
+        // 8N1, disable DLAB
+        self.regs.lcr.write(LCR::WLS::Bits8 + LCR::DLAB::CLEAR);
+
+        // Enable and reset FIFOs
+        self.regs
+            .fcr_iir
+            .write(FCR::FIFOE::SET + FCR::RFIFOR::SET + FCR::XFIFOR::SET);
+
+        Ok(())
     }
 }
 
 impl Console for Ns16550 {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
         // Wait for THR empty
-        while self.read_reg(LSR) & LSR_THR_EMPTY == 0 {
+        while !self.regs.lsr.is_set(LSR::THRE) {
             core::hint::spin_loop();
         }
-        self.write_reg(THR, byte);
+        self.regs.thr_rbr_dll.set(byte);
         Ok(())
     }
 
     fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
-        if self.read_reg(LSR) & LSR_DATA_READY != 0 {
-            Ok(Some(self.read_reg(RBR)))
+        if self.regs.lsr.is_set(LSR::DR) {
+            Ok(Some(self.regs.thr_rbr_dll.get()))
         } else {
             Ok(None)
         }
