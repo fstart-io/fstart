@@ -3,16 +3,22 @@
 //! Services are the abstraction layer between firmware capabilities and
 //! hardware drivers. Drivers implement these traits. Capabilities consume them.
 //!
-//! This crate defines traits only — no implementations.
+//! This crate defines traits only — no implementations. It also defines the
+//! `Device` trait that all drivers implement for lifecycle management.
+//!
+//! See [docs/driver-model.md](../../docs/driver-model.md) for the full
+//! driver model architecture.
 
 #![no_std]
 
 pub mod block;
 pub mod console;
+pub mod device;
 pub mod timer;
 
 pub use block::BlockDevice;
 pub use console::Console;
+pub use device::{Device, DeviceError};
 pub use timer::Timer;
 
 /// Common error type for service operations.

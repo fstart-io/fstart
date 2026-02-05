@@ -5,6 +5,4 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-fstart-types = { workspace = true }
 fstart-services = { workspace = true }
-fstart-drivers = { workspace = true }

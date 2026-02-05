@@ -1,106 +1,151 @@
 //! ARM PL011 UART driver.
 //!
 //! Used by QEMU virt (AArch64).
+//! Register access uses the `tock-registers` crate for type-safe MMIO.
 
-use crate::{Driver, DriverError};
+use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::register_bitfields;
+use tock_registers::register_structs;
+use tock_registers::registers::{ReadOnly, ReadWrite};
+
+use fstart_services::device::{Device, DeviceError};
 use fstart_services::{Console, ServiceError};
-use fstart_types::device::Resources;
 
-// PL011 register offsets
-const UARTDR: usize = 0x000; // Data Register
-const UARTFR: usize = 0x018; // Flag Register
-const UARTIBRD: usize = 0x024; // Integer Baud Rate Divisor
-const UARTFBRD: usize = 0x028; // Fractional Baud Rate Divisor
-const UARTLCR_H: usize = 0x02C; // Line Control Register
-const UARTCR: usize = 0x030; // Control Register
+register_bitfields! [u32,
+    /// Flag Register
+    FR [
+        /// Transmit FIFO full
+        TXFF OFFSET(5) NUMBITS(1) [],
+        /// Receive FIFO empty
+        RXFE OFFSET(4) NUMBITS(1) []
+    ],
+    /// Line Control Register
+    LCR_H [
+        /// Word length (bits 5:6)
+        WLEN OFFSET(5) NUMBITS(2) [
+            Bits5 = 0b00,
+            Bits6 = 0b01,
+            Bits7 = 0b10,
+            Bits8 = 0b11
+        ],
+        /// FIFO enable
+        FEN OFFSET(4) NUMBITS(1) []
+    ],
+    /// Control Register
+    CR [
+        /// UART enable
+        UARTEN OFFSET(0) NUMBITS(1) [],
+        /// Transmit enable
+        TXE OFFSET(8) NUMBITS(1) [],
+        /// Receive enable
+        RXE OFFSET(9) NUMBITS(1) []
+    ]
+];
 
-// Flag register bits
-const UARTFR_TXFF: u32 = 1 << 5; // TX FIFO Full
-const UARTFR_RXFE: u32 = 1 << 4; // RX FIFO Empty
+register_structs! {
+    /// PL011 register block (32-bit word-addressable registers).
+    Pl011Regs {
+        /// Data Register
+        (0x000 => pub dr: ReadWrite<u32>),
+        /// Reserved
+        (0x004 => _reserved0),
+        /// Flag Register
+        (0x018 => pub fr: ReadOnly<u32, FR::Register>),
+        /// Reserved
+        (0x01C => _reserved1),
+        /// Integer Baud Rate Divisor
+        (0x024 => pub ibrd: ReadWrite<u32>),
+        /// Fractional Baud Rate Divisor
+        (0x028 => pub fbrd: ReadWrite<u32>),
+        /// Line Control Register
+        (0x02C => pub lcr_h: ReadWrite<u32, LCR_H::Register>),
+        /// Control Register
+        (0x030 => pub cr: ReadWrite<u32, CR::Register>),
+        (0x034 => @END),
+    }
+}
 
-// LCR bits
-const UARTLCR_H_WLEN_8: u32 = 0x60; // 8-bit word length
-const UARTLCR_H_FEN: u32 = 0x10; // FIFO enable
-
-// CR bits
-const UARTCR_UARTEN: u32 = 1 << 0; // UART enable
-const UARTCR_TXE: u32 = 1 << 8; // TX enable
-const UARTCR_RXE: u32 = 1 << 9; // RX enable
+/// Typed configuration for the PL011 driver.
+///
+/// Contains exactly the fields this driver needs — no optional grab-bag.
+/// Codegen maps the RON `Resources` to this struct at build time.
+#[derive(Debug, Clone, Copy)]
+pub struct Pl011Config {
+    /// MMIO base address of the register block.
+    pub base_addr: u64,
+    /// Input clock frequency in Hz.
+    pub clock_freq: u32,
+    /// Desired baud rate.
+    pub baud_rate: u32,
+}
 
 /// PL011 UART driver.
 pub struct Pl011 {
-    base: *mut u32,
+    regs: &'static Pl011Regs,
+    clock_freq: u32,
+    baud_rate: u32,
 }
 
+// SAFETY: MMIO registers are hardware-fixed addresses; access is safe
+// as long as the base address is correct (which comes from the board RON).
 unsafe impl Send for Pl011 {}
 unsafe impl Sync for Pl011 {}
 
-impl Pl011 {
-    pub const fn new(base_addr: u64) -> Self {
-        Self {
-            base: base_addr as *mut u32,
-        }
-    }
-
-    /// Initialize the UART with the given clock frequency and baud rate.
-    pub fn init(&self, clock_freq: u32, baud_rate: u32) {
-        // Disable UART
-        self.write_reg(UARTCR, 0);
-
-        // Set baud rate
-        // BRD = UARTCLK / (16 * Baud Rate)
-        let brd_i = clock_freq / (16 * baud_rate);
-        let brd_f = ((clock_freq % (16 * baud_rate)) * 64 + baud_rate / 2) / baud_rate;
-
-        self.write_reg(UARTIBRD, brd_i);
-        self.write_reg(UARTFBRD, brd_f);
-
-        // 8N1, FIFO enabled
-        self.write_reg(UARTLCR_H, UARTLCR_H_WLEN_8 | UARTLCR_H_FEN);
-
-        // Enable UART, TX, RX
-        self.write_reg(UARTCR, UARTCR_UARTEN | UARTCR_TXE | UARTCR_RXE);
-    }
-
-    fn read_reg(&self, offset: usize) -> u32 {
-        unsafe { core::ptr::read_volatile(self.base.byte_add(offset)) }
-    }
-
-    fn write_reg(&self, offset: usize, value: u32) {
-        unsafe { core::ptr::write_volatile(self.base.byte_add(offset), value) }
-    }
-}
-
-impl Driver for Pl011 {
+impl Device for Pl011 {
     const NAME: &'static str = "pl011";
     const COMPATIBLE: &'static [&'static str] = &["arm,pl011", "pl011"];
+    type Config = Pl011Config;
 
-    fn from_resources(resources: &Resources) -> Result<Self, DriverError> {
-        let base = resources
-            .mmio_base
-            .ok_or(DriverError::MissingResource("mmio_base"))?;
-        let uart = Self::new(base);
+    fn new(config: &Pl011Config) -> Result<Self, DeviceError> {
+        Ok(Self {
+            // SAFETY: base_addr comes from the board RON and is validated
+            // by codegen at build time.
+            regs: unsafe { &*(config.base_addr as *const Pl011Regs) },
+            clock_freq: config.clock_freq,
+            baud_rate: config.baud_rate,
+        })
+    }
 
-        if let (Some(clock), Some(baud)) = (resources.clock_freq, resources.baud_rate) {
-            uart.init(clock, baud);
-        }
+    fn init(&self) -> Result<(), DeviceError> {
+        // Disable UART
+        self.regs.cr.set(0);
 
-        Ok(uart)
+        // Set baud rate using u64 to avoid overflow in intermediate calculations.
+        // BRD = UARTCLK / (16 * Baud Rate)
+        let clk = self.clock_freq as u64;
+        let baud = self.baud_rate as u64;
+        let divisor = 16 * baud;
+        let brd_i = (clk / divisor) as u32;
+        let brd_f = (((clk % divisor) * 64 + baud / 2) / baud) as u32;
+
+        self.regs.ibrd.set(brd_i);
+        self.regs.fbrd.set(brd_f);
+
+        // 8N1, FIFO enabled
+        self.regs.lcr_h.write(LCR_H::WLEN::Bits8 + LCR_H::FEN::SET);
+
+        // Enable UART, TX, RX
+        self.regs
+            .cr
+            .write(CR::UARTEN::SET + CR::TXE::SET + CR::RXE::SET);
+
+        Ok(())
     }
 }
 
 impl Console for Pl011 {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
-        while self.read_reg(UARTFR) & UARTFR_TXFF != 0 {
+        // Wait for TX FIFO not full
+        while self.regs.fr.is_set(FR::TXFF) {
             core::hint::spin_loop();
         }
-        self.write_reg(UARTDR, byte as u32);
+        self.regs.dr.set(byte as u32);
         Ok(())
     }
 
     fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
-        if self.read_reg(UARTFR) & UARTFR_RXFE == 0 {
-            Ok(Some(self.read_reg(UARTDR) as u8))
+        if !self.regs.fr.is_set(FR::RXFE) {
+            Ok(Some(self.regs.dr.get() as u8))
         } else {
             Ok(None)
         }

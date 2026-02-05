@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// How stages are laid out for this board.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)] // no_std: can't Box heapless containers
 pub enum StageLayout {
     /// Single binary with all capabilities linked in.
     Monolithic(MonolithicConfig),
@@ -23,6 +24,8 @@ pub struct MonolithicConfig {
     pub capabilities: heapless::Vec<Capability, 16>,
     /// Load/run address
     pub load_addr: u64,
+    /// Stack size in bytes
+    pub stack_size: u32,
 }
 
 /// Configuration for one stage in a multi-stage build.
@@ -34,6 +37,8 @@ pub struct StageConfig {
     pub capabilities: heapless::Vec<Capability, 16>,
     /// Where this stage is loaded in memory
     pub load_addr: u64,
+    /// Stack size in bytes
+    pub stack_size: u32,
     /// Where this stage executes from
     pub runs_from: RunsFrom,
 }

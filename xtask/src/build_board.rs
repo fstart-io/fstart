@@ -69,6 +69,11 @@ pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
         cmd.arg("--release");
     }
 
+    // Disable UB precondition checks on volatile ops (nightly core library
+    // adds alignment/null checks on read_volatile/write_volatile that are
+    // incompatible with MMIO register access in firmware debug builds).
+    cmd.env("RUSTFLAGS", "-Zub-checks=no");
+
     // Pass board RON path to build.rs
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
     if let Some(ref name) = stage_name {

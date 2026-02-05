@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 
 /// A device declaration in the board configuration.
 /// Maps a hardware device to a driver and one or more service traits.
+///
+/// Bus hierarchies are expressed via the `parent` field: a child device
+/// sets `parent` to its bus controller's name.  Codegen ensures parents
+/// are initialised before children.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
     /// Device instance name (e.g., "uart0", "flash0")
@@ -17,10 +21,17 @@ pub struct DeviceConfig {
     pub services: heapless::Vec<HString<32>, 8>,
     /// Hardware resources (addresses, clocks, etc.)
     pub resources: Resources,
+    /// Parent device name (for bus-attached devices, e.g., "i2c0").
+    /// `None` for root-level devices.
+    #[serde(default)]
+    pub parent: Option<HString<32>>,
 }
 
 /// Hardware resources for a device.
-/// Passed to the driver constructor.
+///
+/// This is the RON interchange format — deliberately flat and permissive
+/// (all fields `Option`).  Codegen maps these to driver-specific typed
+/// `Config` structs at build time.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Resources {
     /// Memory-mapped I/O base address

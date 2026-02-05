@@ -60,6 +60,9 @@ fstart-platform-riscv64 = { path = "crates/fstart-platform-riscv64" }
 fstart-platform-aarch64 = { path = "crates/fstart-platform-aarch64" }
 fstart-stage = { path = "crates/fstart-stage" }
 
+[profile.dev]
+panic = "abort"
+
 [profile.release]
 opt-level = "z"
 lto = true

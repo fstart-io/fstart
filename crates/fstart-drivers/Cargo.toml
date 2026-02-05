@@ -11,5 +11,5 @@ pl011 = []
 sifive-uart = []
 
 [dependencies]
-fstart-types = { workspace = true }
 fstart-services = { workspace = true }
+tock-registers = "0.10"

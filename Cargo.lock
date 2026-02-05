@@ -322,9 +322,7 @@ version = "0.1.0"
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
- "fstart-drivers",
  "fstart-services",
- "fstart-types",
 ]
 
 [[package]]
@@ -351,7 +349,7 @@ name = "fstart-drivers"
 version = "0.1.0"
 dependencies = [
  "fstart-services",
- "fstart-types",
+ "tock-registers",
 ]
 
 [[package]]
@@ -715,6 +713,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "tock-registers"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d2d250f87fb3fb6f225c907cf54381509f47b40b74b1d1f12d2dccbc915bdfe"
 
 [[package]]
 name = "typenum"
