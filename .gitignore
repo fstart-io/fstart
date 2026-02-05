@@ -1,0 +1,5 @@
+/target
+*.rom
+*.bin
+*.key
+!*.pub

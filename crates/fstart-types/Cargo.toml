@@ -1,0 +1,15 @@
+[package]
+name = "fstart-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+std = ["serde/std", "heapless/serde"]
+alloc = ["serde/alloc"]
+
+[dependencies]
+serde = { workspace = true }
+heapless = { workspace = true }
+bitflags = { workspace = true }

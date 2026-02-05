@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    "xtask",
+    "crates/fstart-types",
+    "crates/fstart-codegen",
+    "crates/fstart-ffs",
+    "crates/fstart-crypto",
+    "crates/fstart-services",
+    "crates/fstart-drivers",
+    "crates/fstart-capabilities",
+    "crates/fstart-alloc",
+    "crates/fstart-log",
+    "crates/fstart-runtime",
+    "crates/fstart-platform-riscv64",
+    "crates/fstart-platform-aarch64",
+    "crates/fstart-stage",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = { version = "1", default-features = false }
+ron = "0.8"
+
+# Crypto (RustCrypto)
+sha2 = { version = "0.10", default-features = false }
+sha3 = { version = "0.10", default-features = false }
+ed25519-dalek = { version = "2", default-features = false }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+
+# Embedded / no_std utilities
+heapless = { version = "0.8", features = ["serde"] }
+log = "0.4"
+bitflags = "2"
+
+# Compression
+lz4_flex = { version = "0.11", default-features = false }
+
+# xtask / host-side
+clap = { version = "4", features = ["derive"] }
+
+# Internal workspace crates
+fstart-types = { path = "crates/fstart-types" }
+fstart-codegen = { path = "crates/fstart-codegen" }
+fstart-ffs = { path = "crates/fstart-ffs" }
+fstart-crypto = { path = "crates/fstart-crypto" }
+fstart-services = { path = "crates/fstart-services" }
+fstart-drivers = { path = "crates/fstart-drivers" }
+fstart-capabilities = { path = "crates/fstart-capabilities" }
+fstart-alloc = { path = "crates/fstart-alloc" }
+fstart-log = { path = "crates/fstart-log" }
+fstart-runtime = { path = "crates/fstart-runtime" }
+fstart-platform-riscv64 = { path = "crates/fstart-platform-riscv64" }
+fstart-platform-aarch64 = { path = "crates/fstart-platform-aarch64" }
+fstart-stage = { path = "crates/fstart-stage" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
