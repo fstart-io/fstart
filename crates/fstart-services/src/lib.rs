@@ -14,11 +14,17 @@
 pub mod block;
 pub mod console;
 pub mod device;
+pub mod gpio;
+pub mod i2c;
+pub mod spi;
 pub mod timer;
 
 pub use block::BlockDevice;
 pub use console::Console;
 pub use device::{BusDevice, Device, DeviceError};
+pub use gpio::GpioController;
+pub use i2c::I2cBus;
+pub use spi::SpiBus;
 pub use timer::Timer;
 
 /// Common error type for service operations.

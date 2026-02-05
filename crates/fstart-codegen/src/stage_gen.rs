@@ -23,8 +23,8 @@ struct DriverInfo {
     type_name: &'static str,
     /// Rust config type name (e.g., "Ns16550Config")
     config_type: &'static str,
-    /// Which service traits this driver implements (used for validation)
-    #[allow(dead_code)] // used by validation logic, read via RON device.services match
+    /// Which service traits this driver implements (used for validation).
+    #[allow(dead_code)] // reserved for future flexible-mode codegen
     services: &'static [&'static str],
 }
 
@@ -44,11 +44,108 @@ const KNOWN_DRIVERS: &[DriverInfo] = &[
         config_type: "Pl011Config",
         services: &["Console"],
     },
+    DriverInfo {
+        name: "designware-i2c",
+        module_path: "fstart_drivers::i2c::designware",
+        type_name: "DesignwareI2c",
+        config_type: "DesignwareI2cConfig",
+        services: &["I2cBus"],
+    },
 ];
 
 /// Look up driver info by RON driver name.
 fn find_driver(name: &str) -> Option<&'static DriverInfo> {
     KNOWN_DRIVERS.iter().find(|d| d.name == name)
+}
+
+/// Bus service names that indicate a device is a bus controller.
+const BUS_SERVICES: &[&str] = &["I2cBus", "SpiBus", "GpioController"];
+
+/// Returns true if a device provides a bus service.
+fn is_bus_provider(dev: &DeviceConfig) -> bool {
+    dev.services
+        .iter()
+        .any(|s| BUS_SERVICES.contains(&s.as_str()))
+}
+
+/// Topological sort of devices: parents before children.
+///
+/// Returns the devices sorted so that any device with a `parent` field comes
+/// after its parent. Also validates:
+/// - Every `parent` reference names an existing device
+/// - Every parent device provides a bus service
+/// - No cycles in the parent chain
+///
+/// Returns either the sorted indices or an error message.
+fn topological_sort_devices(devices: &[DeviceConfig]) -> Result<Vec<usize>, String> {
+    let n = devices.len();
+
+    // Build name -> index map
+    let name_to_idx: std::collections::HashMap<&str, usize> = devices
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.name.as_str(), i))
+        .collect();
+
+    // Build adjacency: parent_idx -> vec of child indices
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut in_degree: Vec<usize> = vec![0; n];
+
+    for (i, dev) in devices.iter().enumerate() {
+        if let Some(ref parent_name) = dev.parent {
+            let parent_str = parent_name.as_str();
+
+            // Validate parent exists
+            let Some(&parent_idx) = name_to_idx.get(parent_str) else {
+                return Err(format!(
+                    "device '{}' has parent '{}' which is not declared",
+                    dev.name.as_str(),
+                    parent_str,
+                ));
+            };
+
+            // Validate parent provides a bus service
+            if !is_bus_provider(&devices[parent_idx]) {
+                return Err(format!(
+                    "device '{}' has parent '{}' which does not provide a bus service \
+                     (expected one of: I2cBus, SpiBus, GpioController)",
+                    dev.name.as_str(),
+                    parent_str,
+                ));
+            };
+
+            children[parent_idx].push(i);
+            in_degree[i] += 1;
+        }
+    }
+
+    // Kahn's algorithm for topological sort
+    let mut queue: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+    let mut sorted: Vec<usize> = Vec::with_capacity(n);
+
+    while let Some(node) = queue.pop() {
+        sorted.push(node);
+        for &child in &children[node] {
+            in_degree[child] -= 1;
+            if in_degree[child] == 0 {
+                queue.push(child);
+            }
+        }
+    }
+
+    if sorted.len() != n {
+        // Cycle detected — find the devices involved
+        let cycle_devices: Vec<&str> = (0..n)
+            .filter(|&i| in_degree[i] > 0)
+            .map(|i| devices[i].name.as_str())
+            .collect();
+        return Err(format!(
+            "cycle detected in device parent chain involving: {}",
+            cycle_devices.join(", "),
+        ));
+    }
+
+    Ok(sorted)
 }
 
 /// Generate the complete Rust source for a stage's main.rs.
@@ -99,12 +196,22 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
         return format!("compile_error!(\"{err}\");\n");
     }
 
-    // Collect all devices referenced by capabilities to determine what we need.
-    // For now, generate structs for ALL declared devices.
+    // Topological sort: validate parent references and determine init order.
+    let sorted_indices = match topological_sort_devices(&config.devices) {
+        Ok(indices) => indices,
+        Err(err) => {
+            return format!("compile_error!(\"{err}\");\n");
+        }
+    };
+
+    // Build sorted device list for code generation.
+    let sorted_devices: Vec<&DeviceConfig> =
+        sorted_indices.iter().map(|&i| &config.devices[i]).collect();
+
     generate_imports(&mut out, &config.devices);
     generate_devices_struct(&mut out, &config.devices);
     generate_stage_context(&mut out, &config.devices);
-    generate_fstart_main(&mut out, config, capabilities, platform);
+    generate_fstart_main(&mut out, config, capabilities, platform, &sorted_devices);
 
     out
 }
@@ -178,7 +285,29 @@ fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
 /// Emit `use` statements for all driver types needed by this board's devices.
 fn generate_imports(out: &mut String, devices: &[DeviceConfig]) {
     out.push_str("use fstart_services::Console;\n");
-    out.push_str("use fstart_services::device::Device;\n\n");
+    out.push_str("use fstart_services::device::Device;\n");
+
+    // Check if any device provides bus services — import those traits too
+    let has_i2c = devices
+        .iter()
+        .any(|d| d.services.iter().any(|s| s.as_str() == "I2cBus"));
+    let has_spi = devices
+        .iter()
+        .any(|d| d.services.iter().any(|s| s.as_str() == "SpiBus"));
+    let has_gpio = devices
+        .iter()
+        .any(|d| d.services.iter().any(|s| s.as_str() == "GpioController"));
+
+    if has_i2c {
+        out.push_str("use fstart_services::I2cBus;\n");
+    }
+    if has_spi {
+        out.push_str("use fstart_services::SpiBus;\n");
+    }
+    if has_gpio {
+        out.push_str("use fstart_services::GpioController;\n");
+    }
+    out.push('\n');
 
     // Collect unique driver modules
     let mut seen: Vec<&str> = Vec::new();
@@ -224,9 +353,30 @@ fn generate_stage_context(out: &mut String, devices: &[DeviceConfig]) {
     out.push_str("impl StageContext {\n");
 
     // Find the first device providing each service type and generate an accessor.
-    let service_types = ["Console", "BlockDevice", "Timer"];
-    let accessor_names = ["console", "block_device", "timer"];
-    let trait_names = ["Console", "BlockDevice", "Timer"];
+    let service_types = [
+        "Console",
+        "BlockDevice",
+        "Timer",
+        "I2cBus",
+        "SpiBus",
+        "GpioController",
+    ];
+    let accessor_names = [
+        "console",
+        "block_device",
+        "timer",
+        "i2c_bus",
+        "spi_bus",
+        "gpio",
+    ];
+    let trait_names = [
+        "Console",
+        "BlockDevice",
+        "Timer",
+        "I2cBus",
+        "SpiBus",
+        "GpioController",
+    ];
 
     for (i, svc) in service_types.iter().enumerate() {
         if let Some(dev) = devices
@@ -250,11 +400,15 @@ fn generate_stage_context(out: &mut String, devices: &[DeviceConfig]) {
 
 /// Emit the `fstart_main()` function — device construction, capability
 /// execution, and halt.
+///
+/// `sorted_devices` is the topologically sorted list of devices (parents
+/// before children) for correct init ordering during DriverInit.
 fn generate_fstart_main(
     out: &mut String,
     config: &BoardConfig,
     capabilities: &[Capability],
     platform: &str,
+    sorted_devices: &[&DeviceConfig],
 ) {
     let halt_fn = match platform {
         "riscv64" => "fstart_platform_riscv64::halt()",
@@ -265,9 +419,9 @@ fn generate_fstart_main(
     out.push_str("#[no_mangle]\n");
     out.push_str("pub extern \"Rust\" fn fstart_main() -> ! {\n");
 
-    // --- Phase 1: Construct all devices (bind phase) ---
-    out.push_str("    // === Device construction (bind phase) ===\n");
-    for dev in &config.devices {
+    // --- Phase 1: Construct all devices in topological order (bind phase) ---
+    out.push_str("    // === Device construction (bind phase, topologically sorted) ===\n");
+    for dev in sorted_devices {
         generate_device_construction(out, dev, halt_fn);
     }
     out.push('\n');
@@ -297,13 +451,13 @@ fn generate_fstart_main(
             Capability::DriverInit => {
                 generate_driver_init(
                     out,
-                    &config.devices,
+                    sorted_devices,
                     &inited_devices,
                     halt_fn,
                     &console_device,
                 );
                 // After DriverInit, all devices are initialised.
-                for dev in &config.devices {
+                for dev in sorted_devices {
                     let name = dev.name.as_str().to_string();
                     if !inited_devices.contains(&name) {
                         inited_devices.push(name);
@@ -404,9 +558,29 @@ fn generate_config_fields(out: &mut String, dev: &DeviceConfig, info: &DriverInf
                 res.baud_rate.unwrap_or(115200)
             ));
         }
+        "designware-i2c" => {
+            // DesignWare I2C needs: base_addr, clock_freq, bus_speed
+            if let Some(base) = res.mmio_base {
+                out.push_str(&format!("        base_addr: {base:#x},\n"));
+            } else {
+                out.push_str(&format!(
+                    "        base_addr: compile_error!(\"device '{name}' requires mmio_base\"),\n"
+                ));
+            }
+            out.push_str(&format!(
+                "        clock_freq: {},\n",
+                res.clock_freq.unwrap_or(100_000_000)
+            ));
+            // Map bus_speed Hz to the I2cSpeed enum
+            let speed_enum = match res.bus_speed {
+                Some(s) if s > 100_000 => "fstart_drivers::i2c::designware::I2cSpeed::Fast",
+                _ => "fstart_drivers::i2c::designware::I2cSpeed::Standard",
+            };
+            out.push_str(&format!("        bus_speed: {speed_enum},\n"));
+        }
         _ => {
             out.push_str(&format!(
-                "        // TODO: config mapping for driver '{}'",
+                "        // TODO: config mapping for driver '{}'\n",
                 info.name
             ));
         }
@@ -464,17 +638,18 @@ fn generate_memory_init(out: &mut String, console_device: &Option<String>) {
 ///
 /// Initialises all devices that were not already initialised by earlier
 /// capabilities (e.g., ConsoleInit already called init() on the UART).
+/// Devices are processed in topological order (parents before children).
 fn generate_driver_init(
     out: &mut String,
-    devices: &[DeviceConfig],
+    sorted_devices: &[&DeviceConfig],
     already_inited: &[String],
     halt_fn: &str,
     console_device: &Option<String>,
 ) {
-    out.push_str("    // DriverInit: init remaining devices\n");
+    out.push_str("    // DriverInit: init remaining devices (topological order)\n");
 
     let mut count = 0usize;
-    for dev in devices {
+    for dev in sorted_devices {
         let name = dev.name.as_str();
         if already_inited.iter().any(|s| s == name) {
             out.push_str(&format!("    // {name}: already initialised\n"));
@@ -734,6 +909,437 @@ mod tests {
         assert!(
             source.contains("[fstart] all capabilities complete"),
             "should log completion message"
+        );
+    }
+
+    // =======================================================================
+    // Bus hierarchy tests
+    // =======================================================================
+
+    /// Helper: create a board config with UART + I2C bus + I2C child device.
+    fn test_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -> BoardConfig {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let mut devices = heapless::Vec::new();
+
+        // Root device: UART
+        let _ = devices.push(DeviceConfig {
+            name: HString::try_from("uart0").unwrap(),
+            compatible: HString::try_from("ns16550a").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            resources: Resources {
+                mmio_base: Some(0x1000_0000),
+                clock_freq: Some(3_686_400),
+                baud_rate: Some(115_200),
+                irq: Some(10),
+                ..Default::default()
+            },
+            parent: None,
+        });
+
+        // Root device: I2C bus controller
+        let _ = devices.push(DeviceConfig {
+            name: HString::try_from("i2c0").unwrap(),
+            compatible: HString::try_from("dw-apb-i2c").unwrap(),
+            driver: HString::try_from("designware-i2c").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("I2cBus").unwrap());
+                v
+            },
+            resources: Resources {
+                mmio_base: Some(0x1004_0000),
+                clock_freq: Some(100_000_000),
+                bus_speed: Some(400_000),
+                ..Default::default()
+            },
+            parent: None,
+        });
+
+        BoardConfig {
+            name: HString::try_from("test-i2c-board").unwrap(),
+            platform: HString::try_from("riscv64").unwrap(),
+            memory: MemoryMap {
+                regions: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(MemoryRegion {
+                        name: HString::try_from("ram").unwrap(),
+                        base: 0x8000_0000,
+                        size: 0x0800_0000,
+                        kind: RegionKind::Ram,
+                    });
+                    v
+                },
+            },
+            devices,
+            stages: StageLayout::Monolithic(MonolithicConfig {
+                capabilities,
+                load_addr: 0x8000_0000,
+                stack_size: 0x10000,
+            }),
+            security: SecurityConfig {
+                signing_algorithm: SignatureAlgorithm::Ed25519,
+                pubkey_file: HString::try_from("keys/dev.pub").unwrap(),
+                required_digests: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(DigestAlgorithm::Sha256);
+                    v
+                },
+            },
+            mode: BuildMode::Rigid,
+            payload: None,
+        }
+    }
+
+    #[test]
+    fn test_topological_sort_no_parents() {
+        // All root devices should sort fine (preserving relative order)
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let devices: Vec<DeviceConfig> = vec![
+            DeviceConfig {
+                name: HString::try_from("uart0").unwrap(),
+                compatible: HString::try_from("ns16550a").unwrap(),
+                driver: HString::try_from("ns16550").unwrap(),
+                services: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(HString::try_from("Console").unwrap());
+                    v
+                },
+                resources: Resources {
+                    mmio_base: Some(0x1000_0000),
+                    ..Default::default()
+                },
+                parent: None,
+            },
+            DeviceConfig {
+                name: HString::try_from("i2c0").unwrap(),
+                compatible: HString::try_from("dw-apb-i2c").unwrap(),
+                driver: HString::try_from("designware-i2c").unwrap(),
+                services: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(HString::try_from("I2cBus").unwrap());
+                    v
+                },
+                resources: Resources {
+                    mmio_base: Some(0x1004_0000),
+                    ..Default::default()
+                },
+                parent: None,
+            },
+        ];
+
+        let sorted = topological_sort_devices(&devices).expect("should succeed");
+        assert_eq!(sorted.len(), 2);
+        // Both root devices — both should be present (order among roots is unspecified)
+        assert!(sorted.contains(&0), "should contain device 0");
+        assert!(sorted.contains(&1), "should contain device 1");
+    }
+
+    #[test]
+    fn test_topological_sort_parent_before_child() {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        // Child listed BEFORE parent in RON — sort must reorder
+        let devices: Vec<DeviceConfig> = vec![
+            // Index 0: child (listed first but has parent)
+            DeviceConfig {
+                name: HString::try_from("tpm0").unwrap(),
+                compatible: HString::try_from("infineon,slb9670").unwrap(),
+                driver: HString::try_from("ns16550").unwrap(), // fake driver, doesn't matter for sort
+                services: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(HString::try_from("Console").unwrap());
+                    v
+                },
+                resources: Resources {
+                    bus_addr: Some(0x50),
+                    ..Default::default()
+                },
+                parent: Some(HString::try_from("i2c0").unwrap()),
+            },
+            // Index 1: parent
+            DeviceConfig {
+                name: HString::try_from("i2c0").unwrap(),
+                compatible: HString::try_from("dw-apb-i2c").unwrap(),
+                driver: HString::try_from("designware-i2c").unwrap(),
+                services: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(HString::try_from("I2cBus").unwrap());
+                    v
+                },
+                resources: Resources {
+                    mmio_base: Some(0x1004_0000),
+                    ..Default::default()
+                },
+                parent: None,
+            },
+        ];
+
+        let sorted = topological_sort_devices(&devices).expect("should succeed");
+        assert_eq!(sorted.len(), 2);
+        // Parent (index 1) must come before child (index 0)
+        assert_eq!(sorted[0], 1, "parent i2c0 should come first");
+        assert_eq!(sorted[1], 0, "child tpm0 should come second");
+    }
+
+    #[test]
+    fn test_topological_sort_unknown_parent_is_error() {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let devices: Vec<DeviceConfig> = vec![DeviceConfig {
+            name: HString::try_from("tpm0").unwrap(),
+            compatible: HString::try_from("infineon,slb9670").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            resources: Resources::default(),
+            parent: Some(HString::try_from("nonexistent").unwrap()),
+        }];
+
+        let result = topological_sort_devices(&devices);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("parent 'nonexistent' which is not declared"));
+    }
+
+    #[test]
+    fn test_topological_sort_parent_not_bus_is_error() {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        // uart0 provides Console, NOT a bus service
+        let devices: Vec<DeviceConfig> = vec![
+            DeviceConfig {
+                name: HString::try_from("uart0").unwrap(),
+                compatible: HString::try_from("ns16550a").unwrap(),
+                driver: HString::try_from("ns16550").unwrap(),
+                services: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(HString::try_from("Console").unwrap());
+                    v
+                },
+                resources: Resources {
+                    mmio_base: Some(0x1000_0000),
+                    ..Default::default()
+                },
+                parent: None,
+            },
+            DeviceConfig {
+                name: HString::try_from("child0").unwrap(),
+                compatible: HString::try_from("some-device").unwrap(),
+                driver: HString::try_from("ns16550").unwrap(),
+                services: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(HString::try_from("Console").unwrap());
+                    v
+                },
+                resources: Resources::default(),
+                parent: Some(HString::try_from("uart0").unwrap()),
+            },
+        ];
+
+        let result = topological_sort_devices(&devices);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("does not provide a bus service"),
+            "should reject non-bus parent"
+        );
+    }
+
+    #[test]
+    fn test_topological_sort_cycle_detection() {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        // Create a cycle: a -> b -> a
+        let devices: Vec<DeviceConfig> = vec![
+            DeviceConfig {
+                name: HString::try_from("a").unwrap(),
+                compatible: HString::try_from("x").unwrap(),
+                driver: HString::try_from("designware-i2c").unwrap(),
+                services: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(HString::try_from("I2cBus").unwrap());
+                    v
+                },
+                resources: Resources::default(),
+                parent: Some(HString::try_from("b").unwrap()),
+            },
+            DeviceConfig {
+                name: HString::try_from("b").unwrap(),
+                compatible: HString::try_from("x").unwrap(),
+                driver: HString::try_from("designware-i2c").unwrap(),
+                services: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(HString::try_from("I2cBus").unwrap());
+                    v
+                },
+                resources: Resources::default(),
+                parent: Some(HString::try_from("a").unwrap()),
+            },
+        ];
+
+        let result = topological_sort_devices(&devices);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("cycle detected"),
+            "should detect cycle"
+        );
+    }
+
+    #[test]
+    fn test_i2c_bus_device_generates_correct_config() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::DriverInit);
+        let config = test_board_with_i2c_bus(caps);
+        let source = generate_stage_source(&config, None);
+
+        // Should generate DesignwareI2c construction
+        assert!(
+            source.contains("DesignwareI2c::new"),
+            "should construct DesignwareI2c: {source}"
+        );
+        assert!(
+            source.contains("DesignwareI2cConfig"),
+            "should use DesignwareI2cConfig"
+        );
+        assert!(
+            source.contains("0x10040000"),
+            "should have correct base addr"
+        );
+        assert!(
+            source.contains("I2cSpeed::Fast"),
+            "400kHz should map to Fast speed"
+        );
+    }
+
+    #[test]
+    fn test_i2c_bus_generates_i2c_bus_import() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_board_with_i2c_bus(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("use fstart_services::I2cBus;"),
+            "should import I2cBus trait"
+        );
+    }
+
+    #[test]
+    fn test_i2c_bus_generates_accessor() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_board_with_i2c_bus(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("fn i2c_bus("),
+            "should generate i2c_bus() accessor"
+        );
+        assert!(source.contains("impl I2cBus"), "should return impl I2cBus");
+    }
+
+    #[test]
+    fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: HString::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::DriverInit);
+
+        let mut config = test_board_with_i2c_bus(caps);
+
+        // Add a child device that references i2c0 as parent.
+        // Use a known driver (ns16550) to keep the test simple — we just
+        // need to verify init order. In a real board this would be a TPM
+        // or sensor driver.
+        let _ = config.devices.push(DeviceConfig {
+            name: HString::try_from("child0").unwrap(),
+            compatible: HString::try_from("test-child").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            resources: Resources {
+                mmio_base: Some(0x2000_0000),
+                bus_addr: Some(0x50),
+                ..Default::default()
+            },
+            parent: Some(HString::try_from("i2c0").unwrap()),
+        });
+
+        let source = generate_stage_source(&config, None);
+
+        // In the generated code, i2c0.init() must appear before child0.init()
+        let i2c_init_pos = source.find("i2c0.init()").expect("should init i2c0");
+        let child_init_pos = source.find("child0.init()").expect("should init child0");
+        assert!(
+            i2c_init_pos < child_init_pos,
+            "parent i2c0 must be initialised before child child0"
+        );
+    }
+
+    #[test]
+    fn test_parent_reference_unknown_device_is_compile_error() {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: HString::try_from("uart0").unwrap(),
+        });
+
+        let mut config = test_board_config(caps);
+        let _ = config.devices.push(DeviceConfig {
+            name: HString::try_from("child0").unwrap(),
+            compatible: HString::try_from("test-child").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            resources: Resources::default(),
+            parent: Some(HString::try_from("ghost").unwrap()),
+        });
+
+        let source = generate_stage_source(&config, None);
+        assert!(
+            source.contains("compile_error!"),
+            "should emit compile_error for unknown parent"
+        );
+        assert!(
+            source.contains("ghost"),
+            "error should mention the unknown parent name"
         );
     }
 }

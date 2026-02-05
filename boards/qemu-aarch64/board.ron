@@ -34,6 +34,7 @@
                 baud_rate: Some(115200),
                 irq: Some(33),
                 bus_addr: None,
+                bus_speed: None,
             ),
         ),
     ],

@@ -13,6 +13,7 @@ aarch64 = ["dep:fstart-platform-aarch64"]
 ns16550 = ["fstart-drivers/ns16550"]
 pl011 = ["fstart-drivers/pl011"]
 sifive-uart = ["fstart-drivers/sifive-uart"]
+designware-i2c = ["fstart-drivers/designware-i2c"]
 
 [dependencies]
 fstart-services = { workspace = true }
