@@ -8,9 +8,13 @@
 //! 3. Generates `fstart_main()` that constructs devices, runs capabilities
 //!    in declared order, and halts
 //!
+//! In **Rigid** mode, all types are concrete — zero overhead.
+//! In **Flexible** mode, service enum wrappers are generated for runtime
+//! driver selection via match dispatch (no trait objects, no alloc).
+//!
 //! See [docs/driver-model.md](../../../docs/driver-model.md).
 
-use fstart_types::{BoardConfig, Capability, DeviceConfig, StageLayout};
+use fstart_types::{BoardConfig, BuildMode, Capability, DeviceConfig, StageLayout};
 
 /// Information about a known driver — maps RON driver name to Rust type path
 /// and its config construction logic.
@@ -23,8 +27,8 @@ struct DriverInfo {
     type_name: &'static str,
     /// Rust config type name (e.g., "Ns16550Config")
     config_type: &'static str,
-    /// Which service traits this driver implements (used for validation).
-    #[allow(dead_code)] // reserved for future flexible-mode codegen
+    /// Which service traits this driver implements.
+    /// Used for flexible-mode enum dispatch codegen and validation.
     services: &'static [&'static str],
 }
 
@@ -148,6 +152,254 @@ fn topological_sort_devices(devices: &[DeviceConfig]) -> Result<Vec<usize>, Stri
     Ok(sorted)
 }
 
+// =======================================================================
+// Flexible mode: service enum dispatch
+// =======================================================================
+
+/// Description of a service trait's methods for enum dispatch codegen.
+struct ServiceMethod {
+    /// Method signature (without the `&self`)
+    /// e.g., "fn write_byte(&self, byte: u8) -> Result<(), ServiceError>"
+    signature: &'static str,
+    /// How to call the inner variant
+    /// e.g., "d.write_byte(byte)"
+    delegation: &'static str,
+}
+
+/// Full description of a service trait for enum codegen.
+struct ServiceTraitInfo {
+    /// Trait name (e.g., "Console")
+    name: &'static str,
+    /// Generated enum name (e.g., "ConsoleDevice")
+    enum_name: &'static str,
+    /// Methods that need delegation (only required methods — defaults are inherited)
+    methods: &'static [ServiceMethod],
+    /// Accessor name on StageContext (e.g., "console")
+    accessor: &'static str,
+}
+
+/// Known service traits and their methods for enum dispatch generation.
+const SERVICE_TRAITS: &[ServiceTraitInfo] = &[
+    ServiceTraitInfo {
+        name: "Console",
+        enum_name: "ConsoleDevice",
+        methods: &[
+            ServiceMethod {
+                signature: "fn write_byte(&self, byte: u8) -> Result<(), ServiceError>",
+                delegation: "d.write_byte(byte)",
+            },
+            ServiceMethod {
+                signature: "fn read_byte(&self) -> Result<Option<u8>, ServiceError>",
+                delegation: "d.read_byte()",
+            },
+        ],
+        accessor: "console",
+    },
+    ServiceTraitInfo {
+        name: "BlockDevice",
+        enum_name: "BlockDeviceEnum",
+        methods: &[
+            ServiceMethod {
+                signature:
+                    "fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError>",
+                delegation: "d.read(offset, buf)",
+            },
+            ServiceMethod {
+                signature:
+                    "fn write(&self, offset: u64, buf: &[u8]) -> Result<usize, ServiceError>",
+                delegation: "d.write(offset, buf)",
+            },
+            ServiceMethod {
+                signature: "fn size(&self) -> u64",
+                delegation: "d.size()",
+            },
+        ],
+        accessor: "block_device",
+    },
+    ServiceTraitInfo {
+        name: "Timer",
+        enum_name: "TimerDevice",
+        methods: &[
+            ServiceMethod {
+                signature: "fn delay_us(&self, us: u64)",
+                delegation: "d.delay_us(us)",
+            },
+            ServiceMethod {
+                signature: "fn timestamp_us(&self) -> u64",
+                delegation: "d.timestamp_us()",
+            },
+        ],
+        accessor: "timer",
+    },
+    ServiceTraitInfo {
+        name: "I2cBus",
+        enum_name: "I2cBusDevice",
+        methods: &[
+            ServiceMethod {
+                signature: "fn read(&self, addr: u8, reg: u8, buf: &mut [u8]) -> Result<usize, ServiceError>",
+                delegation: "d.read(addr, reg, buf)",
+            },
+            ServiceMethod {
+                signature: "fn write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<usize, ServiceError>",
+                delegation: "d.write(addr, reg, data)",
+            },
+        ],
+        accessor: "i2c_bus",
+    },
+    ServiceTraitInfo {
+        name: "SpiBus",
+        enum_name: "SpiBusDevice",
+        methods: &[
+            ServiceMethod {
+                signature: "fn transfer(&self, cs: u8, tx: &[u8], rx: &mut [u8]) -> Result<usize, ServiceError>",
+                delegation: "d.transfer(cs, tx, rx)",
+            },
+        ],
+        accessor: "spi_bus",
+    },
+    ServiceTraitInfo {
+        name: "GpioController",
+        enum_name: "GpioControllerDevice",
+        methods: &[
+            ServiceMethod {
+                signature: "fn get(&self, pin: u32) -> Result<bool, ServiceError>",
+                delegation: "d.get(pin)",
+            },
+            ServiceMethod {
+                signature: "fn set(&self, pin: u32, value: bool) -> Result<(), ServiceError>",
+                delegation: "d.set(pin, value)",
+            },
+            ServiceMethod {
+                signature:
+                    "fn set_direction(&self, pin: u32, output: bool) -> Result<(), ServiceError>",
+                delegation: "d.set_direction(pin, output)",
+            },
+        ],
+        accessor: "gpio",
+    },
+];
+
+/// Find a ServiceTraitInfo by trait name.
+fn find_service_trait(name: &str) -> Option<&'static ServiceTraitInfo> {
+    SERVICE_TRAITS.iter().find(|s| s.name == name)
+}
+
+/// For a given service trait, collect all unique (driver_info, type_name) pairs
+/// from the board's devices that provide that service.
+fn drivers_for_service<'a>(devices: &[DeviceConfig], service_name: &str) -> Vec<&'a DriverInfo> {
+    let mut result: Vec<&DriverInfo> = Vec::new();
+    let mut seen_types: Vec<&str> = Vec::new();
+
+    for dev in devices {
+        // Check if this device declares the service
+        if !dev.services.iter().any(|s| s.as_str() == service_name) {
+            continue;
+        }
+        if let Some(info) = find_driver(dev.driver.as_str()) {
+            // Also verify the driver actually implements this service
+            if info.services.contains(&service_name) && !seen_types.contains(&info.type_name) {
+                seen_types.push(info.type_name);
+                result.push(info);
+            }
+        }
+    }
+    result
+}
+
+/// Collect all service trait names that are used by at least one device.
+fn active_services(devices: &[DeviceConfig]) -> Vec<&'static str> {
+    let mut result: Vec<&'static str> = Vec::new();
+    for svc in SERVICE_TRAITS {
+        if devices
+            .iter()
+            .any(|d| d.services.iter().any(|s| s.as_str() == svc.name))
+        {
+            result.push(svc.name);
+        }
+    }
+    result
+}
+
+/// Generate service enum types and their trait implementations for flexible mode.
+///
+/// For each service trait that has drivers in this board, generates:
+/// ```ignore
+/// enum ConsoleDevice {
+///     Ns16550(Ns16550),
+///     Pl011(Pl011),
+/// }
+///
+/// impl Console for ConsoleDevice {
+///     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
+///         match self {
+///             Self::Ns16550(d) => d.write_byte(byte),
+///             Self::Pl011(d) => d.write_byte(byte),
+///         }
+///     }
+///     // ...
+/// }
+/// ```
+fn generate_flexible_enums(out: &mut String, devices: &[DeviceConfig]) {
+    let services = active_services(devices);
+
+    for svc_name in &services {
+        let Some(svc_info) = find_service_trait(svc_name) else {
+            continue;
+        };
+
+        let drivers = drivers_for_service(devices, svc_name);
+        if drivers.is_empty() {
+            continue;
+        }
+
+        // --- Generate enum ---
+        out.push_str(&format!(
+            "/// Enum dispatch for {} service (Flexible mode).\n",
+            svc_info.name
+        ));
+        out.push_str("#[allow(dead_code)]\n");
+        out.push_str(&format!("enum {} {{\n", svc_info.enum_name));
+        for drv in &drivers {
+            out.push_str(&format!("    {}({}),\n", drv.type_name, drv.type_name));
+        }
+        out.push_str("}\n\n");
+
+        // --- Generate trait impl ---
+        out.push_str(&format!(
+            "impl {} for {} {{\n",
+            svc_info.name, svc_info.enum_name
+        ));
+        for method in svc_info.methods {
+            out.push_str(&format!("    {} {{\n", method.signature));
+            out.push_str("        match self {\n");
+            for drv in &drivers {
+                out.push_str(&format!(
+                    "            Self::{}(d) => {},\n",
+                    drv.type_name, method.delegation
+                ));
+            }
+            out.push_str("        }\n");
+            out.push_str("    }\n\n");
+        }
+        out.push_str("}\n\n");
+    }
+}
+
+/// In flexible mode, find the enum type name for a device based on its first
+/// service. Returns the enum variant name (driver type name) and the enum
+/// type name.
+fn flexible_enum_for_device(dev: &DeviceConfig) -> Option<(&'static str, &'static str)> {
+    // Find the first service this device provides that has a service enum
+    for svc_str in &dev.services {
+        if let Some(svc_info) = find_service_trait(svc_str.as_str()) {
+            if let Some(drv_info) = find_driver(dev.driver.as_str()) {
+                return Some((svc_info.enum_name, drv_info.type_name));
+            }
+        }
+    }
+    None
+}
+
 /// Generate the complete Rust source for a stage's main.rs.
 ///
 /// This is the heart of fstart's "RON drives everything" philosophy.
@@ -208,10 +460,24 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
     let sorted_devices: Vec<&DeviceConfig> =
         sorted_indices.iter().map(|&i| &config.devices[i]).collect();
 
-    generate_imports(&mut out, &config.devices);
-    generate_devices_struct(&mut out, &config.devices);
-    generate_stage_context(&mut out, &config.devices);
-    generate_fstart_main(&mut out, config, capabilities, platform, &sorted_devices);
+    let mode = config.mode;
+
+    generate_imports(&mut out, &config.devices, mode);
+
+    if mode == BuildMode::Flexible {
+        generate_flexible_enums(&mut out, &config.devices);
+    }
+
+    generate_devices_struct(&mut out, &config.devices, mode);
+    generate_stage_context(&mut out, &config.devices, mode);
+    generate_fstart_main(
+        &mut out,
+        config,
+        capabilities,
+        platform,
+        &sorted_devices,
+        mode,
+    );
 
     out
 }
@@ -283,9 +549,14 @@ fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
 }
 
 /// Emit `use` statements for all driver types needed by this board's devices.
-fn generate_imports(out: &mut String, devices: &[DeviceConfig]) {
+fn generate_imports(out: &mut String, devices: &[DeviceConfig], mode: BuildMode) {
     out.push_str("use fstart_services::Console;\n");
     out.push_str("use fstart_services::device::Device;\n");
+
+    // Flexible mode needs ServiceError for the enum trait impls
+    if mode == BuildMode::Flexible {
+        out.push_str("use fstart_services::ServiceError;\n");
+    }
 
     // Check if any device provides bus services — import those traits too
     let has_i2c = devices
@@ -327,13 +598,29 @@ fn generate_imports(out: &mut String, devices: &[DeviceConfig]) {
 }
 
 /// Emit the `Devices` struct — one concrete typed field per device.
-fn generate_devices_struct(out: &mut String, devices: &[DeviceConfig]) {
-    out.push_str("/// All devices for this board, with concrete types.\n");
+///
+/// In Rigid mode, fields use the concrete driver type (e.g., `Ns16550`).
+/// In Flexible mode, fields use the generated service enum (e.g., `ConsoleDevice`).
+fn generate_devices_struct(out: &mut String, devices: &[DeviceConfig], mode: BuildMode) {
+    out.push_str("/// All devices for this board.\n");
     out.push_str("struct Devices {\n");
     for dev in devices {
         let field_name = dev.name.as_str();
         if let Some(info) = find_driver(dev.driver.as_str()) {
-            out.push_str(&format!("    {field_name}: {},\n", info.type_name));
+            match mode {
+                BuildMode::Rigid => {
+                    out.push_str(&format!("    {field_name}: {},\n", info.type_name));
+                }
+                BuildMode::Flexible => {
+                    // Use the service enum type instead of the concrete type
+                    if let Some((enum_name, _)) = flexible_enum_for_device(dev) {
+                        out.push_str(&format!("    {field_name}: {enum_name},\n"));
+                    } else {
+                        // Fallback: use concrete type (device has no service enum)
+                        out.push_str(&format!("    {field_name}: {},\n", info.type_name));
+                    }
+                }
+            }
         } else {
             out.push_str(&format!("    // unknown driver: {}\n", dev.driver.as_str()));
         }
@@ -342,7 +629,11 @@ fn generate_devices_struct(out: &mut String, devices: &[DeviceConfig]) {
 }
 
 /// Emit the `StageContext` struct with typed service accessors.
-fn generate_stage_context(out: &mut String, devices: &[DeviceConfig]) {
+///
+/// In Rigid mode, accessors return `&(impl Trait + '_)` — monomorphized.
+/// In Flexible mode, accessors return `&EnumType` — the generated enum
+/// implements the trait, so callers use it identically.
+fn generate_stage_context(out: &mut String, devices: &[DeviceConfig], mode: BuildMode) {
     out.push_str("/// Stage context — provides typed access to services.\n");
     out.push_str("#[allow(dead_code)]\n");
     out.push_str("struct StageContext {\n");
@@ -352,44 +643,27 @@ fn generate_stage_context(out: &mut String, devices: &[DeviceConfig]) {
     out.push_str("#[allow(dead_code)]\n");
     out.push_str("impl StageContext {\n");
 
-    // Find the first device providing each service type and generate an accessor.
-    let service_types = [
-        "Console",
-        "BlockDevice",
-        "Timer",
-        "I2cBus",
-        "SpiBus",
-        "GpioController",
-    ];
-    let accessor_names = [
-        "console",
-        "block_device",
-        "timer",
-        "i2c_bus",
-        "spi_bus",
-        "gpio",
-    ];
-    let trait_names = [
-        "Console",
-        "BlockDevice",
-        "Timer",
-        "I2cBus",
-        "SpiBus",
-        "GpioController",
-    ];
-
-    for (i, svc) in service_types.iter().enumerate() {
+    for svc in SERVICE_TRAITS {
         if let Some(dev) = devices
             .iter()
-            .find(|d| d.services.iter().any(|s| s.as_str() == *svc))
+            .find(|d| d.services.iter().any(|s| s.as_str() == svc.name))
         {
             let field = dev.name.as_str();
-            let accessor = accessor_names[i];
-            let trait_name = trait_names[i];
             out.push_str("    #[inline]\n");
-            out.push_str(&format!(
-                "    fn {accessor}(&self) -> &(impl {trait_name} + '_) {{\n"
-            ));
+            match mode {
+                BuildMode::Rigid => {
+                    out.push_str(&format!(
+                        "    fn {}(&self) -> &(impl {} + '_) {{\n",
+                        svc.accessor, svc.name,
+                    ));
+                }
+                BuildMode::Flexible => {
+                    out.push_str(&format!(
+                        "    fn {}(&self) -> &{} {{\n",
+                        svc.accessor, svc.enum_name,
+                    ));
+                }
+            }
             out.push_str(&format!("        &self.devices.{field}\n"));
             out.push_str("    }\n\n");
         }
@@ -409,6 +683,7 @@ fn generate_fstart_main(
     capabilities: &[Capability],
     platform: &str,
     sorted_devices: &[&DeviceConfig],
+    mode: BuildMode,
 ) {
     let halt_fn = match platform {
         "riscv64" => "fstart_platform_riscv64::halt()",
@@ -422,7 +697,7 @@ fn generate_fstart_main(
     // --- Phase 1: Construct all devices in topological order (bind phase) ---
     out.push_str("    // === Device construction (bind phase, topologically sorted) ===\n");
     for dev in sorted_devices {
-        generate_device_construction(out, dev, halt_fn);
+        generate_device_construction(out, dev, halt_fn, mode);
     }
     out.push('\n');
 
@@ -439,7 +714,7 @@ fn generate_fstart_main(
         match cap {
             Capability::ConsoleInit { device } => {
                 let dev_name = device.as_str();
-                generate_console_init(out, dev_name, &config.devices, halt_fn);
+                generate_console_init(out, dev_name, &config.devices, halt_fn, mode);
                 inited_devices.push(dev_name.to_string());
                 if console_device.is_none() {
                     console_device = Some(dev_name.to_string());
@@ -455,6 +730,7 @@ fn generate_fstart_main(
                     &inited_devices,
                     halt_fn,
                     &console_device,
+                    mode,
                 );
                 // After DriverInit, all devices are initialised.
                 for dev in sorted_devices {
@@ -512,7 +788,24 @@ fn generate_fstart_main(
 }
 
 /// Generate a device construction call using the `Device` trait.
-fn generate_device_construction(out: &mut String, dev: &DeviceConfig, halt_fn: &str) {
+///
+/// In Rigid mode, the binding is the concrete driver type directly.
+/// In Flexible mode, we construct the concrete device into a temporary,
+/// which is later wrapped in the service enum after init.
+///
+/// The split between construction and wrapping is intentional: `Device::init()`
+/// is a trait method on the concrete type, not on the enum. So the init order is:
+///   1. `let _uart0_inner = Ns16550::new(...)` (construction)
+///   2. `_uart0_inner.init()` (ConsoleInit or DriverInit)
+///   3. `let uart0 = ConsoleDevice::Ns16550(_uart0_inner)` (wrapping)
+///
+/// In Rigid mode, steps 1 and 3 are collapsed (no wrapping needed).
+fn generate_device_construction(
+    out: &mut String,
+    dev: &DeviceConfig,
+    halt_fn: &str,
+    mode: BuildMode,
+) {
     let name = dev.name.as_str();
     let drv_name = dev.driver.as_str();
 
@@ -523,15 +816,43 @@ fn generate_device_construction(out: &mut String, dev: &DeviceConfig, halt_fn: &
         return;
     };
 
-    out.push_str(&format!(
-        "    let {name} = {}::new(&{} {{\n",
-        info.type_name, info.config_type
-    ));
+    match mode {
+        BuildMode::Rigid => {
+            out.push_str(&format!(
+                "    let {name} = {}::new(&{} {{\n",
+                info.type_name, info.config_type
+            ));
+            generate_config_fields(out, dev, info);
+            out.push_str(&format!("    }}).unwrap_or_else(|_| {halt_fn});\n"));
+        }
+        BuildMode::Flexible => {
+            // In flexible mode, construct into a _inner variable.
+            // Wrapping into the enum happens after init (see generate_flexible_wrapping).
+            let binding = if flexible_enum_for_device(dev).is_some() {
+                format!("_{name}_inner")
+            } else {
+                name.to_string()
+            };
+            out.push_str(&format!(
+                "    let {binding} = {}::new(&{} {{\n",
+                info.type_name, info.config_type
+            ));
+            generate_config_fields(out, dev, info);
+            out.push_str(&format!("    }}).unwrap_or_else(|_| {halt_fn});\n"));
+        }
+    }
+}
 
-    // Map Resources fields to config fields based on driver type.
-    generate_config_fields(out, dev, info);
-
-    out.push_str(&format!("    }}).unwrap_or_else(|_| {halt_fn});\n"));
+/// Generate the enum wrapping for a device after init (Flexible mode only).
+///
+/// Produces: `let uart0 = ConsoleDevice::Ns16550(_uart0_inner);`
+fn generate_flexible_wrapping(out: &mut String, dev: &DeviceConfig) {
+    let name = dev.name.as_str();
+    if let Some((enum_name, variant_name)) = flexible_enum_for_device(dev) {
+        out.push_str(&format!(
+            "    let {name} = {enum_name}::{variant_name}(_{name}_inner);\n"
+        ));
+    }
 }
 
 /// Map RON Resources to driver-specific Config fields.
@@ -588,11 +909,16 @@ fn generate_config_fields(out: &mut String, dev: &DeviceConfig, info: &DriverInf
 }
 
 /// Generate code for the ConsoleInit capability.
+///
+/// In Flexible mode, the device variable at this point is `_uart0_inner`
+/// (the concrete type). After init, we wrap it into the enum and call
+/// `console_ready` on the wrapped version.
 fn generate_console_init(
     out: &mut String,
     device_name: &str,
     devices: &[DeviceConfig],
     halt_fn: &str,
+    mode: BuildMode,
 ) {
     let Some(dev) = devices.iter().find(|d| d.name.as_str() == device_name) else {
         out.push_str(&format!(
@@ -618,12 +944,33 @@ fn generate_console_init(
     }
 
     out.push_str(&format!("    // ConsoleInit: {drv_name}\n"));
-    out.push_str(&format!(
-        "    {device_name}.init().unwrap_or_else(|_| {halt_fn});\n"
-    ));
-    out.push_str(&format!(
-        "    fstart_capabilities::console_ready(&{device_name}, \"{device_name}\", \"{drv_name}\");\n"
-    ));
+
+    match mode {
+        BuildMode::Rigid => {
+            out.push_str(&format!(
+                "    {device_name}.init().unwrap_or_else(|_| {halt_fn});\n"
+            ));
+            out.push_str(&format!(
+                "    fstart_capabilities::console_ready(&{device_name}, \"{device_name}\", \"{drv_name}\");\n"
+            ));
+        }
+        BuildMode::Flexible => {
+            // Init the inner concrete device, then wrap in enum
+            let inner = if flexible_enum_for_device(dev).is_some() {
+                format!("_{device_name}_inner")
+            } else {
+                device_name.to_string()
+            };
+            out.push_str(&format!(
+                "    {inner}.init().unwrap_or_else(|_| {halt_fn});\n"
+            ));
+            // Wrap into enum before calling console_ready (which uses Console trait)
+            generate_flexible_wrapping(out, dev);
+            out.push_str(&format!(
+                "    fstart_capabilities::console_ready(&{device_name}, \"{device_name}\", \"{drv_name}\");\n"
+            ));
+        }
+    }
 }
 
 /// Generate code for the MemoryInit capability.
@@ -639,12 +986,16 @@ fn generate_memory_init(out: &mut String, console_device: &Option<String>) {
 /// Initialises all devices that were not already initialised by earlier
 /// capabilities (e.g., ConsoleInit already called init() on the UART).
 /// Devices are processed in topological order (parents before children).
+///
+/// In Flexible mode, calls `init()` on the `_dev_inner` variable then
+/// wraps into the service enum.
 fn generate_driver_init(
     out: &mut String,
     sorted_devices: &[&DeviceConfig],
     already_inited: &[String],
     halt_fn: &str,
     console_device: &Option<String>,
+    mode: BuildMode,
 ) {
     out.push_str("    // DriverInit: init remaining devices (topological order)\n");
 
@@ -658,9 +1009,26 @@ fn generate_driver_init(
         if find_driver(dev.driver.as_str()).is_none() {
             continue; // unknown driver, already compile_error'd in construction
         }
-        out.push_str(&format!(
-            "    {name}.init().unwrap_or_else(|_| {halt_fn});\n"
-        ));
+
+        match mode {
+            BuildMode::Rigid => {
+                out.push_str(&format!(
+                    "    {name}.init().unwrap_or_else(|_| {halt_fn});\n"
+                ));
+            }
+            BuildMode::Flexible => {
+                let inner = if flexible_enum_for_device(dev).is_some() {
+                    format!("_{name}_inner")
+                } else {
+                    name.to_string()
+                };
+                out.push_str(&format!(
+                    "    {inner}.init().unwrap_or_else(|_| {halt_fn});\n"
+                ));
+                // Wrap into enum after init
+                generate_flexible_wrapping(out, dev);
+            }
+        }
         count += 1;
     }
 
@@ -1340,6 +1708,346 @@ mod tests {
         assert!(
             source.contains("ghost"),
             "error should mention the unknown parent name"
+        );
+    }
+
+    // =======================================================================
+    // Flexible mode tests
+    // =======================================================================
+
+    /// Helper: create a flexible-mode board config with a single UART.
+    fn test_flexible_board_config(capabilities: heapless::Vec<Capability, 16>) -> BoardConfig {
+        let mut config = test_board_config(capabilities);
+        config.mode = BuildMode::Flexible;
+        config
+    }
+
+    /// Helper: create a flexible-mode board config with two UARTs (both Console).
+    /// This exercises enum dispatch with multiple variants.
+    fn test_flexible_multi_driver_board(
+        capabilities: heapless::Vec<Capability, 16>,
+    ) -> BoardConfig {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let mut devices = heapless::Vec::new();
+
+        // NS16550 UART
+        let _ = devices.push(DeviceConfig {
+            name: HString::try_from("uart0").unwrap(),
+            compatible: HString::try_from("ns16550a").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            resources: Resources {
+                mmio_base: Some(0x1000_0000),
+                clock_freq: Some(3_686_400),
+                baud_rate: Some(115_200),
+                irq: Some(10),
+                ..Default::default()
+            },
+            parent: None,
+        });
+
+        // PL011 UART
+        let _ = devices.push(DeviceConfig {
+            name: HString::try_from("uart1").unwrap(),
+            compatible: HString::try_from("arm,pl011").unwrap(),
+            driver: HString::try_from("pl011").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            resources: Resources {
+                mmio_base: Some(0x0900_0000),
+                clock_freq: Some(1_843_200),
+                baud_rate: Some(115_200),
+                ..Default::default()
+            },
+            parent: None,
+        });
+
+        BoardConfig {
+            name: HString::try_from("test-flex-multi").unwrap(),
+            platform: HString::try_from("riscv64").unwrap(),
+            memory: MemoryMap {
+                regions: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(MemoryRegion {
+                        name: HString::try_from("ram").unwrap(),
+                        base: 0x8000_0000,
+                        size: 0x0800_0000,
+                        kind: RegionKind::Ram,
+                    });
+                    v
+                },
+            },
+            devices,
+            stages: StageLayout::Monolithic(MonolithicConfig {
+                capabilities,
+                load_addr: 0x8000_0000,
+                stack_size: 0x10000,
+            }),
+            security: SecurityConfig {
+                signing_algorithm: SignatureAlgorithm::Ed25519,
+                pubkey_file: HString::try_from("keys/dev.pub").unwrap(),
+                required_digests: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(DigestAlgorithm::Sha256);
+                    v
+                },
+            },
+            mode: BuildMode::Flexible,
+            payload: None,
+        }
+    }
+
+    #[test]
+    fn test_flexible_generates_console_enum() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_flexible_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("enum ConsoleDevice"),
+            "should generate ConsoleDevice enum: {source}"
+        );
+        assert!(
+            source.contains("Ns16550(Ns16550)"),
+            "should have Ns16550 variant: {source}"
+        );
+    }
+
+    #[test]
+    fn test_flexible_generates_console_trait_impl() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_flexible_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("impl Console for ConsoleDevice"),
+            "should impl Console for ConsoleDevice: {source}"
+        );
+        assert!(
+            source.contains("fn write_byte"),
+            "should have write_byte method: {source}"
+        );
+        assert!(
+            source.contains("fn read_byte"),
+            "should have read_byte method: {source}"
+        );
+        assert!(
+            source.contains("d.write_byte(byte)"),
+            "should delegate write_byte: {source}"
+        );
+    }
+
+    #[test]
+    fn test_flexible_multi_driver_enum_has_both_variants() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_flexible_multi_driver_board(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("enum ConsoleDevice"),
+            "should generate ConsoleDevice enum: {source}"
+        );
+        assert!(
+            source.contains("Ns16550(Ns16550)"),
+            "should have Ns16550 variant: {source}"
+        );
+        assert!(
+            source.contains("Pl011(Pl011)"),
+            "should have Pl011 variant: {source}"
+        );
+
+        // Both variants should appear in the match arms
+        assert!(
+            source.contains("Self::Ns16550(d)"),
+            "should match on Ns16550 variant: {source}"
+        );
+        assert!(
+            source.contains("Self::Pl011(d)"),
+            "should match on Pl011 variant: {source}"
+        );
+    }
+
+    #[test]
+    fn test_flexible_devices_struct_uses_enum_type() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_flexible_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        // Devices struct should use ConsoleDevice, not Ns16550
+        assert!(
+            source.contains("uart0: ConsoleDevice"),
+            "Devices struct should use ConsoleDevice enum type: {source}"
+        );
+    }
+
+    #[test]
+    fn test_flexible_stage_context_returns_enum_type() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_flexible_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        // StageContext accessor should return &ConsoleDevice, not &(impl Console + '_)
+        assert!(
+            source.contains("fn console(&self) -> &ConsoleDevice"),
+            "should return &ConsoleDevice: {source}"
+        );
+    }
+
+    #[test]
+    fn test_flexible_construction_uses_inner_variable() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_flexible_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        // Construction should use _uart0_inner
+        assert!(
+            source.contains("let _uart0_inner = Ns16550::new"),
+            "should construct into _uart0_inner: {source}"
+        );
+        // Init should be called on the inner variable
+        assert!(
+            source.contains("_uart0_inner.init()"),
+            "should call init on inner variable: {source}"
+        );
+        // Wrapping should produce the final variable
+        assert!(
+            source.contains("let uart0 = ConsoleDevice::Ns16550(_uart0_inner)"),
+            "should wrap inner into ConsoleDevice: {source}"
+        );
+    }
+
+    #[test]
+    fn test_flexible_imports_service_error() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_flexible_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("use fstart_services::ServiceError;"),
+            "flexible mode should import ServiceError: {source}"
+        );
+    }
+
+    #[test]
+    fn test_flexible_driver_init_wraps_after_init() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::DriverInit);
+        let config = test_flexible_multi_driver_board(caps);
+        let source = generate_stage_source(&config, None);
+
+        // uart1 should be initialized via _uart1_inner and then wrapped
+        assert!(
+            source.contains("_uart1_inner.init()"),
+            "should init uart1 via inner variable: {source}"
+        );
+        assert!(
+            source.contains("let uart1 = ConsoleDevice::Pl011(_uart1_inner)"),
+            "should wrap uart1 after init: {source}"
+        );
+
+        // The init should come before the wrapping
+        let init_pos = source.find("_uart1_inner.init()").unwrap();
+        let wrap_pos = source
+            .find("let uart1 = ConsoleDevice::Pl011(_uart1_inner)")
+            .unwrap();
+        assert!(init_pos < wrap_pos, "init should come before wrapping");
+    }
+
+    #[test]
+    fn test_flexible_still_generates_completion_message() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_flexible_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("[fstart] all capabilities complete"),
+            "should log completion message in flexible mode: {source}"
+        );
+    }
+
+    #[test]
+    fn test_flexible_with_i2c_bus_generates_i2c_bus_enum() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::DriverInit);
+
+        let mut config = test_board_with_i2c_bus(caps);
+        config.mode = BuildMode::Flexible;
+
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("enum I2cBusDevice"),
+            "should generate I2cBusDevice enum: {source}"
+        );
+        assert!(
+            source.contains("DesignwareI2c(DesignwareI2c)"),
+            "should have DesignwareI2c variant: {source}"
+        );
+        assert!(
+            source.contains("impl I2cBus for I2cBusDevice"),
+            "should impl I2cBus for I2cBusDevice: {source}"
+        );
+    }
+
+    #[test]
+    fn test_rigid_mode_unchanged_no_enums() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let config = test_board_config(caps); // default Rigid mode
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            !source.contains("enum ConsoleDevice"),
+            "rigid mode should NOT generate ConsoleDevice enum: {source}"
+        );
+        assert!(
+            !source.contains("ServiceError"),
+            "rigid mode should NOT import ServiceError: {source}"
+        );
+        assert!(
+            source.contains("uart0: Ns16550"),
+            "rigid mode should use concrete type in Devices: {source}"
         );
     }
 }
