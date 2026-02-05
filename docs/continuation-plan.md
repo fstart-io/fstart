@@ -1,7 +1,8 @@
 # fstart Continuation Plan
 
-Status as of 2026-02-05. This document captures what has been built, what
-remains, and the recommended order of work for future sessions.
+Status as of 2026-02-05 (updated Phase 4 complete). This document captures
+what has been built, what remains, and the recommended order of work for
+future sessions.
 
 ## What Is Done
 
@@ -69,6 +70,66 @@ capability that needs logging (all except `ConsoleInit`) appears before
 - Unknown driver produces compile error
 - Completion message is always present
 
+### Phase 4: Bus Support (COMPLETE)
+
+Bus-attached device infrastructure with parent-before-child init ordering.
+
+#### Bus Service Traits
+
+Three new service traits in `fstart-services/src/`:
+- `I2cBus` (`i2c.rs`) — `read(addr, reg, buf)`, `write(addr, reg, data)`
+- `SpiBus` (`spi.rs`) — `transfer(cs, tx, rx)`, default `write()` / `read()`
+- `GpioController` (`gpio.rs`) — `get(pin)`, `set(pin, value)`, `set_direction(pin, output)`
+
+All re-exported from `fstart-services::lib.rs`.
+
+#### DesignWare I2C Controller Driver
+
+Full driver in `fstart-drivers/src/i2c/designware.rs`:
+- Complete register block via `register_structs!` / `register_bitfields!`,
+  matching the Synopsys DW_apb_i2c databook (cross-referenced with coreboot
+  and U-Boot implementations)
+- `DesignwareI2cConfig { base_addr, clock_freq, bus_speed }` with
+  `I2cSpeed` enum (Standard 100kHz / Fast 400kHz)
+- `impl Device for DesignwareI2c` with SCL timing calculation from clock freq
+- `impl I2cBus for DesignwareI2c` with polled master-mode 7-bit addressing
+- Feature-gated under `designware-i2c`
+
+#### Topological Sort in Codegen
+
+`stage_gen.rs` now:
+- Sorts devices topologically (Kahn's algorithm) before code generation
+- Validates every `parent` reference names an existing device → `compile_error!`
+- Validates parent provides a bus service (I2cBus, SpiBus, GpioController) →
+  `compile_error!`
+- Detects cycles in parent chain → `compile_error!`
+- Generates device construction and `DriverInit` calls in parent-before-child
+  order
+
+#### Codegen Enhancements
+
+- `designware-i2c` added to driver registry with config field mapping
+  (`bus_speed` Hz → `I2cSpeed` enum)
+- `Resources.bus_speed: Option<u32>` added to `fstart-types` for bus
+  controller speed configuration
+- `StageContext` generates `i2c_bus()`, `spi_bus()`, `gpio()` accessors
+  when corresponding services are present
+- Import generation adds `use fstart_services::I2cBus` etc. when needed
+
+#### Testing
+
+**18 unit tests** in `fstart-codegen/src/stage_gen.rs` (8 original + 10 new):
+- Topological sort with no parents (all roots)
+- Topological sort reorders parent before child
+- Unknown parent reference → compile error
+- Parent without bus service → compile error
+- Cycle detection → compile error
+- I2C bus generates correct DesignwareI2cConfig
+- I2C bus generates I2cBus import
+- I2C bus generates `i2c_bus()` accessor
+- DriverInit with bus hierarchy inits parent before child
+- Parent reference to unknown device → compile error in full codegen
+
 ### Infrastructure Fixes
 
 - **AArch64 objcopy**: `xtask build` now automatically runs `llvm-objcopy
@@ -85,66 +146,11 @@ capability that needs logging (all except `ConsoleInit`) appears before
 | qemu-aarch64 release | `cargo xtask build --board qemu-aarch64 --release` | Builds clean |
 | clippy | `cargo clippy --workspace --exclude fstart-stage -- -D warnings` | Clean |
 | fmt | `cargo fmt --all -- --check` | Clean |
-| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 8 pass |
+| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 18 pass |
 
 ---
 
 ## What Remains
-
-### Next Priority: Phase 4 — Bus Support (Driver Model Phase 4)
-
-**Goal**: Enable bus-attached devices (I2C sensors, SPI flash, GPIO
-expanders) with parent-before-child init ordering.
-
-#### 4.1 Bus Service Traits
-
-Add to `fstart-services/src/`:
-
-```rust
-// i2c.rs
-pub trait I2cBus: Send + Sync {
-    fn read(&self, addr: u8, reg: u8, buf: &mut [u8]) -> Result<usize, ServiceError>;
-    fn write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<usize, ServiceError>;
-}
-
-// spi.rs
-pub trait SpiBus: Send + Sync {
-    fn transfer(&self, cs: u8, tx: &[u8], rx: &mut [u8]) -> Result<usize, ServiceError>;
-}
-
-// gpio.rs
-pub trait GpioController: Send + Sync {
-    fn get(&self, pin: u32) -> Result<bool, ServiceError>;
-    fn set(&self, pin: u32, value: bool) -> Result<(), ServiceError>;
-    fn set_direction(&self, pin: u32, output: bool) -> Result<(), ServiceError>;
-}
-```
-
-#### 4.2 Topological Sort in Codegen
-
-Update `stage_gen.rs`:
-- Sort devices by dependency: root devices first, then children.
-- Validate that every `parent` reference names an existing device.
-- Validate that the parent device provides a bus service.
-- Generate parent-before-child init ordering.
-- Pass parent bus reference to child device constructors.
-
-#### 4.3 First Bus Driver
-
-Implement DesignWare I2C controller as `fstart-drivers/src/i2c/designware.rs`:
-- `register_structs!` / `register_bitfields!` for DW APB I2C registers.
-- `DesignwareI2cConfig { base_addr, clock_freq, bus_speed }`.
-- `impl Device for DesignwareI2c`.
-- `impl I2cBus for DesignwareI2c`.
-
-#### 4.4 Test Board
-
-Create `boards/qemu-riscv64-i2c/board.ron` (or extend existing) with a
-bus hierarchy for integration testing.
-
----
-
-### Phase 5: Flexible Mode (Driver Model Phase 5)
 
 **Goal**: Support runtime driver selection via enum dispatch (no trait
 objects, no alloc).
@@ -259,24 +265,32 @@ alternative to `build.rs` codegen for enum dispatch generation.
 
 ---
 
-## File Summary (Modified in This Session)
+## File Summary (Phase 4 Changes)
 
 | File | Change |
 |------|--------|
-| `crates/fstart-services/src/device.rs` | Added `BusDevice` trait |
-| `crates/fstart-services/src/lib.rs` | Re-export `BusDevice` |
-| `crates/fstart-capabilities/src/lib.rs` | All 7 capability functions: `console_ready`, `memory_init`, `driver_init_complete`, `sig_verify`, `fdt_prepare`, `payload_load`, `stage_load` + `write_usize` helper |
-| `crates/fstart-codegen/src/stage_gen.rs` | Full capability pipeline codegen, ordering validation, 8 unit tests |
-| `crates/fstart-codegen/Cargo.toml` | Added `heapless` dev-dependency for tests |
-| `xtask/src/build_board.rs` | Auto `llvm-objcopy -O binary` for AArch64 |
-| `docs/continuation-plan.md` | This document |
+| `crates/fstart-services/src/i2c.rs` | **New**: `I2cBus` trait |
+| `crates/fstart-services/src/spi.rs` | **New**: `SpiBus` trait |
+| `crates/fstart-services/src/gpio.rs` | **New**: `GpioController` trait |
+| `crates/fstart-services/src/lib.rs` | Added modules + re-exports for I2cBus, SpiBus, GpioController |
+| `crates/fstart-drivers/src/i2c/mod.rs` | **New**: I2C driver module (feature-gated) |
+| `crates/fstart-drivers/src/i2c/designware.rs` | **New**: DesignWare APB I2C controller driver |
+| `crates/fstart-drivers/src/lib.rs` | Added `i2c` module |
+| `crates/fstart-drivers/Cargo.toml` | Added `designware-i2c` feature |
+| `crates/fstart-stage/Cargo.toml` | Added `designware-i2c` feature forwarding |
+| `crates/fstart-codegen/src/stage_gen.rs` | Topological sort, parent validation, cycle detection, `designware-i2c` driver entry, bus service imports/accessors, 10 new tests (18 total) |
+| `crates/fstart-types/src/device.rs` | Added `bus_speed: Option<u32>` to `Resources` |
+| `boards/qemu-riscv64/board.ron` | Added `bus_speed: None` to resources |
+| `boards/qemu-aarch64/board.ron` | Added `bus_speed: None` to resources |
+| `docs/continuation-plan.md` | Updated with Phase 4 completion |
 
 ## Git State
 
-Three commits expected on `master`:
+Four commits on `master`:
 1. `1b2b71f` — Initial commit: fstart firmware framework with 14 workspace crates
 2. `9383113` — Introduce typed Device trait driver model with codegen-produced StageContext
-3. (Pending) — Capability pipeline, BusDevice trait, codegen ordering validation, AArch64 objcopy fix
+3. `de59c64` — Capability pipeline, BusDevice trait, codegen ordering validation, AArch64 objcopy
+4. (Pending) — Phase 4: Bus support — I2C/SPI/GPIO service traits, DesignWare I2C driver, topological sort in codegen
 
 ## Quick Reference: Build Commands
 

@@ -48,4 +48,6 @@ pub struct Resources {
     pub irq: Option<u32>,
     /// Bus address (e.g., I2C address, SPI chip select)
     pub bus_addr: Option<u32>,
+    /// Bus speed in Hz (e.g., 100000 for I2C standard, 400000 for fast)
+    pub bus_speed: Option<u32>,
 }

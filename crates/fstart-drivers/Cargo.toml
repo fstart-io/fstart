@@ -9,6 +9,7 @@ default = []
 ns16550 = []
 pl011 = []
 sifive-uart = []
+designware-i2c = []
 
 [dependencies]
 fstart-services = { workspace = true }
