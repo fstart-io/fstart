@@ -44,3 +44,22 @@ pub trait Device: Send + Sync + Sized {
     /// Initialise hardware.  Called after `new()`, in capability order.
     fn init(&self) -> Result<(), DeviceError>;
 }
+
+/// Marker trait for devices that live on a parent bus.
+///
+/// A bus device requires a parent controller that provides a bus-level
+/// service (e.g., `I2cBus`, `SpiBus`).  Codegen validates that the
+/// parent device exists and provides the required bus service, and
+/// ensures parent-before-child init ordering.
+///
+/// # Example
+///
+/// ```ignore
+/// impl BusDevice for Slb9670 {
+///     type ParentBus = dyn I2cBus;
+/// }
+/// ```
+pub trait BusDevice: Device {
+    /// The service trait this device requires from its parent bus controller.
+    type ParentBus: ?Sized;
+}

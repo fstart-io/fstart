@@ -15,6 +15,10 @@
 
 use fstart_services::Console;
 
+// ---------------------------------------------------------------------------
+// ConsoleInit
+// ---------------------------------------------------------------------------
+
 /// Log the console-ready banner after a console device is initialised.
 ///
 /// Called by generated code after `Device::init()` succeeds on a console device.
@@ -24,4 +28,129 @@ pub fn console_ready(console: &dyn Console, device_name: &str, driver_name: &str
     let _ = console.write_str(": ");
     let _ = console.write_str(driver_name);
     let _ = console.write_line(" console ready");
+}
+
+// ---------------------------------------------------------------------------
+// MemoryInit
+// ---------------------------------------------------------------------------
+
+/// Initialise DRAM (memory training / memory controller setup).
+///
+/// In a real board this would perform SPD reads, memory training, and
+/// controller configuration. For QEMU virt machines, RAM is always available
+/// so this is a no-op that logs its execution.
+///
+/// Future: Accept a platform-specific memory-init trait or configuration.
+pub fn memory_init(console: &dyn Console) {
+    let _ = console.write_line("[fstart] capability: MemoryInit");
+    // QEMU virt: RAM is pre-initialised, nothing to do.
+    // Real boards: SPD read → training → controller init would go here.
+    let _ = console.write_line("[fstart] memory init complete (no-op on QEMU)");
+}
+
+// ---------------------------------------------------------------------------
+// DriverInit
+// ---------------------------------------------------------------------------
+
+/// Enumerate and initialise all declared devices/drivers.
+///
+/// Codegen generates the actual `Device::init()` calls for each device
+/// that was not already initialised by an earlier capability (e.g.,
+/// ConsoleInit already inits the UART). This function logs the phase
+/// boundary; the individual init calls are inlined by codegen.
+///
+/// `device_count` is the total number of devices that were initialised
+/// in this phase (provided by codegen, which knows the count).
+pub fn driver_init_complete(console: &dyn Console, device_count: usize) {
+    let _ = console.write_str("[fstart] capability: DriverInit (");
+    // Format the count manually since we don't have format! in no_std
+    let _ = write_usize(console, device_count);
+    let _ = console.write_line(" devices)");
+}
+
+// ---------------------------------------------------------------------------
+// SigVerify
+// ---------------------------------------------------------------------------
+
+/// Verify the firmware filesystem manifest signature.
+///
+/// Reads the FFS manifest, checks its cryptographic signature against
+/// the embedded public key, and verifies file digests.
+///
+/// Future: Accept `&dyn BlockDevice` for FFS access and crypto primitives.
+pub fn sig_verify(console: &dyn Console) {
+    let _ = console.write_line("[fstart] capability: SigVerify");
+    // Skeleton: real implementation needs fstart-ffs + fstart-crypto.
+    let _ = console.write_line("[fstart] sig verify skipped (not yet implemented)");
+}
+
+// ---------------------------------------------------------------------------
+// FdtPrepare
+// ---------------------------------------------------------------------------
+
+/// Prepare a Flattened Device Tree for OS handoff.
+///
+/// Generates an FDT blob from the board RON configuration (or patches
+/// a DTS-provided base FDT) and places it in memory where the payload
+/// can find it.
+///
+/// Future: Accept memory map info and device list to populate FDT nodes.
+pub fn fdt_prepare(console: &dyn Console) {
+    let _ = console.write_line("[fstart] capability: FdtPrepare");
+    // Skeleton: real implementation needs FDT generation from RON.
+    let _ = console.write_line("[fstart] FDT prepare skipped (not yet implemented)");
+}
+
+// ---------------------------------------------------------------------------
+// PayloadLoad
+// ---------------------------------------------------------------------------
+
+/// Load and jump to the payload (OS kernel, shell, etc.).
+///
+/// Reads the payload from FFS (or a fixed address), relocates it if
+/// necessary, and transfers control.
+///
+/// Future: Accept `&dyn BlockDevice` for FFS, console for logging,
+/// and payload entry address/format info.
+pub fn payload_load(console: &dyn Console) {
+    let _ = console.write_line("[fstart] capability: PayloadLoad");
+    // Skeleton: real implementation needs fstart-ffs + payload format parsing.
+    let _ = console.write_line("[fstart] payload load skipped (not yet implemented)");
+}
+
+// ---------------------------------------------------------------------------
+// StageLoad
+// ---------------------------------------------------------------------------
+
+/// Load the next stage from FFS into RAM and jump to it.
+///
+/// Reads the named stage binary from the firmware filesystem, copies it
+/// to its load address, and transfers control.
+///
+/// Future: Accept `&dyn BlockDevice` for FFS access and stage metadata.
+pub fn stage_load(console: &dyn Console, next_stage: &str) {
+    let _ = console.write_str("[fstart] capability: StageLoad -> ");
+    let _ = console.write_line(next_stage);
+    // Skeleton: real implementation needs fstart-ffs + stage binary loading.
+    let _ = console.write_line("[fstart] stage load skipped (not yet implemented)");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Write a `usize` as decimal to the console (no format! in no_std).
+fn write_usize(console: &dyn Console, mut n: usize) -> Result<(), fstart_services::ServiceError> {
+    if n == 0 {
+        return console.write_byte(b'0');
+    }
+    // Max digits for u64 is 20; usize ≤ u64.
+    let mut buf = [0u8; 20];
+    let mut i = buf.len();
+    while n > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    console.write_bytes(&buf[i..])
 }

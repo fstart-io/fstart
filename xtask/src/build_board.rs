@@ -90,11 +90,35 @@ pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
 
     // Determine output binary path
     let profile = if release { "release" } else { "debug" };
-    let binary_path = workspace_root
+    let elf_path = workspace_root
         .join("target")
         .join(target)
         .join(profile)
         .join("fstart-stage");
+
+    // AArch64: QEMU -bios expects a flat binary, not an ELF.
+    // Run llvm-objcopy -O binary to produce a .bin alongside the ELF.
+    let binary_path = if config.platform.as_str() == "aarch64" {
+        let bin_path = elf_path.with_extension("bin");
+        eprintln!(
+            "[fstart] objcopy: {} -> {}",
+            elf_path.display(),
+            bin_path.display()
+        );
+        let objcopy_status = Command::new("llvm-objcopy")
+            .arg("-O")
+            .arg("binary")
+            .arg(&elf_path)
+            .arg(&bin_path)
+            .status()
+            .map_err(|e| format!("failed to run llvm-objcopy: {e}"))?;
+        if !objcopy_status.success() {
+            return Err("llvm-objcopy failed".to_string());
+        }
+        bin_path
+    } else {
+        elf_path
+    };
 
     eprintln!("[fstart] built: {}", binary_path.display());
     Ok(binary_path)
