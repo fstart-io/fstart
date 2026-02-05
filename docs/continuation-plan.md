@@ -1,6 +1,6 @@
 # fstart Continuation Plan
 
-Status as of 2026-02-05 (updated Phase 4 complete). This document captures
+Status as of 2026-02-05 (updated Phase 5 complete). This document captures
 what has been built, what remains, and the recommended order of work for
 future sessions.
 
@@ -136,28 +136,15 @@ Full driver in `fstart-drivers/src/i2c/designware.rs`:
   -O binary` for AArch64 boards (QEMU `-bios` expects flat binary, not ELF).
 - **`cargo xtask run --board qemu-aarch64`** now works end-to-end.
 
-### Verified Working
+### Phase 5: Flexible Mode (COMPLETE)
 
-| Board | Mode | Output |
-|-------|------|--------|
-| qemu-riscv64 debug | `cargo xtask run --board qemu-riscv64` | `[fstart] uart0: ns16550 console ready` + `[fstart] all capabilities complete` |
-| qemu-riscv64 release | `cargo xtask build --board qemu-riscv64 --release` | Builds clean |
-| qemu-aarch64 debug | `cargo xtask run --board qemu-aarch64` | `[fstart] uart0: pl011 console ready` + `[fstart] all capabilities complete` |
-| qemu-aarch64 release | `cargo xtask build --board qemu-aarch64 --release` | Builds clean |
-| clippy | `cargo clippy --workspace --exclude fstart-stage -- -D warnings` | Clean |
-| fmt | `cargo fmt --all -- --check` | Clean |
-| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 18 pass |
+Enum dispatch codegen for runtime driver selection — no trait objects, no alloc.
 
----
+#### Service Enum Generation
 
-## What Remains
-
-**Goal**: Support runtime driver selection via enum dispatch (no trait
-objects, no alloc).
-
-#### 5.1 Enum Dispatch Codegen
-
-When `mode: Flexible`, codegen generates:
+When `mode: Flexible`, codegen generates service enum wrappers for each
+service trait that has drivers in the board. For example, a board with both
+NS16550 and PL011 consoles gets:
 
 ```rust
 enum ConsoleDevice {
@@ -176,10 +163,74 @@ impl Console for ConsoleDevice {
 }
 ```
 
-#### 5.2 Explore crabtime
+All 6 service traits (Console, BlockDevice, Timer, I2cBus, SpiBus,
+GpioController) have full enum dispatch metadata defined in `SERVICE_TRAITS`.
+
+#### Two-Phase Construction
+
+In flexible mode, device construction is split into two phases to support
+the `Device::init()` trait method (which is on the concrete type, not the
+enum):
+
+1. **Construct**: `let _uart0_inner = Ns16550::new(&Ns16550Config { ... })`
+2. **Init**: `_uart0_inner.init()` (ConsoleInit or DriverInit capability)
+3. **Wrap**: `let uart0 = ConsoleDevice::Ns16550(_uart0_inner)`
+
+This ensures `init()` is called on the concrete type before enum wrapping.
+
+#### Codegen Changes
+
+- `generate_imports()` adds `use fstart_services::ServiceError` in Flexible mode
+- `generate_flexible_enums()` generates enum types + trait impls per service
+- `generate_devices_struct()` uses enum types instead of concrete types
+- `generate_stage_context()` returns `&EnumType` instead of `&(impl Trait + '_)`
+- `generate_device_construction()` uses `_name_inner` temporary variables
+- `generate_console_init()` wraps after init via `generate_flexible_wrapping()`
+- `generate_driver_init()` wraps after init for each remaining device
+- `DriverInfo.services` field now used (removed `#[allow(dead_code)]`)
+
+#### Testing Board
+
+New board `boards/qemu-riscv64-flex/board.ron` — identical to `qemu-riscv64`
+but with `mode: Flexible`. Boots on QEMU with correct output.
+
+#### Testing
+
+**29 unit tests** in `fstart-codegen/src/stage_gen.rs` (18 original + 11 new):
+- Flexible generates ConsoleDevice enum
+- Flexible generates Console trait impl with delegation
+- Multi-driver board enum has both Ns16550 and Pl011 variants
+- Devices struct uses enum type in flexible mode
+- StageContext returns &ConsoleDevice (not &impl Console)
+- Construction uses `_inner` variable pattern
+- ServiceError imported in flexible mode
+- DriverInit wraps after init
+- Completion message present in flexible mode
+- I2C bus generates I2cBusDevice enum with trait impl
+- Rigid mode unchanged — no enums generated
+
+### Verified Working
+
+| Board | Mode | Output |
+|-------|------|--------|
+| qemu-riscv64 debug | `cargo xtask run --board qemu-riscv64` | `[fstart] uart0: ns16550 console ready` + `[fstart] all capabilities complete` |
+| qemu-riscv64 release | `cargo xtask build --board qemu-riscv64 --release` | Builds clean |
+| qemu-aarch64 debug | `cargo xtask run --board qemu-aarch64` | `[fstart] uart0: pl011 console ready` + `[fstart] all capabilities complete` |
+| qemu-aarch64 release | `cargo xtask build --board qemu-aarch64 --release` | Builds clean |
+| qemu-riscv64-flex debug | `cargo xtask run --board qemu-riscv64-flex` | `[fstart] uart0: ns16550 console ready` + `[fstart] all capabilities complete` |
+| clippy | `cargo clippy --workspace --exclude fstart-stage -- -D warnings` | Clean |
+| fmt | `cargo fmt --all -- --check` | Clean |
+| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 29 pass |
+
+---
+
+## What Remains
+
+### Explore crabtime (Optional)
 
 Investigate `crabtime` (Zig comptime-like macros for Rust) as an
-alternative to `build.rs` codegen for enum dispatch generation.
+alternative or complement to `build.rs` codegen for enum dispatch
+generation. Low priority — current codegen approach works well.
 
 ---
 
@@ -265,32 +316,22 @@ alternative to `build.rs` codegen for enum dispatch generation.
 
 ---
 
-## File Summary (Phase 4 Changes)
+## File Summary (Phase 5 Changes)
 
 | File | Change |
 |------|--------|
-| `crates/fstart-services/src/i2c.rs` | **New**: `I2cBus` trait |
-| `crates/fstart-services/src/spi.rs` | **New**: `SpiBus` trait |
-| `crates/fstart-services/src/gpio.rs` | **New**: `GpioController` trait |
-| `crates/fstart-services/src/lib.rs` | Added modules + re-exports for I2cBus, SpiBus, GpioController |
-| `crates/fstart-drivers/src/i2c/mod.rs` | **New**: I2C driver module (feature-gated) |
-| `crates/fstart-drivers/src/i2c/designware.rs` | **New**: DesignWare APB I2C controller driver |
-| `crates/fstart-drivers/src/lib.rs` | Added `i2c` module |
-| `crates/fstart-drivers/Cargo.toml` | Added `designware-i2c` feature |
-| `crates/fstart-stage/Cargo.toml` | Added `designware-i2c` feature forwarding |
-| `crates/fstart-codegen/src/stage_gen.rs` | Topological sort, parent validation, cycle detection, `designware-i2c` driver entry, bus service imports/accessors, 10 new tests (18 total) |
-| `crates/fstart-types/src/device.rs` | Added `bus_speed: Option<u32>` to `Resources` |
-| `boards/qemu-riscv64/board.ron` | Added `bus_speed: None` to resources |
-| `boards/qemu-aarch64/board.ron` | Added `bus_speed: None` to resources |
-| `docs/continuation-plan.md` | Updated with Phase 4 completion |
+| `crates/fstart-codegen/src/stage_gen.rs` | `SERVICE_TRAITS` metadata, `generate_flexible_enums()`, flexible-mode branching in all generate functions, `generate_flexible_wrapping()`, two-phase construction, 11 new tests (29 total) |
+| `boards/qemu-riscv64-flex/board.ron` | **New**: Flexible-mode board for QEMU RISC-V 64 |
+| `docs/continuation-plan.md` | Updated with Phase 5 completion |
 
 ## Git State
 
-Four commits on `master`:
+Five commits on `master`:
 1. `1b2b71f` — Initial commit: fstart firmware framework with 14 workspace crates
 2. `9383113` — Introduce typed Device trait driver model with codegen-produced StageContext
 3. `de59c64` — Capability pipeline, BusDevice trait, codegen ordering validation, AArch64 objcopy
-4. (Pending) — Phase 4: Bus support — I2C/SPI/GPIO service traits, DesignWare I2C driver, topological sort in codegen
+4. `187f4af` — Bus support: I2C/SPI/GPIO service traits, DesignWare I2C driver, topological sort
+5. (Pending) — Phase 5: Flexible mode — enum dispatch codegen
 
 ## Quick Reference: Build Commands
 
@@ -305,9 +346,11 @@ cargo test --workspace --exclude fstart-stage --exclude fstart-runtime \
 # Cross-build boards
 cargo xtask build --board qemu-riscv64
 cargo xtask build --board qemu-aarch64
+cargo xtask build --board qemu-riscv64-flex
 cargo xtask build --board qemu-riscv64 --release
 
 # Run on QEMU
 cargo xtask run --board qemu-riscv64
 cargo xtask run --board qemu-aarch64
+cargo xtask run --board qemu-riscv64-flex
 ```
