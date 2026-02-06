@@ -6,9 +6,19 @@ license.workspace = true
 
 [features]
 default = []
-std = ["fstart-types/std", "postcard/use-std"]
+std = ["fstart-types/std", "postcard/use-std", "postcard/alloc", "fstart-crypto/all"]
 alloc = ["fstart-types/alloc", "postcard/alloc"]
+# Forward crypto features for firmware (no_std) builds that need verification
+ed25519 = ["fstart-crypto/ed25519"]
+sha2-digest = ["fstart-crypto/sha2-digest"]
+sha3-digest = ["fstart-crypto/sha3-digest"]
 
 [dependencies]
 fstart-types = { workspace = true }
+fstart-crypto = { workspace = true }
 postcard = { workspace = true }
+heapless = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
