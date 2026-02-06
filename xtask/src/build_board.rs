@@ -58,12 +58,50 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         other => return Err(format!("unsupported platform: {other}")),
     };
 
-    // Collect features: platform + drivers
+    // Collect features: platform + drivers + FFS/crypto (if any stage uses FFS caps)
     let mut features = Vec::new();
     features.push(config.platform.to_string());
     for device in &config.devices {
         features.push(device.driver.to_string());
     }
+
+    // Check if any stage uses FFS capabilities (SigVerify, StageLoad, PayloadLoad)
+    let uses_ffs = match &config.stages {
+        StageLayout::Monolithic(mono) => mono.capabilities.iter().any(|c| {
+            matches!(
+                c,
+                fstart_types::Capability::SigVerify
+                    | fstart_types::Capability::StageLoad { .. }
+                    | fstart_types::Capability::PayloadLoad
+            )
+        }),
+        StageLayout::MultiStage(stages) => stages.iter().any(|s| {
+            s.capabilities.iter().any(|c| {
+                matches!(
+                    c,
+                    fstart_types::Capability::SigVerify
+                        | fstart_types::Capability::StageLoad { .. }
+                        | fstart_types::Capability::PayloadLoad
+                )
+            })
+        }),
+    };
+
+    if uses_ffs {
+        features.push("ffs".to_string());
+        // Enable crypto features based on board security config
+        match config.security.signing_algorithm {
+            fstart_types::SignatureAlgorithm::Ed25519 => features.push("ed25519".to_string()),
+            fstart_types::SignatureAlgorithm::EcdsaP256 => {} // future: add ecdsa feature
+        }
+        for digest in &config.security.required_digests {
+            match digest {
+                fstart_types::DigestAlgorithm::Sha256 => features.push("sha2-digest".to_string()),
+                fstart_types::DigestAlgorithm::Sha3_256 => features.push("sha3-digest".to_string()),
+            }
+        }
+    }
+
     let features_str = features.join(",");
 
     eprintln!("[fstart] target: {target}");

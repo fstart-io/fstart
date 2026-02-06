@@ -333,7 +333,9 @@ version = "0.1.0"
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
+ "fstart-ffs",
  "fstart-services",
+ "fstart-types",
 ]
 
 [[package]]
@@ -408,6 +410,7 @@ dependencies = [
  "fstart-capabilities",
  "fstart-codegen",
  "fstart-drivers",
+ "fstart-ffs",
  "fstart-platform-aarch64",
  "fstart-platform-riscv64",
  "fstart-runtime",

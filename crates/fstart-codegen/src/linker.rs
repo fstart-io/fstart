@@ -95,6 +95,11 @@ fn generate_xip_layout(
     out.push_str("        *(.text .text.*)\n");
     out.push_str("    } > ROM\n\n");
 
+    // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
+    out.push_str("    .fstart.anchor : ALIGN(8) {\n");
+    out.push_str("        *(.fstart.anchor)\n");
+    out.push_str("    } > ROM\n\n");
+
     // Read-only data in ROM
     out.push_str("    .rodata : ALIGN(8) {\n");
     out.push_str("        *(.rodata .rodata.*)\n");
@@ -136,6 +141,11 @@ fn generate_ram_layout(out: &mut String, ram_origin: u64, ram_length: u64, stack
     out.push_str("    .text : {\n");
     out.push_str("        *(.text.entry)\n");
     out.push_str("        *(.text .text.*)\n");
+    out.push_str("    } > RAM\n\n");
+
+    // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
+    out.push_str("    .fstart.anchor : ALIGN(8) {\n");
+    out.push_str("        *(.fstart.anchor)\n");
     out.push_str("    } > RAM\n\n");
 
     out.push_str("    .rodata : ALIGN(8) {\n");

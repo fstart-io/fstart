@@ -4,5 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# FFS support for SigVerify, StageLoad, PayloadLoad
+ffs = ["dep:fstart-ffs", "dep:fstart-types"]
+# Crypto feature forwarding (needed for FFS verification in firmware)
+ed25519 = ["ffs", "fstart-ffs/ed25519"]
+sha2-digest = ["ffs", "fstart-ffs/sha2-digest"]
+sha3-digest = ["ffs", "fstart-ffs/sha3-digest"]
+
 [dependencies]
 fstart-services = { workspace = true }
+fstart-ffs = { workspace = true, optional = true }
+fstart-types = { workspace = true, optional = true }

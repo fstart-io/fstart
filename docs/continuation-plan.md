@@ -1,6 +1,6 @@
 # fstart Continuation Plan
 
-Status as of 2026-02-06 (updated Phase 7 complete). This document captures
+Status as of 2026-02-06 (updated Phase 9 complete). This document captures
 what has been built, what remains, and the recommended order of work for
 future sessions.
 
@@ -406,6 +406,108 @@ New board `boards/qemu-riscv64-multi/board.ron`:
 - Multi-stage with unknown stage name → compile_error
 - Stage ending with PayloadLoad does NOT log completion
 
+### Phase 9: Wire Capabilities to FFS (COMPLETE)
+
+Real FFS operations wired into capability functions. The bootblock now
+performs genuine FFS anchor scanning, manifest signature verification,
+file digest checking, and stage loading.
+
+#### Platform `jump_to(addr)`
+
+Both platform crates (`fstart-platform-riscv64`, `fstart-platform-aarch64`)
+now provide `jump_to(addr: u64) -> !`:
+- RISC-V: `jr` instruction
+- AArch64: `br` instruction
+
+Used by `StageLoad` and `PayloadLoad` to transfer control to loaded code.
+
+#### `flash_base` / `flash_size` in Board Config
+
+New optional fields in `MemoryMap`:
+- `flash_base: Option<u64>` — where the firmware image is mapped in memory
+- `flash_size: Option<u64>` — total firmware image size for FFS reader bounds
+
+All 4 board RON files updated with appropriate values. For QEMU riscv64,
+this is the RAM address where `-bios` loads the image (0x80000000). For
+QEMU aarch64, this is the flash base (0x00000000).
+
+#### Codegen Changes
+
+- `generate_flash_constants()` emits `FLASH_BASE` and `FLASH_SIZE` constants
+  when any FFS capability is present and `flash_base`/`flash_size` are configured.
+- `generate_sig_verify()` now passes `FLASH_BASE, FLASH_SIZE` (or `0, 0` fallback).
+- `generate_stage_load()` passes `FLASH_BASE, FLASH_SIZE, platform::jump_to`
+  when FFS is configured; falls back to `stage_load_stub()` otherwise.
+- `generate_payload_load()` same pattern with `payload_load_stub()` fallback.
+- `needs_ffs()` helper detects FFS capabilities in the capability list.
+- `generate_imports()` accepts capabilities param (no longer imports FfsReader
+  directly — FFS operations are handled inside `fstart_capabilities`).
+- Linker script updated with `.fstart.anchor` section (8-byte aligned, after
+  `.text`) in both XIP and RAM layouts.
+
+#### Feature Flag Plumbing
+
+**`fstart-capabilities`** new features:
+- `ffs` — enables `fstart-ffs` and `fstart-types` dependencies
+- `ed25519` — forwards to `fstart-ffs/ed25519`
+- `sha2-digest` / `sha3-digest` — forwards to `fstart-ffs` crypto features
+
+**`fstart-stage`** new features:
+- `ffs` — forwards to `fstart-capabilities/ffs`
+- `ed25519`, `sha2-digest`, `sha3-digest` — forward crypto features
+
+**`xtask/src/build_board.rs`** auto-detects:
+- Scans all stages for FFS capabilities (SigVerify, StageLoad, PayloadLoad)
+- Automatically enables `ffs` feature + crypto features matching the board's
+  `security.signing_algorithm` and `security.required_digests`
+
+#### Real Capability Implementations (behind `ffs` feature)
+
+**`sig_verify(console, flash_base, flash_size)`:**
+1. Creates `FfsReader` over the memory-mapped flash image
+2. Scans for `FFS_MAGIC` at 8-byte-aligned offsets
+3. Reads and validates the `AnchorBlock`
+4. Reads and cryptographically verifies the RO manifest signature
+5. Verifies file digests for single-segment uncompressed files
+6. Logs results: files verified, files skipped (multi-segment)
+7. Gracefully handles "no FFS image" (no anchor found → skip)
+
+**`stage_load(console, next_stage, flash_base, flash_size, jump_to)`:**
+1. Scans for anchor and reads verified RO manifest
+2. Looks up the named stage file in the manifest
+3. Copies all segments to their load addresses (BSS zeroed)
+4. Jumps to the first Code segment's load address via `jump_to()`
+5. Gracefully handles missing stage file
+
+**`payload_load(console, flash_base, flash_size, jump_to)`:**
+1. Same flow as `stage_load` but looks for `FileType::Payload`
+2. Loads segments and jumps to entry point
+
+**Shared helpers** (behind `ffs` feature):
+- `find_anchor_and_manifest()` — scan + read + verify, with error logging
+- `load_file_segments()` — copy all segments, handle BSS, detect compression
+- `reader_error_str()` — map `ReaderError` to `&'static str` for logging
+- `write_hex()` — format `u64` as `0x...` for no_std console output
+
+**Stubs** (when `ffs` feature absent or `flash_base` not configured):
+- `sig_verify` with `ffs` disabled logs "ffs feature not enabled"
+- `stage_load_stub` / `payload_load_stub` log "not yet wired to FFS"
+
+#### Testing
+
+**3 new unit tests** in `fstart-codegen/src/stage_gen.rs` (38 total):
+- `test_sig_verify_with_flash_base_generates_constants` — verifies FLASH_BASE/SIZE
+  constants emitted and sig_verify called with them
+- `test_stage_load_with_flash_base_generates_real_call` — verifies stage_load
+  called with FLASH_BASE/SIZE and jump_to
+- `test_multi_stage_bootblock_with_flash_base` — full bootblock codegen with
+  real FFS calls and flash constants
+
+**Updated 3 existing tests** for new function signatures:
+- `test_sig_verify_generates_call` — uses `0, 0` fallback args
+- `test_stage_load_generates_call` — uses `stage_load_stub`
+- `test_multi_stage_bootblock_generates_stage_load` — uses stub variants
+
 ### Verified Working
 
 | Board | Mode | Output |
@@ -416,14 +518,14 @@ New board `boards/qemu-riscv64-multi/board.ron`:
 | qemu-aarch64 release | `cargo xtask build --board qemu-aarch64 --release` | Builds clean |
 | qemu-riscv64-flex debug | `cargo xtask run --board qemu-riscv64-flex` | `[fstart] uart0: ns16550 console ready` + `[fstart] all capabilities complete` |
 | qemu-riscv64-multi debug | `cargo xtask build --board qemu-riscv64-multi` | Builds bootblock + main |
-| qemu-riscv64-multi bootblock | QEMU boot | `[fstart] uart0: ns16550 console ready` + SigVerify + StageLoad → main (stub) |
-| qemu-riscv64-multi main | QEMU boot | `[fstart] uart0: ns16550 console ready` + MemoryInit + DriverInit + completion |
-| qemu-riscv64-multi release | `cargo xtask build --board qemu-riscv64-multi --release` | 5.5 KB per stage |
-| qemu-riscv64-multi FFS | `cargo xtask assemble --board qemu-riscv64-multi` | 5.7 MB FFS with 2 stages |
+| qemu-riscv64-multi bootblock | QEMU boot | Console ready + SigVerify (scans flash, anchor found, deserialize error — expected without FFS image) + StageLoad stub |
+| qemu-riscv64-multi main | QEMU boot | Console ready + MemoryInit + DriverInit + completion |
+| qemu-riscv64-multi release | `cargo xtask build --board qemu-riscv64-multi --release` | bootblock 45 KB (includes FFS+crypto), main 5.5 KB |
+| qemu-riscv64-multi FFS | `cargo xtask assemble --board qemu-riscv64-multi` | 10.4 MB FFS with 2 stages |
 | qemu-riscv64 FFS | `cargo xtask assemble --board qemu-riscv64` | 2.8 MB FFS with 1 stage |
 | clippy | `cargo clippy --workspace --exclude fstart-stage -- -D warnings` | Clean |
 | fmt | `cargo fmt --all -- --check` | Clean |
-| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 44 pass (35 codegen + 9 FFS) |
+| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 47 pass (38 codegen + 9 FFS) |
 
 ---
 
@@ -437,60 +539,53 @@ generation. Low priority — current codegen approach works well.
 
 ---
 
-### Phase 8: Payload + OS Handoff
+---
+
+### Phase 9.5: Bootable FFS Image
+
+**Goal**: Make the FFS image directly bootable by QEMU.
+
+The current FFS format puts the anchor at offset 0, followed by manifest
+and file data. To make the image bootable, the bootblock binary needs to
+be at offset 0 (QEMU's `-bios` expects executable code at the start).
+
+- **Anchor embedding in bootblock**: Codegen emits a `#[link_section = ".fstart.anchor"]`
+  static containing the serialized `AnchorBlock` (placeholder offsets).
+  The linker already places this section. `xtask assemble` patches the
+  binary with real manifest offsets after layout.
+- **Bootable layout**: Rearrange `ffs_builder` so the bootblock binary
+  comes first in the image, with the anchor embedded inside it. The RO
+  manifest and file data follow after the bootblock. The bootblock then
+  references its own anchor static (no scanning needed — just a symbol).
+- **Test**: `cargo xtask run --board qemu-riscv64-multi` boots the FFS
+  image directly. The bootblock performs SigVerify → StageLoad → jumps
+  to main stage.
+
+---
+
+### Phase 10: Payload + OS Handoff
 
 **Goal**: Boot Linux on QEMU.
 
-#### 8.1 FDT Generation
+#### 10.1 FDT Generation
 
 - Generate FDT from board RON (memory map, devices, chosen node).
 - `DTS Override` escape hatch: merge board-provided DTS fragments.
 - Place FDT at known address for payload.
 
-#### 8.2 Linux Boot Protocol
+#### 10.2 Linux Boot Protocol
 
 - RISC-V: OpenSBI-style boot (a0=hartid, a1=fdt_addr, jump to kernel).
 - AArch64: kernel image protocol (x0=fdt_addr, jump to kernel).
 
-#### 8.3 Test
+#### 10.3 Test
 
 - Package a minimal Linux kernel (or test payload) in FFS.
 - `cargo xtask run --board qemu-riscv64` boots to kernel banner.
 
 ---
 
-### Phase 9: Wire Capabilities to FFS
-
-**Goal**: Connect stub capabilities to real FFS operations.
-
-#### 9.1 Anchor Embedding in Bootblock
-
-- Codegen emits a `#[link_section = ".anchor"]` static containing the
-  serialized `AnchorBlock` with keys read from the board's pubkey file
-  at build time. For now this is a placeholder — `xtask assemble` patches
-  manifest offsets after image layout.
-
-#### 9.2 SigVerify → FFS Reader
-
-- `sig_verify()` receives the flash image base address (from platform code
-  or a fixed constant in the board config).
-- Creates an `FfsReader`, reads the anchor, verifies the RO manifest
-  signature, and checks file digests.
-
-#### 9.3 StageLoad → FFS + Jump
-
-- `stage_load()` looks up the next stage in the FFS manifest, reads its
-  segments, copies to the load address, and jumps via a platform-specific
-  `jump_to(addr)` function.
-
-#### 9.4 PayloadLoad → FFS + OS Boot
-
-- `payload_load()` reads the payload from FFS, loads it, sets up FDT,
-  and transfers control using the platform boot protocol.
-
----
-
-### Phase 10: Polish + CI
+### Phase 11: Polish + CI
 
 - Logging infrastructure (`fstart-log`): structured log levels, compile-time
   filtering.
@@ -502,25 +597,28 @@ generation. Low priority — current codegen approach works well.
 
 ---
 
-## File Summary (Phase 7 Changes)
+## File Summary (Phase 9 Changes)
 
 | File | Change |
 |------|--------|
-| `crates/fstart-types/src/ffs.rs` | Added `ro_region_base: u32` to `AnchorBlock` |
-| `crates/fstart-ffs/src/reader.rs` | Added `CannotVerifyInPlace` error, fixed doc comment for `read_segment_data` |
-| `crates/fstart-ffs/src/builder.rs` | Includes `ro_region_base` in anchor block |
-| `crates/fstart-ffs/Cargo.toml` | Added `ed25519`, `sha2-digest`, `sha3-digest` feature forwarding |
-| `crates/fstart-ffs/tests/round_trip.rs` | Uses `anchor.ro_region_base` in RO round-trip test |
-| `crates/fstart-codegen/src/stage_gen.rs` | Smart stage ending (jump vs terminal), 6 new multi-stage tests |
-| `xtask/src/build_board.rs` | **Rewritten**: `BuildResult`/`StageBinary` types, per-stage builds, binary renaming |
-| `xtask/src/main.rs` | Updated for `BuildResult` API |
-| `xtask/src/assemble.rs` | **Rewritten**: builds + packages all stages, multi-stage FFS assembly |
-| `boards/qemu-riscv64-multi/board.ron` | **New**: multi-stage board (bootblock + main) |
-| `docs/continuation-plan.md` | Updated with Phase 7 completion |
+| `crates/fstart-platform-riscv64/src/lib.rs` | Added `jump_to(addr: u64) -> !` |
+| `crates/fstart-platform-aarch64/src/lib.rs` | Added `jump_to(addr: u64) -> !` |
+| `crates/fstart-types/src/memory.rs` | Added `flash_base: Option<u64>` and `flash_size: Option<u64>` to `MemoryMap` |
+| `crates/fstart-capabilities/Cargo.toml` | Added `ffs`, `ed25519`, `sha2-digest`, `sha3-digest` features; `fstart-ffs` + `fstart-types` deps |
+| `crates/fstart-capabilities/src/lib.rs` | **Rewritten**: real `sig_verify`, `stage_load`, `payload_load` with FFS reader; `write_hex` helper; stub variants |
+| `crates/fstart-stage/Cargo.toml` | Added `ffs`, `ed25519`, `sha2-digest`, `sha3-digest` features; `fstart-ffs` dep |
+| `crates/fstart-codegen/src/stage_gen.rs` | `generate_flash_constants`, `needs_ffs`, updated capability codegen to pass flash args + jump_to; 3 new tests (38 total) |
+| `crates/fstart-codegen/src/linker.rs` | Added `.fstart.anchor` section to both XIP and RAM linker layouts |
+| `xtask/src/build_board.rs` | Auto-enable `ffs` + crypto features when board uses FFS capabilities |
+| `boards/qemu-riscv64/board.ron` | Added `flash_base`, `flash_size` |
+| `boards/qemu-aarch64/board.ron` | Added `flash_base`, `flash_size` |
+| `boards/qemu-riscv64-flex/board.ron` | Added `flash_base`, `flash_size` |
+| `boards/qemu-riscv64-multi/board.ron` | Added `flash_base`, `flash_size` |
+| `docs/continuation-plan.md` | Updated with Phase 9 completion |
 
 ## Git State
 
-Seven commits on `master`:
+Eight commits on `master`:
 1. `1b2b71f` — Initial commit: fstart firmware framework with 14 workspace crates
 2. `9383113` — Introduce typed Device trait driver model with codegen-produced StageContext
 3. `de59c64` — Capability pipeline, BusDevice trait, codegen ordering validation, AArch64 objcopy
@@ -528,6 +626,7 @@ Seven commits on `master`:
 5. `6e6fd82` — Flexible mode: enum dispatch codegen for runtime driver selection
 6. (Pending) — Phase 6: FFS + Security — flash layout, crypto, reader, builder, xtask assemble
 7. (Pending) — Phase 7: Multi-stage layout — per-stage builds, FFS packaging, bootblock + main
+8. (Pending) — Phase 9: Wire capabilities to FFS — real sig verify, stage load, payload load
 
 ## Quick Reference: Build Commands
 
