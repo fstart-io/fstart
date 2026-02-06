@@ -756,8 +756,15 @@ fn generate_fstart_main(
     }
 
     // --- Phase 3: Build context and finalize ---
+    // Check if the stage ends with a jump (StageLoad or PayloadLoad).
+    // If so, skip the "all capabilities complete" message — the stage should
+    // never reach this point (the jump capability halts/transfers control).
+    let ends_with_jump = capabilities
+        .last()
+        .is_some_and(|cap| matches!(cap, Capability::StageLoad { .. } | Capability::PayloadLoad));
+
     out.push_str("\n    // === Build stage context ===\n");
-    let ctx_binding = if console_device.is_some() {
+    let ctx_binding = if console_device.is_some() && !ends_with_jump {
         "ctx"
     } else {
         "_ctx"
@@ -772,17 +779,25 @@ fn generate_fstart_main(
     out.push_str("        },\n");
     out.push_str("    };\n\n");
 
-    // Log completion via the context's console accessor (devices have been
-    // moved into the Devices struct, so we use ctx instead of bare variables).
-    if console_device.is_some() {
-        out.push_str(
-            "    let _ = ctx.console().write_line(\"[fstart] all capabilities complete\");\n",
-        );
-    }
+    if ends_with_jump {
+        // Stage ends with a jump — it should never reach here.
+        // The jump capability (StageLoad/PayloadLoad) is expected to not return.
+        // If it does return (because it's a stub), we halt.
+        out.push_str("    // Stage should have jumped — halt if we reach here\n");
+        out.push_str(&format!("    {halt_fn};\n"));
+    } else {
+        // Log completion via the context's console accessor (devices have been
+        // moved into the Devices struct, so we use ctx instead of bare variables).
+        if console_device.is_some() {
+            out.push_str(
+                "    let _ = ctx.console().write_line(\"[fstart] all capabilities complete\");\n",
+            );
+        }
 
-    // Halt
-    out.push_str("    // Stage complete — halt\n");
-    out.push_str(&format!("    {halt_fn};\n"));
+        // Halt
+        out.push_str("    // Stage complete — halt\n");
+        out.push_str(&format!("    {halt_fn};\n"));
+    }
 
     out.push_str("}\n");
 }
@@ -2025,6 +2040,189 @@ mod tests {
         assert!(
             source.contains("impl I2cBus for I2cBusDevice"),
             "should impl I2cBus for I2cBusDevice: {source}"
+        );
+    }
+
+    // =======================================================================
+    // Multi-stage tests
+    // =======================================================================
+
+    /// Helper: create a multi-stage board config (bootblock + main).
+    fn test_multi_stage_board() -> BoardConfig {
+        use fstart_types::*;
+        use heapless::String as HString;
+
+        let mut devices = heapless::Vec::new();
+        let _ = devices.push(DeviceConfig {
+            name: HString::try_from("uart0").unwrap(),
+            compatible: HString::try_from("ns16550a").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            resources: Resources {
+                mmio_base: Some(0x1000_0000),
+                clock_freq: Some(3_686_400),
+                baud_rate: Some(115_200),
+                irq: Some(10),
+                ..Default::default()
+            },
+            parent: None,
+        });
+
+        let mut stages = heapless::Vec::new();
+        let _ = stages.push(StageConfig {
+            name: HString::try_from("bootblock").unwrap(),
+            capabilities: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(Capability::ConsoleInit {
+                    device: HString::try_from("uart0").unwrap(),
+                });
+                let _ = v.push(Capability::SigVerify);
+                let _ = v.push(Capability::StageLoad {
+                    next_stage: HString::try_from("main").unwrap(),
+                });
+                v
+            },
+            load_addr: 0x8000_0000,
+            stack_size: 0x4000,
+            runs_from: RunsFrom::Ram,
+        });
+        let _ = stages.push(StageConfig {
+            name: HString::try_from("main").unwrap(),
+            capabilities: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(Capability::ConsoleInit {
+                    device: HString::try_from("uart0").unwrap(),
+                });
+                let _ = v.push(Capability::MemoryInit);
+                let _ = v.push(Capability::DriverInit);
+                v
+            },
+            load_addr: 0x8010_0000,
+            stack_size: 0x10000,
+            runs_from: RunsFrom::Ram,
+        });
+
+        BoardConfig {
+            name: HString::try_from("test-multi").unwrap(),
+            platform: HString::try_from("riscv64").unwrap(),
+            memory: MemoryMap {
+                regions: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(MemoryRegion {
+                        name: HString::try_from("ram").unwrap(),
+                        base: 0x8000_0000,
+                        size: 0x0800_0000,
+                        kind: RegionKind::Ram,
+                    });
+                    v
+                },
+            },
+            devices,
+            stages: StageLayout::MultiStage(stages),
+            security: SecurityConfig {
+                signing_algorithm: SignatureAlgorithm::Ed25519,
+                pubkey_file: HString::try_from("keys/dev.pub").unwrap(),
+                required_digests: {
+                    let mut v = heapless::Vec::new();
+                    let _ = v.push(DigestAlgorithm::Sha256);
+                    v
+                },
+            },
+            mode: BuildMode::Rigid,
+            payload: None,
+        }
+    }
+
+    #[test]
+    fn test_multi_stage_bootblock_generates_stage_load() {
+        let config = test_multi_stage_board();
+        let source = generate_stage_source(&config, Some("bootblock"));
+
+        assert!(
+            source.contains("fstart_capabilities::console_ready"),
+            "bootblock should init console: {source}"
+        );
+        assert!(
+            source.contains("fstart_capabilities::sig_verify(&uart0)"),
+            "bootblock should call sig_verify: {source}"
+        );
+        assert!(
+            source.contains("fstart_capabilities::stage_load(&uart0, \"main\")"),
+            "bootblock should call stage_load(\"main\"): {source}"
+        );
+    }
+
+    #[test]
+    fn test_multi_stage_bootblock_no_completion_message() {
+        let config = test_multi_stage_board();
+        let source = generate_stage_source(&config, Some("bootblock"));
+
+        // Bootblock ends with StageLoad — should NOT log completion
+        assert!(
+            !source.contains("all capabilities complete"),
+            "bootblock should NOT log completion (ends with StageLoad): {source}"
+        );
+    }
+
+    #[test]
+    fn test_multi_stage_main_generates_capabilities() {
+        let config = test_multi_stage_board();
+        let source = generate_stage_source(&config, Some("main"));
+
+        assert!(
+            source.contains("fstart_capabilities::console_ready"),
+            "main stage should init console: {source}"
+        );
+        assert!(
+            source.contains("fstart_capabilities::memory_init(&uart0)"),
+            "main stage should call memory_init: {source}"
+        );
+        assert!(
+            source.contains("all capabilities complete"),
+            "main stage should log completion: {source}"
+        );
+    }
+
+    #[test]
+    fn test_multi_stage_missing_stage_name_is_error() {
+        let config = test_multi_stage_board();
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("compile_error!"),
+            "multi-stage without FSTART_STAGE_NAME should be compile_error: {source}"
+        );
+    }
+
+    #[test]
+    fn test_multi_stage_unknown_stage_name_is_error() {
+        let config = test_multi_stage_board();
+        let source = generate_stage_source(&config, Some("nonexistent"));
+
+        assert!(
+            source.contains("compile_error!"),
+            "unknown stage name should be compile_error: {source}"
+        );
+    }
+
+    #[test]
+    fn test_stage_ending_with_payload_load_no_completion() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::PayloadLoad);
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        // Ends with PayloadLoad — should not log completion
+        assert!(
+            !source.contains("all capabilities complete"),
+            "stage ending with PayloadLoad should NOT log completion: {source}"
         );
     }
 

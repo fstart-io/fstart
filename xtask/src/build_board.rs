@@ -2,16 +2,40 @@
 //!
 //! 1. Parse board.ron
 //! 2. Determine target triple, cargo features, and environment
-//! 3. Invoke cargo build on fstart-stage with the right env vars
-//! 4. Return the path to the built binary
+//! 3. Invoke cargo build on fstart-stage (once for monolithic, per-stage for multi-stage)
+//! 4. Return the path(s) to the built binary(ies)
 
 use fstart_codegen::ron_loader;
 use fstart_types::StageLayout;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Build firmware for the given board. Returns path to the output binary.
-pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
+/// Result of building a board — one or more stage binaries.
+pub struct BuildResult {
+    /// Built stage binaries, in order. For monolithic boards this has one entry
+    /// with name "stage". For multi-stage boards it has one entry per stage.
+    pub stages: Vec<StageBinary>,
+}
+
+/// A built stage binary.
+pub struct StageBinary {
+    /// Stage name (e.g., "bootblock", "main", or "stage" for monolithic).
+    pub name: String,
+    /// Path to the binary on disk.
+    pub path: PathBuf,
+    /// Load address from the board config.
+    pub load_addr: u64,
+}
+
+impl BuildResult {
+    /// Get the first (or only) binary — used for QEMU boot.
+    pub fn primary_binary(&self) -> &StageBinary {
+        &self.stages[0]
+    }
+}
+
+/// Build firmware for the given board. Returns all stage binaries.
+pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     let workspace_root = workspace_root()?;
     let board_dir = workspace_root.join("boards").join(board_name);
     let board_ron = board_dir.join("board.ron");
@@ -42,18 +66,68 @@ pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
     }
     let features_str = features.join(",");
 
-    // Determine stage name for multi-stage builds
-    let stage_name = match &config.stages {
-        StageLayout::Monolithic(_) => None,
-        StageLayout::MultiStage(stages) => {
-            // For now, build the first stage. TODO: build all stages.
-            stages.first().map(|s| s.name.to_string())
-        }
-    };
-
     eprintln!("[fstart] target: {target}");
     eprintln!("[fstart] features: {features_str}");
 
+    let is_aarch64 = config.platform.as_str() == "aarch64";
+
+    match &config.stages {
+        StageLayout::Monolithic(mono) => {
+            // Single build, no FSTART_STAGE_NAME needed
+            let path = build_one_stage(
+                &workspace_root,
+                &board_ron,
+                None,
+                target,
+                &features_str,
+                release,
+                is_aarch64,
+            )?;
+            Ok(BuildResult {
+                stages: vec![StageBinary {
+                    name: "stage".to_string(),
+                    path,
+                    load_addr: mono.load_addr,
+                }],
+            })
+        }
+        StageLayout::MultiStage(stages) => {
+            let mut result = Vec::new();
+            for stage in stages {
+                let stage_name = stage.name.to_string();
+                eprintln!("[fstart] building stage: {stage_name}");
+                let path = build_one_stage(
+                    &workspace_root,
+                    &board_ron,
+                    Some(&stage_name),
+                    target,
+                    &features_str,
+                    release,
+                    is_aarch64,
+                )?;
+                result.push(StageBinary {
+                    name: stage_name,
+                    path,
+                    load_addr: stage.load_addr,
+                });
+            }
+            Ok(BuildResult { stages: result })
+        }
+    }
+}
+
+/// Build a single fstart-stage binary.
+///
+/// `stage_name` is `None` for monolithic, `Some("bootblock")` etc. for multi-stage.
+fn build_one_stage(
+    workspace_root: &std::path::Path,
+    board_ron: &std::path::Path,
+    stage_name: Option<&str>,
+    target: &str,
+    features: &str,
+    release: bool,
+    is_aarch64: bool,
+) -> Result<PathBuf, String> {
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("--package")
@@ -61,7 +135,7 @@ pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
         .arg("--target")
         .arg(target)
         .arg("--features")
-        .arg(&features_str)
+        .arg(features)
         .arg("-Z")
         .arg("build-std=core");
 
@@ -76,7 +150,7 @@ pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
 
     // Pass board RON path to build.rs
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
-    if let Some(ref name) = stage_name {
+    if let Some(name) = stage_name {
         cmd.env("FSTART_STAGE_NAME", name);
     }
 
@@ -85,7 +159,12 @@ pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
         .status()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
     if !status.success() {
-        return Err("build failed".to_string());
+        return Err(format!(
+            "build failed{}",
+            stage_name
+                .map(|n| format!(" for stage '{n}'"))
+                .unwrap_or_default()
+        ));
     }
 
     // Determine output binary path
@@ -96,19 +175,29 @@ pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
         .join(profile)
         .join("fstart-stage");
 
+    // For multi-stage: copy the binary to a stage-specific name so subsequent
+    // builds don't overwrite it (cargo always outputs to "fstart-stage").
+    let final_elf = if let Some(name) = stage_name {
+        let dest = elf_path.with_file_name(format!("fstart-{name}"));
+        std::fs::copy(&elf_path, &dest).map_err(|e| format!("failed to copy stage binary: {e}"))?;
+        dest
+    } else {
+        elf_path.clone()
+    };
+
     // AArch64: QEMU -bios expects a flat binary, not an ELF.
     // Run llvm-objcopy -O binary to produce a .bin alongside the ELF.
-    let binary_path = if config.platform.as_str() == "aarch64" {
-        let bin_path = elf_path.with_extension("bin");
+    let binary_path = if is_aarch64 {
+        let bin_path = final_elf.with_extension("bin");
         eprintln!(
             "[fstart] objcopy: {} -> {}",
-            elf_path.display(),
+            final_elf.display(),
             bin_path.display()
         );
         let objcopy_status = Command::new("llvm-objcopy")
             .arg("-O")
             .arg("binary")
-            .arg(&elf_path)
+            .arg(&final_elf)
             .arg(&bin_path)
             .status()
             .map_err(|e| format!("failed to run llvm-objcopy: {e}"))?;
@@ -117,11 +206,16 @@ pub fn build(board_name: &str, release: bool) -> Result<PathBuf, String> {
         }
         bin_path
     } else {
-        elf_path
+        final_elf
     };
 
     eprintln!("[fstart] built: {}", binary_path.display());
     Ok(binary_path)
+}
+
+/// Public wrapper for workspace root (used by other xtask modules).
+pub fn workspace_root_pub() -> Result<PathBuf, String> {
+    workspace_root()
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
