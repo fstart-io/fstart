@@ -8,6 +8,24 @@ use serde::{Deserialize, Serialize};
 pub struct MemoryMap {
     /// Named memory regions (ROM, RAM only — not per-device MMIO)
     pub regions: heapless::Vec<MemoryRegion, 16>,
+    /// Base address where the firmware flash image is mapped in memory.
+    ///
+    /// For XIP flash, this is the flash memory-mapped region start.
+    /// For QEMU `-bios`, this is the address where QEMU loads the image
+    /// (typically the RAM base, e.g., `0x80000000` for riscv64 virt).
+    ///
+    /// Used by `SigVerify`, `StageLoad`, and `PayloadLoad` to locate
+    /// the FFS anchor and file data in the firmware image. If `None`,
+    /// these capabilities fall back to scanning or use the bootblock's
+    /// own load address.
+    #[serde(default)]
+    pub flash_base: Option<u64>,
+    /// Total size of the firmware flash image in bytes.
+    ///
+    /// Used to bound the `FfsReader`'s view of the flash image.
+    /// If `None`, the total image size from the FFS anchor is used instead.
+    #[serde(default)]
+    pub flash_size: Option<u64>,
 }
 
 /// A single memory region.

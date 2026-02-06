@@ -462,7 +462,12 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
 
     let mode = config.mode;
 
-    generate_imports(&mut out, &config.devices, mode);
+    generate_imports(&mut out, &config.devices, mode, capabilities);
+
+    // Generate flash/FFS constants if any FFS capabilities are present
+    if needs_ffs(capabilities) {
+        generate_flash_constants(&mut out, config);
+    }
 
     if mode == BuildMode::Flexible {
         generate_flexible_enums(&mut out, &config.devices);
@@ -548,8 +553,23 @@ fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
     None
 }
 
+/// Check whether a capability list uses FFS operations (SigVerify, StageLoad, PayloadLoad).
+fn needs_ffs(capabilities: &[Capability]) -> bool {
+    capabilities.iter().any(|c| {
+        matches!(
+            c,
+            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+        )
+    })
+}
+
 /// Emit `use` statements for all driver types needed by this board's devices.
-fn generate_imports(out: &mut String, devices: &[DeviceConfig], mode: BuildMode) {
+fn generate_imports(
+    out: &mut String,
+    devices: &[DeviceConfig],
+    mode: BuildMode,
+    capabilities: &[Capability],
+) {
     out.push_str("use fstart_services::Console;\n");
     out.push_str("use fstart_services::device::Device;\n");
 
@@ -594,6 +614,25 @@ fn generate_imports(out: &mut String, devices: &[DeviceConfig], mode: BuildMode)
             seen.push(drv_name);
         }
     }
+    out.push('\n');
+
+    // Note: FFS operations (SigVerify, StageLoad, PayloadLoad) are handled
+    // entirely within fstart_capabilities — no direct FFS imports needed here.
+    let _ = capabilities; // suppress unused parameter warning
+}
+
+/// Generate flash base address and size constants for FFS operations.
+///
+/// These constants are used by `SigVerify`, `StageLoad`, and `PayloadLoad`
+/// to create an `FfsReader` over the memory-mapped firmware image.
+fn generate_flash_constants(out: &mut String, config: &BoardConfig) {
+    let flash_base = config.memory.flash_base.unwrap_or(0);
+    let flash_size = config.memory.flash_size.unwrap_or(0);
+
+    out.push_str("/// Base address of the firmware flash image in memory.\n");
+    out.push_str(&format!("const FLASH_BASE: u64 = {flash_base:#x};\n"));
+    out.push_str("/// Size of the firmware flash image in bytes.\n");
+    out.push_str(&format!("const FLASH_SIZE: u64 = {flash_size:#x};\n"));
     out.push('\n');
 }
 
@@ -708,6 +747,11 @@ fn generate_fstart_main(
     // Track the first console device name for passing to later capabilities.
     let mut console_device: Option<String> = None;
 
+    // Does this stage have FFS constants (flash_base/flash_size configured)?
+    let has_ffs = needs_ffs(capabilities)
+        && config.memory.flash_base.is_some()
+        && config.memory.flash_size.is_some();
+
     // --- Phase 2: Execute capabilities in declared order ---
     out.push_str("    // === Capability execution ===\n");
     for cap in capabilities {
@@ -741,16 +785,16 @@ fn generate_fstart_main(
                 }
             }
             Capability::SigVerify => {
-                generate_sig_verify(out, &console_device);
+                generate_sig_verify(out, &console_device, has_ffs);
             }
             Capability::FdtPrepare => {
                 generate_fdt_prepare(out, &console_device);
             }
             Capability::PayloadLoad => {
-                generate_payload_load(out, &console_device);
+                generate_payload_load(out, &console_device, platform, has_ffs);
             }
             Capability::StageLoad { next_stage } => {
-                generate_stage_load(out, next_stage.as_str(), &console_device);
+                generate_stage_load(out, next_stage.as_str(), &console_device, platform, has_ffs);
             }
         }
     }
@@ -1055,10 +1099,18 @@ fn generate_driver_init(
 }
 
 /// Generate code for the SigVerify capability.
-fn generate_sig_verify(out: &mut String, console_device: &Option<String>) {
+fn generate_sig_verify(out: &mut String, console_device: &Option<String>, has_ffs: bool) {
     out.push_str("    // SigVerify\n");
     if let Some(ref con) = console_device {
-        out.push_str(&format!("    fstart_capabilities::sig_verify(&{con});\n"));
+        if has_ffs {
+            out.push_str(&format!(
+                "    fstart_capabilities::sig_verify(&{con}, FLASH_BASE, FLASH_SIZE);\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "    fstart_capabilities::sig_verify(&{con}, 0, 0);\n"
+            ));
+        }
     }
 }
 
@@ -1071,20 +1123,55 @@ fn generate_fdt_prepare(out: &mut String, console_device: &Option<String>) {
 }
 
 /// Generate code for the PayloadLoad capability.
-fn generate_payload_load(out: &mut String, console_device: &Option<String>) {
+fn generate_payload_load(
+    out: &mut String,
+    console_device: &Option<String>,
+    platform: &str,
+    has_ffs: bool,
+) {
     out.push_str("    // PayloadLoad\n");
     if let Some(ref con) = console_device {
-        out.push_str(&format!("    fstart_capabilities::payload_load(&{con});\n"));
+        if has_ffs {
+            let jump_fn = match platform {
+                "riscv64" => "fstart_platform_riscv64::jump_to",
+                "aarch64" => "fstart_platform_aarch64::jump_to",
+                _ => "fstart_platform_riscv64::jump_to",
+            };
+            out.push_str(&format!(
+                "    fstart_capabilities::payload_load(&{con}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "    fstart_capabilities::payload_load_stub(&{con});\n"
+            ));
+        }
     }
 }
 
 /// Generate code for the StageLoad capability.
-fn generate_stage_load(out: &mut String, next_stage: &str, console_device: &Option<String>) {
+fn generate_stage_load(
+    out: &mut String,
+    next_stage: &str,
+    console_device: &Option<String>,
+    platform: &str,
+    has_ffs: bool,
+) {
     out.push_str(&format!("    // StageLoad -> {next_stage}\n"));
     if let Some(ref con) = console_device {
-        out.push_str(&format!(
-            "    fstart_capabilities::stage_load(&{con}, \"{next_stage}\");\n"
-        ));
+        if has_ffs {
+            let jump_fn = match platform {
+                "riscv64" => "fstart_platform_riscv64::jump_to",
+                "aarch64" => "fstart_platform_aarch64::jump_to",
+                _ => "fstart_platform_riscv64::jump_to", // fallback
+            };
+            out.push_str(&format!(
+                "    fstart_capabilities::stage_load(&{con}, \"{next_stage}\", FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "    fstart_capabilities::stage_load_stub(&{con}, \"{next_stage}\");\n"
+            ));
+        }
     }
 }
 
@@ -1131,6 +1218,8 @@ mod tests {
                     });
                     v
                 },
+                flash_base: None,
+                flash_size: None,
             },
             devices,
             stages: StageLayout::Monolithic(MonolithicConfig {
@@ -1236,9 +1325,36 @@ mod tests {
         let config = test_board_config(caps);
         let source = generate_stage_source(&config, None);
 
+        // Without flash_base configured, passes 0, 0 as fallback
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0)"),
-            "should call sig_verify"
+            source.contains("fstart_capabilities::sig_verify(&uart0, 0, 0)"),
+            "should call sig_verify with fallback args: {source}"
+        );
+    }
+
+    #[test]
+    fn test_sig_verify_with_flash_base_generates_constants() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::SigVerify);
+        let mut config = test_board_config(caps);
+        config.memory.flash_base = Some(0x8000_0000);
+        config.memory.flash_size = Some(0x40_0000);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("const FLASH_BASE: u64 = 0x80000000;"),
+            "should emit FLASH_BASE constant: {source}"
+        );
+        assert!(
+            source.contains("const FLASH_SIZE: u64 = 0x400000;"),
+            "should emit FLASH_SIZE constant: {source}"
+        );
+        assert!(
+            source.contains("fstart_capabilities::sig_verify(&uart0, FLASH_BASE, FLASH_SIZE)"),
+            "should call sig_verify with FLASH_BASE/SIZE: {source}"
         );
     }
 
@@ -1254,9 +1370,30 @@ mod tests {
         let config = test_board_config(caps);
         let source = generate_stage_source(&config, None);
 
+        // Without flash_base configured, uses stub variant
         assert!(
-            source.contains("fstart_capabilities::stage_load(&uart0, \"main\")"),
-            "should call stage_load with next_stage name"
+            source.contains("fstart_capabilities::stage_load_stub(&uart0, \"main\")"),
+            "should call stage_load_stub without flash config: {source}"
+        );
+    }
+
+    #[test]
+    fn test_stage_load_with_flash_base_generates_real_call() {
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::StageLoad {
+            next_stage: heapless::String::try_from("main").unwrap(),
+        });
+        let mut config = test_board_config(caps);
+        config.memory.flash_base = Some(0x8000_0000);
+        config.memory.flash_size = Some(0x40_0000);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("fstart_capabilities::stage_load(&uart0, \"main\", FLASH_BASE, FLASH_SIZE, fstart_platform_riscv64::jump_to)"),
+            "should call stage_load with flash args and jump_to: {source}"
         );
     }
 
@@ -1359,6 +1496,8 @@ mod tests {
                     });
                     v
                 },
+                flash_base: None,
+                flash_size: None,
             },
             devices,
             stages: StageLayout::Monolithic(MonolithicConfig {
@@ -1800,6 +1939,8 @@ mod tests {
                     });
                     v
                 },
+                flash_base: None,
+                flash_size: None,
             },
             devices,
             stages: StageLayout::Monolithic(MonolithicConfig {
@@ -2120,6 +2261,8 @@ mod tests {
                     });
                     v
                 },
+                flash_base: None,
+                flash_size: None,
             },
             devices,
             stages: StageLayout::MultiStage(stages),
@@ -2146,13 +2289,41 @@ mod tests {
             source.contains("fstart_capabilities::console_ready"),
             "bootblock should init console: {source}"
         );
+        // Without flash_base, uses fallback args for sig_verify
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0)"),
+            source.contains("fstart_capabilities::sig_verify(&uart0, 0, 0)"),
             "bootblock should call sig_verify: {source}"
         );
+        // Without flash_base, uses stub for stage_load
         assert!(
-            source.contains("fstart_capabilities::stage_load(&uart0, \"main\")"),
-            "bootblock should call stage_load(\"main\"): {source}"
+            source.contains("fstart_capabilities::stage_load_stub(&uart0, \"main\")"),
+            "bootblock should call stage_load_stub(\"main\"): {source}"
+        );
+    }
+
+    #[test]
+    fn test_multi_stage_bootblock_with_flash_base() {
+        let mut config = test_multi_stage_board();
+        config.memory.flash_base = Some(0x8000_0000);
+        config.memory.flash_size = Some(0x40_0000);
+        let source = generate_stage_source(&config, Some("bootblock"));
+
+        assert!(
+            source.contains("const FLASH_BASE: u64 = 0x80000000;"),
+            "should emit FLASH_BASE: {source}"
+        );
+        assert!(
+            source.contains("fstart_capabilities::sig_verify(&uart0, FLASH_BASE, FLASH_SIZE)"),
+            "bootblock should call sig_verify with flash args: {source}"
+        );
+        assert!(
+            source.contains("fstart_capabilities::stage_load(&uart0, \"main\", FLASH_BASE, FLASH_SIZE, fstart_platform_riscv64::jump_to)"),
+            "bootblock should call stage_load with flash args: {source}"
+        );
+        // FFS operations are inside fstart_capabilities, not imported directly
+        assert!(
+            source.contains("fstart_capabilities::sig_verify"),
+            "should call sig_verify: {source}"
         );
     }
 

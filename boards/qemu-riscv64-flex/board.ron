@@ -10,10 +10,14 @@
 
     // Memory regions: only ROM and RAM.
     // Device MMIO addresses are in the device resources, not here.
+    // flash_base = where QEMU loads -bios (the FFS image sits here).
+    // flash_size = 4 MiB (max FFS image size for this board).
     memory: (
         regions: [
             ( name: "ram", base: 0x80000000, size: 0x08000000, kind: Ram ),
         ],
+        flash_base: Some(0x80000000),
+        flash_size: Some(0x01000000),
     ),
 
     devices: [

@@ -14,6 +14,11 @@ ns16550 = ["fstart-drivers/ns16550"]
 pl011 = ["fstart-drivers/pl011"]
 sifive-uart = ["fstart-drivers/sifive-uart"]
 designware-i2c = ["fstart-drivers/designware-i2c"]
+# FFS / crypto features (forwarded to fstart-capabilities)
+ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
+ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
+sha2-digest = ["ffs", "fstart-capabilities/sha2-digest", "fstart-ffs/sha2-digest"]
+sha3-digest = ["ffs", "fstart-capabilities/sha3-digest", "fstart-ffs/sha3-digest"]
 
 [dependencies]
 fstart-services = { workspace = true }
@@ -22,6 +27,7 @@ fstart-capabilities = { workspace = true }
 fstart-runtime = { workspace = true }
 fstart-platform-riscv64 = { workspace = true, optional = true }
 fstart-platform-aarch64 = { workspace = true, optional = true }
+fstart-ffs = { workspace = true, optional = true }
 
 [build-dependencies]
 fstart-codegen = { workspace = true }
