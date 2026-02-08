@@ -31,7 +31,7 @@ ron = "0.8"
 # Crypto (RustCrypto)
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
-ed25519-dalek = { version = "2", default-features = false }
+ed25519-dalek = { version = "2", default-features = false, features = ["fast"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 # Embedded / no_std utilities
@@ -63,9 +63,36 @@ fstart-stage = { path = "crates/fstart-stage" }
 [profile.dev]
 panic = "abort"
 
+# Crypto crates are unusably slow at opt-level 0 (minutes for a single
+# Ed25519 verify on emulated RISC-V).  Always compile them with optimizations.
+[profile.dev.package.ed25519-dalek]
+opt-level = 2
+[profile.dev.package.curve25519-dalek]
+opt-level = 2
+[profile.dev.package.sha2]
+opt-level = 2
+[profile.dev.package.sha3]
+opt-level = 2
+[profile.dev.package.p256]
+opt-level = 2
+
 [profile.release]
-opt-level = "z"
+opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# Crypto crates need speed-optimized codegen even in size-optimized release
+# builds.  opt-level "s"/"z" can be orders of magnitude slower for scalar
+# multiplication on soft-float targets (emulated RISC-V, etc.).
+[profile.release.package.ed25519-dalek]
+opt-level = 2
+[profile.release.package.curve25519-dalek]
+opt-level = 2
+[profile.release.package.sha2]
+opt-level = 2
+[profile.release.package.sha3]
+opt-level = 2
+[profile.release.package.p256]
+opt-level = 2

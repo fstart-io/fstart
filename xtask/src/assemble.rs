@@ -3,9 +3,9 @@
 //! Reads a board config, collects built binaries, and assembles them into
 //! a signed FFS firmware image using the fstart-ffs builder.
 
-use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputSegment, RegionConfig};
+use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, InputSegment};
 use fstart_types::ffs::{
-    Compression, FileType, RegionRole, SegmentFlags, SegmentKind, Signature, VerificationKey,
+    Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
 use fstart_types::StageLayout;
 use std::fs;
@@ -17,6 +17,15 @@ use std::path::{Path, PathBuf};
 /// 2. Packages stage binaries into an FFS image.
 /// 3. Signs the manifest with the board's dev key pair.
 pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
+    assemble_impl(board_name, false)
+}
+
+/// Assemble with explicit release flag.
+pub fn assemble_release(board_name: &str, release: bool) -> Result<PathBuf, String> {
+    assemble_impl(board_name, release)
+}
+
+fn assemble_impl(board_name: &str, release: bool) -> Result<PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
     let board_dir = workspace_root.join("boards").join(board_name);
     let board_ron = board_dir.join("board.ron");
@@ -31,12 +40,14 @@ pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
     eprintln!("[fstart] assembling FFS image for: {}", config.name);
 
     // Build all stages first
-    let build_result = crate::build_board::build(board_name, false)?;
+    let build_result = crate::build_board::build(board_name, release)?;
 
     // Read the public key (or generate a dev key pair if not present)
     let (signing_key, verification_key) = get_or_create_dev_keys(&board_dir, &config)?;
 
-    // Build the list of input files from the built stages
+    // Build the list of input files from the built stages.
+    // For multi-stage builds, convert ELFs to flat binaries so the FFS image
+    // is directly bootable (CPU executes from offset 0 of the first file).
     let mut ro_files = Vec::new();
 
     match &config.stages {
@@ -65,13 +76,14 @@ pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
         }
         StageLayout::MultiStage(_stages) => {
             for stage_bin in &build_result.stages {
-                let stage_data = fs::read(&stage_bin.path)
-                    .map_err(|e| format!("failed to read {} binary: {e}", stage_bin.name))?;
+                // Convert ELF to flat binary so the FFS image is directly
+                // loadable as raw bytes at the flash base address.
+                let flat_binary = elf_to_flat_binary(&stage_bin.path)?;
                 eprintln!(
-                    "[fstart] {} binary: {} ({} bytes)",
+                    "[fstart] {} flat binary: {} bytes (from {})",
                     stage_bin.name,
+                    flat_binary.len(),
                     stage_bin.path.display(),
-                    stage_data.len()
                 );
 
                 ro_files.push(InputFile {
@@ -80,7 +92,7 @@ pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
                     segments: vec![InputSegment {
                         name: ".text".to_string(),
                         kind: SegmentKind::Code,
-                        data: stage_data,
+                        data: flat_binary,
                         load_addr: stage_bin.load_addr,
                         compression: Compression::None,
                         flags: SegmentFlags::CODE,
@@ -92,12 +104,10 @@ pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
 
     let image_config = FfsImageConfig {
         keys: vec![verification_key],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
             files: ro_files,
-        },
-        rw_regions: vec![],
-        nvs_size: None,
+        }],
     };
 
     // Build the image with signing
@@ -119,9 +129,9 @@ pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
         ffs_image.image.len()
     );
     eprintln!(
-        "[fstart] anchor at offset 0 ({} bytes, ro_region_base={})",
+        "[fstart] anchor at offset {} ({} bytes)",
+        ffs_image.anchor_offset,
         ffs_image.anchor_bytes.len(),
-        ffs_image.ro_region_base
     );
 
     // Log the stage files in the image
@@ -133,6 +143,32 @@ pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
     );
 
     Ok(image_path)
+}
+
+/// Convert an ELF file to a flat binary using `llvm-objcopy -O binary`.
+///
+/// This strips ELF headers and produces raw bytes starting at the lowest
+/// load address. Needed for FFS images that are loaded as raw data.
+fn elf_to_flat_binary(elf_path: &Path) -> Result<Vec<u8>, String> {
+    use std::process::Command;
+
+    let bin_path = elf_path.with_extension("ffs.bin");
+    let status = Command::new("llvm-objcopy")
+        .arg("-O")
+        .arg("binary")
+        .arg(elf_path)
+        .arg(&bin_path)
+        .status()
+        .map_err(|e| format!("failed to run llvm-objcopy: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("llvm-objcopy failed for {}", elf_path.display()));
+    }
+
+    let data = fs::read(&bin_path)
+        .map_err(|e| format!("failed to read flat binary {}: {e}", bin_path.display()))?;
+
+    Ok(data)
 }
 
 /// Get or create a dev Ed25519 key pair for signing.

@@ -17,9 +17,9 @@ pub mod stage;
 pub use board::{BoardConfig, BuildMode, FdtSource, PayloadConfig, PayloadKind};
 pub use device::{DeviceConfig, Resources};
 pub use ffs::{
-    AnchorBlock, Compression, DigestSet, FfsHeader, FileEntry, FileType, KeyBytes, Manifest,
-    NvsPointer, RegionRole, RwSlotPointer, Segment, SegmentFlags, SegmentKind, Signature,
-    SignatureKind, SignedManifest, VerificationKey, FFS_MAGIC, FFS_VERSION,
+    AnchorBlock, Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, Region,
+    RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,
+    SignedManifest, VerificationKey, FFS_MAGIC, FFS_VERSION,
 };
 pub use memory::{MemoryMap, MemoryRegion, RegionKind};
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};

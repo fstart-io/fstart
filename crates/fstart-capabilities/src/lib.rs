@@ -11,9 +11,10 @@
 //! ## FFS Capabilities
 //!
 //! When the `ffs` feature is enabled, `sig_verify`, `stage_load`, and
-//! `payload_load` perform real FFS operations: scanning for the anchor,
-//! verifying manifest signatures, reading file segments, and jumping to
-//! loaded code. Without the `ffs` feature, stub variants are used.
+//! `payload_load` perform real FFS operations: reading the anchor via
+//! volatile from the embedded `FSTART_ANCHOR` static, verifying manifest
+//! signatures, reading file segments, and jumping to loaded code. Without
+//! the `ffs` feature, stub variants are used.
 //!
 //! See [docs/driver-model.md](../../docs/driver-model.md) for the full
 //! driver model architecture.
@@ -81,44 +82,25 @@ pub fn driver_init_complete(console: &dyn Console, device_count: usize) {
 
 /// Verify the firmware filesystem manifest signature.
 ///
-/// Scans the firmware image for the FFS anchor, reads the RO manifest,
-/// verifies its cryptographic signature, and checks file digests.
+/// `anchor_data` is a reference to the `FSTART_ANCHOR` static embedded in
+/// the bootblock binary. Read via `read_volatile` to see post-build patched
+/// values.
 ///
 /// `flash_base` and `flash_size` specify where the firmware image sits
-/// in memory. If `flash_size` is 0, verification is skipped (no FFS
-/// image available).
+/// in memory. If `flash_size` is 0, verification is skipped.
 #[cfg(feature = "ffs")]
-pub fn sig_verify(console: &dyn Console, flash_base: u64, flash_size: u64) {
+pub fn sig_verify(console: &dyn Console, anchor_data: &[u8], flash_base: u64, flash_size: u64) {
     let _ = console.write_line("[fstart] capability: SigVerify");
 
-    if flash_size == 0 {
+    if flash_size == 0 || anchor_data.is_empty() {
         let _ = console.write_line("[fstart] sig verify: no flash image configured, skipping");
         return;
     }
 
-    // SAFETY: we trust that flash_base..flash_base+flash_size is mapped and
-    // readable memory (guaranteed by the board config and platform setup).
-    let image =
-        unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
-
-    let reader = fstart_ffs::FfsReader::new(image);
-
-    // Scan for the anchor block
-    let anchor_offset = match reader.scan_for_anchor() {
-        Ok(offset) => {
-            let _ = console.write_str("[fstart] sig verify: anchor found at offset ");
-            let _ = write_hex(console, offset as u64);
-            let _ = console.write_line("");
-            offset
-        }
-        Err(_) => {
-            let _ = console.write_line("[fstart] sig verify: no FFS anchor found, skipping");
-            return;
-        }
-    };
-
-    // Read the anchor
-    let anchor = match reader.read_anchor(anchor_offset) {
+    // Volatile-read the anchor to see the post-build patched values
+    // SAFETY: FSTART_ANCHOR is emitted by codegen with proper alignment
+    // and size (>= ANCHOR_SIZE) in the .fstart.anchor linker section.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
         Ok(a) => a,
         Err(e) => {
             let _ = console.write_str("[fstart] sig verify: failed to read anchor: ");
@@ -127,20 +109,38 @@ pub fn sig_verify(console: &dyn Console, flash_base: u64, flash_size: u64) {
         }
     };
 
-    // Verify the RO manifest signature
-    match reader.read_ro_manifest(&anchor) {
-        Ok(manifest) => {
-            let _ = console.write_str("[fstart] sig verify: RO manifest verified (");
-            let _ = write_usize(console, manifest.entries.len());
-            let _ = console.write_line(" files)");
+    // SAFETY: we trust that flash_base..flash_base+flash_size is mapped and
+    // readable memory (guaranteed by the board config and platform setup).
+    let image =
+        unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
+    let reader = fstart_ffs::FfsReader::new(image);
 
-            // Verify file digests for single-segment uncompressed files
-            let mut verified = 0usize;
-            let mut skipped = 0usize;
-            for entry in &manifest.entries {
-                match reader.verify_file_digests_raw(entry, anchor.ro_region_base) {
-                    Ok(()) => verified += 1,
-                    Err(fstart_ffs::ReaderError::CannotVerifyInPlace) => skipped += 1,
+    // Verify the manifest signature
+    let manifest = match reader.read_manifest(&anchor) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = console.write_str("[fstart] sig verify: manifest verification FAILED: ");
+            let _ = console.write_line(reader_error_str(e));
+            return;
+        }
+    };
+
+    // Find the first container region and verify its file digests
+    let mut total_verified = 0usize;
+    let mut total_skipped = 0usize;
+
+    for region in &manifest.regions {
+        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
+            let _ = console.write_str("[fstart] sig verify: region '");
+            let _ = console.write_str(region.name.as_str());
+            let _ = console.write_str("' (");
+            let _ = write_usize(console, children.len());
+            let _ = console.write_line(" entries)");
+
+            for entry in children {
+                match reader.verify_entry_digests(entry, region) {
+                    Ok(()) => total_verified += 1,
+                    Err(fstart_ffs::ReaderError::CannotVerifyInPlace) => total_skipped += 1,
                     Err(_) => {
                         let _ = console.write_str("[fstart] sig verify: digest FAILED for: ");
                         let _ = console.write_line(entry.name.as_str());
@@ -148,22 +148,19 @@ pub fn sig_verify(console: &dyn Console, flash_base: u64, flash_size: u64) {
                     }
                 }
             }
-            let _ = console.write_str("[fstart] sig verify: ");
-            let _ = write_usize(console, verified);
-            let _ = console.write_str(" files verified, ");
-            let _ = write_usize(console, skipped);
-            let _ = console.write_line(" skipped (multi-segment)");
-        }
-        Err(e) => {
-            let _ = console.write_str("[fstart] sig verify: manifest verification FAILED: ");
-            let _ = console.write_line(reader_error_str(e));
         }
     }
+
+    let _ = console.write_str("[fstart] sig verify: ");
+    let _ = write_usize(console, total_verified);
+    let _ = console.write_str(" files verified, ");
+    let _ = write_usize(console, total_skipped);
+    let _ = console.write_line(" skipped (multi-segment)");
 }
 
 /// Stub SigVerify when FFS feature is not enabled.
 #[cfg(not(feature = "ffs"))]
-pub fn sig_verify(console: &dyn Console, _flash_base: u64, _flash_size: u64) {
+pub fn sig_verify(console: &dyn Console, _anchor_data: &[u8], _flash_base: u64, _flash_size: u64) {
     let _ = console.write_line("[fstart] capability: SigVerify");
     let _ = console.write_line("[fstart] sig verify skipped (ffs feature not enabled)");
 }
@@ -193,31 +190,40 @@ pub fn fdt_prepare(console: &dyn Console) {
 ///
 /// Reads the payload from FFS, copies its segments to load addresses,
 /// and transfers control via the provided `jump_to` function.
+///
+/// `anchor_data` is a reference to the `FSTART_ANCHOR` static embedded
+/// in the bootblock binary. Read via volatile to see patched values.
 #[cfg(feature = "ffs")]
 pub fn payload_load(
     console: &dyn Console,
+    anchor_data: &[u8],
     flash_base: u64,
     flash_size: u64,
     jump_to: fn(u64) -> !,
 ) {
     let _ = console.write_line("[fstart] capability: PayloadLoad");
 
-    if flash_size == 0 {
+    if flash_size == 0 || anchor_data.is_empty() {
         let _ = console.write_line("[fstart] payload load: no flash image configured, skipping");
         return;
     }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = console.write_str("[fstart] payload load: failed to read anchor: ");
+            let _ = console.write_line(reader_error_str(e));
+            return;
+        }
+    };
 
     // SAFETY: flash_base..flash_base+flash_size is mapped readable memory.
     let image =
         unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
     let reader = fstart_ffs::FfsReader::new(image);
 
-    let anchor = match find_anchor_and_manifest(&reader, console) {
-        Some((a, _m)) => a,
-        None => return,
-    };
-
-    let manifest = match reader.read_ro_manifest(&anchor) {
+    let manifest = match reader.read_manifest(&anchor) {
         Ok(m) => m,
         Err(e) => {
             let _ = console.write_str("[fstart] payload load: manifest error: ");
@@ -226,14 +232,26 @@ pub fn payload_load(
         }
     };
 
-    // Look for a Payload file type
-    let payload_file = manifest
-        .entries
-        .iter()
-        .find(|e| e.file_type == fstart_types::ffs::FileType::Payload);
+    // Look for a Payload file type in any container region
+    let mut payload_found = None;
+    for region in &manifest.regions {
+        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
+            for entry in children {
+                if let fstart_types::ffs::EntryContent::File { file_type, .. } = &entry.content {
+                    if *file_type == fstart_types::ffs::FileType::Payload {
+                        payload_found = Some((region, entry));
+                        break;
+                    }
+                }
+            }
+        }
+        if payload_found.is_some() {
+            break;
+        }
+    }
 
-    let payload_file = match payload_file {
-        Some(f) => f,
+    let (region, entry) = match payload_found {
+        Some(found) => found,
         None => {
             let _ = console.write_line("[fstart] payload load: no payload found in manifest");
             return;
@@ -241,12 +259,11 @@ pub fn payload_load(
     };
 
     let _ = console.write_str("[fstart] payload load: loading '");
-    let _ = console.write_str(payload_file.name.as_str());
+    let _ = console.write_str(entry.name.as_str());
     let _ = console.write_line("'");
 
     // Load segments
-    let entry_addr = match load_file_segments(&reader, payload_file, anchor.ro_region_base, console)
-    {
+    let entry_addr = match load_entry_segments(&reader, entry, region, console) {
         Some(addr) => addr,
         None => return,
     };
@@ -279,10 +296,14 @@ pub fn payload_load_stub_no_flash(console: &dyn Console) {
 ///
 /// Reads the named stage binary from the firmware filesystem, copies its
 /// segments to the load addresses, and transfers control via `jump_to`.
+///
+/// `anchor_data` is a reference to the `FSTART_ANCHOR` static embedded
+/// in the bootblock binary. Read via volatile to see patched values.
 #[cfg(feature = "ffs")]
 pub fn stage_load(
     console: &dyn Console,
     next_stage: &str,
+    anchor_data: &[u8],
     flash_base: u64,
     flash_size: u64,
     jump_to: fn(u64) -> !,
@@ -290,22 +311,27 @@ pub fn stage_load(
     let _ = console.write_str("[fstart] capability: StageLoad -> ");
     let _ = console.write_line(next_stage);
 
-    if flash_size == 0 {
+    if flash_size == 0 || anchor_data.is_empty() {
         let _ = console.write_line("[fstart] stage load: no flash image configured, skipping");
         return;
     }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = console.write_str("[fstart] stage load: failed to read anchor: ");
+            let _ = console.write_line(reader_error_str(e));
+            return;
+        }
+    };
 
     // SAFETY: flash_base..flash_base+flash_size is mapped readable memory.
     let image =
         unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
     let reader = fstart_ffs::FfsReader::new(image);
 
-    let anchor = match find_anchor_and_manifest(&reader, console) {
-        Some((a, _m)) => a,
-        None => return,
-    };
-
-    let manifest = match reader.read_ro_manifest(&anchor) {
+    let manifest = match reader.read_manifest(&anchor) {
         Ok(m) => m,
         Err(e) => {
             let _ = console.write_str("[fstart] stage load: manifest error: ");
@@ -314,10 +340,21 @@ pub fn stage_load(
         }
     };
 
-    // Look up the stage by name in the manifest
-    let stage_file = match fstart_ffs::FfsReader::find_file(&manifest, next_stage) {
-        Ok(f) => f,
-        Err(_) => {
+    // Search all container regions for the named stage
+    let mut stage_found = None;
+    for region in &manifest.regions {
+        match fstart_ffs::FfsReader::find_entry(region, next_stage) {
+            Ok(entry) => {
+                stage_found = Some((region, entry));
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+
+    let (region, entry) = match stage_found {
+        Some(found) => found,
+        None => {
             let _ = console.write_str("[fstart] stage load: stage '");
             let _ = console.write_str(next_stage);
             let _ = console.write_line("' not found in manifest");
@@ -325,14 +362,19 @@ pub fn stage_load(
         }
     };
 
+    let segments_len = match &entry.content {
+        fstart_types::ffs::EntryContent::File { segments, .. } => segments.len(),
+        _ => 0,
+    };
+
     let _ = console.write_str("[fstart] stage load: loading '");
     let _ = console.write_str(next_stage);
     let _ = console.write_str("' (");
-    let _ = write_usize(console, stage_file.segments.len());
+    let _ = write_usize(console, segments_len);
     let _ = console.write_line(" segments)");
 
     // Load all segments to their load addresses
-    let entry_addr = match load_file_segments(&reader, stage_file, anchor.ro_region_base, console) {
+    let entry_addr = match load_entry_segments(&reader, entry, region, console) {
         Some(addr) => addr,
         None => return,
     };
@@ -355,58 +397,28 @@ pub fn stage_load_stub(console: &dyn Console, next_stage: &str) {
 // FFS Helpers (behind `ffs` feature)
 // ---------------------------------------------------------------------------
 
-/// Scan for the FFS anchor and read the RO manifest.
-///
-/// Returns (AnchorBlock, Manifest) on success, or None on failure (with
-/// error logged to console).
-#[cfg(feature = "ffs")]
-fn find_anchor_and_manifest<'a>(
-    reader: &fstart_ffs::FfsReader<'a>,
-    console: &dyn Console,
-) -> Option<(fstart_types::ffs::AnchorBlock, fstart_types::ffs::Manifest)> {
-    let anchor_offset = match reader.scan_for_anchor() {
-        Ok(offset) => offset,
-        Err(_) => {
-            let _ = console.write_line("[fstart] FFS: no anchor found in flash image");
-            return None;
-        }
-    };
-
-    let anchor = match reader.read_anchor(anchor_offset) {
-        Ok(a) => a,
-        Err(e) => {
-            let _ = console.write_str("[fstart] FFS: failed to read anchor: ");
-            let _ = console.write_line(reader_error_str(e));
-            return None;
-        }
-    };
-
-    let manifest = match reader.read_ro_manifest(&anchor) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = console.write_str("[fstart] FFS: manifest verification failed: ");
-            let _ = console.write_line(reader_error_str(e));
-            return None;
-        }
-    };
-
-    Some((anchor, manifest))
-}
-
-/// Load all segments of a file to their load addresses.
+/// Load all segments of a file entry to their load addresses.
 ///
 /// Returns the entry address (load_addr of the first Code segment, or
 /// load_addr of the first segment if no Code segments).
 #[cfg(feature = "ffs")]
-fn load_file_segments(
+fn load_entry_segments(
     reader: &fstart_ffs::FfsReader<'_>,
-    file: &fstart_types::ffs::FileEntry,
-    region_base: u32,
+    entry: &fstart_types::ffs::RegionEntry,
+    region: &fstart_types::ffs::Region,
     console: &dyn Console,
 ) -> Option<u64> {
+    let segments = match &entry.content {
+        fstart_types::ffs::EntryContent::File { segments, .. } => segments,
+        _ => {
+            let _ = console.write_line("[fstart]   entry is not a file");
+            return None;
+        }
+    };
+
     let mut entry_addr: Option<u64> = None;
 
-    for seg in &file.segments {
+    for seg in segments {
         if seg.kind == fstart_types::ffs::SegmentKind::Bss {
             // BSS: zero-fill at load_addr
             let dest = seg.load_addr as *mut u8;
@@ -421,7 +433,7 @@ fn load_file_segments(
             let _ = console.write_line(" bytes zeroed)");
         } else {
             // Data segment: copy from flash to load_addr
-            let data = match reader.read_segment_data(seg, region_base) {
+            let data = match reader.read_segment_data(seg, region, entry) {
                 Ok(d) => d,
                 Err(e) => {
                     let _ = console.write_str("[fstart]   segment read error: ");
@@ -473,7 +485,7 @@ fn reader_error_str(err: fstart_ffs::ReaderError) -> &'static str {
         fstart_ffs::ReaderError::KeyNotFound => "key not found",
         fstart_ffs::ReaderError::FileNotFound => "file not found",
         fstart_ffs::ReaderError::DigestMismatch => "digest mismatch",
-        fstart_ffs::ReaderError::RwSlotNotFound => "RW slot not found",
+        fstart_ffs::ReaderError::RegionNotFound => "region not found",
         fstart_ffs::ReaderError::UnsupportedAlgorithm => "unsupported algorithm",
         fstart_ffs::ReaderError::CannotVerifyInPlace => "cannot verify in place",
     }
