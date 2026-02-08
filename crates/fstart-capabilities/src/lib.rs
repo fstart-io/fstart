@@ -442,25 +442,91 @@ fn load_entry_segments(
                 }
             };
 
-            if seg.compression != fstart_types::ffs::Compression::None {
-                let _ = console.write_line("[fstart]   compressed segments not yet supported");
-                return None;
-            }
-
             let dest = seg.load_addr as *mut u8;
-            // SAFETY: we trust the board config; the load_addr points to writable RAM
-            // and `data.len()` bytes fit. The source and destination must not overlap
-            // (flash → RAM is always non-overlapping).
-            unsafe {
-                core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+
+            match seg.compression {
+                fstart_types::ffs::Compression::None => {
+                    // SAFETY: we trust the board config; the load_addr points to
+                    // writable RAM and `data.len()` bytes fit. Source and
+                    // destination must not overlap (flash -> RAM).
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+                    }
+                    let _ = console.write_str("[fstart]   ");
+                    let _ = console.write_str(seg.name.as_str());
+                    let _ = console.write_str(": ");
+                    let _ = write_hex(console, seg.load_addr);
+                    let _ = console.write_str(" (");
+                    let _ = write_usize(console, data.len());
+                    let _ = console.write_line(" bytes)");
+                }
+                #[cfg(feature = "lz4")]
+                fstart_types::ffs::Compression::Lz4 => {
+                    // In-place LZ4 decompression (coreboot technique):
+                    // 1. The builder verified that `in_place_size` bytes at
+                    //    load_addr suffice for safe in-place decompression.
+                    // 2. Copy compressed data to the END of the buffer:
+                    //    dest + in_place_size - stored_size
+                    // 3. Decompress from tail to head — the decompressor
+                    //    reads from the tail while writing from the head.
+                    let buf_size = seg.in_place_size as usize;
+                    let stored_size = seg.stored_size as usize;
+                    let loaded_size = seg.loaded_size as usize;
+
+                    // SAFETY: load_addr points to writable RAM with at least
+                    // `in_place_size` bytes available (verified by the builder
+                    // and guaranteed by the linker script / board config).
+                    let buf = unsafe { core::slice::from_raw_parts_mut(dest, buf_size) };
+
+                    // Copy compressed data to the tail of the buffer
+                    let src_offset = buf_size - stored_size;
+                    // SAFETY: src (flash) and dst (RAM tail) don't overlap.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            buf.as_mut_ptr().add(src_offset),
+                            stored_size,
+                        );
+                    }
+
+                    // Decompress in-place: read from tail, write from head.
+                    // SAFETY: the builder simulated this exact operation at
+                    // build time and verified it succeeds.
+                    let result = unsafe {
+                        let src =
+                            core::slice::from_raw_parts(buf.as_ptr().add(src_offset), stored_size);
+                        let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), loaded_size);
+                        lz4_flex::block::decompress_into(src, dst)
+                    };
+
+                    match result {
+                        Ok(n) => {
+                            let _ = console.write_str("[fstart]   ");
+                            let _ = console.write_str(seg.name.as_str());
+                            let _ = console.write_str(": ");
+                            let _ = write_hex(console, seg.load_addr);
+                            let _ = console.write_str(" (");
+                            let _ = write_usize(console, stored_size);
+                            let _ = console.write_str(" -> ");
+                            let _ = write_usize(console, n);
+                            let _ = console.write_line(" bytes, lz4 in-place)");
+                        }
+                        Err(_) => {
+                            let _ =
+                                console.write_str("[fstart]   LZ4 in-place decompress failed: ");
+                            let _ = console.write_line(seg.name.as_str());
+                            return None;
+                        }
+                    }
+                }
+                #[cfg(not(feature = "lz4"))]
+                fstart_types::ffs::Compression::Lz4 => {
+                    let _ = console.write_line(
+                        "[fstart]   LZ4 compressed segment but lz4 feature not enabled",
+                    );
+                    return None;
+                }
             }
-            let _ = console.write_str("[fstart]   ");
-            let _ = console.write_str(seg.name.as_str());
-            let _ = console.write_str(": ");
-            let _ = write_hex(console, seg.load_addr);
-            let _ = console.write_str(" (");
-            let _ = write_usize(console, data.len());
-            let _ = console.write_line(" bytes)");
         }
 
         // Use the first Code segment's load_addr as the entry point,

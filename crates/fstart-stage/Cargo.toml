@@ -19,6 +19,8 @@ ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
 sha2-digest = ["ffs", "fstart-capabilities/sha2-digest", "fstart-ffs/sha2-digest"]
 sha3-digest = ["ffs", "fstart-capabilities/sha3-digest", "fstart-ffs/sha3-digest"]
+# LZ4 decompression for compressed stage/payload segments
+lz4 = ["ffs", "fstart-capabilities/lz4"]
 
 [dependencies]
 fstart-services = { workspace = true }

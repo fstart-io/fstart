@@ -287,17 +287,18 @@ fn lay_out_file(
     let entry_offset = image.len() as u32 - region_base;
 
     for seg in &file.segments {
-        let stored_data = match seg.compression {
-            Compression::None => seg.data.clone(),
+        let (stored_data, in_place_size) = match seg.compression {
+            Compression::None => (seg.data.clone(), 0u32),
             Compression::Lz4 => {
-                // LZ4 compression is not yet implemented. Fail explicitly
-                // rather than storing uncompressed data with an Lz4 metadata
-                // tag, which would produce a corrupt image.
-                return Err(format!(
-                    "LZ4 compression requested for segment '{}' in file '{}' \
-                     but not yet implemented",
-                    seg.name, file.name
-                ));
+                if seg.data.is_empty() {
+                    // BSS or empty segments: nothing to compress
+                    (Vec::new(), 0u32)
+                } else {
+                    let compressed = lz4_flex::block::compress(&seg.data);
+                    let in_place =
+                        verify_in_place_lz4(&compressed, seg.data.len(), &seg.name, &file.name)?;
+                    (compressed, in_place)
+                }
             }
         };
 
@@ -320,6 +321,7 @@ fn lay_out_file(
                 offset: seg_offset,
                 stored_size: stored_data.len() as u32,
                 loaded_size: seg.data.len() as u32,
+                in_place_size,
                 load_addr: seg.load_addr,
                 compression: seg.compression,
                 flags: seg.flags,
@@ -390,8 +392,21 @@ fn recompute_bootblock_digest(
 
     // Re-read all segment data from the image (now with patched anchor)
     // and recompute the concatenated digest.
+    //
+    // Digests cover the *uncompressed* content of each segment. For the
+    // bootblock, all segments must be uncompressed because the builder
+    // patches the anchor directly into the image bytes. (Compressed
+    // bootblock segments would corrupt the LZ4 stream.)
     let mut digest_input: Vec<u8> = Vec::new();
     for seg in segments.iter() {
+        if seg.compression != Compression::None {
+            return Err(format!(
+                "bootblock segment '{}' uses {:?} compression — \
+                 the bootblock must be uncompressed because the anchor \
+                 is patched directly into its image bytes",
+                seg.name, seg.compression,
+            ));
+        }
         let abs_offset = (region_offset + entry_offset + seg.offset) as usize;
         let end = abs_offset + seg.stored_size as usize;
         if end > image.len() {
@@ -435,4 +450,89 @@ where
         manifest_bytes,
         signature,
     })
+}
+
+/// Verify that an LZ4-compressed segment can be safely decompressed in-place.
+///
+/// Follows coreboot's cbfstool approach: simulate the in-place decompression
+/// at build time. The compressed data is placed at the **end** of the output
+/// buffer, then `lz4_flex::block::decompress_into` writes from the beginning.
+/// The decompressor reads from the tail while writing from the head; as long
+/// as the buffer is large enough the write pointer never overtakes the read
+/// pointer.
+///
+/// Returns the minimum contiguous buffer size (`in_place_size`) needed at
+/// the load address, or an error if in-place decompression is not possible.
+///
+/// The worst-case margin is `8 + loaded_size / 255` bytes (from the LZ4 block
+/// format: every 255 bytes of incompressible literals adds 1 byte of encoding
+/// overhead, plus an 8-byte wild-copy guard). In practice the margin is much
+/// smaller.
+fn verify_in_place_lz4(
+    compressed: &[u8],
+    original_size: usize,
+    seg_name: &str,
+    file_name: &str,
+) -> Result<u32, String> {
+    if compressed.is_empty() || original_size == 0 {
+        return Ok(0);
+    }
+
+    // Start with just loaded_size as the buffer size and increase if needed.
+    // The theoretical worst-case overhead is 8 + original_size / 255 bytes,
+    // but we verify empirically because the actual data may need less.
+    let worst_case_margin = 8 + original_size / 255;
+    let max_buf_size = original_size + worst_case_margin;
+
+    // Try progressively larger buffers, starting from just `original_size`
+    let mut buf_size = original_size;
+    loop {
+        // Simulate in-place decompression (coreboot cbfstool approach):
+        // 1. Allocate a buffer of `buf_size` bytes
+        // 2. Copy compressed data to the END of the buffer
+        // 3. Decompress from tail to head
+        //
+        // Rust's borrow checker prevents simultaneous &[..] and &mut [..]
+        // on the same buffer, so we use raw pointers for the simulation,
+        // exactly as the runtime would.
+        let mut buf = vec![0u8; buf_size];
+        let src_offset = buf_size - compressed.len();
+        buf[src_offset..].copy_from_slice(compressed);
+
+        let result = unsafe {
+            let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
+            let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), original_size);
+            lz4_flex::block::decompress_into(src, dst)
+        };
+
+        match result {
+            Ok(n) if n == original_size => {
+                return Ok(buf_size as u32);
+            }
+            Ok(n) => {
+                return Err(format!(
+                    "LZ4 in-place decompression size mismatch for segment '{}' in \
+                     file '{}': expected {original_size}, got {n}",
+                    seg_name, file_name,
+                ));
+            }
+            Err(_) if buf_size < max_buf_size => {
+                // Not enough scratch space — try a larger buffer.
+                // Increase by 1/255th of original_size (at least 1 byte).
+                buf_size += (original_size / 255).max(1);
+                if buf_size > max_buf_size {
+                    buf_size = max_buf_size;
+                }
+            }
+            Err(_) => {
+                return Err(format!(
+                    "LZ4 in-place decompression failed for segment '{}' in file '{}' \
+                     even with worst-case buffer size ({max_buf_size} bytes = \
+                     {original_size} + {worst_case_margin} margin). This should not \
+                     happen — possible lz4_flex bug",
+                    seg_name, file_name,
+                ));
+            }
+        }
+    }
 }

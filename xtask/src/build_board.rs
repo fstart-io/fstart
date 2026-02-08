@@ -89,6 +89,9 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 
     if uses_ffs {
         features.push("ffs".to_string());
+        // LZ4 decompression support — always enabled when FFS is active
+        // so the runtime can handle compressed stage/payload segments.
+        features.push("lz4".to_string());
         // Enable crypto features based on board security config
         match config.security.signing_algorithm {
             fstart_types::SignatureAlgorithm::Ed25519 => features.push("ed25519".to_string()),
