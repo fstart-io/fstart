@@ -75,14 +75,31 @@ fn assemble_impl(board_name: &str, release: bool) -> Result<PathBuf, String> {
             });
         }
         StageLayout::MultiStage(_stages) => {
-            for stage_bin in &build_result.stages {
+            for (i, stage_bin) in build_result.stages.iter().enumerate() {
                 // Convert ELF to flat binary so the FFS image is directly
                 // loadable as raw bytes at the flash base address.
                 let flat_binary = elf_to_flat_binary(&stage_bin.path)?;
+
+                // The first file (bootblock) must be uncompressed — it
+                // executes directly from flash/RAM and contains the
+                // FSTART_ANCHOR placeholder that gets patched in-place.
+                // Subsequent stages are LZ4-compressed and decompressed
+                // in-place at their load address during StageLoad.
+                let compression = if i == 0 {
+                    Compression::None
+                } else {
+                    Compression::Lz4
+                };
+
+                let label = match compression {
+                    Compression::None => "uncompressed",
+                    Compression::Lz4 => "lz4",
+                };
                 eprintln!(
-                    "[fstart] {} flat binary: {} bytes (from {})",
+                    "[fstart] {} flat binary: {} bytes, {} (from {})",
                     stage_bin.name,
                     flat_binary.len(),
+                    label,
                     stage_bin.path.display(),
                 );
 
@@ -94,7 +111,7 @@ fn assemble_impl(board_name: &str, release: bool) -> Result<PathBuf, String> {
                         kind: SegmentKind::Code,
                         data: flat_binary,
                         load_addr: stage_bin.load_addr,
-                        compression: Compression::None,
+                        compression,
                         flags: SegmentFlags::CODE,
                     }],
                 });

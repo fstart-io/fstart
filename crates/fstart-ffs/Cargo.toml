@@ -12,8 +12,6 @@ alloc = ["fstart-types/alloc", "postcard/alloc"]
 ed25519 = ["fstart-crypto/ed25519"]
 sha2-digest = ["fstart-crypto/sha2-digest"]
 sha3-digest = ["fstart-crypto/sha3-digest"]
-# LZ4 decompression for no_std firmware builds
-lz4 = ["dep:lz4_flex"]
 
 [dependencies]
 fstart-types = { workspace = true }

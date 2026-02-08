@@ -754,8 +754,10 @@ fn test_lz4_compressed_segment_round_trip() {
     assert_eq!(compressed_data.len(), seg.stored_size as usize);
 
     // Decompress and verify it matches the original
-    let decompressed =
-        lz4_flex::block::decompress(compressed_data, seg.loaded_size as usize).expect("decompress");
+    let mut decompressed = vec![0u8; seg.loaded_size as usize];
+    let n =
+        fstart_ffs::lz4::decompress_block(compressed_data, &mut decompressed).expect("decompress");
+    assert_eq!(n, seg.loaded_size as usize);
     assert_eq!(decompressed, compressible_data);
 }
 
@@ -841,7 +843,7 @@ fn test_lz4_in_place_decompression() {
     let n = unsafe {
         let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
         let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), seg.loaded_size as usize);
-        lz4_flex::block::decompress_into(src, dst).expect("in-place decompress should succeed")
+        fstart_ffs::lz4::decompress_block(src, dst).expect("in-place decompress should succeed")
     };
 
     assert_eq!(n, mixed_data.len());
@@ -923,9 +925,10 @@ fn test_lz4_multi_segment_with_mixed_compression() {
     let text_compressed = reader
         .read_segment_data(text_seg, region, entry)
         .expect("read .text");
-    let text_decompressed =
-        lz4_flex::block::decompress(text_compressed, text_seg.loaded_size as usize)
-            .expect("decompress .text");
+    let mut text_decompressed = vec![0u8; text_seg.loaded_size as usize];
+    let n = fstart_ffs::lz4::decompress_block(text_compressed, &mut text_decompressed)
+        .expect("decompress .text");
+    assert_eq!(n, text_data.len());
     assert_eq!(text_decompressed, text_data);
 
     // .rodata is uncompressed
@@ -1025,7 +1028,7 @@ fn test_lz4_incompressible_data() {
     let n = unsafe {
         let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
         let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), seg.loaded_size as usize);
-        lz4_flex::block::decompress_into(src, dst).expect("in-place decompress")
+        fstart_ffs::lz4::decompress_block(src, dst).expect("in-place decompress")
     };
 
     assert_eq!(n, data.len());
