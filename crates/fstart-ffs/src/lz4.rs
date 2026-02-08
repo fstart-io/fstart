@@ -33,16 +33,13 @@ pub enum Lz4Error {
     Overrun,
     /// Match offset points before the start of the output.
     BadOffset,
-    /// Output size does not match expected.
-    SizeMismatch,
 }
 
 /// Decompress an LZ4 block from `src` into `dst`.
 ///
 /// Returns the number of bytes written to `dst` on success, or an error.
-///
-/// `dst` must be exactly the expected decompressed size. The function will
-/// error if the decompressed output does not fill `dst` exactly.
+/// The caller should verify the returned count matches the expected
+/// decompressed size — the function does not enforce an exact fill.
 ///
 /// ## In-place decompression
 ///
