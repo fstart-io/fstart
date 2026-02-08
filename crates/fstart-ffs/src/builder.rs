@@ -456,7 +456,7 @@ where
 ///
 /// Follows coreboot's cbfstool approach: simulate the in-place decompression
 /// at build time. The compressed data is placed at the **end** of the output
-/// buffer, then `lz4_flex::block::decompress_into` writes from the beginning.
+/// buffer, then the decompressor writes from the beginning.
 /// The decompressor reads from the tail while writing from the head; as long
 /// as the buffer is large enough the write pointer never overtakes the read
 /// pointer.
@@ -499,37 +499,41 @@ fn verify_in_place_lz4(
         let src_offset = buf_size - compressed.len();
         buf[src_offset..].copy_from_slice(compressed);
 
+        // Use our own overlap-safe decompressor — lz4_flex uses
+        // copy_nonoverlapping internally which panics on overlapping ranges.
         let result = unsafe {
             let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
             let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), original_size);
-            lz4_flex::block::decompress_into(src, dst)
+            crate::lz4::decompress_block(src, dst)
         };
 
         match result {
             Ok(n) if n == original_size => {
                 return Ok(buf_size as u32);
             }
-            Ok(n) => {
-                return Err(format!(
-                    "LZ4 in-place decompression size mismatch for segment '{}' in \
-                     file '{}': expected {original_size}, got {n}",
-                    seg_name, file_name,
-                ));
-            }
-            Err(_) if buf_size < max_buf_size => {
-                // Not enough scratch space — try a larger buffer.
-                // Increase by 1/255th of original_size (at least 1 byte).
+            Ok(_) | Err(_) if buf_size < max_buf_size => {
+                // Not enough scratch space — the in-place guard triggered
+                // (Err) or match copies corrupted unread source data causing
+                // a short decompression (Ok with wrong size). Try a larger
+                // buffer so compressed data sits further from the output.
                 buf_size += (original_size / 255).max(1);
                 if buf_size > max_buf_size {
                     buf_size = max_buf_size;
                 }
             }
+            Ok(n) => {
+                return Err(format!(
+                    "LZ4 in-place decompression size mismatch for segment '{}' in \
+                     file '{}': expected {original_size}, got {n} (even with \
+                     worst-case buffer size {max_buf_size})",
+                    seg_name, file_name,
+                ));
+            }
             Err(_) => {
                 return Err(format!(
                     "LZ4 in-place decompression failed for segment '{}' in file '{}' \
                      even with worst-case buffer size ({max_buf_size} bytes = \
-                     {original_size} + {worst_case_margin} margin). This should not \
-                     happen — possible lz4_flex bug",
+                     {original_size} + {worst_case_margin} margin)",
                     seg_name, file_name,
                 ));
             }

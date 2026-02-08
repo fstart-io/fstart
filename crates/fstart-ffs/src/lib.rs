@@ -19,6 +19,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod lz4;
 pub mod reader;
 
 #[cfg(feature = "std")]

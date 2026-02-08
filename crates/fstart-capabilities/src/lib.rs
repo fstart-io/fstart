@@ -491,12 +491,14 @@ fn load_entry_segments(
 
                     // Decompress in-place: read from tail, write from head.
                     // SAFETY: the builder simulated this exact operation at
-                    // build time and verified it succeeds.
+                    // build time and verified it succeeds. The src slice
+                    // overlaps the tail of buf — our decompressor handles
+                    // this (in-place guard checks output doesn't overtake input).
                     let result = unsafe {
                         let src =
                             core::slice::from_raw_parts(buf.as_ptr().add(src_offset), stored_size);
                         let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), loaded_size);
-                        lz4_flex::block::decompress_into(src, dst)
+                        fstart_ffs::lz4::decompress_block(src, dst)
                     };
 
                     match result {
