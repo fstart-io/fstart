@@ -1,10 +1,11 @@
 //! Integration tests: build an FFS image, then read it back and verify.
 
 use ed25519_dalek::{Signer, SigningKey};
-use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputSegment, RegionConfig};
+use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, InputSegment};
 use fstart_ffs::reader::FfsReader;
 use fstart_types::ffs::{
-    Compression, FileType, RegionRole, SegmentFlags, SegmentKind, Signature, VerificationKey,
+    AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind,
+    Signature, VerificationKey, ANCHOR_SIZE,
 };
 use rand_core::OsRng;
 
@@ -24,17 +25,30 @@ fn make_signer(signing_key: &SigningKey) -> impl Fn(&[u8]) -> Result<Signature, 
     }
 }
 
+/// Create stage binary data with an embedded anchor placeholder.
+///
+/// The builder requires the first file to contain `FSTART01` magic so it
+/// can find and patch the anchor. This simulates a bootblock binary that
+/// has the `#[link_section = ".fstart.anchor"]` static.
+fn stage_data_with_anchor(extra: &[u8]) -> Vec<u8> {
+    let placeholder = AnchorBlock::placeholder();
+    let mut data = vec![0u8; ANCHOR_SIZE + extra.len()];
+    placeholder.write_to(&mut data[..ANCHOR_SIZE]);
+    data[ANCHOR_SIZE..].copy_from_slice(extra);
+    data
+}
+
 #[test]
 fn test_ro_only_round_trip() {
     let (signing_key, vk) = dev_keypair();
 
-    // Build a simple RO-only image with one file
-    let stage_data = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+    // Build a simple RO-only image with one file.
+    let stage_data = stage_data_with_anchor(&[0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04]);
 
     let config = FfsImageConfig {
         keys: vec![vk],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
             files: vec![InputFile {
                 name: "bootblock".to_string(),
                 file_type: FileType::StageCode,
@@ -47,9 +61,7 @@ fn test_ro_only_round_trip() {
                     flags: SegmentFlags::CODE,
                 }],
             }],
-        },
-        rw_regions: vec![],
-        nvs_size: None,
+        }],
     };
 
     let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
@@ -57,41 +69,46 @@ fn test_ro_only_round_trip() {
     // Now read it back
     let reader = FfsReader::new(&ffs.image);
 
-    // Scan for anchor
+    // Scan for anchor (now embedded inside the first file's data)
     let anchor_offset = reader.scan_for_anchor().expect("should find anchor");
-    assert_eq!(anchor_offset, 0, "anchor should be at offset 0");
 
     // Read anchor
     let anchor = reader
         .read_anchor(anchor_offset)
         .expect("should read anchor");
-    assert_eq!(anchor.keys.len(), 1);
-    assert_eq!(anchor.keys[0].key_id, 0);
+    assert_eq!(anchor.key_count, 1);
+    assert_eq!(anchor.valid_keys().len(), 1);
+    assert_eq!(anchor.valid_keys()[0].key_id, 0);
 
-    // Verify ro_region_base is persisted in the anchor
-    let ro_base = anchor.ro_region_base;
-    assert_eq!(
-        ro_base, ffs.ro_region_base,
-        "anchor should persist ro_region_base"
-    );
+    // Read and verify manifest
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
+    assert_eq!(manifest.regions.len(), 1);
 
-    // Read and verify RO manifest
-    let manifest = reader
-        .read_ro_manifest(&anchor)
-        .expect("should read RO manifest");
-    assert_eq!(manifest.region, RegionRole::Ro);
-    assert_eq!(manifest.entries.len(), 1);
-    assert!(manifest.rw_slots.is_empty());
-    assert!(manifest.nvs.is_none());
+    // Check region
+    let region = &manifest.regions[0];
+    assert_eq!(region.name.as_str(), "ro");
+    let children = match &region.content {
+        RegionContent::Container { children } => children,
+        _ => panic!("expected Container"),
+    };
+    assert_eq!(children.len(), 1);
 
     // Check file entry
-    let file = &manifest.entries[0];
-    assert_eq!(file.name.as_str(), "bootblock");
-    assert_eq!(file.file_type, FileType::StageCode);
-    assert_eq!(file.segments.len(), 1);
+    let entry = &children[0];
+    assert_eq!(entry.name.as_str(), "bootblock");
+    let (file_type, segments, digests) = match &entry.content {
+        EntryContent::File {
+            file_type,
+            segments,
+            digests,
+        } => (file_type, segments, digests),
+        _ => panic!("expected File"),
+    };
+    assert_eq!(*file_type, FileType::StageCode);
+    assert_eq!(segments.len(), 1);
 
     // Check segment
-    let seg = &file.segments[0];
+    let seg = &segments[0];
     assert_eq!(seg.name.as_str(), ".text");
     assert_eq!(seg.kind, SegmentKind::Code);
     assert_eq!(seg.loaded_size, stage_data.len() as u32);
@@ -102,28 +119,22 @@ fn test_ro_only_round_trip() {
     assert!(seg.flags.read);
     assert!(!seg.flags.write);
 
-    // Read segment data back — offset is relative to RO region base
-    let seg_data = reader
-        .read_segment_data(seg, ro_base)
-        .expect("should read segment data");
-    assert_eq!(seg_data, &stage_data);
-
-    // Digests should be present (builder computes SHA-256 with the 'all' feature)
-    assert!(file.digests.sha256.is_some(), "should have SHA-256 digest");
+    // Digests should be present
+    assert!(digests.sha256.is_some(), "should have SHA-256 digest");
 }
 
 #[test]
 fn test_multi_segment_file() {
     let (signing_key, vk) = dev_keypair();
 
-    let text_data = vec![0x01; 64]; // code
+    let text_data = stage_data_with_anchor(&vec![0x01; 64]); // code with anchor
     let rodata = vec![0x02; 32]; // read-only data
     let data = vec![0x03; 16]; // read-write data
 
     let config = FfsImageConfig {
         keys: vec![vk],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
             files: vec![InputFile {
                 name: "main-stage".to_string(),
                 file_type: FileType::StageCode,
@@ -154,44 +165,49 @@ fn test_multi_segment_file() {
                     },
                 ],
             }],
-        },
-        rw_regions: vec![],
-        nvs_size: None,
+        }],
     };
 
     let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
-    let ro_base = ffs.ro_region_base;
     let reader = FfsReader::new(&ffs.image);
-    let anchor = reader.read_anchor(0).expect("should read anchor");
-    let manifest = reader
-        .read_ro_manifest(&anchor)
-        .expect("should read manifest");
+    let anchor = reader
+        .read_anchor(ffs.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
 
-    let file = FfsReader::find_file(&manifest, "main-stage").expect("should find file");
-    assert_eq!(file.segments.len(), 3);
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+    let entry = FfsReader::find_entry(region, "main-stage").expect("should find file");
+
+    let segments = match &entry.content {
+        EntryContent::File { segments, .. } => segments,
+        _ => panic!("expected File"),
+    };
+    assert_eq!(segments.len(), 3);
 
     // Verify each segment
-    let text_seg = &file.segments[0];
+    let text_seg = &segments[0];
     assert_eq!(text_seg.name.as_str(), ".text");
     assert_eq!(text_seg.kind, SegmentKind::Code);
     let text_back = reader
-        .read_segment_data(text_seg, ro_base)
+        .read_segment_data(text_seg, region, entry)
         .expect("read .text");
-    assert_eq!(text_back, &text_data);
+    assert_eq!(text_back.len(), text_data.len());
+    // The anchor region is patched post-build, so compare only the non-anchor suffix
+    assert_eq!(&text_back[ANCHOR_SIZE..], &text_data[ANCHOR_SIZE..]);
 
-    let rodata_seg = &file.segments[1];
+    let rodata_seg = &segments[1];
     assert_eq!(rodata_seg.name.as_str(), ".rodata");
     assert_eq!(rodata_seg.kind, SegmentKind::ReadOnlyData);
     let rodata_back = reader
-        .read_segment_data(rodata_seg, ro_base)
+        .read_segment_data(rodata_seg, region, entry)
         .expect("read .rodata");
     assert_eq!(rodata_back, &rodata);
 
-    let data_seg = &file.segments[2];
+    let data_seg = &segments[2];
     assert_eq!(data_seg.name.as_str(), ".data");
     assert_eq!(data_seg.kind, SegmentKind::ReadWriteData);
     let data_back = reader
-        .read_segment_data(data_seg, ro_base)
+        .read_segment_data(data_seg, region, entry)
         .expect("read .data");
     assert_eq!(data_back, &data);
 }
@@ -202,8 +218,8 @@ fn test_multiple_files_in_ro() {
 
     let config = FfsImageConfig {
         keys: vec![vk],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
             files: vec![
                 InputFile {
                     name: "bootblock".to_string(),
@@ -211,7 +227,7 @@ fn test_multiple_files_in_ro() {
                     segments: vec![InputSegment {
                         name: ".text".to_string(),
                         kind: SegmentKind::Code,
-                        data: vec![0xAA; 16],
+                        data: stage_data_with_anchor(&[0xAA; 16]),
                         load_addr: 0x0,
                         compression: Compression::None,
                         flags: SegmentFlags::CODE,
@@ -242,128 +258,80 @@ fn test_multiple_files_in_ro() {
                     }],
                 },
             ],
-        },
-        rw_regions: vec![],
-        nvs_size: None,
+        }],
     };
 
     let image = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
     let reader = FfsReader::new(&image.image);
-    let anchor = reader.read_anchor(0).expect("should read anchor");
-    let manifest = reader
-        .read_ro_manifest(&anchor)
-        .expect("should read manifest");
+    let anchor = reader
+        .read_anchor(image.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
 
-    assert_eq!(manifest.entries.len(), 3);
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+    let children = match &region.content {
+        RegionContent::Container { children } => children,
+        _ => panic!("expected Container"),
+    };
+    assert_eq!(children.len(), 3);
 
     // Look up files by name
-    let bootblock = FfsReader::find_file(&manifest, "bootblock").expect("find bootblock");
-    assert_eq!(bootblock.file_type, FileType::StageCode);
+    let bootblock = FfsReader::find_entry(region, "bootblock").expect("find bootblock");
+    assert!(matches!(
+        &bootblock.content,
+        EntryContent::File {
+            file_type: FileType::StageCode,
+            ..
+        }
+    ));
 
-    let cfg = FfsReader::find_file(&manifest, "board.cfg").expect("find board.cfg");
-    assert_eq!(cfg.file_type, FileType::BoardConfig);
+    let cfg = FfsReader::find_entry(region, "board.cfg").expect("find board.cfg");
+    assert!(matches!(
+        &cfg.content,
+        EntryContent::File {
+            file_type: FileType::BoardConfig,
+            ..
+        }
+    ));
 
-    let fdt = FfsReader::find_file(&manifest, "device-tree.dtb").expect("find fdt");
-    assert_eq!(fdt.file_type, FileType::Fdt);
+    let fdt = FfsReader::find_entry(region, "device-tree.dtb").expect("find fdt");
+    assert!(matches!(
+        &fdt.content,
+        EntryContent::File {
+            file_type: FileType::Fdt,
+            ..
+        }
+    ));
 
     // File not found
-    let missing = FfsReader::find_file(&manifest, "nonexistent");
+    let missing = FfsReader::find_entry(region, "nonexistent");
     assert!(missing.is_err());
 }
 
 #[test]
-fn test_ro_with_rw_slot() {
+fn test_multiple_container_regions() {
     let (signing_key, vk) = dev_keypair();
 
     let config = FfsImageConfig {
         keys: vec![vk],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
-            files: vec![InputFile {
-                name: "bootblock".to_string(),
-                file_type: FileType::StageCode,
-                segments: vec![InputSegment {
-                    name: ".text".to_string(),
-                    kind: SegmentKind::Code,
-                    data: vec![0xAA; 16],
-                    load_addr: 0x0,
-                    compression: Compression::None,
-                    flags: SegmentFlags::CODE,
+        regions: vec![
+            InputRegion::Container {
+                name: "ro".to_string(),
+                files: vec![InputFile {
+                    name: "bootblock".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data_with_anchor(&[0xAA; 16]),
+                        load_addr: 0x0,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
                 }],
-            }],
-        },
-        rw_regions: vec![RegionConfig {
-            role: RegionRole::Rw,
-            files: vec![InputFile {
-                name: "main-stage".to_string(),
-                file_type: FileType::StageCode,
-                segments: vec![InputSegment {
-                    name: ".text".to_string(),
-                    kind: SegmentKind::Code,
-                    data: vec![0xDD; 128],
-                    load_addr: 0x8000_0000,
-                    compression: Compression::None,
-                    flags: SegmentFlags::CODE,
-                }],
-            }],
-        }],
-        nvs_size: None,
-    };
-
-    let image = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
-    let reader = FfsReader::new(&image.image);
-    let anchor = reader.read_anchor(0).expect("should read anchor");
-    let ro_manifest = reader
-        .read_ro_manifest(&anchor)
-        .expect("should read RO manifest");
-
-    // RO manifest should point to one RW slot
-    assert_eq!(ro_manifest.rw_slots.len(), 1);
-    let rw_ptr = &ro_manifest.rw_slots[0];
-    assert_eq!(rw_ptr.role, RegionRole::Rw);
-
-    // Read and verify the RW manifest
-    let rw_manifest = reader
-        .read_rw_manifest(rw_ptr, &anchor)
-        .expect("should read RW manifest");
-    assert_eq!(rw_manifest.region, RegionRole::Rw);
-    assert_eq!(rw_manifest.entries.len(), 1);
-
-    let rw_file = FfsReader::find_file(&rw_manifest, "main-stage").expect("find main-stage");
-    assert_eq!(rw_file.file_type, FileType::StageCode);
-
-    // Read RW segment data using the slot's region_base
-    let rw_seg = &rw_file.segments[0];
-    let rw_data = reader
-        .read_segment_data(rw_seg, rw_ptr.region_base)
-        .expect("read RW segment");
-    assert_eq!(rw_data, &vec![0xDD; 128]);
-}
-
-#[test]
-fn test_ro_with_rw_ab_slots() {
-    let (signing_key, vk) = dev_keypair();
-
-    let config = FfsImageConfig {
-        keys: vec![vk],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
-            files: vec![InputFile {
-                name: "bootblock".to_string(),
-                file_type: FileType::StageCode,
-                segments: vec![InputSegment {
-                    name: ".text".to_string(),
-                    kind: SegmentKind::Code,
-                    data: vec![0xAA; 16],
-                    load_addr: 0x0,
-                    compression: Compression::None,
-                    flags: SegmentFlags::CODE,
-                }],
-            }],
-        },
-        rw_regions: vec![
-            RegionConfig {
-                role: RegionRole::RwA,
+            },
+            InputRegion::Container {
+                name: "rw-a".to_string(),
                 files: vec![InputFile {
                     name: "main-stage".to_string(),
                     file_type: FileType::StageCode,
@@ -377,8 +345,8 @@ fn test_ro_with_rw_ab_slots() {
                     }],
                 }],
             },
-            RegionConfig {
-                role: RegionRole::RwB,
+            InputRegion::Container {
+                name: "rw-b".to_string(),
                 files: vec![InputFile {
                     name: "main-stage".to_string(),
                     file_type: FileType::StageCode,
@@ -393,37 +361,40 @@ fn test_ro_with_rw_ab_slots() {
                 }],
             },
         ],
-        nvs_size: None,
     };
 
     let image = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
     let reader = FfsReader::new(&image.image);
-    let anchor = reader.read_anchor(0).expect("should read anchor");
-    let ro_manifest = reader
-        .read_ro_manifest(&anchor)
-        .expect("should read RO manifest");
+    let anchor = reader
+        .read_anchor(image.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
 
-    // Should have 2 RW slots
-    assert_eq!(ro_manifest.rw_slots.len(), 2);
+    // Should have 3 regions
+    assert_eq!(manifest.regions.len(), 3);
 
-    // Read slot A
-    let slot_a = FfsReader::find_rw_slot(&ro_manifest, RegionRole::RwA).expect("find slot A");
-    let manifest_a = reader.read_rw_manifest(slot_a, &anchor).expect("read RW-A");
-    assert_eq!(manifest_a.region, RegionRole::RwA);
-    let file_a = &manifest_a.entries[0];
+    // Read rw-a
+    let rw_a = FfsReader::find_region(&manifest, "rw-a").expect("find rw-a");
+    let entry_a = FfsReader::find_entry(rw_a, "main-stage").expect("find main in rw-a");
+    let segs_a = match &entry_a.content {
+        EntryContent::File { segments, .. } => segments,
+        _ => panic!("expected File"),
+    };
     let data_a = reader
-        .read_segment_data(&file_a.segments[0], slot_a.region_base)
-        .expect("read A data");
+        .read_segment_data(&segs_a[0], rw_a, entry_a)
+        .expect("read rw-a data");
     assert_eq!(data_a, &vec![0x11; 64]);
 
-    // Read slot B
-    let slot_b = FfsReader::find_rw_slot(&ro_manifest, RegionRole::RwB).expect("find slot B");
-    let manifest_b = reader.read_rw_manifest(slot_b, &anchor).expect("read RW-B");
-    assert_eq!(manifest_b.region, RegionRole::RwB);
-    let file_b = &manifest_b.entries[0];
+    // Read rw-b
+    let rw_b = FfsReader::find_region(&manifest, "rw-b").expect("find rw-b");
+    let entry_b = FfsReader::find_entry(rw_b, "main-stage").expect("find main in rw-b");
+    let segs_b = match &entry_b.content {
+        EntryContent::File { segments, .. } => segments,
+        _ => panic!("expected File"),
+    };
     let data_b = reader
-        .read_segment_data(&file_b.segments[0], slot_b.region_base)
-        .expect("read B data");
+        .read_segment_data(&segs_b[0], rw_b, entry_b)
+        .expect("read rw-b data");
     assert_eq!(data_b, &vec![0x22; 64]);
 }
 
@@ -433,37 +404,49 @@ fn test_nvs_region() {
 
     let config = FfsImageConfig {
         keys: vec![vk],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
-            files: vec![InputFile {
-                name: "stage".to_string(),
-                file_type: FileType::StageCode,
-                segments: vec![InputSegment {
-                    name: ".text".to_string(),
-                    kind: SegmentKind::Code,
-                    data: vec![0xAA; 8],
-                    load_addr: 0x0,
-                    compression: Compression::None,
-                    flags: SegmentFlags::CODE,
+        regions: vec![
+            InputRegion::Container {
+                name: "ro".to_string(),
+                files: vec![InputFile {
+                    name: "stage".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data_with_anchor(&[0xAA; 8]),
+                        load_addr: 0x0,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
                 }],
-            }],
-        },
-        rw_regions: vec![],
-        nvs_size: Some(4096),
+            },
+            InputRegion::Raw {
+                name: "nvs".to_string(),
+                size: 4096,
+                fill: 0xFF,
+            },
+        ],
     };
 
     let image = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
     let reader = FfsReader::new(&image.image);
-    let anchor = reader.read_anchor(0).expect("should read anchor");
-    let manifest = reader
-        .read_ro_manifest(&anchor)
-        .expect("should read manifest");
+    let anchor = reader
+        .read_anchor(image.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
 
-    // NVS pointer should be present
-    let nvs = manifest.nvs.as_ref().expect("should have NVS pointer");
+    // Should have 2 regions: ro + nvs
+    assert_eq!(manifest.regions.len(), 2);
+
+    // NVS region
+    let nvs = FfsReader::find_region(&manifest, "nvs").expect("find nvs");
     assert_eq!(nvs.size, 4096);
+    match &nvs.content {
+        RegionContent::Raw { fill } => assert_eq!(*fill, 0xFF),
+        _ => panic!("expected Raw"),
+    }
 
-    // NVS region should be filled with 0xFF (erased flash)
+    // NVS region data should be all 0xFF
     let nvs_data = &image.image[nvs.offset as usize..(nvs.offset + nvs.size) as usize];
     assert!(nvs_data.iter().all(|&b| b == 0xFF));
 }
@@ -474,41 +457,41 @@ fn test_tampered_signature_fails_verification() {
 
     let config = FfsImageConfig {
         keys: vec![vk],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
             files: vec![InputFile {
                 name: "stage".to_string(),
                 file_type: FileType::StageCode,
                 segments: vec![InputSegment {
                     name: ".text".to_string(),
                     kind: SegmentKind::Code,
-                    data: vec![0xAA; 8],
+                    data: stage_data_with_anchor(&[0xAA; 8]),
                     load_addr: 0x0,
                     compression: Compression::None,
                     flags: SegmentFlags::CODE,
                 }],
             }],
-        },
-        rw_regions: vec![],
-        nvs_size: None,
+        }],
     };
 
-    let mut image = build_image(&config, &make_signer(&signing_key))
-        .expect("build should succeed")
-        .image;
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    let mut image = ffs.image;
+    let anchor_off = ffs.anchor_offset;
 
     // Tamper with the manifest region (flip a byte somewhere in the manifest area)
-    let anchor_len = {
+    let tamper_offset = {
         let reader = FfsReader::new(&image);
-        let anchor = reader.read_anchor(0).unwrap();
-        anchor.ro_manifest_offset as usize + 10 // somewhere in the manifest
+        let anchor = reader.read_anchor(anchor_off).unwrap();
+        anchor.manifest_offset as usize + 10 // somewhere in the manifest
     };
-    image[anchor_len] ^= 0xFF; // flip bits
+    image[tamper_offset] ^= 0xFF; // flip bits
 
     // Now reading the manifest should fail signature verification
     let reader = FfsReader::new(&image);
-    let anchor = reader.read_anchor(0).expect("anchor should still parse");
-    let result = reader.read_ro_manifest(&anchor);
+    let anchor = reader
+        .read_anchor(anchor_off)
+        .expect("anchor should still parse");
+    let result = reader.read_manifest(&anchor);
     assert!(
         result.is_err(),
         "tampered manifest should fail verification"
@@ -522,33 +505,31 @@ fn test_wrong_key_fails_verification() {
 
     let config = FfsImageConfig {
         keys: vec![wrong_vk], // embed wrong key in anchor
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
             files: vec![InputFile {
                 name: "stage".to_string(),
                 file_type: FileType::StageCode,
                 segments: vec![InputSegment {
                     name: ".text".to_string(),
                     kind: SegmentKind::Code,
-                    data: vec![0xAA; 8],
+                    data: stage_data_with_anchor(&[0xAA; 8]),
                     load_addr: 0x0,
                     compression: Compression::None,
                     flags: SegmentFlags::CODE,
                 }],
             }],
-        },
-        rw_regions: vec![],
-        nvs_size: None,
+        }],
     };
 
     // Sign with the correct key but embed the wrong key in anchor
-    let image = build_image(&config, &make_signer(&signing_key))
-        .expect("build should succeed")
-        .image;
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
 
-    let reader = FfsReader::new(&image);
-    let anchor = reader.read_anchor(0).expect("anchor should parse");
-    let result = reader.read_ro_manifest(&anchor);
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader
+        .read_anchor(ffs.anchor_offset)
+        .expect("anchor should parse");
+    let result = reader.read_manifest(&anchor);
     assert!(result.is_err(), "wrong key should fail verification");
 }
 
@@ -558,33 +539,130 @@ fn test_file_not_found() {
 
     let config = FfsImageConfig {
         keys: vec![vk],
-        ro_region: RegionConfig {
-            role: RegionRole::Ro,
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
             files: vec![InputFile {
                 name: "stage".to_string(),
                 file_type: FileType::StageCode,
                 segments: vec![InputSegment {
                     name: ".text".to_string(),
                     kind: SegmentKind::Code,
-                    data: vec![0xAA; 8],
+                    data: stage_data_with_anchor(&[0xAA; 8]),
                     load_addr: 0x0,
                     compression: Compression::None,
                     flags: SegmentFlags::CODE,
                 }],
             }],
-        },
-        rw_regions: vec![],
-        nvs_size: None,
+        }],
     };
 
-    let image = build_image(&config, &make_signer(&signing_key)).expect("build");
-    let reader = FfsReader::new(&image.image);
-    let anchor = reader.read_anchor(0).unwrap();
-    let manifest = reader.read_ro_manifest(&anchor).unwrap();
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader.read_anchor(ffs.anchor_offset).unwrap();
+    let manifest = reader.read_manifest(&anchor).unwrap();
 
-    let result = FfsReader::find_file(&manifest, "nonexistent");
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+    let result = FfsReader::find_entry(region, "nonexistent");
     assert_eq!(
         result.err(),
         Some(fstart_ffs::reader::ReaderError::FileNotFound)
     );
+}
+
+#[test]
+fn test_region_not_found() {
+    let (signing_key, vk) = dev_keypair();
+
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
+            files: vec![InputFile {
+                name: "stage".to_string(),
+                file_type: FileType::StageCode,
+                segments: vec![InputSegment {
+                    name: ".text".to_string(),
+                    kind: SegmentKind::Code,
+                    data: stage_data_with_anchor(&[0xAA; 8]),
+                    load_addr: 0x0,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
+            }],
+        }],
+    };
+
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader.read_anchor(ffs.anchor_offset).unwrap();
+    let manifest = reader.read_manifest(&anchor).unwrap();
+
+    let result = FfsReader::find_region(&manifest, "nonexistent");
+    assert_eq!(
+        result.err(),
+        Some(fstart_ffs::reader::ReaderError::RegionNotFound)
+    );
+}
+
+#[test]
+fn test_bootblock_digest_valid_after_anchor_patch() {
+    let (signing_key, vk) = dev_keypair();
+
+    // Build image where the bootblock has an embedded anchor placeholder.
+    // The builder patches the anchor post-layout, then recomputes the digest.
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
+            files: vec![
+                InputFile {
+                    name: "bootblock".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data_with_anchor(&[0xDE, 0xAD, 0xBE, 0xEF]),
+                        load_addr: 0x8000_0000,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                },
+                InputFile {
+                    name: "config".to_string(),
+                    file_type: FileType::BoardConfig,
+                    segments: vec![InputSegment {
+                        name: "data".to_string(),
+                        kind: SegmentKind::ReadOnlyData,
+                        data: vec![0xBB; 32],
+                        load_addr: 0x0,
+                        compression: Compression::None,
+                        flags: SegmentFlags::RODATA,
+                    }],
+                },
+            ],
+        }],
+    };
+
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader
+        .read_anchor(ffs.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader
+        .read_manifest(&anchor)
+        .expect("should verify manifest");
+
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+
+    // Bootblock digest should now be valid even though the anchor was patched
+    let bootblock = FfsReader::find_entry(region, "bootblock").expect("find bootblock");
+    reader
+        .verify_entry_digests(bootblock, region)
+        .expect("bootblock digest should be valid after anchor patch");
+
+    // Non-bootblock files should also have valid digests
+    let config_entry = FfsReader::find_entry(region, "config").expect("find config");
+    reader
+        .verify_entry_digests(config_entry, region)
+        .expect("config digest should be valid");
 }

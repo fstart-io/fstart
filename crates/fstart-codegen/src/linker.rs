@@ -62,8 +62,27 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             &mut out, rom.base, rom.size, ram_origin, ram_length, stack_size,
         );
     } else {
-        // RAM-only layout: everything in RAM at load_addr
-        generate_ram_layout(&mut out, ram_origin, ram_length, stack_size);
+        // RAM-only layout: everything in RAM at load_addr.
+        //
+        // For multi-stage bootblocks that share their load address with the
+        // FFS image (flash_base == load_addr), BSS and stack must be placed
+        // beyond the image area. Otherwise the entry-point BSS clearing and
+        // stack writes would corrupt the manifest and other stages.
+        let bss_origin = match (config.memory.flash_base, config.memory.flash_size) {
+            (Some(fb), Some(fs)) if fb == load_addr && fs > 0 => {
+                let bss_addr = fb + fs;
+                if bss_addr < ram_origin || bss_addr >= ram_origin + ram_length {
+                    panic!(
+                        "flash_base ({fb:#x}) + flash_size ({fs:#x}) = {bss_addr:#x} \
+                         falls outside RAM region [{ram_origin:#x}..{:#x}]",
+                        ram_origin + ram_length
+                    );
+                }
+                Some(bss_addr)
+            }
+            _ => None,
+        };
+        generate_ram_layout(&mut out, ram_origin, ram_length, stack_size, bss_origin);
     }
 
     out
@@ -130,41 +149,98 @@ fn generate_xip_layout(
 }
 
 /// Generate linker script with everything in RAM (load_addr is in a RAM region).
-fn generate_ram_layout(out: &mut String, ram_origin: u64, ram_length: u64, stack_size: u64) {
-    out.push_str("MEMORY\n{\n");
-    out.push_str(&format!(
-        "    RAM (rwx) : ORIGIN = {ram_origin:#x}, LENGTH = {ram_length:#x}\n"
-    ));
-    out.push_str("}\n\n");
+///
+/// `bss_origin` optionally specifies a fixed starting address for BSS and stack.
+/// When the bootblock shares its address space with the FFS image, BSS/stack
+/// must be placed after the entire image area to avoid corruption.
+fn generate_ram_layout(
+    out: &mut String,
+    ram_origin: u64,
+    ram_length: u64,
+    stack_size: u64,
+    bss_origin: Option<u64>,
+) {
+    // When BSS must be placed at a fixed address (to avoid overlapping the
+    // FFS image), split RAM into two memory regions: CODE for the binary and
+    // RWDATA for BSS/stack. The linker respects memory region assignments
+    // more reliably than bare location-counter overrides.
+    if let Some(bss_addr) = bss_origin {
+        let code_length = bss_addr - ram_origin;
+        let rw_length = ram_length - code_length;
 
-    out.push_str("SECTIONS\n{\n");
-    out.push_str("    .text : {\n");
-    out.push_str("        *(.text.entry)\n");
-    out.push_str("        *(.text .text.*)\n");
-    out.push_str("    } > RAM\n\n");
+        out.push_str("MEMORY\n{\n");
+        out.push_str(&format!(
+            "    CODE  (rwx) : ORIGIN = {ram_origin:#x}, LENGTH = {code_length:#x}\n"
+        ));
+        out.push_str(&format!(
+            "    RWDATA (rwx) : ORIGIN = {bss_addr:#x}, LENGTH = {rw_length:#x}\n"
+        ));
+        out.push_str("}\n\n");
 
-    // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
-    out.push_str("    .fstart.anchor : ALIGN(8) {\n");
-    out.push_str("        *(.fstart.anchor)\n");
-    out.push_str("    } > RAM\n\n");
+        out.push_str("SECTIONS\n{\n");
+        out.push_str("    .text : {\n");
+        out.push_str("        *(.text.entry)\n");
+        out.push_str("        *(.text .text.*)\n");
+        out.push_str("    } > CODE\n\n");
 
-    out.push_str("    .rodata : ALIGN(8) {\n");
-    out.push_str("        *(.rodata .rodata.*)\n");
-    out.push_str("    } > RAM\n\n");
+        out.push_str("    .fstart.anchor : ALIGN(8) {\n");
+        out.push_str("        *(.fstart.anchor)\n");
+        out.push_str("    } > CODE\n\n");
 
-    out.push_str("    .data : ALIGN(8) {\n");
-    out.push_str("        *(.data .data.*)\n");
-    out.push_str("    } > RAM\n\n");
+        out.push_str("    .rodata : ALIGN(8) {\n");
+        out.push_str("        *(.rodata .rodata.*)\n");
+        out.push_str("    } > CODE\n\n");
 
-    out.push_str("    .bss (NOLOAD) : ALIGN(8) {\n");
-    out.push_str("        _bss_start = .;\n");
-    out.push_str("        *(.bss .bss.*)\n");
-    out.push_str("        *(COMMON)\n");
-    out.push_str("        _bss_end = .;\n");
-    out.push_str("    } > RAM\n\n");
+        out.push_str("    .data : ALIGN(8) {\n");
+        out.push_str("        *(.data .data.*)\n");
+        out.push_str("    } > CODE\n\n");
 
-    out.push_str("    . = ALIGN(16);\n");
-    out.push_str(&format!("    . = . + {stack_size:#x};\n"));
-    out.push_str("    _stack_top = .;\n");
-    out.push_str("}\n");
+        out.push_str("    .bss (NOLOAD) : ALIGN(8) {\n");
+        out.push_str("        _bss_start = .;\n");
+        out.push_str("        *(.bss .bss.*)\n");
+        out.push_str("        *(COMMON)\n");
+        out.push_str("        _bss_end = .;\n");
+        out.push_str("    } > RWDATA\n\n");
+
+        out.push_str("    . = ALIGN(16);\n");
+        out.push_str(&format!("    . = . + {stack_size:#x};\n"));
+        out.push_str("    _stack_top = .;\n");
+        out.push_str("}\n");
+    } else {
+        out.push_str("MEMORY\n{\n");
+        out.push_str(&format!(
+            "    RAM (rwx) : ORIGIN = {ram_origin:#x}, LENGTH = {ram_length:#x}\n"
+        ));
+        out.push_str("}\n\n");
+
+        out.push_str("SECTIONS\n{\n");
+        out.push_str("    .text : {\n");
+        out.push_str("        *(.text.entry)\n");
+        out.push_str("        *(.text .text.*)\n");
+        out.push_str("    } > RAM\n\n");
+
+        out.push_str("    .fstart.anchor : ALIGN(8) {\n");
+        out.push_str("        *(.fstart.anchor)\n");
+        out.push_str("    } > RAM\n\n");
+
+        out.push_str("    .rodata : ALIGN(8) {\n");
+        out.push_str("        *(.rodata .rodata.*)\n");
+        out.push_str("    } > RAM\n\n");
+
+        out.push_str("    .data : ALIGN(8) {\n");
+        out.push_str("        *(.data .data.*)\n");
+        out.push_str("    } > RAM\n\n");
+
+        out.push_str("    .bss (NOLOAD) : ALIGN(8) {\n");
+        out.push_str("        _bss_start = .;\n");
+        out.push_str("        *(.bss .bss.*)\n");
+        out.push_str("        *(COMMON)\n");
+        out.push_str("        _bss_end = .;\n");
+        out.push_str("    } > RAM\n\n");
+
+        out.push_str("    . = ALIGN(16);\n");
+        out.push_str(&format!("    . = . + {stack_size:#x};\n"));
+        out.push_str("    _stack_top = .;\n");
+        out.push_str("}\n");
+    }
 }

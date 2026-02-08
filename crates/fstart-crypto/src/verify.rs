@@ -38,12 +38,10 @@ pub fn verify_signature(
     key: &VerificationKey,
 ) -> Result<(), VerifyError> {
     // Check that the key algorithm matches the signature algorithm
-    let key_matches = matches!(
-        (key.algorithm, signature.kind),
-        (SignatureKind::Ed25519, SignatureKind::Ed25519)
-            | (SignatureKind::EcdsaP256, SignatureKind::EcdsaP256)
-    );
-    if !key_matches {
+    let key_kind = key
+        .signature_kind()
+        .ok_or(VerifyError::UnsupportedAlgorithm)?;
+    if key_kind != signature.kind {
         return Err(VerifyError::AlgorithmMismatch);
     }
 

@@ -55,15 +55,40 @@ enum Command {
     },
 }
 
+/// Build and run a board in QEMU.
+///
+/// For monolithic boards, builds the single stage and boots it directly.
+/// For multi-stage boards, assembles the full FFS image (with signing
+/// and anchor patching) and boots that instead.
+fn run_board(board_name: &str, release: bool) -> Result<(), String> {
+    // Check if this is a multi-stage board
+    let workspace_root = build_board::workspace_root_pub()?;
+    let board_ron = workspace_root
+        .join("boards")
+        .join(board_name)
+        .join("board.ron");
+    let config = fstart_codegen::ron_loader::load_board_config(&board_ron)?;
+
+    let is_multi_stage = matches!(config.stages, fstart_types::StageLayout::MultiStage(_));
+
+    if is_multi_stage {
+        // Multi-stage: assemble the FFS image and boot it
+        let image_path = assemble::assemble_release(board_name, release)?;
+        qemu::run(board_name, &image_path)
+    } else {
+        // Monolithic: build and boot the single binary directly
+        let res = build_board::build(board_name, release)?;
+        qemu::run(board_name, &res.primary_binary().path)
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let result: Result<(), String> = match cli.command {
         Command::Build { board, release } => build_board::build(&board, release).map(|_| ()),
-        Command::Run { board, release } => build_board::build(&board, release)
-            .and_then(|res| qemu::run(&board, &res.primary_binary().path)),
-        Command::Test { board } => build_board::build(&board, true)
-            .and_then(|res| qemu::run(&board, &res.primary_binary().path)),
+        Command::Run { board, release } => run_board(&board, release),
+        Command::Test { board } => run_board(&board, true),
         Command::Assemble { board } => assemble::assemble(&board).map(|_| ()),
     };
 

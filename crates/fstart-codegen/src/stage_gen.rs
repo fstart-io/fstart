@@ -464,9 +464,10 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
 
     generate_imports(&mut out, &config.devices, mode, capabilities);
 
-    // Generate flash/FFS constants if any FFS capabilities are present
+    // Generate flash/FFS constants and anchor placeholder if any FFS capabilities are present
     if needs_ffs(capabilities) {
         generate_flash_constants(&mut out, config);
+        generate_anchor_static(&mut out);
     }
 
     if mode == BuildMode::Flexible {
@@ -634,6 +635,26 @@ fn generate_flash_constants(out: &mut String, config: &BoardConfig) {
     out.push_str("/// Size of the firmware flash image in bytes.\n");
     out.push_str(&format!("const FLASH_SIZE: u64 = {flash_size:#x};\n"));
     out.push('\n');
+}
+
+/// Emit the `FSTART_ANCHOR` static — a placeholder anchor block embedded
+/// in the bootblock binary via `#[link_section = ".fstart.anchor"]`.
+///
+/// At build time this contains `FSTART01` magic + version + zeros.
+/// The `xtask assemble` step patches it in-place with the real
+/// `AnchorBlock` (manifest offsets, keys, etc.) after image layout.
+///
+/// The bootblock code references `&FSTART_ANCHOR` directly via volatile
+/// read — no scanning needed at runtime.
+fn generate_anchor_static(out: &mut String) {
+    // Use the repr(C) AnchorBlock::placeholder() which has magic + version set
+    out.push_str("/// FFS anchor block — patched by `xtask assemble` with real offsets.\n");
+    out.push_str("///\n");
+    out.push_str("/// The bootblock reads this via volatile to find the FFS manifest.\n");
+    out.push_str("/// No scanning required at runtime.\n");
+    out.push_str("#[link_section = \".fstart.anchor\"]\n");
+    out.push_str("#[used]\n");
+    out.push_str("static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock = fstart_types::ffs::AnchorBlock::placeholder();\n\n");
 }
 
 /// Emit the `Devices` struct — one concrete typed field per device.
@@ -1098,17 +1119,23 @@ fn generate_driver_init(
     }
 }
 
+/// Expression that casts `&FSTART_ANCHOR` to `&[u8]` for capability functions.
+///
+/// The capabilities accept `&[u8]` and volatile-read the `repr(C)` anchor
+/// from those bytes at runtime (to see post-build patched values).
+const ANCHOR_AS_BYTES: &str = "unsafe { core::slice::from_raw_parts(&FSTART_ANCHOR as *const fstart_types::ffs::AnchorBlock as *const u8, core::mem::size_of::<fstart_types::ffs::AnchorBlock>()) }";
+
 /// Generate code for the SigVerify capability.
 fn generate_sig_verify(out: &mut String, console_device: &Option<String>, has_ffs: bool) {
     out.push_str("    // SigVerify\n");
     if let Some(ref con) = console_device {
         if has_ffs {
             out.push_str(&format!(
-                "    fstart_capabilities::sig_verify(&{con}, FLASH_BASE, FLASH_SIZE);\n"
+                "    fstart_capabilities::sig_verify(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE);\n"
             ));
         } else {
             out.push_str(&format!(
-                "    fstart_capabilities::sig_verify(&{con}, 0, 0);\n"
+                "    fstart_capabilities::sig_verify(&{con}, &[], 0, 0);\n"
             ));
         }
     }
@@ -1138,7 +1165,7 @@ fn generate_payload_load(
                 _ => "fstart_platform_riscv64::jump_to",
             };
             out.push_str(&format!(
-                "    fstart_capabilities::payload_load(&{con}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
+                "    fstart_capabilities::payload_load(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
             ));
         } else {
             out.push_str(&format!(
@@ -1165,7 +1192,7 @@ fn generate_stage_load(
                 _ => "fstart_platform_riscv64::jump_to", // fallback
             };
             out.push_str(&format!(
-                "    fstart_capabilities::stage_load(&{con}, \"{next_stage}\", FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
+                "    fstart_capabilities::stage_load(&{con}, \"{next_stage}\", {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
             ));
         } else {
             out.push_str(&format!(
@@ -1325,10 +1352,15 @@ mod tests {
         let config = test_board_config(caps);
         let source = generate_stage_source(&config, None);
 
-        // Without flash_base configured, passes 0, 0 as fallback
+        // Without flash_base configured, passes empty slice and 0, 0 as fallback
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0, 0, 0)"),
+            source.contains("fstart_capabilities::sig_verify(&uart0, &[], 0, 0)"),
             "should call sig_verify with fallback args: {source}"
+        );
+        // Should still emit FSTART_ANCHOR (since SigVerify needs_ffs)
+        assert!(
+            source.contains("static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock"),
+            "should emit FSTART_ANCHOR static: {source}"
         );
     }
 
@@ -1353,8 +1385,12 @@ mod tests {
             "should emit FLASH_SIZE constant: {source}"
         );
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0, FLASH_BASE, FLASH_SIZE)"),
-            "should call sig_verify with FLASH_BASE/SIZE: {source}"
+            source.contains("fstart_capabilities::sig_verify(&uart0,"),
+            "should call sig_verify: {source}"
+        );
+        assert!(
+            source.contains("FLASH_BASE, FLASH_SIZE)"),
+            "should pass FLASH_BASE, FLASH_SIZE to sig_verify: {source}"
         );
     }
 
@@ -1392,8 +1428,12 @@ mod tests {
         let source = generate_stage_source(&config, None);
 
         assert!(
-            source.contains("fstart_capabilities::stage_load(&uart0, \"main\", FLASH_BASE, FLASH_SIZE, fstart_platform_riscv64::jump_to)"),
-            "should call stage_load with flash args and jump_to: {source}"
+            source.contains("fstart_capabilities::stage_load(&uart0, \"main\","),
+            "should call stage_load with stage name: {source}"
+        );
+        assert!(
+            source.contains("FLASH_BASE, FLASH_SIZE, fstart_platform_riscv64::jump_to)"),
+            "should pass flash args and jump_to: {source}"
         );
     }
 
@@ -2291,7 +2331,7 @@ mod tests {
         );
         // Without flash_base, uses fallback args for sig_verify
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0, 0, 0)"),
+            source.contains("fstart_capabilities::sig_verify(&uart0, &[], 0, 0)"),
             "bootblock should call sig_verify: {source}"
         );
         // Without flash_base, uses stub for stage_load
@@ -2313,17 +2353,20 @@ mod tests {
             "should emit FLASH_BASE: {source}"
         );
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0, FLASH_BASE, FLASH_SIZE)"),
-            "bootblock should call sig_verify with flash args: {source}"
+            source.contains("static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock"),
+            "should emit FSTART_ANCHOR static: {source}"
         );
         assert!(
-            source.contains("fstart_capabilities::stage_load(&uart0, \"main\", FLASH_BASE, FLASH_SIZE, fstart_platform_riscv64::jump_to)"),
-            "bootblock should call stage_load with flash args: {source}"
+            source.contains("fstart_capabilities::sig_verify(&uart0,"),
+            "bootblock should call sig_verify: {source}"
         );
-        // FFS operations are inside fstart_capabilities, not imported directly
         assert!(
-            source.contains("fstart_capabilities::sig_verify"),
-            "should call sig_verify: {source}"
+            source.contains("fstart_capabilities::stage_load(&uart0, \"main\","),
+            "bootblock should call stage_load: {source}"
+        );
+        assert!(
+            source.contains("fstart_platform_riscv64::jump_to)"),
+            "bootblock should pass jump_to: {source}"
         );
     }
 
