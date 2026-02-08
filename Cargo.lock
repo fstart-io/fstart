@@ -336,6 +336,7 @@ dependencies = [
  "fstart-ffs",
  "fstart-services",
  "fstart-types",
+ "lz4_flex",
 ]
 
 [[package]]
@@ -375,6 +376,7 @@ dependencies = [
  "fstart-crypto",
  "fstart-types",
  "heapless",
+ "lz4_flex",
  "postcard",
  "rand_core",
 ]
@@ -521,6 +523,12 @@ name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08ab2867e3eeeca90e844d1940eab391c9dc5228783db2ed999acbc0a9ed375a"
 
 [[package]]
 name = "once_cell_polyfill"

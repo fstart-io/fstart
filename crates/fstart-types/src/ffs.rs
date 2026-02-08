@@ -465,6 +465,20 @@ pub enum FileType {
 /// ELF program headers. Each segment has a content kind (code or data),
 /// a load address, independent compression, and permission flags for
 /// future paging / MPU support.
+///
+/// ## In-place decompression
+///
+/// Compressed segments support in-place decompression following coreboot's
+/// technique: the compressed data is loaded to the **end** of the output
+/// buffer (`load_addr + in_place_size - stored_size`), then decompressed
+/// from head to tail. The decompressor reads from the tail while writing
+/// from the head, so the write pointer never overtakes the read pointer as
+/// long as the buffer is large enough.
+///
+/// The builder verifies in-place safety empirically by simulating the
+/// decompression at build time. `in_place_size` records the minimum buffer
+/// size required (always `>= loaded_size`). For uncompressed segments
+/// `in_place_size == 0` (unused).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Segment {
     /// Segment name (e.g., `".text"`, `".data"`, `".rodata"`, `".bss"`).
@@ -479,6 +493,15 @@ pub struct Segment {
     /// Size of segment data after decompression (original size).
     /// For BSS segments this is the zero-fill size; `stored_size` is 0.
     pub loaded_size: u32,
+    /// Minimum contiguous buffer size at `load_addr` required for safe
+    /// in-place decompression (compressed segments only).
+    ///
+    /// The runtime copies compressed data to `load_addr + in_place_size -
+    /// stored_size`, then decompresses into `load_addr`. The builder
+    /// verifies this is safe by simulating in-place decompression.
+    ///
+    /// `0` for uncompressed or BSS segments.
+    pub in_place_size: u32,
     /// Load address — where this segment should be placed in memory.
     pub load_addr: u64,
     /// Compression algorithm used on this segment's data.

@@ -666,3 +666,368 @@ fn test_bootblock_digest_valid_after_anchor_patch() {
         .verify_entry_digests(config_entry, region)
         .expect("config digest should be valid");
 }
+
+// ---------------------------------------------------------------------------
+// LZ4 compression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_lz4_compressed_segment_round_trip() {
+    let (signing_key, vk) = dev_keypair();
+
+    // Highly compressible data (repeated pattern)
+    let compressible_data = vec![0xAB; 4096];
+
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
+            files: vec![
+                InputFile {
+                    name: "bootblock".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data_with_anchor(&[0xAA; 16]),
+                        load_addr: 0x0,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                },
+                InputFile {
+                    name: "main-stage".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: compressible_data.clone(),
+                        load_addr: 0x8010_0000,
+                        compression: Compression::Lz4,
+                        flags: SegmentFlags::CODE,
+                    }],
+                },
+            ],
+        }],
+    };
+
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader
+        .read_anchor(ffs.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
+
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+    let entry = FfsReader::find_entry(region, "main-stage").expect("find main-stage");
+
+    let (segments, _digests) = match &entry.content {
+        EntryContent::File {
+            segments, digests, ..
+        } => (segments, digests),
+        _ => panic!("expected File"),
+    };
+    assert_eq!(segments.len(), 1);
+
+    let seg = &segments[0];
+    assert_eq!(seg.compression, Compression::Lz4);
+    assert_eq!(seg.loaded_size, 4096);
+    // Compressed data should be smaller than original
+    assert!(
+        seg.stored_size < seg.loaded_size,
+        "stored_size ({}) should be < loaded_size ({})",
+        seg.stored_size,
+        seg.loaded_size
+    );
+    // in_place_size should be >= loaded_size
+    assert!(
+        seg.in_place_size >= seg.loaded_size,
+        "in_place_size ({}) should be >= loaded_size ({})",
+        seg.in_place_size,
+        seg.loaded_size
+    );
+
+    // Read the compressed data from the image
+    let compressed_data = reader
+        .read_segment_data(seg, region, entry)
+        .expect("should read compressed segment");
+    assert_eq!(compressed_data.len(), seg.stored_size as usize);
+
+    // Decompress and verify it matches the original
+    let decompressed =
+        lz4_flex::block::decompress(compressed_data, seg.loaded_size as usize).expect("decompress");
+    assert_eq!(decompressed, compressible_data);
+}
+
+#[test]
+fn test_lz4_in_place_decompression() {
+    let (signing_key, vk) = dev_keypair();
+
+    // Use data with mixed compressibility to exercise the in-place margin
+    let mut mixed_data = Vec::with_capacity(8192);
+    for i in 0..8192u32 {
+        // Alternating compressible and less-compressible patterns
+        if (i / 256) % 2 == 0 {
+            mixed_data.push(0xAA); // compressible runs
+        } else {
+            mixed_data.push((i & 0xFF) as u8); // varying bytes
+        }
+    }
+
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
+            files: vec![
+                InputFile {
+                    name: "bootblock".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data_with_anchor(&[0xAA; 16]),
+                        load_addr: 0x0,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                },
+                InputFile {
+                    name: "payload".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: mixed_data.clone(),
+                        load_addr: 0x8010_0000,
+                        compression: Compression::Lz4,
+                        flags: SegmentFlags::CODE,
+                    }],
+                },
+            ],
+        }],
+    };
+
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader
+        .read_anchor(ffs.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
+
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+    let entry = FfsReader::find_entry(region, "payload").expect("find payload");
+
+    let segments = match &entry.content {
+        EntryContent::File { segments, .. } => segments,
+        _ => panic!("expected File"),
+    };
+    let seg = &segments[0];
+
+    // Read compressed data from flash
+    let compressed = reader
+        .read_segment_data(seg, region, entry)
+        .expect("read compressed data");
+
+    // Simulate in-place decompression exactly as the runtime would:
+    // 1. Allocate in_place_size buffer (simulating the load_addr region)
+    // 2. Copy compressed data to the END
+    // 3. Decompress from tail to head
+    let buf_size = seg.in_place_size as usize;
+    let mut buf = vec![0u8; buf_size];
+    let src_offset = buf_size - compressed.len();
+    buf[src_offset..].copy_from_slice(compressed);
+
+    // Decompress in-place using raw pointers (same as the runtime)
+    let n = unsafe {
+        let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
+        let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), seg.loaded_size as usize);
+        lz4_flex::block::decompress_into(src, dst).expect("in-place decompress should succeed")
+    };
+
+    assert_eq!(n, mixed_data.len());
+    assert_eq!(&buf[..n], &mixed_data);
+}
+
+#[test]
+fn test_lz4_multi_segment_with_mixed_compression() {
+    let (signing_key, vk) = dev_keypair();
+
+    let text_data = vec![0x01; 2048]; // compressible code
+    let rodata = vec![0x02; 512]; // uncompressed rodata
+
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
+            files: vec![
+                InputFile {
+                    name: "bootblock".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data_with_anchor(&[0xAA; 8]),
+                        load_addr: 0x0,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                },
+                InputFile {
+                    name: "stage".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![
+                        InputSegment {
+                            name: ".text".to_string(),
+                            kind: SegmentKind::Code,
+                            data: text_data.clone(),
+                            load_addr: 0x8010_0000,
+                            compression: Compression::Lz4,
+                            flags: SegmentFlags::CODE,
+                        },
+                        InputSegment {
+                            name: ".rodata".to_string(),
+                            kind: SegmentKind::ReadOnlyData,
+                            data: rodata.clone(),
+                            load_addr: 0x8010_1000,
+                            compression: Compression::None,
+                            flags: SegmentFlags::RODATA,
+                        },
+                    ],
+                },
+            ],
+        }],
+    };
+
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader
+        .read_anchor(ffs.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
+
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+    let entry = FfsReader::find_entry(region, "stage").expect("find stage");
+
+    let segments = match &entry.content {
+        EntryContent::File { segments, .. } => segments,
+        _ => panic!("expected File"),
+    };
+    assert_eq!(segments.len(), 2);
+
+    // .text is LZ4-compressed
+    let text_seg = &segments[0];
+    assert_eq!(text_seg.compression, Compression::Lz4);
+    assert!(text_seg.stored_size < text_seg.loaded_size);
+    assert!(text_seg.in_place_size > 0);
+
+    let text_compressed = reader
+        .read_segment_data(text_seg, region, entry)
+        .expect("read .text");
+    let text_decompressed =
+        lz4_flex::block::decompress(text_compressed, text_seg.loaded_size as usize)
+            .expect("decompress .text");
+    assert_eq!(text_decompressed, text_data);
+
+    // .rodata is uncompressed
+    let rodata_seg = &segments[1];
+    assert_eq!(rodata_seg.compression, Compression::None);
+    assert_eq!(rodata_seg.in_place_size, 0);
+
+    let rodata_back = reader
+        .read_segment_data(rodata_seg, region, entry)
+        .expect("read .rodata");
+    assert_eq!(rodata_back, &rodata);
+
+    // Compressed files return CannotVerifyInPlace for digest verification
+    // because the digest covers uncompressed data but the image has compressed
+    let verify_result = reader.verify_entry_digests(entry, region);
+    assert_eq!(
+        verify_result.err(),
+        Some(fstart_ffs::reader::ReaderError::CannotVerifyInPlace),
+        "multi-segment with compression should return CannotVerifyInPlace"
+    );
+}
+
+#[test]
+fn test_lz4_incompressible_data() {
+    let (signing_key, vk) = dev_keypair();
+
+    // Pseudo-random data that won't compress well
+    let mut data = vec![0u8; 1024];
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte = ((i * 17 + 131) % 256) as u8;
+    }
+
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![InputRegion::Container {
+            name: "ro".to_string(),
+            files: vec![
+                InputFile {
+                    name: "bootblock".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data_with_anchor(&[0xAA; 8]),
+                        load_addr: 0x0,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                },
+                InputFile {
+                    name: "random-blob".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: data.clone(),
+                        load_addr: 0x8010_0000,
+                        compression: Compression::Lz4,
+                        flags: SegmentFlags::CODE,
+                    }],
+                },
+            ],
+        }],
+    };
+
+    // Should still build — LZ4 handles incompressible data (may expand slightly)
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader
+        .read_anchor(ffs.anchor_offset)
+        .expect("should read anchor");
+    let manifest = reader.read_manifest(&anchor).expect("should read manifest");
+
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+    let entry = FfsReader::find_entry(region, "random-blob").expect("find random-blob");
+
+    let segments = match &entry.content {
+        EntryContent::File { segments, .. } => segments,
+        _ => panic!("expected File"),
+    };
+    let seg = &segments[0];
+
+    assert_eq!(seg.compression, Compression::Lz4);
+    // For incompressible data, stored_size may be >= loaded_size
+    // but in-place decompression should still work
+    assert!(seg.in_place_size >= seg.loaded_size);
+
+    // Verify round-trip through in-place decompression
+    let compressed = reader
+        .read_segment_data(seg, region, entry)
+        .expect("read compressed");
+    let buf_size = seg.in_place_size as usize;
+    let mut buf = vec![0u8; buf_size];
+    let src_offset = buf_size - compressed.len();
+    buf[src_offset..].copy_from_slice(compressed);
+
+    let n = unsafe {
+        let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
+        let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), seg.loaded_size as usize);
+        lz4_flex::block::decompress_into(src, dst).expect("in-place decompress")
+    };
+
+    assert_eq!(n, data.len());
+    assert_eq!(&buf[..n], &data);
+}
