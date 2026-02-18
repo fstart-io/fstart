@@ -46,6 +46,10 @@
     stages: Monolithic((
         capabilities: [
             ConsoleInit( device: "uart0" ),
+            MemoryInit,
+            SigVerify,
+            FdtPrepare,
+            PayloadLoad,
         ],
         load_addr: 0x00000000,
         stack_size: 0x10000,
@@ -59,5 +63,25 @@
 
     mode: Rigid,
 
-    payload: None,
+    // Linux boot via ARM Trusted Firmware BL31.
+    //
+    // Memory layout (128 MiB RAM at 0x40000000):
+    //   0x00000000 - Flash (fstart firmware, XIP)
+    //   0x40000000 - ATF BL31 (loaded from FFS into RAM)
+    //   0x40100000 - Patched DTB (copied from QEMU-provided DTB)
+    //   0x41000000 - Linux kernel (loaded from FFS)
+    //   0x48000000 - End of RAM
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("Image"),
+        kernel_load_addr: Some(0x41000000),
+        fdt: Platform,
+        dtb_addr: Some(0x40100000),
+        bootargs: Some("console=ttyAMA0 earlycon=pl011,0x09000000"),
+        firmware: Some((
+            kind: ArmTrustedFirmware,
+            file: "bl31.bin",
+            load_addr: 0x40000000,
+        )),
+    )),
 )
