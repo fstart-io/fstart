@@ -33,7 +33,8 @@ nix-shell -p binutils --run "objdump -d target/.../fstart-stage"
 
 ```bash
 # Check all host-side crates (fast, no cross-compile env needed)
-cargo check --workspace --exclude fstart-stage
+cargo check --workspace --exclude fstart-stage \
+    --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64
 
 # Build a specific board (sets FSTART_BOARD_RON, cross-compiles with -Z build-std=core)
 cargo xtask build --board qemu-riscv64
@@ -44,8 +45,9 @@ cargo xtask build --board qemu-riscv64 --release
 cargo xtask run --board qemu-riscv64
 cargo xtask run --board qemu-aarch64
 
-# Clippy — host crates only (fstart-stage needs the board env var)
-cargo clippy --workspace --exclude fstart-stage -- -D warnings
+# Clippy — host crates only (fstart-stage and platform crates need cross-compile)
+cargo clippy --workspace --exclude fstart-stage \
+    --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64 -- -D warnings
 
 # Format
 cargo fmt --all
