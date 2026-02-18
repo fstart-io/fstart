@@ -47,6 +47,7 @@
         capabilities: [
             ConsoleInit( device: "uart0" ),
             MemoryInit,
+            BootMedia(MemoryMapped( base: 0x00000000, size: 0x08000000 )),
             SigVerify,
             FdtPrepare,
             PayloadLoad,

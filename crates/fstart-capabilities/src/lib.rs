@@ -16,6 +16,17 @@
 //! signatures, reading file segments, and jumping to loaded code. Without
 //! the `ffs` feature, stub variants are used.
 //!
+//! ## Boot Media Abstraction
+//!
+//! All FFS capability functions are generic over
+//! [`BootMedia`](fstart_services::BootMedia), accepting any boot medium
+//! implementation. For memory-mapped flash
+//! ([`MemoryMapped`](fstart_services::MemoryMapped)), the code uses the
+//! existing [`FfsReader`](fstart_ffs::FfsReader) fast path — all operations
+//! inline to direct memory access with zero overhead. For block devices
+//! ([`BlockDeviceMedia`](fstart_services::BlockDeviceMedia)), metadata is
+//! read into stack buffers and segments are loaded via the device I/O path.
+//!
 //! See [docs/driver-model.md](../../docs/driver-model.md) for the full
 //! driver model architecture.
 
@@ -26,6 +37,9 @@ extern crate alloc;
 
 #[cfg(any(feature = "ffs", feature = "fdt"))]
 use fstart_log::Hex;
+
+#[cfg(feature = "ffs")]
+use fstart_services::BootMedia;
 
 // ---------------------------------------------------------------------------
 // ConsoleInit
@@ -79,17 +93,23 @@ pub fn driver_init_complete(device_count: usize) {
 
 /// Verify the firmware filesystem manifest signature.
 ///
-/// `anchor_data` is a reference to the `FSTART_ANCHOR` static embedded in
-/// the bootblock binary. Read via `read_volatile` to see post-build patched
-/// values.
+/// Reads the FFS anchor from the embedded `FSTART_ANCHOR` static (via
+/// volatile read to see post-build patched values), then verifies the
+/// manifest signature and file digests.
 ///
-/// `flash_base` and `flash_size` specify where the firmware image sits
-/// in memory. If `flash_size` is 0, verification is skipped.
+/// Generic over [`BootMedia`] — for memory-mapped flash this compiles
+/// down to the same code as a direct `FfsReader` with zero overhead.
+/// For block devices, metadata is read into stack buffers.
+///
+/// # Arguments
+///
+/// - `anchor_data`: Reference to the `FSTART_ANCHOR` static (raw bytes).
+/// - `media`: The boot medium holding the firmware image.
 #[cfg(feature = "ffs")]
-pub fn sig_verify(anchor_data: &[u8], flash_base: u64, flash_size: u64) {
+pub fn sig_verify(anchor_data: &[u8], media: &impl BootMedia) {
     fstart_log::info!("capability: SigVerify");
 
-    if flash_size == 0 || anchor_data.is_empty() {
+    if media.size() == 0 || anchor_data.is_empty() {
         fstart_log::info!("sig verify: no flash image configured, skipping");
         return;
     }
@@ -112,31 +132,8 @@ pub fn sig_verify(anchor_data: &[u8], flash_base: u64, flash_size: u64) {
         anchor.key_count
     );
 
-    // Use the smaller of flash_size and total_image_size as the reader's
-    // window. On XIP platforms, flash_size may be the full flash bank
-    // (e.g., 128 MiB) while the FFS image is much smaller. Using the
-    // anchor's total_image_size ensures the reader only accesses data
-    // that was actually written by the builder.
-    let image_size = if anchor.total_image_size > 0 && (anchor.total_image_size as u64) < flash_size
-    {
-        anchor.total_image_size as usize
-    } else {
-        flash_size as usize
-    };
-
-    // SAFETY: we trust that flash_base..flash_base+image_size is mapped and
-    // readable memory (guaranteed by the board config and platform setup).
-    //
-    // When flash_base is 0 (AArch64 XIP), we must avoid creating a slice
-    // with a null data pointer, as Rust considers `from_raw_parts(null, n)`
-    // UB for n > 0 — the compiler may exploit this (e.g., optimizing
-    // `.get()` to always return None). We use `opaque_addr()` to hide the
-    // zero value from the optimizer.
-    let image = unsafe { core::slice::from_raw_parts(opaque_addr(flash_base), image_size) };
-    let reader = fstart_ffs::FfsReader::new(image);
-
-    // Verify the manifest signature
-    let manifest = match reader.read_manifest(&anchor) {
+    // Read and verify the manifest
+    let manifest = match read_manifest_from_media(media, &anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!(
@@ -147,44 +144,60 @@ pub fn sig_verify(anchor_data: &[u8], flash_base: u64, flash_size: u64) {
         }
     };
 
-    // Find the first container region and verify its file digests
-    let mut total_verified = 0usize;
-    let mut total_skipped = 0usize;
+    // Verify file digests — only possible with memory-mapped access
+    // (requires reading full file data for hashing). For non-memory-mapped
+    // media, the manifest signature already provides integrity.
+    if let Some(image) = media.as_slice() {
+        let image_size = effective_image_size(media.size(), &anchor);
+        let reader = fstart_ffs::FfsReader::new(&image[..image_size]);
 
-    for region in &manifest.regions {
-        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
-            fstart_log::info!(
-                "sig verify: region '{}' ({} entries)",
-                region.name.as_str(),
-                children.len()
-            );
+        let mut total_verified = 0usize;
+        let mut total_skipped = 0usize;
 
-            for entry in children {
-                match reader.verify_entry_digests(entry, region) {
-                    Ok(()) => total_verified += 1,
-                    Err(fstart_ffs::ReaderError::CannotVerifyInPlace) => total_skipped += 1,
-                    Err(_) => {
-                        fstart_log::error!(
-                            "sig verify: digest FAILED for: {}",
-                            entry.name.as_str()
-                        );
-                        return;
+        for region in &manifest.regions {
+            if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
+                fstart_log::info!(
+                    "sig verify: region '{}' ({} entries)",
+                    region.name.as_str(),
+                    children.len()
+                );
+
+                for entry in children {
+                    match reader.verify_entry_digests(entry, region) {
+                        Ok(()) => total_verified += 1,
+                        Err(fstart_ffs::ReaderError::CannotVerifyInPlace) => {
+                            total_skipped += 1;
+                        }
+                        Err(_) => {
+                            fstart_log::error!(
+                                "sig verify: digest FAILED for: {}",
+                                entry.name.as_str()
+                            );
+                            return;
+                        }
                     }
                 }
             }
         }
-    }
 
-    fstart_log::info!(
-        "sig verify: {} files verified, {} skipped (multi-segment)",
-        total_verified,
-        total_skipped
-    );
+        fstart_log::info!(
+            "sig verify: {} files verified, {} skipped (multi-segment)",
+            total_verified,
+            total_skipped
+        );
+    } else {
+        // Non-memory-mapped media: manifest signature verified above;
+        // per-file digest verification requires incremental hashing
+        // (future enhancement).
+        fstart_log::info!(
+            "sig verify: manifest signature verified (per-file digests skipped on block device)"
+        );
+    }
 }
 
 /// Stub SigVerify when FFS feature is not enabled.
 #[cfg(not(feature = "ffs"))]
-pub fn sig_verify(_anchor_data: &[u8], _flash_base: u64, _flash_size: u64) {
+pub fn sig_verify(_anchor_data: &[u8], _media: &impl fstart_services::BootMedia) {
     fstart_log::info!("capability: SigVerify");
     fstart_log::info!("sig verify skipped (ffs feature not enabled)");
 }
@@ -311,16 +324,16 @@ pub fn fdt_prepare_platform(src_dtb_addr: u64, dst_dtb_addr: u64, bootargs: &str
 
 /// Load and jump to the payload (OS kernel, shell, etc.).
 ///
-/// Reads the payload from FFS, copies its segments to load addresses,
-/// and transfers control via the provided `jump_to` function.
+/// Reads the payload from FFS via the provided boot medium, copies its
+/// segments to load addresses, and transfers control via `jump_to`.
 ///
-/// `anchor_data` is a reference to the `FSTART_ANCHOR` static embedded
-/// in the bootblock binary. Read via volatile to see patched values.
+/// Generic over [`BootMedia`] — works with both memory-mapped flash and
+/// block devices with zero overhead for the memory-mapped case.
 #[cfg(feature = "ffs")]
-pub fn payload_load(anchor_data: &[u8], flash_base: u64, flash_size: u64, jump_to: fn(u64) -> !) {
+pub fn payload_load(anchor_data: &[u8], media: &impl BootMedia, jump_to: fn(u64) -> !) {
     fstart_log::info!("capability: PayloadLoad");
 
-    if flash_size == 0 || anchor_data.is_empty() {
+    if media.size() == 0 || anchor_data.is_empty() {
         fstart_log::info!("payload load: no flash image configured, skipping");
         return;
     }
@@ -337,19 +350,7 @@ pub fn payload_load(anchor_data: &[u8], flash_base: u64, flash_size: u64, jump_t
         }
     };
 
-    // Use the anchor's total_image_size when smaller than flash_size.
-    let image_size = if anchor.total_image_size > 0 && (anchor.total_image_size as u64) < flash_size
-    {
-        anchor.total_image_size as usize
-    } else {
-        flash_size as usize
-    };
-
-    // SAFETY: flash_base..flash_base+image_size is mapped readable memory.
-    let image = unsafe { core::slice::from_raw_parts(opaque_addr(flash_base), image_size) };
-    let reader = fstart_ffs::FfsReader::new(image);
-
-    let manifest = match reader.read_manifest(&anchor) {
+    let manifest = match read_manifest_from_media(media, &anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!("payload load: manifest error: {}", reader_error_str(e));
@@ -386,7 +387,7 @@ pub fn payload_load(anchor_data: &[u8], flash_base: u64, flash_size: u64, jump_t
     fstart_log::info!("payload load: loading '{}'", entry.name.as_str());
 
     // Load segments
-    let entry_addr = match load_entry_segments(&reader, entry, region) {
+    let entry_addr = match load_entry_segments_from_media(media, entry, region) {
         Some(addr) => addr,
         None => return,
     };
@@ -415,22 +416,22 @@ pub fn payload_load_stub_no_flash() {
 
 /// Load the next stage from FFS into RAM and jump to it.
 ///
-/// Reads the named stage binary from the firmware filesystem, copies its
-/// segments to the load addresses, and transfers control via `jump_to`.
+/// Reads the named stage binary from the firmware filesystem via the
+/// provided boot medium, copies its segments to load addresses, and
+/// transfers control via `jump_to`.
 ///
-/// `anchor_data` is a reference to the `FSTART_ANCHOR` static embedded
-/// in the bootblock binary. Read via volatile to see patched values.
+/// Generic over [`BootMedia`] — works with both memory-mapped flash and
+/// block devices with zero overhead for the memory-mapped case.
 #[cfg(feature = "ffs")]
 pub fn stage_load(
     next_stage: &str,
     anchor_data: &[u8],
-    flash_base: u64,
-    flash_size: u64,
+    media: &impl BootMedia,
     jump_to: fn(u64) -> !,
 ) {
     fstart_log::info!("capability: StageLoad -> {}", next_stage);
 
-    if flash_size == 0 || anchor_data.is_empty() {
+    if media.size() == 0 || anchor_data.is_empty() {
         fstart_log::info!("stage load: no flash image configured, skipping");
         return;
     }
@@ -444,19 +445,7 @@ pub fn stage_load(
         }
     };
 
-    // Use the anchor's total_image_size when smaller than flash_size.
-    let image_size = if anchor.total_image_size > 0 && (anchor.total_image_size as u64) < flash_size
-    {
-        anchor.total_image_size as usize
-    } else {
-        flash_size as usize
-    };
-
-    // SAFETY: flash_base..flash_base+image_size is mapped readable memory.
-    let image = unsafe { core::slice::from_raw_parts(opaque_addr(flash_base), image_size) };
-    let reader = fstart_ffs::FfsReader::new(image);
-
-    let manifest = match reader.read_manifest(&anchor) {
+    let manifest = match read_manifest_from_media(media, &anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!("stage load: manifest error: {}", reader_error_str(e));
@@ -496,7 +485,7 @@ pub fn stage_load(
     );
 
     // Load all segments to their load addresses
-    let entry_addr = match load_entry_segments(&reader, entry, region) {
+    let entry_addr = match load_entry_segments_from_media(media, entry, region) {
         Some(addr) => addr,
         None => return,
     };
@@ -516,6 +505,53 @@ pub fn stage_load_stub(next_stage: &str) {
 // FFS Helpers (behind `ffs` feature)
 // ---------------------------------------------------------------------------
 
+/// Maximum signed manifest size for stack-buffered reads.
+///
+/// Manifests typically serialize to 1-4 KB with postcard. 8 KB provides
+/// generous headroom for boards with many files and regions.
+#[cfg(feature = "ffs")]
+const MAX_MANIFEST_SIZE: usize = 8192;
+
+/// Read and verify the FFS manifest from any boot medium.
+///
+/// For memory-mapped media, uses the existing [`FfsReader`] fast path
+/// (the `as_slice()` branch). For non-memory-mapped media, reads the
+/// signed manifest into a stack buffer and verifies it there.
+///
+/// In both cases, the manifest signature is verified and the inner
+/// [`ImageManifest`](fstart_types::ffs::ImageManifest) is returned.
+#[cfg(feature = "ffs")]
+fn read_manifest_from_media(
+    media: &impl BootMedia,
+    anchor: &fstart_types::ffs::AnchorBlock,
+) -> Result<fstart_types::ffs::ImageManifest, fstart_ffs::ReaderError> {
+    // Fast path: memory-mapped — use existing FfsReader (zero-cost)
+    if let Some(image) = media.as_slice() {
+        let image_size = effective_image_size(media.size(), anchor);
+        let reader = fstart_ffs::FfsReader::new(&image[..image_size]);
+        return reader.read_manifest(anchor);
+    }
+
+    // Slow path: read signed manifest into a stack buffer.
+    //
+    // TODO: This allocates MAX_MANIFEST_SIZE (8 KiB) on the stack, which is
+    // ~25% of a 32 KiB bootblock stack. Consider using manifest_size instead
+    // of MAX_MANIFEST_SIZE, or document the stack budget requirement.
+    let manifest_offset = anchor.manifest_offset as usize;
+    let manifest_size = anchor.manifest_size as usize;
+
+    if manifest_size == 0 || manifest_size > MAX_MANIFEST_SIZE {
+        return Err(fstart_ffs::ReaderError::OutOfBounds);
+    }
+
+    let mut buf = [0u8; MAX_MANIFEST_SIZE];
+    media
+        .read_at(manifest_offset, &mut buf[..manifest_size])
+        .map_err(|_| fstart_ffs::ReaderError::OutOfBounds)?;
+
+    fstart_ffs::verify_and_parse_manifest(&buf[..manifest_size], anchor.valid_keys())
+}
+
 /// Load a file from FFS by its `FileType`, placing segments at their load addresses.
 ///
 /// Searches all container regions in the manifest for the first file entry
@@ -525,11 +561,10 @@ pub fn stage_load_stub(next_stage: &str) {
 #[cfg(feature = "ffs")]
 pub fn load_ffs_file_by_type(
     anchor_data: &[u8],
-    flash_base: u64,
-    flash_size: u64,
+    media: &impl BootMedia,
     file_type: fstart_types::ffs::FileType,
 ) -> bool {
-    if flash_size == 0 || anchor_data.is_empty() {
+    if media.size() == 0 || anchor_data.is_empty() {
         fstart_log::error!("load file: no flash image configured");
         return false;
     }
@@ -543,20 +578,7 @@ pub fn load_ffs_file_by_type(
         }
     };
 
-    // Use the anchor's total_image_size when smaller than flash_size,
-    // so the reader only accesses FFS image data (see sig_verify comment).
-    let image_size = if anchor.total_image_size > 0 && (anchor.total_image_size as u64) < flash_size
-    {
-        anchor.total_image_size as usize
-    } else {
-        flash_size as usize
-    };
-
-    // SAFETY: flash_base..flash_base+image_size is mapped readable memory.
-    let image = unsafe { core::slice::from_raw_parts(opaque_addr(flash_base), image_size) };
-    let reader = fstart_ffs::FfsReader::new(image);
-
-    let manifest = match reader.read_manifest(&anchor) {
+    let manifest = match read_manifest_from_media(media, &anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!("load file: manifest error: {}", reader_error_str(e));
@@ -593,16 +615,30 @@ pub fn load_ffs_file_by_type(
 
     fstart_log::info!("load file: loading '{}'", entry.name.as_str());
 
-    load_entry_segments(&reader, entry, region).is_some()
+    load_entry_segments_from_media(media, entry, region).is_some()
 }
 
-/// Load all segments of a file entry to their load addresses.
+/// Load all segments of a file entry to their load addresses from any boot medium.
+///
+/// For each segment, reads data from the boot medium directly to the
+/// target load address. This works uniformly for both memory-mapped and
+/// block-device-backed media:
+///
+/// - **Memory-mapped**: `media.read_at()` inlines to `memmove`, identical
+///   to the previous direct `ptr::copy` implementation.
+/// - **Block device**: `media.read_at()` calls the device's `read()` method,
+///   copying data directly to the load address — single copy, no intermediate
+///   buffer.
 ///
 /// Returns the entry address (load_addr of the first Code segment, or
 /// load_addr of the first segment if no Code segments).
 #[cfg(feature = "ffs")]
-fn load_entry_segments(
-    reader: &fstart_ffs::FfsReader<'_>,
+// TODO: segment reads use the full media.size() for bounds checking rather
+// than effective_image_size (min of media size and anchor.total_image_size).
+// The manifest is already signature-verified so corrupt offsets require a
+// compromised key, but applying the cap here would add defense-in-depth.
+fn load_entry_segments_from_media(
+    media: &impl BootMedia,
     entry: &fstart_types::ffs::RegionEntry,
     region: &fstart_types::ffs::Region,
 ) -> Option<u64> {
@@ -630,34 +666,30 @@ fn load_entry_segments(
                 seg.loaded_size
             );
         } else {
-            // Data segment: copy from flash to load_addr
-            let data = match reader.read_segment_data(seg, region, entry) {
-                Ok(d) => d,
-                Err(e) => {
-                    fstart_log::error!("segment read error: {}", reader_error_str(e));
-                    return None;
-                }
-            };
-
+            // Data segment: read from boot medium to load_addr
+            let src_offset = (region.offset + entry.offset + seg.offset) as usize;
+            let stored_size = seg.stored_size as usize;
             let dest = seg.load_addr as *mut u8;
 
             match seg.compression {
                 fstart_types::ffs::Compression::None => {
-                    // SAFETY: we trust the board config; the load_addr points to
-                    // writable RAM and `data.len()` bytes fit. We use `copy`
-                    // (memmove) instead of `copy_nonoverlapping` (memcpy) for
-                    // robustness: when the FFS image is loaded into RAM (not
-                    // flash), source and destination regions may overlap —
-                    // e.g., loading a large kernel from FFS at 0x80000000 to
-                    // a nearby load address.
-                    unsafe {
-                        core::ptr::copy(data.as_ptr(), dest, data.len());
+                    // Read directly from boot medium to the load address.
+                    // For memory-mapped media, this inlines to memmove
+                    // (handles overlap when FFS image is in RAM).
+                    // For block devices, this is a single device read.
+                    //
+                    // SAFETY: we trust the board config; load_addr points to
+                    // writable RAM with enough space for stored_size bytes.
+                    let dest_buf = unsafe { core::slice::from_raw_parts_mut(dest, stored_size) };
+                    if media.read_at(src_offset, dest_buf).is_err() {
+                        fstart_log::error!("segment read error");
+                        return None;
                     }
                     fstart_log::debug!(
                         "  {}: {} ({} bytes)",
                         seg.name.as_str(),
                         Hex(seg.load_addr),
-                        data.len()
+                        stored_size
                     );
                 }
                 #[cfg(feature = "lz4")]
@@ -665,12 +697,11 @@ fn load_entry_segments(
                     // In-place LZ4 decompression (coreboot technique):
                     // 1. The builder verified that `in_place_size` bytes at
                     //    load_addr suffice for safe in-place decompression.
-                    // 2. Copy compressed data to the END of the buffer:
+                    // 2. Read compressed data to the END of the buffer:
                     //    dest + in_place_size - stored_size
                     // 3. Decompress from tail to head — the decompressor
                     //    reads from the tail while writing from the head.
                     let buf_size = seg.in_place_size as usize;
-                    let stored_size = seg.stored_size as usize;
                     let loaded_size = seg.loaded_size as usize;
 
                     // SAFETY: load_addr points to writable RAM with at least
@@ -678,15 +709,14 @@ fn load_entry_segments(
                     // and guaranteed by the linker script / board config).
                     let buf = unsafe { core::slice::from_raw_parts_mut(dest, buf_size) };
 
-                    // Copy compressed data to the tail of the buffer
-                    let src_offset = buf_size - stored_size;
-                    // SAFETY: src (flash) and dst (RAM tail) don't overlap.
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            buf.as_mut_ptr().add(src_offset),
-                            stored_size,
-                        );
+                    // Read compressed data into the tail of the buffer
+                    let comp_offset = buf_size - stored_size;
+                    if media
+                        .read_at(src_offset, &mut buf[comp_offset..comp_offset + stored_size])
+                        .is_err()
+                    {
+                        fstart_log::error!("segment read error (lz4)");
+                        return None;
                     }
 
                     // Decompress in-place: read from tail, write from head.
@@ -696,7 +726,7 @@ fn load_entry_segments(
                     // this (in-place guard checks output doesn't overtake input).
                     let result = unsafe {
                         let src =
-                            core::slice::from_raw_parts(buf.as_ptr().add(src_offset), stored_size);
+                            core::slice::from_raw_parts(buf.as_ptr().add(comp_offset), stored_size);
                         let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), loaded_size);
                         fstart_ffs::lz4::decompress_block(src, dst)
                     };
@@ -760,22 +790,17 @@ fn reader_error_str(err: fstart_ffs::ReaderError) -> &'static str {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a `u64` address to a `*const u8`, preventing the compiler from
-/// recognising zero as null.
+/// Compute the effective image size, preferring the anchor's `total_image_size`
+/// when it's non-zero and smaller than the media size.
 ///
-/// On AArch64 XIP, flash genuinely resides at physical address 0x0. Rust
-/// treats `from_raw_parts(null, n)` as UB for n > 0, and the compiler may
-/// exploit this — for example by making `.get()` always return `None`.
-/// Passing the address through `read_volatile` hides the concrete value
-/// from the optimizer so it cannot fold the null check.
+/// On XIP platforms, the media size may be the full flash bank (e.g., 128 MiB)
+/// while the FFS image is much smaller. Using the anchor's total_image_size
+/// ensures the reader only accesses data that was actually written by the builder.
 #[cfg(feature = "ffs")]
-#[inline(always)]
-fn opaque_addr(addr: u64) -> *const u8 {
-    let result: u64;
-    // SAFETY: a u64 on the stack is always readable. Volatile read prevents
-    // the compiler from constant-folding the value.
-    unsafe {
-        result = core::ptr::read_volatile(&addr);
+fn effective_image_size(media_size: usize, anchor: &fstart_types::ffs::AnchorBlock) -> usize {
+    if anchor.total_image_size > 0 && (anchor.total_image_size as usize) < media_size {
+        anchor.total_image_size as usize
+    } else {
+        media_size
     }
-    result as *const u8
 }

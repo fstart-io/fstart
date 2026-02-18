@@ -19,6 +19,7 @@ fdt = ["dep:dtoolkit"]
 
 [dependencies]
 fstart-log = { workspace = true }
+fstart-services = { workspace = true }
 ufmt = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-types = { workspace = true, optional = true }

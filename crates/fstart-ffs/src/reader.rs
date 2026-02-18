@@ -211,23 +211,47 @@ impl<'a> FfsReader<'a> {
             .get(offset..end)
             .ok_or(ReaderError::OutOfBounds)?;
 
-        // Deserialize the SignedManifest envelope
-        let signed: SignedManifest =
-            postcard::from_bytes(data).map_err(|_| ReaderError::DeserializeError)?;
-
-        // Verify the signature over the raw manifest bytes
-        verify::verify_with_key_lookup(&signed.manifest_bytes, &signed.signature, keys).map_err(
-            |e| match e {
-                verify::VerifyError::KeyNotFound => ReaderError::KeyNotFound,
-                verify::VerifyError::UnsupportedAlgorithm => ReaderError::UnsupportedAlgorithm,
-                _ => ReaderError::SignatureInvalid,
-            },
-        )?;
-
-        // Deserialize the inner ImageManifest
-        let manifest: ImageManifest = postcard::from_bytes(&signed.manifest_bytes)
-            .map_err(|_| ReaderError::DeserializeError)?;
-
-        Ok(manifest)
+        verify_and_parse_manifest(data, keys)
     }
+}
+
+/// Verify a signed manifest and deserialize the inner [`ImageManifest`].
+///
+/// This is the core manifest verification logic, factored out of
+/// [`FfsReader`] so it can be reused by boot-media-aware code paths
+/// that read the manifest into a stack buffer (e.g., when the boot
+/// medium is a block device rather than memory-mapped flash).
+///
+/// # Arguments
+///
+/// - `data`: The raw bytes of the serialized [`SignedManifest`].
+/// - `keys`: Verification keys from the anchor block.
+///
+/// # Errors
+///
+/// Returns [`ReaderError::DeserializeError`] if postcard deserialization fails,
+/// [`ReaderError::SignatureInvalid`] if the signature doesn't verify, or
+/// [`ReaderError::KeyNotFound`] if no matching key is found.
+pub fn verify_and_parse_manifest(
+    data: &[u8],
+    keys: &[fstart_types::ffs::VerificationKey],
+) -> Result<ImageManifest, ReaderError> {
+    // Deserialize the SignedManifest envelope
+    let signed: SignedManifest =
+        postcard::from_bytes(data).map_err(|_| ReaderError::DeserializeError)?;
+
+    // Verify the signature over the raw manifest bytes
+    verify::verify_with_key_lookup(&signed.manifest_bytes, &signed.signature, keys).map_err(
+        |e| match e {
+            verify::VerifyError::KeyNotFound => ReaderError::KeyNotFound,
+            verify::VerifyError::UnsupportedAlgorithm => ReaderError::UnsupportedAlgorithm,
+            _ => ReaderError::SignatureInvalid,
+        },
+    )?;
+
+    // Deserialize the inner ImageManifest
+    let manifest: ImageManifest =
+        postcard::from_bytes(&signed.manifest_bytes).map_err(|_| ReaderError::DeserializeError)?;
+
+    Ok(manifest)
 }
