@@ -1190,10 +1190,19 @@ fn generate_fdt_prepare(
 
     match &payload.fdt {
         fstart_types::FdtSource::Platform => {
-            let dtb_src_expr = match platform {
-                "riscv64" => "fstart_platform_riscv64::boot_dtb_addr()",
-                "aarch64" => "fstart_platform_aarch64::boot_dtb_addr()",
-                _ => "0",
+            // When the board config specifies an explicit src_dtb_addr, use
+            // that constant directly. Otherwise, call the platform crate's
+            // boot_dtb_addr() which reads the address saved from a register
+            // at reset. The explicit path is needed on AArch64 where QEMU
+            // zeroes x0 on firmware boot but places the DTB at RAM base.
+            let dtb_src_expr = if let Some(addr) = payload.src_dtb_addr {
+                format!("{addr:#x}")
+            } else {
+                match platform {
+                    "riscv64" => "fstart_platform_riscv64::boot_dtb_addr()".to_string(),
+                    "aarch64" => "fstart_platform_aarch64::boot_dtb_addr()".to_string(),
+                    _ => "0".to_string(),
+                }
             };
             let dtb_dst = payload.dtb_addr.unwrap_or(0);
             let bootargs = payload.bootargs.as_ref().map(|s| s.as_str()).unwrap_or("");
@@ -1334,10 +1343,11 @@ fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig
             let fw_addr = payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0);
             // Stack-allocate the ATF boot protocol structs
             // SAFETY: repr(C) structs with all-integer fields — zeroed is valid.
-            out.push_str("    let mut _bl33_desc: fstart_platform_aarch64::ImageDesc = unsafe { core::mem::zeroed() };\n");
+            out.push_str("    let mut _bl33_ep: fstart_platform_aarch64::EntryPointInfo = unsafe { core::mem::zeroed() };\n");
+            out.push_str("    let mut _bl33_node: fstart_platform_aarch64::BlParamsNode = unsafe { core::mem::zeroed() };\n");
             out.push_str("    let mut _bl_params: fstart_platform_aarch64::BlParams = unsafe { core::mem::zeroed() };\n");
             out.push_str(&format!(
-                "    fstart_platform_aarch64::prepare_bl_params({kernel_addr:#x}, {dtb_addr:#x}, &mut _bl33_desc, &mut _bl_params);\n"
+                "    fstart_platform_aarch64::prepare_bl_params({kernel_addr:#x}, {dtb_addr:#x}, &mut _bl33_ep, &mut _bl33_node, &mut _bl_params);\n"
             ));
             out.push_str(&format!(
                 "    let _ = {con}.write_line(\"[fstart] jumping to ATF BL31...\");\n"
@@ -1432,6 +1442,7 @@ mod tests {
                 capabilities,
                 load_addr: 0x8000_0000,
                 stack_size: 0x10000,
+                data_addr: None,
             }),
             security: SecurityConfig {
                 signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -1723,6 +1734,7 @@ mod tests {
                 capabilities,
                 load_addr: 0x8000_0000,
                 stack_size: 0x10000,
+                data_addr: None,
             }),
             security: SecurityConfig {
                 signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -2166,6 +2178,7 @@ mod tests {
                 capabilities,
                 load_addr: 0x8000_0000,
                 stack_size: 0x10000,
+                data_addr: None,
             }),
             security: SecurityConfig {
                 signing_algorithm: SignatureAlgorithm::Ed25519,

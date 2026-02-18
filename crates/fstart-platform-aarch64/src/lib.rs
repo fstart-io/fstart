@@ -77,27 +77,35 @@ pub struct EntryPointInfo {
     pub args: Aapcs64Params,
 }
 
-/// Descriptor for a single BL image in the params list.
+/// BL image node in the BL image execution sequence.
+///
+/// TF-A's `bl_params_node_t` — uses POINTERS to `image_info` and `ep_info`.
+/// This differs from `image_desc_t` which embeds them inline.
 #[repr(C)]
-pub struct ImageDesc {
+pub struct BlParamsNode {
     /// Image ID: `BL33_IMAGE_ID` = 5.
     pub image_id: u32,
     pub _pad: u32,
-    /// Entry point info for this image.
-    pub ep_info: EntryPointInfo,
-    /// Pointer to the next descriptor (null for last).
-    pub next: u64,
+    /// Pointer to `ImageInfo` (null if not needed).
+    pub image_info: u64,
+    /// Pointer to `EntryPointInfo` for this image.
+    pub ep_info: u64,
+    /// Pointer to the next `BlParamsNode` (null for last).
+    pub next_params_info: u64,
 }
 
 /// Top-level BL params structure passed to BL31 in `x0`.
 ///
-/// Contains the linked list of image descriptors that BL31 uses
-/// to determine where to jump after initialization.
+/// TF-A's `bl_params_t` — contains a pointer to the head of the
+/// `BlParamsNode` linked list.
+///
+/// Layout: `ParamHeader` (8 bytes) + `head` pointer (8 bytes) = 16 bytes.
+/// No padding needed — `head` is naturally aligned at offset 8.
 #[repr(C)]
 pub struct BlParams {
-    /// Header: type = `PARAM_BL_PARAMS` (3), version = 2.
+    /// Header: type = `PARAM_BL_PARAMS` (0x05), version = 2.
     pub h: ParamHeader,
-    /// Pointer to the head of the image descriptor list.
+    /// Pointer to the head of the params node list.
     pub head: u64,
 }
 
@@ -105,8 +113,8 @@ pub struct BlParams {
 pub mod atf {
     /// Parameter type: entry point info.
     pub const PARAM_EP: u8 = 0x01;
-    /// Parameter type: BL params.
-    pub const PARAM_BL_PARAMS: u8 = 0x03;
+    /// Parameter type: BL params (PARAM_BL_PARAMS = 0x05 in TF-A).
+    pub const PARAM_BL_PARAMS: u8 = 0x05;
     /// Struct version.
     pub const VERSION_2: u8 = 0x02;
     /// Image ID for BL33 (non-secure payload = Linux).
@@ -128,24 +136,24 @@ pub mod atf {
 
 /// Build BL params for booting Linux via ATF BL31.
 ///
-/// `image_desc` must live as long as the `BlParams` is used (both
+/// All output structs must live as long as the `BlParams` is used (all
 /// are typically stack-allocated before the jump).
 ///
 /// # Arguments
 /// - `kernel_addr` — Linux kernel entry point
 /// - `dtb_addr` — Patched DTB address (passed as x0 to Linux)
-/// - `image_desc` — Output: filled-in ImageDesc for BL33
+/// - `bl33_ep` — Output: filled-in EntryPointInfo for BL33
+/// - `bl33_node` — Output: filled-in BlParamsNode for BL33
 /// - `bl_params` — Output: filled-in BlParams
 pub fn prepare_bl_params(
     kernel_addr: u64,
     dtb_addr: u64,
-    image_desc: &mut ImageDesc,
+    bl33_ep: &mut EntryPointInfo,
+    bl33_node: &mut BlParamsNode,
     bl_params: &mut BlParams,
 ) {
     // Fill in BL33 entry point info
-    image_desc.image_id = atf::BL33_IMAGE_ID;
-    image_desc._pad = 0;
-    image_desc.ep_info = EntryPointInfo {
+    *bl33_ep = EntryPointInfo {
         h: ParamHeader {
             param_type: atf::PARAM_EP,
             version: atf::VERSION_2,
@@ -160,7 +168,13 @@ pub fn prepare_bl_params(
             ..Default::default()
         },
     };
-    image_desc.next = 0; // no more images
+
+    // Fill in BL33 params node (TF-A uses pointers, not embedded structs)
+    bl33_node.image_id = atf::BL33_IMAGE_ID;
+    bl33_node._pad = 0;
+    bl33_node.image_info = 0; // no image info needed
+    bl33_node.ep_info = bl33_ep as *mut EntryPointInfo as u64;
+    bl33_node.next_params_info = 0; // no more images
 
     // Fill in top-level bl_params
     bl_params.h = ParamHeader {
@@ -169,7 +183,7 @@ pub fn prepare_bl_params(
         size: core::mem::size_of::<BlParams>() as u16,
         attr: 0,
     };
-    bl_params.head = image_desc as *mut ImageDesc as u64;
+    bl_params.head = bl33_node as *mut BlParamsNode as u64;
 }
 
 /// Jump to ATF BL31, which then boots Linux at EL2.
@@ -185,10 +199,16 @@ pub fn prepare_bl_params(
 /// `params` is valid and will remain so until BL31 reads it.
 pub fn boot_linux_atf(bl31_addr: u64, params: &BlParams) -> ! {
     unsafe {
+        // Ensure all stores to the params structs (and loaded images) are
+        // complete and visible before transferring control to BL31, which
+        // may start with caches in a different state.
+        //
         // Use explicit register constraint for x0 so the compiler places
         // the params pointer directly — avoids clobbering `{bl31}` if the
         // compiler happened to allocate it to x0.
         core::arch::asm!(
+            "dsb sy",   // complete all pending stores
+            "isb",      // synchronise the pipeline
             "br {bl31}",
             bl31 = in(reg) bl31_addr,
             in("x0") params as *const BlParams as u64,

@@ -105,7 +105,7 @@ fn run_board(
     } else {
         // Simple monolithic: build and boot the single binary directly
         let res = build_board::build(board_name, release)?;
-        qemu::run(board_name, &res.primary_binary().path)
+        qemu::run(board_name, &res.primary_binary().run_path)
     }
 }
 

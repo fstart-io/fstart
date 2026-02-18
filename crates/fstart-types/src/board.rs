@@ -54,6 +54,17 @@ pub struct PayloadConfig {
     pub fdt: FdtSource,
     /// Target address for the patched DTB in RAM
     pub dtb_addr: Option<u64>,
+    /// Explicit source address for the platform-provided DTB.
+    ///
+    /// On RISC-V, QEMU passes DTB in `a1` and the platform crate saves it,
+    /// so this field is unnecessary. On AArch64 firmware boot (`-bios`),
+    /// QEMU zeroes all registers and places the DTB at the base of RAM —
+    /// `x0` is 0, not a DTB pointer. Set this to the known DTB address
+    /// (e.g., `0x40000000` for QEMU AArch64 virt).
+    ///
+    /// When `None`, codegen uses `boot_dtb_addr()` from the platform crate.
+    #[serde(default)]
+    pub src_dtb_addr: Option<u64>,
     /// Kernel command line (set in /chosen/bootargs)
     pub bootargs: Option<HString<256>>,
     /// SBI / ATF firmware blob configuration

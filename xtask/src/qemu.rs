@@ -42,24 +42,18 @@ pub fn run(board_name: &str, binary: &Path) -> Result<(), String> {
         name if name.contains("aarch64") => {
             let mut args = vec![
                 "-machine".to_string(),
-                "virt".to_string(),
+                // secure=on: enable TrustZone so secure SRAM at 0x0E000000 exists
+                //   (BL31 is loaded there)
+                // virtualization=on: enable EL2 so BL31 can ERET to Linux at EL2
+                "virt,secure=on,virtualization=on".to_string(),
                 "-cpu".to_string(),
                 "cortex-a72".to_string(),
                 "-nographic".to_string(),
             ];
-            if is_ffs {
-                args.extend([
-                    "-bios".to_string(),
-                    "none".to_string(),
-                    "-device".to_string(),
-                    format!(
-                        "loader,file={},addr=0x00000000,force-raw=on",
-                        binary.display()
-                    ),
-                ]);
-            } else {
-                args.extend(["-bios".to_string(), binary.display().to_string()]);
-            }
+            // AArch64: always use -bios so QEMU enters firmware boot mode,
+            // which places the DTB at RAM base (0x40000000) and starts the
+            // CPU at PC=0x0. Works for both ELF and raw FFS images.
+            args.extend(["-bios".to_string(), binary.display().to_string()]);
             ("qemu-system-aarch64", args)
         }
         _ => return Err(format!("no QEMU configuration for board: {board_name}")),

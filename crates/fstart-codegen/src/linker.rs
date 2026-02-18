@@ -12,17 +12,19 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         other => other,
     };
 
-    // Determine load address and stack size from stage config
-    let (load_addr, stack_size) = match (&config.stages, stage_name) {
-        (StageLayout::Monolithic(mono), _) => (mono.load_addr, mono.stack_size as u64),
+    // Determine load address, stack size, and optional data address from stage config
+    let (load_addr, stack_size, data_addr) = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => {
+            (mono.load_addr, mono.stack_size as u64, mono.data_addr)
+        }
         (StageLayout::MultiStage(stages), Some(name)) => {
             if let Some(stage) = stages.iter().find(|s| s.name.as_str() == name) {
-                (stage.load_addr, stage.stack_size as u64)
+                (stage.load_addr, stage.stack_size as u64, None)
             } else {
-                (0x8000_0000, 0x10000) // fallback
+                (0x8000_0000, 0x10000, None) // fallback
             }
         }
-        _ => (0x8000_0000, 0x10000),
+        _ => (0x8000_0000, 0x10000, None),
     };
 
     // Check if load_addr falls within a ROM region (XIP) or RAM region
@@ -57,9 +59,11 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     out.push_str("ENTRY(_start)\n\n");
 
     if let Some(rom) = rom_region {
-        // XIP layout: code in ROM, data/bss/stack in RAM
+        // XIP layout: code in ROM, data/bss/stack in RAM.
+        // When data_addr is set, place writable sections at that address
+        // instead of ram_origin (e.g., to avoid QEMU's DTB at RAM base).
         generate_xip_layout(
-            &mut out, rom.base, rom.size, ram_origin, ram_length, stack_size,
+            &mut out, rom.base, rom.size, ram_origin, ram_length, stack_size, data_addr,
         );
     } else {
         // RAM-only layout: everything in RAM at load_addr.
@@ -89,6 +93,11 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
 }
 
 /// Generate linker script for XIP from ROM with data/bss/stack in RAM.
+///
+/// When `data_addr` is `Some(addr)`, writable sections (`.data`, `.bss`,
+/// stack) are placed at `addr` instead of the start of the RAM region.
+/// This is used on AArch64 QEMU where the platform places the DTB at the
+/// base of RAM (0x40000000) — BSS clearing would destroy it if placed there.
 fn generate_xip_layout(
     out: &mut String,
     rom_origin: u64,
@@ -96,13 +105,20 @@ fn generate_xip_layout(
     ram_origin: u64,
     ram_length: u64,
     stack_size: u64,
+    data_addr: Option<u64>,
 ) {
+    // When data_addr is set, split RAM into two memory regions:
+    // RAMRO for read-only data (unused currently, but reserved),
+    // and RAMRW for writable sections starting at data_addr.
+    let rw_origin = data_addr.unwrap_or(ram_origin);
+    let rw_length = ram_length - (rw_origin - ram_origin);
+
     out.push_str("MEMORY\n{\n");
     out.push_str(&format!(
         "    ROM (rx)  : ORIGIN = {rom_origin:#x}, LENGTH = {rom_length:#x}\n"
     ));
     out.push_str(&format!(
-        "    RAM (rwx) : ORIGIN = {ram_origin:#x}, LENGTH = {ram_length:#x}\n"
+        "    RAM (rwx) : ORIGIN = {rw_origin:#x}, LENGTH = {rw_length:#x}\n"
     ));
     out.push_str("}\n\n");
 

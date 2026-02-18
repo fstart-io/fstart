@@ -52,7 +52,11 @@
             PayloadLoad,
         ],
         load_addr: 0x00000000,
-        stack_size: 0x10000,
+        stack_size: 0x40000,
+        // Place data/BSS/stack at 2 MiB into RAM to avoid QEMU's DTB.
+        // QEMU places the FDT at RAM base (0x40000000) on firmware boot;
+        // without this, BSS clearing in _start would destroy the DTB.
+        data_addr: Some(0x40200000),
     )),
 
     security: (
@@ -65,23 +69,34 @@
 
     // Linux boot via ARM Trusted Firmware BL31.
     //
-    // Memory layout (128 MiB RAM at 0x40000000):
-    //   0x00000000 - Flash (fstart firmware, XIP)
-    //   0x40000000 - ATF BL31 (loaded from FFS into RAM)
-    //   0x40100000 - Patched DTB (copied from QEMU-provided DTB)
+    // Memory layout:
+    //   0x00000000 - Flash (fstart firmware, XIP from ROM)
+    //   0x0E090000 - ATF BL31 (loaded from FFS into secure SRAM)
+    //   0x40000000 - RAM start; QEMU places DTB here (read-only, ~64 KiB)
+    //   0x40200000 - BSS + stack (data_addr, 2 MiB past RAM base)
+    //   0x40100000 - Patched DTB (copied from QEMU-provided DTB at 0x40000000)
     //   0x41000000 - Linux kernel (loaded from FFS)
-    //   0x48000000 - End of RAM
+    //   0x48000000 - End of RAM (128 MiB)
+    //
+    // BL31 is linked at 0x0E090000 (QEMU virt secure SRAM region) — this
+    // matches coreboot's layout. BL31 initialises at EL3, then erets to
+    // Linux (BL33) at EL2 with x0 = DTB pointer.
     payload: Some((
         kind: LinuxBoot,
         kernel_file: Some("Image"),
         kernel_load_addr: Some(0x41000000),
         fdt: Platform,
         dtb_addr: Some(0x40100000),
+        // QEMU AArch64 virt places the DTB at the base of RAM (0x40000000)
+        // on firmware boot (-bios). Unlike RISC-V where a1=DTB, AArch64
+        // firmware boot zeroes all registers — x0 is always 0, not a DTB
+        // pointer. We tell codegen the known DTB location explicitly.
+        src_dtb_addr: Some(0x40000000),
         bootargs: Some("console=ttyAMA0 earlycon=pl011,0x09000000"),
         firmware: Some((
             kind: ArmTrustedFirmware,
             file: "bl31.bin",
-            load_addr: 0x40000000,
+            load_addr: 0x0E090000,
         )),
     )),
 )
