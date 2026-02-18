@@ -40,6 +40,12 @@ enum Command {
         /// Build in release mode
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        /// Path to kernel binary (for LinuxBoot payloads)
+        #[arg(short, long)]
+        kernel: Option<String>,
+        /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
+        #[arg(short, long)]
+        firmware: Option<String>,
     },
     /// Build and run tests in QEMU
     Test {
@@ -52,16 +58,31 @@ enum Command {
         /// Board name
         #[arg(short, long)]
         board: String,
+        /// Build in release mode
+        #[arg(short, long, default_value_t = false)]
+        release: bool,
+        /// Path to kernel binary (for LinuxBoot payloads)
+        #[arg(short, long)]
+        kernel: Option<String>,
+        /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
+        #[arg(short, long)]
+        firmware: Option<String>,
     },
 }
 
 /// Build and run a board in QEMU.
 ///
-/// For monolithic boards, builds the single stage and boots it directly.
-/// For multi-stage boards, assembles the full FFS image (with signing
-/// and anchor patching) and boots that instead.
-fn run_board(board_name: &str, release: bool) -> Result<(), String> {
-    // Check if this is a multi-stage board
+/// For monolithic boards without external payload blobs, builds the single
+/// stage and boots it directly. For multi-stage boards or boards with
+/// LinuxBoot payloads (which need firmware + kernel in FFS), assembles the
+/// full FFS image first.
+fn run_board(
+    board_name: &str,
+    release: bool,
+    kernel: Option<&str>,
+    firmware: Option<&str>,
+) -> Result<(), String> {
+    // Check if this board needs assembly (multi-stage or has payload blobs)
     let workspace_root = build_board::workspace_root_pub()?;
     let board_ron = workspace_root
         .join("boards")
@@ -70,13 +91,19 @@ fn run_board(board_name: &str, release: bool) -> Result<(), String> {
     let config = fstart_codegen::ron_loader::load_board_config(&board_ron)?;
 
     let is_multi_stage = matches!(config.stages, fstart_types::StageLayout::MultiStage(_));
+    let has_payload_blobs = kernel.is_some()
+        || firmware.is_some()
+        || config
+            .payload
+            .as_ref()
+            .is_some_and(|p| p.firmware.is_some() || p.kernel_file.is_some());
 
-    if is_multi_stage {
-        // Multi-stage: assemble the FFS image and boot it
-        let image_path = assemble::assemble_release(board_name, release)?;
+    if is_multi_stage || has_payload_blobs {
+        // Assemble the FFS image (includes stage + firmware + kernel)
+        let image_path = assemble::assemble_with_opts(board_name, release, kernel, firmware)?;
         qemu::run(board_name, &image_path)
     } else {
-        // Monolithic: build and boot the single binary directly
+        // Simple monolithic: build and boot the single binary directly
         let res = build_board::build(board_name, release)?;
         qemu::run(board_name, &res.primary_binary().path)
     }
@@ -87,9 +114,20 @@ fn main() {
 
     let result: Result<(), String> = match cli.command {
         Command::Build { board, release } => build_board::build(&board, release).map(|_| ()),
-        Command::Run { board, release } => run_board(&board, release),
-        Command::Test { board } => run_board(&board, true),
-        Command::Assemble { board } => assemble::assemble(&board).map(|_| ()),
+        Command::Run {
+            board,
+            release,
+            kernel,
+            firmware,
+        } => run_board(&board, release, kernel.as_deref(), firmware.as_deref()),
+        Command::Test { board } => run_board(&board, true, None, None),
+        Command::Assemble {
+            board,
+            release,
+            kernel,
+            firmware,
+        } => assemble::assemble_with_opts(&board, release, kernel.as_deref(), firmware.as_deref())
+            .map(|_| ()),
     };
 
     if let Err(e) = result {
