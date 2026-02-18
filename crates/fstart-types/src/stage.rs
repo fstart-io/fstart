@@ -79,6 +79,12 @@ pub enum Capability {
         /// Device name from the devices list (e.g., "uart0")
         device: HString<32>,
     },
+    /// Declare the boot medium for FFS operations.
+    ///
+    /// Must appear before any FFS-consuming capability (`SigVerify`,
+    /// `StageLoad`, `PayloadLoad`). Generates the `boot_media` variable
+    /// used by those capabilities.
+    BootMedia(BootMedium),
     /// Verify the firmware filesystem manifest signature.
     SigVerify,
     /// Initialize DRAM (memory training).
@@ -93,5 +99,40 @@ pub enum Capability {
     StageLoad {
         /// Name of the next stage to load
         next_stage: HString<32>,
+    },
+}
+
+/// Boot medium — how the firmware image is accessed at runtime.
+///
+/// Specified via the `BootMedia(...)` capability in the board RON.
+/// Determines which `BootMedia` trait implementation is constructed
+/// in the generated stage code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BootMedium {
+    /// Memory-mapped flash.
+    ///
+    /// The SoC maps the flash chip into the CPU address space starting
+    /// at `base`. This is the SoC-specific raw-flash-to-CPU address
+    /// translation. Generated code constructs a `MemoryMapped` from
+    /// these values — zero-cost, no vtable.
+    ///
+    /// ```ron
+    /// BootMedia(MemoryMapped(base: 0x20000000, size: 0x02000000))
+    /// ```
+    MemoryMapped {
+        /// CPU-visible base address where the flash is mapped.
+        base: u64,
+        /// Size of the mapped flash region in bytes.
+        size: u64,
+    },
+    /// A named device that implements `BlockDevice`.
+    ///
+    /// The device must be listed in `devices` and initialized (via
+    /// `ConsoleInit`, `DriverInit`, or similar) before the `BootMedia`
+    /// capability appears. Generated code wraps the device in a
+    /// `BlockDeviceMedia` adapter.
+    Device {
+        /// Device name from the devices list (e.g., "spi_flash0")
+        name: HString<32>,
     },
 }

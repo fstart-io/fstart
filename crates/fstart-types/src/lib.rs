@@ -25,4 +25,4 @@ pub use ffs::{
 };
 pub use memory::{MemoryMap, MemoryRegion, RegionKind};
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
-pub use stage::{Capability, MonolithicConfig, RunsFrom, StageConfig, StageLayout};
+pub use stage::{BootMedium, Capability, MonolithicConfig, RunsFrom, StageConfig, StageLayout};

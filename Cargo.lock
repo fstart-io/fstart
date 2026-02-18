@@ -354,6 +354,7 @@ dependencies = [
  "dtoolkit",
  "fstart-ffs",
  "fstart-log",
+ "fstart-services",
  "fstart-types",
  "ufmt",
 ]

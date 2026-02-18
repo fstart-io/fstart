@@ -15,7 +15,8 @@
 //! See [docs/driver-model.md](../../../docs/driver-model.md).
 
 use fstart_types::{
-    BoardConfig, BuildMode, Capability, DeviceConfig, FirmwareKind, PayloadKind, StageLayout,
+    BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, FirmwareKind, PayloadKind,
+    StageLayout,
 };
 
 /// Information about a known driver — maps RON driver name to Rust type path
@@ -466,9 +467,13 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
 
     generate_imports(&mut out, &config.devices, mode, capabilities);
 
-    // Generate flash/FFS constants and anchor placeholder if any FFS capabilities are present
+    // Generate flash constants from the BootMedia capability (not from memory map)
+    if let Some(BootMedium::MemoryMapped { base, size }) = get_boot_medium(capabilities) {
+        generate_flash_constants(&mut out, *base, *size);
+    }
+
+    // Generate FFS anchor placeholder if any FFS-consuming capabilities are present
     if needs_ffs(capabilities) {
-        generate_flash_constants(&mut out, config);
         generate_anchor_static(&mut out);
     }
 
@@ -501,11 +506,22 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
 ///   what they're doing.
 fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
     let mut console_inited = false;
+    let mut boot_media_declared = false;
 
     for cap in capabilities {
         match cap {
             Capability::ConsoleInit { .. } => {
                 console_inited = true;
+            }
+            Capability::BootMedia(_) => {
+                if !console_inited {
+                    return Some(
+                        "BootMedia capability requires ConsoleInit to appear earlier \
+                         in the capability list (needed for logging)"
+                            .to_string(),
+                    );
+                }
+                boot_media_declared = true;
             }
             Capability::MemoryInit if !console_inited => {
                 return Some(
@@ -528,6 +544,13 @@ fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
                         .to_string(),
                 );
             }
+            Capability::SigVerify if !boot_media_declared => {
+                return Some(
+                    "SigVerify capability requires BootMedia to appear earlier \
+                     in the capability list"
+                        .to_string(),
+                );
+            }
             Capability::FdtPrepare if !console_inited => {
                 return Some(
                     "FdtPrepare capability requires ConsoleInit to appear earlier \
@@ -542,10 +565,24 @@ fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
                         .to_string(),
                 );
             }
+            Capability::PayloadLoad if !boot_media_declared => {
+                return Some(
+                    "PayloadLoad capability requires BootMedia to appear earlier \
+                     in the capability list"
+                        .to_string(),
+                );
+            }
             Capability::StageLoad { .. } if !console_inited => {
                 return Some(
                     "StageLoad capability requires ConsoleInit to appear earlier \
                      in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::StageLoad { .. } if !boot_media_declared => {
+                return Some(
+                    "StageLoad capability requires BootMedia to appear earlier \
+                     in the capability list"
                         .to_string(),
                 );
             }
@@ -557,12 +594,22 @@ fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
 }
 
 /// Check whether a capability list uses FFS operations (SigVerify, StageLoad, PayloadLoad).
+///
+/// Used to decide whether the FFS anchor static needs to be emitted.
 fn needs_ffs(capabilities: &[Capability]) -> bool {
     capabilities.iter().any(|c| {
         matches!(
             c,
             Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
         )
+    })
+}
+
+/// Find the `BootMedia` capability's medium, if present.
+fn get_boot_medium(capabilities: &[Capability]) -> Option<&BootMedium> {
+    capabilities.iter().find_map(|c| match c {
+        Capability::BootMedia(medium) => Some(medium),
+        _ => None,
     })
 }
 
@@ -634,6 +681,17 @@ fn generate_imports(
     }
     out.push('\n');
 
+    // Import boot media type based on the BootMedia capability variant.
+    match get_boot_medium(capabilities) {
+        Some(BootMedium::MemoryMapped { .. }) => {
+            out.push_str("use fstart_services::boot_media::MemoryMapped;\n\n");
+        }
+        Some(BootMedium::Device { .. }) => {
+            out.push_str("use fstart_services::boot_media::BlockDeviceMedia;\n\n");
+        }
+        None => {}
+    }
+
     // When FDT feature is needed, pull in the alloc crate and force-link
     // the bump allocator. The dtoolkit write API and DeviceTree::to_dtb()
     // use alloc internally (Vec, String, IndexMap).
@@ -646,16 +704,14 @@ fn generate_imports(
 
 /// Generate flash base address and size constants for FFS operations.
 ///
-/// These constants are used by `SigVerify`, `StageLoad`, and `PayloadLoad`
-/// to create an `FfsReader` over the memory-mapped firmware image.
-fn generate_flash_constants(out: &mut String, config: &BoardConfig) {
-    let flash_base = config.memory.flash_base.unwrap_or(0);
-    let flash_size = config.memory.flash_size.unwrap_or(0);
-
-    out.push_str("/// Base address of the firmware flash image in memory.\n");
-    out.push_str(&format!("const FLASH_BASE: u64 = {flash_base:#x};\n"));
+/// These constants come from the `BootMedia(MemoryMapped { base, size })`
+/// capability in the board RON. They represent the SoC-specific flash-to-CPU
+/// address translation.
+fn generate_flash_constants(out: &mut String, base: u64, size: u64) {
+    out.push_str("/// CPU-visible base address of the firmware flash image.\n");
+    out.push_str(&format!("const FLASH_BASE: u64 = {base:#x};\n"));
     out.push_str("/// Size of the firmware flash image in bytes.\n");
-    out.push_str(&format!("const FLASH_SIZE: u64 = {flash_size:#x};\n"));
+    out.push_str(&format!("const FLASH_SIZE: u64 = {size:#x};\n"));
     out.push('\n');
 }
 
@@ -788,11 +844,6 @@ fn generate_fstart_main(
     // can skip them and avoid double-init.
     let mut inited_devices: Vec<String> = Vec::new();
 
-    // Does this stage have FFS constants (flash_base/flash_size configured)?
-    let has_ffs = needs_ffs(capabilities)
-        && config.memory.flash_base.is_some()
-        && config.memory.flash_size.is_some();
-
     // --- Phase 2: Execute capabilities in declared order ---
     out.push_str("    // === Capability execution ===\n");
     for cap in capabilities {
@@ -801,6 +852,9 @@ fn generate_fstart_main(
                 let dev_name = device.as_str();
                 generate_console_init(out, dev_name, &config.devices, halt_fn, mode);
                 inited_devices.push(dev_name.to_string());
+            }
+            Capability::BootMedia(medium) => {
+                generate_boot_media(out, medium, &config.devices);
             }
             Capability::MemoryInit => {
                 generate_memory_init(out);
@@ -816,16 +870,16 @@ fn generate_fstart_main(
                 }
             }
             Capability::SigVerify => {
-                generate_sig_verify(out, has_ffs);
+                generate_sig_verify(out);
             }
             Capability::FdtPrepare => {
                 generate_fdt_prepare(out, config, platform);
             }
             Capability::PayloadLoad => {
-                generate_payload_load(out, config, platform, has_ffs);
+                generate_payload_load(out, config, platform);
             }
             Capability::StageLoad { next_stage } => {
-                generate_stage_load(out, next_stage.as_str(), platform, has_ffs);
+                generate_stage_load(out, next_stage.as_str(), platform);
             }
         }
     }
@@ -1133,16 +1187,55 @@ fn generate_driver_init(
 /// from those bytes at runtime (to see post-build patched values).
 const ANCHOR_AS_BYTES: &str = "unsafe { core::slice::from_raw_parts(&FSTART_ANCHOR as *const fstart_types::ffs::AnchorBlock as *const u8, core::mem::size_of::<fstart_types::ffs::AnchorBlock>()) }";
 
-/// Generate code for the SigVerify capability.
-fn generate_sig_verify(out: &mut String, has_ffs: bool) {
-    out.push_str("    // SigVerify\n");
-    if has_ffs {
-        out.push_str(&format!(
-            "    fstart_capabilities::sig_verify({ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE);\n"
-        ));
-    } else {
-        out.push_str("    fstart_capabilities::sig_verify(&[], 0, 0);\n");
+/// Generate code for the BootMedia capability.
+///
+/// Constructs the `boot_media` variable based on the declared boot medium.
+/// For `MemoryMapped`, uses the FLASH_BASE/FLASH_SIZE constants generated
+/// by `generate_flash_constants`. For `Device`, wraps the named device
+/// in a `BlockDeviceMedia` adapter.
+fn generate_boot_media(out: &mut String, medium: &BootMedium, devices: &[DeviceConfig]) {
+    match medium {
+        BootMedium::MemoryMapped { .. } => {
+            out.push_str("    // BootMedia: memory-mapped flash\n");
+            out.push_str(
+                "    // SAFETY: FLASH_BASE..FLASH_BASE+FLASH_SIZE is mapped readable memory\n",
+            );
+            out.push_str("    // (guaranteed by the board config and platform setup).\n");
+            out.push_str(
+                "    let boot_media = unsafe { MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize) };\n\n",
+            );
+        }
+        BootMedium::Device { name } => {
+            let dev_name = name.as_str();
+            // TODO: validate that the named device has been initialized by a
+            // prior capability (ConsoleInit/DriverInit) so we produce a clear
+            // codegen error rather than a raw Rust "cannot find value" error.
+            //
+            // Look up the device's size from its resources
+            let dev_size = devices
+                .iter()
+                .find(|d| d.name.as_str() == dev_name)
+                .and_then(|d| d.resources.size);
+            if let Some(size) = dev_size {
+                out.push_str(&format!("    // BootMedia: device \"{dev_name}\"\n"));
+                out.push_str(&format!(
+                    "    let boot_media = BlockDeviceMedia::new(&{dev_name}, 0, {size} as usize);\n\n",
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    compile_error!(\"BootMedia device '{dev_name}' has no resources.size — cannot determine media size\");\n",
+                ));
+            }
+        }
     }
+}
+
+/// Generate code for the SigVerify capability.
+fn generate_sig_verify(out: &mut String) {
+    out.push_str("    // SigVerify\n");
+    out.push_str(&format!(
+        "    fstart_capabilities::sig_verify({ANCHOR_AS_BYTES}, &boot_media);\n"
+    ));
 }
 
 /// Generate code for the FdtPrepare capability.
@@ -1197,28 +1290,24 @@ fn generate_fdt_prepare(out: &mut String, config: &BoardConfig, platform: &str) 
 /// - Jumps to firmware which then boots Linux
 ///
 /// Otherwise, uses the generic FFS payload load path.
-fn generate_payload_load(out: &mut String, config: &BoardConfig, platform: &str, has_ffs: bool) {
+fn generate_payload_load(out: &mut String, config: &BoardConfig, platform: &str) {
     out.push_str("    // PayloadLoad\n");
 
-    // Check if this is a LinuxBoot payload with FFS available
-    if is_linux_boot(config) && has_ffs {
+    // Check if this is a LinuxBoot payload
+    if is_linux_boot(config) {
         generate_payload_load_linux(out, config, platform);
         return;
     }
 
     // Generic payload load path
-    if has_ffs {
-        let jump_fn = match platform {
-            "riscv64" => "fstart_platform_riscv64::jump_to",
-            "aarch64" => "fstart_platform_aarch64::jump_to",
-            _ => "fstart_platform_riscv64::jump_to",
-        };
-        out.push_str(&format!(
-            "    fstart_capabilities::payload_load({ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
-        ));
-    } else {
-        out.push_str("    fstart_capabilities::payload_load_stub();\n");
-    }
+    let jump_fn = match platform {
+        "riscv64" => "fstart_platform_riscv64::jump_to",
+        "aarch64" => "fstart_platform_aarch64::jump_to",
+        _ => "fstart_platform_riscv64::jump_to",
+    };
+    out.push_str(&format!(
+        "    fstart_capabilities::payload_load({ANCHOR_AS_BYTES}, &boot_media, {jump_fn});\n"
+    ));
 }
 
 /// Generate the Linux boot payload sequence for a specific platform.
@@ -1249,7 +1338,7 @@ fn generate_payload_load_linux(out: &mut String, config: &BoardConfig, platform:
     // Load kernel from FFS (must happen first — see comment above)
     out.push_str("    fstart_log::info!(\"loading kernel...\");\n");
     out.push_str(&format!(
-        "    if !fstart_capabilities::load_ffs_file_by_type({ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, fstart_types::ffs::FileType::Payload) {{\n"
+        "    if !fstart_capabilities::load_ffs_file_by_type({ANCHOR_AS_BYTES}, &boot_media, fstart_types::ffs::FileType::Payload) {{\n"
     ));
     out.push_str("        fstart_log::error!(\"FATAL: failed to load kernel\");\n");
     out.push_str(&format!("        {halt_fn};\n"));
@@ -1265,7 +1354,7 @@ fn generate_payload_load_linux(out: &mut String, config: &BoardConfig, platform:
             "    fstart_log::info!(\"loading {fw_kind_str}...\");\n"
         ));
         out.push_str(&format!(
-            "    if !fstart_capabilities::load_ffs_file_by_type({ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, fstart_types::ffs::FileType::Firmware) {{\n"
+            "    if !fstart_capabilities::load_ffs_file_by_type({ANCHOR_AS_BYTES}, &boot_media, fstart_types::ffs::FileType::Firmware) {{\n"
         ));
         out.push_str(&format!(
             "        fstart_log::error!(\"FATAL: failed to load {fw_kind_str}\");\n"
@@ -1313,22 +1402,16 @@ fn generate_payload_load_linux(out: &mut String, config: &BoardConfig, platform:
 }
 
 /// Generate code for the StageLoad capability.
-fn generate_stage_load(out: &mut String, next_stage: &str, platform: &str, has_ffs: bool) {
+fn generate_stage_load(out: &mut String, next_stage: &str, platform: &str) {
     out.push_str(&format!("    // StageLoad -> {next_stage}\n"));
-    if has_ffs {
-        let jump_fn = match platform {
-            "riscv64" => "fstart_platform_riscv64::jump_to",
-            "aarch64" => "fstart_platform_aarch64::jump_to",
-            _ => "fstart_platform_riscv64::jump_to", // fallback
-        };
-        out.push_str(&format!(
-            "    fstart_capabilities::stage_load(\"{next_stage}\", {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
-        ));
-    } else {
-        out.push_str(&format!(
-            "    fstart_capabilities::stage_load_stub(\"{next_stage}\");\n"
-        ));
-    }
+    let jump_fn = match platform {
+        "riscv64" => "fstart_platform_riscv64::jump_to",
+        "aarch64" => "fstart_platform_aarch64::jump_to",
+        _ => "fstart_platform_riscv64::jump_to", // fallback
+    };
+    out.push_str(&format!(
+        "    fstart_capabilities::stage_load(\"{next_stage}\", {ANCHOR_AS_BYTES}, &boot_media, {jump_fn});\n"
+    ));
 }
 
 #[cfg(test)]
@@ -1482,32 +1565,12 @@ mod tests {
         let _ = caps.push(Capability::ConsoleInit {
             device: heapless::String::try_from("uart0").unwrap(),
         });
+        let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
+            base: 0x8000_0000,
+            size: 0x40_0000,
+        }));
         let _ = caps.push(Capability::SigVerify);
         let config = test_board_config(caps);
-        let source = generate_stage_source(&config, None);
-
-        // Without flash_base configured, passes empty slice and 0, 0 as fallback
-        assert!(
-            source.contains("fstart_capabilities::sig_verify(&[], 0, 0)"),
-            "should call sig_verify with fallback args: {source}"
-        );
-        // Should still emit FSTART_ANCHOR (since SigVerify needs_ffs)
-        assert!(
-            source.contains("static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock"),
-            "should emit FSTART_ANCHOR static: {source}"
-        );
-    }
-
-    #[test]
-    fn test_sig_verify_with_flash_base_generates_constants() {
-        let mut caps = heapless::Vec::new();
-        let _ = caps.push(Capability::ConsoleInit {
-            device: heapless::String::try_from("uart0").unwrap(),
-        });
-        let _ = caps.push(Capability::SigVerify);
-        let mut config = test_board_config(caps);
-        config.memory.flash_base = Some(0x8000_0000);
-        config.memory.flash_size = Some(0x40_0000);
         let source = generate_stage_source(&config, None);
 
         assert!(
@@ -1519,12 +1582,49 @@ mod tests {
             "should emit FLASH_SIZE constant: {source}"
         );
         assert!(
+            source.contains("MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)"),
+            "should construct MemoryMapped boot media: {source}"
+        );
+        assert!(
             source.contains("fstart_capabilities::sig_verify("),
             "should call sig_verify: {source}"
         );
         assert!(
-            source.contains("FLASH_BASE, FLASH_SIZE)"),
-            "should pass FLASH_BASE, FLASH_SIZE to sig_verify: {source}"
+            source.contains("&boot_media)"),
+            "should pass &boot_media to sig_verify: {source}"
+        );
+        assert!(
+            source.contains("static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock"),
+            "should emit FSTART_ANCHOR static: {source}"
+        );
+    }
+
+    #[test]
+    fn test_sig_verify_with_flash_base_generates_constants() {
+        // BootMedia(MemoryMapped) at base 0x0 (like AArch64 where flash is at 0x0)
+        let mut caps = heapless::Vec::new();
+        let _ = caps.push(Capability::ConsoleInit {
+            device: heapless::String::try_from("uart0").unwrap(),
+        });
+        let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
+            base: 0x0,
+            size: 0x800_0000,
+        }));
+        let _ = caps.push(Capability::SigVerify);
+        let config = test_board_config(caps);
+        let source = generate_stage_source(&config, None);
+
+        assert!(
+            source.contains("const FLASH_BASE: u64 = 0x0;"),
+            "should emit FLASH_BASE constant for base 0: {source}"
+        );
+        assert!(
+            source.contains("const FLASH_SIZE: u64 = 0x8000000;"),
+            "should emit FLASH_SIZE constant: {source}"
+        );
+        assert!(
+            source.contains("MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)"),
+            "should construct MemoryMapped boot media: {source}"
         );
     }
 
@@ -1534,16 +1634,23 @@ mod tests {
         let _ = caps.push(Capability::ConsoleInit {
             device: heapless::String::try_from("uart0").unwrap(),
         });
+        let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
+            base: 0x2000_0000,
+            size: 0x200_0000,
+        }));
         let _ = caps.push(Capability::StageLoad {
             next_stage: heapless::String::try_from("main").unwrap(),
         });
         let config = test_board_config(caps);
         let source = generate_stage_source(&config, None);
 
-        // Without flash_base configured, uses stub variant
         assert!(
-            source.contains("fstart_capabilities::stage_load_stub(\"main\")"),
-            "should call stage_load_stub without flash config: {source}"
+            source.contains("fstart_capabilities::stage_load(\"main\","),
+            "should call stage_load with stage name: {source}"
+        );
+        assert!(
+            source.contains("&boot_media, fstart_platform_riscv64::jump_to)"),
+            "should pass &boot_media and jump_to: {source}"
         );
     }
 
@@ -1553,21 +1660,27 @@ mod tests {
         let _ = caps.push(Capability::ConsoleInit {
             device: heapless::String::try_from("uart0").unwrap(),
         });
+        let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
+            base: 0x8000_0000,
+            size: 0x40_0000,
+        }));
         let _ = caps.push(Capability::StageLoad {
             next_stage: heapless::String::try_from("main").unwrap(),
         });
-        let mut config = test_board_config(caps);
-        config.memory.flash_base = Some(0x8000_0000);
-        config.memory.flash_size = Some(0x40_0000);
+        let config = test_board_config(caps);
         let source = generate_stage_source(&config, None);
 
+        assert!(
+            source.contains("const FLASH_BASE: u64 = 0x80000000;"),
+            "should emit FLASH_BASE from BootMedia: {source}"
+        );
         assert!(
             source.contains("fstart_capabilities::stage_load(\"main\","),
             "should call stage_load with stage name: {source}"
         );
         assert!(
-            source.contains("FLASH_BASE, FLASH_SIZE, fstart_platform_riscv64::jump_to)"),
-            "should pass flash args and jump_to: {source}"
+            source.contains("&boot_media, fstart_platform_riscv64::jump_to)"),
+            "should pass &boot_media and jump_to: {source}"
         );
     }
 
@@ -2397,6 +2510,10 @@ mod tests {
                 let _ = v.push(Capability::ConsoleInit {
                     device: HString::try_from("uart0").unwrap(),
                 });
+                let _ = v.push(Capability::BootMedia(BootMedium::MemoryMapped {
+                    base: 0x2000_0000,
+                    size: 0x200_0000,
+                }));
                 let _ = v.push(Capability::SigVerify);
                 let _ = v.push(Capability::StageLoad {
                     next_stage: HString::try_from("main").unwrap(),
@@ -2467,32 +2584,46 @@ mod tests {
             source.contains("fstart_capabilities::console_ready"),
             "bootblock should init console: {source}"
         );
-        // Without flash_base, uses fallback args for sig_verify
+        // BootMedia(MemoryMapped) is in the test fixture
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&[], 0, 0)"),
+            source.contains("MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)"),
+            "bootblock should construct MemoryMapped boot media: {source}"
+        );
+        assert!(
+            source.contains("fstart_capabilities::sig_verify("),
             "bootblock should call sig_verify: {source}"
         );
-        // Without flash_base, uses stub for stage_load
         assert!(
-            source.contains("fstart_capabilities::stage_load_stub(\"main\")"),
-            "bootblock should call stage_load_stub(\"main\"): {source}"
+            source.contains("&boot_media"),
+            "bootblock should pass &boot_media: {source}"
+        );
+        assert!(
+            source.contains("fstart_capabilities::stage_load(\"main\","),
+            "bootblock should call stage_load(\"main\"): {source}"
         );
     }
 
     #[test]
     fn test_multi_stage_bootblock_with_flash_base() {
-        let mut config = test_multi_stage_board();
-        config.memory.flash_base = Some(0x8000_0000);
-        config.memory.flash_size = Some(0x40_0000);
+        // BootMedia values come from the capability, not from memory map
+        let config = test_multi_stage_board();
         let source = generate_stage_source(&config, Some("bootblock"));
 
         assert!(
-            source.contains("const FLASH_BASE: u64 = 0x80000000;"),
-            "should emit FLASH_BASE: {source}"
+            source.contains("const FLASH_BASE: u64 = 0x20000000;"),
+            "should emit FLASH_BASE from BootMedia capability: {source}"
+        );
+        assert!(
+            source.contains("const FLASH_SIZE: u64 = 0x2000000;"),
+            "should emit FLASH_SIZE from BootMedia capability: {source}"
         );
         assert!(
             source.contains("static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock"),
             "should emit FSTART_ANCHOR static: {source}"
+        );
+        assert!(
+            source.contains("MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)"),
+            "should construct MemoryMapped boot media: {source}"
         );
         assert!(
             source.contains("fstart_capabilities::sig_verify("),
@@ -2503,8 +2634,8 @@ mod tests {
             "bootblock should call stage_load: {source}"
         );
         assert!(
-            source.contains("fstart_platform_riscv64::jump_to)"),
-            "bootblock should pass jump_to: {source}"
+            source.contains("&boot_media, fstart_platform_riscv64::jump_to)"),
+            "bootblock should pass &boot_media and jump_to: {source}"
         );
     }
 
@@ -2567,6 +2698,10 @@ mod tests {
         let _ = caps.push(Capability::ConsoleInit {
             device: heapless::String::try_from("uart0").unwrap(),
         });
+        let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
+            base: 0x2000_0000,
+            size: 0x200_0000,
+        }));
         let _ = caps.push(Capability::PayloadLoad);
         let config = test_board_config(caps);
         let source = generate_stage_source(&config, None);

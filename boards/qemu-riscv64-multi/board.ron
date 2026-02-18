@@ -53,6 +53,7 @@
             name: "bootblock",
             capabilities: [
                 ConsoleInit( device: "uart0" ),
+                BootMedia(MemoryMapped( base: 0x20000000, size: 0x02000000 )),
                 SigVerify,
                 StageLoad( next_stage: "main" ),
             ],

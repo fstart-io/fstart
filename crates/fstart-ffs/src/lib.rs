@@ -25,4 +25,4 @@ pub mod reader;
 #[cfg(feature = "std")]
 pub mod builder;
 
-pub use reader::{FfsReader, ReaderError};
+pub use reader::{verify_and_parse_manifest, FfsReader, ReaderError};

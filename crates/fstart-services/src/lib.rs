@@ -12,6 +12,7 @@
 #![no_std]
 
 pub mod block;
+pub mod boot_media;
 pub mod console;
 pub mod device;
 pub mod gpio;
@@ -20,6 +21,7 @@ pub mod spi;
 pub mod timer;
 
 pub use block::BlockDevice;
+pub use boot_media::{BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMapped, SubRegion};
 pub use console::Console;
 pub use device::{BusDevice, Device, DeviceError};
 pub use gpio::GpioController;
