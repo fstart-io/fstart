@@ -18,7 +18,8 @@ lz4 = ["ffs"]
 fdt = ["dep:dtoolkit"]
 
 [dependencies]
-fstart-services = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-types = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true, features = ["write"] }

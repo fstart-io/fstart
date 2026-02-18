@@ -1,42 +1,35 @@
 //! QEMU launcher for testing.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Run firmware in QEMU.
 ///
-/// For monolithic builds, `binary` is the ELF — QEMU loads it via `-bios`.
-/// For multi-stage FFS images, `binary` is the raw FFS image — we use
-/// `-device loader` to load it at the correct memory address.
+/// For both monolithic and FFS builds, `binary` is a flat binary (raw
+/// firmware or FFS image). RISC-V uses pflash to load it at flash base
+/// (0x20000000, XIP); AArch64 uses `-bios` to load it at flash (0x0, XIP).
 pub fn run(board_name: &str, binary: &Path) -> Result<(), String> {
-    let ext = binary.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let is_ffs = ext == "ffs";
-
     let (qemu_bin, args) = match board_name {
         name if name.contains("riscv64") => {
-            let mut args = vec![
+            // RISC-V virt: load firmware into pflash bank 0 at 0x20000000
+            // (XIP).  The MROM trampoline at 0x1000 sets a0=mhartid,
+            // a1=DTB addr, then jumps to flash base.
+            //
+            // Flash bank 0 is 32 MiB; QEMU pflash requires the backing
+            // image to match exactly, so we pad the firmware binary with
+            // 0xFF (erased NOR flash state).
+            let pflash_size = 32 * 1024 * 1024; // 32 MiB — VIRT_FLASH / 2
+            let pflash_path = create_pflash_image(binary, pflash_size)?;
+
+            let args = vec![
                 "-machine".to_string(),
                 "virt".to_string(),
                 "-nographic".to_string(),
+                "-bios".to_string(),
+                "none".to_string(),
+                "-drive".to_string(),
+                format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
             ];
-            if is_ffs {
-                // FFS image: load as raw binary at the flash base address.
-                // The bootblock is at offset 0 of the image, and QEMU's virt
-                // machine starts executing at 0x80000000.
-                // Use -bios none and -device loader to place the raw image.
-                args.extend([
-                    "-bios".to_string(),
-                    "none".to_string(),
-                    "-device".to_string(),
-                    format!(
-                        "loader,file={},addr=0x80000000,force-raw=on",
-                        binary.display()
-                    ),
-                ]);
-            } else {
-                // ELF: QEMU parses and loads it at the correct addresses.
-                args.extend(["-bios".to_string(), binary.display().to_string()]);
-            }
             ("qemu-system-riscv64", args)
         }
         name if name.contains("aarch64") => {
@@ -45,9 +38,12 @@ pub fn run(board_name: &str, binary: &Path) -> Result<(), String> {
                 // secure=on: enable TrustZone so secure SRAM at 0x0E000000 exists
                 //   (BL31 is loaded there)
                 // virtualization=on: enable EL2 so BL31 can ERET to Linux at EL2
-                "virt,secure=on,virtualization=on".to_string(),
+                // gic-version=3: ATF BL31 is built with QEMU_USE_GIC_DRIVER=QEMU_GICV3
+                "virt,secure=on,virtualization=on,gic-version=3".to_string(),
+                // Use max CPU so all ARMv8/v9 extensions are available —
+                // avoids SIGILL from userspace built with newer features.
                 "-cpu".to_string(),
-                "cortex-a72".to_string(),
+                "max".to_string(),
                 "-nographic".to_string(),
             ];
             // AArch64: always use -bios so QEMU enters firmware boot mode,
@@ -71,4 +67,34 @@ pub fn run(board_name: &str, binary: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Create a QEMU pflash image by padding a firmware binary to the exact
+/// flash bank size. Padding uses 0xFF (the erased state of NOR flash).
+fn create_pflash_image(binary: &Path, flash_size: usize) -> Result<PathBuf, String> {
+    let data = std::fs::read(binary).map_err(|e| format!("failed to read firmware binary: {e}"))?;
+
+    if data.len() > flash_size {
+        return Err(format!(
+            "firmware binary ({} bytes) exceeds flash bank size ({} bytes)",
+            data.len(),
+            flash_size
+        ));
+    }
+
+    let mut pflash = vec![0xFFu8; flash_size];
+    pflash[..data.len()].copy_from_slice(&data);
+
+    let pflash_path = binary.with_extension("pflash");
+    std::fs::write(&pflash_path, &pflash)
+        .map_err(|e| format!("failed to write pflash image: {e}"))?;
+
+    eprintln!(
+        "[fstart] pflash image: {} ({} bytes, firmware {} bytes)",
+        pflash_path.display(),
+        flash_size,
+        data.len()
+    );
+
+    Ok(pflash_path)
 }

@@ -28,6 +28,8 @@ fdt = ["fstart-capabilities/fdt", "dep:fstart-alloc"]
 fstart-services = { workspace = true }
 fstart-drivers = { workspace = true }
 fstart-capabilities = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
 fstart-types = { workspace = true }
 fstart-platform-riscv64 = { workspace = true, optional = true }

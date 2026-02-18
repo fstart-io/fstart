@@ -1,27 +1,32 @@
 // Board definition for QEMU RISC-V 64 virt machine — multi-stage layout.
 //
+// Memory map from QEMU hw/riscv/virt.c:
+//   Flash:  0x2000_0000 .. 0x2200_0000 (bank 0, 32 MiB)
+//   RAM:    0x8000_0000 onwards
+//
 // Two stages:
-//   bootblock: Runs at 0x80000000 (QEMU loads bios here). Minimal:
-//              ConsoleInit + SigVerify + StageLoad -> main.
-//   main:      Loaded to 0x80100000 by the bootblock. Full:
+//   bootblock: XIP from flash at 0x20000000 (offset 0 of FFS image).
+//              Minimal: ConsoleInit + SigVerify + StageLoad -> main.
+//              BSS/stack in RAM at 0x80000000 (~20 KiB).
+//   main:      Loaded to 0x80100000 (RAM) by the bootblock. Full:
 //              ConsoleInit + MemoryInit + DriverInit.
 //
-// Both stages use the same UART and platform. The key difference is
-// the capability set and load address per stage.
+// Boot flow: MROM trampoline at 0x1000 jumps to flash base (0x20000000).
+// Bootblock executes from flash (XIP), loads main into RAM, jumps to it.
 
 (
     name: "qemu-riscv64-multi",
     platform: "riscv64",
 
-    // Memory regions: only RAM for QEMU riscv64 virt.
-    // flash_base = where QEMU loads -bios (the FFS image sits here).
-    // flash_size = 4 MiB (max FFS image size for this board).
+    // Memory regions: ROM (flash bank 0) and RAM.
+    // Device MMIO addresses are in the device resources, not here.
     memory: (
         regions: [
-            ( name: "ram", base: 0x80000000, size: 0x08000000, kind: Ram ),
+            ( name: "flash", base: 0x20000000, size: 0x02000000, kind: Rom ),
+            ( name: "ram",   base: 0x80000000, size: 0x08000000, kind: Ram ),
         ],
-        flash_base: Some(0x80000000),
-        flash_size: Some(0x01000000),
+        flash_base: Some(0x20000000),
+        flash_size: Some(0x02000000),
     ),
 
     devices: [
@@ -51,9 +56,9 @@
                 SigVerify,
                 StageLoad( next_stage: "main" ),
             ],
-            load_addr: 0x80000000,
+            load_addr: 0x20000000,
             stack_size: 0x4000,
-            runs_from: Ram,
+            runs_from: Rom,
         ),
         (
             name: "main",

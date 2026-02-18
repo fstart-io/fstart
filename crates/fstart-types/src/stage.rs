@@ -49,6 +49,14 @@ pub struct StageConfig {
     pub stack_size: u32,
     /// Where this stage executes from
     pub runs_from: RunsFrom,
+    /// Explicit address for data/BSS/stack in RAM (XIP stages only).
+    ///
+    /// Same semantics as [`MonolithicConfig::data_addr`]: when the stage
+    /// runs from ROM (XIP), this offsets writable sections away from the
+    /// default RAM base. Needed on AArch64 where QEMU places the DTB at
+    /// the base of RAM.
+    #[serde(default)]
+    pub data_addr: Option<u64>,
 }
 
 /// Where a stage executes from.

@@ -788,9 +788,6 @@ fn generate_fstart_main(
     // can skip them and avoid double-init.
     let mut inited_devices: Vec<String> = Vec::new();
 
-    // Track the first console device name for passing to later capabilities.
-    let mut console_device: Option<String> = None;
-
     // Does this stage have FFS constants (flash_base/flash_size configured)?
     let has_ffs = needs_ffs(capabilities)
         && config.memory.flash_base.is_some()
@@ -804,22 +801,12 @@ fn generate_fstart_main(
                 let dev_name = device.as_str();
                 generate_console_init(out, dev_name, &config.devices, halt_fn, mode);
                 inited_devices.push(dev_name.to_string());
-                if console_device.is_none() {
-                    console_device = Some(dev_name.to_string());
-                }
             }
             Capability::MemoryInit => {
-                generate_memory_init(out, &console_device);
+                generate_memory_init(out);
             }
             Capability::DriverInit => {
-                generate_driver_init(
-                    out,
-                    sorted_devices,
-                    &inited_devices,
-                    halt_fn,
-                    &console_device,
-                    mode,
-                );
+                generate_driver_init(out, sorted_devices, &inited_devices, halt_fn, mode);
                 // After DriverInit, all devices are initialised.
                 for dev in sorted_devices {
                     let name = dev.name.as_str().to_string();
@@ -829,16 +816,16 @@ fn generate_fstart_main(
                 }
             }
             Capability::SigVerify => {
-                generate_sig_verify(out, &console_device, has_ffs);
+                generate_sig_verify(out, has_ffs);
             }
             Capability::FdtPrepare => {
-                generate_fdt_prepare(out, &console_device, config, platform);
+                generate_fdt_prepare(out, config, platform);
             }
             Capability::PayloadLoad => {
-                generate_payload_load(out, &console_device, config, platform, has_ffs);
+                generate_payload_load(out, config, platform, has_ffs);
             }
             Capability::StageLoad { next_stage } => {
-                generate_stage_load(out, next_stage.as_str(), &console_device, platform, has_ffs);
+                generate_stage_load(out, next_stage.as_str(), platform, has_ffs);
             }
         }
     }
@@ -852,11 +839,7 @@ fn generate_fstart_main(
         .is_some_and(|cap| matches!(cap, Capability::StageLoad { .. } | Capability::PayloadLoad));
 
     out.push_str("\n    // === Build stage context ===\n");
-    let ctx_binding = if console_device.is_some() && !ends_with_jump {
-        "ctx"
-    } else {
-        "_ctx"
-    };
+    let ctx_binding = "_ctx";
     out.push_str(&format!("    let {ctx_binding} = StageContext {{\n"));
     out.push_str("        devices: Devices {\n");
     for dev in &config.devices {
@@ -874,13 +857,8 @@ fn generate_fstart_main(
         out.push_str("    // Stage should have jumped — halt if we reach here\n");
         out.push_str(&format!("    {halt_fn};\n"));
     } else {
-        // Log completion via the context's console accessor (devices have been
-        // moved into the Devices struct, so we use ctx instead of bare variables).
-        if console_device.is_some() {
-            out.push_str(
-                "    let _ = ctx.console().write_line(\"[fstart] all capabilities complete\");\n",
-            );
-        }
+        // Log completion via fstart_log
+        out.push_str("    fstart_log::info!(\"all capabilities complete\");\n");
 
         // Halt
         out.push_str("    // Stage complete — halt\n");
@@ -1054,7 +1032,13 @@ fn generate_console_init(
                 "    {device_name}.init().unwrap_or_else(|_| {halt_fn});\n"
             ));
             out.push_str(&format!(
-                "    fstart_capabilities::console_ready(&{device_name}, \"{device_name}\", \"{drv_name}\");\n"
+                "    // SAFETY: {device_name} lives in fstart_main() which never returns.\n"
+            ));
+            out.push_str(&format!(
+                "    unsafe {{ fstart_log::init(&{device_name}) }};\n"
+            ));
+            out.push_str(&format!(
+                "    fstart_capabilities::console_ready(\"{device_name}\", \"{drv_name}\");\n"
             ));
         }
         BuildMode::Flexible => {
@@ -1070,18 +1054,22 @@ fn generate_console_init(
             // Wrap into enum before calling console_ready (which uses Console trait)
             generate_flexible_wrapping(out, dev);
             out.push_str(&format!(
-                "    fstart_capabilities::console_ready(&{device_name}, \"{device_name}\", \"{drv_name}\");\n"
+                "    // SAFETY: {device_name} lives in fstart_main() which never returns.\n"
+            ));
+            out.push_str(&format!(
+                "    unsafe {{ fstart_log::init(&{device_name}) }};\n"
+            ));
+            out.push_str(&format!(
+                "    fstart_capabilities::console_ready(\"{device_name}\", \"{drv_name}\");\n"
             ));
         }
     }
 }
 
 /// Generate code for the MemoryInit capability.
-fn generate_memory_init(out: &mut String, console_device: &Option<String>) {
+fn generate_memory_init(out: &mut String) {
     out.push_str("    // MemoryInit\n");
-    if let Some(ref con) = console_device {
-        out.push_str(&format!("    fstart_capabilities::memory_init(&{con});\n"));
-    }
+    out.push_str("    fstart_capabilities::memory_init();\n");
 }
 
 /// Generate code for the DriverInit capability.
@@ -1097,7 +1085,6 @@ fn generate_driver_init(
     sorted_devices: &[&DeviceConfig],
     already_inited: &[String],
     halt_fn: &str,
-    console_device: &Option<String>,
     mode: BuildMode,
 ) {
     out.push_str("    // DriverInit: init remaining devices (topological order)\n");
@@ -1135,11 +1122,9 @@ fn generate_driver_init(
         count += 1;
     }
 
-    if let Some(ref con) = console_device {
-        out.push_str(&format!(
-            "    fstart_capabilities::driver_init_complete(&{con}, {count});\n"
-        ));
-    }
+    out.push_str(&format!(
+        "    fstart_capabilities::driver_init_complete({count});\n"
+    ));
 }
 
 /// Expression that casts `&FSTART_ANCHOR` to `&[u8]` for capability functions.
@@ -1149,18 +1134,14 @@ fn generate_driver_init(
 const ANCHOR_AS_BYTES: &str = "unsafe { core::slice::from_raw_parts(&FSTART_ANCHOR as *const fstart_types::ffs::AnchorBlock as *const u8, core::mem::size_of::<fstart_types::ffs::AnchorBlock>()) }";
 
 /// Generate code for the SigVerify capability.
-fn generate_sig_verify(out: &mut String, console_device: &Option<String>, has_ffs: bool) {
+fn generate_sig_verify(out: &mut String, has_ffs: bool) {
     out.push_str("    // SigVerify\n");
-    if let Some(ref con) = console_device {
-        if has_ffs {
-            out.push_str(&format!(
-                "    fstart_capabilities::sig_verify(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE);\n"
-            ));
-        } else {
-            out.push_str(&format!(
-                "    fstart_capabilities::sig_verify(&{con}, &[], 0, 0);\n"
-            ));
-        }
+    if has_ffs {
+        out.push_str(&format!(
+            "    fstart_capabilities::sig_verify({ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE);\n"
+        ));
+    } else {
+        out.push_str("    fstart_capabilities::sig_verify(&[], 0, 0);\n");
     }
 }
 
@@ -1170,21 +1151,11 @@ fn generate_sig_verify(out: &mut String, console_device: &Option<String>, has_ff
 /// a call to `fdt_prepare_platform()` which parses the QEMU-provided DTB,
 /// patches `/chosen/bootargs`, and serializes to the target address.
 /// Otherwise, emits the stub.
-fn generate_fdt_prepare(
-    out: &mut String,
-    console_device: &Option<String>,
-    config: &BoardConfig,
-    platform: &str,
-) {
+fn generate_fdt_prepare(out: &mut String, config: &BoardConfig, platform: &str) {
     out.push_str("    // FdtPrepare\n");
-    let Some(ref con) = console_device else {
-        return;
-    };
 
     let Some(ref payload) = config.payload else {
-        out.push_str(&format!(
-            "    fstart_capabilities::fdt_prepare_stub(&{con});\n"
-        ));
+        out.push_str("    fstart_capabilities::fdt_prepare_stub();\n");
         return;
     };
 
@@ -1207,14 +1178,12 @@ fn generate_fdt_prepare(
             let dtb_dst = payload.dtb_addr.unwrap_or(0);
             let bootargs = payload.bootargs.as_ref().map(|s| s.as_str()).unwrap_or("");
             out.push_str(&format!(
-                "    fstart_capabilities::fdt_prepare_platform(&{con}, {dtb_src_expr}, {dtb_dst:#x}, \"{bootargs}\");\n"
+                "    fstart_capabilities::fdt_prepare_platform({dtb_src_expr}, {dtb_dst:#x}, \"{bootargs}\");\n"
             ));
         }
         _ => {
             // Generated or Override FDT sources — not yet implemented
-            out.push_str(&format!(
-                "    fstart_capabilities::fdt_prepare_stub(&{con});\n"
-            ));
+            out.push_str("    fstart_capabilities::fdt_prepare_stub();\n");
         }
     }
 }
@@ -1228,21 +1197,12 @@ fn generate_fdt_prepare(
 /// - Jumps to firmware which then boots Linux
 ///
 /// Otherwise, uses the generic FFS payload load path.
-fn generate_payload_load(
-    out: &mut String,
-    console_device: &Option<String>,
-    config: &BoardConfig,
-    platform: &str,
-    has_ffs: bool,
-) {
+fn generate_payload_load(out: &mut String, config: &BoardConfig, platform: &str, has_ffs: bool) {
     out.push_str("    // PayloadLoad\n");
-    let Some(ref con) = console_device else {
-        return;
-    };
 
     // Check if this is a LinuxBoot payload with FFS available
     if is_linux_boot(config) && has_ffs {
-        generate_payload_load_linux(out, con, config, platform);
+        generate_payload_load_linux(out, config, platform);
         return;
     }
 
@@ -1254,12 +1214,10 @@ fn generate_payload_load(
             _ => "fstart_platform_riscv64::jump_to",
         };
         out.push_str(&format!(
-            "    fstart_capabilities::payload_load(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
+            "    fstart_capabilities::payload_load({ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
         ));
     } else {
-        out.push_str(&format!(
-            "    fstart_capabilities::payload_load_stub(&{con});\n"
-        ));
+        out.push_str("    fstart_capabilities::payload_load_stub();\n");
     }
 }
 
@@ -1271,7 +1229,7 @@ fn generate_payload_load(
 /// 2. Load kernel from FFS to its load address
 /// 3. Construct platform-specific boot protocol structs
 /// 4. Jump to firmware (which then boots Linux)
-fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig, platform: &str) {
+fn generate_payload_load_linux(out: &mut String, config: &BoardConfig, platform: &str) {
     let payload = config.payload.as_ref().unwrap(); // caller verified is_linux_boot
     let halt_fn = match platform {
         "riscv64" => "fstart_platform_riscv64::halt()",
@@ -1279,9 +1237,7 @@ fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig
         _ => "loop { core::hint::spin_loop(); }",
     };
 
-    out.push_str(&format!(
-        "    let _ = {con}.write_line(\"[fstart] capability: PayloadLoad (LinuxBoot)\");\n"
-    ));
+    out.push_str("    fstart_log::info!(\"capability: PayloadLoad (LinuxBoot)\");\n");
 
     // IMPORTANT: Load the kernel BEFORE firmware. When the FFS image sits in
     // RAM (e.g., RISC-V QEMU loads the FFS at 0x80000000), loading firmware
@@ -1291,15 +1247,11 @@ fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig
     // afterward to load the firmware blob.
 
     // Load kernel from FFS (must happen first — see comment above)
+    out.push_str("    fstart_log::info!(\"loading kernel...\");\n");
     out.push_str(&format!(
-        "    let _ = {con}.write_line(\"[fstart] loading kernel...\");\n"
+        "    if !fstart_capabilities::load_ffs_file_by_type({ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, fstart_types::ffs::FileType::Payload) {{\n"
     ));
-    out.push_str(&format!(
-        "    if !fstart_capabilities::load_ffs_file_by_type(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, fstart_types::ffs::FileType::Payload) {{\n"
-    ));
-    out.push_str(&format!(
-        "        let _ = {con}.write_line(\"[fstart] FATAL: failed to load kernel\");\n"
-    ));
+    out.push_str("        fstart_log::error!(\"FATAL: failed to load kernel\");\n");
     out.push_str(&format!("        {halt_fn};\n"));
     out.push_str("    }\n");
 
@@ -1310,13 +1262,13 @@ fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig
             FirmwareKind::ArmTrustedFirmware => "ATF BL31",
         };
         out.push_str(&format!(
-            "    let _ = {con}.write_line(\"[fstart] loading {fw_kind_str}...\");\n"
+            "    fstart_log::info!(\"loading {fw_kind_str}...\");\n"
         ));
         out.push_str(&format!(
-            "    if !fstart_capabilities::load_ffs_file_by_type(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, fstart_types::ffs::FileType::Firmware) {{\n"
+            "    if !fstart_capabilities::load_ffs_file_by_type({ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, fstart_types::ffs::FileType::Firmware) {{\n"
         ));
         out.push_str(&format!(
-            "        let _ = {con}.write_line(\"[fstart] FATAL: failed to load {fw_kind_str}\");\n"
+            "        fstart_log::error!(\"FATAL: failed to load {fw_kind_str}\");\n"
         ));
         out.push_str(&format!("        {halt_fn};\n"));
         out.push_str("    }\n");
@@ -1332,9 +1284,7 @@ fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig
             out.push_str(&format!(
                 "    let _fw_info = fstart_platform_riscv64::FwDynamicInfo::new({kernel_addr:#x}, fstart_platform_riscv64::boot_hart_id());\n"
             ));
-            out.push_str(&format!(
-                "    let _ = {con}.write_line(\"[fstart] jumping to SBI firmware...\");\n"
-            ));
+            out.push_str("    fstart_log::info!(\"jumping to SBI firmware...\");\n");
             out.push_str(&format!(
                 "    fstart_platform_riscv64::boot_linux_sbi({fw_addr:#x}, fstart_platform_riscv64::boot_hart_id(), {dtb_addr:#x}, &_fw_info);\n"
             ));
@@ -1349,9 +1299,7 @@ fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig
             out.push_str(&format!(
                 "    fstart_platform_aarch64::prepare_bl_params({kernel_addr:#x}, {dtb_addr:#x}, &mut _bl33_ep, &mut _bl33_node, &mut _bl_params);\n"
             ));
-            out.push_str(&format!(
-                "    let _ = {con}.write_line(\"[fstart] jumping to ATF BL31...\");\n"
-            ));
+            out.push_str("    fstart_log::info!(\"jumping to ATF BL31...\");\n");
             out.push_str(&format!(
                 "    fstart_platform_aarch64::boot_linux_atf({fw_addr:#x}, &_bl_params);\n"
             ));
@@ -1365,29 +1313,21 @@ fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig
 }
 
 /// Generate code for the StageLoad capability.
-fn generate_stage_load(
-    out: &mut String,
-    next_stage: &str,
-    console_device: &Option<String>,
-    platform: &str,
-    has_ffs: bool,
-) {
+fn generate_stage_load(out: &mut String, next_stage: &str, platform: &str, has_ffs: bool) {
     out.push_str(&format!("    // StageLoad -> {next_stage}\n"));
-    if let Some(ref con) = console_device {
-        if has_ffs {
-            let jump_fn = match platform {
-                "riscv64" => "fstart_platform_riscv64::jump_to",
-                "aarch64" => "fstart_platform_aarch64::jump_to",
-                _ => "fstart_platform_riscv64::jump_to", // fallback
-            };
-            out.push_str(&format!(
-                "    fstart_capabilities::stage_load(&{con}, \"{next_stage}\", {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
-            ));
-        } else {
-            out.push_str(&format!(
-                "    fstart_capabilities::stage_load_stub(&{con}, \"{next_stage}\");\n"
-            ));
-        }
+    if has_ffs {
+        let jump_fn = match platform {
+            "riscv64" => "fstart_platform_riscv64::jump_to",
+            "aarch64" => "fstart_platform_aarch64::jump_to",
+            _ => "fstart_platform_riscv64::jump_to", // fallback
+        };
+        out.push_str(&format!(
+            "    fstart_capabilities::stage_load(\"{next_stage}\", {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "    fstart_capabilities::stage_load_stub(\"{next_stage}\");\n"
+        ));
     }
 }
 
@@ -1469,7 +1409,11 @@ mod tests {
 
         assert!(source.contains("uart0.init()"), "should call init()");
         assert!(
-            source.contains("fstart_capabilities::console_ready"),
+            source.contains("fstart_log::init(&uart0)"),
+            "should call fstart_log::init"
+        );
+        assert!(
+            source.contains("fstart_capabilities::console_ready("),
             "should call console_ready"
         );
         assert!(source.contains("Ns16550::new"), "should construct Ns16550");
@@ -1494,8 +1438,8 @@ mod tests {
         let source = generate_stage_source(&config, None);
 
         assert!(
-            source.contains("fstart_capabilities::memory_init(&uart0)"),
-            "should call memory_init with console ref"
+            source.contains("fstart_capabilities::memory_init()"),
+            "should call memory_init"
         );
     }
 
@@ -1527,7 +1471,7 @@ mod tests {
             "should skip uart0 since ConsoleInit already inited it"
         );
         assert!(
-            source.contains("fstart_capabilities::driver_init_complete(&uart0, 0)"),
+            source.contains("fstart_capabilities::driver_init_complete(0)"),
             "should report 0 additional devices inited"
         );
     }
@@ -1544,7 +1488,7 @@ mod tests {
 
         // Without flash_base configured, passes empty slice and 0, 0 as fallback
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0, &[], 0, 0)"),
+            source.contains("fstart_capabilities::sig_verify(&[], 0, 0)"),
             "should call sig_verify with fallback args: {source}"
         );
         // Should still emit FSTART_ANCHOR (since SigVerify needs_ffs)
@@ -1575,7 +1519,7 @@ mod tests {
             "should emit FLASH_SIZE constant: {source}"
         );
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0,"),
+            source.contains("fstart_capabilities::sig_verify("),
             "should call sig_verify: {source}"
         );
         assert!(
@@ -1598,7 +1542,7 @@ mod tests {
 
         // Without flash_base configured, uses stub variant
         assert!(
-            source.contains("fstart_capabilities::stage_load_stub(&uart0, \"main\")"),
+            source.contains("fstart_capabilities::stage_load_stub(\"main\")"),
             "should call stage_load_stub without flash config: {source}"
         );
     }
@@ -1618,7 +1562,7 @@ mod tests {
         let source = generate_stage_source(&config, None);
 
         assert!(
-            source.contains("fstart_capabilities::stage_load(&uart0, \"main\","),
+            source.contains("fstart_capabilities::stage_load(\"main\","),
             "should call stage_load with stage name: {source}"
         );
         assert!(
@@ -1657,7 +1601,7 @@ mod tests {
         let source = generate_stage_source(&config, None);
 
         assert!(
-            source.contains("[fstart] all capabilities complete"),
+            source.contains("fstart_log::info!(\"all capabilities complete\")"),
             "should log completion message"
         );
     }
@@ -2384,7 +2328,7 @@ mod tests {
         let source = generate_stage_source(&config, None);
 
         assert!(
-            source.contains("[fstart] all capabilities complete"),
+            source.contains("fstart_log::info!(\"all capabilities complete\")"),
             "should log completion message in flexible mode: {source}"
         );
     }
@@ -2462,6 +2406,7 @@ mod tests {
             load_addr: 0x8000_0000,
             stack_size: 0x4000,
             runs_from: RunsFrom::Ram,
+            data_addr: None,
         });
         let _ = stages.push(StageConfig {
             name: HString::try_from("main").unwrap(),
@@ -2477,6 +2422,7 @@ mod tests {
             load_addr: 0x8010_0000,
             stack_size: 0x10000,
             runs_from: RunsFrom::Ram,
+            data_addr: None,
         });
 
         BoardConfig {
@@ -2523,12 +2469,12 @@ mod tests {
         );
         // Without flash_base, uses fallback args for sig_verify
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0, &[], 0, 0)"),
+            source.contains("fstart_capabilities::sig_verify(&[], 0, 0)"),
             "bootblock should call sig_verify: {source}"
         );
         // Without flash_base, uses stub for stage_load
         assert!(
-            source.contains("fstart_capabilities::stage_load_stub(&uart0, \"main\")"),
+            source.contains("fstart_capabilities::stage_load_stub(\"main\")"),
             "bootblock should call stage_load_stub(\"main\"): {source}"
         );
     }
@@ -2549,11 +2495,11 @@ mod tests {
             "should emit FSTART_ANCHOR static: {source}"
         );
         assert!(
-            source.contains("fstart_capabilities::sig_verify(&uart0,"),
+            source.contains("fstart_capabilities::sig_verify("),
             "bootblock should call sig_verify: {source}"
         );
         assert!(
-            source.contains("fstart_capabilities::stage_load(&uart0, \"main\","),
+            source.contains("fstart_capabilities::stage_load(\"main\","),
             "bootblock should call stage_load: {source}"
         );
         assert!(
@@ -2584,7 +2530,7 @@ mod tests {
             "main stage should init console: {source}"
         );
         assert!(
-            source.contains("fstart_capabilities::memory_init(&uart0)"),
+            source.contains("fstart_capabilities::memory_init()"),
             "main stage should call memory_init: {source}"
         );
         assert!(
