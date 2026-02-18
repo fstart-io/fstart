@@ -14,8 +14,11 @@ sha2-digest = ["ffs", "fstart-ffs/sha2-digest"]
 sha3-digest = ["ffs", "fstart-ffs/sha3-digest"]
 # LZ4 decompression for compressed segments (uses fstart-ffs built-in decompressor)
 lz4 = ["ffs"]
+# FDT preparation for Linux boot (needs alloc via fstart-alloc)
+fdt = ["dep:dtoolkit"]
 
 [dependencies]
 fstart-services = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-types = { workspace = true, optional = true }
+dtoolkit = { workspace = true, optional = true, features = ["write"] }
