@@ -3,21 +3,27 @@
 // Identical to qemu-riscv64 but uses Flexible build mode to exercise
 // enum dispatch codegen. In flexible mode, service enum wrappers are
 // generated for runtime driver selection via match dispatch.
+//
+// Memory map from QEMU hw/riscv/virt.c:
+//   Flash:  0x2000_0000 .. 0x2200_0000 (bank 0, 32 MiB)
+//   RAM:    0x8000_0000 onwards
+//
+// Boot flow: MROM trampoline at 0x1000 jumps to flash base (0x20000000).
+// Firmware executes in place (XIP) from flash; writable data goes to RAM.
 
 (
     name: "qemu-riscv64-flex",
     platform: "riscv64",
 
-    // Memory regions: only ROM and RAM.
+    // Memory regions: ROM (flash bank 0) and RAM.
     // Device MMIO addresses are in the device resources, not here.
-    // flash_base = where QEMU loads -bios (the FFS image sits here).
-    // flash_size = 4 MiB (max FFS image size for this board).
     memory: (
         regions: [
-            ( name: "ram", base: 0x80000000, size: 0x08000000, kind: Ram ),
+            ( name: "flash", base: 0x20000000, size: 0x02000000, kind: Rom ),
+            ( name: "ram",   base: 0x80000000, size: 0x08000000, kind: Ram ),
         ],
-        flash_base: Some(0x80000000),
-        flash_size: Some(0x01000000),
+        flash_base: Some(0x20000000),
+        flash_size: Some(0x02000000),
     ),
 
     devices: [
@@ -43,7 +49,7 @@
         capabilities: [
             ConsoleInit( device: "uart0" ),
         ],
-        load_addr: 0x80000000,
+        load_addr: 0x20000000,
         stack_size: 0x10000,
     )),
 

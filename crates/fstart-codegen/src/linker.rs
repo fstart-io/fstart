@@ -19,7 +19,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         }
         (StageLayout::MultiStage(stages), Some(name)) => {
             if let Some(stage) = stages.iter().find(|s| s.name.as_str() == name) {
-                (stage.load_addr, stage.stack_size as u64, None)
+                (stage.load_addr, stage.stack_size as u64, stage.data_addr)
             } else {
                 (0x8000_0000, 0x10000, None) // fallback
             }

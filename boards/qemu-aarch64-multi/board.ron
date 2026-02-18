@@ -1,0 +1,90 @@
+// Board definition for QEMU AArch64 virt machine — multi-stage layout.
+//
+// Memory map from QEMU hw/arm/virt.c:
+//   Flash:  0x0000_0000 .. 0x0800_0000 (128 MiB, two 64 MiB banks)
+//   UART:   0x0900_0000 (PL011, 4 KiB)
+//   RAM:    0x4000_0000 onwards
+//
+// Two stages:
+//   bootblock: XIP from flash at 0x00000000 (offset 0 of FFS image).
+//              Minimal: ConsoleInit + SigVerify + StageLoad -> main.
+//              BSS/stack in RAM at 0x40200000 (past QEMU DTB at 0x40000000).
+//   main:      Loaded to 0x40400000 (RAM) by the bootblock. Full:
+//              ConsoleInit + MemoryInit + DriverInit.
+//
+// Boot flow: CPU resets at RVBAR (0x0), executing directly from flash.
+// Bootblock executes from flash (XIP), loads main into RAM, jumps to it.
+
+(
+    name: "qemu-aarch64-multi",
+    platform: "aarch64",
+
+    // Memory regions: ROM (flash) and RAM.
+    // Device MMIO addresses are in the device resources, not here.
+    memory: (
+        regions: [
+            ( name: "flash", base: 0x00000000, size: 0x08000000, kind: Rom ),
+            ( name: "ram",   base: 0x40000000, size: 0x08000000, kind: Ram ),
+        ],
+        flash_base: Some(0x00000000),
+        flash_size: Some(0x08000000),
+    ),
+
+    devices: [
+        (
+            name: "uart0",
+            compatible: "arm,pl011",
+            driver: "pl011",
+            services: ["Console"],
+            resources: (
+                mmio_base: Some(0x09000000),
+                io_base: None,
+                size: Some(0x1000),
+                clock_freq: Some(1843200),
+                baud_rate: Some(115200),
+                irq: Some(33),
+                bus_addr: None,
+                bus_speed: None,
+            ),
+        ),
+    ],
+
+    stages: MultiStage([
+        (
+            name: "bootblock",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                SigVerify,
+                StageLoad( next_stage: "main" ),
+            ],
+            load_addr: 0x00000000,
+            stack_size: 0x4000,
+            runs_from: Rom,
+            // Place data/BSS/stack at 2 MiB into RAM to avoid QEMU's DTB.
+            // QEMU places the FDT at RAM base (0x40000000) on firmware boot;
+            // without this, BSS clearing in _start would destroy the DTB.
+            data_addr: Some(0x40200000),
+        ),
+        (
+            name: "main",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                MemoryInit,
+                DriverInit,
+            ],
+            load_addr: 0x40400000,
+            stack_size: 0x10000,
+            runs_from: Ram,
+        ),
+    ]),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256, Sha3_256],
+    ),
+
+    mode: Rigid,
+
+    payload: None,
+)

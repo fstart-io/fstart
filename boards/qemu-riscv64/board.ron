@@ -1,28 +1,30 @@
 // Board definition for QEMU RISC-V 64 virt machine.
 //
-// This RON file is the single source of truth for this board.
-// The build system reads it and generates:
-// - Stage entry point (fstart_main) with capability call sequence
-// - Static driver instantiation
-// - Linker script from memory map
-// - (future) FDT for OS handoff
+// Memory map from QEMU hw/riscv/virt.c:
+//   MROM:   0x0000_1000 .. 0x0000_FFFF (reset trampoline, jumps to flash)
+//   Flash:  0x2000_0000 .. 0x2400_0000 (64 MiB, two 32 MiB banks)
+//   UART:   0x1000_0000 (NS16550A, 256 B)
+//   RAM:    0x8000_0000 onwards
+//
+// Boot flow: CPU resets to MROM (0x1000), which sets a0=hartid,
+// a1=DTB addr, then jumps to flash base (0x20000000).  Firmware
+// executes in place (XIP) from flash; writable data goes to RAM.
 
 (
     name: "qemu-riscv64",
     platform: "riscv64",
 
-    // Memory regions: only ROM and RAM.
+    // Memory regions: ROM (flash bank 0) and RAM.
     // Device MMIO addresses are in the device resources, not here.
-    // flash_base = where QEMU loads the FFS image via -device loader.
-    // flash_size = 16 MiB reservation for the FFS image. BSS and stack
-    // are placed at flash_base + flash_size (0x81000000) by the linker
-    // script, so all payload load addresses must be beyond that region.
+    // flash_base/flash_size describe flash bank 0 where the FFS image
+    // or monolithic firmware is placed via QEMU pflash.
     memory: (
         regions: [
-            ( name: "ram", base: 0x80000000, size: 0x08000000, kind: Ram ),
+            ( name: "flash", base: 0x20000000, size: 0x02000000, kind: Rom ),
+            ( name: "ram",   base: 0x80000000, size: 0x08000000, kind: Ram ),
         ],
-        flash_base: Some(0x80000000),
-        flash_size: Some(0x01000000),
+        flash_base: Some(0x20000000),
+        flash_size: Some(0x02000000),
     ),
 
     devices: [
@@ -52,7 +54,7 @@
             FdtPrepare,
             PayloadLoad,
         ],
-        load_addr: 0x80000000,
+        load_addr: 0x20000000,
         // 256 KiB — debug builds with Ed25519 + SHA-256/SHA3 use
         // significant stack space. 64 KiB overflows in debug mode.
         stack_size: 0x40000,
@@ -68,17 +70,17 @@
 
     // Linux boot via RustSBI fw_dynamic protocol.
     //
-    // Memory layout (128 MiB RAM at 0x80000000):
-    //   0x80000000 - FFS image (16 MiB reservation, ~9 MiB actual)
-    //   0x80100000 - RustSBI fw_dynamic (loaded from FFS, within reservation)
-    //   0x81000000 - BSS + stack (placed by linker at flash_base + flash_size)
-    //   0x82000000 - Linux kernel (loaded from FFS, in free RAM)
+    // Memory layout:
+    //   0x20000000 - Flash bank 0 (firmware code, XIP from ROM)
+    //   0x80000000 - RAM start; BSS + stack (XIP writable data)
+    //   0x80100000 - RustSBI fw_dynamic (loaded from FFS into RAM)
+    //   0x82000000 - Linux kernel (loaded from FFS into RAM)
     //   0x87F00000 - Patched DTB (copied from QEMU-provided DTB)
     //   0x88000000 - End of RAM
     //
-    // kernel_load_addr must be beyond the firmware infrastructure (BSS/stack
-    // at 0x81000000+). A 7.98 MiB kernel at 0x82000000 ends at ~0x827A0000,
-    // well below the DTB at 0x87F00000.
+    // QEMU places its DTB near the top of DRAM (~0x87E00000) and passes
+    // the address via a1; no data_addr offset is needed (unlike AArch64
+    // where QEMU puts the DTB at RAM base).
     payload: Some((
         kind: LinuxBoot,
         kernel_file: Some("vmlinux"),

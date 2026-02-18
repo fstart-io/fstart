@@ -1,8 +1,8 @@
 # fstart Continuation Plan
 
-Status as of 2026-02-06 (updated Phase 9 complete). This document captures
-what has been built, what remains, and the recommended order of work for
-future sessions.
+Status as of 2026-02-18 (updated Phase 11 complete — Linux boots on both
+QEMU targets). This document captures what has been built, what remains,
+and the recommended order of work for future sessions.
 
 ## What Is Done
 
@@ -508,24 +508,140 @@ QEMU aarch64, this is the flash base (0x00000000).
 - `test_stage_load_generates_call` — uses `stage_load_stub`
 - `test_multi_stage_bootblock_generates_stage_load` — uses stub variants
 
+### Phase 10: ufmt Logging Infrastructure (COMPLETE)
+
+Replaced manual `console.write_str()` chains with ergonomic `ufmt`-backed
+log macros across the entire codebase.
+
+#### fstart-log Crate
+
+Rewrote the empty skeleton (`crates/fstart-log/src/lib.rs`):
+- `Level` enum (Error, Warn, Info, Debug, Trace) with runtime filtering
+  via `max_level()` / `set_max_level()`
+- Global console backend using `SyncCell<UnsafeCell<T>>` wrapper (Rust
+  2024 forward-compatible — avoids deprecated `static mut`)
+- `init()` with double-init guard (silently ignores second call)
+- `ConsoleWriter` — zero-sized `ufmt::uWrite` adapter routing to global
+  console; silently discards if no console registered
+- `Hex(u64)` wrapper implementing `ufmt::uDisplay` for hex formatting
+- `error!`, `warn!`, `info!`, `debug!`, `trace!` macros with `[LEVEL]`
+  prefix and `ufmt::uwriteln!` delegation
+- Re-exports `ufmt` via `#[doc(hidden)] pub use ufmt` for macro consumers
+
+#### fstart-capabilities Migration
+
+Full rewrite of `crates/fstart-capabilities/src/lib.rs`:
+- Removed `console: &dyn Console` parameter from all 13 public + 2
+  internal function signatures
+- Replaced ~100 manual write chains with `info!`/`error!`/`debug!` macros
+- Deleted `write_usize()` and `write_hex()` helpers
+- Dropped `fstart-services` dependency (no longer needed)
+
+#### Codegen Updates
+
+`crates/fstart-codegen/src/stage_gen.rs`:
+- `generate_console_init` emits `unsafe { fstart_log::init(&device) }`
+  after device init
+- All `generate_*` functions: removed `console_device` parameter, removed
+  `&console` from capability calls
+- `generate_payload_load_linux`: replaced `{con}.write_line(...)` with
+  `fstart_log::info!(...)`
+- Completion message uses `fstart_log::info!("all capabilities complete")`
+- All 38 codegen tests updated
+
+#### Workspace Dependency Changes
+
+- Root `Cargo.toml`: replaced `log = "0.4"` with `ufmt = { version = "0.2",
+  default-features = false }`
+- `fstart-stage/Cargo.toml`: added `fstart-log` + `ufmt`
+- `fstart-capabilities/Cargo.toml`: replaced `fstart-services` with
+  `fstart-log` + `ufmt`
+- `fstart-log/Cargo.toml`: replaced `log` with `ufmt` + `fstart-services`
+
+#### Design Notes
+
+- **ufmt `$crate` quirk**: Any crate invoking `fstart_log` macros needs
+  `ufmt` as a direct dependency because `ufmt::uwrite!` uses `$crate`
+  internally. Both `fstart-stage` and `fstart-capabilities` have this.
+- **Behavioral improvement**: Capabilities now always execute even without
+  a console (log macros silently discard). Previously codegen silently
+  omitted capability calls if no ConsoleInit preceded them.
+- **No existing crate** combines ufmt formatting with leveled logging macros;
+  `defmt` requires RTT probe tooling, `log` crate uses heavy `core::fmt`.
+
 ### Verified Working
 
 | Board | Mode | Output |
 |-------|------|--------|
-| qemu-riscv64 debug | `cargo xtask run --board qemu-riscv64` | `[fstart] uart0: ns16550 console ready` + `[fstart] all capabilities complete` |
+| qemu-riscv64 debug | `cargo xtask run --board qemu-riscv64` | `[INFO ] uart0: ns16550 console ready` + `[INFO ] all capabilities complete` |
 | qemu-riscv64 release | `cargo xtask build --board qemu-riscv64 --release` | Builds clean |
-| qemu-aarch64 debug | `cargo xtask run --board qemu-aarch64` | `[fstart] uart0: pl011 console ready` + `[fstart] all capabilities complete` |
+| qemu-aarch64 debug | `cargo xtask run --board qemu-aarch64` | `[INFO ] uart0: pl011 console ready` + `[INFO ] all capabilities complete` |
 | qemu-aarch64 release | `cargo xtask build --board qemu-aarch64 --release` | Builds clean |
-| qemu-riscv64-flex debug | `cargo xtask run --board qemu-riscv64-flex` | `[fstart] uart0: ns16550 console ready` + `[fstart] all capabilities complete` |
+| qemu-riscv64-flex debug | `cargo xtask run --board qemu-riscv64-flex` | `[INFO ] uart0: ns16550 console ready` + `[INFO ] all capabilities complete` |
 | qemu-riscv64-multi debug | `cargo xtask build --board qemu-riscv64-multi` | Builds bootblock + main |
-| qemu-riscv64-multi bootblock | QEMU boot | Console ready + SigVerify (scans flash, anchor found, deserialize error — expected without FFS image) + StageLoad stub |
+| qemu-riscv64-multi bootblock | QEMU boot | Console ready + SigVerify + StageLoad stub |
 | qemu-riscv64-multi main | QEMU boot | Console ready + MemoryInit + DriverInit + completion |
-| qemu-riscv64-multi release | `cargo xtask build --board qemu-riscv64-multi --release` | bootblock 45 KB (includes FFS+crypto), main 5.5 KB |
-| qemu-riscv64-multi FFS | `cargo xtask assemble --board qemu-riscv64-multi` | 10.4 MB FFS with 2 stages |
-| qemu-riscv64 FFS | `cargo xtask assemble --board qemu-riscv64` | 2.8 MB FFS with 1 stage |
+| qemu-riscv64-multi release | `cargo xtask build --board qemu-riscv64-multi --release` | Builds clean |
+| qemu-riscv64-multi FFS | `cargo xtask assemble --board qemu-riscv64-multi` | FFS with 2 stages |
+| qemu-riscv64 FFS | `cargo xtask assemble --board qemu-riscv64` | FFS with 1 stage |
 | clippy | `cargo clippy --workspace --exclude fstart-stage -- -D warnings` | Clean |
 | fmt | `cargo fmt --all -- --check` | Clean |
-| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 47 pass (38 codegen + 9 FFS) |
+| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 52 pass (38 codegen + 14 FFS) |
+
+### Phase 11: Linux Boot Verified (COMPLETE)
+
+Both QEMU targets boot Linux end-to-end through the full firmware chain.
+
+#### RISC-V 64 (qemu-riscv64)
+
+Boot chain: **fstart → RustSBI (M-mode) → Linux 6.18.0 (S-mode)**
+
+```
+cargo xtask run --board qemu-riscv64 --release \
+    --kernel /tmp/linux-riscv64-embedded/arch/riscv/boot/Image \
+    --firmware ~/src/rustsbi/target/riscv64gc-unknown-none-elf/release/rustsbi-prototyper-dynamic.bin
+```
+
+Firmware sequence:
+1. fstart initialises NS16550 console
+2. SigVerify: Ed25519 signature + SHA-256/SHA3-256 digest verification
+3. FdtPrepare: copies QEMU DTB, patches `/chosen/bootargs` → `0x87F00000`
+4. PayloadLoad: loads kernel (7.7 MiB Image → `0x82000000`),
+   loads RustSBI fw_dynamic (236 KiB → `0x80100000`),
+   prepares `FwDynamicInfo`, jumps to RustSBI
+5. RustSBI initialises M-mode, `mret`s to Linux at `0x82000000` in S-mode
+6. Linux boots, detects SBI v2.0, reaches `Run /init`
+
+FFS image: 8.3 MiB (114 KiB firmware + 236 KiB RustSBI + 7.7 MiB kernel).
+
+#### AArch64 (qemu-aarch64)
+
+Boot chain: **fstart (EL3) → ATF BL31 (EL3) → Linux 6.18.0 (EL2)**
+
+```
+cargo xtask run --board qemu-aarch64 --release \
+    --kernel /tmp/linux-arm64-embedded/arch/arm64/boot/Image \
+    --firmware /tmp/arm-trusted-firmware/build/qemu/release/bl31.bin
+```
+
+Firmware sequence:
+1. fstart initialises PL011 console
+2. SigVerify: Ed25519 signature + SHA-256/SHA3-256 digest verification
+3. FdtPrepare: copies QEMU DTB from `0x40000000`, patches bootargs → `0x40100000`
+4. PayloadLoad: loads kernel (9.0 MiB Image → `0x41000000`),
+   loads ATF BL31 (49 KiB → `0x0E090000`),
+   prepares `BlParams` with BL33 entry point, jumps to BL31
+5. ATF BL31 v2.14.0 initialises GICv3, `eret`s to Linux at `0x41000000` in EL2
+6. Linux boots, detects GICv3, reaches `Run /init` (u-root)
+
+FFS image: 9.5 MiB (103 KiB firmware + 49 KiB BL31 + 9.0 MiB kernel).
+
+#### Bug Fix
+
+- **QEMU AArch64 GIC version**: Added `gic-version=3` to QEMU `-machine`
+  flags in `xtask/src/qemu.rs`. ATF BL31 is built with
+  `QEMU_USE_GIC_DRIVER=QEMU_GICV3`; without explicit `gic-version=3`,
+  QEMU may default to GICv2, causing BL31 to hang during GIC init.
 
 ---
 
@@ -541,7 +657,7 @@ generation. Low priority — current codegen approach works well.
 
 ---
 
-### Phase 9.5: Bootable FFS Image
+### Phase 10.5: Bootable FFS Image
 
 **Goal**: Make the FFS image directly bootable by QEMU.
 
@@ -563,32 +679,30 @@ be at offset 0 (QEMU's `-bios` expects executable code at the start).
 
 ---
 
-### Phase 10: Payload + OS Handoff
+### Phase 11: Payload + OS Handoff
 
 **Goal**: Boot Linux on QEMU.
 
-#### 10.1 FDT Generation
+#### 11.1 FDT Generation
 
 - Generate FDT from board RON (memory map, devices, chosen node).
 - `DTS Override` escape hatch: merge board-provided DTS fragments.
 - Place FDT at known address for payload.
 
-#### 10.2 Linux Boot Protocol
+#### 11.2 Linux Boot Protocol
 
 - RISC-V: OpenSBI-style boot (a0=hartid, a1=fdt_addr, jump to kernel).
 - AArch64: kernel image protocol (x0=fdt_addr, jump to kernel).
 
-#### 10.3 Test
+#### 11.3 Test
 
 - Package a minimal Linux kernel (or test payload) in FFS.
 - `cargo xtask run --board qemu-riscv64` boots to kernel banner.
 
 ---
 
-### Phase 11: Polish + CI
+### Phase 12: Polish + CI
 
-- Logging infrastructure (`fstart-log`): structured log levels, compile-time
-  filtering.
 - Allocator (`fstart-alloc`): bump allocator for stages that need heap.
 - CI pipeline: GitHub Actions with `cargo check`, `clippy`, `fmt`, `test`,
   cross-build all boards.
@@ -597,28 +711,17 @@ be at offset 0 (QEMU's `-bios` expects executable code at the start).
 
 ---
 
-## File Summary (Phase 9 Changes)
+## File Summary (Phase 11 Changes — Linux Boot)
 
 | File | Change |
 |------|--------|
-| `crates/fstart-platform-riscv64/src/lib.rs` | Added `jump_to(addr: u64) -> !` |
-| `crates/fstart-platform-aarch64/src/lib.rs` | Added `jump_to(addr: u64) -> !` |
-| `crates/fstart-types/src/memory.rs` | Added `flash_base: Option<u64>` and `flash_size: Option<u64>` to `MemoryMap` |
-| `crates/fstart-capabilities/Cargo.toml` | Added `ffs`, `ed25519`, `sha2-digest`, `sha3-digest` features; `fstart-ffs` + `fstart-types` deps |
-| `crates/fstart-capabilities/src/lib.rs` | **Rewritten**: real `sig_verify`, `stage_load`, `payload_load` with FFS reader; `write_hex` helper; stub variants |
-| `crates/fstart-stage/Cargo.toml` | Added `ffs`, `ed25519`, `sha2-digest`, `sha3-digest` features; `fstart-ffs` dep |
-| `crates/fstart-codegen/src/stage_gen.rs` | `generate_flash_constants`, `needs_ffs`, updated capability codegen to pass flash args + jump_to; 3 new tests (38 total) |
-| `crates/fstart-codegen/src/linker.rs` | Added `.fstart.anchor` section to both XIP and RAM linker layouts |
-| `xtask/src/build_board.rs` | Auto-enable `ffs` + crypto features when board uses FFS capabilities |
-| `boards/qemu-riscv64/board.ron` | Added `flash_base`, `flash_size` |
-| `boards/qemu-aarch64/board.ron` | Added `flash_base`, `flash_size` |
-| `boards/qemu-riscv64-flex/board.ron` | Added `flash_base`, `flash_size` |
-| `boards/qemu-riscv64-multi/board.ron` | Added `flash_base`, `flash_size` |
-| `docs/continuation-plan.md` | Updated with Phase 9 completion |
+| `xtask/src/qemu.rs` | Added `gic-version=3` to AArch64 QEMU machine flags |
+| `crates/fstart-log/src/lib.rs` | SyncCell wrapper, double-init guard, removed dead `Level::tag()` |
+| `docs/continuation-plan.md` | Updated with Phase 10 + 11 completion |
 
 ## Git State
 
-Eight commits on `master`:
+Ten commits on `master`:
 1. `1b2b71f` — Initial commit: fstart firmware framework with 14 workspace crates
 2. `9383113` — Introduce typed Device trait driver model with codegen-produced StageContext
 3. `de59c64` — Capability pipeline, BusDevice trait, codegen ordering validation, AArch64 objcopy
@@ -627,6 +730,8 @@ Eight commits on `master`:
 6. (Pending) — Phase 6: FFS + Security — flash layout, crypto, reader, builder, xtask assemble
 7. (Pending) — Phase 7: Multi-stage layout — per-stage builds, FFS packaging, bootblock + main
 8. (Pending) — Phase 9: Wire capabilities to FFS — real sig verify, stage load, payload load
+9. (Pending) — Phase 10: ufmt logging infrastructure — macros, SyncCell, capabilities migration
+10. (Pending) — Phase 11: Linux boot verified, GICv3 fix, fstart-log cleanup
 
 ## Quick Reference: Build Commands
 

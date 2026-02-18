@@ -129,7 +129,10 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     eprintln!("[fstart] target: {target}");
     eprintln!("[fstart] features: {features_str}");
 
-    let is_aarch64 = config.platform.as_str() == "aarch64";
+    // Both AArch64 and RISC-V need flat binaries for QEMU: AArch64 uses
+    // -bios which expects raw binary, RISC-V uses pflash which also needs
+    // raw binary data.
+    let needs_flat_binary = matches!(config.platform.as_str(), "aarch64" | "riscv64");
 
     // Determine build-std components: always need core, add alloc when FDT
     // feature is enabled (dtoolkit write API + bump allocator need alloc).
@@ -145,7 +148,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 target,
                 &features_str,
                 release,
-                is_aarch64,
+                needs_flat_binary,
                 build_std,
             )?;
             Ok(BuildResult {
@@ -169,7 +172,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                     target,
                     &features_str,
                     release,
-                    is_aarch64,
+                    needs_flat_binary,
                     build_std,
                 )?;
                 result.push(StageBinary {
@@ -188,8 +191,8 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 ///
 /// `stage_name` is `None` for monolithic, `Some("bootblock")` etc. for multi-stage.
 #[allow(clippy::too_many_arguments)]
-/// Returns (elf_path, run_path). For AArch64 these differ (ELF vs flat binary);
-/// for other platforms they are the same.
+/// Returns (elf_path, run_path). For AArch64 and RISC-V these differ
+/// (ELF vs flat binary for QEMU); for other platforms they are the same.
 fn build_one_stage(
     workspace_root: &std::path::Path,
     board_ron: &std::path::Path,
@@ -197,7 +200,7 @@ fn build_one_stage(
     target: &str,
     features: &str,
     release: bool,
-    is_aarch64: bool,
+    needs_flat_binary: bool,
     build_std: &str,
 ) -> Result<(PathBuf, PathBuf), String> {
     let mut cmd = Command::new("cargo");
@@ -257,9 +260,14 @@ fn build_one_stage(
         elf_path.clone()
     };
 
-    // AArch64: QEMU -bios expects a flat binary, not an ELF.
-    // Run llvm-objcopy -O binary to produce a .bin alongside the ELF.
-    let run_path = if is_aarch64 {
+    // Produce a flat binary for QEMU. AArch64 uses -bios which needs a raw
+    // binary; RISC-V uses pflash which also needs raw binary data.
+    //
+    // Both platforms use XIP (code in ROM, data in RAM). Removing .data and
+    // .bss prevents objcopy from spanning the ROM→RAM address gap (which
+    // would produce a multi-GiB file of mostly zeros). The entry code
+    // clears BSS at runtime, and firmware statics are zero-initialized.
+    let run_path = if needs_flat_binary {
         let bin_path = final_elf.with_extension("bin");
         eprintln!(
             "[fstart] objcopy: {} -> {}",
@@ -269,6 +277,8 @@ fn build_one_stage(
         let objcopy_status = Command::new("llvm-objcopy")
             .arg("-O")
             .arg("binary")
+            .arg("--remove-section=.data")
+            .arg("--remove-section=.bss")
             .arg(&final_elf)
             .arg(&bin_path)
             .status()
