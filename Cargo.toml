@@ -39,6 +39,9 @@ heapless = { version = "0.8", features = ["serde"] }
 log = "0.4"
 bitflags = "2"
 
+# Device tree
+dtoolkit = { version = "0.1", default-features = false }
+
 # Compression
 lz4_flex = { version = "0.11", default-features = false }
 

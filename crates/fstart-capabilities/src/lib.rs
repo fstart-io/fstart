@@ -21,6 +21,9 @@
 
 #![no_std]
 
+#[cfg(feature = "fdt")]
+extern crate alloc;
+
 use fstart_services::Console;
 
 // ---------------------------------------------------------------------------
@@ -169,17 +172,127 @@ pub fn sig_verify(console: &dyn Console, _anchor_data: &[u8], _flash_base: u64, 
 // FdtPrepare
 // ---------------------------------------------------------------------------
 
-/// Prepare a Flattened Device Tree for OS handoff.
+/// Prepare a Flattened Device Tree for OS handoff (stub — no FDT feature).
 ///
-/// Generates an FDT blob from the board RON configuration (or patches
-/// a DTS-provided base FDT) and places it in memory where the payload
-/// can find it.
-///
-/// Future: Accept memory map info and device list to populate FDT nodes.
-pub fn fdt_prepare(console: &dyn Console) {
+/// When the `fdt` feature is not enabled, this logs a skip message.
+/// The real implementation is `fdt_prepare_platform()` behind `#[cfg(feature = "fdt")]`.
+pub fn fdt_prepare_stub(console: &dyn Console) {
     let _ = console.write_line("[fstart] capability: FdtPrepare");
-    // Skeleton: real implementation needs FDT generation from RON.
-    let _ = console.write_line("[fstart] FDT prepare skipped (not yet implemented)");
+    let _ = console.write_line("[fstart] FDT prepare skipped (fdt feature not enabled)");
+}
+
+/// Prepare a Flattened Device Tree for OS handoff from a platform-provided DTB.
+///
+/// Parses the DTB that QEMU/firmware passed at reset (via `a1` on RISC-V
+/// or `x0` on AArch64), patches `/chosen/bootargs`, and serializes the
+/// result to `dst_dtb_addr` where the payload (Linux) expects it.
+///
+/// Requires the `fdt` feature (pulls in `dtoolkit` + bump allocator).
+///
+/// # Arguments
+///
+/// - `console` — for logging
+/// - `src_dtb_addr` — address of the platform-provided DTB (0 = skip)
+/// - `dst_dtb_addr` — target address for the patched DTB
+/// - `bootargs` — kernel command line to set in `/chosen/bootargs` (empty = skip)
+#[cfg(feature = "fdt")]
+pub fn fdt_prepare_platform(
+    console: &dyn Console,
+    src_dtb_addr: u64,
+    dst_dtb_addr: u64,
+    bootargs: &str,
+) {
+    use alloc::vec::Vec;
+    use dtoolkit::fdt::Fdt;
+    use dtoolkit::model::{DeviceTree, DeviceTreeNode, DeviceTreeProperty};
+
+    let _ = console.write_line("[fstart] capability: FdtPrepare");
+
+    if src_dtb_addr == 0 {
+        let _ = console.write_line("[fstart] FDT prepare: no DTB from platform, skipping");
+        return;
+    }
+
+    if dst_dtb_addr == 0 {
+        let _ = console
+            .write_line("[fstart] FDT prepare: dst_dtb_addr is 0, skipping (misconfigured board?)");
+        return;
+    }
+
+    let _ = console.write_str("[fstart] FDT prepare: source DTB at ");
+    let _ = write_hex(console, src_dtb_addr);
+    let _ = console.write_line("");
+
+    // SAFETY: the platform entry code saved the DTB address from a register
+    // provided by QEMU. The pointer is valid and the FDT blob is in
+    // memory-mapped RAM/flash that is readable at this point.
+    let fdt = match unsafe { Fdt::from_raw(src_dtb_addr as *const u8) } {
+        Ok(f) => f,
+        Err(_) => {
+            let _ = console.write_line("[fstart] FDT prepare: failed to parse source DTB");
+            return;
+        }
+    };
+
+    // Convert the zero-copy FDT into a mutable tree (allocates via bump allocator)
+    let mut tree = match DeviceTree::from_fdt(&fdt) {
+        Ok(t) => t,
+        Err(_) => {
+            let _ = console.write_line("[fstart] FDT prepare: failed to convert to mutable tree");
+            return;
+        }
+    };
+
+    // Patch /chosen/bootargs if bootargs is non-empty
+    if !bootargs.is_empty() {
+        // Find or create /chosen node
+        if tree.find_node_mut("/chosen").is_none() {
+            tree.root.add_child(DeviceTreeNode::new("chosen"));
+        }
+        let chosen = match tree.find_node_mut("/chosen") {
+            Some(n) => n,
+            None => {
+                let _ = console.write_line("[fstart] FDT prepare: failed to find /chosen");
+                return;
+            }
+        };
+
+        // Build null-terminated bootargs value (DTB spec requires it)
+        let mut args_bytes = Vec::from(bootargs.as_bytes());
+        args_bytes.push(0);
+
+        if let Some(prop) = chosen.property_mut("bootargs") {
+            prop.set_value(args_bytes);
+        } else {
+            chosen.add_property(DeviceTreeProperty::new("bootargs", args_bytes));
+        }
+
+        let _ = console.write_str("[fstart] FDT prepare: bootargs = \"");
+        let _ = console.write_str(bootargs);
+        let _ = console.write_line("\"");
+    }
+
+    // Serialize the modified tree back to a DTB blob
+    let dtb_bytes = tree.to_dtb();
+
+    let _ = console.write_str("[fstart] FDT prepare: serialized ");
+    let _ = write_usize(console, dtb_bytes.len());
+    let _ = console.write_str(" bytes to ");
+    let _ = write_hex(console, dst_dtb_addr);
+    let _ = console.write_line("");
+
+    // SAFETY: dst_dtb_addr points to writable RAM with enough space for the
+    // DTB blob. The board config must ensure this region doesn't overlap with
+    // firmware, kernel, or stack.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            dtb_bytes.as_ptr(),
+            dst_dtb_addr as *mut u8,
+            dtb_bytes.len(),
+        );
+    }
+
+    let _ = console.write_line("[fstart] FDT prepare complete");
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +510,84 @@ pub fn stage_load_stub(console: &dyn Console, next_stage: &str) {
 // FFS Helpers (behind `ffs` feature)
 // ---------------------------------------------------------------------------
 
+/// Load a file from FFS by its `FileType`, placing segments at their load addresses.
+///
+/// Searches all container regions in the manifest for the first file entry
+/// matching `file_type`, then loads its segments. Returns `true` on success.
+///
+/// Used by the Linux boot path to load firmware and kernel blobs from FFS.
+#[cfg(feature = "ffs")]
+pub fn load_ffs_file_by_type(
+    console: &dyn Console,
+    anchor_data: &[u8],
+    flash_base: u64,
+    flash_size: u64,
+    file_type: fstart_types::ffs::FileType,
+) -> bool {
+    if flash_size == 0 || anchor_data.is_empty() {
+        let _ = console.write_line("[fstart] load file: no flash image configured");
+        return false;
+    }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = console.write_str("[fstart] load file: anchor error: ");
+            let _ = console.write_line(reader_error_str(e));
+            return false;
+        }
+    };
+
+    // SAFETY: flash_base..flash_base+flash_size is mapped readable memory.
+    let image =
+        unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
+    let reader = fstart_ffs::FfsReader::new(image);
+
+    let manifest = match reader.read_manifest(&anchor) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = console.write_str("[fstart] load file: manifest error: ");
+            let _ = console.write_line(reader_error_str(e));
+            return false;
+        }
+    };
+
+    // Search for first file matching the requested type
+    let mut found = None;
+    for region in &manifest.regions {
+        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
+            for entry in children {
+                if let fstart_types::ffs::EntryContent::File { file_type: ft, .. } = &entry.content
+                {
+                    if *ft == file_type {
+                        found = Some((region, entry));
+                        break;
+                    }
+                }
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+
+    let (region, entry) = match found {
+        Some(f) => f,
+        None => {
+            let _ = console.write_str("[fstart] load file: no file of requested type in FFS");
+            let _ = console.write_line("");
+            return false;
+        }
+    };
+
+    let _ = console.write_str("[fstart] load file: loading '");
+    let _ = console.write_str(entry.name.as_str());
+    let _ = console.write_line("'");
+
+    load_entry_segments(&reader, entry, region, console).is_some()
+}
+
 /// Load all segments of a file entry to their load addresses.
 ///
 /// Returns the entry address (load_addr of the first Code segment, or
@@ -447,10 +638,14 @@ fn load_entry_segments(
             match seg.compression {
                 fstart_types::ffs::Compression::None => {
                     // SAFETY: we trust the board config; the load_addr points to
-                    // writable RAM and `data.len()` bytes fit. Source and
-                    // destination must not overlap (flash -> RAM).
+                    // writable RAM and `data.len()` bytes fit. We use `copy`
+                    // (memmove) instead of `copy_nonoverlapping` (memcpy) for
+                    // robustness: when the FFS image is loaded into RAM (not
+                    // flash), source and destination regions may overlap —
+                    // e.g., loading a large kernel from FFS at 0x80000000 to
+                    // a nearby load address.
                     unsafe {
-                        core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+                        core::ptr::copy(data.as_ptr(), dest, data.len());
                     }
                     let _ = console.write_str("[fstart]   ");
                     let _ = console.write_str(seg.name.as_str());
@@ -580,7 +775,7 @@ fn write_usize(console: &dyn Console, mut n: usize) -> Result<(), fstart_service
 }
 
 /// Write a `u64` as hexadecimal (0x...) to the console.
-#[cfg_attr(not(feature = "ffs"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "ffs", feature = "fdt")), allow(dead_code))]
 fn write_hex(console: &dyn Console, mut n: u64) -> Result<(), fstart_services::ServiceError> {
     let _ = console.write_str("0x");
     if n == 0 {
