@@ -2,12 +2,18 @@
 //!
 //! Reads a board config, collects built binaries, and assembles them into
 //! a signed FFS firmware image using the fstart-ffs builder.
+//!
+//! Stage ELFs are parsed directly — each PT_LOAD segment becomes a separate
+//! FFS segment with its own load address, kind, and flags. This avoids
+//! `llvm-objcopy` entirely and correctly preserves `.data` (initialized
+//! statics), `.rodata`, and BSS information.
 
 use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, InputSegment};
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
 use fstart_types::StageLayout;
+use goblin::elf::{program_header, Elf};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -65,77 +71,59 @@ fn assemble_impl(
     let (signing_key, verification_key) = get_or_create_dev_keys(&board_dir, &config)?;
 
     // Build the list of input files from the built stages.
-    // For multi-stage builds, convert ELFs to flat binaries so the FFS image
-    // is directly bootable (CPU executes from offset 0 of the first file).
+    //
+    // Each stage ELF is parsed directly: PT_LOAD segments become FFS
+    // segments with correct load addresses, kinds (code/rodata/data/bss),
+    // and permission flags. No llvm-objcopy needed.
     let mut ro_files = Vec::new();
 
     match &config.stages {
         StageLayout::Monolithic(mono) => {
             let stage = &build_result.stages[0];
-            // Convert ELF to flat binary so the FFS image is directly
-            // bootable as raw bytes at the flash base address. The CPU
-            // begins executing at offset 0 of the FFS image, which must
-            // be the _start code — not ELF headers.
-            let flat_binary = elf_to_flat_binary(&stage.path)?;
-            eprintln!(
-                "[fstart] stage flat binary: {} bytes (from {})",
-                flat_binary.len(),
-                stage.path.display(),
-            );
+            let segments = parse_elf_segments(&stage.path, Compression::None)?;
+
+            log_stage_segments("stage", &stage.path, &segments);
+
+            // Monolithic stages use the board config load_addr as a fallback,
+            // but ELF-parsed segments already have correct p_paddr values.
+            // Sanity-check that the entry point matches expectations.
+            let elf_data = fs::read(&stage.path)
+                .map_err(|e| format!("failed to read {}: {e}", stage.path.display()))?;
+            let elf = Elf::parse(&elf_data)
+                .map_err(|e| format!("failed to parse {}: {e}", stage.path.display()))?;
+            if elf.entry != mono.load_addr {
+                eprintln!(
+                    "[fstart] note: ELF entry {:#x} differs from board load_addr {:#x}",
+                    elf.entry, mono.load_addr,
+                );
+            }
 
             ro_files.push(InputFile {
                 name: "stage".to_string(),
                 file_type: FileType::StageCode,
-                segments: vec![InputSegment {
-                    name: ".text".to_string(),
-                    kind: SegmentKind::Code,
-                    data: flat_binary,
-                    load_addr: mono.load_addr,
-                    compression: Compression::None,
-                    flags: SegmentFlags::CODE,
-                }],
+                segments,
             });
         }
         StageLayout::MultiStage(_stages) => {
             for (i, stage_bin) in build_result.stages.iter().enumerate() {
-                // Convert ELF to flat binary so the FFS image is directly
-                // loadable as raw bytes at the flash base address.
-                let flat_binary = elf_to_flat_binary(&stage_bin.path)?;
-
                 // The first file (bootblock) must be uncompressed — it
-                // executes directly from flash/RAM and contains the
+                // executes directly from flash (XIP) and contains the
                 // FSTART_ANCHOR placeholder that gets patched in-place.
-                // Subsequent stages are LZ4-compressed and decompressed
-                // in-place at their load address during StageLoad.
+                // Subsequent stages can be LZ4-compressed.
                 let compression = if i == 0 {
                     Compression::None
                 } else {
                     Compression::Lz4
                 };
 
-                let label = match compression {
-                    Compression::None => "uncompressed",
-                    Compression::Lz4 => "lz4",
-                };
-                eprintln!(
-                    "[fstart] {} flat binary: {} bytes, {} (from {})",
-                    stage_bin.name,
-                    flat_binary.len(),
-                    label,
-                    stage_bin.path.display(),
-                );
+                let segments = parse_elf_segments(&stage_bin.path, compression)?;
+
+                log_stage_segments(&stage_bin.name, &stage_bin.path, &segments);
 
                 ro_files.push(InputFile {
                     name: stage_bin.name.clone(),
                     file_type: FileType::StageCode,
-                    segments: vec![InputSegment {
-                        name: ".text".to_string(),
-                        kind: SegmentKind::Code,
-                        data: flat_binary,
-                        load_addr: stage_bin.load_addr,
-                        compression,
-                        flags: SegmentFlags::CODE,
-                    }],
+                    segments,
                 });
             }
         }
@@ -186,6 +174,7 @@ fn assemble_impl(
                         name: ".text".to_string(),
                         kind: SegmentKind::Code,
                         data: fw_data,
+                        mem_size: None,
                         load_addr: fw_load_addr,
                         compression: Compression::None,
                         flags: SegmentFlags::CODE,
@@ -232,6 +221,7 @@ fn assemble_impl(
                         name: ".text".to_string(),
                         kind: SegmentKind::Code,
                         data: kernel_data,
+                        mem_size: None,
                         load_addr: kernel_load_addr,
                         compression: Compression::None,
                         flags: SegmentFlags::CODE,
@@ -289,31 +279,146 @@ fn assemble_impl(
     Ok(image_path)
 }
 
-/// Convert an ELF file to a flat binary using `llvm-objcopy -O binary`.
+// ============================================================================
+// ELF parsing — replaces llvm-objcopy
+// ============================================================================
+
+/// Parse an ELF file into FFS input segments, one per PT_LOAD.
 ///
-/// This strips ELF headers and produces raw bytes starting at the lowest
-/// load address. Needed for FFS images that are loaded as raw data.
-fn elf_to_flat_binary(elf_path: &Path) -> Result<Vec<u8>, String> {
-    use std::process::Command;
+/// Follows the coreboot cbfstool payload model: each PT_LOAD program header
+/// becomes a separate segment with its own load address and type. This
+/// avoids the ROM→RAM address gap that makes flat binaries enormous.
+///
+/// - `p_paddr` is used as the load address (like coreboot and u-boot).
+/// - `p_filesz` bytes of data are extracted from the ELF.
+/// - `p_memsz > p_filesz` produces a BSS tail (the loader zero-fills it).
+/// - Pure BSS segments (`p_filesz == 0`) become `SegmentKind::Bss`.
+/// - Segment kind and flags are derived from `p_flags` (PF_X, PF_W, PF_R).
+fn parse_elf_segments(
+    elf_path: &Path,
+    compression: Compression,
+) -> Result<Vec<InputSegment>, String> {
+    let elf_data =
+        fs::read(elf_path).map_err(|e| format!("failed to read {}: {e}", elf_path.display()))?;
 
-    let bin_path = elf_path.with_extension("ffs.bin");
-    let status = Command::new("llvm-objcopy")
-        .arg("-O")
-        .arg("binary")
-        .arg(elf_path)
-        .arg(&bin_path)
-        .status()
-        .map_err(|e| format!("failed to run llvm-objcopy: {e}"))?;
+    let elf = Elf::parse(&elf_data)
+        .map_err(|e| format!("failed to parse ELF {}: {e}", elf_path.display()))?;
 
-    if !status.success() {
-        return Err(format!("llvm-objcopy failed for {}", elf_path.display()));
+    let mut segments = Vec::new();
+
+    for phdr in &elf.program_headers {
+        // Only process PT_LOAD segments with nonzero memory footprint
+        if phdr.p_type != program_header::PT_LOAD {
+            continue;
+        }
+        if phdr.p_memsz == 0 {
+            continue;
+        }
+
+        let p_flags = phdr.p_flags;
+        let is_exec = p_flags & program_header::PF_X != 0;
+        let is_write = p_flags & program_header::PF_W != 0;
+
+        // Determine segment kind and name from ELF flags, matching
+        // the coreboot PAYLOAD_SEGMENT_CODE / DATA / BSS classification.
+        let (kind, name, flags) = if phdr.p_filesz == 0 {
+            // Pure BSS — no file content, just zero-fill
+            (SegmentKind::Bss, ".bss", SegmentFlags::DATA)
+        } else if is_exec {
+            (SegmentKind::Code, ".text", SegmentFlags::CODE)
+        } else if is_write {
+            (SegmentKind::ReadWriteData, ".data", SegmentFlags::DATA)
+        } else {
+            (SegmentKind::ReadOnlyData, ".rodata", SegmentFlags::RODATA)
+        };
+
+        // Extract file data (p_filesz bytes at p_offset)
+        let data = if phdr.p_filesz > 0 {
+            let start = phdr.p_offset as usize;
+            let end = start + phdr.p_filesz as usize;
+            if end > elf_data.len() {
+                return Err(format!(
+                    "PT_LOAD at {:#x} extends past EOF in {}",
+                    phdr.p_paddr,
+                    elf_path.display(),
+                ));
+            }
+            elf_data[start..end].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        // mem_size tracks the BSS tail: when p_memsz > p_filesz the
+        // loader must zero-fill the remaining bytes after the file data.
+        let mem_size = if phdr.p_memsz != phdr.p_filesz {
+            Some(phdr.p_memsz)
+        } else {
+            None
+        };
+
+        // BSS segments have no stored content — never compress them.
+        // Other segments use the caller's requested compression.
+        let seg_compression = if phdr.p_filesz == 0 {
+            Compression::None
+        } else {
+            compression
+        };
+
+        segments.push(InputSegment {
+            name: name.to_string(),
+            kind,
+            data,
+            mem_size,
+            load_addr: phdr.p_paddr,
+            compression: seg_compression,
+            flags,
+        });
     }
 
-    let data = fs::read(&bin_path)
-        .map_err(|e| format!("failed to read flat binary {}: {e}", bin_path.display()))?;
+    if segments.is_empty() {
+        return Err(format!(
+            "no PT_LOAD segments found in {}",
+            elf_path.display()
+        ));
+    }
 
-    Ok(data)
+    Ok(segments)
 }
+
+/// Log the parsed segments for a stage.
+fn log_stage_segments(stage_name: &str, elf_path: &Path, segments: &[InputSegment]) {
+    let total_file: usize = segments.iter().map(|s| s.data.len()).sum();
+    let total_mem: u64 = segments
+        .iter()
+        .map(|s| s.mem_size.unwrap_or(s.data.len() as u64))
+        .sum();
+    eprintln!(
+        "[fstart] {stage_name}: {} PT_LOAD segment{}, {} bytes stored, {} bytes memory (from {})",
+        segments.len(),
+        if segments.len() == 1 { "" } else { "s" },
+        total_file,
+        total_mem,
+        elf_path.display(),
+    );
+    for seg in segments {
+        let mem = seg.mem_size.unwrap_or(seg.data.len() as u64);
+        let comp = match seg.compression {
+            Compression::None => "",
+            Compression::Lz4 => " lz4",
+        };
+        eprintln!(
+            "[fstart]   {} load={:#x} file={} mem={}{comp}",
+            seg.name,
+            seg.load_addr,
+            seg.data.len(),
+            mem,
+        );
+    }
+}
+
+// ============================================================================
+// Crypto helpers
+// ============================================================================
 
 /// Get or create a dev Ed25519 key pair for signing.
 ///

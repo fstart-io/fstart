@@ -5,6 +5,7 @@
 //!   cargo xtask build --board qemu-riscv64 --release
 //!   cargo xtask run --board qemu-riscv64
 //!   cargo xtask assemble --board qemu-riscv64
+//!   cargo xtask inspect --image target/ffs/qemu-riscv64.ffs
 //!   cargo xtask test --board qemu-riscv64
 
 use clap::{Parser, Subcommand};
@@ -12,6 +13,7 @@ use std::process;
 
 pub mod assemble;
 pub mod build_board;
+mod inspect;
 mod qemu;
 
 #[derive(Parser)]
@@ -67,6 +69,12 @@ enum Command {
         /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
         #[arg(short, long)]
         firmware: Option<String>,
+    },
+    /// Inspect an FFS firmware image (find anchor, display filesystem)
+    Inspect {
+        /// Path to FFS image file
+        #[arg(short, long)]
+        image: String,
     },
 }
 
@@ -128,6 +136,7 @@ fn main() {
             firmware,
         } => assemble::assemble_with_opts(&board, release, kernel.as_deref(), firmware.as_deref())
             .map(|_| ()),
+        Command::Inspect { image } => inspect::inspect(&image),
     };
 
     if let Err(e) = result {

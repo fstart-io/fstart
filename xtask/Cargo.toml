@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 clap = { workspace = true }
+goblin = { workspace = true }
 fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
