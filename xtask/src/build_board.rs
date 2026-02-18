@@ -105,12 +105,33 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         }
     }
 
+    // Check if any stage uses FDT capabilities (FdtPrepare)
+    let uses_fdt = match &config.stages {
+        StageLayout::Monolithic(mono) => mono
+            .capabilities
+            .iter()
+            .any(|c| matches!(c, fstart_types::Capability::FdtPrepare)),
+        StageLayout::MultiStage(stages) => stages.iter().any(|s| {
+            s.capabilities
+                .iter()
+                .any(|c| matches!(c, fstart_types::Capability::FdtPrepare))
+        }),
+    };
+
+    if uses_fdt {
+        features.push("fdt".to_string());
+    }
+
     let features_str = features.join(",");
 
     eprintln!("[fstart] target: {target}");
     eprintln!("[fstart] features: {features_str}");
 
     let is_aarch64 = config.platform.as_str() == "aarch64";
+
+    // Determine build-std components: always need core, add alloc when FDT
+    // feature is enabled (dtoolkit write API + bump allocator need alloc).
+    let build_std = if uses_fdt { "core,alloc" } else { "core" };
 
     match &config.stages {
         StageLayout::Monolithic(mono) => {
@@ -123,6 +144,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 &features_str,
                 release,
                 is_aarch64,
+                build_std,
             )?;
             Ok(BuildResult {
                 stages: vec![StageBinary {
@@ -145,6 +167,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                     &features_str,
                     release,
                     is_aarch64,
+                    build_std,
                 )?;
                 result.push(StageBinary {
                     name: stage_name,
@@ -160,6 +183,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 /// Build a single fstart-stage binary.
 ///
 /// `stage_name` is `None` for monolithic, `Some("bootblock")` etc. for multi-stage.
+#[allow(clippy::too_many_arguments)]
 fn build_one_stage(
     workspace_root: &std::path::Path,
     board_ron: &std::path::Path,
@@ -168,6 +192,7 @@ fn build_one_stage(
     features: &str,
     release: bool,
     is_aarch64: bool,
+    build_std: &str,
 ) -> Result<PathBuf, String> {
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
@@ -178,7 +203,7 @@ fn build_one_stage(
         .arg("--features")
         .arg(features)
         .arg("-Z")
-        .arg("build-std=core");
+        .arg(format!("build-std={build_std}"));
 
     if release {
         cmd.arg("--release");

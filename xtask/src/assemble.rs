@@ -17,15 +17,34 @@ use std::path::{Path, PathBuf};
 /// 2. Packages stage binaries into an FFS image.
 /// 3. Signs the manifest with the board's dev key pair.
 pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
-    assemble_impl(board_name, false)
+    assemble_impl(board_name, false, None, None)
 }
 
-/// Assemble with explicit release flag.
+/// Assemble with explicit release flag (used by `run` for multi-stage boards).
 pub fn assemble_release(board_name: &str, release: bool) -> Result<PathBuf, String> {
-    assemble_impl(board_name, release)
+    assemble_impl(board_name, release, None, None)
 }
 
-fn assemble_impl(board_name: &str, release: bool) -> Result<PathBuf, String> {
+/// Assemble with full options: release flag and optional kernel/firmware paths.
+///
+/// If `kernel`/`firmware` are `None`, falls back to paths from the board RON
+/// `payload` config (resolved relative to the board directory). If neither
+/// is available, no external blobs are added to the image.
+pub fn assemble_with_opts(
+    board_name: &str,
+    release: bool,
+    kernel: Option<&str>,
+    firmware: Option<&str>,
+) -> Result<PathBuf, String> {
+    assemble_impl(board_name, release, kernel, firmware)
+}
+
+fn assemble_impl(
+    board_name: &str,
+    release: bool,
+    kernel_path: Option<&str>,
+    firmware_path: Option<&str>,
+) -> Result<PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
     let board_dir = workspace_root.join("boards").join(board_name);
     let board_ron = board_dir.join("board.ron");
@@ -53,12 +72,15 @@ fn assemble_impl(board_name: &str, release: bool) -> Result<PathBuf, String> {
     match &config.stages {
         StageLayout::Monolithic(mono) => {
             let stage = &build_result.stages[0];
-            let stage_data =
-                fs::read(&stage.path).map_err(|e| format!("failed to read stage binary: {e}"))?;
+            // Convert ELF to flat binary so the FFS image is directly
+            // bootable as raw bytes at the flash base address. The CPU
+            // begins executing at offset 0 of the FFS image, which must
+            // be the _start code — not ELF headers.
+            let flat_binary = elf_to_flat_binary(&stage.path)?;
             eprintln!(
-                "[fstart] stage binary: {} ({} bytes)",
+                "[fstart] stage flat binary: {} bytes (from {})",
+                flat_binary.len(),
                 stage.path.display(),
-                stage_data.len()
             );
 
             ro_files.push(InputFile {
@@ -67,7 +89,7 @@ fn assemble_impl(board_name: &str, release: bool) -> Result<PathBuf, String> {
                 segments: vec![InputSegment {
                     name: ".text".to_string(),
                     kind: SegmentKind::Code,
-                    data: stage_data,
+                    data: flat_binary,
                     load_addr: mono.load_addr,
                     compression: Compression::None,
                     flags: SegmentFlags::CODE,
@@ -115,6 +137,111 @@ fn assemble_impl(board_name: &str, release: bool) -> Result<PathBuf, String> {
                         flags: SegmentFlags::CODE,
                     }],
                 });
+            }
+        }
+    }
+
+    // Add firmware and kernel blobs if this board has a LinuxBoot payload.
+    //
+    // Resolution order for paths:
+    //   1. CLI flags (--kernel, --firmware)
+    //   2. Board RON payload config (payload.firmware.file, payload.kernel_file)
+    //      resolved relative to the board directory
+    //   3. Skip — no external blob added
+    if let Some(ref payload) = config.payload {
+        // Resolve firmware blob path
+        let fw_file = firmware_path.map(PathBuf::from).or_else(|| {
+            payload
+                .firmware
+                .as_ref()
+                .map(|fw| board_dir.join(fw.file.as_str()))
+        });
+
+        if let Some(ref fw_path) = fw_file {
+            if fw_path.exists() {
+                let fw_data =
+                    fs::read(fw_path).map_err(|e| format!("failed to read firmware blob: {e}"))?;
+                let fw_load_addr = payload
+                    .firmware
+                    .as_ref()
+                    .map(|fw| fw.load_addr)
+                    .unwrap_or(0);
+                let fw_name = payload
+                    .firmware
+                    .as_ref()
+                    .map(|fw| fw.file.to_string())
+                    .unwrap_or_else(|| "firmware".to_string());
+
+                eprintln!(
+                    "[fstart] firmware blob: {} ({} bytes, load_addr={:#x})",
+                    fw_path.display(),
+                    fw_data.len(),
+                    fw_load_addr,
+                );
+
+                ro_files.push(InputFile {
+                    name: fw_name,
+                    file_type: FileType::Firmware,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: fw_data,
+                        load_addr: fw_load_addr,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                });
+            } else {
+                eprintln!(
+                    "[fstart] warning: firmware blob not found: {}",
+                    fw_path.display()
+                );
+            }
+        }
+
+        // Resolve kernel blob path
+        let kernel_file = kernel_path.map(PathBuf::from).or_else(|| {
+            payload
+                .kernel_file
+                .as_ref()
+                .map(|kf| board_dir.join(kf.as_str()))
+        });
+
+        if let Some(ref k_path) = kernel_file {
+            if k_path.exists() {
+                let kernel_data =
+                    fs::read(k_path).map_err(|e| format!("failed to read kernel blob: {e}"))?;
+                let kernel_load_addr = payload.kernel_load_addr.unwrap_or(0);
+                let kernel_name = payload
+                    .kernel_file
+                    .as_ref()
+                    .map(|kf| kf.to_string())
+                    .unwrap_or_else(|| "kernel".to_string());
+
+                eprintln!(
+                    "[fstart] kernel blob: {} ({} bytes, load_addr={:#x})",
+                    k_path.display(),
+                    kernel_data.len(),
+                    kernel_load_addr,
+                );
+
+                ro_files.push(InputFile {
+                    name: kernel_name,
+                    file_type: FileType::Payload,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: kernel_data,
+                        load_addr: kernel_load_addr,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                });
+            } else {
+                eprintln!(
+                    "[fstart] warning: kernel blob not found: {}",
+                    k_path.display()
+                );
             }
         }
     }

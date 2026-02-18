@@ -14,7 +14,9 @@
 //!
 //! See [docs/driver-model.md](../../../docs/driver-model.md).
 
-use fstart_types::{BoardConfig, BuildMode, Capability, DeviceConfig, StageLayout};
+use fstart_types::{
+    BoardConfig, BuildMode, Capability, DeviceConfig, FirmwareKind, PayloadKind, StageLayout,
+};
 
 /// Information about a known driver — maps RON driver name to Rust type path
 /// and its config construction logic.
@@ -564,6 +566,21 @@ fn needs_ffs(capabilities: &[Capability]) -> bool {
     })
 }
 
+/// Check whether a capability list uses FDT operations (FdtPrepare).
+fn needs_fdt(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::FdtPrepare))
+}
+
+/// Check whether this board has a LinuxBoot payload configured.
+fn is_linux_boot(config: &BoardConfig) -> bool {
+    config
+        .payload
+        .as_ref()
+        .is_some_and(|p| p.kind == PayloadKind::LinuxBoot)
+}
+
 /// Emit `use` statements for all driver types needed by this board's devices.
 fn generate_imports(
     out: &mut String,
@@ -617,9 +634,14 @@ fn generate_imports(
     }
     out.push('\n');
 
-    // Note: FFS operations (SigVerify, StageLoad, PayloadLoad) are handled
-    // entirely within fstart_capabilities — no direct FFS imports needed here.
-    let _ = capabilities; // suppress unused parameter warning
+    // When FDT feature is needed, pull in the alloc crate and force-link
+    // the bump allocator. The dtoolkit write API and DeviceTree::to_dtb()
+    // use alloc internally (Vec, String, IndexMap).
+    if needs_fdt(capabilities) {
+        out.push_str("extern crate alloc;\n");
+        // Force-link the bump allocator (it defines #[global_allocator])
+        out.push_str("extern crate fstart_alloc;\n\n");
+    }
 }
 
 /// Generate flash base address and size constants for FFS operations.
@@ -752,6 +774,7 @@ fn generate_fstart_main(
     };
 
     out.push_str("#[no_mangle]\n");
+    out.push_str("#[allow(unreachable_code)]\n");
     out.push_str("pub extern \"Rust\" fn fstart_main() -> ! {\n");
 
     // --- Phase 1: Construct all devices in topological order (bind phase) ---
@@ -809,10 +832,10 @@ fn generate_fstart_main(
                 generate_sig_verify(out, &console_device, has_ffs);
             }
             Capability::FdtPrepare => {
-                generate_fdt_prepare(out, &console_device);
+                generate_fdt_prepare(out, &console_device, config, platform);
             }
             Capability::PayloadLoad => {
-                generate_payload_load(out, &console_device, platform, has_ffs);
+                generate_payload_load(out, &console_device, config, platform, has_ffs);
             }
             Capability::StageLoad { next_stage } => {
                 generate_stage_load(out, next_stage.as_str(), &console_device, platform, has_ffs);
@@ -1142,34 +1165,190 @@ fn generate_sig_verify(out: &mut String, console_device: &Option<String>, has_ff
 }
 
 /// Generate code for the FdtPrepare capability.
-fn generate_fdt_prepare(out: &mut String, console_device: &Option<String>) {
+///
+/// When a `PayloadConfig` with `FdtSource::Platform` is configured, generates
+/// a call to `fdt_prepare_platform()` which parses the QEMU-provided DTB,
+/// patches `/chosen/bootargs`, and serializes to the target address.
+/// Otherwise, emits the stub.
+fn generate_fdt_prepare(
+    out: &mut String,
+    console_device: &Option<String>,
+    config: &BoardConfig,
+    platform: &str,
+) {
     out.push_str("    // FdtPrepare\n");
-    if let Some(ref con) = console_device {
-        out.push_str(&format!("    fstart_capabilities::fdt_prepare(&{con});\n"));
+    let Some(ref con) = console_device else {
+        return;
+    };
+
+    let Some(ref payload) = config.payload else {
+        out.push_str(&format!(
+            "    fstart_capabilities::fdt_prepare_stub(&{con});\n"
+        ));
+        return;
+    };
+
+    match &payload.fdt {
+        fstart_types::FdtSource::Platform => {
+            let dtb_src_expr = match platform {
+                "riscv64" => "fstart_platform_riscv64::boot_dtb_addr()",
+                "aarch64" => "fstart_platform_aarch64::boot_dtb_addr()",
+                _ => "0",
+            };
+            let dtb_dst = payload.dtb_addr.unwrap_or(0);
+            let bootargs = payload.bootargs.as_ref().map(|s| s.as_str()).unwrap_or("");
+            out.push_str(&format!(
+                "    fstart_capabilities::fdt_prepare_platform(&{con}, {dtb_src_expr}, {dtb_dst:#x}, \"{bootargs}\");\n"
+            ));
+        }
+        _ => {
+            // Generated or Override FDT sources — not yet implemented
+            out.push_str(&format!(
+                "    fstart_capabilities::fdt_prepare_stub(&{con});\n"
+            ));
+        }
     }
 }
 
 /// Generate code for the PayloadLoad capability.
+///
+/// When the board config has `PayloadKind::LinuxBoot`, generates a
+/// platform-specific Linux boot sequence:
+/// - Loads firmware (SBI/ATF) and kernel from FFS
+/// - Constructs boot protocol structs (FwDynamicInfo / BlParams)
+/// - Jumps to firmware which then boots Linux
+///
+/// Otherwise, uses the generic FFS payload load path.
 fn generate_payload_load(
     out: &mut String,
     console_device: &Option<String>,
+    config: &BoardConfig,
     platform: &str,
     has_ffs: bool,
 ) {
     out.push_str("    // PayloadLoad\n");
-    if let Some(ref con) = console_device {
-        if has_ffs {
-            let jump_fn = match platform {
-                "riscv64" => "fstart_platform_riscv64::jump_to",
-                "aarch64" => "fstart_platform_aarch64::jump_to",
-                _ => "fstart_platform_riscv64::jump_to",
-            };
+    let Some(ref con) = console_device else {
+        return;
+    };
+
+    // Check if this is a LinuxBoot payload with FFS available
+    if is_linux_boot(config) && has_ffs {
+        generate_payload_load_linux(out, con, config, platform);
+        return;
+    }
+
+    // Generic payload load path
+    if has_ffs {
+        let jump_fn = match platform {
+            "riscv64" => "fstart_platform_riscv64::jump_to",
+            "aarch64" => "fstart_platform_aarch64::jump_to",
+            _ => "fstart_platform_riscv64::jump_to",
+        };
+        out.push_str(&format!(
+            "    fstart_capabilities::payload_load(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "    fstart_capabilities::payload_load_stub(&{con});\n"
+        ));
+    }
+}
+
+/// Generate the Linux boot payload sequence for a specific platform.
+///
+/// This is the generated code path when `PayloadKind::LinuxBoot` is set.
+/// The sequence:
+/// 1. Load firmware blob (SBI/ATF) from FFS to its load address
+/// 2. Load kernel from FFS to its load address
+/// 3. Construct platform-specific boot protocol structs
+/// 4. Jump to firmware (which then boots Linux)
+fn generate_payload_load_linux(out: &mut String, con: &str, config: &BoardConfig, platform: &str) {
+    let payload = config.payload.as_ref().unwrap(); // caller verified is_linux_boot
+    let halt_fn = match platform {
+        "riscv64" => "fstart_platform_riscv64::halt()",
+        "aarch64" => "fstart_platform_aarch64::halt()",
+        _ => "loop { core::hint::spin_loop(); }",
+    };
+
+    out.push_str(&format!(
+        "    let _ = {con}.write_line(\"[fstart] capability: PayloadLoad (LinuxBoot)\");\n"
+    ));
+
+    // IMPORTANT: Load the kernel BEFORE firmware. When the FFS image sits in
+    // RAM (e.g., RISC-V QEMU loads the FFS at 0x80000000), loading firmware
+    // to its load_addr (e.g., 0x80100000) will corrupt FFS data at that
+    // offset. The kernel's load_addr (e.g., 0x80A00000) is beyond the FFS
+    // image, so loading it first is safe — and we can still read the FFS
+    // afterward to load the firmware blob.
+
+    // Load kernel from FFS (must happen first — see comment above)
+    out.push_str(&format!(
+        "    let _ = {con}.write_line(\"[fstart] loading kernel...\");\n"
+    ));
+    out.push_str(&format!(
+        "    if !fstart_capabilities::load_ffs_file_by_type(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, fstart_types::ffs::FileType::Payload) {{\n"
+    ));
+    out.push_str(&format!(
+        "        let _ = {con}.write_line(\"[fstart] FATAL: failed to load kernel\");\n"
+    ));
+    out.push_str(&format!("        {halt_fn};\n"));
+    out.push_str("    }\n");
+
+    // Load firmware blob from FFS (after kernel, since this may overwrite FFS data)
+    if let Some(ref fw) = payload.firmware {
+        let fw_kind_str = match fw.kind {
+            FirmwareKind::OpenSbi => "SBI firmware",
+            FirmwareKind::ArmTrustedFirmware => "ATF BL31",
+        };
+        out.push_str(&format!(
+            "    let _ = {con}.write_line(\"[fstart] loading {fw_kind_str}...\");\n"
+        ));
+        out.push_str(&format!(
+            "    if !fstart_capabilities::load_ffs_file_by_type(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, fstart_types::ffs::FileType::Firmware) {{\n"
+        ));
+        out.push_str(&format!(
+            "        let _ = {con}.write_line(\"[fstart] FATAL: failed to load {fw_kind_str}\");\n"
+        ));
+        out.push_str(&format!("        {halt_fn};\n"));
+        out.push_str("    }\n");
+    }
+
+    // Platform-specific boot protocol
+    let dtb_addr = payload.dtb_addr.unwrap_or(0);
+    let kernel_addr = payload.kernel_load_addr.unwrap_or(0);
+
+    match platform {
+        "riscv64" => {
+            let fw_addr = payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0);
             out.push_str(&format!(
-                "    fstart_capabilities::payload_load(&{con}, {ANCHOR_AS_BYTES}, FLASH_BASE, FLASH_SIZE, {jump_fn});\n"
+                "    let _fw_info = fstart_platform_riscv64::FwDynamicInfo::new({kernel_addr:#x}, fstart_platform_riscv64::boot_hart_id());\n"
             ));
-        } else {
             out.push_str(&format!(
-                "    fstart_capabilities::payload_load_stub(&{con});\n"
+                "    let _ = {con}.write_line(\"[fstart] jumping to SBI firmware...\");\n"
+            ));
+            out.push_str(&format!(
+                "    fstart_platform_riscv64::boot_linux_sbi({fw_addr:#x}, fstart_platform_riscv64::boot_hart_id(), {dtb_addr:#x}, &_fw_info);\n"
+            ));
+        }
+        "aarch64" => {
+            let fw_addr = payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0);
+            // Stack-allocate the ATF boot protocol structs
+            // SAFETY: repr(C) structs with all-integer fields — zeroed is valid.
+            out.push_str("    let mut _bl33_desc: fstart_platform_aarch64::ImageDesc = unsafe { core::mem::zeroed() };\n");
+            out.push_str("    let mut _bl_params: fstart_platform_aarch64::BlParams = unsafe { core::mem::zeroed() };\n");
+            out.push_str(&format!(
+                "    fstart_platform_aarch64::prepare_bl_params({kernel_addr:#x}, {dtb_addr:#x}, &mut _bl33_desc, &mut _bl_params);\n"
+            ));
+            out.push_str(&format!(
+                "    let _ = {con}.write_line(\"[fstart] jumping to ATF BL31...\");\n"
+            ));
+            out.push_str(&format!(
+                "    fstart_platform_aarch64::boot_linux_atf({fw_addr:#x}, &_bl_params);\n"
+            ));
+        }
+        _ => {
+            out.push_str(&format!(
+                "    compile_error!(\"LinuxBoot not supported on platform '{platform}'\");\n"
             ));
         }
     }
