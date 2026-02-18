@@ -26,6 +26,14 @@ pub struct MonolithicConfig {
     pub load_addr: u64,
     /// Stack size in bytes
     pub stack_size: u32,
+    /// Explicit address for data/BSS/stack in RAM (XIP builds only).
+    ///
+    /// When code runs from ROM (XIP), writable data sections must be
+    /// placed in RAM. By default they go at the start of the first RAM
+    /// region. Set this to reserve the start of RAM for other uses
+    /// (e.g., QEMU places the DTB at the base of RAM on AArch64).
+    #[serde(default)]
+    pub data_addr: Option<u64>,
 }
 
 /// Configuration for one stage in a multi-stage build.

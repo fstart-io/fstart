@@ -112,10 +112,34 @@ pub fn sig_verify(console: &dyn Console, anchor_data: &[u8], flash_base: u64, fl
         }
     };
 
-    // SAFETY: we trust that flash_base..flash_base+flash_size is mapped and
+    // Log anchor info at a moderate verbosity level
+    let _ = console.write_str("[fstart] sig verify: image_size=");
+    let _ = write_hex(console, anchor.total_image_size as u64);
+    let _ = console.write_str(" key_count=");
+    let _ = write_usize(console, anchor.key_count as usize);
+    let _ = console.write_line("");
+
+    // Use the smaller of flash_size and total_image_size as the reader's
+    // window. On XIP platforms, flash_size may be the full flash bank
+    // (e.g., 128 MiB) while the FFS image is much smaller. Using the
+    // anchor's total_image_size ensures the reader only accesses data
+    // that was actually written by the builder.
+    let image_size = if anchor.total_image_size > 0 && (anchor.total_image_size as u64) < flash_size
+    {
+        anchor.total_image_size as usize
+    } else {
+        flash_size as usize
+    };
+
+    // SAFETY: we trust that flash_base..flash_base+image_size is mapped and
     // readable memory (guaranteed by the board config and platform setup).
-    let image =
-        unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
+    //
+    // When flash_base is 0 (AArch64 XIP), we must avoid creating a slice
+    // with a null data pointer, as Rust considers `from_raw_parts(null, n)`
+    // UB for n > 0 — the compiler may exploit this (e.g., optimizing
+    // `.get()` to always return None). We use `opaque_addr()` to hide the
+    // zero value from the optimizer.
+    let image = unsafe { core::slice::from_raw_parts(opaque_addr(flash_base), image_size) };
     let reader = fstart_ffs::FfsReader::new(image);
 
     // Verify the manifest signature
@@ -331,9 +355,16 @@ pub fn payload_load(
         }
     };
 
-    // SAFETY: flash_base..flash_base+flash_size is mapped readable memory.
-    let image =
-        unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
+    // Use the anchor's total_image_size when smaller than flash_size.
+    let image_size = if anchor.total_image_size > 0 && (anchor.total_image_size as u64) < flash_size
+    {
+        anchor.total_image_size as usize
+    } else {
+        flash_size as usize
+    };
+
+    // SAFETY: flash_base..flash_base+image_size is mapped readable memory.
+    let image = unsafe { core::slice::from_raw_parts(opaque_addr(flash_base), image_size) };
     let reader = fstart_ffs::FfsReader::new(image);
 
     let manifest = match reader.read_manifest(&anchor) {
@@ -439,9 +470,16 @@ pub fn stage_load(
         }
     };
 
-    // SAFETY: flash_base..flash_base+flash_size is mapped readable memory.
-    let image =
-        unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
+    // Use the anchor's total_image_size when smaller than flash_size.
+    let image_size = if anchor.total_image_size > 0 && (anchor.total_image_size as u64) < flash_size
+    {
+        anchor.total_image_size as usize
+    } else {
+        flash_size as usize
+    };
+
+    // SAFETY: flash_base..flash_base+image_size is mapped readable memory.
+    let image = unsafe { core::slice::from_raw_parts(opaque_addr(flash_base), image_size) };
     let reader = fstart_ffs::FfsReader::new(image);
 
     let manifest = match reader.read_manifest(&anchor) {
@@ -539,9 +577,17 @@ pub fn load_ffs_file_by_type(
         }
     };
 
-    // SAFETY: flash_base..flash_base+flash_size is mapped readable memory.
-    let image =
-        unsafe { core::slice::from_raw_parts(flash_base as *const u8, flash_size as usize) };
+    // Use the anchor's total_image_size when smaller than flash_size,
+    // so the reader only accesses FFS image data (see sig_verify comment).
+    let image_size = if anchor.total_image_size > 0 && (anchor.total_image_size as u64) < flash_size
+    {
+        anchor.total_image_size as usize
+    } else {
+        flash_size as usize
+    };
+
+    // SAFETY: flash_base..flash_base+image_size is mapped readable memory.
+    let image = unsafe { core::slice::from_raw_parts(opaque_addr(flash_base), image_size) };
     let reader = fstart_ffs::FfsReader::new(image);
 
     let manifest = match reader.read_manifest(&anchor) {
@@ -757,6 +803,26 @@ fn reader_error_str(err: fstart_ffs::ReaderError) -> &'static str {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Convert a `u64` address to a `*const u8`, preventing the compiler from
+/// recognising zero as null.
+///
+/// On AArch64 XIP, flash genuinely resides at physical address 0x0. Rust
+/// treats `from_raw_parts(null, n)` as UB for n > 0, and the compiler may
+/// exploit this — for example by making `.get()` always return `None`.
+/// Passing the address through `read_volatile` hides the concrete value
+/// from the optimizer so it cannot fold the null check.
+#[cfg(feature = "ffs")]
+#[inline(always)]
+fn opaque_addr(addr: u64) -> *const u8 {
+    let result: u64;
+    // SAFETY: a u64 on the stack is always readable. Volatile read prevents
+    // the compiler from constant-folding the value.
+    unsafe {
+        result = core::ptr::read_volatile(&addr);
+    }
+    result as *const u8
+}
 
 /// Write a `usize` as decimal to the console (no format! in no_std).
 fn write_usize(console: &dyn Console, mut n: usize) -> Result<(), fstart_services::ServiceError> {

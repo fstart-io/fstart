@@ -12,8 +12,13 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Heap size in bytes (64 KiB — enough for FDT manipulation).
-const HEAP_SIZE: usize = 64 * 1024;
+/// Heap size in bytes (256 KiB — enough for FDT manipulation).
+///
+/// QEMU AArch64 virt with `secure=on,virtualization=on` generates a
+/// DTB of ~40 KiB, and `DeviceTree::from_fdt()` + `to_dtb()` allocate
+/// roughly 3× the DTB size in intermediate structures. 256 KiB provides
+/// comfortable headroom.
+const HEAP_SIZE: usize = 256 * 1024;
 
 /// 16-byte-aligned heap backing store.
 #[repr(align(16))]

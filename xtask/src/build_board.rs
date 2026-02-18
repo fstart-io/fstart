@@ -21,8 +21,10 @@ pub struct BuildResult {
 pub struct StageBinary {
     /// Stage name (e.g., "bootblock", "main", or "stage" for monolithic).
     pub name: String,
-    /// Path to the binary on disk.
+    /// Path to the ELF binary on disk (used by assembler for objcopy).
     pub path: PathBuf,
+    /// Path to run in QEMU (flat binary for AArch64, same as `path` otherwise).
+    pub run_path: PathBuf,
     /// Load address from the board config.
     pub load_addr: u64,
 }
@@ -136,7 +138,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     match &config.stages {
         StageLayout::Monolithic(mono) => {
             // Single build, no FSTART_STAGE_NAME needed
-            let path = build_one_stage(
+            let (elf_path, run_path) = build_one_stage(
                 &workspace_root,
                 &board_ron,
                 None,
@@ -149,7 +151,8 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
             Ok(BuildResult {
                 stages: vec![StageBinary {
                     name: "stage".to_string(),
-                    path,
+                    path: elf_path,
+                    run_path,
                     load_addr: mono.load_addr,
                 }],
             })
@@ -159,7 +162,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
             for stage in stages {
                 let stage_name = stage.name.to_string();
                 eprintln!("[fstart] building stage: {stage_name}");
-                let path = build_one_stage(
+                let (elf_path, run_path) = build_one_stage(
                     &workspace_root,
                     &board_ron,
                     Some(&stage_name),
@@ -171,7 +174,8 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 )?;
                 result.push(StageBinary {
                     name: stage_name,
-                    path,
+                    path: elf_path,
+                    run_path,
                     load_addr: stage.load_addr,
                 });
             }
@@ -184,6 +188,8 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 ///
 /// `stage_name` is `None` for monolithic, `Some("bootblock")` etc. for multi-stage.
 #[allow(clippy::too_many_arguments)]
+/// Returns (elf_path, run_path). For AArch64 these differ (ELF vs flat binary);
+/// for other platforms they are the same.
 fn build_one_stage(
     workspace_root: &std::path::Path,
     board_ron: &std::path::Path,
@@ -193,7 +199,7 @@ fn build_one_stage(
     release: bool,
     is_aarch64: bool,
     build_std: &str,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, PathBuf), String> {
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("--package")
@@ -253,7 +259,7 @@ fn build_one_stage(
 
     // AArch64: QEMU -bios expects a flat binary, not an ELF.
     // Run llvm-objcopy -O binary to produce a .bin alongside the ELF.
-    let binary_path = if is_aarch64 {
+    let run_path = if is_aarch64 {
         let bin_path = final_elf.with_extension("bin");
         eprintln!(
             "[fstart] objcopy: {} -> {}",
@@ -272,11 +278,11 @@ fn build_one_stage(
         }
         bin_path
     } else {
-        final_elf
+        final_elf.clone()
     };
 
-    eprintln!("[fstart] built: {}", binary_path.display());
-    Ok(binary_path)
+    eprintln!("[fstart] built: {}", run_path.display());
+    Ok((final_elf, run_path))
 }
 
 /// Public wrapper for workspace root (used by other xtask modules).
