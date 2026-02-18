@@ -42,8 +42,14 @@ pub struct InputSegment {
     pub name: String,
     /// Content kind.
     pub kind: SegmentKind,
-    /// Raw uncompressed data (empty for BSS).
+    /// Raw uncompressed file data (`p_filesz` bytes; empty for pure BSS).
     pub data: Vec<u8>,
+    /// Total memory size including BSS tail (`p_memsz`).
+    ///
+    /// When `mem_size > data.len()`, the loader must zero-fill the
+    /// remaining `mem_size - data.len()` bytes after loading/decompressing.
+    /// If `None`, defaults to `data.len()` (no BSS tail).
+    pub mem_size: Option<u64>,
     /// Load address.
     pub load_addr: u64,
     /// Compression to apply.
@@ -287,17 +293,34 @@ fn lay_out_file(
     let entry_offset = image.len() as u32 - region_base;
 
     for seg in &file.segments {
-        let (stored_data, in_place_size) = match seg.compression {
-            Compression::None => (seg.data.clone(), 0u32),
+        // Align each segment to 8 bytes so embedded structures (like
+        // the FSTART_ANCHOR in the bootblock) remain scannable at
+        // 8-byte-aligned offsets. Without this, segments extracted
+        // from ELF PT_LOAD headers land at arbitrary offsets.
+        let pad = (8 - (image.len() % 8)) % 8;
+        image.extend(core::iter::repeat_n(0u8, pad));
+
+        let (stored_data, in_place_size, actual_compression) = match seg.compression {
+            Compression::None => (seg.data.clone(), 0u32, Compression::None),
             Compression::Lz4 => {
                 if seg.data.is_empty() {
                     // BSS or empty segments: nothing to compress
-                    (Vec::new(), 0u32)
+                    (Vec::new(), 0u32, Compression::None)
                 } else {
                     let compressed = lz4_flex::block::compress(&seg.data);
-                    let in_place =
-                        verify_in_place_lz4(&compressed, seg.data.len(), &seg.name, &file.name)?;
-                    (compressed, in_place)
+                    if compressed.len() >= seg.data.len() {
+                        // Compression didn't help (common for tiny segments
+                        // like 1-byte .data). Store uncompressed instead.
+                        (seg.data.clone(), 0u32, Compression::None)
+                    } else {
+                        let in_place = verify_in_place_lz4(
+                            &compressed,
+                            seg.data.len(),
+                            &seg.name,
+                            &file.name,
+                        )?;
+                        (compressed, in_place, Compression::Lz4)
+                    }
                 }
             }
         };
@@ -314,16 +337,23 @@ fn lay_out_file(
         let name: HString<32> = HString::try_from(seg.name.as_str())
             .map_err(|_| format!("segment name too long: {}", seg.name))?;
 
+        // loaded_size = mem_size if provided (includes BSS tail),
+        // otherwise falls back to data.len() (no BSS).
+        let loaded_size = seg
+            .mem_size
+            .map(|m| m as u32)
+            .unwrap_or(seg.data.len() as u32);
+
         segments
             .push(Segment {
                 name,
                 kind: seg.kind,
                 offset: seg_offset,
                 stored_size: stored_data.len() as u32,
-                loaded_size: seg.data.len() as u32,
+                loaded_size,
                 in_place_size,
                 load_addr: seg.load_addr,
-                compression: seg.compression,
+                compression: actual_compression,
                 flags: seg.flags,
             })
             .map_err(|_| format!("too many segments in file '{}'", file.name))?;

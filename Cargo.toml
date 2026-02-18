@@ -45,6 +45,9 @@ dtoolkit = { version = "0.1", default-features = false }
 # Compression
 lz4_flex = { version = "0.11", default-features = false }
 
+# ELF parsing (host-side only)
+goblin = { version = "0.10", default-features = false, features = ["elf32", "elf64", "endian_fd"] }
+
 # xtask / host-side
 clap = { version = "4", features = ["derive"] }
 
