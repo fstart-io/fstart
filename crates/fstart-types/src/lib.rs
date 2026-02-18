@@ -14,7 +14,9 @@ pub mod memory;
 pub mod security;
 pub mod stage;
 
-pub use board::{BoardConfig, BuildMode, FdtSource, PayloadConfig, PayloadKind};
+pub use board::{
+    BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, PayloadConfig, PayloadKind,
+};
 pub use device::{DeviceConfig, Resources};
 pub use ffs::{
     AnchorBlock, Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, Region,

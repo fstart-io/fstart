@@ -10,6 +10,14 @@ global_asm!(
     .section .text.entry
     .global _start
 _start:
+    // Save boot arguments from QEMU before any register is clobbered.
+    // QEMU RISC-V virt passes: a0 = mhartid, a1 = DTB address.
+    //
+    // Following coreboot's approach (src/arch/riscv/bootblock.S): save DTB
+    // in the mscratch CSR which is immune to stack overflow. The hart ID
+    // can always be re-read from mhartid.
+    csrw mscratch, a1
+
     // Set up stack pointer (grows downward)
     la sp, _stack_top
 

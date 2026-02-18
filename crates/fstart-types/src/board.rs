@@ -48,8 +48,16 @@ pub struct PayloadConfig {
     pub kind: PayloadKind,
     /// Filename of kernel in FFS (e.g., "vmlinux")
     pub kernel_file: Option<HString<64>>,
+    /// Load address for the kernel in RAM
+    pub kernel_load_addr: Option<u64>,
     /// FDT source
     pub fdt: FdtSource,
+    /// Target address for the patched DTB in RAM
+    pub dtb_addr: Option<u64>,
+    /// Kernel command line (set in /chosen/bootargs)
+    pub bootargs: Option<HString<256>>,
+    /// SBI / ATF firmware blob configuration
+    pub firmware: Option<FirmwareConfig>,
 }
 
 /// What kind of payload to boot.
@@ -66,10 +74,35 @@ pub enum PayloadKind {
 /// Where the Flattened Device Tree comes from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FdtSource {
+    /// Use the DTB passed by QEMU/firmware at reset
+    Platform,
     /// Generate FDT automatically from this board.ron
     Generated,
     /// Use a separate DTS file (path relative to board directory)
     Override(HString<128>),
     /// Generate from RON but merge in DTS fragments
     GeneratedWithOverride(HString<128>),
+}
+
+/// Configuration for the SBI firmware (RISC-V) or ATF BL31 (AArch64)
+/// binary that is loaded before jumping to the OS.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirmwareConfig {
+    /// Kind of firmware
+    pub kind: FirmwareKind,
+    /// Path to the firmware binary (relative to board directory)
+    pub file: HString<128>,
+    /// Address in RAM where the firmware blob is loaded
+    pub load_addr: u64,
+}
+
+/// Kind of runtime firmware loaded before the OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FirmwareKind {
+    /// OpenSBI or RustSBI using the fw_dynamic protocol.
+    /// Entry: a0=hartid, a1=dtb, a2=&fw_dynamic_info.
+    OpenSbi,
+    /// ARM Trusted Firmware BL31.
+    /// Entry: x0=&bl_params.
+    ArmTrustedFirmware,
 }
