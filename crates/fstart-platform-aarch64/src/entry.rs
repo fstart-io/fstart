@@ -1,4 +1,8 @@
-//! AArch64 entry point.
+//! AArch64 entry point — reset vector and early init.
+//!
+//! Provides the `_start` symbol placed at the reset vector by the linker script.
+//! Saves the DTB address from QEMU (passed in `x0`), sets up the stack,
+//! clears BSS, and jumps to `fstart_main`.
 
 use core::arch::global_asm;
 
@@ -7,6 +11,10 @@ global_asm!(
     .section .text.entry
     .global _start
 _start:
+    // Save boot argument from QEMU before any register is clobbered.
+    // QEMU AArch64 virt passes: x0 = DTB address.
+    mov x19, x0
+
     // Disable all interrupts
     msr daifset, #0xf
 
@@ -23,6 +31,10 @@ _start:
     str xzr, [x0], #8
     b 1b
 2:
+    // Store boot DTB address to global (after BSS is cleared to zero)
+    ldr x0, =BOOT_DTB_ADDR
+    str x19, [x0]
+
     // Jump to Rust entry point
     bl fstart_main
     // Should never return

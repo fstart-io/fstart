@@ -453,6 +453,8 @@ pub enum FileType {
     Data,
     /// Raw region — a plain area with no special semantics.
     Raw,
+    /// Runtime firmware blob (SBI firmware or ATF BL31).
+    Firmware,
 }
 
 // ============================================================================
