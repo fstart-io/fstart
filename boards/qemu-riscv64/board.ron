@@ -13,8 +13,10 @@
 
     // Memory regions: only ROM and RAM.
     // Device MMIO addresses are in the device resources, not here.
-    // flash_base = where QEMU loads -bios (the FFS image sits here).
-    // flash_size = 4 MiB (max FFS image size for this board).
+    // flash_base = where QEMU loads the FFS image via -device loader.
+    // flash_size = 16 MiB reservation for the FFS image. BSS and stack
+    // are placed at flash_base + flash_size (0x81000000) by the linker
+    // script, so all payload load addresses must be beyond that region.
     memory: (
         regions: [
             ( name: "ram", base: 0x80000000, size: 0x08000000, kind: Ram ),
@@ -45,9 +47,15 @@
     stages: Monolithic((
         capabilities: [
             ConsoleInit( device: "uart0" ),
+            MemoryInit,
+            SigVerify,
+            FdtPrepare,
+            PayloadLoad,
         ],
         load_addr: 0x80000000,
-        stack_size: 0x10000,
+        // 256 KiB — debug builds with Ed25519 + SHA-256/SHA3 use
+        // significant stack space. 64 KiB overflows in debug mode.
+        stack_size: 0x40000,
     )),
 
     security: (
@@ -58,5 +66,30 @@
 
     mode: Rigid,
 
-    payload: None,
+    // Linux boot via RustSBI fw_dynamic protocol.
+    //
+    // Memory layout (128 MiB RAM at 0x80000000):
+    //   0x80000000 - FFS image (16 MiB reservation, ~9 MiB actual)
+    //   0x80100000 - RustSBI fw_dynamic (loaded from FFS, within reservation)
+    //   0x81000000 - BSS + stack (placed by linker at flash_base + flash_size)
+    //   0x82000000 - Linux kernel (loaded from FFS, in free RAM)
+    //   0x87F00000 - Patched DTB (copied from QEMU-provided DTB)
+    //   0x88000000 - End of RAM
+    //
+    // kernel_load_addr must be beyond the firmware infrastructure (BSS/stack
+    // at 0x81000000+). A 7.98 MiB kernel at 0x82000000 ends at ~0x827A0000,
+    // well below the DTB at 0x87F00000.
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("vmlinux"),
+        kernel_load_addr: Some(0x82000000),
+        fdt: Platform,
+        dtb_addr: Some(0x87F00000),
+        bootargs: Some("console=ttyS0 earlycon=sbi"),
+        firmware: Some((
+            kind: OpenSbi,
+            file: "fw_dynamic.bin",
+            load_addr: 0x80100000,
+        )),
+    )),
 )
