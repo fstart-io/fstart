@@ -1,32 +1,11 @@
-//! SPI bus service — SPI controller abstraction.
+//! SPI bus service — embedded-hal SPI trait re-exports.
+//!
+//! fstart uses [`embedded_hal::spi::SpiBus`] as the standard interface for
+//! SPI bus controllers, giving access to the embedded Rust driver ecosystem.
+//!
+//! SPI controller drivers implement `SpiBus` (and `ErrorType`).
+//! The [`SpiDevice`] trait is available for chip-select-aware wrappers.
 
-use crate::ServiceError;
-
-/// An SPI bus controller that can perform transactions via chip-select lines.
-///
-/// Implemented by SPI controller drivers. Child devices select their
-/// chip-select index; the controller handles the physical signalling.
-pub trait SpiBus: Send + Sync {
-    /// Perform a simultaneous transmit/receive SPI transfer.
-    ///
-    /// Selects chip-select `cs`, clocks out `tx` while clocking in `rx`.
-    /// `tx` and `rx` must have the same length.
-    /// Returns the number of bytes transferred.
-    fn transfer(&self, cs: u8, tx: &[u8], rx: &mut [u8]) -> Result<usize, ServiceError>;
-
-    /// Write-only SPI transfer (discard received data).
-    fn write(&self, cs: u8, data: &[u8]) -> Result<usize, ServiceError> {
-        let mut dummy = [0u8; 0];
-        // Default implementation: transfer with empty rx.
-        // Drivers should override for efficiency.
-        self.transfer(cs, data, &mut dummy)
-    }
-
-    /// Read-only SPI transfer (send zeros).
-    fn read(&self, cs: u8, buf: &mut [u8]) -> Result<usize, ServiceError> {
-        let zeros = [0u8; 0];
-        // Default implementation: transfer with empty tx.
-        // Drivers should override for efficiency.
-        self.transfer(cs, &zeros, buf)
-    }
-}
+pub use embedded_hal::spi::{
+    Error, ErrorKind, ErrorType, Mode, Operation, Phase, Polarity, SpiBus, SpiDevice,
+};

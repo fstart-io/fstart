@@ -7,15 +7,16 @@
 //! This driver operates in master-transmitter and master-receiver modes
 //! with 7-bit addressing. It uses polled (non-interrupt) I/O with
 //! spin-waits on status bits.
+//!
+//! Implements [`embedded_hal::i2c::I2c`] for ecosystem compatibility.
 
+use embedded_hal::i2c::{ErrorKind, ErrorType, I2c, NoAcknowledgeSource, Operation};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
 use tock_registers::registers::{ReadOnly, ReadWrite};
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::i2c::I2cBus;
-use fstart_services::ServiceError;
 
 // ---------------------------------------------------------------------------
 // Register definitions
@@ -211,6 +212,8 @@ pub struct DesignwareI2cConfig {
 ///
 /// Operates in 7-bit addressing master mode. Uses polled I/O
 /// (spin-waits on status register bits).
+///
+/// Implements [`embedded_hal::i2c::I2c`] for ecosystem compatibility.
 pub struct DesignwareI2c {
     regs: &'static DesignwareI2cRegs,
     clock_freq: u32,
@@ -327,7 +330,7 @@ impl DesignwareI2c {
     }
 
     /// Wait for the TX FIFO to have room (TFNF = TX FIFO Not Full).
-    fn wait_tx_ready(&self) -> Result<(), ServiceError> {
+    fn wait_tx_ready(&self) -> Result<(), ErrorKind> {
         for _ in 0..TIMEOUT_ITERS {
             if self.regs.ic_status.is_set(IC_STATUS::TFNF) {
                 return Ok(());
@@ -336,15 +339,15 @@ impl DesignwareI2c {
             if self.regs.ic_raw_intr_stat.is_set(IC_INTR::TX_ABRT) {
                 // Clear abort
                 let _ = self.regs.ic_clr_tx_abrt.get();
-                return Err(ServiceError::HardwareError);
+                return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown));
             }
             core::hint::spin_loop();
         }
-        Err(ServiceError::Timeout)
+        Err(ErrorKind::Bus)
     }
 
     /// Wait for data in the RX FIFO (RFNE = RX FIFO Not Empty).
-    fn wait_rx_ready(&self) -> Result<(), ServiceError> {
+    fn wait_rx_ready(&self) -> Result<(), ErrorKind> {
         for _ in 0..TIMEOUT_ITERS {
             if self.regs.ic_status.is_set(IC_STATUS::RFNE) {
                 return Ok(());
@@ -352,25 +355,30 @@ impl DesignwareI2c {
             // Check for TX abort (can happen during read address phase)
             if self.regs.ic_raw_intr_stat.is_set(IC_INTR::TX_ABRT) {
                 let _ = self.regs.ic_clr_tx_abrt.get();
-                return Err(ServiceError::HardwareError);
+                return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown));
             }
             core::hint::spin_loop();
         }
-        Err(ServiceError::Timeout)
+        Err(ErrorKind::Bus)
     }
 
     /// Set the target slave address. Must be done while controller is enabled.
     ///
     /// The DesignWare controller requires disabling and re-enabling to change
     /// the target address. For simplicity we always reconfigure.
-    fn set_target_addr(&self, addr: u8) -> Result<(), ServiceError> {
+    fn set_target_addr(&self, addr: u8) -> Result<(), ErrorKind> {
         // Disable to change target
         self.regs.ic_enable.write(IC_ENABLE::ENABLE::CLEAR);
+        let mut disabled = false;
         for _ in 0..TIMEOUT_ITERS {
             if self.regs.ic_enable_status.get() & 0x1 == 0 {
+                disabled = true;
                 break;
             }
             core::hint::spin_loop();
+        }
+        if !disabled {
+            return Err(ErrorKind::Bus);
         }
 
         self.regs.ic_tar.write(IC_TAR::IC_TAR_ADDR.val(addr as u32));
@@ -383,28 +391,68 @@ impl DesignwareI2c {
 
         Ok(())
     }
-}
 
-impl I2cBus for DesignwareI2c {
-    fn read(&self, addr: u8, reg: u8, buf: &mut [u8]) -> Result<usize, ServiceError> {
-        if buf.is_empty() {
-            return Ok(0);
+    /// Write bytes to the bus. If `send_stop` is true, the last byte
+    /// gets a STOP condition. An empty write with `send_stop` issues a
+    /// zero-length read with STOP to terminate the transaction cleanly.
+    fn write_bytes(&self, data: &[u8], send_stop: bool) -> Result<(), ErrorKind> {
+        if data.is_empty() {
+            if send_stop {
+                // No data to write, but we need a STOP on the bus.
+                // Issue a single read-with-STOP so the controller generates
+                // a STOP condition, then discard the byte.
+                self.wait_tx_ready()?;
+                self.regs
+                    .ic_data_cmd
+                    .write(IC_DATA_CMD::CMD::Read + IC_DATA_CMD::STOP::SET);
+                self.wait_rx_ready()?;
+                let _ = self.regs.ic_data_cmd.get();
+            }
+            return Ok(());
         }
 
-        self.set_target_addr(addr)?;
+        let last = data.len() - 1;
+        for (i, &byte) in data.iter().enumerate() {
+            self.wait_tx_ready()?;
+            if i == last && send_stop {
+                self.regs.ic_data_cmd.write(
+                    IC_DATA_CMD::DAT.val(byte as u32)
+                        + IC_DATA_CMD::CMD::Write
+                        + IC_DATA_CMD::STOP::SET,
+                );
+            } else {
+                self.regs
+                    .ic_data_cmd
+                    .write(IC_DATA_CMD::DAT.val(byte as u32) + IC_DATA_CMD::CMD::Write);
+            }
+        }
+        Ok(())
+    }
 
-        // Write the register address (no STOP — we'll RESTART for read)
-        self.wait_tx_ready()?;
-        self.regs
-            .ic_data_cmd
-            .write(IC_DATA_CMD::DAT.val(reg as u32) + IC_DATA_CMD::CMD::Write);
+    /// Issue read commands and collect bytes from the bus. If `send_stop`
+    /// is true, the last read gets a STOP condition. An empty read with
+    /// `send_stop` issues a dummy read-with-STOP to terminate the
+    /// transaction cleanly.
+    fn read_bytes(&self, buf: &mut [u8], send_stop: bool) -> Result<(), ErrorKind> {
+        if buf.is_empty() {
+            if send_stop {
+                // No data to read, but we need a STOP on the bus.
+                self.wait_tx_ready()?;
+                self.regs
+                    .ic_data_cmd
+                    .write(IC_DATA_CMD::CMD::Read + IC_DATA_CMD::STOP::SET);
+                self.wait_rx_ready()?;
+                let _ = self.regs.ic_data_cmd.get();
+            }
+            return Ok(());
+        }
+
+        let last = buf.len() - 1;
 
         // Issue read commands for each byte
-        let last = buf.len() - 1;
         for i in 0..buf.len() {
             self.wait_tx_ready()?;
-            if i == last {
-                // Last byte: generate STOP
+            if i == last && send_stop {
                 self.regs
                     .ic_data_cmd
                     .write(IC_DATA_CMD::CMD::Read + IC_DATA_CMD::STOP::SET);
@@ -419,42 +467,39 @@ impl I2cBus for DesignwareI2c {
             *byte = (self.regs.ic_data_cmd.get() & 0xFF) as u8;
         }
 
-        Ok(buf.len())
+        Ok(())
     }
+}
 
-    fn write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<usize, ServiceError> {
-        self.set_target_addr(addr)?;
+// ---------------------------------------------------------------------------
+// embedded-hal I2C implementation
+// ---------------------------------------------------------------------------
 
-        // Write register address
-        self.wait_tx_ready()?;
-        if data.is_empty() {
-            // If no data, send reg addr with STOP
-            self.regs
-                .ic_data_cmd
-                .write(IC_DATA_CMD::DAT.val(reg as u32) + IC_DATA_CMD::STOP::SET);
-            return Ok(0);
+impl ErrorType for DesignwareI2c {
+    type Error = ErrorKind;
+}
+
+impl I2c for DesignwareI2c {
+    fn transaction(
+        &mut self,
+        address: u8,
+        operations: &mut [Operation<'_>],
+    ) -> Result<(), Self::Error> {
+        if operations.is_empty() {
+            return Ok(());
         }
-        self.regs
-            .ic_data_cmd
-            .write(IC_DATA_CMD::DAT.val(reg as u32));
 
-        // Write data bytes
-        let last = data.len() - 1;
-        for (i, &byte) in data.iter().enumerate() {
-            self.wait_tx_ready()?;
-            if i == last {
-                self.regs.ic_data_cmd.write(
-                    IC_DATA_CMD::DAT.val(byte as u32)
-                        + IC_DATA_CMD::CMD::Write
-                        + IC_DATA_CMD::STOP::SET,
-                );
-            } else {
-                self.regs
-                    .ic_data_cmd
-                    .write(IC_DATA_CMD::DAT.val(byte as u32) + IC_DATA_CMD::CMD::Write);
+        self.set_target_addr(address)?;
+
+        let last_idx = operations.len() - 1;
+        for (i, op) in operations.iter_mut().enumerate() {
+            let send_stop = i == last_idx;
+            match op {
+                Operation::Write(data) => self.write_bytes(data, send_stop)?,
+                Operation::Read(buf) => self.read_bytes(buf, send_stop)?,
             }
         }
 
-        Ok(data.len())
+        Ok(())
     }
 }

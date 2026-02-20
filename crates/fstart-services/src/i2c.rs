@@ -1,20 +1,12 @@
-//! I2C bus service — I2C controller abstraction.
+//! I2C bus service — embedded-hal I2C trait re-exports.
+//!
+//! fstart uses [`embedded_hal::i2c::I2c`] as the standard interface for
+//! I2C bus controllers, giving access to the embedded Rust driver ecosystem.
+//!
+//! I2C controller drivers implement `I2c` (and `ErrorType`). Child devices
+//! on the bus use the `I2c` trait via their parent controller reference.
 
-use crate::ServiceError;
-
-/// An I2C bus controller that can perform transactions to child addresses.
-///
-/// Implemented by I2C controller drivers (e.g., DesignWare APB I2C).
-/// Child devices on the bus use this trait via their parent reference
-/// to communicate with their hardware.
-pub trait I2cBus: Send + Sync {
-    /// Read `buf.len()` bytes from `reg` on device at `addr`.
-    ///
-    /// Returns the number of bytes actually read.
-    fn read(&self, addr: u8, reg: u8, buf: &mut [u8]) -> Result<usize, ServiceError>;
-
-    /// Write `data` to `reg` on device at `addr`.
-    ///
-    /// Returns the number of bytes actually written.
-    fn write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<usize, ServiceError>;
-}
+pub use embedded_hal::i2c::{
+    Error, ErrorKind, ErrorType, I2c, NoAcknowledgeSource, Operation, SevenBitAddress,
+    TenBitAddress,
+};

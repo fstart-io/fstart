@@ -177,16 +177,44 @@ struct ServiceMethod {
     delegation: &'static str,
 }
 
+/// Distinguishes fstart-native traits from embedded-hal traits for codegen.
+enum TraitKind {
+    /// fstart-native trait with simple method delegation.
+    Native { methods: &'static [ServiceMethod] },
+    /// embedded-hal I2C trait (`I2c` + `ErrorType`).
+    EmbeddedI2c,
+    /// embedded-hal SPI trait (`SpiBus` + `ErrorType`).
+    EmbeddedSpi,
+}
+
 /// Full description of a service trait for enum codegen.
 struct ServiceTraitInfo {
-    /// Trait name (e.g., "Console")
+    /// RON-level service name (e.g., "I2cBus"). Matches the value in
+    /// `DeviceConfig::services`.
     name: &'static str,
     /// Generated enum name (e.g., "ConsoleDevice")
     enum_name: &'static str,
-    /// Methods that need delegation (only required methods — defaults are inherited)
-    methods: &'static [ServiceMethod],
+    /// What kind of trait this is and how to dispatch.
+    kind: TraitKind,
     /// Accessor name on StageContext (e.g., "console")
     accessor: &'static str,
+}
+
+impl ServiceTraitInfo {
+    /// The Rust trait name to use in generated code (e.g., `I2c` not `I2cBus`).
+    fn rust_trait_name(&self) -> &'static str {
+        match &self.kind {
+            TraitKind::Native { .. } => self.name,
+            TraitKind::EmbeddedI2c => "I2c",
+            TraitKind::EmbeddedSpi => "SpiBus",
+        }
+    }
+
+    /// Whether the StageContext accessor needs `&mut self` (embedded-hal
+    /// traits take `&mut self`).
+    fn is_mut_accessor(&self) -> bool {
+        matches!(self.kind, TraitKind::EmbeddedI2c | TraitKind::EmbeddedSpi)
+    }
 }
 
 /// Known service traits and their methods for enum dispatch generation.
@@ -194,98 +222,92 @@ const SERVICE_TRAITS: &[ServiceTraitInfo] = &[
     ServiceTraitInfo {
         name: "Console",
         enum_name: "ConsoleDevice",
-        methods: &[
-            ServiceMethod {
-                signature: "fn write_byte(&self, byte: u8) -> Result<(), ServiceError>",
-                delegation: "d.write_byte(byte)",
-            },
-            ServiceMethod {
-                signature: "fn read_byte(&self) -> Result<Option<u8>, ServiceError>",
-                delegation: "d.read_byte()",
-            },
-        ],
+        kind: TraitKind::Native {
+            methods: &[
+                ServiceMethod {
+                    signature: "fn write_byte(&self, byte: u8) -> Result<(), ServiceError>",
+                    delegation: "d.write_byte(byte)",
+                },
+                ServiceMethod {
+                    signature: "fn read_byte(&self) -> Result<Option<u8>, ServiceError>",
+                    delegation: "d.read_byte()",
+                },
+            ],
+        },
         accessor: "console",
     },
     ServiceTraitInfo {
         name: "BlockDevice",
         enum_name: "BlockDeviceEnum",
-        methods: &[
-            ServiceMethod {
-                signature:
-                    "fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError>",
-                delegation: "d.read(offset, buf)",
-            },
-            ServiceMethod {
-                signature:
-                    "fn write(&self, offset: u64, buf: &[u8]) -> Result<usize, ServiceError>",
-                delegation: "d.write(offset, buf)",
-            },
-            ServiceMethod {
-                signature: "fn size(&self) -> u64",
-                delegation: "d.size()",
-            },
-        ],
+        kind: TraitKind::Native {
+            methods: &[
+                ServiceMethod {
+                    signature:
+                        "fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError>",
+                    delegation: "d.read(offset, buf)",
+                },
+                ServiceMethod {
+                    signature:
+                        "fn write(&self, offset: u64, buf: &[u8]) -> Result<usize, ServiceError>",
+                    delegation: "d.write(offset, buf)",
+                },
+                ServiceMethod {
+                    signature: "fn size(&self) -> u64",
+                    delegation: "d.size()",
+                },
+            ],
+        },
         accessor: "block_device",
     },
     ServiceTraitInfo {
         name: "Timer",
         enum_name: "TimerDevice",
-        methods: &[
-            ServiceMethod {
-                signature: "fn delay_us(&self, us: u64)",
-                delegation: "d.delay_us(us)",
-            },
-            ServiceMethod {
-                signature: "fn timestamp_us(&self) -> u64",
-                delegation: "d.timestamp_us()",
-            },
-        ],
+        kind: TraitKind::Native {
+            methods: &[
+                ServiceMethod {
+                    signature: "fn delay_us(&self, us: u64)",
+                    delegation: "d.delay_us(us)",
+                },
+                ServiceMethod {
+                    signature: "fn timestamp_us(&self) -> u64",
+                    delegation: "d.timestamp_us()",
+                },
+            ],
+        },
         accessor: "timer",
     },
     ServiceTraitInfo {
         name: "I2cBus",
         enum_name: "I2cBusDevice",
-        methods: &[
-            ServiceMethod {
-                signature: "fn read(&self, addr: u8, reg: u8, buf: &mut [u8]) -> Result<usize, ServiceError>",
-                delegation: "d.read(addr, reg, buf)",
-            },
-            ServiceMethod {
-                signature: "fn write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<usize, ServiceError>",
-                delegation: "d.write(addr, reg, data)",
-            },
-        ],
+        kind: TraitKind::EmbeddedI2c,
         accessor: "i2c_bus",
     },
     ServiceTraitInfo {
         name: "SpiBus",
         enum_name: "SpiBusDevice",
-        methods: &[
-            ServiceMethod {
-                signature: "fn transfer(&self, cs: u8, tx: &[u8], rx: &mut [u8]) -> Result<usize, ServiceError>",
-                delegation: "d.transfer(cs, tx, rx)",
-            },
-        ],
+        kind: TraitKind::EmbeddedSpi,
         accessor: "spi_bus",
     },
     ServiceTraitInfo {
         name: "GpioController",
         enum_name: "GpioControllerDevice",
-        methods: &[
-            ServiceMethod {
-                signature: "fn get(&self, pin: u32) -> Result<bool, ServiceError>",
-                delegation: "d.get(pin)",
-            },
-            ServiceMethod {
-                signature: "fn set(&self, pin: u32, value: bool) -> Result<(), ServiceError>",
-                delegation: "d.set(pin, value)",
-            },
-            ServiceMethod {
-                signature:
-                    "fn set_direction(&self, pin: u32, output: bool) -> Result<(), ServiceError>",
-                delegation: "d.set_direction(pin, output)",
-            },
-        ],
+        kind: TraitKind::Native {
+            methods: &[
+                ServiceMethod {
+                    signature: "fn get(&self, pin: u32) -> Result<bool, ServiceError>",
+                    delegation: "d.get(pin)",
+                },
+                ServiceMethod {
+                    signature: "fn set(&self, pin: u32, value: bool) -> Result<(), ServiceError>",
+                    delegation: "d.set(pin, value)",
+                },
+                ServiceMethod {
+                    signature:
+                        "fn set_direction(&self, pin: u32, output: bool) -> Result<(), ServiceError>",
+                    delegation: "d.set_direction(pin, output)",
+                },
+            ],
+        },
         accessor: "gpio",
     },
 ];
@@ -652,10 +674,14 @@ fn generate_imports(
         .any(|d| d.services.iter().any(|s| s.as_str() == "GpioController"));
 
     if has_i2c {
-        tokens.extend(quote! { use fstart_services::I2cBus; });
+        tokens.extend(quote! {
+            use fstart_services::i2c::{I2c, ErrorType as I2cErrorType, ErrorKind as I2cErrorKind, Operation as I2cOperation};
+        });
     }
     if has_spi {
-        tokens.extend(quote! { use fstart_services::SpiBus; });
+        tokens.extend(quote! {
+            use fstart_services::spi::{SpiBus, ErrorType as SpiErrorType, ErrorKind as SpiErrorKind};
+        });
     }
     if has_gpio {
         tokens.extend(quote! { use fstart_services::GpioController; });
@@ -744,27 +770,11 @@ fn generate_flexible_enums(devices: &[DeviceConfig]) -> TokenStream {
         }
 
         let enum_name = format_ident!("{}", svc_info.enum_name);
-        let trait_name = format_ident!("{}", svc_info.name);
 
+        // Generate the enum (same for all trait kinds)
         let variants = drivers.iter().map(|drv| {
             let variant = format_ident!("{}", drv.type_name);
             quote! { #variant(#variant) }
-        });
-
-        let methods = svc_info.methods.iter().map(|method| {
-            let sig: TokenStream = method.signature.parse().unwrap();
-            let del: TokenStream = method.delegation.parse().unwrap();
-            let arms = drivers.iter().map(|drv| {
-                let variant = format_ident!("{}", drv.type_name);
-                quote! { Self::#variant(d) => #del, }
-            });
-            quote! {
-                #sig {
-                    match self {
-                        #(#arms)*
-                    }
-                }
-            }
         });
 
         let doc = format!(
@@ -777,14 +787,143 @@ fn generate_flexible_enums(devices: &[DeviceConfig]) -> TokenStream {
             enum #enum_name {
                 #(#variants,)*
             }
-
-            impl #trait_name for #enum_name {
-                #(#methods)*
-            }
         });
+
+        // Generate trait impl based on kind
+        match &svc_info.kind {
+            TraitKind::Native { methods } => {
+                tokens.extend(generate_native_enum_impl(svc_info, &drivers, methods));
+            }
+            TraitKind::EmbeddedI2c => {
+                tokens.extend(generate_embedded_i2c_enum_impl(svc_info, &drivers));
+            }
+            TraitKind::EmbeddedSpi => {
+                tokens.extend(generate_embedded_spi_enum_impl(svc_info, &drivers));
+            }
+        }
     }
 
     tokens
+}
+
+/// Generate native trait impl for a Flexible-mode enum (Console, Timer, etc.).
+fn generate_native_enum_impl(
+    svc_info: &ServiceTraitInfo,
+    drivers: &[&DriverInfo],
+    methods: &[ServiceMethod],
+) -> TokenStream {
+    let enum_name = format_ident!("{}", svc_info.enum_name);
+    let trait_name = format_ident!("{}", svc_info.name);
+
+    let method_impls = methods.iter().map(|method| {
+        let sig: TokenStream = method.signature.parse().unwrap();
+        let del: TokenStream = method.delegation.parse().unwrap();
+        let arms = drivers.iter().map(|drv| {
+            let variant = format_ident!("{}", drv.type_name);
+            quote! { Self::#variant(d) => #del, }
+        });
+        quote! {
+            #sig {
+                match self {
+                    #(#arms)*
+                }
+            }
+        }
+    });
+
+    quote! {
+        impl #trait_name for #enum_name {
+            #(#method_impls)*
+        }
+    }
+}
+
+/// Generate `ErrorType` + `I2c` impls for a Flexible-mode enum.
+///
+/// NOTE: The enum's error type is hardcoded to `I2cErrorKind`
+/// (`embedded_hal::i2c::ErrorKind`). All I2C driver variants must also use
+/// `ErrorKind` as their `ErrorType::Error`. This is the standard type-erased
+/// error in embedded-hal and should work for all MMIO-based controller
+/// drivers. If a future driver needs a custom error type, this function
+/// would need to be extended with error conversion logic.
+fn generate_embedded_i2c_enum_impl(
+    svc_info: &ServiceTraitInfo,
+    drivers: &[&DriverInfo],
+) -> TokenStream {
+    let enum_name = format_ident!("{}", svc_info.enum_name);
+
+    let transaction_arms = drivers.iter().map(|drv| {
+        let variant = format_ident!("{}", drv.type_name);
+        quote! { Self::#variant(d) => d.transaction(address, operations), }
+    });
+
+    quote! {
+        impl I2cErrorType for #enum_name {
+            type Error = I2cErrorKind;
+        }
+
+        impl I2c for #enum_name {
+            fn transaction(
+                &mut self,
+                address: u8,
+                operations: &mut [I2cOperation<'_>],
+            ) -> Result<(), Self::Error> {
+                match self {
+                    #(#transaction_arms)*
+                }
+            }
+        }
+    }
+}
+
+/// Generate `ErrorType` + `SpiBus` impls for a Flexible-mode enum.
+fn generate_embedded_spi_enum_impl(
+    svc_info: &ServiceTraitInfo,
+    drivers: &[&DriverInfo],
+) -> TokenStream {
+    let enum_name = format_ident!("{}", svc_info.enum_name);
+
+    // Helper: generate match arms that delegate to variant `d`
+    let make_arms = |delegation: &str| -> Vec<TokenStream> {
+        let del: TokenStream = delegation.parse().unwrap();
+        drivers
+            .iter()
+            .map(|drv| {
+                let variant = format_ident!("{}", drv.type_name);
+                quote! { Self::#variant(d) => #del, }
+            })
+            .collect()
+    };
+
+    let read_arms = make_arms("d.read(words)");
+    let write_arms = make_arms("d.write(words)");
+    let transfer_arms = make_arms("d.transfer(read, write)");
+    let transfer_ip_arms = make_arms("d.transfer_in_place(words)");
+    let flush_arms = make_arms("d.flush()");
+
+    quote! {
+        impl SpiErrorType for #enum_name {
+            type Error = SpiErrorKind;
+        }
+
+        impl SpiBus for #enum_name {
+            fn read(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
+                match self { #(#read_arms)* }
+            }
+            fn write(&mut self, words: &[u8]) -> Result<(), Self::Error> {
+                match self { #(#write_arms)* }
+            }
+            fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
+                match self { #(#transfer_arms)* }
+            }
+            fn transfer_in_place(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
+                match self { #(#transfer_ip_arms)* }
+            }
+            fn flush(&mut self) -> Result<(), Self::Error> {
+                match self { #(#flush_arms)* }
+            }
+        }
+    }
 }
 
 /// Emit the `Devices` struct — one concrete typed field per device.
@@ -822,22 +961,29 @@ fn generate_stage_context(devices: &[DeviceConfig], mode: BuildMode) -> TokenStr
             .find(|d| d.services.iter().any(|s| s.as_str() == svc.name))?;
         let accessor_name = format_ident!("{}", svc.accessor);
         let field = format_ident!("{}", dev.name.as_str());
+        let is_mut = svc.is_mut_accessor();
+
+        let (self_param, ref_token) = if is_mut {
+            (quote! { &mut self }, quote! { &mut })
+        } else {
+            (quote! { &self }, quote! { & })
+        };
 
         let return_type = match mode {
             BuildMode::Rigid => {
-                let trait_name = format_ident!("{}", svc.name);
-                quote! { &(impl #trait_name + '_) }
+                let trait_name = format_ident!("{}", svc.rust_trait_name());
+                quote! { #ref_token (impl #trait_name + '_) }
             }
             BuildMode::Flexible => {
                 let enum_name = format_ident!("{}", svc.enum_name);
-                quote! { &#enum_name }
+                quote! { #ref_token #enum_name }
             }
         };
 
         Some(quote! {
             #[inline]
-            fn #accessor_name(&self) -> #return_type {
-                &self.devices.#field
+            fn #accessor_name(#self_param) -> #return_type {
+                #ref_token self.devices.#field
             }
         })
     });
@@ -2018,7 +2164,7 @@ mod tests {
     }
 
     #[test]
-    fn test_i2c_bus_generates_i2c_bus_import() {
+    fn test_i2c_bus_generates_embedded_hal_import() {
         let mut caps = heapless::Vec::new();
         let _ = caps.push(Capability::ConsoleInit {
             device: heapless::String::try_from("uart0").unwrap(),
@@ -2027,9 +2173,10 @@ mod tests {
         let source = generate_stage_source(&config, None);
 
         assert!(
-            source.contains("use fstart_services::I2cBus;"),
-            "should import I2cBus trait"
+            source.contains("use fstart_services::i2c::"),
+            "should import embedded-hal I2C traits from fstart_services: {source}"
         );
+        assert!(source.contains("I2c"), "should import I2c trait: {source}");
     }
 
     #[test]
@@ -2045,7 +2192,10 @@ mod tests {
             source.contains("fn i2c_bus("),
             "should generate i2c_bus() accessor"
         );
-        assert!(source.contains("impl I2cBus"), "should return impl I2cBus");
+        assert!(
+            source.contains("impl I2c"),
+            "should return impl I2c: {source}"
+        );
     }
 
     #[test]
@@ -2440,8 +2590,16 @@ mod tests {
             "should have DesignwareI2c variant: {source}"
         );
         assert!(
-            source.contains("impl I2cBus for I2cBusDevice"),
-            "should impl I2cBus for I2cBusDevice: {source}"
+            source.contains("impl I2cErrorType for I2cBusDevice"),
+            "should impl ErrorType for I2cBusDevice: {source}"
+        );
+        assert!(
+            source.contains("impl I2c for I2cBusDevice"),
+            "should impl I2c for I2cBusDevice: {source}"
+        );
+        assert!(
+            source.contains("fn transaction("),
+            "should have transaction method: {source}"
         );
     }
 

@@ -310,6 +310,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-hal"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
+
+[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -388,6 +394,7 @@ dependencies = [
 name = "fstart-drivers"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal",
  "fstart-services",
  "tock-registers",
 ]
@@ -428,6 +435,9 @@ version = "0.1.0"
 [[package]]
 name = "fstart-services"
 version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+]
 
 [[package]]
 name = "fstart-stage"

@@ -56,7 +56,7 @@ pub trait Device: Send + Sync + Sized {
 ///
 /// ```ignore
 /// impl BusDevice for Slb9670 {
-///     type ParentBus = dyn I2cBus;
+///     type ParentBus = dyn I2c<Error = embedded_hal::i2c::ErrorKind>;
 /// }
 /// ```
 pub trait BusDevice: Device {
