@@ -25,7 +25,7 @@ pub use boot_media::{BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMap
 pub use console::Console;
 pub use device::{BusDevice, Device, DeviceError};
 pub use gpio::GpioController;
-pub use i2c::I2cBus;
+pub use i2c::I2c;
 pub use spi::SpiBus;
 pub use timer::Timer;
 

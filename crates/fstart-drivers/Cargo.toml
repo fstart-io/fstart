@@ -12,5 +12,6 @@ sifive-uart = []
 designware-i2c = []
 
 [dependencies]
+embedded-hal = { workspace = true }
 fstart-services = { workspace = true }
 tock-registers = "0.10"

@@ -35,6 +35,7 @@ ed25519-dalek = { version = "2", default-features = false, features = ["fast"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 # Embedded / no_std utilities
+embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", features = ["serde"] }
 ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
