@@ -1,5 +1,7 @@
 //! Generate linker scripts from board memory map.
 
+use std::fmt::Write;
+
 use fstart_types::{BoardConfig, RegionKind, StageLayout};
 
 /// Generate a linker script for the given board and (optional) stage.
@@ -51,12 +53,14 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         .map(|r| (r.base, r.size))
         .unwrap_or((0x8000_0000, 0x0800_0000));
 
-    out.push_str(&format!(
-        "/* Auto-generated linker script for board: {} */\n\n",
+    writeln!(
+        out,
+        "/* Auto-generated linker script for board: {} */\n",
         config.name
-    ));
-    out.push_str(&format!("OUTPUT_ARCH({arch})\n"));
-    out.push_str("ENTRY(_start)\n\n");
+    )
+    .unwrap();
+    writeln!(out, "OUTPUT_ARCH({arch})").unwrap();
+    writeln!(out, "ENTRY(_start)\n").unwrap();
 
     if let Some(rom) = rom_region {
         // XIP layout: code in ROM, data/bss/stack in RAM.
@@ -113,55 +117,57 @@ fn generate_xip_layout(
     let rw_origin = data_addr.unwrap_or(ram_origin);
     let rw_length = ram_length - (rw_origin - ram_origin);
 
-    out.push_str("MEMORY\n{\n");
-    out.push_str(&format!(
-        "    ROM (rx)  : ORIGIN = {rom_origin:#x}, LENGTH = {rom_length:#x}\n"
-    ));
-    out.push_str(&format!(
-        "    RAM (rwx) : ORIGIN = {rw_origin:#x}, LENGTH = {rw_length:#x}\n"
-    ));
-    out.push_str("}\n\n");
+    writeln!(out, "MEMORY\n{{").unwrap();
+    writeln!(
+        out,
+        "    ROM (rx)  : ORIGIN = {rom_origin:#x}, LENGTH = {rom_length:#x}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    RAM (rwx) : ORIGIN = {rw_origin:#x}, LENGTH = {rw_length:#x}"
+    )
+    .unwrap();
+    writeln!(out, "}}\n").unwrap();
 
-    out.push_str("SECTIONS\n{\n");
+    writeln!(out, "SECTIONS\n{{").unwrap();
 
     // Code in ROM
-    out.push_str("    .text : {\n");
-    out.push_str("        *(.text.entry)\n");
-    out.push_str("        *(.text .text.*)\n");
-    out.push_str("    } > ROM\n\n");
+    writeln!(out, "    .text : {{").unwrap();
+    writeln!(out, "        *(.text.entry)").unwrap();
+    writeln!(out, "        *(.text .text.*)").unwrap();
+    writeln!(out, "    }} > ROM\n").unwrap();
 
     // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
-    out.push_str("    .fstart.anchor : ALIGN(8) {\n");
-    out.push_str("        *(.fstart.anchor)\n");
-    out.push_str("    } > ROM\n\n");
+    writeln!(out, "    .fstart.anchor : ALIGN(8) {{").unwrap();
+    writeln!(out, "        *(.fstart.anchor)").unwrap();
+    writeln!(out, "    }} > ROM\n").unwrap();
 
     // Read-only data in ROM
-    out.push_str("    .rodata : ALIGN(8) {\n");
-    out.push_str("        *(.rodata .rodata.*)\n");
-    out.push_str("    } > ROM\n\n");
+    writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
+    writeln!(out, "        *(.rodata .rodata.*)").unwrap();
+    writeln!(out, "    }} > ROM\n").unwrap();
 
     // Initialized data: stored in ROM, copied to RAM at startup
-    // For now, place in RAM directly (QEMU loads entire bios image,
-    // and our monolithic stage doesn't need a copy loop yet)
-    out.push_str("    .data : ALIGN(8) {\n");
-    out.push_str("        _data_start = .;\n");
-    out.push_str("        *(.data .data.*)\n");
-    out.push_str("        _data_end = .;\n");
-    out.push_str("    } > RAM\n\n");
+    writeln!(out, "    .data : ALIGN(8) {{").unwrap();
+    writeln!(out, "        _data_start = .;").unwrap();
+    writeln!(out, "        *(.data .data.*)").unwrap();
+    writeln!(out, "        _data_end = .;").unwrap();
+    writeln!(out, "    }} > RAM\n").unwrap();
 
     // BSS in RAM
-    out.push_str("    .bss (NOLOAD) : ALIGN(8) {\n");
-    out.push_str("        _bss_start = .;\n");
-    out.push_str("        *(.bss .bss.*)\n");
-    out.push_str("        *(COMMON)\n");
-    out.push_str("        _bss_end = .;\n");
-    out.push_str("    } > RAM\n\n");
+    writeln!(out, "    .bss (NOLOAD) : ALIGN(8) {{").unwrap();
+    writeln!(out, "        _bss_start = .;").unwrap();
+    writeln!(out, "        *(.bss .bss.*)").unwrap();
+    writeln!(out, "        *(COMMON)").unwrap();
+    writeln!(out, "        _bss_end = .;").unwrap();
+    writeln!(out, "    }} > RAM\n").unwrap();
 
     // Stack in RAM
-    out.push_str("    . = ALIGN(16);\n");
-    out.push_str(&format!("    . = . + {stack_size:#x};\n"));
-    out.push_str("    _stack_top = .;\n");
-    out.push_str("}\n");
+    writeln!(out, "    . = ALIGN(16);").unwrap();
+    writeln!(out, "    . = . + {stack_size:#x};").unwrap();
+    writeln!(out, "    _stack_top = .;").unwrap();
+    writeln!(out, "}}").unwrap();
 }
 
 /// Generate linker script with everything in RAM (load_addr is in a RAM region).
@@ -176,87 +182,90 @@ fn generate_ram_layout(
     stack_size: u64,
     bss_origin: Option<u64>,
 ) {
-    // When BSS must be placed at a fixed address (to avoid overlapping the
-    // FFS image), split RAM into two memory regions: CODE for the binary and
-    // RWDATA for BSS/stack. The linker respects memory region assignments
-    // more reliably than bare location-counter overrides.
     if let Some(bss_addr) = bss_origin {
         let code_length = bss_addr - ram_origin;
         let rw_length = ram_length - code_length;
 
-        out.push_str("MEMORY\n{\n");
-        out.push_str(&format!(
-            "    CODE  (rwx) : ORIGIN = {ram_origin:#x}, LENGTH = {code_length:#x}\n"
-        ));
-        out.push_str(&format!(
-            "    RWDATA (rwx) : ORIGIN = {bss_addr:#x}, LENGTH = {rw_length:#x}\n"
-        ));
-        out.push_str("}\n\n");
+        writeln!(out, "MEMORY\n{{").unwrap();
+        writeln!(
+            out,
+            "    CODE  (rwx) : ORIGIN = {ram_origin:#x}, LENGTH = {code_length:#x}"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "    RWDATA (rwx) : ORIGIN = {bss_addr:#x}, LENGTH = {rw_length:#x}"
+        )
+        .unwrap();
+        writeln!(out, "}}\n").unwrap();
 
-        out.push_str("SECTIONS\n{\n");
-        out.push_str("    .text : {\n");
-        out.push_str("        *(.text.entry)\n");
-        out.push_str("        *(.text .text.*)\n");
-        out.push_str("    } > CODE\n\n");
-
-        out.push_str("    .fstart.anchor : ALIGN(8) {\n");
-        out.push_str("        *(.fstart.anchor)\n");
-        out.push_str("    } > CODE\n\n");
-
-        out.push_str("    .rodata : ALIGN(8) {\n");
-        out.push_str("        *(.rodata .rodata.*)\n");
-        out.push_str("    } > CODE\n\n");
-
-        out.push_str("    .data : ALIGN(8) {\n");
-        out.push_str("        *(.data .data.*)\n");
-        out.push_str("    } > CODE\n\n");
-
-        out.push_str("    .bss (NOLOAD) : ALIGN(8) {\n");
-        out.push_str("        _bss_start = .;\n");
-        out.push_str("        *(.bss .bss.*)\n");
-        out.push_str("        *(COMMON)\n");
-        out.push_str("        _bss_end = .;\n");
-        out.push_str("    } > RWDATA\n\n");
-
-        out.push_str("    . = ALIGN(16);\n");
-        out.push_str(&format!("    . = . + {stack_size:#x};\n"));
-        out.push_str("    _stack_top = .;\n");
-        out.push_str("}\n");
+        writeln!(out, "SECTIONS\n{{").unwrap();
+        write_text_section(out, "CODE");
+        write_anchor_section(out, "CODE");
+        write_rodata_section(out, "CODE");
+        write_data_section(out, "CODE");
+        write_bss_section(out, "RWDATA");
+        write_stack(out, stack_size);
+        writeln!(out, "}}").unwrap();
     } else {
-        out.push_str("MEMORY\n{\n");
-        out.push_str(&format!(
-            "    RAM (rwx) : ORIGIN = {ram_origin:#x}, LENGTH = {ram_length:#x}\n"
-        ));
-        out.push_str("}\n\n");
+        writeln!(out, "MEMORY\n{{").unwrap();
+        writeln!(
+            out,
+            "    RAM (rwx) : ORIGIN = {ram_origin:#x}, LENGTH = {ram_length:#x}"
+        )
+        .unwrap();
+        writeln!(out, "}}\n").unwrap();
 
-        out.push_str("SECTIONS\n{\n");
-        out.push_str("    .text : {\n");
-        out.push_str("        *(.text.entry)\n");
-        out.push_str("        *(.text .text.*)\n");
-        out.push_str("    } > RAM\n\n");
-
-        out.push_str("    .fstart.anchor : ALIGN(8) {\n");
-        out.push_str("        *(.fstart.anchor)\n");
-        out.push_str("    } > RAM\n\n");
-
-        out.push_str("    .rodata : ALIGN(8) {\n");
-        out.push_str("        *(.rodata .rodata.*)\n");
-        out.push_str("    } > RAM\n\n");
-
-        out.push_str("    .data : ALIGN(8) {\n");
-        out.push_str("        *(.data .data.*)\n");
-        out.push_str("    } > RAM\n\n");
-
-        out.push_str("    .bss (NOLOAD) : ALIGN(8) {\n");
-        out.push_str("        _bss_start = .;\n");
-        out.push_str("        *(.bss .bss.*)\n");
-        out.push_str("        *(COMMON)\n");
-        out.push_str("        _bss_end = .;\n");
-        out.push_str("    } > RAM\n\n");
-
-        out.push_str("    . = ALIGN(16);\n");
-        out.push_str(&format!("    . = . + {stack_size:#x};\n"));
-        out.push_str("    _stack_top = .;\n");
-        out.push_str("}\n");
+        writeln!(out, "SECTIONS\n{{").unwrap();
+        write_text_section(out, "RAM");
+        write_anchor_section(out, "RAM");
+        write_rodata_section(out, "RAM");
+        write_data_section(out, "RAM");
+        write_bss_section(out, "RAM");
+        write_stack(out, stack_size);
+        writeln!(out, "}}").unwrap();
     }
+}
+
+// Shared section helpers to avoid duplicating the identical section
+// definitions between the split-RAM and single-RAM layout branches.
+
+fn write_text_section(out: &mut String, region: &str) {
+    writeln!(out, "    .text : {{").unwrap();
+    writeln!(out, "        *(.text.entry)").unwrap();
+    writeln!(out, "        *(.text .text.*)").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
+}
+
+fn write_anchor_section(out: &mut String, region: &str) {
+    writeln!(out, "    .fstart.anchor : ALIGN(8) {{").unwrap();
+    writeln!(out, "        *(.fstart.anchor)").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
+}
+
+fn write_rodata_section(out: &mut String, region: &str) {
+    writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
+    writeln!(out, "        *(.rodata .rodata.*)").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
+}
+
+fn write_data_section(out: &mut String, region: &str) {
+    writeln!(out, "    .data : ALIGN(8) {{").unwrap();
+    writeln!(out, "        *(.data .data.*)").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
+}
+
+fn write_bss_section(out: &mut String, region: &str) {
+    writeln!(out, "    .bss (NOLOAD) : ALIGN(8) {{").unwrap();
+    writeln!(out, "        _bss_start = .;").unwrap();
+    writeln!(out, "        *(.bss .bss.*)").unwrap();
+    writeln!(out, "        *(COMMON)").unwrap();
+    writeln!(out, "        _bss_end = .;").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
+}
+
+fn write_stack(out: &mut String, stack_size: u64) {
+    writeln!(out, "    . = ALIGN(16);").unwrap();
+    writeln!(out, "    . = . + {stack_size:#x};").unwrap();
+    writeln!(out, "    _stack_top = .;").unwrap();
 }
