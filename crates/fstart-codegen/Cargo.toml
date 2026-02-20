@@ -8,6 +8,10 @@ license.workspace = true
 fstart-types = { workspace = true, features = ["std"] }
 ron = { workspace = true }
 serde = { workspace = true, features = ["std"] }
+quote = "1"
+proc-macro2 = "1"
+syn = { version = "2", features = ["full"] }
+prettyplease = "0.2"
 
 [dev-dependencies]
 heapless = { workspace = true }
