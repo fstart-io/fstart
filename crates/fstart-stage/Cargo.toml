@@ -23,6 +23,8 @@ sha3-digest = ["ffs", "fstart-capabilities/sha3-digest", "fstart-ffs/sha3-digest
 lz4 = ["ffs", "fstart-capabilities/lz4"]
 # FDT preparation for Linux boot (bump allocator + dtoolkit)
 fdt = ["fstart-capabilities/fdt", "dep:fstart-alloc"]
+# FIT image parsing at runtime
+fit = ["ffs", "fstart-capabilities/fit", "dep:fstart-fit"]
 
 [dependencies]
 fstart-services = { workspace = true }
@@ -35,6 +37,7 @@ fstart-types = { workspace = true }
 fstart-platform-riscv64 = { workspace = true, optional = true }
 fstart-platform-aarch64 = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
+fstart-fit = { workspace = true, optional = true }
 fstart-alloc = { workspace = true, optional = true }
 
 [build-dependencies]

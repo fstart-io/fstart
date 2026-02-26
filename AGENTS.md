@@ -69,7 +69,7 @@ Note: `fstart-stage`, `fstart-runtime`, and platform crates are `no_std` `#![no_
 binaries — they cannot be tested with `cargo test` on the host. Test logic for these
 via `fstart-types` or `fstart-codegen` (which are `std`-capable).
 
-## Workspace Layout (14 crates)
+## Workspace Layout (15 crates)
 
 | Crate | Runs on | Purpose |
 |---|---|---|
@@ -77,6 +77,7 @@ via `fstart-types` or `fstart-codegen` (which are `std`-capable).
 | `fstart-codegen` | host/build.rs | RON→Rust codegen, linker script gen |
 | `fstart-types` | both (`std` feature) | `BoardConfig`, `MemoryMap`, all shared types |
 | `fstart-ffs` | both (`std` feature) | Firmware filesystem reader/builder |
+| `fstart-fit` | both (`std` feature) | FIT (Flattened Image Tree) parser |
 | `fstart-stage` | target | Final binary — `include!`s generated code |
 | `fstart-runtime` | target | `#[panic_handler]` |
 | `fstart-services` | target | Trait defs: `Console`, `BlockDevice`, `Timer`, `Device`, `BusDevice` |
@@ -189,7 +190,8 @@ boards/qemu-riscv64/board.ron
 Features flow from RON → xtask → `--features` on `fstart-stage`:
 - `riscv64` / `aarch64` — selects platform crate (optional dep)
 - `ns16550` / `pl011` / `sifive-uart` — enables driver modules
-- `std` on `fstart-types` / `fstart-ffs` — used by host-side tools only
+- `fit` — FIT image runtime parsing (via `fstart-fit` + `ffs`)
+- `std` on `fstart-types` / `fstart-ffs` / `fstart-fit` — used by host-side tools only
 
 ## Known IDE Issues (Not Real Errors)
 
@@ -197,6 +199,174 @@ Features flow from RON → xtask → `--features` on `fstart-stage`:
   `FSTART_BOARD_RON` which the IDE doesn't set. Actual builds are clean.
 - `fstart-runtime` conflicts with std's `panic_handler` when checked as host target.
   This is expected for `no_std` crates.
+
+## FIT (Flattened Image Tree) Payload Support
+
+FIT images (U-Boot's `.itb` format) bundle kernel, ramdisk, FDT, and firmware
+into a single DTB-format blob with SHA-256 hash integrity and configuration
+selection. The `fstart-fit` crate parses FIT images and runs identically at
+buildtime (xtask, `std`) and runtime (firmware, `no_std`) — zero code duplication.
+
+### Two Parse Modes (selected in RON via `fit_parse`)
+
+- **Buildtime** (`fit_parse: Some(Buildtime)` or omitted): xtask reads the `.itb`,
+  extracts kernel/ramdisk/fdt as separate FFS entries. Firmware loads them like
+  LinuxBoot. The FIT parser runs in xtask at assembly time.
+- **Runtime** (`fit_parse: Some(Runtime)`): the whole `.itb` is embedded in FFS.
+  Firmware parses the FIT in-place (zero-copy on memory-mapped flash) and copies
+  each component to its load address from the FIT metadata.
+
+### Building FIT Images
+
+FIT images are built from `.its` (Image Tree Source) files using `mkimage` (from
+u-boot-tools) and `dtc` (device tree compiler). Templates are in `fit/`.
+
+```bash
+# Prerequisites: Linux kernel and u-root initramfs
+# See "Building Test Payloads" below.
+
+# Build FIT for riscv64
+nix-shell -p ubootTools dtc --run "mkimage -f fit/qemu-riscv64.its fit/qemu-riscv64.itb"
+
+# Build FIT for aarch64
+nix-shell -p ubootTools dtc --run "mkimage -f fit/qemu-aarch64.its fit/qemu-aarch64.itb"
+```
+
+### RON Example (FIT Buildtime)
+
+```ron
+payload: Some((
+    kind: FitImage,
+    fit_file: Some("../../fit/qemu-riscv64.itb"),
+    fit_config: None,           // use default FIT configuration
+    fit_parse: Some(Buildtime), // extract at build, embed as separate FFS entries
+    fdt: Platform,
+    dtb_addr: Some(0x87F00000),
+    bootargs: Some("console=ttyS0 earlycon=sbi"),
+    firmware: Some((
+        kind: OpenSbi,
+        file: "fw_dynamic.bin",
+        load_addr: 0x80100000,
+    )),
+))
+```
+
+### RON Example (FIT Runtime)
+
+```ron
+payload: Some((
+    kind: FitImage,
+    fit_file: Some("../../fit/qemu-riscv64.itb"),
+    fit_config: None,
+    fit_parse: Some(Runtime),   // embed whole .itb, parse at boot
+    fdt: Platform,
+    dtb_addr: Some(0x87F00000),
+    bootargs: Some("console=ttyS0 earlycon=sbi"),
+    firmware: Some((
+        kind: OpenSbi,
+        file: "fw_dynamic.bin",
+        load_addr: 0x80100000,
+    )),
+))
+```
+
+## Building Test Payloads
+
+External repositories are used to build Linux kernels and initramfs images for
+testing FIT payloads in QEMU.
+
+### u-root initramfs (Go-based, at `~/src/u-root`)
+
+u-root builds lightweight Go initramfs images with standard Linux tools (ls, cat,
+init, shell, kexec, etc.). It also contains a native FIT parser and `fitboot`
+command in Go.
+
+```bash
+# Install the u-root tool
+cd ~/src/u-root && go install
+
+# Build riscv64 initramfs
+GOARCH=riscv64 GOOS=linux GORISCV64=rva22u64 \
+    u-root -o fit/initramfs-riscv64 core
+
+# Build aarch64 initramfs
+GOARCH=arm64 GOOS=linux \
+    u-root -o fit/initramfs-aarch64 core
+```
+
+### Linux kernel (at `~/src/linux`)
+
+Minimal kernel configs for QEMU virt machines are provided by u-root in
+`~/src/u-root/configs/`.
+
+```bash
+# riscv64 kernel
+cd ~/src/linux
+nix-shell -p gcc14 flex bison bc perl --run "
+    export CROSS_COMPILE=riscv64-unknown-linux-gnu-
+    export ARCH=riscv
+    make mrproper
+    make tinyconfig
+    cat ~/src/u-root/configs/riscv64_config.txt \
+        ~/src/u-root/configs/generic_config.txt >> .config
+    make olddefconfig
+    make -j\$(($(nproc) * 2 + 1))
+"
+cp ~/src/linux/arch/riscv/boot/Image fit/Image-riscv64
+
+# aarch64 kernel
+cd ~/src/linux
+nix-shell -p gcc14 flex bison bc perl --run "
+    export CROSS_COMPILE=aarch64-unknown-linux-gnu-
+    export ARCH=arm64
+    make mrproper
+    make tinyconfig
+    cat ~/src/u-root/configs/arm64_config.txt \
+        ~/src/u-root/configs/generic_config.txt >> .config
+    make olddefconfig
+    make -j\$(($(nproc) * 2 + 1))
+"
+cp ~/src/linux/arch/arm64/boot/Image fit/Image-aarch64
+```
+
+### Full FIT test workflow
+
+```bash
+# 1. Build initramfs (both architectures)
+cd ~/src/u-root && go install
+GOARCH=riscv64 GOOS=linux u-root -o ~/src/fstart_ParseFITBuildtime/fit/initramfs-riscv64 core
+GOARCH=arm64 GOOS=linux u-root -o ~/src/fstart_ParseFITBuildtime/fit/initramfs-aarch64 core
+
+# 2. Build Linux kernels and copy to fit/
+# (see above)
+
+# 3. Build FIT images
+cd ~/src/fstart_ParseFITBuildtime
+nix-shell -p ubootTools dtc --run "mkimage -f fit/qemu-riscv64.its fit/qemu-riscv64.itb"
+nix-shell -p ubootTools dtc --run "mkimage -f fit/qemu-aarch64.its fit/qemu-aarch64.itb"
+
+# 4. Assemble and run with fstart
+cargo xtask assemble --board qemu-riscv64
+cargo xtask run --board qemu-riscv64
+```
+
+### Standalone QEMU test (without fstart, to verify kernel+initramfs work)
+
+```bash
+nix-shell -p qemu --run "
+    qemu-system-riscv64 -M virt -cpu rv64 -m 1G -nographic \
+        -kernel fit/Image-riscv64 \
+        -initrd fit/initramfs-riscv64 \
+        -append 'earlycon=sbi console=ttyS0'
+"
+
+nix-shell -p qemu --run "
+    qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1G -nographic \
+        -kernel fit/Image-aarch64 \
+        -initrd fit/initramfs-aarch64 \
+        -append 'console=ttyAMA0'
+"
+```
 
 ## What Not to Do
 

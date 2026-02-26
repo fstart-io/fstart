@@ -69,6 +69,22 @@ pub struct PayloadConfig {
     pub bootargs: Option<HString<256>>,
     /// SBI / ATF firmware blob configuration
     pub firmware: Option<FirmwareConfig>,
+    /// Path to a FIT (.itb) image file (relative to board directory).
+    ///
+    /// Used when `kind` is `FitImage`. The FIT bundles kernel, ramdisk,
+    /// and optionally FDT into a single DTB-format blob.
+    #[serde(default)]
+    pub fit_file: Option<HString<128>>,
+    /// FIT configuration name to use (e.g., "conf-1").
+    ///
+    /// When `None`, the FIT's `default` configuration is used.
+    #[serde(default)]
+    pub fit_config: Option<HString<64>>,
+    /// Whether to parse the FIT at buildtime or runtime.
+    ///
+    /// Defaults to `None` (same as `Buildtime` when `kind` is `FitImage`).
+    #[serde(default)]
+    pub fit_parse: Option<FitParseMode>,
 }
 
 /// What kind of payload to boot.
@@ -76,10 +92,32 @@ pub struct PayloadConfig {
 pub enum PayloadKind {
     /// Boot Linux kernel via platform boot protocol
     LinuxBoot,
+    /// Boot from a FIT (Flattened Image Tree) image.
+    ///
+    /// FIT images bundle kernel, ramdisk, FDT, and firmware into a single
+    /// DTB-format blob with hash integrity and configuration selection.
+    /// See `fit_parse` for whether the FIT is parsed at buildtime or runtime.
+    FitImage,
     /// Interactive debug shell
     Shell,
     /// Custom ELF payload
     CustomElf,
+}
+
+/// When to parse a FIT image.
+///
+/// Both modes use the same parser code (`fstart-fit`); this controls
+/// whether extraction happens at buildtime (xtask) or runtime (firmware).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FitParseMode {
+    /// Parse at buildtime: xtask reads the .itb, extracts kernel/ramdisk/fdt
+    /// components, and embeds them as separate FFS entries. The firmware
+    /// loads them as individual blobs (like LinuxBoot).
+    Buildtime,
+    /// Parse at runtime: the whole .itb is embedded in FFS as a single entry.
+    /// The firmware parses the FIT in-place (zero-copy on memory-mapped flash)
+    /// and copies each component to its load address.
+    Runtime,
 }
 
 /// Where the Flattened Device Tree comes from.

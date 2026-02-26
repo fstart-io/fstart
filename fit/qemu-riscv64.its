@@ -1,0 +1,51 @@
+// FIT image source for QEMU riscv64 virt
+//
+// Build:
+//   nix-shell -p ubootTools dtc --run "mkimage -f fit/qemu-riscv64.its fit/qemu-riscv64.itb"
+//
+// Requires:
+//   fit/Image-riscv64        — Linux kernel (arch/riscv/boot/Image)
+//   fit/initramfs-riscv64    — u-root initramfs CPIO
+
+/dts-v1/;
+
+/ {
+    description = "FIT image for QEMU riscv64 virt (fstart)";
+    #address-cells = <2>;
+
+    images {
+        kernel {
+            description = "Linux kernel";
+            data = /incbin/("Image-riscv64");
+            type = "kernel";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            load = <0x0 0x82000000>;
+            entry = <0x0 0x82000000>;
+            hash-1 {
+                algo = "sha256";
+            };
+        };
+        ramdisk {
+            description = "u-root initramfs";
+            data = /incbin/("initramfs-riscv64");
+            type = "ramdisk";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            hash-1 {
+                algo = "sha256";
+            };
+        };
+    };
+
+    configurations {
+        default = "conf-1";
+        conf-1 {
+            description = "QEMU riscv64 virt boot";
+            kernel = "kernel";
+            ramdisk = "ramdisk";
+        };
+    };
+};

@@ -455,6 +455,8 @@ pub enum FileType {
     Raw,
     /// Runtime firmware blob (SBI firmware or ATF BL31).
     Firmware,
+    /// FIT (Flattened Image Tree) image for runtime parsing.
+    FitImage,
 }
 
 // ============================================================================

@@ -15,7 +15,8 @@ pub mod security;
 pub mod stage;
 
 pub use board::{
-    BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, PayloadConfig, PayloadKind,
+    BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig,
+    PayloadKind,
 };
 pub use device::{DeviceConfig, DeviceId, DeviceNode};
 pub use ffs::{

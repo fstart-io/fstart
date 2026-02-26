@@ -4,7 +4,7 @@
 //! before anything that logs) and provides predicate functions used by the
 //! codegen orchestrator to decide which sections to emit.
 
-use fstart_types::{BoardConfig, BootMedium, Capability, PayloadKind};
+use fstart_types::{BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind};
 
 /// Validate that capabilities are in a legal order.
 ///
@@ -137,4 +137,20 @@ pub(super) fn is_linux_boot(config: &BoardConfig) -> bool {
         .payload
         .as_ref()
         .is_some_and(|p| p.kind == PayloadKind::LinuxBoot)
+}
+
+/// Check whether this board has a FIT image payload configured.
+pub(super) fn is_fit_image(config: &BoardConfig) -> bool {
+    config
+        .payload
+        .as_ref()
+        .is_some_and(|p| p.kind == PayloadKind::FitImage)
+}
+
+/// Check whether a FIT payload should be parsed at runtime.
+pub(super) fn is_fit_runtime(config: &BoardConfig) -> bool {
+    config.payload.as_ref().is_some_and(|p| {
+        p.kind == PayloadKind::FitImage
+            && p.fit_parse.unwrap_or(FitParseMode::Buildtime) == FitParseMode::Runtime
+    })
 }

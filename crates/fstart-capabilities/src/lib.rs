@@ -618,6 +618,76 @@ pub fn load_ffs_file_by_type(
     load_entry_segments_from_media(media, entry, region).is_some()
 }
 
+/// Find a file in FFS by its `FileType` and return a slice to its raw data.
+///
+/// This is the zero-copy path for memory-mapped flash: the returned slice
+/// points directly into the flash image. Used by FIT runtime parsing to
+/// access the FIT blob without copying it.
+///
+/// Only works with memory-mapped boot media (returns `None` for block devices).
+/// The returned slice covers the first segment of the matching file entry.
+#[cfg(feature = "ffs")]
+pub fn find_ffs_file_data<'a>(
+    anchor_data: &[u8],
+    media: &'a impl BootMedia,
+    file_type: fstart_types::ffs::FileType,
+) -> Option<&'a [u8]> {
+    let image = media.as_slice()?;
+
+    if anchor_data.is_empty() {
+        fstart_log::error!("find file data: no anchor");
+        return None;
+    }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(e) => {
+            fstart_log::error!("find file data: anchor error: {}", reader_error_str(e));
+            return None;
+        }
+    };
+
+    let image_size = effective_image_size(media.size(), &anchor);
+    let reader = fstart_ffs::FfsReader::new(&image[..image_size]);
+
+    let manifest = match reader.read_manifest(&anchor) {
+        Ok(m) => m,
+        Err(e) => {
+            fstart_log::error!("find file data: manifest error: {}", reader_error_str(e));
+            return None;
+        }
+    };
+
+    // Search for the file entry
+    for region in &manifest.regions {
+        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
+            for entry in children {
+                if let fstart_types::ffs::EntryContent::File {
+                    file_type: ft,
+                    segments,
+                    ..
+                } = &entry.content
+                {
+                    if *ft == file_type {
+                        // Return a slice to the first segment's data
+                        if let Some(seg) = segments.first() {
+                            let offset = (region.offset + entry.offset + seg.offset) as usize;
+                            let size = seg.stored_size as usize;
+                            if offset + size <= image.len() {
+                                return Some(&image[offset..offset + size]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fstart_log::error!("find file data: file type not found in FFS");
+    None
+}
+
 /// Load all segments of a file entry to their load addresses from any boot medium.
 ///
 /// For each segment, reads data from the boot medium directly to the

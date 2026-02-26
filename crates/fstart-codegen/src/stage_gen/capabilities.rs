@@ -14,7 +14,7 @@ use fstart_types::{BoardConfig, BootMedium, BuildMode, DeviceConfig, FdtSource, 
 use super::flexible::{flexible_enum_for_device, generate_flexible_wrapping};
 use super::registry::find_driver_meta;
 use super::tokens::{anchor_as_bytes_expr, halt_expr, hex_addr};
-use super::validation::is_linux_boot;
+use super::validation::{is_fit_image, is_fit_runtime, is_linux_boot};
 
 /// Generate code for the ConsoleInit capability.
 pub(super) fn generate_console_init(
@@ -195,6 +195,17 @@ pub(super) fn generate_payload_load(config: &BoardConfig, platform: &str) -> Tok
         return generate_payload_load_linux(config, platform);
     }
 
+    if is_fit_image(config) {
+        if is_fit_runtime(config) {
+            return generate_payload_load_fit_runtime(config, platform);
+        } else {
+            // Buildtime FIT: xtask extracts components from FIT and embeds
+            // them as separate FFS entries. Runtime code loads them the same
+            // way as LinuxBoot (individual kernel/ramdisk blobs from FFS).
+            return generate_payload_load_linux(config, platform);
+        }
+    }
+
     let anchor = anchor_as_bytes_expr();
     let jump_fn: TokenStream = match platform {
         "riscv64" => quote! { fstart_platform_riscv64::jump_to },
@@ -295,6 +306,188 @@ fn generate_payload_load_linux(config: &BoardConfig, platform: &str) -> TokenStr
         }
         _ => {
             let msg = format!("LinuxBoot not supported on platform '{platform}'");
+            stmts.extend(quote! { compile_error!(#msg); });
+        }
+    }
+
+    stmts
+}
+
+/// Generate code for the FIT runtime payload load sequence.
+///
+/// At runtime, the whole FIT (.itb) is stored in FFS. The firmware:
+/// 1. Loads the FIT blob from FFS (FileType::FitImage) into memory
+/// 2. Parses it with `fstart_fit::FitImage::parse()`
+/// 3. Resolves the configuration (default or named)
+/// 4. Copies each component (kernel, ramdisk) to its load address
+/// 5. Boots via platform-specific protocol
+fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: &str) -> TokenStream {
+    let payload = config.payload.as_ref().unwrap();
+    let halt = halt_expr(platform);
+    let anchor = anchor_as_bytes_expr();
+
+    let config_expr = match &payload.fit_config {
+        Some(name) => {
+            let name_str = name.as_str();
+            quote! { Some(#name_str) }
+        }
+        None => quote! { None },
+    };
+
+    let mut stmts = TokenStream::new();
+
+    stmts.extend(quote! {
+        fstart_log::info!("capability: PayloadLoad (FIT runtime)");
+    });
+
+    // Load FIT blob from FFS. For memory-mapped flash, the FIT stays in
+    // flash and we parse it in-place (zero copy). For block devices, we'd
+    // need to load it into a buffer first (future enhancement).
+    stmts.extend(quote! {
+        fstart_log::info!("loading FIT image from FFS...");
+        let _fit_slice = match fstart_capabilities::find_ffs_file_data(
+            #anchor,
+            &boot_media,
+            fstart_types::ffs::FileType::FitImage,
+        ) {
+            Some(s) => s,
+            None => {
+                fstart_log::error!("FATAL: FIT image not found in FFS");
+                #halt;
+            }
+        };
+
+        fstart_log::info!("parsing FIT image ({} bytes)...", _fit_slice.len());
+        let _fit = match fstart_fit::FitImage::parse(_fit_slice) {
+            Ok(f) => f,
+            Err(_) => {
+                fstart_log::error!("FATAL: failed to parse FIT image");
+                #halt;
+            }
+        };
+
+        let _boot = match _fit.resolve_boot_images(#config_expr) {
+            Ok(b) => b,
+            Err(_) => {
+                fstart_log::error!("FATAL: failed to resolve FIT configuration");
+                #halt;
+            }
+        };
+    });
+
+    // Extract kernel data and copy to load address
+    stmts.extend(quote! {
+        let _kernel_data = match _boot.kernel.data() {
+            Ok(d) => d,
+            Err(_) => {
+                fstart_log::error!("FATAL: failed to read kernel data from FIT");
+                #halt;
+            }
+        };
+        let _kernel_load = match _boot.kernel.load_addr() {
+            Some(addr) => addr,
+            None => {
+                fstart_log::error!("FATAL: kernel has no load address in FIT");
+                #halt;
+            }
+        };
+        fstart_log::info!("FIT: loading kernel ({} bytes) to {}", _kernel_data.len(),
+            fstart_log::Hex(_kernel_load));
+        // SAFETY: load address points to writable RAM per board config.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                _kernel_data.as_ptr(),
+                _kernel_load as *mut u8,
+                _kernel_data.len(),
+            );
+        }
+    });
+
+    // Extract ramdisk if present
+    stmts.extend(quote! {
+        if let Some(ref _rd) = _boot.ramdisk {
+            if let Ok(_rd_data) = _rd.data() {
+                if let Some(_rd_load) = _rd.load_addr() {
+                    fstart_log::info!("FIT: loading ramdisk ({} bytes) to {}",
+                        _rd_data.len(), fstart_log::Hex(_rd_load));
+                    // SAFETY: load address points to writable RAM.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            _rd_data.as_ptr(),
+                            _rd_load as *mut u8,
+                            _rd_data.len(),
+                        );
+                    }
+                }
+            }
+        }
+    });
+
+    // Load firmware blob from FFS (SBI/ATF is separate from FIT)
+    if let Some(ref fw) = payload.firmware {
+        let fw_kind_str = match fw.kind {
+            FirmwareKind::OpenSbi => "SBI firmware",
+            FirmwareKind::ArmTrustedFirmware => "ATF BL31",
+        };
+        let load_msg = format!("loading {fw_kind_str}...");
+        let error_msg = format!("FATAL: failed to load {fw_kind_str}");
+        let anchor2 = anchor_as_bytes_expr();
+        stmts.extend(quote! {
+            fstart_log::info!(#load_msg);
+            if !fstart_capabilities::load_ffs_file_by_type(
+                #anchor2,
+                &boot_media,
+                fstart_types::ffs::FileType::Firmware,
+            ) {
+                fstart_log::error!(#error_msg);
+                #halt;
+            }
+        });
+    }
+
+    // Platform-specific boot protocol
+    let dtb_addr = hex_addr(payload.dtb_addr.unwrap_or(0));
+    let kernel_addr = quote! { _kernel_load };
+
+    match platform {
+        "riscv64" => {
+            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
+            stmts.extend(quote! {
+                let _fw_info = fstart_platform_riscv64::FwDynamicInfo::new(
+                    #kernel_addr,
+                    fstart_platform_riscv64::boot_hart_id(),
+                );
+                fstart_log::info!("jumping to SBI firmware...");
+                fstart_platform_riscv64::boot_linux_sbi(
+                    #fw_addr,
+                    fstart_platform_riscv64::boot_hart_id(),
+                    #dtb_addr,
+                    &_fw_info,
+                );
+            });
+        }
+        "aarch64" => {
+            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
+            stmts.extend(quote! {
+                let mut _bl33_ep: fstart_platform_aarch64::EntryPointInfo =
+                    unsafe { core::mem::zeroed() };
+                let mut _bl33_node: fstart_platform_aarch64::BlParamsNode =
+                    unsafe { core::mem::zeroed() };
+                let mut _bl_params: fstart_platform_aarch64::BlParams =
+                    unsafe { core::mem::zeroed() };
+                fstart_platform_aarch64::prepare_bl_params(
+                    #kernel_addr,
+                    #dtb_addr,
+                    &mut _bl33_ep,
+                    &mut _bl33_node,
+                    &mut _bl_params,
+                );
+                fstart_log::info!("jumping to ATF BL31...");
+                fstart_platform_aarch64::boot_linux_atf(#fw_addr, &_bl_params);
+            });
+        }
+        _ => {
+            let msg = format!("FIT boot not supported on platform '{platform}'");
             stmts.extend(quote! { compile_error!(#msg); });
         }
     }

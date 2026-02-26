@@ -16,6 +16,8 @@ sha3-digest = ["ffs", "fstart-ffs/sha3-digest"]
 lz4 = ["ffs"]
 # FDT preparation for Linux boot (needs alloc via fstart-alloc)
 fdt = ["dep:dtoolkit"]
+# FIT image parsing at runtime
+fit = ["ffs", "dep:fstart-fit"]
 
 [dependencies]
 fstart-log = { workspace = true }
@@ -23,4 +25,5 @@ fstart-services = { workspace = true }
 ufmt = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-types = { workspace = true, optional = true }
+fstart-fit = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true, features = ["write"] }
