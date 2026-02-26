@@ -64,9 +64,15 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
         payload: None,
     };
 
+    let device_tree = vec![DeviceNode {
+        parent: None,
+        depth: 0,
+    }];
+
     ParsedBoard {
         config,
         driver_instances,
+        device_tree,
     }
 }
 
@@ -417,15 +423,26 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
         payload: None,
     };
 
+    let device_tree = vec![
+        DeviceNode {
+            parent: None,
+            depth: 0,
+        }, // uart0
+        DeviceNode {
+            parent: None,
+            depth: 0,
+        }, // i2c0
+    ];
+
     ParsedBoard {
         config,
         driver_instances,
+        device_tree,
     }
 }
 
 #[test]
-fn test_topological_sort_no_parents() {
-    // All root devices should sort fine (preserving relative order)
+fn test_validate_device_tree_all_roots() {
     use fstart_types::*;
     use heapless::String as HString;
 
@@ -452,32 +469,29 @@ fn test_topological_sort_no_parents() {
         },
     ];
 
-    let sorted = topological_sort_devices(&devices).expect("should succeed");
-    assert_eq!(sorted.len(), 2);
-    // Both root devices — both should be present (order among roots is unspecified)
-    assert!(sorted.contains(&0), "should contain device 0");
-    assert!(sorted.contains(&1), "should contain device 1");
+    let tree = vec![
+        DeviceNode {
+            parent: None,
+            depth: 0,
+        },
+        DeviceNode {
+            parent: None,
+            depth: 0,
+        },
+    ];
+
+    assert!(
+        validate_device_tree(&devices, &tree).is_ok(),
+        "all root devices should validate fine"
+    );
 }
 
 #[test]
-fn test_topological_sort_parent_before_child() {
+fn test_validate_device_tree_valid_bus_child() {
     use fstart_types::*;
     use heapless::String as HString;
 
-    // Child listed BEFORE parent in RON — sort must reorder
     let devices: Vec<DeviceConfig> = vec![
-        // Index 0: child (listed first but has parent)
-        DeviceConfig {
-            name: HString::try_from("tpm0").unwrap(),
-            driver: HString::try_from("ns16550").unwrap(), // fake driver, doesn't matter for sort
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Console").unwrap());
-                v
-            },
-            parent: Some(HString::try_from("i2c0").unwrap()),
-        },
-        // Index 1: parent
         DeviceConfig {
             name: HString::try_from("i2c0").unwrap(),
             driver: HString::try_from("designware-i2c").unwrap(),
@@ -488,40 +502,37 @@ fn test_topological_sort_parent_before_child() {
             },
             parent: None,
         },
+        DeviceConfig {
+            name: HString::try_from("tpm0").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            parent: Some(HString::try_from("i2c0").unwrap()),
+        },
     ];
 
-    let sorted = topological_sort_devices(&devices).expect("should succeed");
-    assert_eq!(sorted.len(), 2);
-    // Parent (index 1) must come before child (index 0)
-    assert_eq!(sorted[0], 1, "parent i2c0 should come first");
-    assert_eq!(sorted[1], 0, "child tpm0 should come second");
-}
-
-#[test]
-fn test_topological_sort_unknown_parent_is_error() {
-    use fstart_types::*;
-    use heapless::String as HString;
-
-    let devices: Vec<DeviceConfig> = vec![DeviceConfig {
-        name: HString::try_from("tpm0").unwrap(),
-        driver: HString::try_from("ns16550").unwrap(),
-        services: {
-            let mut v = heapless::Vec::new();
-            let _ = v.push(HString::try_from("Console").unwrap());
-            v
+    let tree = vec![
+        DeviceNode {
+            parent: None,
+            depth: 0,
         },
-        parent: Some(HString::try_from("nonexistent").unwrap()),
-    }];
+        DeviceNode {
+            parent: Some(0),
+            depth: 1,
+        },
+    ];
 
-    let result = topological_sort_devices(&devices);
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .contains("parent 'nonexistent' which is not declared"));
+    assert!(
+        validate_device_tree(&devices, &tree).is_ok(),
+        "child on I2cBus parent should validate"
+    );
 }
 
 #[test]
-fn test_topological_sort_parent_not_bus_is_error() {
+fn test_validate_device_tree_non_bus_parent_is_error() {
     use fstart_types::*;
     use heapless::String as HString;
 
@@ -549,50 +560,24 @@ fn test_topological_sort_parent_not_bus_is_error() {
         },
     ];
 
-    let result = topological_sort_devices(&devices);
+    let tree = vec![
+        DeviceNode {
+            parent: None,
+            depth: 0,
+        },
+        DeviceNode {
+            parent: Some(0),
+            depth: 1,
+        },
+    ];
+
+    let result = validate_device_tree(&devices, &tree);
     assert!(result.is_err());
     assert!(
         result
             .unwrap_err()
             .contains("does not provide a bus service"),
         "should reject non-bus parent"
-    );
-}
-
-#[test]
-fn test_topological_sort_cycle_detection() {
-    use fstart_types::*;
-    use heapless::String as HString;
-
-    // Create a cycle: a -> b -> a
-    let devices: Vec<DeviceConfig> = vec![
-        DeviceConfig {
-            name: HString::try_from("a").unwrap(),
-            driver: HString::try_from("designware-i2c").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("I2cBus").unwrap());
-                v
-            },
-            parent: Some(HString::try_from("b").unwrap()),
-        },
-        DeviceConfig {
-            name: HString::try_from("b").unwrap(),
-            driver: HString::try_from("designware-i2c").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("I2cBus").unwrap());
-                v
-            },
-            parent: Some(HString::try_from("a").unwrap()),
-        },
-    ];
-
-    let result = topological_sort_devices(&devices);
-    assert!(result.is_err());
-    assert!(
-        result.unwrap_err().contains("cycle detected"),
-        "should detect cycle"
     );
 }
 
@@ -673,7 +658,7 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
 
     let mut parsed = test_parsed_board_with_i2c_bus(caps);
 
-    // Add a child device that references i2c0 as parent.
+    // Add a child device nested under i2c0 (index 1).
     let _ = parsed.config.devices.push(DeviceConfig {
         name: HString::try_from("child0").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
@@ -691,6 +676,11 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
             baud_rate: 115_200,
         },
     ));
+    // i2c0 is at index 1
+    parsed.device_tree.push(DeviceNode {
+        parent: Some(1),
+        depth: 1,
+    });
 
     let source = generate_stage_source(&parsed, None);
 
@@ -701,10 +691,20 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
         i2c_init_pos < child_init_pos,
         "parent i2c0 must be initialised before child child0"
     );
+
+    // Bus child should use new_on_bus, not new
+    assert!(
+        source.contains("new_on_bus"),
+        "bus child should use new_on_bus: {source}"
+    );
+    assert!(
+        source.contains("&i2c0"),
+        "bus child should reference parent variable: {source}"
+    );
 }
 
 #[test]
-fn test_parent_reference_unknown_device_is_compile_error() {
+fn test_non_bus_parent_is_compile_error() {
     use fstart_types::*;
     use heapless::String as HString;
 
@@ -714,6 +714,7 @@ fn test_parent_reference_unknown_device_is_compile_error() {
     });
 
     let mut parsed = test_parsed_board(caps);
+    // Add child0 nested under uart0 (index 0) — but uart0 is Console, not a bus
     let _ = parsed.config.devices.push(DeviceConfig {
         name: HString::try_from("child0").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
@@ -722,7 +723,7 @@ fn test_parent_reference_unknown_device_is_compile_error() {
             let _ = v.push(HString::try_from("Console").unwrap());
             v
         },
-        parent: Some(HString::try_from("ghost").unwrap()),
+        parent: Some(HString::try_from("uart0").unwrap()),
     });
     parsed.driver_instances.push(DriverInstance::Ns16550(
         fstart_drivers::uart::ns16550::Ns16550Config {
@@ -731,15 +732,20 @@ fn test_parent_reference_unknown_device_is_compile_error() {
             baud_rate: 115_200,
         },
     ));
+    // uart0 is at index 0
+    parsed.device_tree.push(DeviceNode {
+        parent: Some(0),
+        depth: 1,
+    });
 
     let source = generate_stage_source(&parsed, None);
     assert!(
         source.contains("compile_error!"),
-        "should emit compile_error for unknown parent"
+        "should emit compile_error for non-bus parent: {source}"
     );
     assert!(
-        source.contains("ghost"),
-        "error should mention the unknown parent name"
+        source.contains("does not provide a bus service"),
+        "error should mention bus service: {source}"
     );
 }
 
@@ -838,9 +844,21 @@ fn test_flexible_multi_driver_parsed_board(
         payload: None,
     };
 
+    let device_tree = vec![
+        DeviceNode {
+            parent: None,
+            depth: 0,
+        }, // uart0
+        DeviceNode {
+            parent: None,
+            depth: 0,
+        }, // uart1
+    ];
+
     ParsedBoard {
         config,
         driver_instances,
+        device_tree,
     }
 }
 
@@ -1175,9 +1193,15 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         payload: None,
     };
 
+    let device_tree = vec![DeviceNode {
+        parent: None,
+        depth: 0,
+    }];
+
     ParsedBoard {
         config,
         driver_instances,
+        device_tree,
     }
 }
 
@@ -1345,6 +1369,84 @@ fn test_rigid_mode_unchanged_no_enums() {
     assert!(
         source.contains("uart0: Ns16550"),
         "rigid mode should use concrete type in Devices: {source}"
+    );
+}
+
+// =======================================================================
+// Device tree table tests
+// =======================================================================
+
+#[test]
+fn test_generated_source_contains_device_tree_table() {
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("static DEVICE_TREE"),
+        "should generate static DEVICE_TREE: {source}"
+    );
+    assert!(
+        source.contains("fstart_types::DeviceNode"),
+        "should use fstart_types::DeviceNode: {source}"
+    );
+}
+
+#[test]
+fn test_device_tree_table_with_bus_children() {
+    use fstart_types::*;
+    use heapless::String as HString;
+
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: HString::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::DriverInit);
+
+    let mut parsed = test_parsed_board_with_i2c_bus(caps);
+
+    // Add child under i2c0 (index 1)
+    let _ = parsed.config.devices.push(DeviceConfig {
+        name: HString::try_from("child0").unwrap(),
+        driver: HString::try_from("ns16550").unwrap(),
+        services: {
+            let mut v = heapless::Vec::new();
+            let _ = v.push(HString::try_from("Console").unwrap());
+            v
+        },
+        parent: Some(HString::try_from("i2c0").unwrap()),
+    });
+    parsed.driver_instances.push(DriverInstance::Ns16550(
+        fstart_drivers::uart::ns16550::Ns16550Config {
+            base_addr: 0x2000_0000,
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        },
+    ));
+    parsed.device_tree.push(DeviceNode {
+        parent: Some(1),
+        depth: 1,
+    });
+
+    let source = generate_stage_source(&parsed, None);
+
+    // Table should have 3 entries
+    assert!(
+        source.contains("DeviceNode; 3"),
+        "should have 3 entries in DEVICE_TREE: {source}"
+    );
+    // Should have a parent reference (Some(1u8))
+    assert!(
+        source.contains("Some(1u8)"),
+        "child should reference parent index 1: {source}"
+    );
+    // Root nodes should have None
+    assert!(
+        source.contains("parent: None"),
+        "root nodes should have None parent: {source}"
     );
 }
 

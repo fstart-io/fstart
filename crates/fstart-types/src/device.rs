@@ -3,6 +3,34 @@
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
+/// Stable device identifier — index into the flat device table.
+///
+/// Maximum 256 devices per board (more than sufficient for firmware).
+pub type DeviceId = u8;
+
+/// A node in the flat, index-based device tree.
+///
+/// Generated into the firmware binary as a `static` table for runtime
+/// introspection (power sequencing, diagnostics, etc.).  Stored in
+/// topological order: a node's `parent` index is always less than its
+/// own index — roots come first, then children in pre-order.
+///
+/// No pointers, no linked lists — just indices into a flat array.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceNode {
+    /// Parent device index, or `None` for root devices.
+    pub parent: Option<DeviceId>,
+    /// Depth in the tree (0 = root, 1 = direct child of a root, …).
+    pub depth: u8,
+}
+
+impl DeviceNode {
+    /// Returns `true` if this is a root device (no parent bus).
+    pub const fn is_root(&self) -> bool {
+        self.parent.is_none()
+    }
+}
+
 /// A device declaration in the board configuration.
 ///
 /// Carries the identity and service bindings for a hardware device.

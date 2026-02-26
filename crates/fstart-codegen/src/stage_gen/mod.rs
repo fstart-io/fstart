@@ -34,7 +34,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use fstart_drivers::DriverInstance;
-use fstart_types::{BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, StageLayout};
+use fstart_types::{
+    BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceNode, StageLayout,
+};
 
 use crate::ron_loader::ParsedBoard;
 
@@ -45,7 +47,7 @@ use capabilities::{
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
 use tokens::{halt_expr, hex_addr};
-use topology::topological_sort_devices;
+use topology::validate_device_tree;
 use validation::{get_boot_medium, needs_fdt, needs_ffs, validate_capability_ordering};
 
 // =======================================================================
@@ -82,16 +84,11 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         return format!("compile_error!(\"{err}\");\n");
     }
 
-    // Topological sort: validate parent references and determine init order.
-    let sorted_indices = match topological_sort_devices(&config.devices) {
-        Ok(indices) => indices,
-        Err(err) => {
-            return format!("compile_error!(\"{err}\");\n");
-        }
-    };
-
-    // Build sorted device list for code generation.
-    let sorted_devices: Vec<usize> = sorted_indices;
+    // Validate device tree (bus service requirements).
+    // Ordering is already correct — ron_loader flattens in pre-order DFS.
+    if let Err(err) = validate_device_tree(&config.devices, &parsed.device_tree) {
+        return format!("compile_error!(\"{err}\");\n");
+    }
 
     let mode = config.mode;
 
@@ -131,12 +128,13 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         &parsed.driver_instances,
         mode,
     ));
+    tokens.extend(generate_device_tree_table(&parsed.device_tree));
     tokens.extend(generate_fstart_main(
         config,
         &parsed.driver_instances,
+        &parsed.device_tree,
         capabilities,
         platform,
-        &sorted_devices,
         mode,
     ));
 
@@ -280,6 +278,40 @@ fn generate_anchor_static() -> TokenStream {
 }
 
 // =======================================================================
+// Code generation — device tree table (approach B)
+// =======================================================================
+
+/// Emit the `static DEVICE_TREE` table — flat, index-based device tree
+/// in `.rodata` for runtime introspection.
+fn generate_device_tree_table(tree: &[DeviceNode]) -> TokenStream {
+    let n = tree.len();
+    let entries = tree.iter().map(|node| {
+        let parent = match node.parent {
+            Some(idx) => {
+                let idx_lit = idx;
+                quote! { Some(#idx_lit) }
+            }
+            None => quote! { None },
+        };
+        let depth = node.depth;
+        quote! {
+            fstart_types::DeviceNode { parent: #parent, depth: #depth }
+        }
+    });
+
+    quote! {
+        /// Flat device tree — parents before children, index-based references.
+        ///
+        /// Use `DEVICE_TREE[i].parent` to walk up to a device's bus controller.
+        /// Guaranteed topological order: parent index < child index.
+        #[allow(dead_code)]
+        static DEVICE_TREE: [fstart_types::DeviceNode; #n] = [
+            #(#entries,)*
+        ];
+    }
+}
+
+// =======================================================================
 // Code generation — structs and context
 // =======================================================================
 
@@ -378,19 +410,29 @@ fn generate_stage_context(
 fn generate_fstart_main(
     config: &BoardConfig,
     instances: &[DriverInstance],
+    device_tree: &[DeviceNode],
     capabilities: &[Capability],
     platform: &str,
-    sorted_device_indices: &[usize],
     mode: BuildMode,
 ) -> TokenStream {
     let halt = halt_expr(platform);
     let mut body = TokenStream::new();
 
     // --- Phase 1: Construct all devices in topological order ---
-    for &idx in sorted_device_indices {
+    // Devices are already in pre-order DFS order from RON flattening.
+    for (idx, node) in device_tree.iter().enumerate() {
         let dev = &config.devices[idx];
         let inst = &instances[idx];
-        body.extend(generate_device_construction(dev, inst, &halt, mode));
+        let parent_name = node
+            .parent
+            .map(|pid| config.devices[pid as usize].name.as_str());
+        body.extend(generate_device_construction(
+            dev,
+            inst,
+            parent_name,
+            &halt,
+            mode,
+        ));
     }
 
     // Track which devices have been initialised by capabilities so DriverInit
@@ -418,15 +460,18 @@ fn generate_fstart_main(
                 body.extend(generate_memory_init());
             }
             Capability::DriverInit => {
+                // Devices are in pre-order DFS — sequential indices are
+                // already topological order.
+                let sequential: Vec<usize> = (0..config.devices.len()).collect();
                 body.extend(generate_driver_init(
                     &config.devices,
                     instances,
-                    sorted_device_indices,
+                    &sequential,
                     &inited_devices,
                     &halt,
                     mode,
                 ));
-                for &idx in sorted_device_indices {
+                for idx in 0..config.devices.len() {
                     let name = config.devices[idx].name.as_str().to_string();
                     if !inited_devices.contains(&name) {
                         inited_devices.push(name);
@@ -488,10 +533,15 @@ fn generate_fstart_main(
 // Code generation — device construction
 // =======================================================================
 
-/// Generate a device construction call using the `Device` trait.
+/// Generate a device construction call.
+///
+/// Root devices use `Device::new(&config)`.
+/// Bus children use `BusDevice::new_on_bus(&config, &parent)` — the parent
+/// variable name is resolved at codegen time (approach A: compile-away).
 fn generate_device_construction(
     dev: &DeviceConfig,
     instance: &DriverInstance,
+    parent_name: Option<&str>,
     halt: &TokenStream,
     mode: BuildMode,
 ) -> TokenStream {
@@ -510,7 +560,19 @@ fn generate_device_construction(
         }
     };
 
-    quote! {
-        let #binding = #type_name::new(&#config).unwrap_or_else(|_| #halt);
+    match parent_name {
+        None => {
+            // Root device — Device::new(&config)
+            quote! {
+                let #binding = #type_name::new(&#config).unwrap_or_else(|_| #halt);
+            }
+        }
+        Some(parent) => {
+            // Bus child — BusDevice::new_on_bus(&config, &parent)
+            let parent_ident = format_ident!("{}", parent);
+            quote! {
+                let #binding = #type_name::new_on_bus(&#config, &#parent_ident).unwrap_or_else(|_| #halt);
+            }
+        }
     }
 }
