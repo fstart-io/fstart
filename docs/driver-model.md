@@ -2,7 +2,10 @@
 
 ## Status
 
-Design document. Implementation tracked in phases at the end of this file.
+Design document with implementation notes.  Phases 1–5 are substantially
+complete; the checklist at the end shows current status.  The driver model
+is functional: boards build, run in QEMU, and codegen produces typed
+device construction, service accessors, and a flat device tree table.
 
 ## Goals
 
@@ -215,89 +218,179 @@ A missing required field in the RON is caught at build time by codegen (which em
 
 ### Bus Devices
 
-Devices that live on a bus declare their parent bus requirement:
+Devices that live on a parent bus implement `BusDevice` **instead of** `Device`.
+`BusDevice` is a standalone trait (not a subtrait of `Device`) with its own
+`new_on_bus` constructor that receives a reference to the parent bus controller.
+Codegen resolves parent variable names at build time — no runtime device lookup.
 
 ```rust
-/// Marker: this device lives on a parent bus.
-pub trait BusDevice: Device {
-    /// The service trait this device requires from its parent.
-    type ParentBus;
+/// Trait for devices that live on a parent bus.
+pub trait BusDevice: Send + Sync + Sized {
+    const NAME: &'static str;
+    const COMPATIBLE: &'static [&'static str];
+
+    /// Driver-specific configuration type (deserialized from RON).
+    type Config;
+
+    /// The parent bus interface type (e.g., `B` where `B: I2c`).
+    type Bus: ?Sized;
+
+    /// Construct from config + parent bus reference.  Does NOT touch hardware.
+    fn new_on_bus(config: &Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
+
+    /// Initialise hardware.  Called after `new_on_bus()`, in capability order.
+    fn init(&self) -> Result<(), DeviceError>;
 }
 ```
 
 Example: an I2C-attached TPM:
 
 ```rust
-impl Device for Slb9670 {
+impl BusDevice for Slb9670<B: I2c> {
+    type Bus = B;
     type Config = Slb9670Config;
-    // ...
-}
 
-impl BusDevice for Slb9670 {
-    type ParentBus = dyn I2cBus;
+    fn new_on_bus(config: &Slb9670Config, bus: &B) -> Result<Self, DeviceError> {
+        Ok(Self { bus, addr: config.addr })
+    }
+
+    fn init(&self) -> Result<(), DeviceError> {
+        // Probe TPM identity register...
+        Ok(())
+    }
 }
 ```
 
-## Layer 3 -- Device Tree in RON (fstart-types)
+Codegen generates:
+```rust
+let tpm0 = Slb9670::new_on_bus(&tpm0_config, &i2c0)
+    .unwrap_or_else(|_| halt());
+```
 
-### Hierarchical Device Declarations
+## Layer 3 -- Device Tree in RON (fstart-types + fstart-codegen)
 
-Bus hierarchies are expressed via a `parent` field on child devices.  This avoids
-recursive types (which would require heap allocation in a `no_std` context) while
-keeping the device list flat and easy to serialise with `heapless::Vec`:
+### Typed Driver Configuration (DriverInstance enum)
+
+Instead of a flat `Resources` bag-of-options with `compatible` string matching,
+each driver defines its own typed config struct in `fstart-drivers`, and the RON
+uses a `DriverInstance` enum for type-safe dispatch:
 
 ```rust
+// In fstart-drivers (the enum):
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceConfig {
-    pub name: HString<32>,
-    pub compatible: HString<64>,
-    pub driver: HString<32>,
-    pub services: heapless::Vec<HString<32>, 8>,
-    pub resources: Resources,
-    /// Parent device name (for bus-attached devices).
-    /// `None` for root-level devices.
-    #[serde(default)]
-    pub parent: Option<HString<32>>,
+pub enum DriverInstance {
+    Ns16550(Ns16550Config),
+    Pl011(Pl011Config),
+    DesignwareI2c(DesignwareI2cConfig),
+    // ...
 }
 ```
 
-Board RON example with a bus:
+RON uses the variant name directly — **no `compatible` string matching**, no
+`Resources` mapping.  Serde validates the config fields at parse time:
+
+```ron
+(
+    name: "uart0",
+    driver: Ns16550(( base_addr: 0x10000000, clock_freq: 3686400, baud_rate: 115200 )),
+    services: ["Console"],
+)
+```
+
+Note the double-paren syntax: outer `()` = RON enum variant, inner `()` = anonymous
+struct fields.
+
+### Hierarchical Device Declarations (nested children)
+
+Bus hierarchies are expressed via nested `children` in the RON file — the tree
+structure is **structural**, not string-reference-based.  No `parent` field is
+needed in the RON; hierarchy is implicit from nesting:
 
 ```ron
 devices: [
     (
         name: "uart0",
-        compatible: "ns16550a",
-        driver: "ns16550",
+        driver: Ns16550(( base_addr: 0x10000000, clock_freq: 3686400, baud_rate: 115200 )),
         services: ["Console"],
-        resources: ( mmio_base: Some(0x10000000), clock_freq: Some(3686400),
-                     baud_rate: Some(115200), irq: Some(10) ),
     ),
     (
         name: "i2c0",
-        compatible: "dw-apb-i2c",
-        driver: "designware-i2c",
+        driver: DesignwareI2c(( base_addr: 0x10040000, clock_freq: 100000000 )),
         services: ["I2cBus"],
-        resources: ( mmio_base: Some(0x10040000), clock_freq: Some(100000000) ),
-    ),
-    (
-        name: "tpm0",
-        compatible: "infineon,slb9670",
-        driver: "slb9670",
-        services: ["Tpm"],
-        resources: ( bus_addr: Some(0x50) ),
-        parent: Some("i2c0"),
+        children: [
+            (
+                name: "tpm0",
+                driver: Slb9670(( addr: 0x50 )),
+                services: ["Tpm"],
+            ),
+        ],
     ),
 ]
 ```
 
-Codegen sorts devices topologically (parents before children) and validates that
-every `parent` reference names an existing device that provides a bus service.
+The `children` field defaults to `[]` via `#[serde(default)]`, so existing board
+RON files with no bus hierarchies need no changes.
 
-The `Resources` struct remains as the **RON interchange format**.  It is deliberately
-flat and permissive (all fields `Option`).  Codegen is responsible for validating that
-each driver's required resources are present and mapping them to the driver's typed
-`Config`.
+### RON → Flat Device Table
+
+The codegen RON loader uses a recursive type `RonDevice` with nested children
+(this is host-side `std` code, so `Vec` is fine).  During loading, `flatten_device()`
+performs a pre-order DFS traversal that produces three parallel arrays:
+
+1. **`devices: Vec<DeviceConfig>`** — flat list with `parent: Option<HString<32>>`
+   (filled in from the tree structure during flattening)
+2. **`driver_instances: Vec<DriverInstance>`** — typed config for each device
+3. **`device_tree: Vec<DeviceNode>`** — flat index-based tree for the target binary
+
+Pre-order DFS guarantees parents always precede children — no topological sort
+needed (cycles are structurally impossible with nested children).
+
+### DeviceNode — Runtime Device Tree (fstart-types)
+
+The `DeviceNode` type is a cache-friendly, `no_std`-compatible, const-constructible
+node for runtime introspection:
+
+```rust
+pub type DeviceId = u8;  // Max 256 devices per board
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceNode {
+    /// Parent device index, or `None` for root devices.
+    pub parent: Option<DeviceId>,
+    /// Depth in the tree (0 = root, 1 = child of root, …).
+    pub depth: u8,
+}
+```
+
+Codegen emits a static table into the firmware binary:
+
+```rust
+// Generated:
+static DEVICE_TREE: [fstart_types::DeviceNode; 3] = [
+    fstart_types::DeviceNode { parent: None, depth: 0 },          // uart0
+    fstart_types::DeviceNode { parent: None, depth: 0 },          // i2c0
+    fstart_types::DeviceNode { parent: Some(1), depth: 1 },       // tpm0
+];
+```
+
+No pointers, no linked lists — just indices into a flat array.  This is
+approach B (flat index table) for runtime power sequencing, diagnostics, etc.
+
+### DeviceConfig (host-side metadata)
+
+The `DeviceConfig` struct carries identity and service bindings.  It is used
+only at build time (codegen, xtask) — the target binary never sees it:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceConfig {
+    pub name: HString<32>,
+    pub driver: HString<32>,
+    pub services: heapless::Vec<HString<32>, 8>,
+    #[serde(default)]
+    pub parent: Option<HString<32>>,  // Filled by flatten_device()
+}
+```
 
 ## Layer 4 -- Generated Code (fstart-codegen)
 
@@ -376,19 +469,44 @@ pub extern "Rust" fn fstart_main() -> ! {
 }
 ```
 
-### Bus Ordering
+### Bus Ordering (Approach A — compile-away)
 
-For bus hierarchies, codegen enforces **parent before child** init ordering (matching
-both coreboot's tree-walk and U-Boot's recursive-probe pattern):
+For bus hierarchies, codegen enforces **parent before child** ordering (matching
+both coreboot's tree-walk and U-Boot's recursive-probe pattern).  Parent variable
+names are resolved at build time — the generated code uses direct Rust borrows:
 
 ```rust
-// Parent first:
-let i2c0 = DesignwareI2c::new(&DesignwareI2cConfig { ... })?;
-i2c0.init()?;
+// Generated — parent first (root device, uses Device::new):
+let i2c0 = DesignwareI2c::new(&DesignwareI2cConfig {
+    base_addr: 0x1004_0000,
+    clock_freq: 100_000_000,
+}).unwrap_or_else(|_| halt());
+i2c0.init().unwrap_or_else(|_| halt());
 
-// Then child, receiving a reference to the parent bus:
-let tpm0 = Slb9670::new(&Slb9670Config { bus: &i2c0, addr: 0x50 })?;
-tpm0.init()?;
+// Then child (bus device, uses BusDevice::new_on_bus):
+let tpm0 = Slb9670::new_on_bus(
+    &Slb9670Config { addr: 0x50 },
+    &i2c0,  // ← direct borrow, resolved by codegen
+).unwrap_or_else(|_| halt());
+tpm0.init().unwrap_or_else(|_| halt());
+```
+
+This is approach A: the bus hierarchy compiles away entirely.  No runtime device
+lookup, no `DEVICE_TREE` traversal needed for init.  The `DEVICE_TREE` table
+(approach B) exists in parallel for runtime introspection only.
+
+### Device Tree Table (Approach B — runtime introspection)
+
+Codegen also emits a `static DEVICE_TREE` array for runtime use cases like
+power sequencing and diagnostics:
+
+```rust
+// Generated alongside the init code:
+static DEVICE_TREE: [fstart_types::DeviceNode; 3] = [
+    fstart_types::DeviceNode { parent: None, depth: 0 },          // [0] i2c0
+    fstart_types::DeviceNode { parent: Some(0), depth: 1 },       // [1] tpm0
+    fstart_types::DeviceNode { parent: None, depth: 0 },          // [2] uart0
+];
 ```
 
 ### Codegen Validation
@@ -399,11 +517,14 @@ The codegen phase performs these checks at `build.rs` time, emitting
 | Check | Error |
 |-------|-------|
 | Capability references unknown device name | `"ConsoleInit references device 'foo' which is not declared"` |
-| Device declares unknown driver | `"Device 'uart0' uses driver 'ns16999' which is not known"` |
-| Driver's required resources missing from RON | `"Driver 'ns16550' requires mmio_base but device 'uart0' does not provide it"` |
+| Device declares unknown driver | `"unknown driver variant ..."` |
+| RON config has wrong fields for driver | serde parse error at build time |
 | Capability uses device that doesn't provide required service | `"ConsoleInit requires Console service but device 'gpio0' does not provide it"` |
-| Child device's `parent` names a device without a bus service | `"Device 'tpm0' has parent 'gpio0' which does not provide a bus service"` |
-| Child device's `parent` names a non-existent device | `"Device 'tpm0' has parent 'nonexistent' which is not declared"` |
+| Child device's parent doesn't provide a bus service | `"Device 'tpm0' has parent 'gpio0' which does not provide a bus service (I2cBus, SpiBus, ...)"` |
+
+Note: with nested `children` in RON, some errors from the old flat `parent`
+model are structurally impossible — there is no way to reference a nonexistent
+parent, and the DFS flattening guarantees topological order.
 
 ## Layer 5 -- Rigid vs Flexible Mode
 
@@ -487,7 +608,7 @@ pub enum DeviceError {
 
 ## Driver Author Checklist
 
-To add a new driver (e.g., a SiFive UART):
+To add a new root-level driver (e.g., a SiFive UART):
 
 1. **Create the module**: `fstart-drivers/src/uart/sifive.rs`, feature-gated under
    `sifive-uart`.
@@ -500,8 +621,9 @@ To add a new driver (e.g., a SiFive UART):
    ];
    ```
 
-3. **Define the config type**:
+3. **Define the config type** with serde derives:
    ```rust
+   #[derive(Debug, Clone, Serialize, Deserialize)]
    pub struct SifiveUartConfig {
        pub base_addr: u64,
        pub clock_freq: u32,
@@ -525,53 +647,120 @@ To add a new driver (e.g., a SiFive UART):
    impl Console for SifiveUart { ... }
    ```
 
-6. **Register in codegen**: add the driver name to the match table in
-   `fstart-codegen/src/stage_gen.rs` so codegen knows how to map the RON
-   `driver: "sifive-uart"` to the concrete type and config mapping.
+6. **Add variant to `DriverInstance`** in `fstart-drivers/src/lib.rs`:
+   ```rust
+   pub enum DriverInstance {
+       // ...existing variants...
+       SifiveUart(SifiveUartConfig),
+   }
+   ```
 
-7. **Add feature flag**: in `fstart-drivers/Cargo.toml` and `fstart-stage/Cargo.toml`.
+7. **Register in codegen**: add the driver to `KNOWN_DRIVER_META` in
+   `fstart-codegen/src/stage_gen/registry.rs` with its type path, config type,
+   and service list.
 
-8. **Test**: write a board RON using the driver and verify with
+8. **Add feature flag**: in `fstart-drivers/Cargo.toml` and `fstart-stage/Cargo.toml`.
+
+9. **Test**: write a board RON using the driver and verify with
    `cargo xtask build --board <name>`.
+
+### Bus Device Author Checklist
+
+For a device that lives on a parent bus (e.g., an I2C-attached TPM):
+
+1. **Create the module** in the appropriate category (e.g.,
+   `fstart-drivers/src/tpm/slb9670.rs`), feature-gated.
+
+2. **Define the config type** — only bus-specific fields (no `base_addr`):
+   ```rust
+   #[derive(Debug, Clone, Serialize, Deserialize)]
+   pub struct Slb9670Config {
+       pub addr: u8,  // I2C address
+   }
+   ```
+
+3. **Implement `BusDevice`** (not `Device`):
+   ```rust
+   impl<B: I2c> BusDevice for Slb9670<B> {
+       type Bus = B;
+       type Config = Slb9670Config;
+       fn new_on_bus(config: &Self::Config, bus: &B) -> Result<Self, DeviceError> { ... }
+       fn init(&self) -> Result<(), DeviceError> { ... }
+   }
+   ```
+
+4. **Add variant to `DriverInstance`** and register in codegen (same as above).
+
+5. **Use nested `children` in board RON** — the device appears under its
+   parent controller:
+   ```ron
+   (
+       name: "i2c0",
+       driver: DesignwareI2c(( base_addr: 0x10040000, ... )),
+       services: ["I2cBus"],
+       children: [
+           ( name: "tpm0", driver: Slb9670(( addr: 0x50 )), services: ["Tpm"] ),
+       ],
+   )
+   ```
 
 ## Implementation Phases
 
-### Phase 1: Foundation
+### Phase 1: Foundation ✓
 
-- [ ] Add `Device` trait (with associated `type Config`) and `DeviceError` to
+- [x] Add `Device` trait (with associated `type Config`) and `DeviceError` to
       `fstart-services`.
-- [ ] Add `Ns16550Config`, `Pl011Config` structs to `fstart-drivers`.
-- [ ] Implement `Device` for `Ns16550` and `Pl011`.
-- [ ] Add `BusDevice` trait to `fstart-services`.
-- [ ] Add `parent` field (with `#[serde(default)]`) to `DeviceConfig` in
-      `fstart-types` for bus hierarchies.
-- [ ] Remove old `Driver` trait from `fstart-drivers` (replaced by `Device`).
+- [x] Add `Ns16550Config`, `Pl011Config`, `DesignwareI2cConfig` structs to
+      `fstart-drivers`.
+- [x] Implement `Device` for `Ns16550`, `Pl011`, `DesignwareI2c`.
+- [x] Add `BusDevice` trait to `fstart-services` (standalone trait with
+      `new_on_bus(config, bus)`, not a subtrait of `Device`).
+- [x] Add `DeviceId`, `DeviceNode` to `fstart-types` for flat index-based
+      device tree.
+- [x] Replace `Resources` bag-of-options with typed `DriverInstance` enum.
+- [x] Remove `compatible` string matching — `DriverInstance` variant name
+      determines the driver.
 
-### Phase 2: Codegen Upgrade
+### Phase 2: Codegen Upgrade ✓
 
-- [ ] Update `stage_gen.rs` to generate a `Devices` struct with concrete typed fields.
-- [ ] Update `stage_gen.rs` to generate a `StageContext` with service accessor methods.
-- [ ] Generate typed `Config` construction (map RON `Resources` -> driver configs).
-- [ ] Wire `fstart_capabilities::console_init()` into generated code.
-- [ ] Add codegen validation: missing devices, unknown drivers, service mismatches ->
-      `compile_error!`.
+- [x] Generate `Devices` struct with concrete typed fields.
+- [x] Generate `StageContext` with service accessor methods.
+- [x] Generate typed `Config` construction via `ConfigTokenSerializer`
+      (custom serde Serializer → TokenStream, supports nearly full serde
+      data model).
+- [x] Wire `fstart_capabilities::console_init()` into generated code.
+- [x] Add codegen validation: unknown drivers, service mismatches, bus
+      service checks → `compile_error!`.
+- [x] Split `stage_gen.rs` into focused submodules: `registry.rs`,
+      `topology.rs`, `capabilities.rs`, `flexible.rs`, `config_ser.rs`.
 
-### Phase 3: Capability Pipeline
+### Phase 3: Capability Pipeline ✓
 
-- [ ] Implement capability functions that accept service trait references.
-- [ ] Generate full init pipeline from capability list.
-- [ ] Add ordering validation in codegen (e.g., ConsoleInit must precede capabilities
-      that log).
+- [x] Implement capability functions that accept service trait references.
+- [x] Generate full init pipeline from capability list.
+- [x] Add ordering validation (ConsoleInit must precede MemoryInit, etc.).
+- [x] Multi-stage support: bootblock → main stage loading, signature
+      verification, FFS integration.
 
-### Phase 4: Bus Support
+### Phase 4: Bus Support ✓ (infrastructure)
 
-- [ ] Add bus service traits (`I2cBus`, `SpiBus`, `GpioController`) to
-      `fstart-services`.
-- [ ] Implement codegen support for `children` -- parent-before-child init ordering.
-- [ ] Implement first bus driver (e.g., DesignWare I2C).
+- [x] Add bus service traits (`I2cBus`, `SpiBus`, `GpioController`) to
+      `fstart-services` (I2C uses `embedded-hal v1.0` traits).
+- [x] Implement codegen support for nested `children` in RON — DFS pre-order
+      flattening guarantees parent-before-child ordering.
+- [x] Generate `BusDevice::new_on_bus(&config, &parent)` for bus children
+      (approach A: compile-away).
+- [x] Generate `static DEVICE_TREE: [DeviceNode; N]` table for runtime
+      introspection (approach B: flat index table).
+- [x] Implement `validate_device_tree()` — checks bus service requirements
+      (no topo sort needed, ordering is structural from DFS).
+- [x] Implement DesignWare I2C bus controller driver.
+- [ ] Implement first bus-attached child driver (e.g., SLB9670 TPM).
+- [ ] Exercise `children` syntax in a real board RON file.
 
-### Phase 5: Flexible Mode
+### Phase 5: Flexible Mode ✓
 
-- [ ] Implement enum-dispatch codegen for `mode: Flexible`.
-- [ ] Generate `ConsoleDevice` / `TimerDevice` / etc. enums from the board's driver set.
-- [ ] Implement the service traits on the generated enums.
+- [x] Implement enum-dispatch codegen for `mode: Flexible`.
+- [x] Generate `ConsoleDevice` / `I2cBusDevice` / etc. enums from the
+      board's driver set.
+- [x] Implement the service traits on the generated enums.
