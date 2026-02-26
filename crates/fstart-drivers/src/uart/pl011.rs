@@ -68,8 +68,9 @@ register_structs! {
 /// Typed configuration for the PL011 driver.
 ///
 /// Contains exactly the fields this driver needs — no optional grab-bag.
-/// Codegen maps the RON `Resources` to this struct at build time.
-#[derive(Debug, Clone, Copy)]
+/// Serializable with both RON (build-time validation) and postcard
+/// (runtime config from FFS).
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Pl011Config {
     /// MMIO base address of the register block.
     pub base_addr: u64,

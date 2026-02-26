@@ -10,7 +10,7 @@
     platform: "aarch64",
 
     // Memory regions: only ROM and RAM.
-    // Device MMIO addresses are in the device resources, not here.
+    // Device MMIO addresses are in the driver config, not here.
     // flash_base = XIP flash base for AArch64 virt.
     // flash_size = 128 MiB flash.
     memory: (
@@ -25,21 +25,14 @@
     devices: [
         (
             name: "uart0",
-            compatible: "arm,pl011",
-            driver: "pl011",
-            services: ["Console"],
-            resources: (
-                mmio_base: Some(0x09000000),
-                io_base: None,
-                size: Some(0x1000),
+            driver: Pl011((
+                base_addr: 0x09000000,
                 // QEMU virt PL011 ignores baud rate, but we match coreboot's
                 // default refclk of 115200 * 16 = 1843200 Hz.
-                clock_freq: Some(1843200),
-                baud_rate: Some(115200),
-                irq: Some(33),
-                bus_addr: None,
-                bus_speed: None,
-            ),
+                clock_freq: 1843200,
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
         ),
     ],
 

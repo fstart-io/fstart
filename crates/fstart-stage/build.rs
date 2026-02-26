@@ -28,17 +28,17 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_NAME");
     println!("cargo:rerun-if-changed={board_ron_path}");
 
-    // Parse board config
-    let config = ron_loader::load_board_config(&PathBuf::from(&board_ron_path))
+    // Parse board config (two-phase: typed driver configs + metadata)
+    let parsed = ron_loader::load_parsed_board(&PathBuf::from(&board_ron_path))
         .unwrap_or_else(|e| panic!("failed to load board config: {e}"));
 
     // Generate stage source
-    let stage_source = stage_gen::generate_stage_source(&config, stage_name.as_deref());
+    let stage_source = stage_gen::generate_stage_source(&parsed, stage_name.as_deref());
     let stage_path = out_dir.join("generated_stage.rs");
     fs::write(&stage_path, &stage_source).expect("failed to write generated stage");
 
     // Generate linker script
-    let linker_script = linker::generate_linker_script(&config, stage_name.as_deref());
+    let linker_script = linker::generate_linker_script(&parsed.config, stage_name.as_deref());
     let ld_path = out_dir.join("link.ld");
     fs::write(&ld_path, &linker_script).expect("failed to write linker script");
 

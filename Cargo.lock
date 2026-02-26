@@ -369,6 +369,7 @@ dependencies = [
 name = "fstart-codegen"
 version = "0.1.0"
 dependencies = [
+ "fstart-drivers",
  "fstart-types",
  "heapless",
  "prettyplease",
@@ -396,6 +397,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-services",
+ "serde",
  "tock-registers",
 ]
 

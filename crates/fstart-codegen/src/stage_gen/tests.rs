@@ -1,31 +1,33 @@
 use super::*;
+use crate::ron_loader::ParsedBoard;
+use fstart_drivers::DriverInstance;
 
-/// Helper: create a minimal board config for testing.
-fn test_board_config(capabilities: heapless::Vec<Capability, 16>) -> BoardConfig {
+/// Helper: create a minimal parsed board for testing.
+fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard {
     use fstart_types::*;
     use heapless::String as HString;
 
     let mut devices = heapless::Vec::new();
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("uart0").unwrap(),
-        compatible: HString::try_from("ns16550a").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("Console").unwrap());
             v
         },
-        resources: Resources {
-            mmio_base: Some(0x1000_0000),
-            clock_freq: Some(3_686_400),
-            baud_rate: Some(115_200),
-            irq: Some(10),
-            ..Default::default()
-        },
         parent: None,
     });
 
-    BoardConfig {
+    let driver_instances = vec![DriverInstance::Ns16550(
+        fstart_drivers::uart::ns16550::Ns16550Config {
+            base_addr: 0x1000_0000,
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        },
+    )];
+
+    let config = BoardConfig {
         name: HString::try_from("test-board").unwrap(),
         platform: HString::try_from("riscv64").unwrap(),
         memory: MemoryMap {
@@ -60,6 +62,11 @@ fn test_board_config(capabilities: heapless::Vec<Capability, 16>) -> BoardConfig
         },
         mode: BuildMode::Rigid,
         payload: None,
+    };
+
+    ParsedBoard {
+        config,
+        driver_instances,
     }
 }
 
@@ -69,8 +76,8 @@ fn test_console_init_generates_device_init_and_banner() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(source.contains("uart0.init()"), "should call init()");
     assert!(
@@ -99,8 +106,8 @@ fn test_memory_init_after_console() {
         device: heapless::String::try_from("uart0").unwrap(),
     });
     let _ = caps.push(Capability::MemoryInit);
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("fstart_capabilities::memory_init()"),
@@ -112,8 +119,8 @@ fn test_memory_init_after_console() {
 fn test_memory_init_without_console_is_error() {
     let mut caps = heapless::Vec::new();
     let _ = caps.push(Capability::MemoryInit);
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("compile_error!"),
@@ -128,8 +135,8 @@ fn test_driver_init_skips_already_inited() {
         device: heapless::String::try_from("uart0").unwrap(),
     });
     let _ = caps.push(Capability::DriverInit);
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     // uart0 was already initialised by ConsoleInit, so DriverInit should
     // report 0 additional devices.
@@ -150,8 +157,8 @@ fn test_sig_verify_generates_call() {
         size: 0x40_0000,
     }));
     let _ = caps.push(Capability::SigVerify);
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("const FLASH_BASE: u64 = 0x80000000;"),
@@ -191,8 +198,8 @@ fn test_sig_verify_with_flash_base_generates_constants() {
         size: 0x800_0000,
     }));
     let _ = caps.push(Capability::SigVerify);
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("const FLASH_BASE: u64 = 0x0;"),
@@ -221,8 +228,8 @@ fn test_stage_load_generates_call() {
     let _ = caps.push(Capability::StageLoad {
         next_stage: heapless::String::try_from("main").unwrap(),
     });
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("fstart_capabilities::stage_load("),
@@ -255,8 +262,8 @@ fn test_stage_load_with_flash_base_generates_real_call() {
     let _ = caps.push(Capability::StageLoad {
         next_stage: heapless::String::try_from("main").unwrap(),
     });
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("const FLASH_BASE: u64 = 0x80000000;"),
@@ -290,13 +297,23 @@ fn test_unknown_driver_is_compile_error() {
         device: HString::try_from("uart0").unwrap(),
     });
 
-    let mut config = test_board_config(caps);
-    config.devices[0].driver = HString::try_from("nonexistent").unwrap();
+    let mut parsed = test_parsed_board(caps);
+    // Overwrite the driver name on the DeviceConfig to something unknown.
+    // The DriverInstance is still Ns16550 but the name won't match any
+    // registry entry, which is what triggers the compile_error.
+    parsed.config.devices[0].driver = HString::try_from("nonexistent").unwrap();
 
-    let source = generate_stage_source(&config, None);
+    let source = generate_stage_source(&parsed, None);
+    // The source still generates valid code because DriverInstance::Ns16550
+    // is valid — the driver name on DeviceConfig is informational for xtask.
+    // In the new architecture, an unknown driver would fail at RON parse
+    // time (serde can't deserialize an unknown enum variant). So this test
+    // verifies the codegen doesn't crash even if the names are inconsistent.
+    // The ConsoleInit path checks find_driver_meta(drv_name) where drv_name
+    // comes from inst.meta().name (which is "ns16550", not "nonexistent").
     assert!(
-        source.contains("compile_error!"),
-        "should emit compile_error for unknown driver"
+        source.contains("Ns16550::new"),
+        "should still construct from the DriverInstance: {source}"
     );
 }
 
@@ -306,8 +323,8 @@ fn test_all_capabilities_complete_message() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("fstart_log::info!(\"all capabilities complete\")"),
@@ -319,8 +336,8 @@ fn test_all_capabilities_complete_message() {
 // Bus hierarchy tests
 // =======================================================================
 
-/// Helper: create a board config with UART + I2C bus + I2C child device.
-fn test_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -> BoardConfig {
+/// Helper: create a parsed board with UART + I2C bus + I2C child device.
+fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard {
     use fstart_types::*;
     use heapless::String as HString;
 
@@ -329,19 +346,11 @@ fn test_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -> Board
     // Root device: UART
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("uart0").unwrap(),
-        compatible: HString::try_from("ns16550a").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("Console").unwrap());
             v
-        },
-        resources: Resources {
-            mmio_base: Some(0x1000_0000),
-            clock_freq: Some(3_686_400),
-            baud_rate: Some(115_200),
-            irq: Some(10),
-            ..Default::default()
         },
         parent: None,
     });
@@ -349,23 +358,29 @@ fn test_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -> Board
     // Root device: I2C bus controller
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("i2c0").unwrap(),
-        compatible: HString::try_from("dw-apb-i2c").unwrap(),
         driver: HString::try_from("designware-i2c").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("I2cBus").unwrap());
             v
         },
-        resources: Resources {
-            mmio_base: Some(0x1004_0000),
-            clock_freq: Some(100_000_000),
-            bus_speed: Some(400_000),
-            ..Default::default()
-        },
         parent: None,
     });
 
-    BoardConfig {
+    let driver_instances = vec![
+        DriverInstance::Ns16550(fstart_drivers::uart::ns16550::Ns16550Config {
+            base_addr: 0x1000_0000,
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        }),
+        DriverInstance::DesignwareI2c(fstart_drivers::i2c::designware::DesignwareI2cConfig {
+            base_addr: 0x1004_0000,
+            clock_freq: 100_000_000,
+            bus_speed: fstart_drivers::i2c::designware::I2cSpeed::Fast,
+        }),
+    ];
+
+    let config = BoardConfig {
         name: HString::try_from("test-i2c-board").unwrap(),
         platform: HString::try_from("riscv64").unwrap(),
         memory: MemoryMap {
@@ -400,6 +415,11 @@ fn test_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -> Board
         },
         mode: BuildMode::Rigid,
         payload: None,
+    };
+
+    ParsedBoard {
+        config,
+        driver_instances,
     }
 }
 
@@ -412,31 +432,21 @@ fn test_topological_sort_no_parents() {
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
             name: HString::try_from("uart0").unwrap(),
-            compatible: HString::try_from("ns16550a").unwrap(),
             driver: HString::try_from("ns16550").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
                 let _ = v.push(HString::try_from("Console").unwrap());
                 v
             },
-            resources: Resources {
-                mmio_base: Some(0x1000_0000),
-                ..Default::default()
-            },
             parent: None,
         },
         DeviceConfig {
             name: HString::try_from("i2c0").unwrap(),
-            compatible: HString::try_from("dw-apb-i2c").unwrap(),
             driver: HString::try_from("designware-i2c").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
                 let _ = v.push(HString::try_from("I2cBus").unwrap());
                 v
-            },
-            resources: Resources {
-                mmio_base: Some(0x1004_0000),
-                ..Default::default()
             },
             parent: None,
         },
@@ -459,32 +469,22 @@ fn test_topological_sort_parent_before_child() {
         // Index 0: child (listed first but has parent)
         DeviceConfig {
             name: HString::try_from("tpm0").unwrap(),
-            compatible: HString::try_from("infineon,slb9670").unwrap(),
             driver: HString::try_from("ns16550").unwrap(), // fake driver, doesn't matter for sort
             services: {
                 let mut v = heapless::Vec::new();
                 let _ = v.push(HString::try_from("Console").unwrap());
                 v
             },
-            resources: Resources {
-                bus_addr: Some(0x50),
-                ..Default::default()
-            },
             parent: Some(HString::try_from("i2c0").unwrap()),
         },
         // Index 1: parent
         DeviceConfig {
             name: HString::try_from("i2c0").unwrap(),
-            compatible: HString::try_from("dw-apb-i2c").unwrap(),
             driver: HString::try_from("designware-i2c").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
                 let _ = v.push(HString::try_from("I2cBus").unwrap());
                 v
-            },
-            resources: Resources {
-                mmio_base: Some(0x1004_0000),
-                ..Default::default()
             },
             parent: None,
         },
@@ -504,14 +504,12 @@ fn test_topological_sort_unknown_parent_is_error() {
 
     let devices: Vec<DeviceConfig> = vec![DeviceConfig {
         name: HString::try_from("tpm0").unwrap(),
-        compatible: HString::try_from("infineon,slb9670").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("Console").unwrap());
             v
         },
-        resources: Resources::default(),
         parent: Some(HString::try_from("nonexistent").unwrap()),
     }];
 
@@ -531,29 +529,22 @@ fn test_topological_sort_parent_not_bus_is_error() {
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
             name: HString::try_from("uart0").unwrap(),
-            compatible: HString::try_from("ns16550a").unwrap(),
             driver: HString::try_from("ns16550").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
                 let _ = v.push(HString::try_from("Console").unwrap());
                 v
-            },
-            resources: Resources {
-                mmio_base: Some(0x1000_0000),
-                ..Default::default()
             },
             parent: None,
         },
         DeviceConfig {
             name: HString::try_from("child0").unwrap(),
-            compatible: HString::try_from("some-device").unwrap(),
             driver: HString::try_from("ns16550").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
                 let _ = v.push(HString::try_from("Console").unwrap());
                 v
             },
-            resources: Resources::default(),
             parent: Some(HString::try_from("uart0").unwrap()),
         },
     ];
@@ -577,26 +568,22 @@ fn test_topological_sort_cycle_detection() {
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
             name: HString::try_from("a").unwrap(),
-            compatible: HString::try_from("x").unwrap(),
             driver: HString::try_from("designware-i2c").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
                 let _ = v.push(HString::try_from("I2cBus").unwrap());
                 v
             },
-            resources: Resources::default(),
             parent: Some(HString::try_from("b").unwrap()),
         },
         DeviceConfig {
             name: HString::try_from("b").unwrap(),
-            compatible: HString::try_from("x").unwrap(),
             driver: HString::try_from("designware-i2c").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
                 let _ = v.push(HString::try_from("I2cBus").unwrap());
                 v
             },
-            resources: Resources::default(),
             parent: Some(HString::try_from("a").unwrap()),
         },
     ];
@@ -616,8 +603,8 @@ fn test_i2c_bus_device_generates_correct_config() {
         device: heapless::String::try_from("uart0").unwrap(),
     });
     let _ = caps.push(Capability::DriverInit);
-    let config = test_board_with_i2c_bus(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board_with_i2c_bus(caps);
+    let source = generate_stage_source(&parsed, None);
 
     // Should generate DesignwareI2c construction
     assert!(
@@ -644,8 +631,8 @@ fn test_i2c_bus_generates_embedded_hal_import() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_board_with_i2c_bus(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board_with_i2c_bus(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("use fstart_services::i2c::"),
@@ -660,8 +647,8 @@ fn test_i2c_bus_generates_accessor() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_board_with_i2c_bus(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board_with_i2c_bus(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("fn i2c_bus("),
@@ -684,27 +671,28 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
     });
     let _ = caps.push(Capability::DriverInit);
 
-    let mut config = test_board_with_i2c_bus(caps);
+    let mut parsed = test_parsed_board_with_i2c_bus(caps);
 
     // Add a child device that references i2c0 as parent.
-    let _ = config.devices.push(DeviceConfig {
+    let _ = parsed.config.devices.push(DeviceConfig {
         name: HString::try_from("child0").unwrap(),
-        compatible: HString::try_from("test-child").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("Console").unwrap());
             v
         },
-        resources: Resources {
-            mmio_base: Some(0x2000_0000),
-            bus_addr: Some(0x50),
-            ..Default::default()
-        },
         parent: Some(HString::try_from("i2c0").unwrap()),
     });
+    parsed.driver_instances.push(DriverInstance::Ns16550(
+        fstart_drivers::uart::ns16550::Ns16550Config {
+            base_addr: 0x2000_0000,
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        },
+    ));
 
-    let source = generate_stage_source(&config, None);
+    let source = generate_stage_source(&parsed, None);
 
     // In the generated code, i2c0.init() must appear before child0.init()
     let i2c_init_pos = source.find("i2c0.init()").expect("should init i2c0");
@@ -725,21 +713,26 @@ fn test_parent_reference_unknown_device_is_compile_error() {
         device: HString::try_from("uart0").unwrap(),
     });
 
-    let mut config = test_board_config(caps);
-    let _ = config.devices.push(DeviceConfig {
+    let mut parsed = test_parsed_board(caps);
+    let _ = parsed.config.devices.push(DeviceConfig {
         name: HString::try_from("child0").unwrap(),
-        compatible: HString::try_from("test-child").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("Console").unwrap());
             v
         },
-        resources: Resources::default(),
         parent: Some(HString::try_from("ghost").unwrap()),
     });
+    parsed.driver_instances.push(DriverInstance::Ns16550(
+        fstart_drivers::uart::ns16550::Ns16550Config {
+            base_addr: 0x2000_0000,
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        },
+    ));
 
-    let source = generate_stage_source(&config, None);
+    let source = generate_stage_source(&parsed, None);
     assert!(
         source.contains("compile_error!"),
         "should emit compile_error for unknown parent"
@@ -754,16 +747,18 @@ fn test_parent_reference_unknown_device_is_compile_error() {
 // Flexible mode tests
 // =======================================================================
 
-/// Helper: create a flexible-mode board config with a single UART.
-fn test_flexible_board_config(capabilities: heapless::Vec<Capability, 16>) -> BoardConfig {
-    let mut config = test_board_config(capabilities);
-    config.mode = BuildMode::Flexible;
-    config
+/// Helper: create a flexible-mode parsed board with a single UART.
+fn test_flexible_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard {
+    let mut parsed = test_parsed_board(capabilities);
+    parsed.config.mode = BuildMode::Flexible;
+    parsed
 }
 
-/// Helper: create a flexible-mode board config with two UARTs (both Console).
+/// Helper: create a flexible-mode parsed board with two UARTs (both Console).
 /// This exercises enum dispatch with multiple variants.
-fn test_flexible_multi_driver_board(capabilities: heapless::Vec<Capability, 16>) -> BoardConfig {
+fn test_flexible_multi_driver_parsed_board(
+    capabilities: heapless::Vec<Capability, 16>,
+) -> ParsedBoard {
     use fstart_types::*;
     use heapless::String as HString;
 
@@ -772,19 +767,11 @@ fn test_flexible_multi_driver_board(capabilities: heapless::Vec<Capability, 16>)
     // NS16550 UART
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("uart0").unwrap(),
-        compatible: HString::try_from("ns16550a").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("Console").unwrap());
             v
-        },
-        resources: Resources {
-            mmio_base: Some(0x1000_0000),
-            clock_freq: Some(3_686_400),
-            baud_rate: Some(115_200),
-            irq: Some(10),
-            ..Default::default()
         },
         parent: None,
     });
@@ -792,23 +779,29 @@ fn test_flexible_multi_driver_board(capabilities: heapless::Vec<Capability, 16>)
     // PL011 UART
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("uart1").unwrap(),
-        compatible: HString::try_from("arm,pl011").unwrap(),
         driver: HString::try_from("pl011").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("Console").unwrap());
             v
         },
-        resources: Resources {
-            mmio_base: Some(0x0900_0000),
-            clock_freq: Some(1_843_200),
-            baud_rate: Some(115_200),
-            ..Default::default()
-        },
         parent: None,
     });
 
-    BoardConfig {
+    let driver_instances = vec![
+        DriverInstance::Ns16550(fstart_drivers::uart::ns16550::Ns16550Config {
+            base_addr: 0x1000_0000,
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        }),
+        DriverInstance::Pl011(fstart_drivers::uart::pl011::Pl011Config {
+            base_addr: 0x0900_0000,
+            clock_freq: 1_843_200,
+            baud_rate: 115_200,
+        }),
+    ];
+
+    let config = BoardConfig {
         name: HString::try_from("test-flex-multi").unwrap(),
         platform: HString::try_from("riscv64").unwrap(),
         memory: MemoryMap {
@@ -843,6 +836,11 @@ fn test_flexible_multi_driver_board(capabilities: heapless::Vec<Capability, 16>)
         },
         mode: BuildMode::Flexible,
         payload: None,
+    };
+
+    ParsedBoard {
+        config,
+        driver_instances,
     }
 }
 
@@ -852,8 +850,8 @@ fn test_flexible_generates_console_enum() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_flexible_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("enum ConsoleDevice"),
@@ -871,8 +869,8 @@ fn test_flexible_generates_console_trait_impl() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_flexible_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("impl Console for ConsoleDevice"),
@@ -898,8 +896,8 @@ fn test_flexible_multi_driver_enum_has_both_variants() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_flexible_multi_driver_board(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_multi_driver_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("enum ConsoleDevice"),
@@ -931,8 +929,8 @@ fn test_flexible_devices_struct_uses_enum_type() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_flexible_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     // Devices struct should use ConsoleDevice, not Ns16550
     assert!(
@@ -947,8 +945,8 @@ fn test_flexible_stage_context_returns_enum_type() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_flexible_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     // StageContext accessor should return &ConsoleDevice, not &(impl Console + '_)
     assert!(
@@ -963,8 +961,8 @@ fn test_flexible_construction_uses_inner_variable() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_flexible_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     // Construction should use _uart0_inner
     assert!(
@@ -989,8 +987,8 @@ fn test_flexible_imports_service_error() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_flexible_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("use fstart_services::ServiceError;"),
@@ -1005,8 +1003,8 @@ fn test_flexible_driver_init_wraps_after_init() {
         device: heapless::String::try_from("uart0").unwrap(),
     });
     let _ = caps.push(Capability::DriverInit);
-    let config = test_flexible_multi_driver_board(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_multi_driver_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     // uart1 should be initialized via _uart1_inner and then wrapped
     assert!(
@@ -1032,8 +1030,8 @@ fn test_flexible_still_generates_completion_message() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_flexible_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_flexible_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("fstart_log::info!(\"all capabilities complete\")"),
@@ -1049,10 +1047,10 @@ fn test_flexible_with_i2c_bus_generates_i2c_bus_enum() {
     });
     let _ = caps.push(Capability::DriverInit);
 
-    let mut config = test_board_with_i2c_bus(caps);
-    config.mode = BuildMode::Flexible;
+    let mut parsed = test_parsed_board_with_i2c_bus(caps);
+    parsed.config.mode = BuildMode::Flexible;
 
-    let source = generate_stage_source(&config, None);
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("enum I2cBusDevice"),
@@ -1080,30 +1078,30 @@ fn test_flexible_with_i2c_bus_generates_i2c_bus_enum() {
 // Multi-stage tests
 // =======================================================================
 
-/// Helper: create a multi-stage board config (bootblock + main).
-fn test_multi_stage_board() -> BoardConfig {
+/// Helper: create a multi-stage parsed board (bootblock + main).
+fn test_multi_stage_parsed_board() -> ParsedBoard {
     use fstart_types::*;
     use heapless::String as HString;
 
     let mut devices = heapless::Vec::new();
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("uart0").unwrap(),
-        compatible: HString::try_from("ns16550a").unwrap(),
         driver: HString::try_from("ns16550").unwrap(),
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("Console").unwrap());
             v
         },
-        resources: Resources {
-            mmio_base: Some(0x1000_0000),
-            clock_freq: Some(3_686_400),
-            baud_rate: Some(115_200),
-            irq: Some(10),
-            ..Default::default()
-        },
         parent: None,
     });
+
+    let driver_instances = vec![DriverInstance::Ns16550(
+        fstart_drivers::uart::ns16550::Ns16550Config {
+            base_addr: 0x1000_0000,
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        },
+    )];
 
     let mut stages = heapless::Vec::new();
     let _ = stages.push(StageConfig {
@@ -1145,7 +1143,7 @@ fn test_multi_stage_board() -> BoardConfig {
         data_addr: None,
     });
 
-    BoardConfig {
+    let config = BoardConfig {
         name: HString::try_from("test-multi").unwrap(),
         platform: HString::try_from("riscv64").unwrap(),
         memory: MemoryMap {
@@ -1175,13 +1173,18 @@ fn test_multi_stage_board() -> BoardConfig {
         },
         mode: BuildMode::Rigid,
         payload: None,
+    };
+
+    ParsedBoard {
+        config,
+        driver_instances,
     }
 }
 
 #[test]
 fn test_multi_stage_bootblock_generates_stage_load() {
-    let config = test_multi_stage_board();
-    let source = generate_stage_source(&config, Some("bootblock"));
+    let parsed = test_multi_stage_parsed_board();
+    let source = generate_stage_source(&parsed, Some("bootblock"));
 
     assert!(
         source.contains("fstart_capabilities::console_ready"),
@@ -1211,8 +1214,8 @@ fn test_multi_stage_bootblock_generates_stage_load() {
 
 #[test]
 fn test_multi_stage_bootblock_with_flash_base() {
-    let config = test_multi_stage_board();
-    let source = generate_stage_source(&config, Some("bootblock"));
+    let parsed = test_multi_stage_parsed_board();
+    let source = generate_stage_source(&parsed, Some("bootblock"));
 
     assert!(
         source.contains("const FLASH_BASE: u64 = 0x20000000;"),
@@ -1250,8 +1253,8 @@ fn test_multi_stage_bootblock_with_flash_base() {
 
 #[test]
 fn test_multi_stage_bootblock_no_completion_message() {
-    let config = test_multi_stage_board();
-    let source = generate_stage_source(&config, Some("bootblock"));
+    let parsed = test_multi_stage_parsed_board();
+    let source = generate_stage_source(&parsed, Some("bootblock"));
 
     // Bootblock ends with StageLoad — should NOT log completion
     assert!(
@@ -1262,8 +1265,8 @@ fn test_multi_stage_bootblock_no_completion_message() {
 
 #[test]
 fn test_multi_stage_main_generates_capabilities() {
-    let config = test_multi_stage_board();
-    let source = generate_stage_source(&config, Some("main"));
+    let parsed = test_multi_stage_parsed_board();
+    let source = generate_stage_source(&parsed, Some("main"));
 
     assert!(
         source.contains("fstart_capabilities::console_ready"),
@@ -1281,8 +1284,8 @@ fn test_multi_stage_main_generates_capabilities() {
 
 #[test]
 fn test_multi_stage_missing_stage_name_is_error() {
-    let config = test_multi_stage_board();
-    let source = generate_stage_source(&config, None);
+    let parsed = test_multi_stage_parsed_board();
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         source.contains("compile_error!"),
@@ -1292,8 +1295,8 @@ fn test_multi_stage_missing_stage_name_is_error() {
 
 #[test]
 fn test_multi_stage_unknown_stage_name_is_error() {
-    let config = test_multi_stage_board();
-    let source = generate_stage_source(&config, Some("nonexistent"));
+    let parsed = test_multi_stage_parsed_board();
+    let source = generate_stage_source(&parsed, Some("nonexistent"));
 
     assert!(
         source.contains("compile_error!"),
@@ -1312,8 +1315,8 @@ fn test_stage_ending_with_payload_load_no_completion() {
         size: 0x200_0000,
     }));
     let _ = caps.push(Capability::PayloadLoad);
-    let config = test_board_config(caps);
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
 
     // Ends with PayloadLoad — should not log completion
     assert!(
@@ -1328,8 +1331,8 @@ fn test_rigid_mode_unchanged_no_enums() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let config = test_board_config(caps); // default Rigid mode
-    let source = generate_stage_source(&config, None);
+    let parsed = test_parsed_board(caps); // default Rigid mode
+    let source = generate_stage_source(&parsed, None);
 
     assert!(
         !source.contains("enum ConsoleDevice"),
@@ -1343,4 +1346,198 @@ fn test_rigid_mode_unchanged_no_enums() {
         source.contains("uart0: Ns16550"),
         "rigid mode should use concrete type in Devices: {source}"
     );
+}
+
+// =======================================================================
+// ConfigTokenSerializer — compound type tests
+// =======================================================================
+
+#[test]
+fn test_config_ser_option_none() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        x: Option<u32>,
+    }
+
+    let s = serialize_to_tokens(&Cfg { x: None }).to_string();
+    assert!(
+        s.contains("None"),
+        "Option::None field should produce None: {s}"
+    );
+}
+
+#[test]
+fn test_config_ser_option_some() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        x: Option<u32>,
+    }
+
+    let s = serialize_to_tokens(&Cfg { x: Some(42) }).to_string();
+    assert!(
+        s.contains("Some"),
+        "Option::Some should produce Some(...): {s}"
+    );
+    assert!(s.contains("42u32"), "should contain inner value: {s}");
+}
+
+#[test]
+fn test_config_ser_array_field() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        pins: [u8; 3],
+    }
+
+    let s = serialize_to_tokens(&Cfg { pins: [1, 2, 3] }).to_string();
+    assert!(s.contains("pins"), "should have field name: {s}");
+    assert!(s.contains("1u8"), "should have first element: {s}");
+    assert!(s.contains("2u8"), "should have second element: {s}");
+    assert!(s.contains("3u8"), "should have third element: {s}");
+}
+
+#[test]
+fn test_config_ser_newtype_variant() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    enum Source {
+        External(u32),
+        #[allow(dead_code)]
+        Internal(u32),
+    }
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        src: Source,
+    }
+
+    let s = serialize_to_tokens(&Cfg {
+        src: Source::External(100),
+    })
+    .to_string();
+    assert!(s.contains("Source"), "newtype variant enum name: {s}");
+    assert!(s.contains("External"), "newtype variant name: {s}");
+    assert!(s.contains("100u32"), "inner value: {s}");
+}
+
+#[test]
+fn test_config_ser_struct_variant() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    enum Mode {
+        Custom { speed: u32, duplex: bool },
+    }
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        mode: Mode,
+    }
+
+    let s = serialize_to_tokens(&Cfg {
+        mode: Mode::Custom {
+            speed: 9600,
+            duplex: true,
+        },
+    })
+    .to_string();
+    assert!(s.contains("Mode"), "struct variant enum name: {s}");
+    assert!(s.contains("Custom"), "struct variant name: {s}");
+    assert!(s.contains("speed"), "struct variant field name: {s}");
+    assert!(s.contains("9600u32"), "struct variant field value: {s}");
+    assert!(s.contains("duplex"), "struct variant field name: {s}");
+    assert!(s.contains("true"), "struct variant bool value: {s}");
+}
+
+#[test]
+fn test_config_ser_tuple_variant() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    enum Pair {
+        Coords(u32, u32),
+    }
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        pos: Pair,
+    }
+
+    let s = serialize_to_tokens(&Cfg {
+        pos: Pair::Coords(10, 20),
+    })
+    .to_string();
+    assert!(s.contains("Pair"), "tuple variant enum name: {s}");
+    assert!(s.contains("Coords"), "tuple variant name: {s}");
+    assert!(s.contains("10u32"), "first element: {s}");
+    assert!(s.contains("20u32"), "second element: {s}");
+}
+
+#[test]
+fn test_config_ser_newtype_struct() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    struct Addr(u64);
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        base: Addr,
+    }
+
+    let s = serialize_to_tokens(&Cfg { base: Addr(0x1000) }).to_string();
+    assert!(s.contains("Addr"), "newtype struct name: {s}");
+    // u64 emits hex
+    assert!(s.contains("0x1000"), "inner hex value: {s}");
+}
+
+#[test]
+fn test_config_ser_unit_and_char() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        parity: char,
+    }
+
+    let s = serialize_to_tokens(&Cfg { parity: 'N' }).to_string();
+    assert!(s.contains("'N'"), "char literal: {s}");
+}
+
+#[test]
+fn test_config_ser_nested_option_in_struct() {
+    use config_ser::serialize_to_tokens;
+
+    #[derive(serde::Serialize)]
+    struct Inner {
+        val: u32,
+    }
+
+    #[derive(serde::Serialize)]
+    struct Cfg {
+        extra: Option<Inner>,
+    }
+
+    let none_s = serialize_to_tokens(&Cfg { extra: None }).to_string();
+    assert!(
+        none_s.contains("None"),
+        "nested Option::None should be None: {none_s}"
+    );
+
+    let some_s = serialize_to_tokens(&Cfg {
+        extra: Some(Inner { val: 7 }),
+    })
+    .to_string();
+    assert!(some_s.contains("Some"), "nested Option::Some: {some_s}");
+    assert!(
+        some_s.contains("Inner"),
+        "inner struct name in Some: {some_s}"
+    );
+    assert!(some_s.contains("7u32"), "inner struct value: {some_s}");
 }

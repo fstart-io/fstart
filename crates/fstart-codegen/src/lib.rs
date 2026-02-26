@@ -11,3 +11,6 @@
 pub mod linker;
 pub mod ron_loader;
 pub mod stage_gen;
+
+// Re-export the parsed board type so callers can use it directly.
+pub use ron_loader::ParsedBoard;

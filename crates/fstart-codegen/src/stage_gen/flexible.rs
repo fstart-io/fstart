@@ -9,9 +9,8 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use fstart_drivers::{DriverInstance, DriverMeta};
 use fstart_types::DeviceConfig;
-
-use super::registry::{find_driver, DriverInfo};
 
 // =======================================================================
 // Service trait metadata
@@ -171,23 +170,26 @@ fn find_service_trait(name: &str) -> Option<&'static ServiceTraitInfo> {
     SERVICE_TRAITS.iter().find(|s| s.name == name)
 }
 
-/// For a given service trait, collect all unique (driver_info, type_name) pairs
+/// For a given service trait, collect all unique [`DriverMeta`] entries
 /// from the board's devices that provide that service.
-fn drivers_for_service<'a>(devices: &[DeviceConfig], service_name: &str) -> Vec<&'a DriverInfo> {
-    let mut result: Vec<&DriverInfo> = Vec::new();
+fn drivers_for_service<'a>(
+    devices: &[DeviceConfig],
+    instances: &'a [DriverInstance],
+    service_name: &str,
+) -> Vec<&'a DriverMeta> {
+    let mut result: Vec<&DriverMeta> = Vec::new();
     let mut seen_types: Vec<&str> = Vec::new();
 
-    for dev in devices {
+    for (dev, inst) in devices.iter().zip(instances.iter()) {
         // Check if this device declares the service
         if !dev.services.iter().any(|s| s.as_str() == service_name) {
             continue;
         }
-        if let Some(info) = find_driver(dev.driver.as_str()) {
-            // Also verify the driver actually implements this service
-            if info.services.contains(&service_name) && !seen_types.contains(&info.type_name) {
-                seen_types.push(info.type_name);
-                result.push(info);
-            }
+        let meta = inst.meta();
+        // Also verify the driver actually implements this service
+        if meta.services.contains(&service_name) && !seen_types.contains(&meta.type_name) {
+            seen_types.push(meta.type_name);
+            result.push(meta);
         }
     }
     result
@@ -210,13 +212,15 @@ fn active_services(devices: &[DeviceConfig]) -> Vec<&'static str> {
 /// In flexible mode, find the enum type name for a device based on its first
 /// service. Returns the enum variant name (driver type name) and the enum
 /// type name.
-pub(super) fn flexible_enum_for_device(dev: &DeviceConfig) -> Option<(&'static str, &'static str)> {
+pub(super) fn flexible_enum_for_device(
+    dev: &DeviceConfig,
+    inst: &DriverInstance,
+) -> Option<(&'static str, &'static str)> {
+    let meta = inst.meta();
     // Find the first service this device provides that has a service enum
     for svc_str in &dev.services {
         if let Some(svc_info) = find_service_trait(svc_str.as_str()) {
-            if let Some(drv_info) = find_driver(dev.driver.as_str()) {
-                return Some((svc_info.enum_name, drv_info.type_name));
-            }
+            return Some((svc_info.enum_name, meta.type_name));
         }
     }
     None
@@ -227,7 +231,10 @@ pub(super) fn flexible_enum_for_device(dev: &DeviceConfig) -> Option<(&'static s
 // =======================================================================
 
 /// Generate service enum types and their trait implementations for flexible mode.
-pub(super) fn generate_flexible_enums(devices: &[DeviceConfig]) -> TokenStream {
+pub(super) fn generate_flexible_enums(
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+) -> TokenStream {
     let services = active_services(devices);
     let mut tokens = TokenStream::new();
 
@@ -236,7 +243,7 @@ pub(super) fn generate_flexible_enums(devices: &[DeviceConfig]) -> TokenStream {
             continue;
         };
 
-        let drivers = drivers_for_service(devices, svc_name);
+        let drivers = drivers_for_service(devices, instances, svc_name);
         if drivers.is_empty() {
             continue;
         }
@@ -244,8 +251,8 @@ pub(super) fn generate_flexible_enums(devices: &[DeviceConfig]) -> TokenStream {
         let enum_name = format_ident!("{}", svc_info.enum_name);
 
         // Generate the enum (same for all trait kinds)
-        let variants = drivers.iter().map(|drv| {
-            let variant = format_ident!("{}", drv.type_name);
+        let variants = drivers.iter().map(|meta| {
+            let variant = format_ident!("{}", meta.type_name);
             quote! { #variant(#variant) }
         });
 
@@ -281,7 +288,7 @@ pub(super) fn generate_flexible_enums(devices: &[DeviceConfig]) -> TokenStream {
 /// Generate native trait impl for a Flexible-mode enum (Console, Timer, etc.).
 fn generate_native_enum_impl(
     svc_info: &ServiceTraitInfo,
-    drivers: &[&DriverInfo],
+    drivers: &[&DriverMeta],
     methods: &[ServiceMethod],
 ) -> TokenStream {
     let enum_name = format_ident!("{}", svc_info.enum_name);
@@ -290,8 +297,8 @@ fn generate_native_enum_impl(
     let method_impls = methods.iter().map(|method| {
         let sig: TokenStream = method.signature.parse().unwrap();
         let del: TokenStream = method.delegation.parse().unwrap();
-        let arms = drivers.iter().map(|drv| {
-            let variant = format_ident!("{}", drv.type_name);
+        let arms = drivers.iter().map(|meta| {
+            let variant = format_ident!("{}", meta.type_name);
             quote! { Self::#variant(d) => #del, }
         });
         quote! {
@@ -320,12 +327,12 @@ fn generate_native_enum_impl(
 /// would need to be extended with error conversion logic.
 fn generate_embedded_i2c_enum_impl(
     svc_info: &ServiceTraitInfo,
-    drivers: &[&DriverInfo],
+    drivers: &[&DriverMeta],
 ) -> TokenStream {
     let enum_name = format_ident!("{}", svc_info.enum_name);
 
-    let transaction_arms = drivers.iter().map(|drv| {
-        let variant = format_ident!("{}", drv.type_name);
+    let transaction_arms = drivers.iter().map(|meta| {
+        let variant = format_ident!("{}", meta.type_name);
         quote! { Self::#variant(d) => d.transaction(address, operations), }
     });
 
@@ -351,7 +358,7 @@ fn generate_embedded_i2c_enum_impl(
 /// Generate `ErrorType` + `SpiBus` impls for a Flexible-mode enum.
 fn generate_embedded_spi_enum_impl(
     svc_info: &ServiceTraitInfo,
-    drivers: &[&DriverInfo],
+    drivers: &[&DriverMeta],
 ) -> TokenStream {
     let enum_name = format_ident!("{}", svc_info.enum_name);
 
@@ -360,8 +367,8 @@ fn generate_embedded_spi_enum_impl(
         let del: TokenStream = delegation.parse().unwrap();
         drivers
             .iter()
-            .map(|drv| {
-                let variant = format_ident!("{}", drv.type_name);
+            .map(|meta| {
+                let variant = format_ident!("{}", meta.type_name);
                 quote! { Self::#variant(d) => #del, }
             })
             .collect()
@@ -399,9 +406,9 @@ fn generate_embedded_spi_enum_impl(
 }
 
 /// Generate the enum wrapping for a device after init (Flexible mode only).
-pub(super) fn generate_flexible_wrapping(dev: &DeviceConfig) -> TokenStream {
+pub(super) fn generate_flexible_wrapping(dev: &DeviceConfig, inst: &DriverInstance) -> TokenStream {
     let name_str = dev.name.as_str();
-    if let Some((enum_name_str, variant_name_str)) = flexible_enum_for_device(dev) {
+    if let Some((enum_name_str, variant_name_str)) = flexible_enum_for_device(dev, inst) {
         let name = format_ident!("{}", name_str);
         let enum_name = format_ident!("{}", enum_name_str);
         let variant_name = format_ident!("{}", variant_name_str);

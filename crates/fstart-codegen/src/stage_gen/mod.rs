@@ -1,7 +1,7 @@
 //! Generate stage entry point code from board configuration.
 //!
-//! Given a BoardConfig (or a specific stage within it), this module emits
-//! Rust source code that:
+//! Given a [`ParsedBoard`] (or a specific stage within it), this module
+//! emits Rust source code that:
 //!
 //! 1. Defines a `Devices` struct with one concrete typed field per device
 //! 2. Defines a `StageContext` with service accessor methods
@@ -12,12 +12,17 @@
 //! In **Flexible** mode, service enum wrappers are generated for runtime
 //! driver selection via match dispatch (no trait objects, no alloc).
 //!
+//! Driver-specific configuration comes from [`DriverInstance`] — each driver
+//! defines its own typed `Config` struct.  The `config_ser` module converts
+//! the validated config into a `TokenStream` for the generated source.
+//!
 //! Code generation uses the [`quote`] crate for quasi-quoting and
 //! [`prettyplease`] for formatting. See [docs/driver-model.md](../../../docs/driver-model.md).
 
 mod capabilities;
+mod config_ser;
 mod flexible;
-mod registry;
+pub(crate) mod registry;
 mod tokens;
 mod topology;
 mod validation;
@@ -25,17 +30,20 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-use proc_macro2::{Literal, TokenStream};
+use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use fstart_drivers::DriverInstance;
 use fstart_types::{BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, StageLayout};
+
+use crate::ron_loader::ParsedBoard;
 
 use capabilities::{
     generate_boot_media, generate_console_init, generate_driver_init, generate_fdt_prepare,
     generate_memory_init, generate_payload_load, generate_sig_verify, generate_stage_load,
 };
+use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
-use registry::{find_driver, DriverInfo};
 use tokens::{halt_expr, hex_addr};
 use topology::topological_sort_devices;
 use validation::{get_boot_medium, needs_fdt, needs_ffs, validate_capability_ordering};
@@ -49,7 +57,8 @@ use validation::{get_boot_medium, needs_fdt, needs_ffs, validate_capability_orde
 /// This is the heart of fstart's "RON drives everything" philosophy.
 /// The returned string is valid Rust source to be `include!()`d in the
 /// `#![no_std] #![no_main]` crate root.
-pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> String {
+pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> String {
+    let config = &parsed.config;
     let platform = config.platform.as_str();
 
     // Get capabilities for this stage
@@ -82,8 +91,7 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
     };
 
     // Build sorted device list for code generation.
-    let sorted_devices: Vec<&DeviceConfig> =
-        sorted_indices.iter().map(|&i| &config.devices[i]).collect();
+    let sorted_devices: Vec<usize> = sorted_indices;
 
     let mode = config.mode;
 
@@ -91,7 +99,12 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
     let mut tokens = TokenStream::new();
 
     tokens.extend(generate_platform_externs(platform));
-    tokens.extend(generate_imports(&config.devices, mode, capabilities));
+    tokens.extend(generate_imports(
+        &config.devices,
+        &parsed.driver_instances,
+        mode,
+        capabilities,
+    ));
 
     if let Some(BootMedium::MemoryMapped { base, size }) = get_boot_medium(capabilities) {
         tokens.extend(generate_flash_constants(*base, *size));
@@ -102,13 +115,25 @@ pub fn generate_stage_source(config: &BoardConfig, stage_name: Option<&str>) -> 
     }
 
     if mode == BuildMode::Flexible {
-        tokens.extend(generate_flexible_enums(&config.devices));
+        tokens.extend(generate_flexible_enums(
+            &config.devices,
+            &parsed.driver_instances,
+        ));
     }
 
-    tokens.extend(generate_devices_struct(&config.devices, mode));
-    tokens.extend(generate_stage_context(&config.devices, mode));
+    tokens.extend(generate_devices_struct(
+        &config.devices,
+        &parsed.driver_instances,
+        mode,
+    ));
+    tokens.extend(generate_stage_context(
+        &config.devices,
+        &parsed.driver_instances,
+        mode,
+    ));
     tokens.extend(generate_fstart_main(
         config,
+        &parsed.driver_instances,
         capabilities,
         platform,
         &sorted_devices,
@@ -150,6 +175,7 @@ fn generate_platform_externs(platform: &str) -> TokenStream {
 /// Emit `use` statements for all driver types needed by this board's devices.
 fn generate_imports(
     devices: &[DeviceConfig],
+    instances: &[DriverInstance],
     mode: BuildMode,
     capabilities: &[Capability],
 ) -> TokenStream {
@@ -190,20 +216,16 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::GpioController; });
     }
 
-    // Collect unique driver modules
-    let mut seen: Vec<&str> = Vec::new();
-    for dev in devices {
-        let drv_name = dev.driver.as_str();
-        if !seen.contains(&drv_name) {
-            if let Some(info) = find_driver(drv_name) {
-                let module_path: TokenStream = info.module_path.parse().unwrap();
-                let type_name = format_ident!("{}", info.type_name);
-                let config_type = format_ident!("{}", info.config_type);
-                tokens.extend(quote! {
-                    use #module_path::{#type_name, #config_type};
-                });
-            }
-            seen.push(drv_name);
+    // Collect unique driver modules and import all public types via glob
+    let mut seen_modules: Vec<&str> = Vec::new();
+    for inst in instances {
+        let meta = inst.meta();
+        if !seen_modules.contains(&meta.module_path) {
+            let module_path: TokenStream = meta.module_path.parse().unwrap();
+            tokens.extend(quote! {
+                use #module_path::*;
+            });
+            seen_modules.push(meta.module_path);
         }
     }
 
@@ -262,22 +284,26 @@ fn generate_anchor_static() -> TokenStream {
 // =======================================================================
 
 /// Emit the `Devices` struct — one concrete typed field per device.
-fn generate_devices_struct(devices: &[DeviceConfig], mode: BuildMode) -> TokenStream {
-    let fields = devices.iter().filter_map(|dev| {
+fn generate_devices_struct(
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    mode: BuildMode,
+) -> TokenStream {
+    let fields = devices.iter().zip(instances.iter()).map(|(dev, inst)| {
         let field_name = format_ident!("{}", dev.name.as_str());
-        let info = find_driver(dev.driver.as_str())?;
+        let meta = inst.meta();
 
         let field_type = match mode {
-            BuildMode::Rigid => format_ident!("{}", info.type_name),
+            BuildMode::Rigid => format_ident!("{}", meta.type_name),
             BuildMode::Flexible => {
-                if let Some((enum_name, _)) = flexible_enum_for_device(dev) {
+                if let Some((enum_name, _)) = flexible_enum_for_device(dev, inst) {
                     format_ident!("{}", enum_name)
                 } else {
-                    format_ident!("{}", info.type_name)
+                    format_ident!("{}", meta.type_name)
                 }
             }
         };
-        Some(quote! { #field_name: #field_type, })
+        quote! { #field_name: #field_type, }
     });
 
     quote! {
@@ -289,11 +315,17 @@ fn generate_devices_struct(devices: &[DeviceConfig], mode: BuildMode) -> TokenSt
 }
 
 /// Emit the `StageContext` struct with typed service accessors.
-fn generate_stage_context(devices: &[DeviceConfig], mode: BuildMode) -> TokenStream {
+fn generate_stage_context(
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    mode: BuildMode,
+) -> TokenStream {
     let accessors = SERVICE_TRAITS.iter().filter_map(|svc| {
-        let dev = devices
+        let (idx, dev) = devices
             .iter()
-            .find(|d| d.services.iter().any(|s| s.as_str() == svc.name))?;
+            .enumerate()
+            .find(|(_, d)| d.services.iter().any(|s| s.as_str() == svc.name))?;
+        let _inst = &instances[idx];
         let accessor_name = format_ident!("{}", svc.accessor);
         let field = format_ident!("{}", dev.name.as_str());
         let is_mut = svc.is_mut_accessor();
@@ -345,17 +377,20 @@ fn generate_stage_context(devices: &[DeviceConfig], mode: BuildMode) -> TokenStr
 /// execution, and halt.
 fn generate_fstart_main(
     config: &BoardConfig,
+    instances: &[DriverInstance],
     capabilities: &[Capability],
     platform: &str,
-    sorted_devices: &[&DeviceConfig],
+    sorted_device_indices: &[usize],
     mode: BuildMode,
 ) -> TokenStream {
     let halt = halt_expr(platform);
     let mut body = TokenStream::new();
 
     // --- Phase 1: Construct all devices in topological order ---
-    for dev in sorted_devices {
-        body.extend(generate_device_construction(dev, &halt, mode));
+    for &idx in sorted_device_indices {
+        let dev = &config.devices[idx];
+        let inst = &instances[idx];
+        body.extend(generate_device_construction(dev, inst, &halt, mode));
     }
 
     // Track which devices have been initialised by capabilities so DriverInit
@@ -370,26 +405,29 @@ fn generate_fstart_main(
                 body.extend(generate_console_init(
                     dev_name,
                     &config.devices,
+                    instances,
                     &halt,
                     mode,
                 ));
                 inited_devices.push(dev_name.to_string());
             }
             Capability::BootMedia(medium) => {
-                body.extend(generate_boot_media(medium, &config.devices));
+                body.extend(generate_boot_media(medium));
             }
             Capability::MemoryInit => {
                 body.extend(generate_memory_init());
             }
             Capability::DriverInit => {
                 body.extend(generate_driver_init(
-                    sorted_devices,
+                    &config.devices,
+                    instances,
+                    sorted_device_indices,
                     &inited_devices,
                     &halt,
                     mode,
                 ));
-                for dev in sorted_devices {
-                    let name = dev.name.as_str().to_string();
+                for &idx in sorted_device_indices {
+                    let name = config.devices[idx].name.as_str().to_string();
                     if !inited_devices.contains(&name) {
                         inited_devices.push(name);
                     }
@@ -415,11 +453,9 @@ fn generate_fstart_main(
         .last()
         .is_some_and(|cap| matches!(cap, Capability::StageLoad { .. } | Capability::PayloadLoad));
 
-    let device_fields = config.devices.iter().filter_map(|dev| {
-        find_driver(dev.driver.as_str()).map(|_| {
-            let name = format_ident!("{}", dev.name.as_str());
-            quote! { #name: #name, }
-        })
+    let device_fields = config.devices.iter().map(|dev| {
+        let name = format_ident!("{}", dev.name.as_str());
+        quote! { #name: #name, }
     });
 
     body.extend(quote! {
@@ -455,25 +491,18 @@ fn generate_fstart_main(
 /// Generate a device construction call using the `Device` trait.
 fn generate_device_construction(
     dev: &DeviceConfig,
+    instance: &DriverInstance,
     halt: &TokenStream,
     mode: BuildMode,
 ) -> TokenStream {
     let name_str = dev.name.as_str();
-    let drv_name = dev.driver.as_str();
-
-    let Some(info) = find_driver(drv_name) else {
-        let msg = format!("unknown driver: {drv_name}");
-        return quote! { compile_error!(#msg); };
-    };
-
-    let type_name = format_ident!("{}", info.type_name);
-    let config_type = format_ident!("{}", info.config_type);
-    let fields = generate_config_fields(dev, info);
+    let type_name = driver_type_tokens(instance);
+    let config = config_tokens(instance);
 
     let binding = match mode {
         BuildMode::Rigid => format_ident!("{}", name_str),
         BuildMode::Flexible => {
-            if flexible_enum_for_device(dev).is_some() {
+            if flexible_enum_for_device(dev, instance).is_some() {
                 format_ident!("_{}_inner", name_str)
             } else {
                 format_ident!("{}", name_str)
@@ -482,57 +511,6 @@ fn generate_device_construction(
     };
 
     quote! {
-        let #binding = #type_name::new(&#config_type {
-            #fields
-        }).unwrap_or_else(|_| #halt);
-    }
-}
-
-/// Map RON Resources to driver-specific Config fields.
-fn generate_config_fields(dev: &DeviceConfig, info: &DriverInfo) -> TokenStream {
-    let res = &dev.resources;
-    let name = dev.name.as_str();
-
-    match info.name {
-        "ns16550" | "pl011" => {
-            let base_addr_field = if let Some(base) = res.mmio_base {
-                let hex = hex_addr(base);
-                quote! { base_addr: #hex, }
-            } else {
-                let msg = format!("device '{name}' requires mmio_base");
-                quote! { base_addr: compile_error!(#msg), }
-            };
-            let clock = Literal::u32_unsuffixed(res.clock_freq.unwrap_or(0));
-            let baud = Literal::u32_unsuffixed(res.baud_rate.unwrap_or(115200));
-            quote! {
-                #base_addr_field
-                clock_freq: #clock,
-                baud_rate: #baud,
-            }
-        }
-        "designware-i2c" => {
-            let base_addr_field = if let Some(base) = res.mmio_base {
-                let hex = hex_addr(base);
-                quote! { base_addr: #hex, }
-            } else {
-                let msg = format!("device '{name}' requires mmio_base");
-                quote! { base_addr: compile_error!(#msg), }
-            };
-            let clock = Literal::u32_unsuffixed(res.clock_freq.unwrap_or(100_000_000));
-            let speed: TokenStream = match res.bus_speed {
-                Some(s) if s > 100_000 => "fstart_drivers::i2c::designware::I2cSpeed::Fast"
-                    .parse()
-                    .unwrap(),
-                _ => "fstart_drivers::i2c::designware::I2cSpeed::Standard"
-                    .parse()
-                    .unwrap(),
-            };
-            quote! {
-                #base_addr_field
-                clock_freq: #clock,
-                bus_speed: #speed,
-            }
-        }
-        _ => TokenStream::new(),
+        let #binding = #type_name::new(&#config).unwrap_or_else(|_| #halt);
     }
 }

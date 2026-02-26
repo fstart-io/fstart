@@ -19,7 +19,7 @@
     platform: "riscv64",
 
     // Memory regions: ROM (flash bank 0) and RAM.
-    // Device MMIO addresses are in the device resources, not here.
+    // Device MMIO addresses are in the driver config, not here.
     memory: (
         regions: [
             ( name: "flash", base: 0x20000000, size: 0x02000000, kind: Rom ),
@@ -32,19 +32,12 @@
     devices: [
         (
             name: "uart0",
-            compatible: "ns16550a",
-            driver: "ns16550",
+            driver: Ns16550((
+                base_addr: 0x10000000,
+                clock_freq: 3686400,
+                baud_rate: 115200,
+            )),
             services: ["Console"],
-            resources: (
-                mmio_base: Some(0x10000000),
-                io_base: None,
-                size: Some(0x100),
-                clock_freq: Some(3686400),
-                baud_rate: Some(115200),
-                irq: Some(10),
-                bus_addr: None,
-                bus_speed: None,
-            ),
         ),
     ],
 
