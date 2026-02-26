@@ -11,6 +11,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     let arch = match config.platform.as_str() {
         "riscv64" => "riscv",
         "aarch64" => "aarch64",
+        "armv7" => "arm",
         other => other,
     };
 
@@ -148,12 +149,17 @@ fn generate_xip_layout(
     writeln!(out, "        *(.rodata .rodata.*)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
-    // Initialized data: stored in ROM, copied to RAM at startup
+    // Initialized data: stored in ROM (AT > ROM), copied to RAM at startup.
+    // _data_load is the ROM address of the initializers (load-memory address).
+    // _data_start / _data_end are the RAM addresses (virtual-memory addresses).
+    // The _start assembly copies [_data_load .. _data_load + size) to
+    // [_data_start .. _data_end) before entering Rust code.
     writeln!(out, "    .data : ALIGN(8) {{").unwrap();
     writeln!(out, "        _data_start = .;").unwrap();
     writeln!(out, "        *(.data .data.*)").unwrap();
     writeln!(out, "        _data_end = .;").unwrap();
-    writeln!(out, "    }} > RAM\n").unwrap();
+    writeln!(out, "    }} > RAM AT > ROM").unwrap();
+    writeln!(out, "    _data_load = LOADADDR(.data);\n").unwrap();
 
     // BSS in RAM
     writeln!(out, "    .bss (NOLOAD) : ALIGN(8) {{").unwrap();
@@ -251,8 +257,13 @@ fn write_rodata_section(out: &mut String, region: &str) {
 
 fn write_data_section(out: &mut String, region: &str) {
     writeln!(out, "    .data : ALIGN(8) {{").unwrap();
+    writeln!(out, "        _data_start = .;").unwrap();
     writeln!(out, "        *(.data .data.*)").unwrap();
-    writeln!(out, "    }} > {region}\n").unwrap();
+    writeln!(out, "        _data_end = .;").unwrap();
+    writeln!(out, "    }} > {region}").unwrap();
+    // For RAM-only layouts, _data_load == _data_start (no ROM-to-RAM copy
+    // needed). The _start assembly's copy loop will skip when src == dst.
+    writeln!(out, "    _data_load = LOADADDR(.data);\n").unwrap();
 }
 
 fn write_bss_section(out: &mut String, region: &str) {

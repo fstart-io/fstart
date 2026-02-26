@@ -180,6 +180,7 @@ fn generate_platform_externs(platform: &str) -> TokenStream {
     let platform_crate = match platform {
         "riscv64" => quote! { extern crate fstart_platform_riscv64; },
         "aarch64" => quote! { extern crate fstart_platform_aarch64; },
+        "armv7" => quote! { extern crate fstart_platform_armv7; },
         p => {
             let msg = format!("unsupported platform: {p}");
             return quote! { compile_error!(#msg); };

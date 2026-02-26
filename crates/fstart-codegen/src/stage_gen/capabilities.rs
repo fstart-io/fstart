@@ -174,6 +174,7 @@ pub(super) fn generate_fdt_prepare(config: &BoardConfig, platform: &str) -> Toke
                 match platform {
                     "riscv64" => quote! { fstart_platform_riscv64::boot_dtb_addr() },
                     "aarch64" => quote! { fstart_platform_aarch64::boot_dtb_addr() },
+                    "armv7" => quote! { fstart_platform_armv7::boot_dtb_addr() as u64 },
                     _ => quote! { 0 },
                 }
             };
@@ -210,6 +211,7 @@ pub(super) fn generate_payload_load(config: &BoardConfig, platform: &str) -> Tok
     let jump_fn: TokenStream = match platform {
         "riscv64" => quote! { fstart_platform_riscv64::jump_to },
         "aarch64" => quote! { fstart_platform_aarch64::jump_to },
+        "armv7" => quote! { fstart_platform_armv7::jump_to },
         _ => quote! { fstart_platform_riscv64::jump_to },
     };
     quote! {
@@ -302,6 +304,17 @@ fn generate_payload_load_linux(config: &BoardConfig, platform: &str) -> TokenStr
                 );
                 fstart_log::info!("jumping to ATF BL31...");
                 fstart_platform_aarch64::boot_linux_atf(#fw_addr, &_bl_params);
+            });
+        }
+        "armv7" => {
+            // 32-bit ARM: no ATF/SBI needed — jump directly to kernel.
+            // ARM Linux boot protocol: r0=0, r1=~0 (DT-only), r2=DTB.
+            stmts.extend(quote! {
+                fstart_log::info!("jumping to Linux kernel (direct)...");
+                fstart_platform_armv7::boot_linux_direct(
+                    #kernel_addr as u32,
+                    #dtb_addr as u32,
+                );
             });
         }
         _ => {
@@ -486,6 +499,16 @@ fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: &str) -> To
                 fstart_platform_aarch64::boot_linux_atf(#fw_addr, &_bl_params);
             });
         }
+        "armv7" => {
+            // 32-bit ARM: no ATF/SBI needed — jump directly to kernel.
+            stmts.extend(quote! {
+                fstart_log::info!("jumping to Linux kernel (direct)...");
+                fstart_platform_armv7::boot_linux_direct(
+                    #kernel_addr as u32,
+                    #dtb_addr as u32,
+                );
+            });
+        }
         _ => {
             let msg = format!("FIT boot not supported on platform '{platform}'");
             stmts.extend(quote! { compile_error!(#msg); });
@@ -501,6 +524,7 @@ pub(super) fn generate_stage_load(next_stage: &str, platform: &str) -> TokenStre
     let jump_fn: TokenStream = match platform {
         "riscv64" => quote! { fstart_platform_riscv64::jump_to },
         "aarch64" => quote! { fstart_platform_aarch64::jump_to },
+        "armv7" => quote! { fstart_platform_armv7::jump_to },
         _ => quote! { fstart_platform_riscv64::jump_to },
     };
     quote! {

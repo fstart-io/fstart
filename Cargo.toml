@@ -14,6 +14,7 @@ members = [
     "crates/fstart-runtime",
     "crates/fstart-platform-riscv64",
     "crates/fstart-platform-aarch64",
+    "crates/fstart-platform-armv7",
     "crates/fstart-stage",
     "crates/fstart-fit",
 ]
@@ -66,6 +67,7 @@ fstart-log = { path = "crates/fstart-log" }
 fstart-runtime = { path = "crates/fstart-runtime" }
 fstart-platform-riscv64 = { path = "crates/fstart-platform-riscv64" }
 fstart-platform-aarch64 = { path = "crates/fstart-platform-aarch64" }
+fstart-platform-armv7 = { path = "crates/fstart-platform-armv7" }
 fstart-stage = { path = "crates/fstart-stage" }
 fstart-fit = { path = "crates/fstart-fit" }
 

@@ -9,6 +9,7 @@ default = []
 # Platform selection (exactly one must be enabled)
 riscv64 = ["dep:fstart-platform-riscv64"]
 aarch64 = ["dep:fstart-platform-aarch64"]
+armv7 = ["dep:fstart-platform-armv7"]
 # Driver selection (enabled based on board.ron)
 ns16550 = ["fstart-drivers/ns16550"]
 pl011 = ["fstart-drivers/pl011"]
@@ -36,6 +37,7 @@ fstart-runtime = { workspace = true }
 fstart-types = { workspace = true }
 fstart-platform-riscv64 = { workspace = true, optional = true }
 fstart-platform-aarch64 = { workspace = true, optional = true }
+fstart-platform-armv7 = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-fit = { workspace = true, optional = true }
 fstart-alloc = { workspace = true, optional = true }
