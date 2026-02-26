@@ -30,7 +30,7 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
 use fstart_drivers::DriverInstance;
@@ -84,6 +84,21 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         return format!("compile_error!(\"{err}\");\n");
     }
 
+    // Extract heap_size for this stage (used for allocator backing store).
+    let heap_size: Option<u32> = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => mono.heap_size,
+        (StageLayout::MultiStage(stages), Some(name)) => stages
+            .iter()
+            .find(|s| s.name.as_str() == name)
+            .and_then(|s| s.heap_size),
+        _ => None,
+    };
+
+    // Validate that heap_size is set when FdtPrepare needs the allocator.
+    if needs_fdt(capabilities) && heap_size.is_none() {
+        return "compile_error!(\"FdtPrepare requires heap_size in stage config\");\n".to_string();
+    }
+
     // Validate device tree (bus service requirements).
     // Ordering is already correct — ron_loader flattens in pre-order DFS.
     if let Err(err) = validate_device_tree(&config.devices, &parsed.device_tree) {
@@ -109,6 +124,12 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
 
     if needs_ffs(capabilities) {
         tokens.extend(generate_anchor_static());
+    }
+
+    // When the allocator is needed, generate a sized heap backing store.
+    // fstart-alloc references these symbols via `extern "C"`.
+    if let Some(hs) = heap_size {
+        tokens.extend(generate_heap_storage(hs));
     }
 
     if mode == BuildMode::Flexible {
@@ -274,6 +295,31 @@ fn generate_anchor_static() -> TokenStream {
         #[used]
         static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock =
             fstart_types::ffs::AnchorBlock::placeholder();
+    }
+}
+
+/// Generate heap backing store and size constant for the bump allocator.
+///
+/// Emits a 16-byte-aligned `#[no_mangle]` static that `fstart-alloc`
+/// references via `extern "C"` to locate the heap at link time.
+fn generate_heap_storage(heap_size: u32) -> TokenStream {
+    let size_lit = Literal::usize_unsuffixed(heap_size as usize);
+    quote! {
+        /// Heap backing store — sized by the board RON `heap_size` field.
+        #[repr(align(16))]
+        #[allow(dead_code)]
+        struct _FstartHeapStore(core::cell::UnsafeCell<[u8; #size_lit]>);
+
+        // SAFETY: The bump allocator synchronises access via an atomic cursor.
+        // Firmware is single-threaded at this point.
+        unsafe impl Sync for _FstartHeapStore {}
+
+        #[no_mangle]
+        static _FSTART_HEAP: _FstartHeapStore =
+            _FstartHeapStore(core::cell::UnsafeCell::new([0u8; #size_lit]));
+
+        #[no_mangle]
+        static _FSTART_HEAP_SIZE: usize = #size_lit;
     }
 }
 

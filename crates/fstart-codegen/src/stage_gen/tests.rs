@@ -49,6 +49,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
             capabilities,
             load_addr: 0x8000_0000,
             stack_size: 0x10000,
+            heap_size: None,
             data_addr: None,
         }),
         security: SecurityConfig {
@@ -408,6 +409,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
             capabilities,
             load_addr: 0x8000_0000,
             stack_size: 0x10000,
+            heap_size: None,
             data_addr: None,
         }),
         security: SecurityConfig {
@@ -829,6 +831,7 @@ fn test_flexible_multi_driver_parsed_board(
             capabilities,
             load_addr: 0x8000_0000,
             stack_size: 0x10000,
+            heap_size: None,
             data_addr: None,
         }),
         security: SecurityConfig {
@@ -1141,6 +1144,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         },
         load_addr: 0x8000_0000,
         stack_size: 0x4000,
+        heap_size: None,
         runs_from: RunsFrom::Ram,
         data_addr: None,
     });
@@ -1157,6 +1161,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         },
         load_addr: 0x8010_0000,
         stack_size: 0x10000,
+        heap_size: None,
         runs_from: RunsFrom::Ram,
         data_addr: None,
     });

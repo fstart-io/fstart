@@ -47,6 +47,8 @@
         ],
         load_addr: 0x00000000,
         stack_size: 0x40000,
+        // 256 KiB heap for the bump allocator (FDT manipulation).
+        heap_size: Some(0x40000),
         // Place data/BSS/stack at 2 MiB into RAM to avoid QEMU's DTB.
         // QEMU places the FDT at RAM base (0x40000000) on firmware boot;
         // without this, BSS clearing in _start would destroy the DTB.
