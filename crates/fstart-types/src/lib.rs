@@ -17,7 +17,7 @@ pub mod stage;
 pub use board::{
     BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, PayloadConfig, PayloadKind,
 };
-pub use device::DeviceConfig;
+pub use device::{DeviceConfig, DeviceId, DeviceNode};
 pub use ffs::{
     AnchorBlock, Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, Region,
     RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,
