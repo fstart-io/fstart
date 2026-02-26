@@ -1,0 +1,140 @@
+//! Capability ordering validation and board predicate helpers.
+//!
+//! Ensures capabilities are declared in a legal order (e.g., ConsoleInit
+//! before anything that logs) and provides predicate functions used by the
+//! codegen orchestrator to decide which sections to emit.
+
+use fstart_types::{BoardConfig, BootMedium, Capability, PayloadKind};
+
+/// Validate that capabilities are in a legal order.
+///
+/// Rules:
+/// - Any capability that logs (all of them except ConsoleInit itself) must
+///   come after at least one ConsoleInit.
+/// - DriverInit must come after ConsoleInit (it logs device init results).
+/// - StageLoad / PayloadLoad should be the last capability (nothing runs after
+///   a jump). We warn but don't hard-error since the board author may know
+///   what they're doing.
+pub(super) fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
+    let mut console_inited = false;
+    let mut boot_media_declared = false;
+
+    for cap in capabilities {
+        match cap {
+            Capability::ConsoleInit { .. } => {
+                console_inited = true;
+            }
+            Capability::BootMedia(_) => {
+                if !console_inited {
+                    return Some(
+                        "BootMedia capability requires ConsoleInit to appear earlier \
+                         in the capability list (needed for logging)"
+                            .to_string(),
+                    );
+                }
+                boot_media_declared = true;
+            }
+            Capability::MemoryInit if !console_inited => {
+                return Some(
+                    "MemoryInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::DriverInit if !console_inited => {
+                return Some(
+                    "DriverInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::SigVerify if !console_inited => {
+                return Some(
+                    "SigVerify capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::SigVerify if !boot_media_declared => {
+                return Some(
+                    "SigVerify capability requires BootMedia to appear earlier \
+                     in the capability list"
+                        .to_string(),
+                );
+            }
+            Capability::FdtPrepare if !console_inited => {
+                return Some(
+                    "FdtPrepare capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::PayloadLoad if !console_inited => {
+                return Some(
+                    "PayloadLoad capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::PayloadLoad if !boot_media_declared => {
+                return Some(
+                    "PayloadLoad capability requires BootMedia to appear earlier \
+                     in the capability list"
+                        .to_string(),
+                );
+            }
+            Capability::StageLoad { .. } if !console_inited => {
+                return Some(
+                    "StageLoad capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::StageLoad { .. } if !boot_media_declared => {
+                return Some(
+                    "StageLoad capability requires BootMedia to appear earlier \
+                     in the capability list"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+/// Check whether a capability list uses FFS operations (SigVerify, StageLoad, PayloadLoad).
+///
+/// Used to decide whether the FFS anchor static needs to be emitted.
+pub(super) fn needs_ffs(capabilities: &[Capability]) -> bool {
+    capabilities.iter().any(|c| {
+        matches!(
+            c,
+            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+        )
+    })
+}
+
+/// Find the `BootMedia` capability's medium, if present.
+pub(super) fn get_boot_medium(capabilities: &[Capability]) -> Option<&BootMedium> {
+    capabilities.iter().find_map(|c| match c {
+        Capability::BootMedia(medium) => Some(medium),
+        _ => None,
+    })
+}
+
+/// Check whether a capability list uses FDT operations (FdtPrepare).
+pub(super) fn needs_fdt(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::FdtPrepare))
+}
+
+/// Check whether this board has a LinuxBoot payload configured.
+pub(super) fn is_linux_boot(config: &BoardConfig) -> bool {
+    config
+        .payload
+        .as_ref()
+        .is_some_and(|p| p.kind == PayloadKind::LinuxBoot)
+}
