@@ -246,7 +246,7 @@ pub trait BusDevice: Send + Sync + Sized {
 Example: an I2C-attached TPM:
 
 ```rust
-impl BusDevice for Slb9670<B: I2c> {
+impl<B: I2c> BusDevice for Slb9670<B> {
     type Bus = B;
     type Config = Slb9670Config;
 
@@ -501,11 +501,11 @@ Codegen also emits a `static DEVICE_TREE` array for runtime use cases like
 power sequencing and diagnostics:
 
 ```rust
-// Generated alongside the init code:
+// Generated alongside the init code (same order as the RON devices list):
 static DEVICE_TREE: [fstart_types::DeviceNode; 3] = [
-    fstart_types::DeviceNode { parent: None, depth: 0 },          // [0] i2c0
-    fstart_types::DeviceNode { parent: Some(0), depth: 1 },       // [1] tpm0
-    fstart_types::DeviceNode { parent: None, depth: 0 },          // [2] uart0
+    fstart_types::DeviceNode { parent: None, depth: 0 },          // [0] uart0
+    fstart_types::DeviceNode { parent: None, depth: 0 },          // [1] i2c0
+    fstart_types::DeviceNode { parent: Some(1), depth: 1 },       // [2] tpm0
 ];
 ```
 
@@ -684,7 +684,7 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
    impl<B: I2c> BusDevice for Slb9670<B> {
        type Bus = B;
        type Config = Slb9670Config;
-       fn new_on_bus(config: &Self::Config, bus: &B) -> Result<Self, DeviceError> { ... }
+       fn new_on_bus(config: &Slb9670Config, bus: &B) -> Result<Self, DeviceError> { ... }
        fn init(&self) -> Result<(), DeviceError> { ... }
    }
    ```

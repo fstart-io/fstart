@@ -58,7 +58,7 @@ pub trait Device: Send + Sync + Sized {
 /// # Example
 ///
 /// ```ignore
-/// impl BusDevice for Slb9670<B: I2c> {
+/// impl<B: I2c> BusDevice for Slb9670<B> {
 ///     type Bus = B;
 ///     type Config = Slb9670Config;
 ///
