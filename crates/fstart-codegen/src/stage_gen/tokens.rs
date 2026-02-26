@@ -18,6 +18,7 @@ pub(super) fn halt_expr(platform: &str) -> TokenStream {
     match platform {
         "riscv64" => quote! { fstart_platform_riscv64::halt() },
         "aarch64" => quote! { fstart_platform_aarch64::halt() },
+        "armv7" => quote! { fstart_platform_armv7::halt() },
         _ => quote! { loop { core::hint::spin_loop() } },
     }
 }

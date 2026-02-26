@@ -34,20 +34,24 @@ nix-shell -p binutils --run "objdump -d target/.../fstart-stage"
 ```bash
 # Check all host-side crates (fast, no cross-compile env needed)
 cargo check --workspace --exclude fstart-stage \
-    --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64
+    --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64 \
+    --exclude fstart-platform-armv7
 
 # Build a specific board (sets FSTART_BOARD_RON, cross-compiles with -Z build-std=core)
 cargo xtask build --board qemu-riscv64
 cargo xtask build --board qemu-aarch64
+cargo xtask build --board qemu-armv7
 cargo xtask build --board qemu-riscv64 --release
 
 # Build and launch in QEMU
 cargo xtask run --board qemu-riscv64
 cargo xtask run --board qemu-aarch64
+cargo xtask run --board qemu-armv7
 
 # Clippy — host crates only (fstart-stage and platform crates need cross-compile)
 cargo clippy --workspace --exclude fstart-stage \
-    --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64 -- -D warnings
+    --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64 \
+    --exclude fstart-platform-armv7 -- -D warnings
 
 # Format
 cargo fmt --all
@@ -56,7 +60,8 @@ cargo fmt --all -- --check   # CI-style check
 # Run tests (8 codegen unit tests; add more with #[cfg(test)])
 cargo test --workspace --exclude fstart-stage --exclude fstart-runtime \
     --exclude fstart-alloc \
-    --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64
+    --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64 \
+    --exclude fstart-platform-armv7
 
 # Run a single test by name
 cargo test --package fstart-types -- test_name_here
@@ -69,7 +74,7 @@ Note: `fstart-stage`, `fstart-runtime`, and platform crates are `no_std` `#![no_
 binaries — they cannot be tested with `cargo test` on the host. Test logic for these
 via `fstart-types` or `fstart-codegen` (which are `std`-capable).
 
-## Workspace Layout (15 crates)
+## Workspace Layout (16 crates)
 
 | Crate | Runs on | Purpose |
 |---|---|---|
@@ -88,6 +93,7 @@ via `fstart-types` or `fstart-codegen` (which are `std`-capable).
 | `fstart-log` | target | Logging (skeleton) |
 | `fstart-platform-riscv64` | target | `_start` entry, `halt()` |
 | `fstart-platform-aarch64` | target | `_start` entry, `halt()` |
+| `fstart-platform-armv7` | target | `_start` entry, `halt()` |
 
 ## Code Style
 

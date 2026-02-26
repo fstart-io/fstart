@@ -438,6 +438,10 @@ name = "fstart-platform-aarch64"
 version = "0.1.0"
 
 [[package]]
+name = "fstart-platform-armv7"
+version = "0.1.0"
+
+[[package]]
 name = "fstart-platform-riscv64"
 version = "0.1.0"
 
@@ -464,6 +468,7 @@ dependencies = [
  "fstart-fit",
  "fstart-log",
  "fstart-platform-aarch64",
+ "fstart-platform-armv7",
  "fstart-platform-riscv64",
  "fstart-runtime",
  "fstart-services",

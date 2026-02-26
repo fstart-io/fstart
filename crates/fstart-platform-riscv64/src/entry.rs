@@ -21,15 +21,28 @@ _start:
     // Set up stack pointer (grows downward)
     la sp, _stack_top
 
+    // Copy .data initializers from ROM to RAM.
+    // _data_load = LMA (ROM), _data_start/_data_end = VMA (RAM).
+    la t0, _data_load
+    la t1, _data_start
+    la t2, _data_end
+1:
+    bgeu t1, t2, 2f
+    ld t3, 0(t0)
+    sd t3, 0(t1)
+    addi t0, t0, 8
+    addi t1, t1, 8
+    j 1b
+2:
     // Clear BSS section
     la t0, _bss_start
     la t1, _bss_end
-1:
-    bgeu t0, t1, 2f
+3:
+    bgeu t0, t1, 4f
     sd zero, 0(t0)
     addi t0, t0, 8
-    j 1b
-2:
+    j 3b
+4:
     // Jump to Rust entry point
     call fstart_main
     // Should never return; spin if it does

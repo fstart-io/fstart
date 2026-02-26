@@ -22,15 +22,27 @@ _start:
     ldr x0, =_stack_top
     mov sp, x0
 
+    // Copy .data initializers from ROM to RAM.
+    // _data_load = LMA (ROM), _data_start/_data_end = VMA (RAM).
+    ldr x0, =_data_load
+    ldr x1, =_data_start
+    ldr x2, =_data_end
+1:
+    cmp x1, x2
+    b.ge 2f
+    ldr x3, [x0], #8
+    str x3, [x1], #8
+    b 1b
+2:
     // Clear BSS
     ldr x0, =_bss_start
     ldr x1, =_bss_end
-1:
+3:
     cmp x0, x1
-    b.ge 2f
+    b.ge 4f
     str xzr, [x0], #8
-    b 1b
-2:
+    b 3b
+4:
     // Store boot DTB address to global (after BSS is cleared to zero)
     ldr x0, =BOOT_DTB_ADDR
     str x19, [x0]

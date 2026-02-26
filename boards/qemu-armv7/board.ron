@@ -1,0 +1,104 @@
+// Board definition for QEMU ARM 32-bit (ARMv7) virt machine.
+//
+// Memory map from QEMU hw/arm/virt.c (same layout as AArch64 virt):
+//   Flash:  0x0000_0000 .. 0x0800_0000 (128 MiB, two 64 MiB banks)
+//   UART:   0x0900_0000 (PL011, 4 KiB)
+//   RAM:    0x4000_0000 onwards
+//
+// Boot flow: CPU starts at flash base (0x0) in SVC mode with
+// r0=0, r1=machine_type, r2=DTB address. No ATF/SBI layer
+// needed — firmware jumps directly to the Linux kernel.
+//
+// The QEMU ARM virt machine uses the same memory map for both
+// 32-bit and 64-bit ARM. Key difference: the PA space is limited
+// to 32 bits, so high memory regions are not available.
+
+(
+    name: "qemu-armv7",
+    platform: "armv7",
+
+    // Memory regions: only ROM and RAM.
+    // Device MMIO addresses are in the driver config, not here.
+    // flash_base = XIP flash base for ARM virt.
+    // flash_size = 128 MiB flash.
+    memory: (
+        regions: [
+            ( name: "flash", base: 0x00000000, size: 0x08000000, kind: Rom ),
+            ( name: "ram",   base: 0x40000000, size: 0x08000000, kind: Ram ),
+        ],
+        flash_base: Some(0x00000000),
+        flash_size: Some(0x08000000),
+    ),
+
+    devices: [
+        (
+            name: "uart0",
+            driver: Pl011((
+                base_addr: 0x09000000,
+                // QEMU virt PL011 ignores baud rate, but we match the
+                // default refclk of 115200 * 16 = 1843200 Hz.
+                clock_freq: 1843200,
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
+        ),
+    ],
+
+    stages: Monolithic((
+        capabilities: [
+            ConsoleInit( device: "uart0" ),
+            MemoryInit,
+            BootMedia(MemoryMapped( base: 0x00000000, size: 0x08000000 )),
+            SigVerify,
+            FdtPrepare,
+            PayloadLoad,
+        ],
+        load_addr: 0x00000000,
+        stack_size: 0x40000,
+        // 256 KiB heap for the bump allocator (FDT manipulation).
+        heap_size: Some(0x40000),
+        // Place data/BSS/stack at 2 MiB into RAM to avoid QEMU's DTB.
+        // QEMU places the FDT at RAM base (0x40000000) on firmware boot;
+        // without this, BSS clearing in _start would destroy the DTB.
+        data_addr: Some(0x40200000),
+    )),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256, Sha3_256],
+    ),
+
+    mode: Rigid,
+
+    // Linux boot — direct jump on 32-bit ARM (no ATF/SBI needed).
+    //
+    // Memory layout:
+    //   0x00000000 - Flash (fstart firmware, XIP from ROM)
+    //   0x40000000 - RAM start; QEMU places DTB here (read-only, ~64 KiB)
+    //   0x40200000 - BSS + stack (data_addr, 2 MiB past RAM base)
+    //   0x40F00000 - Patched DTB (copied from QEMU-provided DTB)
+    //   0x41000000 - Linux zImage (loaded from FFS, auto-decompresses)
+    //   0x48000000 - End of RAM (128 MiB)
+    //
+    // ARM Linux boot protocol: r0=0, r1=~0 (DT-only), r2=DTB pointer.
+    // No firmware intermediary needed — we jump directly to the kernel.
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("zImage"),
+        // ARM zImage auto-decompresses to (load_addr & ~0xffffff) + TEXT_OFFSET.
+        // Load the compressed zImage high enough to avoid the decompression zone.
+        // zImage decompresses to ram_base + 0x8000 = 0x40008000 and the
+        // decompressed kernel can be several MiB. Place zImage at 16 MiB into
+        // RAM so it doesn't overlap with the decompressed image.
+        kernel_load_addr: Some(0x41000000),
+        fdt: Platform,
+        // DTB must also be placed outside the decompression zone. Place it at
+        // 15 MiB into RAM, well above the typical decompressed kernel end.
+        dtb_addr: Some(0x40F00000),
+        // QEMU ARM virt places the DTB at RAM base (0x40000000)
+        // on firmware boot (-bios), same as AArch64.
+        src_dtb_addr: Some(0x40000000),
+        bootargs: Some("console=ttyAMA0 earlycon=pl011,mmio32,0x09000000"),
+    )),
+)

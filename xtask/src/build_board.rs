@@ -57,6 +57,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     let target = match config.platform.as_str() {
         "riscv64" => "riscv64gc-unknown-none-elf",
         "aarch64" => "aarch64-unknown-none",
+        "armv7" => "armv7a-none-eabi",
         other => return Err(format!("unsupported platform: {other}")),
     };
 
@@ -142,7 +143,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     // Both AArch64 and RISC-V need flat binaries for QEMU: AArch64 uses
     // -bios which expects raw binary, RISC-V uses pflash which also needs
     // raw binary data.
-    let needs_flat_binary = matches!(config.platform.as_str(), "aarch64" | "riscv64");
+    let needs_flat_binary = matches!(config.platform.as_str(), "aarch64" | "riscv64" | "armv7");
 
     // Determine build-std components: always need core, add alloc when FDT
     // feature is enabled (dtoolkit write API + bump allocator need alloc).
@@ -273,10 +274,13 @@ fn build_one_stage(
     // Produce a flat binary for QEMU. AArch64 uses -bios which needs a raw
     // binary; RISC-V uses pflash which also needs raw binary data.
     //
-    // Both platforms use XIP (code in ROM, data in RAM). Removing .data and
-    // .bss prevents objcopy from spanning the ROM→RAM address gap (which
-    // would produce a multi-GiB file of mostly zeros). The entry code
-    // clears BSS at runtime, and firmware statics are zero-initialized.
+    // Both platforms use XIP (code in ROM, data in RAM). The .data
+    // section's LMA is in ROM (via `AT > ROM` in the linker script) so it
+    // is contiguous with .text/.rodata and must NOT be removed — the _start
+    // assembly copies those initializers to RAM. Only .bss is removed: it
+    // is NOLOAD and its VMA is in RAM, which would cause objcopy to span
+    // the ROM→RAM gap (producing a multi-GiB file of mostly zeros). The
+    // entry code clears BSS at runtime.
     let run_path = if needs_flat_binary {
         let bin_path = final_elf.with_extension("bin");
         eprintln!(
@@ -287,7 +291,6 @@ fn build_one_stage(
         let objcopy_status = Command::new("llvm-objcopy")
             .arg("-O")
             .arg("binary")
-            .arg("--remove-section=.data")
             .arg("--remove-section=.bss")
             .arg(&final_elf)
             .arg(&bin_path)

@@ -52,6 +52,21 @@ pub fn run(board_name: &str, binary: &Path) -> Result<(), String> {
             args.extend(["-bios".to_string(), binary.display().to_string()]);
             ("qemu-system-aarch64", args)
         }
+        name if name.contains("armv7") => {
+            let args = vec![
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-cpu".to_string(),
+                "cortex-a15".to_string(),
+                "-nographic".to_string(),
+            ];
+            // ARMv7: always use -bios so QEMU enters firmware boot mode,
+            // which places the DTB at RAM base (0x40000000) and starts the
+            // CPU at PC=0x0. Same as AArch64.
+            let mut args = args;
+            args.extend(["-bios".to_string(), binary.display().to_string()]);
+            ("qemu-system-arm", args)
+        }
         _ => return Err(format!("no QEMU configuration for board: {board_name}")),
     };
 
