@@ -186,7 +186,7 @@ register_structs! {
 // ---------------------------------------------------------------------------
 
 /// I2C bus speed modes, matching the DesignWare IC_CON.SPEED field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum I2cSpeed {
     /// 100 kHz standard mode
     Standard,
@@ -196,9 +196,10 @@ pub enum I2cSpeed {
 
 /// Typed configuration for the DesignWare I2C driver.
 ///
-/// Contains exactly the fields this driver needs. Codegen maps the
-/// RON `Resources` to this struct at build time.
-#[derive(Debug, Clone, Copy)]
+/// Contains exactly the fields this driver needs.
+/// Serializable with both RON (build-time validation) and postcard
+/// (runtime config from FFS).
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct DesignwareI2cConfig {
     /// MMIO base address of the register block.
     pub base_addr: u64,

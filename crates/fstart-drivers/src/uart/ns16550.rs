@@ -3,6 +3,10 @@
 //! Used by QEMU virt (RISC-V), many x86 platforms, and others.
 //! Register access uses the `tock-registers` crate for type-safe MMIO.
 
+// `tock-registers` `register_structs!` macro triggers `modulo_one` inside
+// its generated alignment test.  This is a false positive.
+#![allow(clippy::modulo_one)]
+
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
@@ -83,8 +87,9 @@ register_structs! {
 /// Typed configuration for the NS16550 driver.
 ///
 /// Contains exactly the fields this driver needs — no optional grab-bag.
-/// Codegen maps the RON `Resources` to this struct at build time.
-#[derive(Debug, Clone, Copy)]
+/// Serializable with both RON (build-time validation) and postcard
+/// (runtime config from FFS).
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Ns16550Config {
     /// MMIO base address of the register block.
     pub base_addr: u64,

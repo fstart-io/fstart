@@ -1,56 +1,11 @@
-//! Driver registry — maps RON driver names to Rust type paths.
+//! Driver registry — resolves driver metadata via [`DriverMeta`].
 //!
-//! This is the central lookup table that codegen uses to resolve a board's
-//! `driver: "ns16550"` string to the actual `fstart_drivers::uart::ns16550::Ns16550`
-//! type, its config struct, and the service traits it implements.
+//! With the typed [`DriverInstance`] enum, most of the old string-based
+//! lookup is replaced by `instance.meta()`.  This module keeps the
+//! bus-service helpers used by topology validation.
 
+use fstart_drivers::DriverMeta;
 use fstart_types::DeviceConfig;
-
-/// Information about a known driver — maps RON driver name to Rust type path
-/// and its config construction logic.
-pub(super) struct DriverInfo {
-    /// RON driver name (e.g., "ns16550")
-    pub name: &'static str,
-    /// Rust module path (e.g., "fstart_drivers::uart::ns16550")
-    pub module_path: &'static str,
-    /// Rust type name (e.g., "Ns16550")
-    pub type_name: &'static str,
-    /// Rust config type name (e.g., "Ns16550Config")
-    pub config_type: &'static str,
-    /// Which service traits this driver implements.
-    /// Used for flexible-mode enum dispatch codegen and validation.
-    pub services: &'static [&'static str],
-}
-
-/// Registry of known drivers.
-const KNOWN_DRIVERS: &[DriverInfo] = &[
-    DriverInfo {
-        name: "ns16550",
-        module_path: "fstart_drivers::uart::ns16550",
-        type_name: "Ns16550",
-        config_type: "Ns16550Config",
-        services: &["Console"],
-    },
-    DriverInfo {
-        name: "pl011",
-        module_path: "fstart_drivers::uart::pl011",
-        type_name: "Pl011",
-        config_type: "Pl011Config",
-        services: &["Console"],
-    },
-    DriverInfo {
-        name: "designware-i2c",
-        module_path: "fstart_drivers::i2c::designware",
-        type_name: "DesignwareI2c",
-        config_type: "DesignwareI2cConfig",
-        services: &["I2cBus"],
-    },
-];
-
-/// Look up driver info by RON driver name.
-pub(super) fn find_driver(name: &str) -> Option<&'static DriverInfo> {
-    KNOWN_DRIVERS.iter().find(|d| d.name == name)
-}
 
 /// Bus service names that indicate a device is a bus controller.
 const BUS_SERVICES: &[&str] = &["I2cBus", "SpiBus", "GpioController"];
@@ -61,3 +16,45 @@ pub(super) fn is_bus_provider(dev: &DeviceConfig) -> bool {
         .iter()
         .any(|s| BUS_SERVICES.contains(&s.as_str()))
 }
+
+/// Look up a [`DriverMeta`] by driver name string.
+///
+/// Useful when codegen only has the driver name (from `DeviceConfig.driver`)
+/// but not the full `DriverInstance`.  Falls back to a const table that
+/// mirrors the data on `DriverInstance::meta()`.
+pub(super) fn find_driver_meta(name: &str) -> Option<&'static DriverMeta> {
+    KNOWN_DRIVER_META.iter().find(|m| m.name == name)
+}
+
+/// Static metadata table — kept in sync with [`DriverInstance`] variants.
+///
+/// Each entry is identical to what `DriverInstance::Xxx(_).meta()` returns.
+/// This exists so that code paths which only have a driver-name string
+/// (from `DeviceConfig.driver`) can still look up metadata without needing
+/// the full `DriverInstance`.
+const KNOWN_DRIVER_META: &[DriverMeta] = &[
+    DriverMeta {
+        name: "ns16550",
+        type_name: "Ns16550",
+        module_path: "fstart_drivers::uart::ns16550",
+        config_type: "Ns16550Config",
+        services: &["Console"],
+        compatible: &["ns16550a", "ns16550"],
+    },
+    DriverMeta {
+        name: "pl011",
+        type_name: "Pl011",
+        module_path: "fstart_drivers::uart::pl011",
+        config_type: "Pl011Config",
+        services: &["Console"],
+        compatible: &["arm,pl011", "pl011"],
+    },
+    DriverMeta {
+        name: "designware-i2c",
+        type_name: "DesignwareI2c",
+        module_path: "fstart_drivers::i2c::designware",
+        config_type: "DesignwareI2cConfig",
+        services: &["I2cBus"],
+        compatible: &["snps,designware-i2c", "dw-apb-i2c"],
+    },
+];

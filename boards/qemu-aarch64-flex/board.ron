@@ -17,7 +17,7 @@
     platform: "aarch64",
 
     // Memory regions: ROM (flash) and RAM.
-    // Device MMIO addresses are in the device resources, not here.
+    // Device MMIO addresses are in the driver config, not here.
     memory: (
         regions: [
             ( name: "flash", base: 0x00000000, size: 0x08000000, kind: Rom ),
@@ -30,19 +30,12 @@
     devices: [
         (
             name: "uart0",
-            compatible: "arm,pl011",
-            driver: "pl011",
+            driver: Pl011((
+                base_addr: 0x09000000,
+                clock_freq: 1843200,
+                baud_rate: 115200,
+            )),
             services: ["Console"],
-            resources: (
-                mmio_base: Some(0x09000000),
-                io_base: None,
-                size: Some(0x1000),
-                clock_freq: Some(1843200),
-                baud_rate: Some(115200),
-                irq: Some(33),
-                bus_addr: None,
-                bus_speed: None,
-            ),
         ),
     ],
 

@@ -8,10 +8,11 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
+use fstart_drivers::DriverInstance;
 use fstart_types::{BoardConfig, BootMedium, BuildMode, DeviceConfig, FdtSource, FirmwareKind};
 
 use super::flexible::{flexible_enum_for_device, generate_flexible_wrapping};
-use super::registry::find_driver;
+use super::registry::find_driver_meta;
 use super::tokens::{anchor_as_bytes_expr, halt_expr, hex_addr};
 use super::validation::is_linux_boot;
 
@@ -19,19 +20,26 @@ use super::validation::is_linux_boot;
 pub(super) fn generate_console_init(
     device_name: &str,
     devices: &[DeviceConfig],
+    instances: &[DriverInstance],
     halt: &TokenStream,
     mode: BuildMode,
 ) -> TokenStream {
-    let Some(dev) = devices.iter().find(|d| d.name.as_str() == device_name) else {
+    let Some((idx, dev)) = devices
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.name.as_str() == device_name)
+    else {
         let msg = format!("ConsoleInit references device '{device_name}' which is not declared");
         return quote! { compile_error!(#msg); };
     };
 
-    let drv_name = dev.driver.as_str();
-    let Some(_info) = find_driver(drv_name) else {
+    let inst = &instances[idx];
+    let drv_name = inst.meta().name;
+
+    if find_driver_meta(drv_name).is_none() {
         let msg = format!("device '{device_name}' uses unknown driver '{drv_name}'");
         return quote! { compile_error!(#msg); };
-    };
+    }
 
     if !dev.services.iter().any(|s| s.as_str() == "Console") {
         let msg = format!(
@@ -51,12 +59,12 @@ pub(super) fn generate_console_init(
             }
         }
         BuildMode::Flexible => {
-            let inner = if flexible_enum_for_device(dev).is_some() {
+            let inner = if flexible_enum_for_device(dev, inst).is_some() {
                 format_ident!("_{}_inner", device_name)
             } else {
                 format_ident!("{}", device_name)
             };
-            let wrapping = generate_flexible_wrapping(dev);
+            let wrapping = generate_flexible_wrapping(dev, inst);
             quote! {
                 #inner.init().unwrap_or_else(|_| #halt);
                 #wrapping
@@ -74,7 +82,9 @@ pub(super) fn generate_memory_init() -> TokenStream {
 
 /// Generate code for the DriverInit capability.
 pub(super) fn generate_driver_init(
-    sorted_devices: &[&DeviceConfig],
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    sorted_indices: &[usize],
     already_inited: &[String],
     halt: &TokenStream,
     mode: BuildMode,
@@ -82,12 +92,11 @@ pub(super) fn generate_driver_init(
     let mut stmts = TokenStream::new();
     let mut count = 0usize;
 
-    for dev in sorted_devices {
+    for &idx in sorted_indices {
+        let dev = &devices[idx];
+        let inst = &instances[idx];
         let name_str = dev.name.as_str();
         if already_inited.iter().any(|s| s == name_str) {
-            continue;
-        }
-        if find_driver(dev.driver.as_str()).is_none() {
             continue;
         }
 
@@ -99,7 +108,7 @@ pub(super) fn generate_driver_init(
                 });
             }
             BuildMode::Flexible => {
-                let inner = if flexible_enum_for_device(dev).is_some() {
+                let inner = if flexible_enum_for_device(dev, inst).is_some() {
                     format_ident!("_{}_inner", name_str)
                 } else {
                     format_ident!("{}", name_str)
@@ -107,7 +116,7 @@ pub(super) fn generate_driver_init(
                 stmts.extend(quote! {
                     #inner.init().unwrap_or_else(|_| #halt);
                 });
-                stmts.extend(generate_flexible_wrapping(dev));
+                stmts.extend(generate_flexible_wrapping(dev, inst));
             }
         }
         count += 1;
@@ -122,7 +131,7 @@ pub(super) fn generate_driver_init(
 }
 
 /// Generate code for the BootMedia capability.
-pub(super) fn generate_boot_media(medium: &BootMedium, devices: &[DeviceConfig]) -> TokenStream {
+pub(super) fn generate_boot_media(medium: &BootMedium) -> TokenStream {
     match medium {
         BootMedium::MemoryMapped { .. } => {
             quote! {
@@ -133,22 +142,12 @@ pub(super) fn generate_boot_media(medium: &BootMedium, devices: &[DeviceConfig])
         }
         BootMedium::Device { name } => {
             let dev_name = name.as_str();
-            let dev_size = devices
-                .iter()
-                .find(|d| d.name.as_str() == dev_name)
-                .and_then(|d| d.resources.size);
-            if let Some(size) = dev_size {
-                let dev_ident = format_ident!("{}", dev_name);
-                let size_lit = Literal::u64_unsuffixed(size);
-                quote! {
-                    let boot_media = BlockDeviceMedia::new(&#dev_ident, 0, #size_lit as usize);
-                }
-            } else {
-                let msg = format!(
-                    "BootMedia device '{dev_name}' has no resources.size \u{2014} cannot determine media size"
-                );
-                quote! { compile_error!(#msg); }
-            }
+            // TODO: Device-backed boot media size should come from the
+            // driver config (e.g., a `size` field on a block device config).
+            // For now, emit a compile_error since no boards use this path.
+            let msg =
+                format!("BootMedia(Device) for '{dev_name}' not yet supported with typed configs");
+            quote! { compile_error!(#msg); }
         }
     }
 }

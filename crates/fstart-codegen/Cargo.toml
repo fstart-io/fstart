@@ -6,12 +6,11 @@ license.workspace = true
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
+fstart-drivers = { workspace = true, features = ["all-drivers"] }
+heapless = { workspace = true }
 ron = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 quote = "1"
 proc-macro2 = "1"
 syn = { version = "2", features = ["full"] }
 prettyplease = "0.2"
-
-[dev-dependencies]
-heapless = { workspace = true }
