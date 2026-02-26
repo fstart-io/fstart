@@ -52,6 +52,8 @@
         // 256 KiB — debug builds with Ed25519 + SHA-256/SHA3 use
         // significant stack space. 64 KiB overflows in debug mode.
         stack_size: 0x40000,
+        // 256 KiB heap for the bump allocator (FDT manipulation).
+        heap_size: Some(0x40000),
     )),
 
     security: (

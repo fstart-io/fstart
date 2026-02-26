@@ -26,6 +26,14 @@ pub struct MonolithicConfig {
     pub load_addr: u64,
     /// Stack size in bytes
     pub stack_size: u32,
+    /// Heap size in bytes for the bump allocator.
+    ///
+    /// Required when the stage uses capabilities that need dynamic
+    /// allocation (e.g., `FdtPrepare`). Codegen emits a sized static
+    /// (`_FSTART_HEAP`) and a size constant (`_FSTART_HEAP_SIZE`) that
+    /// `fstart-alloc` references via `extern "C"` at link time.
+    #[serde(default)]
+    pub heap_size: Option<u32>,
     /// Explicit address for data/BSS/stack in RAM (XIP builds only).
     ///
     /// When code runs from ROM (XIP), writable data sections must be
@@ -47,6 +55,11 @@ pub struct StageConfig {
     pub load_addr: u64,
     /// Stack size in bytes
     pub stack_size: u32,
+    /// Heap size in bytes for the bump allocator.
+    ///
+    /// Same semantics as [`MonolithicConfig::heap_size`].
+    #[serde(default)]
+    pub heap_size: Option<u32>,
     /// Where this stage executes from
     pub runs_from: RunsFrom,
     /// Explicit address for data/BSS/stack in RAM (XIP stages only).

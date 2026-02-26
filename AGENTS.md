@@ -55,6 +55,7 @@ cargo fmt --all -- --check   # CI-style check
 
 # Run tests (8 codegen unit tests; add more with #[cfg(test)])
 cargo test --workspace --exclude fstart-stage --exclude fstart-runtime \
+    --exclude fstart-alloc \
     --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64
 
 # Run a single test by name
