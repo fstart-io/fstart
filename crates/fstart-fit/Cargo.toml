@@ -1,0 +1,23 @@
+[package]
+name = "fstart-fit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+std = ["fstart-types/std", "fstart-crypto/all"]
+# Forward crypto features for firmware (no_std) builds that need hash verification
+sha2-digest = ["fstart-crypto/sha2-digest"]
+sha3-digest = ["fstart-crypto/sha3-digest"]
+
+[dependencies]
+fstart-types = { workspace = true }
+fstart-crypto = { workspace = true }
+dtoolkit = { workspace = true }
+heapless = { workspace = true }
+
+[dev-dependencies]
+# Tests run with std and need dtoolkit write API to construct test FDTs
+fstart-types = { workspace = true, features = ["std"] }
+dtoolkit = { workspace = true, features = ["write"] }

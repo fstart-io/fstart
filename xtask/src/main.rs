@@ -101,10 +101,11 @@ fn run_board(
     let is_multi_stage = matches!(config.stages, fstart_types::StageLayout::MultiStage(_));
     let has_payload_blobs = kernel.is_some()
         || firmware.is_some()
-        || config
-            .payload
-            .as_ref()
-            .is_some_and(|p| p.firmware.is_some() || p.kernel_file.is_some());
+        || config.payload.as_ref().is_some_and(|p| {
+            p.firmware.is_some()
+                || p.kernel_file.is_some()
+                || p.kind == fstart_types::PayloadKind::FitImage
+        });
 
     if is_multi_stage || has_payload_blobs {
         // Assemble the FFS image (includes stage + firmware + kernel)

@@ -129,110 +129,26 @@ fn assemble_impl(
         }
     }
 
-    // Add firmware and kernel blobs if this board has a LinuxBoot payload.
+    // Add payload blobs to the FFS image.
     //
     // Resolution order for paths:
     //   1. CLI flags (--kernel, --firmware)
-    //   2. Board RON payload config (payload.firmware.file, payload.kernel_file)
-    //      resolved relative to the board directory
+    //   2. Board RON payload config (payload.firmware.file, payload.kernel_file,
+    //      payload.fit_file) resolved relative to the board directory
     //   3. Skip — no external blob added
     if let Some(ref payload) = config.payload {
-        // Resolve firmware blob path
-        let fw_file = firmware_path.map(PathBuf::from).or_else(|| {
-            payload
-                .firmware
-                .as_ref()
-                .map(|fw| board_dir.join(fw.file.as_str()))
-        });
-
-        if let Some(ref fw_path) = fw_file {
-            if fw_path.exists() {
-                let fw_data =
-                    fs::read(fw_path).map_err(|e| format!("failed to read firmware blob: {e}"))?;
-                let fw_load_addr = payload
-                    .firmware
-                    .as_ref()
-                    .map(|fw| fw.load_addr)
-                    .unwrap_or(0);
-                let fw_name = payload
-                    .firmware
-                    .as_ref()
-                    .map(|fw| fw.file.to_string())
-                    .unwrap_or_else(|| "firmware".to_string());
-
-                eprintln!(
-                    "[fstart] firmware blob: {} ({} bytes, load_addr={:#x})",
-                    fw_path.display(),
-                    fw_data.len(),
-                    fw_load_addr,
-                );
-
-                ro_files.push(InputFile {
-                    name: fw_name,
-                    file_type: FileType::Firmware,
-                    segments: vec![InputSegment {
-                        name: ".text".to_string(),
-                        kind: SegmentKind::Code,
-                        data: fw_data,
-                        mem_size: None,
-                        load_addr: fw_load_addr,
-                        compression: Compression::None,
-                        flags: SegmentFlags::CODE,
-                    }],
-                });
-            } else {
-                eprintln!(
-                    "[fstart] warning: firmware blob not found: {}",
-                    fw_path.display()
-                );
-            }
-        }
-
-        // Resolve kernel blob path
-        let kernel_file = kernel_path.map(PathBuf::from).or_else(|| {
-            payload
-                .kernel_file
-                .as_ref()
-                .map(|kf| board_dir.join(kf.as_str()))
-        });
-
-        if let Some(ref k_path) = kernel_file {
-            if k_path.exists() {
-                let kernel_data =
-                    fs::read(k_path).map_err(|e| format!("failed to read kernel blob: {e}"))?;
-                let kernel_load_addr = payload.kernel_load_addr.unwrap_or(0);
-                let kernel_name = payload
-                    .kernel_file
-                    .as_ref()
-                    .map(|kf| kf.to_string())
-                    .unwrap_or_else(|| "kernel".to_string());
-
-                eprintln!(
-                    "[fstart] kernel blob: {} ({} bytes, load_addr={:#x})",
-                    k_path.display(),
-                    kernel_data.len(),
-                    kernel_load_addr,
-                );
-
-                ro_files.push(InputFile {
-                    name: kernel_name,
-                    file_type: FileType::Payload,
-                    segments: vec![InputSegment {
-                        name: ".text".to_string(),
-                        kind: SegmentKind::Code,
-                        data: kernel_data,
-                        mem_size: None,
-                        load_addr: kernel_load_addr,
-                        compression: Compression::None,
-                        flags: SegmentFlags::CODE,
-                    }],
-                });
-            } else {
-                eprintln!(
-                    "[fstart] warning: kernel blob not found: {}",
-                    k_path.display()
-                );
-            }
+        // Handle FIT image payloads
+        if payload.kind == fstart_types::PayloadKind::FitImage {
+            assemble_fit_payload(payload, &board_dir, kernel_path, &mut ro_files)?;
+        } else {
+            // LinuxBoot / other payload types: add firmware + kernel blobs
+            assemble_linux_payload(
+                payload,
+                &board_dir,
+                kernel_path,
+                firmware_path,
+                &mut ro_files,
+            )?;
         }
     }
 
@@ -277,6 +193,315 @@ fn assemble_impl(
     );
 
     Ok(image_path)
+}
+
+// ============================================================================
+// Payload assembly helpers
+// ============================================================================
+
+/// Assemble a FIT image payload into FFS entries.
+///
+/// Depending on `fit_parse` mode:
+/// - **Buildtime**: Parse the FIT, extract kernel (and ramdisk), embed them
+///   as separate FFS entries with load addresses from the FIT metadata.
+/// - **Runtime**: Embed the whole .itb as a single `FileType::FitImage` entry.
+fn assemble_fit_payload(
+    payload: &fstart_types::PayloadConfig,
+    board_dir: &Path,
+    kernel_override: Option<&str>,
+    ro_files: &mut Vec<InputFile>,
+) -> Result<(), String> {
+    let fit_parse = payload
+        .fit_parse
+        .unwrap_or(fstart_types::FitParseMode::Buildtime);
+
+    // Resolve the FIT file path
+    let fit_path = kernel_override.map(PathBuf::from).or_else(|| {
+        payload
+            .fit_file
+            .as_ref()
+            .map(|f| board_dir.join(f.as_str()))
+    });
+
+    let fit_path = match fit_path {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "[fstart] warning: FIT image: no fit_file specified and no --kernel override"
+            );
+            return Ok(());
+        }
+    };
+
+    if !fit_path.exists() {
+        eprintln!(
+            "[fstart] warning: FIT image not found: {}",
+            fit_path.display()
+        );
+        return Ok(());
+    }
+
+    let fit_data = fs::read(&fit_path).map_err(|e| format!("failed to read FIT image: {e}"))?;
+    eprintln!(
+        "[fstart] FIT image: {} ({} bytes)",
+        fit_path.display(),
+        fit_data.len(),
+    );
+
+    // Parse the FIT with the same parser used at runtime
+    let fit = fstart_fit::FitImage::parse(&fit_data)
+        .map_err(|e| format!("failed to parse FIT image: {e:?}"))?;
+
+    if let Some(desc) = fit.description() {
+        eprintln!("[fstart] FIT description: {desc}");
+    }
+
+    let config_name = payload.fit_config.as_ref().map(|s| s.as_str());
+
+    match fit_parse {
+        fstart_types::FitParseMode::Runtime => {
+            // Embed the whole FIT as a single FFS entry
+            eprintln!("[fstart] FIT mode: runtime (embedding whole .itb in FFS)");
+
+            ro_files.push(InputFile {
+                name: "fit_image".to_string(),
+                file_type: FileType::FitImage,
+                segments: vec![InputSegment {
+                    name: ".fit".to_string(),
+                    kind: SegmentKind::ReadOnlyData,
+                    data: fit_data,
+                    mem_size: None,
+                    load_addr: 0, // parsed in-place, not loaded to fixed address
+                    compression: Compression::None,
+                    flags: SegmentFlags::RODATA,
+                }],
+            });
+        }
+        fstart_types::FitParseMode::Buildtime => {
+            // Extract components from the FIT and embed as separate entries
+            eprintln!("[fstart] FIT mode: buildtime (extracting components)");
+
+            let boot = fit
+                .resolve_boot_images(config_name)
+                .map_err(|e| format!("failed to resolve FIT config: {e:?}"))?;
+
+            eprintln!(
+                "[fstart] FIT config: {}",
+                boot.config.description().unwrap_or(boot.config.name())
+            );
+
+            // Extract kernel
+            let kernel_data = boot
+                .kernel
+                .data()
+                .map_err(|e| format!("failed to read kernel from FIT: {e:?}"))?;
+            let kernel_load = boot
+                .kernel
+                .load_addr()
+                .unwrap_or(payload.kernel_load_addr.unwrap_or(0));
+
+            eprintln!(
+                "[fstart] FIT kernel: '{}' ({} bytes, load={:#x})",
+                boot.kernel.name(),
+                kernel_data.len(),
+                kernel_load,
+            );
+
+            ro_files.push(InputFile {
+                name: boot.kernel.name().to_string(),
+                file_type: FileType::Payload,
+                segments: vec![InputSegment {
+                    name: ".text".to_string(),
+                    kind: SegmentKind::Code,
+                    data: kernel_data.to_vec(),
+                    mem_size: None,
+                    load_addr: kernel_load,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
+            });
+
+            // Extract ramdisk if present
+            if let Some(ref rd) = boot.ramdisk {
+                if let Ok(rd_data) = rd.data() {
+                    let rd_load = rd.load_addr().unwrap_or(0);
+                    eprintln!(
+                        "[fstart] FIT ramdisk: '{}' ({} bytes, load={:#x})",
+                        rd.name(),
+                        rd_data.len(),
+                        rd_load,
+                    );
+
+                    ro_files.push(InputFile {
+                        name: rd.name().to_string(),
+                        file_type: FileType::Data,
+                        segments: vec![InputSegment {
+                            name: ".data".to_string(),
+                            kind: SegmentKind::ReadOnlyData,
+                            data: rd_data.to_vec(),
+                            mem_size: None,
+                            load_addr: rd_load,
+                            compression: Compression::None,
+                            flags: SegmentFlags::RODATA,
+                        }],
+                    });
+                }
+            }
+
+            // Extract FDT if present in FIT
+            if let Some(ref fdt_img) = boot.fdt {
+                if let Ok(fdt_data) = fdt_img.data() {
+                    let fdt_load = fdt_img.load_addr().unwrap_or(payload.dtb_addr.unwrap_or(0));
+                    eprintln!(
+                        "[fstart] FIT fdt: '{}' ({} bytes, load={:#x})",
+                        fdt_img.name(),
+                        fdt_data.len(),
+                        fdt_load,
+                    );
+
+                    ro_files.push(InputFile {
+                        name: fdt_img.name().to_string(),
+                        file_type: FileType::Fdt,
+                        segments: vec![InputSegment {
+                            name: ".fdt".to_string(),
+                            kind: SegmentKind::ReadOnlyData,
+                            data: fdt_data.to_vec(),
+                            mem_size: None,
+                            load_addr: fdt_load,
+                            compression: Compression::None,
+                            flags: SegmentFlags::RODATA,
+                        }],
+                    });
+                }
+            }
+        }
+    }
+
+    // Add firmware blob (SBI/ATF) — always separate from FIT
+    add_firmware_blob(payload, board_dir, None, ro_files)?;
+
+    Ok(())
+}
+
+/// Assemble a LinuxBoot payload into FFS entries (firmware + kernel blobs).
+fn assemble_linux_payload(
+    payload: &fstart_types::PayloadConfig,
+    board_dir: &Path,
+    kernel_path: Option<&str>,
+    firmware_path: Option<&str>,
+    ro_files: &mut Vec<InputFile>,
+) -> Result<(), String> {
+    // Add firmware blob
+    add_firmware_blob(payload, board_dir, firmware_path, ro_files)?;
+
+    // Resolve kernel blob path
+    let kernel_file = kernel_path.map(PathBuf::from).or_else(|| {
+        payload
+            .kernel_file
+            .as_ref()
+            .map(|kf| board_dir.join(kf.as_str()))
+    });
+
+    if let Some(ref k_path) = kernel_file {
+        if k_path.exists() {
+            let kernel_data =
+                fs::read(k_path).map_err(|e| format!("failed to read kernel blob: {e}"))?;
+            let kernel_load_addr = payload.kernel_load_addr.unwrap_or(0);
+            let kernel_name = payload
+                .kernel_file
+                .as_ref()
+                .map(|kf| kf.to_string())
+                .unwrap_or_else(|| "kernel".to_string());
+
+            eprintln!(
+                "[fstart] kernel blob: {} ({} bytes, load_addr={:#x})",
+                k_path.display(),
+                kernel_data.len(),
+                kernel_load_addr,
+            );
+
+            ro_files.push(InputFile {
+                name: kernel_name,
+                file_type: FileType::Payload,
+                segments: vec![InputSegment {
+                    name: ".text".to_string(),
+                    kind: SegmentKind::Code,
+                    data: kernel_data,
+                    mem_size: None,
+                    load_addr: kernel_load_addr,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
+            });
+        } else {
+            eprintln!(
+                "[fstart] warning: kernel blob not found: {}",
+                k_path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Add the firmware blob (SBI/ATF) to FFS entries.
+fn add_firmware_blob(
+    payload: &fstart_types::PayloadConfig,
+    board_dir: &Path,
+    firmware_path: Option<&str>,
+    ro_files: &mut Vec<InputFile>,
+) -> Result<(), String> {
+    let fw_file = firmware_path.map(PathBuf::from).or_else(|| {
+        payload
+            .firmware
+            .as_ref()
+            .map(|fw| board_dir.join(fw.file.as_str()))
+    });
+
+    if let Some(ref fw_path) = fw_file {
+        if fw_path.exists() {
+            let fw_data =
+                fs::read(fw_path).map_err(|e| format!("failed to read firmware blob: {e}"))?;
+            let fw_load_addr = payload
+                .firmware
+                .as_ref()
+                .map(|fw| fw.load_addr)
+                .unwrap_or(0);
+            let fw_name = payload
+                .firmware
+                .as_ref()
+                .map(|fw| fw.file.to_string())
+                .unwrap_or_else(|| "firmware".to_string());
+
+            eprintln!(
+                "[fstart] firmware blob: {} ({} bytes, load_addr={:#x})",
+                fw_path.display(),
+                fw_data.len(),
+                fw_load_addr,
+            );
+
+            ro_files.push(InputFile {
+                name: fw_name,
+                file_type: FileType::Firmware,
+                segments: vec![InputSegment {
+                    name: ".text".to_string(),
+                    kind: SegmentKind::Code,
+                    data: fw_data,
+                    mem_size: None,
+                    load_addr: fw_load_addr,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
+            });
+        } else {
+            eprintln!(
+                "[fstart] warning: firmware blob not found: {}",
+                fw_path.display()
+            );
+        }
+    }
+
+    Ok(())
 }
 
 // ============================================================================

@@ -359,6 +359,7 @@ version = "0.1.0"
 dependencies = [
  "dtoolkit",
  "fstart-ffs",
+ "fstart-fit",
  "fstart-log",
  "fstart-services",
  "fstart-types",
@@ -415,6 +416,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-fit"
+version = "0.1.0"
+dependencies = [
+ "dtoolkit",
+ "fstart-crypto",
+ "fstart-types",
+ "heapless",
+]
+
+[[package]]
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
@@ -450,6 +461,7 @@ dependencies = [
  "fstart-codegen",
  "fstart-drivers",
  "fstart-ffs",
+ "fstart-fit",
  "fstart-log",
  "fstart-platform-aarch64",
  "fstart-platform-riscv64",
@@ -982,6 +994,7 @@ dependencies = [
  "fstart-codegen",
  "fstart-crypto",
  "fstart-ffs",
+ "fstart-fit",
  "fstart-types",
  "goblin",
  "rand_core",

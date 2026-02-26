@@ -124,6 +124,16 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         features.push("fdt".to_string());
     }
 
+    // Check if the board uses a FIT image with runtime parsing
+    let uses_fit_runtime = config.payload.as_ref().is_some_and(|p| {
+        p.kind == fstart_types::PayloadKind::FitImage
+            && p.fit_parse.unwrap_or(fstart_types::FitParseMode::Buildtime)
+                == fstart_types::FitParseMode::Runtime
+    });
+    if uses_fit_runtime {
+        features.push("fit".to_string());
+    }
+
     let features_str = features.join(",");
 
     eprintln!("[fstart] target: {target}");

@@ -4,3 +4,8 @@
 *.ffs
 *.key
 !*.pub
+
+# FIT build artifacts (kernel images, initramfs, compiled .itb)
+*.itb
+fit/Image-*
+fit/initramfs-*
