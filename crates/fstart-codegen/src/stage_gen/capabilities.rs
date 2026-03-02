@@ -484,18 +484,16 @@ fn generate_payload_load_linux(
             // ARMv7 Linux boot protocol: no SBI/ATF, jump directly to kernel.
             // r0=0, r1=0xFFFFFFFF (DT-only), r2=DTB address.
             //
-            // Pre-boot prep (matches U-Boot's board_init + cleanup_before_linux):
-            // 1. Set CNTFRQ = 24 MHz (OSC24M) so Linux's arch_timer works.
-            //    Must be done from secure mode (we haven't transitioned).
-            // 2. Disable/invalidate I-cache + branch predictor for clean handoff.
+            // CNTFRQ is already programmed by the CCU driver's init() during
+            // the ClockInit capability (see fstart-driver-sunxi-ccu), matching
+            // U-Boot's board_init() timing.
+            //
+            // Pre-boot cleanup: disable/invalidate I-cache + branch predictor
+            // for a clean handoff (matches U-Boot's cleanup_before_linux).
             stmts.extend(quote! {
                 fstart_log::info!("booting Linux (ARMv7)...");
                 fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
                 fstart_log::info!("  dtb    @ {:#x}", #dtb_addr as u64);
-
-                // Set ARM Generic Timer frequency (24 MHz) — without this,
-                // Linux gets CNTFRQ=0 and panics with "Division by zero".
-                fstart_platform_armv7::set_arch_timer_freq(24_000_000);
 
                 // Clean up CPU state: disable/invalidate I-cache, flush BP.
                 fstart_platform_armv7::cleanup_before_linux();
