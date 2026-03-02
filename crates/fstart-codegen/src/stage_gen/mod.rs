@@ -300,6 +300,15 @@ fn generate_imports(
                 tokens.extend(quote! { use fstart_services::BootMedia; });
             }
         }
+        Some(BootMedium::AutoDevice { .. }) => {
+            tokens.extend(quote! { use fstart_services::boot_media::BlockDeviceMedia; });
+            // AutoDevice generates a BlockDevice dispatch enum and
+            // wraps it in BlockDeviceMedia. BootMedia trait needed for
+            // anchor scan and FFS loading.
+            if needs_ffs(capabilities) {
+                tokens.extend(quote! { use fstart_services::BootMedia; });
+            }
+        }
         None => {}
     }
 
@@ -617,7 +626,13 @@ fn generate_fstart_main(
                 inited_devices.push(dev_name.to_string());
             }
             Capability::BootMedia(medium) => {
-                body.extend(generate_boot_media(medium));
+                body.extend(generate_boot_media(
+                    medium,
+                    &config.devices,
+                    instances,
+                    platform,
+                    &halt,
+                ));
                 // Non-first stages scan the boot media for the anchor
                 // instead of using an embedded FSTART_ANCHOR static.
                 if !embed_anchor && needs_ffs(capabilities) {
@@ -681,21 +696,25 @@ fn generate_fstart_main(
                 body.extend(generate_return_to_fel(platform));
             }
             Capability::LoadNextStage {
-                device,
-                base_offset,
+                devices: load_devs,
                 next_stage,
             } => {
-                let dev_name = device.as_str();
                 body.extend(generate_load_next_stage(
-                    dev_name,
-                    *base_offset,
+                    load_devs.as_slice(),
                     next_stage.as_str(),
                     config,
+                    &config.devices,
+                    instances,
                     platform,
                     capabilities,
                     &halt,
                 ));
-                inited_devices.push(dev_name.to_string());
+                for ld in load_devs {
+                    let name = ld.name.to_string();
+                    if !inited_devices.contains(&name) {
+                        inited_devices.push(name);
+                    }
+                }
             }
         }
     }

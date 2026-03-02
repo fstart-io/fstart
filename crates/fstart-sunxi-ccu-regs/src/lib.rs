@@ -92,6 +92,21 @@ register_bitfields! [u32,
         ],
         /// Module clock enable.
         ENABLE OFFSET(31) NUMBITS(1) []
+    ],
+    /// SPI module clock configuration (one per SPI controller).
+    pub SPI_CLK [
+        /// Clock divider M (actual = raw + 1).
+        M OFFSET(0) NUMBITS(4) [],
+        /// Pre-divider N (actual = 2^raw).
+        N OFFSET(16) NUMBITS(2) [],
+        /// Clock source: 0=OSC24M, 1=PLL6, 2=PLL5P.
+        CLK_SRC OFFSET(24) NUMBITS(2) [
+            Osc24M = 0,
+            Pll6 = 1,
+            Pll5P = 2
+        ],
+        /// Module clock enable.
+        ENABLE OFFSET(31) NUMBITS(1) []
     ]
 ];
 
@@ -135,7 +150,14 @@ register_structs! {
         (0x90 => pub mmc_clk2: MmioReadWrite<u32, MMC_CLK::Register>),
         /// MMC module clock 3.
         (0x94 => pub mmc_clk3: MmioReadWrite<u32, MMC_CLK::Register>),
-        (0x98 => _res6: [u8; 0x38]),
+        (0x98 => _res6a: [u8; 0x08]),
+        /// SPI module clock 0 (SPI0).
+        (0xA0 => pub spi0_clk: MmioReadWrite<u32, SPI_CLK::Register>),
+        /// SPI module clock 1 (SPI1).
+        (0xA4 => pub spi1_clk: MmioReadWrite<u32, SPI_CLK::Register>),
+        /// SPI module clock 2 (SPI2).
+        (0xA8 => pub spi2_clk: MmioReadWrite<u32, SPI_CLK::Register>),
+        (0xAC => _res6b: [u8; 0x24]),
         /// GPS module clock configuration (reset control on sun7i).
         (0xD0 => pub gps_clk_cfg: MmioReadWrite<u32>),
         (0xD4 => _res7: [u8; 0x88]),

@@ -49,6 +49,11 @@ pub mod sunxi_a20_mmc {
     pub use fstart_driver_sunxi_mmc::SunxiA20MmcConfig;
 }
 
+#[cfg(feature = "sunxi-a20-spi")]
+pub mod sunxi_a20_spi {
+    pub use fstart_driver_sunxi_spi::SunxiA20SpiConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -111,6 +116,10 @@ pub enum DriverInstance {
     /// Allwinner A20 SD/MMC controller
     #[cfg(feature = "sunxi-a20-mmc")]
     SunxiA20Mmc(sunxi_a20_mmc::SunxiA20MmcConfig),
+
+    /// Allwinner A20 SPI NOR flash (sun4i SPI controller)
+    #[cfg(feature = "sunxi-a20-spi")]
+    SunxiA20Spi(sunxi_a20_spi::SunxiA20SpiConfig),
 }
 
 impl DriverInstance {
@@ -176,6 +185,15 @@ impl DriverInstance {
                 services: &["BlockDevice"],
                 compatible: &["allwinner,sun7i-a20-mmc"],
             },
+            #[cfg(feature = "sunxi-a20-spi")]
+            Self::SunxiA20Spi(_) => &DriverMeta {
+                name: "sunxi-a20-spi",
+                type_name: "SunxiA20Spi",
+                module_path: "fstart_driver_sunxi_spi",
+                config_type: "SunxiA20SpiConfig",
+                services: &["BlockDevice"],
+                compatible: &["allwinner,sun4i-a10-spi"],
+            },
         }
     }
 
@@ -202,6 +220,8 @@ impl DriverInstance {
             Self::SunxiA20Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-a20-mmc")]
             Self::SunxiA20Mmc(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-a20-spi")]
+            Self::SunxiA20Spi(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

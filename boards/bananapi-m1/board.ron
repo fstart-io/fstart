@@ -95,6 +95,19 @@
             )),
             services: ["BlockDevice"],
         ),
+        // SPI NOR flash (SPI0) — alternative boot medium.
+        // Sun4i SPI controller. GPIO mux (PC0-PC2, PC23) and clock
+        // gating handled by init().
+        (
+            name: "spi0",
+            driver: SunxiA20Spi((
+                base_addr: 0x01C05000,
+                ccu_base: 0x01C20000,
+                pio_base: 0x01C20800,
+                flash_size: 0x01000000,
+            )),
+            services: ["BlockDevice"],
+        ),
     ],
 
     // Two-stage boot: bootblock in SRAM, main stage in DRAM.
@@ -122,8 +135,10 @@
                 DramInit( device: "dramc0" ),
                 DriverInit,
                 LoadNextStage(
-                    device: "mmc0",
-                    base_offset: 0x2000,
+                    devices: [
+                        (name: "mmc0", base_offset: 0x2000),
+                        (name: "spi0", base_offset: 0),
+                    ],
                     next_stage: "main",
                 ),
             ],
@@ -139,7 +154,12 @@
             capabilities: [
                 ConsoleInit( device: "uart0" ),
                 DriverInit,
-                BootMedia(Device( name: "mmc0", offset: 0x2000, size: 0x800000 )),
+                BootMedia(AutoDevice(
+                    devices: [
+                        (name: "mmc0", offset: 0x2000, size: 0x800000),
+                        (name: "spi0", offset: 0,      size: 0x400000),
+                    ],
+                )),
                 SigVerify,
                 FdtPrepare,
                 PayloadLoad,

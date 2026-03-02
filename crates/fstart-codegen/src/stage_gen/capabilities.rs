@@ -10,7 +10,10 @@ use quote::{format_ident, quote};
 
 use fstart_device_registry::DriverInstance;
 use fstart_types::memory::RegionKind;
-use fstart_types::{BoardConfig, BootMedium, BuildMode, DeviceConfig, FdtSource, FirmwareKind};
+use fstart_types::{
+    AutoBootDevice, BoardConfig, BootMedium, BuildMode, DeviceConfig, FdtSource, FirmwareKind,
+    LoadDevice,
+};
 
 use super::flexible::{flexible_enum_for_device, generate_flexible_wrapping};
 use super::registry::find_driver_meta;
@@ -193,7 +196,13 @@ pub(super) fn generate_driver_init(
 }
 
 /// Generate code for the BootMedia capability.
-pub(super) fn generate_boot_media(medium: &BootMedium) -> TokenStream {
+pub(super) fn generate_boot_media(
+    medium: &BootMedium,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    platform: &str,
+    halt: &TokenStream,
+) -> TokenStream {
     match medium {
         BootMedium::MemoryMapped { .. } => {
             quote! {
@@ -210,6 +219,117 @@ pub(super) fn generate_boot_media(medium: &BootMedium) -> TokenStream {
                 let boot_media = BlockDeviceMedia::new(&#dev_name, #base_offset, #media_size as usize);
             }
         }
+        BootMedium::AutoDevice {
+            devices: candidates,
+        } => generate_boot_media_auto_device(candidates, devices, instances, platform, halt),
+    }
+}
+
+/// Generate code for `BootMedia(AutoDevice { ... })`.
+///
+/// Emits a block device dispatch enum that wraps each candidate device
+/// type and implements `BlockDevice` via match dispatch. At runtime,
+/// `fstart_soc_sunxi::boot_device()` selects the matching candidate.
+fn generate_boot_media_auto_device(
+    candidates: &[AutoBootDevice],
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    platform: &str,
+    halt: &TokenStream,
+) -> TokenStream {
+    if platform != "armv7" {
+        let msg = format!(
+            "BootMedia(AutoDevice) currently only supports armv7 (eGON header), not '{platform}'"
+        );
+        return quote! { compile_error!(#msg); };
+    }
+
+    // Build the enum variants and BlockDevice match arms.
+    let mut enum_variants = TokenStream::new();
+    let mut read_arms = TokenStream::new();
+    let mut write_arms = TokenStream::new();
+    let mut erase_arms = TokenStream::new();
+    let mut size_arms = TokenStream::new();
+    let mut block_size_arms = TokenStream::new();
+    let mut match_arms = TokenStream::new();
+
+    for candidate in candidates {
+        let dev_name_str = candidate.name.as_str();
+        let dev_ident = format_ident!("{}", dev_name_str);
+        // Convert to CamelCase for enum variant (e.g., "mmc0" -> "Mmc0").
+        let variant_name = to_camel_case(dev_name_str);
+        let variant_ident = format_ident!("{}", variant_name);
+        let offset = hex_addr(candidate.offset);
+        let size = hex_addr(candidate.size);
+
+        // Get driver type for the enum variant.
+        let Some((idx, _)) = devices
+            .iter()
+            .enumerate()
+            .find(|(_, d)| d.name.as_str() == dev_name_str)
+        else {
+            let msg =
+                format!("AutoDevice references device '{dev_name_str}' which is not declared");
+            return quote! { compile_error!(#msg); };
+        };
+        let inst = &instances[idx];
+        let type_name = format_ident!("{}", inst.meta().type_name);
+
+        enum_variants.extend(quote! { #variant_ident(&'a #type_name), });
+        read_arms.extend(quote! { Self::#variant_ident(d) => d.read(offset, buf), });
+        write_arms.extend(quote! { Self::#variant_ident(d) => d.write(offset, buf), });
+        erase_arms.extend(quote! { Self::#variant_ident(d) => d.erase(offset, size), });
+        size_arms.extend(quote! { Self::#variant_ident(d) => d.size(), });
+        block_size_arms.extend(quote! { Self::#variant_ident(d) => d.block_size(), });
+
+        // Generate match arm for boot_media values.
+        let bm_values = boot_media_values_for_device(dev_name_str, devices, instances);
+        for val in bm_values {
+            let val_lit = Literal::u8_unsuffixed(val);
+            match_arms.extend(quote! {
+                #val_lit => {
+                    (_BootBlockDevice::#variant_ident(&#dev_ident), #offset, #size as usize)
+                }
+            });
+        }
+    }
+
+    quote! {
+        // Block device dispatch enum for runtime boot device selection.
+        enum _BootBlockDevice<'a> {
+            #enum_variants
+        }
+
+        impl<'a> BlockDevice for _BootBlockDevice<'a> {
+            fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, fstart_services::ServiceError> {
+                match self { #read_arms }
+            }
+            fn write(&self, offset: u64, buf: &[u8]) -> Result<usize, fstart_services::ServiceError> {
+                match self { #write_arms }
+            }
+            fn erase(&self, offset: u64, size: u64) -> Result<(), fstart_services::ServiceError> {
+                match self { #erase_arms }
+            }
+            fn size(&self) -> u64 {
+                match self { #size_arms }
+            }
+            fn block_size(&self) -> u32 {
+                match self { #block_size_arms }
+            }
+        }
+
+        let (_boot_block_dev, _boot_offset, _boot_size) = {
+            let bm = fstart_soc_sunxi::boot_media();
+            fstart_log::info!("boot media detect: {:#x}", bm);
+            match bm {
+                #match_arms
+                _ => {
+                    fstart_log::error!("FATAL: unknown boot medium: {:#x}", bm);
+                    #halt;
+                }
+            }
+        };
+        let boot_media = BlockDeviceMedia::new(&_boot_block_dev, _boot_offset, _boot_size);
     }
 }
 
@@ -723,6 +843,7 @@ pub(super) fn generate_anchor_scan(
         BootMedium::MemoryMapped { .. } => {
             // Memory-mapped: scan the full media slice for FFS_MAGIC.
             quote! {
+
                 let scanned_anchor_data: [u8; fstart_types::ffs::ANCHOR_SIZE] = {
                     let media_slice = match boot_media.as_slice() {
                         Some(s) => s,
@@ -754,7 +875,7 @@ pub(super) fn generate_anchor_scan(
                 };
             }
         }
-        BootMedium::Device { .. } => {
+        BootMedium::Device { .. } | BootMedium::AutoDevice { .. } => {
             // Block device: read the anchor at ffs_total_size - ANCHOR_SIZE.
             // The FFS assembler patches ffs_total_size into the eGON header
             // (ARMv7) so non-first stages can locate the anchor without
@@ -808,19 +929,22 @@ pub(super) fn generate_anchor_scan(
 /// computes the absolute byte offset on the block device, reads that
 /// many bytes directly into the next stage's load address, and jumps.
 ///
+/// When multiple devices are specified, the boot device is auto-detected
+/// via `fstart_soc_sunxi::boot_device()` and each match arm performs the
+/// full read + handoff + jump sequence (the function never returns).
+///
 /// No intermediate DRAM buffer, no FFS parsing, no LZ4.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn generate_load_next_stage(
-    device_name: &str,
-    base_offset: u64,
+    load_devices: &[LoadDevice],
     next_stage: &str,
     config: &BoardConfig,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
     platform: &str,
     capabilities: &[fstart_types::Capability],
     halt: &TokenStream,
 ) -> TokenStream {
-    let dev_ident = format_ident!("{}", device_name);
-    let base_off = hex_addr(base_offset);
-
     // Resolve the next stage's load_addr from the board config.
     let next_load_addr = match &config.stages {
         fstart_types::StageLayout::MultiStage(stages) => stages
@@ -844,7 +968,6 @@ pub(super) fn generate_load_next_stage(
     }
 
     // Handoff buffer: placed 4K below the next stage's load address.
-    // The HANDOFF_MAX_SIZE (256 bytes) fits easily within this gap.
     let handoff_addr = hex_addr(next_load_addr - 0x1000);
 
     // DRAM size: if DramInit was run in this stage, call the DRAMC
@@ -864,27 +987,8 @@ pub(super) fn generate_load_next_stage(
         None => quote! { 0u64 },
     };
 
-    quote! {
-        // Read next stage location from eGON header (patched by FFS assembler).
-        let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset() as u64;
-        let ns_size = fstart_soc_sunxi::next_stage_size() as usize;
-        if ns_ffs_offset == 0 || ns_size == 0 {
-            fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
-            #halt;
-        }
-        let sd_offset = #base_off + ns_ffs_offset;
-        fstart_log::info!("loading stage '{}': sd_offset={:#x}, size={:#x}, dest={:#x}",
-            #next_stage, sd_offset, ns_size as u64, #load_addr as u64);
-        {
-            let dest_buf = unsafe {
-                core::slice::from_raw_parts_mut(#load_addr as *mut u8, ns_size)
-            };
-            #dev_ident.read(sd_offset, dest_buf).unwrap_or_else(|_| {
-                fstart_log::error!("FATAL: failed to read stage from {}", #device_name);
-                #halt
-            });
-        }
-
+    // Build the handoff + jump sequence (shared by all arms).
+    let handoff_and_jump = quote! {
         // Serialize handoff for the next stage.
         let _handoff_data = fstart_types::handoff::StageHandoff::new(#dram_size_expr);
         let handoff_buf_addr = #handoff_addr as *mut u8;
@@ -903,6 +1007,85 @@ pub(super) fn generate_load_next_stage(
 
         fstart_log::info!("jumping to stage '{}' at {:#x}", #next_stage, #load_addr as u64);
         fstart_platform_armv7::jump_to_with_handoff(#load_addr, #handoff_addr as usize);
+    };
+
+    if load_devices.len() == 1 {
+        // Single device — no auto-detection needed.
+        let ld = &load_devices[0];
+        let dev_name_str = ld.name.as_str();
+        let dev_ident = format_ident!("{}", dev_name_str);
+        let base_off = hex_addr(ld.base_offset);
+
+        return quote! {
+            let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset() as u64;
+            let ns_size = fstart_soc_sunxi::next_stage_size() as usize;
+            if ns_ffs_offset == 0 || ns_size == 0 {
+                fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
+                #halt;
+            }
+            let dev_offset = #base_off + ns_ffs_offset;
+            fstart_log::info!("loading stage '{}': offset={:#x}, size={:#x}, dest={:#x}",
+                #next_stage, dev_offset, ns_size as u64, #load_addr as u64);
+            {
+                let dest_buf = unsafe {
+                    core::slice::from_raw_parts_mut(#load_addr as *mut u8, ns_size)
+                };
+                #dev_ident.read(dev_offset, dest_buf).unwrap_or_else(|_| {
+                    fstart_log::error!("FATAL: failed to read stage from {}", #dev_name_str);
+                    #halt
+                });
+            }
+            #handoff_and_jump
+        };
+    }
+
+    // Multiple devices — auto-detect via eGON header boot_media field.
+    let mut match_arms = TokenStream::new();
+    for ld in load_devices {
+        let dev_name_str = ld.name.as_str();
+        let dev_ident = format_ident!("{}", dev_name_str);
+        let base_off = hex_addr(ld.base_offset);
+
+        let bm_values = boot_media_values_for_device(dev_name_str, devices, instances);
+        for val in &bm_values {
+            let val_lit = Literal::u8_unsuffixed(*val);
+
+            match_arms.extend(quote! {
+                #val_lit => {
+                    let dev_offset = #base_off + ns_ffs_offset;
+                    fstart_log::info!("loading stage '{}' from {}: offset={:#x}, size={:#x}, dest={:#x}",
+                        #next_stage, #dev_name_str, dev_offset, ns_size as u64, #load_addr as u64);
+                    {
+                        let dest_buf = unsafe {
+                            core::slice::from_raw_parts_mut(#load_addr as *mut u8, ns_size)
+                        };
+                        #dev_ident.read(dev_offset, dest_buf).unwrap_or_else(|_| {
+                            fstart_log::error!("FATAL: failed to read stage from {}", #dev_name_str);
+                            #halt
+                        });
+                    }
+                    #handoff_and_jump
+                }
+            });
+        }
+    }
+
+    quote! {
+        let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset() as u64;
+        let ns_size = fstart_soc_sunxi::next_stage_size() as usize;
+        if ns_ffs_offset == 0 || ns_size == 0 {
+            fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
+            #halt;
+        }
+        let bm = fstart_soc_sunxi::boot_media();
+        fstart_log::info!("boot media detect: {:#x}", bm);
+        match bm {
+            #match_arms
+            _ => {
+                fstart_log::error!("FATAL: unknown boot medium: {:#x}", bm);
+                #halt;
+            }
+        }
     }
 }
 
@@ -949,5 +1132,77 @@ pub(super) fn generate_stage_load(
     };
     quote! {
         fstart_capabilities::stage_load(#next_stage, #anchor, &boot_media, #jump_fn);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boot media value inference
+// ---------------------------------------------------------------------------
+
+/// Convert a device name to CamelCase for use as an enum variant name.
+///
+/// E.g., "mmc0" -> "Mmc0", "spi0" -> "Spi0", "spi-flash0" -> "SpiFlash0".
+fn to_camel_case(name: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = true;
+    for ch in name.chars() {
+        if ch == '-' || ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Determine the eGON `boot_media` values that correspond to a device.
+///
+/// Maps a device name to the BROM boot_media constants based on the
+/// device's driver type and configuration. Used by `LoadNextStage` and
+/// `BootMedia(AutoDevice)` codegen to generate match arms for runtime
+/// boot device auto-detection.
+fn boot_media_values_for_device(
+    dev_name: &str,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+) -> Vec<u8> {
+    let Some(idx) = devices.iter().position(|d| d.name.as_str() == dev_name) else {
+        panic!(
+            "boot_media_values_for_device: device '{}' not found in board devices list",
+            dev_name
+        );
+    };
+    let inst = &instances[idx];
+    let driver_name = inst.meta().name;
+
+    match driver_name {
+        "sunxi-a20-mmc" => {
+            // Extract mmc_index from the config to determine which
+            // controller (and thus which boot_media values) this is.
+            // The DriverInstance variants are available because fstart-codegen
+            // depends on fstart-device-registry with the all-drivers feature.
+            if let DriverInstance::SunxiA20Mmc(cfg) = inst {
+                match cfg.mmc_index {
+                    0 => vec![0x00, 0x10], // BOOT_MEDIA_MMC0, BOOT_MEDIA_MMC0_HIGH
+                    2 => vec![0x02, 0x12], // BOOT_MEDIA_MMC2, BOOT_MEDIA_MMC2_HIGH
+                    other => panic!(
+                        "boot_media_values_for_device: unsupported mmc_index {} for device '{}'",
+                        other, dev_name
+                    ),
+                }
+            } else {
+                unreachable!("driver name is sunxi-a20-mmc but instance is not SunxiA20Mmc")
+            }
+        }
+        "sunxi-a20-spi" => {
+            vec![0x03] // BOOT_MEDIA_SPI
+        }
+        other => panic!(
+            "boot_media_values_for_device: driver '{}' on device '{}' has no known boot_media mapping",
+            other, dev_name
+        ),
     }
 }
