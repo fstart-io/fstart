@@ -15,7 +15,7 @@ use serde::ser::{
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant,
 };
 
-use fstart_drivers::DriverInstance;
+use fstart_device_registry::DriverInstance;
 
 use super::tokens::hex_addr;
 

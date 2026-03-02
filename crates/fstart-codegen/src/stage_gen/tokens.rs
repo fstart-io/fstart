@@ -25,6 +25,9 @@ pub(super) fn halt_expr(platform: &str) -> TokenStream {
 
 /// The `unsafe` expression that casts `&FSTART_ANCHOR` to `&[u8]` for
 /// capability functions that read the anchor at runtime.
+///
+/// Used by first/monolithic stages that have the anchor embedded in
+/// their own binary (patched by the FFS builder).
 pub(super) fn anchor_as_bytes_expr() -> TokenStream {
     quote! {
         unsafe {
@@ -33,5 +36,24 @@ pub(super) fn anchor_as_bytes_expr() -> TokenStream {
                 core::mem::size_of::<fstart_types::ffs::AnchorBlock>(),
             )
         }
+    }
+}
+
+/// Reference to the `scanned_anchor_data` local variable.
+///
+/// Used by non-first stages that scan the boot media for the anchor
+/// at runtime (the bootblock's patched anchor is in the FFS image
+/// copy in DRAM).
+pub(super) fn scanned_anchor_bytes_expr() -> TokenStream {
+    quote! { &scanned_anchor_data[..] }
+}
+
+/// Select the appropriate anchor bytes expression based on whether
+/// this stage embeds the anchor or scans boot media for it.
+pub(super) fn anchor_expr(embed_anchor: bool) -> TokenStream {
+    if embed_anchor {
+        anchor_as_bytes_expr()
+    } else {
+        scanned_anchor_bytes_expr()
     }
 }

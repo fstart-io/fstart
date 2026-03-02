@@ -9,7 +9,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use fstart_drivers::{DriverInstance, DriverMeta};
+use fstart_device_registry::{DriverInstance, DriverMeta};
 use fstart_types::DeviceConfig;
 
 // =======================================================================

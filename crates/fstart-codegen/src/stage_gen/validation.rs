@@ -4,7 +4,7 @@
 //! before anything that logs) and provides predicate functions used by the
 //! codegen orchestrator to decide which sections to emit.
 
-use fstart_types::{BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind};
+use fstart_types::{BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, StageLayout};
 
 /// Validate that capabilities are in a legal order.
 ///
@@ -21,6 +21,10 @@ pub(super) fn validate_capability_ordering(capabilities: &[Capability]) -> Optio
 
     for cap in capabilities {
         match cap {
+            Capability::ClockInit { .. } => {
+                // ClockInit runs before ConsoleInit (clocks must be up
+                // before the UART can work).  No logging requirement.
+            }
             Capability::ConsoleInit { .. } => {
                 console_inited = true;
             }
@@ -37,6 +41,13 @@ pub(super) fn validate_capability_ordering(capabilities: &[Capability]) -> Optio
             Capability::MemoryInit if !console_inited => {
                 return Some(
                     "MemoryInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::DramInit { .. } if !console_inited => {
+                return Some(
+                    "DramInit capability requires ConsoleInit to appear earlier \
                      in the capability list (needed for logging)"
                         .to_string(),
                 );
@@ -97,6 +108,20 @@ pub(super) fn validate_capability_ordering(capabilities: &[Capability]) -> Optio
                         .to_string(),
                 );
             }
+            Capability::ReturnToFel if !console_inited => {
+                return Some(
+                    "ReturnToFel capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::LoadNextStage { .. } if !console_inited => {
+                return Some(
+                    "LoadNextStage capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
             _ => {}
         }
     }
@@ -116,19 +141,32 @@ pub(super) fn needs_ffs(capabilities: &[Capability]) -> bool {
     })
 }
 
+/// Check whether this stage should embed a `FSTART_ANCHOR` static.
+///
+/// Returns `true` for monolithic builds and the first stage in a
+/// multi-stage build. Returns `false` for non-first stages — they
+/// scan the boot media for the anchor at runtime instead (the
+/// bootblock's patched anchor is in the FFS image copy in DRAM).
+pub(super) fn needs_embedded_anchor(stages: &StageLayout, stage_name: Option<&str>) -> bool {
+    match stages {
+        StageLayout::Monolithic(_) => true,
+        StageLayout::MultiStage(stages) => {
+            // First stage always embeds the anchor (it gets patched by the builder).
+            // Non-first stages scan the boot media instead.
+            match (stages.first(), stage_name) {
+                (Some(first), Some(name)) => first.name.as_str() == name,
+                _ => true,
+            }
+        }
+    }
+}
+
 /// Find the `BootMedia` capability's medium, if present.
 pub(super) fn get_boot_medium(capabilities: &[Capability]) -> Option<&BootMedium> {
     capabilities.iter().find_map(|c| match c {
         Capability::BootMedia(medium) => Some(medium),
         _ => None,
     })
-}
-
-/// Check whether a capability list uses FDT operations (FdtPrepare).
-pub(super) fn needs_fdt(capabilities: &[Capability]) -> bool {
-    capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::FdtPrepare))
 }
 
 /// Check whether this board has a LinuxBoot payload configured.

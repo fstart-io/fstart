@@ -6,8 +6,9 @@ members = [
     "crates/fstart-codegen",
     "crates/fstart-ffs",
     "crates/fstart-crypto",
+    "crates/fstart-mmio",
     "crates/fstart-services",
-    "crates/fstart-drivers",
+    "crates/fstart-arch",
     "crates/fstart-capabilities",
     "crates/fstart-alloc",
     "crates/fstart-log",
@@ -15,6 +16,15 @@ members = [
     "crates/fstart-platform-riscv64",
     "crates/fstart-platform-aarch64",
     "crates/fstart-platform-armv7",
+    "crates/fstart-soc-sunxi",
+    "crates/fstart-sunxi-ccu-regs",
+    "crates/fstart-driver-ns16550",
+    "crates/fstart-driver-pl011",
+    "crates/fstart-driver-designware-i2c",
+    "crates/fstart-driver-sunxi-ccu",
+    "crates/fstart-driver-sunxi-dramc",
+    "crates/fstart-driver-sunxi-mmc",
+    "crates/fstart-device-registry",
     "crates/fstart-stage",
     "crates/fstart-fit",
 ]
@@ -41,6 +51,7 @@ embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", features = ["serde"] }
 ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
+tock-registers = "0.10"
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
@@ -59,8 +70,8 @@ fstart-types = { path = "crates/fstart-types" }
 fstart-codegen = { path = "crates/fstart-codegen" }
 fstart-ffs = { path = "crates/fstart-ffs" }
 fstart-crypto = { path = "crates/fstart-crypto" }
+fstart-mmio = { path = "crates/fstart-mmio" }
 fstart-services = { path = "crates/fstart-services" }
-fstart-drivers = { path = "crates/fstart-drivers" }
 fstart-capabilities = { path = "crates/fstart-capabilities" }
 fstart-alloc = { path = "crates/fstart-alloc" }
 fstart-log = { path = "crates/fstart-log" }
@@ -68,6 +79,16 @@ fstart-runtime = { path = "crates/fstart-runtime" }
 fstart-platform-riscv64 = { path = "crates/fstart-platform-riscv64" }
 fstart-platform-aarch64 = { path = "crates/fstart-platform-aarch64" }
 fstart-platform-armv7 = { path = "crates/fstart-platform-armv7" }
+fstart-arch = { path = "crates/fstart-arch" }
+fstart-soc-sunxi = { path = "crates/fstart-soc-sunxi" }
+fstart-sunxi-ccu-regs = { path = "crates/fstart-sunxi-ccu-regs" }
+fstart-driver-ns16550 = { path = "crates/fstart-driver-ns16550" }
+fstart-driver-pl011 = { path = "crates/fstart-driver-pl011" }
+fstart-driver-designware-i2c = { path = "crates/fstart-driver-designware-i2c" }
+fstart-driver-sunxi-ccu = { path = "crates/fstart-driver-sunxi-ccu" }
+fstart-driver-sunxi-dramc = { path = "crates/fstart-driver-sunxi-dramc" }
+fstart-driver-sunxi-mmc = { path = "crates/fstart-driver-sunxi-mmc" }
+fstart-device-registry = { path = "crates/fstart-device-registry" }
 fstart-stage = { path = "crates/fstart-stage" }
 fstart-fit = { path = "crates/fstart-fit" }
 
@@ -92,7 +113,7 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = "symbols"
+#strip = "symbols"
 
 # Crypto crates need speed-optimized codegen even in size-optimized release
 # builds.  opt-level "s"/"z" can be orders of magnitude slower for scalar

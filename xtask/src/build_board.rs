@@ -6,7 +6,7 @@
 //! 4. Return the path(s) to the built binary(ies)
 
 use fstart_codegen::ron_loader;
-use fstart_types::StageLayout;
+use fstart_types::{Capability, SecurityConfig, SocImageFormat, StageLayout};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -61,97 +61,51 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         other => return Err(format!("unsupported platform: {other}")),
     };
 
-    // Collect features: platform + drivers + FFS/crypto (if any stage uses FFS caps)
-    let mut features = Vec::new();
-    features.push(config.platform.to_string());
+    // Base features: platform + all driver features (every stage constructs
+    // all devices, so driver features are always needed globally).
+    let mut base_features = Vec::new();
+    base_features.push(config.platform.to_string());
     for device in &config.devices {
-        features.push(device.driver.to_string());
+        base_features.push(device.driver.to_string());
     }
 
-    // Check if any stage uses FFS capabilities (SigVerify, StageLoad, PayloadLoad)
-    let uses_ffs = match &config.stages {
-        StageLayout::Monolithic(mono) => mono.capabilities.iter().any(|c| {
-            matches!(
-                c,
-                fstart_types::Capability::SigVerify
-                    | fstart_types::Capability::StageLoad { .. }
-                    | fstart_types::Capability::PayloadLoad
-            )
-        }),
-        StageLayout::MultiStage(stages) => stages.iter().any(|s| {
-            s.capabilities.iter().any(|c| {
-                matches!(
-                    c,
-                    fstart_types::Capability::SigVerify
-                        | fstart_types::Capability::StageLoad { .. }
-                        | fstart_types::Capability::PayloadLoad
-                )
-            })
-        }),
-    };
-
-    if uses_ffs {
-        features.push("ffs".to_string());
-        // LZ4 decompression support — always enabled when FFS is active
-        // so the runtime can handle compressed stage/payload segments.
-        features.push("lz4".to_string());
-        // Enable crypto features based on board security config
-        match config.security.signing_algorithm {
-            fstart_types::SignatureAlgorithm::Ed25519 => features.push("ed25519".to_string()),
-            fstart_types::SignatureAlgorithm::EcdsaP256 => {} // future: add ecdsa feature
-        }
-        for digest in &config.security.required_digests {
-            match digest {
-                fstart_types::DigestAlgorithm::Sha256 => features.push("sha2-digest".to_string()),
-                fstart_types::DigestAlgorithm::Sha3_256 => features.push("sha3-digest".to_string()),
-            }
-        }
+    // Multi-stage boards need the handoff feature for inter-stage data passing.
+    let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
+    if is_multi_stage {
+        base_features.push("handoff".to_string());
     }
 
-    // Check if any stage uses FDT capabilities (FdtPrepare)
-    let uses_fdt = match &config.stages {
-        StageLayout::Monolithic(mono) => mono
-            .capabilities
-            .iter()
-            .any(|c| matches!(c, fstart_types::Capability::FdtPrepare)),
-        StageLayout::MultiStage(stages) => stages.iter().any(|s| {
-            s.capabilities
-                .iter()
-                .any(|c| matches!(c, fstart_types::Capability::FdtPrepare))
-        }),
-    };
-
-    if uses_fdt {
-        features.push("fdt".to_string());
-    }
-
-    // Check if the board uses a FIT image with runtime parsing
+    // Check if the board uses a FIT image with runtime parsing (board-level feature)
     let uses_fit_runtime = config.payload.as_ref().is_some_and(|p| {
         p.kind == fstart_types::PayloadKind::FitImage
             && p.fit_parse.unwrap_or(fstart_types::FitParseMode::Buildtime)
                 == fstart_types::FitParseMode::Runtime
     });
     if uses_fit_runtime {
-        features.push("fit".to_string());
+        base_features.push("fit".to_string());
     }
 
-    let features_str = features.join(",");
-
     eprintln!("[fstart] target: {target}");
-    eprintln!("[fstart] features: {features_str}");
 
-    // Both AArch64 and RISC-V need flat binaries for QEMU: AArch64 uses
-    // -bios which expects raw binary, RISC-V uses pflash which also needs
-    // raw binary data.
+    // All bare-metal platforms need flat binaries: AArch64 uses -bios
+    // which expects raw binary, RISC-V uses pflash, and ARMv7 Allwinner
+    // boot ROM loads raw binary from SD/SPI/eMMC.
     let needs_flat_binary = matches!(config.platform.as_str(), "aarch64" | "riscv64" | "armv7");
 
-    // Determine build-std components: always need core, add alloc when FDT
-    // feature is enabled (dtoolkit write API + bump allocator need alloc).
-    let build_std = if uses_fdt { "core,alloc" } else { "core" };
+    let soc_format = config.soc_image_format;
 
     match &config.stages {
         StageLayout::Monolithic(mono) => {
-            // Single build, no FSTART_STAGE_NAME needed
+            // Single build — compute features from this stage's capabilities.
+            let mut features = base_features.clone();
+            let cap_features = capability_features(&mono.capabilities, &config.security);
+            features.extend(cap_features);
+            let features_str = features.join(",");
+            let uses_fdt = stage_uses_fdt(&mono.capabilities);
+            let build_std = if uses_fdt { "core,alloc" } else { "core" };
+
+            eprintln!("[fstart] features: {features_str}");
+
             let (elf_path, run_path) = build_one_stage(
                 &workspace_root,
                 &board_ron,
@@ -161,6 +115,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 release,
                 needs_flat_binary,
                 build_std,
+                soc_format,
             )?;
             Ok(BuildResult {
                 stages: vec![StageBinary {
@@ -173,9 +128,31 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         }
         StageLayout::MultiStage(stages) => {
             let mut result = Vec::new();
-            for stage in stages {
+            for (i, stage) in stages.iter().enumerate() {
                 let stage_name = stage.name.to_string();
                 eprintln!("[fstart] building stage: {stage_name}");
+
+                // Compute per-stage features: base (platform + drivers) +
+                // capability-driven features (FFS, crypto, FDT) for THIS
+                // stage only. The bootblock doesn't need FFS/crypto/FDT
+                // even if the main stage does.
+                let mut features = base_features.clone();
+                let cap_features = capability_features(&stage.capabilities, &config.security);
+                features.extend(cap_features);
+                let features_str = features.join(",");
+
+                let uses_fdt = stage_uses_fdt(&stage.capabilities);
+                let build_std = if uses_fdt { "core,alloc" } else { "core" };
+
+                eprintln!("[fstart] features: {features_str}");
+
+                // Allwinner eGON only applies to the first stage (the one
+                // the BROM loads).  Later stages are loaded by fstart.
+                let stage_format = if i == 0 {
+                    soc_format
+                } else {
+                    SocImageFormat::None
+                };
                 let (elf_path, run_path) = build_one_stage(
                     &workspace_root,
                     &board_ron,
@@ -185,6 +162,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                     release,
                     needs_flat_binary,
                     build_std,
+                    stage_format,
                 )?;
                 result.push(StageBinary {
                     name: stage_name,
@@ -213,6 +191,7 @@ fn build_one_stage(
     release: bool,
     needs_flat_binary: bool,
     build_std: &str,
+    soc_format: SocImageFormat,
 ) -> Result<(PathBuf, PathBuf), String> {
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
@@ -232,7 +211,12 @@ fn build_one_stage(
     // Disable UB precondition checks on volatile ops (nightly core library
     // adds alignment/null checks on read_volatile/write_volatile that are
     // incompatible with MMIO register access in firmware debug builds).
-    cmd.env("RUSTFLAGS", "-Zub-checks=no");
+    //
+    // Force strict-align: the armv7a-none-eabi target spec already sets
+    // +strict-align, but we re-assert it here to ensure LLVM never emits
+    // unaligned loads/stores to MMIO addresses (device memory faults on
+    // unaligned access even when the core supports it for normal memory).
+    cmd.env("RUSTFLAGS", "-Zub-checks=no -Ctarget-feature=+strict-align");
 
     // Pass board RON path to build.rs
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
@@ -299,6 +283,13 @@ fn build_one_stage(
         if !objcopy_status.success() {
             return Err("llvm-objcopy failed".to_string());
         }
+
+        // Allwinner eGON: compute the actual binary size, pad to
+        // 512-byte alignment, and patch both length and checksum.
+        if let SocImageFormat::AllwinnerEgon = soc_format {
+            patch_allwinner_egon(&bin_path)?;
+        }
+
         bin_path
     } else {
         final_elf.clone()
@@ -311,6 +302,254 @@ fn build_one_stage(
 /// Public wrapper for workspace root (used by other xtask modules).
 pub fn workspace_root_pub() -> Result<PathBuf, String> {
     workspace_root()
+}
+
+/// Patch an Allwinner eGON binary: compute size, pad, write length + checksum.
+///
+/// Like U-Boot's `mksunxiboot` / `sunxi_egon.c`, this computes the
+/// image size from the actual binary content (rounded up to 8K block
+/// alignment, matching U-Boot's `PAD_SIZE = 8192`), then:
+/// 1. Verifies the eGON magic and checksum sentinel
+/// 2. Pads the binary to the 8K-aligned size
+/// 3. Writes the length at offset 0x10
+/// 4. Computes the word-add checksum and writes it at offset 0x0C
+/// 5. Self-verifies using U-Boot's `egon_verify_header` algorithm
+fn patch_allwinner_egon(bin_path: &std::path::Path) -> Result<(), String> {
+    let mut data = std::fs::read(bin_path).map_err(|e| format!("failed to read binary: {e}"))?;
+
+    if data.len() < 96 {
+        return Err("binary too small for Allwinner eGON header (< 96 bytes)".to_string());
+    }
+    if &data[4..12] != b"eGON.BT0" {
+        return Err("eGON.BT0 magic not found at offset 0x04".to_string());
+    }
+
+    let stamp = u32::from_le_bytes([data[0x0C], data[0x0D], data[0x0E], data[0x0F]]);
+    if stamp != 0x5F0A6C39 {
+        return Err(format!(
+            "eGON checksum sentinel not found (got {stamp:#010x}, expected 0x5F0A6C39)"
+        ));
+    }
+
+    // Compute the image size: round up to 8K (0x2000) block alignment.
+    // U-Boot's sunxi_egon.c uses PAD_SIZE = 8192; the BROM reads this
+    // many bytes from the SD card.  512-byte alignment is the minimum
+    // the hardware accepts, but U-Boot always pads to 8K blocks.
+    let raw_size = data.len();
+    let image_size = ((raw_size + 0x1FFF) & !0x1FFF) as u32;
+
+    // Pad to the aligned size.
+    data.resize(image_size as usize, 0);
+
+    // Write the length field at offset 0x10.
+    data[0x10..0x14].copy_from_slice(&image_size.to_le_bytes());
+
+    // Write the SPL signature at offset 0x14 — "SPL\x02".
+    // U-Boot's sunxi SPL includes this so that sunxi-fel and other tools
+    // recognise the binary as a version-2 SPL header.
+    data[0x14..0x18].copy_from_slice(b"SPL\x02");
+
+    // Compute checksum per U-Boot's gen_check_sum() / egon_set_header():
+    //   1. Stamp value (0x5F0A6C39) is already in the checksum field
+    //   2. Sum all u32 words (stamp participates in the sum)
+    //   3. Write the sum as the checksum
+    let mut checksum: u32 = 0;
+    for chunk in data.chunks_exact(4) {
+        let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        checksum = checksum.wrapping_add(word);
+    }
+
+    // Write the checksum at offset 0x0C.
+    data[0x0C..0x10].copy_from_slice(&checksum.to_le_bytes());
+
+    // Self-verify using U-Boot's egon_verify_header() algorithm:
+    //   1. Save the checksum from the header
+    //   2. Put the stamp value back into the checksum field
+    //   3. Sum all words up to length/4
+    //   4. The sum must equal the saved checksum
+    allwinner_egon_verify(&data)?;
+
+    std::fs::write(bin_path, &data).map_err(|e| format!("failed to write patched binary: {e}"))?;
+
+    eprintln!(
+        "[fstart] Allwinner eGON patched: raw_size={raw_size:#x}, \
+         image_size={image_size:#x}, checksum={checksum:#010x}"
+    );
+    Ok(())
+}
+
+/// Verify an Allwinner eGON binary using U-Boot's verification algorithm.
+///
+/// Mirrors `egon_verify_header()` from `tools/sunxi_egon.c`:
+///   1. Check branch instruction upper byte == 0xEA (ARM)
+///   2. Check "eGON.BT0" magic at offset 0x04
+///   3. Check length is 512-byte aligned and within buffer
+///   4. Save checksum, put stamp back, re-sum, compare
+pub(crate) fn allwinner_egon_verify(data: &[u8]) -> Result<(), String> {
+    if data.len() < 96 {
+        return Err("verify: binary too small".to_string());
+    }
+
+    // Branch instruction check (upper byte of offset 0x00..0x04 must be 0xEA).
+    if data[3] != 0xEA {
+        return Err(format!(
+            "verify: branch instruction upper byte is {:#04x}, expected 0xEA",
+            data[3]
+        ));
+    }
+
+    // Magic check.
+    if &data[4..12] != b"eGON.BT0" {
+        return Err("verify: eGON.BT0 magic mismatch".to_string());
+    }
+
+    // Read length and checksum from header.
+    let length = u32::from_le_bytes([data[0x10], data[0x11], data[0x12], data[0x13]]);
+    let saved_checksum = u32::from_le_bytes([data[0x0C], data[0x0D], data[0x0E], data[0x0F]]);
+
+    if length == 0 || (length & 0x1FF) != 0 {
+        return Err(format!(
+            "verify: length {length:#x} is not a positive multiple of 512"
+        ));
+    }
+    if length as usize > data.len() {
+        return Err(format!(
+            "verify: length {length:#x} exceeds buffer size {:#x}",
+            data.len()
+        ));
+    }
+
+    // Re-compute: put stamp back in checksum field, sum length/4 words.
+    let num_words = length as usize / 4;
+    let mut verify_sum: u32 = 0;
+    for i in 0..num_words {
+        let off = i * 4;
+        let word = if i == 3 {
+            // Checksum field (offset 0x0C) — use stamp value, not stored checksum.
+            0x5F0A6C39_u32
+        } else {
+            u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+        };
+        verify_sum = verify_sum.wrapping_add(word);
+    }
+
+    if verify_sum != saved_checksum {
+        return Err(format!(
+            "verify: checksum mismatch — stored {saved_checksum:#010x}, \
+             computed {verify_sum:#010x}"
+        ));
+    }
+
+    Ok(())
+}
+
+/// Patch the Allwinner eGON header at the start of an FFS image.
+///
+/// The FFS assembler reads stage ELFs directly, so the eGON header fields
+/// (length, SPL signature, checksum) are left at their unpatched defaults.
+/// This function patches them in-place using the bootblock size from the
+/// standalone build.
+///
+/// `bootblock_size` is the eGON image size (8K-aligned) from the patched
+/// standalone `.bin`. The BROM loads exactly this many bytes into SRAM;
+/// the rest of the FFS stays on SD card for later loading.
+pub(crate) fn patch_allwinner_egon_ffs(
+    ffs_image: &mut [u8],
+    bootblock_size: u32,
+) -> Result<(), String> {
+    if (ffs_image.len() as u32) < bootblock_size {
+        return Err(format!(
+            "FFS image ({:#x} bytes) is smaller than bootblock size ({:#x})",
+            ffs_image.len(),
+            bootblock_size
+        ));
+    }
+    if ffs_image.len() < 96 {
+        return Err("FFS image too small for eGON header".to_string());
+    }
+    if &ffs_image[4..12] != b"eGON.BT0" {
+        return Err("eGON.BT0 magic not found at start of FFS image".to_string());
+    }
+
+    // Write the bootblock length at offset 0x10.
+    ffs_image[0x10..0x14].copy_from_slice(&bootblock_size.to_le_bytes());
+
+    // Write the SPL signature at offset 0x14.
+    ffs_image[0x14..0x18].copy_from_slice(b"SPL\x02");
+
+    // Put the stamp value back in the checksum field before computing.
+    ffs_image[0x0C..0x10].copy_from_slice(&0x5F0A6C39_u32.to_le_bytes());
+
+    // Compute checksum over the bootblock area only (what the BROM loads).
+    let bb = &ffs_image[..bootblock_size as usize];
+    let mut checksum: u32 = 0;
+    for chunk in bb.chunks_exact(4) {
+        let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        checksum = checksum.wrapping_add(word);
+    }
+
+    // Write the checksum at offset 0x0C.
+    ffs_image[0x0C..0x10].copy_from_slice(&checksum.to_le_bytes());
+
+    // Self-verify.
+    allwinner_egon_verify(&ffs_image[..bootblock_size as usize])?;
+
+    eprintln!(
+        "[fstart] eGON patched in FFS: bootblock_size={bootblock_size:#x}, \
+         checksum={checksum:#010x}"
+    );
+    Ok(())
+}
+
+/// Compute the capability-driven feature flags for a single stage.
+///
+/// Examines the stage's capabilities to determine which FFS, crypto,
+/// and FDT features are needed. Driver features are NOT included here
+/// (they are always global since every stage constructs all devices).
+fn capability_features(capabilities: &[Capability], security: &SecurityConfig) -> Vec<String> {
+    let mut features = Vec::new();
+
+    let uses_ffs = capabilities.iter().any(|c| {
+        matches!(
+            c,
+            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+        )
+    });
+
+    if uses_ffs {
+        features.push("ffs".to_string());
+        // LZ4 decompression support — always enabled when FFS is active
+        // so the runtime can handle compressed stage/payload segments.
+        features.push("lz4".to_string());
+        // Enable crypto features based on board security config
+        match security.signing_algorithm {
+            fstart_types::SignatureAlgorithm::Ed25519 => features.push("ed25519".to_string()),
+            fstart_types::SignatureAlgorithm::EcdsaP256 => {} // future: add ecdsa feature
+        }
+        for digest in &security.required_digests {
+            match digest {
+                fstart_types::DigestAlgorithm::Sha256 => {
+                    features.push("sha2-digest".to_string());
+                }
+                fstart_types::DigestAlgorithm::Sha3_256 => {
+                    features.push("sha3-digest".to_string());
+                }
+            }
+        }
+    }
+
+    if stage_uses_fdt(capabilities) {
+        features.push("fdt".to_string());
+    }
+
+    features
+}
+
+/// Check if a stage's capabilities require the FDT feature.
+fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::FdtPrepare))
 }
 
 fn workspace_root() -> Result<PathBuf, String> {

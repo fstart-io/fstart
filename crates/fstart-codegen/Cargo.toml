@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-drivers = { workspace = true, features = ["all-drivers"] }
+fstart-device-registry = { workspace = true, features = ["all-drivers"] }
 heapless = { workspace = true }
 ron = { workspace = true }
 serde = { workspace = true, features = ["std"] }
@@ -14,3 +14,8 @@ quote = "1"
 proc-macro2 = "1"
 syn = { version = "2", features = ["full"] }
 prettyplease = "0.2"
+
+[dev-dependencies]
+fstart-driver-ns16550 = { workspace = true }
+fstart-driver-pl011 = { workspace = true }
+fstart-driver-designware-i2c = { workspace = true }

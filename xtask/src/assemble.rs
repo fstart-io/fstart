@@ -12,7 +12,7 @@ use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, I
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
-use fstart_types::StageLayout;
+use fstart_types::{FdtSource, SocImageFormat, StageLayout};
 use goblin::elf::{program_header, Elf};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -106,25 +106,46 @@ fn assemble_impl(
         }
         StageLayout::MultiStage(_stages) => {
             for (i, stage_bin) in build_result.stages.iter().enumerate() {
-                // The first file (bootblock) must be uncompressed — it
-                // executes directly from flash (XIP) and contains the
-                // FSTART_ANCHOR placeholder that gets patched in-place.
-                // Subsequent stages can be LZ4-compressed.
-                let compression = if i == 0 {
-                    Compression::None
+                if i == 0 {
+                    // The bootblock must be uncompressed — it executes
+                    // directly from flash/SRAM and contains the anchor
+                    // placeholder that gets patched in-place.
+                    let segments = parse_elf_segments(&stage_bin.path, Compression::None)?;
+                    log_stage_segments(&stage_bin.name, &stage_bin.path, &segments);
+                    ro_files.push(InputFile {
+                        name: stage_bin.name.clone(),
+                        file_type: FileType::StageCode,
+                        segments,
+                    });
                 } else {
-                    Compression::Lz4
-                };
-
-                let segments = parse_elf_segments(&stage_bin.path, compression)?;
-
-                log_stage_segments(&stage_bin.name, &stage_bin.path, &segments);
-
-                ro_files.push(InputFile {
-                    name: stage_bin.name.clone(),
-                    file_type: FileType::StageCode,
-                    segments,
-                });
+                    // Subsequent stages are stored as flat binaries (the
+                    // objcopy .bin).  The bootblock copies this blob
+                    // directly to load_addr — no FFS parsing or LZ4
+                    // decompression required.
+                    let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
+                        format!("failed to read {}: {e}", stage_bin.run_path.display())
+                    })?;
+                    eprintln!(
+                        "[fstart] {}: flat binary, {} bytes, load_addr={:#x} (from {})",
+                        stage_bin.name,
+                        bin_data.len(),
+                        stage_bin.load_addr,
+                        stage_bin.run_path.display(),
+                    );
+                    ro_files.push(InputFile {
+                        name: stage_bin.name.clone(),
+                        file_type: FileType::StageCode,
+                        segments: vec![InputSegment {
+                            name: ".flat".to_string(),
+                            kind: SegmentKind::Code,
+                            data: bin_data,
+                            mem_size: None,
+                            load_addr: stage_bin.load_addr,
+                            compression: Compression::None,
+                            flags: SegmentFlags::CODE,
+                        }],
+                    });
+                }
             }
         }
     }
@@ -150,6 +171,39 @@ fn assemble_impl(
                 &mut ro_files,
             )?;
         }
+
+        // Resolve DTB blob path from FdtSource::Override
+        if let FdtSource::Override(ref dtb_name) = payload.fdt {
+            let dtb_path = board_dir.join(dtb_name.as_str());
+            if dtb_path.exists() {
+                let dtb_data =
+                    fs::read(&dtb_path).map_err(|e| format!("failed to read DTB: {e}"))?;
+                let dtb_load_addr = payload.dtb_addr.unwrap_or(0);
+
+                eprintln!(
+                    "[fstart] DTB: {} ({} bytes, load_addr={:#x})",
+                    dtb_path.display(),
+                    dtb_data.len(),
+                    dtb_load_addr,
+                );
+
+                ro_files.push(InputFile {
+                    name: dtb_name.to_string(),
+                    file_type: FileType::Fdt,
+                    segments: vec![InputSegment {
+                        name: ".fdt".to_string(),
+                        kind: SegmentKind::ReadOnlyData,
+                        data: dtb_data,
+                        mem_size: None,
+                        load_addr: dtb_load_addr,
+                        compression: Compression::None,
+                        flags: SegmentFlags::RODATA,
+                    }],
+                });
+            } else {
+                eprintln!("[fstart] warning: DTB not found: {}", dtb_path.display());
+            }
+        }
     }
 
     let image_config = FfsImageConfig {
@@ -165,18 +219,65 @@ fn assemble_impl(
         sign_with_ed25519(&signing_key, manifest_bytes)
     })?;
 
+    let mut image_bytes = ffs_image.image;
+
+    // Allwinner eGON: the FFS assembler reads stage ELFs, so the eGON
+    // header (length, checksum, SPL signature) is unpatched. Read the
+    // bootblock size from the standalone .bin (which was already patched
+    // by `build_board`) and apply the same eGON patching to the FFS.
+    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
+        let bb_bin_path = &build_result.stages[0].run_path;
+        let bb_bin =
+            fs::read(bb_bin_path).map_err(|e| format!("failed to read bootblock .bin: {e}"))?;
+        if bb_bin.len() < 0x14 {
+            return Err("bootblock .bin too small to read eGON header".to_string());
+        }
+        let bootblock_size =
+            u32::from_le_bytes([bb_bin[0x10], bb_bin[0x11], bb_bin[0x12], bb_bin[0x13]]);
+        if bootblock_size == 0 {
+            return Err("bootblock .bin has zero eGON length — was it patched?".to_string());
+        }
+
+        // Patch next-stage offset/size into the eGON header BEFORE the
+        // checksum is computed. The bootblock reads these at runtime via
+        // volatile reads from SRAM to find and copy the next stage.
+        if build_result.stages.len() > 1 {
+            let next_name = &build_result.stages[1].name;
+            let loc = ffs_image
+                .file_data
+                .iter()
+                .find(|f| f.name == *next_name)
+                .ok_or_else(|| format!("next stage '{next_name}' not found in FFS file_data"))?;
+
+            // Offset 0x2C: next_stage_offset (from FFS image start).
+            image_bytes[0x2C..0x30].copy_from_slice(&loc.data_offset.to_le_bytes());
+            // Offset 0x30: next_stage_size.
+            image_bytes[0x30..0x34].copy_from_slice(&loc.data_size.to_le_bytes());
+            // Offset 0x34: ffs_total_size — used by subsequent stages to
+            // locate the FFS anchor at ffs_total_size - ANCHOR_SIZE.
+            let ffs_total = image_bytes.len() as u32;
+            image_bytes[0x34..0x38].copy_from_slice(&ffs_total.to_le_bytes());
+
+            eprintln!(
+                "[fstart] next stage '{}': offset={:#x}, size={:#x} ({} bytes)",
+                next_name, loc.data_offset, loc.data_size, loc.data_size,
+            );
+        }
+
+        crate::build_board::patch_allwinner_egon_ffs(&mut image_bytes, bootblock_size)?;
+    }
+
     // Write the FFS image
     let output_dir = workspace_root.join("target").join("ffs");
     fs::create_dir_all(&output_dir).map_err(|e| format!("failed to create output dir: {e}"))?;
 
     let image_path = output_dir.join(format!("{}.ffs", config.name));
-    fs::write(&image_path, &ffs_image.image)
-        .map_err(|e| format!("failed to write FFS image: {e}"))?;
+    fs::write(&image_path, &image_bytes).map_err(|e| format!("failed to write FFS image: {e}"))?;
 
     eprintln!(
         "[fstart] FFS image: {} ({} bytes)",
         image_path.display(),
-        ffs_image.image.len()
+        image_bytes.len()
     );
     eprintln!(
         "[fstart] anchor at offset {} ({} bytes)",
