@@ -409,6 +409,7 @@ dependencies = [
  "fstart-driver-sunxi-ccu",
  "fstart-driver-sunxi-dramc",
  "fstart-driver-sunxi-mmc",
+ "fstart-driver-sunxi-spi",
  "fstart-services",
  "serde",
 ]
@@ -472,6 +473,20 @@ dependencies = [
 
 [[package]]
 name = "fstart-driver-sunxi-mmc"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-services",
+ "fstart-sunxi-ccu-regs",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-sunxi-spi"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
@@ -574,6 +589,7 @@ dependencies = [
  "fstart-driver-sunxi-ccu",
  "fstart-driver-sunxi-dramc",
  "fstart-driver-sunxi-mmc",
+ "fstart-driver-sunxi-spi",
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",

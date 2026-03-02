@@ -172,19 +172,51 @@ pub enum Capability {
     /// The absolute byte offset on the device is `base_offset` +
     /// `next_stage_offset` (from the header).
     ///
+    /// When multiple devices are specified, the boot device is
+    /// auto-detected at runtime via `fstart_soc_sunxi::boot_device()`
+    /// (reads the BROM-written `boot_media` field from the eGON header).
+    ///
     /// Used by bootblocks that are too small to contain the FFS reader
     /// (e.g., Allwinner A20 with 24K SRAM). The bootblock reads just
     /// the next stage binary and jumps — no FFS parsing, no intermediate
     /// DRAM buffer.
     LoadNextStage {
-        /// Block device name (e.g., "mmc0").
-        device: HString<32>,
-        /// Byte offset on the block device where the firmware image
-        /// starts (e.g., 0x2000 for SD card on sunxi).
-        base_offset: u64,
+        /// Boot device candidates. When multiple are specified, the
+        /// active boot device is auto-detected from the eGON header.
+        devices: heapless::Vec<LoadDevice, 4>,
         /// Name of the next stage to jump to after loading.
         next_stage: HString<32>,
     },
+}
+
+/// A boot device candidate for `LoadNextStage`.
+///
+/// Each entry maps a block device name to its firmware image offset
+/// on the medium. The codegen derives the eGON `boot_media` match
+/// value from the device's driver type at build time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadDevice {
+    /// Device name from the devices list (e.g., "mmc0", "spi0").
+    pub name: HString<32>,
+    /// Byte offset on the device where the firmware image starts.
+    ///
+    /// For SD card on sunxi: `0x2000` (sector 16, where BROM looks).
+    /// For SPI NOR flash: `0` (image starts at the beginning of flash).
+    pub base_offset: u64,
+}
+
+/// A boot device candidate for `BootMedium::AutoDevice`.
+///
+/// Similar to [`LoadDevice`] but also carries the FFS region size
+/// needed by the `BootMedia` capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoBootDevice {
+    /// Device name from the devices list (e.g., "mmc0", "spi0").
+    pub name: HString<32>,
+    /// Byte offset on the device where the FFS image starts.
+    pub offset: u64,
+    /// Size of the FFS image region in bytes.
+    pub size: u64,
 }
 
 /// Boot medium — how the firmware image is accessed at runtime.
@@ -230,5 +262,22 @@ pub enum BootMedium {
         offset: u64,
         /// Size of the FFS image region in bytes.
         size: u64,
+    },
+    /// Runtime boot device auto-detection.
+    ///
+    /// On sunxi, the BROM writes the boot source into the eGON header.
+    /// The generated code reads `boot_device()` and selects the matching
+    /// candidate device. A small `BlockDevice` dispatch enum is generated
+    /// to unify the different device types behind a single variable.
+    ///
+    /// ```ron
+    /// BootMedia(AutoDevice(devices: [
+    ///     (name: "mmc0", offset: 0x2000, size: 0x800000),
+    ///     (name: "spi0", offset: 0,      size: 0x400000),
+    /// ]))
+    /// ```
+    AutoDevice {
+        /// Boot device candidates — auto-selected at runtime.
+        devices: heapless::Vec<AutoBootDevice, 4>,
     },
 }

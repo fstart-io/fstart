@@ -24,6 +24,7 @@ members = [
     "crates/fstart-driver-sunxi-ccu",
     "crates/fstart-driver-sunxi-dramc",
     "crates/fstart-driver-sunxi-mmc",
+    "crates/fstart-driver-sunxi-spi",
     "crates/fstart-device-registry",
     "crates/fstart-stage",
     "crates/fstart-fit",
@@ -88,6 +89,7 @@ fstart-driver-designware-i2c = { path = "crates/fstart-driver-designware-i2c" }
 fstart-driver-sunxi-ccu = { path = "crates/fstart-driver-sunxi-ccu" }
 fstart-driver-sunxi-dramc = { path = "crates/fstart-driver-sunxi-dramc" }
 fstart-driver-sunxi-mmc = { path = "crates/fstart-driver-sunxi-mmc" }
+fstart-driver-sunxi-spi = { path = "crates/fstart-driver-sunxi-spi" }
 fstart-device-registry = { path = "crates/fstart-device-registry" }
 fstart-stage = { path = "crates/fstart-stage" }
 fstart-fit = { path = "crates/fstart-fit" }

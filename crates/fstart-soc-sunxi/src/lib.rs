@@ -138,7 +138,34 @@ pub const BOOT_MEDIA_MMC0_HIGH: u8 = 0x10;
 /// Boot medium: MMC2, SPL at 128 KB offset (newer SoCs).
 pub const BOOT_MEDIA_MMC2_HIGH: u8 = 0x12;
 
-/// Read the boot medium type from the eGON header in SRAM.
+/// Typed boot device — decoded from the BROM's `boot_media` field
+/// in the eGON header.
+///
+/// The BROM writes a numeric boot source identifier into the eGON
+/// header at image offset 0x28 after loading the bootblock into SRAM.
+/// This enum provides a typed representation for use in match
+/// dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootDevice {
+    /// SD card on MMC controller 0 (SPL at 8 KB offset).
+    Mmc0,
+    /// NAND flash.
+    Nand,
+    /// eMMC on MMC controller 2 (SPL at 8 KB offset).
+    Mmc2,
+    /// SPI NOR flash.
+    Spi,
+    /// SD card on MMC controller 0 (SPL at 128 KB offset, newer SoCs).
+    Mmc0High,
+    /// eMMC on MMC controller 2 (SPL at 128 KB offset, newer SoCs).
+    Mmc2High,
+    /// USB FEL mode (no valid eGON header — BROM fell through to USB).
+    Fel,
+    /// Unrecognized boot source value.
+    Unknown(u8),
+}
+
+/// Read the raw boot medium byte from the eGON header in SRAM.
 ///
 /// The BROM writes the boot device type at image offset 0x28 after
 /// loading the bootblock into SRAM. Since the BROM patches the
@@ -150,6 +177,34 @@ pub fn boot_media() -> u8 {
     // SAFETY: The eGON header starts at SRAM address 0x00 (for A20).
     // Offset 0x28 is the boot_media field, written by the BROM.
     unsafe { core::ptr::read_volatile(0x28 as *const u8) }
+}
+
+/// Read and decode the boot device from the eGON header in SRAM.
+///
+/// Returns a typed [`BootDevice`] enum value. If the eGON magic is
+/// not present (indicating FEL boot or corrupted header), returns
+/// [`BootDevice::Fel`].
+pub fn boot_device() -> BootDevice {
+    // Validate eGON magic before trusting the boot_media field.
+    // SAFETY: The eGON header is at SRAM address 0x00 (for A20).
+    // Offset 0x04 is the 8-byte magic field.
+    let magic_valid = unsafe {
+        let magic_ptr = 0x04 as *const [u8; 8];
+        core::ptr::read_volatile(magic_ptr) == EGON_MAGIC
+    };
+    if !magic_valid {
+        return BootDevice::Fel;
+    }
+
+    match boot_media() {
+        BOOT_MEDIA_MMC0 => BootDevice::Mmc0,
+        BOOT_MEDIA_NAND => BootDevice::Nand,
+        BOOT_MEDIA_MMC2 => BootDevice::Mmc2,
+        BOOT_MEDIA_SPI => BootDevice::Spi,
+        BOOT_MEDIA_MMC0_HIGH => BootDevice::Mmc0High,
+        BOOT_MEDIA_MMC2_HIGH => BootDevice::Mmc2High,
+        other => BootDevice::Unknown(other),
+    }
 }
 
 /// Read the next-stage offset from the eGON header in SRAM.
