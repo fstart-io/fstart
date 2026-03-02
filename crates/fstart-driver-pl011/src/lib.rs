@@ -1,12 +1,15 @@
 //! ARM PL011 UART driver.
 //!
 //! Used by QEMU virt (AArch64).
-//! Register access uses the `tock-registers` crate for type-safe MMIO.
+//! Register access uses barrier-aware MMIO types from `fstart-mmio`.
 
+#![no_std]
+
+use fstart_mmio::MmioReadOnly;
+use fstart_mmio::MmioReadWrite;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
-use tock_registers::registers::{ReadOnly, ReadWrite};
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{Console, ServiceError};
@@ -46,21 +49,21 @@ register_structs! {
     /// PL011 register block (32-bit word-addressable registers).
     Pl011Regs {
         /// Data Register
-        (0x000 => pub dr: ReadWrite<u32>),
+        (0x000 => pub dr: MmioReadWrite<u32>),
         /// Reserved
         (0x004 => _reserved0),
         /// Flag Register
-        (0x018 => pub fr: ReadOnly<u32, FR::Register>),
+        (0x018 => pub fr: MmioReadOnly<u32, FR::Register>),
         /// Reserved
         (0x01C => _reserved1),
         /// Integer Baud Rate Divisor
-        (0x024 => pub ibrd: ReadWrite<u32>),
+        (0x024 => pub ibrd: MmioReadWrite<u32>),
         /// Fractional Baud Rate Divisor
-        (0x028 => pub fbrd: ReadWrite<u32>),
+        (0x028 => pub fbrd: MmioReadWrite<u32>),
         /// Line Control Register
-        (0x02C => pub lcr_h: ReadWrite<u32, LCR_H::Register>),
+        (0x02C => pub lcr_h: MmioReadWrite<u32, LCR_H::Register>),
         /// Control Register
-        (0x030 => pub cr: ReadWrite<u32, CR::Register>),
+        (0x030 => pub cr: MmioReadWrite<u32, CR::Register>),
         (0x034 => @END),
     }
 }

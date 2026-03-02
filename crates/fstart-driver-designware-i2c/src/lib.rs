@@ -1,26 +1,18 @@
-//! DesignWare APB I2C controller driver.
+//! DesignWare I2C driver.
 //!
-//! Register layout based on the Synopsys DesignWare DW_apb_i2c databook,
-//! cross-referenced with coreboot (`src/drivers/i2c/designware/dw_i2c.c`)
-//! and U-Boot (`drivers/i2c/designware_i2c.c`).
-//!
-//! This driver operates in master-transmitter and master-receiver modes
-//! with 7-bit addressing. It uses polled (non-interrupt) I/O with
-//! spin-waits on status bits.
-//!
-//! Implements [`embedded_hal::i2c::I2c`] for ecosystem compatibility.
+//! Implements I2C master mode using the DesignWare I2C block.
+//! Provides [`Device`] and I2C master service (to be defined later).
 
-use embedded_hal::i2c::{ErrorKind, ErrorType, I2c, NoAcknowledgeSource, Operation};
+#![no_std]
+
+use fstart_mmio::MmioReadOnly;
+use fstart_mmio::MmioReadWrite;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
-use tock_registers::registers::{ReadOnly, ReadWrite};
 
 use fstart_services::device::{Device, DeviceError};
-
-// ---------------------------------------------------------------------------
-// Register definitions
-// ---------------------------------------------------------------------------
+use fstart_services::i2c::{ErrorKind, NoAcknowledgeSource};
 
 register_bitfields! [u32,
     /// IC_CON — I2C Control Register
@@ -109,74 +101,74 @@ register_structs! {
     /// Offsets from U-Boot `struct i2c_regs` / coreboot `dw_i2c.c`.
     DesignwareI2cRegs {
         /// I2C Control Register
-        (0x00 => pub ic_con: ReadWrite<u32, IC_CON::Register>),
+        (0x00 => pub ic_con: MmioReadWrite<u32, IC_CON::Register>),
         /// I2C Target Address Register
-        (0x04 => pub ic_tar: ReadWrite<u32, IC_TAR::Register>),
+        (0x04 => pub ic_tar: MmioReadWrite<u32, IC_TAR::Register>),
         /// I2C Slave Address Register
-        (0x08 => pub ic_sar: ReadWrite<u32>),
+        (0x08 => pub ic_sar: MmioReadWrite<u32>),
         /// I2C High Speed Master Mode Code Address
-        (0x0C => pub ic_hs_maddr: ReadWrite<u32>),
+        (0x0C => pub ic_hs_maddr: MmioReadWrite<u32>),
         /// I2C Data Buffer and Command Register
-        (0x10 => pub ic_data_cmd: ReadWrite<u32, IC_DATA_CMD::Register>),
+        (0x10 => pub ic_data_cmd: MmioReadWrite<u32, IC_DATA_CMD::Register>),
         /// Standard Speed SCL High Count
-        (0x14 => pub ic_ss_scl_hcnt: ReadWrite<u32>),
+        (0x14 => pub ic_ss_scl_hcnt: MmioReadWrite<u32>),
         /// Standard Speed SCL Low Count
-        (0x18 => pub ic_ss_scl_lcnt: ReadWrite<u32>),
+        (0x18 => pub ic_ss_scl_lcnt: MmioReadWrite<u32>),
         /// Fast Speed SCL High Count
-        (0x1C => pub ic_fs_scl_hcnt: ReadWrite<u32>),
+        (0x1C => pub ic_fs_scl_hcnt: MmioReadWrite<u32>),
         /// Fast Speed SCL Low Count
-        (0x20 => pub ic_fs_scl_lcnt: ReadWrite<u32>),
+        (0x20 => pub ic_fs_scl_lcnt: MmioReadWrite<u32>),
         /// High Speed SCL High Count
-        (0x24 => pub ic_hs_scl_hcnt: ReadWrite<u32>),
+        (0x24 => pub ic_hs_scl_hcnt: MmioReadWrite<u32>),
         /// High Speed SCL Low Count
-        (0x28 => pub ic_hs_scl_lcnt: ReadWrite<u32>),
+        (0x28 => pub ic_hs_scl_lcnt: MmioReadWrite<u32>),
         /// Interrupt Status (read-only view of enabled interrupts)
-        (0x2C => pub ic_intr_stat: ReadOnly<u32, IC_INTR::Register>),
+        (0x2C => pub ic_intr_stat: MmioReadOnly<u32, IC_INTR::Register>),
         /// Interrupt Mask
-        (0x30 => pub ic_intr_mask: ReadWrite<u32>),
+        (0x30 => pub ic_intr_mask: MmioReadWrite<u32>),
         /// Raw Interrupt Status
-        (0x34 => pub ic_raw_intr_stat: ReadOnly<u32, IC_INTR::Register>),
+        (0x34 => pub ic_raw_intr_stat: MmioReadOnly<u32, IC_INTR::Register>),
         /// Receive FIFO Threshold
-        (0x38 => pub ic_rx_tl: ReadWrite<u32>),
+        (0x38 => pub ic_rx_tl: MmioReadWrite<u32>),
         /// Transmit FIFO Threshold
-        (0x3C => pub ic_tx_tl: ReadWrite<u32>),
+        (0x3C => pub ic_tx_tl: MmioReadWrite<u32>),
         /// Clear Combined and Individual Interrupt
-        (0x40 => pub ic_clr_intr: ReadOnly<u32>),
+        (0x40 => pub ic_clr_intr: MmioReadOnly<u32>),
         /// Clear RX_UNDER
-        (0x44 => pub ic_clr_rx_under: ReadOnly<u32>),
+        (0x44 => pub ic_clr_rx_under: MmioReadOnly<u32>),
         /// Clear RX_OVER
-        (0x48 => pub ic_clr_rx_over: ReadOnly<u32>),
+        (0x48 => pub ic_clr_rx_over: MmioReadOnly<u32>),
         /// Clear TX_OVER
-        (0x4C => pub ic_clr_tx_over: ReadOnly<u32>),
+        (0x4C => pub ic_clr_tx_over: MmioReadOnly<u32>),
         /// Clear RD_REQ
-        (0x50 => pub ic_clr_rd_req: ReadOnly<u32>),
+        (0x50 => pub ic_clr_rd_req: MmioReadOnly<u32>),
         /// Clear TX_ABRT
-        (0x54 => pub ic_clr_tx_abrt: ReadOnly<u32>),
+        (0x54 => pub ic_clr_tx_abrt: MmioReadOnly<u32>),
         /// Clear RX_DONE
-        (0x58 => pub ic_clr_rx_done: ReadOnly<u32>),
+        (0x58 => pub ic_clr_rx_done: MmioReadOnly<u32>),
         /// Clear ACTIVITY
-        (0x5C => pub ic_clr_activity: ReadOnly<u32>),
+        (0x5C => pub ic_clr_activity: MmioReadOnly<u32>),
         /// Clear STOP_DET
-        (0x60 => pub ic_clr_stop_det: ReadOnly<u32>),
+        (0x60 => pub ic_clr_stop_det: MmioReadOnly<u32>),
         /// Clear START_DET
-        (0x64 => pub ic_clr_start_det: ReadOnly<u32>),
+        (0x64 => pub ic_clr_start_det: MmioReadOnly<u32>),
         /// Clear GEN_CALL
-        (0x68 => pub ic_clr_gen_call: ReadOnly<u32>),
+        (0x68 => pub ic_clr_gen_call: MmioReadOnly<u32>),
         /// I2C Enable Register
-        (0x6C => pub ic_enable: ReadWrite<u32, IC_ENABLE::Register>),
+        (0x6C => pub ic_enable: MmioReadWrite<u32, IC_ENABLE::Register>),
         /// I2C Status Register
-        (0x70 => pub ic_status: ReadOnly<u32, IC_STATUS::Register>),
+        (0x70 => pub ic_status: MmioReadOnly<u32, IC_STATUS::Register>),
         /// I2C Transmit FIFO Level
-        (0x74 => pub ic_txflr: ReadOnly<u32>),
+        (0x74 => pub ic_txflr: MmioReadOnly<u32>),
         /// I2C Receive FIFO Level
-        (0x78 => pub ic_rxflr: ReadOnly<u32>),
+        (0x78 => pub ic_rxflr: MmioReadOnly<u32>),
         /// I2C SDA Hold Time
-        (0x7C => pub ic_sda_hold: ReadWrite<u32>),
+        (0x7C => pub ic_sda_hold: MmioReadWrite<u32>),
         /// I2C Transmit Abort Source
-        (0x80 => pub ic_tx_abrt_source: ReadOnly<u32>),
+        (0x80 => pub ic_tx_abrt_source: MmioReadOnly<u32>),
         (0x84 => _reserved0),
         /// I2C Enable Status Register
-        (0x9C => pub ic_enable_status: ReadOnly<u32>),
+        (0x9C => pub ic_enable_status: MmioReadOnly<u32>),
         (0xA0 => @END),
     }
 }
@@ -476,15 +468,15 @@ impl DesignwareI2c {
 // embedded-hal I2C implementation
 // ---------------------------------------------------------------------------
 
-impl ErrorType for DesignwareI2c {
-    type Error = ErrorKind;
+impl embedded_hal::i2c::ErrorType for DesignwareI2c {
+    type Error = embedded_hal::i2c::ErrorKind;
 }
 
-impl I2c for DesignwareI2c {
+impl embedded_hal::i2c::I2c for DesignwareI2c {
     fn transaction(
         &mut self,
         address: u8,
-        operations: &mut [Operation<'_>],
+        operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> Result<(), Self::Error> {
         if operations.is_empty() {
             return Ok(());
@@ -496,8 +488,8 @@ impl I2c for DesignwareI2c {
         for (i, op) in operations.iter_mut().enumerate() {
             let send_stop = i == last_idx;
             match op {
-                Operation::Write(data) => self.write_bytes(data, send_stop)?,
-                Operation::Read(buf) => self.read_bytes(buf, send_stop)?,
+                embedded_hal::i2c::Operation::Write(data) => self.write_bytes(data, send_stop)?,
+                embedded_hal::i2c::Operation::Read(buf) => self.read_bytes(buf, send_stop)?,
             }
         }
 

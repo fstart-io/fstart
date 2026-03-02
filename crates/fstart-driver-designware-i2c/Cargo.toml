@@ -1,0 +1,12 @@
+[package]
+name = "fstart-driver-designware-i2c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-mmio = { workspace = true }
+fstart-services = { workspace = true }
+tock-registers = { workspace = true }
+serde = { workspace = true }
+embedded-hal = { workspace = true }
