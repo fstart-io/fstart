@@ -1,0 +1,38 @@
+[package]
+name = "fstart-device-registry"
+description = "Aggregates all driver configurations for codegen (host-only std crate)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-services = { path = "../fstart-services" }
+serde = { version = "1.0", features = ["derive"] }
+
+# Optional driver dependencies - enabled by features
+fstart-driver-ns16550 = { path = "../fstart-driver-ns16550", optional = true }
+fstart-driver-pl011 = { path = "../fstart-driver-pl011", optional = true }
+fstart-driver-designware-i2c = { path = "../fstart-driver-designware-i2c", optional = true }
+fstart-driver-sunxi-ccu = { path = "../fstart-driver-sunxi-ccu", optional = true }
+fstart-driver-sunxi-dramc = { path = "../fstart-driver-sunxi-dramc", optional = true }
+fstart-driver-sunxi-mmc = { path = "../fstart-driver-sunxi-mmc", optional = true }
+
+[features]
+# Driver feature flags - enable to include that driver in the registry
+default = []
+ns16550 = ["dep:fstart-driver-ns16550"]
+pl011 = ["dep:fstart-driver-pl011"]
+designware-i2c = ["dep:fstart-driver-designware-i2c"]
+sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
+sunxi-a20-dramc = ["dep:fstart-driver-sunxi-dramc"]
+sunxi-a20-mmc = ["dep:fstart-driver-sunxi-mmc"]
+
+# Meta-feature to enable all drivers (used by codegen on host)
+all-drivers = [
+    "ns16550",
+    "pl011",
+    "designware-i2c",
+    "sunxi-a20-ccu",
+    "sunxi-a20-dramc",
+    "sunxi-a20-mmc",
+]
