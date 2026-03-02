@@ -33,7 +33,10 @@
 #![no_std]
 
 #[cfg(feature = "fdt")]
-extern crate alloc;
+mod fdt_patch;
+
+#[cfg(feature = "handoff")]
+pub mod handoff;
 
 #[cfg(any(feature = "ffs", feature = "fdt"))]
 use fstart_log::Hex;
@@ -85,6 +88,20 @@ pub fn memory_init() {
 /// in this phase (provided by codegen, which knows the count).
 pub fn driver_init_complete(device_count: usize) {
     fstart_log::info!("capability: DriverInit ({} devices)", device_count);
+}
+
+// ---------------------------------------------------------------------------
+// LateDriverInit
+// ---------------------------------------------------------------------------
+
+/// Device lockdown and security hardening — post-boot phase.
+///
+/// Called after OS handoff preparation but before the final jump.
+/// Currently a stub that logs its execution. Future: iterate over
+/// devices and call a `lockdown()` trait method for flash write-protect,
+/// fuse locking, debug port disable, etc.
+pub fn late_driver_init_complete(device_count: usize) {
+    fstart_log::info!("capability: LateDriverInit ({} devices)", device_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,107 +232,115 @@ pub fn fdt_prepare_stub() {
     fstart_log::info!("FDT prepare skipped (fdt feature not enabled)");
 }
 
-/// Prepare a Flattened Device Tree for OS handoff from a platform-provided DTB.
+/// Prepare a Flattened Device Tree for OS handoff.
 ///
-/// Parses the DTB that QEMU/firmware passed at reset (via `a1` on RISC-V
-/// or `x0` on AArch64), patches `/chosen/bootargs`, and serializes the
-/// result to `dst_dtb_addr` where the payload (Linux) expects it.
+/// Copies the source DTB to the destination address (if they differ),
+/// then patches the raw FDT blob:
+/// 1. Sets `/chosen/bootargs` to the provided kernel command line.
+/// 2. Creates or updates `/memory@<base>` with `device_type` and `reg`
+///    properties if `dram_base` and `dram_size` are non-zero.
 ///
-/// Requires the `fdt` feature (pulls in `dtoolkit` + bump allocator).
+/// Uses [`fdt_patch::fdt_set_bootargs`] and [`fdt_patch::fdt_set_memory`]
+/// — no heap allocation, no full-tree conversion.
+///
+/// Works on any valid DTB that already contains a `/chosen` node (all
+/// standard Linux DTBs do).
 ///
 /// # Arguments
 ///
-/// - `src_dtb_addr` — address of the platform-provided DTB (0 = skip)
+/// - `src_dtb_addr` — address of the source DTB (0 = skip)
 /// - `dst_dtb_addr` — target address for the patched DTB
 /// - `bootargs` — kernel command line to set in `/chosen/bootargs` (empty = skip)
+/// - `dram_base` — physical base address of DRAM (0 = skip memory patching)
+/// - `dram_size` — DRAM size in bytes (0 = skip memory patching)
 #[cfg(feature = "fdt")]
-pub fn fdt_prepare_platform(src_dtb_addr: u64, dst_dtb_addr: u64, bootargs: &str) {
-    use alloc::vec::Vec;
-    use dtoolkit::fdt::Fdt;
-    use dtoolkit::model::{DeviceTree, DeviceTreeNode, DeviceTreeProperty};
-
+pub fn fdt_prepare_platform(
+    src_dtb_addr: u64,
+    dst_dtb_addr: u64,
+    bootargs: &str,
+    dram_base: u64,
+    dram_size: u64,
+) {
     fstart_log::info!("capability: FdtPrepare");
 
     if src_dtb_addr == 0 {
-        fstart_log::info!("FDT prepare: no DTB from platform, skipping");
+        fstart_log::info!("FDT: no source DTB, skipping");
         return;
     }
 
     if dst_dtb_addr == 0 {
-        fstart_log::error!("FDT prepare: dst_dtb_addr is 0, skipping (misconfigured board?)");
+        fstart_log::error!("FDT: dst_dtb_addr is 0 (misconfigured board?)");
         return;
     }
 
-    fstart_log::info!("FDT prepare: source DTB at {}", Hex(src_dtb_addr));
-
-    // SAFETY: the platform entry code saved the DTB address from a register
-    // provided by QEMU. The pointer is valid and the FDT blob is in
-    // memory-mapped RAM/flash that is readable at this point.
-    let fdt = match unsafe { Fdt::from_raw(src_dtb_addr as *const u8) } {
-        Ok(f) => f,
-        Err(_) => {
-            fstart_log::error!("FDT prepare: failed to parse source DTB");
-            return;
-        }
+    // Read totalsize from the source FDT header (big-endian u32 at offset 4).
+    let src_ptr = src_dtb_addr as *const u8;
+    let totalsize = {
+        // SAFETY: src_dtb_addr points to a valid FDT blob in readable memory.
+        let raw = unsafe { core::ptr::read_volatile(src_ptr.add(4) as *const u32) };
+        u32::from_be(raw) as usize
     };
 
-    // Convert the zero-copy FDT into a mutable tree (allocates via bump allocator)
-    let mut tree = match DeviceTree::from_fdt(&fdt) {
-        Ok(t) => t,
-        Err(_) => {
-            fstart_log::error!("FDT prepare: failed to convert to mutable tree");
-            return;
+    // Copy source to destination if they differ.
+    let dst_ptr = dst_dtb_addr as *mut u8;
+    if src_dtb_addr != dst_dtb_addr {
+        fstart_log::info!("FDT: copying {} bytes to {}", totalsize, Hex(dst_dtb_addr));
+        // SAFETY: both regions are in DRAM, non-overlapping (board config
+        // must ensure this), and totalsize bytes are readable/writable.
+        unsafe {
+            core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, totalsize);
         }
-    };
+    }
 
-    // Patch /chosen/bootargs if bootargs is non-empty
+    // Allow 4 KiB headroom beyond the current DTB for property insertion,
+    // node creation, and strings growth. The DTB sits in DRAM with plenty
+    // of room.
+    let max_size = totalsize + 4096;
+
+    // Patch bootargs in the destination blob.
     if !bootargs.is_empty() {
-        // Find or create /chosen node
-        if tree.find_node_mut("/chosen").is_none() {
-            tree.root.add_child(DeviceTreeNode::new("chosen"));
-        }
-        let chosen = match tree.find_node_mut("/chosen") {
-            Some(n) => n,
-            None => {
-                fstart_log::error!("FDT prepare: failed to find /chosen");
-                return;
+        // SAFETY: dst_ptr points to a valid, writable FDT blob in DRAM.
+        match unsafe { fdt_patch::fdt_set_bootargs(dst_ptr, max_size, bootargs) } {
+            Ok(new_size) => {
+                fstart_log::info!(
+                    "FDT: patched bootargs ({} -> {} bytes)",
+                    totalsize,
+                    new_size
+                );
             }
-        };
-
-        // Build null-terminated bootargs value (DTB spec requires it)
-        let mut args_bytes = Vec::from(bootargs.as_bytes());
-        args_bytes.push(0);
-
-        if let Some(prop) = chosen.property_mut("bootargs") {
-            prop.set_value(args_bytes);
-        } else {
-            chosen.add_property(DeviceTreeProperty::new("bootargs", args_bytes));
+            Err(_e) => {
+                fstart_log::error!("FDT: bootargs patch failed");
+            }
         }
-
-        fstart_log::info!("FDT prepare: bootargs = \"{}\"", bootargs);
     }
 
-    // Serialize the modified tree back to a DTB blob
-    let dtb_bytes = tree.to_dtb();
+    // Patch memory node if DRAM info is provided.
+    if dram_base != 0 && dram_size != 0 {
+        // Re-read totalsize after bootargs patching may have grown the blob.
+        let current_totalsize = {
+            let raw = unsafe { core::ptr::read_volatile(dst_ptr.add(4) as *const u32) };
+            u32::from_be(raw) as usize
+        };
+        let max_size_mem = current_totalsize + 4096;
 
-    fstart_log::info!(
-        "FDT prepare: serialized {} bytes to {}",
-        dtb_bytes.len(),
-        Hex(dst_dtb_addr)
-    );
-
-    // SAFETY: dst_dtb_addr points to writable RAM with enough space for the
-    // DTB blob. The board config must ensure this region doesn't overlap with
-    // firmware, kernel, or stack.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            dtb_bytes.as_ptr(),
-            dst_dtb_addr as *mut u8,
-            dtb_bytes.len(),
-        );
+        // SAFETY: dst_ptr points to a valid, writable FDT blob in DRAM.
+        match unsafe { fdt_patch::fdt_set_memory(dst_ptr, max_size_mem, dram_base, dram_size) } {
+            Ok(new_size) => {
+                fstart_log::info!(
+                    "FDT: patched memory node ({} -> {} bytes, base={} size={}MB)",
+                    current_totalsize,
+                    new_size,
+                    Hex(dram_base),
+                    dram_size / (1024 * 1024),
+                );
+            }
+            Err(_e) => {
+                fstart_log::error!("FDT: memory node patch failed");
+            }
+        }
     }
 
-    fstart_log::info!("FDT prepare complete");
+    fstart_log::info!("FDT: ready at {}", Hex(dst_dtb_addr));
 }
 
 // ---------------------------------------------------------------------------

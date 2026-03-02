@@ -1,91 +1,28 @@
-//! ARMv7 (32-bit ARM) platform support.
+//! ARMv7-A platform support.
 //!
 //! Provides the reset vector entry point, stack setup, BSS clearing,
-//! and architecture-specific helpers. Captures the DTB address passed
-//! by QEMU at reset.
+//! and architecture-specific helpers for ARMv7-A targets (Cortex-A7,
+//! Cortex-A8, Cortex-A9, Cortex-A15, etc.).
 //!
-//! On QEMU ARM virt with `-bios`, the CPU starts in SVC mode at the
-//! flash base address (0x0). No ATF or SBI layer is needed — the
-//! firmware jumps directly to the Linux kernel.
+//! This crate no longer contains SoC-specific code (like Allwinner eGON
+//! headers). For sunxi-specific support, enable the `sunxi` feature and
+//! depend on `fstart-soc-sunxi`.
+//!
+//! The `udelay`, `sdelay`, and `halt` functions are re-exported from
+//! `fstart-arch` for backward compatibility.
 
 #![no_std]
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
+#[cfg(target_arch = "arm")]
 pub mod entry;
 
-// ---------------------------------------------------------------------------
-// Boot parameters — written by _start assembly, read by Rust code
-// ---------------------------------------------------------------------------
-
-/// DTB address saved from `r2` at reset (written by `_start` assembly).
-///
-/// QEMU ARM virt passes the DTB pointer in `r2` when booting with `-bios`.
-/// On 32-bit ARM, `r0` = 0, `r1` = machine type (~0 for DT-only), `r2` = DTB.
-#[no_mangle]
-static BOOT_DTB_ADDR: AtomicU32 = AtomicU32::new(0);
-
-/// Return the DTB address passed by QEMU/firmware at reset (`r2`).
-pub fn boot_dtb_addr() -> u32 {
-    BOOT_DTB_ADDR.load(Ordering::Relaxed)
-}
+// Re-export architecture utilities from fstart-arch.
+// This preserves the old API while centralizing arch-specific code.
+pub use fstart_arch::{halt, sdelay, udelay};
 
 // ---------------------------------------------------------------------------
-// Linux boot protocol (32-bit ARM)
+// ARMv7-specific jump and boot helpers (not sunxi-specific)
 // ---------------------------------------------------------------------------
-
-/// Jump directly to Linux kernel on 32-bit ARM.
-///
-/// ARM Linux boot protocol:
-/// - `r0` = 0
-/// - `r1` = machine type (0xFFFFFFFF for device-tree-only boot)
-/// - `r2` = pointer to the DTB
-///
-/// No intermediate firmware (ATF/SBI) is needed on 32-bit ARM QEMU.
-/// The kernel is entered in SVC mode with MMU and caches off.
-///
-/// # Safety
-///
-/// The caller must ensure the kernel is loaded at `kernel_addr` and the
-/// DTB at `dtb_addr` is valid.
-pub fn boot_linux_direct(kernel_addr: u32, dtb_addr: u32) -> ! {
-    unsafe {
-        // Data/instruction synchronisation barriers to ensure all stores
-        // (loaded kernel + DTB) are visible before jumping.
-        //
-        // ARM Linux boot protocol: r0=0, r1=~0 (DT-only), r2=DTB.
-        //
-        // We bind kernel_addr to r4 and dtb_addr to r5 (callee-saved,
-        // won't conflict with the r0/r1/r2 protocol registers) to
-        // guarantee the `mov r0/r1/r2` sequence never clobbers our
-        // input operands.
-        core::arch::asm!(
-            "dsb sy",
-            "isb",
-            "mov r0, #0",          // r0 = 0
-            "mvn r1, #0",          // r1 = 0xFFFFFFFF (DT-only machine type)
-            "mov r2, r5",          // r2 = DTB pointer
-            "bx r4",              // jump to kernel
-            in("r4") kernel_addr,
-            in("r5") dtb_addr,
-            options(noreturn),
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Basic helpers
-// ---------------------------------------------------------------------------
-
-/// Halt the processor.
-#[inline(always)]
-pub fn halt() -> ! {
-    loop {
-        unsafe {
-            core::arch::asm!("wfe");
-        }
-    }
-}
 
 /// Jump to an address, transferring control unconditionally.
 ///
@@ -98,12 +35,156 @@ pub fn halt() -> ! {
 /// - `addr` points to valid executable code
 /// - The stack and BSS will be set up by the target code (its own `_start`)
 /// - This function never returns
+#[cfg(target_arch = "arm")]
 #[inline(always)]
 pub fn jump_to(addr: u64) -> ! {
+    // ARMv7 is 32-bit — truncate the u64 address to u32.
+    let addr32 = addr as u32;
     unsafe {
         core::arch::asm!(
             "bx {0}",
-            in(reg) addr as u32,
+            in(reg) addr32,
+            options(noreturn),
+        );
+    }
+}
+
+/// Jump to an address with a handoff pointer in `r0`.
+///
+/// Used by `LoadNextStage` to pass a serialized [`StageHandoff`] to the
+/// next stage. The next stage's `_start` saves `r0` to `r6` before the
+/// CRT0 clobbers it, then passes it to `fstart_main(handoff_ptr)`.
+///
+/// # Safety
+///
+/// Same as [`jump_to`], plus: `handoff_addr` must point to a valid
+/// serialized `StageHandoff` in DRAM (or be 0 for no handoff).
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
+    let addr32 = addr as u32;
+    let handoff32 = handoff_addr as u32;
+    unsafe {
+        // IMPORTANT: `in("r0")` binds the handoff address directly to r0,
+        // ensuring the compiler does NOT allocate `addr` to r0.  The
+        // previous code used `in(reg)` for both + an explicit `mov r0`,
+        // which allowed the compiler to place `addr` in r0 — the mov then
+        // clobbered it, causing `bx` to jump to the handoff buffer instead
+        // of the stage entry point.
+        core::arch::asm!(
+            "bx {addr}",
+            addr = in(reg) addr32,
+            in("r0") handoff32,
+            options(noreturn),
+        );
+    }
+}
+
+/// Write the ARM Generic Timer frequency to CNTFRQ (CP15 c14,c0,0).
+///
+/// The A20's Cortex-A7 has the ARM Generic Timer extension.  Linux reads
+/// CNTFRQ to configure `clocksource_arch_timer`.  If CNTFRQ is 0, the
+/// kernel panics with "Division by zero" in `cev_delta2ns`.
+///
+/// All Allwinner ARM SoCs use the 24 MHz oscillator (OSC24M) as the
+/// arch timer clock source, so `freq` should be `24_000_000`.
+///
+/// Must be called from secure mode — CNTFRQ is a banked secure register
+/// and writes from non-secure state are ignored.  Our firmware runs
+/// entirely in secure mode (no nonsec transition yet), so this is safe.
+///
+/// Equivalent to U-Boot's `board/sunxi/board.c:board_init()` CNTFRQ write
+/// and `arch/arm/cpu/armv7/nonsec_virt.S:_nonsec_init` CNTFRQ write.
+#[cfg(target_arch = "arm")]
+pub fn set_arch_timer_freq(freq: u32) {
+    // SAFETY: writing CNTFRQ from secure SVC mode is architecturally
+    // defined.  The value persists until the next power-on reset.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {freq}, c14, c0, 0",
+            freq = in(reg) freq,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
+/// Clean up CPU state before jumping to the Linux kernel.
+///
+/// Performs the ARM-side subset of U-Boot's `cleanup_before_linux()`:
+/// - Disables and invalidates I-cache (enabled by our entry.rs)
+/// - Invalidates branch predictor array
+/// - DSB + ISB barriers
+///
+/// D-cache and MMU are already off (never enabled by our firmware).
+///
+/// The ARM Linux boot protocol (`Documentation/arm/booting.rst`) permits
+/// I-cache to be on, but U-Boot disables it for a clean handoff and we
+/// follow suit.
+#[cfg(target_arch = "arm")]
+pub fn cleanup_before_linux() {
+    // SAFETY: cache/TLB maintenance operations are safe from secure SVC.
+    unsafe {
+        core::arch::asm!(
+            // Disable I-cache: clear SCTLR.I (bit 12)
+            "mrc p15, 0, r0, c1, c0, 0",
+            "bic r0, r0, #(1 << 12)",
+            "mcr p15, 0, r0, c1, c0, 0",
+            "isb",
+
+            // Invalidate entire I-cache
+            "mov r0, #0",
+            "mcr p15, 0, r0, c7, c5, 0",
+
+            // Invalidate branch predictor array
+            "mcr p15, 0, r0, c7, c5, 6",
+
+            "dsb",
+            "isb",
+            out("r0") _,
+            options(nomem, nostack),
+        );
+    }
+}
+
+/// Boot a Linux kernel using the ARM boot protocol.
+///
+/// Sets up the registers per the ARM Linux boot protocol:
+/// - `r0` = 0
+/// - `r1` = machine type (0xFFFF_FFFF for device-tree-only boot)
+/// - `r2` = physical address of the DTB
+///
+/// Then jumps to the kernel entry point. This function never returns.
+///
+/// The caller should call [`set_arch_timer_freq`] and
+/// [`cleanup_before_linux`] before this function.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `kernel_addr` points to a valid ARM Linux zImage/Image
+/// - `dtb_addr` points to a valid flattened device tree blob
+/// - MMU is off, D-cache is off/clean
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+pub fn boot_linux(kernel_addr: u64, dtb_addr: u64) -> ! {
+    let kernel = kernel_addr as u32;
+    let dtb = dtb_addr as u32;
+    unsafe {
+        // IMPORTANT: Use explicit register bindings (`in("r0")` etc.) for
+        // the ARM boot protocol registers.  This prevents the compiler
+        // from allocating `kernel` to r0/r1/r2 — which would be clobbered
+        // by explicit `mov` instructions before `bx`.  See the fix for
+        // `jump_to_with_handoff` for the full explanation.
+        core::arch::asm!(
+            // Disable IRQ/FIQ and switch to SVC mode (should already be).
+            "cpsid aif, #0x13",
+            // Jump to kernel — r0, r1, r2 are already set by the compiler
+            // from the explicit register bindings below.
+            "bx {kernel}",
+            kernel = in(reg) kernel,
+            in("r0") 0u32,
+            in("r1") 0xFFFF_FFFFu32,       // DT-only boot (no ATAGS)
+            in("r2") dtb,
             options(noreturn),
         );
     }

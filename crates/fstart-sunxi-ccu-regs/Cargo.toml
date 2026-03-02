@@ -1,0 +1,9 @@
+[package]
+name = "fstart-sunxi-ccu-regs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-mmio = { workspace = true }
+tock-registers = { workspace = true }
