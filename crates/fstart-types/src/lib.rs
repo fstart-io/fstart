@@ -10,13 +10,14 @@
 pub mod board;
 pub mod device;
 pub mod ffs;
+pub mod handoff;
 pub mod memory;
 pub mod security;
 pub mod stage;
 
 pub use board::{
     BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig,
-    PayloadKind,
+    PayloadKind, SocImageFormat,
 };
 pub use device::{DeviceConfig, DeviceId, DeviceNode};
 pub use ffs::{

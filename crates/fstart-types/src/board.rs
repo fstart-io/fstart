@@ -16,7 +16,7 @@ use crate::stage::StageLayout;
 pub struct BoardConfig {
     /// Human-readable board name (e.g., "qemu-riscv64")
     pub name: HString<64>,
-    /// Platform identifier (e.g., "riscv64", "aarch64")
+    /// Platform identifier (e.g., "riscv64", "aarch64", "armv7")
     pub platform: HString<32>,
     /// Memory map: ROM, RAM, MMIO regions
     pub memory: MemoryMap,
@@ -30,6 +30,49 @@ pub struct BoardConfig {
     pub mode: BuildMode,
     /// Optional payload configuration
     pub payload: Option<PayloadConfig>,
+    /// SoC-specific binary image format required by the boot ROM.
+    ///
+    /// Each SoC family has its own boot ROM that expects a particular
+    /// binary layout on the boot medium (SD card, SPI flash, eMMC).
+    /// When set, codegen emits the required header/structure in dedicated
+    /// linker sections and xtask patches length/checksum fields post-build.
+    ///
+    /// This is intentionally NOT a generic abstraction — each variant
+    /// carries the exact semantics of one SoC family's boot ROM.
+    #[serde(default)]
+    pub soc_image_format: SocImageFormat,
+}
+
+/// SoC-specific binary image format required by the boot ROM.
+///
+/// Different SoC families have incompatible boot ROM requirements:
+/// Allwinner uses eGON.BT0, TI uses MLO/CH, Mediatek uses BRLYT, etc.
+/// Each variant here describes exactly one SoC family's format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SocImageFormat {
+    /// No SoC-specific image format — binary starts with `.text.entry`.
+    #[default]
+    None,
+    /// Allwinner eGON.BT0 header (sun4i/sun5i/sun7i/sun8i/sun50i/sun20i).
+    ///
+    /// Required by the boot ROM on ALL Allwinner SoCs
+    /// (A10/A13/A20/A31/A64/H3/H5/H6/D1/…).
+    ///
+    /// The BROM scans the boot medium for the `"eGON.BT0"` magic and
+    /// validates the checksum, then loads `length` bytes into SRAM.
+    /// Format:
+    /// - Offset 0x00: ARM/RISC-V branch instruction (jumps over header)
+    /// - Offset 0x04: `"eGON.BT0"` magic (8 bytes)
+    /// - Offset 0x0C: checksum (word-add over entire image)
+    /// - Offset 0x10: total image length (512-byte aligned)
+    ///
+    /// The length field is set to a placeholder at compile time. Xtask
+    /// computes the actual binary size (rounded up to 512-byte alignment),
+    /// pads the binary, and patches both the length and checksum fields
+    /// post-build — just like U-Boot's `mksunxiboot` tool.
+    ///
+    /// See oreboot's D1 implementation for the reference Rust approach.
+    AllwinnerEgon,
 }
 
 /// Build mode determines how the firmware is compiled and how drivers are bound.

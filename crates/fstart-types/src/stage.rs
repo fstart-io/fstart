@@ -87,6 +87,18 @@ pub enum RunsFrom {
 /// At build time, the stage binary is generated to call these in order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Capability {
+    /// Initialize the clock tree / PLL configuration.
+    ///
+    /// Must appear before `ConsoleInit` when the UART clock gate needs
+    /// to be opened, and before `DramInit` when the DRAM PLL must be
+    /// programmed. The referenced device implements `ClockController`.
+    ///
+    /// On Allwinner SoCs this programs PLL1 (CPU), PLL6 (peripherals),
+    /// opens the UART clock gate, and muxes UART GPIO pins.
+    ClockInit {
+        /// Device name from the devices list (e.g., "ccu0")
+        device: HString<32>,
+    },
     /// Initialize an early console for debug output.
     ConsoleInit {
         /// Device name from the devices list (e.g., "uart0")
@@ -100,8 +112,23 @@ pub enum Capability {
     BootMedia(BootMedium),
     /// Verify the firmware filesystem manifest signature.
     SigVerify,
-    /// Initialize DRAM (memory training).
+    /// Initialize DRAM (memory training) — stub, no device reference.
+    ///
+    /// Used on platforms where DRAM is already available or QEMU-style
+    /// virtual boards. For real hardware, use `DramInit` instead.
     MemoryInit,
+    /// Initialize DRAM via a specific memory controller driver.
+    ///
+    /// The referenced device implements `MemoryController`. Its `init()`
+    /// method performs the full DRAM initialization sequence (PLL setup,
+    /// PHY training, size detection). After this capability completes,
+    /// the DRAM region declared in the memory map is usable.
+    ///
+    /// Replaces `MemoryInit` for boards with real DRAM controllers.
+    DramInit {
+        /// Device name from the devices list (e.g., "dramc0")
+        device: HString<32>,
+    },
     /// Enumerate and initialize all declared devices/drivers.
     DriverInit,
     /// Prepare a Flattened Device Tree for OS handoff.
@@ -111,6 +138,51 @@ pub enum Capability {
     /// Load the next stage from FFS into RAM and jump to it.
     StageLoad {
         /// Name of the next stage to load
+        next_stage: HString<32>,
+    },
+    /// Device lockdown and security hardening — post-boot.
+    ///
+    /// Called after all payload/OS handoff preparation is complete but
+    /// before the final jump. Used to:
+    /// - Write-protect flash regions
+    /// - Lock fuses / OTP
+    /// - Disable debug ports (JTAG, UART if desired)
+    /// - Revoke temporary credentials
+    ///
+    /// Devices that need lockdown should implement a `lockdown()` method
+    /// (future trait extension). For now, this is a capability placeholder
+    /// that logs its execution.
+    LateDriverInit,
+    /// Return to the BROM's FEL (USB recovery) mode.
+    ///
+    /// Restores the saved BROM state (SP, LR, CPSR, SCTLR, VBAR) from
+    /// the `fel_stash` written by `save_boot_params` at reset, then
+    /// returns via the saved LR. This function never returns.
+    ///
+    /// Useful for debugging: boot from SD card, run clock/UART init,
+    /// then return to FEL so the host can poke registers via `sunxi-fel`.
+    ///
+    /// Currently supported on `armv7` (Allwinner sunxi) only.
+    ReturnToFel,
+    /// Load the next stage directly from a block device into its load
+    /// address and jump to it.
+    ///
+    /// The stage's offset and size on the block device are read at
+    /// runtime from the eGON header (patched by the FFS assembler).
+    /// The absolute byte offset on the device is `base_offset` +
+    /// `next_stage_offset` (from the header).
+    ///
+    /// Used by bootblocks that are too small to contain the FFS reader
+    /// (e.g., Allwinner A20 with 24K SRAM). The bootblock reads just
+    /// the next stage binary and jumps — no FFS parsing, no intermediate
+    /// DRAM buffer.
+    LoadNextStage {
+        /// Block device name (e.g., "mmc0").
+        device: HString<32>,
+        /// Byte offset on the block device where the firmware image
+        /// starts (e.g., 0x2000 for SD card on sunxi).
+        base_offset: u64,
+        /// Name of the next stage to jump to after loading.
         next_stage: HString<32>,
     },
 }
@@ -143,9 +215,20 @@ pub enum BootMedium {
     /// The device must be listed in `devices` and initialized (via
     /// `ConsoleInit`, `DriverInit`, or similar) before the `BootMedia`
     /// capability appears. Generated code wraps the device in a
-    /// `BlockDeviceMedia` adapter.
+    /// `BlockDeviceMedia` adapter with the given base offset and size.
+    ///
+    /// ```ron
+    /// BootMedia(Device(name: "mmc0", offset: 0x2000, size: 0x400000))
+    /// ```
     Device {
-        /// Device name from the devices list (e.g., "spi_flash0")
+        /// Device name from the devices list (e.g., "mmc0")
         name: HString<32>,
+        /// Byte offset on the device where the FFS image starts.
+        ///
+        /// For Allwinner SD card boot, this is 8192 (sector 16) where
+        /// the BROM loads from.
+        offset: u64,
+        /// Size of the FFS image region in bytes.
+        size: u64,
     },
 }

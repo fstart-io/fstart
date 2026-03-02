@@ -90,6 +90,17 @@ pub struct FfsImageConfig {
     pub regions: Vec<InputRegion>,
 }
 
+/// Location of a file's stored data within the built FFS image.
+#[derive(Debug, Clone)]
+pub struct FileDataLocation {
+    /// File name (matches `InputFile::name`).
+    pub name: String,
+    /// Absolute byte offset in the image of the first segment's data.
+    pub data_offset: u32,
+    /// Total stored bytes across all segments (sum of `stored_size`).
+    pub data_size: u32,
+}
+
 /// Result of building an FFS image.
 pub struct FfsImage {
     /// The complete firmware image bytes.
@@ -98,6 +109,11 @@ pub struct FfsImage {
     pub anchor_offset: usize,
     /// Serialized anchor block bytes (for embedding in bootblock static).
     pub anchor_bytes: Vec<u8>,
+    /// Location of each file's data in the image (in layout order).
+    ///
+    /// Used by the assembler to find, e.g., the next stage's byte range
+    /// for patching into the bootblock header.
+    pub file_data: Vec<FileDataLocation>,
 }
 
 /// Build a bootable FFS image from the given configuration.
@@ -117,6 +133,7 @@ where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
     let mut image: Vec<u8> = Vec::new();
+    let mut file_data: Vec<FileDataLocation> = Vec::new();
 
     // ---- Phase 1: Lay out all regions ----
     let mut manifest_regions: heapless::Vec<Region, 4> = heapless::Vec::new();
@@ -129,6 +146,20 @@ where
 
                 for file in files {
                     let entry = lay_out_file(&mut image, file, region_base)?;
+
+                    // Record file data location for the assembler.
+                    if let EntryContent::File { segments, .. } = &entry.content {
+                        if let Some(first_seg) = segments.first() {
+                            let abs_offset = region_base + entry.offset + first_seg.offset;
+                            let total_stored: u32 = segments.iter().map(|s| s.stored_size).sum();
+                            file_data.push(FileDataLocation {
+                                name: file.name.clone(),
+                                data_offset: abs_offset,
+                                data_size: total_stored,
+                            });
+                        }
+                    }
+
                     children
                         .push(entry)
                         .map_err(|_| "too many files in container (max 16)".to_string())?;
@@ -259,6 +290,7 @@ where
         image,
         anchor_offset,
         anchor_bytes,
+        file_data,
     })
 }
 
