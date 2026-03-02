@@ -82,30 +82,16 @@ pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
 
 /// Write the ARM Generic Timer frequency to CNTFRQ (CP15 c14,c0,0).
 ///
-/// The A20's Cortex-A7 has the ARM Generic Timer extension.  Linux reads
-/// CNTFRQ to configure `clocksource_arch_timer`.  If CNTFRQ is 0, the
-/// kernel panics with "Division by zero" in `cev_delta2ns`.
-///
-/// All Allwinner ARM SoCs use the 24 MHz oscillator (OSC24M) as the
-/// arch timer clock source, so `freq` should be `24_000_000`.
+/// **Note:** In the normal boot flow, CNTFRQ is programmed by the CCU
+/// driver's `init()` via [`fstart_arch::set_cntfrq`] during the
+/// `ClockInit` capability — this matches U-Boot's `board_init()` timing.
+/// This function remains available for manual / non-codegen use.
 ///
 /// Must be called from secure mode — CNTFRQ is a banked secure register
-/// and writes from non-secure state are ignored.  Our firmware runs
-/// entirely in secure mode (no nonsec transition yet), so this is safe.
-///
-/// Equivalent to U-Boot's `board/sunxi/board.c:board_init()` CNTFRQ write
-/// and `arch/arm/cpu/armv7/nonsec_virt.S:_nonsec_init` CNTFRQ write.
+/// and writes from non-secure state are ignored.
 #[cfg(target_arch = "arm")]
 pub fn set_arch_timer_freq(freq: u32) {
-    // SAFETY: writing CNTFRQ from secure SVC mode is architecturally
-    // defined.  The value persists until the next power-on reset.
-    unsafe {
-        core::arch::asm!(
-            "mcr p15, 0, {freq}, c14, c0, 0",
-            freq = in(reg) freq,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
+    fstart_arch::set_cntfrq(freq);
 }
 
 /// Clean up CPU state before jumping to the Linux kernel.
@@ -155,8 +141,8 @@ pub fn cleanup_before_linux() {
 ///
 /// Then jumps to the kernel entry point. This function never returns.
 ///
-/// The caller should call [`set_arch_timer_freq`] and
-/// [`cleanup_before_linux`] before this function.
+/// The caller should call [`cleanup_before_linux`] before this function.
+/// CNTFRQ should already be programmed by the CCU driver during clock init.
 ///
 /// # Safety
 ///

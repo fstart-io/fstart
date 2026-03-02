@@ -48,6 +48,50 @@ pub fn sdelay(count: u32) {
 pub fn sdelay(_count: u32) {}
 
 // ---------------------------------------------------------------------------
+// set_cntfrq — ARM Generic Timer frequency register
+// ---------------------------------------------------------------------------
+
+/// Program the ARM Generic Timer frequency register (CNTFRQ).
+///
+/// The CNTFRQ register tells software (Linux, other OSes) the tick rate
+/// of the Generic Timer.  It is NOT automatically set by hardware — the
+/// boot firmware must program it.
+///
+/// Must be called from secure mode — CNTFRQ is a banked secure register
+/// and writes from non-secure state are silently ignored.
+///
+/// On Allwinner ARMv7 SoCs, the Generic Timer is clocked from OSC24M,
+/// so `freq` should be `24_000_000`.
+///
+/// U-Boot does this in `board_init()` (board/sunxi/board.c) and again
+/// in `_nonsec_init()` (arch/arm/cpu/armv7/nonsec_virt.S) as a safety
+/// net before the secure→non-secure transition.
+#[cfg(all(feature = "armv7", target_arch = "arm"))]
+pub fn set_cntfrq(freq: u32) {
+    // SAFETY: writing CNTFRQ from secure SVC mode is architecturally
+    // defined.  We first check that the Generic Timer extension is
+    // present (ID_PFR1 bits [19:16] != 0), matching U-Boot's guard.
+    unsafe {
+        core::arch::asm!(
+            // Read ID_PFR1 to check for Generic Timer extension.
+            "mrc p15, 0, {tmp}, c0, c1, 1",
+            "and {tmp}, {tmp}, #0x000F0000",  // bits [19:16] = GenTimer
+            "cmp {tmp}, #0",
+            "beq 1f",                         // skip if no Generic Timer
+            "mcr p15, 0, {freq}, c14, c0, 0", // write CNTFRQ
+            "1:",
+            tmp = out(reg) _,
+            freq = in(reg) freq,
+            options(nomem, nostack),
+        );
+    }
+}
+
+/// No-op on non-ARM targets.
+#[cfg(not(all(feature = "armv7", target_arch = "arm")))]
+pub fn set_cntfrq(_freq: u32) {}
+
+// ---------------------------------------------------------------------------
 // halt — put processor in low-power wait state
 // ---------------------------------------------------------------------------
 

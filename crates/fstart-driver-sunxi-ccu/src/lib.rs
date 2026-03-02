@@ -25,6 +25,22 @@ use fstart_arch::sdelay;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// OSC24M frequency (Hz) — the A20's fixed 24 MHz crystal oscillator.
+///
+/// This is the source clock for the ARM Generic Timer (CNTFRQ) on all
+/// Allwinner ARMv7 SoCs.  We program CNTFRQ during clock init because:
+///
+/// - The BROM does NOT set CNTFRQ (U-Boot's comments confirm this).
+/// - CNTFRQ is a secure-only register — it must be written before any
+///   non-secure transition (our firmware stays in secure mode, so this
+///   is always valid).
+/// - U-Boot programs it in `board_init()` (board/sunxi/board.c) and
+///   again as a safety net in `_nonsec_init()` (nonsec_virt.S).
+/// - Clock init is the natural place: the Generic Timer frequency IS
+///   a clock configuration, and it must be correct before any timer-
+///   dependent code runs (DRAM training delays, Linux boot).
+const OSC24M_FREQ: u32 = 24_000_000;
+
 // PLL1 default: safe value from U-Boot
 const PLL1_CFG_DEFAULT: u32 = 0xa100_5000;
 
@@ -209,6 +225,21 @@ impl Device for SunxiA20Ccu {
     fn init(&self) -> Result<(), DeviceError> {
         self.timer_init();
         self.clock_init_safe();
+
+        // Program the ARM Generic Timer frequency register (CNTFRQ).
+        //
+        // The A20's Generic Timer is clocked from OSC24M.  The BROM
+        // leaves CNTFRQ at 0, which causes Linux to panic with
+        // "Division by zero" in the arch_timer driver.
+        //
+        // Must be done from secure mode (we are in secure SVC).
+        // U-Boot does this in board_init() (board/sunxi/board.c:222)
+        // and again in _nonsec_init() (nonsec_virt.S:197).
+        //
+        // We do it here in clock init — after PLLs are stable but
+        // before any timer-dependent code (DRAM training, UART delays).
+        fstart_arch::set_cntfrq(OSC24M_FREQ);
+
         self.clock_init_uart();
         self.gpio_init_uart();
 
