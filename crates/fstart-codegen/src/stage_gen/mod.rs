@@ -96,11 +96,6 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         _ => None,
     };
 
-    // Validate that heap_size is set when FdtPrepare needs the allocator.
-    if needs_fdt(capabilities) && heap_size.is_none() {
-        return "compile_error!(\"FdtPrepare requires heap_size in stage config\");\n".to_string();
-    }
-
     // Validate device tree (bus service requirements).
     // Ordering is already correct — ron_loader flattens in pre-order DFS.
     if let Err(err) = validate_device_tree(&config.devices, &parsed.device_tree) {
