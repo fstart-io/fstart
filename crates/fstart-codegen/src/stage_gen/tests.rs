@@ -1,6 +1,6 @@
 use super::*;
 use crate::ron_loader::ParsedBoard;
-use fstart_drivers::DriverInstance;
+use fstart_device_registry::DriverInstance;
 
 /// Helper: create a minimal parsed board for testing.
 fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard {
@@ -20,10 +20,11 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
     });
 
     let driver_instances = vec![DriverInstance::Ns16550(
-        fstart_drivers::uart::ns16550::Ns16550Config {
+        fstart_driver_ns16550::Ns16550Config {
             base_addr: 0x1000_0000,
             clock_freq: 3_686_400,
             baud_rate: 115_200,
+            reg_shift: 0,
         },
     )];
 
@@ -63,6 +64,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
         },
         mode: BuildMode::Rigid,
         payload: None,
+        soc_image_format: SocImageFormat::default(),
     };
 
     let device_tree = vec![DeviceNode {
@@ -375,15 +377,16 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
     });
 
     let driver_instances = vec![
-        DriverInstance::Ns16550(fstart_drivers::uart::ns16550::Ns16550Config {
+        DriverInstance::Ns16550(fstart_driver_ns16550::Ns16550Config {
             base_addr: 0x1000_0000,
             clock_freq: 3_686_400,
             baud_rate: 115_200,
+            reg_shift: 0,
         }),
-        DriverInstance::DesignwareI2c(fstart_drivers::i2c::designware::DesignwareI2cConfig {
+        DriverInstance::DesignwareI2c(fstart_driver_designware_i2c::DesignwareI2cConfig {
             base_addr: 0x1004_0000,
             clock_freq: 100_000_000,
-            bus_speed: fstart_drivers::i2c::designware::I2cSpeed::Fast,
+            bus_speed: fstart_driver_designware_i2c::I2cSpeed::Fast,
         }),
     ];
 
@@ -423,6 +426,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
         },
         mode: BuildMode::Rigid,
         payload: None,
+        soc_image_format: SocImageFormat::default(),
     };
 
     let device_tree = vec![
@@ -672,10 +676,11 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
         parent: Some(HString::try_from("i2c0").unwrap()),
     });
     parsed.driver_instances.push(DriverInstance::Ns16550(
-        fstart_drivers::uart::ns16550::Ns16550Config {
+        fstart_driver_ns16550::Ns16550Config {
             base_addr: 0x2000_0000,
             clock_freq: 3_686_400,
             baud_rate: 115_200,
+            reg_shift: 0,
         },
     ));
     // i2c0 is at index 1
@@ -728,10 +733,11 @@ fn test_non_bus_parent_is_compile_error() {
         parent: Some(HString::try_from("uart0").unwrap()),
     });
     parsed.driver_instances.push(DriverInstance::Ns16550(
-        fstart_drivers::uart::ns16550::Ns16550Config {
+        fstart_driver_ns16550::Ns16550Config {
             base_addr: 0x2000_0000,
             clock_freq: 3_686_400,
             baud_rate: 115_200,
+            reg_shift: 0,
         },
     ));
     // uart0 is at index 0
@@ -797,12 +803,13 @@ fn test_flexible_multi_driver_parsed_board(
     });
 
     let driver_instances = vec![
-        DriverInstance::Ns16550(fstart_drivers::uart::ns16550::Ns16550Config {
+        DriverInstance::Ns16550(fstart_driver_ns16550::Ns16550Config {
             base_addr: 0x1000_0000,
             clock_freq: 3_686_400,
             baud_rate: 115_200,
+            reg_shift: 0,
         }),
-        DriverInstance::Pl011(fstart_drivers::uart::pl011::Pl011Config {
+        DriverInstance::Pl011(fstart_driver_pl011::Pl011Config {
             base_addr: 0x0900_0000,
             clock_freq: 1_843_200,
             baud_rate: 115_200,
@@ -845,6 +852,7 @@ fn test_flexible_multi_driver_parsed_board(
         },
         mode: BuildMode::Flexible,
         payload: None,
+        soc_image_format: SocImageFormat::default(),
     };
 
     let device_tree = vec![
@@ -1117,10 +1125,11 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
     });
 
     let driver_instances = vec![DriverInstance::Ns16550(
-        fstart_drivers::uart::ns16550::Ns16550Config {
+        fstart_driver_ns16550::Ns16550Config {
             base_addr: 0x1000_0000,
             clock_freq: 3_686_400,
             baud_rate: 115_200,
+            reg_shift: 0,
         },
     )];
 
@@ -1196,6 +1205,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         },
         mode: BuildMode::Rigid,
         payload: None,
+        soc_image_format: SocImageFormat::default(),
     };
 
     let device_tree = vec![DeviceNode {
@@ -1425,10 +1435,11 @@ fn test_device_tree_table_with_bus_children() {
         parent: Some(HString::try_from("i2c0").unwrap()),
     });
     parsed.driver_instances.push(DriverInstance::Ns16550(
-        fstart_drivers::uart::ns16550::Ns16550Config {
+        fstart_driver_ns16550::Ns16550Config {
             base_addr: 0x2000_0000,
             clock_freq: 3_686_400,
             baud_rate: 115_200,
+            reg_shift: 0,
         },
     ));
     parsed.device_tree.push(DeviceNode {

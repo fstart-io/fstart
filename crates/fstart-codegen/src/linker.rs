@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use fstart_types::{BoardConfig, RegionKind, StageLayout};
+use fstart_types::{BoardConfig, RegionKind, SocImageFormat, StageLayout};
 
 /// Generate a linker script for the given board and (optional) stage.
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
@@ -36,13 +36,26 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             r.kind == RegionKind::Rom && load_addr >= r.base && load_addr < r.base + r.size
         });
 
+    // Find the appropriate RAM region. For XIP builds (load_addr in ROM),
+    // the first RAM region is used for writable sections. For RAM builds
+    // (load_addr in RAM), use the RAM region containing load_addr — this
+    // matters for multi-stage boards with SRAM + DRAM where different
+    // stages run from different RAM regions.
     let ram_region = config
         .memory
         .regions
         .iter()
-        .find(|r| r.kind == RegionKind::Ram)
+        .find(|r| r.kind == RegionKind::Ram && load_addr >= r.base && load_addr < r.base + r.size)
         .or_else(|| {
-            // If no RAM region, find the region containing load_addr
+            // load_addr not in any RAM region (XIP) — use first RAM region
+            config
+                .memory
+                .regions
+                .iter()
+                .find(|r| r.kind == RegionKind::Ram)
+        })
+        .or_else(|| {
+            // No RAM region at all — find any region containing load_addr
             config
                 .memory
                 .regions
@@ -54,6 +67,19 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         .map(|r| (r.base, r.size))
         .unwrap_or((0x8000_0000, 0x0800_0000));
 
+    // eGON header is only needed for the first stage (or monolithic). The
+    // BROM loads the first-stage binary with the eGON.BT0 header at offset 0.
+    // Later stages are loaded by fstart and don't need the header.
+    let is_first_stage = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(_), _) => true,
+        (StageLayout::MultiStage(stages), Some(name)) => {
+            stages.first().is_some_and(|s| s.name.as_str() == name)
+        }
+        (StageLayout::MultiStage(_), None) => true,
+    };
+    let needs_egon_header =
+        is_first_stage && matches!(config.soc_image_format, SocImageFormat::AllwinnerEgon);
+
     writeln!(
         out,
         "/* Auto-generated linker script for board: {} */\n",
@@ -61,18 +87,40 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     )
     .unwrap();
     writeln!(out, "OUTPUT_ARCH({arch})").unwrap();
-    writeln!(out, "ENTRY(_start)\n").unwrap();
+
+    // Allwinner eGON: the entry point is the eGON header's branch
+    // instruction (_head_jump) at offset 0, not the platform _start.
+    // Only for the first stage (which has the eGON header).
+    if needs_egon_header {
+        writeln!(out, "ENTRY(_head_jump)\n").unwrap();
+    } else {
+        writeln!(out, "ENTRY(_start)\n").unwrap();
+    }
 
     if let Some(rom) = rom_region {
         // XIP layout: code in ROM, data/bss/stack in RAM.
         // When data_addr is set, place writable sections at that address
         // instead of ram_origin (e.g., to avoid QEMU's DTB at RAM base).
         generate_xip_layout(
-            &mut out, rom.base, rom.size, ram_origin, ram_length, stack_size, data_addr,
+            &mut out,
+            rom.base,
+            rom.size,
+            ram_origin,
+            ram_length,
+            stack_size,
+            data_addr,
+            needs_egon_header,
         );
     } else {
         // RAM-only layout: everything in RAM at load_addr.
         //
+        // Use load_addr as the linker origin so the entry point is
+        // placed at the correct address. Available length extends to
+        // the end of the containing RAM region.
+        let region_end = ram_origin + ram_length;
+        let effective_origin = load_addr;
+        let effective_length = region_end - effective_origin;
+
         // For multi-stage bootblocks that share their load address with the
         // FFS image (flash_base == load_addr), BSS and stack must be placed
         // beyond the image area. Otherwise the entry-point BSS clearing and
@@ -80,18 +128,25 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         let bss_origin = match (config.memory.flash_base, config.memory.flash_size) {
             (Some(fb), Some(fs)) if fb == load_addr && fs > 0 => {
                 let bss_addr = fb + fs;
-                if bss_addr < ram_origin || bss_addr >= ram_origin + ram_length {
+                if bss_addr < effective_origin || bss_addr >= effective_origin + effective_length {
                     panic!(
                         "flash_base ({fb:#x}) + flash_size ({fs:#x}) = {bss_addr:#x} \
-                         falls outside RAM region [{ram_origin:#x}..{:#x}]",
-                        ram_origin + ram_length
+                         falls outside RAM region [{effective_origin:#x}..{:#x}]",
+                        effective_origin + effective_length
                     );
                 }
                 Some(bss_addr)
             }
             _ => None,
         };
-        generate_ram_layout(&mut out, ram_origin, ram_length, stack_size, bss_origin);
+        generate_ram_layout(
+            &mut out,
+            effective_origin,
+            effective_length,
+            stack_size,
+            bss_origin,
+            needs_egon_header,
+        );
     }
 
     out
@@ -103,6 +158,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
 /// stack) are placed at `addr` instead of the start of the RAM region.
 /// This is used on AArch64 QEMU where the platform places the DTB at the
 /// base of RAM (0x40000000) — BSS clearing would destroy it if placed there.
+#[allow(clippy::too_many_arguments)]
 fn generate_xip_layout(
     out: &mut String,
     rom_origin: u64,
@@ -111,6 +167,7 @@ fn generate_xip_layout(
     ram_length: u64,
     stack_size: u64,
     data_addr: Option<u64>,
+    needs_egon_header: bool,
 ) {
     // When data_addr is set, split RAM into two memory regions:
     // RAMRO for read-only data (unused currently, but reserved),
@@ -133,6 +190,15 @@ fn generate_xip_layout(
 
     writeln!(out, "SECTIONS\n{{").unwrap();
 
+    // Allwinner eGON header — placed before code, contains a branch
+    // instruction at offset 0 that jumps over the header to _start.
+    if needs_egon_header {
+        writeln!(out, "    .head : {{").unwrap();
+        writeln!(out, "        *(.head.text)").unwrap();
+        writeln!(out, "        *(.head.egon)").unwrap();
+        writeln!(out, "    }} > ROM\n").unwrap();
+    }
+
     // Code in ROM
     writeln!(out, "    .text : {{").unwrap();
     writeln!(out, "        *(.text.entry)").unwrap();
@@ -140,12 +206,12 @@ fn generate_xip_layout(
     writeln!(out, "    }} > ROM\n").unwrap();
 
     // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
-    writeln!(out, "    .fstart.anchor : ALIGN(8) {{").unwrap();
+    writeln!(out, "    .fstart.anchor : ALIGN(16) {{").unwrap();
     writeln!(out, "        *(.fstart.anchor)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
     // Read-only data in ROM
-    writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
+    writeln!(out, "    .rodata : ALIGN(16) {{").unwrap();
     writeln!(out, "        *(.rodata .rodata.*)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
@@ -154,7 +220,7 @@ fn generate_xip_layout(
     // _data_start / _data_end are the RAM addresses (virtual-memory addresses).
     // The _start assembly copies [_data_load .. _data_load + size) to
     // [_data_start .. _data_end) before entering Rust code.
-    writeln!(out, "    .data : ALIGN(8) {{").unwrap();
+    writeln!(out, "    .data : ALIGN(16) {{").unwrap();
     writeln!(out, "        _data_start = .;").unwrap();
     writeln!(out, "        *(.data .data.*)").unwrap();
     writeln!(out, "        _data_end = .;").unwrap();
@@ -162,17 +228,15 @@ fn generate_xip_layout(
     writeln!(out, "    _data_load = LOADADDR(.data);\n").unwrap();
 
     // BSS in RAM
-    writeln!(out, "    .bss (NOLOAD) : ALIGN(8) {{").unwrap();
+    writeln!(out, "    .bss (NOLOAD) : ALIGN(16) {{").unwrap();
     writeln!(out, "        _bss_start = .;").unwrap();
     writeln!(out, "        *(.bss .bss.*)").unwrap();
     writeln!(out, "        *(COMMON)").unwrap();
     writeln!(out, "        _bss_end = .;").unwrap();
     writeln!(out, "    }} > RAM\n").unwrap();
 
-    // Stack in RAM
-    writeln!(out, "    . = ALIGN(16);").unwrap();
-    writeln!(out, "    . = . + {stack_size:#x};").unwrap();
-    writeln!(out, "    _stack_top = .;").unwrap();
+    // Stack: grows downward from top of RAM region.
+    write_stack(out, stack_size, "RAM");
     writeln!(out, "}}").unwrap();
 }
 
@@ -187,6 +251,7 @@ fn generate_ram_layout(
     ram_length: u64,
     stack_size: u64,
     bss_origin: Option<u64>,
+    needs_egon_header: bool,
 ) {
     if let Some(bss_addr) = bss_origin {
         let code_length = bss_addr - ram_origin;
@@ -206,12 +271,15 @@ fn generate_ram_layout(
         writeln!(out, "}}\n").unwrap();
 
         writeln!(out, "SECTIONS\n{{").unwrap();
+        if needs_egon_header {
+            write_allwinner_egon_section(out, "CODE");
+        }
         write_text_section(out, "CODE");
         write_anchor_section(out, "CODE");
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
-        write_stack(out, stack_size);
+        write_stack(out, stack_size, "RWDATA");
         writeln!(out, "}}").unwrap();
     } else {
         writeln!(out, "MEMORY\n{{").unwrap();
@@ -223,12 +291,15 @@ fn generate_ram_layout(
         writeln!(out, "}}\n").unwrap();
 
         writeln!(out, "SECTIONS\n{{").unwrap();
+        if needs_egon_header {
+            write_allwinner_egon_section(out, "RAM");
+        }
         write_text_section(out, "RAM");
         write_anchor_section(out, "RAM");
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
-        write_stack(out, stack_size);
+        write_stack(out, stack_size, "RAM");
         writeln!(out, "}}").unwrap();
     }
 }
@@ -275,8 +346,22 @@ fn write_bss_section(out: &mut String, region: &str) {
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
-fn write_stack(out: &mut String, stack_size: u64) {
-    writeln!(out, "    . = ALIGN(16);").unwrap();
-    writeln!(out, "    . = . + {stack_size:#x};").unwrap();
-    writeln!(out, "    _stack_top = .;").unwrap();
+/// Allwinner eGON .head section: branch instruction + eGON.BT0 struct.
+fn write_allwinner_egon_section(out: &mut String, region: &str) {
+    writeln!(out, "    .head : {{").unwrap();
+    writeln!(out, "        *(.head.text)").unwrap();
+    writeln!(out, "        *(.head.egon)").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
+}
+
+fn write_stack(out: &mut String, stack_size: u64, region: &str) {
+    // Stack grows downward from the top of the memory region.
+    // The ASSERT verifies there is at least stack_size bytes between
+    // the end of BSS and the top of the region.
+    writeln!(out, "    _stack_top = ORIGIN({region}) + LENGTH({region});").unwrap();
+    writeln!(
+        out,
+        "    ASSERT(_stack_top - _bss_end >= {stack_size:#x}, \"insufficient stack space\")"
+    )
+    .unwrap();
 }

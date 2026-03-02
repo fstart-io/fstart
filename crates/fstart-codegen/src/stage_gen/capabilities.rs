@@ -8,12 +8,13 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use fstart_drivers::DriverInstance;
+use fstart_device_registry::DriverInstance;
+use fstart_types::memory::RegionKind;
 use fstart_types::{BoardConfig, BootMedium, BuildMode, DeviceConfig, FdtSource, FirmwareKind};
 
 use super::flexible::{flexible_enum_for_device, generate_flexible_wrapping};
 use super::registry::find_driver_meta;
-use super::tokens::{anchor_as_bytes_expr, halt_expr, hex_addr};
+use super::tokens::{anchor_as_bytes_expr, anchor_expr, halt_expr, hex_addr};
 use super::validation::{is_fit_image, is_fit_runtime, is_linux_boot};
 
 /// Generate code for the ConsoleInit capability.
@@ -72,6 +73,67 @@ pub(super) fn generate_console_init(
                 fstart_capabilities::console_ready(#device_name, #drv_name);
             }
         }
+    }
+}
+
+/// Generate code for the ClockInit capability.
+///
+/// Finds the referenced clock device, calls its `init()` method, and
+/// logs the result. Analogous to ConsoleInit but for clock controllers.
+pub(super) fn generate_clock_init(
+    device_name: &str,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    halt: &TokenStream,
+) -> TokenStream {
+    let Some((idx, _dev)) = devices
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.name.as_str() == device_name)
+    else {
+        let msg = format!("ClockInit references device '{device_name}' which is not declared");
+        return quote! { compile_error!(#msg); };
+    };
+
+    let inst = &instances[idx];
+    let drv_name = inst.meta().name;
+    let device = format_ident!("{}", device_name);
+
+    quote! {
+        #device.init().unwrap_or_else(|_| #halt);
+        fstart_log::info!("clock init complete: {} ({})", #device_name, #drv_name);
+    }
+}
+
+/// Generate code for the DramInit capability.
+///
+/// Finds the referenced DRAM controller device, calls its `init()`,
+/// and logs the detected memory size.
+pub(super) fn generate_dram_init(
+    device_name: &str,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    halt: &TokenStream,
+) -> TokenStream {
+    let Some((idx, _dev)) = devices
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.name.as_str() == device_name)
+    else {
+        let msg = format!("DramInit references device '{device_name}' which is not declared");
+        return quote! { compile_error!(#msg); };
+    };
+
+    let inst = &instances[idx];
+    let drv_name = inst.meta().name;
+    let device = format_ident!("{}", device_name);
+
+    quote! {
+        #device.init().unwrap_or_else(|_| {
+            fstart_log::error!("FATAL: DRAM init failed ({})", #drv_name);
+            #halt
+        });
+        fstart_log::info!("DRAM init complete: {} ({})", #device_name, #drv_name);
     }
 }
 
@@ -140,31 +202,43 @@ pub(super) fn generate_boot_media(medium: &BootMedium) -> TokenStream {
                 };
             }
         }
-        BootMedium::Device { name } => {
-            let dev_name = name.as_str();
-            // TODO: Device-backed boot media size should come from the
-            // driver config (e.g., a `size` field on a block device config).
-            // For now, emit a compile_error since no boards use this path.
-            let msg =
-                format!("BootMedia(Device) for '{dev_name}' not yet supported with typed configs");
-            quote! { compile_error!(#msg); }
+        BootMedium::Device { name, offset, size } => {
+            let dev_name = format_ident!("{}", name.as_str());
+            let base_offset = hex_addr(*offset);
+            let media_size = hex_addr(*size);
+            quote! {
+                let boot_media = BlockDeviceMedia::new(&#dev_name, #base_offset, #media_size as usize);
+            }
         }
     }
 }
 
 /// Generate code for the SigVerify capability.
-pub(super) fn generate_sig_verify() -> TokenStream {
-    let anchor = anchor_as_bytes_expr();
+pub(super) fn generate_sig_verify(embed_anchor: bool) -> TokenStream {
+    let anchor = anchor_expr(embed_anchor);
     quote! {
         fstart_capabilities::sig_verify(#anchor, &boot_media);
     }
 }
 
 /// Generate code for the FdtPrepare capability.
-pub(super) fn generate_fdt_prepare(config: &BoardConfig, platform: &str) -> TokenStream {
+///
+/// `uses_handoff` indicates whether the stage deserializes a
+/// [`StageHandoff`] from a previous stage. If true, `_handoff` is
+/// available and its `dram_size` field is preferred over the static
+/// board config value (runtime-detected DRAM size from training).
+pub(super) fn generate_fdt_prepare(
+    config: &BoardConfig,
+    platform: &str,
+    uses_handoff: bool,
+) -> TokenStream {
     let Some(ref payload) = config.payload else {
         return quote! { fstart_capabilities::fdt_prepare_stub(); };
     };
+
+    // Find the DRAM region from board config for memory node patching.
+    let dram_info = find_dram_region(config);
+    let dram_expr = generate_dram_expressions(dram_info, uses_handoff);
 
     match &payload.fdt {
         FdtSource::Platform => {
@@ -174,14 +248,49 @@ pub(super) fn generate_fdt_prepare(config: &BoardConfig, platform: &str) -> Toke
                 match platform {
                     "riscv64" => quote! { fstart_platform_riscv64::boot_dtb_addr() },
                     "aarch64" => quote! { fstart_platform_aarch64::boot_dtb_addr() },
-                    "armv7" => quote! { fstart_platform_armv7::boot_dtb_addr() as u64 },
+                    // ARMv7: no DTB address saved by platform (board-specific).
+                    // Use src_dtb_addr in the board RON instead.
+                    "armv7" => quote! { 0u64 },
                     _ => quote! { 0 },
                 }
             };
             let dtb_dst = hex_addr(payload.dtb_addr.unwrap_or(0));
             let bootargs = payload.bootargs.as_ref().map(|s| s.as_str()).unwrap_or("");
+            let (dram_base_expr, dram_size_expr) = dram_expr;
             quote! {
-                fstart_capabilities::fdt_prepare_platform(#dtb_src_expr, #dtb_dst, #bootargs);
+                fstart_capabilities::fdt_prepare_platform(
+                    #dtb_src_expr, #dtb_dst, #bootargs,
+                    #dram_base_expr, #dram_size_expr,
+                );
+            }
+        }
+        FdtSource::Override(_dtb_file) => {
+            // The DTB was assembled into the FFS as FileType::Fdt.
+            // Load it from the FFS image into dtb_addr via boot_media,
+            // then patch bootargs in-place using fdt_prepare_platform.
+            let halt = halt_expr(platform);
+            let embed_anchor = false; // FdtPrepare runs in non-first stages
+            let anchor = anchor_expr(embed_anchor);
+            let dtb_dst = hex_addr(payload.dtb_addr.unwrap_or(0));
+            let bootargs = payload.bootargs.as_ref().map(|s| s.as_str()).unwrap_or("");
+            let (dram_base_expr, dram_size_expr) = dram_expr;
+            quote! {
+                fstart_log::info!("loading DTB from FFS...");
+                if !fstart_capabilities::load_ffs_file_by_type(
+                    #anchor,
+                    &boot_media,
+                    fstart_types::ffs::FileType::Fdt,
+                ) {
+                    fstart_log::error!("FATAL: failed to load DTB from FFS");
+                    #halt;
+                }
+                fstart_log::info!("DTB loaded to {:#x}", #dtb_dst as u64);
+                // Patch bootargs and memory node in-place: src=dst since
+                // DTB is already at dtb_addr.
+                fstart_capabilities::fdt_prepare_platform(
+                    #dtb_dst, #dtb_dst, #bootargs,
+                    #dram_base_expr, #dram_size_expr,
+                );
             }
         }
         _ => {
@@ -190,10 +299,71 @@ pub(super) fn generate_fdt_prepare(config: &BoardConfig, platform: &str) -> Toke
     }
 }
 
+/// Find the DRAM region in the board config's memory map.
+///
+/// Returns `(base, size)` of the first `Ram` region whose name contains
+/// "dram", or the largest `Ram` region if none match by name, or `None`
+/// if no RAM regions exist.
+fn find_dram_region(config: &BoardConfig) -> Option<(u64, u64)> {
+    // Prefer a region explicitly named "dram".
+    if let Some(r) = config
+        .memory
+        .regions
+        .iter()
+        .find(|r| r.kind == RegionKind::Ram && r.name.as_str().contains("dram"))
+    {
+        return Some((r.base, r.size));
+    }
+    // Fall back to the largest RAM region (excluding small SRAMs).
+    config
+        .memory
+        .regions
+        .iter()
+        .filter(|r| r.kind == RegionKind::Ram)
+        .max_by_key(|r| r.size)
+        .map(|r| (r.base, r.size))
+}
+
+/// Generate token expressions for DRAM base and size.
+///
+/// If the stage receives a handoff, the DRAM size is taken from
+/// `_handoff.dram_size` when non-zero, falling back to the board
+/// config constant. The base address is always a compile-time constant
+/// (DRAM doesn't move).
+fn generate_dram_expressions(
+    dram_info: Option<(u64, u64)>,
+    uses_handoff: bool,
+) -> (TokenStream, TokenStream) {
+    match dram_info {
+        Some((base, size)) => {
+            let base_hex = hex_addr(base);
+            let size_hex = hex_addr(size);
+            let size_expr = if uses_handoff {
+                // Prefer runtime handoff dram_size if available.
+                quote! {
+                    _handoff
+                        .as_ref()
+                        .filter(|h| h.dram_size > 0)
+                        .map(|h| h.dram_size)
+                        .unwrap_or(#size_hex)
+                }
+            } else {
+                quote! { #size_hex }
+            };
+            (quote! { #base_hex }, size_expr)
+        }
+        None => (quote! { 0u64 }, quote! { 0u64 }),
+    }
+}
+
 /// Generate code for the PayloadLoad capability.
-pub(super) fn generate_payload_load(config: &BoardConfig, platform: &str) -> TokenStream {
+pub(super) fn generate_payload_load(
+    config: &BoardConfig,
+    platform: &str,
+    embed_anchor: bool,
+) -> TokenStream {
     if is_linux_boot(config) {
-        return generate_payload_load_linux(config, platform);
+        return generate_payload_load_linux(config, platform, embed_anchor);
     }
 
     if is_fit_image(config) {
@@ -203,11 +373,11 @@ pub(super) fn generate_payload_load(config: &BoardConfig, platform: &str) -> Tok
             // Buildtime FIT: xtask extracts components from FIT and embeds
             // them as separate FFS entries. Runtime code loads them the same
             // way as LinuxBoot (individual kernel/ramdisk blobs from FFS).
-            return generate_payload_load_linux(config, platform);
+            return generate_payload_load_linux(config, platform, embed_anchor);
         }
     }
 
-    let anchor = anchor_as_bytes_expr();
+    let anchor = anchor_expr(embed_anchor);
     let jump_fn: TokenStream = match platform {
         "riscv64" => quote! { fstart_platform_riscv64::jump_to },
         "aarch64" => quote! { fstart_platform_aarch64::jump_to },
@@ -220,10 +390,14 @@ pub(super) fn generate_payload_load(config: &BoardConfig, platform: &str) -> Tok
 }
 
 /// Generate the Linux boot payload sequence for a specific platform.
-fn generate_payload_load_linux(config: &BoardConfig, platform: &str) -> TokenStream {
+fn generate_payload_load_linux(
+    config: &BoardConfig,
+    platform: &str,
+    embed_anchor: bool,
+) -> TokenStream {
     let payload = config.payload.as_ref().unwrap(); // caller verified is_linux_boot
     let halt = halt_expr(platform);
-    let anchor = anchor_as_bytes_expr();
+    let anchor = anchor_expr(embed_anchor);
 
     let mut stmts = TokenStream::new();
 
@@ -251,7 +425,7 @@ fn generate_payload_load_linux(config: &BoardConfig, platform: &str) -> TokenStr
         };
         let load_msg = format!("loading {fw_kind_str}...");
         let error_msg = format!("FATAL: failed to load {fw_kind_str}");
-        let anchor2 = anchor_as_bytes_expr();
+        let anchor2 = anchor_expr(embed_anchor);
         stmts.extend(quote! {
             fstart_log::info!(#load_msg);
             if !fstart_capabilities::load_ffs_file_by_type(
@@ -307,14 +481,26 @@ fn generate_payload_load_linux(config: &BoardConfig, platform: &str) -> TokenStr
             });
         }
         "armv7" => {
-            // 32-bit ARM: no ATF/SBI needed — jump directly to kernel.
-            // ARM Linux boot protocol: r0=0, r1=~0 (DT-only), r2=DTB.
+            // ARMv7 Linux boot protocol: no SBI/ATF, jump directly to kernel.
+            // r0=0, r1=0xFFFFFFFF (DT-only), r2=DTB address.
+            //
+            // Pre-boot prep (matches U-Boot's board_init + cleanup_before_linux):
+            // 1. Set CNTFRQ = 24 MHz (OSC24M) so Linux's arch_timer works.
+            //    Must be done from secure mode (we haven't transitioned).
+            // 2. Disable/invalidate I-cache + branch predictor for clean handoff.
             stmts.extend(quote! {
-                fstart_log::info!("jumping to Linux kernel (direct)...");
-                fstart_platform_armv7::boot_linux_direct(
-                    #kernel_addr as u32,
-                    #dtb_addr as u32,
-                );
+                fstart_log::info!("booting Linux (ARMv7)...");
+                fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
+                fstart_log::info!("  dtb    @ {:#x}", #dtb_addr as u64);
+
+                // Set ARM Generic Timer frequency (24 MHz) — without this,
+                // Linux gets CNTFRQ=0 and panics with "Division by zero".
+                fstart_platform_armv7::set_arch_timer_freq(24_000_000);
+
+                // Clean up CPU state: disable/invalidate I-cache, flush BP.
+                fstart_platform_armv7::cleanup_before_linux();
+
+                fstart_platform_armv7::boot_linux(#kernel_addr, #dtb_addr);
             });
         }
         _ => {
@@ -500,13 +686,12 @@ fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: &str) -> To
             });
         }
         "armv7" => {
-            // 32-bit ARM: no ATF/SBI needed — jump directly to kernel.
+            // ARMv7: no ATF/SBI — jump directly to kernel with pre-boot cleanup.
             stmts.extend(quote! {
-                fstart_log::info!("jumping to Linux kernel (direct)...");
-                fstart_platform_armv7::boot_linux_direct(
-                    #kernel_addr as u32,
-                    #dtb_addr as u32,
-                );
+                fstart_log::info!("booting Linux (ARMv7)...");
+                fstart_platform_armv7::set_arch_timer_freq(24_000_000);
+                fstart_platform_armv7::cleanup_before_linux();
+                fstart_platform_armv7::boot_linux(#kernel_addr as u64, #dtb_addr);
             });
         }
         _ => {
@@ -518,9 +703,246 @@ fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: &str) -> To
     stmts
 }
 
+/// Generate code to locate the FFS anchor block in boot media.
+///
+/// Used by non-first stages in a multi-stage build that don't have an
+/// embedded `FSTART_ANCHOR` static.
+///
+/// - **Memory-mapped media**: scans the media slice for `FFS_MAGIC`.
+/// - **Block device media (ARMv7)**: reads the anchor at the known offset
+///   `ffs_total_size - ANCHOR_SIZE`, where `ffs_total_size` was patched
+///   into the eGON header by the FFS assembler.
+///
+/// Emits a `scanned_anchor_data: [u8; ANCHOR_SIZE]` local variable
+/// that subsequent FFS capability calls reference via
+/// `&scanned_anchor_data[..]`.
+pub(super) fn generate_anchor_scan(
+    medium: &BootMedium,
+    platform: &str,
+    halt: &TokenStream,
+) -> TokenStream {
+    match medium {
+        BootMedium::MemoryMapped { .. } => {
+            // Memory-mapped: scan the full media slice for FFS_MAGIC.
+            quote! {
+                let scanned_anchor_data: [u8; fstart_types::ffs::ANCHOR_SIZE] = {
+                    let media_slice = match boot_media.as_slice() {
+                        Some(s) => s,
+                        None => {
+                            fstart_log::error!("FATAL: boot media does not support as_slice");
+                            #halt;
+                        }
+                    };
+                    let magic = &fstart_types::ffs::FFS_MAGIC;
+                    let mut offset = 0usize;
+                    let mut found = false;
+                    while offset + magic.len() <= media_slice.len() {
+                        if &media_slice[offset..offset + magic.len()] == magic {
+                            found = true;
+                            break;
+                        }
+                        offset += 8;
+                    }
+                    if !found || offset + fstart_types::ffs::ANCHOR_SIZE > media_slice.len() {
+                        fstart_log::error!("FATAL: FFS anchor not found in boot media");
+                        #halt;
+                    }
+                    let mut buf = [0u8; fstart_types::ffs::ANCHOR_SIZE];
+                    buf.copy_from_slice(
+                        &media_slice[offset..offset + fstart_types::ffs::ANCHOR_SIZE],
+                    );
+                    fstart_log::info!("FFS anchor found at offset {:#x} in boot media", offset as u64);
+                    buf
+                };
+            }
+        }
+        BootMedium::Device { .. } => {
+            // Block device: read the anchor at ffs_total_size - ANCHOR_SIZE.
+            // The FFS assembler patches ffs_total_size into the eGON header
+            // (ARMv7) so non-first stages can locate the anchor without
+            // scanning the entire device.
+            let ffs_size_expr: TokenStream = match platform {
+                "armv7" => quote! { fstart_soc_sunxi::ffs_total_size() as usize },
+                _ => {
+                    let msg = format!(
+                        "block device anchor scan not yet supported on platform '{platform}'"
+                    );
+                    return quote! { compile_error!(#msg); };
+                }
+            };
+            quote! {
+                let scanned_anchor_data: [u8; fstart_types::ffs::ANCHOR_SIZE] = {
+                    let ffs_size = #ffs_size_expr;
+                    if ffs_size < fstart_types::ffs::ANCHOR_SIZE {
+                        fstart_log::error!("FATAL: ffs_total_size too small ({} bytes)", ffs_size as u32);
+                        #halt;
+                    }
+                    let anchor_offset = ffs_size - fstart_types::ffs::ANCHOR_SIZE;
+                    fstart_log::info!(
+                        "reading FFS anchor at offset {:#x} (ffs_size={:#x})",
+                        anchor_offset as u64,
+                        ffs_size as u64,
+                    );
+                    let mut buf = [0u8; fstart_types::ffs::ANCHOR_SIZE];
+                    match boot_media.read_at(anchor_offset, &mut buf) {
+                        Ok(_) => {}
+                        Err(_) => {
+                            fstart_log::error!("FATAL: failed to read FFS anchor from boot media");
+                            #halt;
+                        }
+                    }
+                    // Verify the magic bytes are present.
+                    let magic = &fstart_types::ffs::FFS_MAGIC;
+                    if buf[..magic.len()] != *magic {
+                        fstart_log::error!("FATAL: FFS anchor magic mismatch at offset {:#x}", anchor_offset as u64);
+                        #halt;
+                    }
+                    buf
+                };
+            }
+        }
+    }
+}
+
+/// Generate code for the LoadNextStage capability.
+///
+/// Reads the next stage's offset and size from the eGON header (ARMv7),
+/// computes the absolute byte offset on the block device, reads that
+/// many bytes directly into the next stage's load address, and jumps.
+///
+/// No intermediate DRAM buffer, no FFS parsing, no LZ4.
+pub(super) fn generate_load_next_stage(
+    device_name: &str,
+    base_offset: u64,
+    next_stage: &str,
+    config: &BoardConfig,
+    platform: &str,
+    capabilities: &[fstart_types::Capability],
+    halt: &TokenStream,
+) -> TokenStream {
+    let dev_ident = format_ident!("{}", device_name);
+    let base_off = hex_addr(base_offset);
+
+    // Resolve the next stage's load_addr from the board config.
+    let next_load_addr = match &config.stages {
+        fstart_types::StageLayout::MultiStage(stages) => stages
+            .iter()
+            .find(|s| s.name.as_str() == next_stage)
+            .map(|s| s.load_addr),
+        _ => None,
+    };
+    let Some(next_load_addr) = next_load_addr else {
+        let msg = format!(
+            "LoadNextStage references next_stage '{next_stage}' which is not defined in stages"
+        );
+        return quote! { compile_error!(#msg); };
+    };
+    let load_addr = hex_addr(next_load_addr);
+
+    if platform != "armv7" {
+        let msg =
+            format!("LoadNextStage currently only supports armv7 (eGON header), not '{platform}'");
+        return quote! { compile_error!(#msg); };
+    }
+
+    // Handoff buffer: placed 4K below the next stage's load address.
+    // The HANDOFF_MAX_SIZE (256 bytes) fits easily within this gap.
+    let handoff_addr = hex_addr(next_load_addr - 0x1000);
+
+    // DRAM size: if DramInit was run in this stage, call the DRAMC
+    // driver's detected_size_bytes() to get the runtime-detected value.
+    let dram_device = capabilities.iter().find_map(|cap| {
+        if let fstart_types::Capability::DramInit { device } = cap {
+            Some(device.as_str())
+        } else {
+            None
+        }
+    });
+    let dram_size_expr = match dram_device {
+        Some(dev_name) => {
+            let dev = format_ident!("{}", dev_name);
+            quote! { #dev.detected_size_bytes() }
+        }
+        None => quote! { 0u64 },
+    };
+
+    quote! {
+        // Read next stage location from eGON header (patched by FFS assembler).
+        let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset() as u64;
+        let ns_size = fstart_soc_sunxi::next_stage_size() as usize;
+        if ns_ffs_offset == 0 || ns_size == 0 {
+            fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
+            #halt;
+        }
+        let sd_offset = #base_off + ns_ffs_offset;
+        fstart_log::info!("loading stage '{}': sd_offset={:#x}, size={:#x}, dest={:#x}",
+            #next_stage, sd_offset, ns_size as u64, #load_addr as u64);
+        {
+            let dest_buf = unsafe {
+                core::slice::from_raw_parts_mut(#load_addr as *mut u8, ns_size)
+            };
+            #dev_ident.read(sd_offset, dest_buf).unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: failed to read stage from {}", #device_name);
+                #halt
+            });
+        }
+
+        // Serialize handoff for the next stage.
+        let _handoff_data = fstart_types::handoff::StageHandoff::new(#dram_size_expr);
+        let handoff_buf_addr = #handoff_addr as *mut u8;
+        let handoff_buf = unsafe {
+            core::slice::from_raw_parts_mut(
+                handoff_buf_addr,
+                fstart_types::handoff::HANDOFF_MAX_SIZE,
+            )
+        };
+        let handoff_len = fstart_capabilities::handoff::serialize(&_handoff_data, handoff_buf)
+            .unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: handoff serialize failed");
+                #halt
+            });
+        fstart_log::info!("handoff: {} bytes at {:#x}", handoff_len, #handoff_addr as u64);
+
+        fstart_log::info!("jumping to stage '{}' at {:#x}", #next_stage, #load_addr as u64);
+        fstart_platform_armv7::jump_to_with_handoff(#load_addr, #handoff_addr as usize);
+    }
+}
+
+/// Generate code for the LateDriverInit capability.
+///
+/// Currently a stub — logs execution. Future: iterate devices and call
+/// a `lockdown()` trait method for security hardening.
+pub(super) fn generate_late_driver_init() -> TokenStream {
+    quote! {
+        fstart_capabilities::late_driver_init_complete(0);
+    }
+}
+
+/// Generate code for the ReturnToFel capability.
+///
+/// Emits code that restores the saved BROM state and returns to FEL
+/// mode. Only supported on armv7 (Allwinner sunxi).
+pub(super) fn generate_return_to_fel(platform: &str) -> TokenStream {
+    if platform != "armv7" {
+        let msg = format!("ReturnToFel is only supported on armv7, not '{platform}'");
+        return quote! { compile_error!(#msg); };
+    }
+    quote! {
+        fstart_log::info!("returning to FEL mode...");
+        unsafe {
+            let stash = &fstart_soc_sunxi::FEL_STASH;
+            fstart_soc_sunxi::return_to_fel(stash.sp, stash.lr);
+        }
+    }
+}
+
 /// Generate code for the StageLoad capability.
-pub(super) fn generate_stage_load(next_stage: &str, platform: &str) -> TokenStream {
-    let anchor = anchor_as_bytes_expr();
+pub(super) fn generate_stage_load(
+    next_stage: &str,
+    platform: &str,
+    embed_anchor: bool,
+) -> TokenStream {
+    let anchor = anchor_expr(embed_anchor);
     let jump_fn: TokenStream = match platform {
         "riscv64" => quote! { fstart_platform_riscv64::jump_to },
         "aarch64" => quote! { fstart_platform_aarch64::jump_to },

@@ -3,18 +3,25 @@ name = "fstart-stage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+autobins = false
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
 
 [features]
 default = []
 # Platform selection (exactly one must be enabled)
 riscv64 = ["dep:fstart-platform-riscv64"]
 aarch64 = ["dep:fstart-platform-aarch64"]
-armv7 = ["dep:fstart-platform-armv7"]
-# Driver selection (enabled based on board.ron)
-ns16550 = ["fstart-drivers/ns16550"]
-pl011 = ["fstart-drivers/pl011"]
-sifive-uart = ["fstart-drivers/sifive-uart"]
-designware-i2c = ["fstart-drivers/designware-i2c"]
+armv7 = ["dep:fstart-platform-armv7", "dep:fstart-soc-sunxi"]
+# Driver selection (enabled based on board.ron devices)
+ns16550 = ["dep:fstart-driver-ns16550"]
+pl011 = ["dep:fstart-driver-pl011"]
+designware-i2c = ["dep:fstart-driver-designware-i2c"]
+sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
+sunxi-a20-dramc = ["dep:fstart-driver-sunxi-dramc"]
+sunxi-a20-mmc = ["dep:fstart-driver-sunxi-mmc"]
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
@@ -22,26 +29,40 @@ sha2-digest = ["ffs", "fstart-capabilities/sha2-digest", "fstart-ffs/sha2-digest
 sha3-digest = ["ffs", "fstart-capabilities/sha3-digest", "fstart-ffs/sha3-digest"]
 # LZ4 decompression for compressed stage/payload segments
 lz4 = ["ffs", "fstart-capabilities/lz4"]
-# FDT preparation for Linux boot (bump allocator + dtoolkit)
-fdt = ["fstart-capabilities/fdt", "dep:fstart-alloc"]
+# FDT preparation for Linux boot (raw blob patcher, no alloc)
+fdt = ["fstart-capabilities/fdt"]
 # FIT image parsing at runtime
 fit = ["ffs", "fstart-capabilities/fit", "dep:fstart-fit"]
+# Inter-stage handoff serialization (postcard, for multi-stage boards)
+handoff = ["fstart-capabilities/handoff"]
 
 [dependencies]
+# Core firmware infrastructure
+fstart-arch = { workspace = true }
 fstart-services = { workspace = true }
-fstart-drivers = { workspace = true }
 fstart-capabilities = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
 fstart-types = { workspace = true }
+
+# Platform crates (exactly one enabled via feature)
 fstart-platform-riscv64 = { workspace = true, optional = true }
 fstart-platform-aarch64 = { workspace = true, optional = true }
-fstart-platform-armv7 = { workspace = true, optional = true }
+fstart-platform-armv7 = { workspace = true, optional = true, features = ["sunxi"] }
+fstart-soc-sunxi = { workspace = true, optional = true }
+
+# Individual driver crates (enabled via features matching board.ron driver names)
+fstart-driver-ns16550 = { workspace = true, optional = true }
+fstart-driver-pl011 = { workspace = true, optional = true }
+fstart-driver-designware-i2c = { workspace = true, optional = true }
+fstart-driver-sunxi-ccu = { workspace = true, optional = true }
+fstart-driver-sunxi-dramc = { workspace = true, optional = true }
+fstart-driver-sunxi-mmc = { workspace = true, optional = true }
+
+# FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
 fstart-fit = { workspace = true, optional = true }
-fstart-alloc = { workspace = true, optional = true }
 
 [build-dependencies]
 fstart-codegen = { workspace = true }
-fstart-types = { workspace = true, features = ["std"] }

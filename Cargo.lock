@@ -242,18 +242,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dtoolkit"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5427b960bccbff1c40fd8a246b346e3959551cb35bd93fc44fdbe292dfc455c9"
-dependencies = [
- "indexmap",
- "thiserror",
- "twox-hash",
- "zerocopy",
-]
-
-[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -328,12 +316,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
-name = "equivalent"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
-
-[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -354,15 +336,18 @@ name = "fstart-alloc"
 version = "0.1.0"
 
 [[package]]
+name = "fstart-arch"
+version = "0.1.0"
+
+[[package]]
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
- "dtoolkit",
  "fstart-ffs",
- "fstart-fit",
  "fstart-log",
  "fstart-services",
  "fstart-types",
+ "postcard",
  "ufmt",
 ]
 
@@ -370,7 +355,10 @@ dependencies = [
 name = "fstart-codegen"
 version = "0.1.0"
 dependencies = [
- "fstart-drivers",
+ "fstart-device-registry",
+ "fstart-driver-designware-i2c",
+ "fstart-driver-ns16550",
+ "fstart-driver-pl011",
  "fstart-types",
  "heapless",
  "prettyplease",
@@ -393,13 +381,88 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-drivers"
+name = "fstart-device-registry"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-designware-i2c",
+ "fstart-driver-ns16550",
+ "fstart-driver-pl011",
+ "fstart-driver-sunxi-ccu",
+ "fstart-driver-sunxi-dramc",
+ "fstart-driver-sunxi-mmc",
+ "fstart-services",
+ "serde",
+]
+
+[[package]]
+name = "fstart-driver-designware-i2c"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-mmio",
  "fstart-services",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-ns16550"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "fstart-services",
+ "serde",
+ "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-pl011"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "fstart-services",
+ "serde",
+ "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-sunxi-ccu"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-mmio",
+ "fstart-services",
+ "fstart-sunxi-ccu-regs",
+ "serde",
+ "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-sunxi-dramc"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-services",
+ "fstart-sunxi-ccu-regs",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-sunxi-mmc"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-services",
+ "fstart-sunxi-ccu-regs",
+ "serde",
+ "tock-registers",
+ "ufmt",
 ]
 
 [[package]]
@@ -416,21 +479,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-fit"
-version = "0.1.0"
-dependencies = [
- "dtoolkit",
- "fstart-crypto",
- "fstart-types",
- "heapless",
-]
-
-[[package]]
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
  "fstart-services",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-mmio"
+version = "0.1.0"
+dependencies = [
+ "tock-registers",
 ]
 
 [[package]]
@@ -440,6 +500,10 @@ version = "0.1.0"
 [[package]]
 name = "fstart-platform-armv7"
 version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-soc-sunxi",
+]
 
 [[package]]
 name = "fstart-platform-riscv64"
@@ -448,6 +512,9 @@ version = "0.1.0"
 [[package]]
 name = "fstart-runtime"
 version = "0.1.0"
+dependencies = [
+ "fstart-log",
+]
 
 [[package]]
 name = "fstart-services"
@@ -457,23 +524,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-soc-sunxi"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-services",
+ "fstart-types",
+]
+
+[[package]]
 name = "fstart-stage"
 version = "0.1.0"
 dependencies = [
- "fstart-alloc",
+ "fstart-arch",
  "fstart-capabilities",
  "fstart-codegen",
- "fstart-drivers",
+ "fstart-driver-designware-i2c",
+ "fstart-driver-ns16550",
+ "fstart-driver-pl011",
+ "fstart-driver-sunxi-ccu",
+ "fstart-driver-sunxi-dramc",
+ "fstart-driver-sunxi-mmc",
  "fstart-ffs",
- "fstart-fit",
  "fstart-log",
  "fstart-platform-aarch64",
  "fstart-platform-armv7",
  "fstart-platform-riscv64",
  "fstart-runtime",
  "fstart-services",
+ "fstart-soc-sunxi",
  "fstart-types",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-sunxi-ccu-regs"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "tock-registers",
 ]
 
 [[package]]
@@ -539,12 +628,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hashbrown"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
-
-[[package]]
 name = "heapless"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -568,16 +651,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest",
-]
-
-[[package]]
-name = "indexmap"
-version = "2.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
-dependencies = [
- "equivalent",
- "hashbrown",
 ]
 
 [[package]]
@@ -913,12 +986,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d2d250f87fb3fb6f225c907cf54381509f47b40b74b1d1f12d2dccbc915bdfe"
 
 [[package]]
-name = "twox-hash"
-version = "2.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
-
-[[package]]
 name = "typenum"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -999,30 +1066,9 @@ dependencies = [
  "fstart-codegen",
  "fstart-crypto",
  "fstart-ffs",
- "fstart-fit",
  "fstart-types",
  "goblin",
  "rand_core",
-]
-
-[[package]]
-name = "zerocopy"
-version = "0.8.39"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db6d35d663eadb6c932438e763b262fe1a70987f9ae936e60158176d710cae4a"
-dependencies = [
- "zerocopy-derive",
-]
-
-[[package]]
-name = "zerocopy-derive"
-version = "0.8.39"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4122cd3169e94605190e77839c9a40d40ed048d305bfdc146e7df40ab0f3e517"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.114",
 ]
 
 [[package]]

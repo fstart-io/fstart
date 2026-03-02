@@ -33,7 +33,7 @@ mod tests;
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use fstart_drivers::DriverInstance;
+use fstart_device_registry::DriverInstance;
 use fstart_types::{
     BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceNode, StageLayout,
 };
@@ -41,14 +41,16 @@ use fstart_types::{
 use crate::ron_loader::ParsedBoard;
 
 use capabilities::{
-    generate_boot_media, generate_console_init, generate_driver_init, generate_fdt_prepare,
-    generate_memory_init, generate_payload_load, generate_sig_verify, generate_stage_load,
+    generate_anchor_scan, generate_boot_media, generate_clock_init, generate_console_init,
+    generate_dram_init, generate_driver_init, generate_fdt_prepare, generate_late_driver_init,
+    generate_load_next_stage, generate_memory_init, generate_payload_load, generate_return_to_fel,
+    generate_sig_verify, generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
 use tokens::{halt_expr, hex_addr};
 use topology::validate_device_tree;
-use validation::{get_boot_medium, needs_fdt, needs_ffs, validate_capability_ordering};
+use validation::{get_boot_medium, needs_embedded_anchor, needs_ffs, validate_capability_ordering};
 
 // =======================================================================
 // Code generation — top-level
@@ -107,6 +109,10 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
 
     let mode = config.mode;
 
+    // Determine anchor strategy: first/monolithic stages embed FSTART_ANCHOR
+    // (patched by the builder). Non-first stages scan the boot media.
+    let embed_anchor = needs_ffs(capabilities) && needs_embedded_anchor(&config.stages, stage_name);
+
     // Assemble all code as a TokenStream
     let mut tokens = TokenStream::new();
 
@@ -116,13 +122,25 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         &parsed.driver_instances,
         mode,
         capabilities,
+        embed_anchor,
     ));
+
+    // Allwinner eGON: emit the eGON.BT0 header struct and branch
+    // instruction in dedicated linker sections.  The platform _start is
+    // in .text.entry; the linker script orders .head before .text.
+    // Only for the first stage (BROM loads it) — later stages don't need the header.
+    let is_first_stage = needs_embedded_anchor(&config.stages, stage_name);
+    if is_first_stage {
+        if let fstart_types::SocImageFormat::AllwinnerEgon = config.soc_image_format {
+            tokens.extend(generate_allwinner_egon_header());
+        }
+    }
 
     if let Some(BootMedium::MemoryMapped { base, size }) = get_boot_medium(capabilities) {
         tokens.extend(generate_flash_constants(*base, *size));
     }
 
-    if needs_ffs(capabilities) {
+    if embed_anchor {
         tokens.extend(generate_anchor_static());
     }
 
@@ -157,6 +175,8 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         capabilities,
         platform,
         mode,
+        embed_anchor,
+        stage_name,
     ));
 
     // Parse the token stream into a syn AST and format with prettyplease
@@ -198,6 +218,7 @@ fn generate_imports(
     instances: &[DriverInstance],
     mode: BuildMode,
     capabilities: &[Capability],
+    embed_anchor: bool,
 ) -> TokenStream {
     let mut tokens = TokenStream::new();
 
@@ -212,6 +233,22 @@ fn generate_imports(
     }
 
     // Check if any device provides bus services — import those traits too
+    let has_block_device = devices
+        .iter()
+        .any(|d| d.services.iter().any(|s| s.as_str() == "BlockDevice"));
+    if has_block_device {
+        tokens.extend(quote! { use fstart_services::BlockDevice; });
+    }
+
+    // Import MemoryController trait only if this stage uses DramInit
+    // (and thus calls detected_size_bytes() on the DRAM controller).
+    let uses_dram_init = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::DramInit { .. }));
+    if uses_dram_init {
+        tokens.extend(quote! { use fstart_services::MemoryController; });
+    }
+
     let has_i2c = devices
         .iter()
         .any(|d| d.services.iter().any(|s| s.as_str() == "I2cBus"));
@@ -253,21 +290,26 @@ fn generate_imports(
     match get_boot_medium(capabilities) {
         Some(BootMedium::MemoryMapped { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::MemoryMapped; });
+            // Import the BootMedia trait so as_slice() is callable in the
+            // anchor scanning code (non-first stages that scan boot media
+            // for the anchor instead of embedding FSTART_ANCHOR).
+            if !embed_anchor && needs_ffs(capabilities) {
+                tokens.extend(quote! { use fstart_services::BootMedia; });
+            }
         }
         Some(BootMedium::Device { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::BlockDeviceMedia; });
+            // Import the BootMedia trait so read_at() is callable in the
+            // anchor scan and FFS loading code.
+            if needs_ffs(capabilities) {
+                tokens.extend(quote! { use fstart_services::BootMedia; });
+            }
         }
         None => {}
     }
 
-    // When FDT feature is needed, pull in the alloc crate and force-link
-    // the bump allocator.
-    if needs_fdt(capabilities) {
-        tokens.extend(quote! {
-            extern crate alloc;
-            extern crate fstart_alloc;
-        });
-    }
+    // FDT patching no longer requires alloc — the raw FDT patcher
+    // operates directly on the blob without heap allocation.
 
     tokens
 }
@@ -281,6 +323,39 @@ fn generate_flash_constants(base: u64, size: u64) -> TokenStream {
         const FLASH_BASE: u64 = #base_hex;
         /// Size of the firmware flash image in bytes.
         const FLASH_SIZE: u64 = #size_hex;
+    }
+}
+
+/// Emit the Allwinner eGON.BT0 header for the binary image.
+///
+/// Generates:
+/// 1. A `global_asm!` block placing a branch-to-`_start` instruction in
+///    `.head.text` (the very first bytes of the binary).
+/// 2. A `#[link_section = ".head.egon"]` static with the eGON header
+///    struct — magic and sentinel checksum; length is a placeholder (0).
+///
+/// The linker script orders: `.head.text` → `.head.egon` → `.text.entry`.
+/// Xtask computes the actual binary size (512-byte aligned), pads the
+/// binary, and patches both the length and checksum fields post-build.
+fn generate_allwinner_egon_header() -> TokenStream {
+    quote! {
+        // Branch instruction at offset 0x00 — jumps over the eGON header
+        // to the real _start entry point in .text.entry.
+        // Must be ARM mode: the BROM starts execution in ARM state.
+        core::arch::global_asm!(
+            ".section .head.text, \"ax\", %progbits",
+            ".arm",
+            ".global _head_jump",
+            "_head_jump:",
+            "b _start",
+        );
+
+        /// Allwinner eGON.BT0 header — length and checksum are placeholders,
+        /// patched by xtask post-build from the actual binary size.
+        #[link_section = ".head.egon"]
+        #[used]
+        static EGON_HEAD: fstart_soc_sunxi::EgonHead =
+            fstart_soc_sunxi::EgonHead::new();
     }
 }
 
@@ -387,6 +462,7 @@ fn generate_devices_struct(
 
     quote! {
         /// All devices for this board.
+        #[allow(dead_code)]
         struct Devices {
             #(#fields)*
         }
@@ -454,6 +530,13 @@ fn generate_stage_context(
 
 /// Emit the `fstart_main()` function — device construction, capability
 /// execution, and halt.
+///
+/// `embed_anchor` controls how the FFS anchor is accessed:
+/// - `true`: the stage has an embedded `FSTART_ANCHOR` static (patched
+///   by the builder). Capability functions read it via volatile.
+/// - `false`: the stage scans the `boot_media` for the anchor at runtime
+///   (used by non-first stages in a LoadNextStage multi-stage flow).
+#[allow(clippy::too_many_arguments)]
 fn generate_fstart_main(
     config: &BoardConfig,
     instances: &[DriverInstance],
@@ -461,9 +544,33 @@ fn generate_fstart_main(
     capabilities: &[Capability],
     platform: &str,
     mode: BuildMode,
+    embed_anchor: bool,
+    stage_name: Option<&str>,
 ) -> TokenStream {
     let halt = halt_expr(platform);
     let mut body = TokenStream::new();
+
+    // --- Phase 0: Handoff deserialization (non-first stages only) ---
+    // For multi-stage boards, non-first stages receive a serialized
+    // StageHandoff in r0 (ARMv7) from the previous stage.
+    let is_first_stage = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(_), _) => true,
+        (StageLayout::MultiStage(stages), Some(name)) => {
+            stages.first().is_some_and(|s| s.name.as_str() == name)
+        }
+        (StageLayout::MultiStage(_), None) => true,
+    };
+
+    let uses_handoff = !is_first_stage;
+    if uses_handoff {
+        body.extend(quote! {
+            // Deserialize handoff from previous stage (if valid).
+            let _handoff = fstart_capabilities::handoff::try_deserialize(handoff_ptr);
+            if let Some(ref h) = _handoff {
+                fstart_log::info!("handoff: dram_size={}MB", h.dram_size / (1024 * 1024));
+            }
+        });
+    }
 
     // --- Phase 1: Construct all devices in topological order ---
     // Devices are already in pre-order DFS order from RON flattening.
@@ -484,11 +591,25 @@ fn generate_fstart_main(
 
     // Track which devices have been initialised by capabilities so DriverInit
     // can skip them and avoid double-init.
-    let mut inited_devices: Vec<String> = Vec::new();
+    //
+    // For non-first stages, pre-populate with devices that ALL previous stages
+    // initialized. The codegen can determine this at compile time from the
+    // board RON — no runtime check needed.
+    let mut inited_devices: Vec<String> = previous_stages_inited_devices(config, stage_name);
 
     // --- Phase 2: Execute capabilities in declared order ---
     for cap in capabilities {
         match cap {
+            Capability::ClockInit { device } => {
+                let dev_name = device.as_str();
+                body.extend(generate_clock_init(
+                    dev_name,
+                    &config.devices,
+                    instances,
+                    &halt,
+                ));
+                inited_devices.push(dev_name.to_string());
+            }
             Capability::ConsoleInit { device } => {
                 let dev_name = device.as_str();
                 body.extend(generate_console_init(
@@ -502,9 +623,24 @@ fn generate_fstart_main(
             }
             Capability::BootMedia(medium) => {
                 body.extend(generate_boot_media(medium));
+                // Non-first stages scan the boot media for the anchor
+                // instead of using an embedded FSTART_ANCHOR static.
+                if !embed_anchor && needs_ffs(capabilities) {
+                    body.extend(generate_anchor_scan(medium, platform, &halt));
+                }
             }
             Capability::MemoryInit => {
                 body.extend(generate_memory_init());
+            }
+            Capability::DramInit { device } => {
+                let dev_name = device.as_str();
+                body.extend(generate_dram_init(
+                    dev_name,
+                    &config.devices,
+                    instances,
+                    &halt,
+                ));
+                inited_devices.push(dev_name.to_string());
             }
             Capability::DriverInit => {
                 // Devices are in pre-order DFS — sequential indices are
@@ -526,24 +662,59 @@ fn generate_fstart_main(
                 }
             }
             Capability::SigVerify => {
-                body.extend(generate_sig_verify());
+                body.extend(generate_sig_verify(embed_anchor));
             }
             Capability::FdtPrepare => {
-                body.extend(generate_fdt_prepare(config, platform));
+                body.extend(generate_fdt_prepare(config, platform, uses_handoff));
             }
             Capability::PayloadLoad => {
-                body.extend(generate_payload_load(config, platform));
+                body.extend(generate_payload_load(config, platform, embed_anchor));
             }
             Capability::StageLoad { next_stage } => {
-                body.extend(generate_stage_load(next_stage.as_str(), platform));
+                body.extend(generate_stage_load(
+                    next_stage.as_str(),
+                    platform,
+                    embed_anchor,
+                ));
+            }
+            Capability::LateDriverInit => {
+                // LateDriverInit: lockdown phase — currently a stub.
+                // Future: call lockdown() on devices that implement it.
+                body.extend(generate_late_driver_init());
+            }
+            Capability::ReturnToFel => {
+                body.extend(generate_return_to_fel(platform));
+            }
+            Capability::LoadNextStage {
+                device,
+                base_offset,
+                next_stage,
+            } => {
+                let dev_name = device.as_str();
+                body.extend(generate_load_next_stage(
+                    dev_name,
+                    *base_offset,
+                    next_stage.as_str(),
+                    config,
+                    platform,
+                    capabilities,
+                    &halt,
+                ));
+                inited_devices.push(dev_name.to_string());
             }
         }
     }
 
     // --- Phase 3: Build context and finalize ---
-    let ends_with_jump = capabilities
-        .last()
-        .is_some_and(|cap| matches!(cap, Capability::StageLoad { .. } | Capability::PayloadLoad));
+    let ends_with_jump = capabilities.last().is_some_and(|cap| {
+        matches!(
+            cap,
+            Capability::StageLoad { .. }
+                | Capability::PayloadLoad
+                | Capability::LoadNextStage { .. }
+                | Capability::ReturnToFel
+        )
+    });
 
     let device_fields = config.devices.iter().map(|dev| {
         let name = format_ident!("{}", dev.name.as_str());
@@ -567,13 +738,81 @@ fn generate_fstart_main(
         });
     }
 
+    // Emit fstart_main with handoff_ptr parameter.
+    // The parameter is always present (all platforms pass it) but only
+    // used by non-first stages that deserialize the handoff.
+    let suppress_unused = if !uses_handoff {
+        quote! { let _ = handoff_ptr; }
+    } else {
+        TokenStream::new()
+    };
+
     quote! {
         #[no_mangle]
-        #[allow(unreachable_code)]
-        pub extern "Rust" fn fstart_main() -> ! {
+        #[allow(unreachable_code, unused_variables)]
+        pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
+            #suppress_unused
             #body
         }
     }
+}
+
+/// Collect device names that MUST NOT be re-initialized by later stages.
+///
+/// Only **targeted hardware-level** capabilities are counted:
+///
+/// - `ClockInit` — PLL/clock-gate configuration persists in hardware.
+///   Re-init could glitch clocks used by already-running peripherals.
+/// - `DramInit` — DRAM controller state persists.  Re-initialization
+///   while executing from DRAM would be **catastrophic**.
+///
+/// Capabilities like `DriverInit`, `ConsoleInit`, and `LoadNextStage`
+/// are NOT counted because they establish driver-side state (SDHC flag,
+/// RCA, FIFO pointers, etc.) that is lost when a later stage constructs
+/// a fresh driver instance via `Device::new()`.  Those devices must be
+/// re-initialized to synchronize software state with hardware.
+///
+/// For the first stage or monolithic builds, returns an empty list.
+fn previous_stages_inited_devices(config: &BoardConfig, stage_name: Option<&str>) -> Vec<String> {
+    let stages = match &config.stages {
+        StageLayout::MultiStage(stages) => stages,
+        _ => return vec![],
+    };
+    let Some(name) = stage_name else {
+        return vec![];
+    };
+
+    // Find our stage's index.
+    let our_idx = match stages.iter().position(|s| s.name.as_str() == name) {
+        Some(idx) => idx,
+        None => return vec![],
+    };
+    if our_idx == 0 {
+        return vec![]; // First stage — no predecessors.
+    }
+
+    // Walk all previous stages.  Only carry forward devices from
+    // targeted init capabilities whose hardware state persists and
+    // whose re-initialization would be harmful or redundant.
+    let mut inited = Vec::new();
+    for stage in &stages[..our_idx] {
+        for cap in &stage.capabilities {
+            match cap {
+                Capability::ClockInit { device } | Capability::DramInit { device } => {
+                    let name = device.to_string();
+                    if !inited.contains(&name) {
+                        inited.push(name);
+                    }
+                }
+                // DriverInit, ConsoleInit, LoadNextStage — NOT counted.
+                // Devices initialized by these need fresh init() in later
+                // stages to rebuild driver-side state.
+                _ => {}
+            }
+        }
+    }
+
+    inited
 }
 
 // =======================================================================

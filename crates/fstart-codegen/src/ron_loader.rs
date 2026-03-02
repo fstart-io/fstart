@@ -17,10 +17,10 @@ use std::path::Path;
 use heapless::String as HString;
 use serde::Deserialize;
 
-use fstart_drivers::DriverInstance;
+use fstart_device_registry::DriverInstance;
 use fstart_types::{
     BoardConfig, BuildMode, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig,
-    SecurityConfig, StageLayout,
+    SecurityConfig, SocImageFormat, StageLayout,
 };
 
 /// A fully-parsed board configuration.
@@ -61,6 +61,8 @@ struct RonBoardConfig {
     security: SecurityConfig,
     mode: BuildMode,
     payload: Option<PayloadConfig>,
+    #[serde(default)]
+    soc_image_format: SocImageFormat,
 }
 
 /// A single device entry in the RON file.
@@ -152,6 +154,7 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
         security: ron.security,
         mode: ron.mode,
         payload: ron.payload,
+        soc_image_format: ron.soc_image_format,
     };
 
     ParsedBoard {

@@ -4,7 +4,7 @@
 //! lookup is replaced by `instance.meta()`.  This module keeps the
 //! bus-service helpers used by topology validation.
 
-use fstart_drivers::DriverMeta;
+use fstart_device_registry::DriverMeta;
 use fstart_types::DeviceConfig;
 
 /// Bus service names that indicate a device is a bus controller.
@@ -36,15 +36,20 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
     DriverMeta {
         name: "ns16550",
         type_name: "Ns16550",
-        module_path: "fstart_drivers::uart::ns16550",
+        module_path: "fstart_driver_ns16550",
         config_type: "Ns16550Config",
         services: &["Console"],
-        compatible: &["ns16550a", "ns16550"],
+        compatible: &[
+            "ns16550a",
+            "ns16550",
+            "snps,dw-apb-uart",
+            "allwinner,sun7i-a20-uart",
+        ],
     },
     DriverMeta {
         name: "pl011",
         type_name: "Pl011",
-        module_path: "fstart_drivers::uart::pl011",
+        module_path: "fstart_driver_pl011",
         config_type: "Pl011Config",
         services: &["Console"],
         compatible: &["arm,pl011", "pl011"],
@@ -52,9 +57,33 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
     DriverMeta {
         name: "designware-i2c",
         type_name: "DesignwareI2c",
-        module_path: "fstart_drivers::i2c::designware",
+        module_path: "fstart_driver_designware_i2c",
         config_type: "DesignwareI2cConfig",
         services: &["I2cBus"],
         compatible: &["snps,designware-i2c", "dw-apb-i2c"],
+    },
+    DriverMeta {
+        name: "sunxi-a20-ccu",
+        type_name: "SunxiA20Ccu",
+        module_path: "fstart_driver_sunxi_ccu",
+        config_type: "SunxiA20CcuConfig",
+        services: &["ClockController"],
+        compatible: &["allwinner,sun7i-a20-ccu"],
+    },
+    DriverMeta {
+        name: "sunxi-a20-dramc",
+        type_name: "SunxiA20Dramc",
+        module_path: "fstart_driver_sunxi_dramc",
+        config_type: "SunxiA20DramcConfig",
+        services: &["MemoryController"],
+        compatible: &["allwinner,sun7i-a20-dramc"],
+    },
+    DriverMeta {
+        name: "sunxi-a20-mmc",
+        type_name: "SunxiA20Mmc",
+        module_path: "fstart_driver_sunxi_mmc",
+        config_type: "SunxiA20MmcConfig",
+        services: &["BlockDevice"],
+        compatible: &["allwinner,sun7i-a20-mmc"],
     },
 ];
