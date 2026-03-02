@@ -13,19 +13,23 @@
 
 pub mod block;
 pub mod boot_media;
+pub mod clock;
 pub mod console;
 pub mod device;
 pub mod gpio;
 pub mod i2c;
+pub mod memory_controller;
 pub mod spi;
 pub mod timer;
 
 pub use block::BlockDevice;
 pub use boot_media::{BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMapped, SubRegion};
+pub use clock::ClockController;
 pub use console::Console;
 pub use device::{BusDevice, Device, DeviceError};
 pub use gpio::GpioController;
 pub use i2c::I2c;
+pub use memory_controller::MemoryController;
 pub use spi::SpiBus;
 pub use timer::Timer;
 

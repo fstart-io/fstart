@@ -33,8 +33,10 @@
 
 #![no_std]
 
-// Re-export ufmt so that macro-generated code can reference it
-// without consumers needing a direct ufmt dependency.
+// Re-export ufmt for code that uses `fstart_log::ufmt::uWrite` etc.
+// Note: fstart_log macros use `::ufmt` paths because ufmt's own
+// macros internally expand to `ufmt::` paths. This means any crate
+// using fstart_log macros must also depend on `ufmt` directly.
 #[doc(hidden)]
 pub use ufmt;
 
@@ -161,7 +163,27 @@ impl ufmt::uWrite for ConsoleWriter {
         // SAFETY: CONSOLE is written once during init, then only read.
         let console = unsafe { *CONSOLE.0.get() };
         if let Some(c) = console {
-            c.write_str(s).map_err(|_| ())
+            // Serial terminals require \r\n, but ufmt's uwriteln! only
+            // emits \n.  Translate on the fly so every newline is \r\n.
+            let bytes = s.as_bytes();
+            let mut start = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                if b == b'\n' {
+                    if i > start {
+                        // SAFETY: slicing a valid UTF-8 string at ASCII
+                        // byte boundaries always yields valid UTF-8.
+                        let chunk = unsafe { core::str::from_utf8_unchecked(&bytes[start..i]) };
+                        c.write_str(chunk).map_err(|_| ())?;
+                    }
+                    c.write_str("\r\n").map_err(|_| ())?;
+                    start = i + 1;
+                }
+            }
+            if start < bytes.len() {
+                let tail = unsafe { core::str::from_utf8_unchecked(&bytes[start..]) };
+                c.write_str(tail).map_err(|_| ())?;
+            }
+            Ok(())
         } else {
             Ok(())
         }
@@ -238,8 +260,8 @@ macro_rules! error {
     ($($args:tt)*) => {{
         if $crate::log_enabled($crate::Level::Error) {
             let mut _w = $crate::writer();
-            let _ = $crate::ufmt::uwrite!(_w, "[ERROR] ");
-            let _ = $crate::ufmt::uwriteln!(_w, $($args)*);
+            let _ = ::ufmt::uwrite!(_w, "[ERROR] ");
+            let _ = ::ufmt::uwriteln!(_w, $($args)*);
         }
     }};
 }
@@ -254,8 +276,8 @@ macro_rules! warn {
     ($($args:tt)*) => {{
         if $crate::log_enabled($crate::Level::Warn) {
             let mut _w = $crate::writer();
-            let _ = $crate::ufmt::uwrite!(_w, "[WARN ] ");
-            let _ = $crate::ufmt::uwriteln!(_w, $($args)*);
+            let _ = ::ufmt::uwrite!(_w, "[WARN ] ");
+            let _ = ::ufmt::uwriteln!(_w, $($args)*);
         }
     }};
 }
@@ -270,8 +292,8 @@ macro_rules! info {
     ($($args:tt)*) => {{
         if $crate::log_enabled($crate::Level::Info) {
             let mut _w = $crate::writer();
-            let _ = $crate::ufmt::uwrite!(_w, "[INFO ] ");
-            let _ = $crate::ufmt::uwriteln!(_w, $($args)*);
+            let _ = ::ufmt::uwrite!(_w, "[INFO ] ");
+            let _ = ::ufmt::uwriteln!(_w, $($args)*);
         }
     }};
 }
@@ -286,8 +308,8 @@ macro_rules! debug {
     ($($args:tt)*) => {{
         if $crate::log_enabled($crate::Level::Debug) {
             let mut _w = $crate::writer();
-            let _ = $crate::ufmt::uwrite!(_w, "[DEBUG] ");
-            let _ = $crate::ufmt::uwriteln!(_w, $($args)*);
+            let _ = ::ufmt::uwrite!(_w, "[DEBUG] ");
+            let _ = ::ufmt::uwriteln!(_w, $($args)*);
         }
     }};
 }
@@ -302,8 +324,8 @@ macro_rules! trace {
     ($($args:tt)*) => {{
         if $crate::log_enabled($crate::Level::Trace) {
             let mut _w = $crate::writer();
-            let _ = $crate::ufmt::uwrite!(_w, "[TRACE] ");
-            let _ = $crate::ufmt::uwriteln!(_w, $($args)*);
+            let _ = ::ufmt::uwrite!(_w, "[TRACE] ");
+            let _ = ::ufmt::uwriteln!(_w, $($args)*);
         }
     }};
 }
