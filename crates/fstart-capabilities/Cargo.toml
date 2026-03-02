@@ -14,10 +14,12 @@ sha2-digest = ["ffs", "fstart-ffs/sha2-digest"]
 sha3-digest = ["ffs", "fstart-ffs/sha3-digest"]
 # LZ4 decompression for compressed segments (uses fstart-ffs built-in decompressor)
 lz4 = ["ffs"]
-# FDT preparation for Linux boot (needs alloc via fstart-alloc)
-fdt = ["dep:dtoolkit"]
+# FDT preparation for Linux boot (raw blob patcher, no alloc needed)
+fdt = []
 # FIT image parsing at runtime
 fit = ["ffs", "dep:fstart-fit"]
+# Inter-stage handoff serialization (postcard)
+handoff = ["dep:postcard", "dep:fstart-types"]
 
 [dependencies]
 fstart-log = { workspace = true }
@@ -26,4 +28,4 @@ ufmt = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-types = { workspace = true, optional = true }
 fstart-fit = { workspace = true, optional = true }
-dtoolkit = { workspace = true, optional = true, features = ["write"] }
+postcard = { workspace = true, optional = true }

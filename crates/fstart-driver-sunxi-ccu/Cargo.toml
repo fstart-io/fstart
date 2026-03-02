@@ -1,0 +1,13 @@
+[package]
+name = "fstart-driver-sunxi-ccu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-arch = { workspace = true, features = ["armv7"] }
+fstart-sunxi-ccu-regs = { workspace = true }
+fstart-mmio = { workspace = true }
+fstart-services = { workspace = true }
+tock-registers = { workspace = true }
+serde = { workspace = true }

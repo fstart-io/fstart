@@ -1,0 +1,173 @@
+// Board definition for LeMaker BananaPi M1 (Allwinner A20 / sun7i).
+//
+// SoC:    Allwinner A20 (dual Cortex-A7 ARMv7-A)
+// DRAM:   1 GB DDR3 at 0x40000000
+// SRAM:   32 KB A1 at 0x00000000 (BROM loads 24 KB from boot medium)
+// UART:   UART0 at 0x01C28000 (snps,dw-apb-uart) — PB22=TX, PB23=RX
+//
+// Multi-stage boot flow:
+//   1. A20 BROM loads 24K eGON.BT0 image from SD card into SRAM
+//   2. Bootblock (SRAM): clock init → UART → DRAM init → load main from SD
+//   3. Main (DRAM): UART → load kernel+DTB from SD → boot Linux
+//
+// SD card layout (FFS image written at sector 16 = byte offset 0x2000):
+//   [0x0000] MBR / partition table
+//   [0x2000] eGON header + bootblock (24K, loaded by BROM)
+//   [0x2000+] rest of FFS (main stage, kernel, DTB, manifest)
+//
+// The FFS image size limit is 4 MB (0x400000), which leaves plenty
+// of room for an LZ4-compressed main stage + kernel + DTB.
+
+(
+    name: "bananapi-m1",
+    platform: "armv7",
+
+    memory: (
+        regions: [
+            // SRAM A1 — bootblock runs here (24K usable from BROM load).
+            ( name: "sram", base: 0x00000000, size: 0x8000, kind: Ram ),
+            // DRAM — available after DramInit. 1 GB DDR3.
+            ( name: "dram", base: 0x40000000, size: 0x40000000, kind: Ram ),
+        ],
+        flash_base: None,
+        flash_size: None,
+    ),
+
+    devices: [
+        // Allwinner A20 CCU — clock tree + UART GPIO pin mux.
+        // Must be initialized before UART (clock gates) and DRAM (PLL5).
+        (
+            name: "ccu0",
+            driver: SunxiA20Ccu((
+                ccu_base: 0x01C20000,
+                pio_base: 0x01C20800,
+                uart_index: 0,
+            )),
+            services: ["ClockController"],
+        ),
+        // UART0 — debug console on PB22 (TX) / PB23 (RX).
+        // NS16550-compatible (DW APB UART), 4-byte register stride.
+        // Access is byte-width (writeb/readb) despite the 4-byte spacing.
+        (
+            name: "uart0",
+            driver: Ns16550((
+                base_addr: 0x01C28000,
+                clock_freq: 24000000,
+                baud_rate: 115200,
+                reg_shift: 2,
+            )),
+            services: ["Console"],
+        ),
+        // Allwinner A20 DRAM controller — DDR3, 432 MHz, vendor magic timings.
+        // Parameters from u-boot Bananapi_defconfig defaults.
+        (
+            name: "dramc0",
+            driver: SunxiA20Dramc((
+                dramc_base: 0x01C01000,
+                ccu_base: 0x01C20000,
+                clock: 432,
+                mbus_clock: 0,
+                zq: 123,
+                odt_en: false,
+                cas: 6,
+                tpr0: 0x30926692,
+                tpr1: 0x1090,
+                tpr2: 0x1a0c8,
+                tpr3: 0x0,
+                tpr4: 0x0,
+                emr1: 4,
+                emr2: 0,
+                emr3: 0,
+                dqs_gating_delay: 0x0,
+                active_windowing: false,
+            )),
+            services: ["MemoryController"],
+        ),
+        // SD card controller (MMC0) — boot medium.
+        // Handles its own GPIO mux (PF0-PF5) and clock gating in init().
+        (
+            name: "mmc0",
+            driver: SunxiA20Mmc((
+                base_addr: 0x01C0F000,
+                ccu_base: 0x01C20000,
+                pio_base: 0x01C20800,
+                mmc_index: 0,
+            )),
+            services: ["BlockDevice"],
+        ),
+    ],
+
+    // Two-stage boot: bootblock in SRAM, main stage in DRAM.
+    //
+    // The bootblock is too small (24K SRAM) for FFS parsing + crypto +
+    // decompression. Instead it does a raw SD→DRAM copy of the FFS image,
+    // then jumps to the main stage. The main stage in DRAM has unlimited
+    // space and handles FFS, signature verification, and Linux boot.
+    //
+    // DRAM layout (after bootblock runs):
+    //   0x40000000  DRAM base (stack for main stage at top of first 16 MB)
+    //   0x41000000  main stage binary (loaded by bootblock jump)
+    //   0x42000000  kernel load address (zImage, placed by PayloadLoad)
+    //   0x43000000  DTB load address (placed by PayloadLoad)
+    //   0x48000000  FFS image copy (4 MB, raw-copied from SD by bootblock)
+    stages: MultiStage([
+        // Stage 1: bootblock — runs from SRAM (24K limit).
+        // Initializes clocks, UART, DRAM, then raw-copies the entire
+        // FFS image from SD card into DRAM and jumps to the main stage.
+        (
+            name: "bootblock",
+            capabilities: [
+                ClockInit( device: "ccu0" ),
+                ConsoleInit( device: "uart0" ),
+                DramInit( device: "dramc0" ),
+                DriverInit,
+                LoadNextStage(
+                    device: "mmc0",
+                    base_offset: 0x2000,
+                    next_stage: "main",
+                ),
+            ],
+            load_addr: 0x00000000,
+            stack_size: 0x1000,
+            runs_from: Ram,
+        ),
+        // Stage 2: main — runs from DRAM after being loaded by bootblock.
+        // Reinitializes UART + MMC, reads kernel/DTB from FFS on SD card,
+        // verifies signature, prepares DTB, and boots Linux.
+        (
+            name: "main",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                DriverInit,
+                BootMedia(Device( name: "mmc0", offset: 0x2000, size: 0x800000 )),
+                SigVerify,
+                FdtPrepare,
+                PayloadLoad,
+            ],
+            load_addr: 0x41000000,
+            stack_size: 0x10000,
+            runs_from: Ram,
+        ),
+    ]),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+
+    mode: Rigid,
+
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("zImage"),
+        kernel_load_addr: Some(0x42000000),
+        fdt: Override("sun7i-a20-bananapi.dtb"),
+        dtb_addr: Some(0x43000000),
+        src_dtb_addr: None,
+        bootargs: Some("earlycon console=ttyS0,115200"),
+        firmware: None,
+    )),
+
+    soc_image_format: AllwinnerEgon,
+)
