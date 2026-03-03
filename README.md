@@ -11,6 +11,9 @@ script, and driver initialization automatically. No hand-written stage code.
 Supports RISC-V 64, AArch64, and ARMv7. Boots Linux. Runs on QEMU and real
 hardware (Allwinner A20).
 
+**Experimental.** This is early-stage software. Internals, APIs, and the board
+file format may change drastically without notice.
+
 ## Quick start
 
 ```bash
