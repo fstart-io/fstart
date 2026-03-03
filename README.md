@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.jpeg" width="200" alt="fstart logo">
+</p>
+
 # fstart
 
 A firmware framework in Rust. You describe a board in a `.ron` file — memory
