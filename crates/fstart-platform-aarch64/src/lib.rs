@@ -1,14 +1,28 @@
 //! AArch64 platform support.
 //!
 //! Provides the reset vector entry point, stack setup, BSS clearing,
-//! and architecture-specific helpers. Captures the DTB address passed
-//! by QEMU at reset.
+//! and architecture-specific helpers.
+//!
+//! Two entry paths are supported:
+//!
+//! - **Default** (`entry.rs`): Standard AArch64 entry for platforms that
+//!   start directly in AArch64 mode (e.g., QEMU virt). Captures the DTB
+//!   address from `x0` at reset.
+//!
+//! - **Sunxi** (`entry_sunxi.rs`, behind `sunxi` feature): Entry for
+//!   Allwinner sun50i SoCs (H5, A64) that boot in AArch32 from the BROM.
+//!   Implements the ARMv8 RMR warm-reset sequence to switch into AArch64,
+//!   with FEL state saving for USB debug mode return.
 
 #![no_std]
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(not(feature = "sunxi"))]
 pub mod entry;
+
+#[cfg(feature = "sunxi")]
+pub mod entry_sunxi;
 
 // ---------------------------------------------------------------------------
 // Boot parameters — written by _start assembly, read by Rust code
@@ -248,6 +262,26 @@ pub fn jump_to(addr: u64) -> ! {
         core::arch::asm!(
             "br {0}",
             in(reg) addr,
+            options(noreturn),
+        );
+    }
+}
+
+/// Jump to the next stage, passing the handoff address in x0.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `addr` points to valid AArch64 executable code
+/// - `handoff_addr` points to a valid serialized `StageHandoff` (or 0)
+/// - This function never returns
+#[inline(always)]
+pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
+    unsafe {
+        core::arch::asm!(
+            "br {addr}",
+            addr = in(reg) addr,
+            in("x0") handoff_addr,
             options(noreturn),
         );
     }

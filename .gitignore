@@ -13,3 +13,4 @@ fit/initramfs-*
 # Board test artifacts (DTBs, kernel images, symlinks)
 *.dtb
 zImage
+Image

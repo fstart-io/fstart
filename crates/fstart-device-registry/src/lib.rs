@@ -223,7 +223,7 @@ impl DriverInstance {
                 module_path: "fstart_driver_sunxi_h3_dramc",
                 config_type: "SunxiH3DramcConfig",
                 services: &["MemoryController"],
-                compatible: &["allwinner,sun8i-h3-dramc"],
+                compatible: &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"],
             },
             #[cfg(feature = "sunxi-mmc")]
             Self::SunxiMmc(_) => &DriverMeta {
@@ -232,7 +232,11 @@ impl DriverInstance {
                 module_path: "fstart_driver_sunxi_mmc",
                 config_type: "SunxiMmcConfig",
                 services: &["BlockDevice"],
-                compatible: &["allwinner,sun7i-a20-mmc", "allwinner,sun8i-h3-mmc"],
+                compatible: &[
+                    "allwinner,sun7i-a20-mmc",
+                    "allwinner,sun8i-h3-mmc",
+                    "allwinner,sun50i-h5-mmc",
+                ],
             },
             #[cfg(feature = "sunxi-spi")]
             Self::SunxiSpi(_) => &DriverMeta {
