@@ -94,4 +94,28 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["BlockDevice"],
         compatible: &["allwinner,sun4i-a10-spi"],
     },
+    DriverMeta {
+        name: "sunxi-h3-ccu",
+        type_name: "SunxiH3Ccu",
+        module_path: "fstart_driver_sunxi_h3_ccu",
+        config_type: "SunxiH3CcuConfig",
+        services: &["ClockController"],
+        compatible: &["allwinner,sun8i-h3-ccu"],
+    },
+    DriverMeta {
+        name: "sunxi-h3-dramc",
+        type_name: "SunxiH3Dramc",
+        module_path: "fstart_driver_sunxi_h3_dramc",
+        config_type: "SunxiH3DramcConfig",
+        services: &["MemoryController"],
+        compatible: &["allwinner,sun8i-h3-dramc"],
+    },
+    DriverMeta {
+        name: "sunxi-h3-mmc",
+        type_name: "SunxiH3Mmc",
+        module_path: "fstart_driver_sunxi_h3_mmc",
+        config_type: "SunxiH3MmcConfig",
+        services: &["BlockDevice"],
+        compatible: &["allwinner,sun8i-h3-mmc"],
+    },
 ];

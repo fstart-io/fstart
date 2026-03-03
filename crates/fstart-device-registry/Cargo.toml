@@ -17,6 +17,9 @@ fstart-driver-sunxi-ccu = { path = "../fstart-driver-sunxi-ccu", optional = true
 fstart-driver-sunxi-dramc = { path = "../fstart-driver-sunxi-dramc", optional = true }
 fstart-driver-sunxi-mmc = { path = "../fstart-driver-sunxi-mmc", optional = true }
 fstart-driver-sunxi-spi = { path = "../fstart-driver-sunxi-spi", optional = true }
+fstart-driver-sunxi-h3-ccu = { path = "../fstart-driver-sunxi-h3-ccu", optional = true }
+fstart-driver-sunxi-h3-dramc = { path = "../fstart-driver-sunxi-h3-dramc", optional = true }
+fstart-driver-sunxi-h3-mmc = { path = "../fstart-driver-sunxi-h3-mmc", optional = true }
 
 [features]
 # Driver feature flags - enable to include that driver in the registry
@@ -28,6 +31,9 @@ sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
 sunxi-a20-dramc = ["dep:fstart-driver-sunxi-dramc"]
 sunxi-a20-mmc = ["dep:fstart-driver-sunxi-mmc"]
 sunxi-a20-spi = ["dep:fstart-driver-sunxi-spi"]
+sunxi-h3-ccu = ["dep:fstart-driver-sunxi-h3-ccu"]
+sunxi-h3-dramc = ["dep:fstart-driver-sunxi-h3-dramc"]
+sunxi-h3-mmc = ["dep:fstart-driver-sunxi-h3-mmc"]
 
 # Meta-feature to enable all drivers (used by codegen on host)
 all-drivers = [
@@ -38,4 +44,7 @@ all-drivers = [
     "sunxi-a20-dramc",
     "sunxi-a20-mmc",
     "sunxi-a20-spi",
+    "sunxi-h3-ccu",
+    "sunxi-h3-dramc",
+    "sunxi-h3-mmc",
 ]
