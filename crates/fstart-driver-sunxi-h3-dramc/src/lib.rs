@@ -21,6 +21,7 @@
 
 use core::cell::Cell;
 
+use tock_registers::fields::FieldValue;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
@@ -65,6 +66,206 @@ register_bitfields! [u32,
     ]
 ];
 
+register_bitfields! [u32,
+    /// CCCR — Credit Control Register (COM block).
+    pub CCCR [
+        /// Credit value clear (bit 31).
+        CREDIT_CLEAR OFFSET(31) NUMBITS(1) []
+    ]
+];
+
+// ===================================================================
+// CTL register bitfields
+// ===================================================================
+
+register_bitfields! [u32,
+    /// PIR — PHY Initialization Register.
+    pub PIR [
+        /// Trigger initialization sequence.
+        INIT OFFSET(0) NUMBITS(1) [],
+        /// ZQ calibration.
+        ZCAL OFFSET(1) NUMBITS(1) [],
+        /// PLL initialization.
+        PLLINIT OFFSET(4) NUMBITS(1) [],
+        /// Digital delay-line calibration.
+        DCAL OFFSET(5) NUMBITS(1) [],
+        /// PHY reset.
+        PHYRST OFFSET(6) NUMBITS(1) [],
+        /// DRAM reset.
+        DRAMRST OFFSET(7) NUMBITS(1) [],
+        /// DRAM initialization (mode register writes).
+        DRAMINIT OFFSET(8) NUMBITS(1) [],
+        /// Read DQS gate training.
+        QSGATE OFFSET(10) NUMBITS(1) [],
+        /// Clear status registers.
+        CLRSR OFFSET(27) NUMBITS(1) []
+    ],
+
+    /// PGSR0 — PHY General Status Register 0.
+    pub PGSR0 [
+        /// Initialization complete.
+        INIT_DONE OFFSET(0) NUMBITS(1) [],
+        /// Error flags (DT/RV/RE/WE errors): bits [27:21].
+        ERRORS OFFSET(21) NUMBITS(7) []
+    ],
+
+    /// PGCR0 — PHY General Configuration Register 0.
+    pub PGCR0 [
+        /// Low-bandwidth clock select (bits [5:0]).
+        LBCLKSEL OFFSET(0) NUMBITS(6) [],
+        /// HDR clock dynamic mode (bits [13:12]).
+        HDRCLKSEL OFFSET(12) NUMBITS(2) [],
+        /// DDR clock dynamic mode (bits [15:14]).
+        DDRCLKSEL OFFSET(14) NUMBITS(2) [],
+        /// Auto-calibration enable (bit 26).
+        AUTOCAL OFFSET(26) NUMBITS(1) [],
+        /// VT compensation (bit 30).
+        VTC OFFSET(30) NUMBITS(1) []
+    ],
+
+    /// PGCR1 — PHY General Configuration Register 1.
+    pub PGCR1 [
+        /// Write leveling step (bit 24).
+        WLSTEP OFFSET(24) NUMBITS(1) [],
+        /// PUB mode (bit 26).
+        PUBMODE OFFSET(26) NUMBITS(1) []
+    ],
+
+    /// PGCR2 — PHY General Configuration Register 2.
+    pub PGCR2 [
+        /// DQS gate power-down mode (bits [7:6]).
+        DQS_GATE_PD OFFSET(6) NUMBITS(2) [],
+        /// Analog PHY phase select (bits [9:8]).
+        APHY_PHASE OFFSET(8) NUMBITS(2) [],
+        /// Digital PHY phase select (bits [11:10]).
+        DPHY_PHASE OFFSET(10) NUMBITS(2) []
+    ],
+
+    /// DTCR — Data Training Configuration Register.
+    pub DTCR [
+        /// Rank mask for data training (bits [27:24]).
+        RANK_MASK OFFSET(24) NUMBITS(4) []
+    ],
+
+    /// ZQCR — ZQ Calibration Control Register.
+    pub ZQCR [
+        /// ZQ calibration value (bits [15:0]).
+        ZQ_VAL OFFSET(0) NUMBITS(16) [],
+        /// ZQ module power-down (bit 31).
+        PWRDOWN OFFSET(31) NUMBITS(1) []
+    ],
+
+    /// ACIOCR — AC I/O Configuration Register.
+    pub ACIOCR_REG [
+        /// AC power-down receiver (bit 1).
+        AC_PDR OFFSET(1) NUMBITS(1) []
+    ],
+
+    /// UPD2 — Update Register 2.
+    pub UPD2 [
+        /// DFI PHY update clock count (bits [27:16]).
+        DFI_PHYUPD_CLK OFFSET(16) NUMBITS(12) []
+    ],
+
+    /// RFSHCTL0 — Refresh Control Register 0.
+    pub RFSHCTL0 [
+        /// Refresh trigger (bit 31).
+        REFRESH_TRIGGER OFFSET(31) NUMBITS(1) []
+    ],
+
+    /// STATR — Controller Status Register.
+    pub STATR [
+        /// Operating mode (bit 0): 1 = normal, 0 = init.
+        OPER_MODE OFFSET(0) NUMBITS(1) []
+    ],
+
+    /// DRAMTMG0 — DRAM Timing Register 0.
+    pub DRAMTMG0 [
+        TRAS OFFSET(0) NUMBITS(8) [],
+        TRASMAX OFFSET(8) NUMBITS(8) [],
+        TFAW OFFSET(16) NUMBITS(8) [],
+        WR2PRE OFFSET(24) NUMBITS(8) []
+    ],
+
+    /// DRAMTMG1 — DRAM Timing Register 1.
+    pub DRAMTMG1 [
+        TRC OFFSET(0) NUMBITS(8) [],
+        TRTP OFFSET(8) NUMBITS(8) [],
+        TXP OFFSET(16) NUMBITS(8) []
+    ],
+
+    /// DRAMTMG2 — DRAM Timing Register 2.
+    pub DRAMTMG2 [
+        TWR2RD OFFSET(0) NUMBITS(8) [],
+        TRD2WR OFFSET(8) NUMBITS(8) [],
+        TCL OFFSET(16) NUMBITS(8) [],
+        TCWL OFFSET(24) NUMBITS(8) []
+    ],
+
+    /// DRAMTMG3 — DRAM Timing Register 3.
+    pub DRAMTMG3 [
+        TMOD OFFSET(0) NUMBITS(8) [],
+        TMRD OFFSET(12) NUMBITS(4) [],
+        TMRW OFFSET(16) NUMBITS(8) []
+    ],
+
+    /// DRAMTMG4 — DRAM Timing Register 4.
+    pub DRAMTMG4 [
+        TRP OFFSET(0) NUMBITS(8) [],
+        TRRD OFFSET(8) NUMBITS(8) [],
+        TCCD OFFSET(16) NUMBITS(8) [],
+        TRCD OFFSET(24) NUMBITS(8) []
+    ],
+
+    /// DRAMTMG5 — DRAM Timing Register 5.
+    pub DRAMTMG5 [
+        TCKE OFFSET(0) NUMBITS(8) [],
+        TCKESR OFFSET(8) NUMBITS(8) [],
+        TCKSRE OFFSET(16) NUMBITS(8) [],
+        TCKSRX OFFSET(24) NUMBITS(8) []
+    ],
+
+    /// DRAMTMG8 — DRAM Timing Register 8.
+    pub DRAMTMG8_REG [
+        POST_SELFREF_GAP OFFSET(0) NUMBITS(8) [],
+        POST_SELFREF_GAP_DLY OFFSET(8) NUMBITS(8) []
+    ],
+
+    /// PITMG0 — PHY Interface Timing Register 0.
+    pub PITMG0 [
+        WR_LATENCY OFFSET(0) NUMBITS(8) [],
+        PHYWR_LAT OFFSET(8) NUMBITS(8) [],
+        T_RDATA_EN OFFSET(16) NUMBITS(8) [],
+        PHYRD_LAT OFFSET(24) NUMBITS(8) []
+    ],
+
+    /// PTR3 — PHY Timing Register 3.
+    pub PTR3 [
+        TDINIT0 OFFSET(0) NUMBITS(20) [],
+        TDINIT1 OFFSET(20) NUMBITS(12) []
+    ],
+
+    /// PTR4 — PHY Timing Register 4.
+    pub PTR4 [
+        TDINIT2 OFFSET(0) NUMBITS(20) [],
+        TDINIT3 OFFSET(20) NUMBITS(12) []
+    ],
+
+    /// RFSHTMG — Refresh Timing Register.
+    pub RFSHTMG [
+        TRFC OFFSET(0) NUMBITS(16) [],
+        TREFI OFFSET(16) NUMBITS(16) []
+    ],
+
+    /// ODTMAP — ODT/Rank Map Register.
+    pub ODTMAP [
+        RANK0_WR OFFSET(0) NUMBITS(4) [],
+        RANK0_RD OFFSET(4) NUMBITS(4) [],
+        RANK1_WR OFFSET(8) NUMBITS(4) [],
+        RANK1_RD OFFSET(12) NUMBITS(4) []
+    ]
+];
+
 // ===================================================================
 // COM register block (0x01C6_2000)
 // ===================================================================
@@ -92,7 +293,7 @@ register_structs! {
         (0x098 => pub mapr: MmioReadWrite<u32>),
         (0x09C => _res1: [u8; 0x34]),
         /// Credit control register.
-        (0x0D0 => pub cccr: MmioReadWrite<u32>),
+        (0x0D0 => pub cccr: MmioReadWrite<u32, CCCR::Register>),
         (0x0D4 => _res2: [u8; 0x72C]),
         /// Protection register.
         (0x800 => pub protect: MmioReadWrite<u32>),
@@ -130,7 +331,7 @@ register_structs! {
     /// Layout from U-Boot `struct sunxi_mctl_ctl_reg`.
     pub SunxiH3DramCtlRegs {
         /// PHY initialization register.
-        (0x000 => pub pir: MmioReadWrite<u32>),
+        (0x000 => pub pir: MmioReadWrite<u32, PIR::Register>),
         /// Power control.
         (0x004 => pub pwrctl: MmioReadWrite<u32>),
         /// Mode register control.
@@ -138,10 +339,10 @@ register_structs! {
         /// Clock enable.
         (0x00C => pub clken: MmioReadWrite<u32>),
         /// PHY general status registers [0..1].
-        (0x010 => pub pgsr0: MmioReadWrite<u32>),
+        (0x010 => pub pgsr0: MmioReadWrite<u32, PGSR0::Register>),
         (0x014 => pub pgsr1: MmioReadWrite<u32>),
         /// Controller status register.
-        (0x018 => pub statr: MmioReadWrite<u32>),
+        (0x018 => pub statr: MmioReadWrite<u32, STATR::Register>),
         (0x01C => _res1: [u8; 0x10]),
         /// LPDDR3 mode register 11.
         (0x02C => pub lp3mr11: MmioReadWrite<u32>),
@@ -156,47 +357,47 @@ register_structs! {
         (0x044 => pub ptr0: MmioReadWrite<u32>),
         (0x048 => pub ptr1: MmioReadWrite<u32>),
         (0x04C => pub ptr2: MmioReadWrite<u32>),
-        (0x050 => pub ptr3: MmioReadWrite<u32>),
-        (0x054 => pub ptr4: MmioReadWrite<u32>),
+        (0x050 => pub ptr3: MmioReadWrite<u32, PTR3::Register>),
+        (0x054 => pub ptr4: MmioReadWrite<u32, PTR4::Register>),
         /// DRAM timing registers [0..8].
-        (0x058 => pub dramtmg0: MmioReadWrite<u32>),
-        (0x05C => pub dramtmg1: MmioReadWrite<u32>),
-        (0x060 => pub dramtmg2: MmioReadWrite<u32>),
-        (0x064 => pub dramtmg3: MmioReadWrite<u32>),
-        (0x068 => pub dramtmg4: MmioReadWrite<u32>),
-        (0x06C => pub dramtmg5: MmioReadWrite<u32>),
+        (0x058 => pub dramtmg0: MmioReadWrite<u32, DRAMTMG0::Register>),
+        (0x05C => pub dramtmg1: MmioReadWrite<u32, DRAMTMG1::Register>),
+        (0x060 => pub dramtmg2: MmioReadWrite<u32, DRAMTMG2::Register>),
+        (0x064 => pub dramtmg3: MmioReadWrite<u32, DRAMTMG3::Register>),
+        (0x068 => pub dramtmg4: MmioReadWrite<u32, DRAMTMG4::Register>),
+        (0x06C => pub dramtmg5: MmioReadWrite<u32, DRAMTMG5::Register>),
         (0x070 => pub dramtmg6: MmioReadWrite<u32>),
         (0x074 => pub dramtmg7: MmioReadWrite<u32>),
-        (0x078 => pub dramtmg8: MmioReadWrite<u32>),
+        (0x078 => pub dramtmg8: MmioReadWrite<u32, DRAMTMG8_REG::Register>),
         /// ODT configuration.
         (0x07C => pub odtcfg: MmioReadWrite<u32>),
         /// PHY interface timing registers [0..1].
-        (0x080 => pub pitmg0: MmioReadWrite<u32>),
+        (0x080 => pub pitmg0: MmioReadWrite<u32, PITMG0::Register>),
         (0x084 => pub pitmg1: MmioReadWrite<u32>),
         (0x088 => _res2: [u8; 0x04]),
         /// Refresh control register 0.
-        (0x08C => pub rfshctl0: MmioReadWrite<u32>),
+        (0x08C => pub rfshctl0: MmioReadWrite<u32, RFSHCTL0::Register>),
         /// Refresh timing.
-        (0x090 => pub rfshtmg: MmioReadWrite<u32>),
+        (0x090 => pub rfshtmg: MmioReadWrite<u32, RFSHTMG::Register>),
         (0x094 => _res3: [u8; 0x24]),
         /// VTF control register (unused on H3).
         (0x0B8 => pub vtfcr: MmioReadWrite<u32>),
         /// DQS gate mode register.
         (0x0BC => pub dqsgmr: MmioReadWrite<u32>),
         /// Data training configuration register.
-        (0x0C0 => pub dtcr: MmioReadWrite<u32>),
+        (0x0C0 => pub dtcr: MmioReadWrite<u32, DTCR::Register>),
         (0x0C4 => _res4: [u8; 0x3C]),
         /// PHY general configuration registers [0..3].
-        (0x100 => pub pgcr0: MmioReadWrite<u32>),
-        (0x104 => pub pgcr1: MmioReadWrite<u32>),
-        (0x108 => pub pgcr2: MmioReadWrite<u32>),
+        (0x100 => pub pgcr0: MmioReadWrite<u32, PGCR0::Register>),
+        (0x104 => pub pgcr1: MmioReadWrite<u32, PGCR1::Register>),
+        (0x108 => pub pgcr2: MmioReadWrite<u32, PGCR2::Register>),
         (0x10C => pub pgcr3: MmioReadWrite<u32>),
         (0x110 => _res5: [u8; 0x10]),
         /// ODT map register.
-        (0x120 => pub odtmap: MmioReadWrite<u32>),
+        (0x120 => pub odtmap: MmioReadWrite<u32, ODTMAP::Register>),
         (0x124 => _res6: [u8; 0x1C]),
         /// ZQ calibration control register.
-        (0x140 => pub zqcr: MmioReadWrite<u32>),
+        (0x140 => pub zqcr: MmioReadWrite<u32, ZQCR::Register>),
         /// ZQ calibration status register.
         (0x144 => pub zqsr: MmioReadWrite<u32>),
         /// ZQ data registers [0..2].
@@ -205,7 +406,7 @@ register_structs! {
         (0x150 => pub zqdr2: MmioReadWrite<u32>),
         (0x154 => _res7: [u8; 0xB4]),
         /// AC I/O configuration register.
-        (0x208 => pub aciocr: MmioReadWrite<u32>),
+        (0x208 => pub aciocr: MmioReadWrite<u32, ACIOCR_REG::Register>),
         (0x20C => _res8: [u8; 0x04]),
         /// AC bit delay line registers [0..30] at 0x210..0x288.
         (0x210 => _acbdlr: [u8; 124]),
@@ -220,7 +421,7 @@ register_structs! {
         (0x480 => _dx3: [u8; 0x80]),
         (0x500 => _res10: [u8; 0x388]),
         /// Update register 2.
-        (0x888 => pub upd2: MmioReadWrite<u32>),
+        (0x888 => pub upd2: MmioReadWrite<u32, UPD2::Register>),
         (0x88C => @END),
     }
 }
@@ -259,26 +460,6 @@ impl SunxiH3DramCtlRegs {
     }
 }
 
-// ===================================================================
-// PIR (PHY Init Register) bit definitions — from U-Boot header
-// ===================================================================
-
-const PIR_INIT: u32 = 1 << 0;
-const PIR_ZCAL: u32 = 1 << 1;
-const PIR_PLLINIT: u32 = 1 << 4;
-const PIR_DCAL: u32 = 1 << 5;
-const PIR_PHYRST: u32 = 1 << 6;
-const PIR_DRAMRST: u32 = 1 << 7;
-const PIR_DRAMINIT: u32 = 1 << 8;
-const PIR_QSGATE: u32 = 1 << 10;
-const PIR_CLRSR: u32 = 1 << 27;
-
-/// PGSR bits.
-const PGSR_INIT_DONE: u32 = 1 << 0;
-
-/// ZQ power down bit (bit 31 of ZQCR).
-const ZQCR_PWRDOWN: u32 = 1 << 31;
-
 /// PROTECT magic value to unlock register writes.
 const PROTECT_MAGIC: u32 = 0x94be6fa3;
 
@@ -292,13 +473,36 @@ const DRAM_BASE: usize = 0x4000_0000;
 const POLL_TIMEOUT: u32 = 1_000_000;
 
 // ===================================================================
-// DX_GCR ODT mode definitions — from U-Boot
+// DX byte-lane GCR/GSR0 field definitions — from U-Boot
 // ===================================================================
 
-/// ODT dynamically enabled during reads/writes.
-const DX_GCR_ODT_DYNAMIC: u32 = 0x0 << 4;
-/// ODT disabled.
-const DX_GCR_ODT_OFF: u32 = 0x2 << 4;
+/// DX byte-lane General Configuration Register field masks.
+mod dx_gcr {
+    /// DQS receiver power-down (bit 1).
+    pub const DQSRPD: u32 = 1 << 1;
+    /// DQS receiver termination (bits [3:2]).
+    pub const DQSRTT_MASK: u32 = 0x3 << 2;
+    /// ODT mode field (bits [5:4]).
+    pub const ODT_MASK: u32 = 0x3 << 4;
+    /// ODT dynamically enabled during reads/writes.
+    pub const ODT_DYNAMIC: u32 = 0x0 << 4;
+    /// ODT disabled.
+    pub const ODT_OFF: u32 = 0x2 << 4;
+    /// RTT output hold (bits [13:12]).
+    pub const RTTOH_MASK: u32 = 0x3 << 12;
+    /// RTT output active lane (bits [15:14]).
+    pub const RTTOAL_MASK: u32 = 0x3 << 14;
+    /// Combined mask for all ODT-related fields.
+    pub const ODT_FIELDS: u32 = ODT_MASK | DQSRPD | DQSRTT_MASK | RTTOH_MASK | RTTOAL_MASK;
+}
+
+/// DX byte-lane General Status Register 0 field masks.
+mod dx_gsr0 {
+    /// QS gate training error for rank 0 (bit 24).
+    pub const QSGATE_ERR: u32 = 1 << 24;
+    /// QS gate training error for rank 1 (bit 25).
+    pub const RANK1_QSGATE_ERR: u32 = 1 << 25;
+}
 
 // ===================================================================
 // DDR3-1333 timing parameters — from u-boot ddr3_1333.c
@@ -511,9 +715,13 @@ impl SunxiH3Dramc {
 
         // Step 3: ODT map
         if self.dual_rank.get() {
-            self.ctl.odtmap.set(0x0000_0303);
+            self.ctl
+                .odtmap
+                .write(ODTMAP::RANK0_WR.val(0x3) + ODTMAP::RANK1_WR.val(0x3));
         } else {
-            self.ctl.odtmap.set(0x0000_0201);
+            self.ctl
+                .odtmap
+                .write(ODTMAP::RANK0_WR.val(0x1) + ODTMAP::RANK1_WR.val(0x2));
         }
         udelay(1);
 
@@ -521,8 +729,7 @@ impl SunxiH3Dramc {
         self.ctl.odtcfg.set(0x0c00_0400);
 
         // Step 5: Clear credit value
-        let cccr = self.com.cccr.get();
-        self.com.cccr.set(cccr | (1 << 31));
+        self.com.cccr.modify(CCCR::CREDIT_CLEAR::SET);
         udelay(10);
 
         // Step 6: Auto-detect DRAM size — stores page_size, row_bits, bank_bits in self
@@ -658,53 +865,50 @@ impl SunxiH3Dramc {
         // 3. Set MBUS master priority
         self.mctl_set_master_priority_h3();
 
-        // 4. Disable VTC: clear bit 30 and bits [5:0] in PGCR0
-        let pgcr0 = self.ctl.pgcr0.get();
-        self.ctl.pgcr0.set(pgcr0 & !((1 << 30) | 0x3f));
+        // 4. Disable VTC and clear low-bandwidth clock select in PGCR0
+        self.ctl
+            .pgcr0
+            .modify(PGCR0::VTC::CLEAR + PGCR0::LBCLKSEL.val(0));
 
-        // 5. PGCR1: clear bit 24, set bit 26 (H3 path)
-        let pgcr1 = self.ctl.pgcr1.get();
-        self.ctl.pgcr1.set((pgcr1 & !(1 << 24)) | (1 << 26));
+        // 5. PGCR1: clear write-leveling step, set PUB mode (H3 path)
+        self.ctl
+            .pgcr1
+            .modify(PGCR1::WLSTEP::CLEAR + PGCR1::PUBMODE::SET);
 
         // 6. Increase DFI_PHY_UPD clock (protect/upd2/unprotect)
         self.com.protect.set(PROTECT_MAGIC);
         udelay(100);
-        let upd2 = self.ctl.upd2.get();
-        self.ctl.upd2.set((upd2 & !(0xfff << 16)) | (0x50 << 16));
+        self.ctl.upd2.modify(UPD2::DFI_PHYUPD_CLK.val(0x50));
         self.com.protect.set(0);
         udelay(100);
 
         // 7. Set DRAMC ODT per byte lane
         for i in 0..4 {
-            let clearmask: u32 = (0x3 << 4) | (0x1 << 1) | (0x3 << 2) | (0x3 << 12) | (0x3 << 14);
-            let setmask: u32 = if self.odt_en {
-                DX_GCR_ODT_DYNAMIC
+            let odt = if self.odt_en {
+                dx_gcr::ODT_DYNAMIC
             } else {
-                DX_GCR_ODT_OFF
+                dx_gcr::ODT_OFF
             };
             let gcr = self.ctl.dx_read(i, dx_off::GCR);
             self.ctl
-                .dx_write(i, dx_off::GCR, (gcr & !clearmask) | setmask);
+                .dx_write(i, dx_off::GCR, (gcr & !dx_gcr::ODT_FIELDS) | odt);
         }
 
-        // 8. AC PDR: set bit 1 in ACIOCR (H3: no bits cleared)
-        let aciocr = self.ctl.aciocr.get();
-        self.ctl.aciocr.set(aciocr | (0x1 << 1));
+        // 8. AC PDR: enable power-down receiver in ACIOCR
+        self.ctl.aciocr.modify(ACIOCR_REG::AC_PDR::SET);
 
-        // 9. Set DQS auto gating PD mode: set bits [7:6] in PGCR2
-        let pgcr2 = self.ctl.pgcr2.get();
-        self.ctl.pgcr2.set(pgcr2 | (0x3 << 6));
+        // 9. Set DQS auto gating PD mode in PGCR2
+        self.ctl.pgcr2.modify(PGCR2::DQS_GATE_PD.val(0x3));
 
-        // 10. H3: dx ddr_clk & hdr_clk dynamic mode — clear bits [15:14] and [13:12] in PGCR0
-        let pgcr0 = self.ctl.pgcr0.get();
-        self.ctl.pgcr0.set(pgcr0 & !((0x3 << 14) | (0x3 << 12)));
+        // 10. H3: dx ddr_clk & hdr_clk dynamic mode
+        self.ctl
+            .pgcr0
+            .modify(PGCR0::DDRCLKSEL.val(0) + PGCR0::HDRCLKSEL.val(0));
 
         // 11. H3: dphy & aphy phase select 270 degree
-        // clrsetbits(pgcr[2], (0x3 << 10) | (0x3 << 8), (0x1 << 10) | (0x2 << 8))
-        let pgcr2 = self.ctl.pgcr2.get();
         self.ctl
             .pgcr2
-            .set((pgcr2 & !((0x3 << 10) | (0x3 << 8))) | ((0x1 << 10) | (0x2 << 8)));
+            .modify(PGCR2::DPHY_PHASE.val(0x1) + PGCR2::APHY_PHASE.val(0x2));
 
         // 12. Set half DQ: if not full width, disable upper byte lanes
         if !bus_full_width {
@@ -712,10 +916,9 @@ impl SunxiH3Dramc {
             self.ctl.dx_write(3, dx_off::GCR, 0);
         }
 
-        // 13. Data training configuration: set rank mask in DTCR bits [27:24]
-        let dtcr = self.ctl.dtcr.get();
+        // 13. Data training configuration: set rank mask in DTCR
         let rank_mask: u32 = if dual_rank { 0x3 } else { 0x1 };
-        self.ctl.dtcr.set((dtcr & !(0xf << 24)) | (rank_mask << 24));
+        self.ctl.dtcr.modify(DTCR::RANK_MASK.val(rank_mask));
 
         // 14. Set bit delays
         self.mctl_set_bit_delays();
@@ -725,27 +928,28 @@ impl SunxiH3Dramc {
         self.mctl_h3_zq_calibration_quirk();
 
         // 16. PHY init: PLL init + digital cal + PHY reset + DRAM reset + DRAM init + QS gate
-        // U-Boot: mctl_phy_init(PIR_PLLINIT | PIR_DCAL | PIR_PHYRST |
-        //                       PIR_DRAMRST | PIR_DRAMINIT | PIR_QSGATE)
-        // Note: mctl_phy_init adds PIR_INIT internally.
         self.mctl_phy_init(
-            PIR_PLLINIT | PIR_DCAL | PIR_PHYRST | PIR_DRAMRST | PIR_DRAMINIT | PIR_QSGATE,
+            PIR::PLLINIT::SET
+                + PIR::DCAL::SET
+                + PIR::PHYRST::SET
+                + PIR::DRAMRST::SET
+                + PIR::DRAMINIT::SET
+                + PIR::QSGATE::SET,
         );
 
         // 17. Detect ranks and bus width
-        if self.ctl.pgsr0.get() & (0xfe << 20) != 0 {
+        if self.ctl.pgsr0.read(PGSR0::ERRORS) != 0 {
             // Check if rank 1 failed (DQS gate error on dx[0] or dx[1])
-            if ((self.ctl.dx_read(0, dx_off::GSR0) >> 24) & 0x2) != 0
-                || ((self.ctl.dx_read(1, dx_off::GSR0) >> 24) & 0x2) != 0
+            if self.ctl.dx_read(0, dx_off::GSR0) & dx_gsr0::RANK1_QSGATE_ERR != 0
+                || self.ctl.dx_read(1, dx_off::GSR0) & dx_gsr0::RANK1_QSGATE_ERR != 0
             {
-                let dtcr = self.ctl.dtcr.get();
-                self.ctl.dtcr.set((dtcr & !(0xf << 24)) | (0x1 << 24));
+                self.ctl.dtcr.modify(DTCR::RANK_MASK.val(0x1));
                 dual_rank = false;
             }
 
             // Check if upper byte lanes failed (half DQ width)
-            if ((self.ctl.dx_read(2, dx_off::GSR0) >> 24) & 0x1) != 0
-                || ((self.ctl.dx_read(3, dx_off::GSR0) >> 24) & 0x1) != 0
+            if self.ctl.dx_read(2, dx_off::GSR0) & dx_gsr0::QSGATE_ERR != 0
+                || self.ctl.dx_read(3, dx_off::GSR0) & dx_gsr0::QSGATE_ERR != 0
             {
                 self.ctl.dx_write(2, dx_off::GCR, 0);
                 self.ctl.dx_write(3, dx_off::GCR, 0);
@@ -756,33 +960,31 @@ impl SunxiH3Dramc {
             udelay(20);
 
             // Re-train with reduced configuration
-            self.mctl_phy_init(PIR_QSGATE);
-            if self.ctl.pgsr0.get() & (0xfe << 20) != 0 {
+            self.mctl_phy_init(PIR::QSGATE::SET);
+            if self.ctl.pgsr0.read(PGSR0::ERRORS) != 0 {
                 return 1;
             }
         }
 
         // 18. Check the DRAMC status — wait for controller ready
         for _ in 0..POLL_TIMEOUT {
-            if self.ctl.statr.get() & 0x1 == 0x1 {
+            if self.ctl.statr.is_set(STATR::OPER_MODE) {
                 break;
             }
             core::hint::spin_loop();
         }
 
         // 19. Refresh trigger (liuke added for refresh debug)
-        let rfsh = self.ctl.rfshctl0.get();
-        self.ctl.rfshctl0.set(rfsh | (1 << 31));
+        self.ctl.rfshctl0.modify(RFSHCTL0::REFRESH_TRIGGER::SET);
         udelay(10);
-        self.ctl.rfshctl0.set(rfsh & !(1 << 31));
+        self.ctl.rfshctl0.modify(RFSHCTL0::REFRESH_TRIGGER::CLEAR);
         udelay(10);
 
         // 20. Set PGCR3, CKE polarity (H3 value)
         self.ctl.pgcr3.set(0x00aa_0060);
 
         // 21. Power down ZQ calibration module for power save
-        let zqcr = self.ctl.zqcr.get();
-        self.ctl.zqcr.set(zqcr | ZQCR_PWRDOWN);
+        self.ctl.zqcr.modify(ZQCR::PWRDOWN::SET);
 
         // 22. Enable master access
         self.com.maer.set(0xffff_ffff);
@@ -851,49 +1053,72 @@ impl SunxiH3Dramc {
         self.ctl.mr3.set(0x0);
 
         // DRAMTMG0: wr2pre | tFAW | tRAS_max | tRAS_min
-        self.ctl
-            .dramtmg0
-            .set((twtp << 24) | (tfaw << 16) | (trasmax << 8) | tras);
+        self.ctl.dramtmg0.write(
+            DRAMTMG0::WR2PRE.val(twtp)
+                + DRAMTMG0::TFAW.val(tfaw)
+                + DRAMTMG0::TRASMAX.val(trasmax)
+                + DRAMTMG0::TRAS.val(tras),
+        );
 
         // DRAMTMG1: tXP | tRTP | tRC
-        self.ctl.dramtmg1.set((txp << 16) | (trtp << 8) | trc);
+        self.ctl
+            .dramtmg1
+            .write(DRAMTMG1::TXP.val(txp) + DRAMTMG1::TRTP.val(trtp) + DRAMTMG1::TRC.val(trc));
 
         // DRAMTMG2: tCWL | tCL | rd2wr | wr2rd
-        self.ctl
-            .dramtmg2
-            .set((tcwl << 24) | (tcl << 16) | (trd2wr << 8) | twr2rd);
+        self.ctl.dramtmg2.write(
+            DRAMTMG2::TCWL.val(tcwl)
+                + DRAMTMG2::TCL.val(tcl)
+                + DRAMTMG2::TRD2WR.val(trd2wr)
+                + DRAMTMG2::TWR2RD.val(twr2rd),
+        );
 
         // DRAMTMG3: tMRW | tMRD | tMOD
-        self.ctl.dramtmg3.set((tmrw << 16) | (tmrd << 12) | tmod);
+        self.ctl
+            .dramtmg3
+            .write(DRAMTMG3::TMRW.val(tmrw) + DRAMTMG3::TMRD.val(tmrd) + DRAMTMG3::TMOD.val(tmod));
 
         // DRAMTMG4: tRCD | tCCD | tRRD | tRP
-        self.ctl
-            .dramtmg4
-            .set((trcd << 24) | (tccd << 16) | (trrd << 8) | trp);
+        self.ctl.dramtmg4.write(
+            DRAMTMG4::TRCD.val(trcd)
+                + DRAMTMG4::TCCD.val(tccd)
+                + DRAMTMG4::TRRD.val(trrd)
+                + DRAMTMG4::TRP.val(trp),
+        );
 
         // DRAMTMG5: tCKSRX | tCKSRE | tCKESR | tCKE
-        self.ctl
-            .dramtmg5
-            .set((tcksrx << 24) | (tcksre << 16) | (tckesr << 8) | tcke);
+        self.ctl.dramtmg5.write(
+            DRAMTMG5::TCKSRX.val(tcksrx)
+                + DRAMTMG5::TCKSRE.val(tcksre)
+                + DRAMTMG5::TCKESR.val(tckesr)
+                + DRAMTMG5::TCKE.val(tcke),
+        );
 
-        // DRAMTMG8: two-rank timing
-        // U-Boot: clrsetbits(dramtmg[8], (0xff<<8)|(0xff<<0), (0x66<<8)|(0x10<<0))
-        let dramtmg8 = self.ctl.dramtmg8.get();
-        self.ctl
-            .dramtmg8
-            .set((dramtmg8 & !((0xff << 8) | 0xff)) | (0x66 << 8) | (0x10 << 0));
+        // DRAMTMG8: two-rank timing (read-modify-write)
+        self.ctl.dramtmg8.modify(
+            DRAMTMG8_REG::POST_SELFREF_GAP.val(0x10) + DRAMTMG8_REG::POST_SELFREF_GAP_DLY.val(0x66),
+        );
 
         // PITMG0: PHY interface timing
-        self.ctl
-            .pitmg0
-            .set((0x2 << 24) | (t_rdata_en << 16) | (0x1 << 8) | wr_latency);
+        self.ctl.pitmg0.write(
+            PITMG0::PHYRD_LAT.val(0x2)
+                + PITMG0::T_RDATA_EN.val(t_rdata_en)
+                + PITMG0::PHYWR_LAT.val(0x1)
+                + PITMG0::WR_LATENCY.val(wr_latency),
+        );
 
         // PTR3/PTR4: DRAM init timing
-        self.ctl.ptr3.set((tdinit1 << 20) | tdinit0);
-        self.ctl.ptr4.set((tdinit3 << 20) | tdinit2);
+        self.ctl
+            .ptr3
+            .write(PTR3::TDINIT1.val(tdinit1) + PTR3::TDINIT0.val(tdinit0));
+        self.ctl
+            .ptr4
+            .write(PTR4::TDINIT3.val(tdinit3) + PTR4::TDINIT2.val(tdinit2));
 
         // RFSHTMG: refresh timing
-        self.ctl.rfshtmg.set((trefi << 16) | trfc);
+        self.ctl
+            .rfshtmg
+            .write(RFSHTMG::TREFI.val(trefi) + RFSHTMG::TRFC.val(trfc));
     }
 }
 
@@ -906,12 +1131,12 @@ impl SunxiH3Dramc {
     ///
     /// U-Boot: writel(val | PIR_INIT, &mctl_ctl->pir);
     ///         mctl_await_completion(&mctl_ctl->pgsr[0], PGSR_INIT_DONE, 0x1);
-    fn mctl_phy_init(&self, val: u32) {
-        self.ctl.pir.set(val | PIR_INIT);
+    fn mctl_phy_init(&self, val: FieldValue<u32, PIR::Register>) {
+        self.ctl.pir.write(val + PIR::INIT::SET);
 
         // Wait for PGSR INIT_DONE
         for _ in 0..POLL_TIMEOUT {
-            if self.ctl.pgsr0.get() & PGSR_INIT_DONE != 0 {
+            if self.ctl.pgsr0.is_set(PGSR0::INIT_DONE) {
                 return;
             }
             core::hint::spin_loop();
@@ -940,11 +1165,10 @@ impl SunxiH3Dramc {
             // Path A: early silicon — run ZCAL, read/patch ZQDR registers
 
             // clrsetbits(zqcr, 0xffff, CONFIG_DRAM_ZQ & 0xffff)
-            let zqcr = self.ctl.zqcr.get();
-            self.ctl.zqcr.set((zqcr & !0xffff) | (self.zq & 0xffff));
+            self.ctl.zqcr.modify(ZQCR::ZQ_VAL.val(self.zq & 0xffff));
 
-            self.ctl.pir.set(PIR_CLRSR);
-            self.mctl_phy_init(PIR_ZCAL);
+            self.ctl.pir.write(PIR::CLRSR::SET);
+            self.mctl_phy_init(PIR::ZCAL::SET);
 
             // Read and patch ZQDR0
             let mut reg_val = self.ctl.zqdr0.get();
@@ -971,14 +1195,14 @@ impl SunxiH3Dramc {
                     .zqcr
                     .set((zq << 20) | (zq << 16) | (zq << 12) | (zq << 8) | (zq << 4) | zq);
 
-                self.ctl.pir.set(PIR_CLRSR);
-                self.mctl_phy_init(PIR_ZCAL);
+                self.ctl.pir.write(PIR::CLRSR::SET);
+                self.mctl_phy_init(PIR::ZCAL::SET);
 
                 zq_val[i] = (self.ctl.zqdr0.get() & 0xff) as u16;
                 self.ctl.zqdr2.set(repeat_byte(zq_val[i] as u8));
 
-                self.ctl.pir.set(PIR_CLRSR);
-                self.mctl_phy_init(PIR_ZCAL);
+                self.ctl.pir.write(PIR::CLRSR::SET);
+                self.mctl_phy_init(PIR::ZCAL::SET);
 
                 let val = (self.ctl.zqdr0.get() >> 24) as u8;
                 let mgray_bin = MGRAY_TO_BIN[(val & 0x1f) as usize];
@@ -1013,8 +1237,7 @@ impl SunxiH3Dramc {
     /// Each ACBDLR register gets: `write_delay << 8`.
     fn mctl_set_bit_delays(&self) {
         // Disable auto-calibration during delay programming
-        let pgcr0 = self.ctl.pgcr0.get();
-        self.ctl.pgcr0.set(pgcr0 & !(1 << 26));
+        self.ctl.pgcr0.modify(PGCR0::AUTOCAL::CLEAR);
 
         // DX byte-lane delays: 4 lanes × 11 signals per lane
         for i in 0..4 {
@@ -1032,8 +1255,7 @@ impl SunxiH3Dramc {
         }
 
         // Re-enable auto-calibration
-        let pgcr0 = self.ctl.pgcr0.get();
-        self.ctl.pgcr0.set(pgcr0 | (1 << 26));
+        self.ctl.pgcr0.modify(PGCR0::AUTOCAL::SET);
     }
 }
 
@@ -1127,41 +1349,37 @@ impl SunxiH3Dramc {
         row_bits: u8,
         bank_bits: u8,
     ) {
-        // fls(page_size) - 4: 512→6, 1024→7, 2048→8, 4096→9, 8192→10
-        // Then << 8 gives the page_size field.
-        let page_enc = ((fls(page_size as u32) - 4) as u32) << 8;
-
-        let cr = (0x4 << 20) // BL8
-            | (0x3 << 16) // DDR3
-            | (0x0 << 19) // 2T command rate
-            | (0x0 << 15) // interleaved
-            | (if bank_bits == 3 { 1u32 << 2 } else { 0 }) // eight banks
-            | (if bus_full_width { 1u32 << 12 } else { 0 })
-            | (if dual_rank { 1u32 } else { 0 })
-            | page_enc
-            | (((row_bits as u32) - 1) << 4);
-
-        self.com.cr.set(cr);
+        self.com.cr.write(
+            MCTL_CR::BURST_LEN.val(0x4) // BL8
+                + MCTL_CR::DRAM_TYPE.val(0x3) // DDR3
+                + MCTL_CR::COMMAND_RATE.val(0) // 2T
+                + MCTL_CR::SEQUENTIAL.val(0) // interleaved
+                + MCTL_CR::BANK_BITS.val(if bank_bits == 3 { 1 } else { 0 })
+                + MCTL_CR::BUS_FULL_WIDTH.val(if bus_full_width { 1 } else { 0 })
+                + MCTL_CR::RANK.val(if dual_rank { 1 } else { 0 })
+                + MCTL_CR::PAGE_SIZE.val((fls(page_size as u32) - 4) as u32)
+                + MCTL_CR::ROW_BITS.val((row_bits as u32) - 1),
+        );
     }
 
     /// Extract page_size from CR value.
     #[allow(dead_code)]
-    fn cr_to_page_size(&self, cr: u32) -> u16 {
-        let enc = (cr >> 8) & 0xf;
+    fn cr_to_page_size(&self) -> u16 {
+        let enc = self.com.cr.read(MCTL_CR::PAGE_SIZE);
         1u16 << (enc + 4) // inverse of fls(page_size) - 4
     }
 
     /// Extract row_bits from CR value.
     #[allow(dead_code)]
-    fn cr_to_row_bits(&self, _cr: u32) -> u8 {
-        let enc = (_cr >> 4) & 0xf;
+    fn cr_to_row_bits(&self) -> u8 {
+        let enc = self.com.cr.read(MCTL_CR::ROW_BITS);
         (enc + 1) as u8
     }
 
     /// Extract bank_bits from CR value.
     #[allow(dead_code)]
-    fn cr_to_bank_bits(&self, cr: u32) -> u8 {
-        if (cr >> 2) & 0x1 != 0 {
+    fn cr_to_bank_bits(&self) -> u8 {
+        if self.com.cr.is_set(MCTL_CR::BANK_BITS) {
             3
         } else {
             2

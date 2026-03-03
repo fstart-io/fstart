@@ -46,7 +46,7 @@ pub mod sunxi_h3_ccu {
 
 #[cfg(feature = "sunxi-a20-dramc")]
 pub mod sunxi_a20_dramc {
-    pub use fstart_driver_sunxi_dramc::SunxiA20DramcConfig;
+    pub use fstart_driver_sunxi_a20_dramc::SunxiA20DramcConfig;
 }
 
 #[cfg(feature = "sunxi-h3-dramc")]
@@ -207,7 +207,7 @@ impl DriverInstance {
             Self::SunxiA20Dramc(_) => &DriverMeta {
                 name: "sunxi-a20-dramc",
                 type_name: "SunxiA20Dramc",
-                module_path: "fstart_driver_sunxi_dramc",
+                module_path: "fstart_driver_sunxi_a20_dramc",
                 config_type: "SunxiA20DramcConfig",
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun7i-a20-dramc"],
