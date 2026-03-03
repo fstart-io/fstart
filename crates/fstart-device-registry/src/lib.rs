@@ -54,6 +54,21 @@ pub mod sunxi_a20_spi {
     pub use fstart_driver_sunxi_spi::SunxiA20SpiConfig;
 }
 
+#[cfg(feature = "sunxi-h3-ccu")]
+pub mod sunxi_h3_ccu {
+    pub use fstart_driver_sunxi_h3_ccu::SunxiH3CcuConfig;
+}
+
+#[cfg(feature = "sunxi-h3-dramc")]
+pub mod sunxi_h3_dramc {
+    pub use fstart_driver_sunxi_h3_dramc::SunxiH3DramcConfig;
+}
+
+#[cfg(feature = "sunxi-h3-mmc")]
+pub mod sunxi_h3_mmc {
+    pub use fstart_driver_sunxi_h3_mmc::SunxiH3MmcConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -120,6 +135,18 @@ pub enum DriverInstance {
     /// Allwinner A20 SPI NOR flash (sun4i SPI controller)
     #[cfg(feature = "sunxi-a20-spi")]
     SunxiA20Spi(sunxi_a20_spi::SunxiA20SpiConfig),
+
+    /// Allwinner H3 Clock Control Unit
+    #[cfg(feature = "sunxi-h3-ccu")]
+    SunxiH3Ccu(sunxi_h3_ccu::SunxiH3CcuConfig),
+
+    /// Allwinner H3 DRAM controller (DesignWare)
+    #[cfg(feature = "sunxi-h3-dramc")]
+    SunxiH3Dramc(sunxi_h3_dramc::SunxiH3DramcConfig),
+
+    /// Allwinner H3 SD/MMC controller
+    #[cfg(feature = "sunxi-h3-mmc")]
+    SunxiH3Mmc(sunxi_h3_mmc::SunxiH3MmcConfig),
 }
 
 impl DriverInstance {
@@ -194,6 +221,33 @@ impl DriverInstance {
                 services: &["BlockDevice"],
                 compatible: &["allwinner,sun4i-a10-spi"],
             },
+            #[cfg(feature = "sunxi-h3-ccu")]
+            Self::SunxiH3Ccu(_) => &DriverMeta {
+                name: "sunxi-h3-ccu",
+                type_name: "SunxiH3Ccu",
+                module_path: "fstart_driver_sunxi_h3_ccu",
+                config_type: "SunxiH3CcuConfig",
+                services: &["ClockController"],
+                compatible: &["allwinner,sun8i-h3-ccu"],
+            },
+            #[cfg(feature = "sunxi-h3-dramc")]
+            Self::SunxiH3Dramc(_) => &DriverMeta {
+                name: "sunxi-h3-dramc",
+                type_name: "SunxiH3Dramc",
+                module_path: "fstart_driver_sunxi_h3_dramc",
+                config_type: "SunxiH3DramcConfig",
+                services: &["MemoryController"],
+                compatible: &["allwinner,sun8i-h3-dramc"],
+            },
+            #[cfg(feature = "sunxi-h3-mmc")]
+            Self::SunxiH3Mmc(_) => &DriverMeta {
+                name: "sunxi-h3-mmc",
+                type_name: "SunxiH3Mmc",
+                module_path: "fstart_driver_sunxi_h3_mmc",
+                config_type: "SunxiH3MmcConfig",
+                services: &["BlockDevice"],
+                compatible: &["allwinner,sun8i-h3-mmc"],
+            },
         }
     }
 
@@ -222,6 +276,12 @@ impl DriverInstance {
             Self::SunxiA20Mmc(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-a20-spi")]
             Self::SunxiA20Spi(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-h3-ccu")]
+            Self::SunxiH3Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-h3-dramc")]
+            Self::SunxiH3Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-h3-mmc")]
+            Self::SunxiH3Mmc(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

@@ -1,0 +1,153 @@
+// Board definition for Xunlong Orange Pi R1 (Allwinner H2+ / sun8i).
+//
+// SoC:    Allwinner H2+ (quad Cortex-A7 ARMv7-A) — treated as H3 variant
+// DRAM:   256 MB DDR3 at 0x40000000
+// SRAM:   A1 16 KB at 0x00000000, A2 48 KB at 0x00040000
+//         (BROM loads 32 KB from boot medium into SRAM A1+A2)
+// UART:   UART0 at 0x01C28000 (NS16550) — PA4=TX, PA5=RX
+//
+// Multi-stage boot flow:
+//   1. H2+ BROM loads 32K eGON.BT0 image from SD card into SRAM
+//   2. Bootblock (SRAM): clock init → UART → DRAM init → load main from SD
+//   3. Main (DRAM): UART → load kernel+DTB from SD → boot Linux
+//
+// SD card layout (FFS image written at sector 16 = byte offset 0x2000):
+//   [0x0000] MBR / partition table
+//   [0x2000] eGON header + bootblock (32K, loaded by BROM)
+//   [0x2000+] rest of FFS (main stage, kernel, DTB, manifest)
+//
+// The H2+ boots in secure mode; the CCU driver configures the security
+// switch to allow non-secure access to bus controllers.
+
+(
+    name: "orangepi-r1",
+    platform: "armv7",
+
+    memory: (
+        regions: [
+            // SRAM A1+A2 — bootblock runs here (32K usable from BROM load).
+            // A1=16K at 0x0, A2=48K at 0x40000. We declare the BROM-loaded region.
+            ( name: "sram", base: 0x00000000, size: 0x8000, kind: Ram ),
+            // DRAM — available after DramInit. 256 MB DDR3.
+            ( name: "dram", base: 0x40000000, size: 0x10000000, kind: Ram ),
+        ],
+        flash_base: None,
+        flash_size: None,
+    ),
+
+    devices: [
+        // Allwinner H3/H2+ CCU — clock tree + UART GPIO pin mux.
+        // sun6i-generation with separate bus-reset registers and
+        // CCU security switch for non-secure access.
+        (
+            name: "ccu0",
+            driver: SunxiH3Ccu((
+                ccu_base: 0x01C20000,
+                pio_base: 0x01C20800,
+                uart_index: 0,
+            )),
+            services: ["ClockController"],
+        ),
+        // UART0 — debug console on PA4 (TX) / PA5 (RX).
+        // NS16550-compatible, 4-byte register stride, 24 MHz input clock.
+        (
+            name: "uart0",
+            driver: Ns16550((
+                base_addr: 0x01C28000,
+                clock_freq: 24000000,
+                baud_rate: 115200,
+                reg_shift: 2,
+            )),
+            services: ["Console"],
+        ),
+        // Allwinner H3/H2+ DesignWare DRAM controller — DDR3, 624 MHz.
+        // Parameters from u-boot orangepi_r1_defconfig.
+        (
+            name: "dramc0",
+            driver: SunxiH3Dramc((
+                dramc_base: 0x01C62000,
+                ccu_base: 0x01C20000,
+                clock: 624,
+                zq: 3881979,
+                odt_en: true,
+            )),
+            services: ["MemoryController"],
+        ),
+        // SD card controller (MMC0) — boot medium.
+        // Uses sun6i clock gating with separate bus-reset register.
+        (
+            name: "mmc0",
+            driver: SunxiH3Mmc((
+                base_addr: 0x01C0F000,
+                ccu_base: 0x01C20000,
+                pio_base: 0x01C20800,
+                mmc_index: 0,
+            )),
+            services: ["BlockDevice"],
+        ),
+    ],
+
+    // Two-stage boot: bootblock in SRAM, main stage in DRAM.
+    stages: MultiStage([
+        // Stage 1: bootblock — runs from SRAM (32K limit on H3).
+        (
+            name: "bootblock",
+            capabilities: [
+                ClockInit( device: "ccu0" ),
+                ConsoleInit( device: "uart0" ),
+                DramInit( device: "dramc0" ),
+//                ReturnToFel,
+                DriverInit,
+                LoadNextStage(
+                    devices: [
+                        (name: "mmc0", base_offset: 0x2000),
+                    ],
+                    next_stage: "main",
+                ),
+            ],
+            load_addr: 0x00000000,
+            stack_size: 0x1000,
+            runs_from: Ram,
+        ),
+        // Stage 2: main — runs from DRAM after being loaded by bootblock.
+        (
+            name: "main",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                DriverInit,
+                BootMedia(AutoDevice(
+                    devices: [
+                        (name: "mmc0", offset: 0x2000, size: 0x800000),
+                    ],
+                )),
+                SigVerify,
+                FdtPrepare,
+                PayloadLoad,
+            ],
+            load_addr: 0x41000000,
+            stack_size: 0x10000,
+            runs_from: Ram,
+        ),
+    ]),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+
+    mode: Rigid,
+
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("zImage"),
+        kernel_load_addr: Some(0x42000000),
+        fdt: Override("sun8i-h2-plus-orangepi-r1.dtb"),
+        dtb_addr: Some(0x43000000),
+        src_dtb_addr: None,
+        bootargs: Some("earlycon console=ttyS0,115200"),
+        firmware: None,
+    )),
+
+    soc_image_format: AllwinnerEgon,
+)

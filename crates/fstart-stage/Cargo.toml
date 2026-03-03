@@ -23,6 +23,9 @@ sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
 sunxi-a20-dramc = ["dep:fstart-driver-sunxi-dramc"]
 sunxi-a20-mmc = ["dep:fstart-driver-sunxi-mmc"]
 sunxi-a20-spi = ["dep:fstart-driver-sunxi-spi"]
+sunxi-h3-ccu = ["dep:fstart-driver-sunxi-h3-ccu"]
+sunxi-h3-dramc = ["dep:fstart-driver-sunxi-h3-dramc"]
+sunxi-h3-mmc = ["dep:fstart-driver-sunxi-h3-mmc"]
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
@@ -61,6 +64,9 @@ fstart-driver-sunxi-ccu = { workspace = true, optional = true }
 fstart-driver-sunxi-dramc = { workspace = true, optional = true }
 fstart-driver-sunxi-mmc = { workspace = true, optional = true }
 fstart-driver-sunxi-spi = { workspace = true, optional = true }
+fstart-driver-sunxi-h3-ccu = { workspace = true, optional = true }
+fstart-driver-sunxi-h3-dramc = { workspace = true, optional = true }
+fstart-driver-sunxi-h3-mmc = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

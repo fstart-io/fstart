@@ -1200,6 +1200,21 @@ fn boot_media_values_for_device(
         "sunxi-a20-spi" => {
             vec![0x03] // BOOT_MEDIA_SPI
         }
+        "sunxi-h3-mmc" => {
+            // H3 uses the same eGON boot_media constants as A20.
+            if let DriverInstance::SunxiH3Mmc(cfg) = inst {
+                match cfg.mmc_index {
+                    0 => vec![0x00, 0x10], // BOOT_MEDIA_MMC0, BOOT_MEDIA_MMC0_HIGH
+                    2 => vec![0x02, 0x12], // BOOT_MEDIA_MMC2, BOOT_MEDIA_MMC2_HIGH
+                    other => panic!(
+                        "boot_media_values_for_device: unsupported mmc_index {} for device '{}'",
+                        other, dev_name
+                    ),
+                }
+            } else {
+                unreachable!("driver name is sunxi-h3-mmc but instance is not SunxiH3Mmc")
+            }
+        }
         other => panic!(
             "boot_media_values_for_device: driver '{}' on device '{}' has no known boot_media mapping",
             other, dev_name
