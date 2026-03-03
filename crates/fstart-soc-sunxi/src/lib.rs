@@ -165,38 +165,41 @@ pub enum BootDevice {
     Unknown(u8),
 }
 
-/// Read the raw boot medium byte from the eGON header in SRAM.
+/// Read the raw boot medium byte from the eGON header at `sram_base`.
 ///
 /// The BROM writes the boot device type at image offset 0x28 after
 /// loading the bootblock into SRAM. Since the BROM patches the
 /// in-SRAM copy, this must be read via volatile.
 ///
+/// `sram_base` is the SRAM address where the eGON image is loaded:
+/// - `0x0000_0000` for A20 (sun7i) and H3 (sun8i)
+/// - `0x0001_0000` for H5 (sun50i) and A64 (sun50i)
+///
 /// Returns one of the `BOOT_MEDIA_*` constants.
 #[inline]
-pub fn boot_media() -> u8 {
-    // SAFETY: The eGON header starts at SRAM address 0x00 (for A20).
-    // Offset 0x28 is the boot_media field, written by the BROM.
-    unsafe { core::ptr::read_volatile(0x28 as *const u8) }
+pub fn boot_media_at(sram_base: usize) -> u8 {
+    // SAFETY: The eGON header starts at the SRAM base address provided
+    // by the board config. Offset 0x28 is the boot_media field.
+    unsafe { core::ptr::read_volatile((sram_base + 0x28) as *const u8) }
 }
 
-/// Read and decode the boot device from the eGON header in SRAM.
+/// Read and decode the boot device from the eGON header at `sram_base`.
 ///
 /// Returns a typed [`BootDevice`] enum value. If the eGON magic is
 /// not present (indicating FEL boot or corrupted header), returns
 /// [`BootDevice::Fel`].
-pub fn boot_device() -> BootDevice {
-    // Validate eGON magic before trusting the boot_media field.
-    // SAFETY: The eGON header is at SRAM address 0x00 (for A20).
-    // Offset 0x04 is the 8-byte magic field.
+///
+/// See [`boot_media_at`] for `sram_base` values.
+pub fn boot_device_at(sram_base: usize) -> BootDevice {
     let magic_valid = unsafe {
-        let magic_ptr = 0x04 as *const [u8; 8];
+        let magic_ptr = (sram_base + 0x04) as *const [u8; 8];
         core::ptr::read_volatile(magic_ptr) == EGON_MAGIC
     };
     if !magic_valid {
         return BootDevice::Fel;
     }
 
-    match boot_media() {
+    match boot_media_at(sram_base) {
         BOOT_MEDIA_MMC0 => BootDevice::Mmc0,
         BOOT_MEDIA_NAND => BootDevice::Nand,
         BOOT_MEDIA_MMC2 => BootDevice::Mmc2,
@@ -207,32 +210,67 @@ pub fn boot_device() -> BootDevice {
     }
 }
 
-/// Read the next-stage offset from the eGON header in SRAM.
+/// Read the next-stage offset from the eGON header at `sram_base`.
 ///
 /// This field is patched by the FFS assembler. Must be read via volatile
 /// because the compiler sees the source-level value as 0.
 #[inline]
-pub fn next_stage_offset() -> u32 {
-    unsafe { core::ptr::read_volatile(0x2C as *const u32) }
+pub fn next_stage_offset_at(sram_base: usize) -> u32 {
+    unsafe { core::ptr::read_volatile((sram_base + 0x2C) as *const u32) }
 }
 
-/// Read the next-stage size from the eGON header in SRAM.
+/// Read the next-stage size from the eGON header at `sram_base`.
 ///
 /// This field is patched by the FFS assembler. Must be read via volatile
 /// because the compiler sees the source-level value as 0.
 #[inline]
-pub fn next_stage_size() -> u32 {
-    unsafe { core::ptr::read_volatile(0x30 as *const u32) }
+pub fn next_stage_size_at(sram_base: usize) -> u32 {
+    unsafe { core::ptr::read_volatile((sram_base + 0x30) as *const u32) }
 }
 
-/// Read the total FFS image size from the eGON header in SRAM.
+/// Read the total FFS image size from the eGON header at `sram_base`.
 ///
 /// This field is patched by the FFS assembler. Subsequent stages use
 /// this to locate the FFS anchor at `ffs_total_size - ANCHOR_SIZE`
 /// on the boot medium.
 #[inline]
+pub fn ffs_total_size_at(sram_base: usize) -> u32 {
+    unsafe { core::ptr::read_volatile((sram_base + 0x34) as *const u32) }
+}
+
+// --- Backward-compatible wrappers (SRAM base = 0, for A20/H3) ---
+
+/// Read boot medium byte from SRAM base 0 (A20/H3).
+///
+/// For H5/A64, use [`boot_media_at`] with `sram_base = 0x10000`.
+#[inline]
+pub fn boot_media() -> u8 {
+    boot_media_at(0)
+}
+
+/// Read and decode boot device from SRAM base 0 (A20/H3).
+///
+/// For H5/A64, use [`boot_device_at`] with `sram_base = 0x10000`.
+pub fn boot_device() -> BootDevice {
+    boot_device_at(0)
+}
+
+/// Read next-stage offset from SRAM base 0 (A20/H3).
+#[inline]
+pub fn next_stage_offset() -> u32 {
+    next_stage_offset_at(0)
+}
+
+/// Read next-stage size from SRAM base 0 (A20/H3).
+#[inline]
+pub fn next_stage_size() -> u32 {
+    next_stage_size_at(0)
+}
+
+/// Read total FFS image size from SRAM base 0 (A20/H3).
+#[inline]
 pub fn ffs_total_size() -> u32 {
-    unsafe { core::ptr::read_volatile(0x34 as *const u32) }
+    ffs_total_size_at(0)
 }
 
 // ---------------------------------------------------------------------------

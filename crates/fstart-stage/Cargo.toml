@@ -15,6 +15,9 @@ default = []
 riscv64 = ["dep:fstart-platform-riscv64"]
 aarch64 = ["dep:fstart-platform-aarch64"]
 armv7 = ["dep:fstart-platform-armv7", "dep:fstart-soc-sunxi"]
+# Allwinner sunxi support — adds fstart-soc-sunxi and enables the sunxi
+# entry point on aarch64 (ARMv8 RMR switch for H5/A64).
+sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi"]
 # Driver selection (enabled based on board.ron devices)
 ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]

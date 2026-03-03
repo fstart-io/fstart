@@ -64,14 +64,29 @@ pub enum SunxiMmcConfig {
         /// MMC controller index (0-2) for clock register selection.
         mmc_index: u8,
     },
+    /// H5 (sun50i) — same hardware as H3, sun6i-generation.
+    ///
+    /// Identical register layout and behaviour to `Sun8iH3`.
+    /// Separate variant for board-level clarity and future-proofing.
+    Sun50iH5 {
+        /// MMC controller base address (e.g., 0x01C0F000 for MMC0).
+        base_addr: u64,
+        /// CCU base address (0x01C20000) for clock gating.
+        ccu_base: u64,
+        /// PIO base address (0x01C20800) for GPIO pin mux.
+        pio_base: u64,
+        /// MMC controller index (0-2) for clock register selection.
+        mmc_index: u8,
+    },
 }
 
 impl SunxiMmcConfig {
     /// Extract the `mmc_index` from any variant.
     pub fn mmc_index(&self) -> u8 {
         match self {
-            Self::Sun7iA20 { mmc_index, .. } => *mmc_index,
-            Self::Sun8iH3 { mmc_index, .. } => *mmc_index,
+            Self::Sun7iA20 { mmc_index, .. }
+            | Self::Sun8iH3 { mmc_index, .. }
+            | Self::Sun50iH5 { mmc_index, .. } => *mmc_index,
         }
     }
 }
@@ -251,8 +266,11 @@ unsafe impl Sync for SunxiMmc {}
 
 impl Device for SunxiMmc {
     const NAME: &'static str = "sunxi-mmc";
-    const COMPATIBLE: &'static [&'static str] =
-        &["allwinner,sun7i-a20-mmc", "allwinner,sun8i-h3-mmc"];
+    const COMPATIBLE: &'static [&'static str] = &[
+        "allwinner,sun7i-a20-mmc",
+        "allwinner,sun8i-h3-mmc",
+        "allwinner,sun50i-h5-mmc",
+    ];
     type Config = SunxiMmcConfig;
 
     fn new(config: &SunxiMmcConfig) -> Result<Self, DeviceError> {
@@ -264,6 +282,12 @@ impl Device for SunxiMmc {
                 mmc_index,
             } => (base_addr, ccu_base, pio_base, mmc_index, SunxiGen::Sun4i),
             SunxiMmcConfig::Sun8iH3 {
+                base_addr,
+                ccu_base,
+                pio_base,
+                mmc_index,
+            }
+            | SunxiMmcConfig::Sun50iH5 {
                 base_addr,
                 ccu_base,
                 pio_base,
