@@ -79,12 +79,12 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         compatible: &["allwinner,sun7i-a20-dramc"],
     },
     DriverMeta {
-        name: "sunxi-a20-mmc",
-        type_name: "SunxiA20Mmc",
+        name: "sunxi-mmc",
+        type_name: "SunxiMmc",
         module_path: "fstart_driver_sunxi_mmc",
-        config_type: "SunxiA20MmcConfig",
+        config_type: "SunxiMmcConfig",
         services: &["BlockDevice"],
-        compatible: &["allwinner,sun7i-a20-mmc"],
+        compatible: &["allwinner,sun7i-a20-mmc", "allwinner,sun8i-h3-mmc"],
     },
     DriverMeta {
         name: "sunxi-a20-spi",
@@ -109,13 +109,5 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "SunxiH3DramcConfig",
         services: &["MemoryController"],
         compatible: &["allwinner,sun8i-h3-dramc"],
-    },
-    DriverMeta {
-        name: "sunxi-h3-mmc",
-        type_name: "SunxiH3Mmc",
-        module_path: "fstart_driver_sunxi_h3_mmc",
-        config_type: "SunxiH3MmcConfig",
-        services: &["BlockDevice"],
-        compatible: &["allwinner,sun8i-h3-mmc"],
     },
 ];

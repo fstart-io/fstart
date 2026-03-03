@@ -14,6 +14,10 @@
 
 #![no_std]
 #![allow(clippy::modulo_one)] // tock-registers alignment test
+#![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
+#![allow(clippy::too_many_arguments)] // mbus_configure_port mirrors U-Boot signature
+#![allow(clippy::unnecessary_cast)] // Explicit casts clarify register-width intent
+#![allow(clippy::needless_range_loop)] // Index-based loops match U-Boot's C style
 
 use core::cell::Cell;
 
@@ -530,13 +534,11 @@ impl SunxiH3Dramc {
         let bank = self.bank_bits.get() as u64;
         let page = self.page_size.get() as u64;
         let rank0_size = (1u64 << (row + bank)) * page;
-        let size = if self.dual_rank.get() {
+        if self.dual_rank.get() {
             rank0_size * 2
         } else {
             rank0_size
-        };
-
-        size
+        }
     }
 }
 
@@ -1143,18 +1145,21 @@ impl SunxiH3Dramc {
     }
 
     /// Extract page_size from CR value.
+    #[allow(dead_code)]
     fn cr_to_page_size(&self, cr: u32) -> u16 {
         let enc = (cr >> 8) & 0xf;
         1u16 << (enc + 4) // inverse of fls(page_size) - 4
     }
 
     /// Extract row_bits from CR value.
+    #[allow(dead_code)]
     fn cr_to_row_bits(&self, _cr: u32) -> u8 {
         let enc = (_cr >> 4) & 0xf;
         (enc + 1) as u8
     }
 
     /// Extract bank_bits from CR value.
+    #[allow(dead_code)]
     fn cr_to_bank_bits(&self, cr: u32) -> u8 {
         if (cr >> 2) & 0x1 != 0 {
             3

@@ -15,6 +15,7 @@
 //! The PIO (GPIO) register block is at `0x01C2_0800`.
 
 #![no_std]
+#![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
 
 use tock_registers::interfaces::{Readable, Writeable};
 

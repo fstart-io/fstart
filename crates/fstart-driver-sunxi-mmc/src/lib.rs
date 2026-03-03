@@ -1,15 +1,20 @@
-//! Allwinner A20 (sun7i) SD/MMC host controller driver.
+//! Allwinner sunxi SD/MMC host controller driver (unified A20/H3).
 //!
 //! Minimal read-only driver for booting from SD card. Implements
 //! `Device` + `BlockDevice` traits. Supports SD v2.0 cards (SDHC)
 //! in 4-bit mode at 25 MHz.
 //!
-//! Hardware: Allwinner SD/MMC controller at 0x01C0F000 (MMC0).
-//! Ported from u-boot `drivers/mmc/sunxi_mmc.c` (sun7i paths only).
+//! Supports both sun4i-generation (A10/A20) and sun6i-generation
+//! (H3/H2+/A64) MMC controllers. The hardware is nearly identical;
+//! the only differences are:
 //!
-//! The driver handles its own clock gating (AHB + module clock) and
-//! GPIO pin mux (PF0-PF5) during `init()`, since these are tightly
-//! coupled to the MMC controller.
+//! 1. **FIFO offset**: 0x100 (sun4i) vs 0x200 (sun6i)
+//! 2. **Clock gating**: sun4i has AHB gate only; sun6i additionally
+//!    deasserts a separate bus-reset register
+//! 3. **Timeout register**: sun6i explicitly writes TMOUT after
+//!    soft-reset (H3 BROM may leave a smaller value)
+//!
+//! Ported from u-boot `drivers/mmc/sunxi_mmc.c`.
 
 #![no_std]
 
@@ -23,7 +28,7 @@ use tock_registers::register_structs;
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{BlockDevice, ServiceError};
 
-use fstart_sunxi_ccu_regs::{SunxiA20CcuRegs, MMC_CLK};
+use fstart_sunxi_ccu_regs::MMC_CLK;
 
 use fstart_arch::udelay;
 
@@ -31,17 +36,57 @@ use fstart_arch::udelay;
 // Driver configuration (from board RON)
 // ---------------------------------------------------------------------------
 
-/// Configuration for the Allwinner A20 MMC controller.
+/// Configuration for the Allwinner sunxi MMC controller.
+///
+/// The enum variant selects the SoC generation, which determines
+/// FIFO offset, clock gating, and reset behaviour.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub struct SunxiA20MmcConfig {
-    /// MMC controller base address (e.g., 0x01C0F000 for MMC0).
-    pub base_addr: u64,
-    /// CCU base address (0x01C20000) for clock gating.
-    pub ccu_base: u64,
-    /// PIO base address (0x01C20800) for GPIO pin mux.
-    pub pio_base: u64,
-    /// MMC controller index (0-3) for clock register selection.
-    pub mmc_index: u8,
+pub enum SunxiMmcConfig {
+    /// A20 (sun7i) — sun4i-generation: AHB gate only, FIFO at 0x100.
+    Sun7iA20 {
+        /// MMC controller base address (e.g., 0x01C0F000 for MMC0).
+        base_addr: u64,
+        /// CCU base address (0x01C20000) for clock gating.
+        ccu_base: u64,
+        /// PIO base address (0x01C20800) for GPIO pin mux.
+        pio_base: u64,
+        /// MMC controller index (0-3) for clock register selection.
+        mmc_index: u8,
+    },
+    /// H3/H2+ (sun8i) — sun6i-generation: AHB gate + bus-reset, FIFO at 0x200.
+    Sun8iH3 {
+        /// MMC controller base address (e.g., 0x01C0F000 for MMC0).
+        base_addr: u64,
+        /// CCU base address (0x01C20000) for clock gating.
+        ccu_base: u64,
+        /// PIO base address (0x01C20800) for GPIO pin mux.
+        pio_base: u64,
+        /// MMC controller index (0-2) for clock register selection.
+        mmc_index: u8,
+    },
+}
+
+impl SunxiMmcConfig {
+    /// Extract the `mmc_index` from any variant.
+    pub fn mmc_index(&self) -> u8 {
+        match self {
+            Self::Sun7iA20 { mmc_index, .. } => *mmc_index,
+            Self::Sun8iH3 { mmc_index, .. } => *mmc_index,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal SoC generation selector
+// ---------------------------------------------------------------------------
+
+/// SoC generation — drives the 3 hardware differences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SunxiGen {
+    /// sun4i-generation (A10, A20): FIFO at 0x100, AHB gate only.
+    Sun4i,
+    /// sun6i-generation (H3, H2+, A64): FIFO at 0x200, gate + reset.
+    Sun6i,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +155,7 @@ register_bitfields![u32,
 ];
 
 register_structs! {
-    /// Allwinner A20 MMC controller register block.
+    /// Allwinner sunxi MMC controller register block.
     SunxiMmcRegs {
         (0x00 => pub gctrl: MmioReadWrite<u32, GCTRL::Register>),
         (0x04 => pub clkcr: MmioReadWrite<u32, CLKCR::Register>),
@@ -131,9 +176,6 @@ register_structs! {
         (0x40 => @END),
     }
 }
-
-// FIFO is at a separate offset on A20 (0x100 from base).
-const FIFO_OFFSET: usize = 0x100;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -158,6 +200,14 @@ const PIO_CFG0_OFF: usize = 0x00;
 const PIO_DRV0_OFF: usize = 0x14;
 const PIO_PULL0_OFF: usize = 0x1C;
 
+// CCU register offsets (same on both A20 and H3).
+/// AHB gate register 0 — bit (8 + mmc_index) enables the MMC clock gate.
+const CCU_AHB_GATE0_OFF: usize = 0x060;
+/// MMC module clock 0 — each controller is at +4*index from this base.
+const CCU_MMC_CLK0_OFF: usize = 0x088;
+/// Bus soft-reset register 0 (sun6i only) — bit (8 + mmc_index) deasserts reset.
+const CCU_BUS_RESET0_OFF: usize = 0x2C0;
+
 // SD command indices.
 const CMD0: u32 = 0; // GO_IDLE_STATE
 const CMD2: u32 = 2; // ALL_SEND_CID
@@ -172,16 +222,20 @@ const ACMD6: u32 = 6; // SET_BUS_WIDTH (app cmd)
 const ACMD41: u32 = 41; // SD_SEND_OP_COND (app cmd)
 
 // ---------------------------------------------------------------------------
-// SD card state (mutable because Device::init takes &self)
+// Driver struct
 // ---------------------------------------------------------------------------
 
-/// Allwinner A20 MMC host controller driver.
-pub struct SunxiA20Mmc {
+/// Allwinner sunxi MMC host controller driver.
+///
+/// Supports both sun4i (A10/A20) and sun6i (H3/H2+/A64) generations.
+/// The `gen` field selects the 3 hardware-specific code paths.
+pub struct SunxiMmc {
     regs: &'static SunxiMmcRegs,
     fifo: *mut u32,
-    ccu: &'static SunxiA20CcuRegs,
+    ccu_base: usize,
     pio_base: usize,
     mmc_index: u8,
+    gen: SunxiGen,
     /// Relative Card Address (assigned during init).
     rca: Cell<u16>,
     /// Whether the card is SDHC (block-addressed).
@@ -192,28 +246,48 @@ pub struct SunxiA20Mmc {
 
 // SAFETY: MMC controller is a fixed MMIO peripheral, accessed from a
 // single-threaded firmware context.
-unsafe impl Send for SunxiA20Mmc {}
-unsafe impl Sync for SunxiA20Mmc {}
+unsafe impl Send for SunxiMmc {}
+unsafe impl Sync for SunxiMmc {}
 
-impl Device for SunxiA20Mmc {
-    const NAME: &'static str = "sunxi-a20-mmc";
-    const COMPATIBLE: &'static [&'static str] = &["allwinner,sun7i-a20-mmc"];
-    type Config = SunxiA20MmcConfig;
+impl Device for SunxiMmc {
+    const NAME: &'static str = "sunxi-mmc";
+    const COMPATIBLE: &'static [&'static str] =
+        &["allwinner,sun7i-a20-mmc", "allwinner,sun8i-h3-mmc"];
+    type Config = SunxiMmcConfig;
 
-    fn new(config: &SunxiA20MmcConfig) -> Result<Self, DeviceError> {
-        let base = config.base_addr as usize;
+    fn new(config: &SunxiMmcConfig) -> Result<Self, DeviceError> {
+        let (base_addr, ccu_base, pio_base, mmc_index, gen) = match *config {
+            SunxiMmcConfig::Sun7iA20 {
+                base_addr,
+                ccu_base,
+                pio_base,
+                mmc_index,
+            } => (base_addr, ccu_base, pio_base, mmc_index, SunxiGen::Sun4i),
+            SunxiMmcConfig::Sun8iH3 {
+                base_addr,
+                ccu_base,
+                pio_base,
+                mmc_index,
+            } => (base_addr, ccu_base, pio_base, mmc_index, SunxiGen::Sun6i),
+        };
+
+        let base = base_addr as usize;
+        let fifo_offset = match gen {
+            SunxiGen::Sun4i => 0x100,
+            SunxiGen::Sun6i => 0x200,
+        };
+
         // SAFETY: base_addr points to the MMC controller MMIO region.
         let regs = unsafe { &*(base as *const SunxiMmcRegs) };
-        let fifo = (base + FIFO_OFFSET) as *mut u32;
-        let ccu = unsafe { &*(config.ccu_base as *const SunxiA20CcuRegs) };
-        let pio_base = config.pio_base as usize;
+        let fifo = (base + fifo_offset) as *mut u32;
 
         Ok(Self {
             regs,
             fifo,
-            ccu,
-            pio_base,
-            mmc_index: config.mmc_index,
+            ccu_base: ccu_base as usize,
+            pio_base: pio_base as usize,
+            mmc_index,
+            gen,
             rca: Cell::new(0),
             sdhc: Cell::new(false),
             capacity: Cell::new(0),
@@ -237,7 +311,7 @@ impl Device for SunxiA20Mmc {
     }
 }
 
-impl BlockDevice for SunxiA20Mmc {
+impl BlockDevice for SunxiMmc {
     fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError> {
         if buf.is_empty() {
             return Ok(0);
@@ -262,7 +336,7 @@ impl BlockDevice for SunxiA20Mmc {
             current_block += 1;
         }
 
-        // Full blocks — use multi-block CMD18 reads.
+        // Full blocks -- use multi-block CMD18 reads.
         // U-Boot uses up to 65535 blocks per CMD18. We cap at a
         // reasonable chunk to keep progress visible and limit the
         // impact of a single failure.
@@ -316,8 +390,20 @@ impl BlockDevice for SunxiA20Mmc {
 // Private implementation
 // ---------------------------------------------------------------------------
 
-impl SunxiA20Mmc {
+impl SunxiMmc {
+    /// Get a reference to the MMC module clock register for this controller.
+    ///
+    /// Both A20 and H3 have MMC clock registers at the same offset from
+    /// CCU base: 0x88 + (index * 4).
+    fn mmc_clk_reg(&self) -> &MmioReadWrite<u32, MMC_CLK::Register> {
+        let addr = self.ccu_base + CCU_MMC_CLK0_OFF + (self.mmc_index as usize) * 4;
+        // SAFETY: MMC clock register at known CCU MMIO address.
+        unsafe { &*(addr as *const MmioReadWrite<u32, MMC_CLK::Register>) }
+    }
+
     /// Configure PF0-PF5 for SDC0 function.
+    ///
+    /// Same pin mux on both A20 and H3: Port F function 2 = SDC0.
     fn setup_gpio(&self) {
         let pf_base = self.pio_base + PIO_PF_OFFSET;
         // SAFETY: PIO registers at known MMIO addresses.
@@ -333,30 +419,57 @@ impl SunxiA20Mmc {
         }
     }
 
-    /// Enable AHB clock gate and set initial module clock.
+    /// Enable AHB clock gate (and bus-reset on sun6i) + set initial module clock.
+    ///
+    /// **Difference 2**: sun4i has AHB gate only; sun6i additionally
+    /// deasserts the bus-reset register at CCU+0x2C0.
     fn setup_clocks(&self) {
+        let gate_addr = (self.ccu_base + CCU_AHB_GATE0_OFF) as *mut u32;
+        let bit = 1u32 << (8 + self.mmc_index);
+
         // Enable AHB gate for this MMC controller (bit 8 + index).
-        let gate = self.ccu.ahb_gate0.get();
-        self.ccu.ahb_gate0.set(gate | (1 << (8 + self.mmc_index)));
+        // SAFETY: AHB gate register at known CCU MMIO address.
+        unsafe {
+            let gate = core::ptr::read_volatile(gate_addr);
+            core::ptr::write_volatile(gate_addr, gate | bit);
+        }
+
+        // sun6i: also deassert bus reset (bit 8 + index in bus_reset0).
+        if self.gen == SunxiGen::Sun6i {
+            let reset_addr = (self.ccu_base + CCU_BUS_RESET0_OFF) as *mut u32;
+            // SAFETY: Bus reset register at known CCU MMIO address.
+            unsafe {
+                let reset = core::ptr::read_volatile(reset_addr);
+                core::ptr::write_volatile(reset_addr, reset | bit);
+            }
+        }
 
         // Set module clock: OSC24M, N=0, M=0 -> 24 MHz.
-        self.ccu
-            .mmc_clk(self.mmc_index)
+        self.mmc_clk_reg()
             .write(MMC_CLK::ENABLE::SET + MMC_CLK::CLK_SRC::Osc24M);
     }
 
     /// Reset the controller.
     ///
     /// Matches U-Boot SPL `sunxi_mmc_reset()`: assert SOFT_RESET then
-    /// wait for it to auto-clear.  The timeout register (TMOUT) is left
-    /// at its hardware-default value (0xFFFFFF40) — U-Boot SPL never
-    /// writes it, and the default gives a generous ~671 ms data timeout
-    /// at 25 MHz.
+    /// wait for it to auto-clear.
+    ///
+    /// **Difference 3**: sun6i explicitly writes TMOUT to 0xFFFFFFFF
+    /// after soft-reset. The H3 BROM (SD-boot path) may leave a smaller
+    /// value that causes premature DATA_TIMEOUT. The A20 BROM leaves
+    /// 0xFFFFFF40, which is safe.
     fn reset_controller(&self) {
         self.regs
             .gctrl
             .write(GCTRL::SOFT_RESET::SET + GCTRL::FIFO_RESET::SET + GCTRL::DMA_RESET::SET);
         udelay(1000);
+
+        if self.gen == SunxiGen::Sun6i {
+            // Set hardware timeout to maximum so DATA_TIMEOUT in RINT is
+            // not triggered before software polling has a chance to drain
+            // the FIFO.
+            self.regs.timeout.set(0xFFFF_FFFF);
+        }
     }
 
     /// Update the internal clock divider (required after clock changes).
@@ -403,7 +516,7 @@ impl SunxiA20Mmc {
             (3, 4)
         };
 
-        self.ccu.mmc_clk(self.mmc_index).write(
+        self.mmc_clk_reg().write(
             MMC_CLK::ENABLE::SET
                 + src
                 + MMC_CLK::SCLK_DLY.val(sclk_dly)
@@ -498,7 +611,7 @@ impl SunxiA20Mmc {
             let st = loop {
                 let st = self.regs.status.get();
                 if st & (1 << 2) == 0 {
-                    // FIFO_EMPTY bit clear → data available
+                    // FIFO_EMPTY bit clear -> data available
                     break st;
                 }
                 timeout -= 1;
@@ -517,7 +630,7 @@ impl SunxiA20Mmc {
             };
 
             // Read available words from FIFO.
-            // A20 quirk: when FIFO is completely full, level reads 0.
+            // Quirk: when FIFO is completely full, level reads as 0.
             let mut in_fifo = ((st >> 17) & 0x3FFF) as usize;
             if in_fifo == 0 && (st & (1 << 3)) != 0 {
                 in_fifo = 32;
@@ -634,7 +747,7 @@ impl SunxiA20Mmc {
         self.regs.arg.set(addr);
         self.regs.cmd.set(cmdval);
 
-        // PIO read FIRST — before checking COMMAND_DONE.
+        // PIO read FIRST -- before checking COMMAND_DONE.
         // This matches U-Boot: mmc_trans_data_by_cpu() runs between
         // cmd write and mmc_rint_wait(COMMAND_DONE).
         let words = (total_bytes / 4) as usize;
@@ -707,7 +820,7 @@ impl SunxiA20Mmc {
             .is_ok();
         fstart_log::debug!("mmc: CMD8 sd_v2={}", sd_v2 as u8);
 
-        // ACMD41: SD_SEND_OP_COND — poll until card is ready.
+        // ACMD41: SD_SEND_OP_COND -- poll until card is ready.
         let mut tries = 1000u32;
         let mut ocr;
         loop {
