@@ -123,7 +123,7 @@ via `fstart-types` or `fstart-codegen` (which are `std`-capable).
 | `fstart-driver-pl011` | ARM PL011 UART | `Console` |
 | `fstart-driver-designware-i2c` | DesignWare APB I2C | `I2cBus` |
 | `fstart-driver-sunxi-ccu` | Allwinner A20 CCU | `ClockController` |
-| `fstart-driver-sunxi-dramc` | Allwinner A20 DRAM controller | `MemoryController` |
+| `fstart-driver-sunxi-a20-dramc` | Allwinner A20 DRAM controller | `MemoryController` |
 | `fstart-driver-sunxi-mmc` | Allwinner A20 SD/MMC | `BlockDevice` |
 | `fstart-sunxi-ccu-regs` | Shared CCU register defs (used by sunxi drivers) | — |
 

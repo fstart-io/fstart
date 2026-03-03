@@ -73,7 +73,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
     DriverMeta {
         name: "sunxi-a20-dramc",
         type_name: "SunxiA20Dramc",
-        module_path: "fstart_driver_sunxi_dramc",
+        module_path: "fstart_driver_sunxi_a20_dramc",
         config_type: "SunxiA20DramcConfig",
         services: &["MemoryController"],
         compatible: &["allwinner,sun7i-a20-dramc"],

@@ -20,7 +20,7 @@ ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]
 designware-i2c = ["dep:fstart-driver-designware-i2c"]
 sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
-sunxi-a20-dramc = ["dep:fstart-driver-sunxi-dramc"]
+sunxi-a20-dramc = ["dep:fstart-driver-sunxi-a20-dramc"]
 sunxi-mmc = ["dep:fstart-driver-sunxi-mmc"]
 sunxi-a20-spi = ["dep:fstart-driver-sunxi-spi"]
 sunxi-h3-ccu = ["dep:fstart-driver-sunxi-h3-ccu"]
@@ -60,7 +60,7 @@ fstart-driver-ns16550 = { workspace = true, optional = true }
 fstart-driver-pl011 = { workspace = true, optional = true }
 fstart-driver-designware-i2c = { workspace = true, optional = true }
 fstart-driver-sunxi-ccu = { workspace = true, optional = true }
-fstart-driver-sunxi-dramc = { workspace = true, optional = true }
+fstart-driver-sunxi-a20-dramc = { workspace = true, optional = true }
 fstart-driver-sunxi-mmc = { workspace = true, optional = true }
 fstart-driver-sunxi-spi = { workspace = true, optional = true }
 fstart-driver-sunxi-h3-ccu = { workspace = true, optional = true }

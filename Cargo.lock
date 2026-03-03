@@ -406,8 +406,8 @@ dependencies = [
  "fstart-driver-designware-i2c",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
+ "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
- "fstart-driver-sunxi-dramc",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",
@@ -448,19 +448,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-driver-sunxi-ccu"
-version = "0.1.0"
-dependencies = [
- "fstart-arch",
- "fstart-mmio",
- "fstart-services",
- "fstart-sunxi-ccu-regs",
- "serde",
- "tock-registers",
-]
-
-[[package]]
-name = "fstart-driver-sunxi-dramc"
+name = "fstart-driver-sunxi-a20-dramc"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
@@ -471,6 +459,18 @@ dependencies = [
  "serde",
  "tock-registers",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-sunxi-ccu"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-mmio",
+ "fstart-services",
+ "fstart-sunxi-ccu-regs",
+ "serde",
+ "tock-registers",
 ]
 
 [[package]]
@@ -614,8 +614,8 @@ dependencies = [
  "fstart-driver-designware-i2c",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
+ "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
- "fstart-driver-sunxi-dramc",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",

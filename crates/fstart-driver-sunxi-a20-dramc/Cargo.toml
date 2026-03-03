@@ -1,5 +1,5 @@
 [package]
-name = "fstart-driver-sunxi-dramc"
+name = "fstart-driver-sunxi-a20-dramc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

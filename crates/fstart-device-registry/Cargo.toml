@@ -14,7 +14,7 @@ fstart-driver-ns16550 = { path = "../fstart-driver-ns16550", optional = true }
 fstart-driver-pl011 = { path = "../fstart-driver-pl011", optional = true }
 fstart-driver-designware-i2c = { path = "../fstart-driver-designware-i2c", optional = true }
 fstart-driver-sunxi-ccu = { path = "../fstart-driver-sunxi-ccu", optional = true }
-fstart-driver-sunxi-dramc = { path = "../fstart-driver-sunxi-dramc", optional = true }
+fstart-driver-sunxi-a20-dramc = { path = "../fstart-driver-sunxi-a20-dramc", optional = true }
 fstart-driver-sunxi-mmc = { path = "../fstart-driver-sunxi-mmc", optional = true }
 fstart-driver-sunxi-spi = { path = "../fstart-driver-sunxi-spi", optional = true }
 fstart-driver-sunxi-h3-ccu = { path = "../fstart-driver-sunxi-h3-ccu", optional = true }
@@ -27,7 +27,7 @@ ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]
 designware-i2c = ["dep:fstart-driver-designware-i2c"]
 sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
-sunxi-a20-dramc = ["dep:fstart-driver-sunxi-dramc"]
+sunxi-a20-dramc = ["dep:fstart-driver-sunxi-a20-dramc"]
 sunxi-mmc = ["dep:fstart-driver-sunxi-mmc"]
 sunxi-a20-spi = ["dep:fstart-driver-sunxi-spi"]
 sunxi-h3-ccu = ["dep:fstart-driver-sunxi-h3-ccu"]
