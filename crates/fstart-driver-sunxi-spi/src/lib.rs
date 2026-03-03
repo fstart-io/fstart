@@ -25,15 +25,14 @@
 
 #![no_std]
 
-use fstart_mmio::MmioReadWrite;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
 
+use fstart_arch::udelay;
+use fstart_mmio::MmioReadWrite;
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{BlockDevice, ServiceError};
-
-use fstart_arch::udelay;
 
 // ---------------------------------------------------------------------------
 // Driver configuration (from board RON)
@@ -43,7 +42,7 @@ use fstart_arch::udelay;
 ///
 /// The enum variant selects the SoC generation, which determines
 /// register layout, clock gating, and GPIO pin mux.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SunxiSpiConfig {
     /// A20 (sun7i) — sun4i-generation SPI IP.
     ///
@@ -263,6 +262,13 @@ const SPI_MAX_XFER: usize = SPI_FIFO_DEPTH - SPI_CMD_LEN;
 /// SPI_CLK = OSC24M / (2 * (1+1)) = 6 MHz.
 const SPI0_CLK_DIV_BY_4: u32 = 0x1001;
 
+/// Timeout for hardware polling loops (FIFO fill, soft reset).
+///
+/// At 6 MHz SPI clock and 64-byte FIFO, a full transfer takes ~85 µs.
+/// On a 1 GHz ARM core each `spin_loop()` takes ~5-10 ns, so 85 µs ≈
+/// ~10K iterations.  1M iterations gives ~100× safety margin.
+const SPI_POLL_TIMEOUT: u32 = 1_000_000;
+
 /// AHB gate bit for SPI0 (bit 20 in both A20 and H3 gate registers).
 const AHB_GATE_SPI0: u32 = 1 << 20;
 
@@ -354,7 +360,7 @@ impl Device for SunxiSpi {
     fn init(&self) -> Result<(), DeviceError> {
         self.setup_gpio();
         self.setup_clocks();
-        self.enable_controller();
+        self.enable_controller()?;
 
         fstart_log::info!(
             "SPI0: init complete (6 MHz, flash {}KB)",
@@ -476,7 +482,7 @@ impl SunxiSpi {
     /// - sun4i: enable + master + FIFO reset + CS manual in one write
     /// - sun6i: enable + master + soft reset, wait for reset, then
     ///   re-apply clock divider and configure transfer control
-    fn enable_controller(&self) {
+    fn enable_controller(&self) -> Result<(), DeviceError> {
         match self.gen {
             SunxiGen::Sun4i => {
                 self.sun4i_regs().ctl.write(
@@ -498,7 +504,13 @@ impl SunxiSpi {
                     .write(GCR6::ENABLE::SET + GCR6::MASTER::SET + GCR6::SRST::SET);
 
                 // Wait for soft reset to complete (SRST self-clears).
+                let mut timeout = SPI_POLL_TIMEOUT;
                 while regs.gcr.is_set(GCR6::SRST) {
+                    timeout -= 1;
+                    if timeout == 0 {
+                        fstart_log::error!("SPI0: soft reset timeout");
+                        return Err(DeviceError::InitFailed);
+                    }
                     core::hint::spin_loop();
                 }
 
@@ -512,6 +524,7 @@ impl SunxiSpi {
                     .write(TCR6::CS_MANUAL::SET + TCR6::CS_ACTIVE_LOW::SET + TCR6::CS_LEVEL::SET);
             }
         }
+        Ok(())
     }
 }
 
@@ -570,7 +583,7 @@ impl SunxiSpi {
     ///
     /// Reads up to `SPI_MAX_XFER` (60) bytes from the given 24-bit
     /// flash address. Returns the number of bytes actually read.
-    fn spi_read_chunk(&self, addr: u32, buf: &mut [u8]) -> usize {
+    fn spi_read_chunk(&self, addr: u32, buf: &mut [u8]) -> Result<usize, ServiceError> {
         match self.gen {
             SunxiGen::Sun4i => self.spi_read_chunk_sun4i(addr, buf),
             SunxiGen::Sun6i => self.spi_read_chunk_sun6i(addr, buf),
@@ -578,10 +591,10 @@ impl SunxiSpi {
     }
 
     /// Sun4i (A10/A20) SPI read chunk implementation.
-    fn spi_read_chunk_sun4i(&self, addr: u32, buf: &mut [u8]) -> usize {
+    fn spi_read_chunk_sun4i(&self, addr: u32, buf: &mut [u8]) -> Result<usize, ServiceError> {
         let len = buf.len().min(SPI_MAX_XFER);
         if len == 0 {
-            return 0;
+            return Ok(0);
         }
         let regs = self.sun4i_regs();
 
@@ -601,6 +614,8 @@ impl SunxiSpi {
         // Write the Read command + 3-byte address to TX FIFO.
         // CRITICAL: use byte-width writes.  A 32-bit write pushes
         // 4 bytes into the FIFO, corrupting the command.
+        // SAFETY: MMIO base address validated in new(); byte-width
+        // volatile writes via fstart_mmio::write8 with dmb barriers.
         unsafe {
             self.txd_write_byte(SPI_CMD_READ);
             self.txd_write_byte((addr >> 16) as u8);
@@ -613,21 +628,32 @@ impl SunxiSpi {
 
         // Wait for the transfer to complete: poll until RX FIFO has
         // all expected bytes (command echo + data).
+        let mut timeout = SPI_POLL_TIMEOUT;
         loop {
             let rx_count = regs.fifo_sta.read(FIFO_STA4::RF_CNT);
             if rx_count >= total {
                 break;
             }
+            timeout -= 1;
+            if timeout == 0 {
+                regs.ctl.modify(CTL4::CS_LEVEL::SET);
+                fstart_log::error!("SPI0: sun4i FIFO poll timeout");
+                return Err(ServiceError::Timeout);
+            }
             core::hint::spin_loop();
         }
 
         // Discard the 4 command echo bytes (one 32-bit read drains 4).
+        // SAFETY: MMIO base address validated in new(); 32-bit volatile
+        // read via fstart_mmio::read32 drains 4 FIFO bytes at once.
         unsafe {
             self.rxd_drain_word();
         }
 
         // Read the actual data bytes (byte-width reads).
         for byte in buf.iter_mut().take(len) {
+            // SAFETY: MMIO base address validated in new(); byte-width
+            // volatile read via fstart_mmio::read8 pops one FIFO byte.
             *byte = unsafe { self.rxd_read_byte() };
         }
 
@@ -637,20 +663,21 @@ impl SunxiSpi {
         // tSHSL: chip select high time between operations.
         udelay(1);
 
-        len
+        Ok(len)
     }
 
     /// Sun6i (H3/H2+/A64) SPI read chunk implementation.
-    fn spi_read_chunk_sun6i(&self, addr: u32, buf: &mut [u8]) -> usize {
+    fn spi_read_chunk_sun6i(&self, addr: u32, buf: &mut [u8]) -> Result<usize, ServiceError> {
         let len = buf.len().min(SPI_MAX_XFER);
         if len == 0 {
-            return 0;
+            return Ok(0);
         }
         let regs = self.sun6i_regs();
 
         // Reset FIFOs (separate FIFO control register on sun6i).
+        // Use modify() to preserve trigger level configuration bits.
         regs.fifo_ctl
-            .write(FIFO_CTL6::TF_RST::SET + FIFO_CTL6::RF_RST::SET);
+            .modify(FIFO_CTL6::TF_RST::SET + FIFO_CTL6::RF_RST::SET);
 
         // Set burst count (total bytes = command + data).
         let total = (SPI_CMD_LEN + len) as u32;
@@ -668,6 +695,8 @@ impl SunxiSpi {
         // Write the Read command + 3-byte address to TX FIFO.
         // CRITICAL: use byte-width writes.  A 32-bit write pushes
         // 4 bytes into the FIFO, corrupting the command.
+        // SAFETY: MMIO base address validated in new(); byte-width
+        // volatile writes via fstart_mmio::write8 with dmb barriers.
         unsafe {
             self.txd_write_byte(SPI_CMD_READ);
             self.txd_write_byte((addr >> 16) as u8);
@@ -680,21 +709,32 @@ impl SunxiSpi {
 
         // Wait for the transfer to complete: poll until RX FIFO has
         // all expected bytes.
+        let mut timeout = SPI_POLL_TIMEOUT;
         loop {
             let rx_count = regs.fifo_sta.read(FIFO_STA6::RF_CNT);
             if rx_count >= total {
                 break;
             }
+            timeout -= 1;
+            if timeout == 0 {
+                regs.tcr.modify(TCR6::CS_LEVEL::SET);
+                fstart_log::error!("SPI0: sun6i FIFO poll timeout");
+                return Err(ServiceError::Timeout);
+            }
             core::hint::spin_loop();
         }
 
         // Discard the 4 command echo bytes (one 32-bit read drains 4).
+        // SAFETY: MMIO base address validated in new(); 32-bit volatile
+        // read via fstart_mmio::read32 drains 4 FIFO bytes at once.
         unsafe {
             self.rxd_drain_word();
         }
 
         // Read the actual data bytes (byte-width reads).
         for byte in buf.iter_mut().take(len) {
+            // SAFETY: MMIO base address validated in new(); byte-width
+            // volatile read via fstart_mmio::read8 pops one FIFO byte.
             *byte = unsafe { self.rxd_read_byte() };
         }
 
@@ -704,7 +744,7 @@ impl SunxiSpi {
         // tSHSL: chip select high time between operations.
         udelay(1);
 
-        len
+        Ok(len)
     }
 }
 
@@ -717,14 +757,26 @@ impl BlockDevice for SunxiSpi {
     ///
     /// Breaks large reads into 60-byte chunks (64-byte FIFO minus
     /// 4-byte command overhead) using the SPI Read (0x03) command.
+    /// Validates that `offset` falls within the flash and clamps the
+    /// read length so it does not exceed the flash boundary.
     fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError> {
+        // Validate offset is within flash capacity (also catches u64→u32
+        // truncation — 3-byte SPI addressing can only reach 16 MiB).
+        if offset >= self.flash_size as u64 {
+            return Err(ServiceError::InvalidParam);
+        }
+
+        // Clamp read length to remaining flash space.
+        let max_readable = (self.flash_size as u64 - offset) as usize;
+        let read_len = buf.len().min(max_readable);
+
         let mut pos = 0usize;
         let mut addr = offset as u32;
 
-        while pos < buf.len() {
-            let remaining = buf.len() - pos;
+        while pos < read_len {
+            let remaining = read_len - pos;
             let chunk = remaining.min(SPI_MAX_XFER);
-            let read = self.spi_read_chunk(addr, &mut buf[pos..pos + chunk]);
+            let read = self.spi_read_chunk(addr, &mut buf[pos..pos + chunk])?;
             if read == 0 {
                 return Err(ServiceError::HardwareError);
             }
