@@ -14,3 +14,5 @@ fit/initramfs-*
 *.dtb
 zImage
 Image
+bl31.bin
+**/keys/**
