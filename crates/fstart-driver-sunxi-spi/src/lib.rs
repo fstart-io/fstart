@@ -2,8 +2,21 @@
 //!
 //! Minimal read-only driver for booting from SPI NOR flash. Implements
 //! `Device` + `BlockDevice` traits. Uses the SPI0 controller to read
-//! from an attached SPI NOR flash chip via the standard Read Data Bytes
-//! command (0x03).
+//! from an attached SPI NOR flash chip.
+//!
+//! ## Clock and command selection
+//!
+//! The SPI bus frequency is configurable via `spi_freq` in the board
+//! RON. The driver auto-selects the clock source:
+//! - **≤ 24 MHz**: OSC24M (always available, no PLL dependency)
+//! - **> 24 MHz**: PLL_PERIPH (600 MHz, divided down via CCU N/M and
+//!   SPI controller CDR2 dividers)
+//!
+//! When the achieved frequency exceeds 25 MHz the driver automatically
+//! switches from Read (0x03) to **Fast Read (0x0B)**, which inserts one
+//! dummy byte after the 3-byte address.
+//!
+//! ## SoC generation differences
 //!
 //! Supports both sun4i-generation (A10/A20) and sun6i-generation
 //! (H3/H2+/A64) SPI controllers. These are **different IP blocks** with
@@ -56,6 +69,13 @@ pub enum SunxiSpiConfig {
         pio_base: u64,
         /// SPI NOR flash capacity in bytes (e.g., 0x01000000 for 16 MiB).
         flash_size: u32,
+        /// Desired SPI bus clock frequency in Hz (e.g., 6000000 for 6 MHz).
+        ///
+        /// The driver selects OSC24M or PLL_PERIPH as clock source and
+        /// computes dividers to achieve the closest frequency at or below
+        /// this value. If the achieved frequency exceeds 25 MHz, Fast
+        /// Read (0x0B) is used automatically.
+        spi_freq: u32,
     },
     /// H3/H2+ (sun8i) — sun6i-generation SPI IP.
     ///
@@ -69,6 +89,13 @@ pub enum SunxiSpiConfig {
         pio_base: u64,
         /// SPI NOR flash capacity in bytes (e.g., 0x01000000 for 16 MiB).
         flash_size: u32,
+        /// Desired SPI bus clock frequency in Hz (e.g., 50000000 for 50 MHz).
+        ///
+        /// The driver selects OSC24M or PLL_PERIPH as clock source and
+        /// computes dividers to achieve the closest frequency at or below
+        /// this value. If the achieved frequency exceeds 25 MHz, Fast
+        /// Read (0x0B) is used automatically.
+        spi_freq: u32,
     },
 }
 
@@ -247,26 +274,44 @@ register_structs! {
 // ---------------------------------------------------------------------------
 
 /// SPI NOR flash Read Data Bytes command (single-IO, 3-byte address).
+/// Format: `[0x03] [A23:A16] [A15:A8] [A7:A0] [data...]`
 const SPI_CMD_READ: u8 = 0x03;
+
+/// SPI NOR flash Fast Read command — requires 1 dummy byte after address.
+/// Format: `[0x0B] [A23:A16] [A15:A8] [A7:A0] [dummy] [data...]`
+const SPI_CMD_FAST_READ: u8 = 0x0B;
 
 /// SPI FIFO depth (64 bytes on both sun4i and sun6i-H3 variants).
 const SPI_FIFO_DEPTH: usize = 64;
 
-/// Command overhead: 1 byte opcode + 3 bytes address = 4 bytes.
-const SPI_CMD_LEN: usize = 4;
+/// Command overhead for Read (0x03): 1 opcode + 3 address = 4 bytes.
+const CMD_LEN_READ: usize = 4;
 
-/// Maximum data payload per SPI transfer (FIFO depth minus command).
-const SPI_MAX_XFER: usize = SPI_FIFO_DEPTH - SPI_CMD_LEN;
+/// Command overhead for Fast Read (0x0B): 1 opcode + 3 address + 1 dummy = 5 bytes.
+const CMD_LEN_FAST_READ: usize = 5;
 
-/// Clock divider value: DRS=1 (bit 12), CDR2=1 (bits 7:0).
-/// SPI_CLK = OSC24M / (2 * (1+1)) = 6 MHz.
-const SPI0_CLK_DIV_BY_4: u32 = 0x1001;
+/// OSC24M crystal oscillator frequency (always available).
+const OSC24M_FREQ: u32 = 24_000_000;
+
+/// PLL_PERIPH (PLL6) frequency — 600 MHz on both A20 and H3.
+///
+/// This PLL must already be running when the SPI driver initialises
+/// at frequencies above 24 MHz. The CCU driver (`ClockInit` capability)
+/// sets it up in the bootblock before `DriverInit` runs.
+const PLL_PERIPH_FREQ: u32 = 600_000_000;
+
+/// Fast Read threshold: use Fast Read (0x0B) above this frequency.
+///
+/// Most SPI NOR flash chips support Read (0x03) up to ~25-33 MHz.
+/// Above that, the extra dummy byte in Fast Read (0x0B) gives the
+/// flash chip internal setup time for higher clock rates.
+const FAST_READ_THRESHOLD: u32 = 25_000_000;
 
 /// Timeout for hardware polling loops (FIFO fill, soft reset).
 ///
-/// At 6 MHz SPI clock and 64-byte FIFO, a full transfer takes ~85 µs.
-/// On a 1 GHz ARM core each `spin_loop()` takes ~5-10 ns, so 85 µs ≈
-/// ~10K iterations.  1M iterations gives ~100× safety margin.
+/// At 100 MHz SPI clock and 64-byte FIFO, a full transfer takes ~5 µs.
+/// On a 1 GHz ARM core each `spin_loop()` takes ~5-10 ns, so 5 µs ≈
+/// ~500 iterations.  1M iterations gives massive safety margin.
 const SPI_POLL_TIMEOUT: u32 = 1_000_000;
 
 /// AHB gate bit for SPI0 (bit 20 in both A20 and H3 gate registers).
@@ -309,6 +354,18 @@ pub struct SunxiSpi {
     flash_size: u32,
     /// SoC generation selector.
     gen: SunxiGen,
+    /// Computed CCU SPI_CLK register value (source + N/M dividers + enable).
+    ccu_spi_clk: u32,
+    /// Computed SPI controller clock control register value (DRS + CDR).
+    spi_clk_ctl: u32,
+    /// Actual achieved SPI clock frequency in Hz.
+    actual_freq: u32,
+    /// Use Fast Read (0x0B) with dummy byte instead of Read (0x03).
+    use_fast_read: bool,
+    /// Command overhead in bytes (4 for Read, 5 for Fast Read).
+    cmd_len: usize,
+    /// Maximum data bytes per SPI transfer (FIFO depth minus cmd_len).
+    max_xfer: usize,
 }
 
 // SAFETY: SunxiSpi contains only MMIO base addresses and config values.
@@ -325,28 +382,57 @@ impl Device for SunxiSpi {
     type Config = SunxiSpiConfig;
 
     fn new(config: &Self::Config) -> Result<Self, DeviceError> {
-        let (base_addr, ccu_base, pio_base, flash_size, gen) = match *config {
+        let (base_addr, ccu_base, pio_base, flash_size, spi_freq, gen) = match *config {
             SunxiSpiConfig::Sun7iA20 {
                 base_addr,
                 ccu_base,
                 pio_base,
                 flash_size,
-            } => (base_addr, ccu_base, pio_base, flash_size, SunxiGen::Sun4i),
+                spi_freq,
+            } => (
+                base_addr,
+                ccu_base,
+                pio_base,
+                flash_size,
+                spi_freq,
+                SunxiGen::Sun4i,
+            ),
             SunxiSpiConfig::Sun8iH3 {
                 base_addr,
                 ccu_base,
                 pio_base,
                 flash_size,
-            } => (base_addr, ccu_base, pio_base, flash_size, SunxiGen::Sun6i),
+                spi_freq,
+            } => (
+                base_addr,
+                ccu_base,
+                pio_base,
+                flash_size,
+                spi_freq,
+                SunxiGen::Sun6i,
+            ),
         };
 
         if base_addr == 0 {
             return Err(DeviceError::MissingResource("base_addr"));
         }
-        // 3-byte addressing (SPI command 0x03) can only reach 16 MiB.
+        // 3-byte addressing can only reach 16 MiB.
         if flash_size > 0x0100_0000 {
             return Err(DeviceError::ConfigError);
         }
+        if spi_freq == 0 {
+            return Err(DeviceError::ConfigError);
+        }
+
+        // Compute clock dividers for the requested frequency.
+        let (ccu_spi_clk, spi_clk_ctl, actual_freq) = compute_clock(spi_freq, gen);
+        let use_fast_read = actual_freq > FAST_READ_THRESHOLD;
+        let cmd_len = if use_fast_read {
+            CMD_LEN_FAST_READ
+        } else {
+            CMD_LEN_READ
+        };
+        let max_xfer = SPI_FIFO_DEPTH - cmd_len;
 
         Ok(Self {
             base: base_addr as usize,
@@ -354,6 +440,12 @@ impl Device for SunxiSpi {
             pio_base: pio_base as usize,
             flash_size,
             gen,
+            ccu_spi_clk,
+            spi_clk_ctl,
+            actual_freq,
+            use_fast_read,
+            cmd_len,
+            max_xfer,
         })
     }
 
@@ -363,8 +455,14 @@ impl Device for SunxiSpi {
         self.enable_controller()?;
 
         fstart_log::info!(
-            "SPI0: init complete (6 MHz, flash {}KB)",
-            self.flash_size / 1024
+            "SPI0: {} MHz, flash {}KB{}",
+            self.actual_freq / 1_000_000,
+            self.flash_size / 1024,
+            if self.use_fast_read {
+                " (fast read)"
+            } else {
+                ""
+            }
         );
         Ok(())
     }
@@ -386,6 +484,86 @@ impl SunxiSpi {
         // SAFETY: MMIO base address validated in `new()`.
         unsafe { &*(self.base as *const Sun6iSpiRegs) }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Clock computation (pure functions — no hardware access)
+// ---------------------------------------------------------------------------
+
+/// Compute clock source, CCU dividers, and SPI controller divider to
+/// achieve the closest SPI bus frequency at or below `target` Hz.
+///
+/// Returns `(ccu_spi_clk_reg, spi_clk_ctl_reg, actual_freq_hz)`.
+///
+/// Strategy:
+/// - **≤ 24 MHz**: use OSC24M (no PLL dependency).
+/// - **> 24 MHz**: use PLL_PERIPH (600 MHz), divided by CCU N/M
+///   dividers and the SPI controller's CDR2 linear divider.
+///
+/// On sun6i, CDR1=0 provides a 1:1 pass-through (no SPI-side division),
+/// which is used when the MOD_CLK already matches the target.
+fn compute_clock(target: u32, gen: SunxiGen) -> (u32, u32, u32) {
+    if target <= OSC24M_FREQ {
+        // OSC24M source — always available, no PLL needed.
+        let ccu_val = 1u32 << 31; // enable, CLK_SRC=00 (OSC24M), N=0, M=0
+
+        // On sun6i, CDR1=0 gives SPI_CLK = MOD_CLK (no division).
+        if gen == SunxiGen::Sun6i && target >= OSC24M_FREQ {
+            return (ccu_val, 0, OSC24M_FREQ);
+        }
+
+        let (clk_ctl, actual) = compute_cdr2(OSC24M_FREQ, target);
+        (ccu_val, clk_ctl, actual)
+    } else {
+        // PLL_PERIPH source — for speeds above 24 MHz.
+        // Find smallest CCU divider d = 2^N * (M+1) such that
+        // PLL_PERIPH / d / 2 <= target  (CDR2=0 gives /2).
+        let min_ccu_div = PLL_PERIPH_FREQ.div_ceil(2 * target);
+        let (n, m) = find_ccu_nm(min_ccu_div);
+        let mod_clk = PLL_PERIPH_FREQ / (1 << n) / (m + 1);
+
+        // CCU register: enable | PLL_PERIPH source (bit 24) | N | M
+        let ccu_val = (1u32 << 31) | (1u32 << 24) | (n << 16) | m;
+
+        // On sun6i, CDR1=0 gives 1:1 → SPI_CLK = MOD_CLK.
+        if gen == SunxiGen::Sun6i && target >= mod_clk {
+            return (ccu_val, 0, mod_clk);
+        }
+
+        let (clk_ctl, actual) = compute_cdr2(mod_clk, target);
+        (ccu_val, clk_ctl, actual)
+    }
+}
+
+/// Compute CDR2 divider: `SPI_CLK = mod_clk / (2 * (CDR2 + 1))`.
+///
+/// Returns `(clk_ctl_register_value, actual_frequency)`.
+/// The result never exceeds `target`.
+fn compute_cdr2(mod_clk: u32, target: u32) -> (u32, u32) {
+    let div = mod_clk.div_ceil(2 * target);
+    let cdr2 = if div > 0 { div - 1 } else { 0 };
+    let cdr2 = cdr2.min(255); // CDR2 is 8-bit
+    let actual = mod_clk / (2 * (cdr2 + 1));
+    ((1 << 12) | cdr2, actual) // DRS=1 | CDR2
+}
+
+/// Find smallest `(N, M)` for the CCU SPI_CLK register such that
+/// `(2^N) * (M + 1) >= min_div`.
+///
+/// N: 0-3 (exponent → divider 1, 2, 4, 8).
+/// M: 0-15 (linear → divider 1..16).
+fn find_ccu_nm(min_div: u32) -> (u32, u32) {
+    for n in 0..=3u32 {
+        let n_div = 1u32 << n;
+        if n_div >= min_div {
+            return (n, 0);
+        }
+        let m = min_div.div_ceil(n_div) - 1;
+        if m <= 15 {
+            return (n, m);
+        }
+    }
+    (3, 15) // Maximum: 8 * 16 = 128
 }
 
 // ---------------------------------------------------------------------------
@@ -454,8 +632,9 @@ impl SunxiSpi {
 
     /// Enable AHB gate, bus reset (sun6i), and SPI module clock.
     ///
-    /// Sets SPI0 module clock source to OSC24M with divide-by-4
-    /// (resulting in 6 MHz SPI clock — same as what the BROM uses).
+    /// Configures the CCU SPI_CLK register (source + N/M dividers) and
+    /// the SPI controller's internal clock divider (CDR) to achieve the
+    /// frequency computed in `new()`.
     fn setup_clocks(&self) {
         // Sun6i: deassert bus reset for SPI0 before opening gate.
         if self.gen == SunxiGen::Sun6i {
@@ -469,12 +648,12 @@ impl SunxiSpi {
 
         // Set clock divider in the SPI controller.
         match self.gen {
-            SunxiGen::Sun4i => self.sun4i_regs().clk_ctl.set(SPI0_CLK_DIV_BY_4),
-            SunxiGen::Sun6i => self.sun6i_regs().clk_ctl.set(SPI0_CLK_DIV_BY_4),
+            SunxiGen::Sun4i => self.sun4i_regs().clk_ctl.set(self.spi_clk_ctl),
+            SunxiGen::Sun6i => self.sun6i_regs().clk_ctl.set(self.spi_clk_ctl),
         }
 
-        // Enable SPI module clock: bit 31 = enable, source = OSC24M.
-        self.ccu_write(CCU_SPI0_CLK_OFFSET, 1 << 31);
+        // Enable SPI module clock with computed source and dividers.
+        self.ccu_write(CCU_SPI0_CLK_OFFSET, self.ccu_spi_clk);
     }
 
     /// Enable the SPI controller and prepare for transfers.
@@ -515,8 +694,8 @@ impl SunxiSpi {
                 }
 
                 // Re-apply clock divider — soft reset may have cleared it
-                // back to the power-on default (0x0002 → CDR1 mode, 12 MHz).
-                regs.clk_ctl.set(SPI0_CLK_DIV_BY_4);
+                // back to the power-on default.
+                regs.clk_ctl.set(self.spi_clk_ctl);
 
                 // Configure transfer control: manual CS, active-low,
                 // CS starts deasserted (CS_LEVEL=1 → pin HIGH).
@@ -581,8 +760,8 @@ impl SunxiSpi {
 impl SunxiSpi {
     /// Perform a single SPI NOR flash read transfer.
     ///
-    /// Reads up to `SPI_MAX_XFER` (60) bytes from the given 24-bit
-    /// flash address. Returns the number of bytes actually read.
+    /// Reads up to `self.max_xfer` bytes from the given 24-bit flash
+    /// address. Returns the number of bytes actually read.
     fn spi_read_chunk(&self, addr: u32, buf: &mut [u8]) -> Result<usize, ServiceError> {
         match self.gen {
             SunxiGen::Sun4i => self.spi_read_chunk_sun4i(addr, buf),
@@ -590,9 +769,49 @@ impl SunxiSpi {
         }
     }
 
+    /// Write the SPI command frame to the TX FIFO.
+    ///
+    /// - Read (0x03):      `[0x03, A2, A1, A0]`      — 4 bytes
+    /// - Fast Read (0x0B): `[0x0B, A2, A1, A0, 0xFF]` — 5 bytes
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure the TX FIFO has been reset and has room for
+    /// `self.cmd_len` bytes. MMIO base address was validated in `new()`.
+    unsafe fn write_cmd_frame(&self, addr: u32) {
+        let opcode = if self.use_fast_read {
+            SPI_CMD_FAST_READ
+        } else {
+            SPI_CMD_READ
+        };
+        self.txd_write_byte(opcode);
+        self.txd_write_byte((addr >> 16) as u8);
+        self.txd_write_byte((addr >> 8) as u8);
+        self.txd_write_byte(addr as u8);
+        if self.use_fast_read {
+            self.txd_write_byte(0xFF); // dummy byte
+        }
+    }
+
+    /// Drain the command echo bytes from the RX FIFO after a transfer.
+    ///
+    /// - Read (0x03):      drain 4 bytes (one 32-bit read)
+    /// - Fast Read (0x0B): drain 5 bytes (one 32-bit + one byte read)
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure the RX FIFO contains at least `self.cmd_len`
+    /// bytes. MMIO base address was validated in `new()`.
+    unsafe fn drain_cmd_echo(&self) {
+        self.rxd_drain_word(); // drains 4 bytes
+        if self.use_fast_read {
+            let _ = self.rxd_read_byte(); // drain 5th (dummy echo) byte
+        }
+    }
+
     /// Sun4i (A10/A20) SPI read chunk implementation.
     fn spi_read_chunk_sun4i(&self, addr: u32, buf: &mut [u8]) -> Result<usize, ServiceError> {
-        let len = buf.len().min(SPI_MAX_XFER);
+        let len = buf.len().min(self.max_xfer);
         if len == 0 {
             return Ok(0);
         }
@@ -602,25 +821,19 @@ impl SunxiSpi {
         regs.ctl.modify(CTL4::TF_RST::SET + CTL4::RF_RST::SET);
 
         // Set burst count (total bytes = command + data).
-        let total = (SPI_CMD_LEN + len) as u32;
+        let total = (self.cmd_len + len) as u32;
         regs.burst_cnt.set(total);
 
-        // Set transmit count (only the 4-byte command is TX).
-        regs.xmit_cnt.set(SPI_CMD_LEN as u32);
+        // Set transmit count (only the command bytes are TX).
+        regs.xmit_cnt.set(self.cmd_len as u32);
 
         // Assert chip select (CS low).
         regs.ctl.modify(CTL4::CS_LEVEL::CLEAR);
 
-        // Write the Read command + 3-byte address to TX FIFO.
-        // CRITICAL: use byte-width writes.  A 32-bit write pushes
-        // 4 bytes into the FIFO, corrupting the command.
-        // SAFETY: MMIO base address validated in new(); byte-width
-        // volatile writes via fstart_mmio::write8 with dmb barriers.
+        // Write the command frame to TX FIFO.
+        // SAFETY: FIFO was just reset; MMIO base validated in new().
         unsafe {
-            self.txd_write_byte(SPI_CMD_READ);
-            self.txd_write_byte((addr >> 16) as u8);
-            self.txd_write_byte((addr >> 8) as u8);
-            self.txd_write_byte(addr as u8);
+            self.write_cmd_frame(addr);
         }
 
         // Start the exchange.
@@ -643,11 +856,10 @@ impl SunxiSpi {
             core::hint::spin_loop();
         }
 
-        // Discard the 4 command echo bytes (one 32-bit read drains 4).
-        // SAFETY: MMIO base address validated in new(); 32-bit volatile
-        // read via fstart_mmio::read32 drains 4 FIFO bytes at once.
+        // Discard command echo bytes from RX FIFO.
+        // SAFETY: FIFO contains at least `total` bytes; base validated.
         unsafe {
-            self.rxd_drain_word();
+            self.drain_cmd_echo();
         }
 
         // Read the actual data bytes (byte-width reads).
@@ -668,7 +880,7 @@ impl SunxiSpi {
 
     /// Sun6i (H3/H2+/A64) SPI read chunk implementation.
     fn spi_read_chunk_sun6i(&self, addr: u32, buf: &mut [u8]) -> Result<usize, ServiceError> {
-        let len = buf.len().min(SPI_MAX_XFER);
+        let len = buf.len().min(self.max_xfer);
         if len == 0 {
             return Ok(0);
         }
@@ -680,28 +892,22 @@ impl SunxiSpi {
             .modify(FIFO_CTL6::TF_RST::SET + FIFO_CTL6::RF_RST::SET);
 
         // Set burst count (total bytes = command + data).
-        let total = (SPI_CMD_LEN + len) as u32;
+        let total = (self.cmd_len + len) as u32;
         regs.mbc.set(total);
 
-        // Set transmit count (only the 4-byte command is TX).
-        regs.mtc.set(SPI_CMD_LEN as u32);
+        // Set transmit count (only the command bytes are TX).
+        regs.mtc.set(self.cmd_len as u32);
 
         // Sun6i also needs the burst control count set.
-        regs.bcc.set(SPI_CMD_LEN as u32);
+        regs.bcc.set(self.cmd_len as u32);
 
         // Assert chip select (CS low) — via TCR on sun6i.
         regs.tcr.modify(TCR6::CS_LEVEL::CLEAR);
 
-        // Write the Read command + 3-byte address to TX FIFO.
-        // CRITICAL: use byte-width writes.  A 32-bit write pushes
-        // 4 bytes into the FIFO, corrupting the command.
-        // SAFETY: MMIO base address validated in new(); byte-width
-        // volatile writes via fstart_mmio::write8 with dmb barriers.
+        // Write the command frame to TX FIFO.
+        // SAFETY: FIFO was just reset; MMIO base validated in new().
         unsafe {
-            self.txd_write_byte(SPI_CMD_READ);
-            self.txd_write_byte((addr >> 16) as u8);
-            self.txd_write_byte((addr >> 8) as u8);
-            self.txd_write_byte(addr as u8);
+            self.write_cmd_frame(addr);
         }
 
         // Start the exchange (XCH is in TCR on sun6i, not GCR).
@@ -724,11 +930,10 @@ impl SunxiSpi {
             core::hint::spin_loop();
         }
 
-        // Discard the 4 command echo bytes (one 32-bit read drains 4).
-        // SAFETY: MMIO base address validated in new(); 32-bit volatile
-        // read via fstart_mmio::read32 drains 4 FIFO bytes at once.
+        // Discard command echo bytes from RX FIFO.
+        // SAFETY: FIFO contains at least `total` bytes; base validated.
         unsafe {
-            self.rxd_drain_word();
+            self.drain_cmd_echo();
         }
 
         // Read the actual data bytes (byte-width reads).
@@ -755,8 +960,8 @@ impl SunxiSpi {
 impl BlockDevice for SunxiSpi {
     /// Read data from SPI NOR flash.
     ///
-    /// Breaks large reads into 60-byte chunks (64-byte FIFO minus
-    /// 4-byte command overhead) using the SPI Read (0x03) command.
+    /// Breaks large reads into chunks (FIFO depth minus command overhead)
+    /// using Read (0x03) or Fast Read (0x0B) depending on clock speed.
     /// Validates that `offset` falls within the flash and clamps the
     /// read length so it does not exceed the flash boundary.
     fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError> {
@@ -775,7 +980,7 @@ impl BlockDevice for SunxiSpi {
 
         while pos < read_len {
             let remaining = read_len - pos;
-            let chunk = remaining.min(SPI_MAX_XFER);
+            let chunk = remaining.min(self.max_xfer);
             let read = self.spi_read_chunk(addr, &mut buf[pos..pos + chunk])?;
             if read == 0 {
                 return Err(ServiceError::HardwareError);

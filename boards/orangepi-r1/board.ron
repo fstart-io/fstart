@@ -88,6 +88,7 @@
         // SPI NOR flash (SPI0) — 16 MiB on-board flash, alternative boot medium.
         // Sun6i-generation SPI controller at 0x01C68000.
         // GPIO mux (PC0-PC3) and clock gating handled by init().
+        // 50 MHz uses PLL_PERIPH (600 MHz) as clock source and Fast Read (0x0B).
         (
             name: "spi0",
             driver: SunxiSpi(Sun8iH3(
@@ -95,6 +96,7 @@
                 ccu_base: 0x01C20000,
                 pio_base: 0x01C20800,
                 flash_size: 0x01000000,
+                spi_freq: 50000000,
             )),
             services: ["BlockDevice"],
         ),
