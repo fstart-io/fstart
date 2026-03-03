@@ -59,9 +59,9 @@ pub mod sunxi_mmc {
     pub use fstart_driver_sunxi_mmc::SunxiMmcConfig;
 }
 
-#[cfg(feature = "sunxi-a20-spi")]
-pub mod sunxi_a20_spi {
-    pub use fstart_driver_sunxi_spi::SunxiA20SpiConfig;
+#[cfg(feature = "sunxi-spi")]
+pub mod sunxi_spi {
+    pub use fstart_driver_sunxi_spi::SunxiSpiConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,9 +144,13 @@ pub enum DriverInstance {
     #[cfg(feature = "sunxi-mmc")]
     SunxiMmc(sunxi_mmc::SunxiMmcConfig),
 
-    /// Allwinner A20 (sun4i) SPI controller.
-    #[cfg(feature = "sunxi-a20-spi")]
-    SunxiA20Spi(sunxi_a20_spi::SunxiA20SpiConfig),
+    /// Allwinner sunxi SPI controller (unified A20/H3).
+    ///
+    /// The inner [`SunxiSpiConfig`] enum selects the SoC generation
+    /// (Sun7iA20 vs Sun8iH3), which determines register layout,
+    /// clock gating, and GPIO pin mux differences.
+    #[cfg(feature = "sunxi-spi")]
+    SunxiSpi(sunxi_spi::SunxiSpiConfig),
 }
 
 impl DriverInstance {
@@ -230,14 +234,14 @@ impl DriverInstance {
                 services: &["BlockDevice"],
                 compatible: &["allwinner,sun7i-a20-mmc", "allwinner,sun8i-h3-mmc"],
             },
-            #[cfg(feature = "sunxi-a20-spi")]
-            Self::SunxiA20Spi(_) => &DriverMeta {
-                name: "sunxi-a20-spi",
-                type_name: "SunxiA20Spi",
+            #[cfg(feature = "sunxi-spi")]
+            Self::SunxiSpi(_) => &DriverMeta {
+                name: "sunxi-spi",
+                type_name: "SunxiSpi",
                 module_path: "fstart_driver_sunxi_spi",
-                config_type: "SunxiA20SpiConfig",
+                config_type: "SunxiSpiConfig",
                 services: &["BlockDevice"],
-                compatible: &["allwinner,sun4i-a10-spi"],
+                compatible: &["allwinner,sun4i-a10-spi", "allwinner,sun8i-h3-spi"],
             },
         }
     }
@@ -269,8 +273,8 @@ impl DriverInstance {
             Self::SunxiH3Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-mmc")]
             Self::SunxiMmc(cfg) => serde::Serialize::serialize(cfg, ser),
-            #[cfg(feature = "sunxi-a20-spi")]
-            Self::SunxiA20Spi(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-spi")]
+            Self::SunxiSpi(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

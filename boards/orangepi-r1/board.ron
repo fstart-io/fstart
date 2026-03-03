@@ -5,16 +5,16 @@
 // SRAM:   A1 16 KB at 0x00000000, A2 48 KB at 0x00040000
 //         (BROM loads 32 KB from boot medium into SRAM A1+A2)
 // UART:   UART0 at 0x01C28000 (NS16550) — PA4=TX, PA5=RX
+// SPI:    SPI0 at 0x01C68000 — 16 MiB on-board SPI NOR flash (PC0-PC3)
 //
 // Multi-stage boot flow:
-//   1. H2+ BROM loads 32K eGON.BT0 image from SD card into SRAM
-//   2. Bootblock (SRAM): clock init → UART → DRAM init → load main from SD
-//   3. Main (DRAM): UART → load kernel+DTB from SD → boot Linux
+//   1. H2+ BROM loads 32K eGON.BT0 image from boot medium into SRAM
+//   2. Bootblock (SRAM): clock init → UART → DRAM init → load main
+//   3. Main (DRAM): UART → load kernel+DTB → boot Linux
 //
-// SD card layout (FFS image written at sector 16 = byte offset 0x2000):
-//   [0x0000] MBR / partition table
-//   [0x2000] eGON header + bootblock (32K, loaded by BROM)
-//   [0x2000+] rest of FFS (main stage, kernel, DTB, manifest)
+// Boot media — BROM auto-detects:
+//   SD card (MMC0):  FFS at byte offset 0x2000 (sector 16, after MBR)
+//   SPI NOR flash:   FFS at byte offset 0 (raw flash, no partition table)
 //
 // The H2+ boots in secure mode; the CCU driver configures the security
 // switch to allow non-secure access to bus controllers.
@@ -85,6 +85,19 @@
             )),
             services: ["BlockDevice"],
         ),
+        // SPI NOR flash (SPI0) — 16 MiB on-board flash, alternative boot medium.
+        // Sun6i-generation SPI controller at 0x01C68000.
+        // GPIO mux (PC0-PC3) and clock gating handled by init().
+        (
+            name: "spi0",
+            driver: SunxiSpi(Sun8iH3(
+                base_addr: 0x01C68000,
+                ccu_base: 0x01C20000,
+                pio_base: 0x01C20800,
+                flash_size: 0x01000000,
+            )),
+            services: ["BlockDevice"],
+        ),
     ],
 
     // Two-stage boot: bootblock in SRAM, main stage in DRAM.
@@ -101,6 +114,7 @@
                 LoadNextStage(
                     devices: [
                         (name: "mmc0", base_offset: 0x2000),
+                        (name: "spi0", base_offset: 0),
                     ],
                     next_stage: "main",
                 ),
@@ -118,6 +132,7 @@
                 BootMedia(AutoDevice(
                     devices: [
                         (name: "mmc0", offset: 0x2000, size: 0x800000),
+                        (name: "spi0", offset: 0,      size: 0x1000000),
                     ],
                 )),
                 SigVerify,
