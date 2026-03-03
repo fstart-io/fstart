@@ -1,0 +1,171 @@
+// Board definition for Xunlong Orange Pi PC2 (Allwinner H5 / sun50i).
+//
+// SoC:    Allwinner H5 (quad Cortex-A53 ARMv8-A / AArch64)
+// DRAM:   1024 MB DDR3 at 0x40000000
+// SRAM:   A1 32 KB at 0x00010000 (H5 BROM loads to 0x10000, unlike H3's 0x00000)
+//         A2 at 0x00044000 (used for BL31)
+// UART:   UART0 at 0x01C28000 (NS16550) -- PA4=TX, PA5=RX
+//
+// Boot flow (AArch32-to-AArch64 RMR switch):
+//   1. H5 BROM runs in AArch32, loads 32K eGON.BT0 from SD into SRAM A1 (0x10000)
+//   2. eGON header branch -> _start (ARM32 mode)
+//   3. ARM32 stub writes RVBAR=_start, triggers RMR warm-reset -> CPU restarts in AArch64
+//   4. AArch64 _start: clock init -> UART -> DRAM init -> load main from SD
+//   5. Main (DRAM): load kernel+DTB+BL31 from SD -> BL31 EL3->EL2 -> Linux
+//
+// SD card layout (FFS image written at sector 16 = byte offset 0x2000):
+//   [0x0000] MBR / partition table
+//   [0x2000] eGON header + bootblock (32K, loaded by BROM)
+//   [0x2000+] rest of FFS (main stage, BL31, kernel, DTB, manifest)
+
+(
+    name: "orangepi-pc2",
+    platform: "aarch64",
+
+    memory: (
+        regions: [
+            // SRAM A1 -- bootblock runs here (32K usable from BROM load).
+            // H5 BROM loads to 0x10000, NOT 0x00000000 like H3.
+            ( name: "sram", base: 0x00010000, size: 0x8000, kind: Ram ),
+            // DRAM -- available after DramInit. 1024 MB DDR3.
+            ( name: "dram", base: 0x40000000, size: 0x40000000, kind: Ram ),
+        ],
+        flash_base: None,
+        flash_size: None,
+    ),
+
+    devices: [
+        // Allwinner H3/H5 CCU -- clock tree + UART GPIO pin mux.
+        // H5 CCU is register-identical to H3: same base, same PLL/gate/reset layout.
+        (
+            name: "ccu0",
+            driver: SunxiH3Ccu((
+                ccu_base: 0x01C20000,
+                pio_base: 0x01C20800,
+                uart_index: 0,
+            )),
+            services: ["ClockController"],
+        ),
+        // UART0 -- debug console on PA4 (TX) / PA5 (RX).
+        // NS16550-compatible, 4-byte register stride, 24 MHz input clock.
+        (
+            name: "uart0",
+            driver: Ns16550((
+                base_addr: 0x01C28000,
+                clock_freq: 24000000,
+                baud_rate: 115200,
+                reg_shift: 2,
+            )),
+            services: ["Console"],
+        ),
+        // Allwinner H5 DesignWare DRAM controller -- DDR3, 672 MHz.
+        // Parameters from u-boot orangepi_pc2_defconfig.
+        // Uses the shared H3/H5 driver with variant=H5 for H5-specific
+        // MBUS priorities, PHY config, ZQ cal, and bit delays.
+        (
+            name: "dramc0",
+            driver: SunxiH3Dramc((
+                dramc_base: 0x01C62000,
+                ccu_base: 0x01C20000,
+                clock: 672,
+                zq: 3881977,
+                odt_en: true,
+                variant: H5,
+            )),
+            services: ["MemoryController"],
+        ),
+        // SD card controller (MMC0) -- boot medium.
+        // H5 uses sun6i-generation MMC (same as H3).
+        (
+            name: "mmc0",
+            driver: SunxiMmc(Sun50iH5(
+                base_addr: 0x01C0F000,
+                ccu_base: 0x01C20000,
+                pio_base: 0x01C20800,
+                mmc_index: 0,
+            )),
+            services: ["BlockDevice"],
+        ),
+    ],
+
+    // Two-stage boot: bootblock in SRAM, main stage in DRAM.
+    stages: MultiStage([
+        // Stage 1: bootblock -- runs from SRAM at 0x10000 (32K limit).
+        (
+            name: "bootblock",
+            capabilities: [
+                ClockInit( device: "ccu0" ),
+                ConsoleInit( device: "uart0" ),
+                DramInit( device: "dramc0" ),
+                DriverInit,
+                LoadNextStage(
+                    devices: [
+                        (name: "mmc0", base_offset: 0x2000),
+                    ],
+                    next_stage: "main",
+                ),
+            ],
+            load_addr: 0x00010000,
+            stack_size: 0x1000,
+            runs_from: Ram,
+        ),
+        // Stage 2: main -- runs from DRAM after being loaded by bootblock.
+        (
+            name: "main",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                DriverInit,
+                BootMedia(AutoDevice(
+                    devices: [
+                        (name: "mmc0", offset: 0x2000, size: 0x1000000),
+                    ],
+                )),
+                SigVerify,
+                FdtPrepare,
+                PayloadLoad,
+            ],
+            load_addr: 0x41000000,
+            stack_size: 0x10000,
+            runs_from: Ram,
+        ),
+    ]),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+
+    mode: Rigid,
+
+    // Linux boot via ARM Trusted Firmware BL31.
+    //
+    // Memory layout:
+    //   0x00010000 - SRAM A1 (bootblock, 32K)
+    //   0x00044000 - SRAM A2 (BL31 load address)
+    //   0x40000000 - DRAM start (1 GB)
+    //   0x41000000 - Main stage load address
+    //   0x4A000000 - Linux kernel load address (ATF PRELOADED_BL33_BASE)
+    //   0x4B000000 - DTB load address
+    //   0x80000000 - End of DRAM
+    //
+    // BL31 runs from SRAM A2 (0x44000) at EL3, then erets to
+    // Linux (BL33) at EL2 with x0 = DTB pointer.
+    // NOTE: kernel_load_addr MUST match ATF's PRELOADED_BL33_BASE (0x4a000000).
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("Image"),
+        kernel_load_addr: Some(0x4A000000),
+        fdt: Override("sun50i-h5-orangepi-pc2.dtb"),
+        dtb_addr: Some(0x4B000000),
+        src_dtb_addr: None,
+        bootargs: Some("earlycon console=ttyS0,115200"),
+        firmware: Some((
+            kind: ArmTrustedFirmware,
+            file: "bl31.bin",
+            load_addr: 0x00044000,
+        )),
+    )),
+
+    soc_image_format: AllwinnerEgon,
+)

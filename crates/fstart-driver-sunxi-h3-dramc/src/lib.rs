@@ -138,7 +138,9 @@ register_bitfields! [u32,
         /// Analog PHY phase select (bits [9:8]).
         APHY_PHASE OFFSET(8) NUMBITS(2) [],
         /// Digital PHY phase select (bits [11:10]).
-        DPHY_PHASE OFFSET(10) NUMBITS(2) []
+        DPHY_PHASE OFFSET(10) NUMBITS(2) [],
+        /// DQ hold disable (bit 13) — H5 clears this for VTF.
+        DQ_HOLD OFFSET(13) NUMBITS(1) []
     ],
 
     /// DTCR — Data Training Configuration Register.
@@ -158,7 +160,9 @@ register_bitfields! [u32,
     /// ACIOCR — AC I/O Configuration Register.
     pub ACIOCR_REG [
         /// AC power-down receiver (bit 1).
-        AC_PDR OFFSET(1) NUMBITS(1) []
+        AC_PDR OFFSET(1) NUMBITS(1) [],
+        /// AC ODT (bit 11) — H5 clears this.
+        AC_ODT OFFSET(11) NUMBITS(1) []
     ],
 
     /// UPD2 — Update Register 2.
@@ -494,6 +498,10 @@ mod dx_gcr {
     pub const RTTOAL_MASK: u32 = 0x3 << 14;
     /// Combined mask for all ODT-related fields.
     pub const ODT_FIELDS: u32 = ODT_MASK | DQSRPD | DQSRTT_MASK | RTTOH_MASK | RTTOAL_MASK;
+    /// H5 DQSG mode: clear bit 9 mask.
+    pub const H5_DQSG_CLR: u32 = 0x2 << 8;
+    /// H5 DQSG mode: set bit 10.
+    pub const H5_DQSG_SET: u32 = 0x4 << 8;
 }
 
 /// DX byte-lane General Status Register 0 field masks.
@@ -548,6 +556,31 @@ const H3_DX_WRITE_DELAYS: [[u8; 11]; 4] = [
 const H3_AC_DELAYS: [u8; 31] = [0; 31];
 
 // ===================================================================
+// Per-byte-lane delay constants for H5 (from u-boot)
+// ===================================================================
+
+/// H5 DX read delays — 4 byte lanes × 11 signals.
+const H5_DX_READ_DELAYS: [[u8; 11]; 4] = [
+    [14, 15, 17, 17, 17, 17, 17, 18, 17, 3, 3],
+    [21, 21, 12, 22, 21, 21, 21, 21, 21, 3, 3],
+    [16, 19, 19, 17, 22, 22, 21, 22, 19, 3, 3],
+    [21, 21, 22, 22, 20, 21, 19, 19, 19, 3, 3],
+];
+
+/// H5 DX write delays — 4 byte lanes × 11 signals.
+const H5_DX_WRITE_DELAYS: [[u8; 11]; 4] = [
+    [1, 2, 3, 4, 3, 4, 4, 4, 6, 6, 6],
+    [6, 6, 6, 5, 5, 5, 5, 5, 6, 6, 6],
+    [0, 2, 4, 2, 6, 5, 5, 5, 6, 6, 6],
+    [3, 3, 3, 2, 2, 1, 1, 1, 4, 4, 4],
+];
+
+/// H5 AC (address/command) delays — non-zero tuning.
+const H5_AC_DELAYS: [u8; 31] = [
+    0, 0, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 0, 0,
+];
+
+// ===================================================================
 // Modified Gray code tables for ZQ calibration
 // ===================================================================
 
@@ -572,13 +605,27 @@ fn repeat_byte(b: u8) -> u32 {
 // Configuration
 // ===================================================================
 
-/// Typed configuration for the H3/H2+ DRAM controller driver.
+/// SoC variant selector for the DesignWare DRAM controller.
+///
+/// The H3 and H5 share the same DesignWare IP but differ in PHY
+/// configuration, MBUS priorities, ZQ calibration, bit delays, and
+/// several timing/control register values.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SunxiDramcVariant {
+    /// Allwinner H3/H2+ (sun8i).
+    #[default]
+    H3,
+    /// Allwinner H5 (sun50i).
+    H5,
+}
+
+/// Typed configuration for the H3/H5 DRAM controller driver.
 ///
 /// The DesignWare controller auto-detects most parameters (rank count,
 /// bus width, density). Only the clock frequency and ZQ value need to
 /// be specified per-board.
 ///
-/// For Orange Pi R1 (256 MB DDR3 at 624 MHz):
+/// For Orange Pi R1 (256 MB DDR3 at 624 MHz, H3):
 /// ```ron
 /// SunxiH3Dramc((
 ///     dramc_base: 0x01C62000,
@@ -588,25 +635,40 @@ fn repeat_byte(b: u8) -> u32 {
 ///     odt_en:     true,
 /// ))
 /// ```
+///
+/// For Orange Pi PC2 (1024 MB DDR3 at 672 MHz, H5):
+/// ```ron
+/// SunxiH3Dramc((
+///     dramc_base: 0x01C62000,
+///     ccu_base:   0x01C20000,
+///     clock:      672,
+///     zq:         3881977,
+///     odt_en:     true,
+///     variant:    H5,
+/// ))
+/// ```
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct SunxiH3DramcConfig {
     /// DRAMC COM register base address (`0x01C6_2000`).
     pub dramc_base: u64,
     /// CCU register base address (`0x01C2_0000`).
     pub ccu_base: u64,
-    /// DRAM clock frequency in MHz (e.g., 624).
+    /// DRAM clock frequency in MHz (e.g., 624 for H3, 672 for H5).
     pub clock: u32,
-    /// ZQ calibration value (e.g., 3881979 = 0x3B3BBB for H3).
+    /// ZQ calibration value (e.g., 3881979 for H3, 3881977 for H5).
     pub zq: u32,
     /// On-Die Termination enable.
     pub odt_en: bool,
+    /// SoC variant. Defaults to `H3` for backward compatibility.
+    #[serde(default)]
+    pub variant: SunxiDramcVariant,
 }
 
 // ===================================================================
 // Driver struct
 // ===================================================================
 
-/// Allwinner H3/H2+ DesignWare DRAM controller driver.
+/// Allwinner H3/H5 DesignWare DRAM controller driver.
 pub struct SunxiH3Dramc {
     com: &'static SunxiH3DramComRegs,
     ctl: &'static SunxiH3DramCtlRegs,
@@ -614,6 +676,7 @@ pub struct SunxiH3Dramc {
     clock: u32,
     zq: u32,
     odt_en: bool,
+    variant: SunxiDramcVariant,
     detected_size: Cell<u64>,
     // Run‑state: updated during init
     dual_rank: Cell<bool>,
@@ -634,7 +697,8 @@ unsafe impl Sync for SunxiH3Dramc {}
 
 impl Device for SunxiH3Dramc {
     const NAME: &'static str = "sunxi-h3-dramc";
-    const COMPATIBLE: &'static [&'static str] = &["allwinner,sun8i-h3-dramc"];
+    const COMPATIBLE: &'static [&'static str] =
+        &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"];
     type Config = SunxiH3DramcConfig;
 
     fn new(config: &SunxiH3DramcConfig) -> Result<Self, DeviceError> {
@@ -647,6 +711,7 @@ impl Device for SunxiH3Dramc {
             clock: config.clock,
             zq: config.zq,
             odt_en: config.odt_en,
+            variant: config.variant,
             detected_size: Cell::new(0),
             dual_rank: Cell::new(true),
             bus_full_width: Cell::new(true),
@@ -657,7 +722,11 @@ impl Device for SunxiH3Dramc {
     }
 
     fn init(&self) -> Result<(), DeviceError> {
-        fstart_log::info!("DRAM: starting H3 DesignWare init");
+        let variant_name = match self.variant {
+            SunxiDramcVariant::H3 => "H3",
+            SunxiDramcVariant::H5 => "H5",
+        };
+        fstart_log::info!("DRAM: starting {} DesignWare init", variant_name);
 
         let size = self.sunxi_dram_init();
         if size == 0 {
@@ -725,8 +794,19 @@ impl SunxiH3Dramc {
         }
         udelay(1);
 
-        // Step 4: H3 ODT delay configuration
-        self.ctl.odtcfg.set(0x0c00_0400);
+        // Step 4: ODT delay configuration (H3 only)
+        if self.variant == SunxiDramcVariant::H3 {
+            self.ctl.odtcfg.set(0x0c00_0400);
+        }
+
+        // Step 4b: VTF enable + DQ hold disable (H5 only)
+        if self.variant == SunxiDramcVariant::H5 {
+            // VTF: set bits [9:8] = 3 in vtfcr
+            let vtfcr = self.ctl.vtfcr.get();
+            self.ctl.vtfcr.set(vtfcr | (3 << 8));
+            // DQ hold disable: clear bit 13 in PGCR2
+            self.ctl.pgcr2.modify(PGCR2::DQ_HOLD::CLEAR);
+        }
 
         // Step 5: Clear credit value
         self.com.cccr.modify(CCCR::CREDIT_CLEAR::SET);
@@ -838,8 +918,12 @@ impl SunxiH3Dramc {
         self.ccu.dram_clk_cfg.modify(H3_DRAM_CLK::RST::SET);
         udelay(10);
 
-        // 15. Write clken magic value for H3
-        self.ctl.clken.set(0xc00e);
+        // 15. Write clken magic value — differs between H3 and H5
+        let clken = match self.variant {
+            SunxiDramcVariant::H3 => 0xc00e,
+            SunxiDramcVariant::H5 => 0x8000,
+        };
+        self.ctl.clken.set(clken);
         udelay(500);
     }
 }
@@ -862,18 +946,32 @@ impl SunxiH3Dramc {
         // 2. Set timing parameters
         self.mctl_set_timing_params();
 
-        // 3. Set MBUS master priority
-        self.mctl_set_master_priority_h3();
+        // 3. Set MBUS master priority (variant-specific)
+        match self.variant {
+            SunxiDramcVariant::H3 => self.mctl_set_master_priority_h3(),
+            SunxiDramcVariant::H5 => self.mctl_set_master_priority_h5(),
+        }
 
         // 4. Disable VTC and clear low-bandwidth clock select in PGCR0
         self.ctl
             .pgcr0
             .modify(PGCR0::VTC::CLEAR + PGCR0::LBCLKSEL.val(0));
 
-        // 5. PGCR1: clear write-leveling step, set PUB mode (H3 path)
-        self.ctl
-            .pgcr1
-            .modify(PGCR1::WLSTEP::CLEAR + PGCR1::PUBMODE::SET);
+        // 5. PGCR1: write-leveling step + PUB mode
+        // H3: clear bit 24 (WLSTEP), set bit 26 (PUBMODE)
+        // H5: set both bit 24 and bit 26
+        match self.variant {
+            SunxiDramcVariant::H3 => {
+                self.ctl
+                    .pgcr1
+                    .modify(PGCR1::WLSTEP::CLEAR + PGCR1::PUBMODE::SET);
+            }
+            SunxiDramcVariant::H5 => {
+                self.ctl
+                    .pgcr1
+                    .modify(PGCR1::WLSTEP::SET + PGCR1::PUBMODE::SET);
+            }
+        }
 
         // 6. Increase DFI_PHY_UPD clock (protect/upd2/unprotect)
         self.com.protect.set(PROTECT_MAGIC);
@@ -883,32 +981,58 @@ impl SunxiH3Dramc {
         udelay(100);
 
         // 7. Set DRAMC ODT per byte lane
+        // H5 additionally modifies DQSG mode bits [10:8].
         for i in 0..4 {
             let odt = if self.odt_en {
                 dx_gcr::ODT_DYNAMIC
             } else {
                 dx_gcr::ODT_OFF
             };
+            let mut clr = dx_gcr::ODT_FIELDS;
+            let mut set = odt;
+            if self.variant == SunxiDramcVariant::H5 {
+                clr |= dx_gcr::H5_DQSG_CLR;
+                set |= dx_gcr::H5_DQSG_SET;
+            }
             let gcr = self.ctl.dx_read(i, dx_off::GCR);
-            self.ctl
-                .dx_write(i, dx_off::GCR, (gcr & !dx_gcr::ODT_FIELDS) | odt);
+            self.ctl.dx_write(i, dx_off::GCR, (gcr & !clr) | set);
         }
 
-        // 8. AC PDR: enable power-down receiver in ACIOCR
-        self.ctl.aciocr.modify(ACIOCR_REG::AC_PDR::SET);
+        // 8. AC PDR + H5 AC ODT disable
+        // H5 additionally clears bit 11 (AC_ODT).
+        match self.variant {
+            SunxiDramcVariant::H3 => {
+                self.ctl.aciocr.modify(ACIOCR_REG::AC_PDR::SET);
+            }
+            SunxiDramcVariant::H5 => {
+                self.ctl
+                    .aciocr
+                    .modify(ACIOCR_REG::AC_PDR::SET + ACIOCR_REG::AC_ODT::CLEAR);
+            }
+        }
 
         // 9. Set DQS auto gating PD mode in PGCR2
         self.ctl.pgcr2.modify(PGCR2::DQS_GATE_PD.val(0x3));
 
-        // 10. H3: dx ddr_clk & hdr_clk dynamic mode
-        self.ctl
-            .pgcr0
-            .modify(PGCR0::DDRCLKSEL.val(0) + PGCR0::HDRCLKSEL.val(0));
-
-        // 11. H3: dphy & aphy phase select 270 degree
-        self.ctl
-            .pgcr2
-            .modify(PGCR2::DPHY_PHASE.val(0x1) + PGCR2::APHY_PHASE.val(0x2));
+        // 10-11. Clock mode and PHY phase select (variant-specific)
+        // H3: clear PGCR0 bits [15:12] (dynamic mode), then dphy=1 aphy=2
+        // H5: leave PGCR0 bits [15:12] at default, then dphy=0 aphy=3
+        match self.variant {
+            SunxiDramcVariant::H3 => {
+                self.ctl
+                    .pgcr0
+                    .modify(PGCR0::DDRCLKSEL.val(0) + PGCR0::HDRCLKSEL.val(0));
+                self.ctl
+                    .pgcr2
+                    .modify(PGCR2::DPHY_PHASE.val(0x1) + PGCR2::APHY_PHASE.val(0x2));
+            }
+            SunxiDramcVariant::H5 => {
+                // H5 does NOT modify PGCR0 clock mode bits.
+                self.ctl
+                    .pgcr2
+                    .modify(PGCR2::DPHY_PHASE.val(0x0) + PGCR2::APHY_PHASE.val(0x3));
+            }
+        }
 
         // 12. Set half DQ: if not full width, disable upper byte lanes
         if !bus_full_width {
@@ -924,18 +1048,36 @@ impl SunxiH3Dramc {
         self.mctl_set_bit_delays();
         udelay(50);
 
-        // 15. H3 ZQ calibration quirk
-        self.mctl_h3_zq_calibration_quirk();
-
-        // 16. PHY init: PLL init + digital cal + PHY reset + DRAM reset + DRAM init + QS gate
-        self.mctl_phy_init(
-            PIR::PLLINIT::SET
-                + PIR::DCAL::SET
-                + PIR::PHYRST::SET
-                + PIR::DRAMRST::SET
-                + PIR::DRAMINIT::SET
-                + PIR::QSGATE::SET,
-        );
+        // 15-16. ZQ calibration + PHY init (variant-specific)
+        // H3: complex multi-step ZQ quirk, then init WITHOUT PIR_ZCAL
+        // H5: simple ZQCR write, then init WITH PIR_ZCAL
+        match self.variant {
+            SunxiDramcVariant::H3 => {
+                self.mctl_h3_zq_calibration_quirk();
+                self.mctl_phy_init(
+                    PIR::PLLINIT::SET
+                        + PIR::DCAL::SET
+                        + PIR::PHYRST::SET
+                        + PIR::DRAMRST::SET
+                        + PIR::DRAMINIT::SET
+                        + PIR::QSGATE::SET,
+                );
+            }
+            SunxiDramcVariant::H5 => {
+                // H5: write full ZQ value directly, let hardware do ZCAL
+                let zqcr_val = self.ctl.zqcr.get();
+                self.ctl.zqcr.set((zqcr_val & !0x00ff_ffff) | self.zq);
+                self.mctl_phy_init(
+                    PIR::ZCAL::SET
+                        + PIR::PLLINIT::SET
+                        + PIR::DCAL::SET
+                        + PIR::PHYRST::SET
+                        + PIR::DRAMRST::SET
+                        + PIR::DRAMINIT::SET
+                        + PIR::QSGATE::SET,
+                );
+            }
+        }
 
         // 17. Detect ranks and bus width
         if self.ctl.pgsr0.read(PGSR0::ERRORS) != 0 {
@@ -980,8 +1122,12 @@ impl SunxiH3Dramc {
         self.ctl.rfshctl0.modify(RFSHCTL0::REFRESH_TRIGGER::CLEAR);
         udelay(10);
 
-        // 20. Set PGCR3, CKE polarity (H3 value)
-        self.ctl.pgcr3.set(0x00aa_0060);
+        // 20. Set PGCR3, CKE polarity (variant-specific)
+        let pgcr3 = match self.variant {
+            SunxiDramcVariant::H3 => 0x00aa_0060,
+            SunxiDramcVariant::H5 => 0xc0aa_0060,
+        };
+        self.ctl.pgcr3.set(pgcr3);
 
         // 21. Power down ZQ calibration module for power save
         self.ctl.zqcr.modify(ZQCR::PWRDOWN::SET);
@@ -1095,8 +1241,14 @@ impl SunxiH3Dramc {
         );
 
         // DRAMTMG8: two-rank timing (read-modify-write)
+        // H5 uses 0x33 for POST_SELFREF_GAP_DLY (faster self-refresh exit).
+        let selfref_gap_dly = match self.variant {
+            SunxiDramcVariant::H3 => 0x66,
+            SunxiDramcVariant::H5 => 0x33,
+        };
         self.ctl.dramtmg8.modify(
-            DRAMTMG8_REG::POST_SELFREF_GAP.val(0x10) + DRAMTMG8_REG::POST_SELFREF_GAP_DLY.val(0x66),
+            DRAMTMG8_REG::POST_SELFREF_GAP.val(0x10)
+                + DRAMTMG8_REG::POST_SELFREF_GAP_DLY.val(selfref_gap_dly),
         );
 
         // PITMG0: PHY interface timing
@@ -1235,15 +1387,23 @@ impl SunxiH3Dramc {
     /// Exact port of U-Boot `mctl_set_bit_delays()`.
     /// Each BDLR register gets: `(write_delay << 8) | read_delay`.
     /// Each ACBDLR register gets: `write_delay << 8`.
+    ///
+    /// H3 and H5 use different per-bit delay tables reflecting
+    /// different PHY characteristics and PCB trace layouts.
     fn mctl_set_bit_delays(&self) {
+        let (dx_read, dx_write, ac) = match self.variant {
+            SunxiDramcVariant::H3 => (&H3_DX_READ_DELAYS, &H3_DX_WRITE_DELAYS, &H3_AC_DELAYS),
+            SunxiDramcVariant::H5 => (&H5_DX_READ_DELAYS, &H5_DX_WRITE_DELAYS, &H5_AC_DELAYS),
+        };
+
         // Disable auto-calibration during delay programming
         self.ctl.pgcr0.modify(PGCR0::AUTOCAL::CLEAR);
 
         // DX byte-lane delays: 4 lanes × 11 signals per lane
         for i in 0..4 {
             for j in 0..11 {
-                let wr = H3_DX_WRITE_DELAYS[i][j] as u32;
-                let rd = H3_DX_READ_DELAYS[i][j] as u32;
+                let wr = dx_write[i][j] as u32;
+                let rd = dx_read[i][j] as u32;
                 self.ctl
                     .dx_write(i, dx_off::BDLR_BASE + j * 4, (wr << 8) | rd);
             }
@@ -1251,7 +1411,7 @@ impl SunxiH3Dramc {
 
         // AC bit delay line registers: 31 entries
         for i in 0..31 {
-            self.ctl.write_acbdlr(i, (H3_AC_DELAYS[i] as u32) << 8);
+            self.ctl.write_acbdlr(i, (ac[i] as u32) << 8);
         }
 
         // Re-enable auto-calibration
@@ -1318,6 +1478,37 @@ impl SunxiH3Dramc {
         self.mbus_configure_port(9, true, false, HIGH, 0, 0, 1024, 256, 64); // DI
         self.mbus_configure_port(10, true, false, HIGHEST, 0, 3, 8192, 6120, 1024); // DE
         self.mbus_configure_port(11, true, false, HIGH, 0, 0, 1024, 288, 64); // DE_CFD
+    }
+
+    /// Set MBUS master priority for H5.
+    ///
+    /// Exact port of U-Boot `mctl_set_master_priority_h5()`.
+    /// H5 uses `tmr` register for window size and different BW limits.
+    fn mctl_set_master_priority_h5(&self) {
+        // H5 uses tmr register for window size, bwcr only has enable bit
+        self.com.tmr.set(399);
+        self.com.bwcr.set(1 << 16);
+
+        // Set CPU high priority
+        self.com.mapr.set(0x0000_0001);
+
+        const HIGHEST: u8 = 3;
+        const HIGH: u8 = 2;
+
+        //            port  bwlimit  priority  qos      wait acs  bwl0   bwl1  bwl2
+        self.mbus_configure_port(0, true, false, HIGHEST, 0, 0, 300, 260, 150); // CPU
+        self.mbus_configure_port(1, true, false, HIGHEST, 0, 0, 600, 400, 200); // GPU
+        self.mbus_configure_port(2, true, false, HIGHEST, 0, 0, 512, 256, 96); // UNUSED
+        self.mbus_configure_port(3, true, false, HIGHEST, 0, 0, 256, 128, 32); // DMA
+        self.mbus_configure_port(4, true, false, HIGHEST, 0, 0, 1900, 1500, 1000); // VE
+        self.mbus_configure_port(5, true, false, HIGHEST, 0, 0, 150, 120, 100); // CSI
+        self.mbus_configure_port(6, true, false, HIGH, 0, 0, 256, 128, 64); // NAND
+        self.mbus_configure_port(7, true, false, HIGHEST, 0, 0, 256, 128, 64); // SS
+        self.mbus_configure_port(8, true, false, HIGHEST, 0, 0, 256, 128, 64); // TS
+        self.mbus_configure_port(9, true, false, HIGH, 0, 0, 1024, 256, 64); // DI
+        self.mbus_configure_port(10, true, false, HIGHEST, 0, 3, 3400, 2400, 1024); // DE
+        self.mbus_configure_port(11, true, false, HIGHEST, 0, 0, 600, 400, 200);
+        // DE_CFD
     }
 }
 

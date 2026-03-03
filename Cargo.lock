@@ -567,6 +567,9 @@ dependencies = [
 [[package]]
 name = "fstart-platform-aarch64"
 version = "0.1.0"
+dependencies = [
+ "fstart-soc-sunxi",
+]
 
 [[package]]
 name = "fstart-platform-armv7"

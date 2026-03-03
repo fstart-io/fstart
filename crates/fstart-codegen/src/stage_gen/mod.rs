@@ -128,7 +128,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     let is_first_stage = needs_embedded_anchor(&config.stages, stage_name);
     if is_first_stage {
         if let fstart_types::SocImageFormat::AllwinnerEgon = config.soc_image_format {
-            tokens.extend(generate_allwinner_egon_header());
+            tokens.extend(generate_allwinner_egon_header(platform));
         }
     }
 
@@ -342,18 +342,41 @@ fn generate_flash_constants(base: u64, size: u64) -> TokenStream {
 /// The linker script orders: `.head.text` → `.head.egon` → `.text.entry`.
 /// Xtask computes the actual binary size (512-byte aligned), pads the
 /// binary, and patches both the length and checksum fields post-build.
-fn generate_allwinner_egon_header() -> TokenStream {
+///
+/// On ARMv7, the branch is `.arm` + `b _start`.
+/// On AArch64 (sun50i H5/A64), the branch is a raw `.word 0xEA000016` —
+/// the ARM32 encoding of `b .+0x60` that jumps over the 96-byte eGON
+/// header.  The AArch64 assembler cannot emit ARM32 instructions, so
+/// the branch must be encoded manually.  The `_start` entry point in
+/// `entry_sunxi.rs` handles the AArch32→AArch64 RMR switch.
+fn generate_allwinner_egon_header(platform: &str) -> TokenStream {
+    let branch_asm = if platform == "aarch64" {
+        // AArch64 target: emit the ARM32 branch as a raw .word.
+        // 0xEA000016 = ARM32 "b .+0x60" (branch forward 22 words from
+        // PC+8 = 96 bytes = offset 0x60, past the eGON header).
+        quote! {
+            core::arch::global_asm!(
+                ".section .head.text, \"ax\", %progbits",
+                ".global _head_jump",
+                "_head_jump:",
+                ".word 0xEA000016",
+            );
+        }
+    } else {
+        // ARMv7 target: assembler natively supports ARM mode.
+        quote! {
+            core::arch::global_asm!(
+                ".section .head.text, \"ax\", %progbits",
+                ".arm",
+                ".global _head_jump",
+                "_head_jump:",
+                "b _start",
+            );
+        }
+    };
+
     quote! {
-        // Branch instruction at offset 0x00 — jumps over the eGON header
-        // to the real _start entry point in .text.entry.
-        // Must be ARM mode: the BROM starts execution in ARM state.
-        core::arch::global_asm!(
-            ".section .head.text, \"ax\", %progbits",
-            ".arm",
-            ".global _head_jump",
-            "_head_jump:",
-            "b _start",
-        );
+        #branch_asm
 
         /// Allwinner eGON.BT0 header — length and checksum are placeholders,
         /// patched by xtask post-build from the actual binary size.
@@ -629,15 +652,15 @@ fn generate_fstart_main(
             Capability::BootMedia(medium) => {
                 body.extend(generate_boot_media(
                     medium,
+                    config,
                     &config.devices,
                     instances,
-                    platform,
                     &halt,
                 ));
                 // Non-first stages scan the boot media for the anchor
                 // instead of using an embedded FSTART_ANCHOR static.
                 if !embed_anchor && needs_ffs(capabilities) {
-                    body.extend(generate_anchor_scan(medium, platform, &halt));
+                    body.extend(generate_anchor_scan(medium, config, &halt));
                 }
             }
             Capability::MemoryInit => {

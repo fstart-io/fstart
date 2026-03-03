@@ -12,7 +12,7 @@ use fstart_device_registry::DriverInstance;
 use fstart_types::memory::RegionKind;
 use fstart_types::{
     AutoBootDevice, BoardConfig, BootMedium, BuildMode, DeviceConfig, FdtSource, FirmwareKind,
-    LoadDevice,
+    LoadDevice, SocImageFormat,
 };
 
 use super::flexible::{flexible_enum_for_device, generate_flexible_wrapping};
@@ -293,9 +293,9 @@ pub(super) fn collect_boot_media_gated_devices(
 /// Generate code for the BootMedia capability.
 pub(super) fn generate_boot_media(
     medium: &BootMedium,
+    config: &BoardConfig,
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
-    platform: &str,
     halt: &TokenStream,
 ) -> TokenStream {
     match medium {
@@ -316,7 +316,42 @@ pub(super) fn generate_boot_media(
         }
         BootMedium::AutoDevice {
             devices: candidates,
-        } => generate_boot_media_auto_device(candidates, devices, instances, platform, halt),
+        } => generate_boot_media_auto_device(candidates, config, devices, instances, halt),
+    }
+}
+
+/// Return the SRAM base address from the board config.
+///
+/// This is the first stage's `load_addr` — where the BROM loads the eGON
+/// image. Used by sunxi helpers that read fields from the eGON header
+/// at runtime (boot media detection, FFS total size, next-stage offset).
+///
+/// Returns 0 for monolithic or empty stage layouts (matches the H3 default).
+fn egon_sram_base(config: &BoardConfig) -> u64 {
+    match &config.stages {
+        fstart_types::StageLayout::MultiStage(stages) => {
+            stages.first().map(|s| s.load_addr).unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+/// Check that the board uses the Allwinner eGON image format.
+///
+/// Capabilities that read eGON header fields at runtime (BootMedia AutoDevice,
+/// LoadNextStage, anchor scan) must only be generated for eGON boards.
+/// A non-eGON aarch64 board (e.g. qemu-aarch64) would fault trying to read
+/// sunxi-specific SRAM locations.
+fn require_egon_format(config: &BoardConfig, capability: &str) -> Result<(), TokenStream> {
+    if config.soc_image_format != SocImageFormat::AllwinnerEgon {
+        let msg = format!(
+            "{capability} requires soc_image_format: AllwinnerEgon, \
+             but board '{}' uses {:?}",
+            config.name, config.soc_image_format
+        );
+        Err(quote! { compile_error!(#msg); })
+    } else {
+        Ok(())
     }
 }
 
@@ -327,17 +362,17 @@ pub(super) fn generate_boot_media(
 /// `fstart_soc_sunxi::boot_device()` selects the matching candidate.
 fn generate_boot_media_auto_device(
     candidates: &[AutoBootDevice],
+    config: &BoardConfig,
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
-    platform: &str,
     halt: &TokenStream,
 ) -> TokenStream {
-    if platform != "armv7" {
-        let msg = format!(
-            "BootMedia(AutoDevice) currently only supports armv7 (eGON header), not '{platform}'"
-        );
-        return quote! { compile_error!(#msg); };
+    if let Err(err) = require_egon_format(config, "BootMedia(AutoDevice)") {
+        return err;
     }
+
+    // SRAM base for eGON header access (bootblock load_addr).
+    let sram_base = hex_addr(egon_sram_base(config));
 
     // Build the enum variants and BlockDevice match arms.
     let mut enum_variants = TokenStream::new();
@@ -414,7 +449,7 @@ fn generate_boot_media_auto_device(
         }
 
         let (_boot_block_dev, _boot_offset, _boot_size) = {
-            let bm = fstart_soc_sunxi::boot_media();
+            let bm = fstart_soc_sunxi::boot_media_at(#sram_base);
             fstart_log::info!("boot media detect: {:#x}", bm);
             match bm {
                 #match_arms
@@ -931,7 +966,7 @@ fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: &str) -> To
 /// `&scanned_anchor_data[..]`.
 pub(super) fn generate_anchor_scan(
     medium: &BootMedium,
-    platform: &str,
+    config: &BoardConfig,
     halt: &TokenStream,
 ) -> TokenStream {
     match medium {
@@ -973,17 +1008,20 @@ pub(super) fn generate_anchor_scan(
         BootMedium::Device { .. } | BootMedium::AutoDevice { .. } => {
             // Block device: read the anchor at ffs_total_size - ANCHOR_SIZE.
             // The FFS assembler patches ffs_total_size into the eGON header
-            // (ARMv7) so non-first stages can locate the anchor without
-            // scanning the entire device.
-            let ffs_size_expr: TokenStream = match platform {
-                "armv7" => quote! { fstart_soc_sunxi::ffs_total_size() as usize },
-                _ => {
-                    let msg = format!(
-                        "block device anchor scan not yet supported on platform '{platform}'"
-                    );
-                    return quote! { compile_error!(#msg); };
-                }
-            };
+            // so non-first stages can locate the anchor without scanning
+            // the entire device.
+            //
+            // SAFETY invariant: this reads the eGON header from SRAM even
+            // when running from the main stage in DRAM.  This is safe because
+            // the header (offsets 0x00–0x60) is at the very start of SRAM
+            // while the bootblock stack grows downward from the top, so the
+            // header bytes survive across stages.
+            if let Err(err) = require_egon_format(config, "block device anchor scan") {
+                return err;
+            }
+            let sram_base = hex_addr(egon_sram_base(config));
+            let ffs_size_expr: TokenStream =
+                quote! { fstart_soc_sunxi::ffs_total_size_at(#sram_base) as usize };
             quote! {
                 let scanned_anchor_data: [u8; fstart_types::ffs::ANCHOR_SIZE] = {
                     let ffs_size = #ffs_size_expr;
@@ -1056,11 +1094,14 @@ pub(super) fn generate_load_next_stage(
     };
     let load_addr = hex_addr(next_load_addr);
 
-    if platform != "armv7" {
-        let msg =
-            format!("LoadNextStage currently only supports armv7 (eGON header), not '{platform}'");
-        return quote! { compile_error!(#msg); };
+    // LoadNextStage requires an Allwinner eGON-format bootblock to read
+    // next-stage offset/size from the eGON header at the SRAM base.
+    if let Err(err) = require_egon_format(config, "LoadNextStage") {
+        return err;
     }
+
+    // SRAM base for eGON header access (bootblock load_addr: H3=0x0, H5=0x10000).
+    let sram_base = hex_addr(egon_sram_base(config));
 
     // Handoff buffer: placed 4K below the next stage's load address.
     let handoff_addr = hex_addr(next_load_addr - 0x1000);
@@ -1082,6 +1123,13 @@ pub(super) fn generate_load_next_stage(
         None => quote! { 0u64 },
     };
 
+    // Platform-specific jump call.
+    let jump_call = if platform == "aarch64" {
+        quote! { fstart_platform_aarch64::jump_to_with_handoff(#load_addr, #handoff_addr as usize); }
+    } else {
+        quote! { fstart_platform_armv7::jump_to_with_handoff(#load_addr, #handoff_addr as usize); }
+    };
+
     // Build the handoff + jump sequence (shared by all arms).
     let handoff_and_jump = quote! {
         // Serialize handoff for the next stage.
@@ -1101,7 +1149,7 @@ pub(super) fn generate_load_next_stage(
         fstart_log::info!("handoff: {} bytes at {:#x}", handoff_len, #handoff_addr as u64);
 
         fstart_log::info!("jumping to stage '{}' at {:#x}", #next_stage, #load_addr as u64);
-        fstart_platform_armv7::jump_to_with_handoff(#load_addr, #handoff_addr as usize);
+        #jump_call
     };
 
     if load_devices.len() == 1 {
@@ -1112,8 +1160,8 @@ pub(super) fn generate_load_next_stage(
         let base_off = hex_addr(ld.base_offset);
 
         return quote! {
-            let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset() as u64;
-            let ns_size = fstart_soc_sunxi::next_stage_size() as usize;
+            let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset_at(#sram_base) as u64;
+            let ns_size = fstart_soc_sunxi::next_stage_size_at(#sram_base) as usize;
             if ns_ffs_offset == 0 || ns_size == 0 {
                 fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
                 #halt;
@@ -1166,13 +1214,13 @@ pub(super) fn generate_load_next_stage(
     }
 
     quote! {
-        let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset() as u64;
-        let ns_size = fstart_soc_sunxi::next_stage_size() as usize;
+        let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset_at(#sram_base) as u64;
+        let ns_size = fstart_soc_sunxi::next_stage_size_at(#sram_base) as usize;
         if ns_ffs_offset == 0 || ns_size == 0 {
             fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
             #halt;
         }
-        let bm = fstart_soc_sunxi::boot_media();
+        let bm = fstart_soc_sunxi::boot_media_at(#sram_base);
         fstart_log::info!("boot media detect: {:#x}", bm);
         match bm {
             #match_arms

@@ -85,6 +85,15 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         base_features.push("fit".to_string());
     }
 
+    // Allwinner sunxi SoCs use the eGON boot format and need
+    // fstart-soc-sunxi for the eGON header, boot media detection,
+    // and FEL support.  For AArch64 sunxi boards (H5, A64) this also
+    // enables the RMR switch entry point in fstart-platform-aarch64.
+    // (ARMv7 sunxi boards always pull in sunxi via the `armv7` feature.)
+    if config.soc_image_format == SocImageFormat::AllwinnerEgon && config.platform != "armv7" {
+        base_features.push("sunxi".to_string());
+    }
+
     eprintln!("[fstart] target: {target}");
 
     // All bare-metal platforms need flat binaries: AArch64 uses -bios

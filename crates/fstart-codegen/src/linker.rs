@@ -192,16 +192,19 @@ fn generate_xip_layout(
 
     // Allwinner eGON header — placed before code, contains a branch
     // instruction at offset 0 that jumps over the header to _start.
+    // KEEP() ensures --gc-sections doesn't strip these; the raw
+    // machine-code branch from .head.text to .text.entry is opaque
+    // to the linker.
     if needs_egon_header {
         writeln!(out, "    .head : {{").unwrap();
-        writeln!(out, "        *(.head.text)").unwrap();
-        writeln!(out, "        *(.head.egon)").unwrap();
+        writeln!(out, "        KEEP(*(.head.text))").unwrap();
+        writeln!(out, "        KEEP(*(.head.egon))").unwrap();
         writeln!(out, "    }} > ROM\n").unwrap();
     }
 
     // Code in ROM
     writeln!(out, "    .text : {{").unwrap();
-    writeln!(out, "        *(.text.entry)").unwrap();
+    writeln!(out, "        KEEP(*(.text.entry))").unwrap();
     writeln!(out, "        *(.text .text.*)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
@@ -309,7 +312,7 @@ fn generate_ram_layout(
 
 fn write_text_section(out: &mut String, region: &str) {
     writeln!(out, "    .text : {{").unwrap();
-    writeln!(out, "        *(.text.entry)").unwrap();
+    writeln!(out, "        KEEP(*(.text.entry))").unwrap();
     writeln!(out, "        *(.text .text.*)").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
@@ -347,10 +350,15 @@ fn write_bss_section(out: &mut String, region: &str) {
 }
 
 /// Allwinner eGON .head section: branch instruction + eGON.BT0 struct.
+///
+/// `KEEP()` ensures these sections survive `--gc-sections` even when the
+/// entry point symbol (`_head_jump`) is the only reference — the raw
+/// machine-code branch from `.head.text` to `.text.entry` is opaque to
+/// the linker and wouldn't count as a reference without `KEEP`.
 fn write_allwinner_egon_section(out: &mut String, region: &str) {
     writeln!(out, "    .head : {{").unwrap();
-    writeln!(out, "        *(.head.text)").unwrap();
-    writeln!(out, "        *(.head.egon)").unwrap();
+    writeln!(out, "        KEEP(*(.head.text))").unwrap();
+    writeln!(out, "        KEEP(*(.head.egon))").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
