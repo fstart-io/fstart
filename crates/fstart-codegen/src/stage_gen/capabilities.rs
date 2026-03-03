@@ -1179,13 +1179,11 @@ fn boot_media_values_for_device(
     let driver_name = inst.meta().name;
 
     match driver_name {
-        "sunxi-a20-mmc" => {
-            // Extract mmc_index from the config to determine which
-            // controller (and thus which boot_media values) this is.
-            // The DriverInstance variants are available because fstart-codegen
-            // depends on fstart-device-registry with the all-drivers feature.
-            if let DriverInstance::SunxiA20Mmc(cfg) = inst {
-                match cfg.mmc_index {
+        "sunxi-mmc" => {
+            // All sunxi MMC controllers share the same eGON boot_media
+            // constants. Extract mmc_index via the SunxiMmcConfig helper.
+            if let DriverInstance::SunxiMmc(cfg) = inst {
+                match cfg.mmc_index() {
                     0 => vec![0x00, 0x10], // BOOT_MEDIA_MMC0, BOOT_MEDIA_MMC0_HIGH
                     2 => vec![0x02, 0x12], // BOOT_MEDIA_MMC2, BOOT_MEDIA_MMC2_HIGH
                     other => panic!(
@@ -1194,26 +1192,11 @@ fn boot_media_values_for_device(
                     ),
                 }
             } else {
-                unreachable!("driver name is sunxi-a20-mmc but instance is not SunxiA20Mmc")
+                unreachable!("driver name is sunxi-mmc but instance is not SunxiMmc")
             }
         }
         "sunxi-a20-spi" => {
             vec![0x03] // BOOT_MEDIA_SPI
-        }
-        "sunxi-h3-mmc" => {
-            // H3 uses the same eGON boot_media constants as A20.
-            if let DriverInstance::SunxiH3Mmc(cfg) = inst {
-                match cfg.mmc_index {
-                    0 => vec![0x00, 0x10], // BOOT_MEDIA_MMC0, BOOT_MEDIA_MMC0_HIGH
-                    2 => vec![0x02, 0x12], // BOOT_MEDIA_MMC2, BOOT_MEDIA_MMC2_HIGH
-                    other => panic!(
-                        "boot_media_values_for_device: unsupported mmc_index {} for device '{}'",
-                        other, dev_name
-                    ),
-                }
-            } else {
-                unreachable!("driver name is sunxi-h3-mmc but instance is not SunxiH3Mmc")
-            }
         }
         other => panic!(
             "boot_media_values_for_device: driver '{}' on device '{}' has no known boot_media mapping",

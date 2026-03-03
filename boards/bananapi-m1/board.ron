@@ -87,7 +87,7 @@
         // Handles its own GPIO mux (PF0-PF5) and clock gating in init().
         (
             name: "mmc0",
-            driver: SunxiA20Mmc((
+            driver: SunxiMmc(Sun7iA20(
                 base_addr: 0x01C0F000,
                 ccu_base: 0x01C20000,
                 pio_base: 0x01C20800,

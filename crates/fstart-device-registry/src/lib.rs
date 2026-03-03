@@ -39,24 +39,14 @@ pub mod sunxi_a20_ccu {
     pub use fstart_driver_sunxi_ccu::SunxiA20CcuConfig;
 }
 
-#[cfg(feature = "sunxi-a20-dramc")]
-pub mod sunxi_a20_dramc {
-    pub use fstart_driver_sunxi_dramc::SunxiA20DramcConfig;
-}
-
-#[cfg(feature = "sunxi-a20-mmc")]
-pub mod sunxi_a20_mmc {
-    pub use fstart_driver_sunxi_mmc::SunxiA20MmcConfig;
-}
-
-#[cfg(feature = "sunxi-a20-spi")]
-pub mod sunxi_a20_spi {
-    pub use fstart_driver_sunxi_spi::SunxiA20SpiConfig;
-}
-
 #[cfg(feature = "sunxi-h3-ccu")]
 pub mod sunxi_h3_ccu {
     pub use fstart_driver_sunxi_h3_ccu::SunxiH3CcuConfig;
+}
+
+#[cfg(feature = "sunxi-a20-dramc")]
+pub mod sunxi_a20_dramc {
+    pub use fstart_driver_sunxi_dramc::SunxiA20DramcConfig;
 }
 
 #[cfg(feature = "sunxi-h3-dramc")]
@@ -64,9 +54,14 @@ pub mod sunxi_h3_dramc {
     pub use fstart_driver_sunxi_h3_dramc::SunxiH3DramcConfig;
 }
 
-#[cfg(feature = "sunxi-h3-mmc")]
-pub mod sunxi_h3_mmc {
-    pub use fstart_driver_sunxi_h3_mmc::SunxiH3MmcConfig;
+#[cfg(feature = "sunxi-mmc")]
+pub mod sunxi_mmc {
+    pub use fstart_driver_sunxi_mmc::SunxiMmcConfig;
+}
+
+#[cfg(feature = "sunxi-a20-spi")]
+pub mod sunxi_a20_spi {
+    pub use fstart_driver_sunxi_spi::SunxiA20SpiConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +98,11 @@ pub struct DriverMeta {
 /// Each variant carries the driver's own `Config` struct — the same type
 /// that `Device::new()` takes.
 ///
+/// Sunxi (Allwinner) drivers that share a unified crate (MMC) use an inner
+/// enum config that selects the SoC-specific variant. Drivers with
+/// fundamentally different codepaths (CCU, DRAM) stay as separate flat
+/// variants.
+///
 /// Variants are feature-gated to match the driver modules.  On the host
 /// (codegen), enable `all-drivers` to parse any board config.  On the
 /// target, only the drivers the board actually uses are compiled in.
@@ -120,33 +120,33 @@ pub enum DriverInstance {
     #[cfg(feature = "designware-i2c")]
     DesignwareI2c(designware_i2c::DesignwareI2cConfig),
 
-    /// Allwinner A20 Clock Control Unit
+    /// Allwinner A20 (sun7i) Clock Control Unit.
     #[cfg(feature = "sunxi-a20-ccu")]
     SunxiA20Ccu(sunxi_a20_ccu::SunxiA20CcuConfig),
 
-    /// Allwinner A20 DRAM controller
-    #[cfg(feature = "sunxi-a20-dramc")]
-    SunxiA20Dramc(sunxi_a20_dramc::SunxiA20DramcConfig),
-
-    /// Allwinner A20 SD/MMC controller
-    #[cfg(feature = "sunxi-a20-mmc")]
-    SunxiA20Mmc(sunxi_a20_mmc::SunxiA20MmcConfig),
-
-    /// Allwinner A20 SPI NOR flash (sun4i SPI controller)
-    #[cfg(feature = "sunxi-a20-spi")]
-    SunxiA20Spi(sunxi_a20_spi::SunxiA20SpiConfig),
-
-    /// Allwinner H3 Clock Control Unit
+    /// Allwinner H3/H2+ (sun8i) Clock Control Unit.
     #[cfg(feature = "sunxi-h3-ccu")]
     SunxiH3Ccu(sunxi_h3_ccu::SunxiH3CcuConfig),
 
-    /// Allwinner H3 DRAM controller (DesignWare)
+    /// Allwinner A20 (sun7i) DRAM controller.
+    #[cfg(feature = "sunxi-a20-dramc")]
+    SunxiA20Dramc(sunxi_a20_dramc::SunxiA20DramcConfig),
+
+    /// Allwinner H3/H2+ (sun8i) DRAM controller.
     #[cfg(feature = "sunxi-h3-dramc")]
     SunxiH3Dramc(sunxi_h3_dramc::SunxiH3DramcConfig),
 
-    /// Allwinner H3 SD/MMC controller
-    #[cfg(feature = "sunxi-h3-mmc")]
-    SunxiH3Mmc(sunxi_h3_mmc::SunxiH3MmcConfig),
+    /// Allwinner sunxi SD/MMC controller (unified A20/H3).
+    ///
+    /// The inner [`SunxiMmcConfig`] enum selects the SoC generation
+    /// (Sun7iA20 vs Sun8iH3), which determines clock gating and
+    /// FIFO offset differences.
+    #[cfg(feature = "sunxi-mmc")]
+    SunxiMmc(sunxi_mmc::SunxiMmcConfig),
+
+    /// Allwinner A20 (sun4i) SPI controller.
+    #[cfg(feature = "sunxi-a20-spi")]
+    SunxiA20Spi(sunxi_a20_spi::SunxiA20SpiConfig),
 }
 
 impl DriverInstance {
@@ -194,33 +194,6 @@ impl DriverInstance {
                 services: &["ClockController"],
                 compatible: &["allwinner,sun7i-a20-ccu"],
             },
-            #[cfg(feature = "sunxi-a20-dramc")]
-            Self::SunxiA20Dramc(_) => &DriverMeta {
-                name: "sunxi-a20-dramc",
-                type_name: "SunxiA20Dramc",
-                module_path: "fstart_driver_sunxi_dramc",
-                config_type: "SunxiA20DramcConfig",
-                services: &["MemoryController"],
-                compatible: &["allwinner,sun7i-a20-dramc"],
-            },
-            #[cfg(feature = "sunxi-a20-mmc")]
-            Self::SunxiA20Mmc(_) => &DriverMeta {
-                name: "sunxi-a20-mmc",
-                type_name: "SunxiA20Mmc",
-                module_path: "fstart_driver_sunxi_mmc",
-                config_type: "SunxiA20MmcConfig",
-                services: &["BlockDevice"],
-                compatible: &["allwinner,sun7i-a20-mmc"],
-            },
-            #[cfg(feature = "sunxi-a20-spi")]
-            Self::SunxiA20Spi(_) => &DriverMeta {
-                name: "sunxi-a20-spi",
-                type_name: "SunxiA20Spi",
-                module_path: "fstart_driver_sunxi_spi",
-                config_type: "SunxiA20SpiConfig",
-                services: &["BlockDevice"],
-                compatible: &["allwinner,sun4i-a10-spi"],
-            },
             #[cfg(feature = "sunxi-h3-ccu")]
             Self::SunxiH3Ccu(_) => &DriverMeta {
                 name: "sunxi-h3-ccu",
@@ -229,6 +202,15 @@ impl DriverInstance {
                 config_type: "SunxiH3CcuConfig",
                 services: &["ClockController"],
                 compatible: &["allwinner,sun8i-h3-ccu"],
+            },
+            #[cfg(feature = "sunxi-a20-dramc")]
+            Self::SunxiA20Dramc(_) => &DriverMeta {
+                name: "sunxi-a20-dramc",
+                type_name: "SunxiA20Dramc",
+                module_path: "fstart_driver_sunxi_dramc",
+                config_type: "SunxiA20DramcConfig",
+                services: &["MemoryController"],
+                compatible: &["allwinner,sun7i-a20-dramc"],
             },
             #[cfg(feature = "sunxi-h3-dramc")]
             Self::SunxiH3Dramc(_) => &DriverMeta {
@@ -239,14 +221,23 @@ impl DriverInstance {
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun8i-h3-dramc"],
             },
-            #[cfg(feature = "sunxi-h3-mmc")]
-            Self::SunxiH3Mmc(_) => &DriverMeta {
-                name: "sunxi-h3-mmc",
-                type_name: "SunxiH3Mmc",
-                module_path: "fstart_driver_sunxi_h3_mmc",
-                config_type: "SunxiH3MmcConfig",
+            #[cfg(feature = "sunxi-mmc")]
+            Self::SunxiMmc(_) => &DriverMeta {
+                name: "sunxi-mmc",
+                type_name: "SunxiMmc",
+                module_path: "fstart_driver_sunxi_mmc",
+                config_type: "SunxiMmcConfig",
                 services: &["BlockDevice"],
-                compatible: &["allwinner,sun8i-h3-mmc"],
+                compatible: &["allwinner,sun7i-a20-mmc", "allwinner,sun8i-h3-mmc"],
+            },
+            #[cfg(feature = "sunxi-a20-spi")]
+            Self::SunxiA20Spi(_) => &DriverMeta {
+                name: "sunxi-a20-spi",
+                type_name: "SunxiA20Spi",
+                module_path: "fstart_driver_sunxi_spi",
+                config_type: "SunxiA20SpiConfig",
+                services: &["BlockDevice"],
+                compatible: &["allwinner,sun4i-a10-spi"],
             },
         }
     }
@@ -270,18 +261,16 @@ impl DriverInstance {
             Self::DesignwareI2c(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-a20-ccu")]
             Self::SunxiA20Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
-            #[cfg(feature = "sunxi-a20-dramc")]
-            Self::SunxiA20Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
-            #[cfg(feature = "sunxi-a20-mmc")]
-            Self::SunxiA20Mmc(cfg) => serde::Serialize::serialize(cfg, ser),
-            #[cfg(feature = "sunxi-a20-spi")]
-            Self::SunxiA20Spi(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-h3-ccu")]
             Self::SunxiH3Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-a20-dramc")]
+            Self::SunxiA20Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-h3-dramc")]
             Self::SunxiH3Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
-            #[cfg(feature = "sunxi-h3-mmc")]
-            Self::SunxiH3Mmc(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-mmc")]
+            Self::SunxiMmc(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-a20-spi")]
+            Self::SunxiA20Spi(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }
