@@ -22,7 +22,7 @@ designware-i2c = ["dep:fstart-driver-designware-i2c"]
 sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
 sunxi-a20-dramc = ["dep:fstart-driver-sunxi-a20-dramc"]
 sunxi-mmc = ["dep:fstart-driver-sunxi-mmc"]
-sunxi-a20-spi = ["dep:fstart-driver-sunxi-spi"]
+sunxi-spi = ["dep:fstart-driver-sunxi-spi"]
 sunxi-h3-ccu = ["dep:fstart-driver-sunxi-h3-ccu"]
 sunxi-h3-dramc = ["dep:fstart-driver-sunxi-h3-dramc"]
 # FFS / crypto features (forwarded to fstart-capabilities)

@@ -100,7 +100,7 @@
         // gating handled by init().
         (
             name: "spi0",
-            driver: SunxiA20Spi((
+            driver: SunxiSpi(Sun7iA20(
                 base_addr: 0x01C05000,
                 ccu_base: 0x01C20000,
                 pio_base: 0x01C20800,

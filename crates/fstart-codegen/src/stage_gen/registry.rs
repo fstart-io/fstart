@@ -87,12 +87,12 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         compatible: &["allwinner,sun7i-a20-mmc", "allwinner,sun8i-h3-mmc"],
     },
     DriverMeta {
-        name: "sunxi-a20-spi",
-        type_name: "SunxiA20Spi",
+        name: "sunxi-spi",
+        type_name: "SunxiSpi",
         module_path: "fstart_driver_sunxi_spi",
-        config_type: "SunxiA20SpiConfig",
+        config_type: "SunxiSpiConfig",
         services: &["BlockDevice"],
-        compatible: &["allwinner,sun4i-a10-spi"],
+        compatible: &["allwinner,sun4i-a10-spi", "allwinner,sun8i-h3-spi"],
     },
     DriverMeta {
         name: "sunxi-h3-ccu",

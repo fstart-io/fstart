@@ -521,7 +521,6 @@ dependencies = [
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
- "fstart-sunxi-ccu-regs",
  "serde",
  "tock-registers",
  "ufmt",

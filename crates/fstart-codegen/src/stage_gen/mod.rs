@@ -41,10 +41,11 @@ use fstart_types::{
 use crate::ron_loader::ParsedBoard;
 
 use capabilities::{
-    generate_anchor_scan, generate_boot_media, generate_clock_init, generate_console_init,
-    generate_dram_init, generate_driver_init, generate_fdt_prepare, generate_late_driver_init,
-    generate_load_next_stage, generate_memory_init, generate_payload_load, generate_return_to_fel,
-    generate_sig_verify, generate_stage_load,
+    collect_boot_media_gated_devices, generate_anchor_scan, generate_boot_media,
+    generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
+    generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
+    generate_memory_init, generate_payload_load, generate_return_to_fel, generate_sig_verify,
+    generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
@@ -656,11 +657,24 @@ fn generate_fstart_main(
                 // Devices are in pre-order DFS — sequential indices are
                 // already topological order.
                 let sequential: Vec<usize> = (0..config.devices.len()).collect();
+                // Collect boot-media-gated devices from LoadNextStage /
+                // BootMedia(AutoDevice) with multiple candidates.  Those
+                // devices are only initialised when the eGON boot_media
+                // field matches, preventing e.g. MMC init failure when
+                // the BROM booted from SPI flash.
+                let boot_media_gated = collect_boot_media_gated_devices(
+                    capabilities,
+                    &config.devices,
+                    instances,
+                    platform,
+                );
                 body.extend(generate_driver_init(
                     &config.devices,
                     instances,
                     &sequential,
                     &inited_devices,
+                    &boot_media_gated,
+                    platform,
                     &halt,
                     mode,
                 ));

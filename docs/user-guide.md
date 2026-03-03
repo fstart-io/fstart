@@ -185,16 +185,26 @@ driver: SunxiA20Mmc((
 ))
 ```
 
-**Allwinner A20 SPI** (`SunxiA20Spi`)
+**Allwinner sunxi SPI** (`SunxiSpi`)
 
-SPI NOR flash controller. Provides the `BlockDevice` service.
+SPI NOR flash controller (unified A20/H3). Provides the `BlockDevice` service.
+The enum variant selects the SoC generation (register layout, clock gating, GPIO).
 
 ```ron
-driver: SunxiA20Spi((
-    base_addr:  u64,
+// A20 (sun4i SPI IP) — CS on PC23
+driver: SunxiSpi(Sun7iA20(
+    base_addr:  u64,   // 0x01C05000 for SPI0
     ccu_base:   u64,
     pio_base:   u64,
-    flash_size: u64,  // total flash size in bytes
+    flash_size: u32,   // total flash size in bytes
+))
+
+// H3/H2+ (sun6i SPI IP) — CS on PC3
+driver: SunxiSpi(Sun8iH3(
+    base_addr:  u64,   // 0x01C68000 for SPI0
+    ccu_base:   u64,
+    pio_base:   u64,
+    flash_size: u32,   // total flash size in bytes
 ))
 ```
 

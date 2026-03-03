@@ -146,16 +146,32 @@ pub(super) fn generate_memory_init() -> TokenStream {
 }
 
 /// Generate code for the DriverInit capability.
+///
+/// When `boot_media_gated` is non-empty (multi-device `LoadNextStage` or
+/// `BootMedia(AutoDevice)`), the listed devices are only initialised if
+/// the eGON header's `boot_media` field matches.  This prevents, e.g.,
+/// trying to bring up the MMC controller when the BROM booted from SPI
+/// and no SD card is inserted.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn generate_driver_init(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     sorted_indices: &[usize],
     already_inited: &[String],
+    boot_media_gated: &[(String, Vec<u8>)],
+    platform: &str,
     halt: &TokenStream,
     mode: BuildMode,
 ) -> TokenStream {
     let mut stmts = TokenStream::new();
     let mut count = 0usize;
+
+    let has_gated = !boot_media_gated.is_empty() && platform == "armv7";
+    if has_gated {
+        stmts.extend(quote! {
+            let _bm = fstart_soc_sunxi::boot_media();
+        });
+    }
 
     for &idx in sorted_indices {
         let dev = &devices[idx];
@@ -165,12 +181,28 @@ pub(super) fn generate_driver_init(
             continue;
         }
 
+        // Check if this device is boot-media-gated.
+        let gated_values = boot_media_gated
+            .iter()
+            .find(|(n, _)| n == name_str)
+            .map(|(_, vals)| vals.as_slice());
+
         match mode {
             BuildMode::Rigid => {
                 let name = format_ident!("{}", name_str);
-                stmts.extend(quote! {
-                    #name.init().unwrap_or_else(|_| #halt);
-                });
+                if let Some(vals) = gated_values {
+                    let val_lits: Vec<_> =
+                        vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
+                    stmts.extend(quote! {
+                        if matches!(_bm, #(#val_lits)|*) {
+                            #name.init().unwrap_or_else(|_| #halt);
+                        }
+                    });
+                } else {
+                    stmts.extend(quote! {
+                        #name.init().unwrap_or_else(|_| #halt);
+                    });
+                }
             }
             BuildMode::Flexible => {
                 let inner = if flexible_enum_for_device(dev, inst).is_some() {
@@ -178,9 +210,19 @@ pub(super) fn generate_driver_init(
                 } else {
                     format_ident!("{}", name_str)
                 };
-                stmts.extend(quote! {
-                    #inner.init().unwrap_or_else(|_| #halt);
-                });
+                if let Some(vals) = gated_values {
+                    let val_lits: Vec<_> =
+                        vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
+                    stmts.extend(quote! {
+                        if matches!(_bm, #(#val_lits)|*) {
+                            #inner.init().unwrap_or_else(|_| #halt);
+                        }
+                    });
+                } else {
+                    stmts.extend(quote! {
+                        #inner.init().unwrap_or_else(|_| #halt);
+                    });
+                }
                 stmts.extend(generate_flexible_wrapping(dev, inst));
             }
         }
@@ -193,6 +235,59 @@ pub(super) fn generate_driver_init(
     });
 
     stmts
+}
+
+/// Collect devices that should only be initialised when the eGON
+/// `boot_media` field matches.
+///
+/// Scans the full capability list for `LoadNextStage` and
+/// `BootMedia(AutoDevice)` entries with **multiple** candidate devices.
+/// For each candidate, returns the device name and its BROM boot-media
+/// constant(s).  Single-device entries are not gated — the device must
+/// init unconditionally.
+pub(super) fn collect_boot_media_gated_devices(
+    capabilities: &[fstart_types::Capability],
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    platform: &str,
+) -> Vec<(String, Vec<u8>)> {
+    if platform != "armv7" {
+        return Vec::new();
+    }
+
+    let mut gated: Vec<(String, Vec<u8>)> = Vec::new();
+
+    for cap in capabilities {
+        match cap {
+            fstart_types::Capability::LoadNextStage {
+                devices: load_devs, ..
+            } if load_devs.len() > 1 => {
+                for ld in load_devs.iter() {
+                    let name = ld.name.as_str().to_string();
+                    if gated.iter().any(|(n, _)| n == &name) {
+                        continue;
+                    }
+                    let vals = boot_media_values_for_device(ld.name.as_str(), devices, instances);
+                    gated.push((name, vals));
+                }
+            }
+            fstart_types::Capability::BootMedia(BootMedium::AutoDevice {
+                devices: candidates,
+            }) if candidates.len() > 1 => {
+                for c in candidates.iter() {
+                    let name = c.name.as_str().to_string();
+                    if gated.iter().any(|(n, _)| n == &name) {
+                        continue;
+                    }
+                    let vals = boot_media_values_for_device(c.name.as_str(), devices, instances);
+                    gated.push((name, vals));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    gated
 }
 
 /// Generate code for the BootMedia capability.
@@ -1195,7 +1290,7 @@ fn boot_media_values_for_device(
                 unreachable!("driver name is sunxi-mmc but instance is not SunxiMmc")
             }
         }
-        "sunxi-a20-spi" => {
+        "sunxi-spi" => {
             vec![0x03] // BOOT_MEDIA_SPI
         }
         other => panic!(
