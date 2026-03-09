@@ -601,7 +601,6 @@ dependencies = [
 name = "fstart-soc-sunxi"
 version = "0.1.0"
 dependencies = [
- "fstart-arch",
  "fstart-services",
  "fstart-types",
 ]

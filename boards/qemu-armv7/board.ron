@@ -15,7 +15,7 @@
 
 (
     name: "qemu-armv7",
-    platform: "armv7",
+    platform: Armv7,
 
     // Memory regions: only ROM and RAM.
     // Device MMIO addresses are in the driver config, not here.

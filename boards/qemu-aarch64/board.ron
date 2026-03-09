@@ -7,7 +7,7 @@
 
 (
     name: "qemu-aarch64",
-    platform: "aarch64",
+    platform: Aarch64,
 
     // Memory regions: only ROM and RAM.
     // Device MMIO addresses are in the driver config, not here.
