@@ -35,7 +35,7 @@ use quote::{format_ident, quote};
 
 use fstart_device_registry::DriverInstance;
 use fstart_types::{
-    BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceNode, StageLayout,
+    BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceNode, Platform, StageLayout,
 };
 
 use crate::ron_loader::ParsedBoard;
@@ -64,7 +64,7 @@ use validation::{get_boot_medium, needs_embedded_anchor, needs_ffs, validate_cap
 /// `#![no_std] #![no_main]` crate root.
 pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> String {
     let config = &parsed.config;
-    let platform = config.platform.as_str();
+    let platform = config.platform;
 
     // Get capabilities for this stage
     let capabilities = match (&config.stages, stage_name) {
@@ -192,14 +192,20 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
 // =======================================================================
 
 /// Generate `extern crate` items for platform and runtime.
-fn generate_platform_externs(platform: &str) -> TokenStream {
+///
+/// The platform crate is aliased to `fstart_platform` so that all
+/// downstream codegen can reference `fstart_platform::halt()`,
+/// `fstart_platform::jump_to()`, etc. without matching on the platform.
+fn generate_platform_externs(platform: Platform) -> TokenStream {
     let platform_crate = match platform {
-        "riscv64" => quote! { extern crate fstart_platform_riscv64; },
-        "aarch64" => quote! { extern crate fstart_platform_aarch64; },
-        "armv7" => quote! { extern crate fstart_platform_armv7; },
-        p => {
-            let msg = format!("unsupported platform: {p}");
-            return quote! { compile_error!(#msg); };
+        Platform::Riscv64 => {
+            quote! { extern crate fstart_platform_riscv64 as fstart_platform; }
+        }
+        Platform::Aarch64 => {
+            quote! { extern crate fstart_platform_aarch64 as fstart_platform; }
+        }
+        Platform::Armv7 => {
+            quote! { extern crate fstart_platform_armv7 as fstart_platform; }
         }
     };
     quote! {
@@ -349,8 +355,8 @@ fn generate_flash_constants(base: u64, size: u64) -> TokenStream {
 /// header.  The AArch64 assembler cannot emit ARM32 instructions, so
 /// the branch must be encoded manually.  The `_start` entry point in
 /// `entry_sunxi.rs` handles the AArch32→AArch64 RMR switch.
-fn generate_allwinner_egon_header(platform: &str) -> TokenStream {
-    let branch_asm = if platform == "aarch64" {
+fn generate_allwinner_egon_header(platform: Platform) -> TokenStream {
+    let branch_asm = if platform == Platform::Aarch64 {
         // AArch64 target: emit the ARM32 branch as a raw .word.
         // 0xEA000016 = ARM32 "b .+0x60" (branch forward 22 words from
         // PC+8 = 96 bytes = offset 0x60, past the eGON header).
@@ -570,7 +576,7 @@ fn generate_fstart_main(
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
     capabilities: &[Capability],
-    platform: &str,
+    platform: Platform,
     mode: BuildMode,
     embed_anchor: bool,
     stage_name: Option<&str>,

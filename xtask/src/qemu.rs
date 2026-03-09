@@ -1,5 +1,6 @@
 //! QEMU launcher for testing.
 
+use fstart_types::Platform;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8,9 +9,9 @@ use std::process::Command;
 /// For both monolithic and FFS builds, `binary` is a flat binary (raw
 /// firmware or FFS image). RISC-V uses pflash to load it at flash base
 /// (0x20000000, XIP); AArch64 uses `-bios` to load it at flash (0x0, XIP).
-pub fn run(board_name: &str, binary: &Path) -> Result<(), String> {
-    let (qemu_bin, args) = match board_name {
-        name if name.contains("riscv64") => {
+pub fn run(platform: Platform, binary: &Path) -> Result<(), String> {
+    let (qemu_bin, args) = match platform {
+        Platform::Riscv64 => {
             // RISC-V virt: load firmware into pflash bank 0 at 0x20000000
             // (XIP).  The MROM trampoline at 0x1000 sets a0=mhartid,
             // a1=DTB addr, then jumps to flash base.
@@ -32,7 +33,7 @@ pub fn run(board_name: &str, binary: &Path) -> Result<(), String> {
             ];
             ("qemu-system-riscv64", args)
         }
-        name if name.contains("aarch64") => {
+        Platform::Aarch64 => {
             let mut args = vec![
                 "-machine".to_string(),
                 // secure=on: enable TrustZone so secure SRAM at 0x0E000000 exists
@@ -52,22 +53,21 @@ pub fn run(board_name: &str, binary: &Path) -> Result<(), String> {
             args.extend(["-bios".to_string(), binary.display().to_string()]);
             ("qemu-system-aarch64", args)
         }
-        name if name.contains("armv7") => {
+        Platform::Armv7 => {
             let args = vec![
                 "-machine".to_string(),
                 "virt".to_string(),
                 "-cpu".to_string(),
                 "cortex-a15".to_string(),
                 "-nographic".to_string(),
+                // ARMv7: always use -bios so QEMU enters firmware boot mode,
+                // which places the DTB at RAM base (0x40000000) and starts the
+                // CPU at PC=0x0. Same as AArch64.
+                "-bios".to_string(),
+                binary.display().to_string(),
             ];
-            // ARMv7: always use -bios so QEMU enters firmware boot mode,
-            // which places the DTB at RAM base (0x40000000) and starts the
-            // CPU at PC=0x0. Same as AArch64.
-            let mut args = args;
-            args.extend(["-bios".to_string(), binary.display().to_string()]);
             ("qemu-system-arm", args)
         }
-        _ => return Err(format!("no QEMU configuration for board: {board_name}")),
     };
 
     eprintln!("[fstart] launching: {qemu_bin} {}", args.join(" "));

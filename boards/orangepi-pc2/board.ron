@@ -20,7 +20,7 @@
 
 (
     name: "orangepi-pc2",
-    platform: "aarch64",
+    platform: Aarch64,
 
     memory: (
         regions: [

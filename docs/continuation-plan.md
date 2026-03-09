@@ -643,9 +643,100 @@ FFS image: 9.5 MiB (103 KiB firmware + 49 KiB BL31 + 9.0 MiB kernel).
   `QEMU_USE_GIC_DRIVER=QEMU_GICV3`; without explicit `gic-version=3`,
   QEMU may default to GICv2, causing BL31 to hang during GIC init.
 
+### Phase 12: Platform Scalability Refactor (COMPLETE)
+
+Replaced stringly-typed platform identity with a `Platform` enum, introduced
+a codegen platform crate alias, and decoupled ARMv7 from Allwinner sunxi.
+These changes make adding new platform targets (x86_64, LoongArch, etc.)
+a compile-checked, mechanical process.
+
+#### Platform Enum
+
+`fstart-types/src/board.rs` — new `Platform` enum:
+- Variants: `Riscv64`, `Aarch64`, `Armv7`
+- Methods: `target_triple()`, `linker_arch()`, `as_str()`
+- `Display` impl, serde derives, `Copy + PartialEq + Eq`
+- `BoardConfig.platform` changed from `HString<32>` to `Platform`
+- Exhaustive `match` everywhere — adding a new variant causes compile errors
+  at every site that needs updating
+
+#### Codegen Platform Alias
+
+`generate_platform_externs()` in `stage_gen/mod.rs` now emits:
+```rust
+extern crate fstart_platform_riscv64 as fstart_platform;
+```
+Common calls (`halt()`, `jump_to()`) use `fstart_platform::` instead of
+per-platform crate names. Platform-specific boot protocols (SBI, ATF, direct
+Linux) still use the concrete platform crate where needed.
+
+#### ARMv7 / Sunxi Decoupling
+
+- `fstart-stage/Cargo.toml`: `armv7` feature no longer implies
+  `dep:fstart-soc-sunxi`. A separate `sunxi` feature activates on either
+  `aarch64` or `armv7` via `dep:fstart-soc-sunxi?` syntax.
+- `fstart-soc-sunxi/Cargo.toml`: removed spurious `fstart-arch` dependency.
+- This allows non-Allwinner ARMv7 boards (e.g., QEMU virt) to build without
+  pulling in sunxi SoC code.
+
+#### Scope of Changes
+
+Eliminated string matching in **17 locations** across 6 files:
+- `fstart-codegen/src/stage_gen/mod.rs` — function signatures, platform
+  extern generation, import generation
+- `fstart-codegen/src/stage_gen/capabilities.rs` — all 9 platform match
+  sites for boot protocols, jump functions, memory init
+- `fstart-codegen/src/stage_gen/tokens.rs` — `halt_expr()` now uses alias
+- `fstart-codegen/src/linker.rs` — `linker_arch()` method replaces match
+- `xtask/src/build_board.rs` — target triple, features, flat binary, sunxi
+- `xtask/src/qemu.rs` — QEMU machine/CPU selection
+
+All 10 board RON files updated: `platform: "riscv64"` → `platform: Riscv64`.
+
+#### Verification
+
+| Check | Result |
+|-------|--------|
+| `cargo test` | 71 pass (47 codegen + 14 FFS + 10 FIT) |
+| `cargo clippy` | Clean (`-D warnings`) |
+| qemu-riscv64 | Builds |
+| qemu-aarch64 | Builds |
+| qemu-armv7 | Builds |
+| qemu-riscv64-multi | Builds |
+| qemu-riscv64-flex | Builds |
+| qemu-aarch64-multi | Builds |
+| qemu-aarch64-flex | Builds |
+| orangepi-pc2 | Builds |
+| bananapi-m1 | Pre-existing linker overflow (bootblock too large for SRAM) |
+| orangepi-r1 | Pre-existing linker overflow (bootblock too large for SRAM) |
+
 ---
 
 ## What Remains
+
+### Platform Scalability — Deferred Items
+
+These were identified during Phase 12 but deferred as lower priority:
+
+1. **Uniform `boot_linux()` API** — Each platform crate exports different
+   boot functions (`boot_linux_sbi`, `boot_linux_atf`, `boot_linux`).
+   Unifying to a single `boot_linux(kernel, dtb, fw)` per-platform would
+   reduce codegen duplication in `generate_payload_load_linux` and
+   `generate_payload_load_fit_runtime`. Requires API changes in all 3
+   platform crates.
+
+2. **Abstract SoC boot header** — `LoadNextStage` and block-device
+   `AnchorScan` are eGON-only. A `SocBootHeader` trait would allow
+   other SoCs (e.g., Rockchip, MediaTek) to provide their own boot
+   media detection and header format.
+
+3. **Move BROM mapping out of codegen** — `boot_media_values_for_device()`
+   in capabilities.rs still hardcodes sunxi BROM constants. These should
+   move to the SoC crate or board RON.
+
+4. **Fix ARMv7 sunxi bootblock size** — bananapi-m1 and orangepi-r1
+   debug builds overflow SRAM. Options: LTO, `opt-level = "s"` for
+   bootblock profile, or split crypto into the main stage only.
 
 ### Explore crabtime (Optional)
 
@@ -711,13 +802,24 @@ be at offset 0 (QEMU's `-bios` expects executable code at the start).
 
 ---
 
-## File Summary (Phase 11 Changes — Linux Boot)
+## File Summary (Phase 12 Changes — Platform Scalability)
 
 | File | Change |
 |------|--------|
-| `xtask/src/qemu.rs` | Added `gic-version=3` to AArch64 QEMU machine flags |
-| `crates/fstart-log/src/lib.rs` | SyncCell wrapper, double-init guard, removed dead `Level::tag()` |
-| `docs/continuation-plan.md` | Updated with Phase 10 + 11 completion |
+| `crates/fstart-types/src/board.rs` | Added `Platform` enum, changed `BoardConfig.platform` type |
+| `crates/fstart-types/src/lib.rs` | Added `Platform` to re-exports |
+| `crates/fstart-codegen/src/ron_loader.rs` | `RonBoardConfig.platform` → `Platform` |
+| `crates/fstart-codegen/src/linker.rs` | Uses `Platform::linker_arch()` |
+| `crates/fstart-codegen/src/stage_gen/mod.rs` | Platform alias, all signatures changed |
+| `crates/fstart-codegen/src/stage_gen/tokens.rs` | `halt_expr()` uses alias |
+| `crates/fstart-codegen/src/stage_gen/capabilities.rs` | 9 match sites → `Platform` enum |
+| `crates/fstart-codegen/src/stage_gen/tests.rs` | Updated for `Platform::Riscv64`, `fstart_platform::` |
+| `xtask/src/build_board.rs` | `Platform` methods, sunxi feature decoupled |
+| `xtask/src/qemu.rs` | `Platform` parameter, exhaustive match |
+| `xtask/src/main.rs` | Passes `config.platform` to qemu |
+| `crates/fstart-stage/Cargo.toml` | Decoupled `armv7` from `sunxi` |
+| `crates/fstart-soc-sunxi/Cargo.toml` | Removed `fstart-arch` dependency |
+| `boards/*/board.ron` (10 files) | `platform:` field → enum variant |
 
 ## Git State
 

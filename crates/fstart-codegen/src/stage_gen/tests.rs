@@ -30,7 +30,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
 
     let config = BoardConfig {
         name: HString::try_from("test-board").unwrap(),
-        platform: HString::try_from("riscv64").unwrap(),
+        platform: Platform::Riscv64,
         memory: MemoryMap {
             regions: {
                 let mut v = heapless::Vec::new();
@@ -253,7 +253,7 @@ fn test_stage_load_generates_call() {
         "should pass &boot_media: {source}"
     );
     assert!(
-        source.contains("fstart_platform_riscv64::jump_to"),
+        source.contains("fstart_platform::jump_to"),
         "should pass jump_to: {source}"
     );
 }
@@ -291,7 +291,7 @@ fn test_stage_load_with_flash_base_generates_real_call() {
         "should pass &boot_media: {source}"
     );
     assert!(
-        source.contains("fstart_platform_riscv64::jump_to"),
+        source.contains("fstart_platform::jump_to"),
         "should pass jump_to: {source}"
     );
 }
@@ -392,7 +392,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
 
     let config = BoardConfig {
         name: HString::try_from("test-i2c-board").unwrap(),
-        platform: HString::try_from("riscv64").unwrap(),
+        platform: Platform::Riscv64,
         memory: MemoryMap {
             regions: {
                 let mut v = heapless::Vec::new();
@@ -818,7 +818,7 @@ fn test_flexible_multi_driver_parsed_board(
 
     let config = BoardConfig {
         name: HString::try_from("test-flex-multi").unwrap(),
-        platform: HString::try_from("riscv64").unwrap(),
+        platform: Platform::Riscv64,
         memory: MemoryMap {
             regions: {
                 let mut v = heapless::Vec::new();
@@ -1177,7 +1177,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
 
     let config = BoardConfig {
         name: HString::try_from("test-multi").unwrap(),
-        platform: HString::try_from("riscv64").unwrap(),
+        platform: Platform::Riscv64,
         memory: MemoryMap {
             regions: {
                 let mut v = heapless::Vec::new();
@@ -1285,7 +1285,7 @@ fn test_multi_stage_bootblock_with_flash_base() {
         "bootblock should pass &boot_media: {source}"
     );
     assert!(
-        source.contains("fstart_platform_riscv64::jump_to"),
+        source.contains("fstart_platform::jump_to"),
         "bootblock should pass jump_to: {source}"
     );
 }

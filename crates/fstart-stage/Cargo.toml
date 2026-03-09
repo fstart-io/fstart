@@ -14,10 +14,12 @@ default = []
 # Platform selection (exactly one must be enabled)
 riscv64 = ["dep:fstart-platform-riscv64"]
 aarch64 = ["dep:fstart-platform-aarch64"]
-armv7 = ["dep:fstart-platform-armv7", "dep:fstart-soc-sunxi"]
+armv7 = ["dep:fstart-platform-armv7"]
 # Allwinner sunxi support — adds fstart-soc-sunxi and enables the sunxi
-# entry point on aarch64 (ARMv8 RMR switch for H5/A64).
-sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi"]
+# entry point on platforms that support it (AArch64 RMR switch for H5/A64,
+# ARMv7 eGON boot for A20/H3).  Driven by `soc_image_format: AllwinnerEgon`
+# in the board RON, not by platform — sunxi boards exist on multiple ISAs.
+sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi", "fstart-platform-armv7?/sunxi"]
 # Driver selection (enabled based on board.ron devices)
 ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]
@@ -55,7 +57,7 @@ fstart-types = { workspace = true }
 # Platform crates (exactly one enabled via feature)
 fstart-platform-riscv64 = { workspace = true, optional = true }
 fstart-platform-aarch64 = { workspace = true, optional = true }
-fstart-platform-armv7 = { workspace = true, optional = true, features = ["sunxi"] }
+fstart-platform-armv7 = { workspace = true, optional = true }
 fstart-soc-sunxi = { workspace = true, optional = true }
 
 # Individual driver crates (enabled via features matching board.ron driver names)

@@ -8,6 +8,57 @@ use crate::memory::MemoryMap;
 use crate::security::SecurityConfig;
 use crate::stage::StageLayout;
 
+/// Target platform / ISA.
+///
+/// This enum is the single source of truth for platform identity.
+/// Adding a new platform variant automatically produces compiler errors
+/// at every `match` site that needs updating — no stringly-typed
+/// matching required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Platform {
+    /// RISC-V 64-bit (riscv64gc-unknown-none-elf)
+    Riscv64,
+    /// AArch64 / ARMv8-A (aarch64-unknown-none)
+    Aarch64,
+    /// ARMv7-A (armv7a-none-eabi)
+    Armv7,
+}
+
+impl Platform {
+    /// Rust target triple for cross-compilation.
+    pub fn target_triple(&self) -> &'static str {
+        match self {
+            Platform::Riscv64 => "riscv64gc-unknown-none-elf",
+            Platform::Aarch64 => "aarch64-unknown-none",
+            Platform::Armv7 => "armv7a-none-eabi",
+        }
+    }
+
+    /// Linker `OUTPUT_ARCH(...)` name.
+    pub fn linker_arch(&self) -> &'static str {
+        match self {
+            Platform::Riscv64 => "riscv",
+            Platform::Aarch64 => "aarch64",
+            Platform::Armv7 => "arm",
+        }
+    }
+
+    /// Short string identifier (used for cargo feature names, log messages).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Platform::Riscv64 => "riscv64",
+            Platform::Aarch64 => "aarch64",
+            Platform::Armv7 => "armv7",
+        }
+    }
+}
+
+impl core::fmt::Display for Platform {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Top-level board configuration, deserialized from a board.ron file.
 ///
 /// This is the single source of truth for a board's hardware description,
@@ -16,8 +67,8 @@ use crate::stage::StageLayout;
 pub struct BoardConfig {
     /// Human-readable board name (e.g., "qemu-riscv64")
     pub name: HString<64>,
-    /// Platform identifier (e.g., "riscv64", "aarch64", "armv7")
-    pub platform: HString<32>,
+    /// Target platform / ISA
+    pub platform: Platform,
     /// Memory map: ROM, RAM, MMIO regions
     pub memory: MemoryMap,
     /// Device declarations with driver and service bindings

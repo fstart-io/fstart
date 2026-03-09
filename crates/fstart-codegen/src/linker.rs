@@ -8,12 +8,7 @@ use fstart_types::{BoardConfig, RegionKind, SocImageFormat, StageLayout};
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
     let mut out = String::new();
 
-    let arch = match config.platform.as_str() {
-        "riscv64" => "riscv",
-        "aarch64" => "aarch64",
-        "armv7" => "arm",
-        other => other,
-    };
+    let arch = config.platform.linker_arch();
 
     // Determine load address, stack size, and optional data address from stage config
     let (load_addr, stack_size, data_addr) = match (&config.stages, stage_name) {

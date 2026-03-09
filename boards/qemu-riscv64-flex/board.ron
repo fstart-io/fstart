@@ -13,7 +13,7 @@
 
 (
     name: "qemu-riscv64-flex",
-    platform: "riscv64",
+    platform: Riscv64,
 
     // Memory regions: ROM (flash bank 0) and RAM.
     // Device MMIO addresses are in the driver config, not here.

@@ -10,6 +10,7 @@ use quote::{format_ident, quote};
 
 use fstart_device_registry::DriverInstance;
 use fstart_types::memory::RegionKind;
+use fstart_types::Platform;
 use fstart_types::{
     AutoBootDevice, BoardConfig, BootMedium, BuildMode, DeviceConfig, FdtSource, FirmwareKind,
     LoadDevice, SocImageFormat,
@@ -159,14 +160,14 @@ pub(super) fn generate_driver_init(
     sorted_indices: &[usize],
     already_inited: &[String],
     boot_media_gated: &[(String, Vec<u8>)],
-    platform: &str,
+    platform: Platform,
     halt: &TokenStream,
     mode: BuildMode,
 ) -> TokenStream {
     let mut stmts = TokenStream::new();
     let mut count = 0usize;
 
-    let has_gated = !boot_media_gated.is_empty() && platform == "armv7";
+    let has_gated = !boot_media_gated.is_empty() && platform == Platform::Armv7;
     if has_gated {
         stmts.extend(quote! {
             let _bm = fstart_soc_sunxi::boot_media();
@@ -249,9 +250,9 @@ pub(super) fn collect_boot_media_gated_devices(
     capabilities: &[fstart_types::Capability],
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
-    platform: &str,
+    platform: Platform,
 ) -> Vec<(String, Vec<u8>)> {
-    if platform != "armv7" {
+    if platform != Platform::Armv7 {
         return Vec::new();
     }
 
@@ -479,7 +480,7 @@ pub(super) fn generate_sig_verify(embed_anchor: bool) -> TokenStream {
 /// board config value (runtime-detected DRAM size from training).
 pub(super) fn generate_fdt_prepare(
     config: &BoardConfig,
-    platform: &str,
+    platform: Platform,
     uses_handoff: bool,
 ) -> TokenStream {
     let Some(ref payload) = config.payload else {
@@ -496,12 +497,11 @@ pub(super) fn generate_fdt_prepare(
                 hex_addr(addr)
             } else {
                 match platform {
-                    "riscv64" => quote! { fstart_platform_riscv64::boot_dtb_addr() },
-                    "aarch64" => quote! { fstart_platform_aarch64::boot_dtb_addr() },
+                    Platform::Riscv64 => quote! { fstart_platform::boot_dtb_addr() },
+                    Platform::Aarch64 => quote! { fstart_platform::boot_dtb_addr() },
                     // ARMv7: no DTB address saved by platform (board-specific).
                     // Use src_dtb_addr in the board RON instead.
-                    "armv7" => quote! { 0u64 },
-                    _ => quote! { 0 },
+                    Platform::Armv7 => quote! { 0u64 },
                 }
             };
             let dtb_dst = hex_addr(payload.dtb_addr.unwrap_or(0));
@@ -609,7 +609,7 @@ fn generate_dram_expressions(
 /// Generate code for the PayloadLoad capability.
 pub(super) fn generate_payload_load(
     config: &BoardConfig,
-    platform: &str,
+    platform: Platform,
     embed_anchor: bool,
 ) -> TokenStream {
     if is_linux_boot(config) {
@@ -628,12 +628,7 @@ pub(super) fn generate_payload_load(
     }
 
     let anchor = anchor_expr(embed_anchor);
-    let jump_fn: TokenStream = match platform {
-        "riscv64" => quote! { fstart_platform_riscv64::jump_to },
-        "aarch64" => quote! { fstart_platform_aarch64::jump_to },
-        "armv7" => quote! { fstart_platform_armv7::jump_to },
-        _ => quote! { fstart_platform_riscv64::jump_to },
-    };
+    let jump_fn: TokenStream = quote! { fstart_platform::jump_to };
     quote! {
         fstart_capabilities::payload_load(#anchor, &boot_media, #jump_fn);
     }
@@ -642,7 +637,7 @@ pub(super) fn generate_payload_load(
 /// Generate the Linux boot payload sequence for a specific platform.
 fn generate_payload_load_linux(
     config: &BoardConfig,
-    platform: &str,
+    platform: Platform,
     embed_anchor: bool,
 ) -> TokenStream {
     let payload = config.payload.as_ref().unwrap(); // caller verified is_linux_boot
@@ -694,32 +689,32 @@ fn generate_payload_load_linux(
     let kernel_addr = hex_addr(payload.kernel_load_addr.unwrap_or(0));
 
     match platform {
-        "riscv64" => {
+        Platform::Riscv64 => {
             let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
             stmts.extend(quote! {
-                let _fw_info = fstart_platform_riscv64::FwDynamicInfo::new(
+                let _fw_info = fstart_platform::FwDynamicInfo::new(
                     #kernel_addr,
-                    fstart_platform_riscv64::boot_hart_id(),
+                    fstart_platform::boot_hart_id(),
                 );
                 fstart_log::info!("jumping to SBI firmware...");
-                fstart_platform_riscv64::boot_linux_sbi(
+                fstart_platform::boot_linux_sbi(
                     #fw_addr,
-                    fstart_platform_riscv64::boot_hart_id(),
+                    fstart_platform::boot_hart_id(),
                     #dtb_addr,
                     &_fw_info,
                 );
             });
         }
-        "aarch64" => {
+        Platform::Aarch64 => {
             let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
             stmts.extend(quote! {
-                let mut _bl33_ep: fstart_platform_aarch64::EntryPointInfo =
+                let mut _bl33_ep: fstart_platform::EntryPointInfo =
                     unsafe { core::mem::zeroed() };
-                let mut _bl33_node: fstart_platform_aarch64::BlParamsNode =
+                let mut _bl33_node: fstart_platform::BlParamsNode =
                     unsafe { core::mem::zeroed() };
-                let mut _bl_params: fstart_platform_aarch64::BlParams =
+                let mut _bl_params: fstart_platform::BlParams =
                     unsafe { core::mem::zeroed() };
-                fstart_platform_aarch64::prepare_bl_params(
+                fstart_platform::prepare_bl_params(
                     #kernel_addr,
                     #dtb_addr,
                     &mut _bl33_ep,
@@ -727,10 +722,10 @@ fn generate_payload_load_linux(
                     &mut _bl_params,
                 );
                 fstart_log::info!("jumping to ATF BL31...");
-                fstart_platform_aarch64::boot_linux_atf(#fw_addr, &_bl_params);
+                fstart_platform::boot_linux_atf(#fw_addr, &_bl_params);
             });
         }
-        "armv7" => {
+        Platform::Armv7 => {
             // ARMv7 Linux boot protocol: no SBI/ATF, jump directly to kernel.
             // r0=0, r1=0xFFFFFFFF (DT-only), r2=DTB address.
             //
@@ -746,14 +741,10 @@ fn generate_payload_load_linux(
                 fstart_log::info!("  dtb    @ {:#x}", #dtb_addr as u64);
 
                 // Clean up CPU state: disable/invalidate I-cache, flush BP.
-                fstart_platform_armv7::cleanup_before_linux();
+                fstart_platform::cleanup_before_linux();
 
-                fstart_platform_armv7::boot_linux(#kernel_addr, #dtb_addr);
+                fstart_platform::boot_linux(#kernel_addr, #dtb_addr);
             });
-        }
-        _ => {
-            let msg = format!("LinuxBoot not supported on platform '{platform}'");
-            stmts.extend(quote! { compile_error!(#msg); });
         }
     }
 
@@ -768,7 +759,7 @@ fn generate_payload_load_linux(
 /// 3. Resolves the configuration (default or named)
 /// 4. Copies each component (kernel, ramdisk) to its load address
 /// 5. Boots via platform-specific protocol
-fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: &str) -> TokenStream {
+fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: Platform) -> TokenStream {
     let payload = config.payload.as_ref().unwrap();
     let halt = halt_expr(platform);
     let anchor = anchor_as_bytes_expr();
@@ -897,32 +888,32 @@ fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: &str) -> To
     let kernel_addr = quote! { _kernel_load };
 
     match platform {
-        "riscv64" => {
+        Platform::Riscv64 => {
             let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
             stmts.extend(quote! {
-                let _fw_info = fstart_platform_riscv64::FwDynamicInfo::new(
+                let _fw_info = fstart_platform::FwDynamicInfo::new(
                     #kernel_addr,
-                    fstart_platform_riscv64::boot_hart_id(),
+                    fstart_platform::boot_hart_id(),
                 );
                 fstart_log::info!("jumping to SBI firmware...");
-                fstart_platform_riscv64::boot_linux_sbi(
+                fstart_platform::boot_linux_sbi(
                     #fw_addr,
-                    fstart_platform_riscv64::boot_hart_id(),
+                    fstart_platform::boot_hart_id(),
                     #dtb_addr,
                     &_fw_info,
                 );
             });
         }
-        "aarch64" => {
+        Platform::Aarch64 => {
             let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
             stmts.extend(quote! {
-                let mut _bl33_ep: fstart_platform_aarch64::EntryPointInfo =
+                let mut _bl33_ep: fstart_platform::EntryPointInfo =
                     unsafe { core::mem::zeroed() };
-                let mut _bl33_node: fstart_platform_aarch64::BlParamsNode =
+                let mut _bl33_node: fstart_platform::BlParamsNode =
                     unsafe { core::mem::zeroed() };
-                let mut _bl_params: fstart_platform_aarch64::BlParams =
+                let mut _bl_params: fstart_platform::BlParams =
                     unsafe { core::mem::zeroed() };
-                fstart_platform_aarch64::prepare_bl_params(
+                fstart_platform::prepare_bl_params(
                     #kernel_addr,
                     #dtb_addr,
                     &mut _bl33_ep,
@@ -930,21 +921,17 @@ fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: &str) -> To
                     &mut _bl_params,
                 );
                 fstart_log::info!("jumping to ATF BL31...");
-                fstart_platform_aarch64::boot_linux_atf(#fw_addr, &_bl_params);
+                fstart_platform::boot_linux_atf(#fw_addr, &_bl_params);
             });
         }
-        "armv7" => {
+        Platform::Armv7 => {
             // ARMv7: no ATF/SBI — jump directly to kernel with pre-boot cleanup.
             stmts.extend(quote! {
                 fstart_log::info!("booting Linux (ARMv7)...");
-                fstart_platform_armv7::set_arch_timer_freq(24_000_000);
-                fstart_platform_armv7::cleanup_before_linux();
-                fstart_platform_armv7::boot_linux(#kernel_addr as u64, #dtb_addr);
+                fstart_platform::set_arch_timer_freq(24_000_000);
+                fstart_platform::cleanup_before_linux();
+                fstart_platform::boot_linux(#kernel_addr as u64, #dtb_addr);
             });
-        }
-        _ => {
-            let msg = format!("FIT boot not supported on platform '{platform}'");
-            stmts.extend(quote! { compile_error!(#msg); });
         }
     }
 
@@ -1074,7 +1061,7 @@ pub(super) fn generate_load_next_stage(
     config: &BoardConfig,
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
-    platform: &str,
+    _platform: Platform,
     capabilities: &[fstart_types::Capability],
     halt: &TokenStream,
 ) -> TokenStream {
@@ -1124,11 +1111,8 @@ pub(super) fn generate_load_next_stage(
     };
 
     // Platform-specific jump call.
-    let jump_call = if platform == "aarch64" {
-        quote! { fstart_platform_aarch64::jump_to_with_handoff(#load_addr, #handoff_addr as usize); }
-    } else {
-        quote! { fstart_platform_armv7::jump_to_with_handoff(#load_addr, #handoff_addr as usize); }
-    };
+    let jump_call =
+        quote! { fstart_platform::jump_to_with_handoff(#load_addr, #handoff_addr as usize); };
 
     // Build the handoff + jump sequence (shared by all arms).
     let handoff_and_jump = quote! {
@@ -1246,8 +1230,8 @@ pub(super) fn generate_late_driver_init() -> TokenStream {
 ///
 /// Emits code that restores the saved BROM state and returns to FEL
 /// mode. Only supported on armv7 (Allwinner sunxi).
-pub(super) fn generate_return_to_fel(platform: &str) -> TokenStream {
-    if platform != "armv7" {
+pub(super) fn generate_return_to_fel(platform: Platform) -> TokenStream {
+    if platform != Platform::Armv7 {
         let msg = format!("ReturnToFel is only supported on armv7, not '{platform}'");
         return quote! { compile_error!(#msg); };
     }
@@ -1263,16 +1247,11 @@ pub(super) fn generate_return_to_fel(platform: &str) -> TokenStream {
 /// Generate code for the StageLoad capability.
 pub(super) fn generate_stage_load(
     next_stage: &str,
-    platform: &str,
+    _platform: Platform,
     embed_anchor: bool,
 ) -> TokenStream {
     let anchor = anchor_expr(embed_anchor);
-    let jump_fn: TokenStream = match platform {
-        "riscv64" => quote! { fstart_platform_riscv64::jump_to },
-        "aarch64" => quote! { fstart_platform_aarch64::jump_to },
-        "armv7" => quote! { fstart_platform_armv7::jump_to },
-        _ => quote! { fstart_platform_riscv64::jump_to },
-    };
+    let jump_fn: TokenStream = quote! { fstart_platform::jump_to };
     quote! {
         fstart_capabilities::stage_load(#next_stage, #anchor, &boot_media, #jump_fn);
     }

@@ -17,7 +17,7 @@ pub mod stage;
 
 pub use board::{
     BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig,
-    PayloadKind, SocImageFormat,
+    PayloadKind, Platform, SocImageFormat,
 };
 pub use device::{DeviceConfig, DeviceId, DeviceNode};
 pub use ffs::{

@@ -20,7 +20,7 @@
 
 (
     name: "bananapi-m1",
-    platform: "armv7",
+    platform: Armv7,
 
     memory: (
         regions: [
