@@ -21,7 +21,7 @@
 
 (
     name: "orangepi-r1",
-    platform: "armv7",
+    platform: Armv7,
 
     memory: (
         regions: [

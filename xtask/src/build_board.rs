@@ -6,7 +6,7 @@
 //! 4. Return the path(s) to the built binary(ies)
 
 use fstart_codegen::ron_loader;
-use fstart_types::{Capability, SecurityConfig, SocImageFormat, StageLayout};
+use fstart_types::{Capability, Platform, SecurityConfig, SocImageFormat, StageLayout};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -53,18 +53,13 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     eprintln!("[fstart] platform: {}", config.platform);
     eprintln!("[fstart] mode: {:?}", config.mode);
 
-    // Determine target triple
-    let target = match config.platform.as_str() {
-        "riscv64" => "riscv64gc-unknown-none-elf",
-        "aarch64" => "aarch64-unknown-none",
-        "armv7" => "armv7a-none-eabi",
-        other => return Err(format!("unsupported platform: {other}")),
-    };
+    // Determine target triple from the Platform enum.
+    let target = config.platform.target_triple();
 
     // Base features: platform + all driver features (every stage constructs
     // all devices, so driver features are always needed globally).
     let mut base_features = Vec::new();
-    base_features.push(config.platform.to_string());
+    base_features.push(config.platform.as_str().to_string());
     for device in &config.devices {
         base_features.push(device.driver.to_string());
     }
@@ -87,10 +82,9 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 
     // Allwinner sunxi SoCs use the eGON boot format and need
     // fstart-soc-sunxi for the eGON header, boot media detection,
-    // and FEL support.  For AArch64 sunxi boards (H5, A64) this also
-    // enables the RMR switch entry point in fstart-platform-aarch64.
-    // (ARMv7 sunxi boards always pull in sunxi via the `armv7` feature.)
-    if config.soc_image_format == SocImageFormat::AllwinnerEgon && config.platform != "armv7" {
+    // and FEL support.  This is driven by `soc_image_format`, not by
+    // the platform — sunxi boards exist on both ARMv7 and AArch64.
+    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
         base_features.push("sunxi".to_string());
     }
 
@@ -99,7 +93,10 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     // All bare-metal platforms need flat binaries: AArch64 uses -bios
     // which expects raw binary, RISC-V uses pflash, and ARMv7 Allwinner
     // boot ROM loads raw binary from SD/SPI/eMMC.
-    let needs_flat_binary = matches!(config.platform.as_str(), "aarch64" | "riscv64" | "armv7");
+    let needs_flat_binary = matches!(
+        config.platform,
+        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7
+    );
 
     let soc_format = config.soc_image_format;
 

@@ -7,20 +7,20 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use fstart_types::Platform;
+
 /// Create a hex-formatted u64 literal token (e.g., `0x80000000`).
 pub(super) fn hex_addr(val: u64) -> TokenStream {
     let s = format!("{val:#x}");
     s.parse().expect("hex literal should parse as TokenStream")
 }
 
-/// Generate the platform halt expression (e.g., `fstart_platform_riscv64::halt()`).
-pub(super) fn halt_expr(platform: &str) -> TokenStream {
-    match platform {
-        "riscv64" => quote! { fstart_platform_riscv64::halt() },
-        "aarch64" => quote! { fstart_platform_aarch64::halt() },
-        "armv7" => quote! { fstart_platform_armv7::halt() },
-        _ => quote! { loop { core::hint::spin_loop() } },
-    }
+/// Generate the platform halt expression.
+///
+/// Uses the `fstart_platform` alias emitted by `generate_platform_externs()`,
+/// so this is platform-agnostic — no match needed.
+pub(super) fn halt_expr(_platform: Platform) -> TokenStream {
+    quote! { fstart_platform::halt() }
 }
 
 /// The `unsafe` expression that casts `&FSTART_ANCHOR` to `&[u8]` for

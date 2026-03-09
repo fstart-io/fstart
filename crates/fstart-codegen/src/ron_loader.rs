@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use fstart_device_registry::DriverInstance;
 use fstart_types::{
-    BoardConfig, BuildMode, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig,
+    BoardConfig, BuildMode, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig, Platform,
     SecurityConfig, SocImageFormat, StageLayout,
 };
 
@@ -54,7 +54,7 @@ pub struct ParsedBoard {
 #[derive(Deserialize)]
 struct RonBoardConfig {
     name: HString<64>,
-    platform: HString<32>,
+    platform: Platform,
     memory: MemoryMap,
     devices: Vec<RonDevice>,
     stages: StageLayout,
