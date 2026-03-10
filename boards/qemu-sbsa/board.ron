@@ -1,0 +1,149 @@
+// Board definition for QEMU SBSA-ref (Server Base System Architecture).
+//
+// This is a fully SW-emulated SBSA machine (AArch64). TF-A BL1/BL2 run
+// first from secure flash (pflash0), then launch fstart as BL33 at EL2
+// from non-secure flash (pflash1).
+//
+// fstart's purpose on this platform is to generate ACPI and SMBIOS tables,
+// then hand off to an OS loader.
+//
+// Boot flow:
+//   TF-A BL1 (secure flash @ 0x0) -> BL2 -> BL31 (EL3)
+//   -> fstart (non-secure flash @ 0x10000000, enters at EL2)
+//   -> SBSA entry stub copies itself from flash to DRAM
+//   -> runs from DRAM, generates ACPI/SMBIOS tables
+//
+// Memory map (from QEMU hw/arm/sbsa-ref.c and TF-A plat/qemu/qemu_sbsa):
+//   Secure flash:     0x0000_0000_0000 .. 0x0000_1000_0000 (256 MiB, TF-A)
+//   Non-secure flash: 0x0000_1000_0000 .. 0x0000_2000_0000 (256 MiB, fstart)
+//   Secure memory:    0x0000_2000_0000 .. 0x0000_4000_0000 (512 MiB)
+//   GIC Distributor:  0x0000_4006_0000
+//   GIC Redistributor: 0x0000_4008_0000
+//   GWDT refresh:     0x0000_5001_0000
+//   GWDT control:     0x0000_5001_1000
+//   PL011 UART:       0x0000_6000_0000
+//   RTC (PL031):      0x0000_6001_0000
+//   SMMU:             0x0000_6005_0000
+//   AHCI:             0x0000_6010_0000
+//   xHCI:             0x0000_6011_0000
+//   PIO:              0x0000_7FFF_0000
+//   PCIe MMIO 32:     0x0000_8000_0000 .. 0x0000_EFFF_FFFF
+//   PCIe ECAM:        0x0000_F000_0000 .. 0x0000_FFFF_FFFF
+//   PCIe MMIO 64:     0x0001_0000_0000 .. 0x00FF_FFFF_FFFF
+//   DRAM:             0x0100_0000_0000 onwards (1 TiB mark)
+//
+// NOTE: The firmware is stored in pflash1 (0x10000000) but DRAM starts at
+// 0x10000000000 — a 1 TiB gap that exceeds AArch64 ADRP range (+/- 4 GiB).
+// A position-independent entry stub in flash copies the binary to DRAM
+// before jumping there (same approach as coreboot's bootblock_custom.S).
+
+(
+    name: "qemu-sbsa",
+    platform: Aarch64,
+
+    // Memory regions: non-secure flash (storage) and DRAM (execution).
+    //
+    // flash_base/flash_size describe pflash1 where the binary is stored.
+    // Code is linked for DRAM addresses and copied there at boot.
+    //
+    // DRAM starts at the 1 TiB mark. We declare 1 GiB (QEMU default).
+    memory: (
+        regions: [
+            ( name: "flash", base: 0x10000000, size: 0x10000000, kind: Rom ),
+            ( name: "ram",   base: 0x10000000000, size: 0x40000000, kind: Ram ),
+        ],
+        flash_base: Some(0x10000000),
+        flash_size: Some(0x10000000),
+    ),
+
+    devices: [
+        (
+            name: "uart0",
+            driver: Pl011((
+                base_addr: 0x60000000,
+                clock_freq: 1843200,
+                baud_rate: 115200,
+                acpi_name: Some("COM0"),
+                acpi_gsiv: Some(33),
+            )),
+            services: ["Console"],
+        ),
+    ],
+
+    // Monolithic stage running from DRAM (copied from flash by entry stub).
+    // TF-A passes the platform FDT pointer in x0 when entering BL33.
+    //
+    // load_addr is in DRAM. The entry stub copies from flash (0x10000000)
+    // to this DRAM address, then jumps to _start in DRAM.
+    stages: Monolithic((
+        capabilities: [
+            ConsoleInit( device: "uart0" ),
+            MemoryInit,
+            AcpiPrepare,
+        ],
+        load_addr: 0x10000100000,
+        stack_size: 0x40000,
+        heap_size: Some(0x40000),
+    )),
+
+    // ACPI configuration — tables placed 512 KiB into DRAM, well below load_addr.
+    // DRAM starts at 0x10000000000; tables at 0x10000000000 + 0x80000.
+    //
+    // SBSA platform: GICv3 + generic timers + HW-reduced ACPI with PSCI.
+    // AHCI, xHCI, and PCIe are declared as extra_devices since fstart
+    // has no driver crates for them yet.
+    acpi: Some((
+        table_addr: 0x10000080000,
+        platform: Arm((
+            num_cpus: 1,
+            gic_dist_base: 0x40060000,
+            gic_redist_base: 0x40080000,
+            // QEMU SBSA-ref maps 64 MiB for redistributors regardless of CPU count.
+            gic_redist_length: Some(0x4000000),
+            // GIC ITS at 0x44081000 — required for MSI/MSI-X with PCIe.
+            gic_its_base: Some(0x44081000),
+            timer_gsivs: (29, 30, 27, 26),
+            watchdog: Some((
+                refresh_base: 0x50010000,
+                control_base: 0x50011000,
+                gsiv: 48,
+            )),
+        )),
+        extra_devices: [
+            Ahci((
+                name: "AHC0",
+                base: 0x60100000,
+                size: 0x10000,
+                gsiv: 42,
+            )),
+            Xhci((
+                name: "USB0",
+                base: 0x60110000,
+                size: 0x10000,
+                gsiv: 43,
+            )),
+            PcieRoot((
+                name: "PCI0",
+                ecam_base: 0xF0000000,
+                mmio32: (0x80000000, 0xEFFFFFFF),
+                mmio64: (0x100000000, 0xFFFFFFFFFF),
+                pio_base: Some(0x7FFF0000),
+                bus_range: (0, 0xFF),
+                irqs: (168, 169, 170, 171),
+                segment: 0,
+            )),
+        ],
+    )),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256, Sha3_256],
+    ),
+
+    mode: Rigid,
+
+    // No payload yet -- fstart's role on SBSA is ACPI/SMBIOS generation.
+    // Future: add an EFI payload or LinuxBoot once table generation works.
+    payload: None,
+)

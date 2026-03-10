@@ -18,11 +18,14 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(not(feature = "sunxi"))]
+#[cfg(not(any(feature = "sunxi", feature = "sbsa")))]
 pub mod entry;
 
 #[cfg(feature = "sunxi")]
 pub mod entry_sunxi;
+
+#[cfg(feature = "sbsa")]
+pub mod entry_sbsa;
 
 // ---------------------------------------------------------------------------
 // Boot parameters — written by _start assembly, read by Rust code

@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod acpi;
 pub mod board;
 pub mod device;
 pub mod ffs;
@@ -15,6 +16,10 @@ pub mod memory;
 pub mod security;
 pub mod stage;
 
+pub use acpi::{
+    AcpiAhciDevice, AcpiConfig, AcpiExtraDevice, AcpiGenericDevice, AcpiPcieRootDevice,
+    AcpiPlatform, AcpiWatchdog, AcpiXhciDevice, ArmPlatformAcpi,
+};
 pub use board::{
     BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig,
     PayloadKind, Platform, SocImageFormat,

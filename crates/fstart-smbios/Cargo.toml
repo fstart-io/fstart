@@ -1,0 +1,11 @@
+[package]
+name = "fstart-smbios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+std = []
+
+[dependencies]

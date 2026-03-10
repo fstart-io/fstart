@@ -247,6 +247,60 @@ impl ufmt::uDisplay for Hex {
 }
 
 // ---------------------------------------------------------------------------
+// Hex dump
+// ---------------------------------------------------------------------------
+
+/// Write a single raw byte to the console, bypassing log formatting.
+///
+/// Used by [`hex_dump`] for efficient binary data output.
+/// Silently discarded if no console has been registered via [`init`].
+#[inline]
+fn raw_write_byte(b: u8) {
+    // SAFETY: CONSOLE is written once during init, then only read.
+    let console = unsafe { *CONSOLE.0.get() };
+    if let Some(c) = console {
+        let _ = c.write_byte(b);
+    }
+}
+
+/// Dump a byte slice as hex to the console.
+///
+/// Output format (compatible with `xxd -r -p` for binary reconstruction):
+/// ```text
+/// ACPI_TABLE_DUMP_START 1234
+/// 44534454340100000247...
+/// ACPI_TABLE_DUMP_END
+/// ```
+///
+/// Each line contains up to 32 bytes (64 hex chars).  The start/end
+/// markers allow reliable extraction from noisy serial logs.
+pub fn hex_dump(data: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    // Write start marker with size.
+    {
+        let mut w = writer();
+        let _ = ufmt::uwriteln!(w, "ACPI_TABLE_DUMP_START {}", data.len() as u32);
+    }
+
+    // Write hex lines — 32 bytes per line (64 hex chars).
+    for chunk in data.chunks(32) {
+        for &b in chunk {
+            raw_write_byte(HEX[(b >> 4) as usize]);
+            raw_write_byte(HEX[(b & 0xF) as usize]);
+        }
+        raw_write_byte(b'\r');
+        raw_write_byte(b'\n');
+    }
+
+    // Write end marker.
+    {
+        let mut w = writer();
+        let _ = ufmt::uwriteln!(w, "ACPI_TABLE_DUMP_END");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Macros
 // ---------------------------------------------------------------------------
 
