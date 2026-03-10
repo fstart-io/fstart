@@ -41,11 +41,11 @@ use fstart_types::{
 use crate::ron_loader::ParsedBoard;
 
 use capabilities::{
-    collect_boot_media_gated_devices, generate_anchor_scan, generate_boot_media,
-    generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
-    generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
-    generate_memory_init, generate_payload_load, generate_return_to_fel, generate_sig_verify,
-    generate_stage_load,
+    collect_boot_media_gated_devices, generate_acpi_prepare, generate_anchor_scan,
+    generate_boot_media, generate_clock_init, generate_console_init, generate_dram_init,
+    generate_driver_init, generate_fdt_prepare, generate_late_driver_init,
+    generate_load_next_stage, generate_memory_init, generate_payload_load, generate_return_to_fel,
+    generate_sig_verify, generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
@@ -752,6 +752,9 @@ fn generate_fstart_main(
                 // Future: call lockdown() on devices that implement it.
                 body.extend(generate_late_driver_init());
             }
+            Capability::AcpiPrepare => {
+                body.extend(generate_acpi_prepare(config, &config.devices, instances));
+            }
             Capability::ReturnToFel => {
                 body.extend(generate_return_to_fel(platform));
             }
@@ -908,6 +911,7 @@ fn generate_device_construction(
     let name_str = dev.name.as_str();
     let type_name = driver_type_tokens(instance);
     let config = config_tokens(instance);
+    let cfg_binding = format_ident!("{}_cfg", name_str);
 
     let binding = match mode {
         BuildMode::Rigid => format_ident!("{}", name_str),
@@ -923,15 +927,19 @@ fn generate_device_construction(
     match parent_name {
         None => {
             // Root device — Device::new(&config)
+            // Config is bound to a named variable so capabilities
+            // (e.g., AcpiPrepare) can reference it later.
             quote! {
-                let #binding = #type_name::new(&#config).unwrap_or_else(|_| #halt);
+                let #cfg_binding = #config;
+                let #binding = #type_name::new(&#cfg_binding).unwrap_or_else(|_| #halt);
             }
         }
         Some(parent) => {
             // Bus child — BusDevice::new_on_bus(&config, &parent)
             let parent_ident = format_ident!("{}", parent);
             quote! {
-                let #binding = #type_name::new_on_bus(&#config, &#parent_ident).unwrap_or_else(|_| #halt);
+                let #cfg_binding = #config;
+                let #binding = #type_name::new_on_bus(&#cfg_binding, &#parent_ident).unwrap_or_else(|_| #halt);
             }
         }
     }

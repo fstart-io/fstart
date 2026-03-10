@@ -88,6 +88,13 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         base_features.push("sunxi".to_string());
     }
 
+    // SBSA boards use a special entry point that copies firmware from
+    // flash to DRAM before executing (the flash→DRAM gap exceeds the
+    // AArch64 ADRP relocation range).
+    if config.name.as_str().contains("sbsa") {
+        base_features.push("sbsa".to_string());
+    }
+
     eprintln!("[fstart] target: {target}");
 
     // All bare-metal platforms need flat binaries: AArch64 uses -bios
@@ -107,8 +114,10 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
             let cap_features = capability_features(&mono.capabilities, &config.security);
             features.extend(cap_features);
             let features_str = features.join(",");
-            let uses_fdt = stage_uses_fdt(&mono.capabilities);
-            let build_std = if uses_fdt { "core,alloc" } else { "core" };
+            let needs_alloc = stage_uses_fdt(&mono.capabilities)
+                || stage_uses_acpi(&mono.capabilities)
+                || mono.heap_size.is_some();
+            let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
             eprintln!("[fstart] features: {features_str}");
 
@@ -147,8 +156,10 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 features.extend(cap_features);
                 let features_str = features.join(",");
 
-                let uses_fdt = stage_uses_fdt(&stage.capabilities);
-                let build_std = if uses_fdt { "core,alloc" } else { "core" };
+                let needs_alloc = stage_uses_fdt(&stage.capabilities)
+                    || stage_uses_acpi(&stage.capabilities)
+                    || stage.heap_size.is_some();
+                let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
                 eprintln!("[fstart] features: {features_str}");
 
@@ -552,6 +563,10 @@ fn capability_features(capabilities: &[Capability], security: &SecurityConfig) -
         features.push("fdt".to_string());
     }
 
+    if stage_uses_acpi(capabilities) {
+        features.push("acpi".to_string());
+    }
+
     features
 }
 
@@ -560,6 +575,13 @@ fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::FdtPrepare))
+}
+
+/// Check if a stage's capabilities require the ACPI feature.
+fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiPrepare))
 }
 
 fn workspace_root() -> Result<PathBuf, String> {

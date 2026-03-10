@@ -20,7 +20,6 @@ fdt = []
 fit = ["ffs", "dep:fstart-fit"]
 # Inter-stage handoff serialization (postcard)
 handoff = ["dep:postcard", "dep:fstart-types"]
-
 [dependencies]
 fstart-log = { workspace = true }
 fstart-services = { workspace = true }

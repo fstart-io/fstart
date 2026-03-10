@@ -21,6 +21,8 @@ armv7 = ["dep:fstart-platform-armv7"]
 # `soc_image_format: AllwinnerEgon` in the board RON, not by platform —
 # sunxi boards exist on multiple ISAs.
 sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi", "fstart-platform-armv7?/sunxi", "fstart-platform-riscv64?/sunxi"]
+# SBSA entry point — copies firmware from flash to DRAM before executing.
+sbsa = ["fstart-platform-aarch64?/sbsa"]
 # Driver selection (enabled based on board.ron devices)
 ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]
@@ -46,6 +48,9 @@ fdt = ["fstart-capabilities/fdt"]
 fit = ["ffs", "fstart-capabilities/fit", "dep:fstart-fit"]
 # Inter-stage handoff serialization (postcard, for multi-stage boards)
 handoff = ["fstart-capabilities/handoff"]
+# ACPI table generation (requires alloc + fstart-alloc global allocator).
+# Enables fstart-acpi/arm for ARM-specific tables (MADT/GICv3, GTDT).
+acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-driver-pl011?/acpi"]
 
 [dependencies]
 # Core firmware infrastructure
@@ -56,6 +61,7 @@ fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
 fstart-types = { workspace = true }
+heapless = { workspace = true }
 
 # Platform crates (exactly one enabled via feature)
 fstart-platform-riscv64 = { workspace = true, optional = true }
@@ -79,6 +85,12 @@ fstart-driver-sunxi-d1-dramc = { workspace = true, optional = true }
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
 fstart-fit = { workspace = true, optional = true }
+
+# ACPI table generation (optional, behind acpi feature)
+fstart-acpi = { workspace = true, optional = true }
+
+# Allocator (optional, behind acpi feature — provides #[global_allocator])
+fstart-alloc = { workspace = true, optional = true }
 
 [build-dependencies]
 fstart-codegen = { workspace = true }

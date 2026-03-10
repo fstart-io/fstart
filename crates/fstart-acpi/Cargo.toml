@@ -1,0 +1,13 @@
+[package]
+name = "fstart-acpi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["arm"]
+std = []
+arm = []
+
+[dependencies]
+acpi_tables = "0.2"

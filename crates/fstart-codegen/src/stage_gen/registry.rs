@@ -45,6 +45,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
             "snps,dw-apb-uart",
             "allwinner,sun7i-a20-uart",
         ],
+        has_acpi: false,
     },
     DriverMeta {
         name: "pl011",
@@ -53,6 +54,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "Pl011Config",
         services: &["Console"],
         compatible: &["arm,pl011", "pl011"],
+        has_acpi: true,
     },
     DriverMeta {
         name: "designware-i2c",
@@ -61,6 +63,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "DesignwareI2cConfig",
         services: &["I2cBus"],
         compatible: &["snps,designware-i2c", "dw-apb-i2c"],
+        has_acpi: false,
     },
     DriverMeta {
         name: "sunxi-a20-ccu",
@@ -69,6 +72,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "SunxiA20CcuConfig",
         services: &["ClockController"],
         compatible: &["allwinner,sun7i-a20-ccu"],
+        has_acpi: false,
     },
     DriverMeta {
         name: "sunxi-a20-dramc",
@@ -77,6 +81,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "SunxiA20DramcConfig",
         services: &["MemoryController"],
         compatible: &["allwinner,sun7i-a20-dramc"],
+        has_acpi: false,
     },
     DriverMeta {
         name: "sunxi-mmc",
@@ -89,6 +94,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
             "allwinner,sun8i-h3-mmc",
             "allwinner,sun50i-h5-mmc",
         ],
+        has_acpi: false,
     },
     DriverMeta {
         name: "sunxi-spi",
@@ -97,6 +103,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "SunxiSpiConfig",
         services: &["BlockDevice"],
         compatible: &["allwinner,sun4i-a10-spi", "allwinner,sun8i-h3-spi"],
+        has_acpi: false,
     },
     DriverMeta {
         name: "sunxi-h3-ccu",
@@ -105,6 +112,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "SunxiH3CcuConfig",
         services: &["ClockController"],
         compatible: &["allwinner,sun8i-h3-ccu"],
+        has_acpi: false,
     },
     DriverMeta {
         name: "sunxi-h3-dramc",
@@ -113,5 +121,6 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "SunxiH3DramcConfig",
         services: &["MemoryController"],
         compatible: &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"],
+        has_acpi: false,
     },
 ];

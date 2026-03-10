@@ -92,6 +92,18 @@ pub struct BoardConfig {
     /// carries the exact semantics of one SoC family's boot ROM.
     #[serde(default)]
     pub soc_image_format: SocImageFormat,
+
+    /// ACPI table generation configuration.
+    ///
+    /// Required when any stage has the `AcpiPrepare` capability. Contains
+    /// the target address for tables, platform parameters (MADT, GTDT,
+    /// FADT), and declarations for ACPI-only devices (hardware without
+    /// fstart driver crates).
+    ///
+    /// Per-driver ACPI fields (e.g., `acpi_name`, `acpi_gsiv`) live in
+    /// each driver's own `Config` struct, not here.
+    #[serde(default)]
+    pub acpi: Option<crate::acpi::AcpiConfig>,
 }
 
 /// SoC-specific binary image format required by the boot ROM.

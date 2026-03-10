@@ -367,4 +367,10 @@ fn write_stack(out: &mut String, stack_size: u64, region: &str) {
         "    ASSERT(_stack_top - _bss_end >= {stack_size:#x}, \"insufficient stack space\")"
     )
     .unwrap();
+
+    // _binary_end marks the end of all loadable content. Used by entry
+    // stubs that need to copy the entire binary (e.g., SBSA flash→DRAM).
+    // For XIP layouts this is the end of .rodata in ROM; for RAM layouts
+    // it's the end of .data (BSS is not stored).
+    writeln!(out, "    _binary_end = _data_end;").unwrap();
 }
