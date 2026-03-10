@@ -162,8 +162,14 @@ impl ser::Serializer for ConfigTokenSerializer {
         Ok(hex_addr(v))
     }
 
+    /// Serialize a string.
+    ///
+    /// `heapless::String<N>` serializes via serde as a plain `str`.
+    /// Since driver config structs use `heapless::String` (not `&str`),
+    /// we emit a construction expression that works for both:
+    /// `heapless::String::try_from("...").unwrap()`.
     fn serialize_str(self, v: &str) -> Result<TokenStream, TokenError> {
-        Ok(quote! { #v })
+        Ok(quote! { heapless::String::try_from(#v).unwrap() })
     }
 
     fn serialize_char(self, v: char) -> Result<TokenStream, TokenError> {

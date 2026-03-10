@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+acpi = ["dep:fstart-acpi"]
+
 [dependencies]
 fstart-mmio = { workspace = true }
 fstart-services = { workspace = true }
+heapless = { workspace = true }
 tock-registers = { workspace = true }
 serde = { workspace = true }
+fstart-acpi = { workspace = true, optional = true }

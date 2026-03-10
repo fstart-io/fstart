@@ -12,5 +12,11 @@
 #![no_std]
 #![no_main]
 
+// When the acpi feature is active, pull in fstart-alloc to register the
+// global allocator. Without this explicit extern crate, the linker would
+// not include it (nothing else references the crate by symbol).
+#[cfg(feature = "acpi")]
+extern crate fstart_alloc;
+
 // Include the generated stage code (fstart_main, driver instances, etc.)
 include!(concat!(env!("OUT_DIR"), "/generated_stage.rs"));
