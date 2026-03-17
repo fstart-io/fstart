@@ -17,9 +17,10 @@ aarch64 = ["dep:fstart-platform-aarch64"]
 armv7 = ["dep:fstart-platform-armv7"]
 # Allwinner sunxi support — adds fstart-soc-sunxi and enables the sunxi
 # entry point on platforms that support it (AArch64 RMR switch for H5/A64,
-# ARMv7 eGON boot for A20/H3).  Driven by `soc_image_format: AllwinnerEgon`
-# in the board RON, not by platform — sunxi boards exist on multiple ISAs.
-sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi", "fstart-platform-armv7?/sunxi"]
+# ARMv7 eGON boot for A20/H3, RISC-V eGON boot for D1).  Driven by
+# `soc_image_format: AllwinnerEgon` in the board RON, not by platform —
+# sunxi boards exist on multiple ISAs.
+sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi", "fstart-platform-armv7?/sunxi", "fstart-platform-riscv64?/sunxi"]
 # Driver selection (enabled based on board.ron devices)
 ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]
@@ -30,6 +31,8 @@ sunxi-mmc = ["dep:fstart-driver-sunxi-mmc"]
 sunxi-spi = ["dep:fstart-driver-sunxi-spi"]
 sunxi-h3-ccu = ["dep:fstart-driver-sunxi-h3-ccu"]
 sunxi-h3-dramc = ["dep:fstart-driver-sunxi-h3-dramc"]
+sunxi-d1-ccu = ["dep:fstart-driver-sunxi-d1-ccu"]
+sunxi-d1-dramc = ["dep:fstart-driver-sunxi-d1-dramc"]
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
@@ -70,6 +73,8 @@ fstart-driver-sunxi-mmc = { workspace = true, optional = true }
 fstart-driver-sunxi-spi = { workspace = true, optional = true }
 fstart-driver-sunxi-h3-ccu = { workspace = true, optional = true }
 fstart-driver-sunxi-h3-dramc = { workspace = true, optional = true }
+fstart-driver-sunxi-d1-ccu = { workspace = true, optional = true }
+fstart-driver-sunxi-d1-dramc = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

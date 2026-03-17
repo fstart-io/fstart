@@ -64,6 +64,16 @@ pub mod sunxi_spi {
     pub use fstart_driver_sunxi_spi::SunxiSpiConfig;
 }
 
+#[cfg(feature = "sunxi-d1-ccu")]
+pub mod sunxi_d1_ccu {
+    pub use fstart_driver_sunxi_d1_ccu::SunxiD1CcuConfig;
+}
+
+#[cfg(feature = "sunxi-d1-dramc")]
+pub mod sunxi_d1_dramc {
+    pub use fstart_driver_sunxi_d1_dramc::SunxiD1DramcConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -151,6 +161,14 @@ pub enum DriverInstance {
     /// clock gating, and GPIO pin mux differences.
     #[cfg(feature = "sunxi-spi")]
     SunxiSpi(sunxi_spi::SunxiSpiConfig),
+
+    /// Allwinner D1/T113 (sun20i) Clock Control Unit.
+    #[cfg(feature = "sunxi-d1-ccu")]
+    SunxiD1Ccu(sunxi_d1_ccu::SunxiD1CcuConfig),
+
+    /// Allwinner D1/T113 (sun20i) DRAM controller.
+    #[cfg(feature = "sunxi-d1-dramc")]
+    SunxiD1Dramc(sunxi_d1_dramc::SunxiD1DramcConfig),
 }
 
 impl DriverInstance {
@@ -247,6 +265,24 @@ impl DriverInstance {
                 services: &["BlockDevice"],
                 compatible: &["allwinner,sun4i-a10-spi", "allwinner,sun8i-h3-spi"],
             },
+            #[cfg(feature = "sunxi-d1-ccu")]
+            Self::SunxiD1Ccu(_) => &DriverMeta {
+                name: "sunxi-d1-ccu",
+                type_name: "SunxiD1Ccu",
+                module_path: "fstart_driver_sunxi_d1_ccu",
+                config_type: "SunxiD1CcuConfig",
+                services: &["ClockController"],
+                compatible: &["allwinner,sun20i-d1-ccu"],
+            },
+            #[cfg(feature = "sunxi-d1-dramc")]
+            Self::SunxiD1Dramc(_) => &DriverMeta {
+                name: "sunxi-d1-dramc",
+                type_name: "SunxiD1Dramc",
+                module_path: "fstart_driver_sunxi_d1_dramc",
+                config_type: "SunxiD1DramcConfig",
+                services: &["MemoryController"],
+                compatible: &["allwinner,sun20i-d1-mbus"],
+            },
         }
     }
 
@@ -279,6 +315,10 @@ impl DriverInstance {
             Self::SunxiMmc(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-spi")]
             Self::SunxiSpi(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-d1-ccu")]
+            Self::SunxiD1Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-d1-dramc")]
+            Self::SunxiD1Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

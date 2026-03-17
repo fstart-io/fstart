@@ -3,10 +3,23 @@
 //! Provides the reset vector entry point, stack setup, BSS clearing,
 //! and architecture-specific helpers. Captures boot parameters (hart ID,
 //! DTB address) passed by QEMU at reset.
+//!
+//! Two entry paths are supported:
+//!
+//! - **Default** (`entry.rs`): Standard RISC-V entry for platforms that
+//!   start with DTB in `a1` (e.g., QEMU virt).
+//!
+//! - **Sunxi** (`entry_sunxi.rs`, behind `sunxi` feature): Entry for
+//!   Allwinner D1/T113 SoCs that boot from the BROM via eGON. The D1
+//!   starts directly in RV64 M-mode — no mode switch is needed.
 
 #![no_std]
 
+#[cfg(not(feature = "sunxi"))]
 pub mod entry;
+
+#[cfg(feature = "sunxi")]
+pub mod entry_sunxi;
 
 // ---------------------------------------------------------------------------
 // Boot parameters — stored in CSRs, immune to stack overflow
@@ -17,6 +30,7 @@ pub mod entry;
 /// Reads directly from the `mhartid` CSR (always available in M-mode).
 pub fn boot_hart_id() -> u64 {
     let id: u64;
+    // SAFETY: reading mhartid is a read-only CSR access, valid at any privilege level.
     unsafe {
         core::arch::asm!("csrr {}, mhartid", out(reg) id);
     }
@@ -31,6 +45,8 @@ pub fn boot_hart_id() -> u64 {
 /// exhaust the stack.
 pub fn boot_dtb_addr() -> u64 {
     let addr: u64;
+    // SAFETY: reading mscratch retrieves the DTB address saved by _start; always valid
+    // in M-mode context.
     unsafe {
         core::arch::asm!("csrr {}, mscratch", out(reg) addr);
     }
@@ -48,6 +64,7 @@ pub fn boot_dtb_addr() -> u64 {
 /// run it in.
 ///
 /// Reference: OpenSBI `include/sbi/fw_dynamic.h`
+#[derive(Debug)]
 #[repr(C)]
 pub struct FwDynamicInfo {
     /// Magic value: `0x4942534f` ("OSBI").
@@ -98,6 +115,8 @@ impl FwDynamicInfo {
 /// The caller must ensure all addresses are valid and the SBI binary
 /// is loaded at `sbi_addr`.
 pub fn boot_linux_sbi(sbi_addr: u64, hart_id: u64, dtb_addr: u64, info: &FwDynamicInfo) -> ! {
+    // SAFETY: caller guarantees all addresses are valid mapped memory and firmware is
+    // at sbi_addr; this is a non-returning M-mode to S-mode transition.
     unsafe {
         // Use explicit register constraints for a0/a1/a2 so the compiler
         // places values directly — avoids clobbering `{sbi}` with `mv`
@@ -122,6 +141,8 @@ pub fn boot_linux_sbi(sbi_addr: u64, hart_id: u64, dtb_addr: u64, info: &FwDynam
 #[inline(always)]
 pub fn halt() -> ! {
     loop {
+        // SAFETY: wfi is a hint instruction that is always safe to execute; it waits
+        // for the next interrupt.
         unsafe {
             core::arch::asm!("wfi");
         }
@@ -141,10 +162,34 @@ pub fn halt() -> ! {
 /// - This function never returns
 #[inline(always)]
 pub fn jump_to(addr: u64) -> ! {
+    // SAFETY: caller guarantees entry is a valid code address in mapped memory; this
+    // is a non-returning jump.
     unsafe {
         core::arch::asm!(
             "jr {0}",
             in(reg) addr,
+            options(noreturn),
+        );
+    }
+}
+
+/// Jump to an address, passing a handoff address in `a0`.
+///
+/// Same as [`jump_to`], plus: `handoff_addr` must point to a valid
+/// serialized `StageHandoff` in DRAM (or be 0 for no handoff).
+///
+/// On RISC-V the convention is to pass the handoff address in `a0`.
+/// The next stage's `_start` saves `a0` and makes it available via
+/// [`boot_hart_id`] or a dedicated handoff reader.
+#[inline(always)]
+pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
+    // SAFETY: caller guarantees entry and handoff_ptr are valid addresses in mapped
+    // memory.
+    unsafe {
+        core::arch::asm!(
+            "jr {addr}",
+            addr = in(reg) addr,
+            in("a0") handoff_addr,
             options(noreturn),
         );
     }

@@ -105,9 +105,10 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
 
     let mode = config.mode;
 
-    // Determine anchor strategy: first/monolithic stages embed FSTART_ANCHOR
-    // (patched by the builder). Non-first stages scan the boot media.
-    let embed_anchor = needs_ffs(capabilities) && needs_embedded_anchor(&config.stages, stage_name);
+    // Anchor strategy: every stage that uses FFS embeds FSTART_ANCHOR.
+    // The FFS builder patches the placeholder in whichever binary contains
+    // it.  This avoids fragile runtime scanning of boot media.
+    let embed_anchor = needs_ffs(capabilities);
 
     // Assemble all code as a TokenStream
     let mut tokens = TokenStream::new();
@@ -292,10 +293,9 @@ fn generate_imports(
     match get_boot_medium(capabilities) {
         Some(BootMedium::MemoryMapped { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::MemoryMapped; });
-            // Import the BootMedia trait so as_slice() is callable in the
-            // anchor scanning code (non-first stages that scan boot media
-            // for the anchor instead of embedding FSTART_ANCHOR).
-            if !embed_anchor && needs_ffs(capabilities) {
+            // Import the BootMedia trait so as_slice() / read_at() are
+            // callable in FFS loading code (PayloadLoad, SigVerify, etc.).
+            if needs_ffs(capabilities) {
                 tokens.extend(quote! { use fstart_services::BootMedia; });
             }
         }
@@ -366,6 +366,21 @@ fn generate_allwinner_egon_header(platform: Platform) -> TokenStream {
                 ".global _head_jump",
                 "_head_jump:",
                 ".word 0xEA000016",
+            );
+        }
+    } else if platform == Platform::Riscv64 {
+        // RISC-V target: emit an RV64 `j _start` instruction.
+        // The RISC-V BROM on Allwinner D1 loads the eGON image into
+        // SRAM at 0x20000 and jumps to offset 0x00. We emit `j _start`
+        // which the assembler encodes as a JAL with rd=x0 (J-type).
+        // The eGON header follows at offset 0x04, and `_start` is at
+        // offset 0x60 (after the 92-byte header + 4-byte branch).
+        quote! {
+            core::arch::global_asm!(
+                ".section .head.text, \"ax\"",
+                ".global _head_jump",
+                "_head_jump:",
+                "j _start",
             );
         }
     } else {
@@ -663,11 +678,8 @@ fn generate_fstart_main(
                     instances,
                     &halt,
                 ));
-                // Non-first stages scan the boot media for the anchor
-                // instead of using an embedded FSTART_ANCHOR static.
-                if !embed_anchor && needs_ffs(capabilities) {
-                    body.extend(generate_anchor_scan(medium, config, &halt));
-                }
+                // With embed_anchor, all FFS-using stages reference the
+                // FSTART_ANCHOR static directly — no boot-media scan needed.
             }
             Capability::MemoryInit => {
                 body.extend(generate_memory_init());
@@ -718,7 +730,12 @@ fn generate_fstart_main(
                 body.extend(generate_sig_verify(embed_anchor));
             }
             Capability::FdtPrepare => {
-                body.extend(generate_fdt_prepare(config, platform, uses_handoff));
+                body.extend(generate_fdt_prepare(
+                    config,
+                    platform,
+                    uses_handoff,
+                    embed_anchor,
+                ));
             }
             Capability::PayloadLoad => {
                 body.extend(generate_payload_load(config, platform, embed_anchor));
