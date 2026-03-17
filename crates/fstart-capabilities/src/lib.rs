@@ -273,10 +273,22 @@ pub fn fdt_prepare_platform(
         return;
     }
 
-    // Read totalsize from the source FDT header (big-endian u32 at offset 4).
+    // Validate FDT magic and read totalsize from the source header.
     let src_ptr = src_dtb_addr as *const u8;
+    let magic = {
+        // SAFETY: src_dtb_addr is assumed to point to readable memory.
+        let raw = unsafe { core::ptr::read_volatile(src_ptr as *const u32) };
+        u32::from_be(raw)
+    };
+    if magic != 0xD00D_FEED {
+        fstart_log::error!(
+            "FDT: invalid magic at {}: expected 0xD00DFEED, got {}",
+            Hex(src_dtb_addr),
+            Hex(magic as u64),
+        );
+        return;
+    }
     let totalsize = {
-        // SAFETY: src_dtb_addr points to a valid FDT blob in readable memory.
         let raw = unsafe { core::ptr::read_volatile(src_ptr.add(4) as *const u32) };
         u32::from_be(raw) as usize
     };
