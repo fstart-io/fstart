@@ -20,14 +20,13 @@
 #![no_std]
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
 
-use fstart_mmio::MmioReadWrite;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::register_bitfields;
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{ClockController, ServiceError};
 
 use fstart_sunxi_ccu_regs::{SunxiD1CcuRegs, D1_CPUX_AXI_CFG, D1_PLL_CPUX, D1_PLL_PERIPH0};
+use fstart_sunxi_pio::{PioGen, Pull, SunxiPio, PORT_B};
 
 use fstart_arch::udelay;
 
@@ -38,42 +37,10 @@ use fstart_arch::udelay;
 /// OSC24M frequency (Hz) — the D1's 24 MHz DCXO.
 const OSC24M_FREQ: u32 = 24_000_000;
 
-// ---------------------------------------------------------------------------
-// PIO (GPIO) register bitfields for D1 UART0 on PB8/PB9
-// ---------------------------------------------------------------------------
-
-/// PIO base offset for PB_CFG1 (pins 8-15, 4 bits per pin).
-const PIO_PB_CFG1_OFF: usize = 0x34;
-/// PIO base offset for PB_PULL0 (pins 0-15, 2 bits per pin).
-const PIO_PB_PULL0_OFF: usize = 0x54;
-
-register_bitfields! [u32,
-    /// Port B configuration register 1 (PB_CFG1) — pins 8-15.
-    ///
-    /// Each pin has a 4-bit function select field.
-    /// PB8 = UART0_TX (function 6), PB9 = UART0_RX (function 6).
-    PB_CFG1 [
-        /// PB8 function select.
-        PB8_SELECT OFFSET(0) NUMBITS(4) [
-            Uart0Tx = 6
-        ],
-        /// PB9 function select.
-        PB9_SELECT OFFSET(4) NUMBITS(4) [
-            Uart0Rx = 6
-        ]
-    ],
-    /// Port B pull register 0 (PB_PULL0) — pins 0-15.
-    ///
-    /// Each pin has a 2-bit pull control field.
-    PB_PULL0 [
-        /// PB9 pull mode (pin 9 × 2 bits = bit 18).
-        PB9_PULL OFFSET(18) NUMBITS(2) [
-            Disabled = 0,
-            PullUp = 1,
-            PullDown = 2
-        ]
-    ]
-];
+/// D1 UART0 TX alternate function on PB8.
+const UART0_TX_FUNC: u8 = 6;
+/// D1 UART0 RX alternate function on PB9.
+const UART0_RX_FUNC: u8 = 6;
 
 /// Typed configuration for the D1/T113 CCU driver.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -101,17 +68,6 @@ unsafe impl Send for SunxiD1Ccu {}
 unsafe impl Sync for SunxiD1Ccu {}
 
 impl SunxiD1Ccu {
-    /// Get a typed reference to a PIO register at the given offset.
-    #[inline(always)]
-    fn pio_reg<R: tock_registers::RegisterLongName>(
-        &self,
-        offset: usize,
-    ) -> &MmioReadWrite<u32, R> {
-        // SAFETY: address is a valid MMIO register within the PIO block at a
-        // fixed hardware address (pio_base from board RON).
-        unsafe { &*((self.pio_base + offset) as *const MmioReadWrite<u32, R>) }
-    }
-
     /// Read a raw CCU register by offset.
     #[inline(always)]
     fn ccu_read(&self, offset: usize) -> u32 {
@@ -232,13 +188,10 @@ impl SunxiD1Ccu {
             return;
         }
 
-        // PB_CFG1: set PB8 and PB9 to function 6 (UART0).
-        self.pio_reg::<PB_CFG1::Register>(PIO_PB_CFG1_OFF)
-            .modify(PB_CFG1::PB8_SELECT::Uart0Tx + PB_CFG1::PB9_SELECT::Uart0Rx);
-
-        // PB_PULL0: set PB9 (RX) to pull-up.
-        self.pio_reg::<PB_PULL0::Register>(PIO_PB_PULL0_OFF)
-            .modify(PB_PULL0::PB9_PULL::PullUp);
+        let pio = SunxiPio::new(self.pio_base, PioGen::Ncat2);
+        pio.set_function(PORT_B, 8, UART0_TX_FUNC);
+        pio.set_function(PORT_B, 9, UART0_RX_FUNC);
+        pio.set_pull(PORT_B, 9, Pull::Up);
     }
 }
 

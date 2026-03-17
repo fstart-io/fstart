@@ -1,0 +1,8 @@
+[package]
+name = "fstart-sunxi-pio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-mmio = { workspace = true }

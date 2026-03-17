@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 fstart-arch = { workspace = true, features = ["armv7"] }
 fstart-sunxi-ccu-regs = { workspace = true }
+fstart-sunxi-pio = { workspace = true }
 fstart-mmio = { workspace = true }
 fstart-services = { workspace = true }
 fstart-log = { workspace = true }
