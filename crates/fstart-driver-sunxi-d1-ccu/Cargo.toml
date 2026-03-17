@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 fstart-arch = { workspace = true, features = ["riscv64"] }
 fstart-sunxi-ccu-regs = { workspace = true }
+fstart-sunxi-pio = { workspace = true }
 fstart-mmio = { workspace = true }
 fstart-services = { workspace = true }
 tock-registers = { workspace = true }

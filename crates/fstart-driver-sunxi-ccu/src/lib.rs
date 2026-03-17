@@ -82,18 +82,13 @@ const TIMER0_RELOAD: u32 = 1 << 1;
 const TIMER0_CLK_SRC_OSC24M: u32 = 1 << 2;
 
 // ---------------------------------------------------------------------------
-// PIO (GPIO) register offsets (from PIO base 0x01C2_0800)
+// PIO (GPIO) pin assignments for A20 UART0 (PB22=TX, PB23=RX, function 2)
 // ---------------------------------------------------------------------------
 
-const PIO_PB_CFG2_OFF: u32 = 0x2C;
-const PIO_PB_PULL1_OFF: u32 = 0x24 + 0x20;
-
-const PB22_UART0_FUNC: u32 = 2;
-const PB23_UART0_FUNC: u32 = 2;
-const PB22_CFG_SHIFT: u32 = (22 - 16) * 4; // = 24
-const PB23_CFG_SHIFT: u32 = (23 - 16) * 4; // = 28
-const PB23_PULL_SHIFT: u32 = (23 - 16) * 2; // = 14
-const GPIO_PULL_UP: u32 = 1;
+/// A20 UART0 TX alternate function on PB22.
+const UART0_TX_FUNC: u8 = 2;
+/// A20 UART0 RX alternate function on PB23.
+const UART0_RX_FUNC: u8 = 2;
 
 /// Typed configuration for the A20 CCU driver.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -119,16 +114,6 @@ unsafe impl Send for SunxiA20Ccu {}
 unsafe impl Sync for SunxiA20Ccu {}
 
 impl SunxiA20Ccu {
-    #[inline(always)]
-    fn pio_read(&self, offset: u32) -> u32 {
-        unsafe { fstart_mmio::read32((self.pio_base + offset as usize) as *const u32) }
-    }
-
-    #[inline(always)]
-    fn pio_write(&self, offset: u32, val: u32) {
-        unsafe { fstart_mmio::write32((self.pio_base + offset as usize) as *mut u32, val) }
-    }
-
     /// Write a u32 to a timer register (at CCU base + offset).
     #[inline(always)]
     fn timer_write(&self, offset: usize, val: u32) {
@@ -193,17 +178,10 @@ impl SunxiA20Ccu {
             return;
         }
 
-        let mut cfg = self.pio_read(PIO_PB_CFG2_OFF);
-        cfg &= !(0xf << PB22_CFG_SHIFT);
-        cfg |= PB22_UART0_FUNC << PB22_CFG_SHIFT;
-        cfg &= !(0xf << PB23_CFG_SHIFT);
-        cfg |= PB23_UART0_FUNC << PB23_CFG_SHIFT;
-        self.pio_write(PIO_PB_CFG2_OFF, cfg);
-
-        let mut pull = self.pio_read(PIO_PB_PULL1_OFF);
-        pull &= !(0x3 << PB23_PULL_SHIFT);
-        pull |= GPIO_PULL_UP << PB23_PULL_SHIFT;
-        self.pio_write(PIO_PB_PULL1_OFF, pull);
+        let pio = fstart_sunxi_pio::SunxiPio::new(self.pio_base, fstart_sunxi_pio::PioGen::Legacy);
+        pio.set_function(fstart_sunxi_pio::PORT_B, 22, UART0_TX_FUNC);
+        pio.set_function(fstart_sunxi_pio::PORT_B, 23, UART0_RX_FUNC);
+        pio.set_pull(fstart_sunxi_pio::PORT_B, 23, fstart_sunxi_pio::Pull::Up);
     }
 }
 

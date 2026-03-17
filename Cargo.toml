@@ -18,6 +18,7 @@ members = [
     "crates/fstart-platform-armv7",
     "crates/fstart-soc-sunxi",
     "crates/fstart-sunxi-ccu-regs",
+    "crates/fstart-sunxi-pio",
     "crates/fstart-driver-ns16550",
     "crates/fstart-driver-pl011",
     "crates/fstart-driver-designware-i2c",
@@ -87,6 +88,7 @@ fstart-platform-armv7 = { path = "crates/fstart-platform-armv7" }
 fstart-arch = { path = "crates/fstart-arch" }
 fstart-soc-sunxi = { path = "crates/fstart-soc-sunxi" }
 fstart-sunxi-ccu-regs = { path = "crates/fstart-sunxi-ccu-regs" }
+fstart-sunxi-pio = { path = "crates/fstart-sunxi-pio" }
 fstart-driver-ns16550 = { path = "crates/fstart-driver-ns16550" }
 fstart-driver-pl011 = { path = "crates/fstart-driver-pl011" }
 fstart-driver-designware-i2c = { path = "crates/fstart-driver-designware-i2c" }
