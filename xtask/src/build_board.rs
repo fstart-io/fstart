@@ -387,7 +387,7 @@ fn patch_allwinner_egon(bin_path: &std::path::Path) -> Result<(), String> {
 /// Verify an Allwinner eGON binary using U-Boot's verification algorithm.
 ///
 /// Mirrors `egon_verify_header()` from `tools/sunxi_egon.c`:
-///   1. Check branch instruction upper byte == 0xEA (ARM)
+///   1. Check branch instruction: ARM (`0xEA` at byte 3) or RISC-V JAL (`0x6F` at byte 0)
 ///   2. Check "eGON.BT0" magic at offset 0x04
 ///   3. Check length is 512-byte aligned and within buffer
 ///   4. Save checksum, put stamp back, re-sum, compare
@@ -396,11 +396,15 @@ pub(crate) fn allwinner_egon_verify(data: &[u8]) -> Result<(), String> {
         return Err("verify: binary too small".to_string());
     }
 
-    // Branch instruction check (upper byte of offset 0x00..0x04 must be 0xEA).
-    if data[3] != 0xEA {
+    // Branch instruction check:
+    // - ARM: byte 3 == 0xEA (ARM `b` opcode)
+    // - RISC-V: byte 0 == 0x6F (RISC-V JAL opcode, `j _start`)
+    let is_arm_branch = data[3] == 0xEA;
+    let is_riscv_jal = (data[0] & 0x7F) == 0x6F; // JAL opcode = 0x6F (bits [6:0])
+    if !is_arm_branch && !is_riscv_jal {
         return Err(format!(
-            "verify: branch instruction upper byte is {:#04x}, expected 0xEA",
-            data[3]
+            "verify: unrecognized branch instruction (bytes: {:#04x} {:#04x} {:#04x} {:#04x})",
+            data[0], data[1], data[2], data[3]
         ));
     }
 

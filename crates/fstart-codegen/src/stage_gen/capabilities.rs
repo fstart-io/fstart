@@ -482,6 +482,7 @@ pub(super) fn generate_fdt_prepare(
     config: &BoardConfig,
     platform: Platform,
     uses_handoff: bool,
+    embed_anchor: bool,
 ) -> TokenStream {
     let Some(ref payload) = config.payload else {
         return quote! { fstart_capabilities::fdt_prepare_stub(); };
@@ -519,7 +520,7 @@ pub(super) fn generate_fdt_prepare(
             // Load it from the FFS image into dtb_addr via boot_media,
             // then patch bootargs in-place using fdt_prepare_platform.
             let halt = halt_expr(platform);
-            let embed_anchor = false; // FdtPrepare runs in non-first stages
+            // All FFS-using stages now embed their own FSTART_ANCHOR.
             let anchor = anchor_expr(embed_anchor);
             let dtb_dst = hex_addr(payload.dtb_addr.unwrap_or(0));
             let bootargs = payload.bootargs.as_ref().map(|s| s.as_str()).unwrap_or("");

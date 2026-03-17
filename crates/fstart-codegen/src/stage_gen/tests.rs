@@ -25,6 +25,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
             clock_freq: 3_686_400,
             baud_rate: 115_200,
             reg_shift: 0,
+            reg_width: 0,
         },
     )];
 
@@ -382,6 +383,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
             clock_freq: 3_686_400,
             baud_rate: 115_200,
             reg_shift: 0,
+            reg_width: 0,
         }),
         DriverInstance::DesignwareI2c(fstart_driver_designware_i2c::DesignwareI2cConfig {
             base_addr: 0x1004_0000,
@@ -681,6 +683,7 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
             clock_freq: 3_686_400,
             baud_rate: 115_200,
             reg_shift: 0,
+            reg_width: 0,
         },
     ));
     // i2c0 is at index 1
@@ -738,6 +741,7 @@ fn test_non_bus_parent_is_compile_error() {
             clock_freq: 3_686_400,
             baud_rate: 115_200,
             reg_shift: 0,
+            reg_width: 0,
         },
     ));
     // uart0 is at index 0
@@ -808,6 +812,7 @@ fn test_flexible_multi_driver_parsed_board(
             clock_freq: 3_686_400,
             baud_rate: 115_200,
             reg_shift: 0,
+            reg_width: 0,
         }),
         DriverInstance::Pl011(fstart_driver_pl011::Pl011Config {
             base_addr: 0x0900_0000,
@@ -1130,6 +1135,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
             clock_freq: 3_686_400,
             baud_rate: 115_200,
             reg_shift: 0,
+            reg_width: 0,
         },
     )];
 
@@ -1440,6 +1446,7 @@ fn test_device_tree_table_with_bus_children() {
             clock_freq: 3_686_400,
             baud_rate: 115_200,
             reg_shift: 0,
+            reg_width: 0,
         },
     ));
     parsed.device_tree.push(DeviceNode {

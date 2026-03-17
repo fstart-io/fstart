@@ -8,6 +8,7 @@
 # FIT build artifacts (kernel images, initramfs, compiled .itb)
 *.itb
 fit/Image-*
+fit/zImage-*
 fit/initramfs-*
 
 # Board test artifacts (DTBs, kernel images, symlinks)
@@ -16,3 +17,11 @@ zImage
 Image
 bl31.bin
 **/keys/**
+
+# Tool/IDE artifacts
+.opencode/
+
+# Accidental media
+*.jpeg
+*.jpg
+*.png

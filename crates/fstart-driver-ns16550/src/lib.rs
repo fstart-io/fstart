@@ -1,21 +1,28 @@
-//! NS16550(A) UART driver — unified, supports both byte-stride and
-//! word-stride register layouts.
+//! NS16550(A) UART driver — unified, supports byte-stride, word-stride,
+//! and word-width register layouts.
 //!
 //! Covers classic NS16550A (byte-stride, reg-shift=0), Synopsys
 //! DesignWare APB UART (`snps,dw-apb-uart`, word-stride, reg-shift=2),
 //! and Allwinner sunxi UARTs (NS16550-compatible, word-stride).
 //!
-//! **Register access is always byte-width** (`strb`/`ldrb` on ARM,
-//! `sb`/`lb` on RISC-V).  This matches U-Boot's `writeb()`/`readb()`
-//! for NS16550 — even when registers sit at 4-byte boundaries, only the
-//! low byte matters.  The `reg_shift` config controls the address stride
-//! between registers (0 = packed, 2 = 4-byte spacing).
+//! ## Register access width (`reg_width`)
 //!
-//! Register access uses `MmioReadWrite<u8>`/`MmioReadOnly<u8>` from
-//! `fstart-mmio`, giving barrier-correct typed access with tock-registers
-//! bitfield definitions.  The runtime `reg_shift` is handled by computing
-//! the register address per-access rather than a fixed `register_structs!`
-//! layout.
+//! The `reg_width` config controls the **bus transaction width**:
+//!
+//! - `1` (default): Byte access (`sb`/`lb` on RISC-V, `strb`/`ldrb` on
+//!   ARM).  Classic NS16550A and most PC-style UARTs.
+//! - `4`: 32-bit word access (`sw`/`lw` on RISC-V, `str`/`ldr` on ARM).
+//!   Required by some APB-connected UARTs (e.g., Allwinner D1's DW APB
+//!   UART).  Matches U-Boot's `reg-io-width = <4>` / `writel()`/`readl()`.
+//!
+//! When `reg_width = 4`, only the low 8 bits of the 32-bit value are
+//! significant (NS16550 is inherently 8-bit), matching U-Boot's behavior.
+//!
+//! ## Register spacing (`reg_shift`)
+//!
+//! The `reg_shift` config controls the address stride between registers:
+//! - `0` -> byte-packed (offset = reg_index), classic NS16550A
+//! - `2` -> 4-byte spacing (offset = reg_index << 2), DW APB / sunxi
 //!
 //! Init sequence is an exact match of U-Boot `ns16550_init()` +
 //! `ns16550_setbrg()` (drivers/serial/ns16550.c).
@@ -25,12 +32,9 @@
 
 #![no_std]
 
-use fstart_mmio::{MmioReadOnly, MmioReadWrite};
-use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::register_bitfields;
-
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{Console, ServiceError};
+use tock_registers::register_bitfields;
 
 // ---------------------------------------------------------------------------
 // Register indices (not byte offsets — multiply by `1 << reg_shift` for
@@ -51,44 +55,43 @@ const REG_MCR: usize = 4;
 const REG_LSR: usize = 5;
 
 // ---------------------------------------------------------------------------
-// Typed bitfield definitions for u8 registers
+// Bitfield definitions — self-documenting reference for the register layout.
+// Actual MMIO access uses `read_reg`/`write_reg` with raw u8 constants
+// below, because tock-registers typed references are u8-only and cannot
+// express the u32 bus width some hardware variants require.
 // ---------------------------------------------------------------------------
 
 register_bitfields! [u8,
-    /// Line Control Register (LCR).
+    /// Line Control Register
     LCR [
-        /// Word Length Select: 00=5, 01=6, 10=7, 11=8 bits.
+        /// Word Length Select: 0b11 = 8 bits
         WLS OFFSET(0) NUMBITS(2) [],
-        /// Number of Stop Bits: 0=1, 1=1.5/2.
-        STB OFFSET(2) NUMBITS(1) [],
-        /// Parity Enable.
-        PEN OFFSET(3) NUMBITS(1) [],
-        /// Divisor Latch Access Bit.
+        /// Divisor Latch Access Bit
         DLAB OFFSET(7) NUMBITS(1) []
     ],
-    /// Line Status Register (LSR).
+    /// Line Status Register
     LSR [
-        /// Data Ready — receiver has data.
+        /// Data Ready
         DR OFFSET(0) NUMBITS(1) [],
-        /// Transmitter Holding Register Empty.
+        /// Transmitter Holding Register Empty
         THRE OFFSET(5) NUMBITS(1) [],
-        /// Transmitter Empty (shift register + THR both empty).
+        /// Transmitter Empty
         TEMT OFFSET(6) NUMBITS(1) []
     ],
-    /// FIFO Control Register (FCR) — write-only.
+    /// FIFO Control Register
     FCR [
-        /// FIFO Enable.
+        /// FIFO Enable
         FIFO_EN OFFSET(0) NUMBITS(1) [],
-        /// RX FIFO Reset.
+        /// Receiver FIFO Reset
         RX_RST OFFSET(1) NUMBITS(1) [],
-        /// TX FIFO Reset.
+        /// Transmitter FIFO Reset
         TX_RST OFFSET(2) NUMBITS(1) []
     ],
-    /// Modem Control Register (MCR).
+    /// Modem Control Register
     MCR [
-        /// Data Terminal Ready.
+        /// Data Terminal Ready
         DTR OFFSET(0) NUMBITS(1) [],
-        /// Request To Send.
+        /// Request To Send
         RTS OFFSET(1) NUMBITS(1) []
     ]
 ];
@@ -103,8 +106,12 @@ register_bitfields! [u8,
 ///   - `0` -> byte-packed (offset = reg_index), classic NS16550A
 ///   - `2` -> 4-byte spacing (offset = reg_index << 2), DW APB / sunxi
 ///
+/// The `reg_width` field controls the bus transaction width:
+///   - `1` (default) -> byte access (`sb`/`lb`)
+///   - `4` -> 32-bit word access (`sw`/`lw`), for DW APB UARTs
+///
 /// Serde defaults ensure backward compatibility: existing board RON
-/// files without `reg_shift` get `0` (byte-stride, no change).
+/// files without `reg_shift`/`reg_width` get byte-stride byte-access.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Ns16550Config {
     /// MMIO base address of the register block.
@@ -116,16 +123,22 @@ pub struct Ns16550Config {
     /// Register address shift (0 = byte-stride, 2 = 4-byte stride).
     #[serde(default)]
     pub reg_shift: u8,
+    /// Register I/O width in bytes (1 = byte, 4 = 32-bit word).
+    /// Corresponds to U-Boot's `reg-io-width` DTS property.
+    /// Default 0 means "auto": uses 4 when reg_shift >= 2, else 1.
+    #[serde(default)]
+    pub reg_width: u8,
 }
 
 /// NS16550 UART driver — covers NS16550A, DW APB UART, and sunxi UART.
 ///
-/// Register access is **byte-width** via `MmioReadWrite<u8>` with
-/// tock-registers bitfield definitions.  The `reg_shift` value controls
-/// only the address spacing between registers.
+/// Supports both byte-width and 32-bit-word register access, selected
+/// by `reg_width`.  The `reg_shift` controls address spacing.
 pub struct Ns16550 {
     base: usize,
     shift: u8,
+    /// Effective I/O width: 1 = byte, 4 = word.
+    width: u8,
     clock_freq: u32,
     baud_rate: u32,
 }
@@ -136,60 +149,55 @@ unsafe impl Send for Ns16550 {}
 unsafe impl Sync for Ns16550 {}
 
 impl Ns16550 {
-    /// Get a typed reference to a read-write register at the given index.
+    /// Compute the MMIO address for register at `index`.
+    #[inline(always)]
+    fn addr(&self, index: usize) -> usize {
+        self.base + (index << self.shift)
+    }
+
+    /// Read a register (respecting `reg_width`).
     ///
-    /// # Safety contract
-    /// The returned reference is valid for the lifetime of `self` because
-    /// the MMIO address is hardware-fixed.  `MmioReadWrite<u8>` is
-    /// `#[repr(transparent)]` over `UnsafeCell<u8>`, matching the single
-    /// byte at the computed address.
+    /// When `width == 4`, performs a 32-bit read and returns the low byte.
+    /// When `width == 1`, performs a byte read.
     #[inline(always)]
-    fn rw<R: tock_registers::RegisterLongName>(&self, index: usize) -> &MmioReadWrite<u8, R> {
-        unsafe { &*((self.base + (index << self.shift)) as *const MmioReadWrite<u8, R>) }
+    fn read_reg(&self, index: usize) -> u8 {
+        let addr = self.addr(index);
+        if self.width == 4 {
+            // SAFETY: self.base + offset is a valid MMIO register address provided
+            // by the board config. When width == 4, alignment is guaranteed by
+            // reg_shift >= 2 (validated in new()).
+            (unsafe { fstart_mmio::read32(addr as *const u32) }) as u8
+        } else {
+            // SAFETY: self.base + offset is a valid MMIO register address provided
+            // by the board config. Byte access has no alignment requirement.
+            unsafe { fstart_mmio::read8(addr as *const u8) }
+        }
     }
 
-    /// Get a typed reference to a read-only register at the given index.
+    /// Write a register (respecting `reg_width`).
+    ///
+    /// When `width == 4`, zero-extends to 32-bit and performs a word write.
+    /// When `width == 1`, performs a byte write.
     #[inline(always)]
-    fn ro<R: tock_registers::RegisterLongName>(&self, index: usize) -> &MmioReadOnly<u8, R> {
-        unsafe { &*((self.base + (index << self.shift)) as *const MmioReadOnly<u8, R>) }
+    fn write_reg(&self, index: usize, val: u8) {
+        let addr = self.addr(index);
+        if self.width == 4 {
+            // SAFETY: self.base + offset is a valid MMIO register address provided
+            // by the board config. When width == 4, alignment is guaranteed by
+            // reg_shift >= 2 (validated in new()).
+            unsafe { fstart_mmio::write32(addr as *mut u32, val as u32) }
+        } else {
+            // SAFETY: self.base + offset is a valid MMIO register address provided
+            // by the board config. Byte access has no alignment requirement.
+            unsafe { fstart_mmio::write8(addr as *mut u8, val) }
+        }
     }
 
-    // -- Named register accessors --
-
-    /// THR/RBR/DLL — transmit/receive/divisor-low (context-dependent).
+    /// Read-modify-write helper for a register.
     #[inline(always)]
-    fn thr(&self) -> &MmioReadWrite<u8> {
-        self.rw(REG_THR)
-    }
-
-    /// IER/DLH — interrupt enable / divisor-high (context-dependent).
-    #[inline(always)]
-    fn ier(&self) -> &MmioReadWrite<u8> {
-        self.rw(REG_IER)
-    }
-
-    /// FCR — FIFO Control Register (write-only in hardware).
-    #[inline(always)]
-    fn fcr(&self) -> &MmioReadWrite<u8, FCR::Register> {
-        self.rw(REG_FCR)
-    }
-
-    /// LCR — Line Control Register.
-    #[inline(always)]
-    fn lcr(&self) -> &MmioReadWrite<u8, LCR::Register> {
-        self.rw(REG_LCR)
-    }
-
-    /// MCR — Modem Control Register.
-    #[inline(always)]
-    fn mcr(&self) -> &MmioReadWrite<u8, MCR::Register> {
-        self.rw(REG_MCR)
-    }
-
-    /// LSR — Line Status Register (read-only).
-    #[inline(always)]
-    fn lsr(&self) -> &MmioReadOnly<u8, LSR::Register> {
-        self.ro(REG_LSR)
+    fn modify_reg(&self, index: usize, clear: u8, set: u8) {
+        let val = self.read_reg(index);
+        self.write_reg(index, (val & !clear) | set);
     }
 
     /// Set baud rate — exact match of U-Boot `ns16550_setbrg()`.
@@ -202,17 +210,37 @@ impl Ns16550 {
         let divisor = ((self.clock_freq as u64) + (self.baud_rate as u64) * 8) / baud16;
         let divisor = divisor as u16;
 
-        // Read-modify-write LCR to set DLAB
-        self.lcr().modify(LCR::DLAB::SET);
+        // Read-modify-write LCR to set DLAB (bit 7)
+        self.modify_reg(REG_LCR, 0, LCR_DLAB);
 
         // Write divisor latch: DLL (low byte), DLH (high byte)
-        self.thr().set(divisor as u8);
-        self.ier().set((divisor >> 8) as u8);
+        self.write_reg(REG_THR, divisor as u8);
+        self.write_reg(REG_IER, (divisor >> 8) as u8);
 
         // Clear DLAB
-        self.lcr().modify(LCR::DLAB::CLEAR);
+        self.modify_reg(REG_LCR, LCR_DLAB, 0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Raw bit constants for register manipulation (avoids tock-registers
+// typed references, which are u8-only and incompatible with u32 MMIO).
+// ---------------------------------------------------------------------------
+
+/// LCR: Word Length Select = 8 bits (WLS=3).
+const LCR_8N1: u8 = 0x03;
+/// LCR: Divisor Latch Access Bit.
+const LCR_DLAB: u8 = 1 << 7;
+/// MCR: DTR + RTS asserted.
+const MCR_DTR_RTS: u8 = 0x03;
+/// FCR: FIFO enable + clear RX + clear TX.
+const FCR_FIFO_ENABLE: u8 = 0x07;
+/// LSR: Transmitter Empty (shift register + THR both empty).
+const LSR_TEMT: u8 = 1 << 6;
+/// LSR: Transmitter Holding Register Empty.
+const LSR_THRE: u8 = 1 << 5;
+/// LSR: Data Ready.
+const LSR_DR: u8 = 1 << 0;
 
 impl Device for Ns16550 {
     const NAME: &'static str = "ns16550";
@@ -225,9 +253,29 @@ impl Device for Ns16550 {
     type Config = Ns16550Config;
 
     fn new(config: &Ns16550Config) -> Result<Self, DeviceError> {
+        // Resolve effective I/O width: 0 = auto (word if reg_shift >= 2).
+        let width = match config.reg_width {
+            0 => {
+                if config.reg_shift >= 2 {
+                    4
+                } else {
+                    1
+                }
+            }
+            1 | 4 => config.reg_width,
+            _ => return Err(DeviceError::ConfigError),
+        };
+
+        // 32-bit accesses require 4-byte alignment: reg_shift >= 2
+        // guarantees offsets are multiples of 4.
+        if width == 4 && config.reg_shift < 2 {
+            return Err(DeviceError::ConfigError);
+        }
+
         Ok(Self {
             base: config.base_addr as usize,
             shift: config.reg_shift,
+            width,
             clock_freq: config.clock_freq,
             baud_rate: config.baud_rate,
         })
@@ -237,22 +285,21 @@ impl Device for Ns16550 {
         // Exact match of U-Boot ns16550_init() + ns16550_setbrg().
 
         // Wait until transmitter completely idle.
-        while !self.lsr().is_set(LSR::TEMT) {
+        while (self.read_reg(REG_LSR) & LSR_TEMT) == 0 {
             core::hint::spin_loop();
         }
 
         // 1. IER = 0 — disable all interrupts
-        self.ier().set(0);
+        self.write_reg(REG_IER, 0);
 
         // 2. MCR = DTR + RTS
-        self.mcr().write(MCR::DTR::SET + MCR::RTS::SET);
+        self.write_reg(REG_MCR, MCR_DTR_RTS);
 
         // 3. FCR = FIFO enable + clear both FIFOs
-        self.fcr()
-            .write(FCR::FIFO_EN::SET + FCR::RX_RST::SET + FCR::TX_RST::SET);
+        self.write_reg(REG_FCR, FCR_FIFO_ENABLE);
 
         // 4. LCR = 8N1 (clears DLAB)
-        self.lcr().write(LCR::WLS.val(3));
+        self.write_reg(REG_LCR, LCR_8N1);
 
         // 5. Set baud rate via DLAB
         self.setbrg();
@@ -264,16 +311,16 @@ impl Device for Ns16550 {
 impl Console for Ns16550 {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
         // Wait for THR empty
-        while !self.lsr().is_set(LSR::THRE) {
+        while (self.read_reg(REG_LSR) & LSR_THRE) == 0 {
             core::hint::spin_loop();
         }
-        self.thr().set(byte);
+        self.write_reg(REG_THR, byte);
         Ok(())
     }
 
     fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
-        if self.lsr().is_set(LSR::DR) {
-            Ok(Some(self.thr().get()))
+        if (self.read_reg(REG_LSR) & LSR_DR) != 0 {
+            Ok(Some(self.read_reg(REG_THR)))
         } else {
             Ok(None)
         }

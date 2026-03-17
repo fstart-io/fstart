@@ -408,6 +408,8 @@ dependencies = [
  "fstart-driver-pl011",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
+ "fstart-driver-sunxi-d1-ccu",
+ "fstart-driver-sunxi-d1-dramc",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",
@@ -471,6 +473,30 @@ dependencies = [
  "fstart-sunxi-ccu-regs",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-sunxi-d1-ccu"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-mmio",
+ "fstart-services",
+ "fstart-sunxi-ccu-regs",
+ "serde",
+ "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-sunxi-d1-dramc"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-services",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
@@ -582,6 +608,9 @@ dependencies = [
 [[package]]
 name = "fstart-platform-riscv64"
 version = "0.1.0"
+dependencies = [
+ "fstart-soc-sunxi",
+]
 
 [[package]]
 name = "fstart-runtime"
@@ -617,6 +646,8 @@ dependencies = [
  "fstart-driver-pl011",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
+ "fstart-driver-sunxi-d1-ccu",
+ "fstart-driver-sunxi-d1-dramc",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",

@@ -7,5 +7,5 @@ license.workspace = true
 [dependencies]
 fstart-mmio = { workspace = true }
 fstart-services = { workspace = true }
-tock-registers = { workspace = true }
 serde = { workspace = true }
+tock-registers = { workspace = true }

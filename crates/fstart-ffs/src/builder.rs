@@ -221,10 +221,13 @@ where
         keys[i] = *key;
     }
 
-    // Scan the image for the FSTART01 placeholder. If none found (e.g.,
-    // monolithic builds without FFS capabilities), reserve space at the end.
-    let anchor_offset = match scan_for_magic(&image) {
-        Ok(offset) => {
+    // Scan the image for the `FSTART_ANCHOR` placeholder.  The placeholder
+    // is a full `AnchorBlock::placeholder()` (magic + version + zeros)
+    // embedded in whichever stage binary uses FFS (bootblock for monolithic,
+    // main stage for multi-stage).  If no placeholder is found, append
+    // space for the anchor at the end (fallback for builds without FFS).
+    let anchor_offset = match scan_for_placeholder(&image) {
+        Some(offset) => {
             if offset + ANCHOR_SIZE > image.len() {
                 return Err(format!(
                     "anchor placeholder at offset {offset} would extend past image end (need {ANCHOR_SIZE} bytes)"
@@ -232,7 +235,7 @@ where
             }
             offset
         }
-        Err(_) => {
+        None => {
             // No embedded placeholder — append space for the anchor at end
             let offset = image.len();
             image.resize(offset + ANCHOR_SIZE, 0);
@@ -256,15 +259,15 @@ where
 
     anchor.write_to(&mut image[anchor_offset..]);
 
-    // ---- Phase 4: Recompute digests for the bootblock entry ----
+    // ---- Phase 4: Recompute digest for the file containing the anchor ----
     //
-    // The anchor was patched into the bootblock after digests were computed,
-    // so the bootblock's digest in the manifest is stale. Recompute it from
-    // the actual image bytes, re-sign the manifest, and write it back.
+    // The anchor was patched after digests were computed, so the file's
+    // digest in the manifest is stale.  Find whichever file contains the
+    // patched anchor and recompute its digest from the actual image bytes.
     //
     // This works because the new serialized manifest has exactly the same
     // size — only the 32-byte hash values change inside fixed-size fields.
-    let manifest = recompute_bootblock_digest(&image, &manifest)?;
+    let manifest = recompute_file_digest(&image, &manifest, anchor_offset)?;
 
     let new_signed = sign_manifest(&manifest, sign)?;
     let new_manifest_serialized =
@@ -294,23 +297,32 @@ where
     })
 }
 
-/// Scan the image for `FFS_MAGIC` at 8-byte-aligned offsets.
+/// Scan the image for the `FSTART_ANCHOR` placeholder at 8-byte-aligned offsets.
 ///
-/// Returns the offset of the placeholder anchor in the bootblock binary.
-fn scan_for_magic(image: &[u8]) -> Result<usize, String> {
+/// A valid placeholder has `FFS_MAGIC` followed by `FFS_VERSION` and then all
+/// zeros (the output of `AnchorBlock::placeholder()`).  Matching only the
+/// 8-byte magic would produce false positives against `FFS_MAGIC` constants
+/// embedded in other binaries' `.rodata` sections.
+fn scan_for_placeholder(image: &[u8]) -> Option<usize> {
     let magic = &FFS_MAGIC;
     let mut offset = 0;
-    while offset + magic.len() <= image.len() {
+    while offset + ANCHOR_SIZE <= image.len() {
         if &image[offset..offset + magic.len()] == magic {
-            return Ok(offset);
+            // Verify this is a genuine placeholder: version must match and
+            // the mutable fields (manifest_offset, manifest_size,
+            // total_image_size) must all be zero.
+            let rest = &image[offset + magic.len()..offset + ANCHOR_SIZE];
+            let version = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
+            let manifest_off = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]);
+            let manifest_sz = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
+            let total_sz = u32::from_le_bytes([rest[12], rest[13], rest[14], rest[15]]);
+            if version == FFS_VERSION && manifest_off == 0 && manifest_sz == 0 && total_sz == 0 {
+                return Some(offset);
+            }
         }
         offset += 8;
     }
-    Err(
-        "no FSTART01 magic found in image — the first file must be a bootblock \
-         binary with an embedded FSTART_ANCHOR placeholder"
-            .to_string(),
-    )
+    None
 }
 
 /// Lay out a file's segments in the image, returning a `RegionEntry`.
@@ -412,77 +424,77 @@ fn lay_out_file(
     })
 }
 
-/// Recompute the digest for the bootblock entry (first file in first container).
+/// Recompute the digest for whichever file contains `anchor_offset`.
 ///
-/// After the anchor is patched, the bootblock's on-image bytes differ from
+/// After the anchor is patched, that file's on-image bytes differ from
 /// the data that was hashed during layout. This function reads the actual
 /// bytes from the image and updates the digest in the manifest.
-fn recompute_bootblock_digest(
+fn recompute_file_digest(
     image: &[u8],
     manifest: &ImageManifest,
+    anchor_offset: usize,
 ) -> Result<ImageManifest, String> {
     let mut manifest = manifest.clone();
 
-    // Find the first container region
-    let region = manifest
-        .regions
-        .iter_mut()
-        .find(|r| matches!(r.content, RegionContent::Container { .. }))
-        .ok_or_else(|| "no container region found for digest recomputation".to_string())?;
+    for region in manifest.regions.iter_mut() {
+        let region_offset = region.offset as usize;
 
-    let region_offset = region.offset;
+        let children = match &mut region.content {
+            RegionContent::Container { children } => children,
+            _ => continue,
+        };
 
-    let children = match &mut region.content {
-        RegionContent::Container { children } => children,
-        _ => unreachable!(),
-    };
+        for entry in children.iter_mut() {
+            let entry_abs = region_offset + entry.offset as usize;
+            let entry_end = entry_abs + entry.size as usize;
 
-    if children.is_empty() {
-        return Ok(manifest);
+            // Check if the anchor falls within this file's byte range.
+            if anchor_offset < entry_abs || anchor_offset >= entry_end {
+                continue;
+            }
+
+            let (segments, digests) = match &mut entry.content {
+                EntryContent::File {
+                    segments, digests, ..
+                } => (segments, digests),
+                _ => continue,
+            };
+
+            // Re-read all segment data from the image (now with patched
+            // anchor) and recompute the concatenated digest.
+            //
+            // The file must be uncompressed because the anchor is patched
+            // directly into the image bytes (compressed data would be
+            // corrupted).
+            let mut digest_input: Vec<u8> = Vec::new();
+            for seg in segments.iter() {
+                if seg.compression != Compression::None {
+                    return Err(format!(
+                        "segment '{}' in file '{}' uses {:?} compression — \
+                         the file containing FSTART_ANCHOR must be uncompressed \
+                         because the anchor is patched directly into the image",
+                        seg.name, entry.name, seg.compression,
+                    ));
+                }
+                let abs_offset = region_offset + entry.offset as usize + seg.offset as usize;
+                let end = abs_offset + seg.stored_size as usize;
+                if end > image.len() {
+                    return Err(format!(
+                        "segment '{}' extends past image end during digest recomputation",
+                        seg.name
+                    ));
+                }
+                digest_input.extend_from_slice(&image[abs_offset..end]);
+            }
+
+            *digests = digest::hash_digest_set(&digest_input)
+                .map_err(|_| "no digest algorithms available")?;
+
+            return Ok(manifest);
+        }
     }
 
-    // The bootblock is the first entry in the first container
-    let entry = &mut children[0];
-    let entry_offset = entry.offset;
-
-    let (segments, digests) = match &mut entry.content {
-        EntryContent::File {
-            segments, digests, ..
-        } => (segments, digests),
-        _ => return Ok(manifest),
-    };
-
-    // Re-read all segment data from the image (now with patched anchor)
-    // and recompute the concatenated digest.
-    //
-    // Digests cover the *uncompressed* content of each segment. For the
-    // bootblock, all segments must be uncompressed because the builder
-    // patches the anchor directly into the image bytes. (Compressed
-    // bootblock segments would corrupt the LZ4 stream.)
-    let mut digest_input: Vec<u8> = Vec::new();
-    for seg in segments.iter() {
-        if seg.compression != Compression::None {
-            return Err(format!(
-                "bootblock segment '{}' uses {:?} compression — \
-                 the bootblock must be uncompressed because the anchor \
-                 is patched directly into its image bytes",
-                seg.name, seg.compression,
-            ));
-        }
-        let abs_offset = (region_offset + entry_offset + seg.offset) as usize;
-        let end = abs_offset + seg.stored_size as usize;
-        if end > image.len() {
-            return Err(format!(
-                "segment '{}' extends past image end during digest recomputation",
-                seg.name
-            ));
-        }
-        digest_input.extend_from_slice(&image[abs_offset..end]);
-    }
-
-    *digests =
-        digest::hash_digest_set(&digest_input).map_err(|_| "no digest algorithms available")?;
-
+    // Anchor is outside all files (appended at end) — no digest to fix.
     Ok(manifest)
 }
 

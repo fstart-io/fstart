@@ -5,3 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fstart-soc-sunxi = { workspace = true, optional = true }
+
+[features]
+default = []
+sunxi = ["dep:fstart-soc-sunxi"]

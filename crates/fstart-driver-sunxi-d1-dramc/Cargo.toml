@@ -1,0 +1,14 @@
+[package]
+name = "fstart-driver-sunxi-d1-dramc"
+description = "Allwinner D1/T113 (sun20i) DRAM controller driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-arch = { workspace = true, features = ["riscv64"] }
+fstart-mmio = { workspace = true }
+fstart-services = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
+serde = { workspace = true }
