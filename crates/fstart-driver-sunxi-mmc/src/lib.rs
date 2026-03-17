@@ -220,21 +220,6 @@ const RINT_ERROR_MASK: u32 = (1 << 1)  // RESP_ERROR
 /// SD block size.
 const BLOCK_SIZE: u32 = 512;
 
-// GPIO pin mux: Port F, function 2 = SDC0.
-/// PIO bank stride: 0x24 on sun4i/sun6i, 0x30 on NCAT2 (D1/T113).
-const PIO_BANK_STRIDE_LEGACY: usize = 0x24;
-const PIO_BANK_STRIDE_NCAT2: usize = 0x30;
-const PIO_CFG0_OFF: usize = 0x00;
-/// Drive strength register offset within a PIO bank.
-/// - sun4i/sun6i: DRV0 at 0x14 within bank
-/// - NCAT2: DRV0 at 0x14 within bank (same)
-const PIO_DRV0_OFF: usize = 0x14;
-/// Pull-up/down register offset within a PIO bank.
-/// - sun4i/sun6i: PULL0 at 0x1C within bank
-/// - NCAT2: PULL0 at 0x24 within bank
-const PIO_PULL0_OFF_LEGACY: usize = 0x1C;
-const PIO_PULL0_OFF_NCAT2: usize = 0x24;
-
 // CCU register offsets (sun4i/sun6i — A20, H3, H5).
 /// AHB gate register 0 — bit (8 + mmc_index) enables the MMC clock gate.
 const CCU_AHB_GATE0_OFF: usize = 0x060;
@@ -474,24 +459,23 @@ impl SunxiMmc {
     /// Configure PF0-PF5 for SDC0 function.
     ///
     /// Port F function 2 = SDC0 on all sunxi SoCs.
-    /// Bank stride and pull register offset differ between generations.
+    /// Uses bulk raw writes for efficiency (6 pins share the same function,
+    /// drive strength, and pull-up settings).
     fn setup_gpio(&self) {
-        let (bank_stride, pull0_off) = match self.gen {
-            SunxiGen::Sun4i | SunxiGen::Sun6i => (PIO_BANK_STRIDE_LEGACY, PIO_PULL0_OFF_LEGACY),
-            SunxiGen::Ncat2 => (PIO_BANK_STRIDE_NCAT2, PIO_PULL0_OFF_NCAT2),
+        let gen = match self.gen {
+            SunxiGen::Sun4i | SunxiGen::Sun6i => fstart_sunxi_pio::PioGen::Legacy,
+            SunxiGen::Ncat2 => fstart_sunxi_pio::PioGen::Ncat2,
         };
-        let pf_base = self.pio_base + 5 * bank_stride; // Port F = bank 5
-                                                       // SAFETY: PIO registers at known MMIO addresses.
-        unsafe {
-            // PF_CFG0: PF0-PF5 = function 2 (SDC0)
-            fstart_mmio::write32((pf_base + PIO_CFG0_OFF) as *mut u32, 0x0022_2222);
+        let pio = fstart_sunxi_pio::SunxiPio::new(self.pio_base, gen);
 
-            // PF_DRV0: PF0-PF5 = drive level 2
-            fstart_mmio::write32((pf_base + PIO_DRV0_OFF) as *mut u32, 0x0000_0AAA);
+        // PF_CFG0: PF0-PF5 = function 2 (SDC0), PF6-PF7 = 0 (input)
+        pio.write_cfg_raw(fstart_sunxi_pio::PORT_F, 0, 0x0022_2222);
 
-            // PF_PULL0: PF0-PF5 = pull-up
-            fstart_mmio::write32((pf_base + pull0_off) as *mut u32, 0x0000_0555);
-        }
+        // PF_DRV0: PF0-PF5 = drive level 2
+        pio.write_drv_raw(fstart_sunxi_pio::PORT_F, 0, 0x0000_0AAA);
+
+        // PF_PULL0: PF0-PF5 = pull-up
+        pio.write_pull_raw(fstart_sunxi_pio::PORT_F, 0, 0x0000_0555);
     }
 
     /// Enable AHB clock gate (and bus-reset on sun6i/NCAT2) + set initial module clock.

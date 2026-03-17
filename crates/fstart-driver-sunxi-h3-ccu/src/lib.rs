@@ -105,26 +105,13 @@ const PRCM_SEC_SWITCH_PLL_CFG_NONSEC: u32 = 1 << 1;
 const PRCM_SEC_SWITCH_PWR_GATE_NONSEC: u32 = 1 << 2;
 
 // ---------------------------------------------------------------------------
-// PIO (GPIO) constants for H3 UART0 on PA4/PA5
+// PIO (GPIO) pin assignments for H3 UART0 (PA4=TX, PA5=RX, function 2)
 // ---------------------------------------------------------------------------
 
-/// Port A configuration register 0 offset (from PIO base).
-const PIO_PA_CFG0_OFF: u32 = 0x00;
-/// Port A pull register 0 offset.
-const PIO_PA_PULL0_OFF: u32 = 0x1C;
-
-/// PA4 function 2 = UART0_TX
-const PA4_UART0_FUNC: u32 = 2;
-/// PA5 function 2 = UART0_RX
-const PA5_UART0_FUNC: u32 = 2;
-/// PA4 config shift (pin 4 × 4 bits = bit 16)
-const PA4_CFG_SHIFT: u32 = 4 * 4;
-/// PA5 config shift (pin 5 × 4 bits = bit 20)
-const PA5_CFG_SHIFT: u32 = 5 * 4;
-/// PA5 pull shift (pin 5 × 2 bits = bit 10)
-const PA5_PULL_SHIFT: u32 = 5 * 2;
-/// Pull-up value.
-const GPIO_PULL_UP: u32 = 1;
+/// H3 UART0 TX alternate function on PA4.
+const UART0_TX_FUNC: u8 = 2;
+/// H3 UART0 RX alternate function on PA5.
+const UART0_RX_FUNC: u8 = 2;
 
 /// Typed configuration for the H3/H2+ CCU driver.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -150,16 +137,6 @@ unsafe impl Send for SunxiH3Ccu {}
 unsafe impl Sync for SunxiH3Ccu {}
 
 impl SunxiH3Ccu {
-    #[inline(always)]
-    fn pio_read(&self, offset: u32) -> u32 {
-        unsafe { fstart_mmio::read32((self.pio_base + offset as usize) as *const u32) }
-    }
-
-    #[inline(always)]
-    fn pio_write(&self, offset: u32, val: u32) {
-        unsafe { fstart_mmio::write32((self.pio_base + offset as usize) as *mut u32, val) }
-    }
-
     /// Write to a timer register (at CCU base + offset).
     #[inline(always)]
     fn timer_write(&self, offset: usize, val: u32) {
@@ -296,19 +273,10 @@ impl SunxiH3Ccu {
             return;
         }
 
-        // PA_CFG0: set PA4 and PA5 to function 2 (UART0)
-        let mut cfg = self.pio_read(PIO_PA_CFG0_OFF);
-        cfg &= !(0xf << PA4_CFG_SHIFT);
-        cfg |= PA4_UART0_FUNC << PA4_CFG_SHIFT;
-        cfg &= !(0xf << PA5_CFG_SHIFT);
-        cfg |= PA5_UART0_FUNC << PA5_CFG_SHIFT;
-        self.pio_write(PIO_PA_CFG0_OFF, cfg);
-
-        // PA_PULL0: set PA5 (RX) to pull-up
-        let mut pull = self.pio_read(PIO_PA_PULL0_OFF);
-        pull &= !(0x3 << PA5_PULL_SHIFT);
-        pull |= GPIO_PULL_UP << PA5_PULL_SHIFT;
-        self.pio_write(PIO_PA_PULL0_OFF, pull);
+        let pio = fstart_sunxi_pio::SunxiPio::new(self.pio_base, fstart_sunxi_pio::PioGen::Legacy);
+        pio.set_function(fstart_sunxi_pio::PORT_A, 4, UART0_TX_FUNC);
+        pio.set_function(fstart_sunxi_pio::PORT_A, 5, UART0_RX_FUNC);
+        pio.set_pull(fstart_sunxi_pio::PORT_A, 5, fstart_sunxi_pio::Pull::Up);
     }
 }
 

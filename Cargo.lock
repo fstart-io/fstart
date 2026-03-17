@@ -471,6 +471,7 @@ dependencies = [
  "fstart-mmio",
  "fstart-services",
  "fstart-sunxi-ccu-regs",
+ "fstart-sunxi-pio",
  "serde",
  "tock-registers",
 ]
@@ -483,6 +484,7 @@ dependencies = [
  "fstart-mmio",
  "fstart-services",
  "fstart-sunxi-ccu-regs",
+ "fstart-sunxi-pio",
  "serde",
  "tock-registers",
 ]
@@ -507,6 +509,7 @@ dependencies = [
  "fstart-mmio",
  "fstart-services",
  "fstart-sunxi-ccu-regs",
+ "fstart-sunxi-pio",
  "serde",
  "tock-registers",
 ]
@@ -534,6 +537,7 @@ dependencies = [
  "fstart-mmio",
  "fstart-services",
  "fstart-sunxi-ccu-regs",
+ "fstart-sunxi-pio",
  "serde",
  "tock-registers",
  "ufmt",
@@ -671,6 +675,13 @@ version = "0.1.0"
 dependencies = [
  "fstart-mmio",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-sunxi-pio"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
 ]
 
 [[package]]
