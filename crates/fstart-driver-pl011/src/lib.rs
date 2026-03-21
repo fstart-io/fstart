@@ -94,6 +94,13 @@ pub struct Pl011Config {
     /// ARM-specific; ignored on non-ARM platforms.
     #[serde(default)]
     pub acpi_gsiv: Option<u32>,
+    /// Emit a DBG2 (Debug Port Table 2) for this UART.
+    ///
+    /// When `true`, the driver's ACPI `extra_tables()` emits a DBG2
+    /// table alongside the SPCR table.  Required by SBSA for the
+    /// primary debug port.
+    #[serde(default)]
+    pub acpi_dbg2: bool,
 }
 
 #[cfg(feature = "acpi")]
