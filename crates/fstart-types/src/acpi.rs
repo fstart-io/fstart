@@ -73,6 +73,12 @@ pub struct ArmPlatformAcpi {
     /// SBSA Generic Watchdog (optional).
     #[serde(default)]
     pub watchdog: Option<AcpiWatchdog>,
+    /// IORT (IO Remapping Table) configuration.
+    ///
+    /// Required when PCIe devices use MSI/MSI-X through the GIC ITS.
+    /// Maps PCI Request IDs to GIC ITS device IDs.
+    #[serde(default)]
+    pub iort: Option<AcpiIort>,
 }
 
 /// SBSA Generic Watchdog parameters for GTDT.
@@ -84,6 +90,35 @@ pub struct AcpiWatchdog {
     pub control_base: u64,
     /// Watchdog GSIV.
     pub gsiv: u32,
+}
+
+/// IORT (IO Remapping Table) configuration.
+///
+/// Describes the mapping between PCI Request IDs and GIC ITS device IDs.
+/// Without IORT, PCIe MSI/MSI-X cannot be routed through the GIC ITS.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcpiIort {
+    /// GIC ITS identifiers (must match MADT GIC ITS entries).
+    ///
+    /// Typically `[0]` for a single-ITS system.
+    pub its_ids: heapless::Vec<u32, 8>,
+    /// PCI segment number (usually 0).
+    #[serde(default)]
+    pub pci_segment: u32,
+    /// Memory address size limit in bits (e.g., 48 for 256 TiB).
+    #[serde(default = "default_memory_address_limit")]
+    pub memory_address_limit: u8,
+    /// Number of PCI Request IDs to map (e.g., 0x10000 for full 16-bit range).
+    #[serde(default = "default_id_count")]
+    pub id_count: u32,
+}
+
+fn default_memory_address_limit() -> u8 {
+    48
+}
+
+fn default_id_count() -> u32 {
+    0x10000
 }
 
 // ---------------------------------------------------------------------------

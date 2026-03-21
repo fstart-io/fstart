@@ -44,6 +44,23 @@ pub struct ArmConfig {
     pub timer_gsivs: (u32, u32, u32, u32),
     /// SBSA Generic Watchdog (optional).
     pub watchdog: Option<WatchdogConfig>,
+    /// IORT configuration (optional).
+    ///
+    /// If set, an IORT table is generated mapping PCI RIDs to GIC ITS
+    /// device IDs. Required for PCIe MSI/MSI-X.
+    pub iort: Option<IortConfig>,
+}
+
+/// IORT configuration for the ARM platform.
+pub struct IortConfig {
+    /// GIC ITS identifiers (must match MADT ITS entries).
+    pub its_ids: &'static [u32],
+    /// PCI segment number.
+    pub pci_segment: u32,
+    /// Memory address size limit in bits.
+    pub memory_address_limit: u8,
+    /// Number of PCI Request IDs to map.
+    pub id_count: u32,
 }
 
 /// Watchdog configuration for GTDT.
@@ -56,11 +73,11 @@ pub struct WatchdogConfig {
     pub gsiv: u32,
 }
 
-/// Build ARM platform tables (MADT + GTDT) and FADT configuration.
+/// Build ARM platform tables (MADT + GTDT + optional IORT) and FADT configuration.
 ///
 /// Returns `(platform_tables, fadt_config)` where `platform_tables`
-/// are pre-serialized MADT and GTDT bytes, and `fadt_config` carries
-/// ARM-specific FADT parameters.
+/// are pre-serialized MADT, GTDT, and optionally IORT bytes, and
+/// `fadt_config` carries ARM-specific FADT parameters.
 pub fn build_platform_tables(config: &ArmConfig) -> (Vec<Vec<u8>>, FadtConfig) {
     let madt = build_madt(config);
     let gtdt_table = build_gtdt(config);
@@ -70,7 +87,24 @@ pub fn build_platform_tables(config: &ArmConfig) -> (Vec<Vec<u8>>, FadtConfig) {
     let mut gtdt_bytes = Vec::new();
     gtdt_table.to_aml_bytes(&mut gtdt_bytes);
 
-    let platform_tables = alloc::vec![madt_bytes, gtdt_bytes];
+    let mut platform_tables = alloc::vec![madt_bytes, gtdt_bytes];
+
+    // IORT: IO Remapping Table (maps PCI RIDs → GIC ITS device IDs).
+    if let Some(iort_cfg) = &config.iort {
+        let iort = crate::iort::build_iort(
+            &crate::iort::ItsGroup {
+                its_ids: iort_cfg.its_ids,
+            },
+            &crate::iort::RootComplex {
+                pci_segment: iort_cfg.pci_segment,
+                memory_address_limit: iort_cfg.memory_address_limit,
+                id_count: iort_cfg.id_count,
+            },
+        );
+        let mut iort_bytes = Vec::new();
+        iort.to_aml_bytes(&mut iort_bytes);
+        platform_tables.push(iort_bytes);
+    }
 
     let fadt_config = FadtConfig {
         hw_reduced: true,
@@ -178,6 +212,7 @@ mod tests {
             gic_its_base: Some(0x4408_1000),
             timer_gsivs: (29, 30, 27, 26),
             watchdog: None,
+            iort: None,
         };
 
         let madt = build_madt(&config);
@@ -239,6 +274,7 @@ mod tests {
             gic_its_base: None,
             timer_gsivs: (29, 30, 27, 26),
             watchdog: None,
+            iort: None,
         };
 
         let madt = build_madt(&config);
@@ -287,11 +323,12 @@ mod tests {
             gic_its_base: None,
             timer_gsivs: (29, 30, 27, 26),
             watchdog: None,
+            iort: None,
         };
 
         let (tables, fadt_cfg) = build_platform_tables(&config);
 
-        // Should have MADT + GTDT.
+        // Should have MADT + GTDT (no IORT).
         assert_eq!(tables.len(), 2);
         // MADT signature.
         assert_eq!(&tables[0][0..4], b"APIC");

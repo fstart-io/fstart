@@ -1494,6 +1494,28 @@ fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenS
                 None => quote! { None },
             };
 
+            let iort_expr = match &sbsa.iort {
+                Some(iort) => {
+                    let seg = Literal::u32_unsuffixed(iort.pci_segment);
+                    let mal = Literal::u8_unsuffixed(iort.memory_address_limit);
+                    let idc = Literal::u32_unsuffixed(iort.id_count);
+                    let its_ids: Vec<_> = iort
+                        .its_ids
+                        .iter()
+                        .map(|id| Literal::u32_unsuffixed(*id))
+                        .collect();
+                    quote! {
+                        Some(fstart_acpi::platform::IortConfig {
+                            its_ids: &[#(#its_ids),*],
+                            pci_segment: #seg,
+                            memory_address_limit: #mal,
+                            id_count: #idc,
+                        })
+                    }
+                }
+                None => quote! { None },
+            };
+
             quote! {
                 let platform_acpi = fstart_acpi::platform::PlatformConfig::Arm(
                     fstart_acpi::platform::ArmConfig {
@@ -1504,6 +1526,7 @@ fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenS
                         gic_its_base: #gic_its_base_expr,
                         timer_gsivs: (#t0, #t1, #t2, #t3),
                         watchdog: #watchdog_expr,
+                        iort: #iort_expr,
                     }
                 );
             }

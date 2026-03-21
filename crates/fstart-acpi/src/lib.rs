@@ -17,9 +17,11 @@
 
 extern crate alloc;
 
+pub mod dbg2;
 pub mod device;
 pub mod devices;
 pub mod gtdt;
+pub mod iort;
 pub mod platform;
 pub mod sbsa;
 pub mod spcr;
