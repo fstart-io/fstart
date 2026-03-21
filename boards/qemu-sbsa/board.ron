@@ -65,6 +65,7 @@
                 baud_rate: 115200,
                 acpi_name: Some("COM0"),
                 acpi_gsiv: Some(33),
+                acpi_dbg2: true,
             )),
             services: ["Console"],
         ),
