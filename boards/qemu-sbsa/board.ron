@@ -80,6 +80,7 @@
             ConsoleInit( device: "uart0" ),
             MemoryInit,
             AcpiPrepare,
+            SmBiosPrepare,
         ],
         load_addr: 0x10000100000,
         stack_size: 0x40000,
@@ -132,6 +133,69 @@
                 irqs: (168, 169, 170, 171),
                 segment: 0,
             )),
+        ],
+    )),
+
+    // SMBIOS configuration — tables placed after ACPI tables in DRAM.
+    // DRAM starts at 0x10000000000; ACPI at +0x80000, SMBIOS at +0x90000.
+    smbios: Some((
+        table_addr: 0x10000090000,
+
+        bios_vendor: "fstart",
+        bios_version: "0.1.0",
+        bios_release_date: "03/10/2026",
+
+        system_manufacturer: "QEMU",
+        system_product: "SBSA Reference",
+        system_version: "1.0",
+
+        baseboard_manufacturer: "QEMU",
+        baseboard_product: "sbsa-ref",
+
+        chassis_type: RackMount,
+        chassis_manufacturer: "QEMU",
+
+        processors: [
+            (
+                socket: "CPU0",
+                manufacturer: "ARM",
+                processor_family: Aarch64,
+                max_speed_mhz: 2000,
+                core_count: 1,
+                thread_count: 1,
+                caches: [
+                    (
+                        designation: "L1 Instruction Cache",
+                        level: 1,
+                        size_kb: 64,
+                        associativity: Way4,
+                        cache_type: Instruction,
+                    ),
+                    (
+                        designation: "L1 Data Cache",
+                        level: 1,
+                        size_kb: 64,
+                        associativity: Way4,
+                        cache_type: Data,
+                    ),
+                    (
+                        designation: "L2 Unified Cache",
+                        level: 2,
+                        size_kb: 1024,
+                        associativity: Way8,
+                        cache_type: Unified,
+                    ),
+                ],
+            ),
+        ],
+
+        memory_devices: [
+            (
+                locator: "DIMM0",
+                size_mb: 1024,
+                speed_mhz: 2400,
+                memory_type: Ddr4,
+            ),
         ],
     )),
 
