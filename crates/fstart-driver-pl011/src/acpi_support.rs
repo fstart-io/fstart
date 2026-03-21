@@ -39,9 +39,32 @@ impl AcpiDevice for Pl011 {
 
     fn extra_tables(&self, config: &Pl011Config) -> Vec<Vec<u8>> {
         let gsiv = config.acpi_gsiv.unwrap_or(0);
+        let mut tables = Vec::new();
+
+        // SPCR: Serial Port Console Redirection.
         let spcr = fstart_acpi::spcr::build_spcr_pl011(config.base_addr, gsiv);
-        let mut bytes = Vec::new();
-        spcr.to_aml_bytes(&mut bytes);
-        vec![bytes]
+        let mut spcr_bytes = Vec::new();
+        spcr.to_aml_bytes(&mut spcr_bytes);
+        tables.push(spcr_bytes);
+
+        // DBG2: Debug Port Table 2 (optional, for SBSA compliance).
+        if config.acpi_dbg2 {
+            let acpi_name = config.acpi_name.as_deref().unwrap_or("COM0");
+            let mut namespace = heapless::String::<32>::new();
+            // Build namespace path: "\\_SB.<acpi_name>"
+            let _ = namespace.push_str("\\_SB.");
+            let _ = namespace.push_str(acpi_name);
+
+            let dbg2 = fstart_acpi::dbg2::build_dbg2_pl011(
+                config.base_addr,
+                0x1000, // PL011 MMIO region size
+                namespace.as_str(),
+            );
+            let mut dbg2_bytes = Vec::new();
+            dbg2.to_aml_bytes(&mut dbg2_bytes);
+            tables.push(dbg2_bytes);
+        }
+
+        tables
     }
 }
