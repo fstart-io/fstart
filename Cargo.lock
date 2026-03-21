@@ -688,6 +688,7 @@ dependencies = [
  "fstart-platform-riscv64",
  "fstart-runtime",
  "fstart-services",
+ "fstart-smbios",
  "fstart-soc-sunxi",
  "fstart-types",
  "heapless",

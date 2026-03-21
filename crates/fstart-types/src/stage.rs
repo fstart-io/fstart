@@ -161,6 +161,12 @@ pub enum Capability {
     /// MADT, GTDT, device tables, DSDT). Requires a heap (`heap_size`
     /// must be set) and the board's `acpi` config section.
     AcpiPrepare,
+    /// Generate SMBIOS tables and write them to the configured address.
+    ///
+    /// Writes SMBIOS 3.0 entry point and structure tables (Type 0/1/2/3/
+    /// 4/16/17/19/32/127) from the board RON's `smbios` config section.
+    /// Does not require a heap — writes directly to the target address.
+    SmBiosPrepare,
     /// Return to the BROM's FEL (USB recovery) mode.
     ///
     /// Restores the saved BROM state (SP, LR, CPSR, SCTLR, VBAR) from

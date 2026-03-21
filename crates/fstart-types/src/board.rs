@@ -104,6 +104,14 @@ pub struct BoardConfig {
     /// each driver's own `Config` struct, not here.
     #[serde(default)]
     pub acpi: Option<crate::acpi::AcpiConfig>,
+
+    /// SMBIOS table generation configuration.
+    ///
+    /// Required when any stage has the `SmBiosPrepare` capability.
+    /// Contains system identity strings, processor descriptions, and
+    /// memory device declarations for SMBIOS Type 0/1/2/3/4/16/17/19.
+    #[serde(default)]
+    pub smbios: Option<crate::smbios::SmbiosConfig>,
 }
 
 /// SoC-specific binary image format required by the boot ROM.

@@ -51,6 +51,8 @@ handoff = ["fstart-capabilities/handoff"]
 # ACPI table generation (requires alloc + fstart-alloc global allocator).
 # Enables fstart-acpi/arm for ARM-specific tables (MADT/GICv3, GTDT).
 acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-driver-pl011?/acpi"]
+# SMBIOS table generation (no alloc needed — writes directly to memory).
+smbios = ["dep:fstart-smbios"]
 
 [dependencies]
 # Core firmware infrastructure
@@ -88,6 +90,9 @@ fstart-fit = { workspace = true, optional = true }
 
 # ACPI table generation (optional, behind acpi feature)
 fstart-acpi = { workspace = true, optional = true }
+
+# SMBIOS table generation (optional, behind smbios feature)
+fstart-smbios = { workspace = true, optional = true }
 
 # Allocator (optional, behind acpi feature — provides #[global_allocator])
 fstart-alloc = { workspace = true, optional = true }

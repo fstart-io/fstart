@@ -67,6 +67,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
         payload: None,
         soc_image_format: SocImageFormat::default(),
         acpi: None,
+        smbios: None,
     };
 
     let device_tree = vec![DeviceNode {
@@ -431,6 +432,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
         payload: None,
         soc_image_format: SocImageFormat::default(),
         acpi: None,
+        smbios: None,
     };
 
     let device_tree = vec![
@@ -822,6 +824,7 @@ fn test_flexible_multi_driver_parsed_board(
             baud_rate: 115_200,
             acpi_name: None,
             acpi_gsiv: None,
+            acpi_dbg2: false,
         }),
     ];
 
@@ -863,6 +866,7 @@ fn test_flexible_multi_driver_parsed_board(
         payload: None,
         soc_image_format: SocImageFormat::default(),
         acpi: None,
+        smbios: None,
     };
 
     let device_tree = vec![
@@ -1218,6 +1222,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         payload: None,
         soc_image_format: SocImageFormat::default(),
         acpi: None,
+        smbios: None,
     };
 
     let device_tree = vec![DeviceNode {
