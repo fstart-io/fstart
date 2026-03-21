@@ -14,6 +14,7 @@ pub mod ffs;
 pub mod handoff;
 pub mod memory;
 pub mod security;
+pub mod smbios;
 pub mod stage;
 
 pub use acpi::{
@@ -32,6 +33,7 @@ pub use ffs::{
 };
 pub use memory::{MemoryMap, MemoryRegion, RegionKind};
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
+pub use smbios::SmbiosConfig;
 pub use stage::{
     AutoBootDevice, BootMedium, Capability, LoadDevice, MonolithicConfig, RunsFrom, StageConfig,
     StageLayout,

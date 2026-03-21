@@ -567,6 +567,10 @@ fn capability_features(capabilities: &[Capability], security: &SecurityConfig) -
         features.push("acpi".to_string());
     }
 
+    if stage_uses_smbios(capabilities) {
+        features.push("smbios".to_string());
+    }
+
     features
 }
 
@@ -582,6 +586,13 @@ fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::AcpiPrepare))
+}
+
+/// Check if a stage's capabilities require the SMBIOS feature.
+fn stage_uses_smbios(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::SmBiosPrepare))
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
