@@ -109,6 +109,13 @@
                 control_base: 0x50011000,
                 gsiv: 48,
             )),
+            // IORT: map all 64K PCI RIDs 1:1 to GIC ITS 0 for MSI/MSI-X.
+            iort: Some((
+                its_ids: [0],
+                pci_segment: 0,
+                memory_address_limit: 0x30,
+                id_count: 0x10000,
+            )),
         )),
         extra_devices: [
             Ahci((

@@ -28,7 +28,7 @@ use acpi_tables::Aml;
 
 // Re-export ARM types when available, for convenience.
 #[cfg(feature = "arm")]
-pub use arm::{ArmConfig, WatchdogConfig};
+pub use arm::{ArmConfig, IortConfig, WatchdogConfig};
 
 /// Platform-specific ACPI configuration enum.
 ///
@@ -425,6 +425,7 @@ mod tests {
                 control_base: 0x5001_1000,
                 gsiv: 48,
             }),
+            iort: None,
         };
 
         let (platform_tables, fadt_config) = arm::build_platform_tables(&arm_cfg);
