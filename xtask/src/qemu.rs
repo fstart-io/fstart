@@ -4,34 +4,91 @@ use fstart_types::Platform;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Find a QEMU binary by name.
+///
+/// Search order:
+/// 1. `$PATH` (standard lookup)
+/// 2. `/nix/store/*/bin/<name>` (NixOS systems where QEMU isn't on PATH)
+fn find_qemu(name: &str) -> String {
+    // Try PATH first.
+    if let Ok(output) = Command::new("which").arg(name).output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return path;
+            }
+        }
+    }
+
+    // Search nix store.
+    if let Ok(entries) = std::fs::read_dir("/nix/store") {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("bin").join(name);
+            if candidate.is_file() {
+                return candidate.display().to_string();
+            }
+        }
+    }
+
+    // Fall back to bare name (will fail with a clear error).
+    name.to_string()
+}
+
 /// Run firmware in QEMU.
 ///
 /// For both monolithic and FFS builds, `binary` is a flat binary (raw
 /// firmware or FFS image). RISC-V uses pflash to load it at flash base
 /// (0x20000000, XIP); AArch64 uses `-bios` to load it at flash (0x0, XIP).
-pub fn run(platform: Platform, binary: &Path) -> Result<(), String> {
+///
+/// `board_name` selects the QEMU machine: `"sifive-unmatched"` uses the
+/// `sifive_u` machine (FU740 emulation with 5 harts); all other RISC-V
+/// boards use the generic `virt` machine.
+pub fn run(platform: Platform, binary: &Path, board_name: &str) -> Result<(), String> {
     let (qemu_bin, args) = match platform {
         Platform::Riscv64 => {
-            // RISC-V virt: load firmware into pflash bank 0 at 0x20000000
-            // (XIP).  The MROM trampoline at 0x1000 sets a0=mhartid,
-            // a1=DTB addr, then jumps to flash base.
-            //
-            // Flash bank 0 is 32 MiB; QEMU pflash requires the backing
-            // image to match exactly, so we pad the firmware binary with
-            // 0xFF (erased NOR flash state).
-            let pflash_size = 32 * 1024 * 1024; // 32 MiB — VIRT_FLASH / 2
-            let pflash_path = create_pflash_image(binary, pflash_size)?;
+            // Select QEMU machine based on board name.
+            // sifive-unmatched uses sifive_u (FU740: 5 harts, SiFive UART).
+            // All other RISC-V boards use the generic virt machine.
+            let is_sifive_u = board_name == "sifive-unmatched";
 
-            let args = vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-nographic".to_string(),
-                "-bios".to_string(),
-                "none".to_string(),
-                "-drive".to_string(),
-                format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
-            ];
-            ("qemu-system-riscv64", args)
+            if is_sifive_u {
+                // sifive_u: use -bios to load fstart firmware. QEMU's
+                // boot ROM at 0x1000 sets a0=hartid, a1=DTB, then jumps
+                // to 0x80000000 where our firmware is loaded.
+                //
+                // The firmware binary is loaded at DRAM base (0x80000000)
+                // by QEMU's -bios option.
+                let args = vec![
+                    "-machine".to_string(),
+                    "sifive_u".to_string(),
+                    "-m".to_string(),
+                    "1G".to_string(),
+                    "-nographic".to_string(),
+                    "-bios".to_string(),
+                    binary.display().to_string(),
+                ];
+                (find_qemu("qemu-system-riscv64"), args)
+            } else {
+                // RISC-V virt: load firmware into pflash bank 0 at
+                // 0x20000000 (XIP). The MROM trampoline at 0x1000 sets
+                // a0=mhartid, a1=DTB addr, then jumps to flash base.
+                //
+                // Flash bank 0 is 32 MiB; QEMU pflash requires the
+                // backing image to match exactly, so we pad with 0xFF.
+                let pflash_size = 32 * 1024 * 1024; // 32 MiB
+                let pflash_path = create_pflash_image(binary, pflash_size)?;
+
+                let args = vec![
+                    "-machine".to_string(),
+                    "virt".to_string(),
+                    "-nographic".to_string(),
+                    "-bios".to_string(),
+                    "none".to_string(),
+                    "-drive".to_string(),
+                    format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
+                ];
+                (find_qemu("qemu-system-riscv64"), args)
+            }
         }
         Platform::Aarch64 => {
             let mut args = vec![
@@ -51,7 +108,7 @@ pub fn run(platform: Platform, binary: &Path) -> Result<(), String> {
             // which places the DTB at RAM base (0x40000000) and starts the
             // CPU at PC=0x0. Works for both ELF and raw FFS images.
             args.extend(["-bios".to_string(), binary.display().to_string()]);
-            ("qemu-system-aarch64", args)
+            (find_qemu("qemu-system-aarch64"), args)
         }
         Platform::Armv7 => {
             let args = vec![
@@ -66,7 +123,7 @@ pub fn run(platform: Platform, binary: &Path) -> Result<(), String> {
                 "-bios".to_string(),
                 binary.display().to_string(),
             ];
-            ("qemu-system-arm", args)
+            (find_qemu("qemu-system-arm"), args)
         }
     };
 

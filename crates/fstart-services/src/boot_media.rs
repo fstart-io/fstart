@@ -313,6 +313,11 @@ impl<F: FlashMap> BootMedia for MemoryMapped<F> {
         let src = self.map.translate(offset);
         unsafe {
             core::ptr::copy(src, buf.as_mut_ptr(), buf.len());
+            // Ensure the copy is not reordered or optimized away.
+            // Needed when source and destination are both in RAM (non-XIP
+            // boards) and subsequent reads from the same address space
+            // must see the updated data.
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         }
         Ok(buf.len())
     }

@@ -63,6 +63,8 @@ struct RonBoardConfig {
     payload: Option<PayloadConfig>,
     #[serde(default)]
     soc_image_format: SocImageFormat,
+    #[serde(default)]
+    boot_hart_id: u32,
 }
 
 /// A single device entry in the RON file.
@@ -155,6 +157,7 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
         mode: ron.mode,
         payload: ron.payload,
         soc_image_format: ron.soc_image_format,
+        boot_hart_id: ron.boot_hart_id,
     };
 
     ParsedBoard {

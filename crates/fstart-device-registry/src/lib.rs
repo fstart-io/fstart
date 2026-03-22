@@ -74,6 +74,21 @@ pub mod sunxi_d1_dramc {
     pub use fstart_driver_sunxi_d1_dramc::SunxiD1DramcConfig;
 }
 
+#[cfg(feature = "sifive-uart")]
+pub mod sifive_uart {
+    pub use fstart_driver_sifive_uart::SifiveUartConfig;
+}
+
+#[cfg(feature = "fu740-prci")]
+pub mod fu740_prci {
+    pub use fstart_driver_fu740_prci::Fu740PrciConfig;
+}
+
+#[cfg(feature = "fu740-ddr")]
+pub mod fu740_ddr {
+    pub use fstart_driver_fu740_ddr::Fu740DdrConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -169,6 +184,18 @@ pub enum DriverInstance {
     /// Allwinner D1/T113 (sun20i) DRAM controller.
     #[cfg(feature = "sunxi-d1-dramc")]
     SunxiD1Dramc(sunxi_d1_dramc::SunxiD1DramcConfig),
+
+    /// SiFive UART (FU540/FU740).
+    #[cfg(feature = "sifive-uart")]
+    SifiveUart(sifive_uart::SifiveUartConfig),
+
+    /// SiFive FU740 PRCI clock controller.
+    #[cfg(feature = "fu740-prci")]
+    Fu740Prci(fu740_prci::Fu740PrciConfig),
+
+    /// SiFive FU740 DDR4 memory controller.
+    #[cfg(feature = "fu740-ddr")]
+    Fu740Ddr(fu740_ddr::Fu740DdrConfig),
 }
 
 impl DriverInstance {
@@ -283,6 +310,33 @@ impl DriverInstance {
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun20i-d1-mbus"],
             },
+            #[cfg(feature = "sifive-uart")]
+            Self::SifiveUart(_) => &DriverMeta {
+                name: "sifive-uart",
+                type_name: "SifiveUart",
+                module_path: "fstart_driver_sifive_uart",
+                config_type: "SifiveUartConfig",
+                services: &["Console"],
+                compatible: &["sifive,fu740-c000-uart", "sifive,uart0"],
+            },
+            #[cfg(feature = "fu740-prci")]
+            Self::Fu740Prci(_) => &DriverMeta {
+                name: "fu740-prci",
+                type_name: "Fu740Prci",
+                module_path: "fstart_driver_fu740_prci",
+                config_type: "Fu740PrciConfig",
+                services: &["ClockController"],
+                compatible: &["sifive,fu740-c000-prci"],
+            },
+            #[cfg(feature = "fu740-ddr")]
+            Self::Fu740Ddr(_) => &DriverMeta {
+                name: "fu740-ddr",
+                type_name: "Fu740Ddr",
+                module_path: "fstart_driver_fu740_ddr",
+                config_type: "Fu740DdrConfig",
+                services: &["MemoryController"],
+                compatible: &["sifive,fu740-c000-ddr"],
+            },
         }
     }
 
@@ -319,6 +373,12 @@ impl DriverInstance {
             Self::SunxiD1Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-d1-dramc")]
             Self::SunxiD1Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sifive-uart")]
+            Self::SifiveUart(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "fu740-prci")]
+            Self::Fu740Prci(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "fu740-ddr")]
+            Self::Fu740Ddr(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

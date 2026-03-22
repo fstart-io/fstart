@@ -649,10 +649,35 @@ fn generate_payload_load_linux(
 
     stmts.extend(quote! {
         fstart_log::info!("capability: PayloadLoad (LinuxBoot)");
-        fstart_log::info!("loading kernel...");
     });
 
+    // Load firmware blob from FFS FIRST — it goes to a high address
+    // (e.g., 0x82000000) that doesn't overlap with the FFS image or
+    // currently-executing code.
+    if let Some(ref fw) = payload.firmware {
+        let fw_kind_str = match fw.kind {
+            FirmwareKind::OpenSbi => "SBI firmware",
+            FirmwareKind::ArmTrustedFirmware => "ATF BL31",
+        };
+        let load_msg = format!("loading {fw_kind_str}...");
+        let error_msg = format!("FATAL: failed to load {fw_kind_str}");
+        let anchor_fw = anchor_expr(embed_anchor);
+        stmts.extend(quote! {
+            fstart_log::info!(#load_msg);
+            if !fstart_capabilities::load_ffs_file_by_type(
+                #anchor_fw,
+                &boot_media,
+                fstart_types::ffs::FileType::Firmware,
+            ) {
+                fstart_log::error!(#error_msg);
+                #halt;
+            }
+        });
+    }
+
+    // Load kernel
     stmts.extend(quote! {
+        fstart_log::info!("loading kernel...");
         if !fstart_capabilities::load_ffs_file_by_type(
             #anchor,
             &boot_media,
@@ -663,29 +688,47 @@ fn generate_payload_load_linux(
         }
     });
 
-    // Load firmware blob from FFS
-    if let Some(ref fw) = payload.firmware {
-        let fw_kind_str = match fw.kind {
-            FirmwareKind::OpenSbi => "SBI firmware",
-            FirmwareKind::ArmTrustedFirmware => "ATF BL31",
-        };
-        let load_msg = format!("loading {fw_kind_str}...");
-        let error_msg = format!("FATAL: failed to load {fw_kind_str}");
-        let anchor2 = anchor_expr(embed_anchor);
+    // Load initramfs blob from FFS if configured.
+    if payload.initramfs_file.is_some() {
+        let initramfs_load_addr = hex_addr(payload.initramfs_load_addr.unwrap_or(0));
+        let anchor3 = anchor_expr(embed_anchor);
         stmts.extend(quote! {
-            fstart_log::info!(#load_msg);
+            fstart_log::info!("loading initramfs...");
             if !fstart_capabilities::load_ffs_file_by_type(
-                #anchor2,
+                #anchor3,
                 &boot_media,
-                fstart_types::ffs::FileType::Firmware,
+                fstart_types::ffs::FileType::Initramfs,
             ) {
-                fstart_log::error!(#error_msg);
+                fstart_log::error!("FATAL: failed to load initramfs");
                 #halt;
+            }
+        });
+
+        // After loading, patch the FDT with initrd addresses.
+        // The FFS loader tells us the actual size via the segment metadata,
+        // but since we loaded it to a known address, we can compute the
+        // size from the FFS file entry. For now, re-read the FFS to get
+        // the initramfs size and patch the FDT.
+        let dtb_for_initrd = hex_addr(payload.dtb_addr.unwrap_or(0));
+        let anchor4 = anchor_expr(embed_anchor);
+        stmts.extend(quote! {
+            // Get initramfs size from FFS metadata for FDT patching
+            let _initrd_size = fstart_capabilities::get_ffs_file_size(
+                #anchor4,
+                &boot_media,
+                fstart_types::ffs::FileType::Initramfs,
+            );
+            if _initrd_size > 0 {
+                fstart_capabilities::fdt_set_initrd_addresses(
+                    #dtb_for_initrd,
+                    #initramfs_load_addr,
+                    _initrd_size,
+                );
             }
         });
     }
 
-    // Platform-specific boot protocol
+    // Platform-specific boot protocol.
     let dtb_addr = hex_addr(payload.dtb_addr.unwrap_or(0));
     let kernel_addr = hex_addr(payload.kernel_load_addr.unwrap_or(0));
 
