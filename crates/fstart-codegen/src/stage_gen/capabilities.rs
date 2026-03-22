@@ -19,7 +19,7 @@ use fstart_types::{
 use super::flexible::{flexible_enum_for_device, generate_flexible_wrapping};
 use super::registry::find_driver_meta;
 use super::tokens::{anchor_as_bytes_expr, anchor_expr, halt_expr, hex_addr};
-use super::validation::{is_fit_image, is_fit_runtime, is_linux_boot};
+use super::validation::{is_fit_image, is_fit_runtime, is_linux_boot, is_uefi_payload};
 
 /// Generate code for the ConsoleInit capability.
 pub(super) fn generate_console_init(
@@ -657,6 +657,10 @@ pub(super) fn generate_payload_load(
     platform: Platform,
     embed_anchor: bool,
 ) -> TokenStream {
+    if is_uefi_payload(config) {
+        return generate_payload_load_uefi(config, platform);
+    }
+
     if is_linux_boot(config) {
         return generate_payload_load_linux(config, platform, embed_anchor);
     }
@@ -676,6 +680,138 @@ pub(super) fn generate_payload_load(
     let jump_fn: TokenStream = quote! { fstart_platform::jump_to };
     quote! {
         fstart_capabilities::payload_load(#anchor, &boot_media, #jump_fn);
+    }
+}
+
+/// Generate the CrabEFI UEFI payload initialization sequence.
+///
+/// Constructs a `PlatformConfig` from fstart's initialized drivers and calls
+/// `crabefi::init_platform()` which never returns.
+fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> TokenStream {
+    let halt = halt_expr(platform);
+
+    // Build memory map from board ROM/RAM regions.
+    let mut mem_entries = TokenStream::new();
+    for region in &config.memory.regions {
+        let base = hex_addr(region.base);
+        let size = hex_addr(region.size);
+        let mem_type = match region.kind {
+            RegionKind::Ram => quote! { fstart_crabefi::MemoryType::Ram },
+            RegionKind::Rom | RegionKind::Reserved => {
+                quote! { fstart_crabefi::MemoryType::Reserved }
+            }
+        };
+        mem_entries.extend(quote! {
+            fstart_crabefi::MemoryRegion {
+                base: #base,
+                size: #size,
+                region_type: #mem_type,
+            },
+        });
+    }
+
+    // Find the console device name for the DebugOutput adapter.
+    let console_device = config
+        .devices
+        .iter()
+        .find(|d| d.services.iter().any(|s| s.as_str() == "Console"))
+        .map(|d| d.name.as_str());
+
+    let console_setup = if let Some(name) = console_device {
+        let dev = format_ident!("{}", name);
+        quote! {
+            let mut _crabefi_console = fstart_crabefi::ConsoleAdapter(&#dev);
+        }
+    } else {
+        quote! {}
+    };
+
+    let debug_output_field = if console_device.is_some() {
+        quote! { debug_output: Some(&mut _crabefi_console), }
+    } else {
+        quote! { debug_output: None, }
+    };
+
+    // Find the PCI device for ECAM base.
+    let pci_device = config
+        .devices
+        .iter()
+        .find(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+
+    let ecam_base_field = if let Some(pci_dev) = pci_device {
+        let dev = format_ident!("{}", pci_dev.name.as_str());
+        quote! { ecam_base: Some(#dev.ecam_base()), }
+    } else {
+        quote! { ecam_base: None, }
+    };
+
+    // QEMU AArch64 virt places the FDT at the base of RAM (0x40000000)
+    // when booting with -bios. Read it so CrabEFI can discover GIC, PCIe
+    // MMIO regions, etc.
+    let fdt_setup = if platform == Platform::Aarch64 {
+        let ram_base = config
+            .memory
+            .regions
+            .iter()
+            .find(|r| r.kind == RegionKind::Ram)
+            .map(|r| hex_addr(r.base))
+            .unwrap_or_else(|| quote! { 0u64 });
+
+        quote! {
+            // QEMU places FDT at the base of RAM. Read the totalsize field
+            // from the FDT header (big-endian u32 at offset 4) to get the
+            // full blob size.
+            let _fdt_ptr = #ram_base as *const u8;
+            let _fdt_size = unsafe {
+                u32::from_be(core::ptr::read_unaligned(_fdt_ptr.add(4) as *const u32))
+            } as usize;
+            let _fdt_blob = unsafe {
+                core::slice::from_raw_parts(_fdt_ptr, _fdt_size)
+            };
+        }
+    } else {
+        quote! {}
+    };
+
+    let fdt_field = if platform == Platform::Aarch64 {
+        quote! { fdt: Some(_fdt_blob), }
+    } else {
+        quote! { fdt: None, }
+    };
+
+    quote! {
+        fstart_log::info!("Launching CrabEFI UEFI payload...");
+
+        let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new();
+        let _crabefi_reset = fstart_crabefi::PsciReset;
+        #console_setup
+
+        let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] = &[
+            #mem_entries
+        ];
+
+        #fdt_setup
+
+        let _crabefi_config = fstart_crabefi::PlatformConfig {
+            memory_map: _crabefi_memory_map,
+            timer: &_crabefi_timer,
+            reset: &_crabefi_reset,
+            block_devices: &mut [],
+            variable_backend: None,
+            #debug_output_field
+            console_input: None,
+            framebuffer: None,
+            acpi_rsdp: None,
+            smbios: None,
+            #fdt_field
+            rng: None,
+            #ecam_base_field
+            deferred_buffer: None,
+            runtime_region: None,
+        };
+
+        // init_platform() is -> ! (never returns).
+        fstart_crabefi::init_platform(_crabefi_config);
     }
 }
 

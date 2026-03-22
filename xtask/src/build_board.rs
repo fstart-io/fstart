@@ -111,11 +111,12 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         StageLayout::Monolithic(mono) => {
             // Single build — compute features from this stage's capabilities.
             let mut features = base_features.clone();
-            let cap_features = capability_features(&mono.capabilities, &config.security);
+            let cap_features = capability_features(&mono.capabilities, &config.security, &config);
             features.extend(cap_features);
             let features_str = features.join(",");
             let needs_alloc = stage_uses_fdt(&mono.capabilities)
                 || stage_uses_acpi(&mono.capabilities)
+                || stage_uses_crabefi(&config)
                 || mono.heap_size.is_some();
             let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
@@ -152,7 +153,8 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 // stage only. The bootblock doesn't need FFS/crypto/FDT
                 // even if the main stage does.
                 let mut features = base_features.clone();
-                let cap_features = capability_features(&stage.capabilities, &config.security);
+                let cap_features =
+                    capability_features(&stage.capabilities, &config.security, &config);
                 features.extend(cap_features);
                 let features_str = features.join(",");
 
@@ -527,7 +529,11 @@ pub(crate) fn patch_allwinner_egon_ffs(
 /// Examines the stage's capabilities to determine which FFS, crypto,
 /// and FDT features are needed. Driver features are NOT included here
 /// (they are always global since every stage constructs all devices).
-fn capability_features(capabilities: &[Capability], security: &SecurityConfig) -> Vec<String> {
+fn capability_features(
+    capabilities: &[Capability],
+    security: &SecurityConfig,
+    config: &fstart_types::BoardConfig,
+) -> Vec<String> {
     let mut features = Vec::new();
 
     let uses_ffs = capabilities.iter().any(|c| {
@@ -567,6 +573,10 @@ fn capability_features(capabilities: &[Capability], security: &SecurityConfig) -
         features.push("pci-ecam".to_string());
     }
 
+    if stage_uses_crabefi(config) {
+        features.push("crabefi".to_string());
+    }
+
     if stage_uses_acpi(capabilities) {
         features.push("acpi".to_string());
     }
@@ -597,6 +607,14 @@ fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::AcpiPrepare))
+}
+
+/// Check if the board uses CrabEFI as a UEFI payload.
+fn stage_uses_crabefi(config: &fstart_types::BoardConfig) -> bool {
+    config
+        .payload
+        .as_ref()
+        .is_some_and(|p| p.kind == fstart_types::PayloadKind::UefiPayload)
 }
 
 /// Check if a stage's capabilities require the SMBIOS feature.
