@@ -133,7 +133,7 @@ impl Device for Pl011 {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         // Disable UART
         self.regs.cr.set(0);
 

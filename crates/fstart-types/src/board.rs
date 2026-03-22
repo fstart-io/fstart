@@ -230,6 +230,13 @@ pub enum PayloadKind {
     Shell,
     /// Custom ELF payload
     CustomElf,
+    /// UEFI payload via CrabEFI library.
+    ///
+    /// Links the CrabEFI library and calls `init_platform()` with a
+    /// `PlatformConfig` constructed from fstart's drivers.  fstart
+    /// handles hardware init (console, PCI BAR allocation, etc.) and
+    /// injects drivers as trait objects.
+    UefiPayload,
 }
 
 /// When to parse a FIT image.

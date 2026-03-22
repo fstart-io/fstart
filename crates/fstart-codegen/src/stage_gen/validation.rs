@@ -59,6 +59,13 @@ pub(super) fn validate_capability_ordering(capabilities: &[Capability]) -> Optio
                         .to_string(),
                 );
             }
+            Capability::PciInit { .. } if !console_inited => {
+                return Some(
+                    "PciInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
             Capability::SigVerify if !console_inited => {
                 return Some(
                     "SigVerify capability requires ConsoleInit to appear earlier \

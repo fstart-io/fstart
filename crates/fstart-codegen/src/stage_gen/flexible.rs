@@ -159,6 +159,43 @@ pub(super) const SERVICE_TRAITS: &[ServiceTraitInfo] = &[
         },
         accessor: "gpio",
     },
+    ServiceTraitInfo {
+        name: "PciRootBus",
+        enum_name: "PciRootBusDevice",
+        kind: TraitKind::Native {
+            methods: &[
+                ServiceMethod {
+                    signature: "fn config_read32(&self, addr: fstart_services::pci::PciAddr, reg: u16) -> Result<u32, ServiceError>",
+                    delegation: "d.config_read32(addr, reg)",
+                },
+                ServiceMethod {
+                    signature: "fn config_write32(&self, addr: fstart_services::pci::PciAddr, reg: u16, val: u32) -> Result<(), ServiceError>",
+                    delegation: "d.config_write32(addr, reg, val)",
+                },
+                ServiceMethod {
+                    signature: "fn ecam_base(&self) -> u64",
+                    delegation: "d.ecam_base()",
+                },
+                ServiceMethod {
+                    signature: "fn ecam_size(&self) -> u64",
+                    delegation: "d.ecam_size()",
+                },
+                ServiceMethod {
+                    signature: "fn bus_start(&self) -> u8",
+                    delegation: "d.bus_start()",
+                },
+                ServiceMethod {
+                    signature: "fn bus_end(&self) -> u8",
+                    delegation: "d.bus_end()",
+                },
+                ServiceMethod {
+                    signature: "fn device_count(&self) -> usize",
+                    delegation: "d.device_count()",
+                },
+            ],
+        },
+        accessor: "pci_root_bus",
+    },
 ];
 
 // =======================================================================

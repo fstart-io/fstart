@@ -45,7 +45,7 @@ pub trait Device: Send + Sync + Sized {
     fn new(config: &Self::Config) -> Result<Self, DeviceError>;
 
     /// Initialise hardware.  Called after `new()`, in capability order.
-    fn init(&self) -> Result<(), DeviceError>;
+    fn init(&mut self) -> Result<(), DeviceError>;
 }
 
 /// Trait for devices that live on a parent bus.
@@ -92,5 +92,5 @@ pub trait BusDevice: Send + Sync + Sized {
     fn new_on_bus(config: &Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
 
     /// Initialise hardware.  Called after `new_on_bus()`, in capability order.
-    fn init(&self) -> Result<(), DeviceError>;
+    fn init(&mut self) -> Result<(), DeviceError>;
 }

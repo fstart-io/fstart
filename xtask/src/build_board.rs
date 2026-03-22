@@ -563,6 +563,10 @@ fn capability_features(capabilities: &[Capability], security: &SecurityConfig) -
         features.push("fdt".to_string());
     }
 
+    if stage_uses_pci(capabilities) {
+        features.push("pci-ecam".to_string());
+    }
+
     if stage_uses_acpi(capabilities) {
         features.push("acpi".to_string());
     }
@@ -579,6 +583,13 @@ fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::FdtPrepare))
+}
+
+/// Check if a stage's capabilities require the PCI ECAM feature.
+fn stage_uses_pci(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::PciInit { .. }))
 }
 
 /// Check if a stage's capabilities require the ACPI feature.

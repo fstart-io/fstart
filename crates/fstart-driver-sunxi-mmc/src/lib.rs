@@ -337,7 +337,7 @@ impl Device for SunxiMmc {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         fstart_log::debug!("mmc: setup_gpio");
         self.setup_gpio();
         fstart_log::debug!("mmc: setup_clocks");

@@ -89,6 +89,11 @@ pub mod fu740_ddr {
     pub use fstart_driver_fu740_ddr::Fu740DdrConfig;
 }
 
+#[cfg(feature = "pci-ecam")]
+pub mod pci_ecam {
+    pub use fstart_driver_pci_ecam::PciEcamConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -210,6 +215,10 @@ pub enum DriverInstance {
     /// SiFive FU740 DDR4 memory controller.
     #[cfg(feature = "fu740-ddr")]
     Fu740Ddr(fu740_ddr::Fu740DdrConfig),
+
+    /// PCI ECAM host bridge with bus enumeration and resource allocation.
+    #[cfg(feature = "pci-ecam")]
+    PciEcam(pci_ecam::PciEcamConfig),
 }
 
 impl DriverInstance {
@@ -392,6 +401,16 @@ impl DriverInstance {
                 compatible: &["sifive,fu740-c000-ddr"],
                 has_acpi: false,
             },
+            #[cfg(feature = "pci-ecam")]
+            Self::PciEcam(_) => &DriverMeta {
+                name: "pci-ecam",
+                type_name: "PciEcam",
+                module_path: "fstart_driver_pci_ecam",
+                config_type: "PciEcamConfig",
+                services: &["PciRootBus"],
+                compatible: &["pci-host-ecam-generic"],
+                has_acpi: false,
+            },
         }
     }
 
@@ -462,6 +481,8 @@ impl DriverInstance {
             Self::Fu740Prci(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "fu740-ddr")]
             Self::Fu740Ddr(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "pci-ecam")]
+            Self::PciEcam(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

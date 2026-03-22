@@ -44,8 +44,8 @@ use capabilities::{
     collect_boot_media_gated_devices, generate_acpi_prepare, generate_boot_media,
     generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
     generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
-    generate_memory_init, generate_payload_load, generate_return_to_fel, generate_sig_verify,
-    generate_smbios_prepare, generate_stage_load,
+    generate_memory_init, generate_payload_load, generate_pci_init, generate_return_to_fel,
+    generate_sig_verify, generate_smbios_prepare, generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
@@ -274,6 +274,13 @@ fn generate_imports(
     }
     if has_gpio {
         tokens.extend(quote! { use fstart_services::GpioController; });
+    }
+
+    let has_pci = devices
+        .iter()
+        .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+    if has_pci {
+        tokens.extend(quote! { use fstart_services::PciRootBus; });
     }
 
     // Collect unique driver modules and import all public types via glob.
@@ -741,6 +748,16 @@ fn generate_fstart_main(
                     }
                 }
             }
+            Capability::PciInit { device } => {
+                let dev_name = device.as_str();
+                body.extend(generate_pci_init(
+                    dev_name,
+                    &config.devices,
+                    instances,
+                    &halt,
+                ));
+                inited_devices.push(dev_name.to_string());
+            }
             Capability::SigVerify => {
                 body.extend(generate_sig_verify(embed_anchor));
             }
@@ -954,7 +971,7 @@ fn generate_device_construction(
             // (e.g., AcpiPrepare) can reference it later.
             quote! {
                 let #cfg_binding = #config;
-                let #binding = #type_name::new(&#cfg_binding).unwrap_or_else(|_| #halt);
+                let mut #binding = #type_name::new(&#cfg_binding).unwrap_or_else(|_| #halt);
             }
         }
         Some(parent) => {
@@ -962,7 +979,7 @@ fn generate_device_construction(
             let parent_ident = format_ident!("{}", parent);
             quote! {
                 let #cfg_binding = #config;
-                let #binding = #type_name::new_on_bus(&#cfg_binding, &#parent_ident).unwrap_or_else(|_| #halt);
+                let mut #binding = #type_name::new_on_bus(&#cfg_binding, &#parent_ident).unwrap_or_else(|_| #halt);
             }
         }
     }

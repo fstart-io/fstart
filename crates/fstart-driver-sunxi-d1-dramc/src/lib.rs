@@ -1217,7 +1217,7 @@ impl Device for SunxiD1Dramc {
         Ok(Self { config: *config })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         let mem_mb = self.init_dram();
         if mem_mb == 0 {
             return Err(DeviceError::InitFailed);

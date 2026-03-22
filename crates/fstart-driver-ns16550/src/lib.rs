@@ -283,7 +283,7 @@ impl Device for Ns16550 {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         // Exact match of U-Boot ns16550_init() + ns16550_setbrg().
 
         // Wait until transmitter completely idle.

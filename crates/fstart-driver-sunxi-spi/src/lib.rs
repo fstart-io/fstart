@@ -449,7 +449,7 @@ impl Device for SunxiSpi {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         self.setup_gpio();
         self.setup_clocks();
         self.enable_controller()?;

@@ -8,7 +8,7 @@ use fstart_device_registry::DriverMeta;
 use fstart_types::DeviceConfig;
 
 /// Bus service names that indicate a device is a bus controller.
-const BUS_SERVICES: &[&str] = &["I2cBus", "SpiBus", "GpioController"];
+const BUS_SERVICES: &[&str] = &["I2cBus", "SpiBus", "GpioController", "PciRootBus"];
 
 /// Returns true if a device provides a bus service.
 pub(super) fn is_bus_provider(dev: &DeviceConfig) -> bool {
@@ -148,6 +148,15 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         config_type: "Fu740DdrConfig",
         services: &["MemoryController"],
         compatible: &["sifive,fu740-c000-ddr"],
+        has_acpi: false,
+    },
+    DriverMeta {
+        name: "pci-ecam",
+        type_name: "PciEcam",
+        module_path: "fstart_driver_pci_ecam",
+        config_type: "PciEcamConfig",
+        services: &["PciRootBus"],
+        compatible: &["pci-host-ecam-generic"],
         has_acpi: false,
     },
 ];
