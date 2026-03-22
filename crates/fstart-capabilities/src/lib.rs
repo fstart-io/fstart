@@ -355,6 +355,45 @@ pub fn fdt_prepare_platform(
     fstart_log::info!("FDT: ready at {}", Hex(dst_dtb_addr));
 }
 
+/// Patch the FDT `/chosen` node with `linux,initrd-start` and `linux,initrd-end`.
+///
+/// Called after `fdt_prepare_platform` and after loading the initramfs blob
+/// to `initrd_start`. The DTB at `dtb_addr` must already be copied and
+/// patched by `fdt_prepare_platform`.
+#[cfg(feature = "fdt")]
+pub fn fdt_set_initrd_addresses(dtb_addr: u64, initrd_start: u64, initrd_size: u64) {
+    let initrd_end = initrd_start + initrd_size;
+    fstart_log::info!(
+        "FDT: patching initrd start={} end={} ({}KB)",
+        Hex(initrd_start),
+        Hex(initrd_end),
+        initrd_size / 1024,
+    );
+
+    let dtb_ptr = dtb_addr as *mut u8;
+    // Read current totalsize.
+    let current_totalsize = {
+        // SAFETY: dtb_addr points to a valid FDT in writable DRAM.
+        let raw = unsafe { core::ptr::read_volatile(dtb_ptr.add(4) as *const u32) };
+        u32::from_be(raw) as usize
+    };
+    let max_size = current_totalsize + 4096;
+
+    // SAFETY: dtb_ptr points to a valid, writable FDT blob in DRAM.
+    match unsafe { fdt_patch::fdt_set_initrd(dtb_ptr, max_size, initrd_start, initrd_end) } {
+        Ok(new_size) => {
+            fstart_log::info!(
+                "FDT: patched initrd props ({} -> {} bytes)",
+                current_totalsize,
+                new_size
+            );
+        }
+        Err(_e) => {
+            fstart_log::error!("FDT: initrd patch failed");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PayloadLoad
 // ---------------------------------------------------------------------------
@@ -650,9 +689,69 @@ pub fn load_ffs_file_by_type(
         }
     };
 
-    fstart_log::info!("load file: loading '{}'", entry.name.as_str());
+    // Log load address from segment metadata for debugging.
+    if let fstart_types::ffs::EntryContent::File { segments, .. } = &entry.content {
+        for seg in segments {
+            fstart_log::info!(
+                "load file: '{}' seg '{}' -> {} ({} bytes)",
+                entry.name.as_str(),
+                seg.name.as_str(),
+                Hex(seg.load_addr),
+                seg.stored_size,
+            );
+        }
+    }
 
     load_entry_segments_from_media(media, entry, region).is_some()
+}
+
+/// Get the total memory size of a file in FFS by its `FileType`.
+///
+/// Returns the sum of `mem_size` across all segments of the matching file.
+/// Used to determine the initramfs size after loading for FDT patching.
+/// Returns 0 if the file is not found.
+#[cfg(feature = "ffs")]
+pub fn get_ffs_file_size(
+    anchor_data: &[u8],
+    media: &impl BootMedia,
+    file_type: fstart_types::ffs::FileType,
+) -> u64 {
+    if media.size() == 0 || anchor_data.is_empty() {
+        return 0;
+    }
+
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(_) => return 0,
+    };
+
+    let manifest = match read_manifest_from_media(media, &anchor) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+
+    for region in &manifest.regions {
+        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
+            for entry in children {
+                if let fstart_types::ffs::EntryContent::File {
+                    file_type: ft,
+                    segments,
+                    ..
+                } = &entry.content
+                {
+                    if *ft == file_type {
+                        let mut total = 0u64;
+                        for seg in segments {
+                            total += seg.loaded_size as u64;
+                        }
+                        return total;
+                    }
+                }
+            }
+        }
+    }
+
+    0
 }
 
 /// Find a file in FFS by its `FileType` and return a slice to its raw data.
@@ -792,6 +891,7 @@ fn load_entry_segments_from_media(
                         fstart_log::error!("segment read error");
                         return None;
                     }
+
                     fstart_log::debug!(
                         "  {}: {} ({} bytes)",
                         seg.name.as_str(),

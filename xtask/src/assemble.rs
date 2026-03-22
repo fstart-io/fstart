@@ -542,6 +542,42 @@ fn assemble_linux_payload(
         }
     }
 
+    // Add initramfs blob if specified
+    if let Some(ref initramfs_name) = payload.initramfs_file {
+        let initramfs_path = board_dir.join(initramfs_name.as_str());
+        if initramfs_path.exists() {
+            let initramfs_data = fs::read(&initramfs_path)
+                .map_err(|e| format!("failed to read initramfs blob: {e}"))?;
+            let initramfs_load_addr = payload.initramfs_load_addr.unwrap_or(0);
+
+            eprintln!(
+                "[fstart] initramfs blob: {} ({} bytes, load_addr={:#x})",
+                initramfs_path.display(),
+                initramfs_data.len(),
+                initramfs_load_addr,
+            );
+
+            ro_files.push(InputFile {
+                name: initramfs_name.to_string(),
+                file_type: FileType::Initramfs,
+                segments: vec![InputSegment {
+                    name: ".data".to_string(),
+                    kind: SegmentKind::ReadOnlyData,
+                    data: initramfs_data,
+                    mem_size: None,
+                    load_addr: initramfs_load_addr,
+                    compression: Compression::None,
+                    flags: SegmentFlags::RODATA,
+                }],
+            });
+        } else {
+            eprintln!(
+                "[fstart] warning: initramfs blob not found: {}",
+                initramfs_path.display()
+            );
+        }
+    }
+
     Ok(())
 }
 
