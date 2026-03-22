@@ -74,6 +74,11 @@ pub mod sunxi_d1_dramc {
     pub use fstart_driver_sunxi_d1_dramc::SunxiD1DramcConfig;
 }
 
+#[cfg(feature = "sifive-uart")]
+pub mod sifive_uart {
+    pub use fstart_driver_sifive_uart::SifiveUartConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -169,6 +174,10 @@ pub enum DriverInstance {
     /// Allwinner D1/T113 (sun20i) DRAM controller.
     #[cfg(feature = "sunxi-d1-dramc")]
     SunxiD1Dramc(sunxi_d1_dramc::SunxiD1DramcConfig),
+
+    /// SiFive UART (FU540/FU740).
+    #[cfg(feature = "sifive-uart")]
+    SifiveUart(sifive_uart::SifiveUartConfig),
 }
 
 impl DriverInstance {
@@ -283,6 +292,15 @@ impl DriverInstance {
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun20i-d1-mbus"],
             },
+            #[cfg(feature = "sifive-uart")]
+            Self::SifiveUart(_) => &DriverMeta {
+                name: "sifive-uart",
+                type_name: "SifiveUart",
+                module_path: "fstart_driver_sifive_uart",
+                config_type: "SifiveUartConfig",
+                services: &["Console"],
+                compatible: &["sifive,fu740-c000-uart", "sifive,uart0"],
+            },
         }
     }
 
@@ -319,6 +337,8 @@ impl DriverInstance {
             Self::SunxiD1Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-d1-dramc")]
             Self::SunxiD1Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sifive-uart")]
+            Self::SifiveUart(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

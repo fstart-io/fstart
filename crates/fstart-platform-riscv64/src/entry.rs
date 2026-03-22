@@ -1,7 +1,19 @@
 //! RISC-V entry point — reset vector and early init.
 //!
 //! Provides the `_start` symbol placed at the reset vector by the linker script.
-//! Sets up the stack, clears BSS, and jumps to `fstart_main`.
+//! Parks non-boot harts, sets up the stack, clears BSS, and jumps to
+//! `fstart_main`.
+//!
+//! ## Multi-hart boot
+//!
+//! On multi-hart SoCs (e.g., SiFive FU740 with 5 harts), the boot ROM
+//! starts ALL harts simultaneously. Only the hart whose `mhartid` matches
+//! the linker symbol `_boot_hart_id` continues. All others enter a WFI
+//! loop, waiting to be woken by an IPI from the SBI firmware later.
+//!
+//! For single-hart platforms or QEMU `virt` (which starts only hart 0 by
+//! default), `_boot_hart_id = 0` and the check is a single branch that
+//! always falls through.
 
 use core::arch::global_asm;
 
@@ -10,13 +22,36 @@ global_asm!(
     .section .text.entry
     .global _start
 _start:
-    // Save boot arguments from QEMU before any register is clobbered.
-    // QEMU RISC-V virt passes: a0 = mhartid, a1 = DTB address.
+    // Save boot arguments before any register is clobbered.
+    // QEMU / boot ROM passes: a0 = mhartid, a1 = DTB address.
     //
     // Following coreboot's approach (src/arch/riscv/bootblock.S): save DTB
     // in the mscratch CSR which is immune to stack overflow. The hart ID
     // can always be re-read from mhartid.
     csrw mscratch, a1
+
+    // --- Multi-hart parking ---
+    // Park all harts except the designated boot hart. On the SiFive FU740,
+    // hart 0 is the S7 monitor core (rv64imac, no S-mode) and hart 1 is
+    // the first U74 application core. _boot_hart_id is defined in the
+    // linker script from the board config.
+    csrr t0, mhartid
+    // Load the boot hart ID from a word embedded in the code stream.
+    // The linker fills _boot_hart_id (an absolute symbol = the hart ID
+    // value). We store it in a .word and load it PC-relative to avoid
+    // issues with `la` on small absolute values.
+    lla  t1, .Lboot_hart_val
+    lw   t1, 0(t1)
+    bne  t0, t1, .Lpark_hart
+    j    .Lboot_hart_ok
+
+    .balign 4
+.Lboot_hart_val:
+    .word _boot_hart_id
+
+.Lboot_hart_ok:
+
+    // --- Boot hart continues ---
 
     // Set up stack pointer (grows downward)
     la sp, _stack_top
@@ -47,10 +82,14 @@ _start:
     // a0 = handoff_ptr = 0 (no inter-stage handoff on RISC-V yet).
     li a0, 0
     call fstart_main
-    // Should never return; spin if it does
-3:
+    // Should never return; fall through to park
+
+    // --- Non-boot harts park here ---
+    // Wait for IPI from SBI firmware (OpenSBI will wake secondary harts
+    // via CLINT when Linux calls SBI_EXT_HSM / sbi_hart_start).
+.Lpark_hart:
     wfi
-    j 3b
+    j .Lpark_hart
     "#
 );
 

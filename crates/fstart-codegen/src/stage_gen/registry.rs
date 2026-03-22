@@ -114,4 +114,12 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["MemoryController"],
         compatible: &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"],
     },
+    DriverMeta {
+        name: "sifive-uart",
+        type_name: "SifiveUart",
+        module_path: "fstart_driver_sifive_uart",
+        config_type: "SifiveUartConfig",
+        services: &["Console"],
+        compatible: &["sifive,fu740-c000-uart", "sifive,uart0"],
+    },
 ];

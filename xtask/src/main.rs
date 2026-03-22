@@ -110,11 +110,11 @@ fn run_board(
     if is_multi_stage || has_payload_blobs {
         // Assemble the FFS image (includes stage + firmware + kernel)
         let image_path = assemble::assemble_with_opts(board_name, release, kernel, firmware)?;
-        qemu::run(config.platform, &image_path)
+        qemu::run(config.platform, &image_path, board_name)
     } else {
         // Simple monolithic: build and boot the single binary directly
         let res = build_board::build(board_name, release)?;
-        qemu::run(config.platform, &res.primary_binary().run_path)
+        qemu::run(config.platform, &res.primary_binary().run_path, board_name)
     }
 }
 
