@@ -9,16 +9,51 @@
 
 use acpi_tables::sdt::Sdt;
 
-/// DBG2 header size: 36-byte ACPI header + devices_offset(4) + devices_count(4).
-const DBG2_HEADER_SIZE: usize = 44;
+// ---------------------------------------------------------------------------
+// Wire-format structs — #[repr(C, packed)] mirrors the DBG2 spec layout.
+// ---------------------------------------------------------------------------
 
-/// Debug device info fixed size (22 bytes).
-const DEVICE_INFO_FIXED_SIZE: usize = 22;
+/// DBG2 fields after the 36-byte ACPI SDT header.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct Dbg2Header {
+    devices_offset: u32,
+    devices_count: u32,
+}
 
-/// GAS (Generic Address Structure) size: 12 bytes.
-const GAS_SIZE: usize = 12;
+/// DBG2 debug device info fixed structure (22 bytes).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct DeviceInfoFixed {
+    revision: u8,
+    length: u16,
+    address_count: u8,
+    namespace_string_length: u16,
+    namespace_string_offset: u16,
+    oem_data_length: u16,
+    oem_data_offset: u16,
+    port_type: u16,
+    port_subtype: u16,
+    _reserved: u16,
+    base_address_offset: u16,
+    address_size_offset: u16,
+}
 
-/// Address size field: 4 bytes (u32).
+/// ACPI Generic Address Structure (GAS, 12 bytes).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct Gas {
+    space_id: u8,
+    bit_width: u8,
+    bit_offset: u8,
+    access_size: u8,
+    address: u64,
+}
+
+const ACPI_HDR: usize = 36;
+const DBG2_HEADER_SIZE: usize = ACPI_HDR + core::mem::size_of::<Dbg2Header>();
+const DEVICE_INFO_FIXED_SIZE: usize = core::mem::size_of::<DeviceInfoFixed>();
+const GAS_SIZE: usize = core::mem::size_of::<Gas>();
 const ADDR_SIZE_FIELD: usize = 4;
 
 /// Port types.
@@ -40,15 +75,19 @@ mod serial_subtype {
     pub const FULL_16550: u16 = 0x0012;
 }
 
+/// DBG2 PL011 configuration.
+pub struct Dbg2Pl011Config<'a> {
+    /// Physical MMIO base address of the PL011 peripheral.
+    pub base_addr: u64,
+    /// Size of the MMIO region in bytes (e.g., 0x1000).
+    pub addr_size: u32,
+    /// ACPI namespace path (e.g., `"\\_SB.COM0"`).
+    pub namespace: &'a str,
+}
+
 /// Build a DBG2 table for a PL011 UART debug port.
-///
-/// # Arguments
-///
-/// * `base_addr` — Physical MMIO base address of the PL011 peripheral.
-/// * `addr_size` — Size of the MMIO region in bytes (e.g., 0x1000).
-/// * `namespace` — ACPI namespace path (e.g., `"\\_SB.COM0"`).
-pub fn build_dbg2_pl011(base_addr: u64, addr_size: u32, namespace: &str) -> Sdt {
-    let ns_bytes = namespace.as_bytes();
+pub fn build_dbg2_pl011(config: &Dbg2Pl011Config<'_>) -> Sdt {
+    let ns_bytes = config.namespace.as_bytes();
     let ns_len = ns_bytes.len() + 1; // include NUL terminator
 
     // Device info total length: fixed struct + GAS + address_size + namespace.
@@ -65,42 +104,61 @@ pub fn build_dbg2_pl011(base_addr: u64, addr_size: u32, namespace: &str) -> Sdt 
         crate::OEM_REVISION,
     );
 
-    // DBG2 header fields.
-    sdt.write_u32(36, DBG2_HEADER_SIZE as u32); // devices_offset
-    sdt.write_u32(40, 1); // devices_count
+    // DBG2 header.
+    crate::write_struct(
+        &mut sdt,
+        ACPI_HDR,
+        &Dbg2Header {
+            devices_offset: DBG2_HEADER_SIZE as u32,
+            devices_count: 1,
+        },
+    );
 
-    // Device info structure at offset 44.
+    // Offsets relative to the start of the device info structure.
+    let base_addr_off = DEVICE_INFO_FIXED_SIZE as u16; // 22
+    let addr_size_off = base_addr_off + GAS_SIZE as u16; // 34
+    let ns_off = addr_size_off + ADDR_SIZE_FIELD as u16; // 38
+
     let dev_off = DBG2_HEADER_SIZE;
-    let base_addr_off = DEVICE_INFO_FIXED_SIZE; // 22
-    let addr_size_off = base_addr_off + GAS_SIZE; // 34
-    let ns_off = addr_size_off + ADDR_SIZE_FIELD; // 38
 
-    sdt.write_u8(dev_off, 0); // revision
-    sdt.write_u16(dev_off + 1, device_info_len as u16); // length
-    sdt.write_u8(dev_off + 3, 1); // address_count
-    sdt.write_u16(dev_off + 4, ns_len as u16); // namespace_string_length
-    sdt.write_u16(dev_off + 6, ns_off as u16); // namespace_string_offset
-    sdt.write_u16(dev_off + 8, 0); // oem_data_length
-    sdt.write_u16(dev_off + 10, 0); // oem_data_offset
-    sdt.write_u16(dev_off + 12, port_type::SERIAL); // port_type
-    sdt.write_u16(dev_off + 14, serial_subtype::ARM_PL011); // port_subtype
-    sdt.write_u16(dev_off + 16, 0); // reserved
-    sdt.write_u16(dev_off + 18, base_addr_off as u16); // base_address_offset
-    sdt.write_u16(dev_off + 20, addr_size_off as u16); // address_size_offset
+    // Debug device info (fixed portion).
+    crate::write_struct(
+        &mut sdt,
+        dev_off,
+        &DeviceInfoFixed {
+            revision: 0,
+            length: device_info_len as u16,
+            address_count: 1,
+            namespace_string_length: ns_len as u16,
+            namespace_string_offset: ns_off,
+            oem_data_length: 0,
+            oem_data_offset: 0,
+            port_type: port_type::SERIAL,
+            port_subtype: serial_subtype::ARM_PL011,
+            _reserved: 0,
+            base_address_offset: base_addr_off,
+            address_size_offset: addr_size_off,
+        },
+    );
 
     // GAS (Generic Address Structure) for the MMIO base address.
-    let gas_off = dev_off + base_addr_off;
-    sdt.write_u8(gas_off, 0); // space_id: SystemMemory
-    sdt.write_u8(gas_off + 1, 32); // bit_width: 32-bit registers
-    sdt.write_u8(gas_off + 2, 0); // bit_offset
-    sdt.write_u8(gas_off + 3, 3); // access_size: DWord
-    sdt.write_u64(gas_off + 4, base_addr); // address (64-bit LE)
+    crate::write_struct(
+        &mut sdt,
+        dev_off + base_addr_off as usize,
+        &Gas {
+            space_id: 0, // SystemMemory
+            bit_width: 32,
+            bit_offset: 0,
+            access_size: 3, // DWord
+            address: config.base_addr,
+        },
+    );
 
     // Address size (u32).
-    sdt.write_u32(dev_off + addr_size_off, addr_size);
+    sdt.write_u32(dev_off + addr_size_off as usize, config.addr_size);
 
     // Namespace string (NUL-terminated).
-    let ns_abs = dev_off + ns_off;
+    let ns_abs = dev_off + ns_off as usize;
     for (i, &b) in ns_bytes.iter().enumerate() {
         sdt.write_u8(ns_abs + i, b);
     }
@@ -118,7 +176,11 @@ mod tests {
 
     #[test]
     fn test_dbg2_pl011() {
-        let dbg2 = build_dbg2_pl011(0x6000_0000, 0x1000, "\\_SB.COM0");
+        let dbg2 = build_dbg2_pl011(&Dbg2Pl011Config {
+            base_addr: 0x6000_0000,
+            addr_size: 0x1000,
+            namespace: "\\_SB.COM0",
+        });
 
         let mut bytes = Vec::new();
         dbg2.to_aml_bytes(&mut bytes);
@@ -176,7 +238,11 @@ mod tests {
 
     #[test]
     fn test_dbg2_short_namespace() {
-        let dbg2 = build_dbg2_pl011(0x0900_0000, 0x1000, ".");
+        let dbg2 = build_dbg2_pl011(&Dbg2Pl011Config {
+            base_addr: 0x0900_0000,
+            addr_size: 0x1000,
+            namespace: ".",
+        });
 
         let mut bytes = Vec::new();
         dbg2.to_aml_bytes(&mut bytes);

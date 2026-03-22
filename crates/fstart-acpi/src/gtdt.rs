@@ -8,6 +8,50 @@
 
 use acpi_tables::sdt::Sdt;
 
+// ---------------------------------------------------------------------------
+// Wire-format structs — #[repr(C, packed)] mirrors the ACPI 6.5 layout.
+// ---------------------------------------------------------------------------
+
+/// GTDT fixed body after the 36-byte ACPI SDT header (revision 3).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct GtdtBody {
+    cnt_ctrl_base: u64,
+    _reserved: u32,
+    secure_el1_gsiv: u32,
+    secure_el1_flags: u32,
+    nonsecure_el1_gsiv: u32,
+    nonsecure_el1_flags: u32,
+    virtual_gsiv: u32,
+    virtual_flags: u32,
+    nonsecure_el2_gsiv: u32,
+    nonsecure_el2_flags: u32,
+    cnt_read_base: u64,
+    platform_timer_count: u32,
+    platform_timer_offset: u32,
+    /// Revision 3 addition (ACPI 6.3+).
+    virtual_el2_gsiv: u32,
+    virtual_el2_flags: u32,
+}
+
+/// SBSA Generic Watchdog subtable (type 1, 28 bytes).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct WatchdogSubtable {
+    subtable_type: u8,
+    length: u16,
+    _reserved: u8,
+    refresh_base: u64,
+    control_base: u64,
+    gsiv: u32,
+    timer_flags: u32,
+}
+
+const ACPI_HDR: usize = 36;
+const GTDT_BODY_SIZE: usize = core::mem::size_of::<GtdtBody>();
+const WATCHDOG_SUBTABLE_SIZE: usize = core::mem::size_of::<WatchdogSubtable>();
+const PLATFORM_TIMERS_OFFSET: u32 = (ACPI_HDR + GTDT_BODY_SIZE) as u32;
+
 /// Timer interrupt flags per ACPI 6.5 Table 5.39.
 pub mod flags {
     /// Level-triggered, active-low, always-on.
@@ -29,33 +73,31 @@ pub struct Watchdog {
     pub timer_flags: u32,
 }
 
+/// GTDT configuration for ARM generic timers.
+#[derive(Debug, Clone)]
+pub struct GtdtConfig<'a> {
+    /// Counter control base address.
+    ///
+    /// Use `0xFFFF_FFFF_FFFF_FFFF` when EL3 firmware manages the counter
+    /// (the common case when TF-A is present).
+    pub cnt_ctrl_base: u64,
+    /// Secure EL1 physical timer interrupt GSIV (SBSA: 29).
+    pub secure_el1_gsiv: u32,
+    /// Non-secure EL1 physical timer interrupt GSIV (SBSA: 30).
+    pub nonsecure_el1_gsiv: u32,
+    /// Virtual timer interrupt GSIV (SBSA: 27).
+    pub virtual_gsiv: u32,
+    /// Non-secure EL2 physical timer interrupt GSIV (SBSA: 26).
+    pub nonsecure_el2_gsiv: u32,
+    /// Flags applied to all four timer interrupts.
+    pub timer_flags: u32,
+    /// Optional SBSA Generic Watchdog subtables.
+    pub watchdogs: &'a [Watchdog],
+}
+
 /// Build a GTDT table for ARM generic timers.
-///
-/// # Arguments
-///
-/// * `cnt_ctrl_base` — Counter control base address. Use
-///   `0xFFFF_FFFF_FFFF_FFFF` when EL3 firmware manages the counter
-///   (the common case when TF-A is present).
-/// * `secure_el1_gsiv` — Secure EL1 physical timer interrupt (SBSA: 29).
-/// * `nonsecure_el1_gsiv` — Non-secure EL1 physical timer (SBSA: 30).
-/// * `virtual_gsiv` — Virtual timer interrupt (SBSA: 27).
-/// * `nonsecure_el2_gsiv` — Non-secure EL2 physical timer (SBSA: 26).
-/// * `timer_flags` — Flags applied to all four timer interrupts.
-/// * `watchdogs` — Optional SBSA Generic Watchdog subtables.
-pub fn build_gtdt(
-    cnt_ctrl_base: u64,
-    secure_el1_gsiv: u32,
-    nonsecure_el1_gsiv: u32,
-    virtual_gsiv: u32,
-    nonsecure_el2_gsiv: u32,
-    timer_flags: u32,
-    watchdogs: &[Watchdog],
-) -> Sdt {
-    // Fixed body: 68 bytes after the 36-byte header (revision 3 adds
-    // Virtual EL2 Timer GSIV + Flags at offsets 96-103 compared to rev 2).
-    // Each watchdog subtable: 28 bytes (type 1).
-    let body_size = 68 + watchdogs.len() * 28;
-    let total_size = 36 + body_size;
+pub fn build_gtdt(config: &GtdtConfig<'_>) -> Sdt {
+    let total_size = ACPI_HDR + GTDT_BODY_SIZE + config.watchdogs.len() * WATCHDOG_SUBTABLE_SIZE;
 
     let mut sdt = Sdt::new(
         *b"GTDT",
@@ -66,40 +108,49 @@ pub fn build_gtdt(
         crate::OEM_REVISION,
     );
 
-    // Fixed fields after header (offsets 36..104 for revision 3).
-    // NOTE: write_u* methods use native byte order; targets are LE.
-    sdt.write_u64(36, cnt_ctrl_base); // CntControlBase
-    sdt.write_u32(44, 0); // Reserved
-    sdt.write_u32(48, secure_el1_gsiv);
-    sdt.write_u32(52, timer_flags); // Secure EL1 Flags
-    sdt.write_u32(56, nonsecure_el1_gsiv);
-    sdt.write_u32(60, timer_flags); // Non-Secure EL1 Flags
-    sdt.write_u32(64, virtual_gsiv);
-    sdt.write_u32(68, timer_flags); // Virtual Timer Flags
-    sdt.write_u32(72, nonsecure_el2_gsiv);
-    sdt.write_u32(76, timer_flags); // Non-Secure EL2 Flags
-    sdt.write_u64(80, 0xFFFF_FFFF_FFFF_FFFF); // CntReadBase (not used)
-    sdt.write_u32(88, watchdogs.len() as u32); // Platform Timer Count
+    let pt_offset = if config.watchdogs.is_empty() {
+        0
+    } else {
+        PLATFORM_TIMERS_OFFSET
+    };
 
-    // Platform Timer Offset: byte offset from table start to first
-    // platform timer structure. Zero if no platform timers.
-    let platform_timer_offset = if watchdogs.is_empty() { 0u32 } else { 104 };
-    sdt.write_u32(92, platform_timer_offset);
+    crate::write_struct(
+        &mut sdt,
+        ACPI_HDR,
+        &GtdtBody {
+            cnt_ctrl_base: config.cnt_ctrl_base,
+            _reserved: 0,
+            secure_el1_gsiv: config.secure_el1_gsiv,
+            secure_el1_flags: config.timer_flags,
+            nonsecure_el1_gsiv: config.nonsecure_el1_gsiv,
+            nonsecure_el1_flags: config.timer_flags,
+            virtual_gsiv: config.virtual_gsiv,
+            virtual_flags: config.timer_flags,
+            nonsecure_el2_gsiv: config.nonsecure_el2_gsiv,
+            nonsecure_el2_flags: config.timer_flags,
+            cnt_read_base: 0xFFFF_FFFF_FFFF_FFFF, // not used
+            platform_timer_count: config.watchdogs.len() as u32,
+            platform_timer_offset: pt_offset,
+            virtual_el2_gsiv: 0,
+            virtual_el2_flags: 0,
+        },
+    );
 
-    // Revision 3 fields: Virtual EL2 Timer (ACPI 6.3+).
-    sdt.write_u32(96, 0); // Virtual EL2 Timer GSIV (0 = not available)
-    sdt.write_u32(100, 0); // Virtual EL2 Timer Flags
-
-    // Watchdog subtables (type 1, 28 bytes each).
-    for (i, wd) in watchdogs.iter().enumerate() {
-        let base = 104 + i * 28;
-        sdt.write_u8(base, 1); // Type: SBSA Generic Watchdog
-        sdt.write_u16(base + 1, 28); // Length
-                                     // base+3: Reserved (already zero)
-        sdt.write_u64(base + 4, wd.refresh_base);
-        sdt.write_u64(base + 12, wd.control_base);
-        sdt.write_u32(base + 20, wd.gsiv);
-        sdt.write_u32(base + 24, wd.timer_flags);
+    // Watchdog subtables.
+    for (i, wd) in config.watchdogs.iter().enumerate() {
+        crate::write_struct(
+            &mut sdt,
+            ACPI_HDR + GTDT_BODY_SIZE + i * WATCHDOG_SUBTABLE_SIZE,
+            &WatchdogSubtable {
+                subtable_type: 1, // SBSA Generic Watchdog
+                length: WATCHDOG_SUBTABLE_SIZE as u16,
+                _reserved: 0,
+                refresh_base: wd.refresh_base,
+                control_base: wd.control_base,
+                gsiv: wd.gsiv,
+                timer_flags: wd.timer_flags,
+            },
+        );
     }
 
     sdt.update_checksum();
@@ -114,15 +165,15 @@ mod tests {
 
     #[test]
     fn test_gtdt_no_watchdog() {
-        let gtdt = build_gtdt(
-            0xFFFF_FFFF_FFFF_FFFF,
-            29,
-            30,
-            27,
-            26,
-            flags::LEVEL_LOW_ALWAYS_ON,
-            &[],
-        );
+        let gtdt = build_gtdt(&GtdtConfig {
+            cnt_ctrl_base: 0xFFFF_FFFF_FFFF_FFFF,
+            secure_el1_gsiv: 29,
+            nonsecure_el1_gsiv: 30,
+            virtual_gsiv: 27,
+            nonsecure_el2_gsiv: 26,
+            timer_flags: flags::LEVEL_LOW_ALWAYS_ON,
+            watchdogs: &[],
+        });
 
         let mut bytes = Vec::new();
         gtdt.to_aml_bytes(&mut bytes);
@@ -161,15 +212,15 @@ mod tests {
             timer_flags: flags::LEVEL_LOW_ALWAYS_ON,
         };
 
-        let gtdt = build_gtdt(
-            0xFFFF_FFFF_FFFF_FFFF,
-            29,
-            30,
-            27,
-            26,
-            flags::LEVEL_LOW_ALWAYS_ON,
-            &[watchdog],
-        );
+        let gtdt = build_gtdt(&GtdtConfig {
+            cnt_ctrl_base: 0xFFFF_FFFF_FFFF_FFFF,
+            secure_el1_gsiv: 29,
+            nonsecure_el1_gsiv: 30,
+            virtual_gsiv: 27,
+            nonsecure_el2_gsiv: 26,
+            timer_flags: flags::LEVEL_LOW_ALWAYS_ON,
+            watchdogs: &[watchdog],
+        });
 
         let mut bytes = Vec::new();
         gtdt.to_aml_bytes(&mut bytes);
