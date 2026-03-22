@@ -200,7 +200,7 @@ impl Device for SunxiA20Ccu {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         self.timer_init();
         self.clock_init_safe();
 

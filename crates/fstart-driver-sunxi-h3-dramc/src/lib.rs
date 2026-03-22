@@ -721,7 +721,7 @@ impl Device for SunxiH3Dramc {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         let variant_name = match self.variant {
             SunxiDramcVariant::H3 => "H3",
             SunxiDramcVariant::H5 => "H5",

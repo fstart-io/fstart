@@ -38,6 +38,7 @@ sunxi-d1-dramc = ["dep:fstart-driver-sunxi-d1-dramc"]
 sifive-uart = ["dep:fstart-driver-sifive-uart"]
 fu740-prci = ["dep:fstart-driver-fu740-prci"]
 fu740-ddr = ["dep:fstart-driver-fu740-ddr"]
+pci-ecam = ["dep:fstart-driver-pci-ecam", "dep:fstart-alloc"]
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
@@ -89,6 +90,7 @@ fstart-driver-sunxi-d1-dramc = { workspace = true, optional = true }
 fstart-driver-sifive-uart = { workspace = true, optional = true }
 fstart-driver-fu740-prci = { workspace = true, optional = true }
 fstart-driver-fu740-ddr = { workspace = true, optional = true }
+fstart-driver-pci-ecam = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

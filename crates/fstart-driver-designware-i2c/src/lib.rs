@@ -239,7 +239,7 @@ impl Device for DesignwareI2c {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         // Disable controller before configuring
         self.regs.ic_enable.write(IC_ENABLE::ENABLE::CLEAR);
         self.wait_disabled()?;

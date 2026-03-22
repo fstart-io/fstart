@@ -382,7 +382,7 @@ impl Device for SunxiA20Dramc {
     ///
     /// Tries 32-bit bus width first, falls back to 16-bit. Adjusts
     /// chip density if the detected size differs from the initial guess.
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         fstart_log::info!("DRAM: starting init");
 
         // A20 has all A0-A15 address lines, allowing max density 8192 Mb.

@@ -33,6 +33,7 @@ members = [
     "crates/fstart-driver-sifive-uart",
     "crates/fstart-driver-fu740-prci",
     "crates/fstart-driver-fu740-ddr",
+    "crates/fstart-driver-pci-ecam",
     "crates/fstart-device-registry",
     "crates/fstart-stage",
     "crates/fstart-fit",
@@ -108,6 +109,7 @@ fstart-driver-sunxi-d1-dramc = { path = "crates/fstart-driver-sunxi-d1-dramc" }
 fstart-driver-sifive-uart = { path = "crates/fstart-driver-sifive-uart" }
 fstart-driver-fu740-prci = { path = "crates/fstart-driver-fu740-prci" }
 fstart-driver-fu740-ddr = { path = "crates/fstart-driver-fu740-ddr" }
+fstart-driver-pci-ecam = { path = "crates/fstart-driver-pci-ecam" }
 fstart-device-registry = { path = "crates/fstart-device-registry" }
 fstart-stage = { path = "crates/fstart-stage" }
 fstart-fit = { path = "crates/fstart-fit" }
