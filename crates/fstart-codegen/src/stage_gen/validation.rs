@@ -122,6 +122,13 @@ pub(super) fn validate_capability_ordering(capabilities: &[Capability]) -> Optio
                         .to_string(),
                 );
             }
+            Capability::SmBiosPrepare if !console_inited => {
+                return Some(
+                    "SmBiosPrepare capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
             _ => {}
         }
     }

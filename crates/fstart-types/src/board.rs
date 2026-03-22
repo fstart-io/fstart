@@ -92,6 +92,26 @@ pub struct BoardConfig {
     /// carries the exact semantics of one SoC family's boot ROM.
     #[serde(default)]
     pub soc_image_format: SocImageFormat,
+
+    /// ACPI table generation configuration.
+    ///
+    /// Required when any stage has the `AcpiPrepare` capability. Contains
+    /// the target address for tables, platform parameters (MADT, GTDT,
+    /// FADT), and declarations for ACPI-only devices (hardware without
+    /// fstart driver crates).
+    ///
+    /// Per-driver ACPI fields (e.g., `acpi_name`, `acpi_gsiv`) live in
+    /// each driver's own `Config` struct, not here.
+    #[serde(default)]
+    pub acpi: Option<crate::acpi::AcpiConfig>,
+
+    /// SMBIOS table generation configuration.
+    ///
+    /// Required when any stage has the `SmBiosPrepare` capability.
+    /// Contains system identity strings, processor descriptions, and
+    /// memory device declarations for SMBIOS Type 0/1/2/3/4/16/17/19.
+    #[serde(default)]
+    pub smbios: Option<crate::smbios::SmbiosConfig>,
 }
 
 /// SoC-specific binary image format required by the boot ROM.

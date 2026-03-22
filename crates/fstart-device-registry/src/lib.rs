@@ -97,6 +97,8 @@ pub struct DriverMeta {
     pub services: &'static [&'static str],
     /// Compatible strings for FDT generation.
     pub compatible: &'static [&'static str],
+    /// Whether this driver implements `AcpiDevice` (behind `acpi` feature).
+    pub has_acpi: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +171,18 @@ pub enum DriverInstance {
     /// Allwinner D1/T113 (sun20i) DRAM controller.
     #[cfg(feature = "sunxi-d1-dramc")]
     SunxiD1Dramc(sunxi_d1_dramc::SunxiD1DramcConfig),
+
+    // -----------------------------------------------------------------
+    // ACPI-only devices — no runtime driver, only contribute ACPI tables
+    // -----------------------------------------------------------------
+    /// AHCI SATA controller (ACPI-only, no runtime driver).
+    Ahci(fstart_types::acpi::AcpiAhciDevice),
+
+    /// xHCI USB controller (ACPI-only, no runtime driver).
+    Xhci(fstart_types::acpi::AcpiXhciDevice),
+
+    /// PCIe Root Complex (ACPI-only, no runtime driver).
+    PcieRoot(fstart_types::acpi::AcpiPcieRootDevice),
 }
 
 impl DriverInstance {
@@ -188,6 +202,7 @@ impl DriverInstance {
                     "snps,dw-apb-uart",
                     "allwinner,sun7i-a20-uart",
                 ],
+                has_acpi: false,
             },
             #[cfg(feature = "pl011")]
             Self::Pl011(_) => &DriverMeta {
@@ -197,6 +212,7 @@ impl DriverInstance {
                 config_type: "Pl011Config",
                 services: &["Console"],
                 compatible: &["arm,pl011", "pl011"],
+                has_acpi: true,
             },
             #[cfg(feature = "designware-i2c")]
             Self::DesignwareI2c(_) => &DriverMeta {
@@ -206,6 +222,7 @@ impl DriverInstance {
                 config_type: "DesignwareI2cConfig",
                 services: &["I2cBus"],
                 compatible: &["snps,designware-i2c", "dw-apb-i2c"],
+                has_acpi: false,
             },
             #[cfg(feature = "sunxi-a20-ccu")]
             Self::SunxiA20Ccu(_) => &DriverMeta {
@@ -215,6 +232,7 @@ impl DriverInstance {
                 config_type: "SunxiA20CcuConfig",
                 services: &["ClockController"],
                 compatible: &["allwinner,sun7i-a20-ccu"],
+                has_acpi: false,
             },
             #[cfg(feature = "sunxi-h3-ccu")]
             Self::SunxiH3Ccu(_) => &DriverMeta {
@@ -224,6 +242,7 @@ impl DriverInstance {
                 config_type: "SunxiH3CcuConfig",
                 services: &["ClockController"],
                 compatible: &["allwinner,sun8i-h3-ccu"],
+                has_acpi: false,
             },
             #[cfg(feature = "sunxi-a20-dramc")]
             Self::SunxiA20Dramc(_) => &DriverMeta {
@@ -233,6 +252,7 @@ impl DriverInstance {
                 config_type: "SunxiA20DramcConfig",
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun7i-a20-dramc"],
+                has_acpi: false,
             },
             #[cfg(feature = "sunxi-h3-dramc")]
             Self::SunxiH3Dramc(_) => &DriverMeta {
@@ -242,6 +262,7 @@ impl DriverInstance {
                 config_type: "SunxiH3DramcConfig",
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"],
+                has_acpi: false,
             },
             #[cfg(feature = "sunxi-mmc")]
             Self::SunxiMmc(_) => &DriverMeta {
@@ -255,6 +276,7 @@ impl DriverInstance {
                     "allwinner,sun8i-h3-mmc",
                     "allwinner,sun50i-h5-mmc",
                 ],
+                has_acpi: false,
             },
             #[cfg(feature = "sunxi-spi")]
             Self::SunxiSpi(_) => &DriverMeta {
@@ -264,6 +286,7 @@ impl DriverInstance {
                 config_type: "SunxiSpiConfig",
                 services: &["BlockDevice"],
                 compatible: &["allwinner,sun4i-a10-spi", "allwinner,sun8i-h3-spi"],
+                has_acpi: false,
             },
             #[cfg(feature = "sunxi-d1-ccu")]
             Self::SunxiD1Ccu(_) => &DriverMeta {
@@ -273,6 +296,7 @@ impl DriverInstance {
                 config_type: "SunxiD1CcuConfig",
                 services: &["ClockController"],
                 compatible: &["allwinner,sun20i-d1-ccu"],
+                has_acpi: false,
             },
             #[cfg(feature = "sunxi-d1-dramc")]
             Self::SunxiD1Dramc(_) => &DriverMeta {
@@ -282,6 +306,34 @@ impl DriverInstance {
                 config_type: "SunxiD1DramcConfig",
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun20i-d1-mbus"],
+                has_acpi: false,
+            },
+            Self::Ahci(_) => &DriverMeta {
+                name: "ahci",
+                type_name: "AcpiAhciDevice",
+                module_path: "fstart_types::acpi",
+                config_type: "AcpiAhciDevice",
+                services: &[],
+                compatible: &[],
+                has_acpi: true,
+            },
+            Self::Xhci(_) => &DriverMeta {
+                name: "xhci",
+                type_name: "AcpiXhciDevice",
+                module_path: "fstart_types::acpi",
+                config_type: "AcpiXhciDevice",
+                services: &[],
+                compatible: &[],
+                has_acpi: true,
+            },
+            Self::PcieRoot(_) => &DriverMeta {
+                name: "pcie-root",
+                type_name: "AcpiPcieRootDevice",
+                module_path: "fstart_types::acpi",
+                config_type: "AcpiPcieRootDevice",
+                services: &[],
+                compatible: &[],
+                has_acpi: true,
             },
         }
     }
@@ -289,6 +341,31 @@ impl DriverInstance {
     /// The cargo feature / RON driver name for this variant.
     pub fn driver_name(&self) -> &'static str {
         self.meta().name
+    }
+
+    /// Return the ACPI namespace name if this instance has one configured.
+    ///
+    /// Checks the driver's config for an `acpi_name` field with a `Some`
+    /// value.  Only drivers whose configs have optional ACPI fields
+    /// (e.g., PL011 with `acpi_name: Option<HString<8>>`) will return
+    /// `Some`.  All others return `None`.
+    pub fn acpi_name(&self) -> Option<&str> {
+        match self {
+            #[cfg(feature = "pl011")]
+            Self::Pl011(cfg) => cfg.acpi_name.as_deref(),
+            Self::Ahci(cfg) => Some(cfg.name.as_str()),
+            Self::Xhci(cfg) => Some(cfg.name.as_str()),
+            Self::PcieRoot(cfg) => Some(cfg.name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if this is an ACPI-only device (no runtime driver).
+    ///
+    /// ACPI-only devices are skipped by `DriverInit` and device construction
+    /// in the generated stage code. They only contribute ACPI table entries.
+    pub fn is_acpi_only(&self) -> bool {
+        matches!(self, Self::Ahci(_) | Self::Xhci(_) | Self::PcieRoot(_))
     }
 
     /// Serialize just the inner config struct via the given serializer.
@@ -319,6 +396,9 @@ impl DriverInstance {
             Self::SunxiD1Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-d1-dramc")]
             Self::SunxiD1Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
+            Self::Ahci(cfg) => serde::Serialize::serialize(cfg, ser),
+            Self::Xhci(cfg) => serde::Serialize::serialize(cfg, ser),
+            Self::PcieRoot(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

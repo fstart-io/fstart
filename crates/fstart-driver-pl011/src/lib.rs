@@ -73,7 +73,10 @@ register_structs! {
 /// Contains exactly the fields this driver needs — no optional grab-bag.
 /// Serializable with both RON (build-time validation) and postcard
 /// (runtime config from FFS).
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+///
+/// ACPI fields are always present (`Option<T>` with `#[serde(default)]`)
+/// but only used when the `acpi` feature is active.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pl011Config {
     /// MMIO base address of the register block.
     pub base_addr: u64,
@@ -81,7 +84,27 @@ pub struct Pl011Config {
     pub clock_freq: u32,
     /// Desired baud rate.
     pub baud_rate: u32,
+
+    // -- ACPI fields (board-specific, from RON) --
+    /// ACPI namespace name (e.g., "COM0").
+    /// Only used on ACPI-capable platforms.
+    #[serde(default)]
+    pub acpi_name: Option<heapless::String<8>>,
+    /// GIC System Interrupt Vector for this UART.
+    /// ARM-specific; ignored on non-ARM platforms.
+    #[serde(default)]
+    pub acpi_gsiv: Option<u32>,
+    /// Emit a DBG2 (Debug Port Table 2) for this UART.
+    ///
+    /// When `true`, the driver's ACPI `extra_tables()` emits a DBG2
+    /// table alongside the SPCR table.  Required by SBSA for the
+    /// primary debug port.
+    #[serde(default)]
+    pub acpi_dbg2: bool,
 }
+
+#[cfg(feature = "acpi")]
+mod acpi_support;
 
 /// PL011 UART driver.
 pub struct Pl011 {

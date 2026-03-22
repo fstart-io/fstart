@@ -63,6 +63,10 @@ struct RonBoardConfig {
     payload: Option<PayloadConfig>,
     #[serde(default)]
     soc_image_format: SocImageFormat,
+    #[serde(default)]
+    acpi: Option<fstart_types::acpi::AcpiConfig>,
+    #[serde(default)]
+    smbios: Option<fstart_types::smbios::SmbiosConfig>,
 }
 
 /// A single device entry in the RON file.
@@ -155,6 +159,8 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
         mode: ron.mode,
         payload: ron.payload,
         soc_image_format: ron.soc_image_format,
+        acpi: ron.acpi,
+        smbios: ron.smbios,
     };
 
     ParsedBoard {

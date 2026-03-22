@@ -10,3 +10,4 @@ fstart-soc-sunxi = { workspace = true, optional = true }
 [features]
 default = []
 sunxi = ["dep:fstart-soc-sunxi"]
+sbsa = []

@@ -7,14 +7,20 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod acpi;
 pub mod board;
 pub mod device;
 pub mod ffs;
 pub mod handoff;
 pub mod memory;
 pub mod security;
+pub mod smbios;
 pub mod stage;
 
+pub use acpi::{
+    AcpiAhciDevice, AcpiConfig, AcpiGenericDevice, AcpiPcieRootDevice, AcpiPlatform, AcpiWatchdog,
+    AcpiXhciDevice, ArmPlatformAcpi,
+};
 pub use board::{
     BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig,
     PayloadKind, Platform, SocImageFormat,
@@ -27,6 +33,7 @@ pub use ffs::{
 };
 pub use memory::{MemoryMap, MemoryRegion, RegionKind};
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
+pub use smbios::SmbiosConfig;
 pub use stage::{
     AutoBootDevice, BootMedium, Capability, LoadDevice, MonolithicConfig, RunsFrom, StageConfig,
     StageLayout,

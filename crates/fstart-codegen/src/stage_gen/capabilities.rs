@@ -177,6 +177,9 @@ pub(super) fn generate_driver_init(
     for &idx in sorted_indices {
         let dev = &devices[idx];
         let inst = &instances[idx];
+        if inst.is_acpi_only() {
+            continue;
+        }
         let name_str = dev.name.as_str();
         if already_inited.iter().any(|s| s == name_str) {
             continue;
@@ -952,6 +955,7 @@ fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: Platform) -
 /// Emits a `scanned_anchor_data: [u8; ANCHOR_SIZE]` local variable
 /// that subsequent FFS capability calls reference via
 /// `&scanned_anchor_data[..]`.
+#[allow(dead_code)]
 pub(super) fn generate_anchor_scan(
     medium: &BootMedium,
     config: &BoardConfig,
@@ -1279,6 +1283,432 @@ fn to_camel_case(name: &str) -> String {
         }
     }
     result
+}
+
+/// Generate code for the AcpiPrepare capability.
+///
+/// Orchestrates per-device ACPI generation:
+/// 1. Collects DSDT AML from each device that has an `AcpiDevice` impl
+/// 2. Collects extra tables (SPCR, MCFG) from those devices
+/// 3. Collects DSDT AML from ACPI-only extra devices (AHCI, xHCI, PCIe)
+/// 4. Calls the platform assembler to build all tables and write to DRAM
+pub(super) fn generate_acpi_prepare(
+    config: &BoardConfig,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+) -> TokenStream {
+    let acpi_cfg = config.acpi.as_ref().unwrap_or_else(|| {
+        panic!("AcpiPrepare capability requires `acpi` config in board RON");
+    });
+
+    let mut device_blocks = TokenStream::new();
+
+    // Per-driver device contributions: iterate devices whose driver
+    // has `has_acpi` and whose config contains an `acpi_name` field.
+    for (idx, dev) in devices.iter().enumerate() {
+        let inst = &instances[idx];
+        let meta = inst.meta();
+        if !meta.has_acpi {
+            continue;
+        }
+        // Check at codegen time whether this device instance has an ACPI
+        // name set.  If not, skip it — the driver has AcpiDevice support
+        // but this particular board instance doesn't want ACPI for it.
+        if inst.acpi_name().is_none() {
+            continue;
+        }
+        let dev_name = format_ident!("{}", dev.name.as_str());
+        let cfg_name = format_ident!("{}_cfg", dev.name.as_str());
+        device_blocks.extend(quote! {
+            dsdt_aml.extend(fstart_acpi::device::AcpiDevice::dsdt_aml(&#dev_name, &#cfg_name));
+            extra_tables.extend(fstart_acpi::device::AcpiDevice::extra_tables(&#dev_name, &#cfg_name));
+        });
+    }
+
+    // ACPI-only device contributions (devices with no runtime driver).
+    let mut extra_idx = 0;
+    for (idx, _dev) in devices.iter().enumerate() {
+        let inst = &instances[idx];
+        if !inst.is_acpi_only() {
+            continue;
+        }
+        let block = generate_acpi_only_device(inst, extra_idx);
+        device_blocks.extend(block);
+        extra_idx += 1;
+    }
+
+    // Platform assembly.
+    let platform_block = generate_platform_acpi(&acpi_cfg.platform);
+
+    quote! {
+        fstart_log::info!("capability: AcpiPrepare");
+        {
+            extern crate alloc;
+            use alloc::vec;
+            use alloc::vec::Vec;
+
+            let mut dsdt_aml: Vec<u8> = Vec::new();
+            let mut extra_tables: Vec<Vec<u8>> = Vec::new();
+
+            #device_blocks
+
+            #platform_block
+
+            // Allocate a heap buffer for the ACPI tables. The bump allocator
+            // gives a stable DRAM address that persists until reset.
+            const _ACPI_BUF_SIZE: usize = 64 * 1024;
+            let acpi_buf = vec![0u8; _ACPI_BUF_SIZE];
+            let acpi_addr = acpi_buf.as_ptr() as u64;
+
+            let acpi_len = fstart_acpi::platform::assemble_and_write(
+                acpi_addr,
+                &platform_acpi,
+                &dsdt_aml,
+                &extra_tables,
+            );
+
+            // Keep the buffer alive — tables must persist for the OS.
+            core::mem::forget(acpi_buf);
+
+            fstart_log::info!("AcpiPrepare: {} bytes written to {}", acpi_len as u32, fstart_log::Hex(acpi_addr));
+
+            // Dump the ACPI tables as hex for offline disassembly with iasl.
+            let acpi_data = unsafe {
+                core::slice::from_raw_parts(acpi_addr as *const u8, acpi_len)
+            };
+            fstart_log::hex_dump(acpi_data);
+        }
+    }
+}
+
+/// Generate code for an ACPI-only device (from the devices[] list).
+fn generate_acpi_only_device(
+    instance: &fstart_device_registry::DriverInstance,
+    idx: usize,
+) -> TokenStream {
+    let var_name = format_ident!("_acpi_dev_{}", idx);
+    match instance {
+        fstart_device_registry::DriverInstance::Ahci(dev) => {
+            let name = dev.name.as_str();
+            let base = Literal::u64_unsuffixed(dev.base);
+            let size = Literal::u32_unsuffixed(dev.size);
+            let gsiv = Literal::u32_unsuffixed(dev.gsiv);
+            quote! {
+                let #var_name = fstart_acpi::devices::AhciAcpi {
+                    name: #name, base: #base, size: #size, gsiv: #gsiv,
+                };
+                dsdt_aml.extend(#var_name.dsdt_aml());
+            }
+        }
+        fstart_device_registry::DriverInstance::Xhci(dev) => {
+            let name = dev.name.as_str();
+            let base = Literal::u64_unsuffixed(dev.base);
+            let size = Literal::u32_unsuffixed(dev.size);
+            let gsiv = Literal::u32_unsuffixed(dev.gsiv);
+            quote! {
+                let #var_name = fstart_acpi::devices::XhciAcpi {
+                    name: #name, base: #base, size: #size, gsiv: #gsiv,
+                };
+                dsdt_aml.extend(#var_name.dsdt_aml());
+            }
+        }
+        fstart_device_registry::DriverInstance::PcieRoot(dev) => {
+            let name = dev.name.as_str();
+            let ecam = Literal::u64_unsuffixed(dev.ecam_base);
+            let m32_start = Literal::u32_unsuffixed(dev.mmio32.0);
+            let m32_end = Literal::u32_unsuffixed(dev.mmio32.1);
+            let m64_start = Literal::u64_unsuffixed(dev.mmio64.0);
+            let m64_end = Literal::u64_unsuffixed(dev.mmio64.1);
+            let pio = dev
+                .pio_base
+                .map_or(Literal::u64_unsuffixed(0), Literal::u64_unsuffixed);
+            let bus_start = Literal::u8_unsuffixed(dev.bus_range.0);
+            let bus_end = Literal::u8_unsuffixed(dev.bus_range.1);
+            let irq0 = Literal::u32_unsuffixed(dev.irqs[0]);
+            let irq1 = Literal::u32_unsuffixed(dev.irqs[1]);
+            let irq2 = Literal::u32_unsuffixed(dev.irqs[2]);
+            let irq3 = Literal::u32_unsuffixed(dev.irqs[3]);
+            let seg = Literal::u16_unsuffixed(dev.segment);
+            quote! {
+                let #var_name = fstart_acpi::devices::PcieRootAcpi {
+                    name: #name,
+                    ecam_base: #ecam,
+                    mmio32_base: #m32_start, mmio32_end: #m32_end,
+                    mmio64_base: #m64_start, mmio64_end: #m64_end,
+                    pio_base: #pio,
+                    bus_start: #bus_start, bus_end: #bus_end,
+                    irqs: [#irq0, #irq1, #irq2, #irq3],
+                    segment: #seg,
+                };
+                dsdt_aml.extend(#var_name.dsdt_aml());
+                extra_tables.extend(#var_name.extra_tables());
+            }
+        }
+        _ => TokenStream::new(),
+    }
+}
+
+/// Generate the platform ACPI config struct literal.
+fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenStream {
+    use fstart_types::acpi::AcpiPlatform;
+
+    match platform {
+        AcpiPlatform::Arm(sbsa) => {
+            let num_cpus = Literal::u32_unsuffixed(sbsa.num_cpus);
+            let gic_dist = Literal::u64_unsuffixed(sbsa.gic_dist_base);
+            let gic_redist = Literal::u64_unsuffixed(sbsa.gic_redist_base);
+            let t0 = Literal::u32_unsuffixed(sbsa.timer_gsivs.0);
+            let t1 = Literal::u32_unsuffixed(sbsa.timer_gsivs.1);
+            let t2 = Literal::u32_unsuffixed(sbsa.timer_gsivs.2);
+            let t3 = Literal::u32_unsuffixed(sbsa.timer_gsivs.3);
+
+            let gic_redist_length_expr = match sbsa.gic_redist_length {
+                Some(len) => {
+                    let len_lit = Literal::u32_unsuffixed(len);
+                    quote! { Some(#len_lit) }
+                }
+                None => quote! { None },
+            };
+
+            let gic_its_base_expr = match sbsa.gic_its_base {
+                Some(addr) => {
+                    let addr_lit = Literal::u64_unsuffixed(addr);
+                    quote! { Some(#addr_lit) }
+                }
+                None => quote! { None },
+            };
+
+            let watchdog_expr = match &sbsa.watchdog {
+                Some(wd) => {
+                    let refresh = Literal::u64_unsuffixed(wd.refresh_base);
+                    let control = Literal::u64_unsuffixed(wd.control_base);
+                    let gsiv = Literal::u32_unsuffixed(wd.gsiv);
+                    quote! {
+                        Some(fstart_acpi::platform::WatchdogConfig {
+                            refresh_base: #refresh,
+                            control_base: #control,
+                            gsiv: #gsiv,
+                        })
+                    }
+                }
+                None => quote! { None },
+            };
+
+            let iort_expr = match &sbsa.iort {
+                Some(iort) => {
+                    let seg = Literal::u32_unsuffixed(iort.pci_segment);
+                    let mal = Literal::u8_unsuffixed(iort.memory_address_limit);
+                    let idc = Literal::u32_unsuffixed(iort.id_count);
+                    let its_ids: Vec<_> = iort
+                        .its_ids
+                        .iter()
+                        .map(|id| Literal::u32_unsuffixed(*id))
+                        .collect();
+                    quote! {
+                        Some(fstart_acpi::platform::IortConfig {
+                            its_ids: &[#(#its_ids),*],
+                            pci_segment: #seg,
+                            memory_address_limit: #mal,
+                            id_count: #idc,
+                        })
+                    }
+                }
+                None => quote! { None },
+            };
+
+            quote! {
+                let platform_acpi = fstart_acpi::platform::PlatformConfig::Arm(
+                    fstart_acpi::platform::ArmConfig {
+                        num_cpus: #num_cpus,
+                        gic_dist_base: #gic_dist,
+                        gic_redist_base: #gic_redist,
+                        gic_redist_length: #gic_redist_length_expr,
+                        gic_its_base: #gic_its_base_expr,
+                        timer_gsivs: (#t0, #t1, #t2, #t3),
+                        watchdog: #watchdog_expr,
+                        iort: #iort_expr,
+                    }
+                );
+            }
+        }
+    }
+}
+
+/// Generate code for the SmBiosPrepare capability.
+///
+/// Emits calls to `fstart_smbios::assemble_and_write` with all the
+/// table data from the board RON's `smbios` config section.
+pub(super) fn generate_smbios_prepare(config: &BoardConfig) -> TokenStream {
+    let smbios_cfg = config.smbios.as_ref().unwrap_or_else(|| {
+        panic!("SmBiosPrepare capability requires `smbios` config in board RON");
+    });
+
+    // Type 0: BIOS Information
+    let bios_vendor = smbios_cfg.bios_vendor.as_str();
+    let bios_version = smbios_cfg.bios_version.as_str();
+    let bios_release_date = smbios_cfg.bios_release_date.as_str();
+
+    // Type 1: System Information
+    let sys_manufacturer = smbios_cfg.system_manufacturer.as_str();
+    let sys_product = smbios_cfg.system_product.as_str();
+    let sys_version = smbios_cfg.system_version.as_str();
+    let sys_serial_expr = if smbios_cfg.system_serial.is_empty() {
+        quote! { None }
+    } else {
+        let s = smbios_cfg.system_serial.as_str();
+        quote! { Some(#s) }
+    };
+
+    // Type 2: Baseboard Information
+    let bb_manufacturer = smbios_cfg.baseboard_manufacturer.as_str();
+    let bb_product = smbios_cfg.baseboard_product.as_str();
+    let has_baseboard =
+        !smbios_cfg.baseboard_manufacturer.is_empty() || !smbios_cfg.baseboard_product.is_empty();
+
+    // Type 3: Enclosure
+    let chassis_byte = Literal::u8_unsuffixed(smbios_cfg.chassis_type.to_smbios_byte());
+    let chassis_manufacturer = if smbios_cfg.chassis_manufacturer.is_empty() {
+        smbios_cfg.system_manufacturer.as_str()
+    } else {
+        smbios_cfg.chassis_manufacturer.as_str()
+    };
+
+    // Type 7: Cache Info + Type 4: Processors
+    let mut processor_stmts = TokenStream::new();
+    for (proc_idx, proc) in smbios_cfg.processors.iter().enumerate() {
+        let socket = proc.socket.as_str();
+        let manufacturer = proc.manufacturer.as_str();
+        let family = Literal::u16_unsuffixed(proc.processor_family.to_smbios_u16());
+        let max_speed = Literal::u16_unsuffixed(proc.max_speed_mhz);
+        let cores = Literal::u16_unsuffixed(proc.core_count);
+        let threads = Literal::u16_unsuffixed(proc.thread_count);
+
+        if proc.caches.is_empty() {
+            // No cache info — use the simple add_processor method.
+            processor_stmts.extend(quote! {
+                w.add_processor(#socket, #manufacturer, #family, #max_speed, #cores, #threads);
+            });
+        } else {
+            // Emit Type 7 cache entries, then Type 4 with cache handles.
+            let mut cache_handle_vars = [None, None, None]; // L1, L2, L3
+            for (cache_idx, cache) in proc.caches.iter().enumerate() {
+                let designation = cache.designation.as_str();
+                let size_kb = Literal::u32_unsuffixed(cache.size_kb);
+                let assoc = Literal::u8_unsuffixed(cache.associativity.to_smbios_byte());
+                let ct = Literal::u8_unsuffixed(cache.cache_type.to_smbios_byte());
+                let level = Literal::u8_unsuffixed(cache.level);
+                let var = format_ident!("_cache_h_p{}_{}", proc_idx, cache_idx);
+
+                processor_stmts.extend(quote! {
+                    let #var = w.add_cache_info(#designation, #level, #size_kb, #assoc, #ct);
+                });
+
+                // Map to L1/L2/L3 slot based on level.
+                let slot = (cache.level as usize).saturating_sub(1);
+                if slot < 3 {
+                    cache_handle_vars[slot] = Some(var);
+                }
+            }
+
+            let l1 = cache_handle_vars[0]
+                .as_ref()
+                .map_or_else(|| quote! { 0xFFFFu16 }, |v| quote! { #v });
+            let l2 = cache_handle_vars[1]
+                .as_ref()
+                .map_or_else(|| quote! { 0xFFFFu16 }, |v| quote! { #v });
+            let l3 = cache_handle_vars[2]
+                .as_ref()
+                .map_or_else(|| quote! { 0xFFFFu16 }, |v| quote! { #v });
+
+            processor_stmts.extend(quote! {
+                w.add_processor_with_caches(
+                    #socket, #manufacturer, #family, #max_speed, #cores, #threads,
+                    #l1, #l2, #l3,
+                );
+            });
+        }
+    }
+
+    // Type 16/17/19: Memory
+    let num_mem_devices = smbios_cfg.memory_devices.len();
+    let has_memory = num_mem_devices > 0;
+
+    let mut memory_stmts = TokenStream::new();
+    if has_memory {
+        // Compute total capacity in KB for the Physical Memory Array.
+        let total_capacity_kb: u64 = smbios_cfg
+            .memory_devices
+            .iter()
+            .map(|d| d.size_mb as u64 * 1024)
+            .sum();
+        let total_kb_lit = Literal::u64_unsuffixed(total_capacity_kb);
+        let num_devs_lit = Literal::u16_unsuffixed(num_mem_devices as u16);
+
+        memory_stmts.extend(quote! {
+            w.add_physical_memory_array(#total_kb_lit, #num_devs_lit);
+        });
+
+        for dev in smbios_cfg.memory_devices.iter() {
+            let locator = dev.locator.as_str();
+            let size_mb = Literal::u32_unsuffixed(dev.size_mb);
+            let speed = Literal::u16_unsuffixed(dev.speed_mhz);
+            let mem_type = Literal::u8_unsuffixed(dev.memory_type.to_smbios_byte());
+            memory_stmts.extend(quote! {
+                w.add_memory_device(#locator, #size_mb, #speed, #mem_type);
+            });
+        }
+
+        // Type 19: Memory Array Mapped Address.
+        // Use the first RAM region from the board config as the mapped range.
+        if let Some(ram_region) = config
+            .memory
+            .regions
+            .iter()
+            .find(|r| r.kind == fstart_types::memory::RegionKind::Ram)
+        {
+            let start = Literal::u64_unsuffixed(ram_region.base);
+            let end = Literal::u64_unsuffixed(ram_region.base + ram_region.size - 1);
+            memory_stmts.extend(quote! {
+                w.add_memory_array_mapped_address(#start, #end, 1);
+            });
+        }
+    }
+
+    let baseboard_stmt = if has_baseboard {
+        quote! { w.add_baseboard_info(#bb_manufacturer, #bb_product); }
+    } else {
+        TokenStream::new()
+    };
+
+    quote! {
+        fstart_log::info!("capability: SmBiosPrepare");
+        {
+            extern crate alloc;
+            use alloc::vec;
+
+            // Allocate a heap buffer for SMBIOS tables (persists until reset).
+            const _SMBIOS_BUF_SIZE: usize = 64 * 1024;
+            let smbios_buf = vec![0u8; _SMBIOS_BUF_SIZE];
+            let smbios_addr = smbios_buf.as_ptr() as u64;
+            core::mem::forget(smbios_buf);
+
+            let smbios_len = fstart_smbios::assemble_and_write(smbios_addr, |w| {
+                w.add_bios_info(#bios_vendor, #bios_version, #bios_release_date);
+                w.add_system_info(#sys_manufacturer, #sys_product, #sys_version, #sys_serial_expr);
+                #baseboard_stmt
+                w.add_enclosure(#chassis_byte, #chassis_manufacturer);
+                #processor_stmts
+                #memory_stmts
+                w.add_system_boot_info();
+                w.add_end_of_table();
+            });
+            fstart_log::info!(
+                "SmBiosPrepare: {} bytes written to {}",
+                smbios_len as u32,
+                fstart_log::Hex(smbios_addr),
+            );
+        }
+    }
 }
 
 /// Determine the eGON `boot_media` values that correspond to a device.

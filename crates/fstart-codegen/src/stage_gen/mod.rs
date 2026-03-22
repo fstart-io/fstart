@@ -41,11 +41,11 @@ use fstart_types::{
 use crate::ron_loader::ParsedBoard;
 
 use capabilities::{
-    collect_boot_media_gated_devices, generate_anchor_scan, generate_boot_media,
+    collect_boot_media_gated_devices, generate_acpi_prepare, generate_boot_media,
     generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
     generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
     generate_memory_init, generate_payload_load, generate_return_to_fel, generate_sig_verify,
-    generate_stage_load,
+    generate_smbios_prepare, generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
@@ -221,7 +221,7 @@ fn generate_imports(
     instances: &[DriverInstance],
     mode: BuildMode,
     capabilities: &[Capability],
-    embed_anchor: bool,
+    _embed_anchor: bool,
 ) -> TokenStream {
     let mut tokens = TokenStream::new();
 
@@ -276,9 +276,14 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::GpioController; });
     }
 
-    // Collect unique driver modules and import all public types via glob
+    // Collect unique driver modules and import all public types via glob.
+    // ACPI-only devices are skipped — their types live in fstart_types/fstart_acpi
+    // and are only used at codegen time, not in the generated stage code.
     let mut seen_modules: Vec<&str> = Vec::new();
     for inst in instances {
+        if inst.is_acpi_only() {
+            continue;
+        }
         let meta = inst.meta();
         if !seen_modules.contains(&meta.module_path) {
             let module_path: TokenStream = meta.module_path.parse().unwrap();
@@ -487,27 +492,33 @@ fn generate_device_tree_table(tree: &[DeviceNode]) -> TokenStream {
 // =======================================================================
 
 /// Emit the `Devices` struct — one concrete typed field per device.
+///
+/// ACPI-only devices (no runtime driver) are excluded.
 fn generate_devices_struct(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     mode: BuildMode,
 ) -> TokenStream {
-    let fields = devices.iter().zip(instances.iter()).map(|(dev, inst)| {
-        let field_name = format_ident!("{}", dev.name.as_str());
-        let meta = inst.meta();
+    let fields = devices
+        .iter()
+        .zip(instances.iter())
+        .filter(|(_, inst)| !inst.is_acpi_only())
+        .map(|(dev, inst)| {
+            let field_name = format_ident!("{}", dev.name.as_str());
+            let meta = inst.meta();
 
-        let field_type = match mode {
-            BuildMode::Rigid => format_ident!("{}", meta.type_name),
-            BuildMode::Flexible => {
-                if let Some((enum_name, _)) = flexible_enum_for_device(dev, inst) {
-                    format_ident!("{}", enum_name)
-                } else {
-                    format_ident!("{}", meta.type_name)
+            let field_type = match mode {
+                BuildMode::Rigid => format_ident!("{}", meta.type_name),
+                BuildMode::Flexible => {
+                    if let Some((enum_name, _)) = flexible_enum_for_device(dev, inst) {
+                        format_ident!("{}", enum_name)
+                    } else {
+                        format_ident!("{}", meta.type_name)
+                    }
                 }
-            }
-        };
-        quote! { #field_name: #field_type, }
-    });
+            };
+            quote! { #field_name: #field_type, }
+        });
 
     quote! {
         /// All devices for this board.
@@ -623,9 +634,13 @@ fn generate_fstart_main(
 
     // --- Phase 1: Construct all devices in topological order ---
     // Devices are already in pre-order DFS order from RON flattening.
+    // ACPI-only devices are skipped — they have no runtime driver.
     for (idx, node) in device_tree.iter().enumerate() {
         let dev = &config.devices[idx];
         let inst = &instances[idx];
+        if inst.is_acpi_only() {
+            continue;
+        }
         let parent_name = node
             .parent
             .map(|pid| config.devices[pid as usize].name.as_str());
@@ -752,6 +767,12 @@ fn generate_fstart_main(
                 // Future: call lockdown() on devices that implement it.
                 body.extend(generate_late_driver_init());
             }
+            Capability::AcpiPrepare => {
+                body.extend(generate_acpi_prepare(config, &config.devices, instances));
+            }
+            Capability::SmBiosPrepare => {
+                body.extend(generate_smbios_prepare(config));
+            }
             Capability::ReturnToFel => {
                 body.extend(generate_return_to_fel(platform));
             }
@@ -790,10 +811,15 @@ fn generate_fstart_main(
         )
     });
 
-    let device_fields = config.devices.iter().map(|dev| {
-        let name = format_ident!("{}", dev.name.as_str());
-        quote! { #name: #name, }
-    });
+    let device_fields = config
+        .devices
+        .iter()
+        .zip(instances.iter())
+        .filter(|(_, inst)| !inst.is_acpi_only())
+        .map(|(dev, _)| {
+            let name = format_ident!("{}", dev.name.as_str());
+            quote! { #name: #name, }
+        });
 
     body.extend(quote! {
         let _ctx = StageContext {
@@ -908,6 +934,7 @@ fn generate_device_construction(
     let name_str = dev.name.as_str();
     let type_name = driver_type_tokens(instance);
     let config = config_tokens(instance);
+    let cfg_binding = format_ident!("{}_cfg", name_str);
 
     let binding = match mode {
         BuildMode::Rigid => format_ident!("{}", name_str),
@@ -923,15 +950,19 @@ fn generate_device_construction(
     match parent_name {
         None => {
             // Root device — Device::new(&config)
+            // Config is bound to a named variable so capabilities
+            // (e.g., AcpiPrepare) can reference it later.
             quote! {
-                let #binding = #type_name::new(&#config).unwrap_or_else(|_| #halt);
+                let #cfg_binding = #config;
+                let #binding = #type_name::new(&#cfg_binding).unwrap_or_else(|_| #halt);
             }
         }
         Some(parent) => {
             // Bus child — BusDevice::new_on_bus(&config, &parent)
             let parent_ident = format_ident!("{}", parent);
             quote! {
-                let #binding = #type_name::new_on_bus(&#config, &#parent_ident).unwrap_or_else(|_| #halt);
+                let #cfg_binding = #config;
+                let #binding = #type_name::new_on_bus(&#cfg_binding, &#parent_ident).unwrap_or_else(|_| #halt);
             }
         }
     }

@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "acpi_tables"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ad581b2b0fa02638f3df6ff3f852ebc30dc7cfe531e9745d1ca4c0f283a6dbe"
+dependencies = [
+ "zerocopy",
+]
+
+[[package]]
 name = "anstream"
 version = "0.6.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -350,6 +359,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
+name = "fstart-acpi"
+version = "0.1.0"
+dependencies = [
+ "acpi_tables",
+]
+
+[[package]]
 name = "fstart-alloc"
 version = "0.1.0"
 
@@ -415,6 +431,7 @@ dependencies = [
  "fstart-driver-sunxi-mmc",
  "fstart-driver-sunxi-spi",
  "fstart-services",
+ "fstart-types",
  "serde",
 ]
 
@@ -443,8 +460,10 @@ dependencies = [
 name = "fstart-driver-pl011"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-mmio",
  "fstart-services",
+ "heapless",
  "serde",
  "tock-registers",
 ]
@@ -631,6 +650,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-smbios"
+version = "0.1.0"
+
+[[package]]
 name = "fstart-soc-sunxi"
 version = "0.1.0"
 dependencies = [
@@ -642,6 +665,8 @@ dependencies = [
 name = "fstart-stage"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
+ "fstart-alloc",
  "fstart-arch",
  "fstart-capabilities",
  "fstart-codegen",
@@ -664,8 +689,10 @@ dependencies = [
  "fstart-platform-riscv64",
  "fstart-runtime",
  "fstart-services",
+ "fstart-smbios",
  "fstart-soc-sunxi",
  "fstart-types",
+ "heapless",
  "ufmt",
 ]
 
