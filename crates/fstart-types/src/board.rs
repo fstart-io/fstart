@@ -112,6 +112,20 @@ pub struct BoardConfig {
     /// memory device declarations for SMBIOS Type 0/1/2/3/4/16/17/19.
     #[serde(default)]
     pub smbios: Option<crate::smbios::SmbiosConfig>,
+
+    /// Boot hart ID for multi-hart platforms.
+    ///
+    /// On multi-hart SoCs (e.g., SiFive FU740 with 5 harts), the boot ROM
+    /// starts all harts simultaneously. Only the hart matching this ID
+    /// continues past `_start`; all others enter a WFI loop waiting for
+    /// an IPI from the SBI firmware.
+    ///
+    /// Defaults to `0` when absent, which is correct for single-hart
+    /// platforms and for QEMU `virt` (which starts only hart 0 by default).
+    /// Set to `1` for the SiFive FU740 (hart 0 is the S7 monitor core
+    /// without S-mode; hart 1 is the first U74 application core).
+    #[serde(default)]
+    pub boot_hart_id: u32,
 }
 
 /// SoC-specific binary image format required by the boot ROM.
@@ -183,6 +197,19 @@ pub struct PayloadConfig {
     pub bootargs: Option<HString<256>>,
     /// SBI / ATF firmware blob configuration
     pub firmware: Option<FirmwareConfig>,
+    /// Initramfs (initial RAM filesystem) file, relative to board directory.
+    ///
+    /// When present, the assembler packages this as an FFS `Initramfs` entry.
+    /// At boot, the firmware loads it to `initramfs_load_addr` and patches
+    /// the FDT `/chosen` node with `linux,initrd-start` / `linux,initrd-end`
+    /// so Linux can find it.
+    #[serde(default)]
+    pub initramfs_file: Option<HString<128>>,
+    /// Load address for the initramfs in RAM.
+    ///
+    /// Must not overlap with the kernel, DTB, or SBI firmware regions.
+    #[serde(default)]
+    pub initramfs_load_addr: Option<u64>,
     /// Path to a FIT (.itb) image file (relative to board directory).
     ///
     /// Used when `kind` is `FitImage`. The FIT bundles kernel, ramdisk,

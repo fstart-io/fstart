@@ -457,6 +457,10 @@ pub enum FileType {
     Firmware,
     /// FIT (Flattened Image Tree) image for runtime parsing.
     FitImage,
+    /// Initial RAM filesystem (initramfs / initrd) — loaded to RAM and
+    /// passed to the kernel via FDT `/chosen/linux,initrd-start` and
+    /// `linux,initrd-end` properties.
+    Initramfs,
 }
 
 // ============================================================================
