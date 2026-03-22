@@ -50,6 +50,12 @@ enum Command {
         /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
         #[arg(short, long)]
         firmware: Option<String>,
+        /// Path to disk image (qcow2/raw) — attached as NVMe
+        #[arg(short, long)]
+        disk: Option<String>,
+        /// Amount of RAM (e.g., "1G", "512M"). Default: QEMU default.
+        #[arg(short, long)]
+        memory: Option<String>,
     },
     /// Build and run tests in QEMU
     Test {
@@ -109,6 +115,8 @@ fn run_board(
     release: bool,
     kernel: Option<&str>,
     firmware: Option<&str>,
+    disk: Option<&str>,
+    memory: Option<&str>,
 ) -> Result<(), String> {
     // Check if this board needs assembly (multi-stage or has payload blobs)
     let workspace_root = build_board::workspace_root_pub()?;
@@ -130,11 +138,17 @@ fn run_board(
     if is_multi_stage || has_payload_blobs {
         // Assemble the FFS image (includes stage + firmware + kernel)
         let image_path = assemble::assemble_with_opts(board_name, release, kernel, firmware)?;
-        qemu::run(board_name, config.platform, &image_path)
+        qemu::run(board_name, config.platform, &image_path, disk, memory)
     } else {
         // Simple monolithic: build and boot the single binary directly
         let res = build_board::build(board_name, release)?;
-        qemu::run(board_name, config.platform, &res.primary_binary().run_path)
+        qemu::run(
+            board_name,
+            config.platform,
+            &res.primary_binary().run_path,
+            disk,
+            memory,
+        )
     }
 }
 
@@ -280,8 +294,17 @@ fn main() {
             release,
             kernel,
             firmware,
-        } => run_board(&board, release, kernel.as_deref(), firmware.as_deref()),
-        Command::Test { board } => run_board(&board, true, None, None),
+            disk,
+            memory,
+        } => run_board(
+            &board,
+            release,
+            kernel.as_deref(),
+            firmware.as_deref(),
+            disk.as_deref(),
+            memory.as_deref(),
+        ),
+        Command::Test { board } => run_board(&board, true, None, None, None, None),
         Command::Assemble {
             board,
             release,
