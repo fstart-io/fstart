@@ -431,6 +431,7 @@ dependencies = [
  "fstart-driver-sunxi-mmc",
  "fstart-driver-sunxi-spi",
  "fstart-services",
+ "fstart-types",
  "serde",
 ]
 

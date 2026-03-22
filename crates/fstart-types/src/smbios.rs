@@ -13,12 +13,6 @@ use serde::{Deserialize, Serialize};
 /// Top-level SMBIOS configuration, from the board RON `smbios` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmbiosConfig {
-    /// Physical address where SMBIOS tables will be placed in DRAM.
-    ///
-    /// The SMBIOS 3.0 entry point is written first, followed by all
-    /// structure tables.  Must be in a DRAM region accessible to the OS.
-    pub table_addr: u64,
-
     // -- Type 0: BIOS Information --
     /// BIOS vendor string (e.g., "fstart").
     pub bios_vendor: HString<64>,

@@ -12,14 +12,61 @@
 
 use acpi_tables::sdt::Sdt;
 
-/// IORT table header size (ACPI header + node_count + node_offset + reserved).
-const IORT_HEADER_SIZE: usize = 48;
+// ---------------------------------------------------------------------------
+// Wire-format structs — #[repr(C, packed)] mirrors the IORT spec layout.
+// ---------------------------------------------------------------------------
 
-/// IORT node header size (type + length + revision + identifier + mapping_count + mapping_offset).
-const NODE_HEADER_SIZE: usize = 16;
+/// IORT table fields after the 36-byte ACPI SDT header.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct IortTableHeader {
+    node_count: u32,
+    node_offset: u32,
+    reserved: u32,
+}
 
-/// IORT ID mapping entry size.
-const ID_MAPPING_SIZE: usize = 20;
+/// IORT node header — common to all node types.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct IortNodeHeader {
+    node_type: u8,
+    length: u16,
+    revision: u8,
+    identifier: u32,
+    mapping_count: u32,
+    mapping_offset: u32,
+}
+
+/// Root Complex node-specific data (revision 4, 24 bytes).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct RcNodeData {
+    memory_properties: u64,
+    ats_attribute: u32,
+    pci_segment_number: u32,
+    memory_address_limit: u8,
+    pasid_capabilities: u16,
+    _reserved: u8,
+    flags: u32,
+}
+
+/// IORT ID mapping entry (20 bytes).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct IdMapping {
+    input_base: u32,
+    /// Stored as count − 1 per the IORT spec.
+    id_count: u32,
+    output_base: u32,
+    output_reference: u32,
+    flags: u32,
+}
+
+const ACPI_HDR: usize = 36;
+const IORT_HEADER_SIZE: usize = ACPI_HDR + core::mem::size_of::<IortTableHeader>();
+const NODE_HEADER_SIZE: usize = core::mem::size_of::<IortNodeHeader>();
+const RC_DATA_SIZE: usize = core::mem::size_of::<RcNodeData>();
+const ID_MAPPING_SIZE: usize = core::mem::size_of::<IdMapping>();
 
 /// IORT node types.
 mod node_type {
@@ -27,17 +74,17 @@ mod node_type {
     pub const ROOT_COMPLEX: u8 = 0x02;
 }
 
-/// Root Complex node data size (revision 4): 24 bytes.
-const RC_DATA_SIZE: usize = 24;
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
-/// ITS Group node configuration.
-pub struct ItsGroup {
+/// IORT configuration: ITS Group + Root Complex.
+///
+/// Describes the ITS-to-PCI RID mapping needed for MSI/MSI-X routing.
+/// The Root Complex maps all PCI RIDs `[0, id_count)` 1:1 to the ITS Group.
+pub struct IortConfig {
     /// GIC ITS identifiers (one per ITS in the system).
     pub its_ids: &'static [u32],
-}
-
-/// Root Complex node configuration.
-pub struct RootComplex {
     /// PCI segment number.
     pub pci_segment: u32,
     /// Memory address limit in bits (e.g., 48 for 256 TiB).
@@ -48,19 +95,15 @@ pub struct RootComplex {
 
 /// Build an IORT table with a single ITS Group and Root Complex.
 ///
-/// The Root Complex maps all PCI RIDs [0, id_count) 1:1 to the ITS Group.
-///
-/// # Arguments
-///
-/// * `its` — ITS Group configuration (GIC ITS identifiers).
-/// * `rc` — Root Complex configuration (PCI segment, address limit, RID count).
-pub fn build_iort(its: &ItsGroup, rc: &RootComplex) -> Sdt {
-    let its_count = its.its_ids.len();
+/// The Root Complex maps all PCI RIDs `[0, config.id_count)` 1:1 to the
+/// ITS Group.
+pub fn build_iort(config: &IortConfig) -> Sdt {
+    let its_count = config.its_ids.len();
 
     // ITS Group node: header + its_count(4) + identifiers(4 * count).
     let its_node_size = NODE_HEADER_SIZE + 4 + 4 * its_count;
 
-    // Root Complex node: header + rc_data(24) + 1 ID mapping(20).
+    // Root Complex node: header + rc_data + 1 ID mapping.
     let rc_node_size = NODE_HEADER_SIZE + RC_DATA_SIZE + ID_MAPPING_SIZE;
 
     let total_size = IORT_HEADER_SIZE + its_node_size + rc_node_size;
@@ -75,57 +118,80 @@ pub fn build_iort(its: &ItsGroup, rc: &RootComplex) -> Sdt {
     );
 
     // IORT header (after 36-byte ACPI header).
-    sdt.write_u32(36, 2); // node_count
-    sdt.write_u32(40, IORT_HEADER_SIZE as u32); // node_offset
-    sdt.write_u32(44, 0); // reserved
+    crate::write_struct(
+        &mut sdt,
+        ACPI_HDR,
+        &IortTableHeader {
+            node_count: 2,
+            node_offset: IORT_HEADER_SIZE as u32,
+            reserved: 0,
+        },
+    );
 
-    // ITS Group node starts at IORT_HEADER_SIZE.
+    // ITS Group node.
     let its_off = IORT_HEADER_SIZE;
-    let its_node_offset_in_table = its_off; // used by RC's ID mapping
-
-    sdt.write_u8(its_off, node_type::ITS_GROUP); // type
-    sdt.write_u16(its_off + 1, its_node_size as u16); // length
-    sdt.write_u8(its_off + 3, 1); // revision
-    sdt.write_u32(its_off + 4, 0); // identifier
-    sdt.write_u32(its_off + 8, 0); // mapping_count (ITS Group has none)
-    sdt.write_u32(its_off + 12, 0); // mapping_offset (unused)
+    crate::write_struct(
+        &mut sdt,
+        its_off,
+        &IortNodeHeader {
+            node_type: node_type::ITS_GROUP,
+            length: its_node_size as u16,
+            revision: 1,
+            identifier: 0,
+            mapping_count: 0,
+            mapping_offset: 0,
+        },
+    );
 
     // ITS Group node data: its_count + identifiers[].
     let its_data_off = its_off + NODE_HEADER_SIZE;
     sdt.write_u32(its_data_off, its_count as u32);
-    for (i, &id) in its.its_ids.iter().enumerate() {
+    for (i, &id) in config.its_ids.iter().enumerate() {
         sdt.write_u32(its_data_off + 4 + i * 4, id);
     }
 
-    // Root Complex node starts after ITS Group node.
+    // Root Complex node.
     let rc_off = its_off + its_node_size;
-    let rc_mapping_offset = (NODE_HEADER_SIZE + RC_DATA_SIZE) as u32;
-
-    sdt.write_u8(rc_off, node_type::ROOT_COMPLEX); // type
-    sdt.write_u16(rc_off + 1, rc_node_size as u16); // length
-    sdt.write_u8(rc_off + 3, 4); // revision
-    sdt.write_u32(rc_off + 4, 1); // identifier
-    sdt.write_u32(rc_off + 8, 1); // mapping_count
-    sdt.write_u32(rc_off + 12, rc_mapping_offset); // mapping_offset
+    crate::write_struct(
+        &mut sdt,
+        rc_off,
+        &IortNodeHeader {
+            node_type: node_type::ROOT_COMPLEX,
+            length: rc_node_size as u16,
+            revision: 4,
+            identifier: 1,
+            mapping_count: 1,
+            mapping_offset: (NODE_HEADER_SIZE + RC_DATA_SIZE) as u32,
+        },
+    );
 
     // Root Complex node data.
-    let rc_data_off = rc_off + NODE_HEADER_SIZE;
-    sdt.write_u64(rc_data_off, 0); // memory_properties
-    sdt.write_u32(rc_data_off + 8, 0); // ats_attribute
-    sdt.write_u32(rc_data_off + 12, rc.pci_segment); // pci_segment_number
-    sdt.write_u8(rc_data_off + 16, rc.memory_address_limit); // memory_address_limit
-    sdt.write_u16(rc_data_off + 17, 0); // pasid_capabilities
-    sdt.write_u8(rc_data_off + 19, 0); // reserved
-    sdt.write_u32(rc_data_off + 20, 0); // flags
+    crate::write_struct(
+        &mut sdt,
+        rc_off + NODE_HEADER_SIZE,
+        &RcNodeData {
+            memory_properties: 0,
+            ats_attribute: 0,
+            pci_segment_number: config.pci_segment,
+            memory_address_limit: config.memory_address_limit,
+            pasid_capabilities: 0,
+            _reserved: 0,
+            flags: 0,
+        },
+    );
 
-    // ID Mapping entry (maps all PCI RIDs 1:1 to ITS).
-    let id_map_off = rc_off + NODE_HEADER_SIZE + RC_DATA_SIZE;
-    sdt.write_u32(id_map_off, 0); // input_base
-                                  // id_count is stored as count - 1 in the IORT spec.
-    sdt.write_u32(id_map_off + 4, rc.id_count.saturating_sub(1));
-    sdt.write_u32(id_map_off + 8, 0); // output_base (1:1 mapping)
-    sdt.write_u32(id_map_off + 12, its_node_offset_in_table as u32); // output_reference
-    sdt.write_u32(id_map_off + 16, 0); // flags
+    // ID Mapping: maps all PCI RIDs 1:1 to the ITS Group node.
+    crate::write_struct(
+        &mut sdt,
+        rc_off + NODE_HEADER_SIZE + RC_DATA_SIZE,
+        &IdMapping {
+            input_base: 0,
+            id_count: config.id_count.saturating_sub(1),
+            output_base: 0,
+            output_reference: its_off as u32,
+            flags: 0,
+        },
+    );
 
     sdt.update_checksum();
     sdt
@@ -139,14 +205,14 @@ mod tests {
 
     #[test]
     fn test_iort_basic() {
-        let its = ItsGroup { its_ids: &[0] };
-        let rc = RootComplex {
+        let cfg = IortConfig {
+            its_ids: &[0],
             pci_segment: 0,
             memory_address_limit: 0x30,
             id_count: 0x10000,
         };
 
-        let iort = build_iort(&its, &rc);
+        let iort = build_iort(&cfg);
         let mut bytes = Vec::new();
         iort.to_aml_bytes(&mut bytes);
 
@@ -227,14 +293,14 @@ mod tests {
 
     #[test]
     fn test_iort_multiple_its() {
-        let its = ItsGroup { its_ids: &[0, 1] };
-        let rc = RootComplex {
+        let cfg = IortConfig {
+            its_ids: &[0, 1],
             pci_segment: 1,
             memory_address_limit: 48,
             id_count: 256,
         };
 
-        let iort = build_iort(&its, &rc);
+        let iort = build_iort(&cfg);
         let mut bytes = Vec::new();
         iort.to_aml_bytes(&mut bytes);
 

@@ -177,6 +177,9 @@ pub(super) fn generate_driver_init(
     for &idx in sorted_indices {
         let dev = &devices[idx];
         let inst = &instances[idx];
+        if inst.is_acpi_only() {
+            continue;
+        }
         let name_str = dev.name.as_str();
         if already_inited.iter().any(|s| s == name_str) {
             continue;
@@ -952,6 +955,7 @@ fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: Platform) -
 /// Emits a `scanned_anchor_data: [u8; ANCHOR_SIZE]` local variable
 /// that subsequent FFS capability calls reference via
 /// `&scanned_anchor_data[..]`.
+#[allow(dead_code)]
 pub(super) fn generate_anchor_scan(
     medium: &BootMedium,
     config: &BoardConfig,
@@ -1296,7 +1300,6 @@ pub(super) fn generate_acpi_prepare(
     let acpi_cfg = config.acpi.as_ref().unwrap_or_else(|| {
         panic!("AcpiPrepare capability requires `acpi` config in board RON");
     });
-    let table_addr_lit = Literal::u64_unsuffixed(acpi_cfg.table_addr);
 
     let mut device_blocks = TokenStream::new();
 
@@ -1322,10 +1325,16 @@ pub(super) fn generate_acpi_prepare(
         });
     }
 
-    // ACPI-only extra device contributions.
-    for (i, extra) in acpi_cfg.extra_devices.iter().enumerate() {
-        let block = generate_extra_device_acpi(extra, i);
+    // ACPI-only device contributions (devices with no runtime driver).
+    let mut extra_idx = 0;
+    for (idx, _dev) in devices.iter().enumerate() {
+        let inst = &instances[idx];
+        if !inst.is_acpi_only() {
+            continue;
+        }
+        let block = generate_acpi_only_device(inst, extra_idx);
         device_blocks.extend(block);
+        extra_idx += 1;
     }
 
     // Platform assembly.
@@ -1335,6 +1344,7 @@ pub(super) fn generate_acpi_prepare(
         fstart_log::info!("capability: AcpiPrepare");
         {
             extern crate alloc;
+            use alloc::vec;
             use alloc::vec::Vec;
 
             let mut dsdt_aml: Vec<u8> = Vec::new();
@@ -1344,33 +1354,41 @@ pub(super) fn generate_acpi_prepare(
 
             #platform_block
 
+            // Allocate a heap buffer for the ACPI tables. The bump allocator
+            // gives a stable DRAM address that persists until reset.
+            const _ACPI_BUF_SIZE: usize = 64 * 1024;
+            let acpi_buf = vec![0u8; _ACPI_BUF_SIZE];
+            let acpi_addr = acpi_buf.as_ptr() as u64;
+
             let acpi_len = fstart_acpi::platform::assemble_and_write(
-                #table_addr_lit,
+                acpi_addr,
                 &platform_acpi,
                 &dsdt_aml,
                 &extra_tables,
             );
-            fstart_log::info!("AcpiPrepare: {} bytes written to {}", acpi_len as u32, fstart_log::Hex(#table_addr_lit));
+
+            // Keep the buffer alive — tables must persist for the OS.
+            core::mem::forget(acpi_buf);
+
+            fstart_log::info!("AcpiPrepare: {} bytes written to {}", acpi_len as u32, fstart_log::Hex(acpi_addr));
 
             // Dump the ACPI tables as hex for offline disassembly with iasl.
             let acpi_data = unsafe {
-                core::slice::from_raw_parts(#table_addr_lit as *const u8, acpi_len)
+                core::slice::from_raw_parts(acpi_addr as *const u8, acpi_len)
             };
             fstart_log::hex_dump(acpi_data);
         }
     }
 }
 
-/// Generate code for an ACPI-only extra device.
-fn generate_extra_device_acpi(
-    extra: &fstart_types::acpi::AcpiExtraDevice,
+/// Generate code for an ACPI-only device (from the devices[] list).
+fn generate_acpi_only_device(
+    instance: &fstart_device_registry::DriverInstance,
     idx: usize,
 ) -> TokenStream {
-    use fstart_types::acpi::AcpiExtraDevice;
-
-    let var_name = format_ident!("_extra_dev_{}", idx);
-    match extra {
-        AcpiExtraDevice::Ahci(dev) => {
+    let var_name = format_ident!("_acpi_dev_{}", idx);
+    match instance {
+        fstart_device_registry::DriverInstance::Ahci(dev) => {
             let name = dev.name.as_str();
             let base = Literal::u64_unsuffixed(dev.base);
             let size = Literal::u32_unsuffixed(dev.size);
@@ -1382,7 +1400,7 @@ fn generate_extra_device_acpi(
                 dsdt_aml.extend(#var_name.dsdt_aml());
             }
         }
-        AcpiExtraDevice::Xhci(dev) => {
+        fstart_device_registry::DriverInstance::Xhci(dev) => {
             let name = dev.name.as_str();
             let base = Literal::u64_unsuffixed(dev.base);
             let size = Literal::u32_unsuffixed(dev.size);
@@ -1394,7 +1412,7 @@ fn generate_extra_device_acpi(
                 dsdt_aml.extend(#var_name.dsdt_aml());
             }
         }
-        AcpiExtraDevice::PcieRoot(dev) => {
+        fstart_device_registry::DriverInstance::PcieRoot(dev) => {
             let name = dev.name.as_str();
             let ecam = Literal::u64_unsuffixed(dev.ecam_base);
             let m32_start = Literal::u32_unsuffixed(dev.mmio32.0);
@@ -1426,25 +1444,7 @@ fn generate_extra_device_acpi(
                 extra_tables.extend(#var_name.extra_tables());
             }
         }
-        AcpiExtraDevice::Generic(dev) => {
-            let name = dev.name.as_str();
-            let hid = dev.hid.as_str();
-            let base = Literal::u64_unsuffixed(dev.base);
-            let size = Literal::u32_unsuffixed(dev.size);
-            let gsiv_expr = match dev.gsiv {
-                Some(g) => {
-                    let g_lit = Literal::u32_unsuffixed(g);
-                    quote! { Some(#g_lit) }
-                }
-                None => quote! { None },
-            };
-            quote! {
-                let #var_name = fstart_acpi::devices::GenericAcpi {
-                    name: #name, hid: #hid, base: #base, size: #size, gsiv: #gsiv_expr,
-                };
-                dsdt_aml.extend(#var_name.dsdt_aml());
-            }
-        }
+        _ => TokenStream::new(),
     }
 }
 
@@ -1542,7 +1542,6 @@ pub(super) fn generate_smbios_prepare(config: &BoardConfig) -> TokenStream {
     let smbios_cfg = config.smbios.as_ref().unwrap_or_else(|| {
         panic!("SmBiosPrepare capability requires `smbios` config in board RON");
     });
-    let table_addr_lit = Literal::u64_unsuffixed(smbios_cfg.table_addr);
 
     // Type 0: BIOS Information
     let bios_vendor = smbios_cfg.bios_vendor.as_str();
@@ -1684,7 +1683,16 @@ pub(super) fn generate_smbios_prepare(config: &BoardConfig) -> TokenStream {
     quote! {
         fstart_log::info!("capability: SmBiosPrepare");
         {
-            let smbios_len = fstart_smbios::assemble_and_write(#table_addr_lit, |w| {
+            extern crate alloc;
+            use alloc::vec;
+
+            // Allocate a heap buffer for SMBIOS tables (persists until reset).
+            const _SMBIOS_BUF_SIZE: usize = 64 * 1024;
+            let smbios_buf = vec![0u8; _SMBIOS_BUF_SIZE];
+            let smbios_addr = smbios_buf.as_ptr() as u64;
+            core::mem::forget(smbios_buf);
+
+            let smbios_len = fstart_smbios::assemble_and_write(smbios_addr, |w| {
                 w.add_bios_info(#bios_vendor, #bios_version, #bios_release_date);
                 w.add_system_info(#sys_manufacturer, #sys_product, #sys_version, #sys_serial_expr);
                 #baseboard_stmt
@@ -1697,7 +1705,7 @@ pub(super) fn generate_smbios_prepare(config: &BoardConfig) -> TokenStream {
             fstart_log::info!(
                 "SmBiosPrepare: {} bytes written to {}",
                 smbios_len as u32,
-                fstart_log::Hex(#table_addr_lit),
+                fstart_log::Hex(smbios_addr),
             );
         }
     }

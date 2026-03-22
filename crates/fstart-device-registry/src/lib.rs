@@ -171,6 +171,18 @@ pub enum DriverInstance {
     /// Allwinner D1/T113 (sun20i) DRAM controller.
     #[cfg(feature = "sunxi-d1-dramc")]
     SunxiD1Dramc(sunxi_d1_dramc::SunxiD1DramcConfig),
+
+    // -----------------------------------------------------------------
+    // ACPI-only devices — no runtime driver, only contribute ACPI tables
+    // -----------------------------------------------------------------
+    /// AHCI SATA controller (ACPI-only, no runtime driver).
+    Ahci(fstart_types::acpi::AcpiAhciDevice),
+
+    /// xHCI USB controller (ACPI-only, no runtime driver).
+    Xhci(fstart_types::acpi::AcpiXhciDevice),
+
+    /// PCIe Root Complex (ACPI-only, no runtime driver).
+    PcieRoot(fstart_types::acpi::AcpiPcieRootDevice),
 }
 
 impl DriverInstance {
@@ -296,6 +308,33 @@ impl DriverInstance {
                 compatible: &["allwinner,sun20i-d1-mbus"],
                 has_acpi: false,
             },
+            Self::Ahci(_) => &DriverMeta {
+                name: "ahci",
+                type_name: "AcpiAhciDevice",
+                module_path: "fstart_types::acpi",
+                config_type: "AcpiAhciDevice",
+                services: &[],
+                compatible: &[],
+                has_acpi: true,
+            },
+            Self::Xhci(_) => &DriverMeta {
+                name: "xhci",
+                type_name: "AcpiXhciDevice",
+                module_path: "fstart_types::acpi",
+                config_type: "AcpiXhciDevice",
+                services: &[],
+                compatible: &[],
+                has_acpi: true,
+            },
+            Self::PcieRoot(_) => &DriverMeta {
+                name: "pcie-root",
+                type_name: "AcpiPcieRootDevice",
+                module_path: "fstart_types::acpi",
+                config_type: "AcpiPcieRootDevice",
+                services: &[],
+                compatible: &[],
+                has_acpi: true,
+            },
         }
     }
 
@@ -314,8 +353,19 @@ impl DriverInstance {
         match self {
             #[cfg(feature = "pl011")]
             Self::Pl011(cfg) => cfg.acpi_name.as_deref(),
+            Self::Ahci(cfg) => Some(cfg.name.as_str()),
+            Self::Xhci(cfg) => Some(cfg.name.as_str()),
+            Self::PcieRoot(cfg) => Some(cfg.name.as_str()),
             _ => None,
         }
+    }
+
+    /// Returns `true` if this is an ACPI-only device (no runtime driver).
+    ///
+    /// ACPI-only devices are skipped by `DriverInit` and device construction
+    /// in the generated stage code. They only contribute ACPI table entries.
+    pub fn is_acpi_only(&self) -> bool {
+        matches!(self, Self::Ahci(_) | Self::Xhci(_) | Self::PcieRoot(_))
     }
 
     /// Serialize just the inner config struct via the given serializer.
@@ -346,6 +396,9 @@ impl DriverInstance {
             Self::SunxiD1Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-d1-dramc")]
             Self::SunxiD1Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
+            Self::Ahci(cfg) => serde::Serialize::serialize(cfg, ser),
+            Self::Xhci(cfg) => serde::Serialize::serialize(cfg, ser),
+            Self::PcieRoot(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

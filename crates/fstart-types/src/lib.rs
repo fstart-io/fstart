@@ -18,8 +18,8 @@ pub mod smbios;
 pub mod stage;
 
 pub use acpi::{
-    AcpiAhciDevice, AcpiConfig, AcpiExtraDevice, AcpiGenericDevice, AcpiPcieRootDevice,
-    AcpiPlatform, AcpiWatchdog, AcpiXhciDevice, ArmPlatformAcpi,
+    AcpiAhciDevice, AcpiConfig, AcpiGenericDevice, AcpiPcieRootDevice, AcpiPlatform, AcpiWatchdog,
+    AcpiXhciDevice, ArmPlatformAcpi,
 };
 pub use board::{
     BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig,

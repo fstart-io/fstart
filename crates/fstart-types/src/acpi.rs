@@ -13,19 +13,8 @@ use serde::{Deserialize, Serialize};
 /// Top-level ACPI configuration, from the board RON `acpi` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpiConfig {
-    /// Physical address where ACPI tables will be placed in DRAM.
-    pub table_addr: u64,
-
     /// Platform-specific ACPI parameters (MADT, GTDT, FADT).
     pub platform: AcpiPlatform,
-
-    /// ACPI device entries for hardware without fstart drivers.
-    ///
-    /// These produce DSDT entries and optional standalone tables.
-    /// Once a real fstart driver is added for a device, it should
-    /// implement `AcpiDevice` and move out of this list.
-    #[serde(default)]
-    pub extra_devices: heapless::Vec<AcpiExtraDevice, 16>,
 }
 
 /// Platform-specific ACPI table parameters.

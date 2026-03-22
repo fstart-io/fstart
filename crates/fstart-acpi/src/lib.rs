@@ -50,3 +50,25 @@ pub const OEM_REVISION: u32 = 1;
 pub const fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
+
+/// Write a `#[repr(C, packed)]` struct into an [`Sdt`] at the given byte
+/// offset.
+///
+/// This is the Rust equivalent of `*(struct foo *)(buf + off) = val;` in C.
+/// All ACPI table fields are little-endian; since every fstart target (and
+/// the host x86 test runner) is LE, native `repr(C)` layout produces the
+/// correct wire bytes.
+///
+/// # Safety
+///
+/// `T` must be `#[repr(C, packed)]` with only integer fields (no padding,
+/// no references, no `Drop`).  The caller must ensure `offset + size_of::<T>()`
+/// does not exceed the SDT's allocated length.
+pub fn write_struct<T: Copy>(sdt: &mut sdt::Sdt, offset: usize, val: &T) {
+    let bytes: &[u8] = unsafe {
+        core::slice::from_raw_parts(val as *const T as *const u8, core::mem::size_of::<T>())
+    };
+    for (i, &b) in bytes.iter().enumerate() {
+        sdt.write_u8(offset + i, b);
+    }
+}
