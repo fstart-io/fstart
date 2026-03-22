@@ -424,6 +424,7 @@ dependencies = [
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
  "fstart-driver-ns16550",
+ "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",
@@ -478,6 +479,17 @@ dependencies = [
  "fstart-services",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-pci-ecam"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-services",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
@@ -708,6 +720,7 @@ dependencies = [
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
  "fstart-driver-ns16550",
+ "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",

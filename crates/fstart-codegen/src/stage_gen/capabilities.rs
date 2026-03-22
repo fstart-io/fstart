@@ -146,6 +146,47 @@ pub(super) fn generate_memory_init() -> TokenStream {
     quote! { fstart_capabilities::memory_init(); }
 }
 
+/// Generate code for the PciInit capability.
+///
+/// Finds the referenced PCI root bus device, calls its `init()` method
+/// (which enumerates the bus, sizes BARs, allocates resources, and
+/// programs hardware), and logs the result.
+pub(super) fn generate_pci_init(
+    device_name: &str,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    halt: &TokenStream,
+) -> TokenStream {
+    let Some((idx, dev)) = devices
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.name.as_str() == device_name)
+    else {
+        let msg = format!("PciInit references device '{device_name}' which is not declared");
+        return quote! { compile_error!(#msg); };
+    };
+
+    let inst = &instances[idx];
+    let drv_name = inst.meta().name;
+
+    if !dev.services.iter().any(|s| s.as_str() == "PciRootBus") {
+        let msg = format!(
+            "PciInit requires PciRootBus service but device '{device_name}' does not provide it"
+        );
+        return quote! { compile_error!(#msg); };
+    }
+
+    let device = format_ident!("{}", device_name);
+
+    quote! {
+        #device.init().unwrap_or_else(|_| {
+            fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
+            #halt
+        });
+        fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
+    }
+}
+
 /// Generate code for the DriverInit capability.
 ///
 /// When `boot_media_gated` is non-empty (multi-device `LoadNextStage` or

@@ -25,6 +25,7 @@ fstart-driver-sunxi-d1-dramc = { path = "../fstart-driver-sunxi-d1-dramc", optio
 fstart-driver-sifive-uart = { path = "../fstart-driver-sifive-uart", optional = true }
 fstart-driver-fu740-prci = { path = "../fstart-driver-fu740-prci", optional = true }
 fstart-driver-fu740-ddr = { path = "../fstart-driver-fu740-ddr", optional = true }
+fstart-driver-pci-ecam = { path = "../fstart-driver-pci-ecam", optional = true }
 
 [features]
 # Driver feature flags - enable to include that driver in the registry
@@ -43,6 +44,7 @@ sunxi-d1-dramc = ["dep:fstart-driver-sunxi-d1-dramc"]
 sifive-uart = ["dep:fstart-driver-sifive-uart"]
 fu740-prci = ["dep:fstart-driver-fu740-prci"]
 fu740-ddr = ["dep:fstart-driver-fu740-ddr"]
+pci-ecam = ["dep:fstart-driver-pci-ecam"]
 
 # Meta-feature to enable all drivers (used by codegen on host)
 all-drivers = [
@@ -60,4 +62,5 @@ all-drivers = [
     "sifive-uart",
     "fu740-prci",
     "fu740-ddr",
+    "pci-ecam",
 ]

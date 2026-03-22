@@ -1012,7 +1012,7 @@ fn test_flexible_construction_uses_inner_variable() {
 
     // Construction should use _uart0_inner
     assert!(
-        source.contains("let _uart0_inner = Ns16550::new"),
+        source.contains("let mut _uart0_inner = Ns16550::new"),
         "should construct into _uart0_inner: {source}"
     );
     // Init should be called on the inner variable

@@ -210,7 +210,7 @@ impl Device for SunxiD1Ccu {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         // The D1 BROM programs basic PLLs before loading the eGON image.
         // However, oreboot's main() programs several additional clocks
         // before DRAM init that the BROM may not fully configure.

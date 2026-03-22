@@ -131,6 +131,17 @@ pub enum Capability {
     },
     /// Enumerate and initialize all declared devices/drivers.
     DriverInit,
+    /// Enumerate a PCI root bus, allocate BAR resources, and enable devices.
+    ///
+    /// The referenced device implements `PciRootBus`.  Its `init()` method
+    /// walks the bus tree, sizes BARs, allocates from the MMIO/IO windows
+    /// in the driver config, programs hardware, and enables memory decode.
+    ///
+    /// Must appear after `ConsoleInit` (so enumeration can be logged).
+    PciInit {
+        /// Device name from the devices list (e.g., "pci0")
+        device: HString<32>,
+    },
     /// Prepare a Flattened Device Tree for OS handoff.
     FdtPrepare,
     /// Load and jump to the payload (OS kernel, shell, etc.).
