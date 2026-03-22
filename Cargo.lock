@@ -423,6 +423,7 @@ dependencies = [
  "fstart-driver-designware-i2c",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
+ "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
  "fstart-driver-sunxi-d1-ccu",
@@ -465,6 +466,16 @@ dependencies = [
  "fstart-mmio",
  "fstart-services",
  "heapless",
+ "serde",
+ "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-sifive-uart"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "fstart-services",
  "serde",
  "tock-registers",
 ]
@@ -674,6 +685,7 @@ dependencies = [
  "fstart-driver-designware-i2c",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
+ "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
  "fstart-driver-sunxi-d1-ccu",

@@ -1,0 +1,11 @@
+[package]
+name = "fstart-driver-sifive-uart"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-mmio = { workspace = true }
+fstart-services = { workspace = true }
+serde = { workspace = true }
+tock-registers = { workspace = true }

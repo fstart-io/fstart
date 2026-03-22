@@ -412,6 +412,284 @@ pub unsafe fn fdt_set_bootargs(
     Ok(new_totalsize)
 }
 
+// ---- Initrd properties in /chosen ------------------------------------------
+
+/// Set `linux,initrd-start` and `linux,initrd-end` in `/chosen`.
+///
+/// These properties tell the Linux kernel where the initramfs resides
+/// in memory. Both are encoded as 64-bit (8-byte) big-endian values
+/// regardless of the root cell sizes — Linux always reads them as u64
+/// from the `/chosen` node.
+///
+/// On success returns the new `totalsize` of the DTB.
+///
+/// # Safety
+///
+/// - `dtb` must point to a valid, writable FDT blob.
+/// - The buffer must be at least `max_size` bytes.
+/// - No other references to the buffer may exist during the call.
+pub unsafe fn fdt_set_initrd(
+    dtb: *mut u8,
+    max_size: usize,
+    initrd_start: u64,
+    initrd_end: u64,
+) -> Result<usize, FdtPatchError> {
+    // SAFETY: caller guarantees dtb points to a valid FDT.
+    let magic = unsafe { read_be32(dtb, 0) };
+    if magic != FDT_MAGIC {
+        return Err(FdtPatchError::BadMagic);
+    }
+
+    let totalsize = unsafe { read_be32(dtb, HDR_TOTALSIZE) } as usize;
+    let off_struct = unsafe { read_be32(dtb, HDR_OFF_DT_STRUCT) } as usize;
+    let off_strings = unsafe { read_be32(dtb, HDR_OFF_DT_STRINGS) } as usize;
+    let size_strings = unsafe { read_be32(dtb, HDR_SIZE_DT_STRINGS) } as usize;
+    let size_struct = unsafe { read_be32(dtb, HDR_SIZE_DT_STRUCT) } as usize;
+
+    // ---- Find /chosen node -------------------------------------------------
+
+    let mut off = off_struct;
+    let struct_end = off_struct + size_struct;
+    let mut depth: u32 = 0;
+    let mut chosen_begin: Option<usize> = None;
+
+    while off < struct_end {
+        // SAFETY: off is within structure block.
+        let token = unsafe { read_be32(dtb, off) };
+        match token {
+            FDT_BEGIN_NODE => {
+                depth += 1;
+                let name_off = off + 4;
+                // SAFETY: name is within structure block.
+                let name_end = unsafe { skip_node_name(dtb, name_off) };
+                if depth == 2 {
+                    let name_len = name_end - 1 - name_off;
+                    if name_len == 6 && unsafe { bytes_eq(dtb, name_off, b"chosen") } {
+                        chosen_begin = Some(off);
+                    }
+                }
+                off = align4(name_end);
+            }
+            FDT_END_NODE => {
+                depth = depth.saturating_sub(1);
+                off += 4;
+            }
+            FDT_PROP => {
+                let prop_len = unsafe { read_be32(dtb, off + 4) } as usize;
+                off = align4(off + 12 + prop_len);
+            }
+            FDT_NOP => off += 4,
+            FDT_END => break,
+            _ => return Err(FdtPatchError::StructureCorrupt),
+        }
+    }
+
+    let chosen_start = chosen_begin.ok_or(FdtPatchError::ChosenNotFound)?;
+
+    // ---- Find insertion point and existing properties -----------------------
+
+    let mut off = chosen_start + 4;
+    // SAFETY: within structure block.
+    off = align4(unsafe { skip_node_name(dtb, off) });
+
+    let mut existing_start: Option<(usize, usize)> = None; // (prop_off, val_len)
+    let mut existing_end: Option<(usize, usize)> = None;
+    let mut insert_off = off;
+    let mut inner_depth: u32 = 0;
+
+    loop {
+        // SAFETY: within structure block.
+        let token = unsafe { read_be32(dtb, off) };
+        match token {
+            FDT_PROP if inner_depth == 0 => {
+                let prop_len = unsafe { read_be32(dtb, off + 4) } as usize;
+                let prop_nameoff = unsafe { read_be32(dtb, off + 8) } as usize;
+                let name_abs = off_strings + prop_nameoff;
+
+                if unsafe { bytes_eq(dtb, name_abs, b"linux,initrd-start\0") } {
+                    existing_start = Some((off, prop_len));
+                } else if unsafe { bytes_eq(dtb, name_abs, b"linux,initrd-end\0") } {
+                    existing_end = Some((off, prop_len));
+                }
+
+                let next = align4(off + 12 + prop_len);
+                insert_off = next;
+                off = next;
+            }
+            FDT_PROP => {
+                let prop_len = unsafe { read_be32(dtb, off + 4) } as usize;
+                off = align4(off + 12 + prop_len);
+            }
+            FDT_BEGIN_NODE => {
+                inner_depth += 1;
+                off = align4(unsafe { skip_node_name(dtb, off + 4) });
+            }
+            FDT_END_NODE => {
+                if inner_depth == 0 {
+                    break;
+                }
+                inner_depth -= 1;
+                off += 4;
+            }
+            FDT_NOP => off += 4,
+            FDT_END => return Err(FdtPatchError::StructureCorrupt),
+            _ => return Err(FdtPatchError::StructureCorrupt),
+        }
+    }
+
+    // ---- Overwrite existing properties if they fit (8 bytes each) -----------
+
+    // Both linux,initrd-start and linux,initrd-end are 8-byte (u64) values.
+    let val_len = 8usize;
+
+    if let Some((prop_off, old_len)) = existing_start {
+        if old_len >= val_len {
+            // SAFETY: property value region is within structure block.
+            unsafe {
+                write_be32(dtb, prop_off + 4, val_len as u32);
+                write_be32(dtb, prop_off + 12, (initrd_start >> 32) as u32);
+                write_be32(dtb, prop_off + 16, initrd_start as u32);
+            }
+        } else {
+            // NOP out old, will insert below.
+            let old_total = align4(12 + old_len);
+            for i in 0..old_total / 4 {
+                unsafe { write_be32(dtb, prop_off + i * 4, FDT_NOP) };
+            }
+            existing_start = None;
+        }
+    }
+
+    if let Some((prop_off, old_len)) = existing_end {
+        if old_len >= val_len {
+            unsafe {
+                write_be32(dtb, prop_off + 4, val_len as u32);
+                write_be32(dtb, prop_off + 12, (initrd_end >> 32) as u32);
+                write_be32(dtb, prop_off + 16, initrd_end as u32);
+            }
+        } else {
+            let old_total = align4(12 + old_len);
+            for i in 0..old_total / 4 {
+                unsafe { write_be32(dtb, prop_off + i * 4, FDT_NOP) };
+            }
+            existing_end = None;
+        }
+    }
+
+    if existing_start.is_some() && existing_end.is_some() {
+        // Both overwritten in place, done.
+        return Ok(totalsize);
+    }
+
+    // ---- Insert missing properties -----------------------------------------
+
+    // Ensure property name strings exist.
+    let start_nameoff =
+        unsafe { find_in_strings(dtb, off_strings, size_strings, b"linux,initrd-start") };
+    let end_nameoff =
+        unsafe { find_in_strings(dtb, off_strings, size_strings, b"linux,initrd-end") };
+
+    let mut new_strings_len = 0usize;
+    let start_nameoff_val = match start_nameoff {
+        Some(n) => n,
+        None => {
+            let n = size_strings + new_strings_len;
+            new_strings_len += b"linux,initrd-start\0".len();
+            n
+        }
+    };
+    let end_nameoff_val = match end_nameoff {
+        Some(n) => n,
+        None => {
+            let n = size_strings + new_strings_len;
+            new_strings_len += b"linux,initrd-end\0".len();
+            n
+        }
+    };
+
+    // Build properties to insert.
+    // Each property: FDT_PROP(4) + len(4) + nameoff(4) + value(8) = 20 bytes.
+    let prop_total_each = align4(12 + val_len); // 20 bytes, already aligned
+    let mut props_to_insert = 0usize;
+    let mut prop_buf = [0u8; 48]; // room for 2 properties
+    let mut p = 0usize;
+
+    if existing_start.is_none() {
+        unsafe {
+            write_be32(prop_buf.as_mut_ptr(), p, FDT_PROP);
+            write_be32(prop_buf.as_mut_ptr(), p + 4, val_len as u32);
+            write_be32(prop_buf.as_mut_ptr(), p + 8, start_nameoff_val as u32);
+            write_be32(prop_buf.as_mut_ptr(), p + 12, (initrd_start >> 32) as u32);
+            write_be32(prop_buf.as_mut_ptr(), p + 16, initrd_start as u32);
+        }
+        p += prop_total_each;
+        props_to_insert += 1;
+    }
+
+    if existing_end.is_none() {
+        unsafe {
+            write_be32(prop_buf.as_mut_ptr(), p, FDT_PROP);
+            write_be32(prop_buf.as_mut_ptr(), p + 4, val_len as u32);
+            write_be32(prop_buf.as_mut_ptr(), p + 8, end_nameoff_val as u32);
+            write_be32(prop_buf.as_mut_ptr(), p + 12, (initrd_end >> 32) as u32);
+            write_be32(prop_buf.as_mut_ptr(), p + 16, initrd_end as u32);
+        }
+        p += prop_total_each;
+        props_to_insert += 1;
+    }
+
+    let insert_total = p;
+    if insert_total == 0 {
+        return Ok(totalsize);
+    }
+
+    let new_totalsize = totalsize + insert_total + new_strings_len;
+    if new_totalsize > max_size {
+        return Err(FdtPatchError::BufferTooSmall);
+    }
+
+    // Shift tail.
+    let tail_len = totalsize - insert_off;
+    unsafe {
+        ptr::copy(
+            dtb.add(insert_off),
+            dtb.add(insert_off + insert_total),
+            tail_len,
+        );
+        ptr::copy_nonoverlapping(prop_buf.as_ptr(), dtb.add(insert_off), insert_total);
+    }
+
+    // Append new strings.
+    if new_strings_len > 0 {
+        let new_off_strings = off_strings + insert_total;
+        let mut str_dest = new_off_strings + size_strings;
+
+        if start_nameoff.is_none() {
+            let s = b"linux,initrd-start\0";
+            unsafe { ptr::copy_nonoverlapping(s.as_ptr(), dtb.add(str_dest), s.len()) };
+            str_dest += s.len();
+        }
+        if end_nameoff.is_none() {
+            let s = b"linux,initrd-end\0";
+            unsafe { ptr::copy_nonoverlapping(s.as_ptr(), dtb.add(str_dest), s.len()) };
+        }
+    }
+
+    // Update header.
+    unsafe {
+        write_be32(dtb, HDR_TOTALSIZE, new_totalsize as u32);
+        write_be32(dtb, HDR_SIZE_DT_STRUCT, (size_struct + insert_total) as u32);
+        write_be32(dtb, HDR_OFF_DT_STRINGS, (off_strings + insert_total) as u32);
+        write_be32(
+            dtb,
+            HDR_SIZE_DT_STRINGS,
+            (size_strings + new_strings_len) as u32,
+        );
+    }
+
+    Ok(new_totalsize)
+}
+
 // ---- Memory node -----------------------------------------------------------
 
 /// Maximum size of the node blob we build on the stack.

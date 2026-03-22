@@ -37,6 +37,37 @@ pub fn boot_hart_id() -> u64 {
     id
 }
 
+// ---------------------------------------------------------------------------
+// SBI copy trampoline (position-independent)
+// ---------------------------------------------------------------------------
+//
+// Copies firmware from a3 (src) to a6 (dst/entry), a5 bytes, then
+// issues fence + fence.i and jumps to a6.
+// a0/a1/a2 are preserved for the SBI entry convention.
+core::arch::global_asm!(
+    r#"
+    .section .text
+    .balign 4
+    .global _sbi_copy_trampoline
+    .global _sbi_copy_trampoline_end
+_sbi_copy_trampoline:
+    mv   a4, a6          // a4 = write pointer (starts at entry/dst)
+1:
+    beqz a5, 2f           // if remaining == 0, done
+    lbu  t0, 0(a3)        // load byte from src
+    sb   t0, 0(a4)        // store byte to dst
+    addi a3, a3, 1
+    addi a4, a4, 1
+    addi a5, a5, -1
+    j    1b
+2:
+    fence rw, rw
+    fence.i
+    jr   a6               // jump to firmware entry point
+_sbi_copy_trampoline_end:
+    "#
+);
+
 /// Return the DTB address passed by QEMU at reset (`a1`).
 ///
 /// The `_start` assembly saves `a1` into the `mscratch` CSR (following
@@ -123,11 +154,85 @@ pub fn boot_linux_sbi(sbi_addr: u64, hart_id: u64, dtb_addr: u64, info: &FwDynam
         // instructions (the compiler is free to pick any register for
         // `{sbi}`, guaranteed not to be a0/a1/a2).
         core::arch::asm!(
+            // Ensure stores to the SBI region are visible and the
+            // I-cache fetches the new instructions (not stale FFS data).
+            "fence rw, rw",
+            "fence.i",
             "jr {sbi}",
             sbi = in(reg) sbi_addr,
             in("a0") hart_id,
             in("a1") dtb_addr,
             in("a2") info as *const FwDynamicInfo as u64,
+            options(noreturn),
+        );
+    }
+}
+
+/// Copy an SBI firmware blob to its load address, then jump to it
+/// using the fw_dynamic protocol.
+///
+/// This is needed when the firmware's load address overlaps with the
+/// currently-executing code (e.g., both at 0x80000000). The copy +
+/// jump is performed from a position-independent trampoline that is
+/// first copied to a safe location (near the stack top) so it
+/// survives the firmware overwrite.
+///
+/// # Safety
+///
+/// - `fw_src` and `fw_dst` must point to valid memory.
+/// - `fw_len` must be the exact size of the firmware binary.
+/// - The trampoline destination (`trampoline_addr`) must be in safe
+///   RAM that won't be overwritten by the firmware copy.
+/// - All other payload files must already be loaded.
+pub fn copy_and_boot_sbi(
+    fw_src: *const u8,
+    fw_dst: u64,
+    fw_len: usize,
+    hart_id: u64,
+    dtb_addr: u64,
+    info: &FwDynamicInfo,
+    trampoline_addr: u64,
+) -> ! {
+    // Copy the trampoline (defined in assembly below) to a safe
+    // high-memory location, then jump to it.  The trampoline copies
+    // the firmware blob from FFS to its load address and jumps.
+
+    extern "C" {
+        fn _sbi_copy_trampoline();
+        fn _sbi_copy_trampoline_end();
+    }
+    let tramp_src = _sbi_copy_trampoline as *const u8;
+    let tramp_end = _sbi_copy_trampoline_end as *const u8;
+    let tramp_size = tramp_end as usize - tramp_src as usize;
+    let tramp_dst = trampoline_addr as *mut u8;
+
+    // Copy trampoline to safe location.
+    // SAFETY: trampoline_addr is in safe high RAM (near stack top).
+    unsafe {
+        core::ptr::copy_nonoverlapping(tramp_src, tramp_dst, tramp_size);
+    }
+
+    // Flush I-cache for the trampoline region.
+    // SAFETY: fence instructions are always safe.
+    unsafe {
+        core::arch::asm!("fence rw, rw");
+        core::arch::asm!("fence.i");
+    }
+
+    // Jump to the trampoline with all parameters in registers.
+    // a3 = src, a4 = dst, a5 = len, a6 = entry point (same as dst)
+    // SAFETY: all addresses are valid, trampoline is at trampoline_addr.
+    unsafe {
+        core::arch::asm!(
+            "jr {tramp}",
+            tramp = in(reg) trampoline_addr,
+            in("a0") hart_id,
+            in("a1") dtb_addr,
+            in("a2") info as *const FwDynamicInfo as u64,
+            in("a3") fw_src as u64,
+            in("a4") fw_dst,
+            in("a5") fw_len,
+            in("a6") fw_dst, // entry point = destination base
             options(noreturn),
         );
     }

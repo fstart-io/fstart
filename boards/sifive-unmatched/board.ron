@@ -1,0 +1,128 @@
+// Board definition for SiFive HiFive Unmatched (FU740-C000 SoC).
+//
+// SoC:    SiFive FU740-C000
+//         1x S7 monitor core (rv64imac, hart 0, no S-mode)
+//         4x U74 application cores (rv64imafdc, harts 1-4, sv39 MMU)
+//
+// DRAM:   16 GiB DDR4 at 0x80000000
+// UART:   SiFive UART0 at 0x10010000
+// L2 LIM: 0x08000000 (2 MiB, used as early scratchpad SRAM)
+// QSPI0:  0x10040000 (regs), flash at 0x20000000 (32 MiB XIP window)
+//
+// QEMU sifive_u machine (for development):
+//   RAM:    0x80000000 (default 8 GiB)
+//   UART0:  0x10010000 (SiFive UART, same register layout as hardware)
+//   Harts:  5 (hart 0 = S7, harts 1-4 = U74)
+//   -bios:  loads firmware at 0x80000000 (DRAM base)
+//
+// Boot flow:
+//   QEMU boot ROM at 0x1000 -> jump to 0x80000000 (DRAM)
+//   All 5 harts start simultaneously; _start parks all except hart 1.
+//   Hart 1: init UART -> MemoryInit -> load OpenSBI + kernel + initramfs
+//         -> patch FDT -> jump to OpenSBI -> Linux boots
+//
+// Note: the FU740 boot ROM on real hardware copies firmware from SPI
+// flash into L2 LIM (0x08000000) before executing it. The firmware
+// never runs XIP from flash — it always runs from RAM (L2 LIM for
+// the first stage, DRAM for later stages). QEMU -bios mimics this
+// by loading directly into DRAM.
+
+(
+    name: "sifive-unmatched",
+    platform: Riscv64,
+
+    // Memory: single RAM region. No ROM/flash for XIP — firmware runs
+    // from DRAM (QEMU -bios loads it there; real hardware boot ROM
+    // copies from SPI flash to L2 LIM/DRAM before execution).
+    //
+    // flash_base/flash_size: the FFS image is loaded by QEMU -bios at
+    // 0x80000000 and occupies ~42 MiB.  BSS and stack must be placed
+    // ABOVE this area — otherwise _start's BSS zeroing destroys the FFS
+    // blob data (firmware, kernel, initramfs) before fstart_main can
+    // read it.  Setting flash_base == load_addr with a conservative
+    // flash_size pushes BSS to 0x90000000, safely above all blob load
+    // addresses (highest: DTB at 0x8F000000).
+    memory: (
+        regions: [
+            ( name: "ram", base: 0x80000000, size: 0x20000000, kind: Ram ),
+        ],
+        flash_base: Some(0x80000000),
+        flash_size: Some(0x10000000),
+    ),
+
+    devices: [
+        (
+            name: "uart0",
+            driver: SifiveUart((
+                base_addr: 0x10010000,
+                // QEMU sifive_u: the UART input clock is the HFPCLK.
+                // QEMU ignores the baud rate divisor for console output,
+                // so any reasonable clock_freq value works. We use 500 MHz
+                // to match typical real hardware (HFPCLKPLL after PRCI init).
+                clock_freq: 500000000,
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
+        ),
+    ],
+
+    stages: Monolithic((
+        capabilities: [
+            ConsoleInit( device: "uart0" ),
+            MemoryInit,
+            BootMedia(MemoryMapped( base: 0x80000000, size: 0x20000000 )),
+            SigVerify,
+            FdtPrepare,
+            PayloadLoad,
+        ],
+        load_addr: 0x80000000,
+        // 256 KiB stack.
+        stack_size: 0x40000,
+        // 256 KiB heap for the bump allocator (FDT manipulation).
+        heap_size: Some(0x40000),
+    )),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256, Sha3_256],
+    ),
+
+    mode: Rigid,
+
+    // Linux boot via OpenSBI fw_dynamic protocol.
+    //
+    // Memory layout (QEMU -bios loads firmware at 0x80000000):
+    //   0x80000000 - FFS image (~42 MiB: firmware code + kernel +
+    //                initramfs + OpenSBI blobs, loaded by QEMU -bios)
+    //   0x82000000 - OpenSBI fw_dynamic (custom build, FW_TEXT_START=0x82000000)
+    //   0x84000000 - Linux kernel (loaded from FFS into RAM)
+    //   0x86000000 - Initramfs (loaded from FFS into RAM)
+    //   0x8F000000 - Patched DTB (copied from platform-provided DTB)
+    //   0x90000000 - End of configured RAM region
+    //
+    // QEMU sifive_u passes DTB address in a1 (saved to mscratch by _start).
+    // The bootargs use ttySIF0 (SiFive UART console device in Linux).
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("Image"),
+        kernel_load_addr: Some(0x84000000),
+        fdt: Platform,
+        dtb_addr: Some(0x8F000000),
+        bootargs: Some("console=ttySIF0 earlycon=sbi"),
+        firmware: Some((
+            kind: OpenSbi,
+            file: "fw_dynamic.bin",
+            // Custom build: FW_TEXT_START=0x83000000. Must be beyond
+            // the FFS image end (~42 MiB from 0x80000000) to avoid
+            // QEMU TB cache issues with -bios loaded addresses.
+            load_addr: 0x83000000,
+        )),
+        initramfs_file: Some("initramfs-riscv64.cpio"),
+        initramfs_load_addr: Some(0x86000000),
+    )),
+
+    // Hart 1 is the boot hart (first U74 core).
+    // Hart 0 is the S7 monitor core (no S-mode, parked at _start).
+    boot_hart_id: 1,
+)

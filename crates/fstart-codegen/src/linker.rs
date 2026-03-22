@@ -92,6 +92,12 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         writeln!(out, "ENTRY(_start)\n").unwrap();
     }
 
+    // Boot hart ID for multi-hart parking. On multi-hart SoCs, all harts
+    // start executing _start simultaneously. Only the hart matching this
+    // value continues; all others enter WFI. Default 0 is correct for
+    // single-hart platforms and QEMU virt.
+    writeln!(out, "_boot_hart_id = {};", config.boot_hart_id).unwrap();
+
     if let Some(rom) = rom_region {
         // XIP layout: code in ROM, data/bss/stack in RAM.
         // When data_addr is set, place writable sections at that address

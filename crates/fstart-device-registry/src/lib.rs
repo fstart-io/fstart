@@ -74,6 +74,11 @@ pub mod sunxi_d1_dramc {
     pub use fstart_driver_sunxi_d1_dramc::SunxiD1DramcConfig;
 }
 
+#[cfg(feature = "sifive-uart")]
+pub mod sifive_uart {
+    pub use fstart_driver_sifive_uart::SifiveUartConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -183,6 +188,10 @@ pub enum DriverInstance {
 
     /// PCIe Root Complex (ACPI-only, no runtime driver).
     PcieRoot(fstart_types::acpi::AcpiPcieRootDevice),
+
+    /// SiFive UART (FU540/FU740).
+    #[cfg(feature = "sifive-uart")]
+    SifiveUart(sifive_uart::SifiveUartConfig),
 }
 
 impl DriverInstance {
@@ -335,6 +344,16 @@ impl DriverInstance {
                 compatible: &[],
                 has_acpi: true,
             },
+            #[cfg(feature = "sifive-uart")]
+            Self::SifiveUart(_) => &DriverMeta {
+                name: "sifive-uart",
+                type_name: "SifiveUart",
+                module_path: "fstart_driver_sifive_uart",
+                config_type: "SifiveUartConfig",
+                services: &["Console"],
+                compatible: &["sifive,fu740-c000-uart", "sifive,uart0"],
+                has_acpi: false,
+            },
         }
     }
 
@@ -399,6 +418,8 @@ impl DriverInstance {
             Self::Ahci(cfg) => serde::Serialize::serialize(cfg, ser),
             Self::Xhci(cfg) => serde::Serialize::serialize(cfg, ser),
             Self::PcieRoot(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sifive-uart")]
+            Self::SifiveUart(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

@@ -196,6 +196,7 @@ fn file_type_str(ft: FileType) -> &'static str {
         FileType::Raw => "Raw",
         FileType::Firmware => "Firmware",
         FileType::FitImage => "FitImage",
+        FileType::Initramfs => "Initramfs",
     }
 }
 
