@@ -122,4 +122,20 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["Console"],
         compatible: &["sifive,fu740-c000-uart", "sifive,uart0"],
     },
+    DriverMeta {
+        name: "fu740-prci",
+        type_name: "Fu740Prci",
+        module_path: "fstart_driver_fu740_prci",
+        config_type: "Fu740PrciConfig",
+        services: &["ClockController"],
+        compatible: &["sifive,fu740-c000-prci"],
+    },
+    DriverMeta {
+        name: "fu740-ddr",
+        type_name: "Fu740Ddr",
+        module_path: "fstart_driver_fu740_ddr",
+        config_type: "Fu740DdrConfig",
+        services: &["MemoryController"],
+        compatible: &["sifive,fu740-c000-ddr"],
+    },
 ];
