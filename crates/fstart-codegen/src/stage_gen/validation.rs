@@ -15,9 +15,15 @@ use fstart_types::{BoardConfig, BootMedium, Capability, FitParseMode, PayloadKin
 /// - StageLoad / PayloadLoad should be the last capability (nothing runs after
 ///   a jump). We warn but don't hard-error since the board author may know
 ///   what they're doing.
-pub(super) fn validate_capability_ordering(capabilities: &[Capability]) -> Option<String> {
+pub(super) fn validate_capability_ordering(
+    capabilities: &[Capability],
+    config: &BoardConfig,
+) -> Option<String> {
     let mut console_inited = false;
     let mut boot_media_declared = false;
+
+    // UefiPayload doesn't use FFS — it links CrabEFI statically.
+    let needs_boot_media = !is_uefi_payload(config);
 
     for cap in capabilities {
         match cap {
@@ -94,10 +100,10 @@ pub(super) fn validate_capability_ordering(capabilities: &[Capability]) -> Optio
                         .to_string(),
                 );
             }
-            Capability::PayloadLoad if !boot_media_declared => {
+            Capability::PayloadLoad if needs_boot_media && !boot_media_declared => {
                 return Some(
                     "PayloadLoad capability requires BootMedia to appear earlier \
-                     in the capability list"
+                     in the capability list (not needed for UefiPayload)"
                         .to_string(),
                 );
             }
@@ -205,4 +211,12 @@ pub(super) fn is_fit_runtime(config: &BoardConfig) -> bool {
         p.kind == PayloadKind::FitImage
             && p.fit_parse.unwrap_or(FitParseMode::Buildtime) == FitParseMode::Runtime
     })
+}
+
+/// Check whether this board has a UEFI payload via CrabEFI.
+pub(super) fn is_uefi_payload(config: &BoardConfig) -> bool {
+    config
+        .payload
+        .as_ref()
+        .is_some_and(|p| p.kind == PayloadKind::UefiPayload)
 }

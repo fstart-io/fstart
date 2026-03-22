@@ -83,7 +83,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     };
 
     // Validate capability ordering before generating code.
-    if let Some(err) = validate_capability_ordering(capabilities) {
+    if let Some(err) = validate_capability_ordering(capabilities, config) {
         return format!("compile_error!(\"{err}\");\n");
     }
 
