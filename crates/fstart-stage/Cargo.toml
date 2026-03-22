@@ -57,6 +57,9 @@ handoff = ["fstart-capabilities/handoff"]
 acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-driver-pl011?/acpi"]
 # SMBIOS table generation (no alloc needed — writes directly to memory).
 smbios = ["dep:fstart-smbios"]
+# CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
+# Requires alloc (fstart-alloc provides #[global_allocator]).
+crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
 
 [dependencies]
 # Core firmware infrastructure
@@ -102,8 +105,11 @@ fstart-acpi = { workspace = true, optional = true }
 # SMBIOS table generation (optional, behind smbios feature)
 fstart-smbios = { workspace = true, optional = true }
 
-# Allocator (optional, behind acpi feature — provides #[global_allocator])
+# Allocator (optional — provides #[global_allocator])
 fstart-alloc = { workspace = true, optional = true }
+
+# CrabEFI adapter (optional, behind crabefi feature)
+fstart-crabefi = { workspace = true, optional = true }
 
 [build-dependencies]
 fstart-codegen = { workspace = true }

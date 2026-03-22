@@ -1,0 +1,9 @@
+[package]
+name = "fstart-crabefi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-services = { workspace = true }
+crabefi = { path = "../../../CrabEFI_r_efi_lib", default-features = false }

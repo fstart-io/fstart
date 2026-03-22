@@ -16,7 +16,7 @@
 // to register the global allocator.  Without this explicit extern crate,
 // the linker would not include it (nothing else references the crate by
 // symbol).
-#[cfg(any(feature = "acpi", feature = "pci-ecam"))]
+#[cfg(any(feature = "acpi", feature = "pci-ecam", feature = "crabefi"))]
 extern crate fstart_alloc;
 
 // Include the generated stage code (fstart_main, driver instances, etc.)
