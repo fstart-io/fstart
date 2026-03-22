@@ -10,10 +10,15 @@
 
 use core::fmt;
 
-// Re-export CrabEFI's platform API for convenience.
-pub use crabefi::MemoryRegion;
-pub use crabefi::MemoryType;
-pub use crabefi::PlatformConfig;
+// Type aliases for generated code convenience.
+pub type MemoryRegion = crabefi::MemoryRegion;
+pub type MemoryType = crabefi::MemoryType;
+pub type PlatformConfig<'a> = crabefi::PlatformConfig<'a>;
+
+/// Call `crabefi::init_platform()`. This is the entry point that never returns.
+pub fn init_platform(config: crabefi::PlatformConfig) -> ! {
+    crabefi::init_platform(config)
+}
 
 // ---------------------------------------------------------------------------
 // Console → DebugOutput adapter
