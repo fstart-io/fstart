@@ -69,6 +69,42 @@
             )),
             services: ["Console"],
         ),
+        // ACPI-only devices — no runtime driver, but generate DSDT entries
+        // and optional standalone tables (MCFG for PCIe).
+        (
+            name: "ahci0",
+            driver: Ahci((
+                name: "AHC0",
+                base: 0x60100000,
+                size: 0x10000,
+                gsiv: 42,
+            )),
+            services: [],
+        ),
+        (
+            name: "xhci0",
+            driver: Xhci((
+                name: "USB0",
+                base: 0x60110000,
+                size: 0x10000,
+                gsiv: 43,
+            )),
+            services: [],
+        ),
+        (
+            name: "pcie0",
+            driver: PcieRoot((
+                name: "PCI0",
+                ecam_base: 0xF0000000,
+                mmio32: (0x80000000, 0xEFFFFFFF),
+                mmio64: (0x100000000, 0xFFFFFFFFFF),
+                pio_base: Some(0x7FFF0000),
+                bus_range: (0, 0xFF),
+                irqs: (168, 169, 170, 171),
+                segment: 0,
+            )),
+            services: [],
+        ),
     ],
 
     // Monolithic stage running from DRAM (copied from flash by entry stub).
@@ -88,14 +124,12 @@
         heap_size: Some(0x40000),
     )),
 
-    // ACPI configuration — tables placed 512 KiB into DRAM, well below load_addr.
-    // DRAM starts at 0x10000000000; tables at 0x10000000000 + 0x80000.
+    // ACPI configuration — tables are heap-allocated at runtime.
     //
     // SBSA platform: GICv3 + generic timers + HW-reduced ACPI with PSCI.
-    // AHCI, xHCI, and PCIe are declared as extra_devices since fstart
-    // has no driver crates for them yet.
+    // AHCI, xHCI, and PCIe are in the devices list above — the ACPI codegen
+    // picks them up automatically via their AcpiDevice metadata.
     acpi: Some((
-        table_addr: 0x10000080000,
         platform: Arm((
             num_cpus: 1,
             gic_dist_base: 0x40060000,
@@ -118,36 +152,10 @@
                 id_count: 0x10000,
             )),
         )),
-        extra_devices: [
-            Ahci((
-                name: "AHC0",
-                base: 0x60100000,
-                size: 0x10000,
-                gsiv: 42,
-            )),
-            Xhci((
-                name: "USB0",
-                base: 0x60110000,
-                size: 0x10000,
-                gsiv: 43,
-            )),
-            PcieRoot((
-                name: "PCI0",
-                ecam_base: 0xF0000000,
-                mmio32: (0x80000000, 0xEFFFFFFF),
-                mmio64: (0x100000000, 0xFFFFFFFFFF),
-                pio_base: Some(0x7FFF0000),
-                bus_range: (0, 0xFF),
-                irqs: (168, 169, 170, 171),
-                segment: 0,
-            )),
-        ],
     )),
 
-    // SMBIOS configuration — tables placed after ACPI tables in DRAM.
-    // DRAM starts at 0x10000000000; ACPI at +0x80000, SMBIOS at +0x90000.
+    // SMBIOS configuration — tables are heap-allocated at runtime.
     smbios: Some((
-        table_addr: 0x10000090000,
 
         bios_vendor: "fstart",
         bios_version: "0.1.0",

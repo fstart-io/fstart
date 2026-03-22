@@ -26,6 +26,14 @@ use acpi_tables::sdt::Sdt;
 use acpi_tables::xsdt::XSDT;
 use acpi_tables::Aml;
 
+/// Size of a standard ACPI SDT header (signature + length + revision +
+/// checksum + OEMID + OEM table ID + OEM revision + creator ID + creator
+/// revision).
+const ACPI_SDT_HEADER_SIZE: usize = 36;
+
+/// Size of each XSDT entry (64-bit physical address pointer).
+const XSDT_ENTRY_SIZE: usize = 8;
+
 // Re-export ARM types when available, for convenience.
 #[cfg(feature = "arm")]
 pub use arm::{ArmConfig, IortConfig, WatchdogConfig};
@@ -126,7 +134,7 @@ pub fn assemble(
     // XSDT entries: FADT + each platform table + each extra table
     let num_xsdt_entries = 1 + platform_tables.len() + device_extra_tables.len();
     let rsdp_size = Rsdp::len();
-    let xsdt_estimate = 36 + 8 * num_xsdt_entries;
+    let xsdt_estimate = ACPI_SDT_HEADER_SIZE + XSDT_ENTRY_SIZE * num_xsdt_entries;
     let fadt_size = FADT::len();
 
     let mut offset: usize = 0;

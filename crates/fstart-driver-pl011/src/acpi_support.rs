@@ -55,11 +55,11 @@ impl AcpiDevice for Pl011 {
             let _ = namespace.push_str("\\_SB.");
             let _ = namespace.push_str(acpi_name);
 
-            let dbg2 = fstart_acpi::dbg2::build_dbg2_pl011(
-                config.base_addr,
-                0x1000, // PL011 MMIO region size
-                namespace.as_str(),
-            );
+            let dbg2 = fstart_acpi::dbg2::build_dbg2_pl011(&fstart_acpi::dbg2::Dbg2Pl011Config {
+                base_addr: config.base_addr,
+                addr_size: 0x1000, // PL011 MMIO region size
+                namespace: namespace.as_str(),
+            });
             let mut dbg2_bytes = Vec::new();
             dbg2.to_aml_bytes(&mut dbg2_bytes);
             tables.push(dbg2_bytes);

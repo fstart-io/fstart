@@ -91,16 +91,12 @@ pub fn build_platform_tables(config: &ArmConfig) -> (Vec<Vec<u8>>, FadtConfig) {
 
     // IORT: IO Remapping Table (maps PCI RIDs → GIC ITS device IDs).
     if let Some(iort_cfg) = &config.iort {
-        let iort = crate::iort::build_iort(
-            &crate::iort::ItsGroup {
-                its_ids: iort_cfg.its_ids,
-            },
-            &crate::iort::RootComplex {
-                pci_segment: iort_cfg.pci_segment,
-                memory_address_limit: iort_cfg.memory_address_limit,
-                id_count: iort_cfg.id_count,
-            },
-        );
+        let iort = crate::iort::build_iort(&crate::iort::IortConfig {
+            its_ids: iort_cfg.its_ids,
+            pci_segment: iort_cfg.pci_segment,
+            memory_address_limit: iort_cfg.memory_address_limit,
+            id_count: iort_cfg.id_count,
+        });
         let mut iort_bytes = Vec::new();
         iort.to_aml_bytes(&mut iort_bytes);
         platform_tables.push(iort_bytes);
@@ -164,15 +160,15 @@ fn build_gtdt(config: &ArmConfig) -> Sdt {
         .collect();
 
     let (sel1, nsel1, virt, nsel2) = config.timer_gsivs;
-    gtdt::build_gtdt(
-        0xFFFF_FFFF_FFFF_FFFF,
-        sel1,
-        nsel1,
-        virt,
-        nsel2,
-        gtdt::flags::LEVEL_LOW_ALWAYS_ON,
-        &watchdogs,
-    )
+    gtdt::build_gtdt(&gtdt::GtdtConfig {
+        cnt_ctrl_base: 0xFFFF_FFFF_FFFF_FFFF,
+        secure_el1_gsiv: sel1,
+        nonsecure_el1_gsiv: nsel1,
+        virtual_gsiv: virt,
+        nonsecure_el2_gsiv: nsel2,
+        timer_flags: gtdt::flags::LEVEL_LOW_ALWAYS_ON,
+        watchdogs: &watchdogs,
+    })
 }
 
 /// Build the FADT with ARM-specific flags.

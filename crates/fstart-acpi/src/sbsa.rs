@@ -303,15 +303,15 @@ fn build_gtdt(config: &SbsaConfig) -> Sdt {
         timer_flags: gtdt::flags::LEVEL_LOW_ALWAYS_ON,
     };
 
-    gtdt::build_gtdt(
-        0xFFFF_FFFF_FFFF_FFFF, // CntControlBase (managed by EL3)
-        29,                    // Secure EL1 timer
-        30,                    // Non-secure EL1 timer
-        27,                    // Virtual timer
-        26,                    // Non-secure EL2 timer
-        gtdt::flags::LEVEL_LOW_ALWAYS_ON,
-        &[watchdog],
-    )
+    gtdt::build_gtdt(&gtdt::GtdtConfig {
+        cnt_ctrl_base: 0xFFFF_FFFF_FFFF_FFFF, // managed by EL3
+        secure_el1_gsiv: 29,
+        nonsecure_el1_gsiv: 30,
+        virtual_gsiv: 27,
+        nonsecure_el2_gsiv: 26,
+        timer_flags: gtdt::flags::LEVEL_LOW_ALWAYS_ON,
+        watchdogs: &[watchdog],
+    })
 }
 
 /// Build the MCFG for PCIe ECAM.
