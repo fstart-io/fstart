@@ -421,6 +421,8 @@ name = "fstart-device-registry"
 version = "0.1.0"
 dependencies = [
  "fstart-driver-designware-i2c",
+ "fstart-driver-fu740-ddr",
+ "fstart-driver-fu740-prci",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
  "fstart-driver-sifive-uart",
@@ -446,6 +448,26 @@ dependencies = [
  "fstart-services",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-fu740-ddr"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-services",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-fu740-prci"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "fstart-services",
+ "serde",
 ]
 
 [[package]]
@@ -683,6 +705,8 @@ dependencies = [
  "fstart-capabilities",
  "fstart-codegen",
  "fstart-driver-designware-i2c",
+ "fstart-driver-fu740-ddr",
+ "fstart-driver-fu740-prci",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
  "fstart-driver-sifive-uart",

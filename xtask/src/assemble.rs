@@ -530,7 +530,11 @@ fn assemble_linux_payload(
                     data: kernel_data,
                     mem_size: None,
                     load_addr: kernel_load_addr,
-                    compression: Compression::None,
+                    // TODO: make compression configurable per-board via RON
+                    // (e.g. payload.compression field). For now LZ4 is always
+                    // used — the runtime decompressor is enabled whenever FFS
+                    // is active, and smaller images benefit all targets.
+                    compression: Compression::Lz4,
                     flags: SegmentFlags::CODE,
                 }],
             });
@@ -566,7 +570,7 @@ fn assemble_linux_payload(
                     data: initramfs_data,
                     mem_size: None,
                     load_addr: initramfs_load_addr,
-                    compression: Compression::None,
+                    compression: Compression::Lz4,
                     flags: SegmentFlags::RODATA,
                 }],
             });
@@ -626,7 +630,7 @@ fn add_firmware_blob(
                     data: fw_data,
                     mem_size: None,
                     load_addr: fw_load_addr,
-                    compression: Compression::None,
+                    compression: Compression::Lz4,
                     flags: SegmentFlags::CODE,
                 }],
             });

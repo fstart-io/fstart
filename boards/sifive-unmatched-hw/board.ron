@@ -1,0 +1,153 @@
+// Board definition for SiFive HiFive Unmatched — REAL HARDWARE.
+//
+// SoC:    SiFive FU740-C000
+//         1x S7 monitor core (rv64imac, hart 0, no S-mode)
+//         4x U74 application cores (rv64imafdc, harts 1-4, sv39 MMU)
+//
+// DRAM:   16 GiB DDR4 at 0x80000000 (initialized by this firmware)
+// UART:   SiFive UART0 at 0x10010000
+// L2 LIM: 0x08000000 (2 MiB, used as early scratchpad SRAM)
+// QSPI0:  0x10040000 (regs), flash at 0x20000000 (32 MiB XIP window)
+// PRCI:   0x10000000 (clock controller)
+// DDR:    0x100B0000 (Denali controller + PHY + bus blocker)
+// GPIO:   0x10060000
+//
+// Boot flow (real hardware with JTAG):
+//   1. Flash FFS image (compressed payloads) to SPI NOR via probe-rs
+//   2. Load stage ELF to L2 LIM via probe-rs run
+//   3. _start parks all harts except boot_hart_id (hart 1)
+//   4. Hart 1 runs fstart_main:
+//      a. ClockInit: PRCI configures all PLLs, deasserts DDR resets
+//      b. ConsoleInit: UART0 at 115200 baud
+//      c. DramInit: DDR4 training and init
+//      d. BootMedia: FFS at SPI NOR XIP window (0x20000000)
+//      e. SigVerify: verify FFS manifest signature
+//      f. FdtPrepare: load + patch DTB
+//      g. PayloadLoad: load OpenSBI + kernel + initramfs -> boot Linux
+//
+// Memory layout:
+//   0x0800_0000  L2 LIM (2 MiB) — stage code + stack
+//   0x2000_0000  SPI NOR XIP (32 MiB) — FFS with LZ4-compressed payloads
+//   0x8000_0000  DRAM (16 GiB, after DDR init):
+//     0x8300_0000  OpenSBI fw_dynamic
+//     0x8400_0000  Linux kernel
+//     0x8600_0000  Initramfs
+//     0x8F00_0000  Patched DTB
+//
+// Usage:
+//   cargo xtask flash --board sifive-unmatched-hw
+//
+// UART console (FT2232H channel B):
+//   picocom -b 115200 /dev/ttyUSB1
+
+(
+    name: "sifive-unmatched-hw",
+    platform: Riscv64,
+
+    // Memory: L2 LIM only — the stage runs entirely from LIM before DRAM is up.
+    // DRAM becomes available after DramInit but is not used for stage code.
+    memory: (
+        regions: [
+            ( name: "lim", base: 0x08000000, size: 0x200000, kind: Ram ),
+        ],
+    ),
+
+    devices: [
+        // FU740 PRCI clock controller — configures all PLLs and manages resets.
+        (
+            name: "prci0",
+            driver: Fu740Prci((
+                base_addr: 0x10000000,
+                gpio_base: 0x10060000,
+            )),
+            services: ["ClockController"],
+        ),
+
+        // SiFive UART0 — debug console.
+        // clock_freq = pclk after PRCI init = 260 MHz / (0 + 2) = 130 MHz.
+        (
+            name: "uart0",
+            driver: SifiveUart((
+                base_addr: 0x10010000,
+                clock_freq: 130000000,
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
+        ),
+
+        // FU740 DDR4 memory controller — Denali DDR4 controller + PHY.
+        (
+            name: "ddr0",
+            driver: Fu740Ddr((
+                ctl_base:     0x100B0000,
+                phy_base:     0x100B2000,
+                filter_base:  0x100B8000,
+                dram_size:    0x400000000,
+            )),
+            services: ["MemoryController"],
+        ),
+    ],
+
+    stages: Monolithic((
+        capabilities: [
+            // 1. Clock init: configure all PLLs, deassert DDR resets.
+            ClockInit( device: "prci0" ),
+
+            // 2. Console init: UART at 115200 baud.
+            ConsoleInit( device: "uart0" ),
+
+            // 3. DRAM init: program DDR4 controller + PHY, run training.
+            DramInit( device: "ddr0" ),
+
+            // 4. Boot media: FFS on SPI NOR, accessible via QSPI0 XIP window.
+            BootMedia(MemoryMapped( base: 0x20000000, size: 0x2000000 )),
+
+            // 5. Signature verification.
+            SigVerify,
+
+            // 6. FDT preparation: load board DTB, patch /chosen, /memory.
+            FdtPrepare,
+
+            // 7. Load and boot: OpenSBI -> Linux.
+            PayloadLoad,
+        ],
+        load_addr: 0x08000000,
+        // 16 KiB stack.
+        stack_size: 0x4000,
+        // 16 KiB heap for FDT manipulation (bump allocator).
+        heap_size: Some(0x4000),
+    )),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+
+    mode: Rigid,
+
+    // Linux boot via OpenSBI fw_dynamic protocol.
+    //
+    // Payloads are LZ4-compressed in the FFS on SPI NOR.
+    // The stage decompresses them directly to DRAM after DDR init.
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("Image"),
+        kernel_load_addr: Some(0x84000000),
+        // Override: bundle the Unmatched DTB in the FFS.
+        // (probe-rs JTAG boot doesn't provide a DTB via a1)
+        fdt: Override("unmatched.dtb"),
+        dtb_addr: Some(0x8F000000),
+        bootargs: Some("console=ttySIF0 earlycon=sbi"),
+        firmware: Some((
+            kind: OpenSbi,
+            file: "fw_dynamic.bin",
+            load_addr: 0x83000000,
+        )),
+        initramfs_file: Some("initramfs-riscv64.cpio"),
+        initramfs_load_addr: Some(0x86000000),
+    )),
+
+    // Hart 1 is the boot hart (first U74 core).
+    boot_hart_id: 1,
+)

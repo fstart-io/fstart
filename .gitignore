@@ -7,6 +7,7 @@
 
 # FIT build artifacts (kernel images, initramfs, compiled .itb)
 *.itb
+*.cpio
 fit/Image-*
 fit/zImage-*
 fit/initramfs-*
