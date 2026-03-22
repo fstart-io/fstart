@@ -44,8 +44,14 @@ fn find_qemu(name: &str) -> String {
 /// `board_name` selects the QEMU machine: `"sifive-unmatched"` uses the
 /// `sifive_u` machine (FU740 emulation with 5 harts); all other RISC-V
 /// boards use the generic `virt` machine.
-pub fn run(board_name: &str, platform: Platform, binary: &Path) -> Result<(), String> {
-    let (qemu_bin, args) = if board_name.contains("sbsa") {
+pub fn run(
+    board_name: &str,
+    platform: Platform,
+    binary: &Path,
+    disk: Option<&str>,
+    memory: Option<&str>,
+) -> Result<(), String> {
+    let (qemu_bin, mut args) = if board_name.contains("sbsa") {
         // SBSA-ref: TF-A runs first from pflash0 (secure flash at 0x0),
         // then launches fstart as BL33 from pflash1 (non-secure flash
         // at 0x10000000). Both pflash images must be exactly 256 MiB.
@@ -156,6 +162,27 @@ pub fn run(board_name: &str, platform: Platform, binary: &Path) -> Result<(), St
             }
         }
     };
+
+    // Add RAM if specified
+    if let Some(mem) = memory {
+        args.extend(["-m".to_string(), mem.to_string()]);
+    }
+
+    // Attach disk image as NVMe (CrabEFI has an NVMe driver)
+    if let Some(disk_path) = disk {
+        let fmt = if disk_path.ends_with(".qcow2") {
+            "qcow2"
+        } else {
+            "raw"
+        };
+        args.extend([
+            "-drive".to_string(),
+            format!("file={disk_path},id=hd0,if=none,format={fmt}"),
+            "-device".to_string(),
+            "nvme,serial=fstartdisk0,drive=hd0".to_string(),
+        ]);
+        eprintln!("[fstart] disk: {disk_path} (NVMe, format={fmt})");
+    }
 
     eprintln!("[fstart] launching: {qemu_bin} {}", args.join(" "));
 
