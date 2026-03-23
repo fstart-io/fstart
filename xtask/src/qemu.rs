@@ -133,10 +133,14 @@ pub fn run(
                     // gic-version=3: GICv3 for FDT consistency
                     // _start does EL3→EL1 transition before jumping to Rust.
                     "virt,secure=on,virtualization=on,gic-version=3".to_string(),
-                    // Use max CPU so all ARMv8/v9 extensions are available —
-                    // avoids SIGILL from userspace built with newer features.
+                    // cortex-a72: ARMv8.0 without FEAT_S1PIE and other
+                    // ARMv9 extensions that trap from Secure EL1 to EL3.
+                    // -cpu max enables FEAT_S1PIE whose PIRE0_EL1 register
+                    // writes trap to EL3 in a tight loop, stalling the
+                    // Linux kernel.  cortex-a72 avoids this and is the
+                    // standard QEMU virt CPU for ARM64 firmware testing.
                     "-cpu".to_string(),
-                    "max".to_string(),
+                    "cortex-a72".to_string(),
                     "-nographic".to_string(),
                 ];
                 // AArch64: always use -bios so QEMU enters firmware boot mode,
