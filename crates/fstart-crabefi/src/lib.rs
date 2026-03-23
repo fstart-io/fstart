@@ -15,6 +15,7 @@ pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type PlatformConfig<'a> = crabefi::PlatformConfig<'a>;
 pub type RuntimeRegion = crabefi::RuntimeRegion;
+pub type FramebufferConfig = crabefi::FramebufferConfig;
 
 /// Call `crabefi::init_platform()`. This is the entry point that never returns.
 pub fn init_platform(config: crabefi::PlatformConfig) -> ! {

@@ -517,6 +517,7 @@ dependencies = [
 name = "fstart-device-registry"
 version = "0.1.0"
 dependencies = [
+ "fstart-driver-bochs-display",
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
@@ -535,6 +536,17 @@ dependencies = [
  "fstart-services",
  "fstart-types",
  "serde",
+]
+
+[[package]]
+name = "fstart-driver-bochs-display"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-services",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
@@ -814,6 +826,7 @@ dependencies = [
  "fstart-capabilities",
  "fstart-codegen",
  "fstart-crabefi",
+ "fstart-driver-bochs-display",
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",

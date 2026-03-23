@@ -1,0 +1,13 @@
+[package]
+name = "fstart-driver-bochs-display"
+description = "Bochs VBE display driver — PCI MMIO mode for QEMU bochs-display"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-mmio = { workspace = true }
+fstart-services = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
+serde = { workspace = true }

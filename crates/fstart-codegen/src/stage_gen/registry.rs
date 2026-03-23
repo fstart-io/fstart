@@ -159,4 +159,13 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         compatible: &["pci-host-ecam-generic"],
         has_acpi: false,
     },
+    DriverMeta {
+        name: "bochs-display",
+        type_name: "BochsDisplay",
+        module_path: "fstart_driver_bochs_display",
+        config_type: "BochsDisplayConfig",
+        services: &["Framebuffer"],
+        compatible: &["bochs-display", "qemu-stdvga"],
+        has_acpi: false,
+    },
 ];

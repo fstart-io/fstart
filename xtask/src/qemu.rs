@@ -147,6 +147,9 @@ pub fn run(
                 // which places the DTB at RAM base (0x40000000) and starts the
                 // CPU at PC=0x0. Works for both ELF and raw FFS images.
                 args.extend(["-bios".to_string(), binary.display().to_string()]);
+                // Bochs VBE display — non-VGA PCI device (class 0x0380) with
+                // MMIO registers in BAR2. No legacy VGA I/O ports needed.
+                args.extend(["-device".to_string(), "bochs-display".to_string()]);
                 (find_qemu("qemu-system-aarch64"), args)
             }
             Platform::Armv7 => {
