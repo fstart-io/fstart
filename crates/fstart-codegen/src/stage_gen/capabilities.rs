@@ -837,27 +837,28 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         let _ram_base: u64 = #ram_base_lit;
         let _ram_end: u64 = _ram_base + #ram_size_lit;
 
-        // Firmware data/BSS/stack region boundaries.
+        // Firmware memory layout within the RWDATA region:
         //
-        // On QEMU aarch64 with 4GB RAM, the RWDATA region can be >4GB from
-        // code (at 0x0), exceeding ADRP's ±4GB reach. So we use compile-time
-        // constants from the board config rather than linker symbols.
+        //   data_addr ──► [.data] [.bss] [heap]  ... free ...  [stack] ◄── _stack_top
+        //   0x40200000                                                    0x140000000
         //
-        // data_addr is where BSS/data starts. We reserve enough for BSS +
-        // heap + stack. The stack grows downward from _stack_top, which the
-        // linker places at data_addr + total RWDATA size. We approximate the
-        // reservation as data_addr + 2 * stack_size (generous; covers BSS +
-        // heap + stack with room to spare).
+        // The linker places BSS/data at data_addr and the stack at the TOP
+        // of the RWDATA region (growing downward). We must reserve BOTH ends
+        // so the EFI allocator doesn't hand out our BSS or stack to apps.
+        //
+        // We use compile-time constants (not linker symbols) because the
+        // RWDATA region can be >4GB from code, exceeding ADRP range.
         let _fw_data_start: u64 = #fw_data_addr_lit;
-        let _fw_reserve_size: u64 = #fw_stack_size_lit * 2;
-        let _fw_stack_top: u64 = _fw_data_start + _fw_reserve_size;
-        let _fw_region_size = _fw_reserve_size;
+        let _fw_bss_reserve: u64 = #fw_stack_size_lit; // generous: BSS+heap < stack_size
+        let _fw_bss_end: u64 = _fw_data_start + _fw_bss_reserve;
+        let _fw_stack_size: u64 = #fw_stack_size_lit;
+        let _fw_stack_bottom: u64 = _ram_end - _fw_stack_size;
 
-        // Build memory map at runtime with the firmware region carved out.
-        // Max 8 entries: ROM + up to 3 RAM splits + firmware reservation.
-        let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 8] = [
+        // Build memory map at runtime with firmware regions carved out.
+        // Layout: ROM | RAM_low | BSS_reserved | RAM_middle | STACK_reserved
+        let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 10] = [
             fstart_crabefi::MemoryRegion { base: 0, size: 0, region_type: fstart_crabefi::MemoryType::Reserved };
-            8
+            10
         ];
         let mut _mem_idx: usize = 0;
 
@@ -870,7 +871,7 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
             _mem_idx += 1;
         }
 
-        // RAM below firmware data region
+        // 1. RAM below firmware BSS region
         if _fw_data_start > _ram_base {
             _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
                 base: _ram_base,
@@ -880,29 +881,35 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
             _mem_idx += 1;
         }
 
-        // Firmware data/BSS/stack — mark as reserved so EFI allocator won't touch it
+        // 2. Firmware BSS/data/heap — reserved
         _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
             base: _fw_data_start,
-            size: _fw_region_size,
+            size: _fw_bss_reserve,
             region_type: fstart_crabefi::MemoryType::Reserved,
         };
         _mem_idx += 1;
 
-        // RAM above firmware stack
-        if _fw_stack_top < _ram_end {
+        // 3. Free RAM between BSS and stack
+        if _fw_stack_bottom > _fw_bss_end {
             _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
-                base: _fw_stack_top,
-                size: _ram_end - _fw_stack_top,
+                base: _fw_bss_end,
+                size: _fw_stack_bottom - _fw_bss_end,
                 region_type: fstart_crabefi::MemoryType::Ram,
             };
             _mem_idx += 1;
         }
 
+        // 4. Firmware stack — reserved (top of RAM, grows downward)
+        _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
+            base: _fw_stack_bottom,
+            size: _fw_stack_size,
+            region_type: fstart_crabefi::MemoryType::Reserved,
+        };
+        _mem_idx += 1;
+
         let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] = &_crabefi_mem_buf[.._mem_idx];
 
-        fstart_log::info!("EFI memory map: {} entries, fw reserved {} KB",
-            _mem_idx as u32,
-            (_fw_region_size / 1024) as u32);
+        fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
 
         #fdt_setup
 
