@@ -235,17 +235,31 @@ pub(super) fn generate_driver_init(
         match mode {
             BuildMode::Rigid => {
                 let name = format_ident!("{}", name_str);
+                let ok_var = format_ident!("_{}_ok", name_str);
+                let driver_name_str = inst.meta().name;
                 if let Some(vals) = gated_values {
                     let val_lits: Vec<_> =
                         vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
                     stmts.extend(quote! {
-                        if matches!(_bm, #(#val_lits)|*) {
-                            #name.init().unwrap_or_else(|_| #halt);
-                        }
+                        let #ok_var = if matches!(_bm, #(#val_lits)|*) {
+                            match #name.init() {
+                                Ok(()) => true,
+                                Err(_) => {
+                                    fstart_log::error!("driver init failed: {}", #driver_name_str);
+                                    false
+                                }
+                            }
+                        } else { false };
                     });
                 } else {
                     stmts.extend(quote! {
-                        #name.init().unwrap_or_else(|_| #halt);
+                        let #ok_var = match #name.init() {
+                            Ok(()) => true,
+                            Err(_) => {
+                                fstart_log::error!("driver init failed: {}", #driver_name_str);
+                                false
+                            }
+                        };
                     });
                 }
             }
@@ -255,17 +269,31 @@ pub(super) fn generate_driver_init(
                 } else {
                     format_ident!("{}", name_str)
                 };
+                let ok_var = format_ident!("_{}_ok", name_str);
+                let driver_name_str = inst.meta().name;
                 if let Some(vals) = gated_values {
                     let val_lits: Vec<_> =
                         vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
                     stmts.extend(quote! {
-                        if matches!(_bm, #(#val_lits)|*) {
-                            #inner.init().unwrap_or_else(|_| #halt);
-                        }
+                        let #ok_var = if matches!(_bm, #(#val_lits)|*) {
+                            match #inner.init() {
+                                Ok(()) => true,
+                                Err(_) => {
+                                    fstart_log::error!("driver init failed: {}", #driver_name_str);
+                                    false
+                                }
+                            }
+                        } else { false };
                     });
                 } else {
                     stmts.extend(quote! {
-                        #inner.init().unwrap_or_else(|_| #halt);
+                        let #ok_var = match #inner.init() {
+                            Ok(()) => true,
+                            Err(_) => {
+                                fstart_log::error!("driver init failed: {}", #driver_name_str);
+                                false
+                            }
+                        };
                     });
                 }
                 stmts.extend(generate_flexible_wrapping(dev, inst));
@@ -822,23 +850,28 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
 
     let (fb_setup, framebuffer_field) = if let Some(fb_dev) = fb_device {
         let dev = format_ident!("{}", fb_dev.name.as_str());
+        let ok_var = format_ident!("_{}_ok", fb_dev.name.as_str());
         let setup = quote! {
-            let _fb_info = #dev.info();
-            let _fb_config = fstart_crabefi::FramebufferConfig {
-                physical_address: _fb_info.base_addr,
-                width: _fb_info.width,
-                height: _fb_info.height,
-                stride: _fb_info.stride,
-                bits_per_pixel: _fb_info.bits_per_pixel,
-                red_mask_pos: _fb_info.red_pos,
-                red_mask_size: _fb_info.red_size,
-                green_mask_pos: _fb_info.green_pos,
-                green_mask_size: _fb_info.green_size,
-                blue_mask_pos: _fb_info.blue_pos,
-                blue_mask_size: _fb_info.blue_size,
+            let _fb_config = if #ok_var {
+                let _fb_info = #dev.info();
+                Some(fstart_crabefi::FramebufferConfig {
+                    physical_address: _fb_info.base_addr,
+                    width: _fb_info.width,
+                    height: _fb_info.height,
+                    stride: _fb_info.stride,
+                    bits_per_pixel: _fb_info.bits_per_pixel,
+                    red_mask_pos: _fb_info.red_pos,
+                    red_mask_size: _fb_info.red_size,
+                    green_mask_pos: _fb_info.green_pos,
+                    green_mask_size: _fb_info.green_size,
+                    blue_mask_pos: _fb_info.blue_pos,
+                    blue_mask_size: _fb_info.blue_size,
+                })
+            } else {
+                None
             };
         };
-        let field = quote! { framebuffer: Some(_fb_config), };
+        let field = quote! { framebuffer: _fb_config, };
         (setup, field)
     } else {
         (quote! {}, quote! { framebuffer: None, })
