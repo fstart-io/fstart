@@ -16,6 +16,7 @@ pub mod boot_media;
 pub mod clock;
 pub mod console;
 pub mod device;
+pub mod framebuffer;
 pub mod gpio;
 pub mod i2c;
 pub mod memory_controller;
@@ -28,6 +29,7 @@ pub use boot_media::{BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMap
 pub use clock::ClockController;
 pub use console::Console;
 pub use device::{BusDevice, Device, DeviceError};
+pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use gpio::GpioController;
 pub use i2c::I2c;
 pub use memory_controller::MemoryController;

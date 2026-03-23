@@ -814,6 +814,36 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         quote! { ecam_base: None, }
     };
 
+    // Find the Framebuffer device for GOP.
+    let fb_device = config
+        .devices
+        .iter()
+        .find(|d| d.services.iter().any(|s| s.as_str() == "Framebuffer"));
+
+    let (fb_setup, framebuffer_field) = if let Some(fb_dev) = fb_device {
+        let dev = format_ident!("{}", fb_dev.name.as_str());
+        let setup = quote! {
+            let _fb_info = #dev.info();
+            let _fb_config = fstart_crabefi::FramebufferConfig {
+                physical_address: _fb_info.base_addr,
+                width: _fb_info.width,
+                height: _fb_info.height,
+                stride: _fb_info.stride,
+                bits_per_pixel: _fb_info.bits_per_pixel,
+                red_mask_pos: _fb_info.red_pos,
+                red_mask_size: _fb_info.red_size,
+                green_mask_pos: _fb_info.green_pos,
+                green_mask_size: _fb_info.green_size,
+                blue_mask_pos: _fb_info.blue_pos,
+                blue_mask_size: _fb_info.blue_size,
+            };
+        };
+        let field = quote! { framebuffer: Some(_fb_config), };
+        (setup, field)
+    } else {
+        (quote! {}, quote! { framebuffer: None, })
+    };
+
     // QEMU AArch64 virt places the FDT at the base of RAM (0x40000000)
     // when booting with -bios. Read it so CrabEFI can discover GIC, PCIe
     // MMIO regions, etc.
@@ -994,6 +1024,8 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
 
         #fdt_setup
 
+        #fb_setup
+
         let _crabefi_config = fstart_crabefi::PlatformConfig {
             memory_map: _crabefi_memory_map,
             timer: &_crabefi_timer,
@@ -1002,7 +1034,7 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
             variable_backend: None,
             #debug_output_field
             console_input: None,
-            framebuffer: None,
+            #framebuffer_field
             acpi_rsdp: None,
             smbios: None,
             #fdt_field

@@ -160,6 +160,17 @@ pub(super) const SERVICE_TRAITS: &[ServiceTraitInfo] = &[
         accessor: "gpio",
     },
     ServiceTraitInfo {
+        name: "Framebuffer",
+        enum_name: "FramebufferDevice",
+        kind: TraitKind::Native {
+            methods: &[ServiceMethod {
+                signature: "fn info(&self) -> fstart_services::framebuffer::FramebufferInfo",
+                delegation: "d.info()",
+            }],
+        },
+        accessor: "framebuffer",
+    },
+    ServiceTraitInfo {
         name: "PciRootBus",
         enum_name: "PciRootBusDevice",
         kind: TraitKind::Native {

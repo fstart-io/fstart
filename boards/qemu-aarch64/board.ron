@@ -55,6 +55,18 @@
             )),
             services: ["PciRootBus"],
         ),
+        (
+            name: "bochs0",
+            driver: BochsDisplay((
+                // ECAM base must match pci0 — used to scan PCI config space
+                // for the bochs-display device (0x1234:0x1111) and read its
+                // BARs (allocated during PciInit).
+                ecam_base: 0x4010000000,
+                width: 1024,
+                height: 768,
+            )),
+            services: ["Framebuffer"],
+        ),
     ],
 
     stages: Monolithic((
@@ -62,6 +74,7 @@
             ConsoleInit( device: "uart0" ),
             MemoryInit,
             PciInit( device: "pci0" ),
+            DriverInit,
             PayloadLoad,
         ],
         load_addr: 0x00000000,
