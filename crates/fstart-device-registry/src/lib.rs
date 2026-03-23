@@ -94,6 +94,11 @@ pub mod pci_ecam {
     pub use fstart_driver_pci_ecam::PciEcamConfig;
 }
 
+#[cfg(feature = "bochs-display")]
+pub mod bochs_display {
+    pub use fstart_driver_bochs_display::BochsDisplayConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -219,6 +224,10 @@ pub enum DriverInstance {
     /// PCI ECAM host bridge with bus enumeration and resource allocation.
     #[cfg(feature = "pci-ecam")]
     PciEcam(pci_ecam::PciEcamConfig),
+
+    /// Bochs VBE display (QEMU bochs-display, PCI MMIO mode).
+    #[cfg(feature = "bochs-display")]
+    BochsDisplay(bochs_display::BochsDisplayConfig),
 }
 
 impl DriverInstance {
@@ -411,6 +420,16 @@ impl DriverInstance {
                 compatible: &["pci-host-ecam-generic"],
                 has_acpi: false,
             },
+            #[cfg(feature = "bochs-display")]
+            Self::BochsDisplay(_) => &DriverMeta {
+                name: "bochs-display",
+                type_name: "BochsDisplay",
+                module_path: "fstart_driver_bochs_display",
+                config_type: "BochsDisplayConfig",
+                services: &["Framebuffer"],
+                compatible: &["bochs-display", "qemu-stdvga"],
+                has_acpi: false,
+            },
         }
     }
 
@@ -483,6 +502,8 @@ impl DriverInstance {
             Self::Fu740Ddr(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "pci-ecam")]
             Self::PciEcam(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "bochs-display")]
+            Self::BochsDisplay(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

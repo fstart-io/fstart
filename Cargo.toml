@@ -34,6 +34,7 @@ members = [
     "crates/fstart-driver-fu740-prci",
     "crates/fstart-driver-fu740-ddr",
     "crates/fstart-driver-pci-ecam",
+    "crates/fstart-driver-bochs-display",
     "crates/fstart-device-registry",
     "crates/fstart-crabefi",
     "crates/fstart-stage",
@@ -111,6 +112,7 @@ fstart-driver-sifive-uart = { path = "crates/fstart-driver-sifive-uart" }
 fstart-driver-fu740-prci = { path = "crates/fstart-driver-fu740-prci" }
 fstart-driver-fu740-ddr = { path = "crates/fstart-driver-fu740-ddr" }
 fstart-driver-pci-ecam = { path = "crates/fstart-driver-pci-ecam" }
+fstart-driver-bochs-display = { path = "crates/fstart-driver-bochs-display" }
 fstart-device-registry = { path = "crates/fstart-device-registry" }
 fstart-crabefi = { path = "crates/fstart-crabefi" }
 fstart-stage = { path = "crates/fstart-stage" }

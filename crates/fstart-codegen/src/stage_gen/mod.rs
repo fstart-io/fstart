@@ -283,6 +283,13 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::PciRootBus; });
     }
 
+    let has_framebuffer = devices
+        .iter()
+        .any(|d| d.services.iter().any(|s| s.as_str() == "Framebuffer"));
+    if has_framebuffer {
+        tokens.extend(quote! { use fstart_services::Framebuffer; });
+    }
+
     // Collect unique driver modules and import all public types via glob.
     // ACPI-only devices are skipped — their types live in fstart_types/fstart_acpi
     // and are only used at codegen time, not in the generated stage code.
