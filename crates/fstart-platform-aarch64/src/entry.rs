@@ -58,10 +58,118 @@ _start:
     bic x0, x0, #(1 << 10)
     msr cptr_el3, x0
 
-    // Ensure GIC is in non-secure mode for EL1 access
-    // (QEMU virt GICv3 should handle this, but be safe)
+    // Install minimal EL3 exception vectors BEFORE ERET.
+    // After ERET to EL1, the Linux kernel issues SMC calls for PSCI
+    // (CPU power management) and SMCCC. Without an EL3 handler these
+    // trap into uninitialised vectors and crash.  The handler below
+    // returns PSCI_NOT_SUPPORTED (-1) for all unknown SMC calls and
+    // handles PSCI_VERSION, PSCI_FEATURES and SMCCC_VERSION.
+    adr x0, .Lel3_vectors
+    msr vbar_el3, x0
 
     isb
+    eret
+
+    // ---------------------------------------------------------------
+    // Minimal EL3 exception vector table (handles SMC from lower ELs)
+    // ---------------------------------------------------------------
+    // AArch64 vector table: 16 entries, 0x80 bytes each, 2KB aligned.
+    // We only care about "Lower EL using AArch64, Synchronous" at
+    // offset 0x400 from VBAR.
+    .balign 2048
+.Lel3_vectors:
+    // Current EL with SP0 (offsets 0x000-0x1FF) — unused
+    b .                    // 0x000 Synchronous
+    .balign 0x80
+    b .                    // 0x080 IRQ
+    .balign 0x80
+    b .                    // 0x100 FIQ
+    .balign 0x80
+    b .                    // 0x180 SError
+
+    // Current EL with SPx (offsets 0x200-0x3FF) — unused
+    .balign 0x80
+    b .                    // 0x200 Synchronous
+    .balign 0x80
+    b .                    // 0x280 IRQ
+    .balign 0x80
+    b .                    // 0x300 FIQ
+    .balign 0x80
+    b .                    // 0x380 SError
+
+    // Lower EL using AArch64 (offsets 0x400-0x5FF) — SMC handler
+    .balign 0x80
+    b .Lel3_smc_handler    // 0x400 Synchronous (SMC lands here)
+    .balign 0x80
+    b .                    // 0x480 IRQ
+    .balign 0x80
+    b .                    // 0x500 FIQ
+    .balign 0x80
+    b .                    // 0x580 SError
+
+    // Lower EL using AArch32 (offsets 0x600-0x7FF) — unused
+    .balign 0x80
+    b .                    // 0x600 Synchronous
+    .balign 0x80
+    b .                    // 0x680 IRQ
+    .balign 0x80
+    b .                    // 0x700 FIQ
+    .balign 0x80
+    b .                    // 0x780 SError
+
+    // SMC handler: check function ID in x0 (W0), return result in x0.
+    // PSCI function IDs (SMCCC calling convention):
+    //   PSCI_VERSION      = 0x84000000
+    //   PSCI_FEATURES     = 0x8400000A
+    //   SMCCC_VERSION     = 0x80000000
+    //   PSCI_CPU_ON       = 0xC4000003
+    //   PSCI_SYSTEM_OFF   = 0x84000008
+    //   PSCI_SYSTEM_RESET = 0x84000009
+.Lel3_smc_handler:
+    // Check EC in ESR_EL3 to confirm this is an SMC
+    mrs x9, esr_el3
+    lsr x9, x9, #26
+    cmp x9, #0x17              // EC=0x17 = SMC from AArch64
+    b.ne .Lel3_smc_unknown
+
+    // PSCI_VERSION (0x84000000) → return 1.1 (0x00010001)
+    ldr w9, =0x84000000
+    cmp w0, w9
+    b.ne 1f
+    ldr w0, =0x00010001        // PSCI v1.1
+    b .Lel3_smc_return
+1:
+    // SMCCC_VERSION (0x80000000) → return 1.2 (0x00010002)
+    ldr w9, =0x80000000
+    cmp w0, w9
+    b.ne 2f
+    ldr w0, =0x00010002        // SMCCC v1.2
+    b .Lel3_smc_return
+2:
+    // PSCI_FEATURES (0x8400000A) → return NOT_SUPPORTED for all
+    ldr w9, =0x8400000A
+    cmp w0, w9
+    b.ne 3f
+    mov x0, #-1                // NOT_SUPPORTED
+    b .Lel3_smc_return
+3:
+    // PSCI_SYSTEM_OFF (0x84000008) → halt
+    ldr w9, =0x84000008
+    cmp w0, w9
+    b.ne 4f
+    wfi
+    b .
+4:
+    // PSCI_SYSTEM_RESET (0x84000009) → halt (could do reset)
+    ldr w9, =0x84000009
+    cmp w0, w9
+    b.ne .Lel3_smc_unknown
+    wfi
+    b .
+
+.Lel3_smc_unknown:
+    mov x0, #-1                // NOT_SUPPORTED
+.Lel3_smc_return:
     eret
 
     // ---------------------------------------------------------------
