@@ -44,6 +44,13 @@ pub(super) fn validate_capability_ordering(
                 }
                 boot_media_declared = true;
             }
+            Capability::GicInit if !console_inited => {
+                return Some(
+                    "GicInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
             Capability::MemoryInit if !console_inited => {
                 return Some(
                     "MemoryInit capability requires ConsoleInit to appear earlier \

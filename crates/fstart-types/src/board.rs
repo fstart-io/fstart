@@ -126,6 +126,35 @@ pub struct BoardConfig {
     /// without S-mode; hart 1 is the first U74 application core).
     #[serde(default)]
     pub boot_hart_id: u32,
+
+    /// GICv3 interrupt controller configuration.
+    ///
+    /// Required when any stage has the `GicInit` capability.  The base
+    /// addresses are platform-specific MMIO locations that vary per SoC
+    /// and board (e.g., QEMU virt: GICD=0x0800_0000, GICR=0x080A_0000;
+    /// QEMU SBSA: GICD=0x4001_7000, GICR=0x4002_0000).
+    ///
+    /// At boot the `GicInit` capability issues an SMC to the EL3
+    /// exception handler, which configures the GIC distributor,
+    /// redistributor, and CPU interface so that all interrupts are
+    /// Group 1 Non-Secure (delivered as IRQ to the OS kernel).
+    #[serde(default)]
+    pub gic: Option<GicConfig>,
+}
+
+/// GICv3 interrupt controller addresses.
+///
+/// Both TF-A and U-Boot perform identical GIC initialization from EL3:
+/// enable affinity routing, assign all SPIs/PPIs to Group 1 Non-Secure,
+/// wake the redistributor, and enable the system-register CPU interface.
+/// Without this, the Linux kernel never receives timer ticks and the
+/// scheduler never runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GicConfig {
+    /// GIC Distributor (GICD) MMIO base address.
+    pub dist_base: u64,
+    /// GIC Redistributor (GICR) MMIO base address (first frame).
+    pub redist_base: u64,
 }
 
 /// SoC-specific binary image format required by the boot ROM.
