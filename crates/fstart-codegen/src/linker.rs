@@ -239,6 +239,9 @@ fn generate_xip_layout(
     writeln!(out, "        _bss_end = .;").unwrap();
     writeln!(out, "    }} > RAM\n").unwrap();
 
+    // Page tables: isolated from BSS to prevent corruption.
+    write_page_tables_section(out, "RAM");
+
     // Stack: grows downward from top of RAM region.
     write_stack(out, stack_size, "RAM");
     writeln!(out, "}}").unwrap();
@@ -283,6 +286,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
+        write_page_tables_section(out, "RWDATA");
         write_stack(out, stack_size, "RWDATA");
         writeln!(out, "}}").unwrap();
     } else {
@@ -303,6 +307,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
+        write_page_tables_section(out, "RAM");
         write_stack(out, stack_size, "RAM");
         writeln!(out, "}}").unwrap();
     }
@@ -363,14 +368,30 @@ fn write_allwinner_egon_section(out: &mut String, region: &str) {
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
+/// MMU page tables: isolated from BSS in a dedicated section.
+///
+/// AArch64 entry code stores page table descriptors in static arrays
+/// that must be 4 KiB aligned. Placing them in BSS risks corruption if
+/// any adjacent static (e.g., CrabEFI's firmware state) overflows.
+/// This section is NOLOAD and cleared by the entry stub before use.
+fn write_page_tables_section(out: &mut String, region: &str) {
+    writeln!(out, "    .page_tables (NOLOAD) : ALIGN(4096) {{").unwrap();
+    writeln!(out, "        _page_tables_start = .;").unwrap();
+    writeln!(out, "        *(.page_tables .page_tables.*)").unwrap();
+    writeln!(out, "        _page_tables_end = .;").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
+}
+
 fn write_stack(out: &mut String, stack_size: u64, region: &str) {
     // Stack grows downward from the top of the memory region.
     // The ASSERT verifies there is at least stack_size bytes between
-    // the end of BSS and the top of the region.
+    // the end of the last NOLOAD section and the top of the region.
+    // _page_tables_end is always defined (the section may be empty on
+    // architectures without MMU page table statics).
     writeln!(out, "    _stack_top = ORIGIN({region}) + LENGTH({region});").unwrap();
     writeln!(
         out,
-        "    ASSERT(_stack_top - _bss_end >= {stack_size:#x}, \"insufficient stack space\")"
+        "    ASSERT(_stack_top - _page_tables_end >= {stack_size:#x}, \"insufficient stack space\")"
     )
     .unwrap();
 

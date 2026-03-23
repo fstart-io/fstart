@@ -105,9 +105,19 @@ _start:
     ldr x0, =BOOT_DTB_ADDR
     str x19, [x0]
 
+    // Clear .page_tables section (separate from BSS to prevent
+    // corruption from CrabEFI or other BSS-resident statics).
+    ldr x0, =_page_tables_start
+    ldr x1, =_page_tables_end
+5:
+    cmp x0, x1
+    b.ge .Lpt_cleared
+    str xzr, [x0], #8
+    b 5b
+.Lpt_cleared:
+
     // ---------------------------------------------------------------
-    // Set up identity-mapped MMU (MUST be after BSS clear since the
-    // page table lives in BSS).
+    // Set up identity-mapped MMU (after page table memory is zeroed).
     //
     // Without MMU, AArch64 treats ALL memory as Device-nGnRnE which
     // enforces strict alignment. UEFI PE binaries use 128-bit SIMD
@@ -116,14 +126,19 @@ _start:
     // Level 1 table, 1GB blocks, 4KB granule, 39-bit VA space.
     // ---------------------------------------------------------------
 
-    // MAIR_EL1: Attr0=Device-nGnRnE (0x00), Attr1=Normal WB (0xFF)
-    ldr x0, =0x00000000000000FF
+    // MAIR_EL1: match U-Boot's attribute layout exactly.
+    // Attr0=0x00 (Device-nGnRnE), Attr1=0x04 (Device-nGnRE),
+    // Attr2=0x0C (Device-GRE), Attr3=0x44 (Normal NC),
+    // Attr4=0xFF (Normal WB RA/WA inner+outer)
+    ldr x0, =0x000000FF440C0400
     msr mair_el1, x0
 
     // TCR_EL1: T0SZ=22 (42-bit VA = 4TB), 4KB granule, WB cacheable
     // IPS=0b011 (42-bit PA, 4TB)
     // 42-bit VA with 4KB granule: L0 has 4 entries, each → L1 (512 entries)
-    ldr x0, =((22) | (1 << 8) | (1 << 10) | (3 << 12) | (3 << 32))
+    // EPD1=1: disable TTBR1 walks — we only use the lower VA range.
+    // Bit 31 is RES1 (architecturally required, matches U-Boot).
+    ldr x0, =((22) | (1 << 8) | (1 << 10) | (3 << 12) | (1 << 23) | (1 << 31) | (3 << 32))
     msr tcr_el1, x0
 
     // === L0 table (4 entries, each pointing to an L1 table) ===
@@ -150,19 +165,20 @@ _start:
     str x2, [x1, #0]
 
     // Entry 1: 0x40000000-0x7FFFFFFF = Normal WB Cacheable (RAM)
-    ldr x2, =(1 | (1 << 2) | (3 << 8) | (1 << 10) | (1 << 30))
+    // AttrIdx=4 (MAIR Attr4=0xFF, matches U-Boot MT_NORMAL)
+    ldr x2, =(1 | (4 << 2) | (3 << 8) | (1 << 10) | (1 << 30))
     str x2, [x1, #8]
 
     // Entry 2: 0x80000000-0xBFFFFFFF = Normal (RAM)
-    ldr x2, =(1 | (1 << 2) | (3 << 8) | (1 << 10) | (2 << 30))
+    ldr x2, =(1 | (4 << 2) | (3 << 8) | (1 << 10) | (2 << 30))
     str x2, [x1, #16]
 
     // Entry 3: 0xC0000000-0xFFFFFFFF = Normal (RAM)
-    ldr x2, =(1 | (1 << 2) | (3 << 8) | (1 << 10) | (3 << 30))
+    ldr x2, =(1 | (4 << 2) | (3 << 8) | (1 << 10) | (3 << 30))
     str x2, [x1, #24]
 
     // Entry 4: 0x100000000-0x13FFFFFFF = Normal (RAM, 4-5GB)
-    ldr x2, =(1 | (1 << 2) | (3 << 8) | (1 << 10) | (4 << 30))
+    ldr x2, =(1 | (4 << 2) | (3 << 8) | (1 << 10) | (4 << 30))
     str x2, [x1, #32]
 
     // Entries 256-257: PCI ECAM at 0x4010000000 (index 256 = 256GB)
@@ -201,14 +217,30 @@ _start:
     // TTBR0_EL1 = L0 table base (not L1!)
     ldr x0, =MMU_L0_TABLE
     msr ttbr0_el1, x0
+
+    // Invalidate all TLB entries BEFORE enabling MMU.
+    // Before MMU enable, QEMU's softmmu may have cached TLB entries
+    // with Device-nGnRnE attributes (the default when MMU is off).
+    // Those stale entries enforce strict alignment on all accesses,
+    // including SIMD stores, even after MMU enable changes memory
+    // types to Normal WB.  This matches U-Boot's sequence.
+    tlbi vmalle1
+    dsb sy
     isb
 
-    // Enable MMU + caches, disable alignment checks
+    // Enable MMU + caches, disable alignment checks.
+    //
+    // Read-modify-write to preserve QEMU's reset defaults (nTWI,
+    // nTWE, etc.) while setting RES1 bits + our functional bits.
+    // RES1 bits (ARMv8): 29,28,23,22,20,11 = 0x30D00800
     mrs x0, sctlr_el1
-    orr x0, x0, #(1 << 0)    // M:  MMU enable
-    orr x0, x0, #(1 << 2)    // C:  data cache
-    orr x0, x0, #(1 << 12)   // I:  instruction cache
-    bic x0, x0, #(1 << 1)    // ~A: no alignment check
+    ldr x1, =0x30D00800       // RES1 bits
+    orr x0, x0, x1            // ensure RES1 bits are set
+    orr x0, x0, #(1 << 0)    // M:   MMU enable
+    orr x0, x0, #(1 << 2)    // C:   data cache
+    orr x0, x0, #(1 << 6)    // nAA: permit unaligned SIMD/FP (FEAT_LSE2)
+    orr x0, x0, #(1 << 12)   // I:   instruction cache
+    bic x0, x0, #(1 << 1)    // ~A:  no GP alignment check
     bic x0, x0, #(1 << 3)    // ~SA: no SP alignment check
     msr sctlr_el1, x0
     isb
@@ -249,13 +281,13 @@ struct PageTable([u64; 512]);
 struct L0Table([u64; 512]);
 
 #[no_mangle]
-#[link_section = ".bss"]
+#[link_section = ".page_tables"]
 static mut MMU_L0_TABLE: L0Table = L0Table([0u64; 512]);
 
 #[no_mangle]
-#[link_section = ".bss"]
+#[link_section = ".page_tables"]
 static mut MMU_L1_TABLE: PageTable = PageTable([0u64; 512]);
 
 #[no_mangle]
-#[link_section = ".bss"]
+#[link_section = ".page_tables"]
 static mut MMU_L1_HIGH_TABLE: PageTable = PageTable([0u64; 512]);
