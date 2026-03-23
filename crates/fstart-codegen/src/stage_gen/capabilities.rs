@@ -697,19 +697,41 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
     // pages to UEFI applications (shim, GRUB), corrupting the firmware stack.
     //
     // Layout (example for qemu-aarch64):
-    //   ROM 0x00000000..0x08000000  → Reserved
-    //   RAM 0x40000000.._data_start → ConventionalMemory (free for UEFI)
-    //   _data_start.._stack_top     → BootServicesData (firmware's own)
-    //   _stack_top..RAM_end         → ConventionalMemory (free for UEFI)
+    //   ROM 0x00000000..0x08000000  → RuntimeServicesCode  (XIP code)
+    //   FDT (at RAM base)           → Reserved
+    //   RAM post-FDT.._data_start   → ConventionalMemory   (free for UEFI)
+    //   _data_start..+bss_reserve   → RuntimeServicesData   (statics, heap)
+    //   free RAM                    → ConventionalMemory   (free for UEFI)
+    //   stack (top of RAM)          → RuntimeServicesData   (FirmwareState)
     //
-    // We use linker symbols _data_start and _stack_top to determine the
-    // firmware region boundaries at runtime.
+    // ROM is RuntimeServicesCode so the kernel maps it after ExitBootServices
+    // (CrabEFI's runtime service functions live in flash). The BSS/heap and
+    // stack regions are RuntimeServicesData because they contain the
+    // RUNTIME_SERVICES table, STATE_PTR, heap backing store, and the
+    // FirmwareState struct (which lives on the stack since init_platform()
+    // is -> ! and never returns).
     let mut static_mem_entries = TokenStream::new();
     for region in &config.memory.regions {
         let base = hex_addr(region.base);
         let size = hex_addr(region.size);
         match region.kind {
-            RegionKind::Rom | RegionKind::Reserved => {
+            RegionKind::Rom => {
+                // ROM contains all XIP code (fstart + CrabEFI library).
+                // Mark as RuntimeServicesCode so the kernel maps it after
+                // ExitBootServices for runtime service calls.
+                //
+                // TODO: Currently marking the entire flash as RuntimeServicesCode.
+                // Ideally we'd only mark the .text section, but that requires
+                // a linker symbol for _text_end.
+                static_mem_entries.extend(quote! {
+                    fstart_crabefi::MemoryRegion {
+                        base: #base,
+                        size: #size,
+                        region_type: fstart_crabefi::MemoryType::RuntimeServicesCode,
+                    },
+                });
+            }
+            RegionKind::Reserved => {
                 static_mem_entries.extend(quote! {
                     fstart_crabefi::MemoryRegion {
                         base: #base,
@@ -870,20 +892,6 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         }
     };
 
-    // RuntimeRegion: For now, fstart's code+data live in Reserved regions
-    // (flash ROM and BSS). CrabEFI's reserve_region can only carve from
-    // ConventionalMemory, not Reserved. Since the Reserved regions are
-    // already protected from the EFI allocator, runtime services will
-    // function during boot. After ExitBootServices, runtime services
-    // won't be available (no RuntimeServicesCode/Data entries), but
-    // that's acceptable for initial boot — the kernel's EFI stub doesn't
-    // require them to load.
-    //
-    // TODO: To properly support SetVirtualAddressMap, we need to either:
-    //   (a) Pass firmware regions as RuntimeServicesCode/Data in the
-    //       platform memory map instead of Reserved, or
-    //   (b) Use force_add_region in CrabEFI to inject RT entries.
-
     quote! {
         fstart_log::info!("Launching CrabEFI UEFI payload...");
 
@@ -947,11 +955,14 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
             #fdt_reservation
         }
 
-        // 2. Firmware BSS/data/heap — reserved
+        // 2. Firmware BSS/data/heap — RuntimeServicesData
+        //    Contains CrabEFI's static RUNTIME_SERVICES table, STATE_PTR,
+        //    fstart-alloc heap backing store, and other statics. Must be
+        //    mapped after ExitBootServices for runtime service calls.
         _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
             base: _fw_data_start,
             size: _fw_bss_reserve,
-            region_type: fstart_crabefi::MemoryType::Reserved,
+            region_type: fstart_crabefi::MemoryType::RuntimeServicesData,
         };
         _mem_idx += 1;
 
@@ -965,11 +976,15 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
             _mem_idx += 1;
         }
 
-        // 4. Firmware stack — reserved (top of RAM, grows downward)
+        // 4. Firmware stack — RuntimeServicesData (top of RAM, grows downward)
+        //    Contains FirmwareState struct allocated on the stack inside
+        //    init_platform() which is -> ! (never returns). Must be mapped
+        //    after ExitBootServices so SetVirtualAddressMap can relocate
+        //    STATE_PTR and the kernel can call runtime services.
         _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
             base: _fw_stack_bottom,
             size: _fw_stack_size,
-            region_type: fstart_crabefi::MemoryType::Reserved,
+            region_type: fstart_crabefi::MemoryType::RuntimeServicesData,
         };
         _mem_idx += 1;
 
