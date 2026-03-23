@@ -72,6 +72,7 @@
     stages: Monolithic((
         capabilities: [
             ConsoleInit( device: "uart0" ),
+            GicInit,
             MemoryInit,
             PciInit( device: "pci0" ),
             DriverInit,
@@ -93,6 +94,12 @@
     ),
 
     mode: Rigid,
+
+    // GICv3 interrupt controller (QEMU virt machine)
+    gic: Some((
+        dist_base:   0x08000000, // GICD
+        redist_base: 0x080A0000, // GICR
+    )),
 
     // CrabEFI UEFI payload — linked as a library, called via init_platform().
     // fstart handles hardware init (console, PCI BARs) and injects drivers
