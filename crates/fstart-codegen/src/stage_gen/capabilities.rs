@@ -13,7 +13,7 @@ use fstart_types::memory::RegionKind;
 use fstart_types::Platform;
 use fstart_types::{
     AutoBootDevice, BoardConfig, BootMedium, BuildMode, DeviceConfig, FdtSource, FirmwareKind,
-    LoadDevice, SocImageFormat,
+    LoadDevice, SocImageFormat, StageLayout,
 };
 
 use super::flexible::{flexible_enum_for_device, generate_flexible_wrapping};
@@ -690,25 +690,72 @@ pub(super) fn generate_payload_load(
 fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> TokenStream {
     let halt = halt_expr(platform);
 
-    // Build memory map from board ROM/RAM regions.
-    let mut mem_entries = TokenStream::new();
+    // Build memory map from board ROM/RAM regions at runtime.
+    //
+    // The RAM region from board.ron must be split to reserve fstart's own
+    // data/BSS/stack — otherwise CrabEFI's EFI allocator will hand those
+    // pages to UEFI applications (shim, GRUB), corrupting the firmware stack.
+    //
+    // Layout (example for qemu-aarch64):
+    //   ROM 0x00000000..0x08000000  → Reserved
+    //   RAM 0x40000000.._data_start → ConventionalMemory (free for UEFI)
+    //   _data_start.._stack_top     → BootServicesData (firmware's own)
+    //   _stack_top..RAM_end         → ConventionalMemory (free for UEFI)
+    //
+    // We use linker symbols _data_start and _stack_top to determine the
+    // firmware region boundaries at runtime.
+    let mut static_mem_entries = TokenStream::new();
     for region in &config.memory.regions {
         let base = hex_addr(region.base);
         let size = hex_addr(region.size);
-        let mem_type = match region.kind {
-            RegionKind::Ram => quote! { fstart_crabefi::MemoryType::Ram },
+        match region.kind {
             RegionKind::Rom | RegionKind::Reserved => {
-                quote! { fstart_crabefi::MemoryType::Reserved }
+                static_mem_entries.extend(quote! {
+                    fstart_crabefi::MemoryRegion {
+                        base: #base,
+                        size: #size,
+                        region_type: fstart_crabefi::MemoryType::Reserved,
+                    },
+                });
             }
-        };
-        mem_entries.extend(quote! {
-            fstart_crabefi::MemoryRegion {
-                base: #base,
-                size: #size,
-                region_type: #mem_type,
-            },
-        });
+            RegionKind::Ram => {
+                // RAM regions are split at runtime (see below).
+            }
+        }
     }
+
+    // Find the RAM region for splitting.
+    let ram_region = config
+        .memory
+        .regions
+        .iter()
+        .find(|r| r.kind == RegionKind::Ram);
+    let ram_base_lit = ram_region
+        .map(|r| hex_addr(r.base))
+        .unwrap_or_else(|| quote! { 0u64 });
+    let ram_size_lit = ram_region
+        .map(|r| hex_addr(r.size))
+        .unwrap_or_else(|| quote! { 0u64 });
+
+    // Get the firmware data region start address and stack size from stage
+    // config. On QEMU aarch64 with large RAM, the RWDATA region can be >4GB
+    // from code (at 0x0), so we use compile-time constants from the board
+    // config rather than linker symbols (ADRP limited to ±4GB).
+    let (fw_data_addr, fw_stack_size) = match &config.stages {
+        StageLayout::Monolithic(mono) => (
+            mono.data_addr.unwrap_or(mono.load_addr),
+            mono.stack_size as u64,
+        ),
+        StageLayout::MultiStage(stages) => {
+            let last = stages.last().unwrap();
+            (
+                last.data_addr.unwrap_or(last.load_addr),
+                last.stack_size as u64,
+            )
+        }
+    };
+    let fw_data_addr_lit = hex_addr(fw_data_addr);
+    let fw_stack_size_lit = hex_addr(fw_stack_size);
 
     // Find the console device name for the DebugOutput adapter.
     let console_device = config
@@ -786,9 +833,76 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         let _crabefi_reset = fstart_crabefi::PsciReset;
         #console_setup
 
-        let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] = &[
-            #mem_entries
+        // RAM region boundaries.
+        let _ram_base: u64 = #ram_base_lit;
+        let _ram_end: u64 = _ram_base + #ram_size_lit;
+
+        // Firmware data/BSS/stack region boundaries.
+        //
+        // On QEMU aarch64 with 4GB RAM, the RWDATA region can be >4GB from
+        // code (at 0x0), exceeding ADRP's ±4GB reach. So we use compile-time
+        // constants from the board config rather than linker symbols.
+        //
+        // data_addr is where BSS/data starts. We reserve enough for BSS +
+        // heap + stack. The stack grows downward from _stack_top, which the
+        // linker places at data_addr + total RWDATA size. We approximate the
+        // reservation as data_addr + 2 * stack_size (generous; covers BSS +
+        // heap + stack with room to spare).
+        let _fw_data_start: u64 = #fw_data_addr_lit;
+        let _fw_reserve_size: u64 = #fw_stack_size_lit * 2;
+        let _fw_stack_top: u64 = _fw_data_start + _fw_reserve_size;
+        let _fw_region_size = _fw_reserve_size;
+
+        // Build memory map at runtime with the firmware region carved out.
+        // Max 8 entries: ROM + up to 3 RAM splits + firmware reservation.
+        let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 8] = [
+            fstart_crabefi::MemoryRegion { base: 0, size: 0, region_type: fstart_crabefi::MemoryType::Reserved };
+            8
         ];
+        let mut _mem_idx: usize = 0;
+
+        // Static entries (ROM, Reserved)
+        let _static_entries: &[fstart_crabefi::MemoryRegion] = &[
+            #static_mem_entries
+        ];
+        for entry in _static_entries {
+            _crabefi_mem_buf[_mem_idx] = *entry;
+            _mem_idx += 1;
+        }
+
+        // RAM below firmware data region
+        if _fw_data_start > _ram_base {
+            _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
+                base: _ram_base,
+                size: _fw_data_start - _ram_base,
+                region_type: fstart_crabefi::MemoryType::Ram,
+            };
+            _mem_idx += 1;
+        }
+
+        // Firmware data/BSS/stack — mark as reserved so EFI allocator won't touch it
+        _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
+            base: _fw_data_start,
+            size: _fw_region_size,
+            region_type: fstart_crabefi::MemoryType::Reserved,
+        };
+        _mem_idx += 1;
+
+        // RAM above firmware stack
+        if _fw_stack_top < _ram_end {
+            _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
+                base: _fw_stack_top,
+                size: _ram_end - _fw_stack_top,
+                region_type: fstart_crabefi::MemoryType::Ram,
+            };
+            _mem_idx += 1;
+        }
+
+        let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] = &_crabefi_mem_buf[.._mem_idx];
+
+        fstart_log::info!("EFI memory map: {} entries, fw reserved {} KB",
+            _mem_idx as u32,
+            (_fw_region_size / 1024) as u32);
 
         #fdt_setup
 
