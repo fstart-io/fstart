@@ -128,10 +128,10 @@ pub fn run(
             Platform::Aarch64 => {
                 let mut args = vec![
                     "-machine".to_string(),
-                    // secure=on: enable TrustZone so secure SRAM at 0x0E000000 exists
-                    //   (BL31 is loaded there)
-                    // virtualization=on: enable EL2 so BL31 can ERET to Linux at EL2
-                    // gic-version=3: ATF BL31 is built with QEMU_USE_GIC_DRIVER=QEMU_GICV3
+                    // secure=on: needed so EL3 exists (CrabEFI's RNG does SMC)
+                    // virtualization=on: EL2 exists (standard for UEFI)
+                    // gic-version=3: GICv3 for FDT consistency
+                    // _start does EL3→EL1 transition before jumping to Rust.
                     "virt,secure=on,virtualization=on,gic-version=3".to_string(),
                     // Use max CPU so all ARMv8/v9 extensions are available —
                     // avoids SIGILL from userspace built with newer features.
