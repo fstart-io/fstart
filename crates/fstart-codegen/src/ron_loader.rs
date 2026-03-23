@@ -69,6 +69,8 @@ struct RonBoardConfig {
     smbios: Option<fstart_types::smbios::SmbiosConfig>,
     #[serde(default)]
     boot_hart_id: u32,
+    #[serde(default)]
+    gic: Option<fstart_types::board::GicConfig>,
 }
 
 /// A single device entry in the RON file.
@@ -164,6 +166,7 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
         acpi: ron.acpi,
         smbios: ron.smbios,
         boot_hart_id: ron.boot_hart_id,
+        gic: ron.gic,
     };
 
     ParsedBoard {

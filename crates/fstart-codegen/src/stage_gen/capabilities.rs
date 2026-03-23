@@ -141,6 +141,30 @@ pub(super) fn generate_dram_init(
     }
 }
 
+/// Generate code for the GicInit capability.
+///
+/// Reads the GICD and GICR base addresses from the board config's `gic`
+/// field and emits an `fstart_arch::gic_init(dist_base, redist_base)` call.
+/// This issues an SMC to the EL3 handler which configures the GICv3
+/// distributor, redistributor, and CPU interface.
+pub(super) fn generate_gic_init(config: &BoardConfig) -> TokenStream {
+    let gic = match &config.gic {
+        Some(g) => g,
+        None => {
+            return quote! {
+                compile_error!("GicInit capability requires `gic` config in board RON");
+            };
+        }
+    };
+    let dist_base = gic.dist_base;
+    let redist_base = gic.redist_base;
+    quote! {
+        fstart_log::info!("GIC init: GICD=0x{:x}, GICR=0x{:x}", #dist_base, #redist_base);
+        fstart_arch::gic_init(#dist_base, #redist_base);
+        fstart_log::info!("GIC init complete (all interrupts Group 1 Non-Secure)");
+    }
+}
+
 /// Generate code for the MemoryInit capability.
 pub(super) fn generate_memory_init() -> TokenStream {
     quote! { fstart_capabilities::memory_init(); }

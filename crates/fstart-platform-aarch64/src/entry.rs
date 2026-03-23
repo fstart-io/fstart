@@ -32,14 +32,43 @@ _start:
     mrs x0, CurrentEL
     lsr x0, x0, #2
     cmp x0, #3
-    b.ne .Lel1_entry           // Already at EL1 (or EL2) — skip ERET
+    b.eq .Lel3_setup           // At EL3 — do EL3→EL1 transition
+    cmp x0, #2
+    b.eq .Lel2_setup           // At EL2 — do EL2→EL1 transition
+    b .Lel1_entry              // Already at EL1 — skip transitions
+
+    // === At EL2: configure for EL1 entry ===
+.Lel2_setup:
+    // HCR_EL2: RW=1 (AArch64 for EL1), all other bits zero
+    // (no trapping, no virtual interrupts)
+    ldr x0, =(1 << 31)            // RW bit
+    msr hcr_el2, x0
+
+    // Enable FP/SIMD at EL2 (CPTR_EL2.TFP bit 10 = 0)
+    // CPTR_EL2 reset value may trap FP. Clear TFP.
+    // Also clear FPEN bits if any — RES1 bits: 0x33FF for non-VHE
+    ldr x0, =0x33FF               // RES1 bits, TFP(10)=0
+    msr cptr_el2, x0
+
+    // SPSR_EL2: target EL1h (M[3:0]=0b0101), DAIF masked
+    mov x0, #0x3C5                // EL1h + DAIF all masked
+    msr spsr_el2, x0
+
+    // ELR_EL2: return to .Lel1_entry
+    adr x0, .Lel1_entry
+    msr elr_el2, x0
+
+    isb
+    eret
 
     // === At EL3: configure for EL1 non-secure entry ===
+.Lel3_setup:
 
     // SCR_EL3: NS=0 (secure), RW=1 (AArch64 for EL2/EL1),
     //          SMD=0 (SMC enabled), HCE=0 (no HVC at Secure EL1)
     // We stay in secure world so EL1 can access the flash at 0x0
-    // where our code resides. Firmware doesn't need non-secure.
+    // where our code resides. The NS switch to non-secure happens
+    // later at ExitBootServices via the FSTART_NS_SWITCH SMC.
     // Bits: RW(10)=1, ST(11)=1
     mov x0, #0x0C00            // RW | ST (no NS, no HCE)
     msr scr_el3, x0
@@ -66,6 +95,11 @@ _start:
     // handles PSCI_VERSION, PSCI_FEATURES and SMCCC_VERSION.
     adr x0, .Lel3_vectors
     msr vbar_el3, x0
+
+    // GICv3 initialization is done later via the GicInit capability,
+    // which issues SMC FSTART_GIC_INIT (0xC2000001) with the GICD and
+    // GICR base addresses read from the board RON config.  The SMC
+    // handler below performs the full TF-A/U-Boot init sequence.
 
     isb
     eret
@@ -163,9 +197,97 @@ _start:
     // PSCI_SYSTEM_RESET (0x84000009) → halt (could do reset)
     ldr w9, =0x84000009
     cmp w0, w9
-    b.ne .Lel3_smc_unknown
+    b.ne 5f
     wfi
     b .
+5:
+    // FSTART_GIC_INIT (0xC2000001) — initialize GICv3 from EL3.
+    //
+    // Called by the GicInit capability via fstart_arch::gic_init().
+    // x1 = GICD base, x2 = GICR base.
+    //
+    // Performs the full TF-A / U-Boot GICv3 init sequence:
+    //   GICD_CTLR, IGROUPR, IGRPMODR, GICR wakeup, GICR_IGROUPR0,
+    //   ICC_SRE_EL3, ICC_IGRPEN1_EL3, ICC_PMR_EL1.
+    ldr x9, =0xC2000001
+    cmp x0, x9
+    b.ne 6f
+
+    // --- Distributor (GICD) at x1 ---
+    mov w9, #0x37              // EnableGrp0|EnableGrp1NS|EnableGrp1S|ARE_S|ARE_NS
+    str w9, [x1]               // GICD_CTLR
+    dsb sy
+
+    // ITLinesNumber from GICD_TYPER
+    ldr w9, [x1, #0x4]        // GICD_TYPER
+    and w9, w9, #0x1f
+    add w9, w9, #1             // number of 32-interrupt groups
+
+    // All SPIs → Group 1 NS
+    add x10, x1, #0x84        // &GICD_IGROUPR[1]
+    add x11, x1, #0xD04       // &GICD_IGRPMODR[1]
+    mov w12, #0xFFFFFFFF
+    mov w13, #1
+.Lgic_spi_loop:
+    cmp w13, w9
+    b.ge .Lgic_spi_done
+    str w12, [x10], #4         // IGROUPR = all-1s
+    str wzr, [x11], #4         // IGRPMODR = 0
+    add w13, w13, #1
+    b .Lgic_spi_loop
+.Lgic_spi_done:
+    dsb sy
+
+    // --- Redistributor (GICR) at x2 ---
+    // Wake: clear ProcessorSleep, wait ChildrenAsleep=0
+    ldr w9, [x2, #0x14]       // GICR_WAKER
+    bic w9, w9, #(1 << 1)     // Clear ProcessorSleep
+    str w9, [x2, #0x14]
+    dsb sy
+    isb
+.Lgic_waker_wait:
+    ldr w9, [x2, #0x14]
+    tbnz w9, #2, .Lgic_waker_wait
+
+    // SGI base = GICR + 64KB
+    add x10, x2, #(1 << 16)
+    mov w9, #0xFFFFFFFF
+    str w9, [x10, #0x80]      // GICR_IGROUPR0 = all-1s
+    str wzr, [x10, #0xD00]    // GICR_IGRPMODR0 = 0
+    dsb sy
+
+    // --- CPU interface (system registers, EL3 only) ---
+    mov x9, #0xF
+    msr S3_6_C12_C12_5, x9    // ICC_SRE_EL3: SRE|DFB|DIB|Enable
+    isb
+    mov x9, #0x3
+    msr S3_6_C12_C12_7, x9    // ICC_IGRPEN1_EL3: G1NS|G1S
+    isb
+    mov x9, #0xFF
+    msr S3_0_C4_C6_0, x9      // ICC_PMR_EL1: all priorities
+    isb
+
+    mov x0, #0                 // SUCCESS
+    eret
+
+6:
+    // FSTART_NS_SWITCH (0xC2000000) — switch caller to Non-Secure EL1.
+    //
+    // Used by CrabEFI's ExitBootServices trampoline: after all firmware
+    // code is done (EBS cleanup, SetVirtualAddressMap), the trampoline
+    // issues this SMC from a RAM page. The EL3 handler sets SCR_EL3.NS=1
+    // and ERETs back. The caller (EFI stub / kernel) now runs at NS-EL1
+    // where GICv3 Non-Secure Group 1 interrupts (MSI-X/LPIs) arrive as
+    // IRQ instead of FIQ — fixing the NVMe interrupt routing issue.
+    movz x9, #0xC200, lsl #16 // 0xC2000000 — no literal pool needed
+    cmp x0, x9
+    b.ne .Lel3_smc_unknown
+    mrs x9, scr_el3
+    orr x9, x9, #1            // NS=1 (bit 0)
+    msr scr_el3, x9
+    isb
+    mov x0, #0                 // SUCCESS
+    eret
 
 .Lel3_smc_unknown:
     mov x0, #-1                // NOT_SUPPORTED
