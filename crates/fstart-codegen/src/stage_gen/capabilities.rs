@@ -826,6 +826,64 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         quote! { fdt: None, }
     };
 
+    // On AArch64, the FDT sits at RAM base. Reserve it and emit the
+    // remaining pre-BSS RAM as ConventionalMemory. On other platforms,
+    // the whole pre-BSS RAM region is ConventionalMemory.
+    let fdt_reservation = if platform == Platform::Aarch64 {
+        quote! {
+            // Read FDT totalsize (big-endian u32 at offset 4) and round
+            // up to page boundary for the reservation.
+            let _fdt_total = unsafe {
+                u32::from_be(core::ptr::read_unaligned(
+                    (_ram_base as *const u8).add(4) as *const u32
+                ))
+            } as u64;
+            let _fdt_reserved = (_fdt_total + 0xFFF) & !0xFFF; // page-align up
+
+            // FDT region: Reserved so allocator won't hand it out
+            _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
+                base: _ram_base,
+                size: _fdt_reserved,
+                region_type: fstart_crabefi::MemoryType::Reserved,
+            };
+            _mem_idx += 1;
+
+            // Remaining RAM between FDT end and firmware BSS start
+            let _post_fdt = _ram_base + _fdt_reserved;
+            if _fw_data_start > _post_fdt {
+                _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
+                    base: _post_fdt,
+                    size: _fw_data_start - _post_fdt,
+                    region_type: fstart_crabefi::MemoryType::Ram,
+                };
+                _mem_idx += 1;
+            }
+        }
+    } else {
+        quote! {
+            _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
+                base: _ram_base,
+                size: _fw_data_start - _ram_base,
+                region_type: fstart_crabefi::MemoryType::Ram,
+            };
+            _mem_idx += 1;
+        }
+    };
+
+    // RuntimeRegion: For now, fstart's code+data live in Reserved regions
+    // (flash ROM and BSS). CrabEFI's reserve_region can only carve from
+    // ConventionalMemory, not Reserved. Since the Reserved regions are
+    // already protected from the EFI allocator, runtime services will
+    // function during boot. After ExitBootServices, runtime services
+    // won't be available (no RuntimeServicesCode/Data entries), but
+    // that's acceptable for initial boot — the kernel's EFI stub doesn't
+    // require them to load.
+    //
+    // TODO: To properly support SetVirtualAddressMap, we need to either:
+    //   (a) Pass firmware regions as RuntimeServicesCode/Data in the
+    //       platform memory map instead of Reserved, or
+    //   (b) Use force_add_region in CrabEFI to inject RT entries.
+
     quote! {
         fstart_log::info!("Launching CrabEFI UEFI payload...");
 
@@ -855,10 +913,15 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         let _fw_stack_bottom: u64 = _ram_end - _fw_stack_size;
 
         // Build memory map at runtime with firmware regions carved out.
-        // Layout: ROM | RAM_low | BSS_reserved | RAM_middle | STACK_reserved
-        let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 10] = [
+        //
+        // Layout (AArch64 with FDT at RAM base):
+        //   ROM | FDT_reserved | RAM_post_fdt | BSS_reserved | RAM_middle | STACK_reserved
+        //
+        // Layout (other platforms):
+        //   ROM | RAM_low | BSS_reserved | RAM_middle | STACK_reserved
+        let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 12] = [
             fstart_crabefi::MemoryRegion { base: 0, size: 0, region_type: fstart_crabefi::MemoryType::Reserved };
-            10
+            12
         ];
         let mut _mem_idx: usize = 0;
 
@@ -871,14 +934,17 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
             _mem_idx += 1;
         }
 
-        // 1. RAM below firmware BSS region
+        // 1. RAM below firmware BSS region, with FDT carved out on AArch64.
+        //
+        // On AArch64, QEMU places the FDT at the base of RAM. We must mark
+        // that region as Reserved so the EFI allocator doesn't hand it out
+        // to applications — the FDT is installed as a configuration table
+        // and GRUB/kernel reads it to discover hardware.
+        //
+        // We read the FDT totalsize to reserve exactly the right amount,
+        // rounded up to the next page boundary.
         if _fw_data_start > _ram_base {
-            _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
-                base: _ram_base,
-                size: _fw_data_start - _ram_base,
-                region_type: fstart_crabefi::MemoryType::Ram,
-            };
-            _mem_idx += 1;
+            #fdt_reservation
         }
 
         // 2. Firmware BSS/data/heap — reserved
