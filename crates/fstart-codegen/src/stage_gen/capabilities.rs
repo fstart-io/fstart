@@ -691,46 +691,6 @@ fn generate_payload_load_linux(
         }
     });
 
-    // Load initramfs blob from FFS if configured.
-    if payload.initramfs_file.is_some() {
-        let initramfs_load_addr = hex_addr(payload.initramfs_load_addr.unwrap_or(0));
-        let anchor3 = anchor_expr(embed_anchor);
-        stmts.extend(quote! {
-            fstart_log::info!("loading initramfs...");
-            if !fstart_capabilities::load_ffs_file_by_type(
-                #anchor3,
-                &boot_media,
-                fstart_types::ffs::FileType::Initramfs,
-            ) {
-                fstart_log::error!("FATAL: failed to load initramfs");
-                #halt;
-            }
-        });
-
-        // After loading, patch the FDT with initrd addresses.
-        // The FFS loader tells us the actual size via the segment metadata,
-        // but since we loaded it to a known address, we can compute the
-        // size from the FFS file entry. For now, re-read the FFS to get
-        // the initramfs size and patch the FDT.
-        let dtb_for_initrd = hex_addr(payload.dtb_addr.unwrap_or(0));
-        let anchor4 = anchor_expr(embed_anchor);
-        stmts.extend(quote! {
-            // Get initramfs size from FFS metadata for FDT patching
-            let _initrd_size = fstart_capabilities::get_ffs_file_size(
-                #anchor4,
-                &boot_media,
-                fstart_types::ffs::FileType::Initramfs,
-            );
-            if _initrd_size > 0 {
-                fstart_capabilities::fdt_set_initrd_addresses(
-                    #dtb_for_initrd,
-                    #initramfs_load_addr,
-                    _initrd_size,
-                );
-            }
-        });
-    }
-
     // Platform-specific boot protocol.
     let dtb_addr = hex_addr(payload.dtb_addr.unwrap_or(0));
     let kernel_addr = hex_addr(payload.kernel_load_addr.unwrap_or(0));

@@ -197,19 +197,6 @@ pub struct PayloadConfig {
     pub bootargs: Option<HString<256>>,
     /// SBI / ATF firmware blob configuration
     pub firmware: Option<FirmwareConfig>,
-    /// Initramfs (initial RAM filesystem) file, relative to board directory.
-    ///
-    /// When present, the assembler packages this as an FFS `Initramfs` entry.
-    /// At boot, the firmware loads it to `initramfs_load_addr` and patches
-    /// the FDT `/chosen` node with `linux,initrd-start` / `linux,initrd-end`
-    /// so Linux can find it.
-    #[serde(default)]
-    pub initramfs_file: Option<HString<128>>,
-    /// Load address for the initramfs in RAM.
-    ///
-    /// Must not overlap with the kernel, DTB, or SBI firmware regions.
-    #[serde(default)]
-    pub initramfs_load_addr: Option<u64>,
     /// Path to a FIT (.itb) image file (relative to board directory).
     ///
     /// Used when `kind` is `FitImage`. The FIT bundles kernel, ramdisk,

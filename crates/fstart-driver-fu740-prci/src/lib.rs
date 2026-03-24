@@ -139,7 +139,7 @@ struct PllSettings {
 
 impl PllSettings {
     /// Encode as a PLLCFG register value (bypass=0, fse=1).
-    const fn to_reg(&self) -> u32 {
+    const fn to_reg(self) -> u32 {
         (self.divr << PLLCFG_DIVR_SHIFT)
             | (self.divf << PLLCFG_DIVF_SHIFT)
             | (self.divq << PLLCFG_DIVQ_SHIFT)

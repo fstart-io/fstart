@@ -199,13 +199,13 @@ impl Fu740Ddr {
     /// must be in place before the per-slice registers (0-1151) are written.
     fn phy_reset(&self) {
         // Phase 1: global PHY config (registers 1152-1214).
-        for i in 1152..=1214 {
-            self.phy_write(i, DENALI_PHY[i]);
+        for (i, &val) in DENALI_PHY.iter().enumerate().skip(1152).take(63) {
+            self.phy_write(i, val);
         }
 
         // Phase 2: per-slice config (registers 0-1151).
-        for i in 0..=1151 {
-            self.phy_write(i, DENALI_PHY[i]);
+        for (i, &val) in DENALI_PHY.iter().enumerate().take(1152) {
+            self.phy_write(i, val);
         }
     }
 

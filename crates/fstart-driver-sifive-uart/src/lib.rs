@@ -169,8 +169,7 @@ impl Device for SifiveUart {
     fn init(&self) -> Result<(), DeviceError> {
         // Baud rate divisor: div = ceil(f_in / f_baud) - 1
         // Using integer ceiling division: (a + b - 1) / b
-        let div =
-            ((self.clock_freq as u64 + self.baud_rate as u64 - 1) / self.baud_rate as u64) - 1;
+        let div = (self.clock_freq as u64).div_ceil(self.baud_rate as u64) - 1;
         self.write_reg(REG_DIV, div as u32);
 
         // Enable TX: 1 stop bit, watermark at 1 (matches coreboot/U-Boot)

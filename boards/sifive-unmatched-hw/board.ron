@@ -23,15 +23,14 @@
 //      d. BootMedia: FFS at SPI NOR XIP window (0x20000000)
 //      e. SigVerify: verify FFS manifest signature
 //      f. FdtPrepare: load + patch DTB
-//      g. PayloadLoad: load OpenSBI + kernel + initramfs -> boot Linux
+//      g. PayloadLoad: load OpenSBI + kernel -> boot Linux
 //
 // Memory layout:
 //   0x0800_0000  L2 LIM (2 MiB) — stage code + stack
 //   0x2000_0000  SPI NOR XIP (32 MiB) — FFS with LZ4-compressed payloads
 //   0x8000_0000  DRAM (16 GiB, after DDR init):
 //     0x8300_0000  OpenSBI fw_dynamic
-//     0x8400_0000  Linux kernel
-//     0x8600_0000  Initramfs
+//     0x8400_0000  Linux kernel with built-in initramfs
 //     0x8F00_0000  Patched DTB
 //
 // Usage:
@@ -144,8 +143,6 @@
             file: "fw_dynamic.bin",
             load_addr: 0x83000000,
         )),
-        initramfs_file: Some("initramfs-riscv64.cpio"),
-        initramfs_load_addr: Some(0x86000000),
     )),
 
     // Hart 1 is the boot hart (first U74 core).
