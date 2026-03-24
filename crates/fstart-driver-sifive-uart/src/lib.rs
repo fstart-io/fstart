@@ -166,7 +166,7 @@ impl Device for SifiveUart {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         // Baud rate divisor: div = ceil(f_in / f_baud) - 1
         // Using integer ceiling division: (a + b - 1) / b
         let div = (self.clock_freq as u64).div_ceil(self.baud_rate as u64) - 1;
