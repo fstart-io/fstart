@@ -134,6 +134,8 @@ impl crabefi::ResetHandler for PsciReset {
         let function_id: u32 = match reset_type {
             crabefi::ResetType::Cold | crabefi::ResetType::Warm => 0x8400_0009, // SYSTEM_RESET
             crabefi::ResetType::Shutdown => 0x8400_0008,                        // SYSTEM_OFF
+            // ResetType is #[non_exhaustive]; default unknown variants to cold reset.
+            _ => 0x8400_0009,
         };
 
         #[cfg(target_arch = "aarch64")]
