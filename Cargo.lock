@@ -363,6 +363,7 @@ name = "fstart-acpi"
 version = "0.1.0"
 dependencies = [
  "acpi_tables",
+ "fstart-types",
 ]
 
 [[package]]
