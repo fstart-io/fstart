@@ -1,13 +1,12 @@
-//! Bochs VBE display driver — MMIO mode for QEMU `bochs-display`.
+//! Bochs VBE display driver — PCI bus child, MMIO mode.
 //!
-//! Initializes the bochs/stdvga display via the VBE DISPI register
-//! interface.  On non-x86 platforms (AArch64, RISC-V) there are no
-//! legacy VGA I/O ports, so this driver uses the MMIO registers exposed
-//! via PCI BAR2 (offset 0x500 for DISPI regs, 0x400 for VGA regs).
+//! A PCI bus child device that uses the parent [`PciRootBus`] to read
+//! BARs at its known device:function address.  After construction the
+//! driver programs the VBE DISPI registers via BAR2 MMIO.
 //!
-//! The driver scans the PCI ECAM config space to find the bochs-display
-//! device (vendor 0x1234, device 0x1111), reads its allocated BARs, and
-//! programs the requested resolution.
+//! On non-x86 platforms (AArch64, RISC-V) there are no legacy VGA I/O
+//! ports, so this driver uses the MMIO registers exposed via PCI BAR2
+//! (offset 0x500 for DISPI regs, 0x400 for VGA regs).
 //!
 //! Compatible: `"bochs-display"`, `"qemu-stdvga"`.
 //!
@@ -22,8 +21,9 @@
 
 #![no_std]
 
-use fstart_services::device::{Device, DeviceError};
+use fstart_services::device::{BusDevice, DeviceError};
 use fstart_services::framebuffer::{Framebuffer, FramebufferInfo};
+use fstart_services::pci::{PciAddr, PciRootBus};
 use serde::{Deserialize, Serialize};
 
 // -----------------------------------------------------------------------
@@ -54,13 +54,8 @@ const MMIO_VGA_OFFSET: usize = 0x400;
 const MMIO_DISPI_OFFSET: usize = 0x500;
 
 // PCI config space offsets
-const PCI_VENDOR_ID: u16 = 0x00;
 const PCI_BAR0: u16 = 0x10;
 const PCI_BAR2: u16 = 0x18;
-
-/// Bochs display PCI vendor:device.
-const BOCHS_VENDOR_ID: u16 = 0x1234;
-const BOCHS_DEVICE_ID: u16 = 0x1111;
 
 // -----------------------------------------------------------------------
 // Config
@@ -68,14 +63,15 @@ const BOCHS_DEVICE_ID: u16 = 0x1111;
 
 /// Typed configuration for the bochs display driver.
 ///
-/// The driver scans PCI config space via ECAM to find the bochs-display
-/// device and read its allocated BARs. Resolution and BPP are configurable.
+/// As a PCI bus child, the driver receives its ECAM base from the parent
+/// [`PciRootBus`] and only needs the device:function address on the bus.
+/// BARs are read via the parent's config-space accessors.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BochsDisplayConfig {
-    /// ECAM base address — needed to read PCI config space for the
-    /// bochs-display device's BARs. Must match the PCI ECAM driver's
-    /// `ecam_base` from the board RON.
-    pub ecam_base: u64,
+    /// PCI device number on the bus (bus number comes from the parent).
+    pub device: u8,
+    /// PCI function number.
+    pub function: u8,
     /// Horizontal resolution in pixels.
     pub width: u16,
     /// Vertical resolution in pixels.
@@ -88,14 +84,16 @@ pub struct BochsDisplayConfig {
 
 /// Bochs VBE display driver.
 ///
-/// After `init()`, the framebuffer is programmed at the requested
-/// resolution with 32-bit XRGB8888 pixels. Call `info()` to get the
-/// physical address and layout.
+/// Constructed via [`BusDevice::new_on_bus`] with a parent [`PciRootBus`].
+/// BARs are read from PCI config space during construction.  After
+/// `init()`, the framebuffer is programmed at the requested resolution
+/// with 32-bit XRGB8888 pixels.  Call `info()` to get the physical
+/// address and layout.
 pub struct BochsDisplay {
     config: BochsDisplayConfig,
-    /// Framebuffer physical address (from PCI BAR0, read during init).
+    /// Framebuffer physical address (from PCI BAR0).
     fb_base: u64,
-    /// MMIO register base (from PCI BAR2, read during init).
+    /// MMIO register base (from PCI BAR2).
     mmio_base: u64,
     /// Whether init() has been called successfully.
     initialized: bool,
@@ -107,49 +105,20 @@ unsafe impl Send for BochsDisplay {}
 unsafe impl Sync for BochsDisplay {}
 
 impl BochsDisplay {
-    /// Read a 32-bit value from PCI ECAM config space.
-    fn ecam_read32(&self, bus: u8, dev: u8, func: u8, reg: u16) -> u32 {
-        let offset = ((bus as usize) << 20)
-            | ((dev as usize) << 15)
-            | ((func as usize) << 12)
-            | ((reg as usize) & 0xFFC);
-        let addr = self.config.ecam_base as usize + offset;
-        // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::read32(addr as *const u32) }
-    }
-
-    /// Scan PCI bus 0 for bochs-display (0x1234:0x1111).
-    ///
-    /// Returns `(bus, dev, func)` of the first match, or `None`.
-    fn find_device(&self) -> Option<(u8, u8, u8)> {
-        for dev in 0..32u8 {
-            let vendor_device = self.ecam_read32(0, dev, 0, PCI_VENDOR_ID);
-            if vendor_device == 0xFFFF_FFFF {
-                continue;
-            }
-            let vendor = vendor_device as u16;
-            let device = (vendor_device >> 16) as u16;
-            if vendor == BOCHS_VENDOR_ID && device == BOCHS_DEVICE_ID {
-                return Some((0, dev, 0));
-            }
-        }
-        None
-    }
-
-    /// Read a BAR value from PCI config space.
+    /// Read a BAR value from PCI config space via the parent bus.
     ///
     /// For 64-bit BARs, reads both the low and high 32-bit halves.
-    fn read_bar(&self, bus: u8, dev: u8, func: u8, bar_offset: u16) -> u64 {
-        let lo = self.ecam_read32(bus, dev, func, bar_offset);
+    fn read_bar(bus: &dyn PciRootBus, addr: PciAddr, bar_offset: u16) -> u64 {
+        let lo = bus.config_read32(addr, bar_offset).unwrap_or(0);
         if lo & 1 != 0 {
-            // I/O BAR — return the I/O base.
+            // I/O BAR
             return (lo & 0xFFFF_FFFC) as u64;
         }
         let mem_type = (lo >> 1) & 0x3;
         let base_lo = (lo & 0xFFFF_FFF0) as u64;
         if mem_type == 2 {
-            // 64-bit BAR — read upper half.
-            let hi = self.ecam_read32(bus, dev, func, bar_offset + 4);
+            // 64-bit BAR
+            let hi = bus.config_read32(addr, bar_offset + 4).unwrap_or(0);
             base_lo | ((hi as u64) << 32)
         } else {
             base_lo
@@ -179,53 +148,75 @@ impl BochsDisplay {
 }
 
 // -----------------------------------------------------------------------
-// Device trait
+// BusDevice trait — PCI bus child
 // -----------------------------------------------------------------------
 
-impl Device for BochsDisplay {
+impl BusDevice for BochsDisplay {
     const NAME: &'static str = "bochs-display";
     const COMPATIBLE: &'static [&'static str] = &["bochs-display", "qemu-stdvga"];
     type Config = BochsDisplayConfig;
+    type Bus = dyn PciRootBus;
 
-    fn new(config: &BochsDisplayConfig) -> Result<Self, DeviceError> {
+    fn new_on_bus(config: &BochsDisplayConfig, bus: &dyn PciRootBus) -> Result<Self, DeviceError> {
+        let addr = PciAddr {
+            bus: 0, // bus 0 (child of root bus)
+            dev: config.device,
+            func: config.function,
+        };
+
+        // Verify the device is present by reading vendor:device ID.
+        let vendor_device = bus
+            .config_read32(addr, 0x00)
+            .map_err(|_| DeviceError::BusError)?;
+        if vendor_device == 0xFFFF_FFFF {
+            fstart_log::error!(
+                "bochs-display: no PCI device at {:02x}:{:02x}.{}",
+                addr.bus,
+                addr.dev,
+                addr.func
+            );
+            return Err(DeviceError::InitFailed);
+        }
+
+        let vendor = vendor_device as u16;
+        let device = (vendor_device >> 16) as u16;
+        if vendor != 0x1234 || device != 0x1111 {
+            fstart_log::error!(
+                "bochs-display: expected 1234:1111, found {:04x}:{:04x}",
+                vendor,
+                device
+            );
+            return Err(DeviceError::InitFailed);
+        }
+
+        // Read BARs (allocated by PCI ECAM driver during PciInit).
+        let fb_base = Self::read_bar(bus, addr, PCI_BAR0);
+        let mmio_base = Self::read_bar(bus, addr, PCI_BAR2);
+
+        fstart_log::info!(
+            "bochs-display: PCI {:02x}:{:02x}.{}, FB={}  MMIO={}",
+            addr.bus,
+            addr.dev,
+            addr.func,
+            fstart_log::Hex(fb_base),
+            fstart_log::Hex(mmio_base),
+        );
+
         Ok(Self {
             config: *config,
-            fb_base: 0,
-            mmio_base: 0,
+            fb_base,
+            mmio_base,
             initialized: false,
         })
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        // Step 1: Find the bochs-display PCI device.
-        let (bus, dev, func) = self.find_device().ok_or_else(|| {
-            fstart_log::error!("bochs-display: PCI device 1234:1111 not found");
-            DeviceError::InitFailed
-        })?;
-
-        fstart_log::info!(
-            "bochs-display: found at PCI {:02x}:{:02x}.{}",
-            bus,
-            dev,
-            func,
-        );
-
-        // Step 2: Read BARs (allocated by PCI ECAM driver during PciInit).
-        self.fb_base = self.read_bar(bus, dev, func, PCI_BAR0);
-        self.mmio_base = self.read_bar(bus, dev, func, PCI_BAR2);
-
         if self.fb_base == 0 || self.mmio_base == 0 {
             fstart_log::error!("bochs-display: BAR0 or BAR2 not allocated");
             return Err(DeviceError::InitFailed);
         }
 
-        fstart_log::info!("bochs-display: FB BAR0 = {}", fstart_log::Hex(self.fb_base));
-        fstart_log::info!(
-            "bochs-display: MMIO BAR2 = {}",
-            fstart_log::Hex(self.mmio_base),
-        );
-
-        // Step 3: Detect the VBE DISPI interface.
+        // Detect the VBE DISPI interface.
         let id = self.dispi_read(VBE_DISPI_INDEX_ID);
         if (id & VBE_DISPI_ID_MASK) != VBE_DISPI_ID_MAGIC {
             fstart_log::error!("bochs-display: VBE DISPI ID mismatch: {}", id);
@@ -233,7 +224,7 @@ impl Device for BochsDisplay {
         }
         fstart_log::info!("bochs-display: VBE DISPI version {}", id);
 
-        // Step 4: Program the display mode.
+        // Program the display mode.
         // Exact sequence from coreboot's bochs_init_linear_fb():
         let w = self.config.width;
         let h = self.config.height;
@@ -252,7 +243,7 @@ impl Device for BochsDisplay {
             VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED,
         );
 
-        // Step 5: Disable VGA blanking via MMIO VGA attribute register.
+        // Disable VGA blanking via MMIO VGA attribute register.
         self.vga_write(0, 0x20);
 
         self.initialized = true;
