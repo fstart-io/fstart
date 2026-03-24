@@ -236,7 +236,7 @@ impl PciEcam {
         if original & 1 == 1 {
             // I/O BAR
             let mask = sized | 0x3;
-            let size = ((!mask) as u32).wrapping_add(1) as u64;
+            let size = (!mask).wrapping_add(1) as u64;
             return (
                 BarInfo {
                     bar_type: BarType::Io,
@@ -256,7 +256,7 @@ impl PciEcam {
             0 => {
                 // 32-bit
                 let mask = sized | 0xF;
-                let size = ((!mask) as u32).wrapping_add(1) as u64;
+                let size = (!mask).wrapping_add(1) as u64;
                 (
                     BarInfo {
                         bar_type: BarType::Memory32,

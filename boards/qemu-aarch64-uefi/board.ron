@@ -1,0 +1,130 @@
+// Board definition for QEMU AArch64 virt machine -- CrabEFI UEFI payload.
+//
+// Same hardware as qemu-aarch64 but boots CrabEFI instead of Linux.
+// CrabEFI is linked as a library and called via init_platform().
+// fstart handles hardware init (console, PCI BARs, GIC) and injects
+// drivers into CrabEFI's PlatformConfig.
+//
+// Memory map from QEMU hw/arm/virt.c (confirmed via coreboot):
+//   Flash:      0x0000_0000 .. 0x0800_0000 (128 MiB, two 64 MiB banks)
+//   UART:       0x0900_0000 (PL011, 4 KiB)
+//   PCIe MMIO:  0x1000_0000 .. 0x3EFE_FFFF (~751 MiB)
+//   PCIe PIO:   0x3EFF_0000 .. 0x3EFF_FFFF (64 KiB)
+//   PCIe ECAM:  0x4010_0000_0000 .. 0x401F_FFFF_FFFF (256 MiB, highmem)
+//   RAM:        0x4000_0000 onwards
+
+(
+    name: "qemu-aarch64-uefi",
+    platform: Aarch64,
+
+    // Memory regions: only ROM and RAM.
+    // Device MMIO addresses are in the driver config, not here.
+    // flash_base = XIP flash base for AArch64 virt.
+    // flash_size = 128 MiB flash.
+    // RAM: 4 GiB for CrabEFI + shim + GRUB + Fedora testing.
+    memory: (
+        regions: [
+            ( name: "flash", base: 0x00000000, size: 0x08000000, kind: Rom ),
+            ( name: "ram",   base: 0x40000000, size: 0x100000000, kind: Ram ),
+        ],
+        flash_base: Some(0x00000000),
+        flash_size: Some(0x08000000),
+    ),
+
+    devices: [
+        (
+            name: "uart0",
+            driver: Pl011((
+                base_addr: 0x09000000,
+                // QEMU virt PL011 ignores baud rate, but we match coreboot's
+                // default refclk of 115200 * 16 = 1843200 Hz.
+                clock_freq: 1843200,
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
+        ),
+        (
+            name: "pci0",
+            driver: PciEcam((
+                // QEMU virt with -cpu max uses highmem ECAM (256 MiB, 256 buses).
+                // The low ECAM at 0x3F000000 is NOT mapped in this configuration.
+                ecam_base:  0x4010000000,
+                ecam_size:  0x10000000,
+                mmio32_base: 0x10000000,
+                mmio32_size: 0x2EFF0000,
+                mmio64_base: 0x8000000000,
+                mmio64_size: 0x8000000000,
+                pio_base:   0x3EFF0000,
+                pio_size:   0x10000,
+                bus_start: 0,
+                bus_end: 255,
+            )),
+            services: ["PciRootBus"],
+            // bochs-display is a PCI child device.  The driver gets
+            // its BARs from the parent PciRootBus's config space
+            // accessors rather than duplicating the ECAM base.
+            children: [
+                (
+                    name: "bochs0",
+                    driver: BochsDisplay((
+                        device: 3,
+                        function: 0,
+                        width: 1024,
+                        height: 768,
+                    )),
+                    services: ["Framebuffer"],
+                ),
+            ],
+        ),
+    ],
+
+    stages: Monolithic((
+        capabilities: [
+            ConsoleInit( device: "uart0" ),
+            // TODO: replace GicInit with TF-A BL31 for EL3 management.
+            // BL31 handles GIC init, PSCI, and the NS switch -- removing
+            // the need for fstart's custom EL3 vectors.
+            GicInit,
+            MemoryInit,
+            PciInit( device: "pci0" ),
+            DriverInit,
+            PayloadLoad,
+        ],
+        load_addr: 0x00000000,
+        // CrabEFI + shim + GRUB need much more stack than bare fstart.
+        stack_size: 0x300000,
+        heap_size: Some(0x100000),
+        // Place data/BSS/stack at 2 MiB into RAM to avoid QEMU's DTB.
+        // QEMU places the FDT at RAM base (0x40000000) on firmware boot;
+        // without this, BSS clearing in _start would destroy the DTB.
+        data_addr: Some(0x40200000),
+    )),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256, Sha3_256],
+    ),
+
+    mode: Rigid,
+
+    // GICv3 interrupt controller (QEMU virt machine).
+    // TODO: remove once BL31 handles GIC init.
+    gic: Some((
+        dist_base:   0x08000000, // GICD
+        redist_base: 0x080A0000, // GICR
+    )),
+
+    // CrabEFI UEFI payload -- linked as a library, called via init_platform().
+    // fstart handles hardware init (console, PCI BARs) and injects drivers
+    // into CrabEFI's PlatformConfig.
+    payload: Some((
+        kind: UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: None,
+        firmware: None,
+    )),
+)

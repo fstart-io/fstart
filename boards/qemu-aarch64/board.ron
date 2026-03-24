@@ -19,7 +19,7 @@
     memory: (
         regions: [
             ( name: "flash", base: 0x00000000, size: 0x08000000, kind: Rom ),
-            ( name: "ram",   base: 0x40000000, size: 0x100000000, kind: Ram ),
+            ( name: "ram",   base: 0x40000000, size: 0x08000000, kind: Ram ),
         ],
         flash_base: Some(0x00000000),
         flash_size: Some(0x08000000),
@@ -37,50 +37,21 @@
             )),
             services: ["Console"],
         ),
-        (
-            name: "pci0",
-            driver: PciEcam((
-                // QEMU virt with -cpu max uses highmem ECAM (256 MiB, 256 buses).
-                // The low ECAM at 0x3F000000 is NOT mapped in this configuration.
-                ecam_base:  0x4010000000,
-                ecam_size:  0x10000000,
-                mmio32_base: 0x10000000,
-                mmio32_size: 0x2EFF0000,
-                mmio64_base: 0x8000000000,
-                mmio64_size: 0x8000000000,
-                pio_base:   0x3EFF0000,
-                pio_size:   0x10000,
-                bus_start: 0,
-                bus_end: 255,
-            )),
-            services: ["PciRootBus"],
-        ),
-        (
-            name: "bochs0",
-            driver: BochsDisplay((
-                // ECAM base must match pci0 — used to scan PCI config space
-                // for the bochs-display device (0x1234:0x1111) and read its
-                // BARs (allocated during PciInit).
-                ecam_base: 0x4010000000,
-                width: 1024,
-                height: 768,
-            )),
-            services: ["Framebuffer"],
-        ),
     ],
 
     stages: Monolithic((
         capabilities: [
             ConsoleInit( device: "uart0" ),
-            GicInit,
             MemoryInit,
-            PciInit( device: "pci0" ),
-            DriverInit,
+            BootMedia(MemoryMapped( base: 0x00000000, size: 0x08000000 )),
+            SigVerify,
+            FdtPrepare,
             PayloadLoad,
         ],
         load_addr: 0x00000000,
-        stack_size: 0x300000,
-        heap_size: Some(0x100000),
+        stack_size: 0x40000,
+        // 256 KiB heap for the bump allocator (FDT manipulation).
+        heap_size: Some(0x40000),
         // Place data/BSS/stack at 2 MiB into RAM to avoid QEMU's DTB.
         // QEMU places the FDT at RAM base (0x40000000) on firmware boot;
         // without this, BSS clearing in _start would destroy the DTB.
@@ -95,22 +66,36 @@
 
     mode: Rigid,
 
-    // GICv3 interrupt controller (QEMU virt machine)
-    gic: Some((
-        dist_base:   0x08000000, // GICD
-        redist_base: 0x080A0000, // GICR
-    )),
-
-    // CrabEFI UEFI payload — linked as a library, called via init_platform().
-    // fstart handles hardware init (console, PCI BARs) and injects drivers
-    // into CrabEFI's PlatformConfig.
+    // Linux boot via ARM Trusted Firmware BL31.
+    //
+    // Memory layout:
+    //   0x00000000 - Flash (fstart firmware, XIP from ROM)
+    //   0x0E090000 - ATF BL31 (loaded from FFS into secure SRAM)
+    //   0x40000000 - RAM start; QEMU places DTB here (read-only, ~64 KiB)
+    //   0x40200000 - BSS + stack (data_addr, 2 MiB past RAM base)
+    //   0x40100000 - Patched DTB (copied from QEMU-provided DTB at 0x40000000)
+    //   0x41000000 - Linux kernel (loaded from FFS)
+    //   0x48000000 - End of RAM (128 MiB)
+    //
+    // BL31 is linked at 0x0E090000 (QEMU virt secure SRAM region) -- this
+    // matches coreboot's layout. BL31 initialises at EL3, then erets to
+    // Linux (BL33) at EL2 with x0 = DTB pointer.
     payload: Some((
-        kind: UefiPayload,
-        kernel_file: None,
-        kernel_load_addr: None,
+        kind: LinuxBoot,
+        kernel_file: Some("Image"),
+        kernel_load_addr: Some(0x41000000),
         fdt: Platform,
-        dtb_addr: None,
-        bootargs: None,
-        firmware: None,
+        dtb_addr: Some(0x40100000),
+        // QEMU AArch64 virt places the DTB at the base of RAM (0x40000000)
+        // on firmware boot (-bios). Unlike RISC-V where a1=DTB, AArch64
+        // firmware boot zeroes all registers -- x0 is always 0, not a DTB
+        // pointer. We tell codegen the known DTB location explicitly.
+        src_dtb_addr: Some(0x40000000),
+        bootargs: Some("console=ttyAMA0 earlycon=pl011,0x09000000"),
+        firmware: Some((
+            kind: ArmTrustedFirmware,
+            file: "bl31.bin",
+            load_addr: 0x0E090000,
+        )),
     )),
 )

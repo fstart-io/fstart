@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 fstart-services = { workspace = true }
-crabefi = { path = "../../../CrabEFI_r_efi_lib", default-features = false }
+crabefi = { path = "../../../CrabEFI", default-features = false }
