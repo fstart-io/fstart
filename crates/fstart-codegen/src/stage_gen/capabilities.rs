@@ -1099,6 +1099,7 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
             #ecam_base_field
             deferred_buffer: None,
             runtime_region: None,
+            heap_pre_initialized: false,
         };
 
         // init_platform() is -> ! (never returns).
