@@ -18,7 +18,7 @@
 // Boot flow:
 //   QEMU boot ROM at 0x1000 -> jump to 0x80000000 (DRAM)
 //   All 5 harts start simultaneously; _start parks all except hart 1.
-//   Hart 1: init UART -> MemoryInit -> load OpenSBI + kernel + initramfs
+//   Hart 1: init UART -> MemoryInit -> load OpenSBI + kernel
 //         -> patch FDT -> jump to OpenSBI -> Linux boots
 //
 // Note: the FU740 boot ROM on real hardware copies firmware from SPI
@@ -36,9 +36,9 @@
     // copies from SPI flash to L2 LIM/DRAM before execution).
     //
     // flash_base/flash_size: the FFS image is loaded by QEMU -bios at
-    // 0x80000000 and occupies ~42 MiB.  BSS and stack must be placed
+    // 0x80000000 and occupies ~30 MiB.  BSS and stack must be placed
     // ABOVE this area — otherwise _start's BSS zeroing destroys the FFS
-    // blob data (firmware, kernel, initramfs) before fstart_main can
+    // blob data (firmware, kernel) before fstart_main can
     // read it.  Setting flash_base == load_addr with a conservative
     // flash_size pushes BSS to 0x90000000, safely above all blob load
     // addresses (highest: DTB at 0x8F000000).
@@ -93,13 +93,12 @@
     // Linux boot via OpenSBI fw_dynamic protocol.
     //
     // Memory layout (QEMU -bios loads firmware at 0x80000000):
-    //   0x80000000 - FFS image (~42 MiB: firmware code + kernel +
-    //                initramfs + OpenSBI blobs, loaded by QEMU -bios)
-    //   0x82000000 - OpenSBI fw_dynamic (custom build, FW_TEXT_START=0x82000000)
-    //   0x84000000 - Linux kernel (loaded from FFS into RAM)
-    //   0x86000000 - Initramfs (loaded from FFS into RAM)
-    //   0x8F000000 - Patched DTB (copied from platform-provided DTB)
-    //   0x90000000 - End of configured RAM region
+//   0x80000000 - FFS image (~42 MiB: firmware code + kernel +
+//                OpenSBI blobs, loaded by QEMU -bios)
+//   0x82000000 - OpenSBI fw_dynamic (custom build, FW_TEXT_START=0x82000000)
+//   0x84000000 - Linux kernel with built-in initramfs (loaded from FFS into RAM)
+//   0x8F000000 - Patched DTB (copied from platform-provided DTB)
+//   0x90000000 - End of configured RAM region
     //
     // QEMU sifive_u passes DTB address in a1 (saved to mscratch by _start).
     // The bootargs use ttySIF0 (SiFive UART console device in Linux).
@@ -118,8 +117,6 @@
             // QEMU TB cache issues with -bios loaded addresses.
             load_addr: 0x83000000,
         )),
-        initramfs_file: Some("initramfs-riscv64.cpio"),
-        initramfs_load_addr: Some(0x86000000),
     )),
 
     // Hart 1 is the boot hart (first U74 core).
