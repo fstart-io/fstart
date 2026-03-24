@@ -11,3 +11,4 @@ arm = []
 
 [dependencies]
 acpi_tables = "0.2"
+fstart-types = { path = "../fstart-types" }

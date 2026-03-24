@@ -131,17 +131,42 @@ pub enum AcpiExtraDevice {
     PcieRoot(AcpiPcieRootDevice),
 }
 
-/// A generic MMIO device for ACPI (single region + interrupt).
+/// A hardware resource for ACPI `_CRS` generation.
+///
+/// Follows coreboot's resource model: each device can have multiple
+/// MMIO regions and/or Port I/O ranges, each described separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AcpiResource {
+    /// Memory-mapped I/O region.
+    ///
+    /// Addresses above 4 GiB automatically use a QWordMemory descriptor;
+    /// addresses below 4 GiB use a compact Memory32Fixed descriptor.
+    Mmio {
+        /// Physical base address of the MMIO region.
+        base: u64,
+        /// Region size in bytes.
+        size: u64,
+    },
+    /// Port I/O range.
+    ///
+    /// Uses the ACPI I/O Port Descriptor (16-bit address space).
+    Pio {
+        /// Base I/O port address.
+        base: u16,
+        /// Number of I/O ports.
+        size: u16,
+    },
+}
+
+/// A generic device for ACPI — multiple MMIO/PIO regions + optional interrupt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpiGenericDevice {
     /// ACPI namespace name (e.g., "DEV0").
     pub name: HString<8>,
     /// ACPI `_HID` value (e.g., "ACPI0007").
     pub hid: HString<16>,
-    /// MMIO base address.
-    pub base: u64,
-    /// MMIO region size in bytes.
-    pub size: u32,
+    /// Hardware resources (MMIO regions, Port I/O ranges).
+    pub resources: heapless::Vec<AcpiResource, 8>,
     /// Interrupt GSIV (optional).
     #[serde(default)]
     pub gsiv: Option<u32>,

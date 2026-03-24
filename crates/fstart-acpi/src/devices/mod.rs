@@ -13,29 +13,80 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use acpi_tables::aml::{Device, Interrupt, Memory32Fixed, Name, ResourceTemplate};
+use acpi_tables::aml::{
+    AddressSpace, AddressSpaceCacheable, Device, Interrupt, Memory32Fixed, Name, ResourceTemplate,
+    IO,
+};
 use acpi_tables::mcfg::MCFG;
 use acpi_tables::Aml;
 
 use crate::platform::serialize;
 
 // ---------------------------------------------------------------------------
-// GenericAcpi — single MMIO region + optional interrupt
+// Auto-width MMIO descriptor — picks 32-bit vs 64-bit based on address range
 // ---------------------------------------------------------------------------
 
-/// A generic MMIO device for ACPI table generation.
+/// MMIO resource descriptor with automatic width selection.
+///
+/// Mirrors coreboot's `acpigen_resource_mmio()` pattern: if the entire
+/// region fits below 4 GiB, emit a compact `Memory32Fixed` descriptor;
+/// otherwise emit a `QWordMemory` address space descriptor.
+enum MmioDescriptor {
+    /// 32-bit fixed memory range (ACPI tag `0x86`).
+    Fixed32(Memory32Fixed),
+    /// 64-bit memory address space (ACPI tag `0x8A`).
+    QWord(AddressSpace<u64>),
+}
+
+impl MmioDescriptor {
+    /// Create an MMIO descriptor for the given base address and size.
+    ///
+    /// Uses `Memory32Fixed` when the region fits entirely below 4 GiB,
+    /// `QWordMemory` otherwise.
+    fn new(base: u64, size: u64) -> Self {
+        let end = base.saturating_add(size).saturating_sub(1);
+        if end < (1u64 << 32) {
+            MmioDescriptor::Fixed32(Memory32Fixed::new(true, base as u32, size as u32))
+        } else {
+            MmioDescriptor::QWord(AddressSpace::<u64>::new_memory(
+                AddressSpaceCacheable::NotCacheable,
+                true,
+                base,
+                end,
+                None,
+            ))
+        }
+    }
+}
+
+impl Aml for MmioDescriptor {
+    fn to_aml_bytes(&self, sink: &mut dyn acpi_tables::AmlSink) {
+        match self {
+            Self::Fixed32(m) => m.to_aml_bytes(sink),
+            Self::QWord(q) => q.to_aml_bytes(sink),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GenericAcpi — multiple MMIO/PIO regions + optional interrupt
+// ---------------------------------------------------------------------------
+
+/// A generic device for ACPI table generation.
 ///
 /// Produces a DSDT device node with `_HID`, `_UID`, and `_CRS` containing
-/// a 32-bit fixed memory region and optional extended interrupt.
+/// one or more MMIO/PIO resource descriptors and an optional extended
+/// interrupt.
+///
+/// MMIO regions above 4 GiB automatically use a `QWordMemory` descriptor;
+/// regions that fit below 4 GiB use a compact `Memory32Fixed` descriptor.
 pub struct GenericAcpi<'a> {
     /// ACPI namespace name (e.g., "DEV0").
     pub name: &'a str,
     /// ACPI `_HID` value (e.g., "ACPI0007").
     pub hid: &'a str,
-    /// MMIO base address.
-    pub base: u64,
-    /// MMIO region size in bytes.
-    pub size: u32,
+    /// Hardware resources (MMIO regions, Port I/O ranges).
+    pub resources: &'a [fstart_types::acpi::AcpiResource],
     /// Interrupt GSIV (optional).
     pub gsiv: Option<u32>,
 }
@@ -43,27 +94,46 @@ pub struct GenericAcpi<'a> {
 impl GenericAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let mmio = Memory32Fixed::new(true, self.base as u32, self.size);
-
         let hid_str: String = String::from(self.hid);
         let hid = Name::new("_HID".into(), &hid_str);
         let uid = Name::new("_UID".into(), &0u32);
 
-        let mut bytes = Vec::new();
+        // Build resource descriptors for each MMIO/PIO region.
+        let mut mmio_descs: Vec<MmioDescriptor> = Vec::new();
+        let mut pio_descs: Vec<IO> = Vec::new();
 
-        if let Some(gsiv) = self.gsiv {
-            let irq = Interrupt::new(true, false, false, false, gsiv);
-            let crs = ResourceTemplate::new(vec![&mmio, &irq]);
-            let crs_name = Name::new("_CRS".into(), &crs);
-            let dev = Device::new(self.name.into(), vec![&hid, &uid, &crs_name]);
-            dev.to_aml_bytes(&mut bytes);
-        } else {
-            let crs = ResourceTemplate::new(vec![&mmio]);
-            let crs_name = Name::new("_CRS".into(), &crs);
-            let dev = Device::new(self.name.into(), vec![&hid, &uid, &crs_name]);
-            dev.to_aml_bytes(&mut bytes);
+        for res in self.resources {
+            match *res {
+                fstart_types::acpi::AcpiResource::Mmio { base, size } => {
+                    mmio_descs.push(MmioDescriptor::new(base, size));
+                }
+                fstart_types::acpi::AcpiResource::Pio { base, size } => {
+                    pio_descs.push(IO::new(base, base, 0, size as u8));
+                }
+            }
         }
 
+        // Collect all resource references for the ResourceTemplate.
+        let mut crs_children: Vec<&dyn Aml> = Vec::new();
+        for m in &mmio_descs {
+            crs_children.push(m);
+        }
+        for p in &pio_descs {
+            crs_children.push(p);
+        }
+
+        let irq;
+        if let Some(gsiv) = self.gsiv {
+            irq = Interrupt::new(true, false, false, false, gsiv);
+            crs_children.push(&irq);
+        }
+
+        let crs = ResourceTemplate::new(crs_children);
+        let crs_name = Name::new("_CRS".into(), &crs);
+        let dev = Device::new(self.name.into(), vec![&hid, &uid, &crs_name]);
+
+        let mut bytes = Vec::new();
+        dev.to_aml_bytes(&mut bytes);
         bytes
     }
 }
@@ -90,7 +160,7 @@ pub struct AhciAcpi<'a> {
 impl AhciAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let mmio = Memory32Fixed::new(true, self.base as u32, self.size);
+        let mmio = MmioDescriptor::new(self.base, self.size as u64);
         let irq = Interrupt::new(true, false, false, false, self.gsiv);
         let crs = ResourceTemplate::new(vec![&mmio, &irq]);
 
@@ -137,7 +207,7 @@ pub struct XhciAcpi<'a> {
 impl XhciAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let mmio = Memory32Fixed::new(true, self.base as u32, self.size);
+        let mmio = MmioDescriptor::new(self.base, self.size as u64);
         let irq = Interrupt::new(true, false, false, false, self.gsiv);
         let crs = ResourceTemplate::new(vec![&mmio, &irq]);
 
@@ -233,11 +303,16 @@ mod tests {
 
     #[test]
     fn test_generic_device_aml() {
+        use fstart_types::acpi::AcpiResource;
+
+        let resources = [AcpiResource::Mmio {
+            base: 0x6001_0000,
+            size: 0x1000,
+        }];
         let dev = GenericAcpi {
             name: "DEV0",
             hid: "ACPI0007",
-            base: 0x6001_0000,
-            size: 0x1000,
+            resources: &resources,
             gsiv: Some(33),
         };
         let aml = dev.dsdt_aml();
@@ -249,17 +324,82 @@ mod tests {
 
     #[test]
     fn test_generic_device_no_irq() {
+        use fstart_types::acpi::AcpiResource;
+
+        let resources = [AcpiResource::Mmio {
+            base: 0x7000_0000,
+            size: 0x100,
+        }];
         let dev = GenericAcpi {
             name: "DEV1",
             hid: "TEST0001",
-            base: 0x7000_0000,
-            size: 0x100,
+            resources: &resources,
             gsiv: None,
         };
         let aml = dev.dsdt_aml();
         assert!(aml.len() > 10);
         assert_eq!(aml[0], 0x5B);
         assert_eq!(aml[1], 0x82);
+    }
+
+    #[test]
+    fn test_generic_device_mixed_mmio_pio() {
+        use fstart_types::acpi::AcpiResource;
+
+        let resources = [
+            AcpiResource::Mmio {
+                base: 0x6001_0000,
+                size: 0x1000,
+            },
+            AcpiResource::Pio {
+                base: 0x3F8,
+                size: 8,
+            },
+        ];
+        let dev = GenericAcpi {
+            name: "DEV2",
+            hid: "TEST0002",
+            resources: &resources,
+            gsiv: Some(4),
+        };
+        let aml = dev.dsdt_aml();
+        assert!(aml.len() > 10);
+        assert_eq!(aml[0], 0x5B);
+        assert_eq!(aml[1], 0x82);
+    }
+
+    #[test]
+    fn test_ahci_above_4g_uses_qword() {
+        let dev = AhciAcpi {
+            name: "AHC0",
+            base: 0x1_0006_0000_0000, // above 4 GiB
+            size: 0x10000,
+            gsiv: 42,
+        };
+        let aml = dev.dsdt_aml();
+        assert!(aml.len() > 10);
+        // Should contain QWordMemory descriptor tag 0x8A somewhere
+        assert!(
+            aml.windows(2).any(|w| w == [0x8A, 0x2B]),
+            "expected QWordMemory descriptor (0x8A) for above-4G address"
+        );
+    }
+
+    #[test]
+    fn test_ahci_below_4g_uses_memory32fixed() {
+        let dev = AhciAcpi {
+            name: "AHC0",
+            base: 0x6010_0000, // below 4 GiB
+            size: 0x10000,
+            gsiv: 42,
+        };
+        let aml = dev.dsdt_aml();
+        assert!(aml.len() > 10);
+        // Should contain Memory32Fixed descriptor tag 0x86
+        assert!(
+            aml.contains(&0x86),
+            "expected Memory32Fixed descriptor (0x86) for below-4G address"
+        );
     }
 
     #[test]
