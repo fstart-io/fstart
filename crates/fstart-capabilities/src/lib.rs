@@ -424,7 +424,8 @@ pub fn payload_load(anchor_data: &[u8], media: &impl BootMedia, jump_to: fn(u64)
     fstart_log::info!("payload load: loading '{}'", entry.name.as_str());
 
     // Load segments
-    let entry_addr = match load_entry_segments_from_media(media, entry, region) {
+    let image_size = effective_image_size(media.size(), &anchor);
+    let entry_addr = match load_entry_segments_from_media(media, entry, region, image_size) {
         Some(addr) => addr,
         None => return,
     };
@@ -522,7 +523,8 @@ pub fn stage_load(
     );
 
     // Load all segments to their load addresses
-    let entry_addr = match load_entry_segments_from_media(media, entry, region) {
+    let image_size = effective_image_size(media.size(), &anchor);
+    let entry_addr = match load_entry_segments_from_media(media, entry, region, image_size) {
         Some(addr) => addr,
         None => return,
     };
@@ -542,18 +544,27 @@ pub fn stage_load_stub(next_stage: &str) {
 // FFS Helpers (behind `ffs` feature)
 // ---------------------------------------------------------------------------
 
-/// Maximum signed manifest size for stack-buffered reads.
+/// Maximum signed manifest size for buffered reads from block devices.
 ///
 /// Manifests typically serialize to 1-4 KB with postcard. 8 KB provides
 /// generous headroom for boards with many files and regions.
 #[cfg(feature = "ffs")]
 const MAX_MANIFEST_SIZE: usize = 8192;
 
+/// Static buffer for manifest reads from non-memory-mapped media.
+///
+/// Placed in BSS (zero-initialized at startup) rather than on the stack
+/// to avoid consuming 8 KiB of stack space per call. Firmware boot is
+/// single-threaded so concurrent access is not a concern.
+#[cfg(feature = "ffs")]
+static MANIFEST_BUF: core::cell::SyncUnsafeCell<[u8; MAX_MANIFEST_SIZE]> =
+    core::cell::SyncUnsafeCell::new([0u8; MAX_MANIFEST_SIZE]);
+
 /// Read and verify the FFS manifest from any boot medium.
 ///
 /// For memory-mapped media, uses the existing [`FfsReader`] fast path
 /// (the `as_slice()` branch). For non-memory-mapped media, reads the
-/// signed manifest into a stack buffer and verifies it there.
+/// signed manifest into a static buffer and verifies it there.
 ///
 /// In both cases, the manifest signature is verified and the inner
 /// [`ImageManifest`](fstart_types::ffs::ImageManifest) is returned.
@@ -569,11 +580,9 @@ fn read_manifest_from_media(
         return reader.read_manifest(anchor);
     }
 
-    // Slow path: read signed manifest into a stack buffer.
-    //
-    // TODO: This allocates MAX_MANIFEST_SIZE (8 KiB) on the stack, which is
-    // ~25% of a 32 KiB bootblock stack. Consider using manifest_size instead
-    // of MAX_MANIFEST_SIZE, or document the stack budget requirement.
+    // Slow path: read signed manifest into the static buffer.
+    // Uses a static rather than a stack allocation to keep stack usage
+    // predictable for bootblocks with small stacks (e.g., 32 KiB).
     let manifest_offset = anchor.manifest_offset as usize;
     let manifest_size = anchor.manifest_size as usize;
 
@@ -581,7 +590,10 @@ fn read_manifest_from_media(
         return Err(fstart_ffs::ReaderError::OutOfBounds);
     }
 
-    let mut buf = [0u8; MAX_MANIFEST_SIZE];
+    // SAFETY: firmware boot is single-threaded; no concurrent access to
+    // MANIFEST_BUF. The buffer is only used within this function scope
+    // and the parsed manifest is returned by value (no references escape).
+    let buf = unsafe { &mut *MANIFEST_BUF.get() };
     media
         .read_at(manifest_offset, &mut buf[..manifest_size])
         .map_err(|_| fstart_ffs::ReaderError::OutOfBounds)?;
@@ -663,7 +675,8 @@ pub fn load_ffs_file_by_type(
         }
     }
 
-    load_entry_segments_from_media(media, entry, region).is_some()
+    let image_size = effective_image_size(media.size(), &anchor);
+    load_entry_segments_from_media(media, entry, region, image_size).is_some()
 }
 
 /// Find a file in FFS by its `FileType` and return a slice to its raw data.
@@ -748,17 +761,19 @@ pub fn find_ffs_file_data<'a>(
 ///   copying data directly to the load address — single copy, no intermediate
 ///   buffer.
 ///
+/// `image_size` is the effective image size (capped by the anchor's
+/// `total_image_size`). All segment source offsets are bounds-checked
+/// against this limit as defense-in-depth — even though the manifest is
+/// signature-verified, corrupt offsets would require a compromised key.
+///
 /// Returns the entry address (load_addr of the first Code segment, or
 /// load_addr of the first segment if no Code segments).
 #[cfg(feature = "ffs")]
-// TODO: segment reads use the full media.size() for bounds checking rather
-// than effective_image_size (min of media size and anchor.total_image_size).
-// The manifest is already signature-verified so corrupt offsets require a
-// compromised key, but applying the cap here would add defense-in-depth.
 fn load_entry_segments_from_media(
     media: &impl BootMedia,
     entry: &fstart_types::ffs::RegionEntry,
     region: &fstart_types::ffs::Region,
+    image_size: usize,
 ) -> Option<u64> {
     let segments = match &entry.content {
         fstart_types::ffs::EntryContent::File { segments, .. } => segments,
@@ -788,6 +803,20 @@ fn load_entry_segments_from_media(
             let src_offset = (region.offset + entry.offset + seg.offset) as usize;
             let stored_size = seg.stored_size as usize;
             let dest = seg.load_addr as *mut u8;
+
+            // Defense-in-depth: verify the segment's source data falls within
+            // the effective image size. The manifest is signature-verified so
+            // this should never trip unless the signing key is compromised.
+            if src_offset.saturating_add(stored_size) > image_size {
+                fstart_log::error!(
+                    "segment '{}' out of bounds: offset {} + size {} > image {}",
+                    seg.name.as_str(),
+                    src_offset as u32,
+                    stored_size as u32,
+                    image_size as u32,
+                );
+                return None;
+            }
 
             match seg.compression {
                 fstart_types::ffs::Compression::None => {

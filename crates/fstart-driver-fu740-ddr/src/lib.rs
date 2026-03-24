@@ -348,7 +348,7 @@ impl Device for Fu740Ddr {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         // Step 1: Write all DDR controller registers.
         self.write_ctl_regs();
 

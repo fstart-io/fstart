@@ -271,6 +271,24 @@ _start:
     eret
 
 6:
+    // FSTART_BOOT_BL31 (0xC2000002) — branch to BL31 at EL3.
+    //
+    // Called from EL1 to hand off control to TF-A BL31 at EL3.
+    // Convention:  x1 = BL31 entry address, x2 = &BlParams.
+    // The handler branches to BL31 with x0 = &BlParams (TF-A convention).
+    // BL31 initialises the secure world, GIC, and PSCI, then ERETs to
+    // the BL33 entry specified in BlParams (at EL2h or EL1h NS).
+    movz x9, #0x0002
+    movk x9, #0xC200, lsl #16 // 0xC2000002
+    cmp x0, x9
+    b.ne 7f
+    dsb sy
+    isb
+    mov x0, x2                 // x0 = &BlParams (TF-A convention)
+    br  x1                     // branch to BL31 at EL3
+    // (BL31 never returns — it ERETs to BL33)
+
+7:
     // FSTART_NS_SWITCH (0xC2000000) — switch caller to Non-Secure EL1.
     //
     // Used by CrabEFI's ExitBootServices trampoline: after all firmware

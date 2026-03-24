@@ -22,8 +22,16 @@ pub(super) fn validate_capability_ordering(
     let mut console_inited = false;
     let mut boot_media_declared = false;
 
-    // UefiPayload doesn't use FFS — it links CrabEFI statically.
-    let needs_boot_media = !is_uefi_payload(config);
+    // UefiPayload links CrabEFI statically and doesn't use FFS for the
+    // payload itself. However, when firmware (BL31) is configured, it IS
+    // loaded from FFS, so BootMedia is required in that case.
+    let uefi_has_firmware = is_uefi_payload(config)
+        && config
+            .payload
+            .as_ref()
+            .and_then(|p| p.firmware.as_ref())
+            .is_some();
+    let needs_boot_media = !is_uefi_payload(config) || uefi_has_firmware;
 
     for cap in capabilities {
         match cap {

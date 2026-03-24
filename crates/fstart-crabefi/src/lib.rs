@@ -112,6 +112,7 @@ pub unsafe fn fdt_page_aligned_size(fdt_addr: u64) -> u64 {
 /// # Panics
 ///
 /// Panics if `buf` is too small to hold all entries (12 should suffice).
+#[allow(clippy::too_many_arguments)]
 pub fn build_efi_memory_map(
     static_entries: &[MemoryRegion],
     ram_base: u64,
@@ -211,6 +212,12 @@ pub struct ArmGenericTimer {
     freq: u64,
 }
 
+impl Default for ArmGenericTimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArmGenericTimer {
     /// Create a new timer by reading `CNTFRQ_EL0`.
     pub fn new() -> Self {
@@ -266,7 +273,7 @@ pub struct PsciReset;
 
 impl crabefi::ResetHandler for PsciReset {
     fn reset(&self, reset_type: crabefi::ResetType) -> ! {
-        let function_id: u32 = match reset_type {
+        let _function_id: u32 = match reset_type {
             crabefi::ResetType::Cold | crabefi::ResetType::Warm => 0x8400_0009, // SYSTEM_RESET
             crabefi::ResetType::Shutdown => 0x8400_0008,                        // SYSTEM_OFF
             // ResetType is #[non_exhaustive]; default unknown variants to cold reset.

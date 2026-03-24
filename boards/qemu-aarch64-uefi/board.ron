@@ -2,8 +2,12 @@
 //
 // Same hardware as qemu-aarch64 but boots CrabEFI instead of Linux.
 // CrabEFI is linked as a library and called via init_platform().
-// fstart handles hardware init (console, PCI BARs, GIC) and injects
+// fstart handles hardware init (console, PCI BARs) and injects
 // drivers into CrabEFI's PlatformConfig.
+//
+// TF-A BL31 provides EL3 services (GIC init, PSCI, NS switch).
+// fstart loads BL31 from FFS early in the boot, calls it via SMC,
+// and BL31 ERETs back to fstart at EL2 NS to continue with CrabEFI.
 //
 // Memory map from QEMU hw/arm/virt.c (confirmed via coreboot):
 //   Flash:      0x0000_0000 .. 0x0800_0000 (128 MiB, two 64 MiB banks)
@@ -81,10 +85,8 @@
     stages: Monolithic((
         capabilities: [
             ConsoleInit( device: "uart0" ),
-            // TODO: replace GicInit with TF-A BL31 for EL3 management.
-            // BL31 handles GIC init, PSCI, and the NS switch -- removing
-            // the need for fstart's custom EL3 vectors.
-            GicInit,
+            // BootMedia provides FFS access for loading BL31 firmware.
+            BootMedia( MemoryMapped( base: 0x00000000, size: 0x08000000 ) ),
             MemoryInit,
             PciInit( device: "pci0" ),
             DriverInit,
@@ -108,16 +110,13 @@
 
     mode: Rigid,
 
-    // GICv3 interrupt controller (QEMU virt machine).
-    // TODO: remove once BL31 handles GIC init.
-    gic: Some((
-        dist_base:   0x08000000, // GICD
-        redist_base: 0x080A0000, // GICR
-    )),
-
     // CrabEFI UEFI payload -- linked as a library, called via init_platform().
     // fstart handles hardware init (console, PCI BARs) and injects drivers
     // into CrabEFI's PlatformConfig.
+    //
+    // TF-A BL31 provides EL3 services (GIC, PSCI).  fstart loads bl31.bin
+    // from FFS and calls boot_bl31_and_resume() before launching CrabEFI.
+    // BL31 initialises GIC/PSCI, then ERETs back to fstart at EL2 NS.
     payload: Some((
         kind: UefiPayload,
         kernel_file: None,
@@ -125,6 +124,12 @@
         fdt: Platform,
         dtb_addr: None,
         bootargs: None,
-        firmware: None,
+        firmware: Some((
+            kind: ArmTrustedFirmware,
+            file: "bl31.bin",
+            // BL31 load address: RAM below the 2 MiB data_addr offset.
+            // 0x40100000 = 1 MiB into RAM, well below data at 0x40200000.
+            load_addr: 0x40100000,
+        )),
     )),
 )

@@ -203,12 +203,17 @@ pub fn prepare_bl_params(
     bl_params.head = bl33_node as *mut BlParamsNode as u64;
 }
 
-/// Jump to ATF BL31, which then boots Linux at EL2.
+/// FSTART_BOOT_BL31 SMC function ID.
 ///
-/// BL31 entry convention:
-/// - `x0` = pointer to `BlParams`
-/// - BL31 runs at EL3, initialises secure world, then `eret`s to
-///   BL33 (Linux) at EL2 with `x0` = DTB pointer.
+/// Issues an SMC to the EL3 handler which branches to BL31 at EL3.
+/// Convention: x0 = function ID, x1 = BL31 address, x2 = &BlParams.
+const FSTART_BOOT_BL31: u64 = 0xC200_0002;
+
+/// Jump to ATF BL31 via SMC, which then boots the BL33 payload at EL2.
+///
+/// This function issues an SMC to the EL3 handler, which branches to
+/// BL31 at EL3. BL31 initialises the secure world (GIC, PSCI, etc.)
+/// then `eret`s to the BL33 entry specified in `params` at EL2.
 ///
 /// # Safety
 ///
@@ -216,23 +221,183 @@ pub fn prepare_bl_params(
 /// `params` is valid and will remain so until BL31 reads it.
 pub fn boot_linux_atf(bl31_addr: u64, params: &BlParams) -> ! {
     unsafe {
-        // Ensure all stores to the params structs (and loaded images) are
-        // complete and visible before transferring control to BL31, which
-        // may start with caches in a different state.
-        //
-        // Use explicit register constraint for x0 so the compiler places
-        // the params pointer directly — avoids clobbering `{bl31}` if the
-        // compiler happened to allocate it to x0.
+        // Flush all pending stores before handing off to BL31.
+        // SMC traps to EL3 where the handler branches to BL31.
         core::arch::asm!(
-            "dsb sy",   // complete all pending stores
-            "isb",      // synchronise the pipeline
-            "br {bl31}",
-            bl31 = in(reg) bl31_addr,
-            in("x0") params as *const BlParams as u64,
+            "dsb sy",
+            "isb",
+            "smc #0",
+            in("x0") FSTART_BOOT_BL31,
+            in("x1") bl31_addr,
+            in("x2") params as *const BlParams as u64,
             options(noreturn),
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// BL31 boot-and-resume (for UEFI / non-terminal BL31 integration)
+// ---------------------------------------------------------------------------
+
+/// Saved callee-saved register context for BL31 resume.
+///
+/// Layout: x19-x29 (11 regs), x30/LR (1 reg), SP (1 reg) = 13 × 8 = 104 bytes.
+#[repr(C, align(16))]
+struct ResumeContext {
+    regs: [u64; 13],
+}
+
+/// Static context for the BL31 resume trampoline.
+///
+/// Written by [`boot_bl31_and_resume`] before the SMC, read by the
+/// trampoline after BL31 ERETs to BL33.
+#[no_mangle]
+static mut BL31_RESUME_CTX: ResumeContext = ResumeContext { regs: [0; 13] };
+
+/// Static BL params for BL31 boot-and-resume.
+///
+/// Must be static because the SMC handler reads them after the caller's
+/// stack frame is conceptually gone (BL31 runs asynchronously from the
+/// caller's perspective).
+#[no_mangle]
+static mut BL31_RESUME_EP: EntryPointInfo = EntryPointInfo {
+    h: ParamHeader {
+        param_type: atf::PARAM_EP,
+        version: atf::VERSION_2,
+        size: core::mem::size_of::<EntryPointInfo>() as u16,
+        attr: atf::EP_NON_SECURE | atf::EP_EE_LITTLE,
+    },
+    pc: 0,
+    spsr: 0,
+    _pad: 0,
+    args: Aapcs64Params {
+        arg0: 0,
+        arg1: 0,
+        arg2: 0,
+        arg3: 0,
+        arg4: 0,
+        arg5: 0,
+        arg6: 0,
+        arg7: 0,
+    },
+};
+
+#[no_mangle]
+static mut BL31_RESUME_NODE: BlParamsNode = BlParamsNode {
+    image_id: atf::BL33_IMAGE_ID,
+    _pad: 0,
+    image_info: 0,
+    ep_info: 0,
+    next_params_info: 0,
+};
+
+#[no_mangle]
+static mut BL31_RESUME_PARAMS: BlParams = BlParams {
+    h: ParamHeader {
+        param_type: atf::PARAM_BL_PARAMS,
+        version: atf::VERSION_2,
+        size: core::mem::size_of::<BlParams>() as u16,
+        attr: 0,
+    },
+    head: 0,
+};
+
+/// Boot BL31 and resume execution after BL31 initialises.
+///
+/// This function appears to "return" from the caller's perspective,
+/// but control actually flows through BL31:
+///
+/// 1. Saves callee-saved registers (x19-x30, SP) to a static.
+/// 2. Prepares BL params with BL33 = resume trampoline.
+/// 3. Issues `SMC FSTART_BOOT_BL31` → EL3 handler → BL31 at EL3.
+/// 4. BL31 initialises GIC, PSCI, secure world.
+/// 5. BL31 ERETs to the resume trampoline at EL2h (Non-Secure).
+/// 6. Trampoline restores registers and returns to the caller.
+///
+/// After return, the caller runs at EL2 Non-Secure with a fully
+/// initialised GIC and PSCI implementation.
+pub fn boot_bl31_and_resume(bl31_addr: u64, dtb_addr: u64) {
+    extern "C" {
+        fn _bl31_resume_trampoline();
+        fn _bl31_save_and_smc(func_id: u64, bl31_addr: u64, params: u64);
+    }
+
+    // SAFETY: firmware boot is single-threaded. The statics are only
+    // written here and read by the trampoline (which runs after BL31
+    // returns control). No concurrent access.
+    unsafe {
+        // Fill BL33 entry point: target = trampoline, mode = EL2h NS
+        BL31_RESUME_EP.pc = _bl31_resume_trampoline as u64;
+        BL31_RESUME_EP.spsr = atf::spsr_el2h();
+        BL31_RESUME_EP.args.arg0 = dtb_addr;
+
+        // Link the params chain
+        BL31_RESUME_NODE.ep_info = &BL31_RESUME_EP as *const EntryPointInfo as u64;
+        BL31_RESUME_PARAMS.head = &BL31_RESUME_NODE as *const BlParamsNode as u64;
+
+        // Save callee-saved registers, SMC to BL31, resume via trampoline.
+        _bl31_save_and_smc(
+            FSTART_BOOT_BL31,
+            bl31_addr,
+            &BL31_RESUME_PARAMS as *const BlParams as u64,
+        );
+    }
+}
+
+// The save-context/SMC/trampoline is written in global_asm to avoid
+// complex inline asm clobber lists.  The trampoline is the BL33 entry
+// that BL31 ERETs to — it restores callee-saved registers and returns
+// to the caller of boot_bl31_and_resume().
+use core::arch::global_asm;
+global_asm!(
+    r#"
+    .section .text
+    .global _bl31_save_and_smc
+    .type _bl31_save_and_smc, @function
+
+    // _bl31_save_and_smc(x0=func_id, x1=bl31_addr, x2=&BlParams)
+    //
+    // Saves callee-saved registers (x19-x30, SP) to BL31_RESUME_CTX,
+    // then issues SMC FSTART_BOOT_BL31.  Control never falls through —
+    // the EL3 handler branches to BL31 which eventually ERETs to the
+    // trampoline below.
+_bl31_save_and_smc:
+    adrp x3, BL31_RESUME_CTX
+    add  x3, x3, :lo12:BL31_RESUME_CTX
+    stp x19, x20, [x3, #0]
+    stp x21, x22, [x3, #16]
+    stp x23, x24, [x3, #32]
+    stp x25, x26, [x3, #48]
+    stp x27, x28, [x3, #64]
+    stp x29, x30, [x3, #80]
+    mov x4, sp
+    str x4, [x3, #96]
+
+    dsb sy
+    isb
+    smc #0
+    // --- unreachable: EL3 handler branches to BL31 ---
+
+    // BL31 resume trampoline — BL33 entry point.
+    // BL31 ERETs here at EL2h NS after completing init.
+    // Restores callee-saved registers and returns to the caller
+    // of boot_bl31_and_resume().
+    .global _bl31_resume_trampoline
+    .type _bl31_resume_trampoline, @function
+_bl31_resume_trampoline:
+    adrp x3, BL31_RESUME_CTX
+    add  x3, x3, :lo12:BL31_RESUME_CTX
+    ldp x19, x20, [x3, #0]
+    ldp x21, x22, [x3, #16]
+    ldp x23, x24, [x3, #32]
+    ldp x25, x26, [x3, #48]
+    ldp x27, x28, [x3, #64]
+    ldp x29, x30, [x3, #80]
+    ldr x4, [x3, #96]
+    mov sp, x4
+    ret   // returns to caller of boot_bl31_and_resume via saved LR
+"#
+);
 
 // ---------------------------------------------------------------------------
 // Basic helpers
