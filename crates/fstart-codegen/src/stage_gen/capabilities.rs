@@ -226,7 +226,7 @@ pub(super) fn generate_driver_init(
     already_inited: &[String],
     boot_media_gated: &[(String, Vec<u8>)],
     platform: Platform,
-    halt: &TokenStream,
+    _halt: &TokenStream,
     mode: BuildMode,
 ) -> TokenStream {
     let mut stmts = TokenStream::new();
@@ -740,41 +740,14 @@ pub(super) fn generate_payload_load(
 /// Constructs a `PlatformConfig` from fstart's initialized drivers and calls
 /// `crabefi::init_platform()` which never returns.
 fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> TokenStream {
-    let halt = halt_expr(platform);
-
-    // Build memory map from board ROM/RAM regions at runtime.
-    //
-    // The RAM region from board.ron must be split to reserve fstart's own
-    // data/BSS/stack — otherwise CrabEFI's EFI allocator will hand those
-    // pages to UEFI applications (shim, GRUB), corrupting the firmware stack.
-    //
-    // Layout (example for qemu-aarch64):
-    //   ROM 0x00000000..0x08000000  → RuntimeServicesCode  (XIP code)
-    //   FDT (at RAM base)           → Reserved
-    //   RAM post-FDT.._data_start   → ConventionalMemory   (free for UEFI)
-    //   _data_start..+bss_reserve   → RuntimeServicesData   (statics, heap)
-    //   free RAM                    → ConventionalMemory   (free for UEFI)
-    //   stack (top of RAM)          → RuntimeServicesData   (FirmwareState)
-    //
-    // ROM is RuntimeServicesCode so the kernel maps it after ExitBootServices
-    // (CrabEFI's runtime service functions live in flash). The BSS/heap and
-    // stack regions are RuntimeServicesData because they contain the
-    // RUNTIME_SERVICES table, STATE_PTR, heap backing store, and the
-    // FirmwareState struct (which lives on the stack since init_platform()
-    // is -> ! and never returns).
+    // Collect static memory map entries (ROM, Reserved) from board config.
+    // RAM regions are split at runtime by build_efi_memory_map().
     let mut static_mem_entries = TokenStream::new();
     for region in &config.memory.regions {
         let base = hex_addr(region.base);
         let size = hex_addr(region.size);
         match region.kind {
             RegionKind::Rom => {
-                // ROM contains all XIP code (fstart + CrabEFI library).
-                // Mark as RuntimeServicesCode so the kernel maps it after
-                // ExitBootServices for runtime service calls.
-                //
-                // TODO: Currently marking the entire flash as RuntimeServicesCode.
-                // Ideally we'd only mark the .text section, but that requires
-                // a linker symbol for _text_end.
                 static_mem_entries.extend(quote! {
                     fstart_crabefi::MemoryRegion {
                         base: #base,
@@ -792,13 +765,11 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
                     },
                 });
             }
-            RegionKind::Ram => {
-                // RAM regions are split at runtime (see below).
-            }
+            RegionKind::Ram => {}
         }
     }
 
-    // Find the RAM region for splitting.
+    // RAM region from board config.
     let ram_region = config
         .memory
         .regions
@@ -811,10 +782,9 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         .map(|r| hex_addr(r.size))
         .unwrap_or_else(|| quote! { 0u64 });
 
-    // Get the firmware data region start address and stack size from stage
-    // config. On QEMU aarch64 with large RAM, the RWDATA region can be >4GB
-    // from code (at 0x0), so we use compile-time constants from the board
-    // config rather than linker symbols (ADRP limited to ±4GB).
+    // Firmware data/stack addresses from stage config.
+    // We use compile-time constants (not linker symbols) because the
+    // RWDATA region can be >4GB from code, exceeding ADRP range.
     let (fw_data_addr, fw_stack_size) = match &config.stages {
         StageLayout::Monolithic(mono) => (
             mono.data_addr.unwrap_or(mono.load_addr),
@@ -831,7 +801,7 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
     let fw_data_addr_lit = hex_addr(fw_data_addr);
     let fw_stack_size_lit = hex_addr(fw_stack_size);
 
-    // Find the console device name for the DebugOutput adapter.
+    // Console device for DebugOutput adapter.
     let console_device = config
         .devices
         .iter()
@@ -853,7 +823,7 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         quote! { debug_output: None, }
     };
 
-    // Find the PCI device for ECAM base.
+    // PCI device for ECAM base.
     let pci_device = config
         .devices
         .iter()
@@ -866,7 +836,7 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         quote! { ecam_base: None, }
     };
 
-    // Find the Framebuffer device for GOP.
+    // Framebuffer device for GOP.
     let fb_device = config
         .devices
         .iter()
@@ -901,82 +871,47 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         (quote! {}, quote! { framebuffer: None, })
     };
 
-    // QEMU AArch64 virt places the FDT at the base of RAM (0x40000000)
-    // when booting with -bios. Read it so CrabEFI can discover GIC, PCIe
-    // MMIO regions, etc.
-    let fdt_setup = if platform == Platform::Aarch64 {
-        let ram_base = config
-            .memory
-            .regions
-            .iter()
-            .find(|r| r.kind == RegionKind::Ram)
-            .map(|r| hex_addr(r.base))
-            .unwrap_or_else(|| quote! { 0u64 });
-
-        quote! {
-            // QEMU places FDT at the base of RAM. Read the totalsize field
-            // from the FDT header (big-endian u32 at offset 4) to get the
-            // full blob size.
-            let _fdt_ptr = #ram_base as *const u8;
-            let _fdt_size = unsafe {
-                u32::from_be(core::ptr::read_unaligned(_fdt_ptr.add(4) as *const u32))
-            } as usize;
-            let _fdt_blob = unsafe {
-                core::slice::from_raw_parts(_fdt_ptr, _fdt_size)
-            };
+    // FDT sourcing: use src_dtb_addr from payload config if set,
+    // otherwise use platform-provided boot_dtb_addr() (saved from x0
+    // at boot on AArch64, from a1 on RISC-V).
+    let payload = config.payload.as_ref();
+    let fdt_addr_expr = if let Some(addr) = payload.and_then(|p| p.src_dtb_addr) {
+        let addr_lit = hex_addr(addr);
+        quote! { #addr_lit }
+    } else {
+        match platform {
+            Platform::Aarch64 | Platform::Riscv64 => {
+                quote! { fstart_platform::boot_dtb_addr() }
+            }
+            Platform::Armv7 => quote! { 0u64 },
         }
-    } else {
-        quote! {}
     };
 
-    let fdt_field = if platform == Platform::Aarch64 {
-        quote! { fdt: Some(_fdt_blob), }
-    } else {
-        quote! { fdt: None, }
-    };
-
-    // On AArch64, the FDT sits at RAM base. Reserve it and emit the
-    // remaining pre-BSS RAM as ConventionalMemory. On other platforms,
-    // the whole pre-BSS RAM region is ConventionalMemory.
-    let fdt_reservation = if platform == Platform::Aarch64 {
-        quote! {
-            // Read FDT totalsize (big-endian u32 at offset 4) and round
-            // up to page boundary for the reservation.
-            let _fdt_total = unsafe {
-                u32::from_be(core::ptr::read_unaligned(
-                    (_ram_base as *const u8).add(4) as *const u32
-                ))
-            } as u64;
-            let _fdt_reserved = (_fdt_total + 0xFFF) & !0xFFF; // page-align up
-
-            // FDT region: Reserved so allocator won't hand it out
-            _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
-                base: _ram_base,
-                size: _fdt_reserved,
-                region_type: fstart_crabefi::MemoryType::Reserved,
-            };
-            _mem_idx += 1;
-
-            // Remaining RAM between FDT end and firmware BSS start
-            let _post_fdt = _ram_base + _fdt_reserved;
-            if _fw_data_start > _post_fdt {
-                _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
-                    base: _post_fdt,
-                    size: _fw_data_start - _post_fdt,
-                    region_type: fstart_crabefi::MemoryType::Ram,
+    let fdt_setup = match platform {
+        Platform::Aarch64 | Platform::Riscv64 => {
+            quote! {
+                let _fdt_addr = #fdt_addr_expr;
+                let (_fdt_blob_opt, _fdt_blob_slice) = if _fdt_addr != 0 {
+                    let ptr = _fdt_addr as *const u8;
+                    let size = unsafe {
+                        u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32))
+                    } as usize;
+                    let blob = unsafe { core::slice::from_raw_parts(ptr, size) };
+                    (true, blob)
+                } else {
+                    (false, &[] as &[u8])
                 };
-                _mem_idx += 1;
             }
         }
-    } else {
-        quote! {
-            _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
-                base: _ram_base,
-                size: _fw_data_start - _ram_base,
-                region_type: fstart_crabefi::MemoryType::Ram,
-            };
-            _mem_idx += 1;
-        }
+        Platform::Armv7 => quote! {
+            let _fdt_addr: u64 = 0;
+            let _fdt_blob_opt = false;
+            let _fdt_blob_slice: &[u8] = &[];
+        },
+    };
+
+    let fdt_field = quote! {
+        fdt: if _fdt_blob_opt { Some(_fdt_blob_slice) } else { None },
     };
 
     quote! {
@@ -986,100 +921,48 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         let _crabefi_reset = fstart_crabefi::PsciReset;
         #console_setup
 
-        // RAM region boundaries.
-        let _ram_base: u64 = #ram_base_lit;
-        let _ram_end: u64 = _ram_base + #ram_size_lit;
+        // Determine FDT address and prepare the blob.
+        #fdt_setup
 
-        // Firmware memory layout within the RWDATA region:
-        //
-        //   data_addr ──► [.data] [.bss] [heap]  ... free ...  [stack] ◄── _stack_top
-        //   0x40200000                                                    0x140000000
-        //
-        // The linker places BSS/data at data_addr and the stack at the TOP
-        // of the RWDATA region (growing downward). We must reserve BOTH ends
-        // so the EFI allocator doesn't hand out our BSS or stack to apps.
-        //
-        // We use compile-time constants (not linker symbols) because the
-        // RWDATA region can be >4GB from code, exceeding ADRP range.
-        let _fw_data_start: u64 = #fw_data_addr_lit;
-        let _fw_bss_reserve: u64 = #fw_stack_size_lit; // generous: BSS+heap < stack_size
-        let _fw_bss_end: u64 = _fw_data_start + _fw_bss_reserve;
-        let _fw_stack_size: u64 = #fw_stack_size_lit;
-        let _fw_stack_bottom: u64 = _ram_end - _fw_stack_size;
+        // FDT reservation: if an FDT is present, read its page-aligned
+        // size so build_efi_memory_map() can carve it out.
+        let _fdt_reservation = if _fdt_addr != 0 {
+            let fdt_size = unsafe {
+                fstart_crabefi::fdt_page_aligned_size(_fdt_addr)
+            };
+            Some((_fdt_addr, fdt_size))
+        } else {
+            None
+        };
 
-        // Build memory map at runtime with firmware regions carved out.
-        //
-        // Layout (AArch64 with FDT at RAM base):
-        //   ROM | FDT_reserved | RAM_post_fdt | BSS_reserved | RAM_middle | STACK_reserved
-        //
-        // Layout (other platforms):
-        //   ROM | RAM_low | BSS_reserved | RAM_middle | STACK_reserved
-        let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 12] = [
-            fstart_crabefi::MemoryRegion { base: 0, size: 0, region_type: fstart_crabefi::MemoryType::Reserved };
-            12
-        ];
-        let mut _mem_idx: usize = 0;
-
-        // Static entries (ROM, Reserved)
+        // Build the EFI memory map. The library function handles splitting
+        // the RAM region around firmware BSS/stack and the FDT.
         let _static_entries: &[fstart_crabefi::MemoryRegion] = &[
             #static_mem_entries
         ];
-        for entry in _static_entries {
-            _crabefi_mem_buf[_mem_idx] = *entry;
-            _mem_idx += 1;
-        }
 
-        // 1. RAM below firmware BSS region, with FDT carved out on AArch64.
-        //
-        // On AArch64, QEMU places the FDT at the base of RAM. We must mark
-        // that region as Reserved so the EFI allocator doesn't hand it out
-        // to applications — the FDT is installed as a configuration table
-        // and GRUB/kernel reads it to discover hardware.
-        //
-        // We read the FDT totalsize to reserve exactly the right amount,
-        // rounded up to the next page boundary.
-        if _fw_data_start > _ram_base {
-            #fdt_reservation
-        }
-
-        // 2. Firmware BSS/data/heap — RuntimeServicesData
-        //    Contains CrabEFI's static RUNTIME_SERVICES table, STATE_PTR,
-        //    fstart-alloc heap backing store, and other statics. Must be
-        //    mapped after ExitBootServices for runtime service calls.
-        _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
-            base: _fw_data_start,
-            size: _fw_bss_reserve,
-            region_type: fstart_crabefi::MemoryType::RuntimeServicesData,
-        };
-        _mem_idx += 1;
-
-        // 3. Free RAM between BSS and stack
-        if _fw_stack_bottom > _fw_bss_end {
-            _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
-                base: _fw_bss_end,
-                size: _fw_stack_bottom - _fw_bss_end,
-                region_type: fstart_crabefi::MemoryType::Ram,
+        let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 12] = [
+            fstart_crabefi::MemoryRegion {
+                base: 0, size: 0,
+                region_type: fstart_crabefi::MemoryType::Reserved,
             };
-            _mem_idx += 1;
-        }
+            12
+        ];
 
-        // 4. Firmware stack — RuntimeServicesData (top of RAM, grows downward)
-        //    Contains FirmwareState struct allocated on the stack inside
-        //    init_platform() which is -> ! (never returns). Must be mapped
-        //    after ExitBootServices so SetVirtualAddressMap can relocate
-        //    STATE_PTR and the kernel can call runtime services.
-        _crabefi_mem_buf[_mem_idx] = fstart_crabefi::MemoryRegion {
-            base: _fw_stack_bottom,
-            size: _fw_stack_size,
-            region_type: fstart_crabefi::MemoryType::RuntimeServicesData,
-        };
-        _mem_idx += 1;
+        let _mem_idx = fstart_crabefi::build_efi_memory_map(
+            _static_entries,
+            #ram_base_lit,
+            #ram_size_lit,
+            #fw_data_addr_lit,
+            #fw_stack_size_lit,   // BSS reserve (generous: BSS+heap < stack_size)
+            #fw_stack_size_lit,   // stack size
+            _fdt_reservation,
+            &mut _crabefi_mem_buf,
+        );
 
-        let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] = &_crabefi_mem_buf[.._mem_idx];
-
+        let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] =
+            &_crabefi_mem_buf[.._mem_idx];
         fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
-
-        #fdt_setup
 
         #fb_setup
 

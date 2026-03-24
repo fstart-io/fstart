@@ -64,6 +64,141 @@ impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> 
 unsafe impl<C: fstart_services::Console + ?Sized> Send for ConsoleAdapter<'_, C> {}
 
 // ---------------------------------------------------------------------------
+// EFI memory map construction
+// ---------------------------------------------------------------------------
+
+/// Read the FDT total size from a raw pointer to an FDT blob.
+///
+/// Reads the `totalsize` field (big-endian `u32` at offset 4) from the
+/// FDT header and rounds up to the next 4 KiB page boundary.
+///
+/// Returns 0 if `fdt_addr` is null (no FDT).
+///
+/// # Safety
+///
+/// `fdt_addr` must point to a valid FDT blob with at least 8 readable
+/// bytes, or be null.
+pub unsafe fn fdt_page_aligned_size(fdt_addr: u64) -> u64 {
+    if fdt_addr == 0 {
+        return 0;
+    }
+    let ptr = fdt_addr as *const u8;
+    // SAFETY: caller guarantees valid FDT at this address.
+    let total = unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32)) } as u64;
+    (total + 0xFFF) & !0xFFF // page-align up
+}
+
+/// Build the EFI memory map with firmware regions carved out of RAM.
+///
+/// Takes static entries (ROM, Reserved from board config), the RAM
+/// region, firmware data/stack locations, and an optional FDT
+/// reservation. Splits the RAM region into:
+///
+/// ```text
+/// [FDT reserved] [free RAM] [BSS/data reserved] [free RAM] [stack reserved]
+/// ```
+///
+/// - ROM is `RuntimeServicesCode` (kernel maps it after ExitBootServices
+///   for runtime service calls).
+/// - BSS/data/heap is `RuntimeServicesData` (contains CrabEFI's statics,
+///   heap backing store, RUNTIME_SERVICES table).
+/// - Stack is `RuntimeServicesData` (contains FirmwareState on the stack
+///   since `init_platform()` is `-> !`).
+/// - FDT (if present) is `Reserved` (GRUB/kernel reads it as a
+///   configuration table).
+///
+/// Returns the number of entries written to `buf`.
+///
+/// # Panics
+///
+/// Panics if `buf` is too small to hold all entries (12 should suffice).
+pub fn build_efi_memory_map(
+    static_entries: &[MemoryRegion],
+    ram_base: u64,
+    ram_size: u64,
+    fw_data_addr: u64,
+    fw_bss_reserve: u64,
+    fw_stack_size: u64,
+    fdt_reservation: Option<(u64, u64)>,
+    buf: &mut [MemoryRegion],
+) -> usize {
+    let mut idx = 0;
+
+    // 1. Copy static entries (ROM, Reserved from board config).
+    for entry in static_entries {
+        buf[idx] = *entry;
+        idx += 1;
+    }
+
+    let ram_end = ram_base + ram_size;
+    let fw_bss_end = fw_data_addr + fw_bss_reserve;
+    let fw_stack_bottom = ram_end - fw_stack_size;
+
+    // 2. RAM below firmware BSS, with optional FDT carved out.
+    if fw_data_addr > ram_base {
+        match fdt_reservation {
+            Some((fdt_addr, fdt_size)) if fdt_size > 0 => {
+                // FDT region: Reserved so allocator won't hand it out.
+                buf[idx] = MemoryRegion {
+                    base: fdt_addr,
+                    size: fdt_size,
+                    region_type: MemoryType::Reserved,
+                };
+                idx += 1;
+
+                // Free RAM between FDT end and firmware BSS start.
+                let post_fdt = fdt_addr + fdt_size;
+                if fw_data_addr > post_fdt {
+                    buf[idx] = MemoryRegion {
+                        base: post_fdt,
+                        size: fw_data_addr - post_fdt,
+                        region_type: MemoryType::Ram,
+                    };
+                    idx += 1;
+                }
+            }
+            _ => {
+                // No FDT reservation -- entire pre-BSS RAM is free.
+                buf[idx] = MemoryRegion {
+                    base: ram_base,
+                    size: fw_data_addr - ram_base,
+                    region_type: MemoryType::Ram,
+                };
+                idx += 1;
+            }
+        }
+    }
+
+    // 3. Firmware BSS/data/heap -- RuntimeServicesData.
+    buf[idx] = MemoryRegion {
+        base: fw_data_addr,
+        size: fw_bss_reserve,
+        region_type: MemoryType::RuntimeServicesData,
+    };
+    idx += 1;
+
+    // 4. Free RAM between BSS end and stack bottom.
+    if fw_stack_bottom > fw_bss_end {
+        buf[idx] = MemoryRegion {
+            base: fw_bss_end,
+            size: fw_stack_bottom - fw_bss_end,
+            region_type: MemoryType::Ram,
+        };
+        idx += 1;
+    }
+
+    // 5. Firmware stack -- RuntimeServicesData (top of RAM, grows down).
+    buf[idx] = MemoryRegion {
+        base: fw_stack_bottom,
+        size: fw_stack_size,
+        region_type: MemoryType::RuntimeServicesData,
+    };
+    idx += 1;
+
+    idx
+}
+
+// ---------------------------------------------------------------------------
 // ARM Generic Timer → CrabEFI Timer adapter
 // ---------------------------------------------------------------------------
 
