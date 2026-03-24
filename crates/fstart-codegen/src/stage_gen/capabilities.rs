@@ -710,7 +710,7 @@ pub(super) fn generate_payload_load(
     embed_anchor: bool,
 ) -> TokenStream {
     if is_uefi_payload(config) {
-        return generate_payload_load_uefi(config, platform);
+        return generate_payload_load_uefi(config, platform, embed_anchor);
     }
 
     if is_linux_boot(config) {
@@ -739,7 +739,11 @@ pub(super) fn generate_payload_load(
 ///
 /// Constructs a `PlatformConfig` from fstart's initialized drivers and calls
 /// `crabefi::init_platform()` which never returns.
-fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> TokenStream {
+fn generate_payload_load_uefi(
+    config: &BoardConfig,
+    platform: Platform,
+    _embed_anchor: bool,
+) -> TokenStream {
     // Collect static memory map entries (ROM, Reserved) from board config.
     // RAM regions are split at runtime by build_efi_memory_map().
     let mut static_mem_entries = TokenStream::new();
@@ -914,8 +918,44 @@ fn generate_payload_load_uefi(config: &BoardConfig, platform: Platform) -> Token
         fdt: if _fdt_blob_opt { Some(_fdt_blob_slice) } else { None },
     };
 
+    // Generate BL31 firmware loading when firmware is configured.
+    // This loads BL31 from FFS and calls boot_bl31_and_resume() which
+    // SMCs to EL3, runs BL31 (GIC init, PSCI, secure world setup), and
+    // resumes at EL2 NS when BL31 ERETs back to the trampoline.
+    let payload = config.payload.as_ref();
+    let bl31_boot = if let Some(fw) = payload.and_then(|p| p.firmware.as_ref()) {
+        if platform == Platform::Aarch64 && fw.kind == FirmwareKind::ArmTrustedFirmware {
+            let anchor_fw = anchor_as_bytes_expr();
+            let halt = halt_expr(platform);
+            let fw_load_addr = hex_addr(fw.load_addr);
+            quote! {
+                fstart_log::info!("loading TF-A BL31 firmware...");
+                if !fstart_capabilities::load_ffs_file_by_type(
+                    #anchor_fw,
+                    &boot_media,
+                    fstart_types::ffs::FileType::Firmware,
+                ) {
+                    fstart_log::error!("FATAL: failed to load BL31 firmware");
+                    #halt;
+                }
+                fstart_log::info!("booting BL31 (GIC, PSCI, NS switch)...");
+                fstart_platform::boot_bl31_and_resume(
+                    #fw_load_addr,
+                    fstart_platform::boot_dtb_addr(),
+                );
+                fstart_log::info!("resumed from BL31 at EL2 NS");
+            }
+        } else {
+            quote! {}
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         fstart_log::info!("Launching CrabEFI UEFI payload...");
+
+        #bl31_boot
 
         let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new();
         let _crabefi_reset = fstart_crabefi::PsciReset;

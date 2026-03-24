@@ -449,7 +449,7 @@ impl Device for Fu740Prci {
         })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         // Enable all U74 microarchitectural features.
         // CSR 0x7C1 (U74 Feature Disable): writing 0 enables everything.
         // Both coreboot and u-boot do this as the very first thing.
