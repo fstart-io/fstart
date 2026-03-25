@@ -141,30 +141,6 @@ pub(super) fn generate_dram_init(
     }
 }
 
-/// Generate code for the GicInit capability.
-///
-/// Reads the GICD and GICR base addresses from the board config's `gic`
-/// field and emits an `fstart_arch::gic_init(dist_base, redist_base)` call.
-/// This issues an SMC to the EL3 handler which configures the GICv3
-/// distributor, redistributor, and CPU interface.
-pub(super) fn generate_gic_init(config: &BoardConfig) -> TokenStream {
-    let gic = match &config.gic {
-        Some(g) => g,
-        None => {
-            return quote! {
-                compile_error!("GicInit capability requires `gic` config in board RON");
-            };
-        }
-    };
-    let dist_base = gic.dist_base;
-    let redist_base = gic.redist_base;
-    quote! {
-        fstart_log::info!("GIC init: GICD=0x{:x}, GICR=0x{:x}", #dist_base, #redist_base);
-        fstart_arch::gic_init(#dist_base, #redist_base);
-        fstart_log::info!("GIC init complete (all interrupts Group 1 Non-Secure)");
-    }
-}
-
 /// Generate code for the MemoryInit capability.
 pub(super) fn generate_memory_init() -> TokenStream {
     quote! { fstart_capabilities::memory_init(); }
@@ -226,7 +202,7 @@ pub(super) fn generate_driver_init(
     already_inited: &[String],
     boot_media_gated: &[(String, Vec<u8>)],
     platform: Platform,
-    _halt: &TokenStream,
+    halt: &TokenStream,
     mode: BuildMode,
 ) -> TokenStream {
     let mut stmts = TokenStream::new();
@@ -256,34 +232,53 @@ pub(super) fn generate_driver_init(
             .find(|(n, _)| n == name_str)
             .map(|(_, vals)| vals.as_slice());
 
+        // Framebuffer devices use an ok_var bool so the UEFI payload
+        // generator can conditionally expose GOP. All other devices halt
+        // on init failure — a broken mandatory driver is unrecoverable.
+        let is_framebuffer = dev.services.iter().any(|s| s.as_str() == "Framebuffer");
+
         match mode {
             BuildMode::Rigid => {
                 let name = format_ident!("{}", name_str);
-                let ok_var = format_ident!("_{}_ok", name_str);
-                let driver_name_str = inst.meta().name;
-                if let Some(vals) = gated_values {
-                    let val_lits: Vec<_> =
-                        vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
-                    stmts.extend(quote! {
-                        let #ok_var = if matches!(_bm, #(#val_lits)|*) {
-                            match #name.init() {
+                if is_framebuffer {
+                    let ok_var = format_ident!("_{}_ok", name_str);
+                    let driver_name_str = inst.meta().name;
+                    if let Some(vals) = gated_values {
+                        let val_lits: Vec<_> =
+                            vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
+                        stmts.extend(quote! {
+                            let #ok_var = if matches!(_bm, #(#val_lits)|*) {
+                                match #name.init() {
+                                    Ok(()) => true,
+                                    Err(_) => {
+                                        fstart_log::error!("driver init failed: {}", #driver_name_str);
+                                        false
+                                    }
+                                }
+                            } else { false };
+                        });
+                    } else {
+                        stmts.extend(quote! {
+                            let #ok_var = match #name.init() {
                                 Ok(()) => true,
                                 Err(_) => {
                                     fstart_log::error!("driver init failed: {}", #driver_name_str);
                                     false
                                 }
-                            }
-                        } else { false };
+                            };
+                        });
+                    }
+                } else if let Some(vals) = gated_values {
+                    let val_lits: Vec<_> =
+                        vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
+                    stmts.extend(quote! {
+                        if matches!(_bm, #(#val_lits)|*) {
+                            #name.init().unwrap_or_else(|_| #halt);
+                        }
                     });
                 } else {
                     stmts.extend(quote! {
-                        let #ok_var = match #name.init() {
-                            Ok(()) => true,
-                            Err(_) => {
-                                fstart_log::error!("driver init failed: {}", #driver_name_str);
-                                false
-                            }
-                        };
+                        #name.init().unwrap_or_else(|_| #halt);
                     });
                 }
             }
@@ -293,31 +288,45 @@ pub(super) fn generate_driver_init(
                 } else {
                     format_ident!("{}", name_str)
                 };
-                let ok_var = format_ident!("_{}_ok", name_str);
-                let driver_name_str = inst.meta().name;
-                if let Some(vals) = gated_values {
-                    let val_lits: Vec<_> =
-                        vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
-                    stmts.extend(quote! {
-                        let #ok_var = if matches!(_bm, #(#val_lits)|*) {
-                            match #inner.init() {
+                if is_framebuffer {
+                    let ok_var = format_ident!("_{}_ok", name_str);
+                    let driver_name_str = inst.meta().name;
+                    if let Some(vals) = gated_values {
+                        let val_lits: Vec<_> =
+                            vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
+                        stmts.extend(quote! {
+                            let #ok_var = if matches!(_bm, #(#val_lits)|*) {
+                                match #inner.init() {
+                                    Ok(()) => true,
+                                    Err(_) => {
+                                        fstart_log::error!("driver init failed: {}", #driver_name_str);
+                                        false
+                                    }
+                                }
+                            } else { false };
+                        });
+                    } else {
+                        stmts.extend(quote! {
+                            let #ok_var = match #inner.init() {
                                 Ok(()) => true,
                                 Err(_) => {
                                     fstart_log::error!("driver init failed: {}", #driver_name_str);
                                     false
                                 }
-                            }
-                        } else { false };
+                            };
+                        });
+                    }
+                } else if let Some(vals) = gated_values {
+                    let val_lits: Vec<_> =
+                        vals.iter().map(|v| Literal::u8_unsuffixed(*v)).collect();
+                    stmts.extend(quote! {
+                        if matches!(_bm, #(#val_lits)|*) {
+                            #inner.init().unwrap_or_else(|_| #halt);
+                        }
                     });
                 } else {
                     stmts.extend(quote! {
-                        let #ok_var = match #inner.init() {
-                            Ok(()) => true,
-                            Err(_) => {
-                                fstart_log::error!("driver init failed: {}", #driver_name_str);
-                                false
-                            }
-                        };
+                        #inner.init().unwrap_or_else(|_| #halt);
                     });
                 }
                 stmts.extend(generate_flexible_wrapping(dev, inst));
