@@ -35,6 +35,9 @@
 #[cfg(feature = "fdt")]
 mod fdt_patch;
 
+#[cfg(feature = "fit")]
+pub mod fit;
+
 #[cfg(feature = "handoff")]
 pub mod handoff;
 
@@ -217,6 +220,94 @@ pub fn sig_verify(anchor_data: &[u8], media: &impl BootMedia) {
 pub fn sig_verify(_anchor_data: &[u8], _media: &impl fstart_services::BootMedia) {
     fstart_log::info!("capability: SigVerify");
     fstart_log::info!("sig verify skipped (ffs feature not enabled)");
+}
+
+// ---------------------------------------------------------------------------
+// Anchor Scanning
+// ---------------------------------------------------------------------------
+
+/// Errors from anchor scanning operations.
+#[cfg(feature = "ffs")]
+#[derive(Debug)]
+pub enum AnchorScanError {
+    /// Boot media does not support `as_slice()` (not memory-mapped).
+    NotMemoryMapped,
+    /// FFS anchor magic not found in the media.
+    NotFound,
+}
+
+/// Scan memory-mapped boot media for the FFS anchor block.
+///
+/// Searches for [`FFS_MAGIC`](fstart_types::ffs::FFS_MAGIC) at 8-byte
+/// aligned offsets in the media.  Returns the anchor data as a
+/// fixed-size array on success.
+///
+/// This replaces the inline scanning code that codegen previously
+/// generated for non-first stages in memory-mapped multi-stage builds.
+///
+/// # Errors
+///
+/// - [`AnchorScanError::NotMemoryMapped`] if the media does not support
+///   `as_slice()` (block device media).
+/// - [`AnchorScanError::NotFound`] if the FFS magic is not found.
+#[cfg(feature = "ffs")]
+pub fn scan_anchor_in_media(
+    media: &impl BootMedia,
+) -> Result<[u8; fstart_types::ffs::ANCHOR_SIZE], AnchorScanError> {
+    let media_slice = media.as_slice().ok_or(AnchorScanError::NotMemoryMapped)?;
+
+    let magic = &fstart_types::ffs::FFS_MAGIC;
+    let mut offset = 0usize;
+    let mut found = false;
+    while offset + magic.len() <= media_slice.len() {
+        if &media_slice[offset..offset + magic.len()] == magic {
+            found = true;
+            break;
+        }
+        offset += 8;
+    }
+    if !found || offset + fstart_types::ffs::ANCHOR_SIZE > media_slice.len() {
+        return Err(AnchorScanError::NotFound);
+    }
+    let mut buf = [0u8; fstart_types::ffs::ANCHOR_SIZE];
+    buf.copy_from_slice(&media_slice[offset..offset + fstart_types::ffs::ANCHOR_SIZE]);
+    fstart_log::info!(
+        "FFS anchor found at offset {:#x} in boot media",
+        offset as u64
+    );
+    Ok(buf)
+}
+
+/// Read the FFS anchor from a block device at a known offset.
+///
+/// For block device media (e.g., SD/MMC), the FFS assembler patches
+/// the total FFS image size into the eGON header.  The anchor is at
+/// `ffs_total_size - ANCHOR_SIZE`.
+///
+/// This function reads the anchor at the given offset, verifies the
+/// magic bytes, and returns the anchor data.
+///
+/// # Errors
+///
+/// Returns `Err` if the read fails or the magic bytes don't match.
+#[cfg(feature = "ffs")]
+pub fn read_anchor_at_offset(
+    media: &impl BootMedia,
+    anchor_offset: usize,
+) -> Result<[u8; fstart_types::ffs::ANCHOR_SIZE], AnchorScanError> {
+    let mut buf = [0u8; fstart_types::ffs::ANCHOR_SIZE];
+    media
+        .read_at(anchor_offset, &mut buf)
+        .map_err(|_| AnchorScanError::NotFound)?;
+
+    // Verify the magic bytes are present.
+    let magic = &fstart_types::ffs::FFS_MAGIC;
+    if buf[..magic.len()] != *magic {
+        return Err(AnchorScanError::NotFound);
+    }
+
+    fstart_log::info!("FFS anchor read at offset {:#x}", anchor_offset as u64);
+    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -551,14 +642,28 @@ pub fn stage_load_stub(next_stage: &str) {
 #[cfg(feature = "ffs")]
 const MAX_MANIFEST_SIZE: usize = 8192;
 
+/// Wrapper that implements `Sync` for `UnsafeCell`, allowing it to live
+/// in a `static`.
+///
+/// This is exactly what `core::cell::SyncUnsafeCell` does, but that API
+/// is still gated behind `#![feature(sync_unsafe_cell)]`.  A two-line
+/// wrapper avoids the nightly dependency entirely.
+#[cfg(feature = "ffs")]
+#[repr(transparent)]
+struct SyncBuf(core::cell::UnsafeCell<[u8; MAX_MANIFEST_SIZE]>);
+
+// SAFETY: firmware boot is single-threaded.  The buffer is only accessed
+// inside `read_manifest_from_media`, which is never called concurrently.
+#[cfg(feature = "ffs")]
+unsafe impl Sync for SyncBuf {}
+
 /// Static buffer for manifest reads from non-memory-mapped media.
 ///
 /// Placed in BSS (zero-initialized at startup) rather than on the stack
-/// to avoid consuming 8 KiB of stack space per call. Firmware boot is
+/// to avoid consuming 8 KiB of stack space per call.  Firmware boot is
 /// single-threaded so concurrent access is not a concern.
 #[cfg(feature = "ffs")]
-static MANIFEST_BUF: core::cell::SyncUnsafeCell<[u8; MAX_MANIFEST_SIZE]> =
-    core::cell::SyncUnsafeCell::new([0u8; MAX_MANIFEST_SIZE]);
+static MANIFEST_BUF: SyncBuf = SyncBuf(core::cell::UnsafeCell::new([0u8; MAX_MANIFEST_SIZE]));
 
 /// Read and verify the FFS manifest from any boot medium.
 ///
@@ -593,7 +698,7 @@ fn read_manifest_from_media(
     // SAFETY: firmware boot is single-threaded; no concurrent access to
     // MANIFEST_BUF. The buffer is only used within this function scope
     // and the parsed manifest is returned by value (no references escape).
-    let buf = unsafe { &mut *MANIFEST_BUF.get() };
+    let buf = unsafe { &mut *MANIFEST_BUF.0.get() };
     media
         .read_at(manifest_offset, &mut buf[..manifest_size])
         .map_err(|_| fstart_ffs::ReaderError::OutOfBounds)?;
