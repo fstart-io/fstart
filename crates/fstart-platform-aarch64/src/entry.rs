@@ -96,11 +96,6 @@ _start:
     adr x0, .Lel3_vectors
     msr vbar_el3, x0
 
-    // GICv3 initialization is done later via the GicInit capability,
-    // which issues SMC FSTART_GIC_INIT (0xC2000001) with the GICD and
-    // GICR base addresses read from the board RON config.  The SMC
-    // handler below performs the full TF-A/U-Boot init sequence.
-
     isb
     eret
 
@@ -201,76 +196,6 @@ _start:
     wfi
     b .
 5:
-    // FSTART_GIC_INIT (0xC2000001) — initialize GICv3 from EL3.
-    //
-    // Called by the GicInit capability via fstart_arch::gic_init().
-    // x1 = GICD base, x2 = GICR base.
-    //
-    // Performs the full TF-A / U-Boot GICv3 init sequence:
-    //   GICD_CTLR, IGROUPR, IGRPMODR, GICR wakeup, GICR_IGROUPR0,
-    //   ICC_SRE_EL3, ICC_IGRPEN1_EL3, ICC_PMR_EL1.
-    ldr x9, =0xC2000001
-    cmp x0, x9
-    b.ne 6f
-
-    // --- Distributor (GICD) at x1 ---
-    mov w9, #0x37              // EnableGrp0|EnableGrp1NS|EnableGrp1S|ARE_S|ARE_NS
-    str w9, [x1]               // GICD_CTLR
-    dsb sy
-
-    // ITLinesNumber from GICD_TYPER
-    ldr w9, [x1, #0x4]        // GICD_TYPER
-    and w9, w9, #0x1f
-    add w9, w9, #1             // number of 32-interrupt groups
-
-    // All SPIs → Group 1 NS
-    add x10, x1, #0x84        // &GICD_IGROUPR[1]
-    add x11, x1, #0xD04       // &GICD_IGRPMODR[1]
-    mov w12, #0xFFFFFFFF
-    mov w13, #1
-.Lgic_spi_loop:
-    cmp w13, w9
-    b.ge .Lgic_spi_done
-    str w12, [x10], #4         // IGROUPR = all-1s
-    str wzr, [x11], #4         // IGRPMODR = 0
-    add w13, w13, #1
-    b .Lgic_spi_loop
-.Lgic_spi_done:
-    dsb sy
-
-    // --- Redistributor (GICR) at x2 ---
-    // Wake: clear ProcessorSleep, wait ChildrenAsleep=0
-    ldr w9, [x2, #0x14]       // GICR_WAKER
-    bic w9, w9, #(1 << 1)     // Clear ProcessorSleep
-    str w9, [x2, #0x14]
-    dsb sy
-    isb
-.Lgic_waker_wait:
-    ldr w9, [x2, #0x14]
-    tbnz w9, #2, .Lgic_waker_wait
-
-    // SGI base = GICR + 64KB
-    add x10, x2, #(1 << 16)
-    mov w9, #0xFFFFFFFF
-    str w9, [x10, #0x80]      // GICR_IGROUPR0 = all-1s
-    str wzr, [x10, #0xD00]    // GICR_IGRPMODR0 = 0
-    dsb sy
-
-    // --- CPU interface (system registers, EL3 only) ---
-    mov x9, #0xF
-    msr S3_6_C12_C12_5, x9    // ICC_SRE_EL3: SRE|DFB|DIB|Enable
-    isb
-    mov x9, #0x3
-    msr S3_6_C12_C12_7, x9    // ICC_IGRPEN1_EL3: G1NS|G1S
-    isb
-    mov x9, #0xFF
-    msr S3_0_C4_C6_0, x9      // ICC_PMR_EL1: all priorities
-    isb
-
-    mov x0, #0                 // SUCCESS
-    eret
-
-6:
     // FSTART_BOOT_BL31 (0xC2000002) — branch to BL31 at EL3.
     //
     // Called from EL1 to hand off control to TF-A BL31 at EL3.
@@ -281,14 +206,14 @@ _start:
     movz x9, #0x0002
     movk x9, #0xC200, lsl #16 // 0xC2000002
     cmp x0, x9
-    b.ne 7f
+    b.ne 6f
     dsb sy
     isb
     mov x0, x2                 // x0 = &BlParams (TF-A convention)
     br  x1                     // branch to BL31 at EL3
     // (BL31 never returns — it ERETs to BL33)
 
-7:
+6:
     // FSTART_NS_SWITCH (0xC2000000) — switch caller to Non-Secure EL1.
     //
     // Used by CrabEFI's ExitBootServices trampoline: after all firmware
@@ -524,13 +449,9 @@ extern "Rust" {
 #[repr(C, align(4096))]
 struct PageTable([u64; 512]);
 
-/// Small table for L0 (only 4 entries used, but 4KB aligned)
-#[repr(C, align(4096))]
-struct L0Table([u64; 512]);
-
 #[no_mangle]
 #[link_section = ".page_tables"]
-static mut MMU_L0_TABLE: L0Table = L0Table([0u64; 512]);
+static mut MMU_L0_TABLE: PageTable = PageTable([0u64; 512]);
 
 #[no_mangle]
 #[link_section = ".page_tables"]

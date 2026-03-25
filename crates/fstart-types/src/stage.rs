@@ -112,18 +112,6 @@ pub enum Capability {
     BootMedia(BootMedium),
     /// Verify the firmware filesystem manifest signature.
     SigVerify,
-    /// Initialize the GICv3 interrupt controller from EL3.
-    ///
-    /// Issues an SMC to the EL3 exception handler, which configures
-    /// the GIC distributor (GICD_CTLR, IGROUPR, IGRPMODR), wakes the
-    /// redistributor, and enables the system-register CPU interface
-    /// (ICC_SRE_EL3, ICC_IGRPEN1_EL3, ICC_PMR_EL1).  After this, all
-    /// interrupts are Group 1 Non-Secure delivered as IRQ to the OS.
-    ///
-    /// Reads GICD/GICR base addresses from `board.gic`.  Must appear
-    /// after `ConsoleInit` (for logging) and before any device that
-    /// uses interrupts.
-    GicInit,
     /// Initialize DRAM (memory training) — stub, no device reference.
     ///
     /// Used on platforms where DRAM is already available or QEMU-style
