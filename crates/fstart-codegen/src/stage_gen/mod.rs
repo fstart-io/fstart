@@ -43,7 +43,7 @@ use crate::ron_loader::ParsedBoard;
 use capabilities::{
     collect_boot_media_gated_devices, generate_acpi_prepare, generate_boot_media,
     generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
-    generate_fdt_prepare, generate_gic_init, generate_late_driver_init, generate_load_next_stage,
+    generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
     generate_memory_init, generate_payload_load, generate_pci_init, generate_return_to_fel,
     generate_sig_verify, generate_smbios_prepare, generate_stage_load,
 };
@@ -709,9 +709,6 @@ fn generate_fstart_main(
                 ));
                 // With embed_anchor, all FFS-using stages reference the
                 // FSTART_ANCHOR static directly — no boot-media scan needed.
-            }
-            Capability::GicInit => {
-                body.extend(generate_gic_init(config));
             }
             Capability::MemoryInit => {
                 body.extend(generate_memory_init());

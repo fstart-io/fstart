@@ -107,13 +107,8 @@ struct BarInfo {
 }
 
 /// A discovered PCI device or bridge.
-#[derive(Debug)]
 struct PciDev {
     addr: PciAddr,
-    vendor_id: u16,
-    device_id: u16,
-    class: u8,
-    subclass: u8,
     header_type: u8,
     bars: [BarInfo; 6],
     /// For bridges: secondary bus number.
@@ -298,13 +293,6 @@ impl PciEcam {
         if vendor_device == 0xFFFF_FFFF {
             return None;
         }
-        let vendor_id = vendor_device as u16;
-        let device_id = (vendor_device >> 16) as u16;
-
-        let class_rev = self.read32(addr, PCI_CLASS_REVISION);
-        let class = (class_rev >> 24) as u8;
-        let subclass = (class_rev >> 16) as u8;
-
         let hdr = self.read32(addr, PCI_HEADER_TYPE);
         let header_type = (hdr >> 16) as u8 & 0x7F;
 
@@ -334,10 +322,6 @@ impl PciEcam {
 
         Some(PciDev {
             addr,
-            vendor_id,
-            device_id,
-            class,
-            subclass,
             header_type,
             bars,
             secondary_bus: 0,
@@ -549,15 +533,17 @@ impl PciEcam {
             } else {
                 ""
             };
+            let vendor_device = self.read32(dev.addr, PCI_VENDOR_ID);
+            let class_rev = self.read32(dev.addr, PCI_CLASS_REVISION);
             fstart_log::info!(
                 "  PCI {:02x}:{:02x}.{} {:04x}:{:04x} class {:02x}{:02x}{}",
                 dev.addr.bus,
                 dev.addr.dev,
                 dev.addr.func,
-                dev.vendor_id,
-                dev.device_id,
-                dev.class,
-                dev.subclass,
+                vendor_device as u16,
+                (vendor_device >> 16) as u16,
+                (class_rev >> 24) as u8,
+                (class_rev >> 16) as u8,
                 kind,
             );
 

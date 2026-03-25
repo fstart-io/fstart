@@ -69,7 +69,6 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
         acpi: None,
         smbios: None,
         boot_hart_id: 0,
-        gic: None,
     };
 
     let device_tree = vec![DeviceNode {
@@ -436,7 +435,6 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
         acpi: None,
         smbios: None,
         boot_hart_id: 0,
-        gic: None,
     };
 
     let device_tree = vec![
@@ -872,7 +870,6 @@ fn test_flexible_multi_driver_parsed_board(
         acpi: None,
         smbios: None,
         boot_hart_id: 0,
-        gic: None,
     };
 
     let device_tree = vec![
@@ -1230,7 +1227,6 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         acpi: None,
         smbios: None,
         boot_hart_id: 0,
-        gic: None,
     };
 
     let device_tree = vec![DeviceNode {

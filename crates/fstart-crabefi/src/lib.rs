@@ -14,7 +14,6 @@ use core::fmt;
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type PlatformConfig<'a> = crabefi::PlatformConfig<'a>;
-pub type RuntimeRegion = crabefi::RuntimeRegion;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
 
 /// Call `crabefi::init_platform()`. This is the entry point that never returns.
@@ -50,6 +49,8 @@ impl<C: fstart_services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapt
     }
 }
 
+// `crabefi::DebugOutput` has `core::fmt::Write` as a supertrait,
+// so this impl is required — not optional.
 impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
