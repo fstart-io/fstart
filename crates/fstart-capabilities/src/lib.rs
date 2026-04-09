@@ -53,26 +53,34 @@ pub mod acpi;
 // FDT blob utilities
 // ---------------------------------------------------------------------------
 
+/// FDT magic number (big-endian `0xD00DFEED`).
+const FDT_MAGIC: u32 = 0xD00D_FEED;
+
 /// Read an FDT (Flattened Device Tree) blob from a raw memory address.
 ///
-/// Reads the `totalsize` field at offset +4 of the FDT header (big-endian
-/// u32) and returns a static slice covering the entire blob. Returns `None`
-/// if `addr` is zero.
+/// Validates the FDT magic at offset +0 (`0xD00DFEED`), reads the
+/// `totalsize` field at offset +4, and returns a static slice covering
+/// the entire blob. Returns `None` if `addr` is zero or magic is wrong.
 ///
 /// Used by the UEFI payload path to obtain the platform-provided FDT blob
 /// for passing to CrabEFI.
 ///
 /// # Safety
 ///
-/// Caller must ensure `addr` points to a valid, readable FDT blob in
-/// memory. The FDT header must be intact (magic + totalsize). The returned
-/// slice borrows the memory at `addr` with `'static` lifetime — the FDT
-/// must remain valid (e.g., in DRAM) for the program's duration.
+/// Caller must ensure `addr` points to at least 8 readable bytes in
+/// memory. If the magic validates, the full `totalsize` bytes starting
+/// at `addr` must be readable. The returned slice borrows the memory at
+/// `addr` with `'static` lifetime -- the FDT must remain valid (e.g.,
+/// in DRAM) for the program's duration.
 pub unsafe fn fdt_blob_from_addr(addr: u64) -> Option<&'static [u8]> {
     if addr == 0 {
         return None;
     }
     let ptr = addr as *const u8;
+    let magic = u32::from_be(core::ptr::read_unaligned(ptr as *const u32));
+    if magic != FDT_MAGIC {
+        return None;
+    }
     let size = u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32)) as usize;
     Some(core::slice::from_raw_parts(ptr, size))
 }
@@ -292,26 +300,25 @@ pub fn scan_anchor_in_media(
 ) -> Result<[u8; fstart_types::ffs::ANCHOR_SIZE], AnchorScanError> {
     let media_slice = media.as_slice().ok_or(AnchorScanError::NotMemoryMapped)?;
 
+    // Linear scan at 8-byte alignment. The anchor is typically near
+    // the end of the FFS image, but the image offset within the media
+    // is unknown to non-first stages, so we scan from the start.
+    // For memory-mapped flash this is cache-friendly sequential reads.
     let magic = &fstart_types::ffs::FFS_MAGIC;
     let mut offset = 0usize;
-    let mut found = false;
-    while offset + magic.len() <= media_slice.len() {
+    while offset + fstart_types::ffs::ANCHOR_SIZE <= media_slice.len() {
         if &media_slice[offset..offset + magic.len()] == magic {
-            found = true;
-            break;
+            let mut buf = [0u8; fstart_types::ffs::ANCHOR_SIZE];
+            buf.copy_from_slice(&media_slice[offset..offset + fstart_types::ffs::ANCHOR_SIZE]);
+            fstart_log::info!(
+                "FFS anchor found at offset {:#x} in boot media",
+                offset as u64
+            );
+            return Ok(buf);
         }
         offset += 8;
     }
-    if !found || offset + fstart_types::ffs::ANCHOR_SIZE > media_slice.len() {
-        return Err(AnchorScanError::NotFound);
-    }
-    let mut buf = [0u8; fstart_types::ffs::ANCHOR_SIZE];
-    buf.copy_from_slice(&media_slice[offset..offset + fstart_types::ffs::ANCHOR_SIZE]);
-    fstart_log::info!(
-        "FFS anchor found at offset {:#x} in boot media",
-        offset as u64
-    );
-    Ok(buf)
+    Err(AnchorScanError::NotFound)
 }
 
 /// Read the FFS anchor from a block device at a known offset.

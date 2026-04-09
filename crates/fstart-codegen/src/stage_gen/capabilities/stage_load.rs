@@ -154,6 +154,18 @@ pub(in crate::stage_gen) fn generate_load_next_stage(
         }
     };
 
+    // Common tail: serialize handoff and jump.
+    let jump_tail = quote! {
+        fstart_capabilities::next_stage::serialize_handoff(
+            #dram_size_expr, #handoff_addr,
+        ).unwrap_or_else(|_| {
+            fstart_log::error!("FATAL: handoff serialize failed");
+            #halt;
+        });
+        fstart_log::info!("jumping to stage '{}' at {:#x}", #next_stage, #load_addr as u64);
+        fstart_platform::jump_to_with_handoff(#load_addr, #handoff_addr as usize);
+    };
+
     if load_devices.len() == 1 {
         // Single device -- no auto-detection needed.
         let ld = &load_devices[0];
@@ -166,12 +178,12 @@ pub(in crate::stage_gen) fn generate_load_next_stage(
             let dev_offset = #base_off + ns_ffs_offset;
             fstart_capabilities::next_stage::read_stage_to_addr(
                 &#dev_ident, #dev_name_str, #next_stage,
-                dev_offset, #load_addr, ns_size, fstart_arch::halt,
-            );
-            fstart_capabilities::next_stage::write_handoff_and_jump(
-                #dram_size_expr, #handoff_addr, #load_addr, #next_stage,
-                fstart_platform::jump_to_with_handoff, fstart_arch::halt,
-            );
+                dev_offset, #load_addr, ns_size,
+            ).unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: failed to read stage from {}", #dev_name_str);
+                #halt;
+            });
+            #jump_tail
         };
     }
 
@@ -191,12 +203,12 @@ pub(in crate::stage_gen) fn generate_load_next_stage(
                     let dev_offset = #base_off + ns_ffs_offset;
                     fstart_capabilities::next_stage::read_stage_to_addr(
                         &#dev_ident, #dev_name_str, #next_stage,
-                        dev_offset, #load_addr, ns_size, fstart_arch::halt,
-                    );
-                    fstart_capabilities::next_stage::write_handoff_and_jump(
-                        #dram_size_expr, #handoff_addr, #load_addr, #next_stage,
-                        fstart_platform::jump_to_with_handoff, fstart_arch::halt,
-                    );
+                        dev_offset, #load_addr, ns_size,
+                    ).unwrap_or_else(|_| {
+                        fstart_log::error!("FATAL: failed to read stage from {}", #dev_name_str);
+                        #halt;
+                    });
+                    #jump_tail
                 }
             });
         }

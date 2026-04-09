@@ -5,12 +5,12 @@
 //! handles SoC-specific header parsing (eGON offsets) and multi-device
 //! match dispatch, but calls these functions for the actual work.
 
-use fstart_services::BlockDevice;
+use fstart_services::{BlockDevice, ServiceError};
 
 /// Read a firmware stage from a block device directly to its load address.
 ///
 /// Performs a single block device read of `size` bytes from `offset`
-/// into `load_addr`. On failure, logs an error and calls `halt`.
+/// into `load_addr`. Returns the number of bytes read on success.
 ///
 /// # Safety
 ///
@@ -24,8 +24,7 @@ pub fn read_stage_to_addr(
     offset: u64,
     load_addr: u64,
     size: usize,
-    halt: fn() -> !,
-) {
+) -> Result<usize, ServiceError> {
     fstart_log::info!(
         "loading stage '{}' from {}: offset={:#x}, size={:#x}, dest={:#x}",
         next_stage,
@@ -36,17 +35,13 @@ pub fn read_stage_to_addr(
     );
     // SAFETY: load_addr points to writable RAM per board config.
     let dest_buf = unsafe { core::slice::from_raw_parts_mut(load_addr as *mut u8, size) };
-    dev.read(offset, dest_buf).unwrap_or_else(|_| {
-        fstart_log::error!("FATAL: failed to read stage from {}", dev_name);
-        halt()
-    });
+    dev.read(offset, dest_buf)
 }
 
-/// Serialize handoff data and jump to the next stage.
+/// Serialize handoff data to a DRAM buffer for the next stage.
 ///
 /// Writes a [`StageHandoff`](fstart_types::handoff::StageHandoff) to
-/// `handoff_addr`, logs the jump, and transfers control via `jump_fn`.
-/// Never returns.
+/// `handoff_addr` and returns the number of bytes written.
 ///
 /// # Safety
 ///
@@ -54,15 +49,13 @@ pub fn read_stage_to_addr(
 /// least [`HANDOFF_MAX_SIZE`](fstart_types::handoff::HANDOFF_MAX_SIZE)
 /// bytes. This is guaranteed by placing the handoff buffer at a known
 /// offset below the next stage's load address.
+///
+/// # Errors
+///
+/// Returns `Err` if postcard serialization fails (buffer too small or
+/// encoding error).
 #[cfg(feature = "handoff")]
-pub fn write_handoff_and_jump(
-    dram_size: u64,
-    handoff_addr: u64,
-    load_addr: u64,
-    next_stage: &str,
-    jump_fn: fn(u64, usize) -> !,
-    halt: fn() -> !,
-) -> ! {
+pub fn serialize_handoff(dram_size: u64, handoff_addr: u64) -> Result<usize, &'static str> {
     let handoff_data = fstart_types::handoff::StageHandoff::new(dram_size);
     // SAFETY: handoff_addr points to writable RAM, 4K below next stage load_addr.
     let handoff_buf = unsafe {
@@ -71,11 +64,7 @@ pub fn write_handoff_and_jump(
             fstart_types::handoff::HANDOFF_MAX_SIZE,
         )
     };
-    let handoff_len = crate::handoff::serialize(&handoff_data, handoff_buf).unwrap_or_else(|_| {
-        fstart_log::error!("FATAL: handoff serialize failed");
-        halt()
-    });
+    let handoff_len = crate::handoff::serialize(&handoff_data, handoff_buf)?;
     fstart_log::info!("handoff: {} bytes at {:#x}", handoff_len, handoff_addr);
-    fstart_log::info!("jumping to stage '{}' at {:#x}", next_stage, load_addr);
-    jump_fn(load_addr, handoff_addr as usize)
+    Ok(handoff_len)
 }

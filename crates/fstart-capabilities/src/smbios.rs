@@ -115,7 +115,10 @@ pub struct MemoryDeviceDesc<'a> {
 pub fn prepare(desc: &SmbiosDesc) {
     fstart_log::info!("capability: SmBiosPrepare");
 
-    const BUF_SIZE: usize = 64 * 1024;
+    // 64 KiB table area + 32 bytes entry point header.
+    // `assemble_and_write` writes ENTRY_POINT_SIZE bytes at `table_addr`
+    // then up to MAX_TABLE_AREA bytes starting at `table_addr + 24`.
+    const BUF_SIZE: usize = 64 * 1024 + 32;
     let smbios_buf = vec![0u8; BUF_SIZE];
     let smbios_addr = smbios_buf.as_ptr() as u64;
     // Keep the buffer alive -- tables must persist for the OS.
