@@ -69,7 +69,8 @@ fn validate_item(item: &DslItem) -> Result<()> {
         DslItem::Store { .. }
         | DslItem::ShiftLeft { .. }
         | DslItem::Subtract { .. }
-        | DslItem::Add { .. } => {}
+        | DslItem::Add { .. }
+        | DslItem::RawExpr { .. } => {}
     }
     Ok(())
 }

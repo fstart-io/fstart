@@ -454,7 +454,9 @@ version = "0.1.0"
 dependencies = [
  "acpi_tables",
  "fstart-acpi-macros",
+ "fstart-mmio",
  "fstart-types",
+ "tock-registers",
 ]
 
 [[package]]
