@@ -14,3 +14,7 @@ x86 = []
 acpi_tables = "0.2"
 fstart-types = { path = "../fstart-types" }
 fstart-acpi-macros = { path = "../fstart-acpi-macros" }
+tock-registers = { workspace = true }
+
+[dev-dependencies]
+fstart-mmio = { path = "../fstart-mmio" }

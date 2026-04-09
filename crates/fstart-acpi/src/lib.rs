@@ -48,6 +48,7 @@ pub mod platform;
 pub mod sbsa;
 pub mod sink;
 pub mod spcr;
+pub mod tock_bridge;
 
 // Re-export commonly used types from acpi_tables.
 pub use acpi_tables::aml;

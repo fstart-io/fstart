@@ -127,6 +127,13 @@ fn emit_item(item: &DslItem, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
         } => emit_binary_op("ShiftLeft", target, value, count, gen),
         DslItem::Subtract { target, a, b, .. } => emit_binary_op("Subtract", target, a, b, gen),
         DslItem::Add { target, a, b, .. } => emit_binary_op("Add", target, a, b, gen),
+        DslItem::RawExpr { expr } => {
+            let var = gen.next("raw");
+            let bindings = quote! {
+                let #var = #expr;
+            };
+            (bindings, var)
+        }
     }
 }
 
