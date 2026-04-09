@@ -12,10 +12,6 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use acpi_tables::aml::{
-    AddressSpace, AddressSpaceCacheable, Device, EISAName, Interrupt, Memory32Fixed, Method, Name,
-    ResourceTemplate,
-};
 use acpi_tables::fadt::{FADTBuilder, Flags, PmProfile, FADT};
 use acpi_tables::madt::{
     EnabledStatus, GicIts, GicVersion, Gicc, Gicd, Gicr, LocalInterruptController, MADT,
@@ -353,22 +349,20 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     };
 
     // --- AHC0: AHCI ---
-    let ahci_irq = Interrupt::new(true, false, false, false, config.ahci_gsiv);
-    let ahci_mmio = Memory32Fixed::new(true, config.ahci_base as u32, 0x10000);
-    let ahci_crs = ResourceTemplate::new(vec![&ahci_mmio, &ahci_irq]);
-    let ahci_hid_val: &'static str = "LNRO0015";
-    let ahci_hid = Name::new("_HID".into(), &ahci_hid_val);
-    let ahci_uid = Name::new("_UID".into(), &0u32);
-    let ahci_cls = Name::new(
-        "_CLS".into(),
-        &acpi_tables::aml::Package::new(vec![&0x01u8, &0x06u8, &0x01u8]),
-    );
-    let ahci_cca = Name::new("_CCA".into(), &1u32);
-    let ahci_crs_name = Name::new("_CRS".into(), &ahci_crs);
-    let ahci_dev = Device::new(
-        "AHC0".into(),
-        vec![&ahci_hid, &ahci_uid, &ahci_cls, &ahci_cca, &ahci_crs_name],
-    );
+    let ahci_base = config.ahci_base as u32;
+    let ahci_gsiv = config.ahci_gsiv;
+    let ahci_aml = fstart_acpi_macros::acpi_dsl! {
+        device("AHC0") {
+            name("_HID", "LNRO0015");
+            name("_UID", 0u32);
+            name("_CCA", 1u32);
+            name("_CLS", package(0x01u8, 0x06u8, 0x01u8));
+            name("_CRS", resource_template {
+                memory_32_fixed(ReadWrite, #{ahci_base}, 0x10000u32);
+                interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{ahci_gsiv});
+            });
+        }
+    };
 
     // --- USB0: xHCI ---
     let xhci_base = config.xhci_base;
@@ -386,57 +380,28 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     };
 
     // --- PCI0: PCIe Root Complex ---
-    let pci_hid = Name::new("_HID".into(), &EISAName::new("PNP0A08"));
-    let pci_cid = Name::new("_CID".into(), &EISAName::new("PNP0A03"));
-    let pci_seg = Name::new("_SEG".into(), &0u32);
-    let pci_bbn = Name::new("_BBN".into(), &0u32);
-    let pci_uid_val: &'static str = "PCI0";
-    let pci_uid = Name::new("_UID".into(), &pci_uid_val);
-    let pci_cca = Name::new("_CCA".into(), &1u32);
-
-    // _CRS: Bus range + MMIO windows.
-    let bus_range = AddressSpace::<u16>::new_bus_number(0, 0xFF);
-    let mmio32 = AddressSpace::<u32>::new_memory(
-        AddressSpaceCacheable::NotCacheable,
-        true,
-        config.pcie_mmio32_base,
-        config.pcie_mmio32_end,
-        None,
-    );
-    let mmio64 = AddressSpace::<u64>::new_memory(
-        AddressSpaceCacheable::NotCacheable,
-        true,
-        config.pcie_mmio64_base,
-        config.pcie_mmio64_end,
-        None,
-    );
-    let pci_crs = ResourceTemplate::new(vec![&bus_range, &mmio32, &mmio64]);
-    let pci_crs_name = Name::new("_CRS".into(), &pci_crs);
-
-    // Simplified _OSC method: accept all OS-requested control.
-    // Returns Arg3 (capability buffer) unchanged.
-    let osc_ret = acpi_tables::aml::Return::new(&acpi_tables::aml::Arg(3));
-    let osc_method = Method::new("_OSC".into(), 4, false, vec![&osc_ret]);
-
-    let pci_dev = Device::new(
-        "PCI0".into(),
-        vec![
-            &pci_hid,
-            &pci_cid,
-            &pci_seg,
-            &pci_bbn,
-            &pci_uid,
-            &pci_cca,
-            &pci_crs_name,
-            &osc_method,
-        ],
-    );
-
-    // Serialize remaining builder-constructed devices to raw bytes.
-    let mut ahci_aml = Vec::new();
-    ahci_dev.to_aml_bytes(&mut ahci_aml);
-    let mut pci_aml = Vec::new();
-    pci_dev.to_aml_bytes(&mut pci_aml);
+    let mmio32_base = config.pcie_mmio32_base;
+    let mmio32_end = config.pcie_mmio32_end;
+    let mmio64_base = config.pcie_mmio64_base;
+    let mmio64_end = config.pcie_mmio64_end;
+    let pci_aml = fstart_acpi_macros::acpi_dsl! {
+        device("PCI0") {
+            name("_HID", eisa_id("PNP0A08"));
+            name("_CID", eisa_id("PNP0A03"));
+            name("_SEG", 0u32);
+            name("_BBN", 0u32);
+            name("_UID", "PCI0");
+            name("_CCA", 1u32);
+            name("_CRS", resource_template {
+                word_bus_number(0u16, 0xFFu16);
+                dword_memory(NotCacheable, ReadWrite, #{mmio32_base}, #{mmio32_end});
+                qword_memory(NotCacheable, ReadWrite, #{mmio64_base}, #{mmio64_end});
+            });
+            method("_OSC", 4, NotSerialized) {
+                ret(#{acpi_tables::aml::Arg(3)});
+            }
+        }
+    };
 
     // Combine all device AML bytes and wrap in \_SB scope.
     let mut all_device_aml = Vec::new();
