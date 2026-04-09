@@ -93,6 +93,31 @@ pub enum ResourceDesc {
         exclusive: bool,
         irq: DslValue,
     },
+    /// WordBusNumber -- PCI bus number range.
+    WordBusNumber { start: DslValue, end: DslValue },
+    /// DWordMemory -- 32-bit MMIO address range.
+    DWordMemory {
+        cacheable: CacheableKind,
+        read_write: bool,
+        base: DslValue,
+        end: DslValue,
+    },
+    /// QWordMemory -- 64-bit MMIO address range.
+    QWordMemory {
+        cacheable: CacheableKind,
+        read_write: bool,
+        base: DslValue,
+        end: DslValue,
+    },
+}
+
+/// AddressSpace cacheability attribute.
+#[derive(Debug, Clone, Copy)]
+pub enum CacheableKind {
+    NotCacheable,
+    Cacheable,
+    WriteCombining,
+    Prefetchable,
 }
 
 /// Parse the top-level DSL input.
@@ -437,9 +462,13 @@ impl Parser {
         match tt {
             TokenTree::Ident(i) if *i == "memory_32_fixed" => self.parse_memory_32_fixed(),
             TokenTree::Ident(i) if *i == "interrupt" => self.parse_interrupt(),
+            TokenTree::Ident(i) if *i == "word_bus_number" => self.parse_word_bus_number(),
+            TokenTree::Ident(i) if *i == "dword_memory" => self.parse_dword_memory(),
+            TokenTree::Ident(i) if *i == "qword_memory" => self.parse_qword_memory(),
             other => Err(Error::new(
                 other.span(),
-                "expected `memory_32_fixed` or `interrupt`",
+                "expected resource descriptor (memory_32_fixed, interrupt, \
+                 word_bus_number, dword_memory, qword_memory)",
             )),
         }
     }
@@ -551,6 +580,87 @@ impl Parser {
             exclusive,
             irq,
         })
+    }
+
+    /// `word_bus_number(start, end);`
+    fn parse_word_bus_number(&mut self) -> Result<ResourceDesc> {
+        self.expect_ident("word_bus_number")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let start = p.parse_value();
+        p.expect_punct(',')?;
+        let end = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(ResourceDesc::WordBusNumber { start, end })
+    }
+
+    /// `dword_memory(Cacheable, ReadWrite, base, end);`
+    fn parse_dword_memory(&mut self) -> Result<ResourceDesc> {
+        self.expect_ident("dword_memory")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let cacheable = p.parse_cacheable()?;
+        p.expect_punct(',')?;
+        let read_write = p.parse_read_write()?;
+        p.expect_punct(',')?;
+        let base = p.parse_value();
+        p.expect_punct(',')?;
+        let end = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(ResourceDesc::DWordMemory {
+            cacheable,
+            read_write,
+            base,
+            end,
+        })
+    }
+
+    /// `qword_memory(Cacheable, ReadWrite, base, end);`
+    fn parse_qword_memory(&mut self) -> Result<ResourceDesc> {
+        self.expect_ident("qword_memory")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let cacheable = p.parse_cacheable()?;
+        p.expect_punct(',')?;
+        let read_write = p.parse_read_write()?;
+        p.expect_punct(',')?;
+        let base = p.parse_value();
+        p.expect_punct(',')?;
+        let end = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(ResourceDesc::QWordMemory {
+            cacheable,
+            read_write,
+            base,
+            end,
+        })
+    }
+
+    fn parse_cacheable(&mut self) -> Result<CacheableKind> {
+        let tt = self
+            .advance()
+            .ok_or_else(|| Error::new(self.span(), "expected cacheability"))?;
+        match &tt {
+            TokenTree::Ident(i) if *i == "NotCacheable" => Ok(CacheableKind::NotCacheable),
+            TokenTree::Ident(i) if *i == "Cacheable" => Ok(CacheableKind::Cacheable),
+            TokenTree::Ident(i) if *i == "WriteCombining" => Ok(CacheableKind::WriteCombining),
+            TokenTree::Ident(i) if *i == "Prefetchable" => Ok(CacheableKind::Prefetchable),
+            _ => Err(Error::new(
+                tt.span(),
+                "expected NotCacheable, Cacheable, WriteCombining, or Prefetchable",
+            )),
+        }
+    }
+
+    fn parse_read_write(&mut self) -> Result<bool> {
+        let tt = self
+            .advance()
+            .ok_or_else(|| Error::new(self.span(), "expected ReadWrite or ReadOnly"))?;
+        match &tt {
+            TokenTree::Ident(i) if *i == "ReadWrite" => Ok(true),
+            TokenTree::Ident(i) if *i == "ReadOnly" => Ok(false),
+            _ => Err(Error::new(tt.span(), "expected `ReadWrite` or `ReadOnly`")),
+        }
     }
 
     fn parse_interpolation(&mut self) -> Result<DslValue> {

@@ -11,7 +11,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::parse::{DslItem, DslValue, NameOrInterp, ResourceDesc};
+use crate::parse::{CacheableKind, DslItem, DslValue, NameOrInterp, ResourceDesc};
 
 /// Counter for unique variable names within a macro invocation.
 struct VarGen {
@@ -361,6 +361,87 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
                 );
             });
             (bindings, var)
+        }
+        ResourceDesc::WordBusNumber { start, end } => {
+            let mut bindings = TokenStream::new();
+            let (s_bind, s_var) = emit_value(start, gen);
+            let (e_bind, e_var) = emit_value(end, gen);
+            bindings.extend(s_bind);
+            bindings.extend(e_bind);
+
+            let var = gen.next("bus");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::aml::AddressSpace::<u16>::new_bus_number(
+                    #s_var as u16,
+                    #e_var as u16,
+                );
+            });
+            (bindings, var)
+        }
+        ResourceDesc::DWordMemory {
+            cacheable,
+            read_write,
+            base,
+            end,
+        } => {
+            let mut bindings = TokenStream::new();
+            let (b_bind, b_var) = emit_value(base, gen);
+            let (e_bind, e_var) = emit_value(end, gen);
+            bindings.extend(b_bind);
+            bindings.extend(e_bind);
+
+            let cache_tok = emit_cacheable(*cacheable);
+            let var = gen.next("dw");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::aml::AddressSpace::<u32>::new_memory(
+                    #cache_tok,
+                    #read_write,
+                    #b_var as u32,
+                    #e_var as u32,
+                    None,
+                );
+            });
+            (bindings, var)
+        }
+        ResourceDesc::QWordMemory {
+            cacheable,
+            read_write,
+            base,
+            end,
+        } => {
+            let mut bindings = TokenStream::new();
+            let (b_bind, b_var) = emit_value(base, gen);
+            let (e_bind, e_var) = emit_value(end, gen);
+            bindings.extend(b_bind);
+            bindings.extend(e_bind);
+
+            let cache_tok = emit_cacheable(*cacheable);
+            let var = gen.next("qw");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::aml::AddressSpace::<u64>::new_memory(
+                    #cache_tok,
+                    #read_write,
+                    #b_var as u64,
+                    #e_var as u64,
+                    None,
+                );
+            });
+            (bindings, var)
+        }
+    }
+}
+
+fn emit_cacheable(kind: CacheableKind) -> TokenStream {
+    match kind {
+        CacheableKind::NotCacheable => {
+            quote! { fstart_acpi::aml::AddressSpaceCacheable::NotCacheable }
+        }
+        CacheableKind::Cacheable => quote! { fstart_acpi::aml::AddressSpaceCacheable::Cacheable },
+        CacheableKind::WriteCombining => {
+            quote! { fstart_acpi::aml::AddressSpaceCacheable::WriteCombining }
+        }
+        CacheableKind::Prefetchable => {
+            quote! { fstart_acpi::aml::AddressSpaceCacheable::Prefetchable }
         }
     }
 }
