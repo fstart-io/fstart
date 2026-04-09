@@ -1,0 +1,128 @@
+// Board definition for QEMU RISC-V 64 virt machine -- CrabEFI UEFI payload.
+//
+// Two-stage boot:
+//   Stage 0 (bootblock): XIP from flash in M-mode.
+//     - Init UART, PCI (enumerate + allocate BARs)
+//     - Load OpenSBI + stage 1 from FFS
+//     - Boot OpenSBI with next_addr = stage 1
+//
+//   Stage 1 (uefi): Loaded to RAM, entered by OpenSBI in S-mode.
+//     - Fresh stack/BSS — no stack corruption from mode transition
+//     - Init UART (fresh struct from config), call CrabEFI
+//
+// OpenSBI provides M-mode services (SBI timer, reset, IPI).
+//
+// Memory map from QEMU hw/riscv/virt.c:
+//   MROM:   0x0000_1000 .. 0x0000_FFFF (reset trampoline, jumps to flash)
+//   Flash:  0x2000_0000 .. 0x2400_0000 (64 MiB, two 32 MiB banks)
+//   UART:   0x1000_0000 (NS16550A, 256 B)
+//   RAM:    0x8000_0000 onwards
+
+(
+    name: "qemu-riscv64-uefi",
+    platform: Riscv64,
+
+    memory: (
+        regions: [
+            ( name: "flash", base: 0x20000000, size: 0x02000000, kind: Rom ),
+            ( name: "ram",   base: 0x80000000, size: 0x80000000, kind: Ram ),
+        ],
+        flash_base: Some(0x20000000),
+        flash_size: Some(0x02000000),
+    ),
+
+    devices: [
+        (
+            name: "uart0",
+            driver: Ns16550((
+                base_addr: 0x10000000,
+                clock_freq: 3686400,
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
+        ),
+        // PCIe host bridge — ECAM at 0x30000000 (from QEMU virt FDT).
+        // Stage 0 enumerates the bus, sizes BARs, allocates MMIO addresses,
+        // and programs hardware.  CrabEFI (stage 1) receives ecam_base via
+        // PlatformConfig for its own config-space reads.
+        (
+            name: "pci0",
+            driver: PciEcam((
+                ecam_base:  0x30000000,
+                ecam_size:  0x10000000,
+                mmio32_base: 0x40000000,
+                mmio32_size: 0x40000000,
+                mmio64_base: 0x400000000,
+                mmio64_size: 0x400000000,
+                pio_base:   0x3000000,
+                pio_size:   0x10000,
+                bus_start: 0,
+                bus_end: 255,
+            )),
+            services: ["PciRootBus"],
+        ),
+    ],
+
+    stages: MultiStage([
+        // Stage 0: M-mode hardware init + OpenSBI boot.
+        // XIP from flash. Inits UART/PCI, loads OpenSBI + stage 1, boots
+        // OpenSBI which mrets to stage 1 in S-mode.
+        (
+            name: "bootblock",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                BootMedia( MemoryMapped( base: 0x20000000, size: 0x02000000 ) ),
+                MemoryInit,
+                PciInit( device: "pci0" ),
+                SigVerify,
+                FirmwareBoot( next_stage: "uefi" ),
+            ],
+            load_addr: 0x20000000,
+            stack_size: 0x10000,
+            // PCI ECAM driver uses alloc::Vec for device enumeration.
+            heap_size: Some(0x10000),
+            runs_from: Rom,
+            // Place data/BSS/stack at 2 MiB into RAM to leave room for
+            // OpenSBI at 0x80000000..0x80200000.
+            data_addr: Some(0x80200000),
+        ),
+        // Stage 1: S-mode CrabEFI UEFI payload.
+        // Entered by OpenSBI in S-mode with fresh stack. No M-mode CSR
+        // access, no stack corruption — completely clean environment.
+        (
+            name: "uefi",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                PayloadLoad,
+            ],
+            load_addr: 0x80400000,
+            stack_size: 0x800000,
+            heap_size: Some(0x100000),
+            runs_from: Ram,
+        ),
+    ]),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256, Sha3_256],
+    ),
+
+    mode: Rigid,
+
+    // CrabEFI UEFI payload -- linked as a library, called via init_platform().
+    // OpenSBI provides M-mode services (SBI timer, IPI, reset).
+    payload: Some((
+        kind: UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: None,
+        firmware: Some((
+            kind: OpenSbi,
+            file: "fw_dynamic.bin",
+            load_addr: 0x80000000,
+        )),
+    )),
+)

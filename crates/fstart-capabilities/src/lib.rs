@@ -668,6 +668,78 @@ pub fn stage_load(
     jump_to(entry_addr);
 }
 
+/// Load a stage from FFS into RAM and return its entry address.
+///
+/// Same as [`stage_load`] but returns the entry address instead of
+/// jumping.  Used by `FirmwareBoot` to load the next stage, then
+/// boot it via SBI firmware (which handles the actual jump).
+///
+/// Returns `None` if the stage is not found or segment loading fails.
+#[cfg(feature = "ffs")]
+pub fn load_stage_entry(
+    next_stage: &str,
+    anchor_data: &[u8],
+    media: &impl BootMedia,
+) -> Option<u64> {
+    fstart_log::info!("firmware boot: loading stage '{}'", next_stage);
+
+    if media.size() == 0 || anchor_data.is_empty() {
+        fstart_log::error!("firmware boot: no flash image configured");
+        return None;
+    }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(e) => {
+            fstart_log::error!("firmware boot: anchor error: {}", reader_error_str(e));
+            return None;
+        }
+    };
+
+    let manifest = match read_manifest_from_media(media, &anchor) {
+        Ok(m) => m,
+        Err(e) => {
+            fstart_log::error!("firmware boot: manifest error: {}", reader_error_str(e));
+            return None;
+        }
+    };
+
+    // Search all container regions for the named stage
+    let mut stage_found = None;
+    for region in &manifest.regions {
+        match fstart_ffs::FfsReader::find_entry(region, next_stage) {
+            Ok(entry) => {
+                stage_found = Some((region, entry));
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+
+    let (region, entry) = match stage_found {
+        Some(found) => found,
+        None => {
+            fstart_log::error!(
+                "firmware boot: stage '{}' not found in manifest",
+                next_stage
+            );
+            return None;
+        }
+    };
+
+    let image_size = effective_image_size(media.size(), &anchor);
+    let entry_addr = load_entry_segments_from_media(media, entry, region, image_size)?;
+
+    fstart_log::info!(
+        "firmware boot: stage '{}' loaded at {}",
+        next_stage,
+        Hex(entry_addr),
+    );
+
+    Some(entry_addr)
+}
+
 /// Stub StageLoad — called when flash_base is not configured.
 pub fn stage_load_stub(next_stage: &str) {
     fstart_log::info!("capability: StageLoad -> {}", next_stage);
@@ -705,6 +777,10 @@ unsafe impl Sync for SyncBuf {}
 /// Placed in BSS (zero-initialized at startup) rather than on the stack
 /// to avoid consuming 8 KiB of stack space per call.  Firmware boot is
 /// single-threaded so concurrent access is not a concern.
+///
+/// Uses `UnsafeCell` + manual `Sync` impl instead of `SyncUnsafeCell`
+/// for compatibility with toolchains where `SyncUnsafeCell::new` is
+/// not yet a stable const fn.
 #[cfg(feature = "ffs")]
 static MANIFEST_BUF: SyncBuf = SyncBuf(core::cell::UnsafeCell::new([0u8; MAX_MANIFEST_SIZE]));
 

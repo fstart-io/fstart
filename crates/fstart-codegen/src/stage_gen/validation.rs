@@ -25,13 +25,33 @@ pub(super) fn validate_capability_ordering(
     // UefiPayload links CrabEFI statically and doesn't use FFS for the
     // payload itself. However, when firmware (BL31) is configured, it IS
     // loaded from FFS, so BootMedia is required in that case.
-    let uefi_has_firmware = is_uefi_payload(config)
-        && config
+    // PayloadLoad needs BootMedia unless it's a pure UEFI payload stage
+    // that only calls init_platform() without accessing FFS.
+    //
+    // In the monolithic case, UEFI PayloadLoad embeds inline firmware
+    // loading (OpenSBI/ATF from FFS) and needs BootMedia.  In multi-stage,
+    // firmware loading is handled by FirmwareBoot in an earlier stage, so
+    // the uefi stage's PayloadLoad just initializes CrabEFI.
+    let firmware_handled_elsewhere = match &config.stages {
+        StageLayout::MultiStage(stages) => stages.iter().any(|s| {
+            s.capabilities
+                .iter()
+                .any(|c| matches!(c, Capability::FirmwareBoot { .. }))
+        }),
+        _ => false,
+    };
+    let needs_boot_media = if is_uefi_payload(config) && firmware_handled_elsewhere {
+        false // firmware loaded by FirmwareBoot in another stage
+    } else if is_uefi_payload(config) {
+        // Monolithic UEFI with firmware: PayloadLoad loads FFS inline
+        config
             .payload
             .as_ref()
             .and_then(|p| p.firmware.as_ref())
-            .is_some();
-    let needs_boot_media = !is_uefi_payload(config) || uefi_has_firmware;
+            .is_some()
+    } else {
+        true // non-UEFI payloads always need FFS
+    };
 
     for cap in capabilities {
         match cap {
@@ -136,6 +156,20 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::FirmwareBoot { .. } if !console_inited => {
+                return Some(
+                    "FirmwareBoot capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::FirmwareBoot { .. } if !boot_media_declared => {
+                return Some(
+                    "FirmwareBoot capability requires BootMedia to appear earlier \
+                     in the capability list"
+                        .to_string(),
+                );
+            }
             Capability::LoadNextStage { .. } if !console_inited => {
                 return Some(
                     "LoadNextStage capability requires ConsoleInit to appear earlier \
@@ -164,7 +198,10 @@ pub(super) fn needs_ffs(capabilities: &[Capability]) -> bool {
     capabilities.iter().any(|c| {
         matches!(
             c,
-            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+            Capability::SigVerify
+                | Capability::StageLoad { .. }
+                | Capability::FirmwareBoot { .. }
+                | Capability::PayloadLoad
         )
     })
 }
