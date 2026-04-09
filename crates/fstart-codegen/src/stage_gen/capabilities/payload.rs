@@ -397,6 +397,45 @@ fn generate_payload_load_uefi(
         (quote! {}, quote! { framebuffer: None, })
     };
 
+    // Platform block devices — non-PCI BlockDevice-service devices.
+    //
+    // PCI block devices (NVMe, AHCI, SDHCI) are discovered internally by
+    // CrabEFI via the ECAM base address.  Platform devices (e.g. sunxi-mmc)
+    // must be wrapped in a BlockDeviceAdapter and passed through
+    // PlatformConfig::block_devices.
+    let platform_block_devs: Vec<&fstart_types::DeviceConfig> = config
+        .devices
+        .iter()
+        .filter(|d| {
+            d.services.iter().any(|s| s.as_str() == "BlockDevice")
+                && !d.services.iter().any(|s| s.as_str() == "PciRootBus")
+        })
+        .collect();
+
+    let (block_device_setup, block_devices_field) = if platform_block_devs.is_empty() {
+        (quote! {}, quote! { block_devices: &mut [], })
+    } else {
+        let mut adapter_decls = TokenStream::new();
+        let mut ref_exprs = Vec::new();
+        for dev in &platform_block_devs {
+            let dev_ident = format_ident!("{}", dev.name.as_str());
+            let adapter_ident = format_ident!("_blk_{}", dev.name.as_str());
+            let name_str = dev.name.as_str();
+            adapter_decls.extend(quote! {
+                let mut #adapter_ident =
+                    fstart_crabefi::BlockDeviceAdapter::new(&#dev_ident, #name_str);
+            });
+            ref_exprs.push(quote! {
+                &mut #adapter_ident as &mut dyn fstart_crabefi::CrabEfiBlockDevice
+            });
+        }
+        let setup = adapter_decls;
+        let field = quote! {
+            block_devices: &mut [#(#ref_exprs),*],
+        };
+        (setup, field)
+    };
+
     // FDT sourcing.
     //
     // RISC-V UEFI stages are entered in S-mode by OpenSBI. After the
@@ -578,12 +617,13 @@ fn generate_payload_load_uefi(
         fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
 
         #fb_setup
+        #block_device_setup
 
         let _crabefi_config = fstart_crabefi::PlatformConfig {
             memory_map: _crabefi_memory_map,
             timer: &_crabefi_timer,
             reset: &_crabefi_reset,
-            block_devices: &mut [],
+            #block_devices_field
             variable_backend: None,
             #debug_output_field
             console_input: None,

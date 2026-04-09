@@ -14,11 +14,15 @@
 
 use core::fmt;
 
-// Type aliases for generated code convenience.
+// Type aliases and re-exports for generated code convenience.
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type PlatformConfig<'a> = crabefi::PlatformConfig<'a>;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
+
+/// Re-export CrabEFI's [`BlockDevice`](crabefi::BlockDevice) trait for use
+/// in generated code that casts platform block device adapters.
+pub use crabefi::BlockDevice as CrabEfiBlockDevice;
 
 /// Call `crabefi::init_platform()`. This is the entry point that never returns.
 pub fn init_platform(config: crabefi::PlatformConfig) -> ! {
@@ -67,6 +71,85 @@ impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> 
 // SAFETY: fstart's Console is Send + Sync (required by the trait bound).
 // ConsoleAdapter holds an immutable reference to it, which is Send.
 unsafe impl<C: fstart_services::Console + ?Sized> Send for ConsoleAdapter<'_, C> {}
+
+// ---------------------------------------------------------------------------
+// BlockDevice → CrabEFI BlockDevice adapter
+// ---------------------------------------------------------------------------
+
+/// Wraps an fstart [`BlockDevice`](fstart_services::BlockDevice) as a CrabEFI
+/// [`BlockDevice`](crabefi::BlockDevice).
+///
+/// fstart's `BlockDevice` uses byte-offset addressing with `&self` (MMIO
+/// interior mutability) and returns `Result<usize, ServiceError>`.
+/// CrabEFI's `BlockDevice` uses LBA-based addressing with `&mut self` and
+/// returns `Result<(), BlockError>`.
+///
+/// The adapter translates LBA → byte offset (`lba * block_size`) and
+/// loops reads until the full request is satisfied, mapping errors to
+/// [`crabefi::BlockError::DeviceError`].
+pub struct BlockDeviceAdapter<'a> {
+    inner: &'a dyn fstart_services::BlockDevice,
+    name: &'a str,
+}
+
+impl<'a> BlockDeviceAdapter<'a> {
+    /// Create a new adapter wrapping an fstart block device.
+    ///
+    /// `name` is displayed in CrabEFI's boot menu (e.g. `"SD/MMC"`).
+    pub fn new(inner: &'a dyn fstart_services::BlockDevice, name: &'a str) -> Self {
+        Self { inner, name }
+    }
+}
+
+impl crabefi::BlockDevice for BlockDeviceAdapter<'_> {
+    fn info(&self) -> crabefi::BlockDeviceInfo {
+        let block_size = self.inner.block_size();
+        let num_blocks = if block_size > 0 {
+            self.inner.size() / block_size as u64
+        } else {
+            0
+        };
+        crabefi::BlockDeviceInfo {
+            num_blocks,
+            block_size,
+            media_id: 0,
+            removable: true,
+            read_only: false,
+        }
+    }
+
+    fn read_blocks(
+        &mut self,
+        lba: u64,
+        count: u32,
+        buffer: &mut [u8],
+    ) -> Result<(), crabefi::BlockError> {
+        self.validate_read(lba, count, buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+
+        let block_size = self.inner.block_size() as u64;
+        let byte_offset = lba * block_size;
+        let total = count as u64 * block_size;
+
+        let mut done = 0u64;
+        while done < total {
+            let start = done as usize;
+            let end = total as usize;
+            match self.inner.read(byte_offset + done, &mut buffer[start..end]) {
+                Ok(0) => return Err(crabefi::BlockError::DeviceError),
+                Ok(n) => done += n as u64,
+                Err(_) => return Err(crabefi::BlockError::DeviceError),
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+}
 
 // ---------------------------------------------------------------------------
 // EFI memory map construction
