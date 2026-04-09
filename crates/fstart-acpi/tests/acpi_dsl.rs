@@ -3,8 +3,11 @@
 //! These tests verify that the DSL produces correct AML bytecode
 //! by checking opcodes, structure, and round-trip properties.
 
+use fstart_acpi::aml::{FieldAccessType, OpRegionSpace};
+use fstart_acpi::tock_bridge::{build_multi_register_field, tock_field_entries};
 use fstart_acpi::Aml;
 use fstart_acpi_macros::acpi_dsl;
+use tock_registers::register_bitfields;
 
 #[test]
 fn test_simple_device() {
@@ -347,6 +350,280 @@ fn test_x86_northbridge_full() {
     assert!(
         aml.len() > 100,
         "expected >100 bytes for full northbridge, got {}",
+        aml.len()
+    );
+}
+
+// -----------------------------------------------------------------------
+// Complete x86 PCI host bridge DSDT -- the full coreboot equivalent.
+//
+// Combines every feature: tock-registers derived fields, acpi_dsl!,
+// OperationRegion, Field, dynamic _CRS with CreateDwordField + ShiftLeft,
+// I/O and memory ranges, _OSC.
+//
+// This is what an actual x86 board would produce.
+// -----------------------------------------------------------------------
+
+register_bitfields! [u32,
+    /// EPBAR: Enhanced PCI Express Base Address Register.
+    NB_EPBAR [
+        EPEN OFFSET(0) NUMBITS(1) [],
+        EPBR OFFSET(12) NUMBITS(20) []
+    ],
+    /// MCHBAR: Memory Controller Hub Base Address Register.
+    NB_MCHBAR [
+        MHEN OFFSET(0) NUMBITS(1) [],
+        MHBR OFFSET(14) NUMBITS(18) []
+    ],
+    /// PXBAR: PCI Express Base Address Register.
+    NB_PXBAR [
+        PXEN OFFSET(0) NUMBITS(1) [],
+        PXSZ OFFSET(1) NUMBITS(2) [],
+        PXBR OFFSET(26) NUMBITS(6) []
+    ],
+    /// DMIBAR: Direct Media Interface Base Address Register.
+    NB_DMIBAR [
+        DMEN OFFSET(0) NUMBITS(1) [],
+        DMBR OFFSET(12) NUMBITS(20) []
+    ]
+];
+
+register_bitfields! [u8,
+    /// PAM0: Programmable Attribute Map 0.
+    NB_PAM0 [
+        PM0H OFFSET(4) NUMBITS(2) []
+    ],
+    /// PAM1: Programmable Attribute Map 1.
+    NB_PAM1 [
+        PM1L OFFSET(0) NUMBITS(2) [],
+        PM1H OFFSET(4) NUMBITS(2) []
+    ],
+    /// PAM2: Programmable Attribute Map 2.
+    NB_PAM2 [
+        PM2L OFFSET(0) NUMBITS(2) [],
+        PM2H OFFSET(4) NUMBITS(2) []
+    ],
+    /// PAM3: Programmable Attribute Map 3.
+    NB_PAM3 [
+        PM3L OFFSET(0) NUMBITS(2) [],
+        PM3H OFFSET(4) NUMBITS(2) []
+    ],
+    /// PAM4: Programmable Attribute Map 4.
+    NB_PAM4 [
+        PM4L OFFSET(0) NUMBITS(2) [],
+        PM4H OFFSET(4) NUMBITS(2) []
+    ],
+    /// PAM5: Programmable Attribute Map 5.
+    NB_PAM5 [
+        PM5L OFFSET(0) NUMBITS(2) [],
+        PM5H OFFSET(4) NUMBITS(2) []
+    ],
+    /// PAM6: Programmable Attribute Map 6.
+    NB_PAM6 [
+        PM6L OFFSET(0) NUMBITS(2) [],
+        PM6H OFFSET(4) NUMBITS(2) []
+    ],
+    /// TOLUD: Top of Low Usable DRAM.
+    NB_TOLUD [
+        TLUD OFFSET(3) NUMBITS(5) []
+    ]
+];
+
+register_bitfields! [u16,
+    /// TOM: Top of Memory.
+    NB_TOM [
+        TOM_ OFFSET(0) NUMBITS(16) []
+    ]
+];
+
+/// Complete x86 PCI host bridge DSDT combining tock-registers derived
+/// MCH fields, resource templates, dynamic _CRS, and _OSC.
+///
+/// Equivalent coreboot ASL:
+///
+/// ```text
+/// Scope (\_SB) {
+///   Device (PCI0) {
+///     Name (_HID, EisaId ("PNP0A08"))
+///     Name (_CID, EisaId ("PNP0A03"))
+///     Name (_ADR, 0x00000000)
+///
+///     Device (MCHC) {
+///       Name(_ADR, 0x00000000)
+///       OperationRegion(MCHP, PCI_Config, 0x00, 0x100)
+///       Field (MCHP, DWordAcc, NoLock, Preserve) { ... }
+///     }
+///
+///     Name (MCRS, ResourceTemplate() { ... })
+///
+///     Method (_CRS, 0, Serialized) {
+///       CreateDwordField(MCRS, ^PM01._MIN, PMIN)
+///       CreateDwordField(MCRS, ^PM01._MAX, PMAX)
+///       CreateDwordField(MCRS, ^PM01._LEN, PLEN)
+///       PMIN = ^MCHC.TLUD << 27
+///       PLEN = PMAX - PMIN + 1
+///       Return (MCRS)
+///     }
+///
+///     Method (_OSC, 4, NotSerialized) { Return (Arg3) }
+///   }
+/// }
+/// ```
+#[test]
+fn test_complete_x86_host_bridge() {
+    // --- Step 1: Build MCH register fields from tock-registers ---
+    let mchp = build_multi_register_field(
+        "MCHP",
+        OpRegionSpace::PCIConfig,
+        0x00,
+        0x100,
+        FieldAccessType::DWord,
+        &[
+            (0x40, 32, &tock_field_entries::<u32, NB_EPBAR::Register>(32)),
+            (
+                0x44,
+                32,
+                &tock_field_entries::<u32, NB_MCHBAR::Register>(32),
+            ),
+            (0x48, 32, &tock_field_entries::<u32, NB_PXBAR::Register>(32)),
+            (
+                0x4C,
+                32,
+                &tock_field_entries::<u32, NB_DMIBAR::Register>(32),
+            ),
+            (0x90, 8, &tock_field_entries::<u8, NB_PAM0::Register>(8)),
+            (0x91, 8, &tock_field_entries::<u8, NB_PAM1::Register>(8)),
+            (0x92, 8, &tock_field_entries::<u8, NB_PAM2::Register>(8)),
+            (0x93, 8, &tock_field_entries::<u8, NB_PAM3::Register>(8)),
+            (0x94, 8, &tock_field_entries::<u8, NB_PAM4::Register>(8)),
+            (0x95, 8, &tock_field_entries::<u8, NB_PAM5::Register>(8)),
+            (0x96, 8, &tock_field_entries::<u8, NB_PAM6::Register>(8)),
+            (0x9C, 8, &tock_field_entries::<u8, NB_TOLUD::Register>(8)),
+            (0xA0, 16, &tock_field_entries::<u16, NB_TOM::Register>(16)),
+        ],
+    );
+
+    // --- Step 2: Build the full DSDT scope ---
+    //
+    // Helper: Path::new is not Copy, so we use a closure to create
+    // fresh instances for each #{} interpolation site.
+    use fstart_acpi::aml::Path;
+    let p = |s| Path::new(s);
+
+    let aml: Vec<u8> = acpi_dsl! {
+        scope("\\_SB_") {
+            device("PCI0") {
+                name("_HID", eisa_id("PNP0A08"));
+                name("_CID", eisa_id("PNP0A03"));
+                name("_ADR", 0x0000_0000u32);
+
+                // MCH device: registers derived from tock-registers
+                device("MCHC") {
+                    name("_ADR", 0x0000_0000u32);
+                    #{mchp}
+                }
+
+                // Static resource template (patched at runtime by _CRS)
+                name("MCRS", resource_template {
+                    // Bus numbers 0-255
+                    word_bus_number(0x0000u16, 0x00FFu16);
+                    // Legacy I/O: 0x0000-0x0CF7
+                    dword_io(0x0000u32, 0x0CF7u32);
+                    // PCI config space I/O port
+                    io(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
+                    // Legacy I/O: 0x0D00-0xFFFF
+                    dword_io(0x0D00u32, 0xFFFFu32);
+                    // VGA memory
+                    dword_memory(Cacheable, ReadWrite, 0x000A_0000u32, 0x000B_FFFFu32);
+                    // PCI memory (placeholder range, patched by _CRS)
+                    dword_memory(NotCacheable, ReadWrite, 0x0000_0000u32, 0xFEBF_FFFFu32);
+                });
+
+                // Dynamic _CRS: reads TOLUD from MCH, patches PCI memory range
+                method("_CRS", 0, Serialized) {
+                    create_dword_field(#{p("MCRS")}, 0x00u32, "PMIN");
+                    create_dword_field(#{p("MCRS")}, 0x04u32, "PMAX");
+                    create_dword_field(#{p("MCRS")}, 0x08u32, "PLEN");
+                    // PMIN = TLUD << 27
+                    shl(#{p("PMIN")}, #{p("TLUD")}, 27u32);
+                    // PLEN = PMAX - PMIN + 1
+                    subtract(#{p("PLEN")}, #{p("PMAX")}, #{p("PMIN")});
+                    add(#{p("PLEN")}, #{p("PLEN")}, 1u32);
+                    ret(#{p("MCRS")});
+                }
+
+                // _OSC: accept all OS capabilities
+                method("_OSC", 4, NotSerialized) {
+                    ret(#{fstart_acpi::aml::Arg(3)});
+                }
+            }
+        }
+    };
+
+    // --- Step 3: Verify the complete DSDT ---
+
+    // Top-level structure
+    assert_eq!(aml[0], 0x10, "ScopeOp"); // \_SB scope
+
+    // All device names present
+    assert!(aml.windows(4).any(|w| w == b"PCI0"), "PCI0 device");
+    assert!(aml.windows(4).any(|w| w == b"MCHC"), "MCHC device");
+
+    // MCH register field names (tock-registers derived)
+    assert!(aml.windows(4).any(|w| w == b"MCHP"), "MCHP region");
+    assert!(aml.windows(4).any(|w| w == b"EPEN"), "EPBAR.EPEN");
+    assert!(aml.windows(4).any(|w| w == b"MHEN"), "MCHBAR.MHEN");
+    assert!(aml.windows(4).any(|w| w == b"PXEN"), "PXBAR.PXEN");
+    assert!(aml.windows(4).any(|w| w == b"DMEN"), "DMIBAR.DMEN");
+    assert!(aml.windows(4).any(|w| w == b"PM0H"), "PAM0.PM0H");
+    assert!(aml.windows(4).any(|w| w == b"PM1L"), "PAM1.PM1L");
+    assert!(aml.windows(4).any(|w| w == b"PM2L"), "PAM2.PM2L");
+    assert!(aml.windows(4).any(|w| w == b"PM3L"), "PAM3.PM3L");
+    assert!(aml.windows(4).any(|w| w == b"PM4L"), "PAM4.PM4L");
+    assert!(aml.windows(4).any(|w| w == b"PM5L"), "PAM5.PM5L");
+    assert!(aml.windows(4).any(|w| w == b"PM6L"), "PAM6.PM6L");
+    assert!(aml.windows(4).any(|w| w == b"TLUD"), "TOLUD.TLUD");
+    assert!(aml.windows(4).any(|w| w == b"TOM_"), "TOM");
+
+    // Resource template
+    assert!(
+        aml.windows(4).any(|w| w == b"MCRS"),
+        "MCRS resource template"
+    );
+    assert!(aml.contains(&0x47), "IO descriptor (0x47)");
+    assert!(aml.contains(&0x87), "DWordMemory descriptor (0x87)");
+    assert!(aml.contains(&0x88), "WordBusNumber descriptor (0x88)");
+
+    // Methods
+    assert!(aml.windows(4).any(|w| w == b"_CRS"), "_CRS method");
+    assert!(aml.windows(4).any(|w| w == b"_OSC"), "_OSC method");
+
+    // Dynamic _CRS internals
+    assert!(
+        aml.windows(4).any(|w| w == b"PMIN"),
+        "CreateDWordField PMIN"
+    );
+    assert!(
+        aml.windows(4).any(|w| w == b"PMAX"),
+        "CreateDWordField PMAX"
+    );
+    assert!(
+        aml.windows(4).any(|w| w == b"PLEN"),
+        "CreateDWordField PLEN"
+    );
+
+    // OpRegion + Field opcodes
+    assert!(aml.windows(2).any(|w| w == [0x5B, 0x80]), "OpRegion opcode");
+    assert!(aml.windows(2).any(|w| w == [0x5B, 0x81]), "Field opcode");
+
+    // EISA IDs (PNP0A08, PNP0A03)
+    assert!(aml.windows(4).any(|w| w == b"_HID"), "_HID");
+    assert!(aml.windows(4).any(|w| w == b"_CID"), "_CID");
+
+    // Size sanity: a real x86 northbridge DSDT is 500+ bytes
+    assert!(
+        aml.len() > 400,
+        "expected >400 bytes for complete host bridge, got {}",
         aml.len()
     );
 }
