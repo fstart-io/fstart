@@ -209,6 +209,85 @@ impl Aml for TockAcpiField {
     }
 }
 
+/// Build a `(byte_offset, bit_width, field_entries)` tuple for one
+/// register, using `offset_of!` to derive the byte offset from a
+/// `register_structs!` type.
+///
+/// ```ignore
+/// use core::mem::offset_of;
+///
+/// let entry = reg_entry::<u32, MCH_EPBAR::Register>(
+///     offset_of!(MchRegs, epbar)
+/// );
+/// // entry = (0x40, 32, vec![FieldEntry::Named(...), ...])
+/// ```
+pub fn reg_entry<T, R>(struct_offset: usize) -> (u64, usize, Vec<FieldEntry>)
+where
+    T: UIntLike + 'static,
+    R: RegisterDebugInfo<T> + 'static,
+{
+    let bits = core::mem::size_of::<T>() * 8;
+    (struct_offset as u64, bits, tock_field_entries::<T, R>(bits))
+}
+
+/// Build a [`TockAcpiField`] from a `register_structs!` type.
+///
+/// Takes the struct type, region metadata, and a list of
+/// `(field_name, register_width_type, RegisterType)` tuples.
+/// Uses `core::mem::offset_of!` to derive byte offsets from the
+/// struct layout automatically.
+///
+/// # Example
+///
+/// ```ignore
+/// register_structs! {
+///     MchRegs {
+///         (0x000 => _pad0),
+///         (0x040 => pub epbar: ReadWrite<u32, MCH_EPBAR::Register>),
+///         (0x044 => pub mchbar: ReadWrite<u32, MCH_MCHBAR::Register>),
+///         (0x048 => @END),
+///     }
+/// }
+///
+/// let mchp = tock_acpi_field!(MchRegs, "MCHP", PCIConfig, DWord, [
+///     epbar: u32, MCH_EPBAR::Register,
+///     mchbar: u32, MCH_MCHBAR::Register,
+/// ]);
+/// ```
+#[macro_export]
+macro_rules! tock_acpi_field {
+    (
+        $struct_ty:ty,
+        $region_name:expr,
+        $space:ident,
+        $access:ident,
+        [ $( $field:ident : $width_ty:ty, $reg_ty:ty ),* $(,)? ]
+    ) => {{
+        extern crate alloc as __tock_acpi_alloc;
+        let entries: __tock_acpi_alloc::vec::Vec<(u64, usize, __tock_acpi_alloc::vec::Vec<$crate::aml::FieldEntry>)> =
+            {
+                let mut v = __tock_acpi_alloc::vec::Vec::new();
+                $(
+                    v.push($crate::tock_bridge::reg_entry::<
+                        $width_ty,
+                        $reg_ty,
+                    >(::core::mem::offset_of!($struct_ty, $field)));
+                )*
+                v
+            };
+        let refs: __tock_acpi_alloc::vec::Vec<(u64, usize, &[$crate::aml::FieldEntry])> =
+            entries.iter().map(|(o, b, e)| (*o, *b, e.as_slice())).collect();
+        $crate::tock_bridge::build_multi_register_field(
+            $region_name,
+            $crate::aml::OpRegionSpace::$space,
+            0,
+            ::core::mem::size_of::<$struct_ty>() as u64,
+            $crate::aml::FieldAccessType::$access,
+            &refs,
+        )
+    }};
+}
+
 /// Build a multi-register ACPI Field spanning a byte range.
 ///
 /// Takes a list of `(byte_offset, register_bits, field_entries)` tuples
