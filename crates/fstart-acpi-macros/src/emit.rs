@@ -11,7 +11,10 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::parse::{CacheableKind, DslItem, DslValue, NameOrInterp, ResourceDesc};
+use crate::parse::{
+    CacheableKind, DslItem, DslValue, FieldAccess, FieldEntryDsl, FieldLock, FieldUpdate,
+    NameOrInterp, RegionSpace, ResourceDesc,
+};
 
 /// Counter for unique variable names within a macro invocation.
 struct VarGen {
@@ -94,6 +97,36 @@ fn emit_item(item: &DslItem, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
             ..
         } => emit_method(name, *argc, *serialized, body, gen),
         DslItem::Return { value, .. } => emit_return(value, gen),
+        DslItem::OpRegion {
+            name,
+            space,
+            offset,
+            length,
+            ..
+        } => emit_op_region(name, *space, offset, length, gen),
+        DslItem::Field {
+            region,
+            access,
+            lock,
+            update,
+            entries,
+            ..
+        } => emit_field(region, *access, *lock, *update, entries, gen),
+        DslItem::CreateDwordField {
+            buffer,
+            index,
+            name,
+            ..
+        } => emit_create_dword_field(buffer, index, name, gen),
+        DslItem::Store { value, target, .. } => emit_store(value, target, gen),
+        DslItem::ShiftLeft {
+            target,
+            value,
+            count,
+            ..
+        } => emit_binary_op("ShiftLeft", target, value, count, gen),
+        DslItem::Subtract { target, a, b, .. } => emit_binary_op("Subtract", target, a, b, gen),
+        DslItem::Add { target, a, b, .. } => emit_binary_op("Add", target, a, b, gen),
     }
 }
 
@@ -286,6 +319,178 @@ fn emit_package(elements: &[DslValue], gen: &mut VarGen) -> (TokenStream, proc_m
     (bindings, var)
 }
 
+fn emit_op_region(
+    name: &str,
+    space: RegionSpace,
+    offset: &DslValue,
+    length: &DslValue,
+    gen: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let (off_bind, off_var) = emit_value(offset, gen);
+    let (len_bind, len_var) = emit_value(length, gen);
+    bindings.extend(off_bind);
+    bindings.extend(len_bind);
+
+    let space_tok = match space {
+        RegionSpace::SystemMemory => quote! { fstart_acpi::aml::OpRegionSpace::SystemMemory },
+        RegionSpace::SystemIO => quote! { fstart_acpi::aml::OpRegionSpace::SystemIO },
+        RegionSpace::PciConfig => quote! { fstart_acpi::aml::OpRegionSpace::PCIConfig },
+        RegionSpace::EmbeddedControl => quote! { fstart_acpi::aml::OpRegionSpace::EmbeddedControl },
+    };
+
+    let var = gen.next("opreg");
+    bindings.extend(quote! {
+        let #var = fstart_acpi::aml::OpRegion::new(
+            fstart_acpi::aml::Path::new(#name),
+            #space_tok,
+            &#off_var,
+            &#len_var,
+        );
+    });
+    (bindings, var)
+}
+
+fn emit_field(
+    region: &str,
+    access: FieldAccess,
+    lock: FieldLock,
+    update: FieldUpdate,
+    entries: &[FieldEntryDsl],
+    gen: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let access_tok = match access {
+        FieldAccess::AnyAcc => quote! { fstart_acpi::aml::FieldAccessType::Any },
+        FieldAccess::ByteAcc => quote! { fstart_acpi::aml::FieldAccessType::Byte },
+        FieldAccess::WordAcc => quote! { fstart_acpi::aml::FieldAccessType::Word },
+        FieldAccess::DWordAcc => quote! { fstart_acpi::aml::FieldAccessType::DWord },
+        FieldAccess::QWordAcc => quote! { fstart_acpi::aml::FieldAccessType::QWord },
+    };
+    let lock_tok = match lock {
+        FieldLock::NoLock => quote! { fstart_acpi::aml::FieldLockRule::NoLock },
+        FieldLock::Lock => quote! { fstart_acpi::aml::FieldLockRule::Lock },
+    };
+    let update_tok = match update {
+        FieldUpdate::Preserve => quote! { fstart_acpi::aml::FieldUpdateRule::Preserve },
+        FieldUpdate::WriteAsOnes => quote! { fstart_acpi::aml::FieldUpdateRule::WriteAsOnes },
+        FieldUpdate::WriteAsZeroes => quote! { fstart_acpi::aml::FieldUpdateRule::WriteAsZeroes },
+    };
+
+    // Convert DSL entries to FieldEntry values, resolving Offset directives
+    // into Reserved gaps.
+    let mut field_entries = Vec::new();
+    let mut bit_pos: usize = 0;
+    for entry in entries {
+        match entry {
+            FieldEntryDsl::Named(name, bits) => {
+                let mut name_bytes = [b'_'; 4];
+                for (i, b) in name.bytes().take(4).enumerate() {
+                    name_bytes[i] = b;
+                }
+                let [a, b, c, d] = name_bytes;
+                field_entries.push(quote! {
+                    fstart_acpi::aml::FieldEntry::Named([#a, #b, #c, #d], #bits)
+                });
+                bit_pos += bits;
+            }
+            FieldEntryDsl::Reserved(bits) => {
+                field_entries.push(quote! {
+                    fstart_acpi::aml::FieldEntry::Reserved(#bits)
+                });
+                bit_pos += bits;
+            }
+            FieldEntryDsl::Offset(byte_offset) => {
+                let target_bits = byte_offset * 8;
+                if target_bits > bit_pos {
+                    let gap = target_bits - bit_pos;
+                    field_entries.push(quote! {
+                        fstart_acpi::aml::FieldEntry::Reserved(#gap)
+                    });
+                    bit_pos = target_bits;
+                }
+            }
+        }
+    }
+
+    let var = gen.next("field");
+    let bindings = quote! {
+        let #var = fstart_acpi::aml::Field::new(
+            fstart_acpi::aml::Path::new(#region),
+            #access_tok,
+            #lock_tok,
+            #update_tok,
+            alloc::vec![#(#field_entries),*],
+        );
+    };
+    (bindings, var)
+}
+
+fn emit_create_dword_field(
+    buffer: &DslValue,
+    index: &DslValue,
+    name: &str,
+    gen: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let (buf_bind, buf_var) = emit_value(buffer, gen);
+    let (idx_bind, idx_var) = emit_value(index, gen);
+    bindings.extend(buf_bind);
+    bindings.extend(idx_bind);
+
+    let name_path = gen.next("cdwn");
+    let var = gen.next("cdwf");
+    bindings.extend(quote! {
+        let #name_path = fstart_acpi::aml::Path::new(#name);
+        let #var = fstart_acpi::aml::CreateDWordField::new(
+            &#name_path,
+            &#buf_var,
+            &#idx_var,
+        );
+    });
+    (bindings, var)
+}
+
+fn emit_store(
+    value: &DslValue,
+    target: &DslValue,
+    gen: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let (val_bind, val_var) = emit_value(value, gen);
+    let (tgt_bind, tgt_var) = emit_value(target, gen);
+    bindings.extend(val_bind);
+    bindings.extend(tgt_bind);
+
+    let var = gen.next("store");
+    bindings.extend(quote! {
+        let #var = fstart_acpi::aml::Store::new(&#tgt_var, &#val_var);
+    });
+    (bindings, var)
+}
+
+fn emit_binary_op(
+    op_name: &str,
+    target: &DslValue,
+    a: &DslValue,
+    b: &DslValue,
+    gen: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let (tgt_bind, tgt_var) = emit_value(target, gen);
+    let (a_bind, a_var) = emit_value(a, gen);
+    let (b_bind, b_var) = emit_value(b, gen);
+    bindings.extend(tgt_bind);
+    bindings.extend(a_bind);
+    bindings.extend(b_bind);
+
+    let op_ident = format_ident!("{}", op_name);
+    let var = gen.next("binop");
+    bindings.extend(quote! {
+        let #var = fstart_acpi::aml::#op_ident::new(&#tgt_var, &#a_var, &#b_var);
+    });
+    (bindings, var)
+}
+
 fn emit_resource_template(
     descs: &[ResourceDesc],
     gen: &mut VarGen,
@@ -423,6 +628,50 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
                     #read_write,
                     #b_var as u64,
                     #e_var as u64,
+                    None,
+                );
+            });
+            (bindings, var)
+        }
+        ResourceDesc::IoPort {
+            base,
+            end,
+            align,
+            len,
+        } => {
+            let mut bindings = TokenStream::new();
+            let (b_bind, b_var) = emit_value(base, gen);
+            let (e_bind, e_var) = emit_value(end, gen);
+            let (a_bind, a_var) = emit_value(align, gen);
+            let (l_bind, l_var) = emit_value(len, gen);
+            bindings.extend(b_bind);
+            bindings.extend(e_bind);
+            bindings.extend(a_bind);
+            bindings.extend(l_bind);
+
+            let var = gen.next("iop");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::aml::IO::new(
+                    #b_var as u16,
+                    #e_var as u16,
+                    #a_var as u8,
+                    #l_var as u8,
+                );
+            });
+            (bindings, var)
+        }
+        ResourceDesc::DWordIO { base, end } => {
+            let mut bindings = TokenStream::new();
+            let (b_bind, b_var) = emit_value(base, gen);
+            let (e_bind, e_var) = emit_value(end, gen);
+            bindings.extend(b_bind);
+            bindings.extend(e_bind);
+
+            let var = gen.next("dio");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::aml::AddressSpace::<u32>::new_io(
+                    #b_var as u32,
+                    #e_var as u32,
                     None,
                 );
             });

@@ -57,6 +57,19 @@ fn validate_item(item: &DslItem) -> Result<()> {
             validate_items(body)?;
         }
         DslItem::Return { .. } => {}
+        DslItem::OpRegion { name, span, .. } => {
+            validate_acpi_name(name, *span)?;
+        }
+        DslItem::Field { region, span, .. } => {
+            validate_acpi_name(region, *span)?;
+        }
+        DslItem::CreateDwordField { name, span, .. } => {
+            validate_acpi_name(name, *span)?;
+        }
+        DslItem::Store { .. }
+        | DslItem::ShiftLeft { .. }
+        | DslItem::Subtract { .. }
+        | DslItem::Add { .. } => {}
     }
     Ok(())
 }
