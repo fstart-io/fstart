@@ -167,6 +167,8 @@ impl AhciAcpi<'_> {
         let hid: &str = "LNRO0015";
         let hid = Name::new("_HID".into(), &hid);
         let uid = Name::new("_UID".into(), &0u32);
+        // _CCA = 1: cache-coherent access (required for ARM DMA-capable devices)
+        let cca = Name::new("_CCA".into(), &1u32);
         let crs_name = Name::new("_CRS".into(), &crs);
 
         // _CLS: PCI class code for SATA AHCI (0x01 / 0x06 / 0x01)
@@ -177,7 +179,7 @@ impl AhciAcpi<'_> {
         cls_pkg.add_element(&0x01u8); // Programming Interface: AHCI 1.0
         let cls = Name::new("_CLS".into(), &cls_pkg);
 
-        let dev = Device::new(self.name.into(), vec![&hid, &uid, &crs_name, &cls]);
+        let dev = Device::new(self.name.into(), vec![&hid, &uid, &cca, &crs_name, &cls]);
 
         let mut bytes = Vec::new();
         dev.to_aml_bytes(&mut bytes);
@@ -213,9 +215,11 @@ impl XhciAcpi<'_> {
 
         let hid = Name::new("_HID".into(), &"PNP0D10");
         let uid = Name::new("_UID".into(), &0u32);
+        // _CCA = 1: cache-coherent access (required for ARM DMA-capable devices)
+        let cca = Name::new("_CCA".into(), &1u32);
         let crs_name = Name::new("_CRS".into(), &crs);
 
-        let dev = Device::new(self.name.into(), vec![&hid, &uid, &crs_name]);
+        let dev = Device::new(self.name.into(), vec![&hid, &uid, &cca, &crs_name]);
 
         let mut bytes = Vec::new();
         dev.to_aml_bytes(&mut bytes);
@@ -259,6 +263,13 @@ pub struct PcieRootAcpi<'a> {
 
 impl PcieRootAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
+    ///
+    /// Generates a complete PCIe root bridge with:
+    /// - `_HID` PNP0A08 (PCIe), `_CID` PNP0A03 (PCI)
+    /// - `_SEG`, `_BBN`, `_CCA`, `_UID`
+    /// - `_CRS` with WordBusNumber, DWordMemory (32-bit MMIO),
+    ///   QWordMemory (64-bit MMIO), and optionally INTA-INTD interrupts
+    /// - `_OSC` method (accepts all OS-requested capabilities)
     pub fn dsdt_aml(&self) -> Vec<u8> {
         let hid = Name::new("_HID".into(), &"PNP0A08");
         let cid = Name::new("_CID".into(), &"PNP0A03");
@@ -268,17 +279,54 @@ impl PcieRootAcpi<'_> {
         let cca = Name::new("_CCA".into(), &1u32);
         let uid = Name::new("_UID".into(), &0u32);
 
-        // Build resource template with interrupt descriptors for INTA..INTD.
+        // _CRS: bus number range + MMIO windows + optional interrupts.
+        //
+        // WordBusNumber: declares the PCI bus number range this root
+        // bridge manages.  Without this, the OS cannot enumerate buses.
+        let bus_range =
+            AddressSpace::<u16>::new_bus_number(self.bus_start as u16, self.bus_end as u16);
+
+        // DWordMemory: 32-bit MMIO window for PCI BARs below 4 GiB.
+        let mmio32 = AddressSpace::<u32>::new_memory(
+            AddressSpaceCacheable::NotCacheable,
+            true, // read-write
+            self.mmio32_base,
+            self.mmio32_end,
+            None,
+        );
+
+        // QWordMemory: 64-bit MMIO window for PCI BARs above 4 GiB.
+        let mmio64 = AddressSpace::<u64>::new_memory(
+            AddressSpaceCacheable::NotCacheable,
+            true,
+            self.mmio64_base,
+            self.mmio64_end,
+            None,
+        );
+
+        // Build _CRS: bus range + MMIO windows + optional legacy IRQs.
         let irq_a = Interrupt::new(true, false, false, false, self.irqs[0]);
         let irq_b = Interrupt::new(true, false, false, false, self.irqs[1]);
         let irq_c = Interrupt::new(true, false, false, false, self.irqs[2]);
         let irq_d = Interrupt::new(true, false, false, false, self.irqs[3]);
-        let crs = ResourceTemplate::new(vec![&irq_a, &irq_b, &irq_c, &irq_d]);
+
+        let crs = ResourceTemplate::new(vec![
+            &bus_range, &mmio32, &mmio64, &irq_a, &irq_b, &irq_c, &irq_d,
+        ]);
         let crs_name = Name::new("_CRS".into(), &crs);
+
+        // _OSC: Operating System Capabilities.
+        //
+        // Simplified version: accepts all OS-requested control by
+        // returning Arg3 (the capability buffer) unchanged.  A full
+        // implementation would mask unsupported capabilities, but for
+        // QEMU virtual hardware this is sufficient.
+        let osc_ret = acpi_tables::aml::Return::new(&acpi_tables::aml::Arg(3));
+        let osc = acpi_tables::aml::Method::new("_OSC".into(), 4, false, vec![&osc_ret]);
 
         let dev = Device::new(
             self.name.into(),
-            vec![&hid, &cid, &seg, &bbn, &cca, &uid, &crs_name],
+            vec![&hid, &cid, &seg, &bbn, &cca, &uid, &crs_name, &osc],
         );
 
         let mut bytes = Vec::new();
@@ -449,6 +497,34 @@ mod tests {
         assert!(aml.len() > 10);
         assert_eq!(aml[0], 0x5B);
         assert_eq!(aml[1], 0x82);
+
+        // AML should contain WordBusNumber descriptor (tag 0x88)
+        // for the bus range 0-255.
+        assert!(
+            aml.contains(&0x88),
+            "expected WordBusNumber descriptor (0x88) for bus range"
+        );
+
+        // AML should contain DWordMemory descriptor (tag 0x87)
+        // for the 32-bit MMIO window.
+        assert!(
+            aml.contains(&0x87),
+            "expected DWordMemory descriptor (0x87) for 32-bit MMIO window"
+        );
+
+        // AML should contain QWordMemory descriptor (tag 0x8A)
+        // for the 64-bit MMIO window.
+        assert!(
+            aml.windows(2).any(|w| w == [0x8A, 0x2B]),
+            "expected QWordMemory descriptor (0x8A) for 64-bit MMIO window"
+        );
+
+        // AML should contain the _OSC method (MethodOp = 0x14,
+        // followed by name "_OSC").
+        assert!(
+            aml.windows(4).any(|w| w == b"_OSC"),
+            "expected _OSC method in PCI root bridge"
+        );
 
         let tables = dev.extra_tables();
         assert_eq!(tables.len(), 1);
