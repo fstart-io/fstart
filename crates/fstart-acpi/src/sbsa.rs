@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 
 use acpi_tables::aml::{
     AddressSpace, AddressSpaceCacheable, Device, EISAName, Interrupt, Memory32Fixed, Method, Name,
-    Path, ResourceTemplate, Scope,
+    ResourceTemplate,
 };
 use acpi_tables::fadt::{FADTBuilder, Flags, PmProfile, FADT};
 use acpi_tables::madt::{
@@ -339,14 +339,18 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     );
 
     // --- COM0: PL011 UART ---
-    let uart_irq = Interrupt::new(true, false, false, false, config.uart_gsiv);
-    let uart_mmio = Memory32Fixed::new(true, config.uart_base as u32, 0x1000);
-    let uart_crs = ResourceTemplate::new(vec![&uart_mmio, &uart_irq]);
-    let uart_hid_val: &'static str = "ARMH0011";
-    let uart_hid = Name::new("_HID".into(), &uart_hid_val);
-    let uart_uid = Name::new("_UID".into(), &0u32);
-    let uart_crs_name = Name::new("_CRS".into(), &uart_crs);
-    let uart_dev = Device::new("COM0".into(), vec![&uart_hid, &uart_uid, &uart_crs_name]);
+    let uart_base = config.uart_base;
+    let uart_gsiv = config.uart_gsiv;
+    let uart_aml = fstart_acpi_macros::acpi_dsl! {
+        device("COM0") {
+            name("_HID", "ARMH0011");
+            name("_UID", 0u32);
+            name("_CRS", resource_template {
+                memory_32_fixed(ReadWrite, #{uart_base}, 0x1000u32);
+                interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_gsiv});
+            });
+        }
+    };
 
     // --- AHC0: AHCI ---
     let ahci_irq = Interrupt::new(true, false, false, false, config.ahci_gsiv);
@@ -367,18 +371,19 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     );
 
     // --- USB0: xHCI ---
-    let xhci_irq = Interrupt::new(true, false, false, false, config.xhci_gsiv);
-    let xhci_mmio = Memory32Fixed::new(true, config.xhci_base as u32, 0x10000);
-    let xhci_crs = ResourceTemplate::new(vec![&xhci_mmio, &xhci_irq]);
-    let xhci_hid_val: &'static str = "PNP0D10";
-    let xhci_hid = Name::new("_HID".into(), &xhci_hid_val);
-    let xhci_uid = Name::new("_UID".into(), &0u32);
-    let xhci_cca = Name::new("_CCA".into(), &1u32);
-    let xhci_crs_name = Name::new("_CRS".into(), &xhci_crs);
-    let xhci_dev = Device::new(
-        "USB0".into(),
-        vec![&xhci_hid, &xhci_uid, &xhci_cca, &xhci_crs_name],
-    );
+    let xhci_base = config.xhci_base;
+    let xhci_gsiv = config.xhci_gsiv;
+    let xhci_aml = fstart_acpi_macros::acpi_dsl! {
+        device("USB0") {
+            name("_HID", "PNP0D10");
+            name("_UID", 0u32);
+            name("_CCA", 1u32);
+            name("_CRS", resource_template {
+                memory_32_fixed(ReadWrite, #{xhci_base}, 0x10000u32);
+                interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{xhci_gsiv});
+            });
+        }
+    };
 
     // --- PCI0: PCIe Root Complex ---
     let pci_hid = Name::new("_HID".into(), &EISAName::new("PNP0A08"));
@@ -427,13 +432,28 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
         ],
     );
 
-    // Wrap all devices in \_SB scope.
-    let scope = Scope::new(
-        Path::new("\\_SB_"),
-        vec![&uart_dev, &ahci_dev, &xhci_dev, &pci_dev],
-    );
+    // Serialize remaining builder-constructed devices to raw bytes.
+    let mut ahci_aml = Vec::new();
+    ahci_dev.to_aml_bytes(&mut ahci_aml);
+    let mut pci_aml = Vec::new();
+    pci_dev.to_aml_bytes(&mut pci_aml);
 
-    scope.to_aml_bytes(&mut dsdt);
+    // Combine all device AML bytes and wrap in \_SB scope.
+    let mut all_device_aml = Vec::new();
+    all_device_aml.extend_from_slice(&uart_aml);
+    all_device_aml.extend_from_slice(&ahci_aml);
+    all_device_aml.extend_from_slice(&xhci_aml);
+    all_device_aml.extend_from_slice(&pci_aml);
+
+    // Build \_SB scope manually: ScopeOp(0x10) + PkgLength + NamePath + content
+    let name_bytes = b"\\_SB_";
+    let content_len = name_bytes.len() + all_device_aml.len();
+    let pkg_len = crate::encode_pkg_length(content_len);
+    dsdt.append_slice(&[0x10]); // ScopeOp
+    dsdt.append_slice(&pkg_len);
+    dsdt.append_slice(name_bytes);
+    dsdt.append_slice(&all_device_aml);
+
     dsdt.update_checksum();
     dsdt
 }

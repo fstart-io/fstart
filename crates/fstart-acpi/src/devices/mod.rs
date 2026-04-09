@@ -159,6 +159,10 @@ pub struct AhciAcpi<'a> {
 
 impl AhciAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
+    ///
+    /// Uses the builder API directly because `MmioDescriptor` auto-selects
+    /// `QWordMemory` vs `Memory32Fixed` based on the address -- AHCI
+    /// controllers can appear above 4 GiB on some platforms.
     pub fn dsdt_aml(&self) -> Vec<u8> {
         let mmio = MmioDescriptor::new(self.base, self.size as u64);
         let irq = Interrupt::new(true, false, false, false, self.gsiv);
@@ -167,17 +171,14 @@ impl AhciAcpi<'_> {
         let hid: &str = "LNRO0015";
         let hid = Name::new("_HID".into(), &hid);
         let uid = Name::new("_UID".into(), &0u32);
-        // _CCA = 1: cache-coherent access (required for ARM DMA-capable devices)
         let cca = Name::new("_CCA".into(), &1u32);
         let crs_name = Name::new("_CRS".into(), &crs);
 
         // _CLS: PCI class code for SATA AHCI (0x01 / 0x06 / 0x01)
-        // Use PackageBuilder to construct the class code package.
-        let mut cls_pkg = acpi_tables::aml::PackageBuilder::new();
-        cls_pkg.add_element(&0x01u8); // Base Class: Mass Storage
-        cls_pkg.add_element(&0x06u8); // Sub Class: SATA
-        cls_pkg.add_element(&0x01u8); // Programming Interface: AHCI 1.0
-        let cls = Name::new("_CLS".into(), &cls_pkg);
+        let cls = Name::new(
+            "_CLS".into(),
+            &acpi_tables::aml::Package::new(vec![&0x01u8, &0x06u8, &0x01u8]),
+        );
 
         let dev = Device::new(self.name.into(), vec![&hid, &uid, &cca, &crs_name, &cls]);
 
