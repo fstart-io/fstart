@@ -114,6 +114,9 @@ pub enum DslItem {
         #[allow(dead_code)]
         span: Span,
     },
+    /// `#{expr}` -- bare interpolation at statement level.
+    /// The expression must implement `Aml`.
+    RawExpr { expr: TokenStream },
 }
 
 /// OperationRegion address space.
@@ -357,7 +360,13 @@ impl Parser {
                     )),
                 }
             }
-            other => Err(Error::new(other.span(), "expected DSL keyword")),
+            // #{expr} -- bare interpolation at statement level
+            TokenTree::Punct(p) if p.as_char() == '#' => {
+                self.advance(); // consume '#'
+                let (expr, _) = self.expect_group(Delimiter::Brace)?;
+                Ok(DslItem::RawExpr { expr })
+            }
+            other => Err(Error::new(other.span(), "expected DSL keyword or #{expr}")),
         }
     }
 
