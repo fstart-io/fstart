@@ -693,21 +693,13 @@ register_structs! {
 #[test]
 fn test_x86_host_bridge_register_structs() {
     // --- tock_acpi_field! derives offsets from MchPciConfig layout ---
-    let mchp = fstart_acpi::tock_acpi_field!(MchPciConfig, "MCHP", PCIConfig, DWord, [
-        epbar: u32, NB_EPBAR::Register,
-        mchbar: u32, NB_MCHBAR::Register,
-        pxbar: u32, NB_PXBAR::Register,
-        dmibar: u32, NB_DMIBAR::Register,
-        pam0: u8, NB_PAM0::Register,
-        pam1: u8, NB_PAM1::Register,
-        pam2: u8, NB_PAM2::Register,
-        pam3: u8, NB_PAM3::Register,
-        pam4: u8, NB_PAM4::Register,
-        pam5: u8, NB_PAM5::Register,
-        pam6: u8, NB_PAM6::Register,
-        tolud: u8, NB_TOLUD::Register,
-        tom: u16, NB_TOM::Register,
-    ]);
+    let mchp = fstart_acpi::tock_acpi_field!(
+        MchPciConfig,
+        "MCHP",
+        PCIConfig,
+        DWord,
+        [epbar, mchbar, pxbar, dmibar, pam0, pam1, pam2, pam3, pam4, pam5, pam6, tolud, tom,]
+    );
 
     let aml: Vec<u8> = acpi_dsl! {
         device("MCHC") {
@@ -738,21 +730,13 @@ fn test_x86_host_bridge_register_structs() {
 
     // Verify the OpRegion+Field output is byte-identical to manual offsets.
     // Rebuild since `mchp` was moved into acpi_dsl!.
-    let mchp_again = fstart_acpi::tock_acpi_field!(MchPciConfig, "MCHP", PCIConfig, DWord, [
-        epbar: u32, NB_EPBAR::Register,
-        mchbar: u32, NB_MCHBAR::Register,
-        pxbar: u32, NB_PXBAR::Register,
-        dmibar: u32, NB_DMIBAR::Register,
-        pam0: u8, NB_PAM0::Register,
-        pam1: u8, NB_PAM1::Register,
-        pam2: u8, NB_PAM2::Register,
-        pam3: u8, NB_PAM3::Register,
-        pam4: u8, NB_PAM4::Register,
-        pam5: u8, NB_PAM5::Register,
-        pam6: u8, NB_PAM6::Register,
-        tolud: u8, NB_TOLUD::Register,
-        tom: u16, NB_TOM::Register,
-    ]);
+    let mchp_again = fstart_acpi::tock_acpi_field!(
+        MchPciConfig,
+        "MCHP",
+        PCIConfig,
+        DWord,
+        [epbar, mchbar, pxbar, dmibar, pam0, pam1, pam2, pam3, pam4, pam5, pam6, tolud, tom,]
+    );
     let mchp_manual = build_multi_register_field(
         "MCHP",
         OpRegionSpace::PCIConfig,
