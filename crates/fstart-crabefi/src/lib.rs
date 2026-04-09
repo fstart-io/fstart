@@ -10,7 +10,7 @@
 
 use core::fmt;
 
-// Type aliases for generated code convenience.
+// Type aliases and re-exports for generated code convenience.
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type PlatformConfig<'a> = crabefi::PlatformConfig<'a>;
@@ -77,6 +77,15 @@ unsafe impl<C: fstart_services::Console + ?Sized> Send for ConsoleAdapter<'_, C>
 
 /// Wraps an fstart [`BlockDevice`](fstart_services::BlockDevice) as a CrabEFI
 /// [`BlockDevice`](crabefi::BlockDevice).
+///
+/// fstart's `BlockDevice` uses byte-offset addressing with `&self` (MMIO
+/// interior mutability) and returns `Result<usize, ServiceError>`.
+/// CrabEFI's `BlockDevice` uses LBA-based addressing with `&mut self` and
+/// returns `Result<(), BlockError>`.
+///
+/// The adapter translates LBA → byte offset (`lba * block_size`) and
+/// loops reads until the full request is satisfied, mapping errors to
+/// [`crabefi::BlockError::DeviceError`].
 pub struct BlockDeviceAdapter<'a> {
     inner: &'a dyn fstart_services::BlockDevice,
     name: &'a str,
@@ -84,6 +93,8 @@ pub struct BlockDeviceAdapter<'a> {
 
 impl<'a> BlockDeviceAdapter<'a> {
     /// Create a new adapter wrapping an fstart block device.
+    ///
+    /// `name` is displayed in CrabEFI's boot menu (e.g. `"SD/MMC"`).
     pub fn new(inner: &'a dyn fstart_services::BlockDevice, name: &'a str) -> Self {
         Self { inner, name }
     }

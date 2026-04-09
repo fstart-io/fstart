@@ -1,0 +1,185 @@
+// Board definition for Sipeed Lichee RV Dock — CrabEFI UEFI payload.
+//
+// SoC:    Allwinner D1 (T-Head C906 RISC-V 64, RV64IMAFDC)
+// DRAM:   512 MB DDR3 at 0x40000000
+// SRAM:   32 KB at 0x00020000 (BROM loads eGON from boot medium)
+// UART:   UART0 at 0x02500000 (snps,dw-apb-uart) — PB8=TX, PB9=RX
+// MMC:    MMC0 at 0x04020000 — SD card (boot + UEFI ESP)
+//
+// Three-stage boot flow:
+//   1. D1 BROM loads eGON.BT0 image from SD card into SRAM at 0x20000
+//   2. Bootblock (SRAM): clock init, UART, DRAM init, load main from SD
+//   3. Main (DRAM, M-mode): UART, MMC, read FFS from SD, load DTB from
+//      FFS, verify signature, load OpenSBI + uefi stage, boot OpenSBI
+//   4. UEFI (DRAM, S-mode): OpenSBI enters via mret with fresh stack.
+//      Init UART + MMC, pass MMC as platform block device to CrabEFI.
+//      CrabEFI discovers GPT/ESP on the SD card and boots GRUB/Linux.
+//
+// SD card layout:
+//   [0x0000] GPT header (LBA 0-33)
+//   [0x2000] eGON header + bootblock (loaded by BROM into SRAM)
+//   [0x2000+] rest of FFS (main stage, uefi stage, OpenSBI, DTB, manifest)
+//   [partition 1] EFI System Partition (FAT32 with GRUB, kernel, initramfs)
+
+(
+    name: "licheerv-dock-uefi",
+    platform: Riscv64,
+
+    memory: (
+        regions: [
+            // SRAM — bootblock runs here (loaded by BROM from boot medium).
+            ( name: "sram", base: 0x00020000, size: 0x8000, kind: Ram ),
+            // DRAM — available after DramInit. 512 MB DDR3.
+            ( name: "dram", base: 0x40000000, size: 0x20000000, kind: Ram ),
+        ],
+        flash_base: None,
+        flash_size: None,
+    ),
+
+    devices: [
+        // Allwinner D1 CCU — clock tree + UART GPIO pin mux.
+        (
+            name: "ccu0",
+            driver: SunxiD1Ccu((
+                ccu_base: 0x02001000,
+                pio_base: 0x02000000,
+                uart_index: 0,
+            )),
+            services: ["ClockController"],
+        ),
+        // UART0 — debug console on PB8 (TX) / PB9 (RX).
+        (
+            name: "uart0",
+            driver: Ns16550((
+                base_addr: 0x02500000,
+                clock_freq: 24000000,
+                baud_rate: 115200,
+                reg_shift: 2,
+                reg_width: 4,
+            )),
+            services: ["Console"],
+        ),
+        // Allwinner D1 DRAM controller — DDR3, 792 MHz.
+        (
+            name: "dramc0",
+            driver: SunxiD1Dramc((
+                dram_clk: 792,
+                dram_type: 3,
+                dram_zq: 0x007B7BFB,
+                dram_odt_en: 1,
+                dram_mr1: 0x42,
+                dram_tpr11: 0x870000,
+                dram_tpr12: 0x24,
+                dram_tpr13: 0x34050100,
+            )),
+            services: ["MemoryController"],
+        ),
+        // SD card controller (MMC0) — boot medium + CrabEFI block device.
+        (
+            name: "mmc0",
+            driver: SunxiMmc(Sun20iD1(
+                base_addr: 0x04020000,
+                ccu_base: 0x02001000,
+                pio_base: 0x02000000,
+                mmc_index: 0,
+            )),
+            services: ["BlockDevice"],
+        ),
+    ],
+
+    // Three-stage boot: bootblock (SRAM) → main (DRAM M-mode) → uefi (DRAM S-mode).
+    stages: MultiStage([
+        // Stage 0: bootblock — runs from SRAM.
+        // Initializes clocks, UART, DRAM, then loads the main stage from
+        // SD card into DRAM and jumps to it.
+        (
+            name: "bootblock",
+            capabilities: [
+                ClockInit( device: "ccu0" ),
+                ConsoleInit( device: "uart0" ),
+                DramInit( device: "dramc0" ),
+                DriverInit,
+                LoadNextStage(
+                    devices: [
+                        (name: "mmc0", base_offset: 0x2000),
+                    ],
+                    next_stage: "main",
+                ),
+            ],
+            load_addr: 0x00020000,
+            stack_size: 0x1000,
+            runs_from: Ram,
+        ),
+        // Stage 1: main — runs from DRAM in M-mode.
+        // Reinitializes UART + MMC, reads FFS from SD card, loads
+        // DTB + OpenSBI + uefi stage from FFS, then boots OpenSBI
+        // which transitions to the uefi stage in S-mode.
+        (
+            name: "main",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                DriverInit,
+                BootMedia(AutoDevice(
+                    devices: [
+                        (name: "mmc0", offset: 0x2000, size: 0x1000000),
+                    ],
+                )),
+                SigVerify,
+                FdtPrepare,
+                FirmwareBoot( next_stage: "uefi" ),
+            ],
+            load_addr: 0x41000000,
+            stack_size: 0x10000,
+            // FFS + crypto + FDT patching need alloc.
+            heap_size: Some(0x10000),
+            runs_from: Ram,
+            // Place data/BSS/stack after OpenSBI (at 0x40100000).
+            data_addr: Some(0x40200000),
+        ),
+        // Stage 2: uefi — runs from DRAM in S-mode.
+        // Entered by OpenSBI via mret with fresh stack/BSS. Reinitializes
+        // UART + MMC from config, wraps MMC as a CrabEFI BlockDevice, and
+        // calls CrabEFI's init_platform().
+        (
+            name: "uefi",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                DriverInit,
+                PayloadLoad,
+            ],
+            load_addr: 0x41400000,
+            stack_size: 0x800000,
+            heap_size: Some(0x100000),
+            runs_from: Ram,
+        ),
+    ]),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+
+    mode: Rigid,
+
+    // CrabEFI UEFI payload — linked as a library, called via init_platform().
+    // OpenSBI provides M-mode services (SBI timer, IPI, reset).
+    // The DTB is bundled in FFS and loaded by FdtPrepare in the main stage,
+    // then passed through OpenSBI to the uefi stage.
+    payload: Some((
+        kind: UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: Override("sun20i-d1-lichee-rv-dock.dtb"),
+        dtb_addr: Some(0x47F00000),
+        src_dtb_addr: None,
+        bootargs: None,
+        firmware: Some((
+            kind: OpenSbi,
+            file: "fw_dynamic.bin",
+            load_addr: 0x40100000,
+        )),
+    )),
+
+    soc_image_format: AllwinnerEgon,
+)
