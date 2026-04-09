@@ -41,12 +41,23 @@ pub fn prepare(
 
     // Allocate a heap buffer for the ACPI tables. The bump allocator
     // gives a stable DRAM address that persists until reset.
-    const BUF_SIZE: usize = 64 * 1024;
+    //
+    // 128 KiB provides headroom for boards with large ACPI namespaces
+    // (dozens of devices, IORT with many ID mappings). Increase if a
+    // board exceeds this limit.
+    const BUF_SIZE: usize = 128 * 1024;
     let acpi_buf = vec![0u8; BUF_SIZE];
     let acpi_addr = acpi_buf.as_ptr() as u64;
 
     let acpi_len =
         fstart_acpi::platform::assemble_and_write(acpi_addr, platform, &dsdt_aml, &extra_tables);
+
+    assert!(
+        acpi_len <= BUF_SIZE,
+        "ACPI tables ({} bytes) exceed buffer size ({} bytes)",
+        acpi_len,
+        BUF_SIZE,
+    );
 
     // Keep the buffer alive — tables must persist for the OS.
     core::mem::forget(acpi_buf);

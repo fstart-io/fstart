@@ -109,21 +109,29 @@ pub fn load_fit_components(
 
     // Step 5: Extract ramdisk if present and copy to its load address.
     if let Some(ref rd) = boot.ramdisk {
-        if let Ok(rd_data) = rd.data() {
-            if let Some(rd_load) = rd.load_addr() {
-                fstart_log::info!(
-                    "FIT: loading ramdisk ({} bytes) to {}",
-                    rd_data.len(),
-                    fstart_log::Hex(rd_load)
-                );
-                // SAFETY: load address points to writable RAM per board config.
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        rd_data.as_ptr(),
-                        rd_load as *mut u8,
+        match rd.data() {
+            Ok(rd_data) => match rd.load_addr() {
+                Some(rd_load) => {
+                    fstart_log::info!(
+                        "FIT: loading ramdisk ({} bytes) to {}",
                         rd_data.len(),
+                        fstart_log::Hex(rd_load)
                     );
+                    // SAFETY: load address points to writable RAM per board config.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            rd_data.as_ptr(),
+                            rd_load as *mut u8,
+                            rd_data.len(),
+                        );
+                    }
                 }
+                None => {
+                    fstart_log::warn!("FIT: ramdisk has no load address, skipping");
+                }
+            },
+            Err(_) => {
+                fstart_log::warn!("FIT: failed to read ramdisk data, skipping");
             }
         }
     }
