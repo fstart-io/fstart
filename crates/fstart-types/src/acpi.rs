@@ -20,15 +20,22 @@ pub struct AcpiConfig {
 /// Platform-specific ACPI table parameters.
 ///
 /// Each variant carries the parameters needed for platform-level tables
-/// (MADT, GTDT, FADT) that describe the interrupt controller, timers,
-/// and power management model.
+/// (MADT, GTDT/HPET, FADT) that describe the interrupt controller,
+/// timers, and power management model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AcpiPlatform {
-    /// ARM platform — GICv3, generic timers, HW-reduced ACPI with PSCI.
+    /// ARM platform -- GICv3, generic timers, HW-reduced ACPI with PSCI.
     ///
     /// Applicable to any ARM system using GICv3 and generic timers:
     /// SBSA servers, QEMU virt, real hardware.
     Arm(ArmPlatformAcpi),
+
+    /// x86 platform -- Local APIC + I/O APIC, optional HPET.
+    ///
+    /// Applicable to any x86/x86_64 system with APIC interrupt
+    /// controller.  Supports both legacy (8259 PIC) and modern
+    /// (HW-reduced) configurations.
+    X86(X86PlatformAcpi),
 }
 
 /// ARM platform ACPI parameters.
@@ -224,4 +231,78 @@ pub struct AcpiPcieRootDevice {
 
 fn default_bus_range() -> (u8, u8) {
     (0, 0xFF)
+}
+
+// ---------------------------------------------------------------------------
+// x86 platform ACPI types
+// ---------------------------------------------------------------------------
+
+/// x86 platform ACPI parameters.
+///
+/// Describes the APIC interrupt controller, optional HPET, and
+/// boot configuration for MADT, HPET, and FADT generation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct X86PlatformAcpi {
+    /// Number of CPUs.
+    pub num_cpus: u32,
+    /// Local APIC base address (usually `0xFEE0_0000`).
+    #[serde(default = "default_lapic_base")]
+    pub lapic_base: u64,
+    /// I/O APIC entries.
+    pub ioapics: heapless::Vec<IoApicEntry, 4>,
+    /// Interrupt Source Override entries (ISA IRQ remapping).
+    ///
+    /// The most common override maps ISA IRQ 0 (PIT timer) to GSI 2.
+    #[serde(default)]
+    pub isos: heapless::Vec<IsoEntry, 16>,
+    /// HPET base address (optional).
+    ///
+    /// If `None`, the platform uses the PM Timer from FADT instead.
+    #[serde(default)]
+    pub hpet_base: Option<u64>,
+    /// Whether legacy devices (8259 PIC, ISA bus) are present.
+    ///
+    /// Controls the MADT `PCAT_COMPAT` flag and FADT legacy fields.
+    #[serde(default)]
+    pub legacy_devices: bool,
+    /// SCI interrupt number (System Control Interrupt for ACPI events).
+    #[serde(default = "default_sci_irq")]
+    pub sci_irq: u8,
+}
+
+/// I/O APIC configuration for x86 MADT.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct IoApicEntry {
+    /// I/O APIC ID.
+    pub id: u8,
+    /// Memory-mapped base address.
+    pub base: u64,
+    /// Global System Interrupt base (first GSI handled by this I/O APIC).
+    pub gsi_base: u32,
+}
+
+/// Interrupt Source Override (ISO) for x86 MADT.
+///
+/// Maps an ISA interrupt to a different GSI with specified
+/// trigger/polarity settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct IsoEntry {
+    /// Bus source (0 = ISA).
+    #[serde(default)]
+    pub bus: u8,
+    /// Source IRQ (ISA IRQ number).
+    pub source: u8,
+    /// Global System Interrupt target.
+    pub gsi: u32,
+    /// MPS INTI flags (trigger mode and polarity).
+    #[serde(default)]
+    pub flags: u16,
+}
+
+fn default_lapic_base() -> u64 {
+    0xFEE0_0000
+}
+
+fn default_sci_irq() -> u8 {
+    9
 }

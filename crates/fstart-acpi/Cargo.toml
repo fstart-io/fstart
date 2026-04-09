@@ -8,6 +8,7 @@ license.workspace = true
 default = ["arm"]
 std = []
 arm = []
+x86 = []
 
 [dependencies]
 acpi_tables = "0.2"
