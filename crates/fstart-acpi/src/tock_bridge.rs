@@ -69,21 +69,22 @@ where
         .collect();
     entries.sort_by_key(|&(shift, _, _)| shift);
 
+    // Compress tock-registers names to 4-char ACPI NameSegs.
+    // Short names (<= 4) are padded with '_'.
+    // Long names (> 4) are truncated; collisions are resolved by
+    // replacing the last character with a digit (0-9).
+    let acpi_names = compress_names(entries.iter().map(|(_, _, n)| *n).collect());
+
     let mut result = Vec::new();
     let mut bit_pos: usize = 0;
 
-    for (shift, width, name) in &entries {
+    for ((shift, width, _), acpi_name) in entries.iter().zip(acpi_names.iter()) {
         // Insert gap if there's unnamed space before this field.
         if *shift > bit_pos {
             result.push(FieldEntry::Reserved(*shift - bit_pos));
         }
 
-        // Named field: pad name to 4 bytes with '_'.
-        let mut name_bytes = [b'_'; 4];
-        for (i, b) in name.bytes().take(4).enumerate() {
-            name_bytes[i] = b;
-        }
-        result.push(FieldEntry::Named(name_bytes, *width));
+        result.push(FieldEntry::Named(*acpi_name, *width));
         bit_pos = *shift + *width;
     }
 
@@ -93,6 +94,48 @@ where
     }
 
     result
+}
+
+/// Compress a list of tock-registers field names to 4-char ACPI NameSegs.
+///
+/// - Names <= 4 chars: padded with `_` (e.g., `TXE` -> `TXE_`).
+/// - Names > 4 chars: truncated to first 4 chars (e.g., `UARTEN` -> `UART`).
+/// - Collisions from truncation: last char replaced with digit suffix
+///   (e.g., two names starting with `UART` -> `UART`, `UAR0`; three ->
+///   `UART`, `UAR0`, `UAR1`).
+fn compress_names(names: Vec<&str>) -> Vec<[u8; 4]> {
+    // First pass: truncate/pad all names to 4 bytes.
+    let mut candidates: Vec<[u8; 4]> = names
+        .iter()
+        .map(|name| {
+            let mut buf = [b'_'; 4];
+            for (i, b) in name.bytes().take(4).enumerate() {
+                buf[i] = b;
+            }
+            buf
+        })
+        .collect();
+
+    // Second pass: detect and resolve collisions.
+    // For each collision group, keep the first occurrence as-is and
+    // disambiguate subsequent ones by replacing the last char with 0-9.
+    let len = candidates.len();
+    for i in 0..len {
+        let mut suffix = 0u8;
+        for j in (i + 1)..len {
+            if candidates[j] == candidates[i] {
+                // Collision: disambiguate candidates[j].
+                let mut fixed = candidates[i];
+                fixed[3] = b'0' + suffix;
+                suffix += 1;
+                // If the first occurrence hasn't been disambiguated yet
+                // and we're on the first collision, also fix the later one.
+                candidates[j] = fixed;
+            }
+        }
+    }
+
+    candidates
 }
 
 /// Count the number of set bits in a UIntLike mask.
@@ -375,6 +418,8 @@ pub fn build_multi_register_field(
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use tock_registers::register_bitfields;
 
@@ -633,5 +678,104 @@ mod tests {
         assert!(aml.windows(4).any(|w| w == b"PM1H"), "PAM1.PM1H field");
         assert!(aml.windows(4).any(|w| w == b"TLUD"), "TOLUD.TLUD field");
         assert!(aml.windows(4).any(|w| w == b"TOM_"), "TOM.TOM_ field");
+    }
+
+    // ---------------------------------------------------------------
+    // compress_names tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_compress_short_names() {
+        // Names <= 4 chars: padded with '_'.
+        let result = compress_names(vec!["TXE", "RXE", "DR"]);
+        assert_eq!(result, vec![*b"TXE_", *b"RXE_", *b"DR__"]);
+    }
+
+    #[test]
+    fn test_compress_exact_4_chars() {
+        let result = compress_names(vec!["EPEN", "MHEN", "TLUD"]);
+        assert_eq!(result, vec![*b"EPEN", *b"MHEN", *b"TLUD"]);
+    }
+
+    #[test]
+    fn test_compress_long_names_no_collision() {
+        // Names > 4 chars truncated to first 4.
+        let result = compress_names(vec!["UARTEN", "FIFO_EN", "BYPASS"]);
+        assert_eq!(result, vec![*b"UART", *b"FIFO", *b"BYPA"]);
+    }
+
+    #[test]
+    fn test_compress_long_names_with_collision() {
+        // Two names that truncate to the same 4 chars.
+        // First keeps its truncated name, second gets last char replaced with '0'.
+        let result = compress_names(vec!["UARTEN", "UARTDIS"]);
+        assert_eq!(result[0], *b"UART");
+        assert_eq!(result[1], *b"UAR0");
+    }
+
+    #[test]
+    fn test_compress_triple_collision() {
+        // Three names truncating to "FIFO".
+        let result = compress_names(vec!["FIFO_EN", "FIFO_RST", "FIFO_CLR"]);
+        assert_eq!(result[0], *b"FIFO");
+        assert_eq!(result[1], *b"FIF0");
+        assert_eq!(result[2], *b"FIF1");
+    }
+
+    #[test]
+    fn test_compress_mixed() {
+        // Mix of short, exact, long, and colliding names.
+        let result = compress_names(vec!["TX", "RXFE", "UARTEN", "UARTCLK", "VCO_GAIN"]);
+        assert_eq!(result[0], *b"TX__");
+        assert_eq!(result[1], *b"RXFE");
+        assert_eq!(result[2], *b"UART");
+        assert_eq!(result[3], *b"UAR0"); // collision with UART
+        assert_eq!(result[4], *b"VCO_");
+    }
+
+    /// Test that tock_field_entries correctly compresses long field names
+    /// and the resulting FieldEntry values have valid 4-byte names.
+    #[test]
+    fn test_tock_field_entries_long_names() {
+        register_bitfields! [u32,
+            LONG_NAMES_REG [
+                UARTEN OFFSET(0) NUMBITS(1) [],
+                UARTCLK OFFSET(1) NUMBITS(1) [],
+                FIFO_ENABLE OFFSET(4) NUMBITS(1) [],
+                FIFO_RESET OFFSET(5) NUMBITS(1) [],
+                SHORT OFFSET(8) NUMBITS(1) []
+            ]
+        ];
+
+        let entries = tock_field_entries::<u32, LONG_NAMES_REG::Register>(32);
+
+        // Collect named entries.
+        let named: Vec<([u8; 4], usize)> = entries
+            .iter()
+            .filter_map(|e| match e {
+                FieldEntry::Named(n, b) => Some((*n, *b)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(named.len(), 5);
+
+        // UARTEN and UARTCLK collide on "UART" -> first keeps UART, second gets UAR0.
+        assert_eq!(named[0].0, *b"UART");
+        assert_eq!(named[1].0, *b"UAR0");
+        // FIFO_ENABLE and FIFO_RESET collide on "FIFO" -> FIFO and FIF0.
+        assert_eq!(named[2].0, *b"FIFO");
+        assert_eq!(named[3].0, *b"FIF0");
+        // SHORT fits in 4 chars -> SHOR.
+        assert_eq!(named[4].0, *b"SHOR");
+
+        // All names must be unique.
+        let name_set: alloc::collections::BTreeSet<[u8; 4]> =
+            named.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            name_set.len(),
+            named.len(),
+            "all compressed names must be unique"
+        );
     }
 }
