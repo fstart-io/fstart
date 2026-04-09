@@ -160,31 +160,42 @@ pub struct AhciAcpi<'a> {
 impl AhciAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
     ///
-    /// Uses the builder API directly because `MmioDescriptor` auto-selects
-    /// `QWordMemory` vs `Memory32Fixed` based on the address -- AHCI
-    /// controllers can appear above 4 GiB on some platforms.
+    /// Selects `memory_32_fixed` or `qword_memory` depending on whether
+    /// the MMIO base address fits within 32 bits.
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let mmio = MmioDescriptor::new(self.base, self.size as u64);
-        let irq = Interrupt::new(true, false, false, false, self.gsiv);
-        let crs = ResourceTemplate::new(vec![&mmio, &irq]);
-
-        let hid: &str = "LNRO0015";
-        let hid = Name::new("_HID".into(), &hid);
-        let uid = Name::new("_UID".into(), &0u32);
-        let cca = Name::new("_CCA".into(), &1u32);
-        let crs_name = Name::new("_CRS".into(), &crs);
-
-        // _CLS: PCI class code for SATA AHCI (0x01 / 0x06 / 0x01)
-        let cls = Name::new(
-            "_CLS".into(),
-            &acpi_tables::aml::Package::new(vec![&0x01u8, &0x06u8, &0x01u8]),
-        );
-
-        let dev = Device::new(self.name.into(), vec![&hid, &uid, &cca, &crs_name, &cls]);
-
-        let mut bytes = Vec::new();
-        dev.to_aml_bytes(&mut bytes);
-        bytes
+        let name = self.name;
+        let gsiv = self.gsiv;
+        if self.base + self.size as u64 <= u32::MAX as u64 {
+            let base = self.base as u32;
+            let size = self.size;
+            fstart_acpi_macros::acpi_dsl! {
+                device(#{name}) {
+                    name("_HID", "LNRO0015");
+                    name("_UID", 0u32);
+                    name("_CCA", 1u32);
+                    name("_CLS", package(0x01u8, 0x06u8, 0x01u8));
+                    name("_CRS", resource_template {
+                        memory_32_fixed(ReadWrite, #{base}, #{size});
+                        interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                    });
+                }
+            }
+        } else {
+            let base = self.base;
+            let end = self.base + self.size as u64 - 1;
+            fstart_acpi_macros::acpi_dsl! {
+                device(#{name}) {
+                    name("_HID", "LNRO0015");
+                    name("_UID", 0u32);
+                    name("_CCA", 1u32);
+                    name("_CLS", package(0x01u8, 0x06u8, 0x01u8));
+                    name("_CRS", resource_template {
+                        qword_memory(NotCacheable, ReadWrite, #{base}, #{end});
+                        interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -272,67 +283,41 @@ impl PcieRootAcpi<'_> {
     ///   QWordMemory (64-bit MMIO), and optionally INTA-INTD interrupts
     /// - `_OSC` method (accepts all OS-requested capabilities)
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let hid = Name::new("_HID".into(), &"PNP0A08");
-        let cid = Name::new("_CID".into(), &"PNP0A03");
-        let seg = Name::new("_SEG".into(), &(self.segment as u32));
-        let bbn = Name::new("_BBN".into(), &(self.bus_start as u32));
-        // _CCA = 1: cache-coherent access (required for ARM)
-        let cca = Name::new("_CCA".into(), &1u32);
-        let uid = Name::new("_UID".into(), &0u32);
-
-        // _CRS: bus number range + MMIO windows + optional interrupts.
-        //
-        // WordBusNumber: declares the PCI bus number range this root
-        // bridge manages.  Without this, the OS cannot enumerate buses.
-        let bus_range =
-            AddressSpace::<u16>::new_bus_number(self.bus_start as u16, self.bus_end as u16);
-
-        // DWordMemory: 32-bit MMIO window for PCI BARs below 4 GiB.
-        let mmio32 = AddressSpace::<u32>::new_memory(
-            AddressSpaceCacheable::NotCacheable,
-            true, // read-write
-            self.mmio32_base,
-            self.mmio32_end,
-            None,
-        );
-
-        // QWordMemory: 64-bit MMIO window for PCI BARs above 4 GiB.
-        let mmio64 = AddressSpace::<u64>::new_memory(
-            AddressSpaceCacheable::NotCacheable,
-            true,
-            self.mmio64_base,
-            self.mmio64_end,
-            None,
-        );
-
-        // Build _CRS: bus range + MMIO windows + optional legacy IRQs.
-        let irq_a = Interrupt::new(true, false, false, false, self.irqs[0]);
-        let irq_b = Interrupt::new(true, false, false, false, self.irqs[1]);
-        let irq_c = Interrupt::new(true, false, false, false, self.irqs[2]);
-        let irq_d = Interrupt::new(true, false, false, false, self.irqs[3]);
-
-        let crs = ResourceTemplate::new(vec![
-            &bus_range, &mmio32, &mmio64, &irq_a, &irq_b, &irq_c, &irq_d,
-        ]);
-        let crs_name = Name::new("_CRS".into(), &crs);
-
-        // _OSC: Operating System Capabilities.
-        //
-        // Simplified version: accepts all OS-requested control by
-        // returning Arg3 (the capability buffer) unchanged.  A full
-        // implementation would mask unsupported capabilities, but for
-        // QEMU virtual hardware this is sufficient.
-        let osc_ret = acpi_tables::aml::Return::new(&acpi_tables::aml::Arg(3));
-        let osc = acpi_tables::aml::Method::new("_OSC".into(), 4, false, vec![&osc_ret]);
-
-        let dev = Device::new(
-            self.name.into(),
-            vec![&hid, &cid, &seg, &bbn, &cca, &uid, &crs_name, &osc],
-        );
-
-        let mut bytes = Vec::new();
-        dev.to_aml_bytes(&mut bytes);
-        bytes
+        let name = self.name;
+        let seg = self.segment as u32;
+        let bbn = self.bus_start as u32;
+        let bus_start = self.bus_start;
+        let bus_end = self.bus_end;
+        let mmio32_base = self.mmio32_base;
+        let mmio32_end = self.mmio32_end;
+        let mmio64_base = self.mmio64_base;
+        let mmio64_end = self.mmio64_end;
+        let irq_a = self.irqs[0];
+        let irq_b = self.irqs[1];
+        let irq_c = self.irqs[2];
+        let irq_d = self.irqs[3];
+        fstart_acpi_macros::acpi_dsl! {
+            device(#{name}) {
+                name("_HID", eisa_id("PNP0A08"));
+                name("_CID", eisa_id("PNP0A03"));
+                name("_SEG", #{seg});
+                name("_BBN", #{bbn});
+                name("_CCA", 1u32);
+                name("_UID", 0u32);
+                name("_CRS", resource_template {
+                    word_bus_number(#{bus_start}, #{bus_end});
+                    dword_memory(NotCacheable, ReadWrite, #{mmio32_base}, #{mmio32_end});
+                    qword_memory(NotCacheable, ReadWrite, #{mmio64_base}, #{mmio64_end});
+                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_a});
+                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_b});
+                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_c});
+                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_d});
+                });
+                method("_OSC", 4, NotSerialized) {
+                    ret(#{acpi_tables::aml::Arg(3)});
+                }
+            }
+        }
     }
 
     /// Produce standalone MCFG table for this PCIe root complex.
