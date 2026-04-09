@@ -209,21 +209,21 @@ pub struct XhciAcpi<'a> {
 impl XhciAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let mmio = MmioDescriptor::new(self.base, self.size as u64);
-        let irq = Interrupt::new(true, false, false, false, self.gsiv);
-        let crs = ResourceTemplate::new(vec![&mmio, &irq]);
-
-        let hid = Name::new("_HID".into(), &"PNP0D10");
-        let uid = Name::new("_UID".into(), &0u32);
-        // _CCA = 1: cache-coherent access (required for ARM DMA-capable devices)
-        let cca = Name::new("_CCA".into(), &1u32);
-        let crs_name = Name::new("_CRS".into(), &crs);
-
-        let dev = Device::new(self.name.into(), vec![&hid, &uid, &cca, &crs_name]);
-
-        let mut bytes = Vec::new();
-        dev.to_aml_bytes(&mut bytes);
-        bytes
+        let name = self.name;
+        let base = self.base;
+        let size = self.size;
+        let gsiv = self.gsiv;
+        fstart_acpi_macros::acpi_dsl! {
+            device(#{name}) {
+                name("_HID", "PNP0D10");
+                name("_UID", 0u32);
+                name("_CCA", 1u32);
+                name("_CRS", resource_template {
+                    memory_32_fixed(ReadWrite, #{base}, #{size});
+                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                });
+            }
+        }
     }
 }
 

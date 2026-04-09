@@ -13,6 +13,4 @@ x86 = []
 [dependencies]
 acpi_tables = "0.2"
 fstart-types = { path = "../fstart-types" }
-
-[dev-dependencies]
 fstart-acpi-macros = { path = "../fstart-acpi-macros" }
