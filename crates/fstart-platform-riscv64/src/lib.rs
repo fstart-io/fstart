@@ -21,7 +21,11 @@ pub mod entry;
 #[cfg(feature = "smode-entry")]
 pub mod entry_smode;
 
-#[cfg(feature = "sunxi")]
+// smode-entry takes priority: stages entered in S-mode by OpenSBI
+// use the S-mode _start regardless of SoC family.  The sunxi entry
+// (T-Head C906 CSR init, BROM register save) is only for the first
+// stage that boots from BROM in M-mode.
+#[cfg(all(feature = "sunxi", not(feature = "smode-entry")))]
 pub mod entry_sunxi;
 
 // ---------------------------------------------------------------------------
