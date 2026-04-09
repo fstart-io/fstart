@@ -463,6 +463,7 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let mp_init_body = mp_init_body(ctx);
     let boot_media_select_body = boot_media_select_body(ctx);
     let load_next_stage_body = load_next_stage_body(ctx);
+    let firmware_boot_body = firmware_boot_body(platform, ctx);
     let payload_load_body = payload_load_body(platform, ctx);
     let init_device_body = init_device_body(ctx);
     let init_all_devices_body = init_all_devices_body(ctx);
@@ -530,6 +531,10 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
 
             fn stage_load(&self, next_stage: &str) -> ! {
                 #stage_load_body
+            }
+
+            fn firmware_boot(&self, next_stage: &str) -> ! {
+                #firmware_boot_body
             }
 
             fn acpi_prepare(&mut self) {
@@ -1432,6 +1437,84 @@ fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
         fstart_log::error!(
             "stage_load: capability returned without jumping — halting",
         );
+        fstart_platform::halt()
+    }
+}
+
+fn firmware_boot_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+    if platform != Platform::Riscv64 {
+        return quote! {
+            let _ = next_stage;
+            todo!("FirmwareBoot is only supported on RISC-V")
+        };
+    }
+
+    if !ctx.ffs_stage {
+        return quote! {
+            let _ = next_stage;
+            todo!("board_gen::firmware_boot requires an FFS-using stage")
+        };
+    }
+
+    let Some(fw) = ctx
+        .config
+        .payload
+        .as_ref()
+        .and_then(|p| p.firmware.as_ref())
+    else {
+        return quote! { compile_error!("FirmwareBoot requires payload.firmware in board RON"); };
+    };
+    let fw_load_addr = hex_addr(fw.load_addr);
+    let dtb_addr_expr = if let Some(addr) = ctx.config.payload.as_ref().and_then(|p| p.dtb_addr) {
+        hex_addr(addr)
+    } else {
+        quote! { fstart_platform::boot_dtb_addr() }
+    };
+    let anchor = anchor_bytes_stmt();
+    let bm_usage = quote! {
+        fstart_log::info!("loading OpenSBI firmware...");
+        if !fstart_capabilities::load_ffs_file_by_type(
+            _anchor_bytes,
+            &_bm,
+            fstart_types::ffs::FileType::Firmware,
+        ) {
+            fstart_log::error!("FATAL: failed to load OpenSBI firmware");
+            fstart_platform::halt();
+        }
+
+        let _next_entry = match fstart_capabilities::load_stage_entry(
+            next_stage,
+            _anchor_bytes,
+            &_bm,
+        ) {
+            Some(addr) => addr,
+            None => {
+                fstart_log::error!("FATAL: failed to load stage '{}'", next_stage);
+                fstart_platform::halt();
+            }
+        };
+
+        let _fw_info = fstart_platform::FwDynamicInfo::new(
+            _next_entry,
+            fstart_platform::boot_hart_id(),
+        );
+        fstart_log::info!("booting OpenSBI -> stage '{}' at S-mode", next_stage);
+        fstart_platform::boot_linux_sbi(
+            #fw_load_addr,
+            fstart_platform::boot_hart_id(),
+            #dtb_addr_expr,
+            &_fw_info,
+        );
+    };
+    let none_body = quote! {
+        fstart_log::error!("firmware_boot: no boot media configured");
+    };
+    let match_body = match_boot_media(ctx, &bm_usage, "firmware_boot", &none_body);
+
+    quote! {
+        fstart_log::info!("capability: FirmwareBoot -> {}", next_stage);
+        #anchor
+        #match_body
         fstart_platform::halt()
     }
 }
@@ -2935,9 +3018,15 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
         hex_addr(addr)
     } else {
         match platform {
-            Platform::Aarch64 | Platform::Riscv64 => {
-                quote! { fstart_platform::boot_dtb_addr() }
-            }
+            Platform::Aarch64 => quote! { fstart_platform::boot_dtb_addr() },
+            Platform::Riscv64 => quote! {
+                {
+                    #[cfg(feature = "smode-entry")]
+                    { fstart_platform::boot_dtb_addr_smode() }
+                    #[cfg(not(feature = "smode-entry"))]
+                    { fstart_platform::boot_dtb_addr() }
+                }
+            },
             Platform::Armv7 | Platform::X86_64 => quote! { 0u64 },
         }
     };
@@ -2955,6 +3044,41 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
         },
     };
     let fdt_field = quote! { fdt: _fdt_blob, };
+
+    let block_device_indices: Vec<usize> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .filter(|idx| {
+            ctx.devices[*idx]
+                .services
+                .iter()
+                .any(|s| s.as_str() == "BlockDevice")
+        })
+        .collect();
+    let (block_device_setup, block_devices_field) = if block_device_indices.is_empty() {
+        (quote! {}, quote! { block_devices: &mut [], })
+    } else {
+        let mut adapter_decls = TokenStream::new();
+        let mut adapter_refs = Vec::new();
+        for (n, idx) in block_device_indices.iter().copied().enumerate() {
+            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+            let adapter = format_ident!("_crabefi_block_{}", n);
+            let name = ctx.devices[idx].name.as_str();
+            adapter_decls.extend(quote! {
+                let _block_ref = self.#field
+                    .as_ref()
+                    .unwrap_or_else(|| fstart_platform::halt());
+                let mut #adapter = fstart_crabefi::BlockDeviceAdapter::new(_block_ref, #name);
+            });
+            adapter_refs.push(quote! { &mut #adapter as &mut dyn fstart_crabefi::CrabEfiBlockDevice });
+        }
+        let block_count = proc_macro2::Literal::usize_unsuffixed(block_device_indices.len());
+        (
+            quote! {
+                #adapter_decls
+                let mut _crabefi_block_devices: [&mut dyn fstart_crabefi::CrabEfiBlockDevice; #block_count] = [#(#adapter_refs),*];
+            },
+            quote! { block_devices: &mut _crabefi_block_devices, },
+        )
+    };
 
     // BL31 load — aarch64 + ATF only.
     let bl31_boot = if let Some(fw) = payload.firmware.as_ref() {
@@ -3007,6 +3131,14 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
             quote! { reset: &_crabefi_reset, },
             quote! { let _crabefi_rng = fstart_crabefi::X86Rng::new(); },
             quote! { rng: Some(&_crabefi_rng), },
+        ),
+        Platform::Riscv64 => (
+            quote! { let _crabefi_timer = unsafe { fstart_crabefi::RiscvSbiTimer::from_fdt(_fdt_addr) }; },
+            quote! { timer: &_crabefi_timer, },
+            quote! { let _crabefi_reset = fstart_crabefi::SbiReset; },
+            quote! { reset: &_crabefi_reset, },
+            quote! {},
+            quote! { rng: None, },
         ),
         _ => (
             quote! { let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new(); },
@@ -3107,22 +3239,24 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
 
         #bl31_boot
 
+        #fdt_setup
+
         #timer_setup
         #reset_setup
         #rng_setup
         #console_setup
 
-        #fdt_setup
         #fdt_reservation_setup
         #memory_map_setup
 
         #fb_setup
+        #block_device_setup
 
         let _crabefi_config = fstart_crabefi::PlatformConfig {
             memory_map: _crabefi_memory_map,
             #timer_field
             #reset_field
-            block_devices: &mut [],
+            #block_devices_field
             variable_backend: None,
             #debug_output_field
             console_input: None,

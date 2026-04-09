@@ -277,6 +277,12 @@ fn cap_to_capop_tokens(cap: &Capability, ctx: &PlanCtx<'_>) -> TokenStream {
                 fstart_stage_runtime::CapOp::StageLoad { next_stage: #name }
             }
         }
+        C::FirmwareBoot { next_stage } => {
+            let name = next_stage.as_str();
+            quote! {
+                fstart_stage_runtime::CapOp::FirmwareBoot { next_stage: #name }
+            }
+        }
         C::AcpiPrepare => quote! { fstart_stage_runtime::CapOp::AcpiPrepare },
         C::SmBiosPrepare => quote! { fstart_stage_runtime::CapOp::SmBiosPrepare },
         C::AcpiLoad { device } => {

@@ -113,7 +113,7 @@ pub fn run(
                     let pflash_size = 32 * 1024 * 1024; // 32 MiB — VIRT_FLASH / 2
                     let pflash_path = create_pflash_image(binary, pflash_size)?;
 
-                    let args = vec![
+                    let mut args = vec![
                         "-machine".to_string(),
                         "virt".to_string(),
                         "-nographic".to_string(),
@@ -122,6 +122,16 @@ pub fn run(
                         "-drive".to_string(),
                         format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
                     ];
+
+                    // CrabEFI UEFI boards need NVMe for disk I/O (GRUB, etc.)
+                    // and more RAM for CrabEFI + GRUB + Linux.
+                    if board_name.contains("uefi") {
+                        // Default to 2 GiB RAM for UEFI boards if not overridden.
+                        if memory.is_none() {
+                            args.extend(["-m".to_string(), "2G".to_string()]);
+                        }
+                    }
+
                     (find_qemu("qemu-system-riscv64"), args)
                 }
             }

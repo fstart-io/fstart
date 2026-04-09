@@ -202,6 +202,11 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                         features.push("x86-static-page-tables".to_string());
                     }
                 }
+                if config.platform == Platform::Riscv64
+                    && stage_is_firmware_boot_target(stages.as_slice(), stage.name.as_str())
+                {
+                    features.push("smode-entry".to_string());
+                }
                 let features_str = features.join(",");
 
                 let stage_has_crabefi = stage
@@ -862,6 +867,16 @@ fn stage_uses_crabefi(config: &fstart_types::BoardConfig) -> bool {
         .payload
         .as_ref()
         .is_some_and(|p| p.kind == fstart_types::PayloadKind::UefiPayload)
+}
+
+/// Check whether `stage_name` is the explicit target of a FirmwareBoot capability.
+fn stage_is_firmware_boot_target(stages: &[fstart_types::StageConfig], stage_name: &str) -> bool {
+    stages.iter().any(|stage| {
+        stage.capabilities.iter().any(|cap| match cap {
+            Capability::FirmwareBoot { next_stage } => next_stage.as_str() == stage_name,
+            _ => false,
+        })
+    })
 }
 
 /// Check if a stage's capabilities require the SMBIOS feature.

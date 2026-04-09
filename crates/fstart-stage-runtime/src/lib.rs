@@ -277,6 +277,13 @@ pub trait Board: Sized {
     /// and calls `fstart_capabilities::stage_load`.  Halts on failure.
     fn stage_load(&self, next_stage: &str) -> !;
 
+    /// Executor arm for [`CapOp::FirmwareBoot`]. Diverges. `next_stage`
+    /// comes from the CapOp variant.
+    fn firmware_boot(&self, next_stage: &str) -> ! {
+        let _ = next_stage;
+        self.halt()
+    }
+
     /// Executor arm for [`CapOp::AcpiPrepare`].
     ///
     /// Generated adapter calls `fstart_capabilities::acpi_prepare`
@@ -587,6 +594,10 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
             CapOp::StageLoad { next_stage } => {
                 fstart_log::info!("stage-runtime: StageLoad('{}')", next_stage);
                 call_stage_load(&board, next_stage)
+            }
+            CapOp::FirmwareBoot { next_stage } => {
+                fstart_log::info!("stage-runtime: FirmwareBoot('{}')", next_stage);
+                board.firmware_boot(next_stage)
             }
             CapOp::AcpiPrepare => call_acpi_prepare(&mut board),
             CapOp::SmBiosPrepare => call_smbios_prepare(&board),

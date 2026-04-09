@@ -16,6 +16,10 @@ pub type MemoryType = crabefi::MemoryType;
 pub type PlatformConfig<'a> = crabefi::PlatformConfig<'a>;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
 
+/// Re-export CrabEFI's [`BlockDevice`](crabefi::BlockDevice) trait for use
+/// in generated code that casts platform block device adapters.
+pub use crabefi::BlockDevice as CrabEfiBlockDevice;
+
 /// Call `crabefi::init_platform()`. This is the entry point that never returns.
 pub fn init_platform(config: crabefi::PlatformConfig) -> ! {
     crabefi::init_platform(config)
@@ -68,6 +72,74 @@ impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> 
 unsafe impl<C: fstart_services::Console + ?Sized> Send for ConsoleAdapter<'_, C> {}
 
 // ---------------------------------------------------------------------------
+// BlockDevice → CrabEFI BlockDevice adapter
+// ---------------------------------------------------------------------------
+
+/// Wraps an fstart [`BlockDevice`](fstart_services::BlockDevice) as a CrabEFI
+/// [`BlockDevice`](crabefi::BlockDevice).
+pub struct BlockDeviceAdapter<'a> {
+    inner: &'a dyn fstart_services::BlockDevice,
+    name: &'a str,
+}
+
+impl<'a> BlockDeviceAdapter<'a> {
+    /// Create a new adapter wrapping an fstart block device.
+    pub fn new(inner: &'a dyn fstart_services::BlockDevice, name: &'a str) -> Self {
+        Self { inner, name }
+    }
+}
+
+impl crabefi::BlockDevice for BlockDeviceAdapter<'_> {
+    fn info(&self) -> crabefi::BlockDeviceInfo {
+        let block_size = self.inner.block_size();
+        let num_blocks = if block_size > 0 {
+            self.inner.size() / block_size as u64
+        } else {
+            0
+        };
+        crabefi::BlockDeviceInfo {
+            num_blocks,
+            block_size,
+            media_id: 0,
+            removable: true,
+            read_only: false,
+        }
+    }
+
+    fn read_blocks(
+        &mut self,
+        lba: u64,
+        count: u32,
+        buffer: &mut [u8],
+    ) -> Result<(), crabefi::BlockError> {
+        self.validate_read(lba, count, buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+
+        let block_size = self.inner.block_size() as u64;
+        let byte_offset = lba * block_size;
+        let total = count as u64 * block_size;
+
+        let mut done = 0u64;
+        while done < total {
+            let start = done as usize;
+            let end = total as usize;
+            match self.inner.read(byte_offset + done, &mut buffer[start..end]) {
+                Ok(0) => return Err(crabefi::BlockError::DeviceError),
+                Ok(n) => done += n as u64,
+                Err(_) => return Err(crabefi::BlockError::DeviceError),
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+// ---------------------------------------------------------------------------
 // EFI memory map construction
 // ---------------------------------------------------------------------------
 
@@ -90,6 +162,130 @@ pub unsafe fn fdt_page_aligned_size(fdt_addr: u64) -> u64 {
     // SAFETY: caller guarantees valid FDT at this address.
     let total = unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32)) } as u64;
     (total + 0xFFF) & !0xFFF // page-align up
+}
+
+/// Read the RISC-V timer frequency from an FDT blob.
+///
+/// Returns 10 MHz if the property is not found or the FDT is malformed.
+///
+/// # Safety
+///
+/// `fdt_addr` must point to a valid FDT blob, or be 0.
+pub unsafe fn fdt_read_timebase_frequency(fdt_addr: u64) -> u64 {
+    const DEFAULT_FREQ: u64 = 10_000_000;
+    if fdt_addr == 0 {
+        return DEFAULT_FREQ;
+    }
+
+    let ptr = fdt_addr as *const u8;
+    let magic = unsafe { u32::from_be(core::ptr::read_unaligned(ptr as *const u32)) };
+    if magic != 0xd00dfeed {
+        return DEFAULT_FREQ;
+    }
+
+    let totalsize = unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32)) }
+        as usize;
+    let off_struct = unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(8) as *const u32)) }
+        as usize;
+    let off_strings = unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(12) as *const u32)) }
+        as usize;
+    if off_struct >= totalsize || off_strings >= totalsize {
+        return DEFAULT_FREQ;
+    }
+
+    const FDT_BEGIN_NODE: u32 = 0x00000001;
+    const FDT_END_NODE: u32 = 0x00000002;
+    const FDT_PROP: u32 = 0x00000003;
+    const FDT_NOP: u32 = 0x00000004;
+    const FDT_END: u32 = 0x00000009;
+
+    let struct_base = unsafe { ptr.add(off_struct) };
+    let strings_base = unsafe { ptr.add(off_strings) };
+    let struct_len = totalsize - off_struct;
+    let strings_len = totalsize - off_strings;
+    let mut offset = 0usize;
+    let mut in_cpus = false;
+    let mut depth = 0u32;
+    let mut cpus_depth = 0u32;
+
+    while offset + 4 <= struct_len {
+        let token = unsafe {
+            u32::from_be(core::ptr::read_unaligned(
+                struct_base.add(offset) as *const u32,
+            ))
+        };
+        offset += 4;
+        match token {
+            FDT_BEGIN_NODE => {
+                let name_start = offset;
+                while offset < struct_len && unsafe { *struct_base.add(offset) } != 0 {
+                    offset += 1;
+                }
+                if offset >= struct_len {
+                    return DEFAULT_FREQ;
+                }
+                let name_len = offset - name_start;
+                offset = (offset + 1 + 3) & !3;
+                if depth == 1 && name_len == 4 {
+                    let name = unsafe {
+                        core::slice::from_raw_parts(struct_base.add(name_start), 4)
+                    };
+                    if name == b"cpus" {
+                        in_cpus = true;
+                        cpus_depth = depth + 1;
+                    }
+                }
+                depth += 1;
+            }
+            FDT_END_NODE => {
+                if in_cpus && depth == cpus_depth {
+                    in_cpus = false;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            FDT_PROP => {
+                if offset + 8 > struct_len {
+                    return DEFAULT_FREQ;
+                }
+                let val_len = unsafe {
+                    u32::from_be(core::ptr::read_unaligned(
+                        struct_base.add(offset) as *const u32,
+                    ))
+                } as usize;
+                let name_off = unsafe {
+                    u32::from_be(core::ptr::read_unaligned(
+                        struct_base.add(offset + 4) as *const u32,
+                    ))
+                } as usize;
+                offset += 8;
+                if offset + val_len > struct_len || name_off >= strings_len {
+                    return DEFAULT_FREQ;
+                }
+                if in_cpus && depth == cpus_depth {
+                    let target = b"timebase-frequency\0";
+                    if name_off + target.len() <= strings_len {
+                        let prop = unsafe {
+                            core::slice::from_raw_parts(strings_base.add(name_off), target.len())
+                        };
+                        if prop == target && val_len == 4 {
+                            let freq = unsafe {
+                                u32::from_be(core::ptr::read_unaligned(
+                                    struct_base.add(offset) as *const u32,
+                                ))
+                            };
+                            return freq as u64;
+                        }
+                    }
+                }
+                offset = (offset + val_len + 3) & !3;
+            }
+            FDT_NOP => {}
+            FDT_END => break,
+            _ => return DEFAULT_FREQ,
+        }
+    }
+
+    DEFAULT_FREQ
 }
 
 /// Build the EFI memory map with firmware regions carved out of RAM.
@@ -336,6 +532,87 @@ impl crabefi::ResetHandler for PsciReset {
         }
 
         #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = reset_type;
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RISC-V SBI Timer / Reset adapters
+// ---------------------------------------------------------------------------
+
+/// CrabEFI [`Timer`](crabefi::Timer) backed by the RISC-V `rdtime` CSR.
+pub struct RiscvSbiTimer {
+    freq: u64,
+}
+
+impl RiscvSbiTimer {
+    /// Create a timer with the given frequency in Hz.
+    pub fn new(freq: u64) -> Self {
+        Self { freq }
+    }
+
+    /// Create a timer by reading `/cpus/timebase-frequency` from an FDT.
+    ///
+    /// # Safety
+    ///
+    /// `fdt_addr` must point to a valid FDT blob, or be 0.
+    pub unsafe fn from_fdt(fdt_addr: u64) -> Self {
+        let freq = unsafe { fdt_read_timebase_frequency(fdt_addr) };
+        Self { freq }
+    }
+}
+
+impl crabefi::Timer for RiscvSbiTimer {
+    fn current_ticks(&self) -> u64 {
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            let value: u64;
+            core::arch::asm!("rdtime {}", out(reg) value, options(nomem, nostack, preserves_flags));
+            value
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            0
+        }
+    }
+
+    fn ticks_per_second(&self) -> u64 {
+        self.freq
+    }
+}
+
+/// CrabEFI [`ResetHandler`](crabefi::ResetHandler) using SBI SRST calls.
+pub struct SbiReset;
+
+impl crabefi::ResetHandler for SbiReset {
+    fn reset(&self, reset_type: crabefi::ResetType) -> ! {
+        #[cfg(target_arch = "riscv64")]
+        {
+            let srst_type: u64 = match reset_type {
+                crabefi::ResetType::Cold => 1,
+                crabefi::ResetType::Warm => 2,
+                crabefi::ResetType::Shutdown => 0,
+                _ => 1,
+            };
+            unsafe {
+                core::arch::asm!(
+                    "ecall",
+                    in("a0") srst_type,
+                    in("a1") 0u64,
+                    in("a6") 0u64,
+                    in("a7") 0x53525354u64,
+                    options(noreturn)
+                );
+            }
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
         {
             let _ = reset_type;
             loop {

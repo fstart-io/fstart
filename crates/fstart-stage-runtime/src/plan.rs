@@ -77,6 +77,9 @@ pub enum CapOp {
     /// `StageLoad { next_stage }` — load the named next stage from
     /// FFS into RAM and jump to it.  Does not return.
     StageLoad { next_stage: &'static str },
+    /// `FirmwareBoot { next_stage }` — load firmware and enter the named
+    /// next stage through platform firmware. Does not return.
+    FirmwareBoot { next_stage: &'static str },
     /// `AcpiPrepare` — generate ACPI tables from the board RON.
     AcpiPrepare,
     /// `SmBiosPrepare` — write SMBIOS tables from the board RON.
