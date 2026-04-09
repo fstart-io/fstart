@@ -16,6 +16,9 @@ extern crate alloc;
 #[cfg(feature = "arm")]
 pub mod arm;
 
+#[cfg(feature = "x86")]
+pub mod x86;
+
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -25,6 +28,8 @@ use acpi_tables::rsdp::Rsdp;
 use acpi_tables::sdt::Sdt;
 use acpi_tables::xsdt::XSDT;
 use acpi_tables::Aml;
+
+use crate::{copy_at, serialize};
 
 /// Size of a standard ACPI SDT header (signature + length + revision +
 /// checksum + OEMID + OEM table ID + OEM revision + creator ID + creator
@@ -38,14 +43,21 @@ const XSDT_ENTRY_SIZE: usize = 8;
 #[cfg(feature = "arm")]
 pub use arm::{ArmConfig, IortConfig, WatchdogConfig};
 
+// Re-export x86 types when available.
+#[cfg(feature = "x86")]
+pub use x86::{HpetConfig, IoApicConfig, IsoConfig, X86Config};
+
 /// Platform-specific ACPI configuration enum.
 ///
 /// Each variant carries the parameters for platform-level tables.
-/// Add new variants for new architectures (e.g., `X86` for APIC/HPET).
 pub enum PlatformConfig {
     /// ARM platform (GICv3, generic timers, HW-reduced ACPI + PSCI).
     #[cfg(feature = "arm")]
     Arm(ArmConfig),
+
+    /// x86 platform (Local APIC + I/O APIC, optional HPET).
+    #[cfg(feature = "x86")]
+    X86(X86Config),
 }
 
 /// FADT configuration — architecture-neutral parameters that control
@@ -83,10 +95,12 @@ pub fn assemble_and_write(
     device_extra_tables: &[Vec<u8>],
 ) -> usize {
     // Delegate to the platform module to build platform-specific
-    // tables (MADT, GTDT) and FADT configuration.
+    // tables (MADT, GTDT/HPET) and FADT configuration.
     let (platform_tables, fadt_config) = match platform {
         #[cfg(feature = "arm")]
         PlatformConfig::Arm(cfg) => arm::build_platform_tables(cfg),
+        #[cfg(feature = "x86")]
+        PlatformConfig::X86(cfg) => x86::build_platform_tables(cfg),
     };
 
     let data = assemble(
@@ -267,7 +281,7 @@ fn build_dsdt(device_aml: &[u8]) -> Sdt {
         // Build scope manually: ScopeOp + PkgLength + "\\_SB_" + device_aml
         let name_aml = encode_name_path(b"\\_SB_");
         let content_len = name_aml.len() + device_aml.len();
-        let pkg_len = encode_pkg_length(content_len);
+        let pkg_len = crate::encode_pkg_length(content_len);
 
         dsdt.append_slice(&[0x10]); // ScopeOp
         dsdt.append_slice(&pkg_len);
@@ -282,54 +296,6 @@ fn build_dsdt(device_aml: &[u8]) -> Sdt {
 /// Encode an AML name path.
 fn encode_name_path(name: &[u8]) -> Vec<u8> {
     name.to_vec()
-}
-
-/// Encode an AML PkgLength.
-///
-/// AML PkgLength encoding (ACPI spec 20.2.4):
-/// - 0..63: 1 byte (bits 0-5 = length)
-/// - 64..4095: 2 bytes (bit 6 set, bits 4-5 = byte count - 1)
-/// - etc.
-pub(crate) fn encode_pkg_length(content_len: usize) -> Vec<u8> {
-    // Total includes the PkgLength field itself.
-    let total1 = content_len + 1;
-    if total1 < 0x3F {
-        return vec![total1 as u8];
-    }
-
-    let total2 = content_len + 2;
-    if total2 < 0xFFF {
-        let byte0 = 0x40 | (total2 & 0x0F) as u8;
-        let byte1 = (total2 >> 4) as u8;
-        return vec![byte0, byte1];
-    }
-
-    let total3 = content_len + 3;
-    if total3 < 0xFFFFF {
-        let byte0 = 0x80 | (total3 & 0x0F) as u8;
-        let byte1 = (total3 >> 4) as u8;
-        let byte2 = (total3 >> 12) as u8;
-        return vec![byte0, byte1, byte2];
-    }
-
-    let total4 = content_len + 4;
-    let byte0 = 0xC0 | (total4 & 0x0F) as u8;
-    let byte1 = (total4 >> 4) as u8;
-    let byte2 = (total4 >> 12) as u8;
-    let byte3 = (total4 >> 20) as u8;
-    vec![byte0, byte1, byte2, byte3]
-}
-
-/// Serialize an Aml object to a Vec<u8>.
-pub(crate) fn serialize(aml: &dyn Aml) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    aml.to_aml_bytes(&mut bytes);
-    bytes
-}
-
-/// Copy `src` into `dst` at the given offset.
-pub(crate) fn copy_at(dst: &mut [u8], offset: usize, src: &[u8]) {
-    dst[offset..offset + src.len()].copy_from_slice(src);
 }
 
 #[cfg(test)]
@@ -411,9 +377,9 @@ mod tests {
     #[test]
     fn test_pkg_length_encoding() {
         // 1-byte
-        assert_eq!(encode_pkg_length(10), vec![11]);
+        assert_eq!(crate::encode_pkg_length(10), vec![11]);
         // 2-byte boundary
-        let pkg = encode_pkg_length(100);
+        let pkg = crate::encode_pkg_length(100);
         assert_eq!(pkg.len(), 2);
         assert!(pkg[0] & 0x40 != 0);
     }

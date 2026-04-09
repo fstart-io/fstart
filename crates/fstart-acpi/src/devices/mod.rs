@@ -20,7 +20,7 @@ use acpi_tables::aml::{
 use acpi_tables::mcfg::MCFG;
 use acpi_tables::Aml;
 
-use crate::platform::serialize;
+use crate::serialize;
 
 // ---------------------------------------------------------------------------
 // Auto-width MMIO descriptor — picks 32-bit vs 64-bit based on address range
