@@ -40,6 +40,7 @@ members = [
     "crates/fstart-stage",
     "crates/fstart-fit",
     "crates/fstart-acpi",
+    "crates/fstart-acpi-macros",
     "crates/fstart-smbios",
 ]
 
