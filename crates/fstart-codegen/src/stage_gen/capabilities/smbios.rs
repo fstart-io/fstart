@@ -1,14 +1,24 @@
 //! Code generation for SMBIOS table preparation.
+//!
+//! Emits a static [`SmbiosDesc`](fstart_capabilities::smbios::SmbiosDesc)
+//! descriptor from the board RON config and calls
+//! [`prepare`](fstart_capabilities::smbios::prepare) at runtime.
+//! All iteration logic (cache handle mapping, memory array linking) is
+//! in the library function — codegen only emits the data.
 
 use proc_macro2::{Literal, TokenStream};
-use quote::{format_ident, quote};
+use quote::quote;
 
+use fstart_types::memory::RegionKind;
 use fstart_types::BoardConfig;
+
+use super::super::tokens::hex_addr;
 
 /// Generate code for the SmBiosPrepare capability.
 ///
-/// Emits calls to `fstart_smbios::assemble_and_write` with all the
-/// table data from the board RON's `smbios` config section.
+/// Constructs a `fstart_capabilities::smbios::SmbiosDesc` struct literal
+/// from the board RON's `smbios` config, then calls the library's
+/// `prepare()` function which handles all SMBIOS writer sequencing.
 pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> TokenStream {
     let smbios_cfg = config.smbios.as_ref().unwrap_or_else(|| {
         panic!("SmBiosPrepare capability requires `smbios` config in board RON");
@@ -30,13 +40,11 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
         quote! { Some(#s) }
     };
 
-    // Type 2: Baseboard Information
+    // Type 2: Baseboard
     let bb_manufacturer = smbios_cfg.baseboard_manufacturer.as_str();
     let bb_product = smbios_cfg.baseboard_product.as_str();
-    let has_baseboard =
-        !smbios_cfg.baseboard_manufacturer.is_empty() || !smbios_cfg.baseboard_product.is_empty();
 
-    // Type 3: Enclosure
+    // Type 3: Chassis
     let chassis_byte = Literal::u8_unsuffixed(smbios_cfg.chassis_type.to_smbios_byte());
     let chassis_manufacturer = if smbios_cfg.chassis_manufacturer.is_empty() {
         smbios_cfg.system_manufacturer.as_str()
@@ -44,140 +52,101 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
         smbios_cfg.chassis_manufacturer.as_str()
     };
 
-    // Type 7: Cache Info + Type 4: Processors
-    let mut processor_stmts = TokenStream::new();
-    for (proc_idx, proc) in smbios_cfg.processors.iter().enumerate() {
-        let socket = proc.socket.as_str();
-        let manufacturer = proc.manufacturer.as_str();
-        let family = Literal::u16_unsuffixed(proc.processor_family.to_smbios_u16());
-        let max_speed = Literal::u16_unsuffixed(proc.max_speed_mhz);
-        let cores = Literal::u16_unsuffixed(proc.core_count);
-        let threads = Literal::u16_unsuffixed(proc.thread_count);
+    // Type 4/7: Processors with caches
+    let processor_items: Vec<TokenStream> = smbios_cfg
+        .processors
+        .iter()
+        .map(|proc| {
+            let socket = proc.socket.as_str();
+            let manufacturer = proc.manufacturer.as_str();
+            let family = Literal::u16_unsuffixed(proc.processor_family.to_smbios_u16());
+            let max_speed = Literal::u16_unsuffixed(proc.max_speed_mhz);
+            let cores = Literal::u16_unsuffixed(proc.core_count);
+            let threads = Literal::u16_unsuffixed(proc.thread_count);
 
-        if proc.caches.is_empty() {
-            // No cache info -- use the simple add_processor method.
-            processor_stmts.extend(quote! {
-                w.add_processor(#socket, #manufacturer, #family, #max_speed, #cores, #threads);
-            });
-        } else {
-            // Emit Type 7 cache entries, then Type 4 with cache handles.
-            let mut cache_handle_vars = [None, None, None]; // L1, L2, L3
-            for (cache_idx, cache) in proc.caches.iter().enumerate() {
-                let designation = cache.designation.as_str();
-                let size_kb = Literal::u32_unsuffixed(cache.size_kb);
-                let assoc = Literal::u8_unsuffixed(cache.associativity.to_smbios_byte());
-                let ct = Literal::u8_unsuffixed(cache.cache_type.to_smbios_byte());
-                let level = Literal::u8_unsuffixed(cache.level);
-                let var = format_ident!("_cache_h_p{}_{}", proc_idx, cache_idx);
+            let cache_items: Vec<TokenStream> = proc
+                .caches
+                .iter()
+                .map(|cache| {
+                    let designation = cache.designation.as_str();
+                    let level = Literal::u8_unsuffixed(cache.level);
+                    let size_kb = Literal::u32_unsuffixed(cache.size_kb);
+                    let assoc = Literal::u8_unsuffixed(cache.associativity.to_smbios_byte());
+                    let ct = Literal::u8_unsuffixed(cache.cache_type.to_smbios_byte());
+                    quote! {
+                        fstart_capabilities::smbios::CacheDesc {
+                            designation: #designation,
+                            level: #level,
+                            size_kb: #size_kb,
+                            associativity: #assoc,
+                            cache_type: #ct,
+                        }
+                    }
+                })
+                .collect();
 
-                processor_stmts.extend(quote! {
-                    let #var = w.add_cache_info(#designation, #level, #size_kb, #assoc, #ct);
-                });
-
-                // Map to L1/L2/L3 slot based on level.
-                let slot = (cache.level as usize).saturating_sub(1);
-                if slot < 3 {
-                    cache_handle_vars[slot] = Some(var);
+            quote! {
+                fstart_capabilities::smbios::ProcessorDesc {
+                    socket: #socket,
+                    manufacturer: #manufacturer,
+                    family: #family,
+                    max_speed_mhz: #max_speed,
+                    core_count: #cores,
+                    thread_count: #threads,
+                    caches: &[#(#cache_items),*],
                 }
             }
+        })
+        .collect();
 
-            let l1 = cache_handle_vars[0]
-                .as_ref()
-                .map_or_else(|| quote! { 0xFFFFu16 }, |v| quote! { #v });
-            let l2 = cache_handle_vars[1]
-                .as_ref()
-                .map_or_else(|| quote! { 0xFFFFu16 }, |v| quote! { #v });
-            let l3 = cache_handle_vars[2]
-                .as_ref()
-                .map_or_else(|| quote! { 0xFFFFu16 }, |v| quote! { #v });
-
-            processor_stmts.extend(quote! {
-                w.add_processor_with_caches(
-                    #socket, #manufacturer, #family, #max_speed, #cores, #threads,
-                    #l1, #l2, #l3,
-                );
-            });
-        }
-    }
-
-    // Type 16/17/19: Memory
-    let num_mem_devices = smbios_cfg.memory_devices.len();
-    let has_memory = num_mem_devices > 0;
-
-    let mut memory_stmts = TokenStream::new();
-    if has_memory {
-        // Compute total capacity in KB for the Physical Memory Array.
-        let total_capacity_kb: u64 = smbios_cfg
-            .memory_devices
-            .iter()
-            .map(|d| d.size_mb as u64 * 1024)
-            .sum();
-        let total_kb_lit = Literal::u64_unsuffixed(total_capacity_kb);
-        let num_devs_lit = Literal::u16_unsuffixed(num_mem_devices as u16);
-
-        memory_stmts.extend(quote! {
-            w.add_physical_memory_array(#total_kb_lit, #num_devs_lit);
-        });
-
-        for dev in smbios_cfg.memory_devices.iter() {
+    // Type 16/17: Memory devices
+    let memory_items: Vec<TokenStream> = smbios_cfg
+        .memory_devices
+        .iter()
+        .map(|dev| {
             let locator = dev.locator.as_str();
             let size_mb = Literal::u32_unsuffixed(dev.size_mb);
             let speed = Literal::u16_unsuffixed(dev.speed_mhz);
             let mem_type = Literal::u8_unsuffixed(dev.memory_type.to_smbios_byte());
-            memory_stmts.extend(quote! {
-                w.add_memory_device(#locator, #size_mb, #speed, #mem_type);
-            });
-        }
+            quote! {
+                fstart_capabilities::smbios::MemoryDeviceDesc {
+                    locator: #locator,
+                    size_mb: #size_mb,
+                    speed_mhz: #speed,
+                    memory_type: #mem_type,
+                }
+            }
+        })
+        .collect();
 
-        // Type 19: Memory Array Mapped Address.
-        // Use the first RAM region from the board config as the mapped range.
-        if let Some(ram_region) = config
-            .memory
-            .regions
-            .iter()
-            .find(|r| r.kind == fstart_types::memory::RegionKind::Ram)
-        {
-            let start = Literal::u64_unsuffixed(ram_region.base);
-            let end = Literal::u64_unsuffixed(ram_region.base + ram_region.size - 1);
-            memory_stmts.extend(quote! {
-                w.add_memory_array_mapped_address(#start, #end, 1);
-            });
-        }
-    }
-
-    let baseboard_stmt = if has_baseboard {
-        quote! { w.add_baseboard_info(#bb_manufacturer, #bb_product); }
-    } else {
-        TokenStream::new()
-    };
+    // Type 19: RAM region from board config
+    let (ram_base_lit, ram_end_lit) = config
+        .memory
+        .regions
+        .iter()
+        .find(|r| r.kind == RegionKind::Ram)
+        .map(|r| (hex_addr(r.base), hex_addr(r.base + r.size - 1)))
+        .unwrap_or_else(|| (quote! { 0u64 }, quote! { 0u64 }));
 
     quote! {
-        fstart_log::info!("capability: SmBiosPrepare");
-        {
-            extern crate alloc;
-            use alloc::vec;
-
-            // Allocate a heap buffer for SMBIOS tables (persists until reset).
-            const _SMBIOS_BUF_SIZE: usize = 64 * 1024;
-            let smbios_buf = vec![0u8; _SMBIOS_BUF_SIZE];
-            let smbios_addr = smbios_buf.as_ptr() as u64;
-            core::mem::forget(smbios_buf);
-
-            let smbios_len = fstart_smbios::assemble_and_write(smbios_addr, |w| {
-                w.add_bios_info(#bios_vendor, #bios_version, #bios_release_date);
-                w.add_system_info(#sys_manufacturer, #sys_product, #sys_version, #sys_serial_expr);
-                #baseboard_stmt
-                w.add_enclosure(#chassis_byte, #chassis_manufacturer);
-                #processor_stmts
-                #memory_stmts
-                w.add_system_boot_info();
-                w.add_end_of_table();
-            });
-            fstart_log::info!(
-                "SmBiosPrepare: {} bytes written to {}",
-                smbios_len as u32,
-                fstart_log::Hex(smbios_addr),
-            );
-        }
+        fstart_capabilities::smbios::prepare(
+            &fstart_capabilities::smbios::SmbiosDesc {
+                bios_vendor: #bios_vendor,
+                bios_version: #bios_version,
+                bios_release_date: #bios_release_date,
+                sys_manufacturer: #sys_manufacturer,
+                sys_product: #sys_product,
+                sys_version: #sys_version,
+                sys_serial: #sys_serial_expr,
+                bb_manufacturer: #bb_manufacturer,
+                bb_product: #bb_product,
+                chassis_type: #chassis_byte,
+                chassis_manufacturer: #chassis_manufacturer,
+                processors: &[#(#processor_items),*],
+                memory_devices: &[#(#memory_items),*],
+                ram_base: #ram_base_lit,
+                ram_end: #ram_end_lit,
+            },
+        );
     }
 }

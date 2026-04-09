@@ -468,10 +468,12 @@ version = "0.1.0"
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",
  "fstart-services",
+ "fstart-smbios",
  "fstart-types",
  "postcard",
  "ufmt",
@@ -851,7 +853,6 @@ dependencies = [
  "fstart-platform-riscv64",
  "fstart-runtime",
  "fstart-services",
- "fstart-smbios",
  "fstart-soc-sunxi",
  "fstart-types",
  "heapless",

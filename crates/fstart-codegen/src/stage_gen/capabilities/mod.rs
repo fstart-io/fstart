@@ -747,10 +747,9 @@ pub(super) fn generate_return_to_fel(platform: Platform) -> TokenStream {
     }
     quote! {
         fstart_log::info!("returning to FEL mode...");
-        unsafe {
-            let stash = &fstart_soc_sunxi::FEL_STASH;
-            fstart_soc_sunxi::return_to_fel(stash.sp, stash.lr);
-        }
+        // SAFETY: save_boot_params has run during early boot, so the
+        // FEL stash contains valid BROM state.
+        unsafe { fstart_soc_sunxi::return_to_fel_from_stash() };
     }
 }
 

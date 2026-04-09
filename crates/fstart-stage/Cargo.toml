@@ -53,11 +53,13 @@ fdt = ["fstart-capabilities/fdt"]
 fit = ["ffs", "fstart-capabilities/fit", "dep:fstart-fit"]
 # Inter-stage handoff serialization (postcard, for multi-stage boards)
 handoff = ["fstart-capabilities/handoff"]
-# ACPI table generation (requires alloc + fstart-alloc global allocator).
-# Enables fstart-acpi/arm for ARM-specific tables (MADT/GICv3, GTDT).
-acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-driver-pl011?/acpi"]
-# SMBIOS table generation (no alloc needed — writes directly to memory).
-smbios = ["dep:fstart-smbios"]
+# ACPI table generation — routed through fstart-capabilities which owns
+# the prepare() entry point and depends on fstart-acpi internally.
+# fstart-acpi is also a direct dep for per-device AcpiDevice trait calls.
+acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-driver-pl011?/acpi", "fstart-capabilities/acpi"]
+# SMBIOS table generation — routed through fstart-capabilities which owns
+# the prepare() entry point and depends on fstart-smbios internally.
+smbios = ["fstart-capabilities/smbios"]
 # CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
 # Requires alloc (fstart-alloc provides #[global_allocator]).
 crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
@@ -103,9 +105,6 @@ fstart-fit = { workspace = true, optional = true }
 
 # ACPI table generation (optional, behind acpi feature)
 fstart-acpi = { workspace = true, optional = true }
-
-# SMBIOS table generation (optional, behind smbios feature)
-fstart-smbios = { workspace = true, optional = true }
 
 # Allocator (optional — provides #[global_allocator])
 fstart-alloc = { workspace = true, optional = true }

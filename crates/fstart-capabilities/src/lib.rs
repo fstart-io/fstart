@@ -41,6 +41,42 @@ pub mod fit;
 #[cfg(feature = "handoff")]
 pub mod handoff;
 
+pub mod next_stage;
+
+#[cfg(feature = "smbios")]
+pub mod smbios;
+
+#[cfg(feature = "acpi")]
+pub mod acpi;
+
+// ---------------------------------------------------------------------------
+// FDT blob utilities
+// ---------------------------------------------------------------------------
+
+/// Read an FDT (Flattened Device Tree) blob from a raw memory address.
+///
+/// Reads the `totalsize` field at offset +4 of the FDT header (big-endian
+/// u32) and returns a static slice covering the entire blob. Returns `None`
+/// if `addr` is zero.
+///
+/// Used by the UEFI payload path to obtain the platform-provided FDT blob
+/// for passing to CrabEFI.
+///
+/// # Safety
+///
+/// Caller must ensure `addr` points to a valid, readable FDT blob in
+/// memory. The FDT header must be intact (magic + totalsize). The returned
+/// slice borrows the memory at `addr` with `'static` lifetime — the FDT
+/// must remain valid (e.g., in DRAM) for the program's duration.
+pub unsafe fn fdt_blob_from_addr(addr: u64) -> Option<&'static [u8]> {
+    if addr == 0 {
+        return None;
+    }
+    let ptr = addr as *const u8;
+    let size = u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32)) as usize;
+    Some(core::slice::from_raw_parts(ptr, size))
+}
+
 #[cfg(any(feature = "ffs", feature = "fdt"))]
 use fstart_log::Hex;
 
