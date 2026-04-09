@@ -1,12 +1,16 @@
 //! Code generation for payload loading capabilities.
 //!
 //! Handles Linux boot, UEFI payload (CrabEFI), and FIT image loading.
+//! Platform boot protocol code and firmware FFS loading are generated
+//! by shared helpers to avoid duplication across payload variants.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use fstart_types::memory::RegionKind;
-use fstart_types::{BoardConfig, FirmwareKind, Platform, StageLayout};
+use fstart_types::{
+    BoardConfig, FirmwareConfig, FirmwareKind, PayloadConfig, Platform, StageLayout,
+};
 
 use super::super::tokens::{anchor_as_bytes_expr, anchor_expr, halt_expr, hex_addr};
 use super::super::validation::{is_fit_image, is_fit_runtime, is_linux_boot, is_uefi_payload};
@@ -42,6 +46,199 @@ pub(in crate::stage_gen) fn generate_payload_load(
         fstart_capabilities::payload_load(#anchor, &boot_media, #jump_fn);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shared helpers for payload generators
+// ---------------------------------------------------------------------------
+
+/// Generate code to load firmware (SBI/ATF) from FFS.
+///
+/// Shared across Linux boot, FIT boot, and UEFI boot paths. Emits a
+/// `load_ffs_file_by_type` call for `FileType::Firmware` with appropriate
+/// logging and error handling.
+fn generate_firmware_load(
+    firmware: &FirmwareConfig,
+    anchor: &TokenStream,
+    halt: &TokenStream,
+) -> TokenStream {
+    let fw_kind_str = match firmware.kind {
+        FirmwareKind::OpenSbi => "SBI firmware",
+        FirmwareKind::ArmTrustedFirmware => "ATF BL31",
+    };
+    let load_msg = format!("loading {fw_kind_str}...");
+    let error_msg = format!("FATAL: failed to load {fw_kind_str}");
+    quote! {
+        fstart_log::info!(#load_msg);
+        if !fstart_capabilities::load_ffs_file_by_type(
+            #anchor,
+            &boot_media,
+            fstart_types::ffs::FileType::Firmware,
+        ) {
+            fstart_log::error!(#error_msg);
+            #halt;
+        }
+    }
+}
+
+/// Generate the platform-specific boot protocol sequence.
+///
+/// Shared between Linux boot and FIT runtime boot. The `kernel_addr`
+/// parameter is a TokenStream expression for the kernel's load address
+/// (a hex literal for Linux boot, a variable name for FIT boot).
+fn generate_platform_boot_protocol(
+    platform: Platform,
+    kernel_addr: &TokenStream,
+    payload: &PayloadConfig,
+) -> TokenStream {
+    let dtb_addr = hex_addr(payload.dtb_addr.unwrap_or(0));
+
+    match platform {
+        Platform::Riscv64 => {
+            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
+            quote! {
+                let _fw_info = fstart_platform::FwDynamicInfo::new(
+                    #kernel_addr,
+                    fstart_platform::boot_hart_id(),
+                );
+                fstart_log::info!("jumping to SBI firmware...");
+                fstart_platform::boot_linux_sbi(
+                    #fw_addr,
+                    fstart_platform::boot_hart_id(),
+                    #dtb_addr,
+                    &_fw_info,
+                );
+            }
+        }
+        Platform::Aarch64 => {
+            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
+            quote! {
+                fstart_log::info!("jumping to ATF BL31...");
+                fstart_platform::boot_linux_atf_prepared(#kernel_addr, #dtb_addr, #fw_addr);
+            }
+        }
+        Platform::Armv7 => {
+            quote! {
+                fstart_log::info!("booting Linux (ARMv7)...");
+                fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
+                fstart_log::info!("  dtb    @ {:#x}", #dtb_addr as u64);
+                fstart_platform::cleanup_before_linux();
+                fstart_platform::boot_linux(#kernel_addr as u64, #dtb_addr);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Linux boot
+// ---------------------------------------------------------------------------
+
+/// Generate the Linux boot payload sequence for a specific platform.
+fn generate_payload_load_linux(
+    config: &BoardConfig,
+    platform: Platform,
+    embed_anchor: bool,
+) -> TokenStream {
+    let payload = config.payload.as_ref().unwrap(); // caller verified is_linux_boot
+    let halt = halt_expr(platform);
+    let anchor = anchor_expr(embed_anchor);
+
+    let mut stmts = TokenStream::new();
+
+    stmts.extend(quote! {
+        fstart_log::info!("capability: PayloadLoad (LinuxBoot)");
+    });
+
+    // Load firmware blob from FFS FIRST -- it goes to a high address
+    // (e.g., 0x82000000) that doesn't overlap with the FFS image or
+    // currently-executing code.
+    if let Some(ref fw) = payload.firmware {
+        stmts.extend(generate_firmware_load(
+            fw,
+            &anchor_expr(embed_anchor),
+            &halt,
+        ));
+    }
+
+    // Load kernel
+    stmts.extend(quote! {
+        fstart_log::info!("loading kernel...");
+        if !fstart_capabilities::load_ffs_file_by_type(
+            #anchor,
+            &boot_media,
+            fstart_types::ffs::FileType::Payload,
+        ) {
+            fstart_log::error!("FATAL: failed to load kernel");
+            #halt;
+        }
+    });
+
+    // Platform-specific boot protocol.
+    let kernel_addr = hex_addr(payload.kernel_load_addr.unwrap_or(0));
+    stmts.extend(generate_platform_boot_protocol(
+        platform,
+        &kernel_addr,
+        payload,
+    ));
+
+    stmts
+}
+
+// ---------------------------------------------------------------------------
+// FIT runtime boot
+// ---------------------------------------------------------------------------
+
+/// Generate code for the FIT runtime payload load sequence.
+///
+/// At runtime, the whole FIT (.itb) is stored in FFS. The firmware uses
+/// `fstart_capabilities::fit::load_fit_components()` to parse and load
+/// FIT components, then boots via the platform-specific protocol.
+fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: Platform) -> TokenStream {
+    let payload = config.payload.as_ref().unwrap();
+    let halt = halt_expr(platform);
+    let anchor = anchor_as_bytes_expr();
+
+    let config_expr = match &payload.fit_config {
+        Some(name) => {
+            let name_str = name.as_str();
+            quote! { Some(#name_str) }
+        }
+        None => quote! { None },
+    };
+
+    let mut stmts = TokenStream::new();
+
+    stmts.extend(quote! {
+        fstart_log::info!("capability: PayloadLoad (FIT runtime)");
+        let _fit_boot = fstart_capabilities::fit::load_fit_components(
+            #anchor,
+            &boot_media,
+            #config_expr,
+        ).unwrap_or_else(|e| {
+            fstart_log::error!("FATAL: FIT boot failed: {}", fstart_capabilities::fit::error_str(&e));
+            #halt;
+        });
+        let _kernel_load = _fit_boot.kernel_addr;
+    });
+
+    // Load firmware blob from FFS (SBI/ATF is separate from FIT)
+    if let Some(ref fw) = payload.firmware {
+        stmts.extend(generate_firmware_load(fw, &anchor_as_bytes_expr(), &halt));
+    }
+
+    // Platform-specific boot protocol (shared with Linux boot).
+    let kernel_addr = quote! { _kernel_load };
+    stmts.extend(generate_platform_boot_protocol(
+        platform,
+        &kernel_addr,
+        payload,
+    ));
+
+    stmts
+}
+
+// ---------------------------------------------------------------------------
+// UEFI payload (CrabEFI)
+// ---------------------------------------------------------------------------
 
 /// Generate the CrabEFI UEFI payload initialization sequence.
 ///
@@ -95,8 +292,6 @@ fn generate_payload_load_uefi(
         .unwrap_or_else(|| quote! { 0u64 });
 
     // Firmware data/stack addresses from stage config.
-    // We use compile-time constants (not linker symbols) because the
-    // RWDATA region can be >4GB from code, exceeding ADRP range.
     let (fw_data_addr, fw_stack_size) = match &config.stages {
         StageLayout::Monolithic(mono) => (
             mono.data_addr.unwrap_or(mono.load_addr),
@@ -183,9 +378,7 @@ fn generate_payload_load_uefi(
         (quote! {}, quote! { framebuffer: None, })
     };
 
-    // FDT sourcing: use src_dtb_addr from payload config if set,
-    // otherwise use platform-provided boot_dtb_addr() (saved from x0
-    // at boot on AArch64, from a1 on RISC-V).
+    // FDT sourcing
     let payload = config.payload.as_ref();
     let fdt_addr_expr = if let Some(addr) = payload.and_then(|p| p.src_dtb_addr) {
         let addr_lit = hex_addr(addr);
@@ -203,33 +396,23 @@ fn generate_payload_load_uefi(
         Platform::Aarch64 | Platform::Riscv64 => {
             quote! {
                 let _fdt_addr = #fdt_addr_expr;
-                let (_fdt_blob_opt, _fdt_blob_slice) = if _fdt_addr != 0 {
-                    let ptr = _fdt_addr as *const u8;
-                    let size = unsafe {
-                        u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32))
-                    } as usize;
-                    let blob = unsafe { core::slice::from_raw_parts(ptr, size) };
-                    (true, blob)
-                } else {
-                    (false, &[] as &[u8])
-                };
+                // SAFETY: platform guarantees _fdt_addr points to a valid
+                // FDT blob in DRAM (saved from boot register on entry).
+                let _fdt_blob: Option<&[u8]> =
+                    unsafe { fstart_capabilities::fdt_blob_from_addr(_fdt_addr) };
             }
         }
         Platform::Armv7 => quote! {
             let _fdt_addr: u64 = 0;
-            let _fdt_blob_opt = false;
-            let _fdt_blob_slice: &[u8] = &[];
+            let _fdt_blob: Option<&[u8]> = None;
         },
     };
 
     let fdt_field = quote! {
-        fdt: if _fdt_blob_opt { Some(_fdt_blob_slice) } else { None },
+        fdt: _fdt_blob,
     };
 
-    // Generate BL31 firmware loading when firmware is configured.
-    // This loads BL31 from FFS and calls boot_bl31_and_resume() which
-    // SMCs to EL3, runs BL31 (GIC init, PSCI, secure world setup), and
-    // resumes at EL2 NS when BL31 ERETs back to the trampoline.
+    // Generate BL31 firmware loading when configured.
     let payload = config.payload.as_ref();
     let bl31_boot = if let Some(fw) = payload.and_then(|p| p.firmware.as_ref()) {
         if platform == Platform::Aarch64 && fw.kind == FirmwareKind::ArmTrustedFirmware {
@@ -283,8 +466,7 @@ fn generate_payload_load_uefi(
             None
         };
 
-        // Build the EFI memory map. The library function handles splitting
-        // the RAM region around firmware BSS/stack and the FDT.
+        // Build the EFI memory map.
         let _static_entries: &[fstart_crabefi::MemoryRegion] = &[
             #static_mem_entries
         ];
@@ -302,8 +484,8 @@ fn generate_payload_load_uefi(
             #ram_base_lit,
             #ram_size_lit,
             #fw_data_addr_lit,
-            #fw_stack_size_lit,   // BSS reserve (generous: BSS+heap < stack_size)
-            #fw_stack_size_lit,   // stack size
+            #fw_stack_size_lit,
+            #fw_stack_size_lit,
             _fdt_reservation,
             &mut _crabefi_mem_buf,
         );
@@ -336,238 +518,4 @@ fn generate_payload_load_uefi(
         // init_platform() is -> ! (never returns).
         fstart_crabefi::init_platform(_crabefi_config);
     }
-}
-
-/// Generate the Linux boot payload sequence for a specific platform.
-fn generate_payload_load_linux(
-    config: &BoardConfig,
-    platform: Platform,
-    embed_anchor: bool,
-) -> TokenStream {
-    let payload = config.payload.as_ref().unwrap(); // caller verified is_linux_boot
-    let halt = halt_expr(platform);
-    let anchor = anchor_expr(embed_anchor);
-
-    let mut stmts = TokenStream::new();
-
-    stmts.extend(quote! {
-        fstart_log::info!("capability: PayloadLoad (LinuxBoot)");
-    });
-
-    // Load firmware blob from FFS FIRST -- it goes to a high address
-    // (e.g., 0x82000000) that doesn't overlap with the FFS image or
-    // currently-executing code.
-    if let Some(ref fw) = payload.firmware {
-        let fw_kind_str = match fw.kind {
-            FirmwareKind::OpenSbi => "SBI firmware",
-            FirmwareKind::ArmTrustedFirmware => "ATF BL31",
-        };
-        let load_msg = format!("loading {fw_kind_str}...");
-        let error_msg = format!("FATAL: failed to load {fw_kind_str}");
-        let anchor_fw = anchor_expr(embed_anchor);
-        stmts.extend(quote! {
-            fstart_log::info!(#load_msg);
-            if !fstart_capabilities::load_ffs_file_by_type(
-                #anchor_fw,
-                &boot_media,
-                fstart_types::ffs::FileType::Firmware,
-            ) {
-                fstart_log::error!(#error_msg);
-                #halt;
-            }
-        });
-    }
-
-    // Load kernel
-    stmts.extend(quote! {
-        fstart_log::info!("loading kernel...");
-        if !fstart_capabilities::load_ffs_file_by_type(
-            #anchor,
-            &boot_media,
-            fstart_types::ffs::FileType::Payload,
-        ) {
-            fstart_log::error!("FATAL: failed to load kernel");
-            #halt;
-        }
-    });
-
-    // Platform-specific boot protocol.
-    let dtb_addr = hex_addr(payload.dtb_addr.unwrap_or(0));
-    let kernel_addr = hex_addr(payload.kernel_load_addr.unwrap_or(0));
-
-    match platform {
-        Platform::Riscv64 => {
-            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
-            stmts.extend(quote! {
-                let _fw_info = fstart_platform::FwDynamicInfo::new(
-                    #kernel_addr,
-                    fstart_platform::boot_hart_id(),
-                );
-                fstart_log::info!("jumping to SBI firmware...");
-                fstart_platform::boot_linux_sbi(
-                    #fw_addr,
-                    fstart_platform::boot_hart_id(),
-                    #dtb_addr,
-                    &_fw_info,
-                );
-            });
-        }
-        Platform::Aarch64 => {
-            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
-            stmts.extend(quote! {
-                let mut _bl33_ep: fstart_platform::EntryPointInfo =
-                    unsafe { core::mem::zeroed() };
-                let mut _bl33_node: fstart_platform::BlParamsNode =
-                    unsafe { core::mem::zeroed() };
-                let mut _bl_params: fstart_platform::BlParams =
-                    unsafe { core::mem::zeroed() };
-                fstart_platform::prepare_bl_params(
-                    #kernel_addr,
-                    #dtb_addr,
-                    &mut _bl33_ep,
-                    &mut _bl33_node,
-                    &mut _bl_params,
-                );
-                fstart_log::info!("jumping to ATF BL31...");
-                fstart_platform::boot_linux_atf(#fw_addr, &_bl_params);
-            });
-        }
-        Platform::Armv7 => {
-            // ARMv7 Linux boot protocol: no SBI/ATF, jump directly to kernel.
-            // r0=0, r1=0xFFFFFFFF (DT-only), r2=DTB address.
-            //
-            // CNTFRQ is already programmed by the CCU driver's init() during
-            // the ClockInit capability (see fstart-driver-sunxi-ccu), matching
-            // U-Boot's board_init() timing.
-            //
-            // Pre-boot cleanup: disable/invalidate I-cache + branch predictor
-            // for a clean handoff (matches U-Boot's cleanup_before_linux).
-            stmts.extend(quote! {
-                fstart_log::info!("booting Linux (ARMv7)...");
-                fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
-                fstart_log::info!("  dtb    @ {:#x}", #dtb_addr as u64);
-
-                // Clean up CPU state: disable/invalidate I-cache, flush BP.
-                fstart_platform::cleanup_before_linux();
-
-                fstart_platform::boot_linux(#kernel_addr, #dtb_addr);
-            });
-        }
-    }
-
-    stmts
-}
-
-/// Generate code for the FIT runtime payload load sequence.
-///
-/// At runtime, the whole FIT (.itb) is stored in FFS. The firmware uses
-/// `fstart_capabilities::fit::load_fit_components()` to:
-/// 1. Load the FIT blob from FFS (FileType::FitImage) into memory
-/// 2. Parse it with `fstart_fit::FitImage::parse()`
-/// 3. Resolve the configuration (default or named)
-/// 4. Copy each component (kernel, ramdisk) to its load address
-/// 5. Return the kernel load address for platform-specific boot
-fn generate_payload_load_fit_runtime(config: &BoardConfig, platform: Platform) -> TokenStream {
-    let payload = config.payload.as_ref().unwrap();
-    let halt = halt_expr(platform);
-    let anchor = anchor_as_bytes_expr();
-
-    let config_expr = match &payload.fit_config {
-        Some(name) => {
-            let name_str = name.as_str();
-            quote! { Some(#name_str) }
-        }
-        None => quote! { None },
-    };
-
-    let mut stmts = TokenStream::new();
-
-    stmts.extend(quote! {
-        fstart_log::info!("capability: PayloadLoad (FIT runtime)");
-        let _fit_boot = fstart_capabilities::fit::load_fit_components(
-            #anchor,
-            &boot_media,
-            #config_expr,
-        ).unwrap_or_else(|e| {
-            fstart_log::error!("FATAL: FIT boot failed: {}", fstart_capabilities::fit::error_str(&e));
-            #halt;
-        });
-        let _kernel_load = _fit_boot.kernel_addr;
-    });
-
-    // Load firmware blob from FFS (SBI/ATF is separate from FIT)
-    if let Some(ref fw) = payload.firmware {
-        let fw_kind_str = match fw.kind {
-            FirmwareKind::OpenSbi => "SBI firmware",
-            FirmwareKind::ArmTrustedFirmware => "ATF BL31",
-        };
-        let load_msg = format!("loading {fw_kind_str}...");
-        let error_msg = format!("FATAL: failed to load {fw_kind_str}");
-        let anchor2 = anchor_as_bytes_expr();
-        stmts.extend(quote! {
-            fstart_log::info!(#load_msg);
-            if !fstart_capabilities::load_ffs_file_by_type(
-                #anchor2,
-                &boot_media,
-                fstart_types::ffs::FileType::Firmware,
-            ) {
-                fstart_log::error!(#error_msg);
-                #halt;
-            }
-        });
-    }
-
-    // Platform-specific boot protocol
-    let dtb_addr = hex_addr(payload.dtb_addr.unwrap_or(0));
-    let kernel_addr = quote! { _kernel_load };
-
-    match platform {
-        Platform::Riscv64 => {
-            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
-            stmts.extend(quote! {
-                let _fw_info = fstart_platform::FwDynamicInfo::new(
-                    #kernel_addr,
-                    fstart_platform::boot_hart_id(),
-                );
-                fstart_log::info!("jumping to SBI firmware...");
-                fstart_platform::boot_linux_sbi(
-                    #fw_addr,
-                    fstart_platform::boot_hart_id(),
-                    #dtb_addr,
-                    &_fw_info,
-                );
-            });
-        }
-        Platform::Aarch64 => {
-            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
-            stmts.extend(quote! {
-                let mut _bl33_ep: fstart_platform::EntryPointInfo =
-                    unsafe { core::mem::zeroed() };
-                let mut _bl33_node: fstart_platform::BlParamsNode =
-                    unsafe { core::mem::zeroed() };
-                let mut _bl_params: fstart_platform::BlParams =
-                    unsafe { core::mem::zeroed() };
-                fstart_platform::prepare_bl_params(
-                    #kernel_addr,
-                    #dtb_addr,
-                    &mut _bl33_ep,
-                    &mut _bl33_node,
-                    &mut _bl_params,
-                );
-                fstart_log::info!("jumping to ATF BL31...");
-                fstart_platform::boot_linux_atf(#fw_addr, &_bl_params);
-            });
-        }
-        Platform::Armv7 => {
-            // ARMv7: no ATF/SBI -- jump directly to kernel with pre-boot cleanup.
-            stmts.extend(quote! {
-                fstart_log::info!("booting Linux (ARMv7)...");
-                fstart_platform::set_arch_timer_freq(24_000_000);
-                fstart_platform::cleanup_before_linux();
-                fstart_platform::boot_linux(#kernel_addr as u64, #dtb_addr);
-            });
-        }
-    }
-
-    stmts
 }

@@ -65,43 +65,10 @@ pub(in crate::stage_gen) fn generate_acpi_prepare(
     let platform_block = generate_platform_acpi(&acpi_cfg.platform);
 
     quote! {
-        fstart_log::info!("capability: AcpiPrepare");
-        {
-            extern crate alloc;
-            use alloc::vec;
-            use alloc::vec::Vec;
-
-            let mut dsdt_aml: Vec<u8> = Vec::new();
-            let mut extra_tables: Vec<Vec<u8>> = Vec::new();
-
+        #platform_block
+        fstart_capabilities::acpi::prepare(&platform_acpi, |dsdt_aml, extra_tables| {
             #device_blocks
-
-            #platform_block
-
-            // Allocate a heap buffer for the ACPI tables. The bump allocator
-            // gives a stable DRAM address that persists until reset.
-            const _ACPI_BUF_SIZE: usize = 64 * 1024;
-            let acpi_buf = vec![0u8; _ACPI_BUF_SIZE];
-            let acpi_addr = acpi_buf.as_ptr() as u64;
-
-            let acpi_len = fstart_acpi::platform::assemble_and_write(
-                acpi_addr,
-                &platform_acpi,
-                &dsdt_aml,
-                &extra_tables,
-            );
-
-            // Keep the buffer alive -- tables must persist for the OS.
-            core::mem::forget(acpi_buf);
-
-            fstart_log::info!("AcpiPrepare: {} bytes written to {}", acpi_len as u32, fstart_log::Hex(acpi_addr));
-
-            // Dump the ACPI tables as hex for offline disassembly with iasl.
-            let acpi_data = unsafe {
-                core::slice::from_raw_parts(acpi_addr as *const u8, acpi_len)
-            };
-            fstart_log::hex_dump(acpi_data);
-        }
+        });
     }
 }
 

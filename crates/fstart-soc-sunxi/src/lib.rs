@@ -320,3 +320,18 @@ extern "C" {
     /// sp and lr values must be passed from `FEL_STASH`.
     pub fn return_to_fel(sp: u32, lr: u32) -> !;
 }
+
+/// Return to BROM FEL mode using the saved stash.
+///
+/// Reads the saved SP and LR from [`FEL_STASH`] and calls
+/// [`return_to_fel`]. This is a convenience wrapper that encapsulates the
+/// `unsafe` stash access.
+///
+/// # Safety
+///
+/// Must only be called after `save_boot_params` has run during early boot.
+/// The FEL stash must contain valid BROM state.
+pub unsafe fn return_to_fel_from_stash() -> ! {
+    let stash = &FEL_STASH;
+    return_to_fel(stash.sp, stash.lr)
+}

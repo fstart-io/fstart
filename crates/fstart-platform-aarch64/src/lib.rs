@@ -203,6 +203,34 @@ pub fn prepare_bl_params(
     bl_params.head = bl33_node as *mut BlParamsNode as u64;
 }
 
+/// Boot Linux via ATF BL31 with automatic parameter setup.
+///
+/// Convenience wrapper that allocates the required BL params structs on
+/// the stack, fills them via [`prepare_bl_params`], and calls
+/// [`boot_linux_atf`]. This encapsulates the three `mem::zeroed()` calls
+/// and struct setup that callers would otherwise need to inline.
+///
+/// # Arguments
+///
+/// - `kernel_addr` — Linux kernel entry point.
+/// - `dtb_addr` — Patched DTB address (passed as x0 to Linux).
+/// - `fw_addr` — BL31 firmware load address.
+pub fn boot_linux_atf_prepared(kernel_addr: u64, dtb_addr: u64, fw_addr: u64) -> ! {
+    // SAFETY: all three structs are repr(C) with only integer fields,
+    // so zeroed bytes form a valid (if empty) representation.
+    let mut bl33_ep: EntryPointInfo = unsafe { core::mem::zeroed() };
+    let mut bl33_node: BlParamsNode = unsafe { core::mem::zeroed() };
+    let mut bl_params: BlParams = unsafe { core::mem::zeroed() };
+    prepare_bl_params(
+        kernel_addr,
+        dtb_addr,
+        &mut bl33_ep,
+        &mut bl33_node,
+        &mut bl_params,
+    );
+    boot_linux_atf(fw_addr, &bl_params)
+}
+
 /// FSTART_BOOT_BL31 SMC function ID.
 ///
 /// Issues an SMC to the EL3 handler which branches to BL31 at EL3.
