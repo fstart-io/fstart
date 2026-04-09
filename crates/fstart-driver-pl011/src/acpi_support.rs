@@ -2,15 +2,20 @@
 //!
 //! Implements [`AcpiDevice`] to contribute a DSDT device node (`_HID`
 //! "ARMH0011") and an SPCR (Serial Port Console Redirection) table.
+//!
+//! The DSDT AML is generated using the [`acpi_dsl!`] proc-macro,
+//! which transforms Rust-flavored ASL syntax into `fstart_acpi`
+//! builder calls at compile time.
+//!
+//! [`acpi_dsl!`]: fstart_acpi_macros::acpi_dsl
 
 extern crate alloc;
 
-use alloc::vec;
 use alloc::vec::Vec;
 
-use fstart_acpi::aml::{Device, Interrupt, Memory32Fixed, Name, ResourceTemplate};
 use fstart_acpi::device::AcpiDevice;
 use fstart_acpi::Aml;
+use fstart_acpi_macros::acpi_dsl;
 
 use crate::{Pl011, Pl011Config};
 
@@ -19,22 +24,28 @@ impl AcpiDevice for Pl011 {
 
     fn dsdt_aml(&self, config: &Pl011Config) -> Vec<u8> {
         let name = config.acpi_name.as_deref().unwrap_or("COM0");
+        let base = config.base_addr;
         let gsiv = config.acpi_gsiv.unwrap_or(0);
 
-        let irq = Interrupt::new(true, false, false, false, gsiv);
-        let mmio = Memory32Fixed::new(true, config.base_addr as u32, 0x1000);
-        let crs = ResourceTemplate::new(vec![&mmio, &irq]);
-
-        let hid_val: &str = "ARMH0011";
-        let hid = Name::new("_HID".into(), &hid_val);
-        let uid = Name::new("_UID".into(), &0u32);
-        let crs_name = Name::new("_CRS".into(), &crs);
-
-        let dev = Device::new(name.into(), vec![&hid, &uid, &crs_name]);
-
-        let mut bytes = Vec::new();
-        dev.to_aml_bytes(&mut bytes);
-        bytes
+        // Generate AML using the DSL macro.  This is equivalent to
+        // the manual builder code but far more readable:
+        //
+        //   let irq = Interrupt::new(true, false, false, false, gsiv);
+        //   let mmio = Memory32Fixed::new(true, base as u32, 0x1000);
+        //   let crs = ResourceTemplate::new(vec![&mmio, &irq]);
+        //   let hid = Name::new("_HID".into(), &"ARMH0011");
+        //   ...
+        //   let dev = Device::new(name.into(), vec![&hid, &uid, &crs_name]);
+        acpi_dsl! {
+            device(#{name}) {
+                name("_HID", "ARMH0011");
+                name("_UID", 0u32);
+                name("_CRS", resource_template {
+                    memory_32_fixed(ReadWrite, #{base}, 0x1000u32);
+                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                });
+            }
+        }
     }
 
     fn extra_tables(&self, config: &Pl011Config) -> Vec<Vec<u8>> {

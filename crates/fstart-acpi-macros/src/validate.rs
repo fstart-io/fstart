@@ -7,7 +7,7 @@
 use proc_macro2::Span;
 use syn::{Error, Result};
 
-use crate::parse::DslItem;
+use crate::parse::{DslItem, NameOrInterp};
 
 /// Validate a list of DSL items.
 pub fn validate_items(items: &[DslItem]) -> Result<()> {
@@ -24,7 +24,10 @@ fn validate_item(item: &DslItem) -> Result<()> {
             children,
             span,
         } => {
-            validate_acpi_path(path, *span)?;
+            // Only validate literal paths; interpolations are checked at runtime.
+            if let NameOrInterp::Literal(p) = path {
+                validate_acpi_path(p, *span)?;
+            }
             validate_items(children)?;
         }
         DslItem::Device {
@@ -32,7 +35,9 @@ fn validate_item(item: &DslItem) -> Result<()> {
             children,
             span,
         } => {
-            validate_acpi_name(name, *span)?;
+            if let NameOrInterp::Literal(n) = name {
+                validate_acpi_name(n, *span)?;
+            }
             validate_items(children)?;
         }
         DslItem::Name { name, span, .. } => {

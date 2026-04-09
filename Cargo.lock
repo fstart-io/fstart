@@ -453,7 +453,17 @@ name = "fstart-acpi"
 version = "0.1.0"
 dependencies = [
  "acpi_tables",
+ "fstart-acpi-macros",
  "fstart-types",
+]
+
+[[package]]
+name = "fstart-acpi-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
 ]
 
 [[package]]
@@ -609,6 +619,7 @@ name = "fstart-driver-pl011"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-mmio",
  "fstart-services",
  "heapless",

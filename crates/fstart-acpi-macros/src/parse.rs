@@ -20,16 +20,25 @@
 use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 use syn::{Error, Result};
 
+/// A name that is either a literal string or an interpolated expression.
+#[derive(Debug)]
+pub enum NameOrInterp {
+    /// Literal ACPI name string (e.g., `"COM0"`).
+    Literal(String),
+    /// Interpolated Rust expression (e.g., `#{name}`).
+    Interpolation(TokenStream),
+}
+
 /// A parsed DSL item.
 #[derive(Debug)]
 pub enum DslItem {
     Scope {
-        path: String,
+        path: NameOrInterp,
         children: Vec<DslItem>,
         span: Span,
     },
     Device {
-        name: String,
+        name: NameOrInterp,
         children: Vec<DslItem>,
         span: Span,
     },
@@ -215,7 +224,7 @@ impl Parser {
         let span = self.expect_ident("scope")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
-        let path = args_parser.expect_string_lit()?;
+        let path = args_parser.parse_name_or_interp()?;
 
         let (body, _) = self.expect_group(Delimiter::Brace)?;
         let mut body_parser = Parser::new(body);
@@ -228,11 +237,23 @@ impl Parser {
         })
     }
 
+    /// Parse a name argument that is either a string literal or `#{expr}`.
+    fn parse_name_or_interp(&mut self) -> Result<NameOrInterp> {
+        if matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '#') {
+            self.expect_punct('#')?;
+            let (expr, _) = self.expect_group(Delimiter::Brace)?;
+            Ok(NameOrInterp::Interpolation(expr))
+        } else {
+            let s = self.expect_string_lit()?;
+            Ok(NameOrInterp::Literal(s))
+        }
+    }
+
     fn parse_device(&mut self) -> Result<DslItem> {
         let span = self.expect_ident("device")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
-        let name = args_parser.expect_string_lit()?;
+        let name = args_parser.parse_name_or_interp()?;
 
         let (body, _) = self.expect_group(Delimiter::Brace)?;
         let mut body_parser = Parser::new(body);

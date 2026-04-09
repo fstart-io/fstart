@@ -11,7 +11,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::parse::{DslItem, DslValue, ResourceDesc};
+use crate::parse::{DslItem, DslValue, NameOrInterp, ResourceDesc};
 
 /// Counter for unique variable names within a macro invocation.
 struct VarGen {
@@ -97,8 +97,16 @@ fn emit_item(item: &DslItem, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
     }
 }
 
+/// Emit a token stream for a NameOrInterp value.
+fn emit_name_or_interp(name: &NameOrInterp) -> TokenStream {
+    match name {
+        NameOrInterp::Literal(s) => quote! { #s },
+        NameOrInterp::Interpolation(expr) => quote! { #expr },
+    }
+}
+
 fn emit_scope(
-    path: &str,
+    path: &NameOrInterp,
     children: &[DslItem],
     gen: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
@@ -117,9 +125,10 @@ fn emit_scope(
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
         .collect();
 
+    let path_expr = emit_name_or_interp(path);
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::Scope::new(
-            fstart_acpi::aml::Path::new(#path),
+            fstart_acpi::aml::Path::new(#path_expr),
             alloc::vec![#(#refs),*],
         );
     });
@@ -128,7 +137,7 @@ fn emit_scope(
 }
 
 fn emit_device(
-    name: &str,
+    name: &NameOrInterp,
     children: &[DslItem],
     gen: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
@@ -147,9 +156,10 @@ fn emit_device(
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
         .collect();
 
+    let name_expr = emit_name_or_interp(name);
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::Device::new(
-            #name.into(),
+            #name_expr.into(),
             alloc::vec![#(#refs),*],
         );
     });
