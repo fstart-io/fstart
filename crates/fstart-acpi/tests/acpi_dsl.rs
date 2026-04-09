@@ -8,6 +8,8 @@ use fstart_acpi::tock_bridge::{build_multi_register_field, tock_field_entries};
 use fstart_acpi::Aml;
 use fstart_acpi_macros::acpi_dsl;
 use tock_registers::register_bitfields;
+use tock_registers::register_structs;
+use tock_registers::registers::ReadWrite;
 
 #[test]
 fn test_simple_device() {
@@ -625,5 +627,172 @@ fn test_complete_x86_host_bridge() {
         aml.len() > 400,
         "expected >400 bytes for complete host bridge, got {}",
         aml.len()
+    );
+}
+
+// -----------------------------------------------------------------------
+// Same northbridge, but using register_structs! for automatic offsets.
+//
+// register_structs! gives us the byte offset of each register via
+// core::mem::offset_of!.  The tock_acpi_field! macro reads those
+// offsets + the register bitfield metadata to produce the ACPI Field.
+// No hardcoded 0x40, 0x44, 0x90, etc.
+// -----------------------------------------------------------------------
+
+register_structs! {
+    /// MCH PCI config register block (0x00..0x100).
+    ///
+    /// The offsets here are the single source of truth -- they're used
+    /// by the firmware for MMIO access AND by the ACPI bridge to
+    /// produce OperationRegion + Field definitions.
+    MchPciConfig {
+        (0x000 => _pad0),
+        (0x040 => pub epbar: ReadWrite<u32, NB_EPBAR::Register>),
+        (0x044 => pub mchbar: ReadWrite<u32, NB_MCHBAR::Register>),
+        (0x048 => pub pxbar: ReadWrite<u32, NB_PXBAR::Register>),
+        (0x04C => pub dmibar: ReadWrite<u32, NB_DMIBAR::Register>),
+        (0x050 => _pad1),
+        (0x090 => pub pam0: ReadWrite<u8, NB_PAM0::Register>),
+        (0x091 => pub pam1: ReadWrite<u8, NB_PAM1::Register>),
+        (0x092 => pub pam2: ReadWrite<u8, NB_PAM2::Register>),
+        (0x093 => pub pam3: ReadWrite<u8, NB_PAM3::Register>),
+        (0x094 => pub pam4: ReadWrite<u8, NB_PAM4::Register>),
+        (0x095 => pub pam5: ReadWrite<u8, NB_PAM5::Register>),
+        (0x096 => pub pam6: ReadWrite<u8, NB_PAM6::Register>),
+        (0x097 => _pad2),
+        (0x09C => pub tolud: ReadWrite<u8, NB_TOLUD::Register>),
+        (0x09D => _pad3),
+        (0x0A0 => pub tom: ReadWrite<u16, NB_TOM::Register>),
+        (0x0A2 => _pad4),
+        (0x100 => @END),
+    }
+}
+
+/// Same as test_complete_x86_host_bridge but with offsets derived from
+/// register_structs! via the tock_acpi_field! macro.
+///
+/// Compare:
+///
+/// **Before** (manual offsets):
+/// ```ignore
+/// build_multi_register_field("MCHP", PCIConfig, 0x00, 0x100, DWordAcc, &[
+///     (0x40, 32, &tock_field_entries::<u32, NB_EPBAR::Register>(32)),
+///     (0x44, 32, &tock_field_entries::<u32, NB_MCHBAR::Register>(32)),
+///     ...
+/// ]);
+/// ```
+///
+/// **After** (struct-derived offsets):
+/// ```ignore
+/// tock_acpi_field!(MchPciConfig, "MCHP", PCIConfig, DWord, [
+///     epbar: u32, NB_EPBAR,
+///     mchbar: u32, NB_MCHBAR,
+///     ...
+/// ]);
+/// ```
+#[test]
+fn test_x86_host_bridge_register_structs() {
+    // --- tock_acpi_field! derives offsets from MchPciConfig layout ---
+    let mchp = fstart_acpi::tock_acpi_field!(MchPciConfig, "MCHP", PCIConfig, DWord, [
+        epbar: u32, NB_EPBAR::Register,
+        mchbar: u32, NB_MCHBAR::Register,
+        pxbar: u32, NB_PXBAR::Register,
+        dmibar: u32, NB_DMIBAR::Register,
+        pam0: u8, NB_PAM0::Register,
+        pam1: u8, NB_PAM1::Register,
+        pam2: u8, NB_PAM2::Register,
+        pam3: u8, NB_PAM3::Register,
+        pam4: u8, NB_PAM4::Register,
+        pam5: u8, NB_PAM5::Register,
+        pam6: u8, NB_PAM6::Register,
+        tolud: u8, NB_TOLUD::Register,
+        tom: u16, NB_TOM::Register,
+    ]);
+
+    let aml: Vec<u8> = acpi_dsl! {
+        device("MCHC") {
+            name("_ADR", 0x0000_0000u32);
+            #{mchp}
+        }
+    };
+
+    // Verify same output as the manual-offset version.
+    assert_eq!(aml[0], 0x5B); // ExtOpPrefix
+    assert_eq!(aml[1], 0x82); // DeviceOp
+    assert!(aml.windows(4).any(|w| w == b"MCHC"));
+    assert!(aml.windows(4).any(|w| w == b"MCHP"));
+
+    // All tock-derived field names present.
+    assert!(aml.windows(4).any(|w| w == b"EPEN"));
+    assert!(aml.windows(4).any(|w| w == b"MHEN"));
+    assert!(aml.windows(4).any(|w| w == b"PXEN"));
+    assert!(aml.windows(4).any(|w| w == b"DMEN"));
+    assert!(aml.windows(4).any(|w| w == b"PM0H"));
+    assert!(aml.windows(4).any(|w| w == b"PM1L"));
+    assert!(aml.windows(4).any(|w| w == b"TLUD"));
+    assert!(aml.windows(4).any(|w| w == b"TOM_"));
+
+    // OpRegion + Field opcodes.
+    assert!(aml.windows(2).any(|w| w == [0x5B, 0x80]));
+    assert!(aml.windows(2).any(|w| w == [0x5B, 0x81]));
+
+    // Verify the OpRegion+Field output is byte-identical to manual offsets.
+    // Rebuild since `mchp` was moved into acpi_dsl!.
+    let mchp_again = fstart_acpi::tock_acpi_field!(MchPciConfig, "MCHP", PCIConfig, DWord, [
+        epbar: u32, NB_EPBAR::Register,
+        mchbar: u32, NB_MCHBAR::Register,
+        pxbar: u32, NB_PXBAR::Register,
+        dmibar: u32, NB_DMIBAR::Register,
+        pam0: u8, NB_PAM0::Register,
+        pam1: u8, NB_PAM1::Register,
+        pam2: u8, NB_PAM2::Register,
+        pam3: u8, NB_PAM3::Register,
+        pam4: u8, NB_PAM4::Register,
+        pam5: u8, NB_PAM5::Register,
+        pam6: u8, NB_PAM6::Register,
+        tolud: u8, NB_TOLUD::Register,
+        tom: u16, NB_TOM::Register,
+    ]);
+    let mchp_manual = build_multi_register_field(
+        "MCHP",
+        OpRegionSpace::PCIConfig,
+        0x00,
+        0x100,
+        FieldAccessType::DWord,
+        &[
+            (0x40, 32, &tock_field_entries::<u32, NB_EPBAR::Register>(32)),
+            (
+                0x44,
+                32,
+                &tock_field_entries::<u32, NB_MCHBAR::Register>(32),
+            ),
+            (0x48, 32, &tock_field_entries::<u32, NB_PXBAR::Register>(32)),
+            (
+                0x4C,
+                32,
+                &tock_field_entries::<u32, NB_DMIBAR::Register>(32),
+            ),
+            (0x90, 8, &tock_field_entries::<u8, NB_PAM0::Register>(8)),
+            (0x91, 8, &tock_field_entries::<u8, NB_PAM1::Register>(8)),
+            (0x92, 8, &tock_field_entries::<u8, NB_PAM2::Register>(8)),
+            (0x93, 8, &tock_field_entries::<u8, NB_PAM3::Register>(8)),
+            (0x94, 8, &tock_field_entries::<u8, NB_PAM4::Register>(8)),
+            (0x95, 8, &tock_field_entries::<u8, NB_PAM5::Register>(8)),
+            (0x96, 8, &tock_field_entries::<u8, NB_PAM6::Register>(8)),
+            (0x9C, 8, &tock_field_entries::<u8, NB_TOLUD::Register>(8)),
+            (0xA0, 16, &tock_field_entries::<u16, NB_TOM::Register>(16)),
+        ],
+    );
+
+    let mut manual_bytes = Vec::new();
+    mchp_manual.to_aml_bytes(&mut manual_bytes);
+
+    // Both should produce identical AML for the same register set.
+    let mut macro_field_bytes = Vec::new();
+    mchp_again.to_aml_bytes(&mut macro_field_bytes);
+
+    assert_eq!(
+        macro_field_bytes, manual_bytes,
+        "tock_acpi_field! output must match manual build_multi_register_field"
     );
 }
