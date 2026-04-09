@@ -30,6 +30,10 @@
 
 extern crate alloc;
 
+// Self-alias so that `fstart_acpi::` paths emitted by the acpi_dsl!
+// proc-macro resolve correctly when the macro is used inside this crate.
+extern crate self as fstart_acpi;
+
 use alloc::vec;
 use alloc::vec::Vec;
 
