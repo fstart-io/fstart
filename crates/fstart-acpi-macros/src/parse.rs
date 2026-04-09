@@ -59,6 +59,107 @@ pub enum DslItem {
         #[allow(dead_code)]
         span: Span,
     },
+    /// `op_region("NAME", space, offset, length);`
+    OpRegion {
+        name: String,
+        space: RegionSpace,
+        offset: DslValue,
+        length: DslValue,
+        span: Span,
+    },
+    /// `field("REGION", access, lock, update) { entries }`
+    Field {
+        region: String,
+        access: FieldAccess,
+        lock: FieldLock,
+        update: FieldUpdate,
+        entries: Vec<FieldEntryDsl>,
+        span: Span,
+    },
+    /// `create_dword_field(buffer, index, "NAME");`
+    CreateDwordField {
+        buffer: DslValue,
+        index: DslValue,
+        name: String,
+        span: Span,
+    },
+    /// `store(value, target);`
+    Store {
+        value: DslValue,
+        target: DslValue,
+        #[allow(dead_code)]
+        span: Span,
+    },
+    /// `shl(target, value, count);`
+    ShiftLeft {
+        target: DslValue,
+        value: DslValue,
+        count: DslValue,
+        #[allow(dead_code)]
+        span: Span,
+    },
+    /// `subtract(target, a, b);`
+    Subtract {
+        target: DslValue,
+        a: DslValue,
+        b: DslValue,
+        #[allow(dead_code)]
+        span: Span,
+    },
+    /// `add(target, a, b);`
+    Add {
+        target: DslValue,
+        a: DslValue,
+        b: DslValue,
+        #[allow(dead_code)]
+        span: Span,
+    },
+}
+
+/// OperationRegion address space.
+#[derive(Debug, Clone, Copy)]
+pub enum RegionSpace {
+    SystemMemory,
+    SystemIO,
+    PciConfig,
+    EmbeddedControl,
+}
+
+/// Field access type.
+#[derive(Debug, Clone, Copy)]
+#[allow(clippy::enum_variant_names)] // Names match ACPI spec terminology
+pub enum FieldAccess {
+    AnyAcc,
+    ByteAcc,
+    WordAcc,
+    DWordAcc,
+    QWordAcc,
+}
+
+/// Field lock rule.
+#[derive(Debug, Clone, Copy)]
+pub enum FieldLock {
+    NoLock,
+    Lock,
+}
+
+/// Field update rule.
+#[derive(Debug, Clone, Copy)]
+pub enum FieldUpdate {
+    Preserve,
+    WriteAsOnes,
+    WriteAsZeroes,
+}
+
+/// A field entry: named field, reserved (gap), or offset directive.
+#[derive(Debug)]
+pub enum FieldEntryDsl {
+    /// `NAME, bits,` -- named bitfield
+    Named(String, usize),
+    /// `, bits,` -- anonymous reserved gap
+    Reserved(usize),
+    /// `offset(byte_offset),` -- jump to a byte offset (emits a gap)
+    Offset(usize),
 }
 
 /// A parsed value expression.
@@ -93,6 +194,15 @@ pub enum ResourceDesc {
         exclusive: bool,
         irq: DslValue,
     },
+    /// `io(base, end, align, len);` -- legacy I/O port descriptor.
+    IoPort {
+        base: DslValue,
+        end: DslValue,
+        align: DslValue,
+        len: DslValue,
+    },
+    /// `dword_io(base, end);` -- DWord I/O range.
+    DWordIO { base: DslValue, end: DslValue },
     /// WordBusNumber -- PCI bus number range.
     WordBusNumber { start: DslValue, end: DslValue },
     /// DWordMemory -- 32-bit MMIO address range.
@@ -234,16 +344,20 @@ impl Parser {
                     "name" => self.parse_name(),
                     "method" => self.parse_method(),
                     "ret" => self.parse_return(),
+                    "op_region" => self.parse_op_region(),
+                    "field" => self.parse_field(),
+                    "create_dword_field" => self.parse_create_dword_field(),
+                    "store" => self.parse_store(),
+                    "shl" => self.parse_shift_left(),
+                    "subtract" => self.parse_subtract(),
+                    "add" => self.parse_add(),
                     _ => Err(Error::new(
                         ident.span(),
                         format!("unknown DSL keyword `{name}`"),
                     )),
                 }
             }
-            other => Err(Error::new(
-                other.span(),
-                "expected DSL keyword (scope, device, name, method, ret)",
-            )),
+            other => Err(Error::new(other.span(), "expected DSL keyword")),
         }
     }
 
@@ -462,6 +576,8 @@ impl Parser {
         match tt {
             TokenTree::Ident(i) if *i == "memory_32_fixed" => self.parse_memory_32_fixed(),
             TokenTree::Ident(i) if *i == "interrupt" => self.parse_interrupt(),
+            TokenTree::Ident(i) if *i == "io" => self.parse_io_port(),
+            TokenTree::Ident(i) if *i == "dword_io" => self.parse_dword_io(),
             TokenTree::Ident(i) if *i == "word_bus_number" => self.parse_word_bus_number(),
             TokenTree::Ident(i) if *i == "dword_memory" => self.parse_dword_memory(),
             TokenTree::Ident(i) if *i == "qword_memory" => self.parse_qword_memory(),
@@ -582,6 +698,39 @@ impl Parser {
         })
     }
 
+    /// `io(base, end, align, len);`
+    fn parse_io_port(&mut self) -> Result<ResourceDesc> {
+        self.expect_ident("io")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let base = p.parse_value();
+        p.expect_punct(',')?;
+        let end = p.parse_value();
+        p.expect_punct(',')?;
+        let align = p.parse_value();
+        p.expect_punct(',')?;
+        let len = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(ResourceDesc::IoPort {
+            base,
+            end,
+            align,
+            len,
+        })
+    }
+
+    /// `dword_io(base, end);`
+    fn parse_dword_io(&mut self) -> Result<ResourceDesc> {
+        self.expect_ident("dword_io")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let base = p.parse_value();
+        p.expect_punct(',')?;
+        let end = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(ResourceDesc::DWordIO { base, end })
+    }
+
     /// `word_bus_number(start, end);`
     fn parse_word_bus_number(&mut self) -> Result<ResourceDesc> {
         self.expect_ident("word_bus_number")?;
@@ -663,9 +812,295 @@ impl Parser {
         }
     }
 
+    // ---------------------------------------------------------------
+    // op_region("NAME", PciConfig, offset, length);
+    // ---------------------------------------------------------------
+    fn parse_op_region(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("op_region")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let name = p.expect_string_lit()?;
+        p.expect_punct(',')?;
+        let space = p.parse_region_space()?;
+        p.expect_punct(',')?;
+        let offset = p.parse_value();
+        p.expect_punct(',')?;
+        let length = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(DslItem::OpRegion {
+            name,
+            space,
+            offset,
+            length,
+            span,
+        })
+    }
+
+    fn parse_region_space(&mut self) -> Result<RegionSpace> {
+        let tt = self
+            .advance()
+            .ok_or_else(|| Error::new(self.span(), "expected region space"))?;
+        match &tt {
+            TokenTree::Ident(i) if *i == "SystemMemory" => Ok(RegionSpace::SystemMemory),
+            TokenTree::Ident(i) if *i == "SystemIO" => Ok(RegionSpace::SystemIO),
+            TokenTree::Ident(i) if *i == "PciConfig" => Ok(RegionSpace::PciConfig),
+            TokenTree::Ident(i) if *i == "EmbeddedControl" => Ok(RegionSpace::EmbeddedControl),
+            _ => Err(Error::new(
+                tt.span(),
+                "expected SystemMemory, SystemIO, PciConfig, or EmbeddedControl",
+            )),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // field("REGION", DWordAcc, NoLock, Preserve) { entries }
+    // ---------------------------------------------------------------
+    fn parse_field(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("field")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let region = p.expect_string_lit()?;
+        p.expect_punct(',')?;
+        let access = p.parse_field_access()?;
+        p.expect_punct(',')?;
+        let lock = p.parse_field_lock()?;
+        p.expect_punct(',')?;
+        let update = p.parse_field_update()?;
+
+        let (body, _) = self.expect_group(Delimiter::Brace)?;
+        let entries = Self::parse_field_entries(body)?;
+
+        Ok(DslItem::Field {
+            region,
+            access,
+            lock,
+            update,
+            entries,
+            span,
+        })
+    }
+
+    fn parse_field_access(&mut self) -> Result<FieldAccess> {
+        let tt = self
+            .advance()
+            .ok_or_else(|| Error::new(self.span(), "expected field access type"))?;
+        match &tt {
+            TokenTree::Ident(i) if *i == "AnyAcc" => Ok(FieldAccess::AnyAcc),
+            TokenTree::Ident(i) if *i == "ByteAcc" => Ok(FieldAccess::ByteAcc),
+            TokenTree::Ident(i) if *i == "WordAcc" => Ok(FieldAccess::WordAcc),
+            TokenTree::Ident(i) if *i == "DWordAcc" => Ok(FieldAccess::DWordAcc),
+            TokenTree::Ident(i) if *i == "QWordAcc" => Ok(FieldAccess::QWordAcc),
+            _ => Err(Error::new(
+                tt.span(),
+                "expected AnyAcc, ByteAcc, WordAcc, DWordAcc, or QWordAcc",
+            )),
+        }
+    }
+
+    fn parse_field_lock(&mut self) -> Result<FieldLock> {
+        let tt = self
+            .advance()
+            .ok_or_else(|| Error::new(self.span(), "expected field lock rule"))?;
+        match &tt {
+            TokenTree::Ident(i) if *i == "NoLock" => Ok(FieldLock::NoLock),
+            TokenTree::Ident(i) if *i == "Lock" => Ok(FieldLock::Lock),
+            _ => Err(Error::new(tt.span(), "expected NoLock or Lock")),
+        }
+    }
+
+    fn parse_field_update(&mut self) -> Result<FieldUpdate> {
+        let tt = self
+            .advance()
+            .ok_or_else(|| Error::new(self.span(), "expected field update rule"))?;
+        match &tt {
+            TokenTree::Ident(i) if *i == "Preserve" => Ok(FieldUpdate::Preserve),
+            TokenTree::Ident(i) if *i == "WriteAsOnes" => Ok(FieldUpdate::WriteAsOnes),
+            TokenTree::Ident(i) if *i == "WriteAsZeroes" => Ok(FieldUpdate::WriteAsZeroes),
+            _ => Err(Error::new(
+                tt.span(),
+                "expected Preserve, WriteAsOnes, or WriteAsZeroes",
+            )),
+        }
+    }
+
+    /// Parse field entries: `NAME, bits,` or `, bits,` or `offset(N),`
+    fn parse_field_entries(tokens: TokenStream) -> Result<Vec<FieldEntryDsl>> {
+        let toks: Vec<TokenTree> = tokens.into_iter().collect();
+        let mut entries = Vec::new();
+        let mut i = 0;
+        while i < toks.len() {
+            // offset(N)
+            if matches!(&toks[i], TokenTree::Ident(id) if *id == "offset") {
+                i += 1; // skip "offset"
+                if let Some(TokenTree::Group(g)) = toks.get(i) {
+                    let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+                    if let Some(TokenTree::Literal(lit)) = inner.first() {
+                        let n = parse_usize_literal(&lit.to_string())
+                            .map_err(|_| Error::new(lit.span(), "expected integer for offset"))?;
+                        entries.push(FieldEntryDsl::Offset(n));
+                    }
+                    i += 1; // skip group
+                }
+                // skip trailing comma
+                if matches!(toks.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ',') {
+                    i += 1;
+                }
+                continue;
+            }
+            // `, bits,` -- anonymous reserved field (starts with comma)
+            if matches!(&toks[i], TokenTree::Punct(p) if p.as_char() == ',') {
+                i += 1; // skip comma
+                if let Some(TokenTree::Literal(lit)) = toks.get(i) {
+                    let bits: usize = lit
+                        .to_string()
+                        .parse()
+                        .map_err(|_| Error::new(lit.span(), "expected bit count"))?;
+                    entries.push(FieldEntryDsl::Reserved(bits));
+                    i += 1; // skip literal
+                }
+                // skip trailing comma
+                if matches!(toks.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ',') {
+                    i += 1;
+                }
+                continue;
+            }
+            // `NAME, bits,` -- named field
+            if let TokenTree::Ident(ident) = &toks[i] {
+                let field_name = ident.to_string();
+                i += 1; // skip name
+                        // expect comma
+                if matches!(toks.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ',') {
+                    i += 1;
+                }
+                if let Some(TokenTree::Literal(lit)) = toks.get(i) {
+                    let bits: usize = lit
+                        .to_string()
+                        .parse()
+                        .map_err(|_| Error::new(lit.span(), "expected bit count"))?;
+                    entries.push(FieldEntryDsl::Named(field_name, bits));
+                    i += 1; // skip literal
+                }
+                // skip trailing comma
+                if matches!(toks.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ',') {
+                    i += 1;
+                }
+                continue;
+            }
+            // skip any other token (e.g. comments)
+            i += 1;
+        }
+        Ok(entries)
+    }
+
+    // ---------------------------------------------------------------
+    // create_dword_field(buffer, index, "NAME");
+    // ---------------------------------------------------------------
+    fn parse_create_dword_field(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("create_dword_field")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let buffer = p.parse_value();
+        p.expect_punct(',')?;
+        let index = p.parse_value();
+        p.expect_punct(',')?;
+        let name = p.expect_string_lit()?;
+        self.expect_punct(';')?;
+        Ok(DslItem::CreateDwordField {
+            buffer,
+            index,
+            name,
+            span,
+        })
+    }
+
+    // ---------------------------------------------------------------
+    // store(value, target);
+    // ---------------------------------------------------------------
+    fn parse_store(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("store")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let value = p.parse_value();
+        p.expect_punct(',')?;
+        let target = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(DslItem::Store {
+            value,
+            target,
+            span,
+        })
+    }
+
+    // ---------------------------------------------------------------
+    // shl(target, value, count);
+    // ---------------------------------------------------------------
+    fn parse_shift_left(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("shl")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let target = p.parse_value();
+        p.expect_punct(',')?;
+        let value = p.parse_value();
+        p.expect_punct(',')?;
+        let count = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(DslItem::ShiftLeft {
+            target,
+            value,
+            count,
+            span,
+        })
+    }
+
+    // ---------------------------------------------------------------
+    // subtract(target, a, b);
+    // ---------------------------------------------------------------
+    fn parse_subtract(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("subtract")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let target = p.parse_value();
+        p.expect_punct(',')?;
+        let a = p.parse_value();
+        p.expect_punct(',')?;
+        let b = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(DslItem::Subtract { target, a, b, span })
+    }
+
+    // ---------------------------------------------------------------
+    // add(target, a, b);
+    // ---------------------------------------------------------------
+    fn parse_add(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("add")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let target = p.parse_value();
+        p.expect_punct(',')?;
+        let a = p.parse_value();
+        p.expect_punct(',')?;
+        let b = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(DslItem::Add { target, a, b, span })
+    }
+
     fn parse_interpolation(&mut self) -> Result<DslValue> {
         self.expect_punct('#')?;
         let (expr, _) = self.expect_group(Delimiter::Brace)?;
         Ok(DslValue::Interpolation(expr))
+    }
+}
+
+/// Parse a usize from a literal string, handling decimal, hex (0x..),
+/// octal (0o..), and binary (0b..) prefixes.
+fn parse_usize_literal(s: &str) -> core::result::Result<usize, core::num::ParseIntError> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        usize::from_str_radix(hex, 16)
+    } else if let Some(oct) = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")) {
+        usize::from_str_radix(oct, 8)
+    } else if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+        usize::from_str_radix(bin, 2)
+    } else {
+        s.parse()
     }
 }
