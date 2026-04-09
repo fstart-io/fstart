@@ -222,5 +222,71 @@ fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenS
                 );
             }
         }
+        AcpiPlatform::X86(x86) => {
+            let num_cpus = Literal::u32_unsuffixed(x86.num_cpus);
+            let lapic_base = Literal::u64_unsuffixed(x86.lapic_base);
+            let sci_irq = Literal::u8_unsuffixed(x86.sci_irq);
+            let legacy = x86.legacy_devices;
+
+            let ioapic_entries: Vec<_> = x86
+                .ioapics
+                .iter()
+                .map(|ioapic| {
+                    let id = Literal::u8_unsuffixed(ioapic.id);
+                    let base = Literal::u64_unsuffixed(ioapic.base);
+                    let gsi = Literal::u32_unsuffixed(ioapic.gsi_base);
+                    quote! {
+                        fstart_acpi::platform::IoApicConfig {
+                            id: #id, base: #base, gsi_base: #gsi,
+                        }
+                    }
+                })
+                .collect();
+
+            let iso_entries: Vec<_> = x86
+                .isos
+                .iter()
+                .map(|iso| {
+                    let bus = Literal::u8_unsuffixed(iso.bus);
+                    let source = Literal::u8_unsuffixed(iso.source);
+                    let gsi = Literal::u32_unsuffixed(iso.gsi);
+                    let flags = Literal::u16_unsuffixed(iso.flags);
+                    quote! {
+                        fstart_acpi::platform::IsoConfig {
+                            bus: #bus, source: #source, gsi: #gsi, flags: #flags,
+                        }
+                    }
+                })
+                .collect();
+
+            let hpet_expr = match x86.hpet_base {
+                Some(base) => {
+                    let base_lit = Literal::u64_unsuffixed(base);
+                    quote! { Some(#base_lit) }
+                }
+                None => quote! { None },
+            };
+
+            let num_ioapics = Literal::usize_unsuffixed(x86.ioapics.len());
+            let num_isos = Literal::usize_unsuffixed(x86.isos.len());
+
+            quote! {
+                static _IOAPICS: [fstart_acpi::platform::IoApicConfig; #num_ioapics] =
+                    [#(#ioapic_entries),*];
+                static _ISOS: [fstart_acpi::platform::IsoConfig; #num_isos] =
+                    [#(#iso_entries),*];
+                let platform_acpi = fstart_acpi::platform::PlatformConfig::X86(
+                    fstart_acpi::platform::X86Config {
+                        num_cpus: #num_cpus,
+                        lapic_base: #lapic_base,
+                        ioapics: &_IOAPICS,
+                        isos: &_ISOS,
+                        hpet_base: #hpet_expr,
+                        legacy_devices: #legacy,
+                        sci_irq: #sci_irq,
+                    }
+                );
+            }
+        }
     }
 }
