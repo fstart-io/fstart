@@ -212,15 +212,6 @@ impl Aml for TockAcpiField {
 /// Build a `(byte_offset, bit_width, field_entries)` tuple for one
 /// register, using `offset_of!` to derive the byte offset from a
 /// `register_structs!` type.
-///
-/// ```ignore
-/// use core::mem::offset_of;
-///
-/// let entry = reg_entry::<u32, MCH_EPBAR::Register>(
-///     offset_of!(MchRegs, epbar)
-/// );
-/// // entry = (0x40, 32, vec![FieldEntry::Named(...), ...])
-/// ```
 pub fn reg_entry<T, R>(struct_offset: usize) -> (u64, usize, Vec<FieldEntry>)
 where
     T: UIntLike + 'static,
@@ -228,6 +219,45 @@ where
 {
     let bits = core::mem::size_of::<T>() * 8;
     (struct_offset as u64, bits, tock_field_entries::<T, R>(bits))
+}
+
+/// Trait for register field types that carry type-level register metadata.
+///
+/// Implemented for `tock_registers::registers::ReadWrite<T, R>` and
+/// `ReadOnly<T, R>`.  Custom register wrappers (e.g., fstart-mmio's
+/// `MmioReadWrite`) can implement this to participate in [`tock_acpi_field!`].
+pub trait AcpiRegField {
+    /// The register width type (u8, u16, u32, u64).
+    type Width: UIntLike + 'static;
+    /// The `RegisterDebugInfo` type from `register_bitfields!`.
+    type Reg: RegisterDebugInfo<Self::Width> + 'static;
+}
+
+impl<T: UIntLike + 'static, R: RegisterDebugInfo<T> + 'static> AcpiRegField
+    for tock_registers::registers::ReadWrite<T, R>
+{
+    type Width = T;
+    type Reg = R;
+}
+
+impl<T: UIntLike + 'static, R: RegisterDebugInfo<T> + 'static> AcpiRegField
+    for tock_registers::registers::ReadOnly<T, R>
+{
+    type Width = T;
+    type Reg = R;
+}
+
+/// Extract register metadata from a closure that accesses a struct field.
+///
+/// The closure is never called -- it exists purely so that the compiler
+/// can infer `T` and `R` from the struct field type
+/// (`ReadWrite<T, R>` or `ReadOnly<T, R>`).
+pub fn field_entry_for<S, F, Fld>(_accessor: F, offset: usize) -> (u64, usize, Vec<FieldEntry>)
+where
+    F: Fn(&S) -> &Fld,
+    Fld: AcpiRegField,
+{
+    reg_entry::<Fld::Width, Fld::Reg>(offset)
 }
 
 /// Build a [`TockAcpiField`] from a `register_structs!` type.
@@ -250,8 +280,7 @@ where
 /// }
 ///
 /// let mchp = tock_acpi_field!(MchRegs, "MCHP", PCIConfig, DWord, [
-///     epbar: u32, MCH_EPBAR::Register,
-///     mchbar: u32, MCH_MCHBAR::Register,
+///     epbar, mchbar,
 /// ]);
 /// ```
 #[macro_export]
@@ -261,17 +290,17 @@ macro_rules! tock_acpi_field {
         $region_name:expr,
         $space:ident,
         $access:ident,
-        [ $( $field:ident : $width_ty:ty, $reg_ty:ty ),* $(,)? ]
+        [ $( $field:ident ),* $(,)? ]
     ) => {{
         extern crate alloc as __tock_acpi_alloc;
         let entries: __tock_acpi_alloc::vec::Vec<(u64, usize, __tock_acpi_alloc::vec::Vec<$crate::aml::FieldEntry>)> =
             {
                 let mut v = __tock_acpi_alloc::vec::Vec::new();
                 $(
-                    v.push($crate::tock_bridge::reg_entry::<
-                        $width_ty,
-                        $reg_ty,
-                    >(::core::mem::offset_of!($struct_ty, $field)));
+                    v.push($crate::tock_bridge::field_entry_for(
+                        |s: &$struct_ty| &s.$field,
+                        ::core::mem::offset_of!($struct_ty, $field),
+                    ));
                 )*
                 v
             };
