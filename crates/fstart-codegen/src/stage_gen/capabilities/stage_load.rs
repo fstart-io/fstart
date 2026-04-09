@@ -2,6 +2,11 @@
 //!
 //! Handles `LoadNextStage` (multi-device, single-device, auto-detect) and
 //! the FFS anchor scan for non-first stages.
+//!
+//! The actual block device read and handoff serialization are delegated
+//! to library functions in [`fstart_capabilities::next_stage`]. Codegen
+//! handles SoC-specific header parsing (eGON offsets) and multi-device
+//! match dispatch.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
@@ -43,16 +48,6 @@ pub(in crate::stage_gen) fn generate_anchor_scan(
             }
         }
         BootMedium::Device { .. } | BootMedium::AutoDevice { .. } => {
-            // Block device: read the anchor at ffs_total_size - ANCHOR_SIZE.
-            // The FFS assembler patches ffs_total_size into the eGON header
-            // so non-first stages can locate the anchor without scanning
-            // the entire device.
-            //
-            // SAFETY invariant: this reads the eGON header from SRAM even
-            // when running from the main stage in DRAM.  This is safe because
-            // the header (offsets 0x00-0x60) is at the very start of SRAM
-            // while the bootblock stack grows downward from the top, so the
-            // header bytes survive across stages.
             if let Err(err) = require_egon_format(config, "block device anchor scan") {
                 return err;
             }
@@ -86,14 +81,14 @@ pub(in crate::stage_gen) fn generate_anchor_scan(
 /// Generate code for the LoadNextStage capability.
 ///
 /// Reads the next stage's offset and size from the eGON header (ARMv7),
-/// computes the absolute byte offset on the block device, reads that
-/// many bytes directly into the next stage's load address, and jumps.
+/// then delegates to `fstart_capabilities::next_stage::read_stage_to_addr`
+/// for the block device read and
+/// `fstart_capabilities::next_stage::write_handoff_and_jump` for the
+/// handoff serialization and jump.
 ///
 /// When multiple devices are specified, the boot device is auto-detected
-/// via `fstart_soc_sunxi::boot_device()` and each match arm performs the
-/// full read + handoff + jump sequence (the function never returns).
-///
-/// No intermediate DRAM buffer, no FFS parsing, no LZ4.
+/// via `fstart_soc_sunxi::boot_device()` and each match arm calls the
+/// library functions with the resolved device.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::stage_gen) fn generate_load_next_stage(
     load_devices: &[LoadDevice],
@@ -121,13 +116,12 @@ pub(in crate::stage_gen) fn generate_load_next_stage(
     };
     let load_addr = hex_addr(next_load_addr);
 
-    // LoadNextStage requires an Allwinner eGON-format bootblock to read
-    // next-stage offset/size from the eGON header at the SRAM base.
+    // LoadNextStage requires an Allwinner eGON-format bootblock.
     if let Err(err) = require_egon_format(config, "LoadNextStage") {
         return err;
     }
 
-    // SRAM base for eGON header access (bootblock load_addr: H3=0x0, H5=0x10000).
+    // SRAM base for eGON header access.
     let sram_base = hex_addr(egon_sram_base(config));
 
     // Handoff buffer: placed 4K below the next stage's load address.
@@ -150,30 +144,14 @@ pub(in crate::stage_gen) fn generate_load_next_stage(
         None => quote! { 0u64 },
     };
 
-    // Platform-specific jump call.
-    let jump_call =
-        quote! { fstart_platform::jump_to_with_handoff(#load_addr, #handoff_addr as usize); };
-
-    // Build the handoff + jump sequence (shared by all arms).
-    let handoff_and_jump = quote! {
-        // Serialize handoff for the next stage.
-        let _handoff_data = fstart_types::handoff::StageHandoff::new(#dram_size_expr);
-        let handoff_buf_addr = #handoff_addr as *mut u8;
-        let handoff_buf = unsafe {
-            core::slice::from_raw_parts_mut(
-                handoff_buf_addr,
-                fstart_types::handoff::HANDOFF_MAX_SIZE,
-            )
-        };
-        let handoff_len = fstart_capabilities::handoff::serialize(&_handoff_data, handoff_buf)
-            .unwrap_or_else(|_| {
-                fstart_log::error!("FATAL: handoff serialize failed");
-                #halt
-            });
-        fstart_log::info!("handoff: {} bytes at {:#x}", handoff_len, #handoff_addr as u64);
-
-        fstart_log::info!("jumping to stage '{}' at {:#x}", #next_stage, #load_addr as u64);
-        #jump_call
+    // Common: read eGON header values + validate.
+    let header_read = quote! {
+        let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset_at(#sram_base) as u64;
+        let ns_size = fstart_soc_sunxi::next_stage_size_at(#sram_base) as usize;
+        if ns_ffs_offset == 0 || ns_size == 0 {
+            fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
+            #halt;
+        }
     };
 
     if load_devices.len() == 1 {
@@ -184,25 +162,16 @@ pub(in crate::stage_gen) fn generate_load_next_stage(
         let base_off = hex_addr(ld.base_offset);
 
         return quote! {
-            let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset_at(#sram_base) as u64;
-            let ns_size = fstart_soc_sunxi::next_stage_size_at(#sram_base) as usize;
-            if ns_ffs_offset == 0 || ns_size == 0 {
-                fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
-                #halt;
-            }
+            #header_read
             let dev_offset = #base_off + ns_ffs_offset;
-            fstart_log::info!("loading stage '{}': offset={:#x}, size={:#x}, dest={:#x}",
-                #next_stage, dev_offset, ns_size as u64, #load_addr as u64);
-            {
-                let dest_buf = unsafe {
-                    core::slice::from_raw_parts_mut(#load_addr as *mut u8, ns_size)
-                };
-                #dev_ident.read(dev_offset, dest_buf).unwrap_or_else(|_| {
-                    fstart_log::error!("FATAL: failed to read stage from {}", #dev_name_str);
-                    #halt
-                });
-            }
-            #handoff_and_jump
+            fstart_capabilities::next_stage::read_stage_to_addr(
+                &#dev_ident, #dev_name_str, #next_stage,
+                dev_offset, #load_addr, ns_size, fstart_arch::halt,
+            );
+            fstart_capabilities::next_stage::write_handoff_and_jump(
+                #dram_size_expr, #handoff_addr, #load_addr, #next_stage,
+                fstart_platform::jump_to_with_handoff, fstart_arch::halt,
+            );
         };
     }
 
@@ -220,30 +189,21 @@ pub(in crate::stage_gen) fn generate_load_next_stage(
             match_arms.extend(quote! {
                 #val_lit => {
                     let dev_offset = #base_off + ns_ffs_offset;
-                    fstart_log::info!("loading stage '{}' from {}: offset={:#x}, size={:#x}, dest={:#x}",
-                        #next_stage, #dev_name_str, dev_offset, ns_size as u64, #load_addr as u64);
-                    {
-                        let dest_buf = unsafe {
-                            core::slice::from_raw_parts_mut(#load_addr as *mut u8, ns_size)
-                        };
-                        #dev_ident.read(dev_offset, dest_buf).unwrap_or_else(|_| {
-                            fstart_log::error!("FATAL: failed to read stage from {}", #dev_name_str);
-                            #halt
-                        });
-                    }
-                    #handoff_and_jump
+                    fstart_capabilities::next_stage::read_stage_to_addr(
+                        &#dev_ident, #dev_name_str, #next_stage,
+                        dev_offset, #load_addr, ns_size, fstart_arch::halt,
+                    );
+                    fstart_capabilities::next_stage::write_handoff_and_jump(
+                        #dram_size_expr, #handoff_addr, #load_addr, #next_stage,
+                        fstart_platform::jump_to_with_handoff, fstart_arch::halt,
+                    );
                 }
             });
         }
     }
 
     quote! {
-        let ns_ffs_offset = fstart_soc_sunxi::next_stage_offset_at(#sram_base) as u64;
-        let ns_size = fstart_soc_sunxi::next_stage_size_at(#sram_base) as usize;
-        if ns_ffs_offset == 0 || ns_size == 0 {
-            fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
-            #halt;
-        }
+        #header_read
         let bm = fstart_soc_sunxi::boot_media_at(#sram_base);
         fstart_log::info!("boot media detect: {:#x}", bm);
         match bm {

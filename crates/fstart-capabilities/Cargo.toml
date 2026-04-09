@@ -20,6 +20,10 @@ fdt = []
 fit = ["ffs", "dep:fstart-fit"]
 # Inter-stage handoff serialization (postcard)
 handoff = ["dep:postcard", "dep:fstart-types"]
+# SMBIOS table generation from static descriptors
+smbios = ["dep:fstart-smbios"]
+# ACPI table generation orchestration
+acpi = ["dep:fstart-acpi"]
 [dependencies]
 fstart-log = { workspace = true }
 fstart-services = { workspace = true }
@@ -27,4 +31,6 @@ ufmt = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-types = { workspace = true, optional = true }
 fstart-fit = { workspace = true, optional = true }
+fstart-smbios = { workspace = true, optional = true }
+fstart-acpi = { workspace = true, optional = true }
 postcard = { workspace = true, optional = true }
