@@ -70,6 +70,8 @@ pub enum DslValue {
     IntLit(TokenStream),
     /// EISA ID: `eisa_id("PNP0501")`
     EisaId(String),
+    /// Package: `package(val1, val2, ...)`
+    Package(Vec<DslValue>),
     /// Resource template: `resource_template { ... }`
     ResourceTemplate(Vec<ResourceDesc>),
     /// Rust expression interpolation: `#{expr}`
@@ -340,10 +342,15 @@ impl Parser {
     fn parse_value(&mut self) -> DslValue {
         // Check for special value forms
         if self.peek_ident_eq("eisa_id") {
-            return self.parse_eisa_id().unwrap_or_else(|e| {
-                // Fallback: treat as interpolation
-                DslValue::Interpolation(e.to_compile_error())
-            });
+            return self
+                .parse_eisa_id()
+                .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
+        }
+
+        if self.peek_ident_eq("package") {
+            return self
+                .parse_package()
+                .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
         }
 
         if self.peek_ident_eq("resource_template") {
@@ -387,6 +394,21 @@ impl Parser {
                 DslValue::Interpolation(expr)
             }
         }
+    }
+
+    fn parse_package(&mut self) -> Result<DslValue> {
+        self.expect_ident("package")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut args_parser = Parser::new(args);
+        let mut elements = Vec::new();
+        while !args_parser.at_end() {
+            elements.push(args_parser.parse_value());
+            // Consume optional trailing comma.
+            if !args_parser.at_end() {
+                let _ = args_parser.expect_punct(',');
+            }
+        }
+        Ok(DslValue::Package(elements))
     }
 
     fn parse_eisa_id(&mut self) -> Result<DslValue> {

@@ -251,6 +251,7 @@ fn emit_value(value: &DslValue, gen: &mut VarGen) -> (TokenStream, proc_macro2::
             };
             (binding, var)
         }
+        DslValue::Package(elements) => emit_package(elements, gen),
         DslValue::ResourceTemplate(descs) => emit_resource_template(descs, gen),
         DslValue::Interpolation(expr) => {
             let var = gen.next("expr");
@@ -260,6 +261,29 @@ fn emit_value(value: &DslValue, gen: &mut VarGen) -> (TokenStream, proc_macro2::
             (binding, var)
         }
     }
+}
+
+fn emit_package(elements: &[DslValue], gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let mut elem_vars: Vec<proc_macro2::Ident> = Vec::new();
+
+    for elem in elements {
+        let (binding, var) = emit_value(elem, gen);
+        bindings.extend(binding);
+        elem_vars.push(var);
+    }
+
+    let var = gen.next("pkg");
+    let refs: Vec<_> = elem_vars
+        .iter()
+        .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
+        .collect();
+
+    bindings.extend(quote! {
+        let #var = fstart_acpi::aml::Package::new(alloc::vec![#(#refs),*]);
+    });
+
+    (bindings, var)
 }
 
 fn emit_resource_template(
