@@ -26,7 +26,7 @@ use super::tokens::{anchor_expr, halt_expr, hex_addr};
 
 // Re-export sub-module functions for use by stage_gen::mod.rs.
 pub(super) use acpi::generate_acpi_prepare;
-pub(super) use payload::generate_payload_load;
+pub(super) use payload::{generate_firmware_boot, generate_payload_load};
 pub(super) use smbios::generate_smbios_prepare;
 #[allow(unused_imports)]
 pub(super) use stage_load::generate_anchor_scan;
@@ -195,6 +195,12 @@ pub(super) fn generate_pci_init(
             #halt
         });
         fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
+        // Drop the PCI driver struct to free its Vec<PciDev> heap allocation.
+        // On RISC-V UEFI boards, the M→S transition via OpenSBI corrupts large
+        // stack-resident structs; dropping before the transition avoids stale
+        // pointers. BARs are programmed in hardware and persist; CrabEFI
+        // re-enumerates PCI using the ECAM base literal.
+        core::mem::drop(#device);
     }
 }
 

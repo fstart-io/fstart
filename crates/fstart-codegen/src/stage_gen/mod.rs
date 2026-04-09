@@ -43,9 +43,9 @@ use crate::ron_loader::ParsedBoard;
 use capabilities::{
     collect_boot_media_gated_devices, generate_acpi_prepare, generate_boot_media,
     generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
-    generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
-    generate_memory_init, generate_payload_load, generate_pci_init, generate_return_to_fel,
-    generate_sig_verify, generate_smbios_prepare, generate_stage_load,
+    generate_fdt_prepare, generate_firmware_boot, generate_late_driver_init,
+    generate_load_next_stage, generate_memory_init, generate_payload_load, generate_pci_init,
+    generate_return_to_fel, generate_sig_verify, generate_smbios_prepare, generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
@@ -777,11 +777,24 @@ fn generate_fstart_main(
                 ));
             }
             Capability::PayloadLoad => {
-                body.extend(generate_payload_load(config, platform, embed_anchor));
+                body.extend(generate_payload_load(
+                    config,
+                    platform,
+                    embed_anchor,
+                    instances,
+                ));
             }
             Capability::StageLoad { next_stage } => {
                 body.extend(generate_stage_load(
                     next_stage.as_str(),
+                    platform,
+                    embed_anchor,
+                ));
+            }
+            Capability::FirmwareBoot { next_stage } => {
+                body.extend(generate_firmware_boot(
+                    next_stage.as_str(),
+                    config,
                     platform,
                     embed_anchor,
                 ));
@@ -829,6 +842,7 @@ fn generate_fstart_main(
         matches!(
             cap,
             Capability::StageLoad { .. }
+                | Capability::FirmwareBoot { .. }
                 | Capability::PayloadLoad
                 | Capability::LoadNextStage { .. }
                 | Capability::ReturnToFel

@@ -23,6 +23,8 @@ armv7 = ["dep:fstart-platform-armv7"]
 sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi", "fstart-platform-armv7?/sunxi", "fstart-platform-riscv64?/sunxi"]
 # SBSA entry point — copies firmware from flash to DRAM before executing.
 sbsa = ["fstart-platform-aarch64?/sbsa"]
+# S-mode entry point — for stages booted via SBI firmware (OpenSBI).
+smode-entry = ["fstart-platform-riscv64?/smode-entry"]
 # Driver selection (enabled based on board.ron devices)
 ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]

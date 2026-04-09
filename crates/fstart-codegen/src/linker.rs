@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use fstart_types::{BoardConfig, RegionKind, SocImageFormat, StageLayout};
+use fstart_types::{BoardConfig, Platform, RegionKind, SocImageFormat, StageLayout};
 
 /// Generate a linker script for the given board and (optional) stage.
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
@@ -111,6 +111,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             stack_size,
             data_addr,
             needs_egon_header,
+            config.platform,
         );
     } else {
         // RAM-only layout: everything in RAM at load_addr.
@@ -147,6 +148,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             stack_size,
             bss_origin,
             needs_egon_header,
+            config.platform,
         );
     }
 
@@ -169,6 +171,7 @@ fn generate_xip_layout(
     stack_size: u64,
     data_addr: Option<u64>,
     needs_egon_header: bool,
+    platform: Platform,
 ) {
     // When data_addr is set, split RAM into two memory regions:
     // RAMRO for read-only data (unused currently, but reserved),
@@ -203,14 +206,15 @@ fn generate_xip_layout(
         writeln!(out, "    }} > ROM\n").unwrap();
     }
 
-    // Code in ROM
+    // Code + anchor in ROM (same output section so the linker emits a
+    // single PT_LOAD segment with R+E flags).  If the anchor were in its
+    // own output section, the linker creates a separate RO segment and
+    // the FFS scan_for_placeholder finds the magic at an 8-byte-earlier
+    // file offset than where the CPU reads &FSTART_ANCHOR.
     writeln!(out, "    .text : {{").unwrap();
     writeln!(out, "        KEEP(*(.text.entry))").unwrap();
     writeln!(out, "        *(.text .text.*)").unwrap();
-    writeln!(out, "    }} > ROM\n").unwrap();
-
-    // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
-    writeln!(out, "    .fstart.anchor : ALIGN(16) {{").unwrap();
+    writeln!(out, "        . = ALIGN(16);").unwrap();
     writeln!(out, "        *(.fstart.anchor)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
@@ -242,8 +246,8 @@ fn generate_xip_layout(
     // Page tables: isolated from BSS to prevent corruption.
     write_page_tables_section(out, "RAM");
 
-    // Stack: grows downward from top of RAM region.
-    write_stack(out, stack_size, "RAM");
+    // Stack placement.
+    write_stack(out, stack_size, "RAM", platform);
     writeln!(out, "}}").unwrap();
 }
 
@@ -259,6 +263,7 @@ fn generate_ram_layout(
     stack_size: u64,
     bss_origin: Option<u64>,
     needs_egon_header: bool,
+    platform: Platform,
 ) {
     if let Some(bss_addr) = bss_origin {
         let code_length = bss_addr - ram_origin;
@@ -287,7 +292,7 @@ fn generate_ram_layout(
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
         write_page_tables_section(out, "RWDATA");
-        write_stack(out, stack_size, "RWDATA");
+        write_stack(out, stack_size, "RWDATA", platform);
         writeln!(out, "}}").unwrap();
     } else {
         writeln!(out, "MEMORY\n{{").unwrap();
@@ -308,7 +313,7 @@ fn generate_ram_layout(
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
         write_page_tables_section(out, "RAM");
-        write_stack(out, stack_size, "RAM");
+        write_stack(out, stack_size, "RAM", platform);
         writeln!(out, "}}").unwrap();
     }
 }
@@ -382,18 +387,40 @@ fn write_page_tables_section(out: &mut String, region: &str) {
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
-fn write_stack(out: &mut String, stack_size: u64, region: &str) {
-    // Stack grows downward from the top of the memory region.
-    // The ASSERT verifies there is at least stack_size bytes between
-    // the end of the last NOLOAD section and the top of the region.
-    // _page_tables_end is always defined (the section may be empty on
-    // architectures without MMU page table statics).
-    writeln!(out, "    _stack_top = ORIGIN({region}) + LENGTH({region});").unwrap();
-    writeln!(
-        out,
-        "    ASSERT(_stack_top - _page_tables_end >= {stack_size:#x}, \"insufficient stack space\")"
-    )
-    .unwrap();
+fn write_stack(out: &mut String, stack_size: u64, region: &str, platform: Platform) {
+    // Place _stack_top after the last NOLOAD section + stack_size.
+    //
+    // On RISC-V, the entry assembly uses `la sp, _stack_top` which
+    // generates `auipc + addi` (PC-relative, ±2 GiB range).  Placing
+    // the stack at the END of a multi-GiB RAM region would exceed this
+    // range when code is in flash. So we place the stack immediately
+    // after the data sections, not at RAM end.
+    //
+    // On AArch64/ARMv7, `ldr` can load any 64/32-bit address from the
+    // literal pool so there is no range limitation.  We still use the
+    // compact placement for consistency and determinism.
+    match platform {
+        Platform::Riscv64 => {
+            // Stack is immediately after page_tables_end.
+            writeln!(out, "    _stack_top = _page_tables_end + {stack_size:#x};").unwrap();
+            writeln!(
+                out,
+                "    ASSERT(_stack_top <= ORIGIN({region}) + LENGTH({region}), \"stack overflows RAM region\")"
+            )
+            .unwrap();
+        }
+        _ => {
+            // Stack grows downward from the top of the memory region.
+            // The ASSERT verifies there is at least stack_size bytes between
+            // the end of the last NOLOAD section and the top of the region.
+            writeln!(out, "    _stack_top = ORIGIN({region}) + LENGTH({region});").unwrap();
+            writeln!(
+                out,
+                "    ASSERT(_stack_top - _page_tables_end >= {stack_size:#x}, \"insufficient stack space\")"
+            )
+            .unwrap();
+        }
+    }
 
     // _binary_end marks the end of all loadable content. Used by entry
     // stubs that need to copy the entire binary (e.g., SBSA flash→DRAM).

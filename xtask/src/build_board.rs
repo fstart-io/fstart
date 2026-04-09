@@ -156,10 +156,30 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 let cap_features =
                     capability_features(&stage.capabilities, &config.security, &config);
                 features.extend(cap_features);
+
+                // Stages after a FirmwareBoot are entered in S-mode by the
+                // SBI firmware.  They need the smode-entry feature to use
+                // the S-mode _start that reads DTB from sscratch (not
+                // mscratch) and skips M-mode CSR accesses.
+                if i > 0
+                    && config.platform == Platform::Riscv64
+                    && stages[..i].iter().any(|prev| {
+                        prev.capabilities
+                            .iter()
+                            .any(|c| matches!(c, Capability::FirmwareBoot { .. }))
+                    })
+                {
+                    features.push("smode-entry".to_string());
+                }
                 let features_str = features.join(",");
 
+                let stage_has_payload = stage
+                    .capabilities
+                    .iter()
+                    .any(|c| matches!(c, Capability::PayloadLoad));
                 let needs_alloc = stage_uses_fdt(&stage.capabilities)
                     || stage_uses_acpi(&stage.capabilities)
+                    || (stage_has_payload && stage_uses_crabefi(&config))
                     || stage.heap_size.is_some();
                 let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
@@ -539,7 +559,10 @@ fn capability_features(
     let uses_ffs = capabilities.iter().any(|c| {
         matches!(
             c,
-            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+            Capability::SigVerify
+                | Capability::StageLoad { .. }
+                | Capability::FirmwareBoot { .. }
+                | Capability::PayloadLoad
         )
     });
 
@@ -573,7 +596,11 @@ fn capability_features(
         features.push("pci-ecam".to_string());
     }
 
-    if stage_uses_crabefi(config) {
+    if stage_uses_crabefi(config)
+        && capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::PayloadLoad))
+    {
         features.push("crabefi".to_string());
     }
 
