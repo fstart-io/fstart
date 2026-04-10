@@ -308,32 +308,19 @@ fn generate_imports(
         }
     }
 
-    // Import boot media type based on the BootMedia capability variant.
+    // Import boot media concrete type based on the BootMedia capability variant.
+    // The BootMedia *trait* is not imported — generated code passes the
+    // concrete type to fstart_capabilities functions which are generic over
+    // `impl BootMedia`, so the trait doesn't need to be in scope here.
     match get_boot_medium(capabilities) {
         Some(BootMedium::MemoryMapped { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::MemoryMapped; });
-            // Import the BootMedia trait so as_slice() / read_at() are
-            // callable in FFS loading code (PayloadLoad, SigVerify, etc.).
-            if needs_ffs(capabilities) {
-                tokens.extend(quote! { use fstart_services::BootMedia; });
-            }
         }
         Some(BootMedium::Device { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::BlockDeviceMedia; });
-            // Import the BootMedia trait so read_at() is callable in the
-            // anchor scan and FFS loading code.
-            if needs_ffs(capabilities) {
-                tokens.extend(quote! { use fstart_services::BootMedia; });
-            }
         }
         Some(BootMedium::AutoDevice { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::BlockDeviceMedia; });
-            // AutoDevice generates a BlockDevice dispatch enum and
-            // wraps it in BlockDeviceMedia. BootMedia trait needed for
-            // anchor scan and FFS loading.
-            if needs_ffs(capabilities) {
-                tokens.extend(quote! { use fstart_services::BootMedia; });
-            }
         }
         None => {}
     }
