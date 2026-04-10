@@ -235,15 +235,15 @@ fn build_one_stage(
     // +strict-align, but we re-assert it here to ensure LLVM never emits
     // unaligned loads/stores to MMIO addresses (device memory faults on
     // unaligned access even when the core supports it for normal memory).
-    cmd.env(
-        "RUSTFLAGS",
-        concat!(
-            "-Zub-checks=no -Ctarget-feature=+strict-align",
-            " -Dwarnings",
-            " -Astatic-mut-refs",          // firmware statics (console, heap)
-            " -Afunction-item-references", // fn-to-ptr casts in platform asm
-        ),
-    );
+    // Base RUSTFLAGS for all cross-compiled firmware builds.
+    // FSTART_EXTRA_RUSTFLAGS (if set) is appended — CI uses this for
+    // -Dwarnings to catch generated-code regressions.
+    let mut rustflags = String::from("-Zub-checks=no -Ctarget-feature=+strict-align");
+    if let Ok(extra) = std::env::var("FSTART_EXTRA_RUSTFLAGS") {
+        rustflags.push(' ');
+        rustflags.push_str(&extra);
+    }
+    cmd.env("RUSTFLAGS", &rustflags);
 
     // Pass board RON path to build.rs
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());

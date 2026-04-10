@@ -56,6 +56,18 @@ jobs:
             --exclude fstart-platform-aarch64 \
             --exclude fstart-platform-armv7
 
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
+      - name: Cross-build warnings (generated code)
+        env:
+          FSTART_EXTRA_RUSTFLAGS: -Dwarnings -Astatic-mut-refs
+        run: |
+          cargo xtask build --board qemu-riscv64 --release
+          cargo xtask build --board qemu-aarch64 --release
+
   # -----------------------------------------------------------------------
   # Build every board image (cross-compile via -Z build-std=core)
   # -----------------------------------------------------------------------
