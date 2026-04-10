@@ -97,6 +97,7 @@ fi
 make -C "$TFA_DIR" \
   CROSS_COMPILE="$AARCH64_CROSS" \
   PLAT=qemu \
+  QEMU_USE_GIC_DRIVER=QEMU_GICV3 \
   bl31 \
   -j"$NPROC"
 
