@@ -58,10 +58,16 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 
     // Base features: platform + all driver features (every stage constructs
     // all devices, so driver features are always needed globally).
+    // ACPI-only devices (ahci, xhci, pcie-root) have no driver crate and
+    // no corresponding cargo feature — skip them.
+    const ACPI_ONLY_DRIVERS: &[&str] = &["ahci", "xhci", "pcie-root"];
     let mut base_features = Vec::new();
     base_features.push(config.platform.as_str().to_string());
     for device in &config.devices {
-        base_features.push(device.driver.to_string());
+        let drv = device.driver.as_str();
+        if !ACPI_ONLY_DRIVERS.contains(&drv) {
+            base_features.push(drv.to_string());
+        }
     }
 
     // Multi-stage boards need the handoff feature for inter-stage data passing.
