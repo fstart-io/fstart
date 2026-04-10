@@ -5,15 +5,15 @@
 //!
 //! ```text
 //! items       = item*
-//! item        = scope | device | name_decl | method | ret
-//! scope       = "scope" "(" STRING ")" "{" items "}"
-//! device      = "device" "(" STRING ")" "{" items "}"
-//! name_decl   = "name" "(" STRING "," value ")" ";"
-//! method      = "method" "(" STRING "," INT "," serialized ")" "{" items "}"
-//! ret         = "ret" "(" value ")" ";"
-//! value       = resource_template | eisa_id | interpolation | literal
-//! resource_template = "resource_template" "{" resource_desc* "}"
-//! resource_desc = memory_32_fixed | interrupt
+//! item        = Scope | Device | Name | Method | Return
+//! Scope       = "Scope" "(" STRING ")" "{" items "}"
+//! Device      = "Device" "(" STRING ")" "{" items "}"
+//! Name        = "Name" "(" STRING "," value ")" ";"
+//! Method      = "Method" "(" STRING "," INT "," serialized ")" "{" items "}"
+//! Return      = "Return" "(" value ")" ";"
+//! value       = ResourceTemplate | EisaId | interpolation | literal
+//! ResourceTemplate = "ResourceTemplate" "{" resource_desc* "}"
+//! resource_desc = Memory32Fixed | Interrupt
 //! interpolation = "#{" expr "}"
 //! ```
 
@@ -59,7 +59,7 @@ pub enum DslItem {
         #[allow(dead_code)]
         span: Span,
     },
-    /// `op_region("NAME", space, offset, length);`
+    /// `OperationRegion("NAME", space, offset, length);`
     OpRegion {
         name: String,
         space: RegionSpace,
@@ -67,7 +67,7 @@ pub enum DslItem {
         length: DslValue,
         span: Span,
     },
-    /// `field("REGION", access, lock, update) { entries }`
+    /// `Field("REGION", access, lock, update) { entries }`
     Field {
         region: String,
         access: FieldAccess,
@@ -76,21 +76,21 @@ pub enum DslItem {
         entries: Vec<FieldEntryDsl>,
         span: Span,
     },
-    /// `create_dword_field(buffer, index, "NAME");`
+    /// `CreateDwordField(buffer, index, "NAME");`
     CreateDwordField {
         buffer: DslValue,
         index: DslValue,
         name: String,
         span: Span,
     },
-    /// `store(value, target);`
+    /// `Store(value, target);`
     Store {
         value: DslValue,
         target: DslValue,
         #[allow(dead_code)]
         span: Span,
     },
-    /// `shl(target, value, count);`
+    /// `ShiftLeft(target, value, count);`
     ShiftLeft {
         target: DslValue,
         value: DslValue,
@@ -98,7 +98,7 @@ pub enum DslItem {
         #[allow(dead_code)]
         span: Span,
     },
-    /// `subtract(target, a, b);`
+    /// `Subtract(target, a, b);`
     Subtract {
         target: DslValue,
         a: DslValue,
@@ -106,7 +106,7 @@ pub enum DslItem {
         #[allow(dead_code)]
         span: Span,
     },
-    /// `add(target, a, b);`
+    /// `Add(target, a, b);`
     Add {
         target: DslValue,
         a: DslValue,
@@ -172,11 +172,11 @@ pub enum DslValue {
     StringLit(String),
     /// Integer literal: `0u32`, `0x1000u32`
     IntLit(TokenStream),
-    /// EISA ID: `eisa_id("PNP0501")`
+    /// EISA ID: `EisaId("PNP0501")`
     EisaId(String),
-    /// Package: `package(val1, val2, ...)`
+    /// Package: `Package(val1, val2, ...)`
     Package(Vec<DslValue>),
-    /// Resource template: `resource_template { ... }`
+    /// Resource template: `ResourceTemplate { ... }`
     ResourceTemplate(Vec<ResourceDesc>),
     /// Rust expression interpolation: `#{expr}`
     Interpolation(TokenStream),
@@ -197,14 +197,14 @@ pub enum ResourceDesc {
         exclusive: bool,
         irq: DslValue,
     },
-    /// `io(base, end, align, len);` -- legacy I/O port descriptor.
+    /// `IO(base, end, align, len);` -- legacy I/O port descriptor.
     IoPort {
         base: DslValue,
         end: DslValue,
         align: DslValue,
         len: DslValue,
     },
-    /// `dword_io(base, end);` -- DWord I/O range.
+    /// `DWordIO(base, end);` -- DWord I/O range.
     DWordIO { base: DslValue, end: DslValue },
     /// WordBusNumber -- PCI bus number range.
     WordBusNumber { start: DslValue, end: DslValue },
@@ -342,18 +342,18 @@ impl Parser {
             TokenTree::Ident(ident) => {
                 let name = ident.to_string();
                 match name.as_str() {
-                    "scope" => self.parse_scope(),
-                    "device" => self.parse_device(),
-                    "name" => self.parse_name(),
-                    "method" => self.parse_method(),
-                    "ret" => self.parse_return(),
-                    "op_region" => self.parse_op_region(),
-                    "field" => self.parse_field(),
-                    "create_dword_field" => self.parse_create_dword_field(),
-                    "store" => self.parse_store(),
-                    "shl" => self.parse_shift_left(),
-                    "subtract" => self.parse_subtract(),
-                    "add" => self.parse_add(),
+                    "Scope" => self.parse_scope(),
+                    "Device" => self.parse_device(),
+                    "Name" => self.parse_name(),
+                    "Method" => self.parse_method(),
+                    "Return" => self.parse_return(),
+                    "OperationRegion" => self.parse_op_region(),
+                    "Field" => self.parse_field(),
+                    "CreateDwordField" => self.parse_create_dword_field(),
+                    "Store" => self.parse_store(),
+                    "ShiftLeft" => self.parse_shift_left(),
+                    "Subtract" => self.parse_subtract(),
+                    "Add" => self.parse_add(),
                     _ => Err(Error::new(
                         ident.span(),
                         format!("unknown DSL keyword `{name}`"),
@@ -371,7 +371,7 @@ impl Parser {
     }
 
     fn parse_scope(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("scope")?;
+        let span = self.expect_ident("Scope")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
         let path = args_parser.parse_name_or_interp()?;
@@ -400,7 +400,7 @@ impl Parser {
     }
 
     fn parse_device(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("device")?;
+        let span = self.expect_ident("Device")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
         let name = args_parser.parse_name_or_interp()?;
@@ -417,7 +417,7 @@ impl Parser {
     }
 
     fn parse_name(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("name")?;
+        let span = self.expect_ident("Name")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
         let name = args_parser.expect_string_lit()?;
@@ -429,7 +429,7 @@ impl Parser {
     }
 
     fn parse_method(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("method")?;
+        let span = self.expect_ident("Method")?;
         let (args, args_span) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
         let name = args_parser.expect_string_lit()?;
@@ -478,7 +478,7 @@ impl Parser {
     }
 
     fn parse_return(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("ret")?;
+        let span = self.expect_ident("Return")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
         let value = args_parser.parse_value();
@@ -489,19 +489,19 @@ impl Parser {
 
     fn parse_value(&mut self) -> DslValue {
         // Check for special value forms
-        if self.peek_ident_eq("eisa_id") {
+        if self.peek_ident_eq("EisaId") {
             return self
                 .parse_eisa_id()
                 .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
         }
 
-        if self.peek_ident_eq("package") {
+        if self.peek_ident_eq("Package") {
             return self
                 .parse_package()
                 .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
         }
 
-        if self.peek_ident_eq("resource_template") {
+        if self.peek_ident_eq("ResourceTemplate") {
             return self
                 .parse_resource_template()
                 .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
@@ -545,7 +545,7 @@ impl Parser {
     }
 
     fn parse_package(&mut self) -> Result<DslValue> {
-        self.expect_ident("package")?;
+        self.expect_ident("Package")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
         let mut elements = Vec::new();
@@ -560,7 +560,7 @@ impl Parser {
     }
 
     fn parse_eisa_id(&mut self) -> Result<DslValue> {
-        self.expect_ident("eisa_id")?;
+        self.expect_ident("EisaId")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut args_parser = Parser::new(args);
         let id = args_parser.expect_string_lit()?;
@@ -568,7 +568,7 @@ impl Parser {
     }
 
     fn parse_resource_template(&mut self) -> Result<DslValue> {
-        self.expect_ident("resource_template")?;
+        self.expect_ident("ResourceTemplate")?;
         let (body, _) = self.expect_group(Delimiter::Brace)?;
         let mut body_parser = Parser::new(body);
         let mut descs = Vec::new();
@@ -583,23 +583,23 @@ impl Parser {
             .peek()
             .ok_or_else(|| Error::new(self.span(), "expected resource descriptor"))?;
         match tt {
-            TokenTree::Ident(i) if *i == "memory_32_fixed" => self.parse_memory_32_fixed(),
-            TokenTree::Ident(i) if *i == "interrupt" => self.parse_interrupt(),
-            TokenTree::Ident(i) if *i == "io" => self.parse_io_port(),
-            TokenTree::Ident(i) if *i == "dword_io" => self.parse_dword_io(),
-            TokenTree::Ident(i) if *i == "word_bus_number" => self.parse_word_bus_number(),
-            TokenTree::Ident(i) if *i == "dword_memory" => self.parse_dword_memory(),
-            TokenTree::Ident(i) if *i == "qword_memory" => self.parse_qword_memory(),
+            TokenTree::Ident(i) if *i == "Memory32Fixed" => self.parse_memory_32_fixed(),
+            TokenTree::Ident(i) if *i == "Interrupt" => self.parse_interrupt(),
+            TokenTree::Ident(i) if *i == "IO" => self.parse_io_port(),
+            TokenTree::Ident(i) if *i == "DWordIO" => self.parse_dword_io(),
+            TokenTree::Ident(i) if *i == "WordBusNumber" => self.parse_word_bus_number(),
+            TokenTree::Ident(i) if *i == "DWordMemory" => self.parse_dword_memory(),
+            TokenTree::Ident(i) if *i == "QWordMemory" => self.parse_qword_memory(),
             other => Err(Error::new(
                 other.span(),
-                "expected resource descriptor (memory_32_fixed, interrupt, \
-                 word_bus_number, dword_memory, qword_memory)",
+                "expected resource descriptor (Memory32Fixed, Interrupt, \
+                 WordBusNumber, DWordMemory, QWordMemory)",
             )),
         }
     }
 
     fn parse_memory_32_fixed(&mut self) -> Result<ResourceDesc> {
-        self.expect_ident("memory_32_fixed")?;
+        self.expect_ident("Memory32Fixed")?;
         let (args, args_span) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
 
@@ -631,7 +631,7 @@ impl Parser {
     }
 
     fn parse_interrupt(&mut self) -> Result<ResourceDesc> {
-        self.expect_ident("interrupt")?;
+        self.expect_ident("Interrupt")?;
         let (args, args_span) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
 
@@ -707,9 +707,9 @@ impl Parser {
         })
     }
 
-    /// `io(base, end, align, len);`
+    /// `IO(base, end, align, len);`
     fn parse_io_port(&mut self) -> Result<ResourceDesc> {
-        self.expect_ident("io")?;
+        self.expect_ident("IO")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let base = p.parse_value();
@@ -728,9 +728,9 @@ impl Parser {
         })
     }
 
-    /// `dword_io(base, end);`
+    /// `DWordIO(base, end);`
     fn parse_dword_io(&mut self) -> Result<ResourceDesc> {
-        self.expect_ident("dword_io")?;
+        self.expect_ident("DWordIO")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let base = p.parse_value();
@@ -740,9 +740,9 @@ impl Parser {
         Ok(ResourceDesc::DWordIO { base, end })
     }
 
-    /// `word_bus_number(start, end);`
+    /// `WordBusNumber(start, end);`
     fn parse_word_bus_number(&mut self) -> Result<ResourceDesc> {
-        self.expect_ident("word_bus_number")?;
+        self.expect_ident("WordBusNumber")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let start = p.parse_value();
@@ -752,9 +752,9 @@ impl Parser {
         Ok(ResourceDesc::WordBusNumber { start, end })
     }
 
-    /// `dword_memory(Cacheable, ReadWrite, base, end);`
+    /// `DWordMemory(Cacheable, ReadWrite, base, end);`
     fn parse_dword_memory(&mut self) -> Result<ResourceDesc> {
-        self.expect_ident("dword_memory")?;
+        self.expect_ident("DWordMemory")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let cacheable = p.parse_cacheable()?;
@@ -773,9 +773,9 @@ impl Parser {
         })
     }
 
-    /// `qword_memory(Cacheable, ReadWrite, base, end);`
+    /// `QWordMemory(Cacheable, ReadWrite, base, end);`
     fn parse_qword_memory(&mut self) -> Result<ResourceDesc> {
-        self.expect_ident("qword_memory")?;
+        self.expect_ident("QWordMemory")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let cacheable = p.parse_cacheable()?;
@@ -822,10 +822,10 @@ impl Parser {
     }
 
     // ---------------------------------------------------------------
-    // op_region("NAME", PciConfig, offset, length);
+    // OperationRegion("NAME", PciConfig, offset, length);
     // ---------------------------------------------------------------
     fn parse_op_region(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("op_region")?;
+        let span = self.expect_ident("OperationRegion")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let name = p.expect_string_lit()?;
@@ -862,10 +862,10 @@ impl Parser {
     }
 
     // ---------------------------------------------------------------
-    // field("REGION", DWordAcc, NoLock, Preserve) { entries }
+    // Field("REGION", DWordAcc, NoLock, Preserve) { entries }
     // ---------------------------------------------------------------
     fn parse_field(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("field")?;
+        let span = self.expect_ident("Field")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let region = p.expect_string_lit()?;
@@ -932,15 +932,15 @@ impl Parser {
         }
     }
 
-    /// Parse field entries: `NAME, bits,` or `, bits,` or `offset(N),`
+    /// Parse field entries: `NAME, bits,` or `, bits,` or `Offset(N),`
     fn parse_field_entries(tokens: TokenStream) -> Result<Vec<FieldEntryDsl>> {
         let toks: Vec<TokenTree> = tokens.into_iter().collect();
         let mut entries = Vec::new();
         let mut i = 0;
         while i < toks.len() {
-            // offset(N)
-            if matches!(&toks[i], TokenTree::Ident(id) if *id == "offset") {
-                i += 1; // skip "offset"
+            // Offset(N)
+            if matches!(&toks[i], TokenTree::Ident(id) if *id == "Offset") {
+                i += 1; // skip "Offset"
                 if let Some(TokenTree::Group(g)) = toks.get(i) {
                     let inner: Vec<TokenTree> = g.stream().into_iter().collect();
                     if let Some(TokenTree::Literal(lit)) = inner.first() {
@@ -1002,10 +1002,10 @@ impl Parser {
     }
 
     // ---------------------------------------------------------------
-    // create_dword_field(buffer, index, "NAME");
+    // CreateDwordField(buffer, index, "NAME");
     // ---------------------------------------------------------------
     fn parse_create_dword_field(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("create_dword_field")?;
+        let span = self.expect_ident("CreateDwordField")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let buffer = p.parse_value();
@@ -1023,10 +1023,10 @@ impl Parser {
     }
 
     // ---------------------------------------------------------------
-    // store(value, target);
+    // Store(value, target);
     // ---------------------------------------------------------------
     fn parse_store(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("store")?;
+        let span = self.expect_ident("Store")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let value = p.parse_value();
@@ -1041,10 +1041,10 @@ impl Parser {
     }
 
     // ---------------------------------------------------------------
-    // shl(target, value, count);
+    // ShiftLeft(target, value, count);
     // ---------------------------------------------------------------
     fn parse_shift_left(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("shl")?;
+        let span = self.expect_ident("ShiftLeft")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let target = p.parse_value();
@@ -1062,10 +1062,10 @@ impl Parser {
     }
 
     // ---------------------------------------------------------------
-    // subtract(target, a, b);
+    // Subtract(target, a, b);
     // ---------------------------------------------------------------
     fn parse_subtract(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("subtract")?;
+        let span = self.expect_ident("Subtract")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let target = p.parse_value();
@@ -1078,10 +1078,10 @@ impl Parser {
     }
 
     // ---------------------------------------------------------------
-    // add(target, a, b);
+    // Add(target, a, b);
     // ---------------------------------------------------------------
     fn parse_add(&mut self) -> Result<DslItem> {
-        let span = self.expect_ident("add")?;
+        let span = self.expect_ident("Add")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
         let target = p.parse_value();

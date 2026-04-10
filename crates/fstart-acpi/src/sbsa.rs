@@ -20,7 +20,6 @@ use acpi_tables::mcfg::MCFG;
 use acpi_tables::rsdp::Rsdp;
 use acpi_tables::sdt::Sdt;
 use acpi_tables::xsdt::XSDT;
-use acpi_tables::Aml;
 
 use crate::gtdt;
 use crate::spcr;
@@ -238,21 +237,7 @@ pub fn build_sbsa_tables(config: &SbsaConfig, base_addr: u64) -> AcpiTables {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Serialize an Aml object to a Vec<u8>.
-fn serialize(aml: &dyn Aml) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    aml.to_aml_bytes(&mut bytes);
-    bytes
-}
-
-/// Copy `src` into `dst` at the given offset.
-fn copy_at(dst: &mut [u8], offset: usize, src: &[u8]) {
-    dst[offset..offset + src.len()].copy_from_slice(src);
-}
+use crate::{copy_at, serialize};
 
 /// Build the GICv3 MADT for the SBSA platform.
 fn build_madt(config: &SbsaConfig) -> MADT {
@@ -338,12 +323,12 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     let uart_base = config.uart_base;
     let uart_gsiv = config.uart_gsiv;
     let uart_aml = fstart_acpi_macros::acpi_dsl! {
-        device("COM0") {
-            name("_HID", "ARMH0011");
-            name("_UID", 0u32);
-            name("_CRS", resource_template {
-                memory_32_fixed(ReadWrite, #{uart_base}, 0x1000u32);
-                interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_gsiv});
+        Device("COM0") {
+            Name("_HID", "ARMH0011");
+            Name("_UID", 0u32);
+            Name("_CRS", ResourceTemplate {
+                Memory32Fixed(ReadWrite, #{uart_base}, 0x1000u32);
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_gsiv});
             });
         }
     };
@@ -352,14 +337,14 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     let ahci_base = config.ahci_base as u32;
     let ahci_gsiv = config.ahci_gsiv;
     let ahci_aml = fstart_acpi_macros::acpi_dsl! {
-        device("AHC0") {
-            name("_HID", "LNRO0015");
-            name("_UID", 0u32);
-            name("_CCA", 1u32);
-            name("_CLS", package(0x01u8, 0x06u8, 0x01u8));
-            name("_CRS", resource_template {
-                memory_32_fixed(ReadWrite, #{ahci_base}, 0x10000u32);
-                interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{ahci_gsiv});
+        Device("AHC0") {
+            Name("_HID", "LNRO0015");
+            Name("_UID", 0u32);
+            Name("_CCA", 1u32);
+            Name("_CLS", Package(0x01u8, 0x06u8, 0x01u8));
+            Name("_CRS", ResourceTemplate {
+                Memory32Fixed(ReadWrite, #{ahci_base}, 0x10000u32);
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{ahci_gsiv});
             });
         }
     };
@@ -368,13 +353,13 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     let xhci_base = config.xhci_base;
     let xhci_gsiv = config.xhci_gsiv;
     let xhci_aml = fstart_acpi_macros::acpi_dsl! {
-        device("USB0") {
-            name("_HID", "PNP0D10");
-            name("_UID", 0u32);
-            name("_CCA", 1u32);
-            name("_CRS", resource_template {
-                memory_32_fixed(ReadWrite, #{xhci_base}, 0x10000u32);
-                interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{xhci_gsiv});
+        Device("USB0") {
+            Name("_HID", "PNP0D10");
+            Name("_UID", 0u32);
+            Name("_CCA", 1u32);
+            Name("_CRS", ResourceTemplate {
+                Memory32Fixed(ReadWrite, #{xhci_base}, 0x10000u32);
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{xhci_gsiv});
             });
         }
     };
@@ -385,20 +370,20 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     let mmio64_base = config.pcie_mmio64_base;
     let mmio64_end = config.pcie_mmio64_end;
     let pci_aml = fstart_acpi_macros::acpi_dsl! {
-        device("PCI0") {
-            name("_HID", eisa_id("PNP0A08"));
-            name("_CID", eisa_id("PNP0A03"));
-            name("_SEG", 0u32);
-            name("_BBN", 0u32);
-            name("_UID", "PCI0");
-            name("_CCA", 1u32);
-            name("_CRS", resource_template {
-                word_bus_number(0u16, 0xFFu16);
-                dword_memory(NotCacheable, ReadWrite, #{mmio32_base}, #{mmio32_end});
-                qword_memory(NotCacheable, ReadWrite, #{mmio64_base}, #{mmio64_end});
+        Device("PCI0") {
+            Name("_HID", EisaId("PNP0A08"));
+            Name("_CID", EisaId("PNP0A03"));
+            Name("_SEG", 0u32);
+            Name("_BBN", 0u32);
+            Name("_UID", "PCI0");
+            Name("_CCA", 1u32);
+            Name("_CRS", ResourceTemplate {
+                WordBusNumber(0u16, 0xFFu16);
+                DWordMemory(NotCacheable, ReadWrite, #{mmio32_base}, #{mmio32_end});
+                QWordMemory(NotCacheable, ReadWrite, #{mmio64_base}, #{mmio64_end});
             });
-            method("_OSC", 4, NotSerialized) {
-                ret(#{acpi_tables::aml::Arg(3)});
+            Method("_OSC", 4, NotSerialized) {
+                Return(#{acpi_tables::aml::Arg(3)});
             }
         }
     };
@@ -426,6 +411,7 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acpi_tables::Aml;
 
     #[test]
     fn test_build_sbsa_tables() {

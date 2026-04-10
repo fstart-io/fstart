@@ -101,8 +101,8 @@ pub fn write_struct<T: Copy>(sdt: &mut sdt::Sdt, offset: usize, val: &T) {
 /// Encode an AML PkgLength.
 ///
 /// AML PkgLength encoding (ACPI spec 20.2.4):
-/// - Total 0..62: 1 byte (bits 0-5 = length)
-/// - Total 63..4095: 2 bytes (bits 6-7 encode byte count)
+/// - Total 0..63: 1 byte (6-bit length field)
+/// - Total 64..4095: 2 bytes (byte count bits in byte 0 bits 6-7)
 /// - Total 4096..1048575: 3 bytes
 /// - Total 1048576+: 4 bytes
 ///
@@ -111,19 +111,19 @@ pub fn write_struct<T: Copy>(sdt: &mut sdt::Sdt, offset: usize, val: &T) {
 pub(crate) fn encode_pkg_length(content_len: usize) -> Vec<u8> {
     // Total includes the PkgLength field itself.
     let total1 = content_len + 1;
-    if total1 < 0x3F {
+    if total1 < 0x40 {
         return vec![total1 as u8];
     }
 
     let total2 = content_len + 2;
-    if total2 < 0xFFF {
+    if total2 < 0x1000 {
         let byte0 = 0x40 | (total2 & 0x0F) as u8;
         let byte1 = (total2 >> 4) as u8;
         return vec![byte0, byte1];
     }
 
     let total3 = content_len + 3;
-    if total3 < 0xFFFFF {
+    if total3 < 0x10_0000 {
         let byte0 = 0x80 | (total3 & 0x0F) as u8;
         let byte1 = (total3 >> 4) as u8;
         let byte2 = (total3 >> 12) as u8;

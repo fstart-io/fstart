@@ -37,12 +37,12 @@ impl AcpiDevice for Pl011 {
         //   ...
         //   let dev = Device::new(name.into(), vec![&hid, &uid, &crs_name]);
         acpi_dsl! {
-            device(#{name}) {
-                name("_HID", "ARMH0011");
-                name("_UID", 0u32);
-                name("_CRS", resource_template {
-                    memory_32_fixed(ReadWrite, #{base}, 0x1000u32);
-                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+            Device(#{name}) {
+                Name("_HID", "ARMH0011");
+                Name("_UID", 0u32);
+                Name("_CRS", ResourceTemplate {
+                    Memory32Fixed(ReadWrite, #{base}, 0x1000u32);
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
                 });
             }
         }

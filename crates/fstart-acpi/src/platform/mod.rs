@@ -415,4 +415,31 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_pkg_length_boundaries() {
+        // 1-byte max: content_len + 1 = 0x3F (63), content = 62
+        let pkg = crate::encode_pkg_length(62);
+        assert_eq!(pkg.len(), 1);
+        assert_eq!(pkg[0], 63);
+
+        // 1-byte max edge: content_len + 1 = 0x3F
+        let pkg = crate::encode_pkg_length(62);
+        assert_eq!(pkg.len(), 1);
+
+        // Transition to 2-byte: content_len + 1 = 0x40 (doesn't fit 6 bits)
+        let pkg = crate::encode_pkg_length(63);
+        assert_eq!(pkg.len(), 2);
+        // Verify total encodes to 63 + 2 = 65
+        let total = (pkg[0] as usize & 0x0F) | ((pkg[1] as usize) << 4);
+        assert_eq!(total, 65);
+
+        // 2-byte max: content_len + 2 = 0xFFF (4095), content = 4093
+        let pkg = crate::encode_pkg_length(4093);
+        assert_eq!(pkg.len(), 2);
+
+        // Transition to 3-byte: content_len + 2 = 0x1000
+        let pkg = crate::encode_pkg_length(4094);
+        assert_eq!(pkg.len(), 3);
+    }
 }
