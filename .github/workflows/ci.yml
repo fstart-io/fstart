@@ -102,10 +102,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
-          shared-key: build-${{ matrix.board }}
+          shared-key: release-${{ matrix.board }}
 
       - name: Build ${{ matrix.board }}
-        run: cargo xtask build --board ${{ matrix.board }}
+        run: cargo xtask build --board ${{ matrix.board }} --release
 
   # -----------------------------------------------------------------------
   # Build external payloads: OpenSBI, TF-A BL31, Linux kernels
@@ -186,7 +186,7 @@ jobs:
 
       - name: QEMU smoke test (${{ matrix.board }})
         run: |
-          timeout 120 cargo xtask run \
+          timeout 120 cargo xtask run --release \
             --board ${{ matrix.board }} --memory 256M \
             > /tmp/qemu.log 2>&1 || true
           echo "::group::QEMU output"
@@ -257,7 +257,7 @@ jobs:
           fi
           ARGS="$ARGS --kernel ${{ matrix.kernel }}"
 
-          timeout 300 cargo xtask run $ARGS \
+          timeout 300 cargo xtask run --release $ARGS \
             > /tmp/qemu.log 2>&1 || true
           echo "::group::QEMU output"
           cat /tmp/qemu.log
