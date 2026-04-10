@@ -60,6 +60,19 @@ pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 
+/// AML NullTarget -- used as the target for binary operations whose
+/// result is not stored (only returned as the expression value).
+///
+/// Emits a single `0x00` byte (NullName), which the AML interpreter
+/// treats as "discard the store".
+pub struct NullTarget;
+
+impl Aml for NullTarget {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        sink.byte(0x00);
+    }
+}
+
 /// OEM ID used in all fstart-generated ACPI tables (6 bytes, padded).
 pub const OEM_ID: [u8; 6] = *b"FSTART";
 

@@ -780,3 +780,435 @@ fn test_x86_host_bridge_register_structs() {
         "tock_acpi_field! output must match manual build_multi_register_field"
     );
 }
+
+// =======================================================================
+// ASL 2.0 expression and control flow tests
+// =======================================================================
+
+/// Test If/Else control flow with comparison operators.
+#[test]
+fn test_if_else() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("TEST", 1, NotSerialized) {
+            If (Arg0 == 0u32) {
+                Return(1u32);
+            } Else {
+                Return(0u32);
+            }
+        }
+    };
+
+    assert_eq!(aml[0], 0x14); // MethodOp
+    assert!(aml.windows(4).any(|w| w == b"TEST"));
+    // IfOp = 0xA0
+    assert!(aml.contains(&0xA0), "expected IfOp (0xA0)");
+    // ElseOp = 0xA1
+    assert!(aml.contains(&0xA1), "expected ElseOp (0xA1)");
+}
+
+/// Test If without Else.
+#[test]
+fn test_if_no_else() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("CHK_", 1, NotSerialized) {
+            If (Arg0 > 10u32) {
+                Return(1u32);
+            }
+            Return(0u32);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14); // MethodOp
+    assert!(aml.contains(&0xA0), "expected IfOp");
+    // No ElseOp should appear
+    assert!(!aml.contains(&0xA1), "should not have ElseOp");
+}
+
+/// Test While loop with Break.
+#[test]
+fn test_while_loop() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("POLL", 0, NotSerialized) {
+            Local0 = 100u32;
+            While (Local0 > 0u32) {
+                Local0--;
+            }
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14); // MethodOp
+    assert!(aml.windows(4).any(|w| w == b"POLL"));
+    // WhileOp = 0xA2
+    assert!(aml.contains(&0xA2), "expected WhileOp (0xA2)");
+    // StoreOp = 0x70 (for Local0 = 100u32)
+    assert!(aml.contains(&0x70), "expected StoreOp (0x70)");
+    // DecrementOp = 0x76
+    assert!(aml.contains(&0x76), "expected DecrementOp (0x76)");
+}
+
+/// Test While with Break.
+#[test]
+fn test_while_break() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("BRK_", 0, NotSerialized) {
+            Local0 = 0u32;
+            While (One) {
+                If (Local0 == 10u32) {
+                    Break;
+                }
+                Local0++;
+            }
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    // BreakOp = 0xA5
+    assert!(aml.contains(&0xA5), "expected BreakOp (0xA5)");
+    // IncrementOp = 0x75
+    assert!(aml.contains(&0x75), "expected IncrementOp (0x75)");
+}
+
+/// Test ASL 2.0 assignment syntax with arithmetic.
+#[test]
+fn test_assign_arithmetic() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("MATH", 2, NotSerialized) {
+            Local0 = Arg0 + Arg1;
+            Local1 = Arg0 - Arg1;
+            Local2 = Arg0 << 4u32;
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    // Should have Store ops
+    assert!(aml.contains(&0x70), "expected StoreOp");
+}
+
+/// Test bitwise operators.
+#[test]
+fn test_bitwise_operators() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("BITS", 2, NotSerialized) {
+            Local0 = Arg0 & Arg1;
+            Local1 = Arg0 | Arg1;
+            Local2 = Arg0 ^ Arg1;
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.windows(4).any(|w| w == b"BITS"));
+}
+
+/// Test logical operators.
+#[test]
+fn test_logical_operators() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("LOGC", 2, NotSerialized) {
+            If (Arg0 == 1u32 && Arg1 == 2u32) {
+                Return(1u32);
+            }
+            If (Arg0 == 0u32 || Arg1 == 0u32) {
+                Return(0u32);
+            }
+            Return(2u32);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    // LAndOp = 0x90
+    assert!(aml.contains(&0x90), "expected LAndOp (0x90)");
+    // LOrOp = 0x91
+    assert!(aml.contains(&0x91), "expected LOrOp (0x91)");
+}
+
+/// Test logical NOT.
+#[test]
+fn test_logical_not() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("LNOT", 1, NotSerialized) {
+            If (!Arg0) {
+                Return(1u32);
+            }
+            Return(0u32);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    // LNotOp = 0x92
+    assert!(aml.contains(&0x92), "expected LNotOp (0x92)");
+}
+
+/// Test Notify statement.
+#[test]
+fn test_notify() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("NTFY", 0, NotSerialized) {
+            Notify(DEV0, 0x80u32);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    // NotifyOp = 0x86
+    assert!(aml.contains(&0x86), "expected NotifyOp (0x86)");
+}
+
+/// Test Sleep statement.
+#[test]
+fn test_sleep() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("SLP_", 0, NotSerialized) {
+            Sleep(100u32);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    // Sleep = ExtOpPrefix(0x5B) + SleepOp(0x22)
+    assert!(
+        aml.windows(2).any(|w| w == [0x5B, 0x22]),
+        "expected Sleep opcode"
+    );
+}
+
+/// Test Stall statement.
+#[test]
+fn test_stall() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("STL_", 0, NotSerialized) {
+            Stall(50u8);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    // Stall = ExtOpPrefix(0x5B) + StallOp(0x21)
+    assert!(
+        aml.windows(2).any(|w| w == [0x5B, 0x21]),
+        "expected Stall opcode"
+    );
+}
+
+/// Test ToUUID in expression context.
+#[test]
+fn test_touuid_expr() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("_OSC", 4, NotSerialized) {
+            If (Arg0 == ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766")) {
+                Return(Arg3);
+            }
+            Return(Arg3);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.windows(4).any(|w| w == b"_OSC"));
+    // Should have IfOp
+    assert!(aml.contains(&0xA0), "expected IfOp");
+}
+
+/// Complete _OSC method test -- the canonical ASL 2.0 example.
+///
+/// Tests expression parsing, If/Else, CreateDwordField, bitwise
+/// assignment, and Return with expression argument.
+#[test]
+fn test_osc_method() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("_OSC", 4, NotSerialized) {
+            CreateDwordField(#{fstart_acpi::aml::Arg(3)}, 0u32, "CDW1");
+
+            If (Arg0 == ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766")) {
+                CreateDwordField(#{fstart_acpi::aml::Arg(3)}, 4u32, "CDW2");
+                CDW2 = CDW2 & 0x1Du32;
+            } Else {
+                CDW1 = CDW1 | 4u32;
+            }
+
+            Return(Arg3);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14); // MethodOp
+    assert!(aml.windows(4).any(|w| w == b"_OSC"));
+    assert!(aml.windows(4).any(|w| w == b"CDW1"));
+    assert!(aml.windows(4).any(|w| w == b"CDW2"));
+    assert!(aml.contains(&0xA0), "expected IfOp");
+    assert!(aml.contains(&0xA1), "expected ElseOp");
+    assert!(aml.contains(&0x70), "expected StoreOp");
+}
+
+/// Test increment/decrement with function-call syntax.
+#[test]
+fn test_increment_decrement_call() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("INCD", 0, NotSerialized) {
+            Local0 = 0u32;
+            Increment(Local0);
+            Decrement(Local0);
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.contains(&0x75), "expected IncrementOp");
+    assert!(aml.contains(&0x76), "expected DecrementOp");
+}
+
+/// Test ASL 2.0 assignment where the value is a comparison
+/// (stores boolean result).
+#[test]
+fn test_assign_comparison() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("CMP_", 2, NotSerialized) {
+            Local0 = Arg0 >= Arg1;
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.contains(&0x70), "expected StoreOp");
+}
+
+/// Verify ASL 2.0 assignment produces the same AML as legacy Store.
+#[test]
+fn test_assign_matches_store() {
+    // ASL 2.0 style
+    let aml_2: Vec<u8> = acpi_dsl! {
+        Method("TST1", 0, NotSerialized) {
+            Local0 = 42u32;
+        }
+    };
+
+    // Legacy style
+    let aml_1: Vec<u8> = acpi_dsl! {
+        Method("TST1", 0, NotSerialized) {
+            Store(42u32, #{fstart_acpi::aml::Local(0)});
+        }
+    };
+
+    assert_eq!(aml_2, aml_1, "ASL 2.0 assignment should match legacy Store");
+}
+
+/// Test postfix increment `Local0++` and decrement `Local0--`.
+#[test]
+fn test_postfix_inc_dec() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("POST", 0, NotSerialized) {
+            Local0 = 5u32;
+            Local0++;
+            Local0--;
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.contains(&0x75), "expected IncrementOp");
+    assert!(aml.contains(&0x76), "expected DecrementOp");
+}
+
+/// Test Zero, One, Ones constants in expressions.
+#[test]
+fn test_aml_constants() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("CON_", 0, NotSerialized) {
+            Local0 = Zero;
+            Local1 = One;
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    // Zero encodes as 0x00, One as 0x01 -- but these are also used
+    // by NullTarget and other structures, so just check StoreOp is present
+    assert!(aml.contains(&0x70), "expected StoreOp");
+}
+
+/// Test complex nested expression: `(a + b) * c`.
+#[test]
+fn test_nested_arithmetic() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("NEST", 3, NotSerialized) {
+            Local0 = (Arg0 + Arg1) * Arg2;
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.contains(&0x70), "expected StoreOp");
+}
+
+/// ElseIf chain test.
+#[test]
+fn test_elseif_chain() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("ELIF", 1, NotSerialized) {
+            If (Arg0 == 0u32) {
+                Return(0u32);
+            } Else If (Arg0 == 1u32) {
+                Return(1u32);
+            } Else {
+                Return(2u32);
+            }
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.windows(4).any(|w| w == b"ELIF"));
+    // Should have two IfOps (outer + inner ElseIf)
+    let if_count = aml.iter().filter(|&&b| b == 0xA0).count();
+    assert!(if_count >= 2, "expected at least 2 IfOps, got {}", if_count);
+}
+
+/// Test shift right operator.
+#[test]
+fn test_shift_right() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("SHR_", 1, NotSerialized) {
+            Local0 = Arg0 >> 4u32;
+            Return(Local0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.contains(&0x70), "expected StoreOp");
+}
+
+/// Full dynamic _CRS using ASL 2.0 assignment syntax (replaces
+/// the legacy test_dynamic_crs_method with C-style operators).
+#[test]
+fn test_dynamic_crs_asl2() {
+    use fstart_acpi::aml::Path;
+    let p = |s| Path::new(s);
+
+    let aml: Vec<u8> = acpi_dsl! {
+        Name("MCRS", ResourceTemplate {
+            WordBusNumber(0x0000u16, 0x00FFu16);
+            IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
+            DWordIO(0x0000u32, 0xFFFFu32);
+            DWordMemory(Cacheable, ReadWrite, 0x000A_0000u32, 0x000B_FFFFu32);
+            DWordMemory(NotCacheable, ReadWrite, 0x0000_0000u32, 0xFEBF_FFFFu32);
+        });
+
+        Method("_CRS", 0, Serialized) {
+            CreateDwordField(#{p("MCRS")}, 0x00u32, "PMIN");
+            CreateDwordField(#{p("MCRS")}, 0x04u32, "PMAX");
+            CreateDwordField(#{p("MCRS")}, 0x08u32, "PLEN");
+
+            PMIN = TLUD << 27u32;
+            PLEN = PMAX - PMIN;
+            PLEN = PLEN + 1u32;
+
+            Return(#{p("MCRS")});
+        }
+    };
+
+    assert_eq!(aml[0], 0x08); // NameOp for MCRS
+    assert!(aml.windows(4).any(|w| w == b"MCRS"));
+    assert!(aml.windows(4).any(|w| w == b"_CRS"));
+    assert!(aml.windows(4).any(|w| w == b"PMIN"));
+    assert!(aml.windows(4).any(|w| w == b"PMAX"));
+    assert!(aml.windows(4).any(|w| w == b"PLEN"));
+    // Should have StoreOps for the assignments
+    assert!(aml.contains(&0x70), "expected StoreOp");
+}
