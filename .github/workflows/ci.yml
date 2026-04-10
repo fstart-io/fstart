@@ -73,9 +73,7 @@ jobs:
   # -----------------------------------------------------------------------
   build-boards:
     runs-on: ubuntu-latest
-    # Some boards have known build issues (linker overflow, missing features).
-    # continue-on-error lets the overall CI pass while tracking regressions.
-    continue-on-error: ${{ contains(fromJSON('["bananapi-m1","orangepi-pc2","orangepi-r1","licheerv-dock","qemu-aarch64-uefi","qemu-sbsa"]'), matrix.board) }}
+    continue-on-error: ${{ contains(fromJSON('["qemu-aarch64-uefi","qemu-sbsa"]'), matrix.board) }}
     strategy:
       fail-fast: false
       matrix:
@@ -121,7 +119,6 @@ jobs:
 
   # -----------------------------------------------------------------------
   # Build external payloads: OpenSBI, TF-A BL31, Linux kernels
-  # Cached by version pins + kernel config hashes.
   # -----------------------------------------------------------------------
   build-payloads:
     runs-on: ubuntu-latest
@@ -160,8 +157,7 @@ jobs:
   # -----------------------------------------------------------------------
   qemu-smoke:
     runs-on: ubuntu-latest
-    # aarch64-multi: bootblock stage-load writes binary FFS data to UART,
-    # garbling serial output so grep can't reliably find "console ready".
+    # aarch64-multi: stage-load writes binary FFS data through the UART.
     continue-on-error: ${{ matrix.board == 'qemu-aarch64-multi' }}
     strategy:
       fail-fast: false
@@ -199,9 +195,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-misc qemu-system-arm
 
-      - name: QEMU smoke test (${{ matrix.board }})
+      - name: Build firmware
+        run: cargo xtask build --board ${{ matrix.board }} --release
+
+      - name: Run in QEMU (${{ matrix.board }})
         run: |
-          timeout 120 cargo xtask run --release \
+          timeout 60 cargo xtask run --release \
             --board ${{ matrix.board }} --memory 256M \
             > /tmp/qemu.log 2>&1 || true
           echo "::group::QEMU output"
@@ -215,8 +214,8 @@ jobs:
   qemu-boot:
     needs: [build-payloads]
     runs-on: ubuntu-latest
-    # Some boards have firmware-level boot issues (OpenSBI/ATF handoff).
-    # sifive-unmatched validates the full chain; others are tracked here.
+    # sifive-unmatched validates the full chain; virt boards have FFS
+    # payload-load issues under investigation.
     continue-on-error: ${{ matrix.board != 'sifive-unmatched' }}
     strategy:
       fail-fast: false
@@ -267,15 +266,23 @@ jobs:
           name: payloads
           path: payloads
 
-      - name: QEMU boot test (${{ matrix.board }})
+      - name: Build and assemble firmware
+        run: |
+          ARGS="--board ${{ matrix.board }}"
+          if [ -n "${{ matrix.firmware }}" ]; then
+            ARGS="$ARGS --firmware ${{ matrix.firmware }}"
+          fi
+          ARGS="$ARGS --kernel ${{ matrix.kernel }}"
+          cargo xtask assemble --release $ARGS
+
+      - name: Run in QEMU (${{ matrix.board }})
         run: |
           ARGS="--board ${{ matrix.board }} --memory ${{ matrix.memory }}"
           if [ -n "${{ matrix.firmware }}" ]; then
             ARGS="$ARGS --firmware ${{ matrix.firmware }}"
           fi
           ARGS="$ARGS --kernel ${{ matrix.kernel }}"
-
-          timeout 300 cargo xtask run --release $ARGS \
+          timeout 120 cargo xtask run --release $ARGS \
             > /tmp/qemu.log 2>&1 || true
           echo "::group::QEMU output"
           cat /tmp/qemu.log
