@@ -92,6 +92,11 @@ jobs:
           components: rust-src, llvm-tools
           targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
 
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           shared-key: build-${{ matrix.board }}
@@ -164,6 +169,11 @@ jobs:
           components: rust-src, llvm-tools
           targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
 
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
       - name: Install QEMU
@@ -219,6 +229,11 @@ jobs:
           toolchain: nightly
           components: rust-src, llvm-tools
           targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
+
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
