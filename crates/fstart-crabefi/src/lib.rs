@@ -274,25 +274,29 @@ pub struct PsciReset;
 
 impl crabefi::ResetHandler for PsciReset {
     fn reset(&self, reset_type: crabefi::ResetType) -> ! {
-        let _function_id: u32 = match reset_type {
-            crabefi::ResetType::Cold | crabefi::ResetType::Warm => 0x8400_0009, // SYSTEM_RESET
-            crabefi::ResetType::Shutdown => 0x8400_0008,                        // SYSTEM_OFF
-            // ResetType is #[non_exhaustive]; default unknown variants to cold reset.
-            _ => 0x8400_0009,
-        };
-
         #[cfg(target_arch = "aarch64")]
-        unsafe {
-            core::arch::asm!(
-                "hvc #0",
-                in("x0") function_id as u64,
-                options(noreturn)
-            );
+        {
+            let function_id: u32 = match reset_type {
+                crabefi::ResetType::Cold | crabefi::ResetType::Warm => 0x8400_0009, // SYSTEM_RESET
+                crabefi::ResetType::Shutdown => 0x8400_0008,                        // SYSTEM_OFF
+                // ResetType is #[non_exhaustive]; default unknown variants to cold reset.
+                _ => 0x8400_0009,
+            };
+            unsafe {
+                core::arch::asm!(
+                    "hvc #0",
+                    in("x0") function_id as u64,
+                    options(noreturn)
+                );
+            }
         }
 
         #[cfg(not(target_arch = "aarch64"))]
-        loop {
-            core::hint::spin_loop();
+        {
+            let _ = reset_type;
+            loop {
+                core::hint::spin_loop();
+            }
         }
     }
 }
