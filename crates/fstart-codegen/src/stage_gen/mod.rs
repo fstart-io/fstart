@@ -243,12 +243,16 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::BlockDevice; });
     }
 
-    // Import MemoryController trait only if this stage uses DramInit
-    // (and thus calls detected_size_bytes() on the DRAM controller).
+    // Import MemoryController trait when DramInit + LoadNextStage are both
+    // present — LoadNextStage calls detected_size_bytes() on the DRAM
+    // controller to pass the runtime-detected size to the next stage.
     let uses_dram_init = capabilities
         .iter()
         .any(|c| matches!(c, Capability::DramInit { .. }));
-    if uses_dram_init {
+    let uses_load_next_stage = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::LoadNextStage { .. }));
+    if uses_dram_init && uses_load_next_stage {
         tokens.extend(quote! { use fstart_services::MemoryController; });
     }
 
@@ -860,7 +864,7 @@ fn generate_fstart_main(
 
     quote! {
         #[no_mangle]
-        #[allow(unreachable_code, unused_variables)]
+        #[allow(unreachable_code, unused_variables, unused_mut)]
         pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
             #suppress_unused
             #body

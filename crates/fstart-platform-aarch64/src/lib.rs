@@ -360,14 +360,14 @@ pub fn boot_bl31_and_resume(bl31_addr: u64, dtb_addr: u64) {
         BL31_RESUME_EP.args.arg0 = dtb_addr;
 
         // Link the params chain
-        BL31_RESUME_NODE.ep_info = &BL31_RESUME_EP as *const EntryPointInfo as u64;
-        BL31_RESUME_PARAMS.head = &BL31_RESUME_NODE as *const BlParamsNode as u64;
+        BL31_RESUME_NODE.ep_info = &raw const BL31_RESUME_EP as *const EntryPointInfo as u64;
+        BL31_RESUME_PARAMS.head = &raw const BL31_RESUME_NODE as *const BlParamsNode as u64;
 
         // Save callee-saved registers, SMC to BL31, resume via trampoline.
         _bl31_save_and_smc(
             FSTART_BOOT_BL31,
             bl31_addr,
-            &BL31_RESUME_PARAMS as *const BlParams as u64,
+            &raw const BL31_RESUME_PARAMS as *const BlParams as u64,
         );
     }
 }
