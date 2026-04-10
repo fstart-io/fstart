@@ -182,8 +182,7 @@ jobs:
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-misc qemu-system-arm qemu-system-data
+          sudo apt-get install -y qemu-system-misc qemu-system-arm
 
       - name: QEMU smoke test (${{ matrix.board }})
         run: |
@@ -243,8 +242,7 @@ jobs:
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-misc qemu-system-arm qemu-system-data
+          sudo apt-get install -y qemu-system-misc qemu-system-arm
 
       - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
