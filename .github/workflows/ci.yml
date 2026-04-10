@@ -148,8 +148,6 @@ jobs:
   # -----------------------------------------------------------------------
   qemu-smoke:
     runs-on: ubuntu-latest
-    # Multi-stage boards may produce binary noise on serial that masks output.
-    continue-on-error: ${{ contains(matrix.board, 'multi') }}
     strategy:
       fail-fast: false
       matrix:
@@ -194,7 +192,7 @@ jobs:
           echo "::group::QEMU output"
           cat /tmp/qemu.log
           echo "::endgroup::"
-          grep -qi "${{ matrix.expect }}" /tmp/qemu.log
+          grep -aqi "${{ matrix.expect }}" /tmp/qemu.log
 
   # -----------------------------------------------------------------------
   # QEMU boot tests — full boot chain: fstart -> SBI/ATF -> Linux
@@ -267,4 +265,4 @@ jobs:
           echo "::group::QEMU output"
           cat /tmp/qemu.log
           echo "::endgroup::"
-          grep -q "Linux version" /tmp/qemu.log
+          grep -aq "Linux version" /tmp/qemu.log

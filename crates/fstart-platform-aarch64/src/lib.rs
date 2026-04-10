@@ -355,7 +355,7 @@ pub fn boot_bl31_and_resume(bl31_addr: u64, dtb_addr: u64) {
     // returns control). No concurrent access.
     unsafe {
         // Fill BL33 entry point: target = trampoline, mode = EL2h NS
-        BL31_RESUME_EP.pc = _bl31_resume_trampoline as u64;
+        BL31_RESUME_EP.pc = (_bl31_resume_trampoline as *const ()) as u64;
         BL31_RESUME_EP.spsr = atf::spsr_el2h();
         BL31_RESUME_EP.args.arg0 = dtb_addr;
 
