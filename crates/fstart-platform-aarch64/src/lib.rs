@@ -363,13 +363,6 @@ pub fn boot_bl31_and_resume(bl31_addr: u64, dtb_addr: u64) {
         BL31_RESUME_NODE.ep_info = &raw const BL31_RESUME_EP as *const EntryPointInfo as u64;
         BL31_RESUME_PARAMS.head = &raw const BL31_RESUME_NODE as *const BlParamsNode as u64;
 
-        // Flush the BL params structures from D-cache to RAM.
-        // The firmware runs at EL1 with MMU on (Normal WB cacheable).
-        // BL31 runs at EL3 with MMU off, reading directly from RAM.
-        // Without explicit cache maintenance the writes above may sit
-        // in the L1/L2 cache and BL31 reads stale zeros from DRAM.
-        flush_bl_params();
-
         // Save callee-saved registers, SMC to BL31, resume via trampoline.
         _bl31_save_and_smc(
             FSTART_BOOT_BL31,
@@ -377,43 +370,6 @@ pub fn boot_bl31_and_resume(bl31_addr: u64, dtb_addr: u64) {
             &raw const BL31_RESUME_PARAMS as *const BlParams as u64,
         );
     }
-}
-
-/// Flush BL params structures from D-cache to Point of Coherency.
-///
-/// Cleans each cache line covering the three static BL param structs
-/// so that EL3 code (running with MMU off) sees the updated values.
-#[cfg(target_arch = "aarch64")]
-unsafe fn flush_bl_params() {
-    // SAFETY: the pointers are valid &'static addresses and we only
-    // perform cache maintenance (no memory access beyond dc civac).
-    let structs: &[(*const u8, usize)] = &[
-        (
-            &raw const BL31_RESUME_EP as *const u8,
-            core::mem::size_of::<EntryPointInfo>(),
-        ),
-        (
-            &raw const BL31_RESUME_NODE as *const u8,
-            core::mem::size_of::<BlParamsNode>(),
-        ),
-        (
-            &raw const BL31_RESUME_PARAMS as *const u8,
-            core::mem::size_of::<BlParams>(),
-        ),
-    ];
-    for &(base, size) in structs {
-        let mut addr = base as usize;
-        let end = addr + size;
-        while addr < end {
-            core::arch::asm!(
-                "dc civac, {0}",
-                in(reg) addr,
-                options(nostack, preserves_flags),
-            );
-            addr += 64; // cache line size (Cortex-A72 = 64 bytes)
-        }
-    }
-    core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
 }
 
 // The save-context/SMC/trampoline is written in global_asm to avoid

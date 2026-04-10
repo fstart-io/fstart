@@ -620,7 +620,14 @@ fn add_firmware_blob(
                     data: fw_data,
                     mem_size: None,
                     load_addr: fw_load_addr,
-                    compression: Compression::Lz4,
+                    // Firmware blobs (SBI/ATF) are loaded to their
+                    // final address uncompressed.  LZ4 decompression
+                    // writes to the destination with multi-byte stores
+                    // that may be unaligned — this triggers alignment
+                    // faults on targets where the load address falls in
+                    // Device-mapped memory (e.g., AArch64 secure SRAM
+                    // at 0x0E000000 mapped as Device-nGnRnE).
+                    compression: Compression::None,
                     flags: SegmentFlags::CODE,
                 }],
             });
