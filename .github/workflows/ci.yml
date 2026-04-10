@@ -21,7 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: dtolnay/rust-toolchain@a54c7afe936401765389b3f6224d93e07423d2a4 # nightly
+      - name: Clone CrabEFI (path dependency)
+        run: git clone --depth 1 https://github.com/ArthurHeymans/CrabEFI.git ../CrabEFI
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: nightly
           components: rust-src, clippy, rustfmt, llvm-tools
@@ -80,7 +83,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: dtolnay/rust-toolchain@a54c7afe936401765389b3f6224d93e07423d2a4 # nightly
+      - name: Clone CrabEFI (path dependency)
+        run: git clone --depth 1 https://github.com/ArthurHeymans/CrabEFI.git ../CrabEFI
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: nightly
           components: rust-src, llvm-tools
@@ -149,7 +155,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: dtolnay/rust-toolchain@a54c7afe936401765389b3f6224d93e07423d2a4 # nightly
+      - name: Clone CrabEFI (path dependency)
+        run: git clone --depth 1 https://github.com/ArthurHeymans/CrabEFI.git ../CrabEFI
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: nightly
           components: rust-src, llvm-tools
@@ -202,7 +211,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: dtolnay/rust-toolchain@a54c7afe936401765389b3f6224d93e07423d2a4 # nightly
+      - name: Clone CrabEFI (path dependency)
+        run: git clone --depth 1 https://github.com/ArthurHeymans/CrabEFI.git ../CrabEFI
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: nightly
           components: rust-src, llvm-tools
