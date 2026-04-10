@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 fstart-services = { workspace = true }
-crabefi = { path = "../../../CrabEFI", default-features = false }
+crabefi = { git = "https://github.com/ArthurHeymans/CrabEFI.git", default-features = false }
