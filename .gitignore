@@ -22,6 +22,9 @@ bl31.bin
 # Tool/IDE artifacts
 .opencode/
 
+# Test disk images
+*.img
+
 # Accidental media
 *.jpeg
 *.jpg

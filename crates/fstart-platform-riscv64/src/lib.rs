@@ -15,10 +15,17 @@
 
 #![no_std]
 
-#[cfg(not(feature = "sunxi"))]
+#[cfg(not(any(feature = "sunxi", feature = "smode-entry")))]
 pub mod entry;
 
-#[cfg(feature = "sunxi")]
+#[cfg(feature = "smode-entry")]
+pub mod entry_smode;
+
+// smode-entry takes priority: stages entered in S-mode by OpenSBI
+// use the S-mode _start regardless of SoC family.  The sunxi entry
+// (T-Head C906 CSR init, BROM register save) is only for the first
+// stage that boots from BROM in M-mode.
+#[cfg(all(feature = "sunxi", not(feature = "smode-entry")))]
 pub mod entry_sunxi;
 
 // ---------------------------------------------------------------------------
@@ -236,6 +243,332 @@ pub fn copy_and_boot_sbi(
             options(noreturn),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// OpenSBI boot-and-resume (for CrabEFI UEFI payload)
+// ---------------------------------------------------------------------------
+
+// Assembly for the OpenSBI resume trampoline. OpenSBI's fw_dynamic protocol
+// boots OpenSBI in M-mode; it initializes SBI services, then mrets to
+// `next_addr` in S-mode.  Our trampoline at `next_addr` restores the
+// callee-saved registers and stack pointer that were saved before jumping
+// to OpenSBI, effectively "returning" from boot_opensbi_and_resume() in
+// S-mode.
+//
+// Also installs a minimal S-mode trap handler (stvec) for CrabEFI.
+core::arch::global_asm!(
+    r#"
+    .section .text
+    .balign 4
+    .global _opensbi_resume_trampoline
+_opensbi_resume_trampoline:
+    // OpenSBI mrets here in S-mode with:
+    //   a0 = hart_id, a1 = DTB address
+    //
+    // We saved a1 (DTB) into mscratch before jumping to OpenSBI.
+    // In S-mode we can't access mscratch, but a1 from OpenSBI IS the
+    // DTB address (OpenSBI passes it through).  Save the S-mode DTB
+    // address into sscratch so boot_dtb_addr_smode() can read it.
+    csrw sscratch, a1
+
+    // Disable S-mode interrupts.  OpenSBI may have left a timer
+    // interrupt pending (STIP via MIDELEG).  CrabEFI's init path
+    // logs via the `log` crate which isn't ready yet; a timer
+    // interrupt hitting the trap handler before logger init would
+    // deadlock on the logger lock.
+    csrci sstatus, 0x2   // clear SIE (bit 1)
+    csrw sie, zero        // mask all S-mode interrupt sources
+
+    // Install the S-mode trap handler (stvec) for CrabEFI.
+    la t0, _fstart_stvec_entry
+    csrw stvec, t0
+
+    // Restore callee-saved registers from the save area.
+    la t0, _opensbi_resume_save_area
+    ld ra,    0(t0)
+    ld sp,    8(t0)
+    ld s0,   16(t0)
+    ld s1,   24(t0)
+    ld s2,   32(t0)
+    ld s3,   40(t0)
+    ld s4,   48(t0)
+    ld s5,   56(t0)
+    ld s6,   64(t0)
+    ld s7,   72(t0)
+    ld s8,   80(t0)
+    ld s9,   88(t0)
+    ld s10,  96(t0)
+    ld s11, 104(t0)
+
+    // Return to boot_opensbi_and_resume() caller (now in S-mode).
+    ret
+
+    // Save area for callee-saved registers (16 x 8 bytes = 128 bytes).
+    .section .data
+    .balign 8
+    .global _opensbi_resume_save_area
+_opensbi_resume_save_area:
+    .space 128
+
+    // S-mode trap handler for CrabEFI.  Saves caller-saved registers,
+    // reads scause/stval/sepc, and calls the Rust trap handler.
+    .section .text
+    .balign 4
+    .global _fstart_stvec_entry
+_fstart_stvec_entry:
+    csrw sscratch, sp
+    addi sp, sp, -128
+
+    sd ra,   0(sp)
+    sd t0,   8(sp)
+    sd t1,  16(sp)
+    sd t2,  24(sp)
+    sd a0,  32(sp)
+    sd a1,  40(sp)
+    sd a2,  48(sp)
+    sd a3,  56(sp)
+    sd a4,  64(sp)
+    sd a5,  72(sp)
+    sd a6,  80(sp)
+    sd a7,  88(sp)
+
+    csrr a0, scause
+    csrr a1, stval
+    csrr a2, sepc
+
+    call fstart_smode_trap_handler
+
+    ld ra,   0(sp)
+    ld t0,   8(sp)
+    ld t1,  16(sp)
+    ld t2,  24(sp)
+    ld a0,  32(sp)
+    ld a1,  40(sp)
+    ld a2,  48(sp)
+    ld a3,  56(sp)
+    ld a4,  64(sp)
+    ld a5,  72(sp)
+    ld a6,  80(sp)
+    ld a7,  88(sp)
+
+    addi sp, sp, 128
+    csrr sp, sscratch
+
+    sret
+    "#
+);
+
+/// S-mode trap handler for CrabEFI.
+///
+/// Handles S-mode exceptions (halt with UART diagnostic) and interrupts
+/// (mask unexpected ones). CrabEFI's `riscv_trap_handler` will take over
+/// once CrabEFI initializes, but this catches traps during the transition.
+#[unsafe(no_mangle)]
+pub extern "C" fn fstart_smode_trap_handler(scause: u64, stval: u64, sepc: u64) {
+    // Direct UART write for diagnostics (works even if logging is broken).
+    const UART: *mut u8 = 0x1000_0000 as *mut u8;
+    unsafe fn uart_char(c: u8) {
+        unsafe { core::ptr::write_volatile(UART, c) };
+    }
+    unsafe fn uart_hex_u64(val: u64) {
+        for i in (0..16).rev() {
+            let nibble = ((val >> (i * 4)) & 0xf) as u8;
+            let c = if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'a' + nibble - 10
+            };
+            unsafe { uart_char(c) };
+        }
+    }
+
+    let is_interrupt = (scause >> 63) != 0;
+    let code = scause & 0x7FFF_FFFF_FFFF_FFFF;
+
+    // Print trap info: "TRAP cause=XXXX stval=XXXX sepc=XXXX\n"
+    unsafe {
+        for &c in b"\r\nTRAP cause=" {
+            uart_char(c);
+        }
+        uart_hex_u64(scause);
+        for &c in b" stval=" {
+            uart_char(c);
+        }
+        uart_hex_u64(stval);
+        for &c in b" sepc=" {
+            uart_char(c);
+        }
+        uart_hex_u64(sepc);
+        uart_char(b'\r');
+        uart_char(b'\n');
+    }
+
+    if is_interrupt {
+        // Mask the interrupt source in SIE to prevent re-firing.
+        let sie_mask: u64 = match code {
+            1 => 1 << 1, // SSIE (software)
+            5 => 1 << 5, // STIE (timer)
+            9 => 1 << 9, // SEIE (external)
+            _ => 0,
+        };
+        if sie_mask != 0 {
+            // SAFETY: clearing SIE bits is always safe.
+            unsafe {
+                core::arch::asm!(
+                    "csrc sie, {mask}",
+                    mask = in(reg) sie_mask,
+                    options(nomem, nostack, preserves_flags)
+                );
+            }
+        } else {
+            // Unknown interrupt — halt.
+            loop {
+                // SAFETY: wfi is always safe.
+                unsafe {
+                    core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+                }
+            }
+        }
+    } else {
+        // Exception — halt. Nothing useful can be done.
+        loop {
+            // SAFETY: wfi is always safe.
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+            }
+        }
+    }
+}
+
+/// Boot OpenSBI and resume in S-mode.
+///
+/// Saves callee-saved registers, creates a `FwDynamicInfo` pointing to
+/// a resume trampoline, and jumps to OpenSBI. OpenSBI initializes SBI
+/// services (timer, reset, IPI), then `mret`s to the trampoline in
+/// S-mode. The trampoline restores registers and returns to the caller.
+///
+/// After this function returns, fstart is running in S-mode with full
+/// SBI services available (timer via rdtime, reset via SBI SRST, etc.).
+///
+/// # Important: must not be inlined
+///
+/// The register-save asm captures `ra` (return address). If this function
+/// is inlined, `ra` may point to an M-mode instruction (e.g., `csrr mscratch`)
+/// from the caller's inline expansion. When the trampoline restores `ra`
+/// and `ret`s in S-mode, that M-mode instruction causes an illegal
+/// instruction trap. `#[inline(never)]` ensures `ra` = return address
+/// to the caller, which is always S-mode-safe code.
+///
+/// # Safety
+///
+/// `sbi_addr` must point to a valid OpenSBI fw_dynamic binary loaded in
+/// RAM. `dtb_addr` must point to a valid FDT blob.
+#[inline(never)]
+pub fn boot_opensbi_and_resume(sbi_addr: u64, dtb_addr: u64) {
+    // Get the resume trampoline address via inline assembly to avoid
+    // Rust function-pointer-to-integer cast issues (the compiler may
+    // not resolve extern "C" fn symbols correctly at link time on
+    // RISC-V with static relocation model).
+    let resume_addr: u64;
+    unsafe {
+        core::arch::asm!(
+            "la {out}, _opensbi_resume_trampoline",
+            out = out(reg) resume_addr,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    // Build the fw_dynamic info struct telling OpenSBI to mret to our
+    // resume trampoline in S-mode.
+    let info = FwDynamicInfo {
+        magic: FwDynamicInfo::MAGIC,
+        version: FwDynamicInfo::VERSION,
+        next_addr: resume_addr,
+        next_mode: FwDynamicInfo::MODE_S,
+        options: 0,
+        boot_hart: 0,
+    };
+
+    // SAFETY: single-threaded firmware context; save area is in .data.
+    unsafe {
+        // Save callee-saved registers to the static save area.
+        // We save ra, sp, s0-s11 so the resume trampoline can restore them.
+        core::arch::asm!(
+            "la {tmp}, _opensbi_resume_save_area",
+            "sd ra,    0({tmp})",
+            "sd sp,    8({tmp})",
+            "sd s0,   16({tmp})",
+            "sd s1,   24({tmp})",
+            "sd s2,   32({tmp})",
+            "sd s3,   40({tmp})",
+            "sd s4,   48({tmp})",
+            "sd s5,   56({tmp})",
+            "sd s6,   64({tmp})",
+            "sd s7,   72({tmp})",
+            "sd s8,   80({tmp})",
+            "sd s9,   88({tmp})",
+            "sd s10,  96({tmp})",
+            "sd s11, 104({tmp})",
+            tmp = out(reg) _,
+            options(nostack)
+        );
+    }
+
+    // SAFETY: caller guarantees sbi_addr and dtb_addr are valid. The
+    // fence + fence.i ensure the SBI binary is visible to the I-cache.
+    //
+    // IMPORTANT: we do NOT use options(noreturn) here even though the
+    // `jr` never falls through. The resume trampoline restores ra/sp
+    // from the save area and does `ret`, effectively making this
+    // function "return" via an out-of-band path. If we declared
+    // noreturn, the compiler would not preserve ra across the save-
+    // registers asm block, making the restored ra garbage.
+    //
+    // The `unimp` after `jr` is unreachable but satisfies the compiler's
+    // expectation that inline asm falls through.
+    unsafe {
+        core::arch::asm!(
+            "fence rw, rw",
+            "fence.i",
+            "jr {sbi}",
+            "unimp",  // unreachable — OpenSBI never returns here
+            sbi = in(reg) sbi_addr,
+            in("a0") boot_hart_id(),
+            in("a1") dtb_addr,
+            in("a2") &info as *const FwDynamicInfo as u64,
+        );
+    }
+    // Unreachable: the resume trampoline restores registers and does
+    // `ret` to our caller. The compiler-generated epilogue here is
+    // never executed.
+}
+
+/// Return the DTB address when running in S-mode (after OpenSBI resume).
+///
+/// Return the DTB address in S-mode.
+///
+/// The S-mode entry point (`entry_smode.rs`) and the resume trampoline
+/// both save the DTB address (from OpenSBI's `a1`) into `sscratch`.
+pub fn boot_dtb_addr_smode() -> u64 {
+    let addr: u64;
+    // SAFETY: reading sscratch retrieves the DTB address saved at S-mode entry.
+    unsafe {
+        core::arch::asm!("csrr {}, sscratch", out(reg) addr);
+    }
+    addr
+}
+
+/// Return the boot hart ID in S-mode.
+///
+/// The S-mode entry point (`entry_smode.rs`) saves the hart ID (from
+/// OpenSBI's `a0`) into a BSS global `_smode_hart_id`.
+pub fn boot_hart_id_smode() -> u64 {
+    extern "C" {
+        static _smode_hart_id: u64;
+    }
+    // SAFETY: _smode_hart_id is written by entry_smode.rs before fstart_main.
+    unsafe { core::ptr::read_volatile(&_smode_hart_id) }
 }
 
 // ---------------------------------------------------------------------------
