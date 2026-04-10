@@ -24,7 +24,6 @@ fn validate_item(item: &DslItem) -> Result<()> {
             children,
             span,
         } => {
-            // Only validate literal paths; interpolations are checked at runtime.
             if let NameOrInterp::Literal(p) = path {
                 validate_acpi_path(p, *span)?;
             }
@@ -66,11 +65,29 @@ fn validate_item(item: &DslItem) -> Result<()> {
         DslItem::CreateDwordField { name, span, .. } => {
             validate_acpi_name(name, *span)?;
         }
+        DslItem::If {
+            body, else_body, ..
+        } => {
+            validate_items(body)?;
+            if let Some(else_items) = else_body {
+                validate_items(else_items)?;
+            }
+        }
+        DslItem::While { body, .. } => {
+            validate_items(body)?;
+        }
         DslItem::Store { .. }
         | DslItem::ShiftLeft { .. }
         | DslItem::Subtract { .. }
         | DslItem::Add { .. }
-        | DslItem::RawExpr { .. } => {}
+        | DslItem::RawExpr { .. }
+        | DslItem::Assign { .. }
+        | DslItem::Notify { .. }
+        | DslItem::Sleep { .. }
+        | DslItem::Stall { .. }
+        | DslItem::Break { .. }
+        | DslItem::Increment { .. }
+        | DslItem::Decrement { .. } => {}
     }
     Ok(())
 }
@@ -81,10 +98,9 @@ fn validate_acpi_path(path: &str, span: Span) -> Result<()> {
         return Err(Error::new(span, "ACPI path cannot be empty"));
     }
 
-    // Root path or relative path
     let segments: Vec<&str> = if let Some(rest) = path.strip_prefix('\\') {
         if rest.is_empty() {
-            return Ok(()); // root "\" alone is valid
+            return Ok(());
         }
         rest.split('.').collect()
     } else {
@@ -92,7 +108,6 @@ fn validate_acpi_path(path: &str, span: Span) -> Result<()> {
     };
 
     for seg in &segments {
-        // Remove leading underscores for predefined names, then validate
         let clean = seg.trim_start_matches('_');
         if seg.is_empty() {
             return Err(Error::new(span, format!("empty path segment in `{path}`")));
@@ -103,14 +118,13 @@ fn validate_acpi_path(path: &str, span: Span) -> Result<()> {
                 format!("ACPI name segment `{seg}` exceeds 4 characters"),
             ));
         }
-        // Allow A-Z, 0-9, _ (case-insensitive for validation)
         if !seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             return Err(Error::new(
                 span,
                 format!("ACPI name `{seg}` contains invalid characters (allowed: A-Z, 0-9, _)"),
             ));
         }
-        let _ = clean; // suppress unused warning
+        let _ = clean;
     }
     Ok(())
 }
