@@ -118,24 +118,32 @@ fn compress_names(names: Vec<&str>) -> Vec<[u8; 4]> {
 
     // Second pass: detect and resolve collisions.
     // For each collision group, keep the first occurrence as-is and
-    // disambiguate subsequent ones by replacing the last char with 0-9.
+    // disambiguate subsequent ones by replacing the last char with
+    // 0-9, A-Z (36 possible suffixes -- more than enough).
     let len = candidates.len();
     for i in 0..len {
         let mut suffix = 0u8;
         for j in (i + 1)..len {
             if candidates[j] == candidates[i] {
-                // Collision: disambiguate candidates[j].
                 let mut fixed = candidates[i];
-                fixed[3] = b'0' + suffix;
+                fixed[3] = suffix_char(suffix);
                 suffix += 1;
-                // If the first occurrence hasn't been disambiguated yet
-                // and we're on the first collision, also fix the later one.
                 candidates[j] = fixed;
             }
         }
     }
 
     candidates
+}
+
+/// Map a collision suffix index to a valid ACPI NameSeg character.
+/// 0-9 -> '0'-'9', 10-35 -> 'A'-'Z'.
+fn suffix_char(idx: u8) -> u8 {
+    if idx < 10 {
+        b'0' + idx
+    } else {
+        b'A' + (idx - 10)
+    }
 }
 
 /// Count the number of set bits in a UIntLike mask.
@@ -526,9 +534,9 @@ mod tests {
             TockAcpiField::new::<u32, TEST_FR::Register>("FREG", OpRegionSpace::SystemMemory, 0x18);
 
         let aml: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
-            device("UAR0") {
-                name("_HID", "ARMH0011");
-                name("_UID", 0u32);
+            Device("UAR0") {
+                Name("_HID", "ARMH0011");
+                Name("_UID", 0u32);
                 // OpRegion + Field derived from tock-registers definitions
                 #{fr_field}
             }
@@ -647,8 +655,8 @@ mod tests {
 
         // Step 3: Produce the MCHC device using acpi_dsl! with tock-derived fields.
         let aml: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
-            device("MCHC") {
-                name("_ADR", 0x0000_0000u32);
+            Device("MCHC") {
+                Name("_ADR", 0x0000_0000u32);
                 #{mchp}
             }
         };
@@ -731,6 +739,23 @@ mod tests {
         assert_eq!(result[2], *b"UART");
         assert_eq!(result[3], *b"UAR0"); // collision with UART
         assert_eq!(result[4], *b"VCO_");
+    }
+
+    #[test]
+    fn test_compress_many_collisions() {
+        // 12 names all truncating to "FOOB" -- tests the 0-9 then A-Z suffix.
+        let names: Vec<&str> = (0..12).map(|_| "FOOBAR").collect();
+        let result = compress_names(names);
+        assert_eq!(result[0], *b"FOOB"); // first keeps truncated name
+        assert_eq!(result[1], *b"FOO0");
+        assert_eq!(result[2], *b"FOO1");
+        assert_eq!(result[9], *b"FOO8");
+        assert_eq!(result[10], *b"FOO9");
+        assert_eq!(result[11], *b"FOOA"); // 10 -> 'A'
+
+        // All must be unique.
+        let set: alloc::collections::BTreeSet<[u8; 4]> = result.iter().copied().collect();
+        assert_eq!(set.len(), 12);
     }
 
     /// Test that tock_field_entries correctly compresses long field names

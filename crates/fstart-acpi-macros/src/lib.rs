@@ -8,15 +8,15 @@
 //!
 //! # Supported constructs (Phase 2 core subset)
 //!
-//! - `scope("path") { ... }` -- ACPI Scope
-//! - `device("NAME") { ... }` -- ACPI Device
-//! - `name("_HID", value)` -- ACPI Name object
-//! - `method("NAME", argc, Serialized|NotSerialized) { ... }` -- Method
-//! - `ret(value)` -- Return statement
-//! - `eisa_id("PNP0501")` -- EISA ID encoding
-//! - `resource_template { ... }` -- ResourceTemplate
-//! - `memory_32_fixed(ReadWrite|ReadOnly, base, size)` -- Memory32Fixed
-//! - `interrupt(consumer, level, polarity, sharing, irq)` -- Interrupt
+//! - `Scope("path") { ... }` -- ACPI Scope
+//! - `Device("NAME") { ... }` -- ACPI Device
+//! - `Name("_HID", value)` -- ACPI Name object
+//! - `Method("NAME", argc, Serialized|NotSerialized) { ... }` -- Method
+//! - `Return(value)` -- Return statement
+//! - `EisaId("PNP0501")` -- EISA ID encoding
+//! - `ResourceTemplate { ... }` -- ResourceTemplate
+//! - `Memory32Fixed(ReadWrite|ReadOnly, base, size)` -- Memory32Fixed
+//! - `Interrupt(consumer, level, polarity, sharing, irq)` -- Interrupt
 //! - `#{rust_expr}` -- Interpolation of Rust expressions
 
 extern crate proc_macro;
@@ -40,12 +40,12 @@ use proc_macro::TokenStream;
 /// let uart_irq: u32 = 33;
 ///
 /// let aml_bytes: Vec<u8> = acpi_dsl! {
-///     device("COM0") {
-///         name("_HID", "ARMH0011");
-///         name("_UID", 0u32);
-///         name("_CRS", resource_template {
-///             memory_32_fixed(ReadWrite, #{uart_base}, 0x1000u32);
-///             interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_irq});
+///     Device("COM0") {
+///         Name("_HID", "ARMH0011");
+///         Name("_UID", 0u32);
+///         Name("_CRS", ResourceTemplate {
+///             Memory32Fixed(ReadWrite, #{uart_base}, 0x1000u32);
+///             Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_irq});
 ///         });
 ///     }
 /// };

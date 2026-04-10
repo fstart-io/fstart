@@ -14,9 +14,9 @@ use tock_registers::registers::ReadWrite;
 #[test]
 fn test_simple_device() {
     let aml: Vec<u8> = acpi_dsl! {
-        device("COM0") {
-            name("_HID", "ARMH0011");
-            name("_UID", 0u32);
+        Device("COM0") {
+            Name("_HID", "ARMH0011");
+            Name("_UID", 0u32);
         }
     };
 
@@ -29,9 +29,9 @@ fn test_simple_device() {
 #[test]
 fn test_device_with_eisa_id() {
     let aml: Vec<u8> = acpi_dsl! {
-        device("UAR0") {
-            name("_HID", eisa_id("PNP0501"));
-            name("_UID", 0u32);
+        Device("UAR0") {
+            Name("_HID", EisaId("PNP0501"));
+            Name("_UID", 0u32);
         }
     };
 
@@ -43,11 +43,11 @@ fn test_device_with_eisa_id() {
 #[test]
 fn test_device_with_resource_template() {
     let aml: Vec<u8> = acpi_dsl! {
-        device("COM0") {
-            name("_HID", "ARMH0011");
-            name("_CRS", resource_template {
-                memory_32_fixed(ReadWrite, 0x6000_0000u32, 0x1000u32);
-                interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, 33u32);
+        Device("COM0") {
+            Name("_HID", "ARMH0011");
+            Name("_CRS", ResourceTemplate {
+                Memory32Fixed(ReadWrite, 0x6000_0000u32, 0x1000u32);
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, 33u32);
             });
         }
     };
@@ -63,11 +63,11 @@ fn test_interpolation() {
     let uart_irq: u32 = 33;
 
     let aml: Vec<u8> = acpi_dsl! {
-        device("COM0") {
-            name("_HID", "ARMH0011");
-            name("_CRS", resource_template {
-                memory_32_fixed(ReadWrite, #{uart_base}, 0x1000u32);
-                interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_irq});
+        Device("COM0") {
+            Name("_HID", "ARMH0011");
+            Name("_CRS", ResourceTemplate {
+                Memory32Fixed(ReadWrite, #{uart_base}, 0x1000u32);
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_irq});
             });
         }
     };
@@ -80,8 +80,8 @@ fn test_interpolation() {
 #[test]
 fn test_method_with_return() {
     let aml: Vec<u8> = acpi_dsl! {
-        method("_STA", 0, NotSerialized) {
-            ret(0x0Fu32);
+        Method("_STA", 0, NotSerialized) {
+            Return(0x0Fu32);
         }
     };
 
@@ -93,10 +93,10 @@ fn test_method_with_return() {
 #[test]
 fn test_scope_with_devices() {
     let aml: Vec<u8> = acpi_dsl! {
-        scope("\\_SB_") {
-            device("COM0") {
-                name("_HID", "ARMH0011");
-                name("_UID", 0u32);
+        Scope("\\_SB_") {
+            Device("COM0") {
+                Name("_HID", "ARMH0011");
+                Name("_UID", 0u32);
             }
         }
     };
@@ -111,9 +111,9 @@ fn test_macro_matches_manual_builder() {
     // Build the same device using the macro and the manual builder API,
     // then compare the output bytes.
     let macro_aml: Vec<u8> = acpi_dsl! {
-        device("DEV0") {
-            name("_HID", "TEST0001");
-            name("_UID", 0u32);
+        Device("DEV0") {
+            Name("_HID", "TEST0001");
+            Name("_UID", 0u32);
         }
     };
 
@@ -142,12 +142,12 @@ fn test_macro_matches_manual_builder() {
 #[test]
 fn test_op_region_and_field() {
     let aml: Vec<u8> = acpi_dsl! {
-        device("MCHC") {
-            name("_ADR", 0x0000_0000u32);
+        Device("MCHC") {
+            Name("_ADR", 0x0000_0000u32);
 
-            op_region("MCHP", PciConfig, 0x00u32, 0x100u32);
-            field("MCHP", DWordAcc, NoLock, Preserve) {
-                offset(0x40),
+            OperationRegion("MCHP", PciConfig, 0x00u32, 0x100u32);
+            Field("MCHP", DWordAcc, NoLock, Preserve) {
+                Offset(0x40),
                 // EPBAR
                 EPEN, 1,
                 , 11,
@@ -166,7 +166,7 @@ fn test_op_region_and_field() {
                 , 11,
                 DMBR, 20,
 
-                offset(0x90),
+                Offset(0x90),
                 // PAM0
                 , 4,
                 PM0H, 2,
@@ -177,12 +177,12 @@ fn test_op_region_and_field() {
                 PM1H, 2,
                 , 2,
 
-                offset(0x9c),
+                Offset(0x9c),
                 // TOLUD
                 , 3,
                 TLUD, 5,
 
-                offset(0xa0),
+                Offset(0xa0),
                 // TOM
                 TOM_, 16,
             }
@@ -220,31 +220,31 @@ fn test_op_region_and_field() {
 fn test_dynamic_crs_method() {
     let aml: Vec<u8> = acpi_dsl! {
         // Named resource template with PCI memory region
-        name("MCRS", resource_template {
-            word_bus_number(0x0000u16, 0x00FFu16);
-            io(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
-            dword_io(0x0000u32, 0xFFFFu32);
-            dword_memory(Cacheable, ReadWrite, 0x000A_0000u32, 0x000B_FFFFu32);
-            dword_memory(NotCacheable, ReadWrite, 0x0000_0000u32, 0xFEBF_FFFFu32);
+        Name("MCRS", ResourceTemplate {
+            WordBusNumber(0x0000u16, 0x00FFu16);
+            IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
+            DWordIO(0x0000u32, 0xFFFFu32);
+            DWordMemory(Cacheable, ReadWrite, 0x000A_0000u32, 0x000B_FFFFu32);
+            DWordMemory(NotCacheable, ReadWrite, 0x0000_0000u32, 0xFEBF_FFFFu32);
         });
 
         // _CRS method that patches the resource template based on TOLUD
-        method("_CRS", 0, Serialized) {
-            create_dword_field(#{fstart_acpi::aml::Path::new("MCRS")}, 0x00u32, "PMIN");
-            create_dword_field(#{fstart_acpi::aml::Path::new("MCRS")}, 0x04u32, "PMAX");
-            create_dword_field(#{fstart_acpi::aml::Path::new("MCRS")}, 0x08u32, "PLEN");
+        Method("_CRS", 0, Serialized) {
+            CreateDwordField(#{fstart_acpi::aml::Path::new("MCRS")}, 0x00u32, "PMIN");
+            CreateDwordField(#{fstart_acpi::aml::Path::new("MCRS")}, 0x04u32, "PMAX");
+            CreateDwordField(#{fstart_acpi::aml::Path::new("MCRS")}, 0x08u32, "PLEN");
             // PMIN = TLUD << 27
-            shl(#{fstart_acpi::aml::Path::new("PMIN")},
+            ShiftLeft(#{fstart_acpi::aml::Path::new("PMIN")},
                 #{fstart_acpi::aml::Path::new("TLUD")},
                 27u32);
             // PLEN = PMAX - PMIN + 1
-            subtract(#{fstart_acpi::aml::Path::new("PLEN")},
+            Subtract(#{fstart_acpi::aml::Path::new("PLEN")},
                      #{fstart_acpi::aml::Path::new("PMAX")},
                      #{fstart_acpi::aml::Path::new("PMIN")});
-            add(#{fstart_acpi::aml::Path::new("PLEN")},
+            Add(#{fstart_acpi::aml::Path::new("PLEN")},
                 #{fstart_acpi::aml::Path::new("PLEN")},
                 1u32);
-            ret(#{fstart_acpi::aml::Path::new("MCRS")});
+            Return(#{fstart_acpi::aml::Path::new("MCRS")});
         }
     };
 
@@ -261,9 +261,9 @@ fn test_dynamic_crs_method() {
 #[test]
 fn test_io_descriptors() {
     let aml: Vec<u8> = acpi_dsl! {
-        name("_CRS", resource_template {
-            io(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
-            dword_io(0x0D00u32, 0xFFFFu32);
+        Name("_CRS", ResourceTemplate {
+            IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
+            DWordIO(0x0D00u32, 0xFFFFu32);
         });
     };
 
@@ -276,8 +276,8 @@ fn test_io_descriptors() {
 #[test]
 fn test_store() {
     let aml: Vec<u8> = acpi_dsl! {
-        method("TEST", 0, NotSerialized) {
-            store(0x42u32, #{fstart_acpi::aml::Local(0)});
+        Method("TEST", 0, NotSerialized) {
+            Store(0x42u32, #{fstart_acpi::aml::Local(0)});
         }
     };
 
@@ -292,40 +292,40 @@ fn test_store() {
 #[test]
 fn test_x86_northbridge_full() {
     let aml: Vec<u8> = acpi_dsl! {
-        scope("\\_SB_") {
-            device("PCI0") {
-                name("_HID", eisa_id("PNP0A08"));
-                name("_CID", eisa_id("PNP0A03"));
-                name("_ADR", 0u32);
+        Scope("\\_SB_") {
+            Device("PCI0") {
+                Name("_HID", EisaId("PNP0A08"));
+                Name("_CID", EisaId("PNP0A03"));
+                Name("_ADR", 0u32);
 
                 // Memory Controller Hub device
-                device("MCHC") {
-                    name("_ADR", 0x0000_0000u32);
-                    op_region("MCHP", PciConfig, 0x00u32, 0x100u32);
-                    field("MCHP", DWordAcc, NoLock, Preserve) {
-                        offset(0x40),
+                Device("MCHC") {
+                    Name("_ADR", 0x0000_0000u32);
+                    OperationRegion("MCHP", PciConfig, 0x00u32, 0x100u32);
+                    Field("MCHP", DWordAcc, NoLock, Preserve) {
+                        Offset(0x40),
                         EPEN, 1,
                         , 11,
                         EPBR, 20,
-                        offset(0x9c),
+                        Offset(0x9c),
                         , 3,
                         TLUD, 5,
                     }
                 }
 
                 // PCI resource template
-                name("MCRS", resource_template {
-                    word_bus_number(0x0000u16, 0x00FFu16);
-                    io(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
-                    dword_memory(NotCacheable, ReadWrite, 0x0000_0000u32, 0xFEBF_FFFFu32);
+                Name("MCRS", ResourceTemplate {
+                    WordBusNumber(0x0000u16, 0x00FFu16);
+                    IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
+                    DWordMemory(NotCacheable, ReadWrite, 0x0000_0000u32, 0xFEBF_FFFFu32);
                 });
 
-                method("_CRS", 0, Serialized) {
-                    ret(#{fstart_acpi::aml::Path::new("MCRS")});
+                Method("_CRS", 0, Serialized) {
+                    Return(#{fstart_acpi::aml::Path::new("MCRS")});
                 }
 
-                method("_OSC", 4, NotSerialized) {
-                    ret(#{fstart_acpi::aml::Arg(3)});
+                Method("_OSC", 4, NotSerialized) {
+                    Return(#{fstart_acpi::aml::Arg(3)});
                 }
             }
         }
@@ -513,50 +513,50 @@ fn test_complete_x86_host_bridge() {
     let p = |s| Path::new(s);
 
     let aml: Vec<u8> = acpi_dsl! {
-        scope("\\_SB_") {
-            device("PCI0") {
-                name("_HID", eisa_id("PNP0A08"));
-                name("_CID", eisa_id("PNP0A03"));
-                name("_ADR", 0x0000_0000u32);
+        Scope("\\_SB_") {
+            Device("PCI0") {
+                Name("_HID", EisaId("PNP0A08"));
+                Name("_CID", EisaId("PNP0A03"));
+                Name("_ADR", 0x0000_0000u32);
 
                 // MCH device: registers derived from tock-registers
-                device("MCHC") {
-                    name("_ADR", 0x0000_0000u32);
+                Device("MCHC") {
+                    Name("_ADR", 0x0000_0000u32);
                     #{mchp}
                 }
 
                 // Static resource template (patched at runtime by _CRS)
-                name("MCRS", resource_template {
+                Name("MCRS", ResourceTemplate {
                     // Bus numbers 0-255
-                    word_bus_number(0x0000u16, 0x00FFu16);
+                    WordBusNumber(0x0000u16, 0x00FFu16);
                     // Legacy I/O: 0x0000-0x0CF7
-                    dword_io(0x0000u32, 0x0CF7u32);
+                    DWordIO(0x0000u32, 0x0CF7u32);
                     // PCI config space I/O port
-                    io(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
+                    IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
                     // Legacy I/O: 0x0D00-0xFFFF
-                    dword_io(0x0D00u32, 0xFFFFu32);
+                    DWordIO(0x0D00u32, 0xFFFFu32);
                     // VGA memory
-                    dword_memory(Cacheable, ReadWrite, 0x000A_0000u32, 0x000B_FFFFu32);
+                    DWordMemory(Cacheable, ReadWrite, 0x000A_0000u32, 0x000B_FFFFu32);
                     // PCI memory (placeholder range, patched by _CRS)
-                    dword_memory(NotCacheable, ReadWrite, 0x0000_0000u32, 0xFEBF_FFFFu32);
+                    DWordMemory(NotCacheable, ReadWrite, 0x0000_0000u32, 0xFEBF_FFFFu32);
                 });
 
                 // Dynamic _CRS: reads TOLUD from MCH, patches PCI memory range
-                method("_CRS", 0, Serialized) {
-                    create_dword_field(#{p("MCRS")}, 0x00u32, "PMIN");
-                    create_dword_field(#{p("MCRS")}, 0x04u32, "PMAX");
-                    create_dword_field(#{p("MCRS")}, 0x08u32, "PLEN");
+                Method("_CRS", 0, Serialized) {
+                    CreateDwordField(#{p("MCRS")}, 0x00u32, "PMIN");
+                    CreateDwordField(#{p("MCRS")}, 0x04u32, "PMAX");
+                    CreateDwordField(#{p("MCRS")}, 0x08u32, "PLEN");
                     // PMIN = TLUD << 27
-                    shl(#{p("PMIN")}, #{p("TLUD")}, 27u32);
+                    ShiftLeft(#{p("PMIN")}, #{p("TLUD")}, 27u32);
                     // PLEN = PMAX - PMIN + 1
-                    subtract(#{p("PLEN")}, #{p("PMAX")}, #{p("PMIN")});
-                    add(#{p("PLEN")}, #{p("PLEN")}, 1u32);
-                    ret(#{p("MCRS")});
+                    Subtract(#{p("PLEN")}, #{p("PMAX")}, #{p("PMIN")});
+                    Add(#{p("PLEN")}, #{p("PLEN")}, 1u32);
+                    Return(#{p("MCRS")});
                 }
 
                 // _OSC: accept all OS capabilities
-                method("_OSC", 4, NotSerialized) {
-                    ret(#{fstart_acpi::aml::Arg(3)});
+                Method("_OSC", 4, NotSerialized) {
+                    Return(#{fstart_acpi::aml::Arg(3)});
                 }
             }
         }
@@ -702,8 +702,8 @@ fn test_x86_host_bridge_register_structs() {
     );
 
     let aml: Vec<u8> = acpi_dsl! {
-        device("MCHC") {
-            name("_ADR", 0x0000_0000u32);
+        Device("MCHC") {
+            Name("_ADR", 0x0000_0000u32);
             #{mchp}
         }
     };

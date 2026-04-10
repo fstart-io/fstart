@@ -169,14 +169,14 @@ impl AhciAcpi<'_> {
             let base = self.base as u32;
             let size = self.size;
             fstart_acpi_macros::acpi_dsl! {
-                device(#{name}) {
-                    name("_HID", "LNRO0015");
-                    name("_UID", 0u32);
-                    name("_CCA", 1u32);
-                    name("_CLS", package(0x01u8, 0x06u8, 0x01u8));
-                    name("_CRS", resource_template {
-                        memory_32_fixed(ReadWrite, #{base}, #{size});
-                        interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                Device(#{name}) {
+                    Name("_HID", "LNRO0015");
+                    Name("_UID", 0u32);
+                    Name("_CCA", 1u32);
+                    Name("_CLS", Package(0x01u8, 0x06u8, 0x01u8));
+                    Name("_CRS", ResourceTemplate {
+                        Memory32Fixed(ReadWrite, #{base}, #{size});
+                        Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
                     });
                 }
             }
@@ -184,14 +184,14 @@ impl AhciAcpi<'_> {
             let base = self.base;
             let end = self.base + self.size as u64 - 1;
             fstart_acpi_macros::acpi_dsl! {
-                device(#{name}) {
-                    name("_HID", "LNRO0015");
-                    name("_UID", 0u32);
-                    name("_CCA", 1u32);
-                    name("_CLS", package(0x01u8, 0x06u8, 0x01u8));
-                    name("_CRS", resource_template {
-                        qword_memory(NotCacheable, ReadWrite, #{base}, #{end});
-                        interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                Device(#{name}) {
+                    Name("_HID", "LNRO0015");
+                    Name("_UID", 0u32);
+                    Name("_CCA", 1u32);
+                    Name("_CLS", Package(0x01u8, 0x06u8, 0x01u8));
+                    Name("_CRS", ResourceTemplate {
+                        QWordMemory(NotCacheable, ReadWrite, #{base}, #{end});
+                        Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
                     });
                 }
             }
@@ -226,13 +226,13 @@ impl XhciAcpi<'_> {
         let size = self.size;
         let gsiv = self.gsiv;
         fstart_acpi_macros::acpi_dsl! {
-            device(#{name}) {
-                name("_HID", "PNP0D10");
-                name("_UID", 0u32);
-                name("_CCA", 1u32);
-                name("_CRS", resource_template {
-                    memory_32_fixed(ReadWrite, #{base}, #{size});
-                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+            Device(#{name}) {
+                Name("_HID", "PNP0D10");
+                Name("_UID", 0u32);
+                Name("_CCA", 1u32);
+                Name("_CRS", ResourceTemplate {
+                    Memory32Fixed(ReadWrite, #{base}, #{size});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
                 });
             }
         }
@@ -297,24 +297,24 @@ impl PcieRootAcpi<'_> {
         let irq_c = self.irqs[2];
         let irq_d = self.irqs[3];
         fstart_acpi_macros::acpi_dsl! {
-            device(#{name}) {
-                name("_HID", eisa_id("PNP0A08"));
-                name("_CID", eisa_id("PNP0A03"));
-                name("_SEG", #{seg});
-                name("_BBN", #{bbn});
-                name("_CCA", 1u32);
-                name("_UID", 0u32);
-                name("_CRS", resource_template {
-                    word_bus_number(#{bus_start}, #{bus_end});
-                    dword_memory(NotCacheable, ReadWrite, #{mmio32_base}, #{mmio32_end});
-                    qword_memory(NotCacheable, ReadWrite, #{mmio64_base}, #{mmio64_end});
-                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_a});
-                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_b});
-                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_c});
-                    interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_d});
+            Device(#{name}) {
+                Name("_HID", EisaId("PNP0A08"));
+                Name("_CID", EisaId("PNP0A03"));
+                Name("_SEG", #{seg});
+                Name("_BBN", #{bbn});
+                Name("_CCA", 1u32);
+                Name("_UID", 0u32);
+                Name("_CRS", ResourceTemplate {
+                    WordBusNumber(#{bus_start}, #{bus_end});
+                    DWordMemory(NotCacheable, ReadWrite, #{mmio32_base}, #{mmio32_end});
+                    QWordMemory(NotCacheable, ReadWrite, #{mmio64_base}, #{mmio64_end});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_a});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_b});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_c});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_d});
                 });
-                method("_OSC", 4, NotSerialized) {
-                    ret(#{acpi_tables::aml::Arg(3)});
+                Method("_OSC", 4, NotSerialized) {
+                    Return(#{acpi_tables::aml::Arg(3)});
                 }
             }
         }
