@@ -29,8 +29,14 @@ pub(in crate::stage_gen) fn generate_acpi_prepare(
 
     // Per-driver device contributions: iterate devices whose driver
     // has `has_acpi` and whose config contains an `acpi_name` field.
+    // ACPI-only devices (Ahci, Xhci, PcieRoot) are handled separately
+    // below — they have no runtime driver instance, so the device
+    // construction phase skips them and their variables don't exist.
     for (idx, dev) in devices.iter().enumerate() {
         let inst = &instances[idx];
+        if inst.is_acpi_only() {
+            continue;
+        }
         let meta = inst.meta();
         if !meta.has_acpi {
             continue;

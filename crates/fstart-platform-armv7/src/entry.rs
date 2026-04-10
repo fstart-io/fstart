@@ -174,9 +174,12 @@ cpu_init_cp15:
     mov     r2, r3, lsl #4             @ shift variant field for combined value
     orr     r2, r4, r2                  @ r2 has combined CPU variant + revision
 
-    // Early stack for ERRATA that need to call C code
-    // SYS_INIT_SP_ADDR = SRAM base + 32K = 0x8000 on sunxi
-    ldr     r0, =0x8000
+    // Early stack for ERRATA that need to call C code.
+    // Uses the linker-defined _stack_top symbol which resolves to the
+    // top of the writable memory region (RAM/SRAM).  Previously
+    // hardcoded to 0x8000 (sunxi SRAM), which silently wrote to ROM
+    // on boards without SRAM at that address (e.g., QEMU virt).
+    ldr     r0, =_stack_top
     bic     r0, r0, #7                 @ 8-byte alignment for ABI compliance
     mov     sp, r0
 
@@ -186,18 +189,19 @@ cpu_init_cp15:
     // cpu_init_crit -> lowlevel_init -> s_init
     //
     // Matches U-Boot arch/arm/cpu/armv7/start.S:cpu_init_crit and
-    // arch/arm/cpu/armv7/lowlevel_init.S exactly for sunxi SPL.
+    // arch/arm/cpu/armv7/lowlevel_init.S except for the temporary
+    // stack address (linker symbol instead of hardcoded constant).
     //
     // cpu_init_crit: just branches to lowlevel_init
     // lowlevel_init: sets sp, r9, calls s_init
-    // s_init: empty on sunxi (just bx lr)
+    // s_init: empty (just bx lr)
     // ===============================================================
 cpu_init_crit:
     b       lowlevel_init               @ go setup pll,mux,memory
 
 lowlevel_init:
     // Setup a temporary stack. Global data is not available yet.
-    ldr     sp, =0x8000                 @ SYS_INIT_SP_ADDR
+    ldr     sp, =_stack_top
     bic     sp, sp, #7                  @ 8-byte alignment for ABI compliance
 
     // fstart has no global data struct — clear r9.

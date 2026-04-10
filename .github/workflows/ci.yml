@@ -1,0 +1,317 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions: read-all
+
+env:
+  OPENSBI_VERSION: "1.6"
+  TFA_VERSION: "2.12.0"
+  LINUX_VERSION: "6.12"
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Code quality: format, lint, unit tests (host crates only)
+  # -----------------------------------------------------------------------
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly
+          components: rust-src, llvm-tools, clippy, rustfmt
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (host crates)
+        run: |
+          cargo clippy --workspace \
+            --exclude fstart-stage \
+            --exclude fstart-platform-riscv64 \
+            --exclude fstart-platform-aarch64 \
+            --exclude fstart-platform-armv7 \
+            --exclude fstart-runtime \
+            -- -D warnings
+
+      - name: Tests
+        run: |
+          cargo test --workspace \
+            --exclude fstart-stage \
+            --exclude fstart-runtime \
+            --exclude fstart-alloc \
+            --exclude fstart-crabefi \
+            --exclude fstart-platform-riscv64 \
+            --exclude fstart-platform-aarch64 \
+            --exclude fstart-platform-armv7
+
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
+      - name: Cross-build warnings (generated code)
+        env:
+          FSTART_EXTRA_RUSTFLAGS: -Dwarnings -Astatic-mut-refs
+        run: |
+          cargo xtask build --board qemu-riscv64 --release
+          cargo xtask build --board qemu-aarch64 --release
+
+  # -----------------------------------------------------------------------
+  # Build every board image (cross-compile via -Z build-std=core)
+  # -----------------------------------------------------------------------
+  build-boards:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - qemu-riscv64
+          - qemu-aarch64
+          - qemu-armv7
+          - bananapi-m1
+          - qemu-riscv64-multi
+          - qemu-riscv64-flex
+          - qemu-aarch64-multi
+          - qemu-aarch64-flex
+          - qemu-aarch64-uefi
+          - qemu-sbsa
+          - orangepi-pc2
+          - sifive-unmatched
+          - sifive-unmatched-hw
+          - licheerv-dock
+          - orangepi-r1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly
+          components: rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
+
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          shared-key: release-${{ matrix.board }}
+
+      - name: Build ${{ matrix.board }}
+        run: cargo xtask build --board ${{ matrix.board }} --release
+
+  # -----------------------------------------------------------------------
+  # Build external payloads: OpenSBI, TF-A BL31, Linux kernels
+  # -----------------------------------------------------------------------
+  build-payloads:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install cross-compilers and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
+            make flex bison bc libelf-dev libssl-dev \
+            xz-utils curl git
+
+      - name: Cache payloads
+        id: cache-payloads
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: payloads
+          key: payloads-opensbi${{ env.OPENSBI_VERSION }}-tfa${{ env.TFA_VERSION }}-linux${{ env.LINUX_VERSION }}-${{ hashFiles('ci/kernel-*.config', 'ci/build-payloads.sh') }}
+
+      - name: Build payloads
+        if: steps.cache-payloads.outputs.cache-hit != 'true'
+        run: bash ci/build-payloads.sh payloads
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: payloads
+          path: payloads/
+          retention-days: 7
+
+  # -----------------------------------------------------------------------
+  # QEMU smoke tests — boards without payloads (firmware boots and halts)
+  # -----------------------------------------------------------------------
+  qemu-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: qemu-riscv64-multi
+            expect: "console ready"
+          - board: qemu-riscv64-flex
+            expect: "console ready"
+          - board: qemu-aarch64-multi
+            expect: "console ready"
+          - board: qemu-aarch64-flex
+            expect: "console ready"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly
+          components: rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
+
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      - name: Cache QEMU packages
+        id: cache-qemu
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/qemu-debs
+          key: qemu-debs-${{ runner.os }}-v1
+
+      - name: Install QEMU
+        run: |
+          if [ "${{ steps.cache-qemu.outputs.cache-hit }}" = "true" ]; then
+            sudo dpkg -i ~/qemu-debs/*.deb 2>/dev/null || sudo apt-get install -yf
+          else
+            sudo apt-get update
+            sudo apt-get install -y -d --no-install-recommends \
+              qemu-system-misc qemu-system-arm \
+              qemu-system-data ipxe-qemu
+            mkdir -p ~/qemu-debs
+            cp /var/cache/apt/archives/qemu*.deb \
+               /var/cache/apt/archives/ipxe*.deb \
+               /var/cache/apt/archives/seabios*.deb \
+               ~/qemu-debs/ 2>/dev/null || true
+            sudo apt-get install -y --no-install-recommends \
+              qemu-system-misc qemu-system-arm \
+              qemu-system-data ipxe-qemu
+          fi
+
+      - name: Build firmware
+        run: cargo xtask build --board ${{ matrix.board }} --release
+
+      - name: Run in QEMU (${{ matrix.board }})
+        run: |
+          timeout 60 cargo xtask run --release \
+            --board ${{ matrix.board }} --memory 256M \
+            > /tmp/qemu.log 2>&1 || true
+          echo "::group::QEMU output"
+          cat /tmp/qemu.log
+          echo "::endgroup::"
+          grep -aqi "${{ matrix.expect }}" /tmp/qemu.log
+
+  # -----------------------------------------------------------------------
+  # QEMU boot tests — full boot chain: fstart -> SBI/ATF -> Linux
+  # -----------------------------------------------------------------------
+  qemu-boot:
+    needs: [build-payloads]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: qemu-riscv64
+            firmware: payloads/fw_dynamic.bin
+            kernel: payloads/Image-riscv64
+            memory: 1G
+          - board: qemu-aarch64
+            firmware: payloads/bl31.bin
+            kernel: payloads/Image-aarch64
+            memory: 1G
+          - board: qemu-armv7
+            firmware: ""
+            kernel: payloads/zImage-armv7
+            memory: 512M
+          - board: sifive-unmatched
+            firmware: payloads/fw_dynamic.bin
+            kernel: payloads/Image-riscv64
+            memory: 1G
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly
+          components: rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
+
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      - name: Cache QEMU packages
+        id: cache-qemu
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/qemu-debs
+          key: qemu-debs-${{ runner.os }}-v1
+
+      - name: Install QEMU
+        run: |
+          if [ "${{ steps.cache-qemu.outputs.cache-hit }}" = "true" ]; then
+            sudo dpkg -i ~/qemu-debs/*.deb 2>/dev/null || sudo apt-get install -yf
+          else
+            sudo apt-get update
+            sudo apt-get install -y -d --no-install-recommends \
+              qemu-system-misc qemu-system-arm \
+              qemu-system-data ipxe-qemu
+            mkdir -p ~/qemu-debs
+            cp /var/cache/apt/archives/qemu*.deb \
+               /var/cache/apt/archives/ipxe*.deb \
+               /var/cache/apt/archives/seabios*.deb \
+               ~/qemu-debs/ 2>/dev/null || true
+            sudo apt-get install -y --no-install-recommends \
+              qemu-system-misc qemu-system-arm \
+              qemu-system-data ipxe-qemu
+          fi
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: payloads
+          path: payloads
+
+      - name: Build and assemble firmware
+        run: |
+          ARGS="--board ${{ matrix.board }}"
+          if [ -n "${{ matrix.firmware }}" ]; then
+            ARGS="$ARGS --firmware ${{ matrix.firmware }}"
+          fi
+          ARGS="$ARGS --kernel ${{ matrix.kernel }}"
+          cargo xtask assemble --release $ARGS
+
+      - name: Run in QEMU (${{ matrix.board }})
+        run: |
+          ARGS="--board ${{ matrix.board }} --memory ${{ matrix.memory }}"
+          if [ -n "${{ matrix.firmware }}" ]; then
+            ARGS="$ARGS --firmware ${{ matrix.firmware }}"
+          fi
+          ARGS="$ARGS --kernel ${{ matrix.kernel }}"
+          timeout 120 cargo xtask run --release $ARGS \
+            > /tmp/qemu.log 2>&1 || true
+          echo "::group::QEMU output"
+          cat /tmp/qemu.log
+          echo "::endgroup::"
+          grep -aq "Linux version" /tmp/qemu.log

@@ -80,28 +80,32 @@ fn assemble_impl(
     match &config.stages {
         StageLayout::Monolithic(mono) => {
             let stage = &build_result.stages[0];
-            let segments = parse_elf_segments(&stage.path, Compression::None)?;
 
-            log_stage_segments("stage", &stage.path, &segments);
-
-            // Monolithic stages use the board config load_addr as a fallback,
-            // but ELF-parsed segments already have correct p_paddr values.
-            // Sanity-check that the entry point matches expectations.
-            let elf_data = fs::read(&stage.path)
-                .map_err(|e| format!("failed to read {}: {e}", stage.path.display()))?;
-            let elf = Elf::parse(&elf_data)
-                .map_err(|e| format!("failed to parse {}: {e}", stage.path.display()))?;
-            if elf.entry != mono.load_addr {
-                eprintln!(
-                    "[fstart] note: ELF entry {:#x} differs from board load_addr {:#x}",
-                    elf.entry, mono.load_addr,
-                );
+            // Log the ELF segment breakdown for diagnostics.
+            if let Ok(segs) = parse_elf_segments(&stage.path, Compression::None) {
+                log_stage_segments("stage", &stage.path, &segs);
             }
+
+            // Use the flat binary (.bin) to preserve alignment gaps
+            // between sections (e.g., .text -> .fstart.anchor -> .rodata).
+            // ELF segment parsing packs segments contiguously, shifting the
+            // anchor relative to its link-time VMA — fatal for XIP boards
+            // that read the anchor via volatile at the linked address.
+            let bin_data = fs::read(&stage.run_path)
+                .map_err(|e| format!("failed to read {}: {e}", stage.run_path.display()))?;
 
             ro_files.push(InputFile {
                 name: "stage".to_string(),
                 file_type: FileType::StageCode,
-                segments,
+                segments: vec![InputSegment {
+                    name: ".flat".to_string(),
+                    kind: SegmentKind::Code,
+                    data: bin_data,
+                    mem_size: None,
+                    load_addr: mono.load_addr,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
             });
         }
         StageLayout::MultiStage(_stages) => {
@@ -110,12 +114,34 @@ fn assemble_impl(
                     // The bootblock must be uncompressed — it executes
                     // directly from flash/SRAM and contains the anchor
                     // placeholder that gets patched in-place.
-                    let segments = parse_elf_segments(&stage_bin.path, Compression::None)?;
-                    log_stage_segments(&stage_bin.name, &stage_bin.path, &segments);
+                    //
+                    // Use the flat binary (.bin) rather than ELF segment
+                    // parsing. The flat binary preserves alignment gaps
+                    // between sections (e.g., .text -> .fstart.anchor ->
+                    // .rodata), which is critical for XIP boards where
+                    // the firmware reads the anchor at its link-time VMA.
+                    // ELF segment parsing packs segments contiguously,
+                    // losing alignment padding and causing the anchor to
+                    // shift relative to its link address.
+                    let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
+                        format!("failed to read {}: {e}", stage_bin.run_path.display())
+                    })?;
+                    log_stage_segments(&stage_bin.name, &stage_bin.path, &{
+                        // Still parse ELF for the log message (segment breakdown)
+                        parse_elf_segments(&stage_bin.path, Compression::None).unwrap_or_default()
+                    });
                     ro_files.push(InputFile {
                         name: stage_bin.name.clone(),
                         file_type: FileType::StageCode,
-                        segments,
+                        segments: vec![InputSegment {
+                            name: ".flat".to_string(),
+                            kind: SegmentKind::Code,
+                            data: bin_data,
+                            mem_size: None,
+                            load_addr: stage_bin.load_addr,
+                            compression: Compression::None,
+                            flags: SegmentFlags::CODE,
+                        }],
                     });
                 } else {
                     // Subsequent stages are stored as flat binaries (the

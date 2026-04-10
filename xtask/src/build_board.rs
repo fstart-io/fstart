@@ -58,10 +58,16 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 
     // Base features: platform + all driver features (every stage constructs
     // all devices, so driver features are always needed globally).
+    // ACPI-only devices (ahci, xhci, pcie-root) have no driver crate and
+    // no corresponding cargo feature — skip them.
+    const ACPI_ONLY_DRIVERS: &[&str] = &["ahci", "xhci", "pcie-root"];
     let mut base_features = Vec::new();
     base_features.push(config.platform.as_str().to_string());
     for device in &config.devices {
-        base_features.push(device.driver.to_string());
+        let drv = device.driver.as_str();
+        if !ACPI_ONLY_DRIVERS.contains(&drv) {
+            base_features.push(drv.to_string());
+        }
     }
 
     // Multi-stage boards need the handoff feature for inter-stage data passing.
@@ -231,11 +237,19 @@ fn build_one_stage(
     // adds alignment/null checks on read_volatile/write_volatile that are
     // incompatible with MMIO register access in firmware debug builds).
     //
-    // Force strict-align: the armv7a-none-eabi target spec already sets
-    // +strict-align, but we re-assert it here to ensure LLVM never emits
-    // unaligned loads/stores to MMIO addresses (device memory faults on
-    // unaligned access even when the core supports it for normal memory).
-    cmd.env("RUSTFLAGS", "-Zub-checks=no -Ctarget-feature=+strict-align");
+    // Note: +strict-align is NOT set here — the ARM target specs
+    // (armv7a-none-eabi, aarch64-unknown-none) already include it by
+    // default.  Passing it via -Ctarget-feature triggers an "unknown and
+    // unstable feature" warning from rustc even though LLVM accepts it.
+    //
+    // FSTART_EXTRA_RUSTFLAGS (if set) is appended — CI uses this for
+    // -Dwarnings to catch generated-code regressions.
+    let mut rustflags = String::from("-Zub-checks=no");
+    if let Ok(extra) = std::env::var("FSTART_EXTRA_RUSTFLAGS") {
+        rustflags.push(' ');
+        rustflags.push_str(&extra);
+    }
+    cmd.env("RUSTFLAGS", &rustflags);
 
     // Pass board RON path to build.rs
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());

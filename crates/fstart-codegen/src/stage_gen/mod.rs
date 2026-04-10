@@ -243,12 +243,16 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::BlockDevice; });
     }
 
-    // Import MemoryController trait only if this stage uses DramInit
-    // (and thus calls detected_size_bytes() on the DRAM controller).
+    // Import MemoryController trait when DramInit + LoadNextStage are both
+    // present — LoadNextStage calls detected_size_bytes() on the DRAM
+    // controller to pass the runtime-detected size to the next stage.
     let uses_dram_init = capabilities
         .iter()
         .any(|c| matches!(c, Capability::DramInit { .. }));
-    if uses_dram_init {
+    let uses_load_next_stage = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::LoadNextStage { .. }));
+    if uses_dram_init && uses_load_next_stage {
         tokens.extend(quote! { use fstart_services::MemoryController; });
     }
 
@@ -283,6 +287,13 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::PciRootBus; });
     }
 
+    // Import BusDevice trait when any device has a parent (bus child).
+    // BusDevice provides new_on_bus() used by child device construction.
+    let has_bus_children = devices.iter().any(|d| d.parent.is_some());
+    if has_bus_children {
+        tokens.extend(quote! { use fstart_services::device::BusDevice; });
+    }
+
     let has_framebuffer = devices
         .iter()
         .any(|d| d.services.iter().any(|s| s.as_str() == "Framebuffer"));
@@ -308,32 +319,19 @@ fn generate_imports(
         }
     }
 
-    // Import boot media type based on the BootMedia capability variant.
+    // Import boot media concrete type based on the BootMedia capability variant.
+    // The BootMedia *trait* is not imported — generated code passes the
+    // concrete type to fstart_capabilities functions which are generic over
+    // `impl BootMedia`, so the trait doesn't need to be in scope here.
     match get_boot_medium(capabilities) {
         Some(BootMedium::MemoryMapped { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::MemoryMapped; });
-            // Import the BootMedia trait so as_slice() / read_at() are
-            // callable in FFS loading code (PayloadLoad, SigVerify, etc.).
-            if needs_ffs(capabilities) {
-                tokens.extend(quote! { use fstart_services::BootMedia; });
-            }
         }
         Some(BootMedium::Device { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::BlockDeviceMedia; });
-            // Import the BootMedia trait so read_at() is callable in the
-            // anchor scan and FFS loading code.
-            if needs_ffs(capabilities) {
-                tokens.extend(quote! { use fstart_services::BootMedia; });
-            }
         }
         Some(BootMedium::AutoDevice { .. }) => {
             tokens.extend(quote! { use fstart_services::boot_media::BlockDeviceMedia; });
-            // AutoDevice generates a BlockDevice dispatch enum and
-            // wraps it in BlockDeviceMedia. BootMedia trait needed for
-            // anchor scan and FFS loading.
-            if needs_ffs(capabilities) {
-                tokens.extend(quote! { use fstart_services::BootMedia; });
-            }
         }
         None => {}
     }
@@ -873,7 +871,7 @@ fn generate_fstart_main(
 
     quote! {
         #[no_mangle]
-        #[allow(unreachable_code, unused_variables)]
+        #[allow(unreachable_code, unused_variables, unused_mut)]
         pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
             #suppress_unused
             #body
