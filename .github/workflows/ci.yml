@@ -207,7 +207,7 @@ jobs:
         include:
           - board: qemu-riscv64
             firmware: payloads/fw_dynamic.bin
-            kernel: payloads/vmlinux-riscv64
+            kernel: payloads/Image-riscv64
             memory: 1G
           - board: qemu-aarch64
             firmware: payloads/bl31.bin
