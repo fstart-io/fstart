@@ -73,7 +73,6 @@ jobs:
   # -----------------------------------------------------------------------
   build-boards:
     runs-on: ubuntu-latest
-    continue-on-error: ${{ contains(fromJSON('["qemu-aarch64-uefi","qemu-sbsa"]'), matrix.board) }}
     strategy:
       fail-fast: false
       matrix:
