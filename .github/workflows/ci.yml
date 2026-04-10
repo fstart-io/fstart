@@ -156,8 +156,6 @@ jobs:
   # -----------------------------------------------------------------------
   qemu-smoke:
     runs-on: ubuntu-latest
-    # aarch64-multi: stage-load writes binary FFS data through the UART.
-    continue-on-error: ${{ matrix.board == 'qemu-aarch64-multi' }}
     strategy:
       fail-fast: false
       matrix:
