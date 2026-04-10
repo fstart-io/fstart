@@ -144,28 +144,16 @@ pub fn run(
                     "cortex-a72".to_string(),
                     "-nographic".to_string(),
                 ];
-                // AArch64 virt: use pflash for FFS images (multi-stage
-                // boards that XIP from flash and read the FFS anchor
-                // via volatile). -bios works for small monolithic
-                // binaries but doesn't properly back the pflash device,
-                // so volatile reads of the patched anchor return stale
-                // (pre-patch) data.
+                // AArch64 virt: use -bios for FFS images.  QEMU loads
+                // the -bios file into pflash0 AND enters firmware boot
+                // mode (DTB at RAM base, PSCI conduit setup, proper
+                // EL3 initialization).  Using raw pflash without -bios
+                // skips the PSCI conduit, which breaks TF-A BL31 boot.
                 //
-                // Detect FFS images by the .ffs extension (set by
-                // assemble). Pflash bank 0 is 64 MiB on ARM virt.
-                let is_ffs = binary
-                    .extension()
-                    .is_some_and(|ext| ext == "ffs" || ext == "pflash");
-                if is_ffs {
-                    let pflash_size = 64 * 1024 * 1024; // 64 MiB — virt flash0
-                    let pflash_path = create_pflash_image(binary, pflash_size)?;
-                    args.extend([
-                        "-drive".to_string(),
-                        format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
-                    ]);
-                } else {
-                    args.extend(["-bios".to_string(), binary.display().to_string()]);
-                }
+                // The flat binary FFS packing (preserving section
+                // alignment gaps) ensures the anchor is at its
+                // link-time VMA even with -bios.
+                args.extend(["-bios".to_string(), binary.display().to_string()]);
                 // Bochs VBE display — only for boards that use a framebuffer
                 // (CrabEFI UEFI payload). Non-VGA PCI device (class 0x0380)
                 // with MMIO registers in BAR2.
