@@ -80,28 +80,32 @@ fn assemble_impl(
     match &config.stages {
         StageLayout::Monolithic(mono) => {
             let stage = &build_result.stages[0];
-            let segments = parse_elf_segments(&stage.path, Compression::None)?;
 
-            log_stage_segments("stage", &stage.path, &segments);
-
-            // Monolithic stages use the board config load_addr as a fallback,
-            // but ELF-parsed segments already have correct p_paddr values.
-            // Sanity-check that the entry point matches expectations.
-            let elf_data = fs::read(&stage.path)
-                .map_err(|e| format!("failed to read {}: {e}", stage.path.display()))?;
-            let elf = Elf::parse(&elf_data)
-                .map_err(|e| format!("failed to parse {}: {e}", stage.path.display()))?;
-            if elf.entry != mono.load_addr {
-                eprintln!(
-                    "[fstart] note: ELF entry {:#x} differs from board load_addr {:#x}",
-                    elf.entry, mono.load_addr,
-                );
+            // Log the ELF segment breakdown for diagnostics.
+            if let Ok(segs) = parse_elf_segments(&stage.path, Compression::None) {
+                log_stage_segments("stage", &stage.path, &segs);
             }
+
+            // Use the flat binary (.bin) to preserve alignment gaps
+            // between sections (e.g., .text -> .fstart.anchor -> .rodata).
+            // ELF segment parsing packs segments contiguously, shifting the
+            // anchor relative to its link-time VMA — fatal for XIP boards
+            // that read the anchor via volatile at the linked address.
+            let bin_data = fs::read(&stage.run_path)
+                .map_err(|e| format!("failed to read {}: {e}", stage.run_path.display()))?;
 
             ro_files.push(InputFile {
                 name: "stage".to_string(),
                 file_type: FileType::StageCode,
-                segments,
+                segments: vec![InputSegment {
+                    name: ".flat".to_string(),
+                    kind: SegmentKind::Code,
+                    data: bin_data,
+                    mem_size: None,
+                    load_addr: mono.load_addr,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
             });
         }
         StageLayout::MultiStage(_stages) => {
