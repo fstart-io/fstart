@@ -110,12 +110,34 @@ fn assemble_impl(
                     // The bootblock must be uncompressed — it executes
                     // directly from flash/SRAM and contains the anchor
                     // placeholder that gets patched in-place.
-                    let segments = parse_elf_segments(&stage_bin.path, Compression::None)?;
-                    log_stage_segments(&stage_bin.name, &stage_bin.path, &segments);
+                    //
+                    // Use the flat binary (.bin) rather than ELF segment
+                    // parsing. The flat binary preserves alignment gaps
+                    // between sections (e.g., .text -> .fstart.anchor ->
+                    // .rodata), which is critical for XIP boards where
+                    // the firmware reads the anchor at its link-time VMA.
+                    // ELF segment parsing packs segments contiguously,
+                    // losing alignment padding and causing the anchor to
+                    // shift relative to its link address.
+                    let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
+                        format!("failed to read {}: {e}", stage_bin.run_path.display())
+                    })?;
+                    log_stage_segments(&stage_bin.name, &stage_bin.path, &{
+                        // Still parse ELF for the log message (segment breakdown)
+                        parse_elf_segments(&stage_bin.path, Compression::None).unwrap_or_default()
+                    });
                     ro_files.push(InputFile {
                         name: stage_bin.name.clone(),
                         file_type: FileType::StageCode,
-                        segments,
+                        segments: vec![InputSegment {
+                            name: ".flat".to_string(),
+                            kind: SegmentKind::Code,
+                            data: bin_data,
+                            mem_size: None,
+                            load_addr: stage_bin.load_addr,
+                            compression: Compression::None,
+                            flags: SegmentFlags::CODE,
+                        }],
                     });
                 } else {
                     // Subsequent stages are stored as flat binaries (the
