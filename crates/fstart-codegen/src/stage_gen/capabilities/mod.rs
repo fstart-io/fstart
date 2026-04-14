@@ -418,42 +418,40 @@ pub(super) fn generate_boot_media(
     halt: &TokenStream,
 ) -> TokenStream {
     match medium {
+        BootMedium::MemoryMapped {
+            ram_copy_addr: Some(ram_addr),
+            ..
+        } => {
+            // Copy FFS from flash to RAM before operating on it.
+            //
+            // This is used on platforms where flash-mapped MMIO is slow
+            // (e.g., x86_64 with code-model=large) or where the flash
+            // doesn't support true XIP. The board RON specifies the RAM
+            // destination via `ram_copy_addr`.
+            let ram_addr_lit = hex_addr(*ram_addr);
+            quote! {
+                // Copy FFS from flash to RAM for fast access
+                fstart_log::info!("copying FFS from flash {:#x} to RAM {:#x} ({} bytes)...",
+                    FLASH_BASE, #ram_addr_lit, FLASH_SIZE);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        FLASH_BASE as *const u8,
+                        #ram_addr_lit as *mut u8,
+                        FLASH_SIZE as usize,
+                    );
+                }
+                fstart_log::info!("FFS copied to RAM");
+                let boot_media = unsafe {
+                    MemoryMapped::from_raw_addr(#ram_addr_lit, FLASH_SIZE as usize)
+                };
+            }
+        }
         BootMedium::MemoryMapped { .. } => {
-            if config.platform == Platform::X86_64 {
-                // x86_64 with code-model=large: copy FFS from flash to RAM
-                // before operating on it. The large code model makes every
-                // function call indirect (movabsq+callq), which is very slow
-                // for the tight loops in postcard deserialization and LZ4
-                // decompression. By copying the FFS to RAM first, the data
-                // pointers are in low memory and core::ptr::copy / memcpy
-                // operate on fast RAM instead of flash-mapped MMIO.
-                //
-                // The copy destination is above the kernel load address to
-                // avoid overlap. The kernel gets loaded later and overwrites
-                // only its own region.
-                quote! {
-                    // Copy FFS from flash to RAM for fast access
-                    let _ffs_ram_addr: u64 = 0x2000000; // 32 MiB — above typical kernel
-                    fstart_log::info!("copying FFS from flash {:#x} to RAM {:#x} ({} bytes)...",
-                        FLASH_BASE, _ffs_ram_addr, FLASH_SIZE);
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            FLASH_BASE as *const u8,
-                            _ffs_ram_addr as *mut u8,
-                            FLASH_SIZE as usize,
-                        );
-                    }
-                    fstart_log::info!("FFS copied to RAM");
-                    let boot_media = unsafe {
-                        MemoryMapped::from_raw_addr(_ffs_ram_addr, FLASH_SIZE as usize)
-                    };
-                }
-            } else {
-                quote! {
-                    let boot_media = unsafe {
-                        MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)
-                    };
-                }
+            // Direct XIP from flash-mapped memory (ARM, RISC-V, etc.)
+            quote! {
+                let boot_media = unsafe {
+                    MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)
+                };
             }
         }
         BootMedium::Device { name, offset, size } => {
@@ -782,19 +780,18 @@ pub(super) fn generate_acpi_load(device_name: &str, halt: &TokenStream) -> Token
     quote! {
         // AcpiLoad: load ACPI tables from external provider
         {
-            use fstart_services::acpi_provider::AcpiTableProvider;
-            // Allocate 256 KiB buffer for ACPI tables.
+            // 256 KiB buffer for ACPI tables — persists for the OS lifetime.
             // QEMU Q35 produces ~128 KiB of tables plus RSDP/alignment.
             static mut _ACPI_LOAD_BUF: [u8; 256 * 1024] = [0u8; 256 * 1024];
-            let acpi_buf = unsafe { &mut _ACPI_LOAD_BUF };
-            let rsdp = #dev_var.load_acpi_tables(acpi_buf)
-                .unwrap_or_else(|_| {
-                    fstart_log::error!("AcpiLoad: failed to load ACPI tables from '{}'", stringify!(#dev_var));
-                    #halt
-                });
-            // Store RSDP address for PayloadLoad
-            _acpi_rsdp_addr = rsdp;
-            fstart_log::info!("ACPI tables loaded, RSDP at {:#x}", rsdp);
+            let acpi_buf = unsafe { &raw mut _ACPI_LOAD_BUF };
+            _acpi_rsdp_addr = fstart_capabilities::acpi_load(
+                &#dev_var,
+                unsafe { &mut *acpi_buf },
+                stringify!(#dev_var),
+            ).unwrap_or_else(|_| {
+                fstart_log::error!("AcpiLoad: failed");
+                #halt
+            });
         }
     }
 }
@@ -810,19 +807,16 @@ pub(super) fn generate_memory_detect(device_name: &str, halt: &TokenStream) -> T
     quote! {
         // MemoryDetect: discover system memory layout at runtime
         {
-            use fstart_services::memory_detect::MemoryDetector;
-            _e820_count = #dev_var.detect_memory(&mut _e820_entries)
-                .unwrap_or_else(|_| {
-                    fstart_log::error!("MemoryDetect: failed to detect memory from '{}'", stringify!(#dev_var));
-                    #halt
-                });
-            _total_ram = #dev_var.total_ram_bytes()
-                .unwrap_or_else(|_| {
-                    fstart_log::error!("MemoryDetect: failed to get total RAM from '{}'", stringify!(#dev_var));
-                    #halt
-                });
-            fstart_log::info!("Detected {} MiB RAM, {} e820 entries",
-                _total_ram >> 20, _e820_count);
+            let (count, total) = fstart_capabilities::memory_detect(
+                &#dev_var,
+                &mut _e820_entries,
+                stringify!(#dev_var),
+            ).unwrap_or_else(|_| {
+                fstart_log::error!("MemoryDetect: failed");
+                #halt
+            });
+            _e820_count = count;
+            _total_ram = total;
         }
     }
 }

@@ -246,6 +246,11 @@ fn build_one_stage(
         // allow kernel code model with fast PC-relative calls.
         //
         // Force curve25519-dalek to use the scalar ("serial") backend.
+        // This must be in RUSTFLAGS (not Cargo.toml) because:
+        // 1. Cargo features can't set --cfg on transitive dependencies
+        // 2. .cargo/config.toml would affect host builds too
+        // 3. This only applies to x86_64-unknown-none (firmware target)
+        //
         // The auto-detected "simd" backend (AVX2) causes LLVM crashes
         // when compiling for x86_64-unknown-none: adding +avx2 globally
         // breaks compiler_builtins (f16/f128 getCopyFromParts mismatch),

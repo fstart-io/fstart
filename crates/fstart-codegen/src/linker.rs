@@ -10,19 +10,27 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
 
     let arch = config.platform.linker_arch();
 
-    // Determine load address, stack size, and optional data address from stage config
-    let (load_addr, stack_size, data_addr) = match (&config.stages, stage_name) {
-        (StageLayout::Monolithic(mono), _) => {
-            (mono.load_addr, mono.stack_size as u64, mono.data_addr)
-        }
+    // Determine load address, stack size, and optional data/page-table addresses from stage config
+    let (load_addr, stack_size, data_addr, page_table_addr) = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => (
+            mono.load_addr,
+            mono.stack_size as u64,
+            mono.data_addr,
+            mono.page_table_addr,
+        ),
         (StageLayout::MultiStage(stages), Some(name)) => {
             if let Some(stage) = stages.iter().find(|s| s.name.as_str() == name) {
-                (stage.load_addr, stage.stack_size as u64, stage.data_addr)
+                (
+                    stage.load_addr,
+                    stage.stack_size as u64,
+                    stage.data_addr,
+                    stage.page_table_addr,
+                )
             } else {
-                (0x8000_0000, 0x10000, None) // fallback
+                (0x8000_0000, 0x10000, None, None) // fallback
             }
         }
-        _ => (0x8000_0000, 0x10000, None),
+        _ => (0x8000_0000, 0x10000, None, None),
     };
 
     // Check if load_addr falls within a ROM region (XIP) or RAM region
@@ -110,6 +118,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             ram_length,
             stack_size,
             data_addr,
+            page_table_addr,
             needs_egon_header,
             config.platform,
         );
@@ -170,6 +179,7 @@ fn generate_xip_layout(
     ram_length: u64,
     stack_size: u64,
     data_addr: Option<u64>,
+    page_table_addr: Option<(u64, u64)>,
     needs_egon_header: bool,
     platform: Platform,
 ) {
@@ -185,12 +195,20 @@ fn generate_xip_layout(
         "    ROM (rx)  : ORIGIN = {rom_origin:#x}, LENGTH = {rom_length:#x}"
     )
     .unwrap();
-    if platform == Platform::X86_64 {
-        // x86_64: page tables (0x1000) and IDT (0x7000) live below the
-        // main RAM region. A separate LOW region prevents the linker
-        // from merging them into the BSS PT_LOAD segment (which would
-        // produce a wrapped MemSiz spanning 0x10000→0x1000).
-        writeln!(out, "    LOW (rwx) : ORIGIN = 0x1000, LENGTH = 0x7000").unwrap();
+    if let Some((pt_origin, pt_length)) = page_table_addr {
+        // Page tables and IDT live in a separate LOW region below the
+        // main RAM. This prevents the linker from merging them into
+        // the BSS PT_LOAD segment (which would produce a wrapped MemSiz).
+        //
+        // On QEMU x86_64 this is conventional memory at 0x1000-0x8000.
+        // On real Intel/AMD platforms with proper flash mapping, page
+        // tables can live in ROM — set page_table_addr to None and the
+        // .pagetables section goes in the normal RAM region.
+        writeln!(
+            out,
+            "    LOW (rwx) : ORIGIN = {pt_origin:#x}, LENGTH = {pt_length:#x}"
+        )
+        .unwrap();
     }
     writeln!(
         out,
@@ -253,7 +271,7 @@ fn generate_xip_layout(
     writeln!(out, "    }} > RAM\n").unwrap();
 
     // Page tables: isolated from BSS to prevent corruption.
-    write_page_tables_section(out, "RAM", platform);
+    write_page_tables_section(out, "RAM", platform, page_table_addr.is_some());
 
     // Stack: grows downward from top of RAM region.
     write_stack(out, stack_size, "RAM");
@@ -333,7 +351,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
-        write_page_tables_section(out, "RWDATA", platform);
+        write_page_tables_section(out, "RWDATA", platform, false);
         write_stack(out, stack_size, "RWDATA");
         writeln!(out, "}}").unwrap();
     } else {
@@ -354,7 +372,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
-        write_page_tables_section(out, "RAM", platform);
+        write_page_tables_section(out, "RAM", platform, false);
         write_stack(out, stack_size, "RAM");
         writeln!(out, "}}").unwrap();
     }
@@ -428,18 +446,20 @@ fn write_allwinner_egon_section(out: &mut String, region: &str) {
 /// that must be 4 KiB aligned. Placing them in BSS risks corruption if
 /// any adjacent static (e.g., CrabEFI's firmware state) overflows.
 /// This section is NOLOAD and cleared by the entry stub before use.
-fn write_page_tables_section(out: &mut String, region: &str, platform: Platform) {
-    if platform == Platform::X86_64 {
-        // x86_64: page tables and IDT are placed at fixed low addresses
-        // (0x1000) to keep them separate from BSS/stack. Placing them
-        // below BSS prevents stack overflow from corrupting the page
-        // tables (which causes hard-to-debug triple faults).
+fn write_page_tables_section(
+    out: &mut String,
+    region: &str,
+    platform: Platform,
+    has_low_region: bool,
+) {
+    if has_low_region {
+        // Page tables and IDT placed in the LOW region (separate from
+        // BSS/stack). Used on platforms where page tables must live at
+        // specific addresses (e.g., QEMU x86_64 conventional memory).
         //
-        // Layout:
-        //   0x1000..0x7000  page tables (6 pages, PML4+PDPT+4×PDT)
-        //   0x7000..0x8000  IDT (1 page, 256 entries × 16 bytes)
-        // Place in LOW region so the linker creates a separate PT_LOAD
-        // segment, preventing merge with BSS (which would wrap MemSiz).
+        // Layout (for x86_64):
+        //   page tables: 6 pages (PML4 + PDPT + 4×PDT)
+        //   IDT: 1 page (256 entries × 16 bytes)
         writeln!(out, "    .page_tables (NOLOAD) : {{").unwrap();
         writeln!(out, "        _page_tables_start = .;").unwrap();
         writeln!(

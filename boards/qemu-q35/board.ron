@@ -47,7 +47,7 @@
             // Stage code (.text + .rodata + .ltext) occupies ~640 KiB at the
             // start of flash; 1 MiB gives headroom for growth.
             // On x86, codegen copies FFS to RAM before use (fast LZ4/SHA).
-            BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000 )),
+            BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000, ram_copy_addr: Some(0x2000000) )),
             SigVerify,
             DriverInit,
             PayloadLoad,
@@ -56,6 +56,11 @@
         stack_size: 0x80000,
         heap_size: None,
         data_addr: Some(0x100000),
+        // Page tables (6 pages) + IDT (1 page) at conventional memory
+        // 0x1000-0x8000. On QEMU x86_64, RAM below 1 MiB is available
+        // but not usable for BSS/stack (too small for debug builds).
+        // Real Intel/AMD platforms may put page tables in ROM or CAR.
+        page_table_addr: Some((0x1000, 0x7000)),
     )),
     security: (
         signing_algorithm: Ed25519,

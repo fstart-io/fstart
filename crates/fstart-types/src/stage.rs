@@ -42,6 +42,16 @@ pub struct MonolithicConfig {
     /// (e.g., QEMU places the DTB at the base of RAM on AArch64).
     #[serde(default)]
     pub data_addr: Option<u64>,
+    /// Separate low-memory region for page tables and IDT (x86_64).
+    ///
+    /// On x86_64, page tables and the IDT must be in writable RAM at
+    /// addresses below the main data region. When set, the linker
+    /// creates a separate LOW memory region at `(addr, size)` for
+    /// `.pagetables` and `.idt` sections. When unset, these sections
+    /// go in the normal RAM region (or in ROM for platforms that
+    /// support ROM-resident page tables).
+    #[serde(default)]
+    pub page_table_addr: Option<(u64, u64)>,
 }
 
 /// Configuration for one stage in a multi-stage build.
@@ -70,6 +80,11 @@ pub struct StageConfig {
     /// the base of RAM.
     #[serde(default)]
     pub data_addr: Option<u64>,
+    /// Separate low-memory region for page tables and IDT (x86_64).
+    ///
+    /// Same semantics as [`MonolithicConfig::page_table_addr`].
+    #[serde(default)]
+    pub page_table_addr: Option<(u64, u64)>,
 }
 
 /// Where a stage executes from.
@@ -295,6 +310,18 @@ pub enum BootMedium {
         base: u64,
         /// Size of the mapped flash region in bytes.
         size: u64,
+        /// Optional RAM address to copy FFS data before accessing it.
+        ///
+        /// On x86_64 with code-model=large, FFS operations (postcard
+        /// deserialization, LZ4 decompression) are significantly faster
+        /// when operating on RAM rather than flash-mapped MMIO. When
+        /// set, generated code copies `size` bytes from `base` to this
+        /// address before constructing the `MemoryMapped` accessor.
+        ///
+        /// On platforms with true XIP (ARM, RISC-V), this should be
+        /// `None` — the flash is accessed directly.
+        #[serde(default)]
+        ram_copy_addr: Option<u64>,
     },
     /// A named device that implements `BlockDevice`.
     ///
