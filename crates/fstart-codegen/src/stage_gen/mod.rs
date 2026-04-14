@@ -134,7 +134,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         }
     }
 
-    if let Some(BootMedium::MemoryMapped { base, size }) = get_boot_medium(capabilities) {
+    if let Some(BootMedium::MemoryMapped { base, size, .. }) = get_boot_medium(capabilities) {
         tokens.extend(generate_flash_constants(*base, *size));
     }
 

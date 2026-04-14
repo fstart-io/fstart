@@ -152,6 +152,52 @@ pub fn late_driver_init_complete(device_count: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// AcpiLoad
+// ---------------------------------------------------------------------------
+
+/// Load ACPI tables from an external provider (e.g., QEMU fw_cfg).
+///
+/// Calls `load_acpi_tables()` on the given device, writing tables into
+/// `buffer`. Returns the RSDP physical address on success.
+///
+/// This function lives in firmware library code — codegen just calls it
+/// with the appropriate device reference and buffer.
+pub fn acpi_load(
+    provider: &impl fstart_services::acpi_provider::AcpiTableProvider,
+    buffer: &mut [u8],
+    device_name: &str,
+) -> Result<u64, fstart_services::ServiceError> {
+    use fstart_services::acpi_provider::AcpiTableProvider;
+    let rsdp = provider.load_acpi_tables(buffer)?;
+    fstart_log::info!("ACPI tables loaded, RSDP at {:#x}", rsdp);
+    Ok(rsdp)
+}
+
+// ---------------------------------------------------------------------------
+// MemoryDetect
+// ---------------------------------------------------------------------------
+
+/// Detect system memory layout at runtime (e.g., e820 from QEMU fw_cfg).
+///
+/// Calls `detect_memory()` and `total_ram_bytes()` on the given device.
+/// Populates `entries` with memory map entries and returns
+/// `(entry_count, total_ram_bytes)`.
+///
+/// This function lives in firmware library code — codegen just calls it
+/// with the appropriate device reference and entry buffer.
+pub fn memory_detect(
+    detector: &impl fstart_services::memory_detect::MemoryDetector,
+    entries: &mut [fstart_services::memory_detect::E820Entry],
+    device_name: &str,
+) -> Result<(usize, u64), fstart_services::ServiceError> {
+    use fstart_services::memory_detect::MemoryDetector;
+    let count = detector.detect_memory(entries)?;
+    let total = detector.total_ram_bytes()?;
+    fstart_log::info!("Detected {} MiB RAM, {} e820 entries", total >> 20, count);
+    Ok((count, total))
+}
+
+// ---------------------------------------------------------------------------
 // SigVerify
 // ---------------------------------------------------------------------------
 
