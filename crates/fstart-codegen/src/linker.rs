@@ -214,7 +214,6 @@ fn generate_xip_layout(
     }
 
     // Code in ROM.
-    // Code in ROM
     writeln!(out, "    .text : {{").unwrap();
     writeln!(out, "        KEEP(*(.text.entry))").unwrap();
     writeln!(out, "        *(.text .text.*)").unwrap();
