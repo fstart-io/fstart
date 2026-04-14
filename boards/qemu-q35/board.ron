@@ -5,6 +5,11 @@
 // UART: legacy ISA NS16550 at I/O port 0x3F8 (COM1).
 // ACPI: loaded from QEMU via fw_cfg table-loader protocol.
 // PCI: ECAM at 0xB0000000 (256 buses).
+//
+// TODO: add PCI root bridge (PciEcam) and VGA device once the heap
+// allocator is integrated. Linux does its own PCI enumeration so
+// this isn't blocking for LinuxBoot, but is needed for firmware-level
+// PCI resource allocation (e.g., for a framebuffer console).
 (
     name: "qemu-q35",
     platform: X86_64,
