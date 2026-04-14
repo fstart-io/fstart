@@ -276,15 +276,15 @@ fn generate_xip_layout(
     // Stack: grows downward from top of RAM region.
     write_stack(out, stack_size, "RAM");
 
-    // x86 entry code layout: the CPU starts at 0xFFFFFFF0 (reset vector).
-    // The .text.entry section (16-bit GDT load, mode transitions) must be
-    // within 64KB of the reset vector (CS base = 0xFFFF0000 at reset).
-    // We place it at (ROM_END - 64K) and the reset vector at (ROM_END - 16).
-    // x86: the reset vector at 0xFFFFFFF0 contains a near 16-bit jmp to
-    // _start16bit. Both .reset and .text.entry must be in the last 64K
-    // of the ROM (the initial CS segment at 0xFFFF0000). We merge them
-    // into a single output section pinned to (ROM_END - 64K).
-    if platform == Platform::X86_64 {
+    // x86 bootblock entry code: only the first stage (bootblock) has the
+    // 16-bit reset vector and mode transition code. Later stages in a
+    // multi-stage build start in 64-bit long mode (jumped to by the
+    // bootblock or previous stage) and don't need .x86boot or .reset.
+    //
+    // The CPU starts at 0xFFFFFFF0 (reset vector). The .x86boot section
+    // (16-bit GDT load, mode transitions) must be within 64KB of the
+    // reset vector (CS base = 0xFFFF0000 at reset).
+    if platform == Platform::X86_64 && is_first_stage {
         let boot_block_addr = rom_origin + rom_length - 0x1000; // last 4K
         let reset_addr = rom_origin + rom_length - 16;
         writeln!(out).unwrap();
