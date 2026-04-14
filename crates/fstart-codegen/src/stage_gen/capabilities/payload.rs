@@ -126,16 +126,16 @@ fn generate_platform_boot_protocol(
             }
         }
         Platform::X86_64 => {
+            let bootargs_str = payload.bootargs.as_deref().unwrap_or("console=ttyS0");
             quote! {
                 fstart_log::info!("booting Linux (x86_64)...");
                 fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
                 // x86 Linux boot protocol: fill zero page and jump.
-                // The boot_linux function drops to 32-bit protected mode,
-                // sets %esi = zero_page, and jumps to code32_start.
                 fstart_platform::boot_linux(
                     #kernel_addr as u64,
                     _acpi_rsdp_addr,
                     &_e820_entries[.._e820_count],
+                    #bootargs_str,
                 );
             }
         }

@@ -35,7 +35,7 @@ pub(super) fn serialize_to_tokens<T: Serialize>(value: &T) -> TokenStream {
 ///
 /// Returns tokens like:
 /// ```text
-/// Ns16550Config { base_addr: 0x10000000, clock_freq: 3686400u32, baud_rate: 115200u32 }
+/// Ns16550Config { regs: Mmio(0x10000000, 0, 0), clock_freq: 3686400u32, baud_rate: 115200u32 }
 /// ```
 ///
 /// This delegates to [`DriverInstance::serialize_config`] with a custom

@@ -276,14 +276,19 @@ impl AcpiTableProvider for QemuFwCfg {
                     // Read file data into buffer
                     self.read_file(file_sel, &mut buffer[cursor..cursor + file_size as usize]);
 
-                    if alloc_count < allocs.len() {
-                        allocs[alloc_count] = Some(AllocEntry {
-                            name,
-                            offset: cursor,
-                            size: file_size as usize,
-                        });
-                        alloc_count += 1;
+                    if alloc_count >= allocs.len() {
+                        fstart_log::error!(
+                            "fw_cfg: too many ACPI allocations (max {})",
+                            allocs.len()
+                        );
+                        return Err(ServiceError::InvalidParam);
                     }
+                    allocs[alloc_count] = Some(AllocEntry {
+                        name,
+                        offset: cursor,
+                        size: file_size as usize,
+                    });
+                    alloc_count += 1;
                     cursor += file_size as usize;
                 }
 
