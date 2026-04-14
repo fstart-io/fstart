@@ -444,37 +444,67 @@ pub fn boot_linux(kernel_addr: u64, rsdp_addr: u64, e820_entries: &[E820Entry]) 
     let params = unsafe { &mut *(ZERO_PAGE as *mut [u8; 4096]) };
     params.fill(0);
 
-    // The loaded image is a raw bzImage: setup_header + protected-mode kernel.
-    // Read setup_sects (offset 0x1F1) from the setup header at kernel_addr
-    // to find where the protected-mode kernel starts within the image.
-    let setup_header = unsafe { core::slice::from_raw_parts(kernel_addr as *const u8, 0x4000) };
-    let setup_sects = setup_header[0x1F1] as u64;
-    let pm_kernel_offset = (setup_sects + 1) * 512;
+    // The loaded image is a raw bzImage: real-mode boot sector + setup
+    // header, followed by the protected-mode (compressed) kernel.
+    //
+    // The boot_params struct mirrors the bzImage layout: the setup_header
+    // lives at offset 0x1F1 within boot_params, exactly where it sits in
+    // the on-disk image. We must copy the ENTIRE setup header (not just
+    // the first 0x200 bytes) so the kernel can read critical fields like
+    // kernel_alignment (0x230), init_size (0x260), xloadflags (0x236),
+    // relocatable_kernel (0x234), etc.
+    let bzimage = unsafe { core::slice::from_raw_parts(kernel_addr as *const u8, 0x80_0000) };
 
-    // Copy the original setup header (first 0x200 bytes) into boot_params
-    // so Linux can read its own setup fields (protocol version, cmdline
-    // size, xloadflags, etc.). Then overlay our fields on top.
-    let hdr_len = 0x200usize.min(setup_header.len());
-    params[..hdr_len].copy_from_slice(&setup_header[..hdr_len]);
+    // Read setup_sects (offset 0x1F1) to determine the size of the
+    // real-mode portion of the bzImage.
+    let setup_sects = bzimage[0x1F1] as u64;
+    let setup_size = (setup_sects + 1) * 512; // bytes of real-mode code + header
+    let pm_kernel_offset = setup_size;
 
-    // Override fields that the bootloader must set
+    // Copy the entire real-mode setup area into boot_params.
+    // The setup area can be up to ~60 sectors (30 KiB) but boot_params
+    // is only 4 KiB. The setup_header fields that the kernel reads are
+    // all within the first 0x290 bytes (end of the header area, before
+    // the e820 table at 0x2D0). Copy up to 0x290 bytes from the bzImage
+    // to ensure ALL setup header fields are present.
+    let copy_end = (setup_size as usize).min(0x290).min(bzimage.len());
+    params[..copy_end].copy_from_slice(&bzimage[..copy_end]);
+
+    // Override fields that the bootloader must set.
     params[0x210] = 0xFF; // type_of_loader = unregistered
     params[0x211] |= 0x01; // loadflags |= LOADED_HIGH
 
-    // Relocate the protected-mode kernel to pref_address (from setup header
-    // offset 0x258), which is properly aligned to kernel_alignment. The PM
-    // kernel sits at kernel_addr + pm_kernel_offset within the loaded
-    // bzImage; move it to pref_address so the decompressor's alignment
-    // requirements are satisfied. Since pref_address (0x1000000) < source
-    // (0x1004000), a forward copy is safe (no overlap corruption).
-    let pref_address = u64::from_le_bytes(setup_header[0x258..0x260].try_into().unwrap_or([0; 8]));
+    // heap_end_ptr (offset 0x224): end of the setup heap relative to
+    // the start of the real-mode code. Set to end of boot_params.
+    // This is loadflags.CAN_USE_HEAP dependent; set it defensively.
+    params[0x211] |= 0x80; // loadflags |= CAN_USE_HEAP
+    params[0x224..0x226].copy_from_slice(&0xFE00u16.to_le_bytes());
+
+    // Relocate the protected-mode kernel to pref_address.
+    //
+    // pref_address (offset 0x258) is where the kernel prefers to be
+    // loaded, typically 0x1000000, aligned to kernel_alignment (2 MiB).
+    // The PM kernel sits at kernel_addr + pm_kernel_offset within the
+    // loaded bzImage. Move it to pref_address so the decompressor's
+    // alignment requirements are satisfied.
+    //
+    // startup_64 uses RIP-relative addressing (leaq startup_32(%rip))
+    // to discover its own address. The PM kernel must be at an aligned
+    // address so the kernel's relocation calculation works correctly.
+    let pref_address = u64::from_le_bytes(bzimage[0x258..0x260].try_into().unwrap_or([0; 8]));
     let pm_kernel_src = kernel_addr + pm_kernel_offset;
-    let pm_kernel_size = setup_header.len() as u64 * 512 - pm_kernel_offset; // approximate
-                                                                             // Use syssize (offset 0x1F4) for the actual protected-mode code size
+
+    // syssize (offset 0x1F4): protected-mode code size in 16-byte
+    // paragraphs. This is the exact amount to copy.
     let syssize =
-        u32::from_le_bytes(setup_header[0x1F4..0x1F8].try_into().unwrap_or([0; 4])) as u64 * 16; // syssize is in 16-byte paragraphs
+        u32::from_le_bytes(bzimage[0x1F4..0x1F8].try_into().unwrap_or([0; 4])) as u64 * 16;
     let copy_len = syssize;
+
     let pm_kernel_addr = if pref_address != 0 && pref_address != pm_kernel_src {
+        // SAFETY: pref_address (0x1000000) is below pm_kernel_src
+        // (kernel_load_addr + setup_size), so a forward copy is safe
+        // (no overlap corruption). Both addresses are in identity-mapped
+        // RAM covered by our page tables.
         unsafe {
             core::ptr::copy(
                 pm_kernel_src as *const u8,
@@ -487,13 +517,13 @@ pub fn boot_linux(kernel_addr: u64, rsdp_addr: u64, e820_entries: &[E820Entry]) 
         pm_kernel_src
     };
 
-    // code32_start — set to where the protected-mode kernel now sits
+    // code32_start (offset 0x214): tell the kernel where the PM code is.
     params[0x214..0x218].copy_from_slice(&(pm_kernel_addr as u32).to_le_bytes());
 
     // vid_mode (offset 0x1FA) — 0xFFFF = "normal" (no video mode change)
     params[0x1FA..0x1FC].copy_from_slice(&0xFFFFu16.to_le_bytes());
 
-    // cmd_line_ptr (offset 0x228) — write the command line to CMD_LINE addr
+    // cmd_line_ptr (offset 0x228)
     let cmdline = unsafe { &mut *(CMD_LINE as *mut [u8; 4096]) };
     let bootargs = b"console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8\0";
     cmdline[..bootargs.len()].copy_from_slice(bootargs);
@@ -516,31 +546,66 @@ pub fn boot_linux(kernel_addr: u64, rsdp_addr: u64, e820_entries: &[E820Entry]) 
     let entry64 = pm_kernel_addr + 0x200;
 
     fstart_log::info!("  setup_sects: {}", setup_sects);
-    fstart_log::info!("  pm_kernel @ {:#x}", pm_kernel_addr);
+    fstart_log::info!(
+        "  pm_kernel @ {:#x} (syssize {:#x})",
+        pm_kernel_addr,
+        syssize
+    );
+    fstart_log::info!("  pref_address: {:#x}", pref_address);
     fstart_log::info!("  entry64 @ {:#x}", entry64);
     fstart_log::info!("  zero_page @ {:#x}", ZERO_PAGE);
     fstart_log::info!("  rsdp @ {:#x}", rsdp_addr);
     fstart_log::info!("  e820 count: {}", e820_entries.len());
 
+    // Log critical setup header fields for debugging.
+    let init_size = u32::from_le_bytes(params[0x260..0x264].try_into().unwrap_or([0; 4]));
+    let kernel_alignment = u32::from_le_bytes(params[0x230..0x234].try_into().unwrap_or([0; 4]));
+    let xloadflags = u16::from_le_bytes(params[0x236..0x238].try_into().unwrap_or([0; 2]));
+    fstart_log::info!("  init_size: {:#x}", init_size);
+    fstart_log::info!("  kernel_alignment: {:#x}", kernel_alignment);
+    fstart_log::info!("  xloadflags: {:#x}", xloadflags);
+
     // Jump to the kernel's 64-bit entry.
-    // The 64-bit boot protocol expects:
+    //
+    // The 64-bit boot protocol (boot protocol 2.12+, XLF_KERNEL_64) expects:
     //   - CPU in 64-bit long mode with paging enabled
     //   - Identity-mapped page tables covering all of physical memory
-    //     that the kernel might access during early boot
+    //     the kernel might access during early boot (we map 4 GiB)
     //   - %rsi = physical address of the boot_params (zero page)
-    //   - Interrupts disabled
+    //   - Interrupts disabled (cli)
     //   - GDT with __BOOT_CS (0x10) and __BOOT_DS (0x18) valid
     //
     // Our firmware already satisfies all of these: we're in long mode
     // with identity-mapped 2 MiB pages over 4 GiB, interrupts are
-    // disabled (cli in _start16bit), and we have a valid GDT.
+    // disabled (cli in _start16bit), and we have the correct GDT.
     //
     // SAFETY: all zero page fields have been populated above.
-    // kernel_addr points to a previously loaded bzImage.
+    // kernel_addr points to a previously loaded and relocated bzImage.
     unsafe {
         core::arch::asm!(
+            // Consume the input operands FIRST — the compiler may have
+            // placed them in any GPR, and the xor sequence below would
+            // destroy them if we zeroed first.
+            "cli",
             "mov rsi, {zero_page}",
-            "jmp {entry}",
+            "mov rdi, {entry}",
+            // Now zero all other GPRs to give the kernel a clean slate.
+            // rsi = boot_params, rdi = entry (consumed by jmp below).
+            // Leave rsp as-is — kernel sets its own stack.
+            "xor eax, eax",
+            "xor ebx, ebx",
+            "xor ecx, ecx",
+            "xor edx, edx",
+            "xor ebp, ebp",
+            "xor r8d, r8d",
+            "xor r9d, r9d",
+            "xor r10d, r10d",
+            "xor r11d, r11d",
+            "xor r12d, r12d",
+            "xor r13d, r13d",
+            "xor r14d, r14d",
+            "xor r15d, r15d",
+            "jmp rdi",
             zero_page = in(reg) ZERO_PAGE,
             entry = in(reg) entry64,
             options(noreturn),
