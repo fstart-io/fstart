@@ -331,7 +331,7 @@ fn lay_out_file(
     file: &InputFile,
     region_base: u32,
 ) -> Result<RegionEntry, String> {
-    let mut segments: heapless::Vec<Segment, 4> = heapless::Vec::new();
+    let mut segments: heapless::Vec<Segment, 8> = heapless::Vec::new();
     let mut digest_input: Vec<u8> = Vec::new();
 
     let entry_offset = image.len() as u32 - region_base;
