@@ -150,6 +150,20 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::AcpiLoad { .. } if !console_inited => {
+                return Some(
+                    "AcpiLoad capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::MemoryDetect { .. } if !console_inited => {
+                return Some(
+                    "MemoryDetect capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
             _ => {}
         }
     }

@@ -125,6 +125,20 @@ fn generate_platform_boot_protocol(
                 fstart_platform::boot_linux(#kernel_addr as u64, #dtb_addr);
             }
         }
+        Platform::X86_64 => {
+            quote! {
+                fstart_log::info!("booting Linux (x86_64)...");
+                fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
+                // x86 Linux boot protocol: fill zero page and jump.
+                // The boot_linux function drops to 32-bit protected mode,
+                // sets %esi = zero_page, and jumps to code32_start.
+                fstart_platform::boot_linux(
+                    #kernel_addr as u64,
+                    _acpi_rsdp_addr,
+                    &_e820_entries[.._e820_count],
+                );
+            }
+        }
     }
 }
 
@@ -388,7 +402,7 @@ fn generate_payload_load_uefi(
             Platform::Aarch64 | Platform::Riscv64 => {
                 quote! { fstart_platform::boot_dtb_addr() }
             }
-            Platform::Armv7 => quote! { 0u64 },
+            Platform::Armv7 | Platform::X86_64 => quote! { 0u64 },
         }
     };
 
@@ -402,7 +416,7 @@ fn generate_payload_load_uefi(
                     unsafe { fstart_capabilities::fdt_blob_from_addr(_fdt_addr) };
             }
         }
-        Platform::Armv7 => quote! {
+        Platform::Armv7 | Platform::X86_64 => quote! {
             let _fdt_addr: u64 = 0;
             let _fdt_blob: Option<&[u8]> = None;
         },

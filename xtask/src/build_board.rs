@@ -108,7 +108,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     // boot ROM loads raw binary from SD/SPI/eMMC.
     let needs_flat_binary = matches!(
         config.platform,
-        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7
+        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7 | Platform::X86_64
     );
 
     let soc_format = config.soc_image_format;
@@ -239,12 +239,25 @@ fn build_one_stage(
     //
     // Note: +strict-align is NOT set here — the ARM target specs
     // (armv7a-none-eabi, aarch64-unknown-none) already include it by
-    // default.  Passing it via -Ctarget-feature triggers an "unknown and
+    // default. Passing it via -Ctarget-feature triggers an "unknown and
     // unstable feature" warning from rustc even though LLVM accepts it.
-    //
+    let mut rustflags = if target.starts_with("x86_64") {
+        // x86_64 firmware: static relocation, large code model.
+        // Large model is needed because ROM at the top of 4 GiB and RAM/BSS
+        // can be ~4 GiB apart, exceeding small/medium/kernel model ±2 GiB
+        // limits.
+        //
+        // Force curve25519-dalek to use the scalar ("serial") backend.
+        // The auto-detected "simd" backend (AVX2) causes LLVM crashes when
+        // compiling for x86_64-unknown-none.
+        "-Zub-checks=no -Crelocation-model=static -Ccode-model=large \
+         --cfg curve25519_dalek_backend=\"serial\""
+            .to_string()
+    } else {
+        "-Zub-checks=no".to_string()
+    };
     // FSTART_EXTRA_RUSTFLAGS (if set) is appended — CI uses this for
     // -Dwarnings to catch generated-code regressions.
-    let mut rustflags = String::from("-Zub-checks=no");
     if let Ok(extra) = std::env::var("FSTART_EXTRA_RUSTFLAGS") {
         rustflags.push(' ');
         rustflags.push_str(&extra);
@@ -599,6 +612,28 @@ fn capability_features(
         features.push("smbios".to_string());
     }
 
+    // AcpiLoad needs the fw_cfg driver and x86-boot support
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }))
+    {
+        features.push("acpi-load".to_string());
+    }
+
+    // MemoryDetect needs the memory-detect feature
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MemoryDetect { .. }))
+    {
+        features.push("memory-detect".to_string());
+    }
+
+    // NS16550 PIO mode needs the pio feature propagated
+    if config.platform == Platform::X86_64 {
+        features.push("ns16550-pio".to_string());
+        features.push("x86-boot".to_string());
+    }
+
     features
 }
 
@@ -620,7 +655,7 @@ fn stage_uses_pci(capabilities: &[Capability]) -> bool {
 fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
-        .any(|c| matches!(c, Capability::AcpiPrepare))
+        .any(|c| matches!(c, Capability::AcpiPrepare | Capability::AcpiLoad { .. }))
 }
 
 /// Check if the board uses CrabEFI as a UEFI payload.

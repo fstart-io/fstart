@@ -99,6 +99,11 @@ pub mod bochs_display {
     pub use fstart_driver_bochs_display::BochsDisplayConfig;
 }
 
+#[cfg(feature = "qemu-fw-cfg")]
+pub mod qemu_fw_cfg {
+    pub use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -228,6 +233,10 @@ pub enum DriverInstance {
     /// Bochs VBE display (QEMU bochs-display, PCI MMIO mode).
     #[cfg(feature = "bochs-display")]
     BochsDisplay(bochs_display::BochsDisplayConfig),
+
+    /// QEMU fw_cfg device — provides ACPI tables and e820 memory map.
+    #[cfg(feature = "qemu-fw-cfg")]
+    QemuFwCfg(qemu_fw_cfg::QemuFwCfgConfig),
 }
 
 impl DriverInstance {
@@ -430,6 +439,16 @@ impl DriverInstance {
                 compatible: &["bochs-display", "qemu-stdvga"],
                 has_acpi: false,
             },
+            #[cfg(feature = "qemu-fw-cfg")]
+            Self::QemuFwCfg(_) => &DriverMeta {
+                name: "qemu-fw-cfg",
+                type_name: "QemuFwCfg",
+                module_path: "fstart_driver_qemu_fw_cfg",
+                config_type: "QemuFwCfgConfig",
+                services: &["AcpiTableProvider", "MemoryDetector"],
+                compatible: &["qemu,fw-cfg"],
+                has_acpi: false,
+            },
         }
     }
 
@@ -504,6 +523,8 @@ impl DriverInstance {
             Self::PciEcam(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "bochs-display")]
             Self::BochsDisplay(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "qemu-fw-cfg")]
+            Self::QemuFwCfg(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

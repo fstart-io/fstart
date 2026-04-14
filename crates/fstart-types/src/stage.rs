@@ -178,6 +178,35 @@ pub enum Capability {
     /// 4/16/17/19/32/127) from the board RON's `smbios` config section.
     /// Does not require a heap — writes directly to the target address.
     SmBiosPrepare,
+    /// Load ACPI tables from an external provider device.
+    ///
+    /// Calls the referenced device's `AcpiTableProvider` implementation
+    /// to load pre-built ACPI tables into memory. Used when the platform
+    /// provides ACPI tables externally (e.g., QEMU's fw_cfg device)
+    /// rather than generating them from the board RON.
+    ///
+    /// The loaded RSDP address is stored for the payload boot protocol
+    /// (e.g., x86 zero page, or UEFI system table).
+    ///
+    /// For platforms that generate their own ACPI tables, use
+    /// `AcpiPrepare` instead.
+    AcpiLoad {
+        /// Device name implementing `AcpiTableProvider` (e.g., "fw_cfg0")
+        device: HString<32>,
+    },
+    /// Detect system memory layout at runtime.
+    ///
+    /// Calls the referenced device's `MemoryDetector` implementation
+    /// to discover the memory map. On QEMU this reads e820 entries from
+    /// the fw_cfg device. On real hardware, a future implementation
+    /// might read SPD data and perform memory training.
+    ///
+    /// Results are stored for later use by the boot protocol (e.g.,
+    /// x86 zero page e820 table, or FDT `/memory` node updates).
+    MemoryDetect {
+        /// Device name implementing `MemoryDetector` (e.g., "fw_cfg0")
+        device: HString<32>,
+    },
     /// Return to the BROM's FEL (USB recovery) mode.
     ///
     /// Restores the saved BROM state (SP, LR, CPSR, SCTLR, VBAR) from

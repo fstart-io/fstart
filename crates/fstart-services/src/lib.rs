@@ -11,6 +11,7 @@
 
 #![no_std]
 
+pub mod acpi_provider;
 pub mod block;
 pub mod boot_media;
 pub mod clock;
@@ -20,6 +21,7 @@ pub mod framebuffer;
 pub mod gpio;
 pub mod i2c;
 pub mod memory_controller;
+pub mod memory_detect;
 pub mod pci;
 pub mod spi;
 pub mod timer;
