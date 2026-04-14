@@ -17,17 +17,14 @@
             // Debug builds with code-model=large need ~512 KiB stack.
             ( name: "workram", base: 0x00100000, size: 0x00F00000, kind: Ram ),
         ],
-        flash_base: Some(0xFF800000),
-        flash_size: Some(0x00800000),
     ),
     devices: [
         (
             name: "uart0",
             driver: Ns16550((
-                base_addr: 0x3F8,
+                regs: Pio(0x3F8),
                 clock_freq: 1843200,
                 baud_rate: 115200,
-                access_mode: Pio,
             )),
             services: ["Console"],
         ),

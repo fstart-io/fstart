@@ -433,7 +433,12 @@ pub fn jump_to(addr: u64) -> ! {
 /// - `kernel_addr`: physical address of the loaded kernel (typically `0x100000`)
 /// - `rsdp_addr`: physical address of the ACPI RSDP (from AcpiLoad)
 /// - `e820_entries`: slice of e820 memory map entries (from MemoryDetect)
-pub fn boot_linux(kernel_addr: u64, rsdp_addr: u64, e820_entries: &[E820Entry]) -> ! {
+pub fn boot_linux(
+    kernel_addr: u64,
+    rsdp_addr: u64,
+    e820_entries: &[E820Entry],
+    bootargs: &str,
+) -> ! {
     // The zero page is at a well-known location in conventional memory.
     const ZERO_PAGE: u64 = 0x90000;
     const CMD_LINE: u64 = 0x91000;
@@ -525,8 +530,10 @@ pub fn boot_linux(kernel_addr: u64, rsdp_addr: u64, e820_entries: &[E820Entry]) 
 
     // cmd_line_ptr (offset 0x228)
     let cmdline = unsafe { &mut *(CMD_LINE as *mut [u8; 4096]) };
-    let bootargs = b"console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8\0";
-    cmdline[..bootargs.len()].copy_from_slice(bootargs);
+    let args_bytes = bootargs.as_bytes();
+    let copy_len = args_bytes.len().min(4095); // leave room for NUL
+    cmdline[..copy_len].copy_from_slice(&args_bytes[..copy_len]);
+    cmdline[copy_len] = 0; // NUL terminator
     params[0x228..0x22C].copy_from_slice(&(CMD_LINE as u32).to_le_bytes());
 
     // ACPI RSDP address (offset 0x070, protocol 2.14+)
