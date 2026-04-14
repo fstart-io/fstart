@@ -248,8 +248,16 @@ fn build_one_stage(
         // limits.
         //
         // Force curve25519-dalek to use the scalar ("serial") backend.
-        // The auto-detected "simd" backend (AVX2) causes LLVM crashes when
-        // compiling for x86_64-unknown-none.
+        // This must be in RUSTFLAGS (not Cargo.toml) because:
+        // 1. Cargo features can't set --cfg on transitive dependencies
+        // 2. .cargo/config.toml would affect host builds too
+        // 3. This only applies to x86_64-unknown-none (firmware target)
+        //
+        // The auto-detected "simd" backend (AVX2) causes LLVM crashes
+        // when compiling for x86_64-unknown-none: adding +avx2 globally
+        // breaks compiler_builtins (f16/f128 getCopyFromParts mismatch),
+        // and without it LLVM can't lower AVX2 intrinsics. The scalar
+        // backend is correct and sufficient for firmware signature verify.
         "-Zub-checks=no -Crelocation-model=static -Ccode-model=large \
          --cfg curve25519_dalek_backend=\"serial\""
             .to_string()

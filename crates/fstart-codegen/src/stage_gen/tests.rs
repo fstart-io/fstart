@@ -51,6 +51,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
             stack_size: 0x10000,
             heap_size: None,
             data_addr: None,
+            page_table_addr: None,
         }),
         security: SecurityConfig {
             signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -166,6 +167,7 @@ fn test_sig_verify_generates_call() {
     let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
         base: 0x8000_0000,
         size: 0x40_0000,
+        ram_copy_addr: None,
     }));
     let _ = caps.push(Capability::SigVerify);
     let parsed = test_parsed_board(caps);
@@ -207,6 +209,7 @@ fn test_sig_verify_with_flash_base_generates_constants() {
     let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
         base: 0x0,
         size: 0x800_0000,
+        ram_copy_addr: None,
     }));
     let _ = caps.push(Capability::SigVerify);
     let parsed = test_parsed_board(caps);
@@ -235,6 +238,7 @@ fn test_stage_load_generates_call() {
     let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
         base: 0x2000_0000,
         size: 0x200_0000,
+        ram_copy_addr: None,
     }));
     let _ = caps.push(Capability::StageLoad {
         next_stage: heapless::String::try_from("main").unwrap(),
@@ -269,6 +273,7 @@ fn test_stage_load_with_flash_base_generates_real_call() {
     let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
         base: 0x8000_0000,
         size: 0x40_0000,
+        ram_copy_addr: None,
     }));
     let _ = caps.push(Capability::StageLoad {
         next_stage: heapless::String::try_from("main").unwrap(),
@@ -415,6 +420,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
             stack_size: 0x10000,
             heap_size: None,
             data_addr: None,
+            page_table_addr: None,
         }),
         security: SecurityConfig {
             signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -844,6 +850,7 @@ fn test_flexible_multi_driver_parsed_board(
             stack_size: 0x10000,
             heap_size: None,
             data_addr: None,
+            page_table_addr: None,
         }),
         security: SecurityConfig {
             signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -1150,6 +1157,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
             let _ = v.push(Capability::BootMedia(BootMedium::MemoryMapped {
                 base: 0x2000_0000,
                 size: 0x200_0000,
+                ram_copy_addr: None,
             }));
             let _ = v.push(Capability::SigVerify);
             let _ = v.push(Capability::StageLoad {
@@ -1162,6 +1170,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         heap_size: None,
         runs_from: RunsFrom::Ram,
         data_addr: None,
+        page_table_addr: None,
     });
     let _ = stages.push(StageConfig {
         name: HString::try_from("main").unwrap(),
@@ -1179,6 +1188,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         heap_size: None,
         runs_from: RunsFrom::Ram,
         data_addr: None,
+        page_table_addr: None,
     });
 
     let config = BoardConfig {
@@ -1361,6 +1371,7 @@ fn test_stage_ending_with_payload_load_no_completion() {
     let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
         base: 0x2000_0000,
         size: 0x200_0000,
+        ram_copy_addr: None,
     }));
     let _ = caps.push(Capability::PayloadLoad);
     let parsed = test_parsed_board(caps);
