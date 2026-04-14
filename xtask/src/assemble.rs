@@ -3,10 +3,11 @@
 //! Reads a board config, collects built binaries, and assembles them into
 //! a signed FFS firmware image using the fstart-ffs builder.
 //!
-//! Stage ELFs are parsed directly — each PT_LOAD segment becomes a separate
-//! FFS segment with its own load address, kind, and flags. This avoids
-//! `llvm-objcopy` entirely and correctly preserves `.data` (initialized
-//! statics), `.rodata`, and BSS information.
+//! Stage flat binaries (`.bin` files produced by `llvm-objcopy`) are
+//! embedded as single FFS segments. This preserves alignment gaps between
+//! sections (e.g., `.text` → `.fstart.anchor` → `.rodata`) which is
+//! critical for XIP boards that read the anchor at its link-time VMA.
+//! ELF parsing is retained only for diagnostic logging.
 
 use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, InputSegment};
 use fstart_types::ffs::{
@@ -72,9 +73,9 @@ fn assemble_impl(
 
     // Build the list of input files from the built stages.
     //
-    // Each stage ELF is parsed directly: PT_LOAD segments become FFS
-    // segments with correct load addresses, kinds (code/rodata/data/bss),
-    // and permission flags. No llvm-objcopy needed.
+    // Each stage is packaged as a flat binary (.bin from objcopy) to
+    // preserve alignment gaps between sections.  ELF parsing is
+    // retained only for diagnostic logging.
     let mut ro_files = Vec::new();
 
     match &config.stages {
@@ -126,10 +127,15 @@ fn assemble_impl(
                     let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
-                    log_stage_segments(&stage_bin.name, &stage_bin.path, &{
-                        // Still parse ELF for the log message (segment breakdown)
-                        parse_elf_segments(&stage_bin.path, Compression::None).unwrap_or_default()
-                    });
+                    // Still parse ELF for the log message (segment breakdown)
+                    match parse_elf_segments(&stage_bin.path, Compression::None) {
+                        Ok(segs) => log_stage_segments(&stage_bin.name, &stage_bin.path, &segs),
+                        Err(err) => eprintln!(
+                            "[fstart] warning: failed to parse ELF for diagnostics ({}): {}",
+                            stage_bin.path.display(),
+                            err,
+                        ),
+                    }
                     ro_files.push(InputFile {
                         name: stage_bin.name.clone(),
                         file_type: FileType::StageCode,
