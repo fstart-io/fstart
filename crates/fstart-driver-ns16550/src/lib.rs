@@ -34,6 +34,15 @@
 //! Init sequence is an exact match of U-Boot `ns16550_init()` +
 //! `ns16550_setbrg()` (drivers/serial/ns16550.c).
 //!
+//! ## Register access mode (`access_mode`)
+//!
+//! The `access_mode` config selects between memory-mapped and port I/O access:
+//!   - `Mmio` (default): Memory-mapped I/O via `read_volatile`/`write_volatile`.
+//!     Used by all non-x86 platforms and MMIO-mapped x86 UARTs.
+//!   - `Pio`: x86 port I/O via `in`/`out` instructions.  Used by legacy
+//!     PC UARTs (COM1 at 0x3F8, COM2 at 0x2F8, etc.).  Requires the `pio`
+//!     feature on this crate.
+//!
 //! Compatible: `"ns16550a"`, `"ns16550"`, `"snps,dw-apb-uart"`,
 //!             `"allwinner,sun7i-a20-uart"`.
 
@@ -109,6 +118,26 @@ register_bitfields! [u8,
 // Config & driver
 // ---------------------------------------------------------------------------
 
+/// Register access mode: memory-mapped or port I/O.
+///
+/// Selects the bus transaction mechanism used to reach the UART registers.
+/// MMIO uses `read_volatile`/`write_volatile`; PIO uses x86 `in`/`out`
+/// instructions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AccessMode {
+    /// Memory-mapped I/O (all platforms).
+    Mmio,
+    /// x86 port I/O via `in`/`out` instructions.
+    /// Requires the `pio` feature on this crate.
+    Pio,
+}
+
+impl Default for AccessMode {
+    fn default() -> Self {
+        Self::Mmio
+    }
+}
+
 /// Typed configuration for the NS16550 driver.
 ///
 /// The `reg_shift` field controls the address stride between registers:
@@ -119,11 +148,16 @@ register_bitfields! [u8,
 ///   - `1` (default) -> byte access (`sb`/`lb`)
 ///   - `4` -> 32-bit word access (`sw`/`lw`), for DW APB UARTs
 ///
+/// The `access_mode` field selects MMIO or port I/O:
+///   - `Mmio` (default) -> memory-mapped register access
+///   - `Pio` -> x86 port I/O (`in`/`out` instructions)
+///
 /// Serde defaults ensure backward compatibility: existing board RON
-/// files without `reg_shift`/`reg_width` get byte-stride byte-access.
+/// files without `reg_shift`/`reg_width`/`access_mode` get MMIO
+/// byte-stride byte-access.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Ns16550Config {
-    /// MMIO base address of the register block.
+    /// MMIO base address or I/O port base of the register block.
     pub base_addr: u64,
     /// Input clock frequency in Hz.
     pub clock_freq: u32,
@@ -137,19 +171,26 @@ pub struct Ns16550Config {
     /// Default 0 means "auto": uses 4 when reg_shift >= 2, else 1.
     #[serde(default)]
     pub reg_width: u8,
+    /// Access mode: MMIO (default) or PIO (x86 port I/O).
+    #[serde(default)]
+    pub access_mode: AccessMode,
 }
 
-/// NS16550 UART driver — covers NS16550A, DW APB UART, and sunxi UART.
+/// NS16550 UART driver — covers NS16550A, DW APB UART, sunxi UART,
+/// and x86 legacy port-I/O UARTs.
 ///
-/// Register access uses width-aware MMIO (`read_reg`/`write_reg`) with
-/// tock-registers `LocalRegisterCopy` for typed bitfield operations.
+/// Register access uses width-aware MMIO or port I/O (`read_reg`/`write_reg`)
+/// with tock-registers `LocalRegisterCopy` for typed bitfield operations.
 /// The `reg_shift` controls address spacing; `reg_width` controls
-/// the bus transaction width (byte or 32-bit word).
+/// the bus transaction width (byte or 32-bit word); `access_mode` selects
+/// between MMIO and PIO.
 pub struct Ns16550 {
     base: usize,
     shift: u8,
     /// Effective I/O width: 1 = byte, 4 = word.
     width: u8,
+    /// Access mode: MMIO or PIO.
+    access_mode: AccessMode,
     clock_freq: u32,
     baud_rate: u32,
 }
@@ -166,41 +207,72 @@ impl Ns16550 {
         self.base + (index << self.shift)
     }
 
-    /// Read a register (respecting `reg_width`).
+    /// Read a register (respecting `access_mode` and `reg_width`).
     ///
-    /// When `width == 4`, performs a 32-bit read and returns the low byte.
-    /// When `width == 1`, performs a byte read.
+    /// - PIO mode: byte-width `in` from I/O port.
+    /// - MMIO mode, `width == 4`: 32-bit read, returns low byte.
+    /// - MMIO mode, `width == 1`: byte read.
     #[inline(always)]
     fn read_reg(&self, index: usize) -> u8 {
         let addr = self.addr(index);
-        if self.width == 4 {
-            // SAFETY: self.base + offset is a valid MMIO register address provided
-            // by the board config. When width == 4, alignment is guaranteed by
-            // reg_shift >= 2 (validated in new()).
-            (unsafe { fstart_mmio::read32(addr as *const u32) }) as u8
-        } else {
-            // SAFETY: self.base + offset is a valid MMIO register address provided
-            // by the board config. Byte access has no alignment requirement.
-            unsafe { fstart_mmio::read8(addr as *const u8) }
+        match self.access_mode {
+            #[cfg(feature = "pio")]
+            AccessMode::Pio => {
+                // SAFETY: I/O port address provided by board config.
+                unsafe { fstart_pio::inb(addr as u16) }
+            }
+            #[cfg(not(feature = "pio"))]
+            AccessMode::Pio => {
+                // PIO not compiled in — should not be reachable (constructor rejects).
+                0
+            }
+            AccessMode::Mmio => {
+                if self.width == 4 {
+                    // SAFETY: self.base + offset is a valid MMIO register address
+                    // provided by the board config. When width == 4, alignment is
+                    // guaranteed by reg_shift >= 2 (validated in new()).
+                    (unsafe { fstart_mmio::read32(addr as *const u32) }) as u8
+                } else {
+                    // SAFETY: self.base + offset is a valid MMIO register address
+                    // provided by the board config. Byte access has no alignment
+                    // requirement.
+                    unsafe { fstart_mmio::read8(addr as *const u8) }
+                }
+            }
         }
     }
 
-    /// Write a register (respecting `reg_width`).
+    /// Write a register (respecting `access_mode` and `reg_width`).
     ///
-    /// When `width == 4`, zero-extends to 32-bit and performs a word write.
-    /// When `width == 1`, performs a byte write.
+    /// - PIO mode: byte-width `out` to I/O port.
+    /// - MMIO mode, `width == 4`: zero-extends to 32-bit, word write.
+    /// - MMIO mode, `width == 1`: byte write.
     #[inline(always)]
     fn write_reg(&self, index: usize, val: u8) {
         let addr = self.addr(index);
-        if self.width == 4 {
-            // SAFETY: self.base + offset is a valid MMIO register address provided
-            // by the board config. When width == 4, alignment is guaranteed by
-            // reg_shift >= 2 (validated in new()).
-            unsafe { fstart_mmio::write32(addr as *mut u32, val as u32) }
-        } else {
-            // SAFETY: self.base + offset is a valid MMIO register address provided
-            // by the board config. Byte access has no alignment requirement.
-            unsafe { fstart_mmio::write8(addr as *mut u8, val) }
+        match self.access_mode {
+            #[cfg(feature = "pio")]
+            AccessMode::Pio => {
+                // SAFETY: I/O port address provided by board config.
+                unsafe { fstart_pio::outb(addr as u16, val) }
+            }
+            #[cfg(not(feature = "pio"))]
+            AccessMode::Pio => {
+                // PIO not compiled in — should not be reachable (constructor rejects).
+            }
+            AccessMode::Mmio => {
+                if self.width == 4 {
+                    // SAFETY: self.base + offset is a valid MMIO register address
+                    // provided by the board config. When width == 4, alignment is
+                    // guaranteed by reg_shift >= 2 (validated in new()).
+                    unsafe { fstart_mmio::write32(addr as *mut u32, val as u32) }
+                } else {
+                    // SAFETY: self.base + offset is a valid MMIO register address
+                    // provided by the board config. Byte access has no alignment
+                    // requirement.
+                    unsafe { fstart_mmio::write8(addr as *mut u8, val) }
+                }
+            }
         }
     }
 
@@ -255,7 +327,25 @@ impl Device for Ns16550 {
     type Config = Ns16550Config;
 
     fn new(config: &Ns16550Config) -> Result<Self, DeviceError> {
-        // Resolve effective I/O width: 0 = auto (word if reg_shift >= 2).
+        // PIO mode: always byte-width, ignore reg_width/reg_shift for
+        // width resolution. Port I/O UARTs are always byte-stride.
+        if config.access_mode == AccessMode::Pio {
+            #[cfg(not(feature = "pio"))]
+            return Err(DeviceError::ConfigError);
+
+            #[cfg(feature = "pio")]
+            return Ok(Self {
+                base: config.base_addr as usize,
+                shift: config.reg_shift,
+                width: 1,
+                access_mode: AccessMode::Pio,
+                clock_freq: config.clock_freq,
+                baud_rate: config.baud_rate,
+            });
+        }
+
+        // MMIO mode: resolve effective I/O width.
+        // 0 = auto (word if reg_shift >= 2).
         let width = match config.reg_width {
             0 => {
                 if config.reg_shift >= 2 {
@@ -278,6 +368,7 @@ impl Device for Ns16550 {
             base: config.base_addr as usize,
             shift: config.reg_shift,
             width,
+            access_mode: AccessMode::Mmio,
             clock_freq: config.clock_freq,
             baud_rate: config.baud_rate,
         })

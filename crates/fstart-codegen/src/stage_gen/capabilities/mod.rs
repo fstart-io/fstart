@@ -31,6 +31,8 @@ pub(super) use smbios::generate_smbios_prepare;
 #[allow(unused_imports)]
 pub(super) use stage_load::generate_anchor_scan;
 pub(super) use stage_load::generate_load_next_stage;
+// Note: generate_acpi_load and generate_memory_detect are defined in this module
+// (not in sub-modules) and are automatically visible to super.
 
 /// Generate code for the ConsoleInit capability.
 pub(super) fn generate_console_init(
@@ -417,10 +419,41 @@ pub(super) fn generate_boot_media(
 ) -> TokenStream {
     match medium {
         BootMedium::MemoryMapped { .. } => {
-            quote! {
-                let boot_media = unsafe {
-                    MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)
-                };
+            if config.platform == Platform::X86_64 {
+                // x86_64 with code-model=large: copy FFS from flash to RAM
+                // before operating on it. The large code model makes every
+                // function call indirect (movabsq+callq), which is very slow
+                // for the tight loops in postcard deserialization and LZ4
+                // decompression. By copying the FFS to RAM first, the data
+                // pointers are in low memory and core::ptr::copy / memcpy
+                // operate on fast RAM instead of flash-mapped MMIO.
+                //
+                // The copy destination is above the kernel load address to
+                // avoid overlap. The kernel gets loaded later and overwrites
+                // only its own region.
+                quote! {
+                    // Copy FFS from flash to RAM for fast access
+                    let _ffs_ram_addr: u64 = 0x2000000; // 32 MiB — above typical kernel
+                    fstart_log::info!("copying FFS from flash {:#x} to RAM {:#x} ({} bytes)...",
+                        FLASH_BASE, _ffs_ram_addr, FLASH_SIZE);
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            FLASH_BASE as *const u8,
+                            _ffs_ram_addr as *mut u8,
+                            FLASH_SIZE as usize,
+                        );
+                    }
+                    fstart_log::info!("FFS copied to RAM");
+                    let boot_media = unsafe {
+                        MemoryMapped::from_raw_addr(_ffs_ram_addr, FLASH_SIZE as usize)
+                    };
+                }
+            } else {
+                quote! {
+                    let boot_media = unsafe {
+                        MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)
+                    };
+                }
             }
         }
         BootMedium::Device { name, offset, size } => {
@@ -622,6 +655,8 @@ pub(super) fn generate_fdt_prepare(
                     // ARMv7: no DTB address saved by platform (board-specific).
                     // Use src_dtb_addr in the board RON instead.
                     Platform::Armv7 => quote! { 0u64 },
+                    // x86_64: no DTB from platform — use src_dtb_addr or 0.
+                    Platform::X86_64 => quote! { 0u64 },
                 }
             };
             let dtb_dst = hex_addr(payload.dtb_addr.unwrap_or(0));
@@ -733,6 +768,62 @@ fn generate_dram_expressions(
 pub(super) fn generate_late_driver_init() -> TokenStream {
     quote! {
         fstart_capabilities::late_driver_init_complete(0);
+    }
+}
+
+/// Generate code for the AcpiLoad capability.
+///
+/// Calls the device's `AcpiTableProvider::load_acpi_tables()` method to
+/// load pre-built ACPI tables (e.g., from QEMU fw_cfg) into a heap buffer.
+/// The buffer is leaked so tables persist for the OS. The RSDP physical
+/// address is stored in `_acpi_rsdp_addr` for later use by PayloadLoad.
+pub(super) fn generate_acpi_load(device_name: &str, halt: &TokenStream) -> TokenStream {
+    let dev_var = format_ident!("{}", device_name);
+    quote! {
+        // AcpiLoad: load ACPI tables from external provider
+        {
+            use fstart_services::acpi_provider::AcpiTableProvider;
+            // Allocate 256 KiB buffer for ACPI tables.
+            // QEMU Q35 produces ~128 KiB of tables plus RSDP/alignment.
+            static mut _ACPI_LOAD_BUF: [u8; 256 * 1024] = [0u8; 256 * 1024];
+            let acpi_buf = unsafe { &mut _ACPI_LOAD_BUF };
+            let rsdp = #dev_var.load_acpi_tables(acpi_buf)
+                .unwrap_or_else(|_| {
+                    fstart_log::error!("AcpiLoad: failed to load ACPI tables from '{}'", stringify!(#dev_var));
+                    #halt
+                });
+            // Store RSDP address for PayloadLoad
+            _acpi_rsdp_addr = rsdp;
+            fstart_log::info!("ACPI tables loaded, RSDP at {:#x}", rsdp);
+        }
+    }
+}
+
+/// Generate code for the MemoryDetect capability.
+///
+/// Calls the device's `MemoryDetector::detect_memory()` method to read
+/// the system memory map at runtime (e.g., e820 from QEMU fw_cfg).
+/// Results are stored in `_e820_entries` / `_e820_count` / `_total_ram`
+/// for later use by the boot protocol (x86 zero page, FDT updates, etc.).
+pub(super) fn generate_memory_detect(device_name: &str, halt: &TokenStream) -> TokenStream {
+    let dev_var = format_ident!("{}", device_name);
+    quote! {
+        // MemoryDetect: discover system memory layout at runtime
+        {
+            use fstart_services::memory_detect::MemoryDetector;
+            _e820_count = #dev_var.detect_memory(&mut _e820_entries)
+                .unwrap_or_else(|_| {
+                    fstart_log::error!("MemoryDetect: failed to detect memory from '{}'", stringify!(#dev_var));
+                    #halt
+                });
+            _total_ram = #dev_var.total_ram_bytes()
+                .unwrap_or_else(|_| {
+                    fstart_log::error!("MemoryDetect: failed to get total RAM from '{}'", stringify!(#dev_var));
+                    #halt
+                });
+            fstart_log::info!("Detected {} MiB RAM, {} e820 entries",
+                _total_ram >> 20, _e820_count);
+        }
     }
 }
 

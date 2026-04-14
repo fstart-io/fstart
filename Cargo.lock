@@ -539,6 +539,7 @@ dependencies = [
  "fstart-driver-ns16550",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
+ "fstart-driver-qemu-fw-cfg",
  "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
@@ -600,6 +601,7 @@ name = "fstart-driver-ns16550"
 version = "0.1.0"
 dependencies = [
  "fstart-mmio",
+ "fstart-pio",
  "fstart-services",
  "serde",
  "tock-registers",
@@ -627,6 +629,17 @@ dependencies = [
  "heapless",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-qemu-fw-cfg"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
@@ -785,6 +798,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-pio"
+version = "0.1.0"
+
+[[package]]
 name = "fstart-platform-aarch64"
 version = "0.1.0"
 dependencies = [
@@ -804,6 +821,16 @@ name = "fstart-platform-riscv64"
 version = "0.1.0"
 dependencies = [
  "fstart-soc-sunxi",
+]
+
+[[package]]
+name = "fstart-platform-x86_64"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "ufmt",
 ]
 
 [[package]]
@@ -849,6 +876,7 @@ dependencies = [
  "fstart-driver-ns16550",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
+ "fstart-driver-qemu-fw-cfg",
  "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
@@ -864,6 +892,7 @@ dependencies = [
  "fstart-platform-aarch64",
  "fstart-platform-armv7",
  "fstart-platform-riscv64",
+ "fstart-platform-x86_64",
  "fstart-runtime",
  "fstart-services",
  "fstart-soc-sunxi",

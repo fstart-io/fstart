@@ -102,7 +102,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     // boot ROM loads raw binary from SD/SPI/eMMC.
     let needs_flat_binary = matches!(
         config.platform,
-        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7
+        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7 | Platform::X86_64
     );
 
     let soc_format = config.soc_image_format;
@@ -231,11 +231,33 @@ fn build_one_stage(
     // adds alignment/null checks on read_volatile/write_volatile that are
     // incompatible with MMIO register access in firmware debug builds).
     //
-    // Force strict-align: the armv7a-none-eabi target spec already sets
-    // +strict-align, but we re-assert it here to ensure LLVM never emits
-    // unaligned loads/stores to MMIO addresses (device memory faults on
-    // unaligned access even when the core supports it for normal memory).
-    cmd.env("RUSTFLAGS", "-Zub-checks=no -Ctarget-feature=+strict-align");
+    // Force strict-align on ARM/RISC-V: the armv7a-none-eabi target spec
+    // already sets +strict-align, but we re-assert it here to ensure LLVM
+    // never emits unaligned loads/stores to MMIO addresses (device memory
+    // faults on unaligned access even when the core supports it for normal
+    // memory).  Not applicable to x86_64 (unaligned access is always allowed).
+    let rustflags = if target.starts_with("x86_64") {
+        // x86_64 firmware: static relocation, large code model.
+        // Large model is needed because ROM at 0xFF800000 and RAM/BSS at
+        // 0x10000 are ~4 GiB apart, exceeding small/medium/kernel model
+        // ±2 GiB limits. LTO (enabled in release profile) mitigates the
+        // indirect-call overhead by inlining across crate boundaries.
+        // Future: move BSS/stack to addresses within 2 GiB of ROM to
+        // allow kernel code model with fast PC-relative calls.
+        //
+        // Force curve25519-dalek to use the scalar ("serial") backend.
+        // The auto-detected "simd" backend (AVX2) causes LLVM crashes
+        // when compiling for x86_64-unknown-none: adding +avx2 globally
+        // breaks compiler_builtins (f16/f128 getCopyFromParts mismatch),
+        // and without it LLVM can't lower AVX2 intrinsics. The scalar
+        // backend is correct and sufficient for firmware signature verify.
+        "-Zub-checks=no -Crelocation-model=static -Ccode-model=large \
+         --cfg curve25519_dalek_backend=\"serial\""
+            .to_string()
+    } else {
+        "-Zub-checks=no -Ctarget-feature=+strict-align".to_string()
+    };
+    cmd.env("RUSTFLAGS", &rustflags);
 
     // Pass board RON path to build.rs
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
@@ -585,6 +607,28 @@ fn capability_features(
         features.push("smbios".to_string());
     }
 
+    // AcpiLoad needs the fw_cfg driver and x86-boot support
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }))
+    {
+        features.push("acpi-load".to_string());
+    }
+
+    // MemoryDetect needs the memory-detect feature
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MemoryDetect { .. }))
+    {
+        features.push("memory-detect".to_string());
+    }
+
+    // NS16550 PIO mode needs the pio feature propagated
+    if config.platform == Platform::X86_64 {
+        features.push("ns16550-pio".to_string());
+        features.push("x86-boot".to_string());
+    }
+
     features
 }
 
@@ -606,7 +650,7 @@ fn stage_uses_pci(capabilities: &[Capability]) -> bool {
 fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
-        .any(|c| matches!(c, Capability::AcpiPrepare))
+        .any(|c| matches!(c, Capability::AcpiPrepare | Capability::AcpiLoad { .. }))
 }
 
 /// Check if the board uses CrabEFI as a UEFI payload.

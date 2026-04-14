@@ -530,10 +530,9 @@ fn assemble_linux_payload(
                     data: kernel_data,
                     mem_size: None,
                     load_addr: kernel_load_addr,
-                    // TODO: make compression configurable per-board via RON
-                    // (e.g. payload.compression field). For now LZ4 is always
-                    // used — the runtime decompressor is enabled whenever FFS
-                    // is active, and smaller images benefit all targets.
+                    // LZ4 compression — the x86 FFS-to-RAM copy ensures
+                    // decompression runs on fast RAM, not flash XIP.
+                    // TODO: make compression configurable per-board via RON.
                     compression: Compression::Lz4,
                     flags: SegmentFlags::CODE,
                 }],

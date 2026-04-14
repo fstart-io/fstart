@@ -41,11 +41,12 @@ use fstart_types::{
 use crate::ron_loader::ParsedBoard;
 
 use capabilities::{
-    collect_boot_media_gated_devices, generate_acpi_prepare, generate_boot_media,
-    generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
-    generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
-    generate_memory_init, generate_payload_load, generate_pci_init, generate_return_to_fel,
-    generate_sig_verify, generate_smbios_prepare, generate_stage_load,
+    collect_boot_media_gated_devices, generate_acpi_load, generate_acpi_prepare,
+    generate_boot_media, generate_clock_init, generate_console_init, generate_dram_init,
+    generate_driver_init, generate_fdt_prepare, generate_late_driver_init,
+    generate_load_next_stage, generate_memory_detect, generate_memory_init, generate_payload_load,
+    generate_pci_init, generate_return_to_fel, generate_sig_verify, generate_smbios_prepare,
+    generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
@@ -208,6 +209,9 @@ fn generate_platform_externs(platform: Platform) -> TokenStream {
         Platform::Armv7 => {
             quote! { extern crate fstart_platform_armv7 as fstart_platform; }
         }
+        Platform::X86_64 => {
+            quote! { extern crate fstart_platform_x86_64 as fstart_platform; }
+        }
     };
     quote! {
         #platform_crate
@@ -336,6 +340,24 @@ fn generate_imports(
             }
         }
         None => {}
+    }
+
+    // AcpiLoad needs the AcpiTableProvider trait
+    let uses_acpi_load = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }));
+    if uses_acpi_load {
+        tokens.extend(quote! { use fstart_services::acpi_provider::AcpiTableProvider; });
+    }
+
+    // MemoryDetect needs the MemoryDetector trait and E820Entry type
+    let uses_memory_detect = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MemoryDetect { .. }));
+    if uses_memory_detect {
+        tokens.extend(quote! {
+            use fstart_services::memory_detect::MemoryDetector;
+        });
     }
 
     // FDT patching no longer requires alloc — the raw FDT patcher
@@ -624,6 +646,29 @@ fn generate_fstart_main(
     let halt = halt_expr(platform);
     let mut body = TokenStream::new();
 
+    // --- Pre-phase: Declare mutable state for cross-capability communication ---
+    // These variables are written by one capability and read by another (e.g.,
+    // MemoryDetect writes e820 entries, PayloadLoad reads them for the zero page).
+    let has_acpi_load = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }));
+    let has_memory_detect = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MemoryDetect { .. }));
+
+    if has_acpi_load {
+        body.extend(quote! {
+            let mut _acpi_rsdp_addr: u64 = 0;
+        });
+    }
+    if has_memory_detect {
+        body.extend(quote! {
+            let mut _e820_entries = [fstart_services::memory_detect::E820Entry::zeroed(); 128];
+            let mut _e820_count: usize = 0;
+            let mut _total_ram: u64 = 0;
+        });
+    }
+
     // --- Phase 0: Handoff deserialization (non-first stages only) ---
     // For multi-stage boards, non-first stages receive a serialized
     // StageHandoff in r0 (ARMv7) from the previous stage.
@@ -796,6 +841,14 @@ fn generate_fstart_main(
             }
             Capability::SmBiosPrepare => {
                 body.extend(generate_smbios_prepare(config));
+            }
+            Capability::AcpiLoad { device } => {
+                let dev_name = device.as_str();
+                body.extend(generate_acpi_load(dev_name, &halt));
+            }
+            Capability::MemoryDetect { device } => {
+                let dev_name = device.as_str();
+                body.extend(generate_memory_detect(dev_name, &halt));
             }
             Capability::ReturnToFel => {
                 body.extend(generate_return_to_fel(platform));

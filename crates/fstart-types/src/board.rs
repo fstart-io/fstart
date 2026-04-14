@@ -22,6 +22,8 @@ pub enum Platform {
     Aarch64,
     /// ARMv7-A (armv7a-none-eabi)
     Armv7,
+    /// x86-64 / AMD64 (x86_64-unknown-none)
+    X86_64,
 }
 
 impl Platform {
@@ -31,6 +33,7 @@ impl Platform {
             Platform::Riscv64 => "riscv64gc-unknown-none-elf",
             Platform::Aarch64 => "aarch64-unknown-none",
             Platform::Armv7 => "armv7a-none-eabi",
+            Platform::X86_64 => "x86_64-unknown-none",
         }
     }
 
@@ -40,6 +43,7 @@ impl Platform {
             Platform::Riscv64 => "riscv",
             Platform::Aarch64 => "aarch64",
             Platform::Armv7 => "arm",
+            Platform::X86_64 => "i386:x86-64",
         }
     }
 
@@ -49,6 +53,7 @@ impl Platform {
             Platform::Riscv64 => "riscv64",
             Platform::Aarch64 => "aarch64",
             Platform::Armv7 => "armv7",
+            Platform::X86_64 => "x86_64",
         }
     }
 }

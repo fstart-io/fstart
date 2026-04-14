@@ -1,7 +1,7 @@
 //! Architecture-specific utilities.
 //!
 //! Provides delay functions, processor halt, and other low-level operations
-//! that vary between CPU architectures (ARMv7-A, AArch64, RISC-V).
+//! that vary between CPU architectures (ARMv7-A, AArch64, RISC-V, x86_64).
 
 #![no_std]
 
@@ -9,7 +9,12 @@
 // udelay — microsecond delay (generic spin loop)
 // ---------------------------------------------------------------------------
 
-#[cfg(any(feature = "armv7", feature = "aarch64", feature = "riscv64"))]
+#[cfg(any(
+    feature = "armv7",
+    feature = "aarch64",
+    feature = "riscv64",
+    feature = "x86_64"
+))]
 pub fn udelay(us: u32) {
     for _ in 0..us.saturating_mul(100) {
         core::hint::spin_loop();
@@ -20,7 +25,12 @@ pub fn udelay(us: u32) {
 // mdelay — millisecond delay
 // ---------------------------------------------------------------------------
 
-#[cfg(any(feature = "armv7", feature = "aarch64", feature = "riscv64"))]
+#[cfg(any(
+    feature = "armv7",
+    feature = "aarch64",
+    feature = "riscv64",
+    feature = "x86_64"
+))]
 pub fn mdelay(ms: u32) {
     for _ in 0..ms {
         udelay(1000);
@@ -116,10 +126,21 @@ pub fn halt() -> ! {
     }
 }
 
+#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+pub fn halt() -> ! {
+    loop {
+        // SAFETY: `hlt` puts the CPU in a low-power wait state until the
+        // next interrupt. In firmware context interrupts are typically
+        // disabled, so this is effectively a permanent halt.
+        unsafe { core::arch::asm!("hlt", options(nostack, nomem, preserves_flags)) };
+    }
+}
+
 #[cfg(not(any(
     all(feature = "armv7", target_arch = "arm"),
     all(feature = "aarch64", target_arch = "aarch64"),
-    all(feature = "riscv64", target_arch = "riscv64")
+    all(feature = "riscv64", target_arch = "riscv64"),
+    all(feature = "x86_64", target_arch = "x86_64"),
 )))]
 pub fn halt() -> ! {
     loop {

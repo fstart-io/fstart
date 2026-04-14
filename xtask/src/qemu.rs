@@ -168,6 +168,75 @@ pub fn run(
                 ];
                 (find_qemu("qemu-system-arm"), args)
             }
+            Platform::X86_64 => {
+                // x86 Q35: load firmware as pflash (flash ROM at top of 4GB).
+                // QEMU Q35 maps pflash0 at the top of the 32-bit address space
+                // with the reset vector at 0xFFFFFFF0.
+                let pflash_size = 8 * 1024 * 1024; // 8 MiB flash
+                                                   // x86: the raw stage .bin has boot code at the correct
+                                                   // offsets within 8MB (reset vector at end, code at start).
+                                                   // The FFS image has the stage segments + kernel payload.
+                                                   // We overlay the FFS onto the raw binary so both the boot
+                                                   // code (end of flash) and FFS data (start of flash) are
+                                                   // present.
+                                                   //
+                                                   // binary = target/ffs/qemu-q35.ffs
+                                                   // stage_bin = target/x86_64-unknown-none/{debug,release}/fstart-stage.bin
+                let workspace = binary.parent().unwrap().parent().unwrap();
+                let profile = if binary.to_str().unwrap_or("").contains("release")
+                    || std::env::args().any(|a| a == "--release")
+                {
+                    "release"
+                } else {
+                    "debug"
+                };
+                let stage_bin = workspace
+                    .join("x86_64-unknown-none")
+                    .join(profile)
+                    .join("fstart-stage.bin");
+                let pflash_path = if stage_bin.exists() {
+                    create_x86_pflash(binary, &stage_bin, pflash_size)?
+                } else {
+                    eprintln!(
+                        "[fstart] warning: stage .bin not found at {}, using FFS directly",
+                        stage_bin.display()
+                    );
+                    create_pflash_image_aligned(binary, pflash_size, true)?
+                };
+
+                // Try KVM first, fall back to TCG if /dev/kvm is absent.
+                // -cpu max: under KVM exposes host features; under TCG
+                // enables all emulated features.
+                // KVM requires -bios (ROM mapping via EPT). pflash is backed
+                // by a block device whose MMIO semantics prevent KVM from
+                // fetching instructions — the ljmpl from the boot block to
+                // stage code at 0xFF800000 hangs. TCG software-emulates
+                // everything so pflash works fine there.
+                let use_kvm = std::fs::File::open("/dev/kvm").is_ok();
+                let mut args = vec![
+                    "-machine".to_string(),
+                    "q35".to_string(),
+                    "-accel".to_string(),
+                    if use_kvm { "kvm" } else { "tcg" }.to_string(),
+                    "-cpu".to_string(),
+                    if use_kvm { "host" } else { "max" }.to_string(),
+                    "-m".to_string(),
+                    "1G".to_string(),
+                    "-nographic".to_string(),
+                    if use_kvm { "-bios" } else { "-drive" }.to_string(),
+                    if use_kvm {
+                        pflash_path.display().to_string()
+                    } else {
+                        format!("if=pflash,format=raw,file={}", pflash_path.display())
+                    },
+                    // ISA debugcon for early debug output
+                    "-device".to_string(),
+                    "isa-debugcon,iobase=0x402,chardev=debugout".to_string(),
+                    "-chardev".to_string(),
+                    "file,id=debugout,path=/dev/stderr".to_string(),
+                ];
+                (find_qemu("qemu-system-x86_64"), args)
+            }
         }
     };
 
@@ -357,7 +426,18 @@ fn find_board_dir(binary: &Path) -> Result<PathBuf, String> {
 
 /// Create a QEMU pflash image by padding a firmware binary to the exact
 /// flash bank size. Padding uses 0xFF (the erased state of NOR flash).
-fn create_pflash_image(binary: &Path, flash_size: usize) -> Result<PathBuf, String> {
+///
+/// The `align_end` parameter controls placement within the pflash:
+/// - `false` (default, RISC-V/ARM): firmware at offset 0, padding after.
+/// - `true` (x86): firmware at end of flash, padding before. This is
+///   required because QEMU maps pflash so the LAST byte is at the top
+///   of the address space (0xFFFFFFFF on x86), and the reset vector
+///   must be at the last 16 bytes.
+fn create_pflash_image_aligned(
+    binary: &Path,
+    flash_size: usize,
+    align_end: bool,
+) -> Result<PathBuf, String> {
     let data = std::fs::read(binary).map_err(|e| format!("failed to read firmware binary: {e}"))?;
 
     if data.len() > flash_size {
@@ -369,17 +449,146 @@ fn create_pflash_image(binary: &Path, flash_size: usize) -> Result<PathBuf, Stri
     }
 
     let mut pflash = vec![0xFFu8; flash_size];
-    pflash[..data.len()].copy_from_slice(&data);
+    if align_end {
+        // x86: firmware at the END of flash (reset vector at last 16 bytes)
+        let offset = flash_size - data.len();
+        pflash[offset..].copy_from_slice(&data);
+    } else {
+        // ARM/RISC-V: firmware at the START of flash
+        pflash[..data.len()].copy_from_slice(&data);
+    }
 
     let pflash_path = binary.with_extension("pflash");
     std::fs::write(&pflash_path, &pflash)
         .map_err(|e| format!("failed to write pflash image: {e}"))?;
 
     eprintln!(
-        "[fstart] pflash image: {} ({} bytes, firmware {} bytes)",
+        "[fstart] pflash image: {} ({} bytes, firmware {} bytes{})",
         pflash_path.display(),
         flash_size,
-        data.len()
+        data.len(),
+        if align_end { ", aligned to end" } else { "" },
+    );
+
+    Ok(pflash_path)
+}
+
+/// Convenience wrapper: firmware at start of flash (ARM/RISC-V).
+fn create_pflash_image(binary: &Path, flash_size: usize) -> Result<PathBuf, String> {
+    create_pflash_image_aligned(binary, flash_size, false)
+}
+
+/// Create an x86 pflash image by overlaying the FFS image onto the raw
+/// stage binary.
+///
+/// The raw stage `.bin` (from objcopy) is a full flash-sized image with
+/// boot code at the correct offsets (reset vector at end, 16/32/64-bit
+/// entry code near end, main code at start). The FFS image contains the
+/// stage segments + kernel payload at offset 0 (mapped to flash base).
+///
+/// We start with the raw binary as the base (preserving boot code at the
+/// end) and overlay the FFS content at offset 0 (so the FFS anchor and
+/// payload are accessible via memory-mapped flash reads).
+fn create_x86_pflash(
+    ffs_image: &Path,
+    stage_bin: &Path,
+    flash_size: usize,
+) -> Result<PathBuf, String> {
+    let mut pflash =
+        std::fs::read(stage_bin).map_err(|e| format!("failed to read stage binary: {e}"))?;
+
+    if pflash.len() != flash_size {
+        // Pad or truncate to flash size
+        pflash.resize(flash_size, 0xFF);
+    }
+
+    let ffs_data =
+        std::fs::read(ffs_image).map_err(|e| format!("failed to read FFS image: {e}"))?;
+
+    if ffs_data.len() > flash_size {
+        return Err(format!(
+            "FFS image ({} bytes) exceeds flash size ({} bytes)",
+            ffs_data.len(),
+            flash_size,
+        ));
+    }
+
+    // Place FFS at offset 0x100000 (1 MiB) to avoid overwriting stage code.
+    // Stage code (.text + .rodata + .ltext with code-model=large) occupies
+    // ~640 KiB at the start of flash; 1 MiB gives headroom for growth.
+    //
+    // Flash layout (8 MiB pflash at 0xFF800000):
+    //   [0x000000..0x0FFFFF] stage code XIP (.text, .rodata, .ltext)
+    //   [0x100000..0x7FEFFF] FFS image (kernel payload, manifest, etc.)
+    //   [0x7FF000..0x7FFFFF] boot block (.x86boot + .reset)
+    //
+    // Must match the board RON BootMedia base:
+    //   flash_base + FFS_FLASH_OFFSET = 0xFF800000 + 0x100000 = 0xFF900000
+    const FFS_FLASH_OFFSET: usize = 0x100000;
+    let ffs_end = FFS_FLASH_OFFSET + ffs_data.len();
+    let bootblock_start = flash_size - 0x1000; // last 4K
+
+    if ffs_end > bootblock_start {
+        return Err(format!(
+            "FFS image ({} bytes) at offset {:#x} overlaps boot block at {:#x}",
+            ffs_data.len(),
+            FFS_FLASH_OFFSET,
+            bootblock_start,
+        ));
+    }
+
+    pflash[FFS_FLASH_OFFSET..ffs_end].copy_from_slice(&ffs_data);
+
+    // Patch the FSTART_ANCHOR in the stage code region.
+    //
+    // The assembler patches the anchor within the FFS image (at the anchor
+    // offset within the FFS). But the stage binary has its own copy of the
+    // anchor in the `.fstart.anchor` section (at a fixed flash offset).
+    // On x86, these are at different flash offsets, so we must copy the
+    // patched anchor from the FFS to the stage's anchor location.
+    //
+    // This mechanism is reusable: any x86 platform with the boot block
+    // architecture needs this anchor patching step.
+    //
+    // Find the anchor in the FFS by scanning for the FSTART01 magic.
+    let anchor_magic = b"FSTART01";
+    if let Some(ffs_anchor_off) = ffs_data
+        .windows(anchor_magic.len())
+        .position(|w| w == anchor_magic)
+    {
+        // Find the anchor in the stage binary (pflash offset 0..FFS_FLASH_OFFSET)
+        if let Some(stage_anchor_off) = pflash[..FFS_FLASH_OFFSET]
+            .windows(anchor_magic.len())
+            .position(|w| w == anchor_magic)
+        {
+            // The anchor block is 300 bytes (AnchorBlock size).
+            // Copy from FFS anchor to stage anchor.
+            let anchor_size = 300;
+            let ffs_src = ffs_anchor_off;
+            let stage_dst = stage_anchor_off;
+            if ffs_src + anchor_size <= ffs_data.len()
+                && stage_dst + anchor_size <= FFS_FLASH_OFFSET
+            {
+                pflash[stage_dst..stage_dst + anchor_size]
+                    .copy_from_slice(&ffs_data[ffs_src..ffs_src + anchor_size]);
+                eprintln!(
+                    "[fstart] x86 pflash: patched anchor at flash offset {:#x} (from FFS offset {:#x})",
+                    stage_dst, ffs_src,
+                );
+            }
+        }
+    }
+
+    let pflash_path = ffs_image.with_extension("pflash");
+    std::fs::write(&pflash_path, &pflash)
+        .map_err(|e| format!("failed to write pflash image: {e}"))?;
+
+    eprintln!(
+        "[fstart] x86 pflash: {} ({} bytes, FFS {} bytes at offset {:#x})",
+        pflash_path.display(),
+        flash_size,
+        ffs_data.len(),
+        FFS_FLASH_OFFSET,
     );
 
     Ok(pflash_path)

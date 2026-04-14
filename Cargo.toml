@@ -42,6 +42,9 @@ members = [
     "crates/fstart-acpi",
     "crates/fstart-acpi-macros",
     "crates/fstart-smbios",
+    "crates/fstart-pio",
+    "crates/fstart-platform-x86_64",
+    "crates/fstart-driver-qemu-fw-cfg",
 ]
 
 [workspace.package]
@@ -120,6 +123,9 @@ fstart-stage = { path = "crates/fstart-stage" }
 fstart-fit = { path = "crates/fstart-fit" }
 fstart-acpi = { path = "crates/fstart-acpi" }
 fstart-smbios = { path = "crates/fstart-smbios" }
+fstart-pio = { path = "crates/fstart-pio" }
+fstart-platform-x86_64 = { path = "crates/fstart-platform-x86_64" }
+fstart-driver-qemu-fw-cfg = { path = "crates/fstart-driver-qemu-fw-cfg" }
 
 [profile.dev]
 panic = "abort"
