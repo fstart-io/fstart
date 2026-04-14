@@ -613,6 +613,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-log",
  "fstart-mmio",
+ "fstart-pio",
  "fstart-services",
  "serde",
  "ufmt",

@@ -4,12 +4,8 @@
 // RAM: detected at runtime via fw_cfg e820.
 // UART: legacy ISA NS16550 at I/O port 0x3F8 (COM1).
 // ACPI: loaded from QEMU via fw_cfg table-loader protocol.
-// PCI: ECAM at 0xB0000000 (256 buses).
-//
-// TODO: add PCI root bridge (PciEcam) and VGA device once the heap
-// allocator is integrated. Linux does its own PCI enumeration so
-// this isn't blocking for LinuxBoot, but is needed for firmware-level
-// PCI resource allocation (e.g., for a framebuffer console).
+// PCI: ECAM at 0xB0000000, 256 buses. MMIO32 window below ECAM,
+//      PIO window 0xC000-0xFFFF (above legacy ISA ports).
 (
     name: "qemu-q35",
     platform: X86_64,
@@ -41,6 +37,34 @@
             )),
             services: ["AcpiTableProvider", "MemoryDetector"],
         ),
+        (
+            name: "pci0",
+            driver: PciEcam((
+                ecam_base:  0xB0000000,
+                ecam_size:  0x10000000,   // 256 MiB (256 buses)
+                mmio32_base: 0x80000000,
+                mmio32_size: 0x30000000,  // 768 MiB (0x80000000-0xAFFFFFFF)
+                mmio64_base: 0x380000000,
+                mmio64_size: 0x040000000, // 1 GiB above 4 GiB
+                pio_base:   0xC000,
+                pio_size:   0x4000,       // 0xC000-0xFFFF
+                bus_start: 0,
+                bus_end: 255,
+            )),
+            services: ["PciRootBus"],
+            children: [
+                (
+                    name: "bochs0",
+                    driver: BochsDisplay((
+                        device: 2,
+                        function: 0,
+                        width: 1024,
+                        height: 768,
+                    )),
+                    services: ["Framebuffer"],
+                ),
+            ],
+        ),
     ],
     stages: Monolithic((
         capabilities: [
@@ -48,6 +72,9 @@
             MemoryDetect( device: "fw_cfg0" ),
             MemoryInit,
             AcpiLoad( device: "fw_cfg0" ),
+            // PCI enumeration — sizes BARs, allocates MMIO/IO resources,
+            // enables devices. Must appear after MemoryInit (heap required).
+            PciInit( device: "pci0" ),
             // FFS at flash offset 0x100000 (1 MiB) — after stage code, before boot block.
             // Stage code (.text + .rodata + .ltext) occupies ~640 KiB at the
             // start of flash; 1 MiB gives headroom for growth.
@@ -59,7 +86,9 @@
         ],
         load_addr: 0xFF800000,
         stack_size: 0x80000,
-        heap_size: None,
+        // Heap for PCI device list (alloc::Vec). 256 KiB is plenty for
+        // Q35's modest bus topology (~20 devices).
+        heap_size: Some(0x40000),
         data_addr: Some(0x100000),
         // Page tables (6 pages) + IDT (1 page) at conventional memory
         // 0x1000-0x8000. On QEMU x86_64, RAM below 1 MiB is available

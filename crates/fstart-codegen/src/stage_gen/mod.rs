@@ -256,6 +256,13 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::MemoryController; });
     }
 
+    // BusDevice trait is needed when any device has a parent bus (e.g., PCI
+    // child devices use BusDevice::new_on_bus).
+    let has_bus_children = devices.iter().any(|d| d.parent.is_some());
+    if has_bus_children {
+        tokens.extend(quote! { use fstart_services::device::BusDevice; });
+    }
+
     let has_i2c = devices
         .iter()
         .any(|d| d.services.iter().any(|s| s.as_str() == "I2cBus"));
@@ -350,15 +357,9 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::acpi_provider::AcpiTableProvider; });
     }
 
-    // MemoryDetect needs the MemoryDetector trait and E820Entry type
-    let uses_memory_detect = capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::MemoryDetect { .. }));
-    if uses_memory_detect {
-        tokens.extend(quote! {
-            use fstart_services::memory_detect::MemoryDetector;
-        });
-    }
+    // MemoryDetect: E820Entry type is used in the generated variable
+    // declarations. The MemoryDetector trait itself is imported by the
+    // fstart_capabilities::memory_detect() function, not the generated code.
 
     // FDT patching no longer requires alloc — the raw FDT patcher
     // operates directly on the blob without heap allocation.
@@ -691,22 +692,29 @@ fn generate_fstart_main(
         });
     }
 
-    // --- Phase 1: Construct all devices in topological order ---
+    // --- Phase 1: Construct root devices (no parent bus) ---
+    //
+    // Bus children (e.g., PCI devices) are deferred to Phase 2 because
+    // their construction reads BARs from the parent bus, which must be
+    // initialized first (via PciInit or similar capability).
+    //
     // Devices are already in pre-order DFS order from RON flattening.
     // ACPI-only devices are skipped — they have no runtime driver.
+    let mut deferred_children: Vec<usize> = Vec::new();
     for (idx, node) in device_tree.iter().enumerate() {
-        let dev = &config.devices[idx];
         let inst = &instances[idx];
         if inst.is_acpi_only() {
             continue;
         }
-        let parent_name = node
-            .parent
-            .map(|pid| config.devices[pid as usize].name.as_str());
+        if node.parent.is_some() {
+            // Bus child — defer to after parent is initialized.
+            deferred_children.push(idx);
+            continue;
+        }
         body.extend(generate_device_construction(
-            dev,
+            &config.devices[idx],
             inst,
-            parent_name,
+            None,
             &halt,
             mode,
         ));
@@ -769,6 +777,25 @@ fn generate_fstart_main(
                 inited_devices.push(dev_name.to_string());
             }
             Capability::DriverInit => {
+                // Construct any remaining deferred bus children before
+                // DriverInit runs. By this point all parent devices
+                // are constructed and initialized (via PciInit or
+                // similar capability), so bus children can read BARs.
+                for &idx in &deferred_children {
+                    let dev = &config.devices[idx];
+                    let inst = &instances[idx];
+                    let parent_name = device_tree[idx]
+                        .parent
+                        .map(|pid| config.devices[pid as usize].name.as_str());
+                    body.extend(generate_device_construction(
+                        dev,
+                        inst,
+                        parent_name,
+                        &halt,
+                        mode,
+                    ));
+                }
+                deferred_children.clear();
                 // Devices are in pre-order DFS — sequential indices are
                 // already topological order.
                 let sequential: Vec<usize> = (0..config.devices.len()).collect();

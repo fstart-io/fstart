@@ -234,6 +234,18 @@ pub fn run(
                     "isa-debugcon,iobase=0x402,chardev=debugout".to_string(),
                     "-chardev".to_string(),
                     "file,id=debugout,path=/dev/stderr".to_string(),
+                    // Bochs VBE display — non-VGA PCI device (class 0x0380)
+                    // with MMIO registers in BAR2. Only added when the
+                    // board RON declares a BochsDisplay child device.
+                    // Q35 has a built-in VGA; use -vga none to avoid
+                    // conflicts, then add bochs-display explicitly.
+                    //
+                    // TODO: conditionally add based on board RON devices.
+                    // For now, always add it.
+                    "-vga".to_string(),
+                    "none".to_string(),
+                    "-device".to_string(),
+                    "bochs-display".to_string(),
                 ];
                 (find_qemu("qemu-system-x86_64"), args)
             }

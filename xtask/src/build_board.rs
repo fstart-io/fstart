@@ -597,7 +597,12 @@ fn capability_features(
     }
 
     if stage_uses_pci(capabilities) {
-        features.push("pci-ecam".to_string());
+        if config.platform == Platform::X86_64 {
+            // x86: use CF8/CFC to program PCIEXBAR before ECAM access.
+            features.push("pci-ecam-pio".to_string());
+        } else {
+            features.push("pci-ecam".to_string());
+        }
     }
 
     if stage_uses_crabefi(config) {
