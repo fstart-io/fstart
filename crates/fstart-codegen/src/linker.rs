@@ -120,6 +120,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             data_addr,
             page_table_addr,
             needs_egon_header,
+            is_first_stage,
             config.platform,
         );
     } else {
@@ -181,6 +182,7 @@ fn generate_xip_layout(
     data_addr: Option<u64>,
     page_table_addr: Option<(u64, u64)>,
     needs_egon_header: bool,
+    is_first_stage: bool,
     platform: Platform,
 ) {
     // When data_addr is set, split RAM into two memory regions:
@@ -449,7 +451,7 @@ fn write_allwinner_egon_section(out: &mut String, region: &str) {
 fn write_page_tables_section(
     out: &mut String,
     region: &str,
-    platform: Platform,
+    _platform: Platform,
     has_low_region: bool,
 ) {
     if has_low_region {
