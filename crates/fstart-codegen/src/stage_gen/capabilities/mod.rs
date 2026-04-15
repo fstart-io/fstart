@@ -195,25 +195,15 @@ pub(super) fn generate_pci_init(
 
     let device = format_ident!("{}", device_name);
 
-    // Q35 host bridge needs e820 data to compute MMIO windows.
-    let is_q35 = dev.driver.as_str() == "q35-hostbridge";
-
-    if is_q35 {
-        quote! {
-            #device.init_with_e820(&_e820_entries[.._e820_count]).unwrap_or_else(|_| {
-                fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
-                #halt
-            });
-            fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
-        }
-    } else {
-        quote! {
-            #device.init().unwrap_or_else(|_| {
-                fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
-                #halt
-            });
-            fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
-        }
+    // All PCI host bridges use Device::init(). Drivers that need e820
+    // data (e.g., Q35) read it from the global E820State populated by
+    // the MemoryDetect capability — no codegen special-casing needed.
+    quote! {
+        #device.init().unwrap_or_else(|_| {
+            fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
+            #halt
+        });
+        fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
     }
 }
 
@@ -799,11 +789,14 @@ pub(super) fn generate_acpi_load(device_name: &str, halt: &TokenStream) -> Token
         {
             // 256 KiB buffer for ACPI tables — persists for the OS lifetime.
             // QEMU Q35 produces ~128 KiB of tables plus RSDP/alignment.
-            static mut _ACPI_LOAD_BUF: [u8; 256 * 1024] = [0u8; 256 * 1024];
-            let acpi_buf = unsafe { &raw mut _ACPI_LOAD_BUF };
+            // Uses UnsafeCell to avoid `static mut` deprecation.
+            static _ACPI_LOAD_BUF: core::cell::UnsafeCell<[u8; 256 * 1024]> =
+                core::cell::UnsafeCell::new([0u8; 256 * 1024]);
+            // SAFETY: single-threaded firmware init, buffer used exactly once.
+            let acpi_buf = unsafe { &mut *_ACPI_LOAD_BUF.get() };
             _acpi_rsdp_addr = fstart_capabilities::acpi_load(
                 &#dev_var,
-                unsafe { &mut *acpi_buf },
+                acpi_buf,
                 stringify!(#dev_var),
             ).unwrap_or_else(|_| {
                 fstart_log::error!("AcpiLoad: failed");
@@ -817,14 +810,16 @@ pub(super) fn generate_acpi_load(device_name: &str, halt: &TokenStream) -> Token
 ///
 /// Calls the device's `MemoryDetector::detect_memory()` method to read
 /// the system memory map at runtime (e.g., e820 from QEMU fw_cfg).
-/// Results are stored in `_e820_entries` / `_e820_count` / `_total_ram`
-/// for later use by the boot protocol (x86 zero page, FDT updates, etc.).
+/// Results are stored in the global `E820State` (accessible via
+/// `fstart_services::memory_detect::e820_state()`) for later use by
+/// PCI host bridges, boot protocol, and CrabEFI.
 pub(super) fn generate_memory_detect(device_name: &str, halt: &TokenStream) -> TokenStream {
     let dev_var = format_ident!("{}", device_name);
     quote! {
-        // MemoryDetect: discover system memory layout at runtime
+        // MemoryDetect: discover system memory layout at runtime.
+        // Results are stored in the global E820State for consumers.
         {
-            let (count, total) = fstart_capabilities::memory_detect(
+            let _ = fstart_capabilities::memory_detect(
                 &#dev_var,
                 &mut _e820_entries,
                 stringify!(#dev_var),
@@ -832,8 +827,6 @@ pub(super) fn generate_memory_detect(device_name: &str, halt: &TokenStream) -> T
                 fstart_log::error!("MemoryDetect: failed");
                 #halt
             });
-            _e820_count = count;
-            _total_ram = total;
         }
     }
 }

@@ -194,6 +194,15 @@ pub fn memory_detect(
     let count = detector.detect_memory(entries)?;
     let total = detector.total_ram_bytes()?;
     fstart_log::info!("Detected {} MiB RAM, {} e820 entries", total >> 20, count);
+
+    // Store in global state so PCI host bridges (and other consumers)
+    // can access e820 data without codegen passing it explicitly.
+    // SAFETY: single-threaded firmware init, called once during the
+    // MemoryDetect capability phase.
+    unsafe {
+        fstart_services::memory_detect::e820_state_mut().store(entries, count, total);
+    }
+
     Ok((count, total))
 }
 

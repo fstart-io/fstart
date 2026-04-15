@@ -21,7 +21,11 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
 
     let driver_instances = vec![DriverInstance::Ns16550(
         fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio(0x1000_0000, 0, 0),
+            regs: fstart_driver_ns16550::AccessMode::Mmio {
+                base: 0x1000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
             clock_freq: 3_686_400,
             baud_rate: 115_200,
         },
@@ -52,6 +56,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
             heap_size: None,
             data_addr: None,
             page_table_addr: None,
+            page_size: fstart_types::stage::PageSize::default(),
         }),
         security: SecurityConfig {
             signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -385,7 +390,11 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
 
     let driver_instances = vec![
         DriverInstance::Ns16550(fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio(0x1000_0000, 0, 0),
+            regs: fstart_driver_ns16550::AccessMode::Mmio {
+                base: 0x1000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
             clock_freq: 3_686_400,
             baud_rate: 115_200,
         }),
@@ -421,6 +430,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
             heap_size: None,
             data_addr: None,
             page_table_addr: None,
+            page_size: fstart_types::stage::PageSize::default(),
         }),
         security: SecurityConfig {
             signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -687,7 +697,11 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
     });
     parsed.driver_instances.push(DriverInstance::Ns16550(
         fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio(0x2000_0000, 0, 0),
+            regs: fstart_driver_ns16550::AccessMode::Mmio {
+                base: 0x2000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
             clock_freq: 3_686_400,
             baud_rate: 115_200,
         },
@@ -743,7 +757,11 @@ fn test_non_bus_parent_is_compile_error() {
     });
     parsed.driver_instances.push(DriverInstance::Ns16550(
         fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio(0x2000_0000, 0, 0),
+            regs: fstart_driver_ns16550::AccessMode::Mmio {
+                base: 0x2000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
             clock_freq: 3_686_400,
             baud_rate: 115_200,
         },
@@ -812,7 +830,11 @@ fn test_flexible_multi_driver_parsed_board(
 
     let driver_instances = vec![
         DriverInstance::Ns16550(fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio(0x1000_0000, 0, 0),
+            regs: fstart_driver_ns16550::AccessMode::Mmio {
+                base: 0x1000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
             clock_freq: 3_686_400,
             baud_rate: 115_200,
         }),
@@ -851,6 +873,7 @@ fn test_flexible_multi_driver_parsed_board(
             heap_size: None,
             data_addr: None,
             page_table_addr: None,
+            page_size: fstart_types::stage::PageSize::default(),
         }),
         security: SecurityConfig {
             signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -1140,7 +1163,11 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
 
     let driver_instances = vec![DriverInstance::Ns16550(
         fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio(0x1000_0000, 0, 0),
+            regs: fstart_driver_ns16550::AccessMode::Mmio {
+                base: 0x1000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
             clock_freq: 3_686_400,
             baud_rate: 115_200,
         },
@@ -1171,6 +1198,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         runs_from: RunsFrom::Ram,
         data_addr: None,
         page_table_addr: None,
+        page_size: fstart_types::stage::PageSize::default(),
     });
     let _ = stages.push(StageConfig {
         name: HString::try_from("main").unwrap(),
@@ -1189,6 +1217,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         runs_from: RunsFrom::Ram,
         data_addr: None,
         page_table_addr: None,
+        page_size: fstart_types::stage::PageSize::default(),
     });
 
     let config = BoardConfig {
@@ -1456,7 +1485,11 @@ fn test_device_tree_table_with_bus_children() {
     });
     parsed.driver_instances.push(DriverInstance::Ns16550(
         fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio(0x2000_0000, 0, 0),
+            regs: fstart_driver_ns16550::AccessMode::Mmio {
+                base: 0x2000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
             clock_freq: 3_686_400,
             baud_rate: 115_200,
         },

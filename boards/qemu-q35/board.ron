@@ -23,7 +23,7 @@
         (
             name: "uart0",
             driver: Ns16550((
-                regs: Pio(0x3F8),
+                regs: Pio(base: 0x3F8),
                 clock_freq: 1843200,
                 baud_rate: 115200,
             )),
@@ -86,12 +86,14 @@
         // Q35's modest bus topology (~20 devices).
         heap_size: Some(0x40000),
         data_addr: Some(0x100000),
-        // Page tables (6 pages) + IDT (1 page) at conventional memory
-        // 0x1000-0x8000. On QEMU x86_64, RAM below 1 MiB is available
-        // but not usable for BSS/stack (too small for debug builds).
+        // Page tables + IDT at conventional memory 0x1000-0x8000.
+        // On QEMU x86_64, RAM below 1 MiB is available but not usable
+        // for BSS/stack (too small for debug builds).
         // Real Intel/AMD platforms may put page tables in ROM or CAR.
-        // 2 pages for PML4+PDPT (1 GiB pages) + 1 page for IDT.
         page_table_addr: Some((0x1000, 0x4000)),
+        // QEMU always supports 1 GiB pages; real hardware should use
+        // Size2MiB unless the target CPU is known to have PDPE1GB.
+        page_size: Size1GiB,
     )),
     security: (
         signing_algorithm: Ed25519,
