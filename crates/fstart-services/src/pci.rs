@@ -8,6 +8,19 @@
 //! After `init()` returns, all BARs on the bus tree are programmed and the
 //! devices are ready for use by downstream consumers (e.g., CrabEFI's own
 //! PCI driver model which *reads* pre-allocated BARs).
+//!
+//! # Resource windows
+//!
+//! A root bridge decodes one or more address windows on behalf of its
+//! children.  Each window is either memory-mapped (MMIO) or I/O port
+//! space, described by [`PciWindow`].  Whether a memory window is
+//! reachable via 32-bit or 64-bit BARs is derived from its base and
+//! size — no separate "32-bit" vs "64-bit" distinction is needed.
+//!
+//! The [`PciRootBus::windows`] method returns all windows as a slice,
+//! so platforms with multiple MMIO ranges (e.g., separate prefetchable
+//! and non-prefetchable regions, or below- and above-4 GiB ranges) can
+//! describe their topology faithfully.
 
 use crate::ServiceError;
 
@@ -22,6 +35,56 @@ pub struct PciAddr {
 impl PciAddr {
     pub const fn new(bus: u8, dev: u8, func: u8) -> Self {
         Self { bus, dev, func }
+    }
+}
+
+/// Kind of address space a [`PciWindow`] decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PciWindowKind {
+    /// Memory-mapped I/O.  Whether 32-bit or 64-bit BARs can target this
+    /// window is determined by the address range: if `base + size <= 4 GiB`,
+    /// 32-bit BARs fit; otherwise only 64-bit BARs can reach it.
+    Mmio,
+    /// I/O port space.  On architectures without native I/O ports
+    /// (AArch64, RISC-V), the host bridge maps PCI I/O into a memory
+    /// window — `base` is that MMIO address.  On x86, `base` is the
+    /// first I/O port number.
+    Io,
+}
+
+/// One address window decoded by a PCI root bridge.
+///
+/// A root bridge may decode several windows: low MMIO (below 4 GiB),
+/// high MMIO (above 4 GiB), I/O ports, etc.  The allocator assigns
+/// BARs from these windows during enumeration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciWindow {
+    /// Kind of address space (memory or I/O).
+    pub kind: PciWindowKind,
+    /// Base physical address (MMIO) or I/O port address.
+    pub base: u64,
+    /// Size of the window in bytes.
+    pub size: u64,
+    /// Whether this memory window supports prefetchable transactions.
+    ///
+    /// Only meaningful for [`PciWindowKind::Mmio`] windows.  ACPI `_CRS`
+    /// resource descriptors and PCI bridge forwarding registers
+    /// distinguish prefetchable from non-prefetchable memory.
+    pub prefetchable: bool,
+}
+
+impl PciWindow {
+    /// Exclusive end address (`base + size`), saturating at `u64::MAX`.
+    pub const fn end(&self) -> u64 {
+        self.base.saturating_add(self.size)
+    }
+
+    /// Whether a 32-bit BAR can target this window.
+    ///
+    /// True when the entire window fits within the low 4 GiB.
+    pub const fn is_below_4g(&self) -> bool {
+        self.base.saturating_add(self.size) <= 0x1_0000_0000
     }
 }
 
@@ -91,4 +154,15 @@ pub trait PciRootBus: Send + Sync {
 
     /// Number of discovered devices after `init()`.
     fn device_count(&self) -> usize;
+
+    /// Address windows decoded by this root bridge.
+    ///
+    /// Returns all MMIO and I/O windows that the root bridge forwards to
+    /// PCI devices.  The allocator assigns BARs from these windows during
+    /// enumeration.  Consumers (ACPI table generators, downstream PCI
+    /// stacks) use these to learn the platform topology.
+    ///
+    /// A typical ECAM host bridge returns 2–3 windows: low MMIO
+    /// (below 4 GiB), high MMIO (above 4 GiB), and I/O ports.
+    fn windows(&self) -> &[PciWindow];
 }
