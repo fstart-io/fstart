@@ -12,8 +12,11 @@ fit/Image-*
 fit/zImage-*
 fit/initramfs-*
 
-# Board test artifacts (DTBs, kernel images, symlinks)
+# Board test artifacts (DTBs, kernel images, symlinks, disk images)
 *.dtb
+*.img
+*.iso
+*.qcow2
 zImage
 Image
 bl31.bin
