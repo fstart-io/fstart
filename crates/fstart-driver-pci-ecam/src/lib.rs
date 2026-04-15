@@ -24,32 +24,15 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::pci::{PciAddr, PciRootBus, PciWindow, PciWindowKind};
+use fstart_services::pci::{
+    PciAddr, PciRootBus, PciWindow, PciWindowKind, PCI_BAR0, PCI_CLASS_REVISION,
+    PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND, PCI_HEADER_TYPE,
+    PCI_HEADER_TYPE_BRIDGE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_IO_BASE, PCI_MEMORY_BASE,
+    PCI_PREF_BASE_UPPER32, PCI_PREF_LIMIT_UPPER32, PCI_PREF_MEMORY_BASE, PCI_PRIMARY_BUS,
+    PCI_VENDOR_ID, PCI_VENDOR_INVALID,
+};
 use fstart_services::ServiceError;
 use serde::{Deserialize, Serialize};
-
-// -----------------------------------------------------------------------
-// PCI standard register offsets and bits
-// -----------------------------------------------------------------------
-
-const PCI_VENDOR_ID: u16 = 0x00;
-const PCI_COMMAND: u16 = 0x04;
-const PCI_CLASS_REVISION: u16 = 0x08;
-const PCI_HEADER_TYPE: u16 = 0x0E;
-const PCI_BAR0: u16 = 0x10;
-const PCI_PRIMARY_BUS: u16 = 0x18;
-const PCI_IO_BASE: u16 = 0x1C;
-const PCI_MEMORY_BASE: u16 = 0x20;
-const PCI_PREF_MEMORY_BASE: u16 = 0x24;
-const PCI_PREF_BASE_UPPER32: u16 = 0x28;
-const PCI_PREF_LIMIT_UPPER32: u16 = 0x2C;
-
-const PCI_CMD_IO: u16 = 0x0001;
-const PCI_CMD_MEMORY: u16 = 0x0002;
-const PCI_CMD_BUS_MASTER: u16 = 0x0004;
-
-const PCI_HEADER_TYPE_BRIDGE: u8 = 0x01;
-const PCI_HEADER_TYPE_MULTI_FUNC: u8 = 0x80;
 
 // -----------------------------------------------------------------------
 // Config
@@ -354,7 +337,7 @@ impl PciEcam {
     /// Probe a single device/function, size its BARs.
     fn probe_device(&self, addr: PciAddr) -> Option<PciDev> {
         let vendor_device = self.read32(addr, PCI_VENDOR_ID);
-        if vendor_device == 0xFFFF_FFFF {
+        if vendor_device == PCI_VENDOR_INVALID {
             return None;
         }
         let hdr = self.read32(addr, PCI_HEADER_TYPE);
@@ -400,7 +383,7 @@ impl PciEcam {
     fn enumerate_bus(&mut self, bus: u8) {
         for dev in 0..32u8 {
             let addr = PciAddr::new(bus, dev, 0);
-            if self.read32(addr, PCI_VENDOR_ID) == 0xFFFF_FFFF {
+            if self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                 continue;
             }
 
@@ -411,7 +394,7 @@ impl PciEcam {
 
             for func in 0..max_func {
                 let faddr = PciAddr::new(bus, dev, func);
-                if func > 0 && self.read32(faddr, PCI_VENDOR_ID) == 0xFFFF_FFFF {
+                if func > 0 && self.read32(faddr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                     continue;
                 }
 

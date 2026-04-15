@@ -90,7 +90,8 @@
         // 0x1000-0x8000. On QEMU x86_64, RAM below 1 MiB is available
         // but not usable for BSS/stack (too small for debug builds).
         // Real Intel/AMD platforms may put page tables in ROM or CAR.
-        page_table_addr: Some((0x1000, 0x7000)),
+        // 2 pages for PML4+PDPT (1 GiB pages) + 1 page for IDT.
+        page_table_addr: Some((0x1000, 0x4000)),
     )),
     security: (
         signing_algorithm: Ed25519,

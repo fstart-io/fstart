@@ -124,6 +124,51 @@ pub unsafe fn outl(port: u16, val: u32) {
     }
 }
 
+// -----------------------------------------------------------------------
+// Legacy PCI configuration access via CF8/CFC I/O ports
+// -----------------------------------------------------------------------
+
+/// CF8 address port for legacy PCI config access.
+const PCI_CF8: u16 = 0xCF8;
+/// CFC data port for legacy PCI config access.
+const PCI_CFC: u16 = 0xCFC;
+
+/// Build a CF8 address for legacy PCI config access.
+///
+/// Format: `(1 << 31) | (bus << 16) | (dev << 11) | (func << 8) | (reg & 0xFC)`
+#[inline]
+const fn cf8_addr(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
+    0x8000_0000
+        | ((bus as u32) << 16)
+        | ((dev as u32) << 11)
+        | ((func as u32) << 8)
+        | ((reg as u32) & 0xFC)
+}
+
+/// Read a 32-bit PCI config register via legacy CF8/CFC I/O ports.
+///
+/// # Safety
+/// Must only be called on x86 systems with legacy PCI config access.
+#[inline]
+pub unsafe fn pci_cfg_read32(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
+    unsafe {
+        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
+        inl(PCI_CFC)
+    }
+}
+
+/// Write a 32-bit PCI config register via legacy CF8/CFC I/O ports.
+///
+/// # Safety
+/// Must only be called on x86 systems with legacy PCI config access.
+#[inline]
+pub unsafe fn pci_cfg_write32(bus: u8, dev: u8, func: u8, reg: u8, val: u32) {
+    unsafe {
+        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
+        outl(PCI_CFC, val);
+    }
+}
+
 /// Tiny I/O delay via a dummy write to port 0x80 (POST code port).
 ///
 /// This is the standard Linux/coreboot technique for I/O delay on x86.
