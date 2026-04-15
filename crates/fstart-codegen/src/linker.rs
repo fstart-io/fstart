@@ -96,6 +96,11 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     // Only for the first stage (which has the eGON header).
     if needs_egon_header {
         writeln!(out, "ENTRY(_head_jump)\n").unwrap();
+    } else if config.platform == Platform::X86_64 && !is_first_stage {
+        // Non-first x86_64 stages use a 64-bit-only entry point.
+        // The bootblock already transitioned to long mode; the RAM stage
+        // just needs to set up stack, zero BSS, and call fstart_main.
+        writeln!(out, "ENTRY(_start_ram)\n").unwrap();
     } else {
         writeln!(out, "ENTRY(_start)\n").unwrap();
     }
@@ -384,9 +389,14 @@ fn generate_ram_layout(
 // definitions between the split-RAM and single-RAM layout branches.
 
 fn write_text_section(out: &mut String, region: &str) {
+    // .ltext: large code model (x86_64) puts function bodies in .ltext
+    // sections — capture them alongside normal .text so all executable
+    // code is contiguous and _text_start/_text_end span everything.
     writeln!(out, "    .text : {{").unwrap();
+    writeln!(out, "        _text_start = .;").unwrap();
     writeln!(out, "        KEEP(*(.text.entry))").unwrap();
-    writeln!(out, "        *(.text .text.*)").unwrap();
+    writeln!(out, "        *(.text .text.* .ltext .ltext.*)").unwrap();
+    writeln!(out, "        _text_end = .;").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
@@ -400,6 +410,7 @@ fn write_rodata_section(out: &mut String, region: &str) {
     // .lrodata: large code model (x86_64) puts read-only data in separate
     // .lrodata sections — capture them here alongside normal .rodata.
     writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
+    writeln!(out, "        _rodata_start = .;").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
@@ -466,7 +477,7 @@ fn write_page_tables_section(
         writeln!(out, "        _page_tables_start = .;").unwrap();
         writeln!(
             out,
-            "        . += 0x6000;  /* 6 pages for x86_64 identity map */"
+            "        . += 0x2000;  /* 2 pages: PML4 + PDPT (1 GiB pages) */"
         )
         .unwrap();
         writeln!(out, "        _page_tables_end = .;").unwrap();
@@ -480,6 +491,15 @@ fn write_page_tables_section(
         writeln!(out, "        *(.page_tables .page_tables.*)").unwrap();
         writeln!(out, "        _page_tables_end = .;").unwrap();
         writeln!(out, "    }} > {region}\n").unwrap();
+
+        // x86_64 RAM stages inherit page tables from the bootblock but
+        // still define their own IDT. Place it in the main RAM region
+        // alongside BSS (no LOW region for RAM stages).
+        if _platform == Platform::X86_64 {
+            writeln!(out, "    .idt_table (NOLOAD) : ALIGN(4096) {{").unwrap();
+            writeln!(out, "        *(.idt_table)").unwrap();
+            writeln!(out, "    }} > {region}\n").unwrap();
+        }
     }
 }
 

@@ -155,15 +155,35 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         ));
     }
 
+    // Bus children (e.g., PCI child devices) are only constructed in
+    // stages with DriverInit. For bootblock stages without DriverInit,
+    // exclude these from the Devices struct and StageContext.
+    let has_driver_init = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::DriverInit));
+    let excluded_indices: Vec<usize> = if !has_driver_init {
+        parsed
+            .device_tree
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.parent.is_some())
+            .map(|(idx, _)| idx)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     tokens.extend(generate_devices_struct(
         &config.devices,
         &parsed.driver_instances,
         mode,
+        &excluded_indices,
     ));
     tokens.extend(generate_stage_context(
         &config.devices,
         &parsed.driver_instances,
         mode,
+        &excluded_indices,
     ));
     tokens.extend(generate_device_tree_table(&parsed.device_tree));
     tokens.extend(generate_fstart_main(
@@ -531,16 +551,20 @@ fn generate_device_tree_table(tree: &[DeviceNode]) -> TokenStream {
 /// Emit the `Devices` struct — one concrete typed field per device.
 ///
 /// ACPI-only devices (no runtime driver) are excluded.
+/// `excluded_indices` are device indices that this stage won't construct
+/// (e.g., bus children in stages without DriverInit).
 fn generate_devices_struct(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     mode: BuildMode,
+    excluded_indices: &[usize],
 ) -> TokenStream {
     let fields = devices
         .iter()
         .zip(instances.iter())
-        .filter(|(_, inst)| !inst.is_acpi_only())
-        .map(|(dev, inst)| {
+        .enumerate()
+        .filter(|(idx, (_, inst))| !inst.is_acpi_only() && !excluded_indices.contains(idx))
+        .map(|(_, (dev, inst))| {
             let field_name = format_ident!("{}", dev.name.as_str());
             let meta = inst.meta();
 
@@ -571,12 +595,12 @@ fn generate_stage_context(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     mode: BuildMode,
+    excluded_indices: &[usize],
 ) -> TokenStream {
     let accessors = SERVICE_TRAITS.iter().filter_map(|svc| {
-        let (idx, dev) = devices
-            .iter()
-            .enumerate()
-            .find(|(_, d)| d.services.iter().any(|s| s.as_str() == svc.name))?;
+        let (idx, dev) = devices.iter().enumerate().find(|(idx, d)| {
+            !excluded_indices.contains(idx) && d.services.iter().any(|s| s.as_str() == svc.name)
+        })?;
         let _inst = &instances[idx];
         let accessor_name = format_ident!("{}", svc.accessor);
         let field = format_ident!("{}", dev.name.as_str());
@@ -915,12 +939,27 @@ fn generate_fstart_main(
         )
     });
 
+    // Determine which devices are excluded (bus children in stages without
+    // DriverInit — they're never constructed).
+    let has_driver_init_cap = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::DriverInit));
     let device_fields = config
         .devices
         .iter()
         .zip(instances.iter())
-        .filter(|(_, inst)| !inst.is_acpi_only())
-        .map(|(dev, _)| {
+        .enumerate()
+        .filter(|(idx, (_, inst))| {
+            if inst.is_acpi_only() {
+                return false;
+            }
+            // Exclude bus children when this stage doesn't have DriverInit
+            if !has_driver_init_cap && device_tree[*idx].parent.is_some() {
+                return false;
+            }
+            true
+        })
+        .map(|(_, (dev, _))| {
             let name = format_ident!("{}", dev.name.as_str());
             quote! { #name: #name, }
         });

@@ -173,15 +173,21 @@ pub fn run(
                 // QEMU Q35 maps pflash0 at the top of the 32-bit address space
                 // with the reset vector at 0xFFFFFFF0.
                 let pflash_size = 8 * 1024 * 1024; // 8 MiB flash
-                                                   // x86: the raw stage .bin has boot code at the correct
-                                                   // offsets within 8MB (reset vector at end, code at start).
-                                                   // The FFS image has the stage segments + kernel payload.
-                                                   // We overlay the FFS onto the raw binary so both the boot
-                                                   // code (end of flash) and FFS data (start of flash) are
-                                                   // present.
-                                                   //
-                                                   // binary = target/ffs/qemu-q35.ffs
-                                                   // stage_bin = target/x86_64-unknown-none/{debug,release}/fstart-stage.bin
+                let is_uefi = board_name.contains("uefi");
+
+                // x86: the raw stage .bin has boot code at the correct
+                // offsets within 8MB (reset vector at end, code at start).
+                // The FFS image has the stage segments + kernel payload.
+                // We overlay the FFS onto the raw binary so both the boot
+                // code (end of flash) and FFS data (start of flash) are
+                // present.
+                //
+                // For multi-stage boards (e.g., qemu-q35-uefi), the
+                // bootblock .bin provides the reset vector; FFS contains
+                // the main stage + payload data.
+                //
+                // binary = target/ffs/<board>.ffs
+                // stage_bin = target/x86_64-unknown-none/{debug,release}/fstart-{stage}.bin
                 let workspace = binary.parent().unwrap().parent().unwrap();
                 let profile = if binary.to_str().unwrap_or("").contains("release")
                     || std::env::args().any(|a| a == "--release")
@@ -190,10 +196,18 @@ pub fn run(
                 } else {
                     "debug"
                 };
+
+                // For multi-stage, the bootblock binary has the reset vector.
+                // For monolithic, it's fstart-stage.bin.
+                let stage_bin_name = if is_uefi {
+                    "fstart-bootblock.bin"
+                } else {
+                    "fstart-stage.bin"
+                };
                 let stage_bin = workspace
                     .join("x86_64-unknown-none")
                     .join(profile)
-                    .join("fstart-stage.bin");
+                    .join(stage_bin_name);
                 let pflash_path = if stage_bin.exists() {
                     create_x86_pflash(binary, &stage_bin, pflash_size)?
                 } else {
@@ -213,6 +227,7 @@ pub fn run(
                 // stage code at 0xFF800000 hangs. TCG software-emulates
                 // everything so pflash works fine there.
                 let use_kvm = std::fs::File::open("/dev/kvm").is_ok();
+                let default_mem = if is_uefi { "4G" } else { "1G" };
                 let mut args = vec![
                     "-machine".to_string(),
                     "q35".to_string(),
@@ -221,7 +236,7 @@ pub fn run(
                     "-cpu".to_string(),
                     if use_kvm { "host" } else { "max" }.to_string(),
                     "-m".to_string(),
-                    "1G".to_string(),
+                    default_mem.to_string(),
                     "-nographic".to_string(),
                     if use_kvm { "-bios" } else { "-drive" }.to_string(),
                     if use_kvm {
@@ -235,18 +250,34 @@ pub fn run(
                     "-chardev".to_string(),
                     "file,id=debugout,path=/dev/stderr".to_string(),
                     // Bochs VBE display — non-VGA PCI device (class 0x0380)
-                    // with MMIO registers in BAR2. Only added when the
-                    // board RON declares a BochsDisplay child device.
-                    // Q35 has a built-in VGA; use -vga none to avoid
-                    // conflicts, then add bochs-display explicitly.
-                    //
-                    // TODO: conditionally add based on board RON devices.
-                    // For now, always add it.
+                    // with MMIO registers in BAR2. Q35 has a built-in VGA;
+                    // use -vga none to avoid conflicts.
                     "-vga".to_string(),
                     "none".to_string(),
                     "-device".to_string(),
                     "bochs-display".to_string(),
                 ];
+
+                // UEFI boards: attach AHCI disk via ICH9-AHCI.
+                // QEMU Q35 already provides an ICH9-AHCI controller on
+                // the southbridge, but adding an explicit one ensures
+                // SATA device detection in CrabEFI's PCI scan.
+                if is_uefi && disk.is_none() {
+                    // Check for a default disk image in the board directory
+                    let board_dir = find_board_dir_by_name(binary, board_name)?;
+                    let default_disk = board_dir.join("disk.img");
+                    if default_disk.exists() {
+                        let disk_str = default_disk.display().to_string();
+                        args.extend([
+                            "-drive".to_string(),
+                            format!("file={disk_str},id=hd0,if=none,format=raw"),
+                            "-device".to_string(),
+                            "ide-hd,drive=hd0".to_string(),
+                        ]);
+                        eprintln!("[fstart] disk: {disk_str} (AHCI/SATA, default)");
+                    }
+                }
+
                 (find_qemu("qemu-system-x86_64"), args)
             }
         }
@@ -257,20 +288,37 @@ pub fn run(
         args.extend(["-m".to_string(), mem.to_string()]);
     }
 
-    // Attach disk image as NVMe (CrabEFI has an NVMe driver)
+    // Attach disk image.
+    // x86 Q35 UEFI: AHCI (ICH9-SATA) via ide-hd on the built-in controller.
+    // AArch64/RISC-V: NVMe (CrabEFI has an NVMe driver).
     if let Some(disk_path) = disk {
         let fmt = if disk_path.ends_with(".qcow2") {
             "qcow2"
         } else {
             "raw"
         };
-        args.extend([
-            "-drive".to_string(),
-            format!("file={disk_path},id=hd0,if=none,format={fmt}"),
-            "-device".to_string(),
-            "nvme,serial=fstartdisk0,drive=hd0".to_string(),
-        ]);
-        eprintln!("[fstart] disk: {disk_path} (NVMe, format={fmt})");
+        if platform == Platform::X86_64 {
+            let is_iso = disk_path.ends_with(".iso");
+            let device_type = if is_iso { "ide-cd" } else { "ide-hd" };
+            args.extend([
+                "-drive".to_string(),
+                format!(
+                    "file={disk_path},id=hd0,if=none,format={fmt},readonly={}",
+                    if is_iso { "on" } else { "off" }
+                ),
+                "-device".to_string(),
+                format!("{device_type},drive=hd0"),
+            ]);
+            eprintln!("[fstart] disk: {disk_path} (AHCI/{device_type}, format={fmt})");
+        } else {
+            args.extend([
+                "-drive".to_string(),
+                format!("file={disk_path},id=hd0,if=none,format={fmt}"),
+                "-device".to_string(),
+                "nvme,serial=fstartdisk0,drive=hd0".to_string(),
+            ]);
+            eprintln!("[fstart] disk: {disk_path} (NVMe, format={fmt})");
+        }
     }
 
     eprintln!("[fstart] launching: {qemu_bin} {}", args.join(" "));
@@ -434,6 +482,35 @@ fn find_board_dir(binary: &Path) -> Result<PathBuf, String> {
     }
 
     Err("could not find SBSA board directory".to_string())
+}
+
+/// Find a board directory by board name, starting from a binary's location.
+fn find_board_dir_by_name(binary: &Path, board_name: &str) -> Result<PathBuf, String> {
+    let mut dir = binary
+        .parent()
+        .ok_or_else(|| "no parent directory for binary".to_string())?
+        .to_path_buf();
+
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            let contents =
+                std::fs::read_to_string(&cargo_toml).map_err(|e| format!("read error: {e}"))?;
+            if contents.contains("[workspace]") {
+                let board_dir = dir.join("boards").join(board_name);
+                if board_dir.is_dir() {
+                    return Ok(board_dir);
+                }
+                return Err(format!(
+                    "board directory not found: {}",
+                    board_dir.display()
+                ));
+            }
+        }
+        if !dir.pop() {
+            return Err("could not find workspace root from binary path".to_string());
+        }
+    }
 }
 
 /// Create a QEMU pflash image by padding a firmware binary to the exact

@@ -1,0 +1,151 @@
+// QEMU Q35 (x86_64) — CrabEFI UEFI firmware.
+//
+// Two-stage boot: XIP bootblock + RAM main stage.
+//
+// Stage 1 "bootblock": runs XIP from flash, minimal hw init (UART, page
+//   tables), reads FFS from flash, loads main stage to RAM, jumps.
+//
+// Stage 2 "main": runs from RAM at 2 MiB, full CrabEFI with PCI enum,
+//   AHCI discovery, bochs-display, ACPI tables, e820 memory map.
+//   CrabEFI boots Fedora/Ubuntu from AHCI disk via EFI boot manager.
+//
+// Flash: 8 MiB pflash at top of 4 GiB address space (0xFF800000-0xFFFFFFFF).
+// RAM: 4 GiB (detected at runtime via fw_cfg e820).
+// UART: legacy ISA NS16550 at I/O port 0x3F8 (COM1).
+// ACPI: loaded from QEMU via fw_cfg table-loader protocol.
+// PCI: Q35 host bridge — ECAM at 0xB0000000, 256 buses.
+//      MMIO windows computed at runtime from e820 memory map.
+(
+    name: "qemu-q35-uefi",
+    platform: X86_64,
+    memory: (
+        regions: [
+            ( name: "flash", base: 0xFF800000, size: 0x00800000, kind: Rom ),
+            // 4 GiB RAM for CrabEFI + shim + GRUB + Fedora.
+            // Actual size detected via fw_cfg e820.
+            // Bootblock uses workram (1 MiB at 0x100000) for BSS/stack.
+            // Main stage uses full RAM for CrabEFI + OS.
+            // Main stage runs at 16 MiB to keep 0-16 MiB free for
+            // Linux trampolines and AP startup code.
+            ( name: "workram", base: 0x00100000, size: 0x03F00000, kind: Ram ),
+        ],
+    ),
+    devices: [
+        (
+            name: "uart0",
+            driver: Ns16550((
+                regs: Pio(0x3F8),
+                clock_freq: 1843200,
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
+        ),
+        (
+            name: "fw_cfg0",
+            driver: QemuFwCfg((
+                ctl_port: 0x510,
+                data_port: 0x511,
+            )),
+            services: ["AcpiTableProvider", "MemoryDetector"],
+        ),
+        (
+            name: "pci0",
+            driver: Q35HostBridge((
+                ecam_base:  0xB0000000,
+                ecam_size:  0x10000000,
+                bus_start: 0,
+                bus_end: 255,
+            )),
+            services: ["PciRootBus"],
+            children: [
+                (
+                    name: "bochs0",
+                    driver: BochsDisplay((
+                        device: 2,
+                        function: 0,
+                        width: 1024,
+                        height: 768,
+                    )),
+                    services: ["Framebuffer"],
+                ),
+            ],
+        ),
+    ],
+    stages: MultiStage([
+        // Stage 1: Bootblock (XIP from flash)
+        //
+        // Minimal init: UART for logging, then load main stage from FFS.
+        // Page tables at 0x1000-0x7000, IDT at 0x7000-0x8000.
+        // BSS/stack at 0x100000 (workram). Stack 256 KiB for bootblock.
+        (
+            name: "bootblock",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                // FFS at flash offset 0x100000 (1 MiB) — after stage code.
+                // base = flash_base + 0x100000 = 0xFF900000.
+                // size = 8 MiB - 1 MiB (stage) - 4 KiB (boot block) ≈ 7 MiB.
+                BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000 )),
+                StageLoad( next_stage: "main" ),
+            ],
+            load_addr: 0xFF800000,
+            stack_size: 0x40000,
+            // Minimal heap required because PCI driver features
+            // transitively depend on alloc (via fstart-alloc).
+            // The bootblock doesn't use it, but it must be linked.
+            heap_size: Some(0x1000),
+            runs_from: Rom,
+            data_addr: Some(0x100000),
+            // 2 pages for PML4+PDPT (1 GiB pages) + 1 page for IDT.
+            page_table_addr: Some((0x1000, 0x4000)),
+        ),
+        // Stage 2: Main stage (RAM)
+        //
+        // Runs from DRAM at 16 MiB. Full hw init + CrabEFI.
+        // Stack 4 MiB for CrabEFI + systemd-boot + kernel loading.
+        // Heap 1 MiB for PCI enumeration + CrabEFI internal allocs.
+        // FFS is re-read from flash (copied to RAM at 32 MiB for speed).
+        (
+            name: "main",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                MemoryDetect( device: "fw_cfg0" ),
+                MemoryInit,
+                AcpiLoad( device: "fw_cfg0" ),
+                PciInit( device: "pci0" ),
+                // FFS at flash offset 0x100000 — same as bootblock.
+                // Copied to RAM at 32 MiB for fast LZ4/SHA operations.
+                BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000, ram_copy_addr: Some(0x2000000) )),
+                SigVerify,
+                DriverInit,
+                PayloadLoad,
+            ],
+            // data_addr at 16 MiB: Linux needs 0-16 MiB for trampolines,
+            // AP startup, and real-mode emulation.  STRICT_KERNEL_RWX
+            // marks RuntimeServicesData pages NX, so firmware data must
+            // not overlap the kernel's low-memory executable regions.
+            load_addr: 0x1000000,
+            stack_size: 0x400000,
+            heap_size: Some(0x100000),
+            runs_from: Ram,
+            data_addr: Some(0x1000000),
+            page_table_addr: None,
+        ),
+    ]),
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    mode: Rigid,
+    // CrabEFI UEFI payload — linked as a library.
+    // No kernel file — CrabEFI boots from AHCI disk via EFI boot manager.
+    payload: Some((
+        kind: UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: None,
+        firmware: None,
+    )),
+)

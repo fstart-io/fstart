@@ -173,8 +173,17 @@ core::arch::global_asm!(
     "rep",
     "stosl",
     // Set up identity-mapped page tables for long mode.
-    // We use static page tables in the .page_tables section.
-    // PML4[0] → PDPT, PDPT[0..3] → PDT[0..3], each PDT has 512 2MB pages.
+    //
+    // Uses 1 GiB pages (PDPE1GB) for a compact 2-page layout:
+    //   PML4[0] → PDPT, PDPT[0..511] = 512 × 1 GiB identity pages.
+    // Covers 512 GiB — enough for any QEMU or real hardware config.
+    //
+    // 1 GiB pages (bit 7 = PS in PDPT entries) are supported by all
+    // x86_64 CPUs that QEMU can emulate (KVM host, TCG -cpu max).
+    //
+    // Layout: 2 pages total.
+    //   page_tables_start + 0x0000: PML4 (1 page)
+    //   page_tables_start + 0x1000: PDPT (1 page)
     //
     // Clear page table area first
     "movl $_page_tables_start, %edi",
@@ -188,25 +197,19 @@ core::arch::global_asm!(
     "movl $_page_tables_start, %edi",
     "leal 0x1003(%edi), %eax", // PDPT = page_tables + 0x1000, flags = 0x3
     "movl %eax, (%edi)",
-    // PDPT[0..3] = address of PDT[0..3] | Present | Writable
+    // Fill PDPT[0..511] with 1 GiB identity-mapped pages.
+    // Each entry: physical_addr | PageSize(1GB) | Writable | Present
+    // 1 GiB page flag = bit 7 (PS) in PDPT entry = 0x83.
     "leal 0x1000(%edi), %esi", // ESI = PDPT base
-    "leal 0x2003(%edi), %eax", // PDT0 = page_tables + 0x2000, flags = 0x3
-    "movl %eax, 0(%esi)",      // PDPT[0]
-    "addl $0x1000, %eax",
-    "movl %eax, 8(%esi)", // PDPT[1]
-    "addl $0x1000, %eax",
-    "movl %eax, 16(%esi)", // PDPT[2]
-    "addl $0x1000, %eax",
-    "movl %eax, 24(%esi)", // PDPT[3]
-    // Fill PDT entries: 4 PDTs × 512 entries = 2048 × 2MB = 4GB
-    // Each entry: physical_addr | Present | Writable | PageSize(2MB)
-    "leal 0x2000(%edi), %esi", // ESI = PDT0 base
-    "movl $0x00000083, %eax",  // Start: PA=0, PS=1, RW=1, P=1
-    "movl $2048, %ecx",        // 2048 entries
+    "xorl %edx, %edx",         // EDX = high 32 bits of PA (starts at 0)
+    "xorl %eax, %eax",         // EAX = low 32 bits of PA (starts at 0)
+    "orl $0x83, %eax",         // PS=1, RW=1, P=1
+    "movl $512, %ecx",         // 512 entries × 1 GiB = 512 GiB
     "1:",
-    "movl %eax, (%esi)",
-    "movl $0, 4(%esi)",     // high 32 bits = 0 (below 4GB)
-    "addl $0x200000, %eax", // next 2MB page
+    "movl %eax, (%esi)",      // low 32 bits
+    "movl %edx, 4(%esi)",     // high 32 bits
+    "addl $0x40000000, %eax", // next 1 GiB page (low 32 bits)
+    "adcl $0, %edx",          // carry into high 32 bits
     "addl $8, %esi",
     "decl %ecx",
     "jnz 1b",
@@ -218,10 +221,15 @@ core::arch::global_asm!(
     // Load PML4 base into CR3
     "movl $_page_tables_start, %eax",
     "movl %eax, %cr3",
-    // Enable long mode: set IA32_EFER.LME (bit 8)
+    // Enable long mode + NX support:
+    //   IA32_EFER.LME (bit 8) — Long Mode Enable
+    //   IA32_EFER.NXE (bit 11) — No-Execute Enable
+    // NXE is required by CrabEFI and the Linux kernel for marking
+    // data pages as non-executable. Without it, bit 63 in page
+    // table entries is reserved and triggers #PF.
     "movl $0xC0000080, %ecx", // IA32_EFER MSR
     "rdmsr",
-    "orl $0x100, %eax", // LME = 1
+    "orl $0x900, %eax", // LME | NXE
     "wrmsr",
     // Enable paging + SSE/AVX in one CR0 write:
     //   Set:   PG (bit 31), MP (bit 1)
@@ -342,14 +350,63 @@ core::arch::global_asm!(
 );
 
 // IDT table at a fixed low address (after page tables).
-// Page tables: 0x1000..0x7000 (6 pages).
-// IDT: 0x7000..0x8000 (1 page, 256 entries × 16 bytes).
+// Page tables: 0x1000..0x3000 (2 pages: PML4 + PDPT, 1 GiB pages).
+// IDT: placed after page tables (1 page, 256 entries × 16 bytes).
 core::arch::global_asm!(
     ".section .idt_table, \"aw\", @nobits",
     ".align 4096",
     ".global _idt_table",
     "_idt_table:",
     ".skip 4096",
+);
+
+// ---------------------------------------------------------------------------
+// RAM-stage entry (64-bit only — no 16-bit/32-bit transition)
+// ---------------------------------------------------------------------------
+
+/// Entry point for non-first x86_64 stages that run from RAM.
+///
+/// The bootblock already transitioned to 64-bit long mode with identity-
+/// mapped page tables. This entry zeros BSS, copies .data initializers
+/// (harmless no-op when src == dst), sets up the IDT and stack, then
+/// calls `fstart_main(0)`.
+///
+/// Placed in `.text.entry` so `KEEP(*(.text.entry))` in the linker script
+/// ensures it's at the start of the binary (= the load address that the
+/// bootblock's `jump_to()` targets).
+core::arch::global_asm!(
+    ".att_syntax prefix",
+    ".section .text.entry, \"ax\"",
+    ".code64",
+    ".global _start_ram",
+    "_start_ram:",
+    // Zero BSS (64-bit mode)
+    "movabs $_bss_start, %rdi",
+    "movabs $_bss_end, %rcx",
+    "subq %rdi, %rcx",
+    "shrq $3, %rcx", // count in qwords
+    "xorl %eax, %eax",
+    "rep stosq",
+    // Set up stack
+    "movabs $_stack_top, %rsp",
+    // Copy .data initializers (skip if src == dst, i.e., RAM-only)
+    "movabs $_data_load, %rsi",
+    "movabs $_data_start, %rdi",
+    "movabs $_data_end, %rcx",
+    "subq %rdi, %rcx",
+    "cmpq %rsi, %rdi",
+    "je 1f",
+    "rep movsb",
+    "1:",
+    // Set up IDT
+    "call _setup_idt",
+    // Call fstart_main(handoff_ptr=0)
+    "xorl %edi, %edi",
+    "call fstart_main",
+    // Should never return
+    "2:",
+    "hlt",
+    "jmp 2b",
 );
 
 // Make sure the linker pulls in the entry code

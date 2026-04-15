@@ -158,9 +158,23 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 features.extend(cap_features);
                 let features_str = features.join(",");
 
+                let stage_has_crabefi = stage
+                    .capabilities
+                    .iter()
+                    .any(|c| matches!(c, Capability::PayloadLoad))
+                    && stage_uses_crabefi(&config);
+                // PCI and Q35 driver features pull in fstart-alloc, which
+                // needs alloc in build-std even for stages that don't
+                // directly use PCI. Driver features are global.
+                let has_pci_driver = config
+                    .devices
+                    .iter()
+                    .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
                 let needs_alloc = stage_uses_fdt(&stage.capabilities)
                     || stage_uses_acpi(&stage.capabilities)
-                    || stage.heap_size.is_some();
+                    || stage_has_crabefi
+                    || stage.heap_size.is_some()
+                    || has_pci_driver;
                 let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
                 eprintln!("[fstart] features: {features_str}");
@@ -610,7 +624,12 @@ fn capability_features(
         }
     }
 
-    if stage_uses_crabefi(config) {
+    // CrabEFI is only needed by stages that actually have PayloadLoad.
+    // For multi-stage boards, the bootblock doesn't need CrabEFI.
+    let has_payload_load = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::PayloadLoad));
+    if has_payload_load && stage_uses_crabefi(config) {
         features.push("crabefi".to_string());
     }
 

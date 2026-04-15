@@ -26,7 +26,10 @@ extern crate alloc;
 use fstart_driver_pci_ecam::{PciEcam, PciEcamConfig};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::E820Entry;
-use fstart_services::pci::{PciAddr, PciRootBus, PciWindow};
+use fstart_services::pci::{
+    PciAddr, PciRootBus, PciWindow, PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC,
+    PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PCI_VENDOR_ID,
+};
 use fstart_services::ServiceError;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +38,29 @@ use serde::{Deserialize, Serialize};
 /// Below this are the IOAPIC (0xFEC0_0000), LAPIC (0xFEE0_0000), and
 /// the flash/ROM region.  Matches coreboot's `DOMAIN_RESOURCE_32BIT_LIMIT`.
 const MMIO32_LIMIT: u64 = 0xFE00_0000;
+
+// -----------------------------------------------------------------------
+// Q35 MCH (bus 0, dev 0, fn 0) register offsets
+// -----------------------------------------------------------------------
+
+/// PAM registers: Programmable Attribute Map.
+///
+/// 7 registers (PAM0..PAM6) control access routing for the legacy
+/// 0xC0000-0xFFFFF region.  Each register has two 4-bit nibbles
+/// controlling two 16 KiB sub-regions.  Value `0x3` per nibble =
+/// full DRAM read+write.
+const PAM0: u16 = 0x90;
+
+// -----------------------------------------------------------------------
+// PCI IRQ routing table — matches coreboot qemu-q35 mainboard.c
+// -----------------------------------------------------------------------
+
+/// IRQ rotation table for PCI slots.
+///
+/// Uses legacy PIC IRQs 10 and 11 only.  Each PCI device has 4 interrupt
+/// pins (INTA-INTD); the slot number mod 4 selects a starting offset
+/// into this table.
+const Q35_IRQS: [u8; 8] = [10, 10, 11, 11, 10, 10, 11, 11];
 
 /// Fallback 64-bit MMIO limit when CPUID leaf 0x80000008 is unavailable.
 /// 39-bit physical = 512 GiB — conservative for QEMU Q35.
@@ -90,8 +116,6 @@ impl Q35HostBridge {
     /// After this call, ECAM is live and all PCI config access goes
     /// through memory-mapped MMIO.
     fn enable_ecam(&self) {
-        const CF8: u16 = 0xCF8;
-        const CFC: u16 = 0xCFC;
         const PCIEXBAR_LO: u8 = 0x60;
         const PCIEXBAR_HI: u8 = 0x64;
 
@@ -103,18 +127,13 @@ impl Q35HostBridge {
             _ => 0 << 1,   // default to 256
         };
 
-        // CF8 address: (1<<31) | (bus<<16) | (dev<<11) | (fn<<8) | (reg & 0xFC)
-        // Host bridge = bus 0, dev 0, fn 0.
-        let cf8_hi = 0x8000_0000u32 | (PCIEXBAR_HI as u32 & 0xFC);
-        let cf8_lo = 0x8000_0000u32 | (PCIEXBAR_LO as u32 & 0xFC);
         let pciexbar_val = (self.config.ecam_base as u32) | length_bits | 1;
 
-        // SAFETY: CF8/CFC are standard x86 PCI config I/O ports.
+        // SAFETY: MCH is at bus 0, dev 0, fn 0.  CF8/CFC are standard
+        // x86 PCI config I/O ports.
         unsafe {
-            fstart_pio::outl(CF8, cf8_hi);
-            fstart_pio::outl(CFC, 0); // PCIEXBAR high = 0 (below 4 GiB)
-            fstart_pio::outl(CF8, cf8_lo);
-            fstart_pio::outl(CFC, pciexbar_val);
+            fstart_pio::pci_cfg_write32(0, 0, 0, PCIEXBAR_HI, 0);
+            fstart_pio::pci_cfg_write32(0, 0, 0, PCIEXBAR_LO, pciexbar_val);
         }
 
         fstart_log::info!(
@@ -122,6 +141,88 @@ impl Q35HostBridge {
             self.config.ecam_base,
             bus_count
         );
+    }
+
+    /// Open the legacy 0xC0000-0xFFFFF region for DRAM read/write.
+    ///
+    /// PAM0 controls 0xF0000-0xFFFFF (the BIOS area) — read-modify-write
+    /// to preserve the lower nibble.  PAM1-6 each control two 16 KiB
+    /// sub-regions; `0x33` enables DRAM R/W for both.
+    ///
+    /// Matches coreboot `qemu_nb_init()` in `qemu-q35/mainboard.c`.
+    fn program_pam(&self) {
+        let mch = PciAddr::new(0, 0, 0);
+
+        // PAM0: preserve lower nibble, set upper nibble to 0x3 (DRAM R/W
+        // for 0xF0000-0xFFFFF).
+        let pam0 = self.ecam.config_read8(mch, PAM0).unwrap_or(0);
+        let _ = self.ecam.config_write8(mch, PAM0, pam0 | 0x30);
+
+        // PAM1-PAM6: full DRAM access for 0xC0000-0xEFFFF.
+        for i in 1u16..=6 {
+            let _ = self.ecam.config_write8(mch, PAM0 + i, 0x33);
+        }
+
+        fstart_log::info!("Q35: PAM0-6 programmed (legacy region -> DRAM)");
+    }
+
+    /// Assign PCI interrupt lines to all discovered devices.
+    ///
+    /// Follows coreboot's Q35 IRQ assignment pattern:
+    /// - Slots 0-24: IRQ table offset by `slot % 4` (standard swizzle)
+    /// - Slots 25-31: IRQ table at offset 0 (southbridge devices)
+    ///
+    /// For each device that has an interrupt pin configured, writes the
+    /// IRQ number to `PCI_INTERRUPT_LINE` (config reg 0x3C).
+    fn assign_irqs(&self) {
+        let bus = self.ecam.bus_start();
+        for slot in 0u8..32 {
+            // Check if a device exists at this slot (function 0).
+            let addr = PciAddr::new(bus, slot, 0);
+            let vendor = self
+                .ecam
+                .config_read16(addr, PCI_VENDOR_ID)
+                .unwrap_or(0xFFFF);
+            if vendor == 0xFFFF {
+                continue;
+            }
+
+            let offset = if slot < 25 { (slot as usize) % 4 } else { 0 };
+
+            // Assign IRQs for all functions of this device.
+            let max_func = if self.is_multifunction(addr) { 8 } else { 1 };
+            for func in 0..max_func {
+                let faddr = PciAddr::new(bus, slot, func);
+                if func > 0 {
+                    let fv = self
+                        .ecam
+                        .config_read16(faddr, PCI_VENDOR_ID)
+                        .unwrap_or(0xFFFF);
+                    if fv == 0xFFFF {
+                        continue;
+                    }
+                }
+                let pin = self
+                    .ecam
+                    .config_read8(faddr, PCI_INTERRUPT_PIN)
+                    .unwrap_or(0);
+                if pin == 0 || pin > 4 {
+                    continue; // no interrupt pin
+                }
+                // Pin 1=INTA..4=INTD, index into rotated table.
+                let irq_idx = (offset + (pin as usize) - 1) % Q35_IRQS.len();
+                let irq = Q35_IRQS[irq_idx];
+                let _ = self.ecam.config_write8(faddr, PCI_INTERRUPT_LINE, irq);
+            }
+        }
+
+        fstart_log::info!("Q35: PCI IRQ routing assigned");
+    }
+
+    /// Check if device at `addr` is multi-function (bit 7 of header type).
+    fn is_multifunction(&self, addr: PciAddr) -> bool {
+        let hdr = self.ecam.config_read8(addr, PCI_HEADER_TYPE).unwrap_or(0);
+        hdr & PCI_HEADER_TYPE_MULTI_FUNC != 0
     }
 
     /// Compute TOLUD and TOUUD from e820 entries.
@@ -164,7 +265,10 @@ impl Q35HostBridge {
         // Step 1: Enable ECAM via CF8/CFC.
         self.enable_ecam();
 
-        // Step 2: Compute MMIO windows from memory layout.
+        // Step 2: Open legacy region (0xC0000-0xFFFFF) for DRAM access.
+        self.program_pam();
+
+        // Step 3: Compute MMIO windows from memory layout.
         let (tolud, touud) = Self::ram_tops_from_e820(entries);
         let ecam_end = self.config.ecam_base + self.config.ecam_size;
 
@@ -193,8 +297,13 @@ impl Q35HostBridge {
             PIO_SIZE,
         );
 
-        // Step 3: Enumerate and allocate (delegated to PciEcam).
-        self.ecam.init()
+        // Step 4: Enumerate and allocate BARs (delegated to PciEcam).
+        self.ecam.init()?;
+
+        // Step 5: Assign PCI IRQ routing to all discovered devices.
+        self.assign_irqs();
+
+        Ok(())
     }
 }
 
