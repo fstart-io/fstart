@@ -159,7 +159,7 @@ impl BusDevice for BochsDisplay {
 
     fn new_on_bus(config: &BochsDisplayConfig, bus: &dyn PciRootBus) -> Result<Self, DeviceError> {
         let addr = PciAddr {
-            bus: 0, // bus 0 (child of root bus)
+            bus: bus.bus_start(),
             dev: config.device,
             func: config.function,
         };

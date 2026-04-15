@@ -35,7 +35,7 @@ pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use gpio::GpioController;
 pub use i2c::I2c;
 pub use memory_controller::MemoryController;
-pub use pci::{PciAddr, PciRootBus};
+pub use pci::{PciAddr, PciRootBus, PciWindow, PciWindowKind};
 pub use spi::SpiBus;
 pub use timer::Timer;
 
