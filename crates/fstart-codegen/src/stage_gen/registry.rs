@@ -168,4 +168,13 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         compatible: &["bochs-display", "qemu-stdvga"],
         has_acpi: false,
     },
+    DriverMeta {
+        name: "q35-hostbridge",
+        type_name: "Q35HostBridge",
+        module_path: "fstart_driver_q35_hostbridge",
+        config_type: "Q35HostBridgeConfig",
+        services: &["PciRootBus"],
+        compatible: &["q35-hostbridge"],
+        has_acpi: false,
+    },
 ];

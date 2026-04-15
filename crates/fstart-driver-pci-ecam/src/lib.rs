@@ -181,57 +181,59 @@ unsafe impl Send for PciEcam {}
 unsafe impl Sync for PciEcam {}
 
 impl PciEcam {
-    // -- PCIEXBAR bootstrap (x86 only) --
+    // -- Window management (public for composition by platform drivers) --
 
-    /// Program the host bridge's PCIEXBAR register to enable ECAM.
+    /// Replace the resource pools and rebuild the external window list.
     ///
-    /// On x86, ECAM is not active at reset. The MCH (bus 0, device 0,
-    /// function 0) has a PCIEXBAR register at config offset 0x60 that
-    /// must be programmed via legacy CF8/CFC I/O port config access
-    /// before memory-mapped config space works.
-    ///
-    /// This follows the coreboot Q35 bootblock pattern:
-    ///   1. Write 0 to PCIEXBAR_HI (offset 0x64)
-    ///   2. Write base | length_encoding | enable to PCIEXBAR_LO (0x60)
-    ///
-    /// After these writes, ECAM is live and all subsequent config
-    /// access uses MMIO.
-    #[cfg(feature = "pio")]
-    fn enable_ecam(&self) {
-        const CF8: u16 = 0xCF8;
-        const CFC: u16 = 0xCFC;
-        const PCIEXBAR_LO: u8 = 0x60;
-        const PCIEXBAR_HI: u8 = 0x64;
+    /// Platform host-bridge drivers (e.g., Q35) use this to set MMIO/IO
+    /// windows computed at runtime from hardware state (TOLUD, e820).
+    /// Must be called **before** `init()`.
+    pub fn configure_windows(
+        &mut self,
+        mmio32_base: u64,
+        mmio32_size: u64,
+        mmio64_base: u64,
+        mmio64_size: u64,
+        pio_base: u64,
+        pio_size: u64,
+    ) {
+        self.mmio32 = ResourcePool::new(mmio32_base, mmio32_size);
+        self.mmio64 = ResourcePool::new(mmio64_base, mmio64_size);
+        self.io_pool = ResourcePool::new(pio_base, pio_size);
+        self.rebuild_windows();
+    }
 
-        // Encode the length field (bits 2:1 of PCIEXBAR_LO).
-        let bus_count = (self.bus_end as u32) - (self.bus_start as u32) + 1;
-        let length_bits: u32 = match bus_count {
-            256 => 0 << 1, // 256 MiB
-            128 => 1 << 1, // 128 MiB
-            64 => 2 << 1,  // 64 MiB
-            _ => 0 << 1,   // default to 256
-        };
+    /// Rebuild the external `windows` array from the current resource pools.
+    fn rebuild_windows(&mut self) {
+        self.window_count = 0;
 
-        // CF8 address format: (1<<31) | (bus<<16) | (dev<<11) | (fn<<8) | (reg & 0xFC)
-        // Host bridge = bus 0, dev 0, fn 0.
-        let cf8_hi = 0x8000_0000u32 | (PCIEXBAR_HI as u32 & 0xFC);
-        let cf8_lo = 0x8000_0000u32 | (PCIEXBAR_LO as u32 & 0xFC);
-
-        let pciexbar_val = (self.ecam_base as u32) | length_bits | 1; // enable bit
-
-        // SAFETY: CF8/CFC are standard x86 PCI config I/O ports.
-        unsafe {
-            fstart_pio::outl(CF8, cf8_hi);
-            fstart_pio::outl(CFC, 0); // PCIEXBAR high = 0 (below 4 GiB)
-            fstart_pio::outl(CF8, cf8_lo);
-            fstart_pio::outl(CFC, pciexbar_val);
+        if self.mmio32.limit > self.mmio32.next {
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: self.mmio32.next,
+                size: self.mmio32.limit - self.mmio32.next,
+                prefetchable: false,
+            };
+            self.window_count += 1;
         }
-
-        fstart_log::info!(
-            "PCI: PCIEXBAR enabled at {:#x} ({} buses)",
-            self.ecam_base,
-            bus_count
-        );
+        if self.mmio64.limit > self.mmio64.next {
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: self.mmio64.next,
+                size: self.mmio64.limit - self.mmio64.next,
+                prefetchable: true,
+            };
+            self.window_count += 1;
+        }
+        if self.io_pool.limit > self.io_pool.next {
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Io,
+                base: self.io_pool.next,
+                size: self.io_pool.limit - self.io_pool.next,
+                prefetchable: false,
+            };
+            self.window_count += 1;
+        }
     }
 
     // -- ECAM helpers --
@@ -713,13 +715,6 @@ impl Device for PciEcam {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        // On x86, enable ECAM by programming the host bridge's PCIEXBAR
-        // register via legacy CF8/CFC I/O port config access. After this,
-        // the ECAM MMIO region is live and all config reads/writes go
-        // through memory-mapped access.
-        #[cfg(feature = "pio")]
-        self.enable_ecam();
-
         fstart_log::info!(
             "PCI: enumerating buses {}..{}",
             self.bus_start,
