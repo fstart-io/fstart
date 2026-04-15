@@ -22,6 +22,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2026-02-26
+          components: rust-src, llvm-tools, clippy, rustfmt
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
@@ -90,6 +94,10 @@ jobs:
 
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2026-02-26
+          components: rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
 
       - name: Add llvm-tools to PATH
         run: |
@@ -160,6 +168,10 @@ jobs:
 
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2026-02-26
+          components: rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
 
       - name: Add llvm-tools to PATH
         run: |
@@ -239,6 +251,10 @@ jobs:
 
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2026-02-26
+          components: rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi
 
       - name: Add llvm-tools to PATH
         run: |
