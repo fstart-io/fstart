@@ -45,6 +45,7 @@ members = [
     "crates/fstart-pio",
     "crates/fstart-platform-x86_64",
     "crates/fstart-driver-qemu-fw-cfg",
+    "crates/fstart-driver-q35-hostbridge",
 ]
 
 [workspace.package]
@@ -126,6 +127,7 @@ fstart-smbios = { path = "crates/fstart-smbios" }
 fstart-pio = { path = "crates/fstart-pio" }
 fstart-platform-x86_64 = { path = "crates/fstart-platform-x86_64" }
 fstart-driver-qemu-fw-cfg = { path = "crates/fstart-driver-qemu-fw-cfg" }
+fstart-driver-q35-hostbridge = { path = "crates/fstart-driver-q35-hostbridge" }
 
 [profile.dev]
 panic = "abort"

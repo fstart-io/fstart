@@ -1,11 +1,12 @@
 [package]
-name = "fstart-driver-pci-ecam"
+name = "fstart-driver-q35-hostbridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-fstart-mmio = { workspace = true }
+fstart-driver-pci-ecam = { workspace = true }
+fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
