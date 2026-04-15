@@ -11,6 +11,7 @@
 
 #![no_std]
 
+pub mod acpi_provider;
 pub mod block;
 pub mod boot_media;
 pub mod clock;
@@ -20,6 +21,7 @@ pub mod framebuffer;
 pub mod gpio;
 pub mod i2c;
 pub mod memory_controller;
+pub mod memory_detect;
 pub mod pci;
 pub mod spi;
 pub mod timer;
@@ -33,7 +35,7 @@ pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use gpio::GpioController;
 pub use i2c::I2c;
 pub use memory_controller::MemoryController;
-pub use pci::{PciAddr, PciRootBus};
+pub use pci::{PciAddr, PciRootBus, PciWindow, PciWindowKind};
 pub use spi::SpiBus;
 pub use timer::Timer;
 

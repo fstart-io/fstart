@@ -102,7 +102,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     // boot ROM loads raw binary from SD/SPI/eMMC.
     let needs_flat_binary = matches!(
         config.platform,
-        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7
+        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7 | Platform::X86_64
     );
 
     let soc_format = config.soc_image_format;
@@ -158,9 +158,23 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 features.extend(cap_features);
                 let features_str = features.join(",");
 
+                let stage_has_crabefi = stage
+                    .capabilities
+                    .iter()
+                    .any(|c| matches!(c, Capability::PayloadLoad))
+                    && stage_uses_crabefi(&config);
+                // PCI and Q35 driver features pull in fstart-alloc, which
+                // needs alloc in build-std even for stages that don't
+                // directly use PCI. Driver features are global.
+                let has_pci_driver = config
+                    .devices
+                    .iter()
+                    .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
                 let needs_alloc = stage_uses_fdt(&stage.capabilities)
                     || stage_uses_acpi(&stage.capabilities)
-                    || stage.heap_size.is_some();
+                    || stage_has_crabefi
+                    || stage.heap_size.is_some()
+                    || has_pci_driver;
                 let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
                 eprintln!("[fstart] features: {features_str}");
@@ -231,11 +245,38 @@ fn build_one_stage(
     // adds alignment/null checks on read_volatile/write_volatile that are
     // incompatible with MMIO register access in firmware debug builds).
     //
-    // Force strict-align: the armv7a-none-eabi target spec already sets
-    // +strict-align, but we re-assert it here to ensure LLVM never emits
-    // unaligned loads/stores to MMIO addresses (device memory faults on
-    // unaligned access even when the core supports it for normal memory).
-    cmd.env("RUSTFLAGS", "-Zub-checks=no -Ctarget-feature=+strict-align");
+    // Force strict-align on ARM/RISC-V: the armv7a-none-eabi target spec
+    // already sets +strict-align, but we re-assert it here to ensure LLVM
+    // never emits unaligned loads/stores to MMIO addresses (device memory
+    // faults on unaligned access even when the core supports it for normal
+    // memory).  Not applicable to x86_64 (unaligned access is always allowed).
+    let rustflags = if target.starts_with("x86_64") {
+        // x86_64 firmware: static relocation, large code model.
+        // Large model is needed because ROM at 0xFF800000 and RAM/BSS at
+        // 0x10000 are ~4 GiB apart, exceeding small/medium/kernel model
+        // ±2 GiB limits. LTO (enabled in release profile) mitigates the
+        // indirect-call overhead by inlining across crate boundaries.
+        // Future: move BSS/stack to addresses within 2 GiB of ROM to
+        // allow kernel code model with fast PC-relative calls.
+        //
+        // Force curve25519-dalek to use the scalar ("serial") backend.
+        // This must be in RUSTFLAGS (not Cargo.toml) because:
+        // 1. Cargo features can't set --cfg on transitive dependencies
+        // 2. .cargo/config.toml would affect host builds too
+        // 3. This only applies to x86_64-unknown-none (firmware target)
+        //
+        // The auto-detected "simd" backend (AVX2) causes LLVM crashes
+        // when compiling for x86_64-unknown-none: adding +avx2 globally
+        // breaks compiler_builtins (f16/f128 getCopyFromParts mismatch),
+        // and without it LLVM can't lower AVX2 intrinsics. The scalar
+        // backend is correct and sufficient for firmware signature verify.
+        "-Zub-checks=no -Crelocation-model=static -Ccode-model=large \
+         --cfg curve25519_dalek_backend=\"serial\""
+            .to_string()
+    } else {
+        "-Zub-checks=no -Ctarget-feature=+strict-align".to_string()
+    };
+    cmd.env("RUSTFLAGS", &rustflags);
 
     // Pass board RON path to build.rs
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
@@ -569,11 +610,26 @@ fn capability_features(
         features.push("fdt".to_string());
     }
 
+    // PCI features are determined by the actual driver, not the platform.
+    // The Q35 host bridge handles CF8/CFC bootstrap internally.
     if stage_uses_pci(capabilities) {
-        features.push("pci-ecam".to_string());
+        // Find the PCI root bus device to determine which driver is used.
+        let pci_driver = config
+            .devices
+            .iter()
+            .find(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+        match pci_driver.map(|d| d.driver.as_str()) {
+            Some("q35-hostbridge") => features.push("q35-hostbridge".to_string()),
+            _ => features.push("pci-ecam".to_string()),
+        }
     }
 
-    if stage_uses_crabefi(config) {
+    // CrabEFI is only needed by stages that actually have PayloadLoad.
+    // For multi-stage boards, the bootblock doesn't need CrabEFI.
+    let has_payload_load = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::PayloadLoad));
+    if has_payload_load && stage_uses_crabefi(config) {
         features.push("crabefi".to_string());
     }
 
@@ -583,6 +639,28 @@ fn capability_features(
 
     if stage_uses_smbios(capabilities) {
         features.push("smbios".to_string());
+    }
+
+    // AcpiLoad needs the fw_cfg driver and x86-boot support
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }))
+    {
+        features.push("acpi-load".to_string());
+    }
+
+    // MemoryDetect needs the memory-detect feature
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MemoryDetect { .. }))
+    {
+        features.push("memory-detect".to_string());
+    }
+
+    // NS16550 PIO mode needs the pio feature propagated
+    if config.platform == Platform::X86_64 {
+        features.push("ns16550-pio".to_string());
+        features.push("x86-boot".to_string());
     }
 
     features
@@ -606,7 +684,7 @@ fn stage_uses_pci(capabilities: &[Capability]) -> bool {
 fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
-        .any(|c| matches!(c, Capability::AcpiPrepare))
+        .any(|c| matches!(c, Capability::AcpiPrepare | Capability::AcpiLoad { .. }))
 }
 
 /// Check if the board uses CrabEFI as a UEFI payload.

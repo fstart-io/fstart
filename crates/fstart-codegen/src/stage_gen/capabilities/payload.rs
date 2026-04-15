@@ -125,6 +125,20 @@ fn generate_platform_boot_protocol(
                 fstart_platform::boot_linux(#kernel_addr as u64, #dtb_addr);
             }
         }
+        Platform::X86_64 => {
+            let bootargs_str = payload.bootargs.as_deref().unwrap_or("console=ttyS0");
+            quote! {
+                fstart_log::info!("booting Linux (x86_64)...");
+                fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
+                // x86 Linux boot protocol: fill zero page and jump.
+                fstart_platform::boot_linux(
+                    #kernel_addr as u64,
+                    _acpi_rsdp_addr,
+                    &_e820_entries[.._e820_count],
+                    #bootargs_str,
+                );
+            }
+        }
     }
 }
 
@@ -388,7 +402,7 @@ fn generate_payload_load_uefi(
             Platform::Aarch64 | Platform::Riscv64 => {
                 quote! { fstart_platform::boot_dtb_addr() }
             }
-            Platform::Armv7 => quote! { 0u64 },
+            Platform::Armv7 | Platform::X86_64 => quote! { 0u64 },
         }
     };
 
@@ -402,7 +416,7 @@ fn generate_payload_load_uefi(
                     unsafe { fstart_capabilities::fdt_blob_from_addr(_fdt_addr) };
             }
         }
-        Platform::Armv7 => quote! {
+        Platform::Armv7 | Platform::X86_64 => quote! {
             let _fdt_addr: u64 = 0;
             let _fdt_blob: Option<&[u8]> = None;
         },
@@ -443,77 +457,177 @@ fn generate_payload_load_uefi(
         quote! {}
     };
 
+    // Platform-specific timer, reset, and RNG construction.
+    let (timer_setup, timer_field, reset_setup, reset_field, rng_setup, rng_field) = match platform
+    {
+        Platform::X86_64 => (
+            quote! {
+                let _crabefi_timer = fstart_crabefi::TscTimer::new();
+                fstart_log::info!("TSC timer initialized");
+            },
+            quote! { timer: &_crabefi_timer, },
+            quote! { let _crabefi_reset = fstart_crabefi::X86Reset; },
+            quote! { reset: &_crabefi_reset, },
+            quote! { let _crabefi_rng = fstart_crabefi::X86Rng::new(); },
+            quote! { rng: Some(&_crabefi_rng), },
+        ),
+        _ => (
+            quote! { let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new(); },
+            quote! { timer: &_crabefi_timer, },
+            quote! { let _crabefi_reset = fstart_crabefi::PsciReset; },
+            quote! { reset: &_crabefi_reset, },
+            quote! {},
+            quote! { rng: None, },
+        ),
+    };
+
+    // ACPI RSDP: on x86_64, AcpiLoad provides _acpi_rsdp_addr.
+    let acpi_rsdp_field = if platform == Platform::X86_64 {
+        quote! { acpi_rsdp: Some(_acpi_rsdp_addr), }
+    } else {
+        quote! { acpi_rsdp: None, }
+    };
+
+    // Runtime region: on x86_64, tell CrabEFI's allocator to carve
+    // fstart's code (.text) as RuntimeServicesCode and everything else
+    // (rodata + data + BSS + page tables + IDT + stack) as
+    // RuntimeServicesData. These survive ExitBootServices so the kernel
+    // can access the EFI system table and runtime services.
+    let runtime_region_field = if platform == Platform::X86_64 {
+        quote! { Some(fstart_crabefi::compute_runtime_region()), }
+    } else {
+        quote! { None, }
+    };
+
+    // Memory map construction is platform-specific:
+    // - x86_64: build from e820 entries (from MemoryDetect), carve firmware
+    // - AArch64/RISC-V: build from static board config RAM region
+    let memory_map_setup = if platform == Platform::X86_64 {
+        // x86_64: e820 entries are in _e820_entries[.._e820_count] from MemoryDetect.
+        // ROM entries come from the board config.
+        // Firmware data/stack addresses from stage config.
+        //
+        // fw_stack_addr = top of highest RAM below 4G minus stack_size.
+        // Since we don't know the exact RAM top at codegen time,
+        // the generated code computes it from the stage config.
+        quote! {
+            let _rom_entries: &[fstart_crabefi::MemoryRegion] = &[
+                #static_mem_entries
+            ];
+
+            // 64 entries: up to 128 e820 entries can be split by firmware
+            // regions, plus ROM entries. 64 should be more than enough.
+            let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 64] = [
+                fstart_crabefi::MemoryRegion {
+                    base: 0, size: 0,
+                    region_type: fstart_crabefi::MemoryType::Reserved,
+                };
+                64
+            ];
+
+            // Do NOT carve firmware holes in the initial e820 map.
+            // Instead, pass the entire RAM as ConventionalMemory and let
+            // CrabEFI's allocator split it via runtime_region (below).
+            let _mem_idx = fstart_crabefi::build_efi_memory_map_from_e820(
+                &_e820_entries[.._e820_count],
+                0, 0,  // no firmware data hole
+                0, 0,  // no firmware stack hole
+                _rom_entries,
+                &mut _crabefi_mem_buf,
+            );
+
+            let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] =
+                &_crabefi_mem_buf[.._mem_idx];
+            fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
+        }
+    } else {
+        // AArch64/RISC-V: static RAM region from board config.
+        quote! {
+            let _static_entries: &[fstart_crabefi::MemoryRegion] = &[
+                #static_mem_entries
+            ];
+
+            let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 12] = [
+                fstart_crabefi::MemoryRegion {
+                    base: 0, size: 0,
+                    region_type: fstart_crabefi::MemoryType::Reserved,
+                };
+                12
+            ];
+
+            let _mem_idx = fstart_crabefi::build_efi_memory_map(
+                _static_entries,
+                #ram_base_lit,
+                #ram_size_lit,
+                #fw_data_addr_lit,
+                #fw_stack_size_lit,
+                #fw_stack_size_lit,
+                _fdt_reservation,
+                &mut _crabefi_mem_buf,
+            );
+
+            let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] =
+                &_crabefi_mem_buf[.._mem_idx];
+            fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
+        }
+    };
+
+    // FDT reservation is only needed on non-x86 platforms.
+    let fdt_reservation_setup = if platform != Platform::X86_64 {
+        quote! {
+            let _fdt_reservation = if _fdt_addr != 0 {
+                let fdt_size = unsafe {
+                    fstart_crabefi::fdt_page_aligned_size(_fdt_addr)
+                };
+                Some((_fdt_addr, fdt_size))
+            } else {
+                None
+            };
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         fstart_log::info!("Launching CrabEFI UEFI payload...");
 
         #bl31_boot
 
-        let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new();
-        let _crabefi_reset = fstart_crabefi::PsciReset;
+        #timer_setup
+        #reset_setup
+        #rng_setup
         #console_setup
 
         // Determine FDT address and prepare the blob.
         #fdt_setup
 
-        // FDT reservation: if an FDT is present, read its page-aligned
-        // size so build_efi_memory_map() can carve it out.
-        let _fdt_reservation = if _fdt_addr != 0 {
-            let fdt_size = unsafe {
-                fstart_crabefi::fdt_page_aligned_size(_fdt_addr)
-            };
-            Some((_fdt_addr, fdt_size))
-        } else {
-            None
-        };
+        #fdt_reservation_setup
 
         // Build the EFI memory map.
-        let _static_entries: &[fstart_crabefi::MemoryRegion] = &[
-            #static_mem_entries
-        ];
-
-        let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 12] = [
-            fstart_crabefi::MemoryRegion {
-                base: 0, size: 0,
-                region_type: fstart_crabefi::MemoryType::Reserved,
-            };
-            12
-        ];
-
-        let _mem_idx = fstart_crabefi::build_efi_memory_map(
-            _static_entries,
-            #ram_base_lit,
-            #ram_size_lit,
-            #fw_data_addr_lit,
-            #fw_stack_size_lit,
-            #fw_stack_size_lit,
-            _fdt_reservation,
-            &mut _crabefi_mem_buf,
-        );
-
-        let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] =
-            &_crabefi_mem_buf[.._mem_idx];
-        fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
+        #memory_map_setup
 
         #fb_setup
 
         let _crabefi_config = fstart_crabefi::PlatformConfig {
             memory_map: _crabefi_memory_map,
-            timer: &_crabefi_timer,
-            reset: &_crabefi_reset,
+            #timer_field
+            #reset_field
             block_devices: &mut [],
             variable_backend: None,
             #debug_output_field
             console_input: None,
             #framebuffer_field
-            acpi_rsdp: None,
+            #acpi_rsdp_field
             smbios: None,
             #fdt_field
-            rng: None,
+            #rng_field
             #ecam_base_field
             deferred_buffer: None,
-            runtime_region: None,
+            runtime_region: #runtime_region_field
             heap_pre_initialized: false,
         };
+
+        fstart_log::info!("EFI memory map: {} entries, calling init_platform...", _mem_idx as u32);
 
         // init_platform() is -> ! (never returns).
         fstart_crabefi::init_platform(_crabefi_config);

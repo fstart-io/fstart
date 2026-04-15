@@ -31,6 +31,8 @@ pub(super) use smbios::generate_smbios_prepare;
 #[allow(unused_imports)]
 pub(super) use stage_load::generate_anchor_scan;
 pub(super) use stage_load::generate_load_next_stage;
+// Note: generate_acpi_load and generate_memory_detect are defined in this module
+// (not in sub-modules) and are automatically visible to super.
 
 /// Generate code for the ConsoleInit capability.
 pub(super) fn generate_console_init(
@@ -162,6 +164,10 @@ pub(super) fn generate_memory_init() -> TokenStream {
 /// Finds the referenced PCI root bus device, calls its `init()` method
 /// (which enumerates the bus, sizes BARs, allocates resources, and
 /// programs hardware), and logs the result.
+///
+/// For the Q35 host bridge, `init_with_e820()` is called instead of
+/// `init()`, passing the e820 entries from MemoryDetect so the driver
+/// can compute the PCI MMIO hole at runtime.
 pub(super) fn generate_pci_init(
     device_name: &str,
     devices: &[DeviceConfig],
@@ -189,12 +195,25 @@ pub(super) fn generate_pci_init(
 
     let device = format_ident!("{}", device_name);
 
-    quote! {
-        #device.init().unwrap_or_else(|_| {
-            fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
-            #halt
-        });
-        fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
+    // Q35 host bridge needs e820 data to compute MMIO windows.
+    let is_q35 = dev.driver.as_str() == "q35-hostbridge";
+
+    if is_q35 {
+        quote! {
+            #device.init_with_e820(&_e820_entries[.._e820_count]).unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
+                #halt
+            });
+            fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
+        }
+    } else {
+        quote! {
+            #device.init().unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
+                #halt
+            });
+            fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
+        }
     }
 }
 
@@ -416,7 +435,36 @@ pub(super) fn generate_boot_media(
     halt: &TokenStream,
 ) -> TokenStream {
     match medium {
+        BootMedium::MemoryMapped {
+            ram_copy_addr: Some(ram_addr),
+            ..
+        } => {
+            // Copy FFS from flash to RAM before operating on it.
+            //
+            // This is used on platforms where flash-mapped MMIO is slow
+            // (e.g., x86_64 with code-model=large) or where the flash
+            // doesn't support true XIP. The board RON specifies the RAM
+            // destination via `ram_copy_addr`.
+            let ram_addr_lit = hex_addr(*ram_addr);
+            quote! {
+                // Copy FFS from flash to RAM for fast access
+                fstart_log::info!("copying FFS from flash {:#x} to RAM {:#x} ({} bytes)...",
+                    FLASH_BASE, #ram_addr_lit, FLASH_SIZE);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        FLASH_BASE as *const u8,
+                        #ram_addr_lit as *mut u8,
+                        FLASH_SIZE as usize,
+                    );
+                }
+                fstart_log::info!("FFS copied to RAM");
+                let boot_media = unsafe {
+                    MemoryMapped::from_raw_addr(#ram_addr_lit, FLASH_SIZE as usize)
+                };
+            }
+        }
         BootMedium::MemoryMapped { .. } => {
+            // Direct XIP from flash-mapped memory (ARM, RISC-V, etc.)
             quote! {
                 let boot_media = unsafe {
                     MemoryMapped::from_raw_addr(FLASH_BASE, FLASH_SIZE as usize)
@@ -622,6 +670,8 @@ pub(super) fn generate_fdt_prepare(
                     // ARMv7: no DTB address saved by platform (board-specific).
                     // Use src_dtb_addr in the board RON instead.
                     Platform::Armv7 => quote! { 0u64 },
+                    // x86_64: no DTB from platform — use src_dtb_addr or 0.
+                    Platform::X86_64 => quote! { 0u64 },
                 }
             };
             let dtb_dst = hex_addr(payload.dtb_addr.unwrap_or(0));
@@ -733,6 +783,58 @@ fn generate_dram_expressions(
 pub(super) fn generate_late_driver_init() -> TokenStream {
     quote! {
         fstart_capabilities::late_driver_init_complete(0);
+    }
+}
+
+/// Generate code for the AcpiLoad capability.
+///
+/// Calls the device's `AcpiTableProvider::load_acpi_tables()` method to
+/// load pre-built ACPI tables (e.g., from QEMU fw_cfg) into a heap buffer.
+/// The buffer is leaked so tables persist for the OS. The RSDP physical
+/// address is stored in `_acpi_rsdp_addr` for later use by PayloadLoad.
+pub(super) fn generate_acpi_load(device_name: &str, halt: &TokenStream) -> TokenStream {
+    let dev_var = format_ident!("{}", device_name);
+    quote! {
+        // AcpiLoad: load ACPI tables from external provider
+        {
+            // 256 KiB buffer for ACPI tables — persists for the OS lifetime.
+            // QEMU Q35 produces ~128 KiB of tables plus RSDP/alignment.
+            static mut _ACPI_LOAD_BUF: [u8; 256 * 1024] = [0u8; 256 * 1024];
+            let acpi_buf = unsafe { &raw mut _ACPI_LOAD_BUF };
+            _acpi_rsdp_addr = fstart_capabilities::acpi_load(
+                &#dev_var,
+                unsafe { &mut *acpi_buf },
+                stringify!(#dev_var),
+            ).unwrap_or_else(|_| {
+                fstart_log::error!("AcpiLoad: failed");
+                #halt
+            });
+        }
+    }
+}
+
+/// Generate code for the MemoryDetect capability.
+///
+/// Calls the device's `MemoryDetector::detect_memory()` method to read
+/// the system memory map at runtime (e.g., e820 from QEMU fw_cfg).
+/// Results are stored in `_e820_entries` / `_e820_count` / `_total_ram`
+/// for later use by the boot protocol (x86 zero page, FDT updates, etc.).
+pub(super) fn generate_memory_detect(device_name: &str, halt: &TokenStream) -> TokenStream {
+    let dev_var = format_ident!("{}", device_name);
+    quote! {
+        // MemoryDetect: discover system memory layout at runtime
+        {
+            let (count, total) = fstart_capabilities::memory_detect(
+                &#dev_var,
+                &mut _e820_entries,
+                stringify!(#dev_var),
+            ).unwrap_or_else(|_| {
+                fstart_log::error!("MemoryDetect: failed");
+                #halt
+            });
+            _e820_count = count;
+            _total_ram = total;
+        }
     }
 }
 

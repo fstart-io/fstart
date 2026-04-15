@@ -15,6 +15,7 @@ default = []
 riscv64 = ["dep:fstart-platform-riscv64"]
 aarch64 = ["dep:fstart-platform-aarch64"]
 armv7 = ["dep:fstart-platform-armv7"]
+x86_64 = ["dep:fstart-platform-x86_64"]
 # Allwinner sunxi support — adds fstart-soc-sunxi and enables the sunxi
 # entry point on platforms that support it (AArch64 RMR switch for H5/A64,
 # ARMv7 eGON boot for A20/H3, RISC-V eGON boot for D1).  Driven by
@@ -39,7 +40,18 @@ sifive-uart = ["dep:fstart-driver-sifive-uart"]
 fu740-prci = ["dep:fstart-driver-fu740-prci"]
 fu740-ddr = ["dep:fstart-driver-fu740-ddr"]
 pci-ecam = ["dep:fstart-driver-pci-ecam", "dep:fstart-alloc"]
+
+q35-hostbridge = ["dep:fstart-driver-q35-hostbridge", "dep:fstart-alloc"]
 bochs-display = ["dep:fstart-driver-bochs-display"]
+qemu-fw-cfg = ["dep:fstart-driver-qemu-fw-cfg"]
+# NS16550 with x86 port I/O support
+ns16550-pio = ["ns16550", "fstart-driver-ns16550?/pio"]
+# x86 boot protocol support (zero page construction in platform crate)
+x86-boot = []
+# AcpiLoad capability (load ACPI tables from external provider)
+acpi-load = []
+# MemoryDetect capability (runtime memory detection)
+memory-detect = []
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
@@ -79,6 +91,7 @@ heapless = { workspace = true }
 fstart-platform-riscv64 = { workspace = true, optional = true }
 fstart-platform-aarch64 = { workspace = true, optional = true }
 fstart-platform-armv7 = { workspace = true, optional = true }
+fstart-platform-x86_64 = { workspace = true, optional = true }
 fstart-soc-sunxi = { workspace = true, optional = true }
 
 # Individual driver crates (enabled via features matching board.ron driver names)
@@ -98,6 +111,8 @@ fstart-driver-fu740-prci = { workspace = true, optional = true }
 fstart-driver-fu740-ddr = { workspace = true, optional = true }
 fstart-driver-pci-ecam = { workspace = true, optional = true }
 fstart-driver-bochs-display = { workspace = true, optional = true }
+fstart-driver-qemu-fw-cfg = { workspace = true, optional = true }
+fstart-driver-q35-hostbridge = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

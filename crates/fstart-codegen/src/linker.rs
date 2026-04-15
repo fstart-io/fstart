@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use fstart_types::{BoardConfig, RegionKind, SocImageFormat, StageLayout};
+use fstart_types::{BoardConfig, Platform, RegionKind, SocImageFormat, StageLayout};
 
 /// Generate a linker script for the given board and (optional) stage.
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
@@ -10,19 +10,27 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
 
     let arch = config.platform.linker_arch();
 
-    // Determine load address, stack size, and optional data address from stage config
-    let (load_addr, stack_size, data_addr) = match (&config.stages, stage_name) {
-        (StageLayout::Monolithic(mono), _) => {
-            (mono.load_addr, mono.stack_size as u64, mono.data_addr)
-        }
+    // Determine load address, stack size, and optional data/page-table addresses from stage config
+    let (load_addr, stack_size, data_addr, page_table_addr) = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => (
+            mono.load_addr,
+            mono.stack_size as u64,
+            mono.data_addr,
+            mono.page_table_addr,
+        ),
         (StageLayout::MultiStage(stages), Some(name)) => {
             if let Some(stage) = stages.iter().find(|s| s.name.as_str() == name) {
-                (stage.load_addr, stage.stack_size as u64, stage.data_addr)
+                (
+                    stage.load_addr,
+                    stage.stack_size as u64,
+                    stage.data_addr,
+                    stage.page_table_addr,
+                )
             } else {
-                (0x8000_0000, 0x10000, None) // fallback
+                (0x8000_0000, 0x10000, None, None) // fallback
             }
         }
-        _ => (0x8000_0000, 0x10000, None),
+        _ => (0x8000_0000, 0x10000, None, None),
     };
 
     // Check if load_addr falls within a ROM region (XIP) or RAM region
@@ -88,6 +96,11 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     // Only for the first stage (which has the eGON header).
     if needs_egon_header {
         writeln!(out, "ENTRY(_head_jump)\n").unwrap();
+    } else if config.platform == Platform::X86_64 && !is_first_stage {
+        // Non-first x86_64 stages use a 64-bit-only entry point.
+        // The bootblock already transitioned to long mode; the RAM stage
+        // just needs to set up stack, zero BSS, and call fstart_main.
+        writeln!(out, "ENTRY(_start_ram)\n").unwrap();
     } else {
         writeln!(out, "ENTRY(_start)\n").unwrap();
     }
@@ -110,7 +123,10 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             ram_length,
             stack_size,
             data_addr,
+            page_table_addr,
             needs_egon_header,
+            is_first_stage,
+            config.platform,
         );
     } else {
         // RAM-only layout: everything in RAM at load_addr.
@@ -147,6 +163,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             stack_size,
             bss_origin,
             needs_egon_header,
+            config.platform,
         );
     }
 
@@ -168,7 +185,10 @@ fn generate_xip_layout(
     ram_length: u64,
     stack_size: u64,
     data_addr: Option<u64>,
+    page_table_addr: Option<(u64, u64)>,
     needs_egon_header: bool,
+    is_first_stage: bool,
+    platform: Platform,
 ) {
     // When data_addr is set, split RAM into two memory regions:
     // RAMRO for read-only data (unused currently, but reserved),
@@ -182,6 +202,21 @@ fn generate_xip_layout(
         "    ROM (rx)  : ORIGIN = {rom_origin:#x}, LENGTH = {rom_length:#x}"
     )
     .unwrap();
+    if let Some((pt_origin, pt_length)) = page_table_addr {
+        // Page tables and IDT live in a separate LOW region below the
+        // main RAM. This prevents the linker from merging them into
+        // the BSS PT_LOAD segment (which would produce a wrapped MemSiz).
+        //
+        // On QEMU x86_64 this is conventional memory at 0x1000-0x8000.
+        // On real Intel/AMD platforms with proper flash mapping, page
+        // tables can live in ROM — set page_table_addr to None and the
+        // .pagetables section goes in the normal RAM region.
+        writeln!(
+            out,
+            "    LOW (rwx) : ORIGIN = {pt_origin:#x}, LENGTH = {pt_length:#x}"
+        )
+        .unwrap();
+    }
     writeln!(
         out,
         "    RAM (rwx) : ORIGIN = {rw_origin:#x}, LENGTH = {rw_length:#x}"
@@ -203,7 +238,7 @@ fn generate_xip_layout(
         writeln!(out, "    }} > ROM\n").unwrap();
     }
 
-    // Code in ROM
+    // Code in ROM.
     writeln!(out, "    .text : {{").unwrap();
     writeln!(out, "        KEEP(*(.text.entry))").unwrap();
     writeln!(out, "        *(.text .text.*)").unwrap();
@@ -214,9 +249,10 @@ fn generate_xip_layout(
     writeln!(out, "        *(.fstart.anchor)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
-    // Read-only data in ROM
+    // Read-only data in ROM.
+    // .lrodata: large code model (x86_64) puts read-only data in .lrodata.
     writeln!(out, "    .rodata : ALIGN(16) {{").unwrap();
-    writeln!(out, "        *(.rodata .rodata.*)").unwrap();
+    writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
     // Initialized data: stored in ROM (AT > ROM), copied to RAM at startup.
@@ -224,26 +260,61 @@ fn generate_xip_layout(
     // _data_start / _data_end are the RAM addresses (virtual-memory addresses).
     // The _start assembly copies [_data_load .. _data_load + size) to
     // [_data_start .. _data_end) before entering Rust code.
+    // .ldata: large code model (x86_64) puts initialized data in .ldata.
     writeln!(out, "    .data : ALIGN(16) {{").unwrap();
     writeln!(out, "        _data_start = .;").unwrap();
-    writeln!(out, "        *(.data .data.*)").unwrap();
+    writeln!(out, "        *(.data .data.* .ldata .ldata.*)").unwrap();
     writeln!(out, "        _data_end = .;").unwrap();
     writeln!(out, "    }} > RAM AT > ROM").unwrap();
     writeln!(out, "    _data_load = LOADADDR(.data);\n").unwrap();
 
-    // BSS in RAM
+    // BSS in RAM.
+    // .lbss: large code model (x86_64) puts uninitialized data in .lbss.
     writeln!(out, "    .bss (NOLOAD) : ALIGN(16) {{").unwrap();
     writeln!(out, "        _bss_start = .;").unwrap();
-    writeln!(out, "        *(.bss .bss.*)").unwrap();
+    writeln!(out, "        *(.bss .bss.* .lbss .lbss.*)").unwrap();
     writeln!(out, "        *(COMMON)").unwrap();
     writeln!(out, "        _bss_end = .;").unwrap();
     writeln!(out, "    }} > RAM\n").unwrap();
 
     // Page tables: isolated from BSS to prevent corruption.
-    write_page_tables_section(out, "RAM");
+    write_page_tables_section(out, "RAM", platform, page_table_addr.is_some());
 
     // Stack: grows downward from top of RAM region.
     write_stack(out, stack_size, "RAM");
+
+    // x86 bootblock entry code: only the first stage (bootblock) has the
+    // 16-bit reset vector and mode transition code. Later stages in a
+    // multi-stage build start in 64-bit long mode (jumped to by the
+    // bootblock or previous stage) and don't need .x86boot or .reset.
+    //
+    // The CPU starts at 0xFFFFFFF0 (reset vector). The .x86boot section
+    // (16-bit GDT load, mode transitions) must be within 64KB of the
+    // reset vector (CS base = 0xFFFF0000 at reset).
+    if platform == Platform::X86_64 && is_first_stage {
+        let boot_block_addr = rom_origin + rom_length - 0x1000; // last 4K
+        let reset_addr = rom_origin + rom_length - 16;
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "    /* x86: 16-bit/32-bit/64-bit entry code + reset vector */"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "    .x86boot {boot_block_addr:#x} : AT({boot_block_addr:#x}) {{"
+        )
+        .unwrap();
+        writeln!(out, "        KEEP(*(.x86boot))").unwrap();
+        writeln!(out, "    }} > ROM").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "    .reset {reset_addr:#x} : AT({reset_addr:#x}) {{").unwrap();
+        writeln!(out, "        KEEP(*(.reset))").unwrap();
+        writeln!(out, "    }} > ROM").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "    _binary_end = .;").unwrap();
+    }
+
     writeln!(out, "}}").unwrap();
 }
 
@@ -259,6 +330,7 @@ fn generate_ram_layout(
     stack_size: u64,
     bss_origin: Option<u64>,
     needs_egon_header: bool,
+    platform: Platform,
 ) {
     if let Some(bss_addr) = bss_origin {
         let code_length = bss_addr - ram_origin;
@@ -286,7 +358,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
-        write_page_tables_section(out, "RWDATA");
+        write_page_tables_section(out, "RWDATA", platform, false);
         write_stack(out, stack_size, "RWDATA");
         writeln!(out, "}}").unwrap();
     } else {
@@ -307,7 +379,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
-        write_page_tables_section(out, "RAM");
+        write_page_tables_section(out, "RAM", platform, false);
         write_stack(out, stack_size, "RAM");
         writeln!(out, "}}").unwrap();
     }
@@ -317,9 +389,14 @@ fn generate_ram_layout(
 // definitions between the split-RAM and single-RAM layout branches.
 
 fn write_text_section(out: &mut String, region: &str) {
+    // .ltext: large code model (x86_64) puts function bodies in .ltext
+    // sections — capture them alongside normal .text so all executable
+    // code is contiguous and _text_start/_text_end span everything.
     writeln!(out, "    .text : {{").unwrap();
+    writeln!(out, "        _text_start = .;").unwrap();
     writeln!(out, "        KEEP(*(.text.entry))").unwrap();
-    writeln!(out, "        *(.text .text.*)").unwrap();
+    writeln!(out, "        *(.text .text.* .ltext .ltext.*)").unwrap();
+    writeln!(out, "        _text_end = .;").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
@@ -330,15 +407,21 @@ fn write_anchor_section(out: &mut String, region: &str) {
 }
 
 fn write_rodata_section(out: &mut String, region: &str) {
+    // .lrodata: large code model (x86_64) puts read-only data in separate
+    // .lrodata sections — capture them here alongside normal .rodata.
     writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
-    writeln!(out, "        *(.rodata .rodata.*)").unwrap();
+    writeln!(out, "        _rodata_start = .;").unwrap();
+    writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
 fn write_data_section(out: &mut String, region: &str) {
+    // .ldata: large code model (x86_64) puts initialized data in .ldata
+    // sections — capture them with .data so LMA is set correctly via
+    // AT > ROM on XIP layouts.
     writeln!(out, "    .data : ALIGN(8) {{").unwrap();
     writeln!(out, "        _data_start = .;").unwrap();
-    writeln!(out, "        *(.data .data.*)").unwrap();
+    writeln!(out, "        *(.data .data.* .ldata .ldata.*)").unwrap();
     writeln!(out, "        _data_end = .;").unwrap();
     writeln!(out, "    }} > {region}").unwrap();
     // For RAM-only layouts, _data_load == _data_start (no ROM-to-RAM copy
@@ -347,9 +430,11 @@ fn write_data_section(out: &mut String, region: &str) {
 }
 
 fn write_bss_section(out: &mut String, region: &str) {
+    // .lbss: large code model (x86_64) puts uninitialized data in .lbss
+    // sections — capture them with .bss so they are NOLOAD.
     writeln!(out, "    .bss (NOLOAD) : ALIGN(8) {{").unwrap();
     writeln!(out, "        _bss_start = .;").unwrap();
-    writeln!(out, "        *(.bss .bss.*)").unwrap();
+    writeln!(out, "        *(.bss .bss.* .lbss .lbss.*)").unwrap();
     writeln!(out, "        *(COMMON)").unwrap();
     writeln!(out, "        _bss_end = .;").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
@@ -374,12 +459,48 @@ fn write_allwinner_egon_section(out: &mut String, region: &str) {
 /// that must be 4 KiB aligned. Placing them in BSS risks corruption if
 /// any adjacent static (e.g., CrabEFI's firmware state) overflows.
 /// This section is NOLOAD and cleared by the entry stub before use.
-fn write_page_tables_section(out: &mut String, region: &str) {
-    writeln!(out, "    .page_tables (NOLOAD) : ALIGN(4096) {{").unwrap();
-    writeln!(out, "        _page_tables_start = .;").unwrap();
-    writeln!(out, "        *(.page_tables .page_tables.*)").unwrap();
-    writeln!(out, "        _page_tables_end = .;").unwrap();
-    writeln!(out, "    }} > {region}\n").unwrap();
+fn write_page_tables_section(
+    out: &mut String,
+    region: &str,
+    _platform: Platform,
+    has_low_region: bool,
+) {
+    if has_low_region {
+        // Page tables and IDT placed in the LOW region (separate from
+        // BSS/stack). Used on platforms where page tables must live at
+        // specific addresses (e.g., QEMU x86_64 conventional memory).
+        //
+        // Layout (for x86_64):
+        //   page tables: 6 pages (PML4 + PDPT + 4×PDT)
+        //   IDT: 1 page (256 entries × 16 bytes)
+        writeln!(out, "    .page_tables (NOLOAD) : {{").unwrap();
+        writeln!(out, "        _page_tables_start = .;").unwrap();
+        writeln!(
+            out,
+            "        . += 0x2000;  /* 2 pages: PML4 + PDPT (1 GiB pages) */"
+        )
+        .unwrap();
+        writeln!(out, "        _page_tables_end = .;").unwrap();
+        writeln!(out, "    }} > LOW\n").unwrap();
+        writeln!(out, "    .idt_table (NOLOAD) : {{").unwrap();
+        writeln!(out, "        *(.idt_table)").unwrap();
+        writeln!(out, "    }} > LOW\n").unwrap();
+    } else {
+        writeln!(out, "    .page_tables (NOLOAD) : ALIGN(4096) {{").unwrap();
+        writeln!(out, "        _page_tables_start = .;").unwrap();
+        writeln!(out, "        *(.page_tables .page_tables.*)").unwrap();
+        writeln!(out, "        _page_tables_end = .;").unwrap();
+        writeln!(out, "    }} > {region}\n").unwrap();
+
+        // x86_64 RAM stages inherit page tables from the bootblock but
+        // still define their own IDT. Place it in the main RAM region
+        // alongside BSS (no LOW region for RAM stages).
+        if _platform == Platform::X86_64 {
+            writeln!(out, "    .idt_table (NOLOAD) : ALIGN(4096) {{").unwrap();
+            writeln!(out, "        *(.idt_table)").unwrap();
+            writeln!(out, "    }} > {region}\n").unwrap();
+        }
+    }
 }
 
 fn write_stack(out: &mut String, stack_size: u64, region: &str) {

@@ -41,11 +41,12 @@ use fstart_types::{
 use crate::ron_loader::ParsedBoard;
 
 use capabilities::{
-    collect_boot_media_gated_devices, generate_acpi_prepare, generate_boot_media,
-    generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
-    generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
-    generate_memory_init, generate_payload_load, generate_pci_init, generate_return_to_fel,
-    generate_sig_verify, generate_smbios_prepare, generate_stage_load,
+    collect_boot_media_gated_devices, generate_acpi_load, generate_acpi_prepare,
+    generate_boot_media, generate_clock_init, generate_console_init, generate_dram_init,
+    generate_driver_init, generate_fdt_prepare, generate_late_driver_init,
+    generate_load_next_stage, generate_memory_detect, generate_memory_init, generate_payload_load,
+    generate_pci_init, generate_return_to_fel, generate_sig_verify, generate_smbios_prepare,
+    generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
@@ -133,7 +134,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         }
     }
 
-    if let Some(BootMedium::MemoryMapped { base, size }) = get_boot_medium(capabilities) {
+    if let Some(BootMedium::MemoryMapped { base, size, .. }) = get_boot_medium(capabilities) {
         tokens.extend(generate_flash_constants(*base, *size));
     }
 
@@ -154,15 +155,35 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         ));
     }
 
+    // Bus children (e.g., PCI child devices) are only constructed in
+    // stages with DriverInit. For bootblock stages without DriverInit,
+    // exclude these from the Devices struct and StageContext.
+    let has_driver_init = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::DriverInit));
+    let excluded_indices: Vec<usize> = if !has_driver_init {
+        parsed
+            .device_tree
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.parent.is_some())
+            .map(|(idx, _)| idx)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     tokens.extend(generate_devices_struct(
         &config.devices,
         &parsed.driver_instances,
         mode,
+        &excluded_indices,
     ));
     tokens.extend(generate_stage_context(
         &config.devices,
         &parsed.driver_instances,
         mode,
+        &excluded_indices,
     ));
     tokens.extend(generate_device_tree_table(&parsed.device_tree));
     tokens.extend(generate_fstart_main(
@@ -208,6 +229,9 @@ fn generate_platform_externs(platform: Platform) -> TokenStream {
         Platform::Armv7 => {
             quote! { extern crate fstart_platform_armv7 as fstart_platform; }
         }
+        Platform::X86_64 => {
+            quote! { extern crate fstart_platform_x86_64 as fstart_platform; }
+        }
     };
     quote! {
         #platform_crate
@@ -250,6 +274,13 @@ fn generate_imports(
         .any(|c| matches!(c, Capability::DramInit { .. }));
     if uses_dram_init {
         tokens.extend(quote! { use fstart_services::MemoryController; });
+    }
+
+    // BusDevice trait is needed when any device has a parent bus (e.g., PCI
+    // child devices use BusDevice::new_on_bus).
+    let has_bus_children = devices.iter().any(|d| d.parent.is_some());
+    if has_bus_children {
+        tokens.extend(quote! { use fstart_services::device::BusDevice; });
     }
 
     let has_i2c = devices
@@ -337,6 +368,18 @@ fn generate_imports(
         }
         None => {}
     }
+
+    // AcpiLoad needs the AcpiTableProvider trait
+    let uses_acpi_load = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }));
+    if uses_acpi_load {
+        tokens.extend(quote! { use fstart_services::acpi_provider::AcpiTableProvider; });
+    }
+
+    // MemoryDetect: E820Entry type is used in the generated variable
+    // declarations. The MemoryDetector trait itself is imported by the
+    // fstart_capabilities::memory_detect() function, not the generated code.
 
     // FDT patching no longer requires alloc — the raw FDT patcher
     // operates directly on the blob without heap allocation.
@@ -508,16 +551,20 @@ fn generate_device_tree_table(tree: &[DeviceNode]) -> TokenStream {
 /// Emit the `Devices` struct — one concrete typed field per device.
 ///
 /// ACPI-only devices (no runtime driver) are excluded.
+/// `excluded_indices` are device indices that this stage won't construct
+/// (e.g., bus children in stages without DriverInit).
 fn generate_devices_struct(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     mode: BuildMode,
+    excluded_indices: &[usize],
 ) -> TokenStream {
     let fields = devices
         .iter()
         .zip(instances.iter())
-        .filter(|(_, inst)| !inst.is_acpi_only())
-        .map(|(dev, inst)| {
+        .enumerate()
+        .filter(|(idx, (_, inst))| !inst.is_acpi_only() && !excluded_indices.contains(idx))
+        .map(|(_, (dev, inst))| {
             let field_name = format_ident!("{}", dev.name.as_str());
             let meta = inst.meta();
 
@@ -548,12 +595,12 @@ fn generate_stage_context(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     mode: BuildMode,
+    excluded_indices: &[usize],
 ) -> TokenStream {
     let accessors = SERVICE_TRAITS.iter().filter_map(|svc| {
-        let (idx, dev) = devices
-            .iter()
-            .enumerate()
-            .find(|(_, d)| d.services.iter().any(|s| s.as_str() == svc.name))?;
+        let (idx, dev) = devices.iter().enumerate().find(|(idx, d)| {
+            !excluded_indices.contains(idx) && d.services.iter().any(|s| s.as_str() == svc.name)
+        })?;
         let _inst = &instances[idx];
         let accessor_name = format_ident!("{}", svc.accessor);
         let field = format_ident!("{}", dev.name.as_str());
@@ -624,6 +671,29 @@ fn generate_fstart_main(
     let halt = halt_expr(platform);
     let mut body = TokenStream::new();
 
+    // --- Pre-phase: Declare mutable state for cross-capability communication ---
+    // These variables are written by one capability and read by another (e.g.,
+    // MemoryDetect writes e820 entries, PayloadLoad reads them for the zero page).
+    let has_acpi_load = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }));
+    let has_memory_detect = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MemoryDetect { .. }));
+
+    if has_acpi_load {
+        body.extend(quote! {
+            let mut _acpi_rsdp_addr: u64 = 0;
+        });
+    }
+    if has_memory_detect {
+        body.extend(quote! {
+            let mut _e820_entries = [fstart_services::memory_detect::E820Entry::zeroed(); 128];
+            let mut _e820_count: usize = 0;
+            let mut _total_ram: u64 = 0;
+        });
+    }
+
     // --- Phase 0: Handoff deserialization (non-first stages only) ---
     // For multi-stage boards, non-first stages receive a serialized
     // StageHandoff in r0 (ARMv7) from the previous stage.
@@ -646,22 +716,29 @@ fn generate_fstart_main(
         });
     }
 
-    // --- Phase 1: Construct all devices in topological order ---
+    // --- Phase 1: Construct root devices (no parent bus) ---
+    //
+    // Bus children (e.g., PCI devices) are deferred to Phase 2 because
+    // their construction reads BARs from the parent bus, which must be
+    // initialized first (via PciInit or similar capability).
+    //
     // Devices are already in pre-order DFS order from RON flattening.
     // ACPI-only devices are skipped — they have no runtime driver.
+    let mut deferred_children: Vec<usize> = Vec::new();
     for (idx, node) in device_tree.iter().enumerate() {
-        let dev = &config.devices[idx];
         let inst = &instances[idx];
         if inst.is_acpi_only() {
             continue;
         }
-        let parent_name = node
-            .parent
-            .map(|pid| config.devices[pid as usize].name.as_str());
+        if node.parent.is_some() {
+            // Bus child — defer to after parent is initialized.
+            deferred_children.push(idx);
+            continue;
+        }
         body.extend(generate_device_construction(
-            dev,
+            &config.devices[idx],
             inst,
-            parent_name,
+            None,
             &halt,
             mode,
         ));
@@ -724,6 +801,25 @@ fn generate_fstart_main(
                 inited_devices.push(dev_name.to_string());
             }
             Capability::DriverInit => {
+                // Construct any remaining deferred bus children before
+                // DriverInit runs. By this point all parent devices
+                // are constructed and initialized (via PciInit or
+                // similar capability), so bus children can read BARs.
+                for &idx in &deferred_children {
+                    let dev = &config.devices[idx];
+                    let inst = &instances[idx];
+                    let parent_name = device_tree[idx]
+                        .parent
+                        .map(|pid| config.devices[pid as usize].name.as_str());
+                    body.extend(generate_device_construction(
+                        dev,
+                        inst,
+                        parent_name,
+                        &halt,
+                        mode,
+                    ));
+                }
+                deferred_children.clear();
                 // Devices are in pre-order DFS — sequential indices are
                 // already topological order.
                 let sequential: Vec<usize> = (0..config.devices.len()).collect();
@@ -797,6 +893,14 @@ fn generate_fstart_main(
             Capability::SmBiosPrepare => {
                 body.extend(generate_smbios_prepare(config));
             }
+            Capability::AcpiLoad { device } => {
+                let dev_name = device.as_str();
+                body.extend(generate_acpi_load(dev_name, &halt));
+            }
+            Capability::MemoryDetect { device } => {
+                let dev_name = device.as_str();
+                body.extend(generate_memory_detect(dev_name, &halt));
+            }
             Capability::ReturnToFel => {
                 body.extend(generate_return_to_fel(platform));
             }
@@ -835,12 +939,27 @@ fn generate_fstart_main(
         )
     });
 
+    // Determine which devices are excluded (bus children in stages without
+    // DriverInit — they're never constructed).
+    let has_driver_init_cap = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::DriverInit));
     let device_fields = config
         .devices
         .iter()
         .zip(instances.iter())
-        .filter(|(_, inst)| !inst.is_acpi_only())
-        .map(|(dev, _)| {
+        .enumerate()
+        .filter(|(idx, (_, inst))| {
+            if inst.is_acpi_only() {
+                return false;
+            }
+            // Exclude bus children when this stage doesn't have DriverInit
+            if !has_driver_init_cap && device_tree[*idx].parent.is_some() {
+                return false;
+            }
+            true
+        })
+        .map(|(_, (dev, _))| {
             let name = format_ident!("{}", dev.name.as_str());
             quote! { #name: #name, }
         });

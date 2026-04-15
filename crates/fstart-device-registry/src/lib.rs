@@ -99,6 +99,16 @@ pub mod bochs_display {
     pub use fstart_driver_bochs_display::BochsDisplayConfig;
 }
 
+#[cfg(feature = "qemu-fw-cfg")]
+pub mod qemu_fw_cfg {
+    pub use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
+}
+
+#[cfg(feature = "q35-hostbridge")]
+pub mod q35_hostbridge {
+    pub use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -228,6 +238,15 @@ pub enum DriverInstance {
     /// Bochs VBE display (QEMU bochs-display, PCI MMIO mode).
     #[cfg(feature = "bochs-display")]
     BochsDisplay(bochs_display::BochsDisplayConfig),
+
+    /// QEMU fw_cfg device — provides ACPI tables and e820 memory map.
+    #[cfg(feature = "qemu-fw-cfg")]
+    QemuFwCfg(qemu_fw_cfg::QemuFwCfgConfig),
+
+    /// Q35 PCI host bridge — ECAM with CF8/CFC bootstrap and runtime
+    /// MMIO window computation from e820.
+    #[cfg(feature = "q35-hostbridge")]
+    Q35HostBridge(q35_hostbridge::Q35HostBridgeConfig),
 }
 
 impl DriverInstance {
@@ -430,6 +449,26 @@ impl DriverInstance {
                 compatible: &["bochs-display", "qemu-stdvga"],
                 has_acpi: false,
             },
+            #[cfg(feature = "qemu-fw-cfg")]
+            Self::QemuFwCfg(_) => &DriverMeta {
+                name: "qemu-fw-cfg",
+                type_name: "QemuFwCfg",
+                module_path: "fstart_driver_qemu_fw_cfg",
+                config_type: "QemuFwCfgConfig",
+                services: &["AcpiTableProvider", "MemoryDetector"],
+                compatible: &["qemu,fw-cfg"],
+                has_acpi: false,
+            },
+            #[cfg(feature = "q35-hostbridge")]
+            Self::Q35HostBridge(_) => &DriverMeta {
+                name: "q35-hostbridge",
+                type_name: "Q35HostBridge",
+                module_path: "fstart_driver_q35_hostbridge",
+                config_type: "Q35HostBridgeConfig",
+                services: &["PciRootBus"],
+                compatible: &["q35-hostbridge"],
+                has_acpi: false,
+            },
         }
     }
 
@@ -504,6 +543,10 @@ impl DriverInstance {
             Self::PciEcam(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "bochs-display")]
             Self::BochsDisplay(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "qemu-fw-cfg")]
+            Self::QemuFwCfg(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "q35-hostbridge")]
+            Self::Q35HostBridge(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

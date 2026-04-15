@@ -206,30 +206,46 @@ fn copy_within(src: &[u8], si: usize, dst: &mut [u8], di: usize, len: usize) {
 fn wild_copy(src: &[u8], si: usize, dst: &mut [u8], di: usize, dst_end: usize) {
     let mut s = si;
     let mut d = di;
-    while d < dst_end {
-        let remaining_src = src.len() - s;
-        let remaining_dst = dst.len() - d;
-        let chunk = 8.min(remaining_src).min(remaining_dst);
-        dst[d..d + chunk].copy_from_slice(&src[s..s + chunk]);
+    // Fast path: full 8-byte chunks with bounds checked once.
+    while d + 8 <= dst.len() && s + 8 <= src.len() && d < dst_end {
+        dst[d..d + 8].copy_from_slice(&src[s..s + 8]);
         s += 8;
         d += 8;
+    }
+    // Remainder: byte-by-byte for the tail.
+    while d < dst_end && d < dst.len() && s < src.len() {
+        dst[d] = src[s];
+        d += 1;
+        s += 1;
     }
 }
 
 /// Wild copy within the same buffer (for match copies with offset >= 8).
+///
+/// When offset >= 8, each 8-byte chunk is non-overlapping with the source,
+/// so we can use `ptr::copy_nonoverlapping` for the fast path. For the
+/// last partial chunk we fall back to byte copy.
 #[inline(always)]
 fn wild_copy_within(buf: &mut [u8], src: usize, dst: usize, dst_end: usize) {
     let mut s = src;
     let mut d = dst;
-    while d < dst_end {
-        // Copy byte-by-byte to handle potential overlap correctly
-        // (even with offset >= 8, the match may catch up during long copies)
-        let chunk_end = (d + 8).min(dst_end);
-        while d < chunk_end {
-            buf[d] = buf[s];
-            d += 1;
-            s += 1;
+    // Fast path: copy 8-byte chunks. Since offset >= 8 (caller guarantees),
+    // the source and destination of each chunk are non-overlapping.
+    while d + 8 <= dst_end && s + 8 <= buf.len() {
+        // SAFETY: s < d (match is from earlier output) and d - s >= 8
+        // (offset >= 8), so [s..s+8] and [d..d+8] don't overlap.
+        // Both ranges are within buf bounds (checked above).
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.as_ptr().add(s), buf.as_mut_ptr().add(d), 8);
         }
+        s += 8;
+        d += 8;
+    }
+    // Remainder: byte-by-byte for the last partial chunk.
+    while d < dst_end {
+        buf[d] = buf[s];
+        d += 1;
+        s += 1;
     }
 }
 

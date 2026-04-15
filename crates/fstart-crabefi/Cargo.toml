@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 fstart-services = { workspace = true }
 crabefi = { path = "../../../CrabEFI", default-features = false }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+fstart-pio = { workspace = true }

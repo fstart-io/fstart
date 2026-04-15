@@ -23,7 +23,9 @@
 
 use fstart_services::device::{BusDevice, DeviceError};
 use fstart_services::framebuffer::{Framebuffer, FramebufferInfo};
-use fstart_services::pci::{PciAddr, PciRootBus};
+use fstart_services::pci::{
+    PciAddr, PciRootBus, PCI_BAR0, PCI_BAR2, PCI_VENDOR_ID, PCI_VENDOR_INVALID,
+};
 use serde::{Deserialize, Serialize};
 
 // -----------------------------------------------------------------------
@@ -52,10 +54,6 @@ const VBE_DISPI_LFB_ENABLED: u16 = 0x40;
 // BAR2 MMIO offsets (bochs-display, non-VGA class 0x0380)
 const MMIO_VGA_OFFSET: usize = 0x400;
 const MMIO_DISPI_OFFSET: usize = 0x500;
-
-// PCI config space offsets
-const PCI_BAR0: u16 = 0x10;
-const PCI_BAR2: u16 = 0x18;
 
 // -----------------------------------------------------------------------
 // Config
@@ -159,16 +157,16 @@ impl BusDevice for BochsDisplay {
 
     fn new_on_bus(config: &BochsDisplayConfig, bus: &dyn PciRootBus) -> Result<Self, DeviceError> {
         let addr = PciAddr {
-            bus: 0, // bus 0 (child of root bus)
+            bus: bus.bus_start(),
             dev: config.device,
             func: config.function,
         };
 
         // Verify the device is present by reading vendor:device ID.
         let vendor_device = bus
-            .config_read32(addr, 0x00)
+            .config_read32(addr, PCI_VENDOR_ID)
             .map_err(|_| DeviceError::BusError)?;
-        if vendor_device == 0xFFFF_FFFF {
+        if vendor_device == PCI_VENDOR_INVALID {
             fstart_log::error!(
                 "bochs-display: no PCI device at {:02x}:{:02x}.{}",
                 addr.bus,

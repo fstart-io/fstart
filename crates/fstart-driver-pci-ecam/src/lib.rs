@@ -24,32 +24,15 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::pci::{PciAddr, PciRootBus};
+use fstart_services::pci::{
+    PciAddr, PciRootBus, PciWindow, PciWindowKind, PCI_BAR0, PCI_CLASS_REVISION,
+    PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND, PCI_HEADER_TYPE,
+    PCI_HEADER_TYPE_BRIDGE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_IO_BASE, PCI_MEMORY_BASE,
+    PCI_PREF_BASE_UPPER32, PCI_PREF_LIMIT_UPPER32, PCI_PREF_MEMORY_BASE, PCI_PRIMARY_BUS,
+    PCI_VENDOR_ID, PCI_VENDOR_INVALID,
+};
 use fstart_services::ServiceError;
 use serde::{Deserialize, Serialize};
-
-// -----------------------------------------------------------------------
-// PCI standard register offsets and bits
-// -----------------------------------------------------------------------
-
-const PCI_VENDOR_ID: u16 = 0x00;
-const PCI_COMMAND: u16 = 0x04;
-const PCI_CLASS_REVISION: u16 = 0x08;
-const PCI_HEADER_TYPE: u16 = 0x0E;
-const PCI_BAR0: u16 = 0x10;
-const PCI_PRIMARY_BUS: u16 = 0x18;
-const PCI_IO_BASE: u16 = 0x1C;
-const PCI_MEMORY_BASE: u16 = 0x20;
-const PCI_PREF_MEMORY_BASE: u16 = 0x24;
-const PCI_PREF_BASE_UPPER32: u16 = 0x28;
-const PCI_PREF_LIMIT_UPPER32: u16 = 0x2C;
-
-const PCI_CMD_IO: u16 = 0x0001;
-const PCI_CMD_MEMORY: u16 = 0x0002;
-const PCI_CMD_BUS_MASTER: u16 = 0x0004;
-
-const PCI_HEADER_TYPE_BRIDGE: u8 = 0x01;
-const PCI_HEADER_TYPE_MULTI_FUNC: u8 = 0x80;
 
 // -----------------------------------------------------------------------
 // Config
@@ -152,6 +135,12 @@ impl ResourcePool {
 // Driver struct
 // -----------------------------------------------------------------------
 
+/// Maximum number of address windows a single root bridge can have.
+///
+/// Three is typical (low MMIO, high MMIO, I/O) but a few extra slots
+/// accommodate unusual platforms.
+const MAX_WINDOWS: usize = 8;
+
 /// PCI ECAM host bridge driver.
 pub struct PciEcam {
     ecam_base: usize,
@@ -161,6 +150,9 @@ pub struct PciEcam {
     mmio32: ResourcePool,
     mmio64: ResourcePool,
     io_pool: ResourcePool,
+    /// Decoded address windows (original config values, not modified by allocation).
+    windows: [PciWindow; MAX_WINDOWS],
+    window_count: usize,
     devices: Vec<PciDev>,
     /// Next bus number to assign to a bridge.
     next_bus: u8,
@@ -172,6 +164,61 @@ unsafe impl Send for PciEcam {}
 unsafe impl Sync for PciEcam {}
 
 impl PciEcam {
+    // -- Window management (public for composition by platform drivers) --
+
+    /// Replace the resource pools and rebuild the external window list.
+    ///
+    /// Platform host-bridge drivers (e.g., Q35) use this to set MMIO/IO
+    /// windows computed at runtime from hardware state (TOLUD, e820).
+    /// Must be called **before** `init()`.
+    pub fn configure_windows(
+        &mut self,
+        mmio32_base: u64,
+        mmio32_size: u64,
+        mmio64_base: u64,
+        mmio64_size: u64,
+        pio_base: u64,
+        pio_size: u64,
+    ) {
+        self.mmio32 = ResourcePool::new(mmio32_base, mmio32_size);
+        self.mmio64 = ResourcePool::new(mmio64_base, mmio64_size);
+        self.io_pool = ResourcePool::new(pio_base, pio_size);
+        self.rebuild_windows();
+    }
+
+    /// Rebuild the external `windows` array from the current resource pools.
+    fn rebuild_windows(&mut self) {
+        self.window_count = 0;
+
+        if self.mmio32.limit > self.mmio32.next {
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: self.mmio32.next,
+                size: self.mmio32.limit - self.mmio32.next,
+                prefetchable: false,
+            };
+            self.window_count += 1;
+        }
+        if self.mmio64.limit > self.mmio64.next {
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: self.mmio64.next,
+                size: self.mmio64.limit - self.mmio64.next,
+                prefetchable: true,
+            };
+            self.window_count += 1;
+        }
+        if self.io_pool.limit > self.io_pool.next {
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Io,
+                base: self.io_pool.next,
+                size: self.io_pool.limit - self.io_pool.next,
+                prefetchable: false,
+            };
+            self.window_count += 1;
+        }
+    }
+
     // -- ECAM helpers --
 
     fn ecam_addr(&self, addr: PciAddr, reg: u16) -> Option<usize> {
@@ -290,7 +337,7 @@ impl PciEcam {
     /// Probe a single device/function, size its BARs.
     fn probe_device(&self, addr: PciAddr) -> Option<PciDev> {
         let vendor_device = self.read32(addr, PCI_VENDOR_ID);
-        if vendor_device == 0xFFFF_FFFF {
+        if vendor_device == PCI_VENDOR_INVALID {
             return None;
         }
         let hdr = self.read32(addr, PCI_HEADER_TYPE);
@@ -336,7 +383,7 @@ impl PciEcam {
     fn enumerate_bus(&mut self, bus: u8) {
         for dev in 0..32u8 {
             let addr = PciAddr::new(bus, dev, 0);
-            if self.read32(addr, PCI_VENDOR_ID) == 0xFFFF_FFFF {
+            if self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                 continue;
             }
 
@@ -347,7 +394,7 @@ impl PciEcam {
 
             for func in 0..max_func {
                 let faddr = PciAddr::new(bus, dev, func);
-                if func > 0 && self.read32(faddr, PCI_VENDOR_ID) == 0xFFFF_FFFF {
+                if func > 0 && self.read32(faddr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                     continue;
                 }
 
@@ -593,6 +640,48 @@ impl Device for PciEcam {
             return Err(DeviceError::ConfigError);
         }
 
+        // Build the window list from the config.  Only add windows that
+        // have a non-zero size (the platform may omit some).
+        let dummy = PciWindow {
+            kind: PciWindowKind::Mmio,
+            base: 0,
+            size: 0,
+            prefetchable: false,
+        };
+        let mut windows = [dummy; MAX_WINDOWS];
+        let mut wc = 0;
+
+        if config.mmio32_size > 0 {
+            windows[wc] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: config.mmio32_base,
+                size: config.mmio32_size,
+                prefetchable: false,
+            };
+            wc += 1;
+        }
+        if config.mmio64_size > 0 {
+            windows[wc] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: config.mmio64_base,
+                size: config.mmio64_size,
+                // The high MMIO window is typically used for prefetchable
+                // 64-bit BARs (framebuffers, NVMe, etc.).  Mark it
+                // prefetchable so ACPI _CRS descriptors are correct.
+                prefetchable: true,
+            };
+            wc += 1;
+        }
+        if config.pio_size > 0 {
+            windows[wc] = PciWindow {
+                kind: PciWindowKind::Io,
+                base: config.pio_base,
+                size: config.pio_size,
+                prefetchable: false,
+            };
+            wc += 1;
+        }
+
         Ok(Self {
             ecam_base: config.ecam_base as usize,
             ecam_size: config.ecam_size as usize,
@@ -601,6 +690,8 @@ impl Device for PciEcam {
             mmio32: ResourcePool::new(config.mmio32_base, config.mmio32_size),
             mmio64: ResourcePool::new(config.mmio64_base, config.mmio64_size),
             io_pool: ResourcePool::new(config.pio_base, config.pio_size),
+            windows,
+            window_count: wc,
             devices: Vec::new(),
             next_bus: config.bus_start + 1,
         })
@@ -657,5 +748,9 @@ impl PciRootBus for PciEcam {
 
     fn device_count(&self) -> usize {
         self.devices.len()
+    }
+
+    fn windows(&self) -> &[PciWindow] {
+        &self.windows[..self.window_count]
     }
 }

@@ -1,0 +1,111 @@
+// QEMU Q35 (x86_64) — ICH9 chipset emulation.
+//
+// Flash: 8 MiB pflash at top of 4 GiB address space (0xFF800000-0xFFFFFFFF).
+// RAM: detected at runtime via fw_cfg e820.
+// UART: legacy ISA NS16550 at I/O port 0x3F8 (COM1).
+// ACPI: loaded from QEMU via fw_cfg table-loader protocol.
+// PCI: Q35 host bridge — ECAM at 0xB0000000, 256 buses.
+//      MMIO windows computed at runtime from e820 memory map.
+(
+    name: "qemu-q35",
+    platform: X86_64,
+    memory: (
+        regions: [
+            ( name: "flash", base: 0xFF800000, size: 0x00800000, kind: Rom ),
+            // Firmware working RAM above 1 MiB — well clear of the IVT, BDA,
+            // VGA hole, and BIOS shadow areas in conventional memory.
+            // QEMU provides 1 GiB of RAM; actual size detected via fw_cfg e820.
+            // Debug builds with code-model=large need ~512 KiB stack.
+            ( name: "workram", base: 0x00100000, size: 0x00F00000, kind: Ram ),
+        ],
+    ),
+    devices: [
+        (
+            name: "uart0",
+            driver: Ns16550((
+                regs: Pio(0x3F8),
+                clock_freq: 1843200,
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
+        ),
+        (
+            name: "fw_cfg0",
+            driver: QemuFwCfg((
+                ctl_port: 0x510,
+                data_port: 0x511,
+            )),
+            services: ["AcpiTableProvider", "MemoryDetector"],
+        ),
+        (
+            name: "pci0",
+            // Q35 host bridge: ECAM bootstrap via CF8/CFC, MMIO windows
+            // computed at runtime from e820 (TOLUD depends on DRAM size).
+            driver: Q35HostBridge((
+                ecam_base:  0xB0000000,
+                ecam_size:  0x10000000,   // 256 MiB (256 buses)
+                bus_start: 0,
+                bus_end: 255,
+            )),
+            services: ["PciRootBus"],
+            children: [
+                (
+                    name: "bochs0",
+                    driver: BochsDisplay((
+                        device: 2,
+                        function: 0,
+                        width: 1024,
+                        height: 768,
+                    )),
+                    services: ["Framebuffer"],
+                ),
+            ],
+        ),
+    ],
+    stages: Monolithic((
+        capabilities: [
+            ConsoleInit( device: "uart0" ),
+            MemoryDetect( device: "fw_cfg0" ),
+            MemoryInit,
+            AcpiLoad( device: "fw_cfg0" ),
+            // PCI enumeration — sizes BARs, allocates MMIO/IO resources,
+            // enables devices. Must appear after MemoryInit (heap required).
+            PciInit( device: "pci0" ),
+            // FFS at flash offset 0x100000 (1 MiB) — after stage code, before boot block.
+            // Stage code (.text + .rodata + .ltext) occupies ~640 KiB at the
+            // start of flash; 1 MiB gives headroom for growth.
+            // On x86, codegen copies FFS to RAM before use (fast LZ4/SHA).
+            BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000, ram_copy_addr: Some(0x2000000) )),
+            SigVerify,
+            DriverInit,
+            PayloadLoad,
+        ],
+        load_addr: 0xFF800000,
+        stack_size: 0x80000,
+        // Heap for PCI device list (alloc::Vec). 256 KiB is plenty for
+        // Q35's modest bus topology (~20 devices).
+        heap_size: Some(0x40000),
+        data_addr: Some(0x100000),
+        // Page tables (6 pages) + IDT (1 page) at conventional memory
+        // 0x1000-0x8000. On QEMU x86_64, RAM below 1 MiB is available
+        // but not usable for BSS/stack (too small for debug builds).
+        // Real Intel/AMD platforms may put page tables in ROM or CAR.
+        // 2 pages for PML4+PDPT (1 GiB pages) + 1 page for IDT.
+        page_table_addr: Some((0x1000, 0x4000)),
+    )),
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    mode: Rigid,
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("bzImage"),
+        kernel_load_addr: Some(0x1000000),
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: Some("console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8"),
+        firmware: None,
+    )),
+)

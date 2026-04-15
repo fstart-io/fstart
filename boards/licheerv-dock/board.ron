@@ -49,11 +49,9 @@
         (
             name: "uart0",
             driver: Ns16550((
-                base_addr: 0x02500000,
+                regs: Mmio(0x02500000, 2, 4),
                 clock_freq: 24000000,
                 baud_rate: 115200,
-                reg_shift: 2,
-                reg_width: 4,
             )),
             services: ["Console"],
         ),
