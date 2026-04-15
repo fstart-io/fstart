@@ -62,9 +62,14 @@ const PAM0: u16 = 0x90;
 /// into this table.
 const Q35_IRQS: [u8; 8] = [10, 10, 11, 11, 10, 10, 11, 11];
 
-/// Fallback 64-bit MMIO limit when CPUID leaf 0x80000008 is unavailable.
-/// 39-bit physical = 512 GiB — conservative for QEMU Q35.
-const MMIO64_LIMIT_FALLBACK: u64 = 0x80_0000_0000;
+/// Default 64-bit MMIO limit: 39-bit physical = 512 GiB.
+/// Used as a conservative fallback when CPUID detection fails.
+const MMIO64_LIMIT_DEFAULT: u64 = 0x80_0000_0000;
+
+/// Expected Q35 MCH (host bridge) PCI vendor/device ID.
+/// Intel 82G33/G31/P35/P31 Express DRAM Controller (device 29c0).
+const Q35_MCH_VID: u16 = 0x8086;
+const Q35_MCH_DID: u16 = 0x29C0;
 
 /// Full x86 I/O port range: 0x0000..0xFFFF (64 KiB).
 /// The PCI root bridge decodes the entire I/O space; legacy ISA
@@ -249,6 +254,81 @@ impl Q35HostBridge {
         (tolud, touud)
     }
 
+    /// Read the CPU's physical address width from CPUID leaf 0x80000008.
+    ///
+    /// Returns the MMIO64 limit (1 << phys_bits). Falls back to
+    /// `MMIO64_LIMIT_DEFAULT` (39-bit / 512 GiB) if the leaf is
+    /// unavailable.
+    fn detect_phys_addr_limit() -> u64 {
+        // SAFETY: CPUID is always available on x86_64.
+        let (max_ext_leaf, _, _, _) = unsafe { Self::cpuid(0x80000000) };
+        if max_ext_leaf < 0x80000008 {
+            fstart_log::info!(
+                "Q35: CPUID 0x80000008 unavailable, using {}-bit default",
+                MMIO64_LIMIT_DEFAULT.trailing_zeros()
+            );
+            return MMIO64_LIMIT_DEFAULT;
+        }
+        let (eax, _, _, _) = unsafe { Self::cpuid(0x80000008) };
+        let phys_bits = (eax & 0xFF) as u32;
+        let limit = if phys_bits >= 64 {
+            u64::MAX
+        } else {
+            1u64 << phys_bits
+        };
+        fstart_log::info!("Q35: physical address width: {} bits", phys_bits);
+        limit
+    }
+
+    /// Execute CPUID instruction.
+    ///
+    /// # Safety
+    /// Only valid on x86/x86_64 targets.
+    #[inline]
+    unsafe fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
+        let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
+        unsafe {
+            core::arch::asm!(
+                "push rbx",
+                "cpuid",
+                "mov {ebx_out:e}, ebx",
+                "pop rbx",
+                in("eax") leaf,
+                in("ecx") 0u32,
+                ebx_out = out(reg) ebx,
+                lateout("eax") eax,
+                lateout("ecx") ecx,
+                lateout("edx") edx,
+                options(nomem),
+            );
+        }
+        (eax, ebx, ecx, edx)
+    }
+
+    /// Verify that the MCH at bus 0, dev 0, fn 0 is the expected Q35 device.
+    ///
+    /// Reads the PCI vendor/device ID via legacy CF8/CFC before ECAM is
+    /// active. Matches coreboot's `mainboard_machine_check()` pattern.
+    fn verify_machine_type(&self) -> Result<(), DeviceError> {
+        // SAFETY: CF8/CFC is the standard x86 PCI config I/O port pair.
+        let vid = unsafe { fstart_pio::pci_cfg_read32(0, 0, 0, 0) };
+        let vendor = (vid & 0xFFFF) as u16;
+        let device = ((vid >> 16) & 0xFFFF) as u16;
+        if vendor != Q35_MCH_VID || device != Q35_MCH_DID {
+            fstart_log::error!(
+                "Q35: unexpected MCH at 00:00.0: vendor={:#06x} device={:#06x} \
+                 (expected {:#06x}:{:#06x})",
+                vendor,
+                device,
+                Q35_MCH_VID,
+                Q35_MCH_DID
+            );
+            return Err(DeviceError::InitFailed);
+        }
+        fstart_log::info!("Q35: MCH verified ({:#06x}:{:#06x})", vendor, device);
+        Ok(())
+    }
+
     /// Configure MMIO windows from the e820 memory map and call
     /// `init()` on the inner PCI ECAM driver.
     ///
@@ -259,9 +339,12 @@ impl Q35HostBridge {
     /// Window computation follows coreboot's Q35/i440fx pattern:
     /// - **MMIO32**: `max(TOLUD, ecam_end)` up to `0xFE00_0000`
     /// - **MMIO64**: starts above TOUUD (top of all RAM), extends to
-    ///   the CPU's physical address limit
+    ///   the CPU's physical address limit (from CPUID 0x80000008)
     /// - **I/O**: full 64 KiB port space (`0x0000..0xFFFF`)
     pub fn init_with_e820(&mut self, entries: &[E820Entry]) -> Result<(), DeviceError> {
+        // Step 0: Verify we're running on Q35 hardware (read MCH PCI ID).
+        self.verify_machine_type()?;
+
         // Step 1: Enable ECAM via CF8/CFC.
         self.enable_ecam();
 
@@ -277,8 +360,10 @@ impl Q35HostBridge {
         let mmio32_size = MMIO32_LIMIT.saturating_sub(mmio32_base);
 
         // MMIO64 starts above all RAM (including high RAM above 4 GiB).
+        // Use CPUID to determine the CPU's actual physical address width.
+        let mmio64_limit = Self::detect_phys_addr_limit();
         let mmio64_base = touud;
-        let mmio64_size = MMIO64_LIMIT_FALLBACK.saturating_sub(mmio64_base);
+        let mmio64_size = mmio64_limit.saturating_sub(mmio64_base);
 
         fstart_log::info!("Q35: TOLUD={:#x} TOUUD={:#x}", tolud, touud);
         fstart_log::info!("Q35: MMIO32={:#x}..{:#x}", mmio32_base, MMIO32_LIMIT);
@@ -340,13 +425,18 @@ impl Device for Q35HostBridge {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        // Bare init() without e820 data cannot compute windows.
-        // Platform codegen should call init_with_e820() instead.
-        fstart_log::error!(
-            "Q35HostBridge::init() called without e820 data; \
-             use init_with_e820() instead"
-        );
-        Err(DeviceError::InitFailed)
+        // Read e820 data from the global state populated by MemoryDetect.
+        // SAFETY: single-threaded firmware init; MemoryDetect runs before
+        // PciInit in the capability pipeline order.
+        let state = unsafe { fstart_services::memory_detect::e820_state() };
+        if state.count() == 0 {
+            fstart_log::error!(
+                "Q35HostBridge::init(): no e820 data available. \
+                 Ensure MemoryDetect runs before PciInit."
+            );
+            return Err(DeviceError::InitFailed);
+        }
+        self.init_with_e820(state.entries())
     }
 }
 

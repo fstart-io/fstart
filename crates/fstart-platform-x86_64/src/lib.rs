@@ -174,16 +174,15 @@ core::arch::global_asm!(
     "stosl",
     // Set up identity-mapped page tables for long mode.
     //
-    // Uses 1 GiB pages (PDPE1GB) for a compact 2-page layout:
-    //   PML4[0] → PDPT, PDPT[0..511] = 512 × 1 GiB identity pages.
-    // Covers 512 GiB — enough for any QEMU or real hardware config.
+    // Page size is selected at build time via the `x86-1g-pages` feature:
     //
-    // 1 GiB pages (bit 7 = PS in PDPT entries) are supported by all
-    // x86_64 CPUs that QEMU can emulate (KVM host, TCG -cpu max).
+    // x86-1g-pages (2 pages, 512 GiB):
+    //   PML4[0] -> PDPT, PDPT[0..511] = 512 x 1 GiB identity pages.
+    //   Requires PDPE1GB (CPUID 0x80000001 EDX[26]).
     //
-    // Layout: 2 pages total.
-    //   page_tables_start + 0x0000: PML4 (1 page)
-    //   page_tables_start + 0x1000: PDPT (1 page)
+    // Default / 2 MiB (6 pages, 4 GiB):
+    //   PML4[0] -> PDPT, PDPT[0..3] -> PD0..PD3, each PD has 512 x 2 MiB.
+    //   Universally supported. Matches coreboot pt.S layout.
     //
     // Clear page table area first
     "movl $_page_tables_start, %edi",
@@ -197,14 +196,21 @@ core::arch::global_asm!(
     "movl $_page_tables_start, %edi",
     "leal 0x1003(%edi), %eax", // PDPT = page_tables + 0x1000, flags = 0x3
     "movl %eax, (%edi)",
-    // Fill PDPT[0..511] with 1 GiB identity-mapped pages.
-    // Each entry: physical_addr | PageSize(1GB) | Writable | Present
-    // 1 GiB page flag = bit 7 (PS) in PDPT entry = 0x83.
+);
+
+// 1 GiB pages: PDPT[0..511] = 512 x 1 GiB identity-mapped pages.
+// Requires PDPE1GB. Covers 512 GiB. Compact: only 2 pages total.
+#[cfg(feature = "x86-1g-pages")]
+core::arch::global_asm!(
+    ".att_syntax prefix",
+    ".section .text, \"ax\"",
+    ".code32",
+    "movl $_page_tables_start, %edi",
     "leal 0x1000(%edi), %esi", // ESI = PDPT base
     "xorl %edx, %edx",         // EDX = high 32 bits of PA (starts at 0)
     "xorl %eax, %eax",         // EAX = low 32 bits of PA (starts at 0)
     "orl $0x83, %eax",         // PS=1, RW=1, P=1
-    "movl $512, %ecx",         // 512 entries × 1 GiB = 512 GiB
+    "movl $512, %ecx",         // 512 entries x 1 GiB = 512 GiB
     "1:",
     "movl %eax, (%esi)",      // low 32 bits
     "movl %edx, 4(%esi)",     // high 32 bits
@@ -213,6 +219,48 @@ core::arch::global_asm!(
     "addl $8, %esi",
     "decl %ecx",
     "jnz 1b",
+);
+
+// 2 MiB pages (default): PDPT[0..3] -> PD0..PD3, each PD 512 x 2 MiB.
+// Universally supported. Covers 4 GiB. Matches coreboot pt.S layout.
+#[cfg(not(feature = "x86-1g-pages"))]
+core::arch::global_asm!(
+    ".att_syntax prefix",
+    ".section .text, \"ax\"",
+    ".code32",
+    "movl $_page_tables_start, %edi",
+    // PDPT[0..3] = address of PD0..PD3 | Present | Writable
+    "leal 0x1000(%edi), %esi", // ESI = PDPT base
+    "leal 0x2003(%edi), %eax", // PD0 = page_tables + 0x2000, flags = 0x3
+    "movl %eax, 0(%esi)",
+    "addl $0x1000, %eax", // PD1 = page_tables + 0x3000
+    "movl %eax, 8(%esi)",
+    "addl $0x1000, %eax", // PD2 = page_tables + 0x4000
+    "movl %eax, 16(%esi)",
+    "addl $0x1000, %eax", // PD3 = page_tables + 0x5000
+    "movl %eax, 24(%esi)",
+    // Fill PD0..PD3 with 2048 x 2 MiB identity-mapped pages.
+    // Each entry: physical_addr | PageSize(2MB) | Writable | Present = 0x83.
+    "leal 0x2000(%edi), %esi", // ESI = PD0 base
+    "xorl %edx, %edx",         // EDX = high 32 bits of PA
+    "xorl %eax, %eax",         // EAX = low 32 bits of PA
+    "orl $0x83, %eax",         // PS=1, RW=1, P=1
+    "movl $2048, %ecx",        // 4 PDs x 512 entries = 2048
+    "2:",
+    "movl %eax, (%esi)",    // low 32 bits
+    "movl %edx, 4(%esi)",   // high 32 bits
+    "addl $0x200000, %eax", // next 2 MiB page
+    "adcl $0, %edx",        // carry into high 32 bits
+    "addl $8, %esi",
+    "decl %ecx",
+    "jnz 2b",
+);
+
+// Continue the entry sequence after page table setup.
+core::arch::global_asm!(
+    ".att_syntax prefix",
+    ".section .text, \"ax\"",
+    ".code32",
     // Enable PAE (bit 5), OSFXSR (bit 9), OSXMMEXCPT (bit 10).
     // OSFXSR + OSXMMEXCPT enable SSE/SSE2 (compiler_builtins memcpy).
     "movl %cr4, %eax",
@@ -479,31 +527,34 @@ pub fn jump_to(addr: u64) -> ! {
 ///
 /// Uses the 64-bit entry point at `code32_start + 0x200` (available since
 /// boot protocol 2.12 when `XLF_KERNEL_64` is set in `xload_flags`).
-/// This avoids the complex long-mode → protected-mode teardown needed
+/// This avoids the complex long-mode -> protected-mode teardown needed
 /// by the 32-bit protocol: we stay in long mode, set `%rsi` to the
 /// zero page, and jump directly to the kernel's `startup_64`.
 ///
-/// Constructs the zero page (boot_params) at `0x90000`, fills e820
-/// entries and ACPI RSDP address, then jumps to the kernel.
+/// Constructs the zero page (boot_params), fills e820 entries and ACPI
+/// RSDP address, then jumps to the kernel.
 ///
 /// # Arguments
 /// - `kernel_addr`: physical address of the loaded kernel (typically `0x100000`)
 /// - `rsdp_addr`: physical address of the ACPI RSDP (from AcpiLoad)
 /// - `e820_entries`: slice of e820 memory map entries (from MemoryDetect)
+/// - `bootargs`: kernel command line string
+/// - `zero_page_addr`: physical address for boot_params (0x90000 on QEMU,
+///   should be in e820-reported free conventional memory on real hardware)
 pub fn boot_linux(
     kernel_addr: u64,
     rsdp_addr: u64,
     e820_entries: &[E820Entry],
     bootargs: &str,
+    zero_page_addr: u64,
 ) -> ! {
-    // The zero page is at a well-known location in conventional memory.
-    const ZERO_PAGE: u64 = 0x90000;
-    const CMD_LINE: u64 = 0x91000;
+    let zero_page = zero_page_addr;
+    let cmd_line = zero_page + 0x1000; // command line follows zero page
 
-    // SAFETY: these addresses are in conventional memory below 640K,
-    // cleared by the entry code, and not used by any other code at
-    // this point.
-    let params = unsafe { &mut *(ZERO_PAGE as *mut [u8; 4096]) };
+    // SAFETY: zero_page_addr is in conventional memory (provided by
+    // the board config), cleared by the entry code, and not used by
+    // any other code at this point.
+    let params = unsafe { &mut *(zero_page as *mut [u8; 4096]) };
     params.fill(0);
 
     // The loaded image is a raw bzImage: real-mode boot sector + setup
@@ -586,12 +637,12 @@ pub fn boot_linux(
     params[0x1FA..0x1FC].copy_from_slice(&0xFFFFu16.to_le_bytes());
 
     // cmd_line_ptr (offset 0x228)
-    let cmdline = unsafe { &mut *(CMD_LINE as *mut [u8; 4096]) };
+    let cmdline = unsafe { &mut *(cmd_line as *mut [u8; 4096]) };
     let args_bytes = bootargs.as_bytes();
     let copy_len = args_bytes.len().min(4095); // leave room for NUL
     cmdline[..copy_len].copy_from_slice(&args_bytes[..copy_len]);
     cmdline[copy_len] = 0; // NUL terminator
-    params[0x228..0x22C].copy_from_slice(&(CMD_LINE as u32).to_le_bytes());
+    params[0x228..0x22C].copy_from_slice(&(cmd_line as u32).to_le_bytes());
 
     // ACPI RSDP address (offset 0x070, protocol 2.14+)
     params[0x070..0x078].copy_from_slice(&rsdp_addr.to_le_bytes());
@@ -617,7 +668,7 @@ pub fn boot_linux(
     );
     fstart_log::info!("  pref_address: {:#x}", pref_address);
     fstart_log::info!("  entry64 @ {:#x}", entry64);
-    fstart_log::info!("  zero_page @ {:#x}", ZERO_PAGE);
+    fstart_log::info!("  zero_page @ {:#x}", zero_page);
     fstart_log::info!("  rsdp @ {:#x}", rsdp_addr);
     fstart_log::info!("  e820 count: {}", e820_entries.len());
 
@@ -670,7 +721,7 @@ pub fn boot_linux(
             "xor r14d, r14d",
             "xor r15d, r15d",
             "jmp rdi",
-            zero_page = in(reg) ZERO_PAGE,
+            zero_page = in(reg) zero_page,
             entry = in(reg) entry64,
             options(noreturn),
         );

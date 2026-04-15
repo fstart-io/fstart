@@ -53,7 +53,7 @@
         (
             name: "uart0",
             driver: Ns16550((
-                regs: Mmio(0x01C28000, 2, 0),
+                regs: Mmio(base: 0x01C28000, reg_shift: 2, reg_width: 0),
                 clock_freq: 24000000,
                 baud_rate: 115200,
             )),

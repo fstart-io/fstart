@@ -58,6 +58,94 @@ impl E820Entry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Global e820 state — populated by MemoryDetect, read by PCI host bridges
+// ---------------------------------------------------------------------------
+
+/// Maximum number of e820 entries stored in the global state.
+pub const MAX_E820_ENTRIES: usize = 128;
+
+/// Shared e820 memory map state.
+///
+/// Populated by the `MemoryDetect` capability after calling
+/// `MemoryDetector::detect_memory()`.  Read by PCI host bridge drivers
+/// (e.g., Q35) to compute MMIO windows without requiring the codegen to
+/// pass e820 data explicitly.
+///
+/// This is firmware-level global state: single-threaded, set once during
+/// the capability pipeline, then read-only.
+pub struct E820State {
+    entries: [E820Entry; MAX_E820_ENTRIES],
+    count: usize,
+    total_ram: u64,
+}
+
+impl E820State {
+    const fn new() -> Self {
+        Self {
+            entries: [E820Entry::zeroed(); MAX_E820_ENTRIES],
+            count: 0,
+            total_ram: 0,
+        }
+    }
+
+    /// Store e820 entries and total RAM. Called once by MemoryDetect.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from single-threaded firmware init context.
+    pub unsafe fn store(&mut self, entries: &[E820Entry], count: usize, total_ram: u64) {
+        let n = count.min(MAX_E820_ENTRIES);
+        self.entries[..n].copy_from_slice(&entries[..n]);
+        self.count = n;
+        self.total_ram = total_ram;
+    }
+
+    /// Get the stored e820 entries.
+    pub fn entries(&self) -> &[E820Entry] {
+        &self.entries[..self.count]
+    }
+
+    /// Get the stored entry count.
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Get the total detected RAM in bytes.
+    pub fn total_ram(&self) -> u64 {
+        self.total_ram
+    }
+}
+
+/// Global e820 state instance.
+///
+/// # Safety
+///
+/// Access is safe in single-threaded firmware init. The `store()` method
+/// is called once during MemoryDetect; subsequent reads via `e820_state()`
+/// are safe because no concurrent mutation occurs.
+static mut E820_GLOBAL: E820State = E820State::new();
+
+/// Get a shared reference to the global e820 state.
+///
+/// # Safety
+///
+/// Safe to call after `MemoryDetect` has completed (which populates the
+/// state). Must not be called concurrently with `store()`.
+pub unsafe fn e820_state() -> &'static E820State {
+    unsafe { &*core::ptr::addr_of!(E820_GLOBAL) }
+}
+
+/// Get a mutable reference to the global e820 state for initial population.
+///
+/// # Safety
+///
+/// Must only be called once, from the MemoryDetect capability, in
+/// single-threaded firmware init context.
+pub unsafe fn e820_state_mut() -> &'static mut E820State {
+    unsafe { &mut *core::ptr::addr_of_mut!(E820_GLOBAL) }
+}
+
 /// A device that can detect the system memory layout at runtime.
 pub trait MemoryDetector {
     /// Discover memory regions and write them to `entries`.

@@ -52,6 +52,12 @@ pub struct MonolithicConfig {
     /// support ROM-resident page tables).
     #[serde(default)]
     pub page_table_addr: Option<(u64, u64)>,
+    /// x86_64 identity-map page size (default: 2 MiB).
+    ///
+    /// Controls page table layout and total memory used. Use `Size1GiB`
+    /// only on CPUs known to support PDPE1GB.
+    #[serde(default)]
+    pub page_size: PageSize,
 }
 
 /// Configuration for one stage in a multi-stage build.
@@ -85,6 +91,11 @@ pub struct StageConfig {
     /// Same semantics as [`MonolithicConfig::page_table_addr`].
     #[serde(default)]
     pub page_table_addr: Option<(u64, u64)>,
+    /// x86_64 identity-map page size (default: 2 MiB).
+    ///
+    /// Same semantics as [`MonolithicConfig::page_size`].
+    #[serde(default)]
+    pub page_size: PageSize,
 }
 
 /// Where a stage executes from.
@@ -94,6 +105,31 @@ pub enum RunsFrom {
     Rom,
     /// Execute from RAM after being loaded
     Ram,
+}
+
+/// x86_64 identity-map page size for page table construction.
+///
+/// Controls the page table depth and total size:
+/// - `Size2MiB`: 4-level (PML4 + PDPT + PD tables), 6 pages for 4 GiB.
+///   Compatible with all x86_64 CPUs.
+/// - `Size1GiB`: 3-level (PML4 + PDPT with PS=1), 2 pages for 512 GiB.
+///   Requires CPUID 0x80000001 EDX bit 26 (PDPE1GB).  Not supported on
+///   early Atom, some Xeon E3, and Goldmont-class CPUs.
+///
+/// Real boards should set this based on the target CPU's known capabilities.
+/// QEMU boards can use `Size1GiB` since QEMU always supports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PageSize {
+    /// 2 MiB pages — universally supported on all x86_64 CPUs.
+    Size2MiB,
+    /// 1 GiB pages — requires PDPE1GB (CPUID 0x80000001 EDX[26]).
+    Size1GiB,
+}
+
+impl Default for PageSize {
+    fn default() -> Self {
+        Self::Size2MiB
+    }
 }
 
 /// A capability is a composable unit of firmware functionality.

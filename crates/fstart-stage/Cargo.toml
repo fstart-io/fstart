@@ -48,6 +48,8 @@ qemu-fw-cfg = ["dep:fstart-driver-qemu-fw-cfg"]
 ns16550-pio = ["ns16550", "fstart-driver-ns16550?/pio"]
 # x86 boot protocol support (zero page construction in platform crate)
 x86-boot = []
+# x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
+x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
 # AcpiLoad capability (load ACPI tables from external provider)
 acpi-load = []
 # MemoryDetect capability (runtime memory detection)

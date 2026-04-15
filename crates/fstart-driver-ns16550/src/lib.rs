@@ -127,33 +127,47 @@ register_bitfields! [u8,
 /// 32-bit width).
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum AccessMode {
-    /// Memory-mapped I/O: base address, register shift, I/O width.
+    /// Memory-mapped I/O with configurable register layout.
     ///
     /// `reg_shift` controls address stride: `0` = byte-packed,
     /// `2` = 4-byte spacing (DW APB / sunxi).
     ///
     /// `reg_width` controls bus transaction width: `1` = byte,
     /// `4` = 32-bit word. `0` = auto (word if shift >= 2, else byte).
-    Mmio(u64, u8, u8),
-    /// x86 port I/O: base I/O port address.
+    Mmio {
+        /// Base address of the register block.
+        base: u64,
+        /// Register index shift (0 = byte stride, 2 = 4-byte stride).
+        reg_shift: u8,
+        /// Bus transaction width (0 = auto, 1 = byte, 4 = word).
+        reg_width: u8,
+    },
+    /// x86 port I/O with base I/O port address.
     /// Requires the `pio` feature on this crate.
-    Pio(u64),
+    Pio {
+        /// Base I/O port address (e.g., 0x3F8 for COM1).
+        base: u64,
+    },
 }
 
 impl Default for AccessMode {
     fn default() -> Self {
-        Self::Mmio(0, 0, 0)
+        Self::Mmio {
+            base: 0,
+            reg_shift: 0,
+            reg_width: 0,
+        }
     }
 }
 
 /// Typed configuration for the NS16550 driver.
 ///
 /// The `regs` field selects the register access mechanism:
-///   - `Mmio(base, reg_shift, reg_width)` — memory-mapped I/O
-///   - `Pio(base)` — x86 port I/O (always byte-stride, byte-width)
+///   - `Mmio { base, reg_shift, reg_width }` — memory-mapped I/O
+///   - `Pio { base }` — x86 port I/O (always byte-stride, byte-width)
 ///
 /// Serde defaults ensure backward compatibility: existing board RON
-/// files without explicit `regs` get `Mmio(0, 0, 0)`.
+/// files without explicit `regs` get `Mmio { base: 0, reg_shift: 0, reg_width: 0 }`.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Ns16550Config {
     /// Register access mechanism (MMIO or PIO) with base address.
@@ -311,14 +325,18 @@ impl Device for Ns16550 {
 
     fn new(config: &Ns16550Config) -> Result<Self, DeviceError> {
         let regs = match config.regs {
-            AccessMode::Pio(base) => {
+            AccessMode::Pio { base } => {
                 #[cfg(not(feature = "pio"))]
                 return Err(DeviceError::ConfigError);
 
                 #[cfg(feature = "pio")]
                 ResolvedRegs::Pio { base: base as u16 }
             }
-            AccessMode::Mmio(base, reg_shift, reg_width) => {
+            AccessMode::Mmio {
+                base,
+                reg_shift,
+                reg_width,
+            } => {
                 // Resolve effective I/O width.
                 // 0 = auto (word if reg_shift >= 2).
                 let width = match reg_width {

@@ -688,9 +688,10 @@ fn generate_fstart_main(
     }
     if has_memory_detect {
         body.extend(quote! {
+            // Buffer for memory_detect() output. The detected entries are
+            // also stored in the global E820State for consumers (PCI host
+            // bridge, boot protocol, CrabEFI).
             let mut _e820_entries = [fstart_services::memory_detect::E820Entry::zeroed(); 128];
-            let mut _e820_count: usize = 0;
-            let mut _total_ram: u64 = 0;
         });
     }
 

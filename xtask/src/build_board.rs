@@ -113,6 +113,9 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
             let mut features = base_features.clone();
             let cap_features = capability_features(&mono.capabilities, &config.security, &config);
             features.extend(cap_features);
+            if mono.page_size == fstart_types::stage::PageSize::Size1GiB {
+                features.push("x86-1g-pages".to_string());
+            }
             let features_str = features.join(",");
             let needs_alloc = stage_uses_fdt(&mono.capabilities)
                 || stage_uses_acpi(&mono.capabilities)
@@ -156,6 +159,9 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 let cap_features =
                     capability_features(&stage.capabilities, &config.security, &config);
                 features.extend(cap_features);
+                if stage.page_size == fstart_types::stage::PageSize::Size1GiB {
+                    features.push("x86-1g-pages".to_string());
+                }
                 let features_str = features.join(",");
 
                 let stage_has_crabefi = stage

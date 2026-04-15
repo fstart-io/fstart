@@ -186,6 +186,7 @@ impl Device for QemuFwCfg {
 // ---------------------------------------------------------------------------
 
 /// Tracking entry for an allocated table in the buffer.
+#[derive(Clone)]
 struct AllocEntry {
     /// File name (NUL-terminated, up to 56 bytes).
     name: [u8; 56],
@@ -208,10 +209,14 @@ impl AcpiTableProvider for QemuFwCfg {
             loader_size
         );
 
-        // Read the loader commands into a temporary buffer on the stack.
+        // Read the loader commands into a static buffer to avoid 10 KiB
+        // stack usage. On real hardware with CAR, stack may be only 4-8 KiB.
         // Each command is 128 bytes. Typical QEMU has < 20 commands.
         const MAX_CMDS: usize = 64;
-        let mut loader_buf = [0u8; MAX_CMDS * 128];
+        // SAFETY: firmware is single-threaded; this static is accessed
+        // only from load_acpi_tables() which runs once during AcpiLoad.
+        static mut LOADER_BUF: [u8; MAX_CMDS * 128] = [0u8; MAX_CMDS * 128];
+        let loader_buf = unsafe { &mut *core::ptr::addr_of_mut!(LOADER_BUF) };
         let cmd_count = (loader_size as usize) / 128;
         if cmd_count > MAX_CMDS {
             return Err(ServiceError::InvalidParam);
@@ -219,8 +224,13 @@ impl AcpiTableProvider for QemuFwCfg {
         self.read_file(loader_sel, &mut loader_buf[..loader_size as usize]);
         fstart_log::info!("fw_cfg: {} table-loader commands", cmd_count as u32);
 
-        // Track allocations (file name → buffer offset)
-        let mut allocs: [Option<AllocEntry>; 32] = core::array::from_fn(|_| None);
+        // Track allocations (file name -> buffer offset).
+        // Static to avoid ~2 KiB on the stack.
+        // SAFETY: single-threaded firmware init.
+        static mut ALLOCS: [Option<AllocEntry>; 32] = [const { None }; 32];
+        let allocs = unsafe { &mut *core::ptr::addr_of_mut!(ALLOCS) };
+        // Clear any stale data from a previous call.
+        allocs.fill(None);
         let mut alloc_count = 0usize;
         let mut cursor = 0usize; // next free position in buffer
 
@@ -446,9 +456,16 @@ impl MemoryDetector for QemuFwCfg {
 // ---------------------------------------------------------------------------
 
 /// Find the buffer offset of an allocated file by its raw 56-byte name.
+///
+/// Both `entry.name` and `name` are NUL-padded 56-byte arrays from
+/// table-loader commands.  We compare the NUL-terminated prefix of each
+/// to avoid false prefix matches (e.g., "etc/acpi/rsdt" matching
+/// "etc/acpi/rsdtx").
 fn find_alloc(allocs: &[Option<AllocEntry>; 32], name: &[u8]) -> Option<usize> {
+    let name_len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     for entry in allocs.iter().flatten() {
-        if entry.name[..name.len()] == *name {
+        let entry_len = entry.name.iter().position(|&b| b == 0).unwrap_or(56);
+        if entry_len == name_len && entry.name[..entry_len] == name[..name_len] {
             return Some(entry.offset);
         }
     }
