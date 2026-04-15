@@ -2,6 +2,7 @@
 
 use std::fmt::Write;
 
+use fstart_types::stage::PageSize;
 use fstart_types::{BoardConfig, Platform, RegionKind, SocImageFormat, StageLayout};
 
 /// Generate a linker script for the given board and (optional) stage.
@@ -11,27 +12,30 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     let arch = config.platform.linker_arch();
 
     // Determine load address, stack size, and optional data/page-table addresses from stage config
-    let (load_addr, stack_size, data_addr, page_table_addr) = match (&config.stages, stage_name) {
-        (StageLayout::Monolithic(mono), _) => (
-            mono.load_addr,
-            mono.stack_size as u64,
-            mono.data_addr,
-            mono.page_table_addr,
-        ),
-        (StageLayout::MultiStage(stages), Some(name)) => {
-            if let Some(stage) = stages.iter().find(|s| s.name.as_str() == name) {
-                (
-                    stage.load_addr,
-                    stage.stack_size as u64,
-                    stage.data_addr,
-                    stage.page_table_addr,
-                )
-            } else {
-                (0x8000_0000, 0x10000, None, None) // fallback
+    let (load_addr, stack_size, data_addr, page_table_addr, page_size) =
+        match (&config.stages, stage_name) {
+            (StageLayout::Monolithic(mono), _) => (
+                mono.load_addr,
+                mono.stack_size as u64,
+                mono.data_addr,
+                mono.page_table_addr,
+                mono.page_size,
+            ),
+            (StageLayout::MultiStage(stages), Some(name)) => {
+                if let Some(stage) = stages.iter().find(|s| s.name.as_str() == name) {
+                    (
+                        stage.load_addr,
+                        stage.stack_size as u64,
+                        stage.data_addr,
+                        stage.page_table_addr,
+                        stage.page_size,
+                    )
+                } else {
+                    (0x8000_0000, 0x10000, None, None, PageSize::default()) // fallback
+                }
             }
-        }
-        _ => (0x8000_0000, 0x10000, None, None),
-    };
+            _ => (0x8000_0000, 0x10000, None, None, PageSize::default()),
+        };
 
     // Check if load_addr falls within a ROM region (XIP) or RAM region
     let rom_region =
@@ -127,6 +131,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             needs_egon_header,
             is_first_stage,
             config.platform,
+            page_size,
         );
     } else {
         // RAM-only layout: everything in RAM at load_addr.
@@ -189,6 +194,7 @@ fn generate_xip_layout(
     needs_egon_header: bool,
     is_first_stage: bool,
     platform: Platform,
+    page_size: PageSize,
 ) {
     // When data_addr is set, split RAM into two memory regions:
     // RAMRO for read-only data (unused currently, but reserved),
@@ -278,7 +284,7 @@ fn generate_xip_layout(
     writeln!(out, "    }} > RAM\n").unwrap();
 
     // Page tables: isolated from BSS to prevent corruption.
-    write_page_tables_section(out, "RAM", platform, page_table_addr.is_some());
+    write_page_tables_section(out, "RAM", platform, page_table_addr.is_some(), page_size);
 
     // Stack: grows downward from top of RAM region.
     write_stack(out, stack_size, "RAM");
@@ -358,7 +364,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
-        write_page_tables_section(out, "RWDATA", platform, false);
+        write_page_tables_section(out, "RWDATA", platform, false, PageSize::default());
         write_stack(out, stack_size, "RWDATA");
         writeln!(out, "}}").unwrap();
     } else {
@@ -379,7 +385,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
-        write_page_tables_section(out, "RAM", platform, false);
+        write_page_tables_section(out, "RAM", platform, false, PageSize::default());
         write_stack(out, stack_size, "RAM");
         writeln!(out, "}}").unwrap();
     }
@@ -464,22 +470,24 @@ fn write_page_tables_section(
     region: &str,
     _platform: Platform,
     has_low_region: bool,
+    page_size: PageSize,
 ) {
     if has_low_region {
         // Page tables and IDT placed in the LOW region (separate from
         // BSS/stack). Used on platforms where page tables must live at
         // specific addresses (e.g., QEMU x86_64 conventional memory).
         //
-        // Layout (for x86_64):
-        //   page tables: 6 pages (PML4 + PDPT + 4×PDT)
-        //   IDT: 1 page (256 entries × 16 bytes)
+        // Size depends on page size:
+        //   1 GiB pages: 2 pages (PML4 + PDPT), 512 GiB coverage
+        //   2 MiB pages: 6 pages (PML4 + PDPT + 4xPD), 4 GiB coverage
+        //   IDT: 1 page (256 entries x 16 bytes)
+        let (pt_size, pt_comment) = match page_size {
+            PageSize::Size1GiB => (0x2000, "2 pages: PML4 + PDPT (1 GiB pages, 512 GiB)"),
+            PageSize::Size2MiB => (0x6000, "6 pages: PML4 + PDPT + 4xPD (2 MiB pages, 4 GiB)"),
+        };
         writeln!(out, "    .page_tables (NOLOAD) : {{").unwrap();
         writeln!(out, "        _page_tables_start = .;").unwrap();
-        writeln!(
-            out,
-            "        . += 0x2000;  /* 2 pages: PML4 + PDPT (1 GiB pages) */"
-        )
-        .unwrap();
+        writeln!(out, "        . += {pt_size:#x};  /* {pt_comment} */").unwrap();
         writeln!(out, "        _page_tables_end = .;").unwrap();
         writeln!(out, "    }} > LOW\n").unwrap();
         writeln!(out, "    .idt_table (NOLOAD) : {{").unwrap();

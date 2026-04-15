@@ -34,7 +34,7 @@
         (
             name: "uart0",
             driver: Ns16550((
-                regs: Pio(0x3F8),
+                regs: Pio(base: 0x3F8),
                 clock_freq: 1843200,
                 baud_rate: 115200,
             )),
@@ -95,8 +95,8 @@
             heap_size: Some(0x1000),
             runs_from: Rom,
             data_addr: Some(0x100000),
-            // 2 pages for PML4+PDPT (1 GiB pages) + 1 page for IDT.
             page_table_addr: Some((0x1000, 0x4000)),
+            page_size: Size1GiB,
         ),
         // Stage 2: Main stage (RAM)
         //

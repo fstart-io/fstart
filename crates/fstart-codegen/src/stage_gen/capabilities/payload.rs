@@ -131,11 +131,15 @@ fn generate_platform_boot_protocol(
                 fstart_log::info!("booting Linux (x86_64)...");
                 fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
                 // x86 Linux boot protocol: fill zero page and jump.
+                // e820 data comes from the global E820State (populated by
+                // MemoryDetect); passed as a slice for the boot protocol.
+                let _e820_state = unsafe { fstart_services::memory_detect::e820_state() };
                 fstart_platform::boot_linux(
                     #kernel_addr as u64,
                     _acpi_rsdp_addr,
-                    &_e820_entries[.._e820_count],
+                    _e820_state.entries(),
                     #bootargs_str,
+                    0x90000u64,  // zero_page_addr: conventional memory
                 );
             }
         }
@@ -503,14 +507,10 @@ fn generate_payload_load_uefi(
     // - x86_64: build from e820 entries (from MemoryDetect), carve firmware
     // - AArch64/RISC-V: build from static board config RAM region
     let memory_map_setup = if platform == Platform::X86_64 {
-        // x86_64: e820 entries are in _e820_entries[.._e820_count] from MemoryDetect.
-        // ROM entries come from the board config.
-        // Firmware data/stack addresses from stage config.
-        //
-        // fw_stack_addr = top of highest RAM below 4G minus stack_size.
-        // Since we don't know the exact RAM top at codegen time,
-        // the generated code computes it from the stage config.
+        // x86_64: e820 entries come from the global E820State populated by
+        // MemoryDetect.  ROM entries come from the board config.
         quote! {
+            let _e820_state = unsafe { fstart_services::memory_detect::e820_state() };
             let _rom_entries: &[fstart_crabefi::MemoryRegion] = &[
                 #static_mem_entries
             ];
@@ -529,7 +529,7 @@ fn generate_payload_load_uefi(
             // Instead, pass the entire RAM as ConventionalMemory and let
             // CrabEFI's allocator split it via runtime_region (below).
             let _mem_idx = fstart_crabefi::build_efi_memory_map_from_e820(
-                &_e820_entries[.._e820_count],
+                _e820_state.entries(),
                 0, 0,  // no firmware data hole
                 0, 0,  // no firmware stack hole
                 _rom_entries,

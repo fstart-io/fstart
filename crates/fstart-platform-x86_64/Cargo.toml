@@ -12,3 +12,6 @@ ufmt = { workspace = true }
 
 [features]
 default = []
+# Use 1 GiB pages for identity mapping (requires PDPE1GB).
+# Without this feature, 2 MiB pages are used (universally supported).
+x86-1g-pages = []
