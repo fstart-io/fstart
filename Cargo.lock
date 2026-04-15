@@ -539,6 +539,7 @@ dependencies = [
  "fstart-driver-ns16550",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
+ "fstart-driver-q35-hostbridge",
  "fstart-driver-qemu-fw-cfg",
  "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",
@@ -613,7 +614,6 @@ version = "0.1.0"
 dependencies = [
  "fstart-log",
  "fstart-mmio",
- "fstart-pio",
  "fstart-services",
  "serde",
  "ufmt",
@@ -630,6 +630,18 @@ dependencies = [
  "heapless",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-q35-hostbridge"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-pci-ecam",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
@@ -877,6 +889,7 @@ dependencies = [
  "fstart-driver-ns16550",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
+ "fstart-driver-q35-hostbridge",
  "fstart-driver-qemu-fw-cfg",
  "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",

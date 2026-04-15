@@ -4,8 +4,8 @@
 // RAM: detected at runtime via fw_cfg e820.
 // UART: legacy ISA NS16550 at I/O port 0x3F8 (COM1).
 // ACPI: loaded from QEMU via fw_cfg table-loader protocol.
-// PCI: ECAM at 0xB0000000, 256 buses. MMIO32 window below ECAM,
-//      PIO window 0xC000-0xFFFF (above legacy ISA ports).
+// PCI: Q35 host bridge — ECAM at 0xB0000000, 256 buses.
+//      MMIO windows computed at runtime from e820 memory map.
 (
     name: "qemu-q35",
     platform: X86_64,
@@ -39,15 +39,11 @@
         ),
         (
             name: "pci0",
-            driver: PciEcam((
+            // Q35 host bridge: ECAM bootstrap via CF8/CFC, MMIO windows
+            // computed at runtime from e820 (TOLUD depends on DRAM size).
+            driver: Q35HostBridge((
                 ecam_base:  0xB0000000,
                 ecam_size:  0x10000000,   // 256 MiB (256 buses)
-                mmio32_base: 0x80000000,
-                mmio32_size: 0x30000000,  // 768 MiB (0x80000000-0xAFFFFFFF)
-                mmio64_base: 0x380000000,
-                mmio64_size: 0x040000000, // 1 GiB above 4 GiB
-                pio_base:   0xC000,
-                pio_size:   0x4000,       // 0xC000-0xFFFF
                 bus_start: 0,
                 bus_end: 255,
             )),

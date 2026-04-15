@@ -164,6 +164,10 @@ pub(super) fn generate_memory_init() -> TokenStream {
 /// Finds the referenced PCI root bus device, calls its `init()` method
 /// (which enumerates the bus, sizes BARs, allocates resources, and
 /// programs hardware), and logs the result.
+///
+/// For the Q35 host bridge, `init_with_e820()` is called instead of
+/// `init()`, passing the e820 entries from MemoryDetect so the driver
+/// can compute the PCI MMIO hole at runtime.
 pub(super) fn generate_pci_init(
     device_name: &str,
     devices: &[DeviceConfig],
@@ -191,12 +195,25 @@ pub(super) fn generate_pci_init(
 
     let device = format_ident!("{}", device_name);
 
-    quote! {
-        #device.init().unwrap_or_else(|_| {
-            fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
-            #halt
-        });
-        fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
+    // Q35 host bridge needs e820 data to compute MMIO windows.
+    let is_q35 = dev.driver.as_str() == "q35-hostbridge";
+
+    if is_q35 {
+        quote! {
+            #device.init_with_e820(&_e820_entries[.._e820_count]).unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
+                #halt
+            });
+            fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
+        }
+    } else {
+        quote! {
+            #device.init().unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
+                #halt
+            });
+            fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
+        }
     }
 }
 

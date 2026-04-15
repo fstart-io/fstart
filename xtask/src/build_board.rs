@@ -596,12 +596,17 @@ fn capability_features(
         features.push("fdt".to_string());
     }
 
+    // PCI features are determined by the actual driver, not the platform.
+    // The Q35 host bridge handles CF8/CFC bootstrap internally.
     if stage_uses_pci(capabilities) {
-        if config.platform == Platform::X86_64 {
-            // x86: use CF8/CFC to program PCIEXBAR before ECAM access.
-            features.push("pci-ecam-pio".to_string());
-        } else {
-            features.push("pci-ecam".to_string());
+        // Find the PCI root bus device to determine which driver is used.
+        let pci_driver = config
+            .devices
+            .iter()
+            .find(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+        match pci_driver.map(|d| d.driver.as_str()) {
+            Some("q35-hostbridge") => features.push("q35-hostbridge".to_string()),
+            _ => features.push("pci-ecam".to_string()),
         }
     }
 
