@@ -1,0 +1,13 @@
+[package]
+name = "fstart-superio"
+description = "Generic SuperIO chip framework for x86 LPC-attached peripheral controllers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-log = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true }
+serde = { workspace = true }
+ufmt = { workspace = true }

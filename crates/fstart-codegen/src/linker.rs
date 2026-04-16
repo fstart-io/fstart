@@ -11,7 +11,9 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
 
     let arch = config.platform.linker_arch();
 
-    // Determine load address, stack size, and optional data/page-table addresses from stage config
+    // Load address, stack size, and optional data / page-table
+    // reservations — pulled from either the monolithic stage or the
+    // named multi-stage entry.
     let (load_addr, stack_size, data_addr, page_table_addr, page_size) =
         match (&config.stages, stage_name) {
             (StageLayout::Monolithic(mono), _) => (
@@ -31,17 +33,32 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
                         stage.page_size,
                     )
                 } else {
-                    (0x8000_0000, 0x10000, None, None, PageSize::default()) // fallback
+                    (0x8000_0000, 0x10000, None, None, PageSize::default())
                 }
             }
             _ => (0x8000_0000, 0x10000, None, None, PageSize::default()),
         };
 
-    // Check if load_addr falls within a ROM region (XIP) or RAM region
+    // Check if load_addr falls within a ROM region (XIP) or RAM region.
     let rom_region =
         config.memory.regions.iter().find(|r| {
             r.kind == RegionKind::Rom && load_addr >= r.base && load_addr < r.base + r.size
         });
+
+    // Cache-as-RAM landing decision.
+    //
+    // An XIP stage (load_addr inside a ROM region) automatically uses
+    // `memory.car` for writable sections if the board declares it.
+    // This captures the x86 pre-DRAM pattern — bootblock / romstage
+    // use CAR because DRAM isn't trained yet — without any per-stage
+    // flag: the distinction between "writable in RAM" (ARM, RISC-V,
+    // post-DRAM x86) and "writable in CAR" (pre-DRAM x86) is fully
+    // determined by whether the board declares `memory.car`.
+    let car_config = if rom_region.is_some() {
+        config.memory.car.as_ref().map(|c| (c.base, c.size))
+    } else {
+        None
+    };
 
     // Find the appropriate RAM region. For XIP builds (load_addr in ROM),
     // the first RAM region is used for writable sections. For RAM builds
@@ -70,9 +87,16 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
                 .find(|r| load_addr >= r.base && load_addr < r.base + r.size)
         });
 
-    let (ram_origin, ram_length) = ram_region
-        .map(|r| (r.base, r.size))
-        .unwrap_or((0x8000_0000, 0x0800_0000));
+    // In CAR mode, writable sections land in the CAR region instead
+    // of the board's RAM region. This decouples pre-DRAM stages from
+    // DRAM being available.
+    let (ram_origin, ram_length) = if let Some((car_base, car_size)) = car_config {
+        (car_base, car_size)
+    } else {
+        ram_region
+            .map(|r| (r.base, r.size))
+            .unwrap_or((0x8000_0000, 0x0800_0000))
+    };
 
     // eGON header is only needed for the first stage (or monolithic). The
     // BROM loads the first-stage binary with the eGON.BT0 header at offset 0.
@@ -169,6 +193,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             bss_origin,
             needs_egon_header,
             config.platform,
+            is_first_stage,
         );
     }
 
@@ -284,7 +309,14 @@ fn generate_xip_layout(
     writeln!(out, "    }} > RAM\n").unwrap();
 
     // Page tables: isolated from BSS to prevent corruption.
-    write_page_tables_section(out, "RAM", platform, page_table_addr.is_some(), page_size);
+    write_page_tables_section(
+        out,
+        "RAM",
+        platform,
+        page_table_addr.is_some(),
+        page_size,
+        is_first_stage,
+    );
 
     // Stack: grows downward from top of RAM region.
     write_stack(out, stack_size, "RAM");
@@ -329,6 +361,7 @@ fn generate_xip_layout(
 /// `bss_origin` optionally specifies a fixed starting address for BSS and stack.
 /// When the bootblock shares its address space with the FFS image, BSS/stack
 /// must be placed after the entire image area to avoid corruption.
+#[allow(clippy::too_many_arguments)]
 fn generate_ram_layout(
     out: &mut String,
     ram_origin: u64,
@@ -337,6 +370,7 @@ fn generate_ram_layout(
     bss_origin: Option<u64>,
     needs_egon_header: bool,
     platform: Platform,
+    is_first_stage: bool,
 ) {
     if let Some(bss_addr) = bss_origin {
         let code_length = bss_addr - ram_origin;
@@ -364,7 +398,14 @@ fn generate_ram_layout(
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
-        write_page_tables_section(out, "RWDATA", platform, false, PageSize::default());
+        write_page_tables_section(
+            out,
+            "RWDATA",
+            platform,
+            false,
+            PageSize::default(),
+            is_first_stage,
+        );
         write_stack(out, stack_size, "RWDATA");
         writeln!(out, "}}").unwrap();
     } else {
@@ -385,7 +426,14 @@ fn generate_ram_layout(
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
-        write_page_tables_section(out, "RAM", platform, false, PageSize::default());
+        write_page_tables_section(
+            out,
+            "RAM",
+            platform,
+            false,
+            PageSize::default(),
+            is_first_stage,
+        );
         write_stack(out, stack_size, "RAM");
         writeln!(out, "}}").unwrap();
     }
@@ -461,30 +509,45 @@ fn write_allwinner_egon_section(out: &mut String, region: &str) {
 
 /// MMU page tables: isolated from BSS in a dedicated section.
 ///
+/// Space reservation rules for x86_64:
+///
+/// - **First stage** (bootblock or monolithic): the 32-bit→64-bit entry
+///   code builds PML4 / PDPT / PDTs at `[_page_tables_start, _page_tables_end)`.
+///   The linker must reserve real bytes sized according to [`PageSize`],
+///   otherwise CR3 ends up pointing at collapsed memory and the mode
+///   switch faults silently.
+/// - **Non-first x86_64 stages** (e.g., ramstage after bootblock): no
+///   page-table construction — `_start_ram` inherits the tables already
+///   programmed by the bootblock. Zero-byte reservation is fine, and
+///   `page_size` has no effect.
+///
 /// AArch64 entry code stores page table descriptors in static arrays
-/// that must be 4 KiB aligned. Placing them in BSS risks corruption if
-/// any adjacent static (e.g., CrabEFI's firmware state) overflows.
-/// This section is NOLOAD and cleared by the entry stub before use.
+/// placed in `.page_tables` via attribute — the linker only needs the
+/// symbol bookends there.
+#[allow(clippy::too_many_arguments)]
 fn write_page_tables_section(
     out: &mut String,
     region: &str,
-    _platform: Platform,
+    platform: Platform,
     has_low_region: bool,
     page_size: PageSize,
+    is_first_stage: bool,
 ) {
+    // Size depends on page size (x86_64 only):
+    //   1 GiB pages: 2 pages (PML4 + PDPT), 512 GiB coverage
+    //   2 MiB pages: 6 pages (PML4 + PDPT + 4xPD), 4 GiB coverage
+    let (pt_size, pt_comment) = match page_size {
+        PageSize::Size1GiB => (0x2000u64, "2 pages: PML4 + PDPT (1 GiB pages, 512 GiB)"),
+        PageSize::Size2MiB => (
+            0x6000u64,
+            "6 pages: PML4 + PDPT + 4xPD (2 MiB pages, 4 GiB)",
+        ),
+    };
+
     if has_low_region {
         // Page tables and IDT placed in the LOW region (separate from
         // BSS/stack). Used on platforms where page tables must live at
         // specific addresses (e.g., QEMU x86_64 conventional memory).
-        //
-        // Size depends on page size:
-        //   1 GiB pages: 2 pages (PML4 + PDPT), 512 GiB coverage
-        //   2 MiB pages: 6 pages (PML4 + PDPT + 4xPD), 4 GiB coverage
-        //   IDT: 1 page (256 entries x 16 bytes)
-        let (pt_size, pt_comment) = match page_size {
-            PageSize::Size1GiB => (0x2000, "2 pages: PML4 + PDPT (1 GiB pages, 512 GiB)"),
-            PageSize::Size2MiB => (0x6000, "6 pages: PML4 + PDPT + 4xPD (2 MiB pages, 4 GiB)"),
-        };
         writeln!(out, "    .page_tables (NOLOAD) : {{").unwrap();
         writeln!(out, "        _page_tables_start = .;").unwrap();
         writeln!(out, "        . += {pt_size:#x};  /* {pt_comment} */").unwrap();
@@ -494,8 +557,16 @@ fn write_page_tables_section(
         writeln!(out, "        *(.idt_table)").unwrap();
         writeln!(out, "    }} > LOW\n").unwrap();
     } else {
+        // Non-LOW path: reserve real space on x86_64 first stage (the
+        // entry asm builds tables here). Other stages / platforms get
+        // a zero-size placeholder so `_page_tables_{start,end}` symbols
+        // exist for consistency.
+        let needs_reservation = platform == Platform::X86_64 && is_first_stage;
         writeln!(out, "    .page_tables (NOLOAD) : ALIGN(4096) {{").unwrap();
         writeln!(out, "        _page_tables_start = .;").unwrap();
+        if needs_reservation {
+            writeln!(out, "        . += {pt_size:#x};  /* {pt_comment} */").unwrap();
+        }
         writeln!(out, "        *(.page_tables .page_tables.*)").unwrap();
         writeln!(out, "        _page_tables_end = .;").unwrap();
         writeln!(out, "    }} > {region}\n").unwrap();
@@ -503,7 +574,7 @@ fn write_page_tables_section(
         // x86_64 RAM stages inherit page tables from the bootblock but
         // still define their own IDT. Place it in the main RAM region
         // alongside BSS (no LOW region for RAM stages).
-        if _platform == Platform::X86_64 {
+        if platform == Platform::X86_64 {
             writeln!(out, "    .idt_table (NOLOAD) : ALIGN(4096) {{").unwrap();
             writeln!(out, "        *(.idt_table)").unwrap();
             writeln!(out, "    }} > {region}\n").unwrap();

@@ -244,7 +244,12 @@ fn default_bus_range() -> (u8, u8) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct X86PlatformAcpi {
     /// Number of CPUs.
-    pub num_cpus: u32,
+    ///
+    /// When `None`, the MADT builder enumerates LAPIC IDs at runtime via
+    /// CPUID leaf 0x0B (x2APIC topology). This is essential for
+    /// multi-board images where CPU counts differ per board.
+    #[serde(default)]
+    pub num_cpus: Option<u32>,
     /// Local APIC base address (usually `0xFEE0_0000`).
     #[serde(default = "default_lapic_base")]
     pub lapic_base: u64,

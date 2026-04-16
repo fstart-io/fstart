@@ -538,6 +538,10 @@ dependencies = [
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
+ "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
@@ -597,6 +601,46 @@ dependencies = [
  "fstart-mmio",
  "fstart-services",
  "serde",
+]
+
+[[package]]
+name = "fstart-driver-i2c-ck505"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-services",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-ich7"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "fstart-superio",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-pineview"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-ite8721f"
+version = "0.1.0"
+dependencies = [
+ "fstart-superio",
 ]
 
 [[package]]
@@ -888,6 +932,10 @@ dependencies = [
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
+ "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
@@ -930,6 +978,17 @@ name = "fstart-sunxi-pio"
 version = "0.1.0"
 dependencies = [
  "fstart-mmio",
+]
+
+[[package]]
+name = "fstart-superio"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
