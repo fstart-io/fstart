@@ -1,0 +1,320 @@
+// Foxconn D41S — Intel Atom D410 (Pineview NB) + ICH7 SB + ITE IT8721F SuperIO.
+//
+// The board has:
+//   - 1 MiB SPI NOR flash (mapped at 0xFFF00000..0xFFFFFFFF).
+//   - DDR2 SDRAM (size detected at runtime via SPD over SMBus).
+//   - 4 integrated SATA ports, 1 PATA header.
+//   - 4 PCIe lanes from the ICH7 (only port 1 is routed to the NIC).
+//   - Realtek RTL8168 gigabit NIC on PCIe root port 1.
+//   - IDT CK505 clock generator on SMBus.
+//   - ITE IT8721F SuperIO on LPC (base port 0x2e) providing COM1, COM2,
+//     PS/2 keyboard/mouse, parallel port, environment controller, CIR.
+//
+// Boot flow (x86 three-stage CAR model):
+//   1. `bootblock` (XIP from flash): reset vector -> NEM Cache-as-RAM
+//      setup -> set up SuperIO COM1 -> load `romstage`.
+//   2. `romstage` (XIP from flash, stack in CAR): program NB+SB chipset
+//      registers (ChipsetInit), train DDR2 DRAM (DramInit), load
+//      `ramstage` into DRAM.
+//   3. `ramstage` (runs from DRAM): initialize PCI / NIC / SMBus / ACPI
+//      / SMBIOS, then hand off to the payload (Linux).
+//
+// This is a chassis/chipset board — QEMU cannot execute it end-to-end.
+// Build-only verification ensures the RON schema, codegen, and driver
+// interfaces are consistent.
+
+(
+    name: "foxconn-d41s",
+    platform: X86_64,
+
+    memory: (
+        regions: [
+            ( name: "flash", base: 0xFFF00000, size: 0x100000, kind: Rom ),
+            // DRAM region covers the conventional 1 GiB the D410 typically ships with.
+            // Real size is detected at runtime via SPD — this is the upper bound
+            // used by the linker for the `ramstage` layout.
+            ( name: "ram",   base: 0x00100000, size: 0x3FF00000, kind: Ram ),
+        ],
+        flash_base: 0xFFF00000,
+        flash_size: 0x100000,
+        // Cache-as-RAM window used by bootblock and romstage. The Atom D4xx
+        // L2 is 512 KiB; we use a 1 MiB reservation to be compatible with
+        // future chips in the same family.
+        car: (
+            method: NonEvictMode,
+            base: 0xFEF00000,
+            size: 0x100000,
+        ),
+    ),
+
+    devices: [
+        // Northbridge and southbridge are separate chips connected by
+        // DMI — they are siblings at the top level, not a bus-parent
+        // hierarchy. This mirrors physical reality and lets ChipsetInit
+        // address both in stages (bootblock, romstage) that do not run
+        // a full DriverInit.
+        //
+        // The console is provided by the IT8721F SuperIO (COM1 at
+        // 0x3F8), which sits on the LPC bus under the ICH7 southbridge.
+        // At reset the CPU can't reach LPC-space I/O — the ICH7 LPC
+        // decode windows must be programmed first. The device tree
+        // (superio → lpc → southbridge) captures this dependency
+        // and the codegen walks the chain: `southbridge.init()` opens
+        // LPC decode, `superio.init()` then enters config mode and
+        // programs COM1 at 0x3F8. Only after that chain completes does
+        // the Console service become available for logging.
+        (
+            name: "northbridge",
+            driver: IntelPineview((
+                mchbar: 0xFED10000,
+                dmibar: 0xFED18000,
+                epbar:  0xFED19000,
+                igd: ( use_crt: true, use_lvds: false, spread_spectrum: false ),
+            )),
+            services: ["MemoryController", "PciHost"],
+        ),
+        (
+            name: "southbridge",
+            driver: IntelIch7((
+                rcba: 0xFED1C000,
+                pirq_routing: (0x0b, 0x0b, 0x0b, 0x0b,
+                               0x0b, 0x0b, 0x0b, 0x0b),
+                gpe0_en: 0x441,
+                lpc_decode: (0x00fc0a01, 0, 0, 0),
+                hd_audio: true,
+                sata: ( mode: Ahci, ports: 0x3 ),
+                usb: ( ehci: true, uhci: (true, true, true, true) ),
+                pata: false,
+            )),
+            services: ["Southbridge"],
+            children: [
+                // PCIe root ports — structural PCI bridge nodes.
+                // Port 0 is empty on this board.
+                ( name: "pcie0", bus: Pci(0x1c, 0), services: ["PciBridge"] ),
+                // Port 1 hosts the RTL8168 NIC (runtime-enumerated).
+                ( name: "pcie1", bus: Pci(0x1c, 1), services: ["PciBridge"] ),
+                ( name: "pcie2", bus: Pci(0x1c, 2), enabled: false, services: ["PciBridge"] ),
+                ( name: "pcie3", bus: Pci(0x1c, 3), enabled: false, services: ["PciBridge"] ),
+
+                // LPC bus — structural internal SB function. The
+                // SuperIO is the only LPC peripheral on this board.
+                ( name: "lpc", services: ["LpcBus"],
+                    children: [
+                        // The IT8721F SuperIO's job is LDN programming:
+                        // its `init()` enters config mode and maps each
+                        // enabled logical device to its I/O base (LDN 1
+                        // → COM1 @ 0x3F8, LDN 2 → COM2 @ 0x2F8, etc.).
+                        // It does NOT itself drive UART I/O — each COM
+                        // port is a separate NS16550 child below, so
+                        // the board author can pick either (or both) as
+                        // the `Console` provider via `ConsoleInit`.
+                        //
+                        // The `SuperIoHost` service lets COM children
+                        // nest here for init-ordering; the codegen walks
+                        // `com1 → superio → southbridge` and emits
+                        // init() calls root-first, so LPC decode is
+                        // open before the SuperIO is poked, and the
+                        // SuperIO's LDNs are programmed before the
+                        // NS16550 starts touching the UART registers.
+                        ( name: "superio", bus: Lpc(0x2e),
+                            driver: Ite8721f((
+                                com1: ( io_base: 0x3f8, irq: 4, baud_rate: 115200 ),
+                                com2: ( io_base: 0x2f8, irq: 3, baud_rate: 115200 ),
+                                parallel: ( io_base: 0x378, irq: 7 ),
+                                env_controller: ( io_base: 0xa10, io_ext: 0xa00 ),
+                                keyboard: ( io_base: 0x60, io_ext: 0x64, irq: 1 ),
+                                mouse: ( irq: 12 ),
+                                cir: ( io_base: 0x3e0, irq: 10 ),
+                            )),
+                            services: ["SuperIoHost"],
+                            children: [
+                                // COM1 (matches SuperIO LDN 1 above).
+                                // The NS16550 driver handles 16550
+                                // register programming (baud, FIFO,
+                                // LCR) at the I/O base the SuperIO
+                                // decodes to. Either com1 or com2 can
+                                // be chosen as the console by name.
+                                ( name: "com1",
+                                    driver: Ns16550((
+                                        regs: Pio(base: 0x3f8),
+                                        clock_freq: 1843200,
+                                        baud_rate: 115200,
+                                    )),
+                                    services: ["Console"],
+                                ),
+                                ( name: "com2",
+                                    driver: Ns16550((
+                                        regs: Pio(base: 0x2f8),
+                                        clock_freq: 1843200,
+                                        baud_rate: 115200,
+                                    )),
+                                    services: ["Console"],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+
+                // SMBus — structural internal SB function. Hosts
+                // the CK505 clock generator and (at runtime) the
+                // DIMM SPD EEPROMs at 0x50..0x57.
+                ( name: "smbus", services: ["SmBus"],
+                    children: [
+                        // The CK505 driver is declared here but disabled
+                        // for the initial build: its `new_on_bus` needs
+                        // an SmBus bus provider which is not yet wired
+                        // into the ICH7 driver. Re-enable after Phase 6
+                        // plumbs the SMBus transaction API.
+                        ( name: "ck505", bus: I2c(0x69), enabled: false,
+                            driver: I2cCk505((
+                                mask: (0x00, 0x80, 0xff, 0xff, 0xff),
+                                regs: (0x00, 0x80, 0xfe, 0xff, 0xfc),
+                            )),
+                            services: [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ],
+
+    stages: MultiStage([
+        // Two stages: bootblock (XIP from flash, writable in CAR) does
+        // console bring-up, full chipset init, DRAM training, then loads
+        // the ramstage from the FFS image into DRAM. Ramstage (runs from
+        // DRAM) finishes driver init, ACPI/SMBIOS, and jumps to the payload.
+        (
+            name: "bootblock",
+            capabilities: [
+                // Console chain: the codegen walks com1 → superio → lpc
+                // (structural, skipped) → southbridge. Init is emitted
+                // root-first: `southbridge.init()` programs RCBA and
+                // the LPC I/O decode windows; `superio.init()` enters
+                // config mode and maps LDN 1 to 0x3F8; finally
+                // `com1.init()` programs the 16550 UART registers
+                // (baud, FIFO, LCR). Only after all three complete
+                // is the Console service available for logging.
+                //
+                // Swap to `com2` to use COM2 (0x2F8) as the console
+                // instead — no other changes needed.
+                ConsoleInit( device: "com1" ),
+                // ChipsetInit still calls the NB + SB early_init hooks.
+                // `southbridge.early_init()` is a no-op beyond what `init()`
+                // already did; `northbridge.early_init()` opens MCHBAR/DMIBAR.
+                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+                // DDR2 training (currently stubbed, see
+                // fstart-driver-intel-pineview/src/lib.rs).
+                DramInit( device: "northbridge" ),
+                // Load the ramstage from FFS in flash and jump to it.
+                BootMedia(MemoryMapped( base: 0xFFF00000, size: 0xFE000 )),
+                StageLoad( next_stage: "ramstage" ),
+            ],
+            // Code runs XIP from ROM (reset vector 0xFFFFFFF0). Writable
+            // state lives in Cache-as-RAM automatically because `memory.car`
+            // is declared above and the load_addr lands in a ROM region —
+            // the linker chooses CAR without any explicit `runs_from` flag.
+            // The NEM setup in the platform crate programs MTRRs + MSR
+            // 0x2E0 before Rust code touches any RAM-backed variable.
+            // The x86_64 bootblock entry code builds PML4/PDPT/PDTs at
+            // `_page_tables_start` (sized by `page_size`) during the
+            // 32→64-bit transition; the linker reserves that space in
+            // CAR automatically.
+            load_addr: 0xFFFF0000,
+            stack_size: 0x2000,
+            runs_from: Rom,
+            // Atom D410 (Bonnell core) has no PDPE1GB, so 2 MiB pages.
+            // Page-table reservation = 6 × 4 KiB = 24 KiB in CAR.
+            page_size: Size2MiB,
+        ),
+        (
+            name: "ramstage",
+            capabilities: [
+                ConsoleInit( device: "com1" ),
+                DriverInit,
+                AcpiPrepare,
+                SmBiosPrepare,
+                BootMedia(MemoryMapped(
+                    base: 0xFFF00000, size: 0xFE000,
+                    ram_copy_addr: 0x2000000,
+                )),
+                SigVerify,
+                PayloadLoad,
+            ],
+            load_addr: 0x01000000,
+            stack_size: 0x8000,
+            heap_size: 0x40000,
+            // Ramstage runs from DRAM. It enters via `_start_ram` which
+            // inherits the page tables built by the bootblock — no
+            // `page_table_addr` / `page_size` needed here. The linker
+            // still emits an IDT section in the RAM region so the
+            // ramstage can install its own exception handler.
+            runs_from: Ram,
+        ),
+    ]),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    mode: Rigid,
+
+    // ACPI: chipset-fixed topology only. CPU count + LAPIC IDs detected
+    // at runtime via CPUID leaf 0x0B (future Phase 6 work).
+    acpi: (
+        platform: X86((
+            lapic_base: 0xFEE00000,
+            ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
+            isos: [
+                // PIT remapped from IRQ 0 to GSI 2 (standard on ICH7).
+                ( bus: 0, source: 0, gsi: 2, flags: 0 ),
+                // SCI on IRQ 9, active-low level-triggered.
+                ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
+            ],
+            hpet_base: 0xFED00000,
+            legacy_devices: true,
+            sci_irq: 9,
+        )),
+    ),
+
+    // SMBIOS: board identity strings only. Runtime-detected fields
+    // (CPU frequency, cores/threads, cache geometry, DIMM sizes/speeds)
+    // are omitted here — a future SmBiosPrepare extension reads them
+    // from CPUID / SPD at boot.
+    smbios: (
+        bios_vendor: "fstart",
+        bios_version: "0.1.0",
+        bios_release_date: "04/15/2026",
+        system_manufacturer: "Foxconn",
+        system_product: "D41S",
+        system_version: "1.0",
+        baseboard_manufacturer: "Foxconn",
+        baseboard_product: "D41S",
+        chassis_type: Desktop,
+        chassis_manufacturer: "Foxconn",
+        processors: [
+            (
+                socket: "FCBGA559",
+                manufacturer: "Intel",
+                processor_family: X86_64,
+                // max_speed_mhz, core_count, thread_count, caches:
+                // detected via CPUID at runtime.
+            ),
+        ],
+        memory_devices: [
+            ( locator: "DIMM0" ),
+            ( locator: "DIMM1" ),
+            // size_mb, speed_mhz, memory_type: detected via SPD at runtime.
+        ],
+    ),
+
+    payload: (
+        kind: LinuxBoot,
+        kernel_file: "bzImage",
+        kernel_load_addr: 0x1000000,
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: "console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8",
+        firmware: None,
+    ),
+)

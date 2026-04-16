@@ -463,6 +463,46 @@ extern "Rust" {
 }
 
 // ---------------------------------------------------------------------------
+// Cache-as-RAM (NEM) setup stub
+// ---------------------------------------------------------------------------
+
+/// Set up Non-Evict Mode (NEM) Cache-as-RAM on Intel Atom-class CPUs.
+///
+/// Intended to be called very early from assembly (before any stack
+/// operations). The complete NEM procedure is:
+///
+/// 1. Clear and disable all MTRRs.
+/// 2. Program MTRR `IA32_MTRR_PHYS_BASE0` / `IA32_MTRR_PHYS_MASK0` so
+///    `[car_base, car_base + car_size)` is type WB (0x6).
+/// 3. Enable MTRRs via `IA32_MTRR_DEF_TYPE` (bit 11).
+/// 4. Enable caching by clearing CR0.CD / CR0.NW.
+/// 5. Set `NO_EVICT_MODE_SETUP` bit (MSR `0x2E0`, bit 0).
+/// 6. Fill the CAR region with cache-line reads to prime the cache.
+/// 7. Set `NO_EVICT_MODE_RUN` bit (MSR `0x2E0`, bit 1) — now writes to
+///    CAR lines stay in the cache and never evict.
+/// 8. Zero the CAR region so BSS is clean.
+///
+/// This function is a **stub** that logs intent and returns. Actual
+/// NEM programming requires inline-assembly MSR access in real mode
+/// and must run before the stack is established — it cannot be a
+/// normal Rust `pub` function. A future port of the ~250-line
+/// coreboot `src/soc/intel/pineview/bootblock.c` NEM sequence will
+/// replace this stub.
+///
+/// # Safety
+/// Only valid on Intel Atom-class CPUs that support NEM (Pineview,
+/// Cedarview). Caller must guarantee the CAR region does not overlap
+/// any live hardware MMIO.
+#[no_mangle]
+pub unsafe extern "C" fn fstart_nem_setup(car_base: u64, car_size: u64) {
+    fstart_log::info!(
+        "fstart_nem_setup stub: CAR at {:#x}+{:#x} (TODO: full NEM sequence)",
+        car_base,
+        car_size,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Exception handler — called from the IDT stub with register state
 // ---------------------------------------------------------------------------
 

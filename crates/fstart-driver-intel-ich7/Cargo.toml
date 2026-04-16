@@ -1,0 +1,14 @@
+[package]
+name = "fstart-driver-intel-ich7"
+description = "Intel ICH7 (I/O Controller Hub 7) southbridge driver — RCBA, LPC, PIRQ, function disable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-log = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true }
+fstart-superio = { workspace = true }
+serde = { workspace = true }
+ufmt = { workspace = true }

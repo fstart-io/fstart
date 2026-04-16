@@ -44,6 +44,11 @@ pci-ecam = ["dep:fstart-driver-pci-ecam", "dep:fstart-alloc"]
 q35-hostbridge = ["dep:fstart-driver-q35-hostbridge", "dep:fstart-alloc"]
 bochs-display = ["dep:fstart-driver-bochs-display"]
 qemu-fw-cfg = ["dep:fstart-driver-qemu-fw-cfg"]
+# x86 chipset drivers (Atom D41x / ICH7 / IT8721F / CK505)
+ite8721f = ["dep:fstart-driver-ite8721f"]
+intel-pineview = ["dep:fstart-driver-intel-pineview"]
+intel-ich7 = ["dep:fstart-driver-intel-ich7"]
+i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
 # NS16550 with x86 port I/O support
 ns16550-pio = ["ns16550", "fstart-driver-ns16550?/pio"]
 # x86 boot protocol support (zero page construction in platform crate)
@@ -70,7 +75,7 @@ handoff = ["fstart-capabilities/handoff"]
 # ACPI table generation — routed through fstart-capabilities which owns
 # the prepare() entry point and depends on fstart-acpi internally.
 # fstart-acpi is also a direct dep for per-device AcpiDevice trait calls.
-acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-driver-pl011?/acpi", "fstart-capabilities/acpi"]
+acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-acpi?/x86", "fstart-driver-pl011?/acpi", "fstart-capabilities/acpi"]
 # SMBIOS table generation — routed through fstart-capabilities which owns
 # the prepare() entry point and depends on fstart-smbios internally.
 smbios = ["fstart-capabilities/smbios"]
@@ -115,6 +120,10 @@ fstart-driver-pci-ecam = { workspace = true, optional = true }
 fstart-driver-bochs-display = { workspace = true, optional = true }
 fstart-driver-qemu-fw-cfg = { workspace = true, optional = true }
 fstart-driver-q35-hostbridge = { workspace = true, optional = true }
+fstart-driver-ite8721f = { workspace = true, optional = true }
+fstart-driver-intel-pineview = { workspace = true, optional = true }
+fstart-driver-intel-ich7 = { workspace = true, optional = true }
+fstart-driver-i2c-ck505 = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

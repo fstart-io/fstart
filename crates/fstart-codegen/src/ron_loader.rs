@@ -17,11 +17,16 @@ use std::path::Path;
 use heapless::String as HString;
 use serde::Deserialize;
 
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::{DriverInstance, StructuralConfig};
+use fstart_types::device::BusAddress;
 use fstart_types::{
     BoardConfig, BuildMode, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig, Platform,
     SecurityConfig, SocImageFormat, StageLayout,
 };
+
+fn default_enabled() -> bool {
+    true
+}
 
 /// A fully-parsed board configuration.
 ///
@@ -90,13 +95,25 @@ struct RonBoardConfig {
 #[derive(Deserialize)]
 struct RonDevice {
     name: HString<32>,
+    #[serde(default)]
     services: heapless::Vec<HString<32>, 8>,
     /// Typed enum variant: `Ns16550(( base_addr: …, … ))`, `Pl011(( … ))`, etc.
-    driver: DriverInstance,
+    ///
+    /// Optional: structural (driverless) nodes that only exist to give
+    /// downstream devices a parent in the tree omit this field. The
+    /// flattener substitutes `DriverInstance::Structural` when absent.
+    #[serde(default)]
+    driver: Option<DriverInstance>,
     /// Child devices attached to this bus controller.
     /// Empty for leaf devices (default when omitted in RON).
     #[serde(default)]
     children: Vec<RonDevice>,
+    /// Physical attachment to the parent bus (optional).
+    #[serde(default)]
+    bus: Option<BusAddress>,
+    /// Whether this device is enabled (default `true`).
+    #[serde(default = "default_enabled")]
+    enabled: bool,
 }
 
 // -----------------------------------------------------------------------
@@ -112,8 +129,15 @@ struct RonDevice {
 pub fn load_parsed_board(path: &Path) -> Result<ParsedBoard, String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    let ron_cfg: RonBoardConfig =
-        ron::from_str(&contents).map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+    // Enable `implicit_some` so board.ron files can write `field: 42`
+    // for `Option<T>` schema fields without wrapping in `Some(42)`.
+    // This is forward-compatible: changing a concrete field to `Option<T>`
+    // no longer breaks existing board files that use the bare value.
+    let options =
+        ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
+    let ron_cfg: RonBoardConfig = options
+        .from_str(&contents)
+        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
     Ok(convert(ron_cfg))
 }
 
@@ -187,7 +211,12 @@ fn flatten_device(
 ) {
     let my_idx = devices.len() as DeviceId;
 
-    let driver_name = rd.driver.driver_name();
+    // Driverless (structural) nodes: substitute a `Structural` instance
+    // with the sentinel `"_structural"` driver name.
+    let instance = rd
+        .driver
+        .unwrap_or_else(|| DriverInstance::Structural(StructuralConfig::default()));
+    let driver_name = instance.driver_name();
     let parent_name = parent_idx.map(|idx| devices[idx as usize].name.clone());
 
     let _ = devices.push(DeviceConfig {
@@ -196,8 +225,10 @@ fn flatten_device(
             .unwrap_or_else(|_| panic!("driver name '{driver_name}' exceeds HString<32> capacity")),
         services: rd.services,
         parent: parent_name,
+        bus: rd.bus,
+        enabled: rd.enabled,
     });
-    driver_instances.push(rd.driver);
+    driver_instances.push(instance);
     device_tree.push(DeviceNode {
         parent: parent_idx,
         depth,
