@@ -35,21 +35,24 @@ use quote::{format_ident, quote};
 
 use fstart_device_registry::DriverInstance;
 use fstart_types::{
-    BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceNode, Platform, StageLayout,
+    BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceId, DeviceNode, Platform,
+    StageLayout,
 };
 
 use crate::ron_loader::ParsedBoard;
 
 use capabilities::{
     collect_boot_media_gated_devices, generate_acpi_load, generate_acpi_prepare,
-    generate_boot_media, generate_clock_init, generate_console_init, generate_dram_init,
-    generate_driver_init, generate_fdt_prepare, generate_late_driver_init,
+    generate_boot_media, generate_chipset_init, generate_clock_init, generate_console_init,
+    generate_dram_init, generate_driver_init, generate_fdt_prepare, generate_late_driver_init,
     generate_load_next_stage, generate_memory_detect, generate_memory_init, generate_payload_load,
     generate_pci_init, generate_return_to_fel, generate_sig_verify, generate_smbios_prepare,
     generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
-use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
+use flexible::{
+    flexible_enum_for_device, generate_flexible_enums, generate_flexible_wrapping, SERVICE_TRAITS,
+};
 use tokens::{halt_expr, hex_addr};
 use topology::validate_device_tree;
 use validation::{get_boot_medium, needs_embedded_anchor, needs_ffs, validate_capability_ordering};
@@ -100,7 +103,11 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
 
     // Validate device tree (bus service requirements).
     // Ordering is already correct — ron_loader flattens in pre-order DFS.
-    if let Err(err) = validate_device_tree(&config.devices, &parsed.device_tree) {
+    if let Err(err) = validate_device_tree(
+        &config.devices,
+        &parsed.driver_instances,
+        &parsed.device_tree,
+    ) {
         return format!("compile_error!(\"{err}\");\n");
     }
 
@@ -322,11 +329,12 @@ fn generate_imports(
     }
 
     // Collect unique driver modules and import all public types via glob.
-    // ACPI-only devices are skipped — their types live in fstart_types/fstart_acpi
+    // ACPI-only and structural devices are skipped — their types live in
+    // fstart_types/fstart_acpi and fstart_device_registry respectively,
     // and are only used at codegen time, not in the generated stage code.
     let mut seen_modules: Vec<&str> = Vec::new();
     for inst in instances {
-        if inst.is_acpi_only() {
+        if inst.is_acpi_only() || inst.is_structural() {
             continue;
         }
         let meta = inst.meta();
@@ -563,7 +571,12 @@ fn generate_devices_struct(
         .iter()
         .zip(instances.iter())
         .enumerate()
-        .filter(|(idx, (_, inst))| !inst.is_acpi_only() && !excluded_indices.contains(idx))
+        .filter(|(idx, (dev, inst))| {
+            !inst.is_acpi_only()
+                && !inst.is_structural()
+                && dev.enabled
+                && !excluded_indices.contains(idx)
+        })
         .map(|(_, (dev, inst))| {
             let field_name = format_ident!("{}", dev.name.as_str());
             let meta = inst.meta();
@@ -677,12 +690,19 @@ fn generate_fstart_main(
     let has_acpi_load = capabilities
         .iter()
         .any(|c| matches!(c, Capability::AcpiLoad { .. }));
+    let has_acpi_prepare = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiPrepare));
     let has_memory_detect = capabilities
         .iter()
         .any(|c| matches!(c, Capability::MemoryDetect { .. }));
 
-    if has_acpi_load {
+    // Both AcpiLoad and AcpiPrepare produce an RSDP address that
+    // PayloadLoad later hands to the OS. Declare the variable up front
+    // so the generated code compiles whichever capability is present.
+    if has_acpi_load || has_acpi_prepare {
         body.extend(quote! {
+            #[allow(unused_assignments)]
             let mut _acpi_rsdp_addr: u64 = 0;
         });
     }
@@ -726,9 +746,17 @@ fn generate_fstart_main(
     // Devices are already in pre-order DFS order from RON flattening.
     // ACPI-only devices are skipped — they have no runtime driver.
     let mut deferred_children: Vec<usize> = Vec::new();
+    // Track which devices have been constructed (root devices are
+    // constructed here in Phase 1; bus children may be constructed
+    // later by `ensure_device_ready` if a capability references them).
+    let mut constructed_devices: Vec<String> = Vec::new();
     for (idx, node) in device_tree.iter().enumerate() {
         let inst = &instances[idx];
-        if inst.is_acpi_only() {
+        let dev = &config.devices[idx];
+        if inst.is_acpi_only() || inst.is_structural() {
+            continue;
+        }
+        if !dev.enabled {
             continue;
         }
         if node.parent.is_some() {
@@ -736,13 +764,8 @@ fn generate_fstart_main(
             deferred_children.push(idx);
             continue;
         }
-        body.extend(generate_device_construction(
-            &config.devices[idx],
-            inst,
-            None,
-            &halt,
-            mode,
-        ));
+        body.extend(generate_device_construction(dev, inst, None, &halt, mode));
+        constructed_devices.push(dev.name.as_str().to_string());
     }
 
     // Track which devices have been initialised by capabilities so DriverInit
@@ -753,21 +776,56 @@ fn generate_fstart_main(
     // board RON — no runtime check needed.
     let mut inited_devices: Vec<String> = previous_stages_inited_devices(config, stage_name);
 
+    // Small closure to DRY out the ancestor-ready preamble that each
+    // device-referencing capability needs. The helper walks the target
+    // device's non-structural ancestor chain and emits `new` + `init`
+    // calls in root-first order, updating `constructed_devices` and
+    // `inited_devices` so no subsequent capability re-initializes the
+    // same hardware.
+    //
+    // Use via `prelude(&mut body, device_name)`.
+    let make_prelude = |body: &mut TokenStream,
+                        dev_name: &str,
+                        constructed: &mut Vec<String>,
+                        inited: &mut Vec<String>| {
+        body.extend(ensure_device_ready(
+            dev_name,
+            &config.devices,
+            instances,
+            device_tree,
+            constructed,
+            inited,
+            &halt,
+            mode,
+        ));
+    };
+
     // --- Phase 2: Execute capabilities in declared order ---
     for cap in capabilities {
         match cap {
             Capability::ClockInit { device } => {
                 let dev_name = device.as_str();
+                make_prelude(
+                    &mut body,
+                    dev_name,
+                    &mut constructed_devices,
+                    &mut inited_devices,
+                );
                 body.extend(generate_clock_init(
                     dev_name,
                     &config.devices,
                     instances,
                     &halt,
                 ));
-                inited_devices.push(dev_name.to_string());
             }
             Capability::ConsoleInit { device } => {
                 let dev_name = device.as_str();
+                make_prelude(
+                    &mut body,
+                    dev_name,
+                    &mut constructed_devices,
+                    &mut inited_devices,
+                );
                 body.extend(generate_console_init(
                     dev_name,
                     &config.devices,
@@ -775,7 +833,6 @@ fn generate_fstart_main(
                     &halt,
                     mode,
                 ));
-                inited_devices.push(dev_name.to_string());
             }
             Capability::BootMedia(medium) => {
                 body.extend(generate_boot_media(
@@ -793,25 +850,60 @@ fn generate_fstart_main(
             }
             Capability::DramInit { device } => {
                 let dev_name = device.as_str();
+                make_prelude(
+                    &mut body,
+                    dev_name,
+                    &mut constructed_devices,
+                    &mut inited_devices,
+                );
                 body.extend(generate_dram_init(
                     dev_name,
                     &config.devices,
                     instances,
                     &halt,
                 ));
-                inited_devices.push(dev_name.to_string());
+            }
+            Capability::ChipsetInit {
+                northbridge,
+                southbridge,
+            } => {
+                make_prelude(
+                    &mut body,
+                    northbridge.as_str(),
+                    &mut constructed_devices,
+                    &mut inited_devices,
+                );
+                make_prelude(
+                    &mut body,
+                    southbridge.as_str(),
+                    &mut constructed_devices,
+                    &mut inited_devices,
+                );
+                body.extend(generate_chipset_init(
+                    northbridge.as_str(),
+                    southbridge.as_str(),
+                    &config.devices,
+                    &halt,
+                ));
             }
             Capability::DriverInit => {
                 // Construct any remaining deferred bus children before
                 // DriverInit runs. By this point all parent devices
                 // are constructed and initialized (via PciInit or
                 // similar capability), so bus children can read BARs.
+                //
+                // Structural parents don't exist at runtime — walk up the
+                // tree to find the nearest non-structural ancestor.
                 for &idx in &deferred_children {
                     let dev = &config.devices[idx];
                     let inst = &instances[idx];
-                    let parent_name = device_tree[idx]
-                        .parent
-                        .map(|pid| config.devices[pid as usize].name.as_str());
+                    // Skip structural / acpi-only / disabled children
+                    // (they have no `new_on_bus` implementation).
+                    if inst.is_structural() || inst.is_acpi_only() || !dev.enabled {
+                        continue;
+                    }
+                    let parent_name =
+                        walk_to_real_parent(idx, device_tree, &config.devices, instances);
                     body.extend(generate_device_construction(
                         dev,
                         inst,
@@ -854,13 +946,18 @@ fn generate_fstart_main(
             }
             Capability::PciInit { device } => {
                 let dev_name = device.as_str();
+                make_prelude(
+                    &mut body,
+                    dev_name,
+                    &mut constructed_devices,
+                    &mut inited_devices,
+                );
                 body.extend(generate_pci_init(
                     dev_name,
                     &config.devices,
                     instances,
                     &halt,
                 ));
-                inited_devices.push(dev_name.to_string());
             }
             Capability::SigVerify => {
                 body.extend(generate_sig_verify(embed_anchor));
@@ -896,10 +993,22 @@ fn generate_fstart_main(
             }
             Capability::AcpiLoad { device } => {
                 let dev_name = device.as_str();
+                make_prelude(
+                    &mut body,
+                    dev_name,
+                    &mut constructed_devices,
+                    &mut inited_devices,
+                );
                 body.extend(generate_acpi_load(dev_name, &halt));
             }
             Capability::MemoryDetect { device } => {
                 let dev_name = device.as_str();
+                make_prelude(
+                    &mut body,
+                    dev_name,
+                    &mut constructed_devices,
+                    &mut inited_devices,
+                );
                 body.extend(generate_memory_detect(dev_name, &halt));
             }
             Capability::ReturnToFel => {
@@ -950,8 +1059,11 @@ fn generate_fstart_main(
         .iter()
         .zip(instances.iter())
         .enumerate()
-        .filter(|(idx, (_, inst))| {
-            if inst.is_acpi_only() {
+        .filter(|(idx, (dev, inst))| {
+            if inst.is_acpi_only() || inst.is_structural() {
+                return false;
+            }
+            if !dev.enabled {
                 return false;
             }
             // Exclude bus children when this stage doesn't have DriverInit
@@ -1063,11 +1175,156 @@ fn previous_stages_inited_devices(config: &BoardConfig, stage_name: Option<&str>
 // Code generation — device construction
 // =======================================================================
 
+/// Walk up the device tree to find the first non-structural ancestor.
+///
+/// Structural nodes (bus bridges, LPC bus, SMBus) exist in the tree for
+/// topology purposes but have no runtime representation. A bus child of
+/// a structural node is actually attached to the structural node's
+/// first real ancestor — e.g., a SuperIO at
+/// `southbridge > lpc (structural) > superio` is constructed with the
+/// southbridge as its `new_on_bus` parent.
+fn walk_to_real_parent<'a>(
+    child_idx: usize,
+    device_tree: &[DeviceNode],
+    devices: &'a [DeviceConfig],
+    instances: &[DriverInstance],
+) -> Option<&'a str> {
+    let mut current = device_tree[child_idx].parent?;
+    loop {
+        let idx = current as usize;
+        if !instances[idx].is_structural() {
+            return Some(devices[idx].name.as_str());
+        }
+        current = device_tree[idx].parent?;
+    }
+}
+
+/// Emit the "bring-up chain" for a device referenced by a capability.
+///
+/// The device tree carries the hardware dependency order: a bus child
+/// cannot be reached until its parent bus is programmed. For example,
+/// the IT8721F SuperIO on an ICH7 board lives as `southbridge → lpc
+/// (structural) → superio`; the `southbridge.init()` call programs
+/// the LPC I/O decode windows, and only after that can the SuperIO
+/// at config port 0x2e be reached.
+///
+/// This helper walks the chain from the root ancestor down to (and
+/// including) the target device. For each non-structural device in the
+/// chain it:
+/// 1. Emits a `Device::new` / `BusDevice::new_on_bus` call if the
+///    device has not yet been constructed in this stage.
+/// 2. Emits an `.init()` call if the device has not yet been initialized.
+///
+/// Structural nodes are skipped entirely (no runtime representation).
+/// ACPI-only and disabled devices are skipped.
+///
+/// Updates `constructed` and `inited` in place so that subsequent
+/// capabilities or a later `DriverInit` do not redo the work.
+#[allow(clippy::too_many_arguments)]
+fn ensure_device_ready(
+    device_name: &str,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    device_tree: &[DeviceNode],
+    constructed: &mut Vec<String>,
+    inited: &mut Vec<String>,
+    halt: &TokenStream,
+    mode: BuildMode,
+) -> TokenStream {
+    let mut tokens = TokenStream::new();
+
+    // Find the target device.
+    let Some(target_idx) = devices.iter().position(|d| d.name.as_str() == device_name) else {
+        return tokens;
+    };
+
+    // Collect the chain from root to target (inclusive), root-first.
+    let mut chain: Vec<usize> = Vec::new();
+    let mut cursor = Some(target_idx as DeviceId);
+    while let Some(c) = cursor {
+        chain.push(c as usize);
+        cursor = device_tree[c as usize].parent;
+    }
+    chain.reverse();
+
+    for idx in chain {
+        let dev = &devices[idx];
+        let inst = &instances[idx];
+        let name_str = dev.name.as_str();
+
+        // Skip nodes that have no runtime representation or have been
+        // explicitly disabled by the board author.
+        if !dev.enabled || inst.is_acpi_only() || inst.is_structural() {
+            continue;
+        }
+
+        // In Flexible mode a device with a service-enum wrapper is
+        // constructed into `_name_inner`, then wrapped into the
+        // user-visible `name` variable via a match-style enum
+        // constructor. The `.init()` call must run on the inner
+        // variable (before wrapping), because the wrapper delegates
+        // via the service trait, and `wrapping` moves the value.
+        let has_flex_wrapper =
+            mode == BuildMode::Flexible && flexible_enum_for_device(dev, inst).is_some();
+        let init_target = if has_flex_wrapper {
+            format_ident!("_{}_inner", name_str)
+        } else {
+            format_ident!("{}", name_str)
+        };
+
+        // Construct if not already done. Root devices are constructed
+        // up front in Phase 1 (they appear in `constructed`); bus
+        // children are constructed on demand here.
+        if !constructed.iter().any(|s| s == name_str) {
+            let parent_name = walk_to_real_parent(idx, device_tree, devices, instances);
+            tokens.extend(generate_device_construction(
+                dev,
+                inst,
+                parent_name,
+                halt,
+                mode,
+            ));
+            constructed.push(name_str.to_string());
+        }
+
+        // Init if not already done. A failure at this point often
+        // happens before the logger is set up (we are setting up the
+        // logger's underlying device), so the fallback is a silent halt.
+        if !inited.iter().any(|s| s == name_str) {
+            tokens.extend(quote! {
+                #init_target.init().unwrap_or_else(|_| #halt);
+            });
+            // In Flexible mode, emit the wrapping immediately after
+            // init so subsequent code (capability bodies, other
+            // `ensure_device_ready` calls) can reference the outer
+            // variable by its unadorned name.
+            if has_flex_wrapper {
+                tokens.extend(generate_flexible_wrapping(dev, inst));
+            }
+            inited.push(name_str.to_string());
+        }
+    }
+
+    tokens
+}
+
 /// Generate a device construction call.
 ///
-/// Root devices use `Device::new(&config)`.
-/// Bus children use `BusDevice::new_on_bus(&config, &parent)` — the parent
-/// variable name is resolved at codegen time (approach A: compile-away).
+/// Dispatch rules:
+///
+/// - No parent → `Device::new(&cfg)`.
+/// - Parent + `is_bus_device == true` → `BusDevice::new_on_bus(&cfg, &parent)`.
+///   Used by drivers that implement
+///   [`fstart_services::device::BusDevice`] (e.g., SuperIO on LPC, bochs
+///   display on PCI, CK505 on SMBus).
+/// - Parent + `is_bus_device == false` → `Device::new(&cfg)`.
+///   The parent relationship is topological only — used for init
+///   ordering by [`ensure_device_ready`] — not for construction.
+///   Example: an NS16550 UART that sits behind a SuperIO on the LPC
+///   bus. The NS16550 has its own absolute I/O base in its config;
+///   its dependency on the SuperIO is satisfied at init-ordering
+///   time (the SuperIO's LDN must be programmed before the UART
+///   registers are touched), not via a bus handle.
 fn generate_device_construction(
     dev: &DeviceConfig,
     instance: &DriverInstance,
@@ -1079,6 +1336,7 @@ fn generate_device_construction(
     let type_name = driver_type_tokens(instance);
     let config = config_tokens(instance);
     let cfg_binding = format_ident!("{}_cfg", name_str);
+    let is_bus_device = instance.meta().is_bus_device;
 
     let binding = match mode {
         BuildMode::Rigid => format_ident!("{}", name_str),
@@ -1091,22 +1349,22 @@ fn generate_device_construction(
         }
     };
 
-    match parent_name {
-        None => {
-            // Root device — Device::new(&config)
-            // Config is bound to a named variable so capabilities
-            // (e.g., AcpiPrepare) can reference it later.
-            quote! {
-                let #cfg_binding = #config;
-                let mut #binding = #type_name::new(&#cfg_binding).unwrap_or_else(|_| #halt);
-            }
-        }
-        Some(parent) => {
-            // Bus child — BusDevice::new_on_bus(&config, &parent)
+    match (parent_name, is_bus_device) {
+        (Some(parent), true) => {
+            // Bus-device child: construction reads from the parent bus.
             let parent_ident = format_ident!("{}", parent);
             quote! {
                 let #cfg_binding = #config;
                 let mut #binding = #type_name::new_on_bus(&#cfg_binding, &#parent_ident).unwrap_or_else(|_| #halt);
+            }
+        }
+        _ => {
+            // Plain Device: root, or child in the tree purely for
+            // init-ordering purposes. Config carries all the addresses
+            // it needs; the parent is not passed as a constructor arg.
+            quote! {
+                let #cfg_binding = #config;
+                let mut #binding = #type_name::new(&#cfg_binding).unwrap_or_else(|_| #halt);
             }
         }
     }

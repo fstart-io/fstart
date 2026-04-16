@@ -31,15 +31,26 @@ pub(super) use smbios::generate_smbios_prepare;
 #[allow(unused_imports)]
 pub(super) use stage_load::generate_anchor_scan;
 pub(super) use stage_load::generate_load_next_stage;
+// Note: generate_chipset_init, generate_acpi_load, and generate_memory_detect
+// are defined in this module (not sub-modules) and are automatically visible
+// to super via the `pub(super)` qualifier.
 // Note: generate_acpi_load and generate_memory_detect are defined in this module
 // (not in sub-modules) and are automatically visible to super.
 
 /// Generate code for the ConsoleInit capability.
+///
+/// Construction and `.init()` of the target device — along with any
+/// non-structural ancestors that must be programmed first (e.g., an
+/// ICH7 southbridge's LPC decode windows before a SuperIO at config
+/// port 0x2e becomes reachable) — are emitted by
+/// [`ensure_device_ready`](super::super::ensure_device_ready) in the
+/// dispatch loop. This function emits only the Console-specific tail:
+/// hooking the global logger to the device and logging the banner.
 pub(super) fn generate_console_init(
     device_name: &str,
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
-    halt: &TokenStream,
+    _halt: &TokenStream,
     mode: BuildMode,
 ) -> TokenStream {
     let Some((idx, dev)) = devices
@@ -68,40 +79,27 @@ pub(super) fn generate_console_init(
 
     let device = format_ident!("{}", device_name);
 
-    match mode {
-        BuildMode::Rigid => {
-            quote! {
-                #device.init().unwrap_or_else(|_| #halt);
-                unsafe { fstart_log::init(&#device) };
-                fstart_capabilities::console_ready(#device_name, #drv_name);
-            }
-        }
-        BuildMode::Flexible => {
-            let inner = if flexible_enum_for_device(dev, inst).is_some() {
-                format_ident!("_{}_inner", device_name)
-            } else {
-                format_ident!("{}", device_name)
-            };
-            let wrapping = generate_flexible_wrapping(dev, inst);
-            quote! {
-                #inner.init().unwrap_or_else(|_| #halt);
-                #wrapping
-                unsafe { fstart_log::init(&#device) };
-                fstart_capabilities::console_ready(#device_name, #drv_name);
-            }
-        }
+    // Note: in Flexible mode the inner→outer wrapping is emitted by
+    // `ensure_device_ready` right after `init()`, so `#device` is the
+    // already-wrapped outer variable here in both modes.
+    let _ = dev;
+    let _ = inst;
+    let _ = mode;
+    quote! {
+        unsafe { fstart_log::init(&#device) };
+        fstart_capabilities::console_ready(#device_name, #drv_name);
     }
 }
 
 /// Generate code for the ClockInit capability.
 ///
-/// Finds the referenced clock device, calls its `init()` method, and
-/// logs the result. Analogous to ConsoleInit but for clock controllers.
+/// Only the banner log; the device's `.init()` call and any ancestor
+/// chain are emitted by [`ensure_device_ready`] in the dispatch loop.
 pub(super) fn generate_clock_init(
     device_name: &str,
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
-    halt: &TokenStream,
+    _halt: &TokenStream,
 ) -> TokenStream {
     let Some((idx, _dev)) = devices
         .iter()
@@ -114,23 +112,24 @@ pub(super) fn generate_clock_init(
 
     let inst = &instances[idx];
     let drv_name = inst.meta().name;
-    let device = format_ident!("{}", device_name);
+    let _ = device_name;
+    let _ = format_ident!("{}", device_name);
 
     quote! {
-        #device.init().unwrap_or_else(|_| #halt);
         fstart_log::info!("clock init complete: {} ({})", #device_name, #drv_name);
     }
 }
 
 /// Generate code for the DramInit capability.
 ///
-/// Finds the referenced DRAM controller device, calls its `init()`,
-/// and logs the detected memory size.
+/// `.init()` is called by [`ensure_device_ready`] during the dispatch
+/// prelude; this function emits only the logging that marks the DRAM
+/// bring-up complete.
 pub(super) fn generate_dram_init(
     device_name: &str,
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
-    halt: &TokenStream,
+    _halt: &TokenStream,
 ) -> TokenStream {
     let Some((idx, _dev)) = devices
         .iter()
@@ -143,13 +142,8 @@ pub(super) fn generate_dram_init(
 
     let inst = &instances[idx];
     let drv_name = inst.meta().name;
-    let device = format_ident!("{}", device_name);
 
     quote! {
-        #device.init().unwrap_or_else(|_| {
-            fstart_log::error!("FATAL: DRAM init failed ({})", #drv_name);
-            #halt
-        });
         fstart_log::info!("DRAM init complete: {} ({})", #device_name, #drv_name);
     }
 }
@@ -159,20 +153,83 @@ pub(super) fn generate_memory_init() -> TokenStream {
     quote! { fstart_capabilities::memory_init(); }
 }
 
+/// Generate code for the ChipsetInit capability.
+///
+/// Calls `PciHost::early_init()` on the named northbridge and
+/// `Southbridge::early_init()` on the named southbridge. This is the
+/// x86 romstage's chipset unlock sequence — MCHBAR / DMIBAR mapping,
+/// RCBA programming, LPC decode opens, and function disable.
+///
+/// Validates that each device provides the required service and emits
+/// a `compile_error!` stub if it does not.
+pub(super) fn generate_chipset_init(
+    nb_name: &str,
+    sb_name: &str,
+    devices: &[DeviceConfig],
+    halt: &TokenStream,
+) -> TokenStream {
+    // Validate northbridge
+    let Some((_, nb_dev)) = devices
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.name.as_str() == nb_name)
+    else {
+        let msg =
+            format!("ChipsetInit references northbridge device '{nb_name}' which is not declared");
+        return quote! { compile_error!(#msg); };
+    };
+    if !nb_dev.services.iter().any(|s| s.as_str() == "PciHost") {
+        let msg = format!("ChipsetInit northbridge '{nb_name}' must provide the PciHost service");
+        return quote! { compile_error!(#msg); };
+    }
+
+    // Validate southbridge
+    let Some((_, sb_dev)) = devices
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.name.as_str() == sb_name)
+    else {
+        let msg =
+            format!("ChipsetInit references southbridge device '{sb_name}' which is not declared");
+        return quote! { compile_error!(#msg); };
+    };
+    if !sb_dev.services.iter().any(|s| s.as_str() == "Southbridge") {
+        let msg =
+            format!("ChipsetInit southbridge '{sb_name}' must provide the Southbridge service");
+        return quote! { compile_error!(#msg); };
+    }
+
+    let nb = format_ident!("{}", nb_name);
+    let sb = format_ident!("{}", sb_name);
+
+    quote! {
+        {
+            use fstart_services::PciHost as _PciHost;
+            use fstart_services::Southbridge as _Southbridge;
+            _PciHost::early_init(&mut #nb).unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: northbridge early_init failed");
+                #halt
+            });
+            _Southbridge::early_init(&mut #sb).unwrap_or_else(|_| {
+                fstart_log::error!("FATAL: southbridge early_init failed");
+                #halt
+            });
+            fstart_log::info!("chipset init complete: {} + {}", #nb_name, #sb_name);
+        }
+    }
+}
+
 /// Generate code for the PciInit capability.
 ///
-/// Finds the referenced PCI root bus device, calls its `init()` method
-/// (which enumerates the bus, sizes BARs, allocates resources, and
-/// programs hardware), and logs the result.
-///
-/// For the Q35 host bridge, `init_with_e820()` is called instead of
-/// `init()`, passing the e820 entries from MemoryDetect so the driver
-/// can compute the PCI MMIO hole at runtime.
+/// Drivers that need e820 data (e.g., Q35) read it from the global
+/// `E820State` populated by the `MemoryDetect` capability. `.init()` is
+/// emitted by [`ensure_device_ready`] during the dispatch prelude;
+/// this function only emits the banner log.
 pub(super) fn generate_pci_init(
     device_name: &str,
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
-    halt: &TokenStream,
+    _halt: &TokenStream,
 ) -> TokenStream {
     let Some((idx, dev)) = devices
         .iter()
@@ -193,16 +250,7 @@ pub(super) fn generate_pci_init(
         return quote! { compile_error!(#msg); };
     }
 
-    let device = format_ident!("{}", device_name);
-
-    // All PCI host bridges use Device::init(). Drivers that need e820
-    // data (e.g., Q35) read it from the global E820State populated by
-    // the MemoryDetect capability — no codegen special-casing needed.
     quote! {
-        #device.init().unwrap_or_else(|_| {
-            fstart_log::error!("FATAL: PCI init failed ({})", #drv_name);
-            #halt
-        });
         fstart_log::info!("PCI init complete: {} ({})", #device_name, #drv_name);
     }
 }
@@ -238,7 +286,11 @@ pub(super) fn generate_driver_init(
     for &idx in sorted_indices {
         let dev = &devices[idx];
         let inst = &instances[idx];
-        if inst.is_acpi_only() {
+        if inst.is_acpi_only() || inst.is_structural() {
+            continue;
+        }
+        // Skip disabled devices entirely.
+        if !dev.enabled {
             continue;
         }
         let name_str = dev.name.as_str();

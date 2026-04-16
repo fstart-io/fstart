@@ -1,0 +1,12 @@
+[package]
+name = "fstart-driver-i2c-ck505"
+description = "IDT CK505 clock generator driver — SMBus-attached clock source common on Atom/NM10 boards"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-log = { workspace = true }
+fstart-services = { workspace = true }
+serde = { workspace = true }
+ufmt = { workspace = true }

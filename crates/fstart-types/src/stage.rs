@@ -99,11 +99,33 @@ pub struct StageConfig {
 }
 
 /// Where a stage executes from.
+///
+/// Describes the **code** location only. The writable landing spot
+/// (`.data`, `.bss`, stack) is chosen by the linker from whatever
+/// writable memory is actually available at the time the stage runs:
+///
+/// - On ARM / RISC-V / x86 post-DRAM: the first RAM region.
+/// - On x86 pre-DRAM stages (bootblock, romstage) where the board
+///   declares [`crate::memory::MemoryMap::car`]: the CAR region.
+///
+/// The choice is automatic — an XIP stage (`Rom`) on a board with
+/// `memory.car` declared lands its writable sections in CAR; on a
+/// board without, it lands them in RAM. No separate `Car` variant is
+/// required; the distinction is fully expressed by the presence of
+/// `memory.car` in the memory map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunsFrom {
-    /// Execute in place from ROM (XIP)
+    /// Execute in place from ROM (XIP).
+    ///
+    /// Code runs from flash-mapped ROM. Writable sections go into
+    /// `memory.car` if declared (x86 pre-DRAM pattern), else the
+    /// first RAM region (everything else).
     Rom,
-    /// Execute from RAM after being loaded
+    /// Execute from RAM after being loaded.
+    ///
+    /// Load address must lie inside a RAM region. Code is copied from
+    /// flash into RAM by a prior stage's `StageLoad` capability and
+    /// jumped to.
     Ram,
 }
 
@@ -179,6 +201,22 @@ pub enum Capability {
     DramInit {
         /// Device name from the devices list (e.g., "dramc0")
         device: HString<32>,
+    },
+    /// Early chipset initialization (x86 northbridge + southbridge).
+    ///
+    /// Calls `PciHost::early_init()` on the northbridge and
+    /// `Southbridge::early_init()` on the southbridge. Used by the
+    /// x86 romstage before `DramInit` — the NB must be programmed to
+    /// expose its registers (MCHBAR, DMIBAR) and the SB must unlock
+    /// LPC decode ranges / BIOS shadow before DRAM training.
+    ///
+    /// This is an x86-specific capability; other platforms use
+    /// `DriverInit` + per-driver `Device::init()` instead.
+    ChipsetInit {
+        /// Northbridge device name (implements `PciHost`).
+        northbridge: HString<32>,
+        /// Southbridge device name (implements `Southbridge`).
+        southbridge: HString<32>,
     },
     /// Enumerate and initialize all declared devices/drivers.
     DriverInit,

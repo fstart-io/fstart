@@ -1,0 +1,13 @@
+[package]
+name = "fstart-driver-intel-pineview"
+description = "Intel Atom D4xx/D5xx (Pineview) northbridge driver — MCHBAR, DRAM controller, PCI domain root"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-log = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true }
+serde = { workspace = true }
+ufmt = { workspace = true }

@@ -46,6 +46,11 @@ members = [
     "crates/fstart-platform-x86_64",
     "crates/fstart-driver-qemu-fw-cfg",
     "crates/fstart-driver-q35-hostbridge",
+    "crates/fstart-superio",
+    "crates/fstart-driver-ite8721f",
+    "crates/fstart-driver-intel-pineview",
+    "crates/fstart-driver-intel-ich7",
+    "crates/fstart-driver-i2c-ck505",
 ]
 
 [workspace.package]
@@ -128,6 +133,11 @@ fstart-pio = { path = "crates/fstart-pio" }
 fstart-platform-x86_64 = { path = "crates/fstart-platform-x86_64" }
 fstart-driver-qemu-fw-cfg = { path = "crates/fstart-driver-qemu-fw-cfg" }
 fstart-driver-q35-hostbridge = { path = "crates/fstart-driver-q35-hostbridge" }
+fstart-superio = { path = "crates/fstart-superio" }
+fstart-driver-ite8721f = { path = "crates/fstart-driver-ite8721f" }
+fstart-driver-intel-pineview = { path = "crates/fstart-driver-intel-pineview" }
+fstart-driver-intel-ich7 = { path = "crates/fstart-driver-intel-ich7" }
+fstart-driver-i2c-ck505 = { path = "crates/fstart-driver-i2c-ck505" }
 
 [profile.dev]
 panic = "abort"

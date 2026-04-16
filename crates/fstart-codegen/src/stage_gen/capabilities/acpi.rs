@@ -223,7 +223,9 @@ fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenS
             }
         }
         AcpiPlatform::X86(x86) => {
-            let num_cpus = Literal::u32_unsuffixed(x86.num_cpus);
+            // num_cpus = None → 0 sentinel; future: detect via CPUID at runtime.
+            // For now we fall back to 1 CPU when unset to keep the MADT valid.
+            let num_cpus = Literal::u32_unsuffixed(x86.num_cpus.unwrap_or(1));
             let lapic_base = Literal::u64_unsuffixed(x86.lapic_base);
             let sci_irq = Literal::u8_unsuffixed(x86.sci_irq);
             let legacy = x86.legacy_devices;

@@ -66,6 +66,13 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::ChipsetInit { .. } if !console_inited => {
+                return Some(
+                    "ChipsetInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
             Capability::DriverInit if !console_inited => {
                 return Some(
                     "DriverInit capability requires ConsoleInit to appear earlier \

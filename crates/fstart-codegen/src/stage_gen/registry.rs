@@ -8,7 +8,32 @@ use fstart_device_registry::DriverMeta;
 use fstart_types::DeviceConfig;
 
 /// Bus service names that indicate a device is a bus controller.
-const BUS_SERVICES: &[&str] = &["I2cBus", "SpiBus", "GpioController", "PciRootBus"];
+///
+/// A parent device must provide at least one of these for a **bus-device**
+/// child (`is_bus_device == true`) to be accepted by
+/// [`super::topology::validate_device_tree`]. Plain-device children
+/// (e.g., an NS16550 UART nested under a SuperIO for init ordering)
+/// don't require the parent to provide any of these.
+///
+/// The list covers:
+/// - Real bus controllers (`I2cBus`, `SpiBus`, `PciRootBus`).
+/// - GPIO controllers that expose pins as children.
+/// - x86 chipset sub-hierarchies: the northbridge (`PciHost`),
+///   southbridge (`Southbridge`), PCIe root ports (`PciBridge`),
+///   LPC bus (`LpcBus`), SMBus (`SmBus`), and SuperIO hosts
+///   (`SuperIoHost`).
+const BUS_SERVICES: &[&str] = &[
+    "I2cBus",
+    "SpiBus",
+    "GpioController",
+    "PciRootBus",
+    "PciHost",
+    "Southbridge",
+    "PciBridge",
+    "LpcBus",
+    "SmBus",
+    "SuperIoHost",
+];
 
 /// Returns true if a device provides a bus service.
 pub(super) fn is_bus_provider(dev: &DeviceConfig) -> bool {
@@ -46,6 +71,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
             "allwinner,sun7i-a20-uart",
         ],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "pl011",
@@ -55,6 +81,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["Console"],
         compatible: &["arm,pl011", "pl011"],
         has_acpi: true,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "designware-i2c",
@@ -64,6 +91,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["I2cBus"],
         compatible: &["snps,designware-i2c", "dw-apb-i2c"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "sunxi-a20-ccu",
@@ -73,6 +101,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["ClockController"],
         compatible: &["allwinner,sun7i-a20-ccu"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "sunxi-a20-dramc",
@@ -82,6 +111,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["MemoryController"],
         compatible: &["allwinner,sun7i-a20-dramc"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "sunxi-mmc",
@@ -95,6 +125,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
             "allwinner,sun50i-h5-mmc",
         ],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "sunxi-spi",
@@ -104,6 +135,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["BlockDevice"],
         compatible: &["allwinner,sun4i-a10-spi", "allwinner,sun8i-h3-spi"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "sunxi-h3-ccu",
@@ -113,6 +145,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["ClockController"],
         compatible: &["allwinner,sun8i-h3-ccu"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "sunxi-h3-dramc",
@@ -122,6 +155,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["MemoryController"],
         compatible: &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "sifive-uart",
@@ -131,6 +165,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["Console"],
         compatible: &["sifive,fu740-c000-uart", "sifive,uart0"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "fu740-prci",
@@ -140,6 +175,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["ClockController"],
         compatible: &["sifive,fu740-c000-prci"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "fu740-ddr",
@@ -149,6 +185,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["MemoryController"],
         compatible: &["sifive,fu740-c000-ddr"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "pci-ecam",
@@ -158,6 +195,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["PciRootBus"],
         compatible: &["pci-host-ecam-generic"],
         has_acpi: false,
+        is_bus_device: false,
     },
     DriverMeta {
         name: "bochs-display",
@@ -167,6 +205,7 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["Framebuffer"],
         compatible: &["bochs-display", "qemu-stdvga"],
         has_acpi: false,
+        is_bus_device: true,
     },
     DriverMeta {
         name: "q35-hostbridge",
@@ -176,5 +215,56 @@ const KNOWN_DRIVER_META: &[DriverMeta] = &[
         services: &["PciRootBus"],
         compatible: &["q35-hostbridge"],
         has_acpi: false,
+        is_bus_device: false,
+    },
+    DriverMeta {
+        name: "ite8721f",
+        type_name: "Ite8721f",
+        module_path: "fstart_driver_ite8721f",
+        config_type: "Ite8721fConfig",
+        services: &["SuperIoHost"],
+        compatible: &["ite,it8721f", "ite,8721f"],
+        has_acpi: false,
+        is_bus_device: true,
+    },
+    DriverMeta {
+        name: "intel-pineview",
+        type_name: "IntelPineview",
+        module_path: "fstart_driver_intel_pineview",
+        config_type: "IntelPineviewConfig",
+        services: &["MemoryController", "PciHost"],
+        compatible: &["intel,pineview-mch", "intel,atom-d4xx-mch"],
+        has_acpi: false,
+        is_bus_device: false,
+    },
+    DriverMeta {
+        name: "intel-ich7",
+        type_name: "IntelIch7",
+        module_path: "fstart_driver_intel_ich7",
+        config_type: "IntelIch7Config",
+        services: &["Southbridge"],
+        compatible: &["intel,ich7", "intel,nm10"],
+        has_acpi: false,
+        is_bus_device: false,
+    },
+    DriverMeta {
+        name: "i2c-ck505",
+        type_name: "I2cCk505",
+        module_path: "fstart_driver_i2c_ck505",
+        config_type: "I2cCk505Config",
+        services: &[],
+        compatible: &["idt,ck505"],
+        has_acpi: false,
+        is_bus_device: true,
+    },
+    DriverMeta {
+        name: "_structural",
+        type_name: "_Structural",
+        module_path: "fstart_device_registry",
+        config_type: "StructuralConfig",
+        services: &[],
+        compatible: &[],
+        has_acpi: false,
+        is_bus_device: false,
     },
 ];

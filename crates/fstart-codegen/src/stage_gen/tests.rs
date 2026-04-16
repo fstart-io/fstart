@@ -17,6 +17,8 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
             v
         },
         parent: None,
+        bus: None,
+        enabled: true,
     });
 
     let driver_instances = vec![DriverInstance::Ns16550(
@@ -47,6 +49,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
             },
             flash_base: None,
             flash_size: None,
+            car: None,
         },
         devices,
         stages: StageLayout::Monolithic(MonolithicConfig {
@@ -374,6 +377,8 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
             v
         },
         parent: None,
+        bus: None,
+        enabled: true,
     });
 
     // Root device: I2C bus controller
@@ -386,6 +391,8 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
             v
         },
         parent: None,
+        bus: None,
+        enabled: true,
     });
 
     let driver_instances = vec![
@@ -421,6 +428,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
             },
             flash_base: None,
             flash_size: None,
+            car: None,
         },
         devices,
         stages: StageLayout::Monolithic(MonolithicConfig {
@@ -467,6 +475,43 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
     }
 }
 
+/// Minimal test helper: a plain-device NS16550 instance so tests can
+/// construct `DriverInstance` vectors without pulling in a full driver
+/// config every time.
+fn test_ns16550_instance() -> DriverInstance {
+    DriverInstance::Ns16550(fstart_device_registry::ns16550::Ns16550Config {
+        regs: fstart_driver_ns16550::AccessMode::Mmio {
+            base: 0x1000_0000,
+            reg_shift: 0,
+            reg_width: 0,
+        },
+        clock_freq: 3_686_400,
+        baud_rate: 115_200,
+    })
+}
+
+/// Minimal test helper: a bus-device DesignWare I2C instance.
+fn test_dw_i2c_instance() -> DriverInstance {
+    DriverInstance::DesignwareI2c(
+        fstart_device_registry::designware_i2c::DesignwareI2cConfig {
+            base_addr: 0x1004_0000,
+            clock_freq: 100_000_000,
+            bus_speed: fstart_driver_designware_i2c::I2cSpeed::Fast,
+        },
+    )
+}
+
+/// Minimal test helper: a bus-device Bochs display instance — a bus child
+/// of a PCI host bridge. Used to exercise bus-device-child validation.
+fn test_bochs_instance() -> DriverInstance {
+    DriverInstance::BochsDisplay(fstart_device_registry::bochs_display::BochsDisplayConfig {
+        device: 2,
+        function: 0,
+        width: 1024,
+        height: 768,
+    })
+}
+
 #[test]
 fn test_validate_device_tree_all_roots() {
     use fstart_types::*;
@@ -482,6 +527,8 @@ fn test_validate_device_tree_all_roots() {
                 v
             },
             parent: None,
+            bus: None,
+            enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("i2c0").unwrap(),
@@ -492,8 +539,12 @@ fn test_validate_device_tree_all_roots() {
                 v
             },
             parent: None,
+            bus: None,
+            enabled: true,
         },
     ];
+
+    let instances = vec![test_ns16550_instance(), test_dw_i2c_instance()];
 
     let tree = vec![
         DeviceNode {
@@ -507,37 +558,60 @@ fn test_validate_device_tree_all_roots() {
     ];
 
     assert!(
-        validate_device_tree(&devices, &tree).is_ok(),
+        validate_device_tree(&devices, &instances, &tree).is_ok(),
         "all root devices should validate fine"
     );
 }
 
 #[test]
 fn test_validate_device_tree_valid_bus_child() {
+    // A BusDevice child (bochs-display) nested under a PCI host bridge
+    // that provides `PciRootBus` — this is the shape that validation
+    // should accept.
     use fstart_types::*;
     use heapless::String as HString;
 
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
-            name: HString::try_from("i2c0").unwrap(),
-            driver: HString::try_from("designware-i2c").unwrap(),
+            name: HString::try_from("pci0").unwrap(),
+            driver: HString::try_from("pci-ecam").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("I2cBus").unwrap());
+                let _ = v.push(HString::try_from("PciRootBus").unwrap());
                 v
             },
             parent: None,
+            bus: None,
+            enabled: true,
         },
         DeviceConfig {
-            name: HString::try_from("tpm0").unwrap(),
-            driver: HString::try_from("ns16550").unwrap(),
+            name: HString::try_from("bochs0").unwrap(),
+            driver: HString::try_from("bochs-display").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Console").unwrap());
+                let _ = v.push(HString::try_from("Framebuffer").unwrap());
                 v
             },
-            parent: Some(HString::try_from("i2c0").unwrap()),
+            parent: Some(HString::try_from("pci0").unwrap()),
+            bus: None,
+            enabled: true,
         },
+    ];
+
+    let instances = vec![
+        DriverInstance::PciEcam(fstart_device_registry::pci_ecam::PciEcamConfig {
+            ecam_base: 0x3000_0000,
+            ecam_size: 0x1000_0000,
+            mmio32_base: 0x4000_0000,
+            mmio32_size: 0x4000_0000,
+            mmio64_base: 0x4_0000_0000,
+            mmio64_size: 0x4_0000_0000,
+            pio_base: 0x3eff_0000,
+            pio_size: 0x1_0000,
+            bus_start: 0,
+            bus_end: 255,
+        }),
+        test_bochs_instance(),
     ];
 
     let tree = vec![
@@ -552,8 +626,8 @@ fn test_validate_device_tree_valid_bus_child() {
     ];
 
     assert!(
-        validate_device_tree(&devices, &tree).is_ok(),
-        "child on I2cBus parent should validate"
+        validate_device_tree(&devices, &instances, &tree).is_ok(),
+        "bus-device child on PciRootBus parent should validate"
     );
 }
 
@@ -562,7 +636,8 @@ fn test_validate_device_tree_non_bus_parent_is_error() {
     use fstart_types::*;
     use heapless::String as HString;
 
-    // uart0 provides Console, NOT a bus service
+    // uart0 provides Console, NOT a bus service. bochs0 is a BusDevice
+    // child, so validation *must* run for it and must reject the parent.
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
             name: HString::try_from("uart0").unwrap(),
@@ -573,18 +648,24 @@ fn test_validate_device_tree_non_bus_parent_is_error() {
                 v
             },
             parent: None,
+            bus: None,
+            enabled: true,
         },
         DeviceConfig {
-            name: HString::try_from("child0").unwrap(),
-            driver: HString::try_from("ns16550").unwrap(),
+            name: HString::try_from("bochs0").unwrap(),
+            driver: HString::try_from("bochs-display").unwrap(),
             services: {
                 let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Console").unwrap());
+                let _ = v.push(HString::try_from("Framebuffer").unwrap());
                 v
             },
             parent: Some(HString::try_from("uart0").unwrap()),
+            bus: None,
+            enabled: true,
         },
     ];
+
+    let instances = vec![test_ns16550_instance(), test_bochs_instance()];
 
     let tree = vec![
         DeviceNode {
@@ -597,13 +678,68 @@ fn test_validate_device_tree_non_bus_parent_is_error() {
         },
     ];
 
-    let result = validate_device_tree(&devices, &tree);
+    let result = validate_device_tree(&devices, &instances, &tree);
     assert!(result.is_err());
     assert!(
         result
             .unwrap_err()
             .contains("does not provide a bus service"),
-        "should reject non-bus parent"
+        "should reject non-bus parent for bus-device child"
+    );
+}
+
+#[test]
+fn test_validate_device_tree_plain_device_child_ok() {
+    // A plain-device child (NS16550) nested under a non-bus parent is
+    // allowed under the new ordering-only semantics: the NS16550 is
+    // constructed via `Device::new(&cfg)` — the parent is only used
+    // by `ensure_device_ready` for init ordering.
+    use fstart_types::*;
+    use heapless::String as HString;
+
+    let devices: Vec<DeviceConfig> = vec![
+        DeviceConfig {
+            name: HString::try_from("uart0").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            parent: None,
+            bus: None,
+            enabled: true,
+        },
+        DeviceConfig {
+            name: HString::try_from("uart1").unwrap(),
+            driver: HString::try_from("ns16550").unwrap(),
+            services: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(HString::try_from("Console").unwrap());
+                v
+            },
+            parent: Some(HString::try_from("uart0").unwrap()),
+            bus: None,
+            enabled: true,
+        },
+    ];
+
+    let instances = vec![test_ns16550_instance(), test_ns16550_instance()];
+
+    let tree = vec![
+        DeviceNode {
+            parent: None,
+            depth: 0,
+        },
+        DeviceNode {
+            parent: Some(0),
+            depth: 1,
+        },
+    ];
+
+    assert!(
+        validate_device_tree(&devices, &instances, &tree).is_ok(),
+        "plain-device child should be accepted even when parent provides no bus service"
     );
 }
 
@@ -673,6 +809,8 @@ fn test_i2c_bus_generates_accessor() {
 
 #[test]
 fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
+    // Bus-device child (CK505 on I2C) nested under an I2C root. Exercises
+    // the `BusDevice::new_on_bus` path and the init-ordering guarantee.
     use fstart_types::*;
     use heapless::String as HString;
 
@@ -684,26 +822,19 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
 
     let mut parsed = test_parsed_board_with_i2c_bus(caps);
 
-    // Add a child device nested under i2c0 (index 1).
+    // Add a bus-device child (CK505) nested under i2c0 (index 1).
     let _ = parsed.config.devices.push(DeviceConfig {
-        name: HString::try_from("child0").unwrap(),
-        driver: HString::try_from("ns16550").unwrap(),
-        services: {
-            let mut v = heapless::Vec::new();
-            let _ = v.push(HString::try_from("Console").unwrap());
-            v
-        },
+        name: HString::try_from("ck0").unwrap(),
+        driver: HString::try_from("i2c-ck505").unwrap(),
+        services: heapless::Vec::new(),
         parent: Some(HString::try_from("i2c0").unwrap()),
+        bus: Some(fstart_types::BusAddress::I2c(0x69)),
+        enabled: true,
     });
-    parsed.driver_instances.push(DriverInstance::Ns16550(
-        fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio {
-                base: 0x2000_0000,
-                reg_shift: 0,
-                reg_width: 0,
-            },
-            clock_freq: 3_686_400,
-            baud_rate: 115_200,
+    parsed.driver_instances.push(DriverInstance::I2cCk505(
+        fstart_device_registry::i2c_ck505::I2cCk505Config {
+            mask: [0x00, 0x80, 0xff, 0xff, 0xff],
+            regs: [0x00, 0x80, 0xfe, 0xff, 0xfc],
         },
     ));
     // i2c0 is at index 1
@@ -714,15 +845,15 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
 
     let source = generate_stage_source(&parsed, None);
 
-    // In the generated code, i2c0.init() must appear before child0.init()
+    // In the generated code, i2c0.init() must appear before ck0.init().
     let i2c_init_pos = source.find("i2c0.init()").expect("should init i2c0");
-    let child_init_pos = source.find("child0.init()").expect("should init child0");
+    let child_init_pos = source.find("ck0.init()").expect("should init ck0");
     assert!(
         i2c_init_pos < child_init_pos,
-        "parent i2c0 must be initialised before child child0"
+        "parent i2c0 must be initialised before child ck0"
     );
 
-    // Bus child should use new_on_bus, not new
+    // Bus-device child should use new_on_bus with its parent.
     assert!(
         source.contains("new_on_bus"),
         "bus child should use new_on_bus: {source}"
@@ -735,6 +866,11 @@ fn test_driver_init_with_bus_hierarchy_inits_parent_first() {
 
 #[test]
 fn test_non_bus_parent_is_compile_error() {
+    // A *bus-device* child whose parent provides no bus service is a
+    // topology error — you cannot construct it via `new_on_bus(...)`
+    // because the parent exposes no bus handle. (A plain-Device child
+    // is fine: it's just init-ordering — see
+    // `test_validate_device_tree_plain_device_child_ok`.)
     use fstart_types::*;
     use heapless::String as HString;
 
@@ -744,26 +880,20 @@ fn test_non_bus_parent_is_compile_error() {
     });
 
     let mut parsed = test_parsed_board(caps);
-    // Add child0 nested under uart0 (index 0) — but uart0 is Console, not a bus
+    // Add a bus-device child (CK505) nested under uart0 (index 0).
+    // uart0 is Console — not any of the accepted bus services.
     let _ = parsed.config.devices.push(DeviceConfig {
-        name: HString::try_from("child0").unwrap(),
-        driver: HString::try_from("ns16550").unwrap(),
-        services: {
-            let mut v = heapless::Vec::new();
-            let _ = v.push(HString::try_from("Console").unwrap());
-            v
-        },
+        name: HString::try_from("ck0").unwrap(),
+        driver: HString::try_from("i2c-ck505").unwrap(),
+        services: heapless::Vec::new(),
         parent: Some(HString::try_from("uart0").unwrap()),
+        bus: Some(fstart_types::BusAddress::I2c(0x69)),
+        enabled: true,
     });
-    parsed.driver_instances.push(DriverInstance::Ns16550(
-        fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio {
-                base: 0x2000_0000,
-                reg_shift: 0,
-                reg_width: 0,
-            },
-            clock_freq: 3_686_400,
-            baud_rate: 115_200,
+    parsed.driver_instances.push(DriverInstance::I2cCk505(
+        fstart_device_registry::i2c_ck505::I2cCk505Config {
+            mask: [0, 0, 0, 0, 0],
+            regs: [0, 0, 0, 0, 0],
         },
     ));
     // uart0 is at index 0
@@ -775,7 +905,7 @@ fn test_non_bus_parent_is_compile_error() {
     let source = generate_stage_source(&parsed, None);
     assert!(
         source.contains("compile_error!"),
-        "should emit compile_error for non-bus parent: {source}"
+        "should emit compile_error for non-bus parent of bus-device child: {source}"
     );
     assert!(
         source.contains("does not provide a bus service"),
@@ -814,6 +944,8 @@ fn test_flexible_multi_driver_parsed_board(
             v
         },
         parent: None,
+        bus: None,
+        enabled: true,
     });
 
     // PL011 UART
@@ -826,6 +958,8 @@ fn test_flexible_multi_driver_parsed_board(
             v
         },
         parent: None,
+        bus: None,
+        enabled: true,
     });
 
     let driver_instances = vec![
@@ -864,6 +998,7 @@ fn test_flexible_multi_driver_parsed_board(
             },
             flash_base: None,
             flash_size: None,
+            car: None,
         },
         devices,
         stages: StageLayout::Monolithic(MonolithicConfig {
@@ -1159,6 +1294,8 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
             v
         },
         parent: None,
+        bus: None,
+        enabled: true,
     });
 
     let driver_instances = vec![DriverInstance::Ns16550(
@@ -1236,6 +1373,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
             },
             flash_base: None,
             flash_size: None,
+            car: None,
         },
         devices,
         stages: StageLayout::MultiStage(stages),
@@ -1482,6 +1620,8 @@ fn test_device_tree_table_with_bus_children() {
             v
         },
         parent: Some(HString::try_from("i2c0").unwrap()),
+        bus: None,
+        enabled: true,
     });
     parsed.driver_instances.push(DriverInstance::Ns16550(
         fstart_driver_ns16550::Ns16550Config {

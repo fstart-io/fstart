@@ -58,10 +58,18 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 
     // Base features: platform + all driver features (every stage constructs
     // all devices, so driver features are always needed globally).
+    //
+    // Structural (driverless) nodes use the sentinel driver name
+    // `_structural` and must be skipped here — there is no cargo
+    // feature by that name.
     let mut base_features = Vec::new();
     base_features.push(config.platform.as_str().to_string());
     for device in &config.devices {
-        base_features.push(device.driver.to_string());
+        let drv = device.driver.as_str();
+        if drv == "_structural" {
+            continue;
+        }
+        base_features.push(drv.to_string());
     }
 
     // Multi-stage boards need the handoff feature for inter-stage data passing.
