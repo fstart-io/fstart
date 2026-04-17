@@ -99,6 +99,17 @@ pub mod bochs_display {
     pub use fstart_driver_bochs_display::BochsDisplayConfig;
 }
 
+#[cfg(feature = "sg2042")]
+pub mod sg2042 {
+    pub use fstart_soc_sg2042::cmn::Sg2042CmnConfig;
+    pub use fstart_soc_sg2042::ddr::Sg2042DdrConfig;
+    pub use fstart_soc_sg2042::pcie::Sg2042PcieConfig;
+    pub use fstart_soc_sg2042::plic::Sg2042PlicConfig;
+    pub use fstart_soc_sg2042::riscv::Sg2042RvReleaseConfig;
+    pub use fstart_soc_sg2042::top::Sg2042TopConfig;
+    pub use fstart_soc_sg2042::wdt::Sg2042WdtConfig;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -196,6 +207,37 @@ pub enum DriverInstance {
     /// Allwinner D1/T113 (sun20i) DRAM controller.
     #[cfg(feature = "sunxi-d1-dramc")]
     SunxiD1Dramc(sunxi_d1_dramc::SunxiD1DramcConfig),
+
+    // -----------------------------------------------------------------
+    // Sophgo SG2042 (Milk-V Pioneer) drivers
+    // -----------------------------------------------------------------
+    /// SG2042 SYS_CTRL clock controller (TOP register block).
+    #[cfg(feature = "sg2042")]
+    Sg2042Top(sg2042::Sg2042TopConfig),
+
+    /// SG2042 DesignWare APB watchdog timer.
+    #[cfg(feature = "sg2042")]
+    Sg2042Wdt(sg2042::Sg2042WdtConfig),
+
+    /// SG2042 DDR memory controller (stub pending RE).
+    #[cfg(feature = "sg2042")]
+    Sg2042Ddr(sg2042::Sg2042DdrConfig),
+
+    /// SG2042 CMN-600 coherent mesh network.
+    #[cfg(feature = "sg2042")]
+    Sg2042Cmn(sg2042::Sg2042CmnConfig),
+
+    /// SG2042 PLIC interrupt controller routing.
+    #[cfg(feature = "sg2042")]
+    Sg2042Plic(sg2042::Sg2042PlicConfig),
+
+    /// SG2042 Cadence PCIe RC (PCIe0, x16 Gen4).
+    #[cfg(feature = "sg2042")]
+    Sg2042Pcie(sg2042::Sg2042PcieConfig),
+
+    /// SG2042 RISC-V core release (terminal SocHandoff driver).
+    #[cfg(feature = "sg2042")]
+    Sg2042RvRelease(sg2042::Sg2042RvReleaseConfig),
 
     // -----------------------------------------------------------------
     // ACPI-only devices — no runtime driver, only contribute ACPI tables
@@ -430,6 +472,76 @@ impl DriverInstance {
                 compatible: &["bochs-display", "qemu-stdvga"],
                 has_acpi: false,
             },
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Top(_) => &DriverMeta {
+                name: "sg2042-top",
+                type_name: "Sg2042Top",
+                module_path: "fstart_soc_sg2042",
+                config_type: "Sg2042TopConfig",
+                services: &["ClockController"],
+                compatible: &["sophgo,sg2042-sysctrl"],
+                has_acpi: false,
+            },
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Wdt(_) => &DriverMeta {
+                name: "sg2042-wdt",
+                type_name: "Sg2042Wdt",
+                module_path: "fstart_soc_sg2042",
+                config_type: "Sg2042WdtConfig",
+                services: &[],
+                compatible: &["sophgo,sg2042-wdt", "snps,dw-wdt"],
+                has_acpi: false,
+            },
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Ddr(_) => &DriverMeta {
+                name: "sg2042-ddr",
+                type_name: "Sg2042Ddr",
+                module_path: "fstart_soc_sg2042",
+                config_type: "Sg2042DdrConfig",
+                services: &["MemoryController"],
+                compatible: &["sophgo,sg2042-ddr"],
+                has_acpi: false,
+            },
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Cmn(_) => &DriverMeta {
+                name: "sg2042-cmn",
+                type_name: "Sg2042Cmn",
+                module_path: "fstart_soc_sg2042",
+                config_type: "Sg2042CmnConfig",
+                services: &[],
+                compatible: &["sophgo,sg2042-cmn600", "arm,cmn-600"],
+                has_acpi: false,
+            },
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Plic(_) => &DriverMeta {
+                name: "sg2042-plic",
+                type_name: "Sg2042Plic",
+                module_path: "fstart_soc_sg2042",
+                config_type: "Sg2042PlicConfig",
+                services: &[],
+                compatible: &["sophgo,sg2042-plic", "riscv,plic0"],
+                has_acpi: false,
+            },
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Pcie(_) => &DriverMeta {
+                name: "sg2042-pcie",
+                type_name: "Sg2042Pcie",
+                module_path: "fstart_soc_sg2042",
+                config_type: "Sg2042PcieConfig",
+                services: &["PciRootBus"],
+                compatible: &["sophgo,sg2042-pcie", "cdns,cdns-pcie-host"],
+                has_acpi: false,
+            },
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042RvRelease(_) => &DriverMeta {
+                name: "sg2042-rv-release",
+                type_name: "Sg2042RvRelease",
+                module_path: "fstart_soc_sg2042",
+                config_type: "Sg2042RvReleaseConfig",
+                services: &["SocHandoff"],
+                compatible: &["sophgo,sg2042-rv-release"],
+                has_acpi: false,
+            },
         }
     }
 
@@ -504,6 +616,20 @@ impl DriverInstance {
             Self::PciEcam(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "bochs-display")]
             Self::BochsDisplay(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Top(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Wdt(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Ddr(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Cmn(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Plic(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042Pcie(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sg2042")]
+            Self::Sg2042RvRelease(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

@@ -30,11 +30,16 @@ pub fn plic_cfg_base(plic_base: u64) -> u64 {
 
 // Config register offsets from `PLIC_CFG_BASE`
 const PLIC_TARGET_ID_CTRL: u64 = 0x000;
+#[allow(dead_code)] // single-socket Pioneer only uses cluster ctrl; kept for multi-socket future use
 const PLIC_SOCKET0_CTRL: u64 = 0x004;
+#[allow(dead_code)] // multi-socket path, not used on single-socket Pioneer
 const PLIC_SOCKET1_CTRL: u64 = 0x008;
 const PLIC_SOCKET0_CLUSTER_CTRL_BASE: u64 = 0x400;
+#[allow(dead_code)] // multi-socket path
 const PLIC_SOCKET1_CLUSTER_CTRL_BASE: u64 = 0x410;
+#[allow(dead_code)] // multi-socket path
 const PLIC_SOCKET0_A4SID_CTRL: u64 = 0x800;
+#[allow(dead_code)] // multi-socket path
 const PLIC_SOCKET1_A4SID_CTRL: u64 = 0x804;
 
 // ===================================================================
