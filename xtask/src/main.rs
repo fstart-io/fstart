@@ -15,6 +15,7 @@ use std::process;
 
 pub mod assemble;
 pub mod build_board;
+pub mod fip;
 mod inspect;
 mod qemu;
 

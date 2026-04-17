@@ -14,3 +14,4 @@ fstart-fit = { workspace = true, features = ["std"] }
 fstart-crypto = { workspace = true, features = ["all"] }
 ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+tempfile = "3"

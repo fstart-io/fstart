@@ -51,6 +51,15 @@ pub fn run(
     disk: Option<&str>,
     memory: Option<&str>,
 ) -> Result<(), String> {
+    // milkv-pioneer runs an ARM Cortex-A53 SCP — no public QEMU model exists.
+    // Direct users to flash hardware via SPI flash instead.
+    if board_name == "milkv-pioneer" {
+        return Err("no emulator configured for board 'milkv-pioneer' \
+             (Sophgo SG2042 A53 SCP has no QEMU model). \
+             Flash target/milkv-pioneer/fstart.fip to SPI flash offset 0x30000."
+            .to_string());
+    }
+
     let (qemu_bin, mut args) = if board_name.contains("sbsa") {
         // SBSA-ref: TF-A runs first from pflash0 (secure flash at 0x0),
         // then launches fstart as BL33 from pflash1 (non-secure flash

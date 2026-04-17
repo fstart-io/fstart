@@ -94,6 +94,13 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         base_features.push("sunxi".to_string());
     }
 
+    // Sophgo SG2042 FIP format: add the `sophgo` feature flag so
+    // fstart-platform-aarch64 uses entry_sophgo.rs (correct MMU tables
+    // for the SG2042 address space) instead of the default AArch64 entry.
+    if config.soc_image_format == SocImageFormat::SophgoFip {
+        base_features.push("sophgo".to_string());
+    }
+
     // SBSA boards use a special entry point that copies firmware from
     // flash to DRAM before executing (the flash→DRAM gap exceeds the
     // AArch64 ADRP relocation range).
@@ -321,6 +328,25 @@ fn build_one_stage(
         // 512-byte alignment, and patch both length and checksum.
         if let SocImageFormat::AllwinnerEgon = soc_format {
             patch_allwinner_egon(&bin_path)?;
+        }
+
+        // Sophgo FIP: wrap the flat binary in a FIP container for the
+        // SG2042 silicon boot ROM. Output to target/<board>/fstart.fip,
+        // where <board> is the board.ron's parent directory name.
+        if let SocImageFormat::SophgoFip = soc_format {
+            let payload =
+                std::fs::read(&bin_path).map_err(|e| format!("read binary for FIP: {e}"))?;
+            let board_name = board_ron
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown-board");
+            let board_output_dir = workspace_root.join("target").join(board_name);
+            std::fs::create_dir_all(&board_output_dir)
+                .map_err(|e| format!("create FIP output dir: {e}"))?;
+            let fip_path = board_output_dir.join("fstart.fip");
+            crate::fip::write_fip(&payload, &fip_path)?;
+            eprintln!("[fstart] FIP: {}", fip_path.display());
         }
 
         bin_path
