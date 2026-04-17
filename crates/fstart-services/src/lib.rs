@@ -21,6 +21,7 @@ pub mod gpio;
 pub mod i2c;
 pub mod memory_controller;
 pub mod pci;
+pub mod soc_handoff;
 pub mod spi;
 pub mod timer;
 
@@ -34,6 +35,7 @@ pub use gpio::GpioController;
 pub use i2c::I2c;
 pub use memory_controller::MemoryController;
 pub use pci::{PciAddr, PciRootBus};
+pub use soc_handoff::SocHandoff;
 pub use spi::SpiBus;
 pub use timer::Timer;
 
