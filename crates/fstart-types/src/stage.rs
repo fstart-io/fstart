@@ -189,6 +189,22 @@ pub enum Capability {
     ///
     /// Currently supported on `armv7` (Allwinner sunxi) only.
     ReturnToFel,
+    /// Hand off control to a secondary processor subsystem and halt.
+    ///
+    /// The referenced device implements `SocHandoff`. Its `handoff()`
+    /// method performs all steps needed to release the secondary processor:
+    /// loading its firmware image, writing its reset vector to hardware
+    /// registers, enabling its subsystem, then parking the primary
+    /// processor in a WFI loop.
+    ///
+    /// This capability is **terminal** — `handoff()` diverges (`-> !`).
+    /// No code is emitted after the call. Used on heterogeneous SoCs
+    /// where the primary core (e.g., ARM Cortex-A53 SCP on SG2042) hands
+    /// off to the application processors (e.g., 64× RISC-V C920 cores).
+    SocHandoff {
+        /// Device name from the devices list (e.g., "sg2042_rv")
+        device: HString<32>,
+    },
     /// Load the next stage directly from a block device into its load
     /// address and jump to it.
     ///

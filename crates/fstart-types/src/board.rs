@@ -158,6 +158,22 @@ pub enum SocImageFormat {
     ///
     /// See oreboot's D1 implementation for the reference Rust approach.
     AllwinnerEgon,
+    /// Sophgo Mango FIP (Firmware Image Package) container.
+    ///
+    /// Required by the Sophgo SG2042 silicon boot ROM (Milk-V Pioneer
+    /// and compatible boards). The boot ROM reads `fip.bin` from SPI flash
+    /// at offset `0x30000` (copy A) or `0x230000` (copy B after WDT reset)
+    /// and extracts the BL2 image by matching `UUID_MANGO_BL2`.
+    ///
+    /// FIP layout produced by xtask:
+    /// - Bytes 0x00–0x0F: TOC header (`magic = 0xAA64_0001 LE`, serial = 0)
+    /// - Bytes 0x10–0x37: BL2 entry (UUID_MANGO_BL2, offset=0x58, size=N)
+    /// - Bytes 0x38–0x5F: null UUID end-of-table marker
+    /// - Bytes 0x58–(0x58+N): raw BL2 binary
+    ///
+    /// The BL2 binary must be linked at `BL2_BASE = 0x7010_0210_00`
+    /// (confirmed from Sophgo TF-A `platform_def.h`).
+    SophgoFip,
 }
 
 /// Build mode determines how the firmware is compiled and how drivers are bound.
