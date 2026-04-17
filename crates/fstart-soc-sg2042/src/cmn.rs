@@ -155,8 +155,10 @@ impl Sg2042Cmn {
         // mango_cmn600.c:process_node_rni()
         // chip0: 0x7070810A00 and 0x7071810A00
         unsafe {
-            let rni0 = 0x7070_8010_A00usize;
-            let rni1 = 0x7071_8010_A00usize;
+            // RNI node addresses: 0x7070_8010_A00 and 0x7071_8010_A00
+            // mango_cmn600.c:process_node_rni() chip0
+            let rni0 = 0x0000_0707_0801_0A00_usize;
+            let rni1 = 0x0000_0707_1801_0A00_usize;
             let v0 = core::ptr::read_volatile(rni0 as *const u64);
             core::ptr::write_volatile(rni0 as *mut u64, v0 | 0x60);
             let v1 = core::ptr::read_volatile(rni1 as *const u64);

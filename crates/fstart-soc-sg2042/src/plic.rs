@@ -130,7 +130,8 @@ impl Device for Sg2042Plic {
 
         // Write own A4SID (=3) and socket ID (=0) to TARGET_ID_CTRL.
         // mango_plic.c: tmp = (socket_id << 0) | (3 << 8)
-        let target_id = (0u32 << 0) | (3u32 << 8);
+        // mango_plic.c: (socket_id << 0) | (3 << 8)  with socket_id=0
+        let target_id = 3u32 << 8;
         self.plic_write(cfg_base + PLIC_TARGET_ID_CTRL, target_id);
 
         // Program cluster A4SIDs for socket 0.
@@ -150,7 +151,7 @@ impl Sg2042Plic {
     /// Reference: `mango_plic.c:plic_setup_cluster_a4sid()`
     fn setup_cluster_a4sids(&self, ctrl_base: u64) {
         let clusters = self.cluster_count.min(16) as usize;
-        let regs = (clusters + 3) / 4; // round up to 4-cluster groups
+        let regs = clusters.div_ceil(4);
 
         for reg_idx in 0..regs {
             let mut word: u32 = 0;

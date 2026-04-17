@@ -254,7 +254,7 @@ impl Sg2042Pcie {
 
     fn phy_write_lane(&self, lane: u8, offset: u16, val: u16) {
         // PHY register address = phy_apb + (offset << 2) | (lane << 11)
-        let addr = self.phy_apb + ((offset as u64) << 2) | ((lane as u64) << 11);
+        let addr = (self.phy_apb + ((offset as u64) << 2)) | ((lane as u64) << 11);
         unsafe {
             core::ptr::write_volatile(addr as *mut u32, val as u32);
         }
