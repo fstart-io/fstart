@@ -1681,3 +1681,121 @@ fn test_config_ser_nested_option_in_struct() {
     );
     assert!(some_s.contains("7u32"), "inner struct value: {some_s}");
 }
+
+// ---------------------------------------------------------------------------
+// milkv-pioneer integration tests
+// ---------------------------------------------------------------------------
+
+/// Load boards/milkv-pioneer/board.ron from the workspace root.
+///
+/// Uses the CARGO_MANIFEST_DIR env var to locate the workspace root,
+/// then walks up two levels from `crates/fstart-codegen/` to reach it.
+fn milkv_pioneer_board_ron() -> std::path::PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let crate_dir = std::path::PathBuf::from(manifest);
+    // crate_dir = …/crates/fstart-codegen → workspace root = crate_dir/../../
+    let workspace_root = crate_dir.parent().unwrap().parent().unwrap();
+    workspace_root
+        .join("boards")
+        .join("milkv-pioneer")
+        .join("board.ron")
+}
+
+#[test]
+fn test_milkv_pioneer_board_ron_parses() {
+    let path = milkv_pioneer_board_ron();
+    assert!(
+        path.exists(),
+        "milkv-pioneer/board.ron not found at {}",
+        path.display()
+    );
+    let parsed = crate::ron_loader::load_parsed_board(&path)
+        .expect("milkv-pioneer/board.ron should parse without error");
+    assert_eq!(parsed.config.name.as_str(), "milkv-pioneer");
+    assert_eq!(parsed.config.platform, fstart_types::Platform::Aarch64);
+    assert_eq!(
+        parsed.config.soc_image_format,
+        fstart_types::SocImageFormat::SophgoFip
+    );
+}
+
+#[test]
+fn test_milkv_pioneer_codegen_produces_valid_source() {
+    let path = milkv_pioneer_board_ron();
+    let parsed = crate::ron_loader::load_parsed_board(&path).expect("board.ron should parse");
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        !source.contains("compile_error!"),
+        "generated source must not contain compile_error!: {source}"
+    );
+    // Key driver types must appear
+    assert!(
+        source.contains("Sg2042Top"),
+        "Sg2042Top must be in generated source"
+    );
+    assert!(
+        source.contains("Sg2042Ddr"),
+        "Sg2042Ddr must be in generated source"
+    );
+    assert!(
+        source.contains("Sg2042Pcie"),
+        "Sg2042Pcie must be in generated source"
+    );
+    assert!(
+        source.contains("Sg2042RvRelease"),
+        "Sg2042RvRelease must be in generated source"
+    );
+    // SocHandoff call must be present
+    assert!(
+        source.contains(".handoff()"),
+        "SocHandoff call (.handoff()) must be in generated source"
+    );
+}
+
+#[test]
+fn test_milkv_pioneer_ends_with_soc_handoff_no_completion_banner() {
+    let path = milkv_pioneer_board_ron();
+    let parsed = crate::ron_loader::load_parsed_board(&path).expect("board.ron should parse");
+    let source = generate_stage_source(&parsed, None);
+
+    // SocHandoff is terminal — the "all capabilities complete" message
+    // must NOT appear.
+    assert!(
+        !source.contains("all capabilities complete"),
+        "terminal SocHandoff must suppress completion banner: {source}"
+    );
+}
+
+#[test]
+fn test_milkv_pioneer_linker_script_has_sram0_origin() {
+    use crate::linker::generate_linker_script;
+    let path = milkv_pioneer_board_ron();
+    let config = crate::ron_loader::load_board_config(&path).expect("board.ron should parse");
+    let script = generate_linker_script(&config, None);
+
+    // SRAM0 BL2_BASE = 0x7010021000
+    assert!(
+        script.contains("0x7010021000"),
+        "linker script must contain SRAM0 BL2_BASE address 0x7010021000: {script}"
+    );
+}
+
+#[test]
+fn test_milkv_pioneer_ron_roundtrip() {
+    use fstart_types::{Capability, SocImageFormat};
+    let path = milkv_pioneer_board_ron();
+    let config = crate::ron_loader::load_board_config(&path).expect("board.ron should parse");
+
+    // Verify key field values from the RON
+    assert_eq!(config.soc_image_format, SocImageFormat::SophgoFip);
+    // The last capability must be SocHandoff
+    let last_cap = match &config.stages {
+        fstart_types::StageLayout::Monolithic(m) => m.capabilities.last().cloned(),
+        _ => None,
+    };
+    assert!(
+        matches!(last_cap, Some(Capability::SocHandoff { .. })),
+        "last capability must be SocHandoff"
+    );
+}

@@ -14,10 +14,8 @@ pub const FIP_TOC_MAGIC: u32 = 0xAA64_0001;
 /// Byte offset at which the single BL2 payload starts in our minimal FIP.
 ///
 /// Layout: 16-byte TOC header + 40-byte BL2 entry + 40-byte null terminator
-/// = 96 bytes = 0x60. Aligned to 8 bytes; we use 0x58 (88 bytes) because
-/// that is: 16 (hdr) + 40 (entry) + 32 (null, trimmed to UUID only per TF-A).
-/// Actual value per TF-A fiptool: 0x58 bytes before first payload.
-pub const FIP_PAYLOAD_OFFSET: u64 = 0x58;
+/// = 96 bytes = 0x60.
+pub const FIP_PAYLOAD_OFFSET: u64 = 0x60;
 
 /// UUID identifying this image as Sophgo Mango BL2.
 ///

@@ -1,0 +1,172 @@
+// Milk-V Pioneer board — Sophgo SG2042 (64-core RISC-V workstation)
+//
+// fstart runs on the Cortex-A53 SCP at EL3, replacing TF-A BL2.
+// It initialises all platform hardware before releasing 64 RISC-V C920
+// application cores to run ZSBL → OpenSBI → Linux.
+//
+// Boot flow:
+//   SG2042 BootROM → fstart.fip (this board) → RISC-V ZSBL → OpenSBI → Linux
+//
+// Hardware reference: Sophgo TF-A plat/sophgo/mango/
+// Address source: platform_def.h (all addresses verified from C source)
+(
+    name: "milkv-pioneer",
+    platform: Aarch64,
+    soc_image_format: SophgoFip,
+
+    memory: (
+        // SRAM0: where the A53 SCP firmware executes.
+        // BL2_BASE = 0x7010021000 (from platform_def.h BL2_BASE).
+        // BootROM copies the FIP BL2 image to this address and jumps to it.
+        // Size = SRAM0_BASE (0x7010000000) + 2 MB - BL2_BASE = ~2 MB - 0x21000
+        regions: [
+            ( name: "sram0", kind: Rom, base: 0x7010021000, size: 0x1DF000 ),
+            // RAM region omitted: DDR is not available until DDR init is
+            // implemented (reverse engineering of mango_ddr_init_asic pending).
+            // Phase 2: add ( name: "ddr0", kind: Ram, base: 0x0000000000, size: 0x80000000 )
+        ],
+    ),
+
+    devices: [
+        // ── UART1 console (NS16550A) ────────────────────────────────────────
+        // UART1_BASE = 0x7040001000 (platform_def.h:467)
+        // Boot console: PLAT_MANGO_BOOT_UART_BASE = UART1_BASE
+        // Clock: 500 MHz in Normal mode; divisor = 500_000_000 / (115200 * 16) = 271
+        (
+            name: "uart1",
+            driver: Ns16550((
+                base_addr: 0x7040001000,
+                clock_freq: 500000000,  // 500 MHz Normal mode; divisor = 500_000_000 / (115200 * 16) = 271
+                baud_rate: 115200,
+            )),
+            services: ["Console"],
+        ),
+
+        // ── SYS_CTRL (TOP) clock controller ────────────────────────────────
+        // SYS_CTRL_BASE = 0x7030010000 (platform_def.h:SYS_CTRL_BASE / TOP_BASE)
+        // I2C1_BASE = 0x7030006000 (platform_def.h) — for MCU board detection
+        // MCU I2C device address 0x17 (MCU_DEV_ADDR in mango_bl2_setup.c)
+        (
+            name: "sg2042_top",
+            driver: Sg2042Top((
+                sys_ctrl_base: 0x7030010000,
+                i2c1_base: 0x7030006000,
+                mcu_addr: 0x17,
+            )),
+            services: ["ClockController"],
+        ),
+
+        // ── DesignWare APB watchdog ─────────────────────────────────────────
+        // WDT_BASE = 0x7030004000 (platform_def.h)
+        // timeout_top=15 → 2^(16+15) cycles at 100 MHz ≈ 21474 s (safe boot window)
+        (
+            name: "sg2042_wdt",
+            driver: Sg2042Wdt((
+                wdt_base: 0x7030004000,
+                sys_ctrl_base: 0x7030010000,
+                timeout_top: 15,
+            )),
+            services: [],
+        ),
+
+        // ── DDR memory controller (stub — RE pending) ──────────────────────
+        // init() returns Err(InitFailed) with a diagnostic message.
+        // When DDR init is implemented, only this driver changes; the board
+        // RON and capability sequence remain the same.
+        (
+            name: "sg2042_ddr",
+            driver: Sg2042Ddr(()),
+            services: ["MemoryController"],
+        ),
+
+        // ── CMN-600 coherent mesh network ───────────────────────────────────
+        // CMN600_BASE = 0x7070000000 (platform_def.h)
+        // Must run after DDR init (DramInit capability halts if DDR stub fires).
+        (
+            name: "sg2042_cmn",
+            driver: Sg2042Cmn((
+                cmn_base: 0x7070000000,
+                sys_ctrl_base: 0x7030010000,
+            )),
+            services: [],
+        ),
+
+        // ── PLIC interrupt routing ──────────────────────────────────────────
+        // PLIC_BASE = 0x7090000000 (platform_def.h)
+        // 16 clusters, single socket (Pioneer is not multi-socket).
+        (
+            name: "sg2042_plic",
+            driver: Sg2042Plic((
+                plic_base: 0x7090000000,
+                cluster_count: 16,
+                socket_id: 0,
+            )),
+            services: [],
+        ),
+
+        // ── Cadence PCIe RC (PCIe0, x16 Gen4) ──────────────────────────────
+        // PCIE0_CFG_BASE = 0x7060000000 (platform_def.h)
+        (
+            name: "sg2042_pcie",
+            driver: Sg2042Pcie((
+                pcie_cfg_base: 0x7060000000,
+                pcie_id: 0,
+                sys_ctrl_base: 0x7030010000,
+            )),
+            services: ["PciRootBus"],
+        ),
+
+        // ── RISC-V core release (terminal SocHandoff) ───────────────────────
+        // SERIAL_FLASH0_BASE = 0x7000180000 (platform_def.h, DMMR window)
+        // DPT offset = 0x600000 (DISK_PART_TABLE_ADDR in mango_misc.c)
+        // Loads "zsbl" partition from SPI flash DPT to DDR, sets reset vector,
+        // releases 16 clusters, and parks the A53 in WFI.
+        (
+            name: "sg2042_rv",
+            driver: Sg2042RvRelease((
+                sys_ctrl_base: 0x7030010000,
+                flash_dmmr_base: 0x7000180000,
+                dpt_offset: 0x600000,
+                cluster_count: 16,
+                socket_id: 0,
+            )),
+            services: ["SocHandoff"],
+        ),
+    ],
+
+    stages: Monolithic((
+        // load_addr = BL2_BASE = 0x7010021000 (from platform_def.h).
+        // The BootROM copies the FIP BL2 payload to this address.
+        // stack_size = PLATFORM_STACK_SIZE = 0x1000 (4 KB).
+        load_addr: 0x7010021000,
+        stack_size: 0x1000,
+        capabilities: [
+            // Step 1: Console first — any subsequent log message is visible.
+            ConsoleInit(device: "uart1"),
+
+            // Step 2: Clock gates, IP resets, I2C, MCU board detection.
+            ClockInit(device: "sg2042_top"),
+
+            // Step 3: DDR init — STUB. Returns Err(InitFailed) and halts.
+            // Phase 2: implements mango_ddr_init_asic() after RE.
+            DramInit(device: "sg2042_ddr"),
+
+            // Steps 4+: Post-DDR init (CMN, PLIC, WDT) via DriverInit,
+            // then PCIe enumeration, then RISC-V core release.
+            // These run only when DramInit succeeds (Phase 2+).
+            DriverInit,
+            PciInit(device: "sg2042_pcie"),
+            SocHandoff(device: "sg2042_rv"),
+        ],
+    )),
+
+    // Signature verification is not used on this board (no SigVerify capability).
+    // These fields are required by the type but not exercised.
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    mode: Rigid,
+    payload: None,
+)
