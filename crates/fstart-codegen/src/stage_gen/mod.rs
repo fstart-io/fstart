@@ -45,7 +45,7 @@ use capabilities::{
     generate_clock_init, generate_console_init, generate_dram_init, generate_driver_init,
     generate_fdt_prepare, generate_late_driver_init, generate_load_next_stage,
     generate_memory_init, generate_payload_load, generate_pci_init, generate_return_to_fel,
-    generate_sig_verify, generate_smbios_prepare, generate_stage_load,
+    generate_sig_verify, generate_smbios_prepare, generate_soc_handoff, generate_stage_load,
 };
 use config_ser::{config_tokens, driver_type_tokens};
 use flexible::{flexible_enum_for_device, generate_flexible_enums, SERVICE_TRAITS};
@@ -819,6 +819,11 @@ fn generate_fstart_main(
                     }
                 }
             }
+            Capability::SocHandoff { device } => {
+                let dev_name = device.as_str();
+                body.extend(generate_soc_handoff(dev_name, &config.devices, instances));
+                inited_devices.push(dev_name.to_string());
+            }
         }
     }
 
@@ -830,6 +835,7 @@ fn generate_fstart_main(
                 | Capability::PayloadLoad
                 | Capability::LoadNextStage { .. }
                 | Capability::ReturnToFel
+                | Capability::SocHandoff { .. }
         )
     });
 

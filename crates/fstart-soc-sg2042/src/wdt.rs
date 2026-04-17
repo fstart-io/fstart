@@ -6,11 +6,7 @@
 //! Hardware reference: `mango_common.c` — `bm_wdt_start()`, `bm_wdt_stop()`.
 
 use serde::{Deserialize, Serialize};
-use tock_registers::{
-    interfaces::{Readable, Writeable},
-    register_bitfields, register_structs,
-    registers::ReadWrite,
-};
+use tock_registers::{interfaces::Writeable, register_structs, registers::ReadWrite};
 
 use fstart_services::device::{Device, DeviceError};
 

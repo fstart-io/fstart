@@ -753,6 +753,45 @@ pub(super) fn generate_return_to_fel(platform: Platform) -> TokenStream {
     }
 }
 
+/// Generate code for the SocHandoff capability.
+///
+/// Validates the device implements `SocHandoff`, then emits a call to
+/// `device.handoff()`. The method diverges (`-> !`) by the trait contract,
+/// so no `halt()` is emitted — the trait guarantees the A53 parks in WFI.
+pub(super) fn generate_soc_handoff(
+    device_name: &str,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+) -> TokenStream {
+    let Some((idx, _dev)) = devices
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.name.as_str() == device_name)
+    else {
+        let msg = format!("SocHandoff references device '{device_name}' which is not declared");
+        return quote! { compile_error!(#msg); };
+    };
+
+    let inst = &instances[idx];
+    if !inst.meta().services.contains(&"SocHandoff") {
+        let drv = inst.meta().name;
+        let msg = format!(
+            "SocHandoff: device '{device_name}' (driver '{drv}') \
+             does not implement the SocHandoff service"
+        );
+        return quote! { compile_error!(#msg); };
+    }
+
+    let device = format_ident!("{}", device_name);
+    let drv_name = inst.meta().name;
+    quote! {
+        fstart_log::info!("SoC handoff via {} ({})", #device_name, #drv_name);
+        // handoff() -> ! — the SocHandoff trait guarantees divergence;
+        // no halt() needed after this call.
+        #device.handoff();
+    }
+}
+
 /// Generate code for the StageLoad capability.
 pub(super) fn generate_stage_load(
     next_stage: &str,
