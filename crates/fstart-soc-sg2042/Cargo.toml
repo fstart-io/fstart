@@ -10,6 +10,7 @@ fstart-types = { workspace = true }
 fstart-log = { workspace = true }
 fstart-arch = { workspace = true, features = ["aarch64"] }
 tock-registers = { workspace = true }
+ufmt = { workspace = true }
 serde = { workspace = true }
 
 [features]
