@@ -287,6 +287,13 @@ fn generate_imports(
         tokens.extend(quote! { use fstart_services::PciRootBus; });
     }
 
+    let has_soc_handoff = devices
+        .iter()
+        .any(|d| d.services.iter().any(|s| s.as_str() == "SocHandoff"));
+    if has_soc_handoff {
+        tokens.extend(quote! { use fstart_services::SocHandoff; });
+    }
+
     // Import BusDevice trait when any device has a parent (bus child).
     // BusDevice provides new_on_bus() used by child device construction.
     let has_bus_children = devices.iter().any(|d| d.parent.is_some());

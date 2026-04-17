@@ -13,12 +13,19 @@
 //!   Allwinner sun50i SoCs (H5, A64) that boot in AArch32 from the BROM.
 //!   Implements the ARMv8 RMR warm-reset sequence to switch into AArch64,
 //!   with FEL state saving for USB debug mode return.
+//!
+//! - **Sophgo** (`entry_sophgo.rs`, behind `sophgo` feature): Entry for
+//!   Sophgo SG2042 SoCs (Milk-V Pioneer). Extends the default entry's MMU
+//!   page tables to cover the SG2042's 40-bit peripheral address space
+//!   (0x7000000000–0x70BFFFFFFF). Adds an L2 table so SRAM0 (where BL2
+//!   executes) gets Normal WB attributes while neighbouring peripherals
+//!   in the same 1 GiB block stay Device-nGnRnE.
 
 #![no_std]
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(not(any(feature = "sunxi", feature = "sbsa")))]
+#[cfg(not(any(feature = "sunxi", feature = "sbsa", feature = "sophgo")))]
 pub mod entry;
 
 #[cfg(feature = "sunxi")]
@@ -26,6 +33,9 @@ pub mod entry_sunxi;
 
 #[cfg(feature = "sbsa")]
 pub mod entry_sbsa;
+
+#[cfg(feature = "sophgo")]
+pub mod entry_sophgo;
 
 // ---------------------------------------------------------------------------
 // Boot parameters — written by _start assembly, read by Rust code

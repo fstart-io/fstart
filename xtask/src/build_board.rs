@@ -609,7 +609,15 @@ fn capability_features(
         features.push("fdt".to_string());
     }
 
-    if stage_uses_pci(capabilities) {
+    // Only add "pci-ecam" when the board explicitly uses the pci-ecam driver.
+    // Boards that implement PciRootBus through their own SoC driver (e.g.,
+    // sg2042-pcie) use PciInit without needing the pci-ecam crate.
+    if stage_uses_pci(capabilities)
+        && config
+            .devices
+            .iter()
+            .any(|d| d.driver.as_str() == "pci-ecam")
+    {
         features.push("pci-ecam".to_string());
     }
 

@@ -11,3 +11,6 @@ fstart-soc-sunxi = { workspace = true, optional = true }
 default = []
 sunxi = ["dep:fstart-soc-sunxi"]
 sbsa = []
+# Sophgo SG2042 (Milk-V Pioneer): correct MMU page tables for the 40-bit
+# peripheral address space. No extra runtime dependency needed.
+sophgo = []

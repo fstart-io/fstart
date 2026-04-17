@@ -30,3 +30,13 @@ pub mod wdt;
 
 #[cfg(feature = "std")]
 pub mod fip;
+
+// Re-export all driver types at crate root so generated stage code can use
+// `use fstart_soc_sg2042::*;` and find types without module qualification.
+pub use cmn::{Sg2042Cmn, Sg2042CmnConfig};
+pub use ddr::{Sg2042Ddr, Sg2042DdrConfig};
+pub use pcie::{Sg2042Pcie, Sg2042PcieConfig};
+pub use plic::{Sg2042Plic, Sg2042PlicConfig};
+pub use riscv::{Sg2042RvRelease, Sg2042RvReleaseConfig};
+pub use top::{Sg2042Top, Sg2042TopConfig};
+pub use wdt::{Sg2042Wdt, Sg2042WdtConfig};

@@ -20,10 +20,10 @@
         // BootROM copies the FIP BL2 image to this address and jumps to it.
         // Size = SRAM0_BASE (0x7010000000) + 2 MB - BL2_BASE = ~2 MB - 0x21000
         regions: [
-            ( name: "sram0", kind: Rom, base: 0x7010021000, size: 0x1DF000 ),
-            // RAM region omitted: DDR is not available until DDR init is
-            // implemented (reverse engineering of mango_ddr_init_asic pending).
-            // Phase 2: add ( name: "ddr0", kind: Ram, base: 0x0000000000, size: 0x80000000 )
+            // SRAM0 is read/write/execute SRAM — kind: Ram generates the
+            // RAM-only linker layout where .text, .data, .bss, and .stack
+            // all reside contiguously in SRAM0.
+            ( name: "sram0", kind: Ram, base: 0x7010021000, size: 0x1DF000 ),
         ],
     ),
 

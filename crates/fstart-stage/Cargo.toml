@@ -40,6 +40,16 @@ fu740-prci = ["dep:fstart-driver-fu740-prci"]
 fu740-ddr = ["dep:fstart-driver-fu740-ddr"]
 pci-ecam = ["dep:fstart-driver-pci-ecam", "dep:fstart-alloc"]
 bochs-display = ["dep:fstart-driver-bochs-display"]
+# Sophgo SG2042 drivers (Milk-V Pioneer)
+sg2042-top = ["dep:fstart-soc-sg2042"]
+sg2042-wdt = ["dep:fstart-soc-sg2042"]
+sg2042-ddr = ["dep:fstart-soc-sg2042"]
+sg2042-cmn = ["dep:fstart-soc-sg2042"]
+sg2042-plic = ["dep:fstart-soc-sg2042"]
+sg2042-pcie = ["dep:fstart-soc-sg2042"]
+sg2042-rv-release = ["dep:fstart-soc-sg2042"]
+# sophgo = SG2042 MMU entry point + all SG2042 SoC crate features
+sophgo = ["dep:fstart-soc-sg2042", "fstart-platform-aarch64?/sophgo"]
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
@@ -98,6 +108,7 @@ fstart-driver-fu740-prci = { workspace = true, optional = true }
 fstart-driver-fu740-ddr = { workspace = true, optional = true }
 fstart-driver-pci-ecam = { workspace = true, optional = true }
 fstart-driver-bochs-display = { workspace = true, optional = true }
+fstart-soc-sg2042 = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
