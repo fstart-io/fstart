@@ -10,9 +10,9 @@
 //! | 0x00   | 4    | TOC magic (`0xAA64_0001` LE) |
 //! | 0x04   | 4    | Serial number (0) |
 //! | 0x08   | 8    | TOC flags (0) |
-//! | 0x10   | 40   | BL2 entry (UUID_MANGO_BL2, offset=0x58, size=N) |
+//! | 0x10   | 40   | BL2 entry (UUID_MANGO_BL2, offset=0x60, size=N) |
 //! | 0x38   | 40   | Null UUID end-of-table marker |
-//! | 0x58   | N    | Raw BL2 binary |
+//! | 0x60   | N    | Raw BL2 binary |
 //!
 //! # References
 //!
@@ -74,7 +74,8 @@ pub fn write_fip(payload: &[u8], out_path: &Path) -> Result<(), String> {
     // Null end-of-table sentinel: all-zero UUID + zero fields (40 bytes)
     buf.write_all(&[0u8; 40]).map_err(|e| e.to_string())?;
 
-    assert_eq!(
+    // Compile-time constant: header is always exactly FIP_PAYLOAD_OFFSET bytes.
+    debug_assert_eq!(
         buf.len(),
         FIP_PAYLOAD_OFFSET as usize,
         "FIP header size must be exactly {:#x} bytes",
