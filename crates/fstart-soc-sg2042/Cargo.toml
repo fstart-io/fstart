@@ -1,0 +1,17 @@
+[package]
+name = "fstart-soc-sg2042"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-services = { workspace = true }
+fstart-types = { workspace = true }
+fstart-log = { workspace = true }
+fstart-arch = { workspace = true, features = ["aarch64"] }
+tock-registers = { workspace = true }
+serde = { workspace = true }
+
+[features]
+# Enable the FIP container writer for use by xtask (requires std).
+std = []
