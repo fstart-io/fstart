@@ -659,18 +659,14 @@ All 10 board RON files updated: `platform: "riscv64"` → `platform: Riscv64`.
 
 These were identified during Phase 12 but deferred pending actual need:
 
-1. **Uniform `boot_linux()` API** — Each platform crate exports different
-   boot functions (`boot_linux_sbi`, `boot_linux_atf`, `boot_linux`).
-   Unifying to a single `boot_linux(kernel, dtb, fw)` per-platform would
-   reduce codegen duplication.  Low priority: `board_gen`’s
-   `platform_boot_protocol_stmts` already abstracts the per-platform
-   differences at codegen time.
+1. ~~**Uniform `boot_linux()` API**~~ — **DONE.** Added
+   `BootLinuxParams` struct in `fstart-services/src/boot.rs` and
+   `boot_linux(&BootLinuxParams) -> !` on all four platform crates.
+   `board_gen` now emits a single params construction + call.
 
-2. **Abstract SoC boot header** — `LoadNextStage` and block-device
-   boot-source detection are eGON-only.  A `SocBootHeader` trait would
-   allow other SoCs (Rockchip, MediaTek) to plug in their own boot
-   media detection and header format.  Deferred until a non-sunxi board
-   actually needs it.
+2. ~~**Abstract SoC boot header**~~ — **DONE.** Added
+   `SocBootHeader` trait in `fstart-services/src/soc_boot.rs`;
+   implemented for Allwinner eGON in `fstart-soc-sunxi::EgonBootHeader`.
 
 3. ~~**Move BROM mapping out of codegen**~~ — **DONE.** Moved to
    `DriverInstance::boot_media_values()` in `fstart-device-registry`.
