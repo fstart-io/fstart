@@ -2,10 +2,12 @@
 
 ## Status
 
-Design document with implementation notes.  Phases 1–5 are substantially
-complete; the checklist at the end shows current status.  The driver model
-is functional: boards build, run in QEMU, and codegen produces typed
-device construction, service accessors, and a flat device tree table.
+Design document with implementation notes.  Phases 1–4 are substantially
+complete; Phase 5 (Flexible mode) was superseded by the stage-runtime /
+codegen split.  The driver model is functional: boards build, run in
+QEMU, and codegen produces a typed board adapter (`impl Board for
+_BoardDevices`) consumed by a handwritten generic executor
+(`fstart_stage_runtime::run_stage`).
 
 ## Goals
 
@@ -13,8 +15,9 @@ device construction, service accessors, and a flat device tree table.
    linker-section magic.
 2. **RON-driven** -- the board `.ron` file remains the single source of truth; codegen
    produces all glue code.
-3. **Zero-cost abstractions** -- in `Rigid` mode every call is monomorphized; no trait
-   objects, no vtables.
+3. **Zero-cost abstractions** -- the `Board` trait is `Sized` and the executor is
+   generic over `B: Board`, so every call is monomorphized; no trait objects,
+   no vtables.
 4. **`no_std` / no-alloc** -- bounded containers, static lifetimes, no heap.
 5. **Layered** -- clean separation between *service interfaces*, *device classes*,
    *drivers*, and *board wiring*.
@@ -65,23 +68,22 @@ compile-time device-tree validation.
                              v
 +----------------------------------------------------------------+
 |                    Generated Stage Code                         |
-|  * Concrete type aliases (type BoardConsole = Ns16550)         |
-|  * Static device instances                                     |
-|  * Devices struct (typed, one field per device)                |
-|  * StageContext (typed service accessors)                      |
-|  * fstart_main() init sequence from capabilities               |
+|  * _BoardDevices struct (Option<Driver> per device)            |
+|  * impl Board for _BoardDevices (capability trampolines)      |
+|  * static STAGE_PLAN: StagePlan (CapOp sequence)              |
+|  * fstart_main() stub → run_stage(board, plan, handoff)       |
 +----------+-----------------+-------------------+---------------+
            |                 |                   |
            v                 v                   v
   +---------------+  +---------------+  +--------------------+
-  | fstart-       |  | fstart-       |  | fstart-            |
-  | services      |  | drivers       |  | capabilities       |
+  | fstart-       |  | fstart-       |  | fstart-stage-      |
+  | services      |  | drivers       |  | runtime            |
   |               |  |               |  |                    |
-  | trait Console |  | Ns16550       |  | console_init()     |
-  | trait Timer   |  | Pl011         |  | memory_init()      |
-  | trait Block   |  | DesignwareI2c |  | sig_verify()       |
-  | trait I2cBus  |  |               |  |                    |
-  | trait Device  |  | impl Device   |  | StageContext       |
+  | trait Console |  | Ns16550       |  | trait Board        |
+  | trait Timer   |  | Pl011         |  | run_stage<B>()     |
+  | trait Block   |  | DesignwareI2c |  | StagePlan, CapOp   |
+  | trait I2cBus  |  |               |  | DeviceMask         |
+  | trait Device  |  | impl Device   |  |                    |
   +---------------+  +---------------+  +--------------------+
 ```
 
@@ -398,74 +400,134 @@ This is where fstart diverges most from coreboot and U-Boot.  Instead of runtime
 data structures populated from a device tree, codegen produces **concrete Rust types
 at build time**.
 
-### Devices Struct
+### _BoardDevices Struct
 
-One field per device, using the exact driver type:
+One `Option<Driver>` field per enabled device, plus bookkeeping state:
 
 ```rust
 // Generated for qemu-riscv64:
-struct Devices {
-    uart0: fstart_drivers::uart::ns16550::Ns16550,
+struct _BoardDevices {
+    uart0: Option<Ns16550>,
+    // Bookkeeping (populated by new(), updated by trampolines):
+    _inited: fstart_stage_runtime::DeviceMask,
+    _boot_media: fstart_stage_runtime::BootMediaState,
+    _dtb_dst_addr: u64,
+    _bootargs: &'static str,
+    _dram_base: u64,
+    _dram_size_static: u64,
+    _handoff: Option<fstart_types::handoff::StageHandoff>,
+    _acpi_rsdp_addr: u64,
+    _egon_sram_base: u64,
 }
 ```
 
-For boards with bus hierarchies:
+All device fields are `Option<T>` because `init_device(id)` is the sole
+construction site — devices are lazily materialised when the executor asks
+for them.
+
+### impl Board for _BoardDevices
+
+The codegen-emitted adapter implements the `Board` trait from
+`fstart-stage-runtime`.  Each method dispatches to concrete driver fields
+via a `match id { ... }` on `DeviceId`:
 
 ```rust
-struct Devices {
-    uart0: Ns16550,
-    i2c0: DesignwareI2c,
-    tpm0: Slb9670,
-}
-```
-
-### StageContext
-
-Provides typed access to services.  No trait objects in Rigid mode:
-
-```rust
-struct StageContext {
-    devices: Devices,
-}
-
-impl StageContext {
-    #[inline]
-    fn console(&self) -> &impl Console {
-        &self.devices.uart0
+impl fstart_stage_runtime::Board for _BoardDevices {
+    fn init_device(&mut self, id: DeviceId) -> Result<(), DeviceError> {
+        match id {
+            0 => {
+                if self._inited.contains(0) { return Ok(()); }
+                let cfg = Ns16550Config { base_addr: 0x1000_0000, clock: 0, baud: 115200 };
+                let mut _dev = Ns16550::new(&cfg)?;
+                _dev.init()?;
+                self.uart0 = Some(_dev);
+                self._inited.set(0);
+                Ok(())
+            }
+            _ => Err(DeviceError::InitFailed),
+        }
     }
+
+    unsafe fn install_logger(&self, id: DeviceId) {
+        match id {
+            0 => {
+                fstart_log::init(self.uart0.as_ref().unwrap_or_else(|| halt()));
+                fstart_capabilities::console_ready("uart0", "ns16550");
+            }
+            _ => fstart_platform::halt(),
+        }
+    }
+
+    fn sig_verify(&self) { /* reads &FSTART_ANCHOR + self._boot_media */ }
+    fn fdt_prepare(&self) { /* reads self._dtb_dst_addr, self._bootargs, etc. */ }
+    fn payload_load(&self) -> ! { /* loads kernel from FFS, jumps via platform */ }
+    // ... 15 more methods
+    fn halt(&self) -> ! { fstart_platform::halt() }
 }
 ```
 
-### Init Sequence
+Capability trampolines read board-level data from `&self` fields — no
+constants as method arguments (multi-platform invariant).
 
-Generated from the capability list in RON.  The order in the RON file IS the init
-order:
+### StagePlan
+
+Codegen emits a `static STAGE_PLAN` in `.rodata` — the capability sequence
+resolved to `DeviceId` constants:
+
+```rust
+static STAGE_PLAN: fstart_stage_runtime::StagePlan = StagePlan {
+    stage_name: "bootblock",
+    is_first_stage: true,
+    ends_with_jump: true,
+    caps: &[
+        CapOp::ConsoleInit(0),
+        CapOp::BootMediaStatic { device: None, offset: 0x2000_0000, size: 0x200_0000 },
+        CapOp::SigVerify,
+        CapOp::FdtPrepare,
+        CapOp::PayloadLoad,
+    ],
+    persistent_inited: &[],
+    boot_media_gated: &[],
+    all_devices: &[0],
+};
+```
+
+### Init Sequence (run_stage executor)
+
+The handwritten executor in `fstart-stage-runtime` iterates the plan's
+capability sequence and dispatches through the `Board` trait:
+
+```rust
+// fstart-stage-runtime/src/lib.rs (simplified)
+pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, handoff: usize) -> ! {
+    let mut inited = DeviceMask::from_slice(plan.persistent_inited);
+    for op in plan.caps {
+        match *op {
+            CapOp::ConsoleInit(id) => {
+                if board.init_device(id).is_err() { board.halt(); }
+                unsafe { board.install_logger(id); }
+                inited.set(id);
+            }
+            CapOp::SigVerify => board.sig_verify(),
+            CapOp::PayloadLoad => board.payload_load(),
+            // ... one arm per CapOp variant
+            _ => {}
+        }
+    }
+    board.halt();
+}
+```
+
+`fstart_main` is a thin stub:
 
 ```rust
 #[no_mangle]
-pub extern "Rust" fn fstart_main() -> ! {
-    // --- Device construction (bind phase) ---
-    let uart0 = Ns16550::new(&Ns16550Config {
-        base_addr: 0x1000_0000,
-        clock_freq: 3_686_400,
-        baud_rate: 115_200,
-    }).unwrap_or_else(|_| fstart_platform_riscv64::halt());
-
-    // --- Capability: ConsoleInit(device: "uart0") ---
-    uart0.init().unwrap_or_else(|_| fstart_platform_riscv64::halt());
-    let _ = uart0.write_line("[fstart] uart0: ns16550 console ready");
-
-    // --- Build context ---
-    let ctx = StageContext { devices: Devices { uart0 } };
-
-    // --- Capability: MemoryInit ---
-    fstart_capabilities::memory_init(ctx.console());
-
-    // --- Capability: PayloadLoad ---
-    // fstart_capabilities::payload_load(ctx.console(), ctx.block());
-
-    let _ = ctx.console().write_line("[fstart] all capabilities complete");
-    fstart_platform_riscv64::halt()
+pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
+    fstart_stage_runtime::run_stage(
+        _BoardDevices::new(),
+        &STAGE_PLAN,
+        handoff_ptr,
+    )
 }
 ```
 
@@ -526,48 +588,20 @@ Note: with nested `children` in RON, some errors from the old flat `parent`
 model are structurally impossible — there is no way to reference a nonexistent
 parent, and the DFS flattening guarantees topological order.
 
-## Layer 5 -- Rigid vs Flexible Mode
+## Layer 5 -- Dispatch Mode
 
-The `mode` field in the board RON controls how dispatch works.
+All boards use **Rigid** mode (`BuildMode::Rigid`).  The `Board` trait is
+`Sized` and the executor is generic over `B: Board`, so every call
+monomorphises — the compiled firmware is identical in shape to what direct
+inlined calls would produce.  **Zero vtables, zero runtime overhead.**
 
-### Rigid (default)
-
-All types are concrete.  Codegen emits direct struct fields, `&impl Trait` returns,
-and monomorphised function calls.  The compiler inlines everything and eliminates
-unused code.  **Zero runtime overhead.**
-
-```rust
-// Rigid: concrete type, no indirection
-fn console(&self) -> &impl Console { &self.devices.uart0 }
-```
-
-### Flexible
-
-For boards that may select between drivers at runtime (e.g., detect which UART is
-present), codegen produces an enum:
-
-```rust
-// Flexible: enum dispatch, no trait objects, no vtable
-enum ConsoleDevice {
-    Ns16550(Ns16550),
-    Pl011(Pl011),
-}
-
-impl Console for ConsoleDevice {
-    fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
-        match self {
-            Self::Ns16550(d) => d.write_byte(byte),
-            Self::Pl011(d) => d.write_byte(byte),
-        }
-    }
-    // ...
-}
-```
-
-The enum variants are generated from the set of drivers that the board's devices
-declare.  This avoids `dyn Trait` (no vtable allocation, no pointer indirection)
-while still allowing runtime selection.  The match arms are exhaustive and
-compiler-checked.
+The earlier **Flexible** mode (enum dispatch for runtime driver selection)
+was removed when the stage-runtime / codegen split landed.  The `Board`
+trait makes Flexible redundant: if runtime driver selection is ever needed,
+the codegen can emit `Option<enum-of-driver-variants>` fields inside
+`_BoardDevices` without changing the trait, the executor, or any capability
+helper.  The `BuildMode` enum retains only the `Rigid` variant for forward
+compatibility.
 
 ## Lifecycle Comparison
 
@@ -721,10 +755,10 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
 - [x] Remove `compatible` string matching — `DriverInstance` variant name
       determines the driver.
 
-### Phase 2: Codegen Upgrade ✓
+### Phase 2: Codegen Upgrade ✓ (superseded by Phase 6 — stage-runtime split)
 
-- [x] Generate `Devices` struct with concrete typed fields.
-- [x] Generate `StageContext` with service accessor methods.
+- [x] ~~Generate `Devices` struct with concrete typed fields.~~ → replaced by `_BoardDevices`
+- [x] ~~Generate `StageContext` with service accessor methods.~~ → removed (executor needs no context struct)
 - [x] Generate typed `Config` construction via `ConfigTokenSerializer`
       (custom serde Serializer → TokenStream, supports nearly full serde
       data model).
@@ -758,9 +792,28 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
 - [ ] Implement first bus-attached child driver (e.g., SLB9670 TPM).
 - [ ] Exercise `children` syntax in a real board RON file.
 
-### Phase 5: Flexible Mode ✓
+### Phase 5: Flexible Mode — REMOVED
 
-- [x] Implement enum-dispatch codegen for `mode: Flexible`.
-- [x] Generate `ConsoleDevice` / `I2cBusDevice` / etc. enums from the
-      board's driver set.
-- [x] Implement the service traits on the generated enums.
+Flexible mode was implemented and then **removed** when the stage-runtime /
+codegen split landed.  The generic `Board` trait makes enum dispatch
+redundant — if runtime driver selection is needed, it lives inside
+`_BoardDevices` fields, not in a separate codegen mode.
+
+- [x] ~~Implement enum-dispatch codegen for `mode: Flexible`.~~ → deleted (`flexible.rs` removed)
+- [x] ~~Generate `ConsoleDevice` / `I2cBusDevice` / etc. enums.~~ → deleted
+- [x] ~~Implement the service traits on the generated enums.~~ → deleted
+
+### Phase 6: Stage Runtime / Codegen Split ✓
+
+- [x] Create `fstart-stage-runtime` crate with `Board` trait, `StagePlan`,
+      `CapOp`, `DeviceMask`, `BootMediaState`, and `run_stage<B: Board>()` executor.
+- [x] `plan_gen.rs`: emit `static STAGE_PLAN: StagePlan` per stage.
+- [x] `board_gen.rs`: emit `struct _BoardDevices` + `impl Board for _BoardDevices`
+      with all 20 methods (init_device, init_all_devices, install_logger,
+      15 capability trampolines, halt, jump_to, jump_to_with_handoff).
+- [x] Flip `fstart_main` to a 3-line stub calling `run_stage()`.
+- [x] Delete old codegen: `Devices`, `StageContext`, `flexible.rs`,
+      `ensure_device_ready`, `walk_to_real_parent`, `make_prelude`,
+      `generate_driver_init`, `generate_boot_media_auto_device`.
+- [x] 25 host-side executor tests via `MockBoard`.
+- [x] All 16 boards build; all 93 tests pass.

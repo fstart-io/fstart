@@ -959,9 +959,18 @@ dependencies = [
  "fstart-runtime",
  "fstart-services",
  "fstart-soc-sunxi",
+ "fstart-stage-runtime",
  "fstart-types",
  "heapless",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-stage-runtime"
+version = "0.1.0"
+dependencies = [
+ "fstart-services",
+ "fstart-types",
 ]
 
 [[package]]

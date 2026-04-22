@@ -61,12 +61,16 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     //
     // Structural (driverless) nodes use the sentinel driver name
     // `_structural` and must be skipped here — there is no cargo
-    // feature by that name.
+    // feature by that name.  Similarly, ACPI-only devices (ahci,
+    // xhci, pcie-root) contribute only build-time ACPI table entries
+    // and have no runtime driver crate / no corresponding feature in
+    // fstart-stage's Cargo.toml.
+    const ACPI_ONLY_DRIVERS: &[&str] = &["ahci", "xhci", "pcie-root"];
     let mut base_features = Vec::new();
     base_features.push(config.platform.as_str().to_string());
     for device in &config.devices {
         let drv = device.driver.as_str();
-        if drv == "_structural" {
+        if drv == "_structural" || ACPI_ONLY_DRIVERS.contains(&drv) {
             continue;
         }
         base_features.push(drv.to_string());

@@ -13,6 +13,7 @@ members = [
     "crates/fstart-alloc",
     "crates/fstart-log",
     "crates/fstart-runtime",
+    "crates/fstart-stage-runtime",
     "crates/fstart-platform-riscv64",
     "crates/fstart-platform-aarch64",
     "crates/fstart-platform-armv7",
@@ -100,6 +101,7 @@ fstart-capabilities = { path = "crates/fstart-capabilities" }
 fstart-alloc = { path = "crates/fstart-alloc" }
 fstart-log = { path = "crates/fstart-log" }
 fstart-runtime = { path = "crates/fstart-runtime" }
+fstart-stage-runtime = { path = "crates/fstart-stage-runtime" }
 fstart-platform-riscv64 = { path = "crates/fstart-platform-riscv64" }
 fstart-platform-aarch64 = { path = "crates/fstart-platform-aarch64" }
 fstart-platform-armv7 = { path = "crates/fstart-platform-armv7" }

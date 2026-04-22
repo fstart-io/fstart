@@ -21,11 +21,16 @@ All 14 workspace crates created and cross-compiling for both targets.
 - `parent: Option<HString<32>>` field on `DeviceConfig` for bus hierarchies.
 - Old `Driver` trait removed (never existed — clean start).
 
-### Phase 2: Codegen Upgrade (COMPLETE)
+### Phase 2: Codegen Upgrade (COMPLETE — superseded by Phase 13)
 
-- `Devices` struct generated with concrete typed fields per device.
-- `StageContext` generated with service accessor methods (`console()`,
-  `block_device()`, `timer()`) returning `&(impl Trait + '_)`.
+> **Note:** The `Devices` struct and `StageContext` described here were
+> replaced by `_BoardDevices` + `impl Board` + `run_stage()` in Phase 13
+> (stage-runtime / codegen split).  The typed `Config` construction and
+> codegen validation remain unchanged.
+
+- ~~`Devices` struct generated with concrete typed fields per device.~~ → replaced by `_BoardDevices`
+- ~~`StageContext` generated with service accessor methods (`console()`,
+  `block_device()`, `timer()`) returning `&(impl Trait + '_)`.~~ → removed
 - Typed `Config` construction: codegen maps RON `Resources` → driver-specific
   config structs at build time.
 - `fstart_capabilities::console_ready()` wired into generated code.
@@ -136,78 +141,15 @@ Full driver in `fstart-drivers/src/i2c/designware.rs`:
   -O binary` for AArch64 boards (QEMU `-bios` expects flat binary, not ELF).
 - **`cargo xtask run --board qemu-aarch64`** now works end-to-end.
 
-### Phase 5: Flexible Mode (COMPLETE)
+### Phase 5: Flexible Mode (REMOVED — superseded by Phase 13)
 
-Enum dispatch codegen for runtime driver selection — no trait objects, no alloc.
-
-#### Service Enum Generation
-
-When `mode: Flexible`, codegen generates service enum wrappers for each
-service trait that has drivers in the board. For example, a board with both
-NS16550 and PL011 consoles gets:
-
-```rust
-enum ConsoleDevice {
-    Ns16550(Ns16550),
-    Pl011(Pl011),
-}
-
-impl Console for ConsoleDevice {
-    fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
-        match self {
-            Self::Ns16550(d) => d.write_byte(byte),
-            Self::Pl011(d) => d.write_byte(byte),
-        }
-    }
-    // ...
-}
-```
-
-All 6 service traits (Console, BlockDevice, Timer, I2cBus, SpiBus,
-GpioController) have full enum dispatch metadata defined in `SERVICE_TRAITS`.
-
-#### Two-Phase Construction
-
-In flexible mode, device construction is split into two phases to support
-the `Device::init()` trait method (which is on the concrete type, not the
-enum):
-
-1. **Construct**: `let _uart0_inner = Ns16550::new(&Ns16550Config { ... })`
-2. **Init**: `_uart0_inner.init()` (ConsoleInit or DriverInit capability)
-3. **Wrap**: `let uart0 = ConsoleDevice::Ns16550(_uart0_inner)`
-
-This ensures `init()` is called on the concrete type before enum wrapping.
-
-#### Codegen Changes
-
-- `generate_imports()` adds `use fstart_services::ServiceError` in Flexible mode
-- `generate_flexible_enums()` generates enum types + trait impls per service
-- `generate_devices_struct()` uses enum types instead of concrete types
-- `generate_stage_context()` returns `&EnumType` instead of `&(impl Trait + '_)`
-- `generate_device_construction()` uses `_name_inner` temporary variables
-- `generate_console_init()` wraps after init via `generate_flexible_wrapping()`
-- `generate_driver_init()` wraps after init for each remaining device
-- `DriverInfo.services` field now used (removed `#[allow(dead_code)]`)
-
-#### Testing Board
-
-New board `boards/qemu-riscv64-flex/board.ron` — identical to `qemu-riscv64`
-but with `mode: Flexible`. Boots on QEMU with correct output.
-
-#### Testing
-
-**29 unit tests** in `fstart-codegen/src/stage_gen.rs` (18 original + 11 new):
-- Flexible generates ConsoleDevice enum
-- Flexible generates Console trait impl with delegation
-- Multi-driver board enum has both Ns16550 and Pl011 variants
-- Devices struct uses enum type in flexible mode
-- StageContext returns &ConsoleDevice (not &impl Console)
-- Construction uses `_inner` variable pattern
-- ServiceError imported in flexible mode
-- DriverInit wraps after init
-- Completion message present in flexible mode
-- I2C bus generates I2cBusDevice enum with trait impl
-- Rigid mode unchanged — no enums generated
+> **Note:** Flexible mode was implemented and then **deleted** when the
+> stage-runtime / codegen split landed in Phase 13.  The generic `Board`
+> trait makes enum dispatch redundant — if runtime driver selection is
+> ever needed, it lives inside `_BoardDevices` fields, not a separate
+> codegen mode.  `flexible.rs`, `qemu-riscv64-flex` board, and the
+> `BuildMode::Flexible` variant are all gone.  Only `BuildMode::Rigid`
+> remains.
 
 ### Phase 6: Firmware Filesystem + Security (COMPLETE)
 
@@ -577,7 +519,6 @@ Full rewrite of `crates/fstart-capabilities/src/lib.rs`:
 | qemu-riscv64 release | `cargo xtask build --board qemu-riscv64 --release` | Builds clean |
 | qemu-aarch64 debug | `cargo xtask run --board qemu-aarch64` | `[INFO ] uart0: pl011 console ready` + `[INFO ] all capabilities complete` |
 | qemu-aarch64 release | `cargo xtask build --board qemu-aarch64 --release` | Builds clean |
-| qemu-riscv64-flex debug | `cargo xtask run --board qemu-riscv64-flex` | `[INFO ] uart0: ns16550 console ready` + `[INFO ] all capabilities complete` |
 | qemu-riscv64-multi debug | `cargo xtask build --board qemu-riscv64-multi` | Builds bootblock + main |
 | qemu-riscv64-multi bootblock | QEMU boot | Console ready + SigVerify + StageLoad stub |
 | qemu-riscv64-multi main | QEMU boot | Console ready + MemoryInit + DriverInit + completion |
@@ -586,7 +527,7 @@ Full rewrite of `crates/fstart-capabilities/src/lib.rs`:
 | qemu-riscv64 FFS | `cargo xtask assemble --board qemu-riscv64` | FFS with 1 stage |
 | clippy | `cargo clippy --workspace --exclude fstart-stage -- -D warnings` | Clean |
 | fmt | `cargo fmt --all -- --check` | Clean |
-| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-platform-*` | 52 pass (38 codegen + 14 FFS) |
+| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-alloc --exclude fstart-platform-*` | 237 pass (68 codegen + 25 runtime + 14 FFS + ...) |
 
 ### Phase 11: Linux Boot Verified (COMPLETE)
 
@@ -738,6 +679,118 @@ These were identified during Phase 12 but deferred as lower priority:
    debug builds overflow SRAM. Options: LTO, `opt-level = "s"` for
    bootblock profile, or split crypto into the main stage only.
 
+5. **AArch64 debug-mode hang** — see Phase 13 known limitations below.
+
+### Phase 13: Stage Runtime / Codegen Split (COMPLETE)
+
+Replaced the old codegen architecture (generated `Devices` struct,
+`StageContext`, inline `fstart_main()` body, `flexible.rs` enum dispatch)
+with a clean split between handwritten runtime and codegen-emitted board
+adapter.
+
+#### New crate: fstart-stage-runtime
+
+`crates/fstart-stage-runtime/` — `#![no_std]` handwritten executor:
+
+- **`Board` trait** (20 methods): `init_device`, `init_all_devices`,
+  `install_logger`, 12 capability trampolines (`memory_init`, `sig_verify`,
+  `fdt_prepare`, `payload_load`, `stage_load`, `acpi_prepare`,
+  `smbios_prepare`, `chipset_init`, `pci_init`, `acpi_load`,
+  `memory_detect`, `return_to_fel`), boot media (`boot_media_select`,
+  `boot_media_static`, `load_next_stage`), platform primitives (`halt`,
+  `jump_to`, `jump_to_with_handoff`).
+- **`StagePlan`** — `.rodata` literal with capability sequence as `CapOp`
+  variants, `persistent_inited` / `boot_media_gated` / `all_devices` tables.
+- **`CapOp` enum** — one variant per capability, device names resolved to
+  `DeviceId` (`u8`).  No string comparisons at runtime.
+- **`DeviceMask`** — 256-bit bitset over `DeviceId` for init tracking.
+- **`BootMediaState`** — enum tracking the current boot medium (None / Mmio /
+  Block) so trampolines can reconstruct the concrete `impl BootMedia`.
+- **`run_stage<B: Board>(board, plan, handoff) -> !`** — one `match` per
+  capability, dispatches through `Board` trait methods.  Monomorphised in
+  Rigid mode — zero vtables.
+- **25 host-side unit tests** via `MockBoard` + thread-local event log.
+
+#### Codegen changes: plan_gen.rs + board_gen.rs
+
+**`plan_gen.rs`** emits `static STAGE_PLAN: StagePlan` per stage:
+- Resolves device names → `DeviceId` via `DeviceIdMap`.
+- Emits `BootMediaCandidate` tables with `media_ids` for auto-select.
+- `persistent_inited` from prior stages’ `ClockInit` / `DramInit`.
+- `boot_media_gated` from multi-device `LoadNextStage` / `BootMediaAuto`.
+- `all_devices` for `DriverInit` iteration.
+
+**`board_gen.rs`** (4068 lines) emits the complete board adapter:
+- `struct _BoardDevices` — `Option<Driver>` fields + bookkeeping
+  (`_inited`, `_boot_media`, `_dtb_dst_addr`, `_bootargs`, `_dram_base`,
+  `_dram_size_static`, `_handoff`, `_acpi_rsdp_addr`, `_egon_sram_base`).
+- `impl _BoardDevices { const fn new() -> Self }` — all fields `None` / zero.
+- `impl Board for _BoardDevices` — all 20 methods with real bodies:
+  - `init_device`: per-device `match id` with ancestor-chain walking
+    (root-first, bus-device `new_on_bus`).
+  - `init_all_devices`: iterates enabled devices, respects skip/gated masks.
+  - `install_logger`: per-Console-device match with `fstart_log::init`.
+  - Capability trampolines: read board state from `&self` fields and
+    delegate to `fstart_capabilities::*`.
+  - Dead-code stubs (`todo!()`) for methods the stage doesn’t use.
+
+#### What was deleted
+
+- `flexible.rs` (468 lines) — Flexible mode enum dispatch.
+- `generate_devices_struct` / `generate_stage_context` — old struct emission.
+- `generate_fstart_main` — old inline `fstart_main()` body.
+- `ensure_device_ready` / `walk_to_real_parent` / `make_prelude` — device
+  construction chain building.
+- `generate_driver_init` dispatch matrix.
+- `generate_boot_media_auto_device` / `generate_load_next_stage` enum
+  synthesis.
+- `BuildMode::Flexible` variant (only `Rigid` remains).
+- `qemu-riscv64-flex` board.
+
+Result: `stage_gen/mod.rs` shrunk from 1371 → 530 lines;
+`stage_gen/capabilities/mod.rs` shrunk from 984 → 120 lines.
+
+#### Key design invariants
+
+1. `STAGE_PLAN` is module-local (no `#[no_mangle]`) — allows future
+   multi-platform binaries with multiple plans.
+2. Only `fstart_main` calls `_BoardDevices::new()` — future
+   `new_for(platform)` won’t touch the trait or executor.
+3. No constants in `impl Board` method bodies — all on `self` fields.
+4. Per-device init helpers via `chain_from_root` / `walk_to_real_parent`.
+5. Capability trampolines take minimal context from executor.
+6. `StagePlan` carries stage-composition data only, not platform data.
+
+#### Verification
+
+- 68 codegen tests + 25 runtime executor tests — all pass.
+- All 16 boards build (13 debug, 3 release-only due to SRAM constraints).
+- QEMU smoke test: firmware boots through full capability sequence.
+
+#### Known limitation: AArch64 debug-mode hang
+
+After the split, AArch64 debug builds hang silently during
+`Pl011::init()`.  The `impl Board::init_device` body constructs the
+driver into a `let mut _dev`, calls `_dev.init()?`, then moves `_dev`
+into `self.uart0: Option<Pl011>`.  In debug mode LLVM routes the
+16-byte `_dev` through a stack scratch copy such that `init()` programs
+a stale copy, and subsequent `Console` writes hang waiting for
+`LSR::THRE`.  RISC-V 64 is not affected (24-byte `Ns16550` stays in
+registers).  Release mode works on both archs.
+
+Workarounds tried and rejected:
+- `Option::insert`-based construction: works AArch64-debug but hangs
+  RISC-V-debug (inverse symptom).
+- `core::hint::black_box(&mut _dev)` barrier: same RISC-V regression.
+- MMIO probe at top of `run_stage`: fixes AArch64 but hardcodes
+  QEMU-virt-specific address in common code.
+
+The real fix is a driver-side rework: store `usize` base address instead
+of `&'static Pl011Regs`, or add a `construct_into(&mut MaybeUninit<Self>)`
+trait method.  Until then, AArch64 development must use `--release`.
+
+---
+
 ### Explore crabtime (Optional)
 
 Investigate `crabtime` (Zig comptime-like macros for Rust) as an
@@ -848,7 +901,6 @@ cargo test --workspace --exclude fstart-stage --exclude fstart-runtime \
 # Cross-build boards
 cargo xtask build --board qemu-riscv64
 cargo xtask build --board qemu-aarch64
-cargo xtask build --board qemu-riscv64-flex
 cargo xtask build --board qemu-riscv64-multi
 cargo xtask build --board qemu-riscv64 --release
 cargo xtask build --board qemu-riscv64-multi --release
@@ -860,6 +912,5 @@ cargo xtask assemble --board qemu-riscv64-multi
 # Run on QEMU
 cargo xtask run --board qemu-riscv64
 cargo xtask run --board qemu-aarch64
-cargo xtask run --board qemu-riscv64-flex
 cargo xtask run --board qemu-riscv64-multi  # boots bootblock stage
 ```
