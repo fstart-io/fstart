@@ -317,6 +317,27 @@ pub mod ecam {
         let v = read16(bus, dev, func, reg);
         write16(bus, dev, func, reg, v | bits);
     }
+
+    /// AND mask a 16-bit register.
+    #[inline]
+    pub fn and16(bus: u8, dev: u8, func: u8, reg: u16, mask: u16) {
+        let v = read16(bus, dev, func, reg);
+        write16(bus, dev, func, reg, v & mask);
+    }
+
+    /// AND mask a 32-bit register.
+    #[inline]
+    pub fn and32(bus: u8, dev: u8, func: u8, reg: u16, mask: u32) {
+        let v = read32(bus, dev, func, reg);
+        write32(bus, dev, func, reg, v & mask);
+    }
+
+    /// AND-then-OR a 8-bit register.
+    #[inline]
+    pub fn and8_or8(bus: u8, dev: u8, func: u8, reg: u16, mask: u8, bits: u8) {
+        let v = read8(bus, dev, func, reg);
+        write8(bus, dev, func, reg, (v & mask) | bits);
+    }
 }
 
 /// Legacy struct wrapper — delegates to [`ecam`] free functions.

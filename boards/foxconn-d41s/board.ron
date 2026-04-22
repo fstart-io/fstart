@@ -83,7 +83,46 @@
                                0x0b, 0x0b, 0x0b, 0x0b),
                 gpe0_en: 0x441,
                 lpc_decode: (0x00fc0a01, 0, 0, 0),
-                hd_audio: true,
+                // HD Audio (Azalia) — Realtek ALC662 verb table from
+                // coreboot mainboard/foxconn/d41s/hda_verb.c.
+                //
+                // Each verb word encodes: [31:28]=codec, [27:20]=NID,
+                //   [19:8]=verb_id, [7:0]=payload.
+                // AZALIA_PIN_CFG(codec, pin, val) expands to 4 verbs
+                //   that program SET_CONFIGURATION_DEFAULT.
+                hda: (
+                    verbs: [
+                        ( vendor_id: 0x10ec0662, subsystem_id: 0x105b0d55, verbs: [
+                            // Pin 0x14: rear line-out, jack, rear, green
+                            // AZALIA_PIN_CFG(0, 0x14, 0x01014c10)
+                            0x01471c10, 0x01471d4c, 0x01471e01, 0x01471f01,
+                            // Pin 0x15: not connected
+                            0x01571cf0, 0x01571d11, 0x01571e11, 0x01571f41,
+                            // Pin 0x16: not connected
+                            0x01671cf0, 0x01671d11, 0x01671e11, 0x01671f41,
+                            // Pin 0x18: rear mic-in, jack, rear, pink
+                            // AZALIA_PIN_CFG(0, 0x18, 0x01a19c30)
+                            0x01871c30, 0x01871d9c, 0x01871ea1, 0x01871f01,
+                            // Pin 0x19: front mic-in, jack, front, pink
+                            // AZALIA_PIN_CFG(0, 0x19, 0x02a19c31)
+                            0x01971c31, 0x01971d9c, 0x01971ea1, 0x01971f02,
+                            // Pin 0x1a: line-in, jack, rear, blue
+                            // AZALIA_PIN_CFG(0, 0x1a, 0x0181343f)
+                            0x01a71c3f, 0x01a71d34, 0x01a71e81, 0x01a71f01,
+                            // Pin 0x1b: front headphone, jack, front, green
+                            // AZALIA_PIN_CFG(0, 0x1b, 0x02214c1f)
+                            0x01b71c1f, 0x01b71d4c, 0x01b71e21, 0x01b71f02,
+                            // Pin 0x1c: not connected
+                            0x01c71cf0, 0x01c71d11, 0x01c71e11, 0x01c71f41,
+                            // Pin 0x1d: internal, BIOS beep
+                            // AZALIA_PIN_CFG(0, 0x1d, 0x4005c603)
+                            0x01d71c03, 0x01d71dc6, 0x01d71e05, 0x01d71f40,
+                            // Pin 0x1e: SPDIF out, rear, orange
+                            // AZALIA_PIN_CFG(0, 0x1e, 0x99430120)
+                            0x01e71c20, 0x01e71d01, 0x01e71e43, 0x01e71f99,
+                        ]),
+                    ],
+                ),
                 sata: ( mode: Ahci, ports: 0x3 ),
                 usb: ( ehci: true, uhci: (true, true, true, true) ),
                 pata: false,

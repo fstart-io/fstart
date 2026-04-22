@@ -111,6 +111,76 @@ pub struct UsbConfig {
     pub uhci: [bool; 4],
 }
 
+/// HD Audio (Azalia) codec verb table entry.
+///
+/// Each entry describes one HDA codec's pin configuration and custom
+/// verb commands.  The verb table format follows coreboot's convention:
+/// each verb is a 32-bit word encoding codec address, NID, verb ID,
+/// and payload.
+///
+/// ## RON example
+///
+/// ```ron
+/// hda_verbs: [
+///     // Realtek ALC662 — Foxconn D41S
+///     ( vendor_id: 0x10ec0662, subsystem_id: 0x105b0d55, verbs: [
+///         // AZALIA_PIN_CFG(0, 0x14, 0x01014c10)  — rear line-out
+///         0x01471c10, 0x01471d4c, 0x01471e01, 0x01471f01,
+///         // pin 0x15 = NC
+///         0x01571cf0, 0x01571d11, 0x01571e11, 0x01571f41,
+///     ]),
+/// ]
+/// ```
+///
+/// Use the `hda_verb!` / `hda_pin_cfg!` macros to build verbs
+/// readably at the board level (see below).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HdaVerbTable {
+    /// Codec vendor/device ID (e.g. `0x10ec0662` for ALC662).
+    pub vendor_id: u32,
+    /// Subsystem ID written to the codec.
+    pub subsystem_id: u32,
+    /// Raw 32-bit HDA verbs.
+    pub verbs: heapless::Vec<u32, 64>,
+}
+
+/// HD Audio configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HdaConfig {
+    /// Codec verb tables.
+    #[serde(default)]
+    pub verbs: heapless::Vec<HdaVerbTable, 4>,
+}
+
+/// Construct a single HDA verb word.
+///
+/// `AZALIA_VERB_12B(codec, nid, verb_id, payload)`
+///
+/// Encodes: `[31:28]=codec, [27:20]=nid, [19:8]=verb_id, [7:0]=payload`
+#[inline]
+const fn hda_verb(codec: u32, nid: u32, verb: u32, payload: u32) -> u32 {
+    (codec << 28) | (nid << 20) | (verb << 8) | payload
+}
+
+/// Expand a pin config value into the four SET_CONFIGURATION_DEFAULT verbs.
+///
+/// Equivalent to coreboot's `AZALIA_PIN_CFG(codec, pin, val)` macro.
+#[inline]
+const fn hda_pin_cfg(codec: u32, pin: u32, val: u32) -> [u32; 4] {
+    [
+        hda_verb(codec, pin, 0x71c, (val >> 0) & 0xff),
+        hda_verb(codec, pin, 0x71d, (val >> 8) & 0xff),
+        hda_verb(codec, pin, 0x71e, (val >> 16) & 0xff),
+        hda_verb(codec, pin, 0x71f, (val >> 24) & 0xff),
+    ]
+}
+
+/// Pin config value for "not connected" (coreboot `AZALIA_PIN_CFG_NC`).
+#[inline]
+const fn hda_pin_nc(seq: u32) -> u32 {
+    0x411111f0 | (seq & 0xf)
+}
+
 /// GPIO pad configuration for one set of 32 pins.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct GpioSet {
@@ -145,9 +215,9 @@ pub struct IntelIch7Config {
     pub gpe0_en: u32,
     /// LPC I/O decode register values (GEN1..GEN4).
     pub lpc_decode: [u32; 4],
-    /// Enable HD Audio function.
+    /// HD Audio (Azalia) configuration with verb tables.
     #[serde(default)]
-    pub hd_audio: bool,
+    pub hda: Option<HdaConfig>,
     /// SATA configuration.
     #[serde(default)]
     pub sata: Option<SataConfig>,
@@ -345,7 +415,7 @@ impl IntelIch7 {
     /// Compute the Function Disable (FD) bitmask.
     fn function_disable_mask(&self) -> u32 {
         let mut fd = 0u32;
-        if !self.config.hd_audio {
+        if self.config.hda.is_none() {
             fd |= 1 << 4;
         }
         if self.config.sata.is_none() {
@@ -567,12 +637,36 @@ impl IntelIch7 {
         // ---- Clock gating ----
         self.enable_clock_gating();
 
+        // ---- ISA DMA controller reset ----
+        self.isa_dma_init();
+
+        // ---- i8259 PIC init ----
+        self.i8259_init();
+
+        // ---- GPE0 enable + PM1_CNT (SCI, bus master C3->C0) ----
+        self.power_options_late();
+
+        // ---- SPI access request clear ----
+        let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+        let spi_ctrl = rcba.read16(0x3802);
+        rcba.write16(0x3802, spi_ctrl & !(1u16));
+
+        // ---- PCIe root port init ----
+        self.pcie_init();
+
+        // ---- HD Audio (Azalia) init ----
+        if let Some(ref hda) = self.config.hda {
+            self.hda_init(hda);
+        }
+
         // ---- USB Transient Disconnect Detect (fixup) ----
         ecam::write8(0, d, f, 0xAD, 0x03);
 
         // ---- RCBA fixup (must be after PCI enumeration) ----
-        let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
         rcba.write32(0x1D40, rcba.read32(0x1D40) | 1);
+
+        // ---- Disable performance counter (RCBA FD bit 0) ----
+        rcba.write32(0x3418, rcba.read32(0x3418) | 1);
 
         fstart_log::info!("intel-ich7: ramstage init complete");
         Ok(())
@@ -720,6 +814,329 @@ impl IntelIch7 {
         cg &= !((1 << 29) | (1 << 28)); // disable UHCI clock gating
         rcba.write32(0x341C, cg);
         fstart_log::info!("intel-ich7: clock gating enabled");
+    }
+
+    /// ISA DMA controller initialization.
+    ///
+    /// Programs the 8237 DMA controller into known state. Standard
+    /// x86 POST sequence — ensures DMA channels are masked and the
+    /// controller is in a known operating mode.
+    fn isa_dma_init(&self) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use fstart_pio::{inb, outb};
+
+            // DMA controller 1 (channels 0-3)
+            outb(0x0D, 0x00); // Master clear
+            outb(0x0B, 0x40); // Channel 0: single, addr increment, demand
+            outb(0x0B, 0x41); // Channel 1
+            outb(0x0B, 0x42); // Channel 2
+            outb(0x0B, 0x43); // Channel 3
+
+            // DMA controller 2 (channels 4-7)
+            outb(0xDA, 0x00); // Master clear
+            outb(0xD6, 0xC0); // Channel 4: cascade mode
+            outb(0xD6, 0x41); // Channel 5
+            outb(0xD6, 0x42); // Channel 6
+            outb(0xD6, 0x43); // Channel 7
+
+            // Unmask DMA controller 2 channel 4 (cascade).
+            outb(0xD4, 0x00);
+            // Mask all DMA controller 1 channels.
+            outb(0x0F, 0x0F);
+
+            let _ = inb(0x80); // small delay
+        }
+    }
+
+    /// i8259 PIC initialization.
+    ///
+    /// Sets up the dual 8259 interrupt controllers in the standard
+    /// PC/AT configuration.  IRQ 9 is configured as level-triggered
+    /// for ACPI SCI.
+    fn i8259_init(&self) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use fstart_pio::outb;
+
+            // ICW1: begin init, ICW4 needed.
+            outb(0x20, 0x11); // Master PIC
+            outb(0xA0, 0x11); // Slave PIC
+                              // ICW2: vector offset (master=0x08, slave=0x70).
+            outb(0x21, 0x08);
+            outb(0xA1, 0x70);
+            // ICW3: master has slave on IRQ2, slave ID=2.
+            outb(0x21, 0x04);
+            outb(0xA1, 0x02);
+            // ICW4: 8086 mode.
+            outb(0x21, 0x01);
+            outb(0xA1, 0x01);
+            // Mask all interrupts.
+            outb(0x21, 0xFF);
+            outb(0xA1, 0xFF);
+
+            // Set IRQ 9 as level-triggered (ACPI SCI).
+            // ELCR1 (port 0x4D0) and ELCR2 (port 0x4D1).
+            let elcr2 = fstart_pio::inb(0x4D1);
+            fstart_pio::outb(0x4D1, elcr2 | (1 << 1)); // IRQ 9 = bit 1 of ELCR2
+        }
+    }
+
+    /// Late power options: GPE0 enable, NMI control, PM1_CNT.
+    ///
+    /// Completes the power management setup started in early_init.
+    /// Programs GPE0_EN from the board config, sets PM1_CNT for
+    /// SCI_EN and bus-master C3->C0 wakeup, configures NMI source
+    /// control.
+    fn power_options_late(&self) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use fstart_pio::{inb, inl, outb, outl, outw};
+
+            let pm = DEFAULT_PMBASE as u16;
+
+            // GPE0_EN from board config.
+            outl(pm + 0x2C, self.config.gpe0_en);
+
+            // NMI source control (port 0x61).
+            let mut nmi = inb(0x61);
+            nmi &= 0x0F; // Upper nibble must be 0
+            nmi |= 1 << 2; // PCI SERR# disable (for now)
+            nmi &= !(1 << 3); // IOCHK# NMI enable
+            outb(0x61, nmi);
+
+            // Disable NMI sources (port 0x70 bit 7).
+            let nmi_ctl = inb(0x70);
+            outb(0x70, nmi_ctl | (1 << 7));
+
+            // PM1_CNT: enable SCI, bus-master C3->C0 wakeup.
+            let mut pm1 = inl(pm + 0x04);
+            pm1 &= !0x1C00; // Clear SLP_TYP
+            pm1 |= 1 << 1; // BM_RLD: bus master C3->C0
+            pm1 |= 1 << 0; // SCI_EN
+            outl(pm + 0x04, pm1);
+        }
+    }
+
+    /// PCIe root port initialization.
+    ///
+    /// Programs all enabled PCIe root ports (dev 0x1C, func 0..5)
+    /// with bus master, cache line size, clock gating, VC0 traffic
+    /// class, and common clock configuration.
+    ///
+    /// Ported from coreboot `pcie.c::pci_init()`.
+    fn pcie_init(&self) {
+        // ICH7 has up to 6 PCIe root ports at dev 0x1C func 0..5.
+        for func in 0u8..6 {
+            let vid = ecam::read16(0, 0x1C, func, 0x00);
+            if vid == 0xFFFF {
+                continue; // Function not present
+            }
+
+            // Enable bus master.
+            ecam::or16(0, 0x1C, func, 0x04, 0x07); // IO+Mem+BusMaster
+
+            // Cache line size = 0x10.
+            ecam::write8(0, 0x1C, func, 0x0C, 0x10);
+
+            // Disable parity error response on bridge control.
+            ecam::and16(0, 0x1C, func, 0x3E, !1u16);
+
+            // Enable IO xAPIC on this port.
+            ecam::or32(0, 0x1C, func, 0xD8, 1 << 7);
+
+            // Enable backbone clock gating.
+            ecam::or32(0, 0x1C, func, 0xE1, 0x0F);
+
+            // VC0 traffic class.
+            let vc0 = ecam::read32(0, 0x1C, func, 0x114);
+            ecam::write32(0, 0x1C, func, 0x114, (vc0 & !0xFF) | 1);
+
+            // Mask completion timeouts.
+            ecam::or32(0, 0x1C, func, 0x148, 1 << 14);
+
+            // Enable common clock configuration.
+            ecam::or16(0, 0x1C, func, 0x50, 1 << 6);
+
+            fstart_log::info!("intel-ich7: PCIe port {} init", func);
+        }
+    }
+
+    /// HD Audio (Azalia) controller initialization.
+    ///
+    /// Enables the HDA controller at dev 0x1B func 0, performs codec
+    /// discovery via the STATESTS register, and programs verb tables
+    /// from the board configuration.
+    ///
+    /// Ported from coreboot `azalia.c::azalia_init()`.
+    fn hda_init(&self, hda: &HdaConfig) {
+        let d: u8 = 0x1B;
+        let f: u8 = 0;
+
+        let vid = ecam::read16(0, d, f, 0x00);
+        if vid == 0xFFFF {
+            fstart_log::info!("intel-ich7: HDA not present");
+            return;
+        }
+
+        // ESD fix.
+        let esd = ecam::read32(0, d, f, 0x134);
+        ecam::write32(0, d, f, 0x134, (esd & !(0xFF << 16)) | (2 << 16));
+
+        // Link1 description.
+        let l1 = ecam::read32(0, d, f, 0x140);
+        ecam::write32(0, d, f, 0x140, (l1 & !(0xFF << 16)) | (2 << 16));
+
+        // VC0 resource control.
+        let vc0 = ecam::read32(0, d, f, 0x114);
+        ecam::write32(0, d, f, 0x114, (vc0 & !0xFF) | 1);
+
+        // VCi traffic class (TC7).
+        ecam::or8(0, d, f, 0x44, 7);
+
+        // VCi resource control: enable, ID, TC mapping.
+        ecam::or32(0, d, f, 0x120, (1 << 31) | (1 << 24) | 0x80);
+
+        // Enable bus master.
+        ecam::or16(0, d, f, 0x04, 0x06); // Mem + BusMaster
+
+        // Clock detect cycle.
+        ecam::or8(0, d, f, 0x40, 1 << 3); // Set CLKDETCLR
+        ecam::and8(0, d, f, 0x40, !(1 << 3)); // Clear it
+        ecam::or8(0, d, f, 0x40, 1 << 2); // Enable clock detection
+
+        // Select Azalia mode.
+        ecam::or8(0, d, f, 0x40, 1);
+
+        // Disable docking.
+        ecam::and8(0, d, f, 0x4D, !(1 << 7));
+
+        // Read BAR0 for MMIO base.
+        let bar = ecam::read32(0, d, f, 0x10) & !0xF;
+        if bar == 0 {
+            fstart_log::error!("intel-ich7: HDA BAR0 not assigned");
+            return;
+        }
+        let base = bar as usize;
+
+        // Codec detection: reset controller, read STATESTS.
+        let codec_mask = self.hda_codec_detect(base);
+        if codec_mask == 0 {
+            fstart_log::info!("intel-ich7: no HDA codecs found");
+            return;
+        }
+
+        fstart_log::info!("intel-ich7: HDA codec mask = {:#x}", codec_mask);
+
+        // Program verb tables for detected codecs.
+        for table in &hda.verbs {
+            // Find which codec address has this vendor ID.
+            for addr in 0u8..4 {
+                if (codec_mask & (1 << addr)) == 0 {
+                    continue;
+                }
+                // Read codec vendor ID via immediate command.
+                let viddid = self.hda_send_verb(
+                    base,
+                    hda_verb(addr as u32, 0, 0xF00, 0x00), // GET_PARAMETER(VENDOR_ID)
+                );
+                if viddid == Some(table.vendor_id) {
+                    fstart_log::info!(
+                        "intel-ich7: programming HDA codec {} (vid={:#x})",
+                        addr,
+                        table.vendor_id
+                    );
+                    for &verb in &table.verbs {
+                        self.hda_send_verb(base, verb);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// HDA codec detection.
+    ///
+    /// Resets the HDA controller, waits for codecs to signal, returns
+    /// a bitmask of detected codec addresses.
+    fn hda_codec_detect(&self, base: usize) -> u32 {
+        // SAFETY: base is the HDA BAR0 MMIO address.
+        unsafe {
+            let gctl = (base + 0x08) as *mut u32;
+            let statests = (base + 0x0E) as *mut u16;
+
+            // Enter reset (clear CRST).
+            let v = core::ptr::read_volatile(gctl);
+            core::ptr::write_volatile(gctl, v & !1);
+            // Wait for reset to take effect.
+            for _ in 0..1000 {
+                if core::ptr::read_volatile(gctl) & 1 == 0 {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+
+            // Exit reset (set CRST).
+            let v = core::ptr::read_volatile(gctl);
+            core::ptr::write_volatile(gctl, v | 1);
+            // Wait for controller to be ready.
+            for _ in 0..1000 {
+                if core::ptr::read_volatile(gctl) & 1 != 0 {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+
+            // Codecs have up to 521us to signal (25 frames at 48kHz).
+            for _ in 0..600 {
+                core::hint::spin_loop();
+            }
+
+            let mask = core::ptr::read_volatile(statests) as u32 & 0x0F;
+            mask
+        }
+    }
+
+    /// Send a single HDA immediate command and read the response.
+    ///
+    /// Uses the Immediate Command (IC), Immediate Response (IR),
+    /// and Immediate Command Status (ICS) registers.
+    fn hda_send_verb(&self, base: usize, verb: u32) -> Option<u32> {
+        // SAFETY: base is the HDA BAR0 MMIO address.
+        unsafe {
+            let ic = (base + 0x60) as *mut u32;
+            let ir = (base + 0x64) as *const u32;
+            let ics = (base + 0x68) as *mut u16;
+
+            // Wait for not busy.
+            for _ in 0..10000 {
+                if core::ptr::read_volatile(ics) & 1 == 0 {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            if core::ptr::read_volatile(ics) & 1 != 0 {
+                return None; // Timeout
+            }
+
+            // Write the verb.
+            core::ptr::write_volatile(ic, verb);
+            // Set ICB (Immediate Command Busy) to trigger send.
+            core::ptr::write_volatile(ics, core::ptr::read_volatile(ics) | 1);
+
+            // Wait for response (IRV bit = bit 1).
+            for _ in 0..10000 {
+                let status = core::ptr::read_volatile(ics);
+                if status & 2 != 0 {
+                    return Some(core::ptr::read_volatile(ir));
+                }
+                if status & 1 == 0 {
+                    return Some(core::ptr::read_volatile(ir));
+                }
+                core::hint::spin_loop();
+            }
+            None // Timeout
+        }
     }
 
     /// Platform lockdown (from coreboot `lpc_final`).
