@@ -52,6 +52,9 @@ members = [
   "crates/fstart-driver-intel-pineview",
   "crates/fstart-driver-intel-ich7",
   "crates/fstart-driver-i2c-ck505",
+  "crates/fstart-smbus-intel",
+  "crates/fstart-pineview-regs",
+  "crates/fstart-spd",
 ]
 
 [workspace.package]
@@ -144,6 +147,9 @@ fstart-driver-ite8721f = { path = "crates/fstart-driver-ite8721f" }
 fstart-driver-intel-pineview = { path = "crates/fstart-driver-intel-pineview" }
 fstart-driver-intel-ich7 = { path = "crates/fstart-driver-intel-ich7" }
 fstart-driver-i2c-ck505 = { path = "crates/fstart-driver-i2c-ck505" }
+fstart-smbus-intel = { path = "crates/fstart-smbus-intel" }
+fstart-pineview-regs = { path = "crates/fstart-pineview-regs" }
+fstart-spd = { path = "crates/fstart-spd" }
 
 [profile.dev]
 panic = "abort"
