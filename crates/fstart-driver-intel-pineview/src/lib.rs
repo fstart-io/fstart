@@ -15,6 +15,8 @@
 
 #![no_std]
 
+pub mod raminit;
+
 use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, EcamPci, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
@@ -276,11 +278,23 @@ impl Device for IntelPineview {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        // Full DRAM training runs here when referenced by a `DramInit`
-        // capability. TODO: port coreboot's DDR2 raminit.c (~2600 lines).
-        fstart_log::warn!("intel-pineview: DRAM training stub — assuming 1 GiB");
-        self.detected_size = 1 << 30;
         fstart_log::info!("intel-pineview: mchbar={:#x}", self.config.mchbar);
+
+        // DRAM training runs when referenced by a `DramInit` capability.
+        // The actual training is called from the generated board adapter's
+        // `dram_init()` trampoline, which passes in the SMBus handle and
+        // SPD addresses.  The `init()` here is for non-DRAM device setup.
+        //
+        // If no DramInit capability ran (e.g., ramstage re-init), assume
+        // DRAM is already trained and read size from DRB registers.
+        if self.detected_size == 0 {
+            let mch = self.mchbar();
+            let drb3 = mch.read16(fstart_pineview_regs::mchbar::C0DRB0 + 6);
+            self.detected_size = (drb3 as u64) * 32 * 1024 * 1024;
+            if self.detected_size == 0 {
+                fstart_log::warn!("intel-pineview: DRAM not yet trained");
+            }
+        }
         Ok(())
     }
 }
