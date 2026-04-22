@@ -91,6 +91,7 @@ fstart-capabilities = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
+fstart-stage-runtime = { workspace = true }
 fstart-types = { workspace = true }
 heapless = { workspace = true }
 
