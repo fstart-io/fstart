@@ -125,22 +125,11 @@
                 // SuperIO is the only LPC peripheral on this board.
                 ( name: "lpc", services: ["LpcBus"],
                     children: [
-                        // The IT8721F SuperIO's job is LDN programming:
-                        // its `init()` enters config mode and maps each
-                        // enabled logical device to its I/O base (LDN 1
-                        // → COM1 @ 0x3F8, LDN 2 → COM2 @ 0x2F8, etc.).
-                        // It does NOT itself drive UART I/O — each COM
-                        // port is a separate NS16550 child below, so
-                        // the board author can pick either (or both) as
-                        // the `Console` provider via `ConsoleInit`.
-                        //
-                        // The `SuperIoHost` service lets COM children
-                        // nest here for init-ordering; the codegen walks
-                        // `com1 → superio → southbridge` and emits
-                        // init() calls root-first, so LPC decode is
-                        // open before the SuperIO is poked, and the
-                        // SuperIO's LDNs are programmed before the
-                        // NS16550 starts touching the UART registers.
+                        // IT8721F SuperIO: programs LDNs and provides
+                        // Console directly via `console_port: "com1"`.
+                        // No separate NS16550 children needed — the
+                        // SuperIO initializes the 16550 registers and
+                        // does PIO at the configured io_base.
                         ( name: "superio", bus: Lpc(0x2e),
                             driver: Ite8721f((
                                 com1: ( io_base: 0x3f8, irq: 4, baud_rate: 115200 ),
@@ -151,32 +140,9 @@
                                 mouse: ( irq: 12 ),
                                 cir: ( io_base: 0x3e0, irq: 10 ),
                                 acpi_name: "SIO0",
+                                console_port: "com1",
                             )),
-                            services: ["SuperIoHost"],
-                            children: [
-                                // COM1 (matches SuperIO LDN 1 above).
-                                // The NS16550 driver handles 16550
-                                // register programming (baud, FIFO,
-                                // LCR) at the I/O base the SuperIO
-                                // decodes to. Either com1 or com2 can
-                                // be chosen as the console by name.
-                                ( name: "com1",
-                                    driver: Ns16550((
-                                        regs: Pio(base: 0x3f8),
-                                        clock_freq: 1843200,
-                                        baud_rate: 115200,
-                                    )),
-                                    services: ["Console"],
-                                ),
-                                ( name: "com2",
-                                    driver: Ns16550((
-                                        regs: Pio(base: 0x2f8),
-                                        clock_freq: 1843200,
-                                        baud_rate: 115200,
-                                    )),
-                                    services: ["Console"],
-                                ),
-                            ],
+                            services: ["SuperIoHost", "Console"],
                         ),
                     ],
                 ),
@@ -221,9 +187,10 @@
                 // (baud, FIFO, LCR). Only after all three complete
                 // is the Console service available for logging.
                 //
-                // Swap to `com2` to use COM2 (0x2F8) as the console
-                // instead — no other changes needed.
-                ConsoleInit( device: "com1" ),
+                // The SuperIO provides Console directly via its
+                // `console_port: "com1"` config — change to
+                // `"com2"` to use the secondary UART instead.
+                ConsoleInit( device: "superio" ),
                 // ChipsetInit still calls the NB + SB early_init hooks.
                 // `southbridge.early_init()` is a no-op beyond what `init()`
                 // already did; `northbridge.early_init()` opens MCHBAR/DMIBAR.
@@ -255,7 +222,7 @@
         (
             name: "ramstage",
             capabilities: [
-                ConsoleInit( device: "com1" ),
+                ConsoleInit( device: "superio" ),
                 DriverInit,
                 AcpiPrepare,
                 SmBiosPrepare,

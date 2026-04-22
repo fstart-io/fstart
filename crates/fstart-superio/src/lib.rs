@@ -130,6 +130,16 @@ pub struct SuperIoConfig {
     /// enabled LDN (COM1, KBC, mouse, etc.) with standard PNP HIDs.
     #[serde(default)]
     pub acpi_name: Option<heapless::String<8>>,
+    /// Which COM port to use as the firmware console.
+    ///
+    /// When set to `"com1"` or `"com2"`, the SuperIO driver implements
+    /// the `Console` service directly — no separate NS16550 child
+    /// device is needed.  The driver initializes the 16550 registers
+    /// (baud divisor, 8N1, FIFO enable) during `init()` and provides
+    /// `write_byte`/`read_byte` via port I/O at the COM port's
+    /// configured `io_base`.
+    #[serde(default)]
+    pub console_port: Option<heapless::String<8>>,
 }
 
 /// 16550-compatible UART settings exposed by the SuperIO.
@@ -426,29 +436,118 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
         }
 
         self.exit_config();
+
+        // If a console port is configured, initialize the 16550
+        // registers (divisor latch, 8N1, FIFO enable) so the
+        // SuperIO can serve as a Console without a separate NS16550
+        // child device.
+        if let Some(com) = self.console_com() {
+            uart_init(com.io_base, com.baud_rate);
+        }
+
         Ok(())
     }
 }
 
-// The SuperIO driver intentionally does NOT implement `Console`.
-//
-// A SuperIO chip's job is purely logical-device programming: it enters
-// configuration mode, selects each enabled LDN via register 0x07, and
-// writes the I/O base / IRQ / enable pair. Once those are set, each
-// LDN appears at its programmed I/O address as a regular peripheral
-// (NS16550-compatible UART for COM ports, 8042 for KBC, etc.).
-//
-// Actual UART I/O is handled by a separate NS16550 driver declared as
-// a *plain-Device* child of the SuperIO in the board RON. Declaring
-// COM1 and COM2 as two independent children lets the board author
-// pick either — or both — as the `Console` provider without hardcoding
-// the choice here.
-//
-// The init-ordering guarantee is provided by codegen: a ConsoleInit
-// referencing `com1` emits `southbridge.init()` → `superio.init()` →
-// `com1.init()` via `ensure_device_ready`, so LPC decode is open and
-// the SuperIO LDN is programmed before the NS16550 code touches the
-// UART registers.
+impl<C: SuperIoChip> SuperIo<C> {
+    /// Resolve the console COM port config from the `console_port` field.
+    fn console_com(&self) -> Option<ComPortConfig> {
+        let port = self.config.console_port.as_deref()?;
+        match port {
+            "com1" => self.config.com1,
+            "com2" => self.config.com2,
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Console implementation — 16550 register access via PIO
+// ---------------------------------------------------------------------------
+
+// 16550 register indices (byte offset from io_base).
+const UART_THR: u16 = 0; // Transmit Holding / Receive Buffer / Divisor Low
+const UART_IER: u16 = 1; // Interrupt Enable / Divisor High
+const UART_FCR: u16 = 2; // FIFO Control (write-only)
+const UART_LCR: u16 = 3; // Line Control
+const UART_MCR: u16 = 4; // Modem Control
+const UART_LSR: u16 = 5; // Line Status
+
+/// LSR bit: Transmitter Holding Register Empty.
+const LSR_THRE: u8 = 1 << 5;
+/// LSR bit: Transmitter Empty (shift register + THR).
+const LSR_TEMT: u8 = 1 << 6;
+/// LSR bit: Data Ready.
+const LSR_DR: u8 = 1 << 0;
+/// LCR bit: Divisor Latch Access Bit.
+const LCR_DLAB: u8 = 1 << 7;
+
+/// Standard ISA UART input clock (1.8432 MHz).
+const ISA_UART_CLOCK: u32 = 1_843_200;
+
+/// Initialize a 16550 UART at `io_base` to 8N1 at the given baud rate.
+///
+/// Matches U-Boot `ns16550_init()` + `ns16550_setbrg()`.
+fn uart_init(io_base: u16, baud_rate: u32) {
+    let baud = if baud_rate == 0 { 115_200 } else { baud_rate };
+    let divisor = (ISA_UART_CLOCK + baud * 8) / (baud * 16);
+
+    // SAFETY: io_base comes from the board RON config.
+    unsafe {
+        // Wait until any in-progress transmission completes.
+        while fstart_pio::inb(io_base + UART_LSR) & LSR_TEMT == 0 {
+            core::hint::spin_loop();
+        }
+
+        // Disable interrupts.
+        fstart_pio::outb(io_base + UART_IER, 0);
+        // MCR: DTR + RTS.
+        fstart_pio::outb(io_base + UART_MCR, 0x03);
+        // FCR: enable FIFO, clear both.
+        fstart_pio::outb(io_base + UART_FCR, 0x07);
+        // LCR: 8N1 (WLS=3, no parity, 1 stop).
+        fstart_pio::outb(io_base + UART_LCR, 0x03);
+
+        // Set baud rate via divisor latch.
+        let lcr = fstart_pio::inb(io_base + UART_LCR);
+        fstart_pio::outb(io_base + UART_LCR, lcr | LCR_DLAB);
+        fstart_pio::outb(io_base + UART_THR, divisor as u8);
+        fstart_pio::outb(io_base + UART_IER, (divisor >> 8) as u8);
+        fstart_pio::outb(io_base + UART_LCR, lcr & !LCR_DLAB);
+    }
+}
+
+impl<C: SuperIoChip> fstart_services::Console for SuperIo<C> {
+    fn write_byte(&self, byte: u8) -> Result<(), fstart_services::ServiceError> {
+        let com = match self.console_com() {
+            Some(c) => c,
+            None => return Err(fstart_services::ServiceError::NotSupported),
+        };
+        // SAFETY: io_base from board config.
+        unsafe {
+            while fstart_pio::inb(com.io_base + UART_LSR) & LSR_THRE == 0 {
+                core::hint::spin_loop();
+            }
+            fstart_pio::outb(com.io_base + UART_THR, byte);
+        }
+        Ok(())
+    }
+
+    fn read_byte(&self) -> Result<Option<u8>, fstart_services::ServiceError> {
+        let com = match self.console_com() {
+            Some(c) => c,
+            None => return Err(fstart_services::ServiceError::NotSupported),
+        };
+        // SAFETY: io_base from board config.
+        unsafe {
+            if fstart_pio::inb(com.io_base + UART_LSR) & LSR_DR != 0 {
+                Ok(Some(fstart_pio::inb(com.io_base + UART_THR)))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ACPI device generation — one DSDT node per enabled logical device

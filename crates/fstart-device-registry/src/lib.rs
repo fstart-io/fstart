@@ -568,10 +568,11 @@ impl DriverInstance {
                 type_name: "Ite8721f",
                 module_path: "fstart_driver_ite8721f",
                 config_type: "Ite8721fConfig",
-                // SuperIOs don't drive UART I/O — they program LDNs.
-                // They expose `SuperIoHost` so child peripherals (UARTs,
-                // KBC, etc.) can nest for init-ordering.
-                services: &["SuperIoHost"],
+                // SuperIOs program LDNs and optionally provide Console
+                // directly when `console_port` is set — no separate
+                // NS16550 child needed.  Also expose `SuperIoHost` for
+                // init-ordering of any remaining children.
+                services: &["SuperIoHost", "Console"],
                 compatible: &["ite,it8721f", "ite,8721f"],
                 has_acpi: true,
                 is_bus_device: true,
