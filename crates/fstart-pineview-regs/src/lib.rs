@@ -101,33 +101,49 @@ pub struct MchBar {
 }
 
 impl MchBar {
-    pub const fn new(base: usize) -> Self { Self { base } }
+    pub const fn new(base: usize) -> Self {
+        Self { base }
+    }
 
-    #[inline] pub fn read32(&self, off: u32) -> u32 {
+    #[inline]
+    pub fn read32(&self, off: u32) -> u32 {
         // SAFETY: base is the programmed MCHBAR; off is a register offset.
         unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
     }
-    #[inline] pub fn write32(&self, off: u32, val: u32) {
+    #[inline]
+    pub fn write32(&self, off: u32, val: u32) {
         unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
     }
-    #[inline] pub fn read16(&self, off: u32) -> u16 {
+    #[inline]
+    pub fn read16(&self, off: u32) -> u16 {
         unsafe { fstart_mmio::read16((self.base + off as usize) as *const u16) }
     }
-    #[inline] pub fn write16(&self, off: u32, val: u16) {
+    #[inline]
+    pub fn write16(&self, off: u32, val: u16) {
         unsafe { fstart_mmio::write16((self.base + off as usize) as *mut u16, val) }
     }
-    #[inline] pub fn read8(&self, off: u32) -> u8 {
+    #[inline]
+    pub fn read8(&self, off: u32) -> u8 {
         unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
     }
-    #[inline] pub fn write8(&self, off: u32, val: u8) {
+    #[inline]
+    pub fn write8(&self, off: u32, val: u8) {
         unsafe { fstart_mmio::write8((self.base + off as usize) as *mut u8, val) }
     }
     /// `reg = (reg & mask) | set`.
-    #[inline] pub fn modify32(&self, off: u32, mask: u32, set: u32) {
-        let v = self.read32(off); self.write32(off, (v & mask) | set);
+    #[inline]
+    pub fn modify32(&self, off: u32, mask: u32, set: u32) {
+        let v = self.read32(off);
+        self.write32(off, (v & mask) | set);
     }
-    #[inline] pub fn setbits32(&self, off: u32, bits: u32) { self.modify32(off, !0, bits); }
-    #[inline] pub fn clrbits32(&self, off: u32, bits: u32) { self.modify32(off, !bits, 0); }
+    #[inline]
+    pub fn setbits32(&self, off: u32, bits: u32) {
+        self.modify32(off, !0, bits);
+    }
+    #[inline]
+    pub fn clrbits32(&self, off: u32, bits: u32) {
+        self.modify32(off, !bits, 0);
+    }
 
     /// Typed overlay for the early-init register subset.
     ///
@@ -139,31 +155,53 @@ impl MchBar {
 }
 
 /// DMIBAR MMIO accessor.
-pub struct DmiBar { base: usize }
+pub struct DmiBar {
+    base: usize,
+}
 impl DmiBar {
-    pub const fn new(base: usize) -> Self { Self { base } }
-    #[inline] pub fn read32(&self, off: u32) -> u32 {
+    pub const fn new(base: usize) -> Self {
+        Self { base }
+    }
+    #[inline]
+    pub fn read32(&self, off: u32) -> u32 {
         unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
     }
-    #[inline] pub fn write32(&self, off: u32, val: u32) {
+    #[inline]
+    pub fn write32(&self, off: u32, val: u32) {
         unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
     }
 }
 
 /// RCBA (Root Complex Base Address) MMIO accessor.
-pub struct Rcba { base: usize }
+pub struct Rcba {
+    base: usize,
+}
 impl Rcba {
-    pub const fn new(base: usize) -> Self { Self { base } }
-    #[inline] pub fn read32(&self, off: u32) -> u32 {
+    pub const fn new(base: usize) -> Self {
+        Self { base }
+    }
+    #[inline]
+    pub fn read32(&self, off: u32) -> u32 {
         unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
     }
-    #[inline] pub fn write32(&self, off: u32, val: u32) {
+    #[inline]
+    pub fn write32(&self, off: u32, val: u32) {
         unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
     }
-    #[inline] pub fn read8(&self, off: u32) -> u8 {
+    #[inline]
+    pub fn read16(&self, off: u32) -> u16 {
+        unsafe { fstart_mmio::read16((self.base + off as usize) as *const u16) }
+    }
+    #[inline]
+    pub fn write16(&self, off: u32, val: u16) {
+        unsafe { fstart_mmio::write16((self.base + off as usize) as *mut u16, val) }
+    }
+    #[inline]
+    pub fn read8(&self, off: u32) -> u8 {
         unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
     }
-    #[inline] pub fn write8(&self, off: u32, val: u8) {
+    #[inline]
+    pub fn write8(&self, off: u32, val: u8) {
         unsafe { fstart_mmio::write8((self.base + off as usize) as *mut u8, val) }
     }
 }
@@ -188,7 +226,9 @@ impl EcamPci {
     /// Create an accessor for ECAM at the given base address.
     ///
     /// Typical Pineview value: `0xE000_0000`.
-    pub const fn new(base: usize) -> Self { Self { base } }
+    pub const fn new(base: usize) -> Self {
+        Self { base }
+    }
 
     /// Compute the MMIO address for a PCI config register.
     #[inline]
@@ -321,6 +361,14 @@ pub mod hostbridge {
     pub const TOLUD: u16 = 0xb0;
     /// Scratchpad Data.
     pub const SKPAD: u16 = 0xdc;
+    /// Extended System Management RAM Control.
+    pub const ESMRAMC: u16 = 0x9e;
+    /// Graphics Base of Stolen Memory.
+    pub const GBSM: u16 = 0xa4;
+    /// Base of GTT Stolen Memory.
+    pub const BGSM: u16 = 0xa8;
+    /// TSEG Memory Base.
+    pub const TSEG: u16 = 0xac;
     /// Capability ID.
     pub const CAPID0: u16 = 0xe0;
     /// Default ECAM base address for Pineview (64 buses).
@@ -366,13 +414,25 @@ pub mod ich7 {
 /// Used primarily by the DDR2 raminit.
 pub mod mchbar {
     /// Register indexed by channel `z` (stride 0x100).
-    #[inline] pub const fn gz(r: u32, z: u32) -> u32 { r + z * 0x100 }
+    #[inline]
+    pub const fn gz(r: u32, z: u32) -> u32 {
+        r + z * 0x100
+    }
     /// Register indexed by lane `y` (stride 4).
-    #[inline] pub const fn ly(r: u32, y: u32) -> u32 { r + y * 4 }
+    #[inline]
+    pub const fn ly(r: u32, y: u32) -> u32 {
+        r + y * 4
+    }
     /// Register indexed by channel `x` (stride 0x400).
-    #[inline] pub const fn cx(r: u32, x: u32) -> u32 { r + x * 0x400 }
+    #[inline]
+    pub const fn cx(r: u32, x: u32) -> u32 {
+        r + x * 0x400
+    }
     /// Register indexed by channel `x` and lane `y`.
-    #[inline] pub const fn cxly(r: u32, x: u32, y: u32) -> u32 { x * 0x400 + r + y * 4 }
+    #[inline]
+    pub const fn cxly(r: u32, x: u32, y: u32) -> u32 {
+        x * 0x400 + r + y * 4
+    }
 
     // ---- Ported from coreboot mchbar_regs.h ----
     pub const HTPACER: u32 = 0x10;
@@ -636,6 +696,20 @@ pub mod mchbar {
     pub const C0ODTRECORDX: u32 = 0x45a;
     pub const C0DQSODTRECORDX: u32 = 0x462;
     pub const XCOMPSDR0BNS: u32 = 0x4b0;
+
+    // Lane-indexed register bases (use with `ly()` helper).
+    /// DLL Receive Control per lane: ly(0x540, lane)
+    pub const C0DLLRCVCTLY_BASE: u32 = 0x540;
+    /// RX Receive DLL per lane: ly(0x560, lane)
+    pub const C0RXRCVYDLL_BASE: u32 = 0x560;
+    /// Misc control per lane: ly(0x561, lane)
+    pub const C0MISCCCTLY_BASE: u32 = 0x561;
+    /// DQ Rank TX1 per rank: ly(0x5a4, rank)
+    pub const C0DQRYTX1_BASE: u32 = 0x5a4;
+    /// DQS Rank TX1 per rank: ly(0x5b4, rank)
+    pub const C0DQSRYTX1_BASE: u32 = 0x5b4;
+    /// DQ/DQS Rank TX3 per rank: ly(0x5c8, rank)
+    pub const C0DQSDQRYTX3_BASE: u32 = 0x5c8;
     pub const C0TXDQ0R0DLL: u32 = 0x500;
     pub const C0TXDQ0R1DLL: u32 = 0x501;
     pub const C0TXDQ0R2DLL: u32 = 0x502;
@@ -870,6 +944,8 @@ pub mod mchbar {
     pub const C0TXDQDQS5MISC: u32 = 0x2814;
     pub const C0TXDQDQS6MISC: u32 = 0x2818;
     pub const C0TXDQDQS7MISC: u32 = 0x281c;
+    // Additional missing registers.
+    pub const HPET_BASE: u32 = 0xFED0_0000;
     pub const CSHRPDCTL5: u32 = 0x2c00;
     pub const CSHWRIOBONUSX: u32 = 0x2c02;
     pub const C0CALRESULT1: u32 = 0x2c04;

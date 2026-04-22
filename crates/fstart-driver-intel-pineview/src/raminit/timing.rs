@@ -5,7 +5,7 @@
 //! `sdram_clkmode`, `sdram_timings`, `sdram_checkreset`.
 
 use super::SysInfo;
-use fstart_pineview_regs::{hostbridge, mchbar, MchBar};
+use fstart_pineview_regs::{hostbridge, ich7, mchbar, EcamPci, MchBar};
 
 // ===================================================================
 // Helpers
@@ -41,13 +41,6 @@ fn div_round_up(a: u32, b: u32) -> u32 {
 ///
 /// Ported from coreboot `sdram_detect_ram_speed()`.
 pub fn detect_ram_speed(si: &mut SysInfo) {
-    // Read FSB and DDR frequency from host bridge config.
-    // In fstart these would come from ECAM, but we read from MCHBAR-side
-    // POC register or the config. For now, default to 800/667.
-    // TODO: read from actual PCI config via ECAM when on real hardware.
-    let mut fsb: u8 = 1; // FSB_CLOCK_800MHz
-    let mut freq: u8 = 0; // MEM_CLOCK_667MHz
-
     // Detect common CAS latency.
     let mut common_cas: u8 = 0xFF;
     for i in 0..super::TOTAL_DIMMS {
@@ -64,7 +57,8 @@ pub fn detect_ram_speed(si: &mut SysInfo) {
     let msb = msbpos(common_cas);
     let lsb = lsbpos(common_cas);
     let mut highcas = msb as u8;
-    let lowcas = lsb.max(5) as u8;
+    let lowcas = (lsb.max(5)) as u8;
+    let mut freq: u8 = si.selected_timings.mem_clock; // default from config
     let mut cas: u8 = 0;
 
     // Try to find a CAS that meets timing constraints.
@@ -88,6 +82,9 @@ pub fn detect_ram_speed(si: &mut SysInfo) {
         if ok {
             cas = highcas;
         } else {
+            if highcas == 0 {
+                break;
+            }
             highcas -= 1;
         }
     }
@@ -97,9 +94,7 @@ pub fn detect_ram_speed(si: &mut SysInfo) {
         freq = 0;
         fstart_log::warn!("raminit: dropping to 667 MHz due to timing constraints");
         highcas = msb as u8;
-        let lowcas = lsb as u8;
         while cas == 0 && highcas >= lowcas {
-            // At 667 MHz, all DIMMs should fit.
             cas = highcas;
         }
     }
@@ -111,13 +106,16 @@ pub fn detect_ram_speed(si: &mut SysInfo) {
 
     si.selected_timings.cas = cas;
     si.selected_timings.mem_clock = freq;
-    si.selected_timings.fsb_clock = fsb;
 
     fstart_log::info!(
         "raminit: DDR {}MHz, CAS={}, FSB={}",
         if freq == 1 { 800 } else { 667 },
         cas,
-        if fsb == 1 { 800 } else { 667 }
+        if si.selected_timings.fsb_clock == 1 {
+            800
+        } else {
+            667
+        }
     );
 }
 
@@ -125,7 +123,7 @@ pub fn detect_ram_speed(si: &mut SysInfo) {
 ///
 /// Ported from coreboot `sdram_detect_smallest_params()`.
 pub fn detect_smallest_params(si: &mut SysInfo) {
-    // Cycle time multiplier in ps for DDR667 and DDR800.
+    // Cycle time in ps for DDR667 and DDR800.
     let mult: [u32; 2] = [3000, 2500];
     let m = mult[si.selected_timings.mem_clock as usize];
 
@@ -166,8 +164,7 @@ pub fn detect_smallest_params(si: &mut SysInfo) {
     si.selected_timings.trtp = 15u8.min(div_round_up(max_trtp, m) as u8);
 
     fstart_log::info!(
-        "raminit: timings CAS={} tRAS={} tRP={} tRCD={} tWR={} tRFC={} tWTR={} tRRD={} tRTP={}",
-        si.selected_timings.cas,
+        "raminit: tRAS={} tRP={} tRCD={} tWR={} tRFC={} tWTR={} tRRD={} tRTP={}",
         si.selected_timings.tras,
         si.selected_timings.trp,
         si.selected_timings.trcd,
@@ -192,12 +189,12 @@ pub fn clk_crossing(si: &SysInfo, mch: &MchBar) {
 
     static CLKCROSS: [[[u32; 4]; 2]; 2] = [
         [
-            [0xFFFF_FFFF, 0x0503_0305, 0x0000_FFFF, 0x0000_0000], // FSB667, DDR667
-            [0x1F1F_1F1F, 0x2A1F_1FA5, 0x0000_0000, 0x0500_0002], // FSB667, DDR800
+            [0xFFFF_FFFF, 0x0503_0305, 0x0000_FFFF, 0x0000_0000],
+            [0x1F1F_1F1F, 0x2A1F_1FA5, 0x0000_0000, 0x0500_0002],
         ],
         [
-            [0x1F1F_1F1F, 0x0D07_070B, 0x0000_0000, 0x0000_0000], // FSB800, DDR667
-            [0xFFFF_FFFF, 0x0503_0305, 0x0000_FFFF, 0x0000_0000], // FSB800, DDR800
+            [0x1F1F_1F1F, 0x0D07_070B, 0x0000_0000, 0x0000_0000],
+            [0xFFFF_FFFF, 0x0503_0305, 0x0000_FFFF, 0x0000_0000],
         ],
     ];
 
@@ -291,10 +288,10 @@ pub fn clkmode(si: &SysInfo, mch: &MchBar) {
     let v = mch.read8(mchbar::CSHRMISCCTL1);
     mch.write8(mchbar::CSHRMISCCTL1, v & !0x3F);
 
-    let (ddr_freq, mpll_ctl): (u8, u16) = if si.selected_timings.mem_clock == 0 {
-        (0, 1)
+    let mpll_ctl: u16 = if si.selected_timings.mem_clock == 0 {
+        1 // 667 MHz
     } else {
-        (1, (1 << 8) | (1 << 5))
+        (1 << 8) | (1 << 5) // 800 MHz
     };
 
     if si.boot_path != super::BOOT_PATH_RESET {
@@ -306,80 +303,331 @@ pub fn clkmode(si: &SysInfo, mch: &MchBar) {
     mch.setbits32(mchbar::C0STATRDCTRL, 1 << 23);
 
     static CAS_TO_REG: [[u32; 4]; 2] = [
-        [0x0000_0000, 0x0003_0100, 0x0C24_0201, 0x0000_0000], // DDR667
-        [0x0000_0000, 0x0003_0100, 0x0C24_0201, 0x1045_0302], // DDR800
+        [0x0000_0000, 0x0003_0100, 0x0C24_0201, 0x0000_0000],
+        [0x0000_0000, 0x0003_0100, 0x0C24_0201, 0x1045_0302],
     ];
 
+    let ddr_freq = si.selected_timings.mem_clock as usize;
     let cas_idx = si.selected_timings.cas.saturating_sub(3) as usize;
     if cas_idx < 4 {
-        mch.write32(mchbar::C0GNT2LNCH2, CAS_TO_REG[ddr_freq as usize][cas_idx]);
+        mch.write32(mchbar::C0GNT2LNCH2, CAS_TO_REG[ddr_freq][cas_idx]);
     }
 
     fstart_log::info!("raminit: clock mode configured");
 }
 
 // ===================================================================
-// Check reset
+// Check reset — with actual cf9 reset trigger
 // ===================================================================
 
-/// Check for warm reset condition.
+/// Check for warm reset condition. If the PMCON bits indicate a
+/// reset is needed (first pass of raminit on fresh power), trigger
+/// a full platform reset.
 ///
 /// Ported from coreboot `sdram_checkreset()`.
-pub fn check_reset(mch: &MchBar) {
-    let pmsts = mch.read32(mchbar::PMSTS);
-    if pmsts & (1 << 8) != 0 {
-        fstart_log::info!("raminit: warm reset detected");
+pub fn check_reset(si: &SysInfo, ecam: &EcamPci) {
+    let d = ich7::LPC_DEV;
+    let f = ich7::LPC_FUNC;
+
+    let mut pmcon2 = ecam.read8(0, d, f, 0xA2);
+    let mut pmcon3 = ecam.read8(0, d, f, 0xA4);
+    pmcon3 &= !0x02;
+
+    let reset = if pmcon2 & 0x80 != 0 {
+        pmcon2 &= !0x80;
+        true
+    } else {
+        pmcon2 |= 0x80;
+        false
+    };
+
+    if pmcon2 & 0x04 != 0 {
+        pmcon2 |= 0x04;
+        pmcon3 = (pmcon3 & !0x30) | 0x30;
+        pmcon3 |= 1 << 3;
+    }
+
+    ecam.write8(0, d, f, 0xA2, pmcon2);
+    ecam.write8(0, d, f, 0xA4, pmcon3);
+
+    if reset {
+        fstart_log::info!("raminit: triggering full reset (PMCON2 bit 7 set)");
+        // Write 0x0E to CF9 to trigger full reset.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            fstart_pio::outb(0xCF9, 0x0E);
+        }
+        // Should not reach here after reset.
+        loop {
+            core::hint::spin_loop();
+        }
     }
 }
 
 // ===================================================================
-// Timing registers
+// Full timing register programming
 // ===================================================================
 
 /// Program detailed timing registers into MCHBAR.
 ///
-/// Ported from coreboot `sdram_timings()`. This is the largest single
-/// function (~200 lines of register writes). Currently a condensed
-/// port covering the main timing register programming.
+/// This is a faithful line-by-line port of coreboot `sdram_timings()`.
 pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     let t = &si.selected_timings;
-    let ddr = t.mem_clock;
-
-    // Write latency: CAS - 1 for DDR2.
     let wl = t.cas.saturating_sub(1);
+    let flag = if t.mem_clock == 0 { 0usize } else { 1usize };
 
-    // tRAS, tRP, tRCD encoding into C0C2REG and related registers.
-    let c0c2reg = ((t.tras as u32) << 16) | ((t.trp as u32) << 8) | (t.trcd as u32);
-    mch.write32(mchbar::C0C2REG, c0c2reg);
+    // Detect bank/page geometry for timing adjustments.
+    let mut trp_adj: u8 = 0;
+    let mut bank: u8 = 1;
+    let mut page: usize = 0;
+    for i in 0..super::TOTAL_DIMMS {
+        if let Some(ref d) = si.dimms[i] {
+            if d.card_type != 0 {
+                if d.banks == 1 {
+                    trp_adj = 1;
+                    bank = 0;
+                }
+                if d.page_size == 2048 {
+                    page = 1;
+                }
+            }
+        }
+    }
 
-    // Core timing register.
-    let latctrl = ((t.cas as u32) << 0)
-        | ((wl as u32) << 4)
-        | ((t.trp as u32) << 8)
-        | ((t.trcd as u32) << 12)
-        | ((t.twr as u32) << 16);
-    mch.write32(mchbar::C0LATCTRL, latctrl);
+    static PAGETAB: [[u8; 2]; 2] = [[0x0E, 0x12], [0x10, 0x14]];
 
-    // Cycle tracking registers.
-    mch.write32(mchbar::C0CYCTRKPCHG, (t.trp as u32) | ((t.trp as u32) << 8));
-    mch.write32(
-        mchbar::C0CYCTRKACT,
-        (t.trcd as u32) | ((t.tras as u32) << 8),
+    // C0LATCTRL: write latency and CAS.
+    mch.write8(
+        mchbar::C0LATCTRL,
+        ((wl.saturating_sub(3)) << 4) | (t.cas.saturating_sub(3)),
     );
-    mch.write32(mchbar::C0CYCTRKRD, (t.cas as u32) | ((t.trtp as u32) << 8));
-    mch.write32(mchbar::C0CYCTRKWR, (wl as u32) | ((t.twr as u32) << 8));
-    mch.write32(mchbar::C0CYCTRKREFR, t.trfc as u32);
+
+    mch.setbits32(mchbar::C0PVCFG, 3);
+
+    // C0CYCTRKPCHG: precharge tracking.
+    let pchg = ((wl as u16 + 4 + t.twr as u16) << 6) | ((2 + (t.trtp as u16).max(2)) << 2) | 1;
+    mch.write16(mchbar::C0CYCTRKPCHG, pchg);
+
+    // C0CYCTRKACT: activate tracking.
+    let mut act = ((bank as u32) << 21)
+        | ((t.trrd as u32) << 17)
+        | ((t.trp as u32) << 13)
+        | (((t.trp + trp_adj) as u32) << 9)
+        | (t.trfc as u32);
+    if bank == 0 {
+        act |= (PAGETAB[flag][page] as u32) << 22;
+    }
+    mch.write16(mchbar::C0CYCTRKACT, act as u16);
+    mch.write16(mchbar::C0CYCTRKACT + 2, (act >> 16) as u16);
+
+    // SHCYCTRKCKEL.
+    let shckel_bits = (mch.read16(mchbar::C0CYCTRKACT + 2) & 0x0FC0) >> 6;
+    let v = mch.read16(mchbar::SHCYCTRKCKEL);
+    mch.write16(
+        mchbar::SHCYCTRKCKEL,
+        (v & !(0x3F << 7)) | (shckel_bits << 7),
+    );
+
+    // C0CYCTRKWR: write tracking.
+    let wrtrk = ((t.trcd as u16) << 12) | (4 << 8) | (6 << 4) | 8;
+    mch.write16(mchbar::C0CYCTRKWR, wrtrk);
+
+    // C0CYCTRKRD: read tracking.
+    let rdtrk = ((t.trcd as u32) << 17)
+        | ((wl as u32 + 4 + t.twtr as u32) << 12)
+        | ((t.cas as u32) << 8)
+        | (4 << 4)
+        | 6;
+    mch.write32(mchbar::C0CYCTRKRD, rdtrk);
+
+    // C0CYCTRKREFR: refresh tracking.
+    let refr = (((t.trp + trp_adj) as u16) << 9) | (t.trfc as u16);
+    mch.write8(mchbar::C0CYCTRKREFR, refr as u8);
+    mch.write8(mchbar::C0CYCTRKREFR + 1, (refr >> 8) as u8);
+
+    // C0CKECTRL: CKE idle timer.
+    let v = mch.read16(mchbar::C0CKECTRL);
+    mch.write16(mchbar::C0CKECTRL, (v & !(0x1FF << 1)) | (100 << 1));
+
+    // C0CYCTRKPCHG2: tRAS.
+    let v = mch.read8(mchbar::C0CYCTRKPCHG2);
+    mch.write8(mchbar::C0CYCTRKPCHG2, (v & !0x3F) | t.tras);
+
+    // Arbitration control.
+    mch.write16(mchbar::C0ARBCTRL, 0x2310);
+    let v = mch.read8(mchbar::C0ADDCSCTRL);
+    mch.write8(mchbar::C0ADDCSCTRL, (v & !0x1F) | 1);
+
+    // C0STATRDCTRL: static read control.
+    let reg32_ddr = if t.mem_clock == 0 { 3000u32 } else { 2500 };
+    let reg32_fsb = if si.selected_timings.fsb_clock == 0 {
+        6000u32
+    } else {
+        5000
+    };
+    let stat = (((t.cas as u32 + 7) * reg32_ddr / reg32_fsb) as u16) << 8;
+    let v = mch.read16(mchbar::C0STATRDCTRL);
+    mch.write16(mchbar::C0STATRDCTRL, (v & !(0x1F << 8)) | stat);
+
+    // C0WRDATACTRL: write data control.
+    let wl_flag: u8 = if wl > 2 { 1 } else { 0 };
+    let wdat_lo = wl.saturating_sub(1).saturating_sub(wl_flag);
+    let wdat = (wdat_lo as u16) | ((wdat_lo as u16) << 4) | ((wl_flag as u16) << 8);
+    let v = mch.read16(mchbar::C0WRDATACTRL);
+    mch.write16(mchbar::C0WRDATACTRL, (v & !0x01FF) | wdat);
+
+    mch.write16(mchbar::C0RDQCTRL, 0x1585);
+    let v = mch.read8(mchbar::C0PWLRCTRL);
+    mch.write8(mchbar::C0PWLRCTRL, v & !0x1F);
+
+    // rdmodwr_window.
+    let v = mch.read16(mchbar::C0PWLRCTRL);
+    mch.write16(
+        mchbar::C0PWLRCTRL,
+        (v & !(0x3F << 8)) | (((t.cas as u16) + 9) << 8),
+    );
 
     // Refresh control.
-    let refrctrl = if ddr == 0 { 0x3F7 } else { 0x4B0 };
-    mch.write32(mchbar::C0REFRCTRL, refrctrl);
+    let (refctrl16, refctrl32) = if t.mem_clock == 0 {
+        (0x0514u16, 0x0A28u32)
+    } else {
+        (0x0618u16, 0x0C30u32)
+    };
+    let v = mch.read32(mchbar::C0REFRCTRL2);
+    mch.write32(
+        mchbar::C0REFRCTRL2,
+        (v & !(0xFFFFF << 8)) | (0x3F << 22) | (refctrl32 << 8),
+    );
+    mch.write8(mchbar::C0REFRCTRL + 3, 0);
+    let v = mch.read16(mchbar::C0REFCTRL);
+    mch.write16(mchbar::C0REFCTRL, (v & !0x3FFF) | refctrl16);
 
-    // ODT/JEDEC register.
-    let jedec = ((t.twr as u32) << 0)
-        | ((t.cas as u32) << 4)
-        | ((t.twtr as u32) << 8)
-        | ((t.trrd as u32) << 12);
-    mch.write32(mchbar::C0JEDEC, jedec);
+    // NPUT static mode.
+    mch.setbits32(mchbar::C0DYNRDCTRL, 1 << 0);
+
+    let v = mch.read32(mchbar::C0STATRDCTRL);
+    mch.write32(mchbar::C0STATRDCTRL, (v & !(0x7F << 24)) | (0x0B << 25));
+    if si.selected_timings.mem_clock > si.selected_timings.fsb_clock {
+        mch.setbits32(mchbar::C0STATRDCTRL, 1 << 24);
+    }
+
+    let v = mch.read8(mchbar::C0RDFIFOCTRL);
+    mch.write8(mchbar::C0RDFIFOCTRL, v & !0x03);
+
+    let v = mch.read16(mchbar::C0WRDATACTRL);
+    mch.write16(
+        mchbar::C0WRDATACTRL,
+        (v & !(0x1F << 10)) | (((wl as u16) + 10) << 10),
+    );
+
+    let v = mch.read32(mchbar::C0CKECTRL);
+    mch.write32(
+        mchbar::C0CKECTRL,
+        (v & !(7 << 24 | 7 << 17)) | (3 << 24) | (3 << 17),
+    );
+
+    // C0REFRCTRL + 4 (16-bit).
+    let refctrl4 = (0x15u16 << 6) | 0x1F | (0x06 << 12);
+    let v = mch.read16(mchbar::C0REFRCTRL + 4);
+    mch.write16(mchbar::C0REFRCTRL + 4, (v & !0x7FFF) | refctrl4);
+
+    // C0REFRCTRL2 upper bits.
+    let reg32 = (0x06u32 << 27) | (1 << 25);
+    let v = mch.read32(mchbar::C0REFRCTRL2);
+    mch.write32(mchbar::C0REFRCTRL2, (v & !(3 << 28)) | (reg32 << 8));
+    let v = mch.read8(mchbar::C0REFRCTRL + 3);
+    mch.write8(mchbar::C0REFRCTRL + 3, (v & !0xFA) | ((reg32 >> 24) as u8));
+
+    let v = mch.read8(mchbar::C0JEDEC);
+    mch.write8(mchbar::C0JEDEC, v & !(1 << 7));
+    let v = mch.read8(mchbar::C0DYNRDCTRL);
+    mch.write8(mchbar::C0DYNRDCTRL, v & !(3 << 1));
+
+    // Write watermark flush (64-bit register).
+    let wmflsh = ((6u32 & 3) << 30) | (4 << 25) | (1 << 20) | (8 << 15) | (6 << 10) | (4 << 5) | 1;
+    mch.write32(mchbar::C0WRWMFLSH, wmflsh);
+    let v = mch.read16(mchbar::C0WRWMFLSH + 4);
+    mch.write16(mchbar::C0WRWMFLSH + 4, (v & !0x01FF) | (8 << 3) | (6 >> 2));
+
+    mch.setbits32(mchbar::SHPENDREG, 0x1C00 | (0x1F << 5));
+
+    let v = mch.read8(mchbar::SHPAGECTRL);
+    mch.write8(mchbar::SHPAGECTRL, (v & !0xFF) | 0x40);
+    let v = mch.read8(mchbar::SHPAGECTRL + 1);
+    mch.write8(mchbar::SHPAGECTRL + 1, (v & !0x07) | 0x05);
+    let v = mch.read8(mchbar::SHCMPLWRCMD);
+    mch.write8(mchbar::SHCMPLWRCMD, v | 0x1F);
+
+    let bonus = (3u8 << 6) | (si.dt0mode << 4) | 0x0C;
+    let v = mch.read8(mchbar::SHBONUSREG);
+    mch.write8(mchbar::SHBONUSREG, (v & !0xDF) | bonus);
+
+    let v = mch.read8(mchbar::CSHRWRIOMLNS);
+    mch.write8(mchbar::CSHRWRIOMLNS, v & !(1 << 1));
+    let v = mch.read8(mchbar::C0MISCTM);
+    mch.write8(mchbar::C0MISCTM, (v & !0x07) | 0x02);
+    let v = mch.read16(mchbar::C0BYPCTRL);
+    mch.write16(mchbar::C0BYPCTRL, (v & !(0xFF << 2)) | (4 << 2));
+
+    // WRWMCONFIG: kN=2 (2N command rate).
+    let wrwm = (2u32 << 29) | (1 << 28) | (1 << 23);
+    let v = mch.read32(mchbar::WRWMCONFIG);
+    mch.write32(mchbar::WRWMCONFIG, (v & !(0xFFB << 20)) | wrwm);
+
+    // BYPACTSF: extract from CYCTRKACT.
+    let actlo = mch.read16(mchbar::C0CYCTRKACT);
+    let acthi = mch.read16(mchbar::C0CYCTRKACT + 2);
+    let byp_act = ((actlo >> 13) & 0x07) as u8 | (((acthi & 1) as u8) << 3);
+    let v = mch.read8(mchbar::BYPACTSF);
+    mch.write8(mchbar::BYPACTSF, (v & !0xF0) | (byp_act << 4));
+
+    let rdtrk_bits = ((mch.read32(mchbar::C0CYCTRKRD) & 0x000F_0000) >> 17) as u8;
+    let v = mch.read8(mchbar::BYPACTSF);
+    mch.write8(mchbar::BYPACTSF, (v & !0x0F) | rdtrk_bits);
+
+    // Clear bypass knobs.
+    let v = mch.read8(mchbar::BYPKNRULE);
+    mch.write8(mchbar::BYPKNRULE, v & !0xFC);
+    let v = mch.read8(mchbar::BYPKNRULE);
+    mch.write8(mchbar::BYPKNRULE, v & !0x03);
+    let v = mch.read8(mchbar::SHBONUSREG);
+    mch.write8(mchbar::SHBONUSREG, v & !0x03);
+    mch.setbits32(mchbar::C0BYPCTRL, 1 << 0);
+    mch.setbits32(mchbar::CSHRMISCCTL1, 1 << 9);
+
+    // DLL receive control per lane.
+    for i in 0..8u32 {
+        let v = mch.read32(mchbar::ly(0x540, i));
+        mch.write32(mchbar::ly(0x540, i), (v & !0x3F3F_3F3F) | 0x0C0C_0C0C);
+    }
+
+    // RDCS to RCVEN delay: coarse = CAS + 1.
+    let v = mch.read32(mchbar::C0STATRDCTRL);
+    mch.write32(
+        mchbar::C0STATRDCTRL,
+        (v & !(0x0F << 16)) | (((t.cas + 1) as u32) << 16),
+    );
+
+    // Program RCVEN delay with DLL-safe settings (all zero).
+    for i in 0..8u32 {
+        let v = mch.read8(mchbar::ly(0x560, i));
+        mch.write8(mchbar::ly(0x560, i), v & !0x3F);
+        let v = mch.read16(mchbar::C0RCVMISCCTL2);
+        mch.write16(mchbar::C0RCVMISCCTL2, v & !(3 << (i * 2)));
+        let v = mch.read16(mchbar::C0RCVMISCCTL1);
+        mch.write16(mchbar::C0RCVMISCCTL1, v & !(3 << (i * 2)));
+        let v = mch.read16(mchbar::C0COARSEDLY0);
+        mch.write16(mchbar::C0COARSEDLY0, v & !(3 << (i * 2)));
+    }
+
+    // Power up DLL.
+    let v = mch.read8(mchbar::C0DLLPIEN);
+    mch.write8(mchbar::C0DLLPIEN, v & !(1 << 0));
+    mch.setbits32(mchbar::C0DLLPIEN, 1 << 1);
+    mch.setbits32(mchbar::C0DLLPIEN, 1 << 2);
+
+    mch.setbits32(mchbar::C0COREBONUS, 0x000C_0400);
+    mch.setbits32(mchbar::C0CMDTX1, 1 << 31);
 
     fstart_log::info!("raminit: timing registers programmed (WL={})", wl);
 }
