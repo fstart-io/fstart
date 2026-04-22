@@ -74,6 +74,35 @@ pub struct FadtConfig {
     pub arm_psci: bool,
     /// ACPI PM profile.
     pub pm_profile: PmProfile,
+    /// PM1a Event Block I/O port base (x86 only, 0 = unused).
+    pub pm1a_evt_blk: u32,
+    /// PM1a Control Block I/O port base.
+    pub pm1a_cnt_blk: u32,
+    /// PM Timer Block I/O port base.
+    pub pm_tmr_blk: u32,
+    /// GPE0 Block I/O port base.
+    pub gpe0_blk: u32,
+    /// SCI interrupt number.
+    pub sci_int: u16,
+    /// IAPC boot arch flags (8042, legacy devices, etc.).
+    pub iapc_boot_arch: u16,
+}
+
+impl Default for FadtConfig {
+    fn default() -> Self {
+        Self {
+            hw_reduced: false,
+            low_power_s0: false,
+            arm_psci: false,
+            pm_profile: PmProfile::Unspecified,
+            pm1a_evt_blk: 0,
+            pm1a_cnt_blk: 0,
+            pm_tmr_blk: 0,
+            gpe0_blk: 0,
+            sci_int: 0,
+            iapc_boot_arch: 0,
+        }
+    }
 }
 
 /// Assemble a complete ACPI table set and write it to physical memory.
@@ -230,14 +259,22 @@ pub fn assemble(
 /// Build the FADT from architecture-neutral configuration.
 fn build_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // ARM platform has its own build_fadt that handles arm_boot_arch.
-    // For generic path, delegate to ARM when the feature is enabled
-    // and arm_psci is set.
     #[cfg(feature = "arm")]
     if config.arm_psci {
         return arm::build_fadt(dsdt_addr, config);
     }
 
-    // Generic (x86-like) FADT path.
+    // x86-style FADT with PM block addresses.
+    //
+    // If PM block addresses are set (non-zero), we build a full FADT
+    // with legacy PM register pointers (pm1a_evt_blk, pm1a_cnt_blk,
+    // pm_tmr_blk, gpe0_blk). Otherwise fall back to the builder for
+    // HW-reduced platforms.
+    if config.pm1a_evt_blk != 0 {
+        return build_x86_fadt(dsdt_addr, config);
+    }
+
+    // HW-reduced path (no PM registers).
     let mut fadt_builder =
         FADTBuilder::new(crate::OEM_ID, crate::OEM_TABLE_ID, crate::OEM_REVISION)
             .dsdt_64(dsdt_addr)
@@ -254,6 +291,107 @@ fn build_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     let mut bytes = Vec::new();
     fadt.to_aml_bytes(&mut bytes);
     bytes
+}
+
+/// Build an x86 FADT with full PM block addresses.
+///
+/// FADT revision 6.1, 276 bytes. Layout matches coreboot's `acpi_fill_fadt`
+/// for ICH7: PM1a event/control blocks, PM timer, GPE0, SCI interrupt,
+/// IAPC boot arch flags, and the standard ACPI flags.
+fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
+    use acpi_tables::sdt::Sdt;
+    use acpi_tables::Aml;
+
+    // FADT is 276 bytes for ACPI 6.1 (revision 6).
+    let mut fadt = Sdt::new(
+        *b"FACP",
+        276,
+        6, // FADT revision 6 (ACPI 6.1)
+        crate::OEM_ID,
+        crate::OEM_TABLE_ID,
+        crate::OEM_REVISION,
+    );
+
+    // Preferred PM Profile (offset 45).
+    fadt.write_u8(45, config.pm_profile as u8);
+    // SCI_INT (offset 46, u16).
+    fadt.write_u16(46, config.sci_int);
+    // PM1a_EVT_BLK (offset 56, u32).
+    fadt.write_u32(56, config.pm1a_evt_blk);
+    // PM1a_CNT_BLK (offset 64, u32).
+    fadt.write_u32(64, config.pm1a_cnt_blk);
+    // PM_TMR_BLK (offset 76, u32).
+    fadt.write_u32(76, config.pm_tmr_blk);
+    // GPE0_BLK (offset 80, u32).
+    fadt.write_u32(80, config.gpe0_blk);
+    // PM1_EVT_LEN (offset 88, u8) = 4.
+    fadt.write_u8(88, 4);
+    // PM1_CNT_LEN (offset 89, u8) = 2.
+    fadt.write_u8(89, 2);
+    // PM_TMR_LEN (offset 91, u8) = 4.
+    fadt.write_u8(91, 4);
+    // GPE0_BLK_LEN (offset 92, u8) = 8.
+    fadt.write_u8(92, 8);
+    // P_LVL2_LAT (offset 96, u16) = 1.
+    fadt.write_u16(96, 1);
+    // P_LVL3_LAT (offset 98, u16) = 85.
+    fadt.write_u16(98, 85);
+    // DUTY_OFFSET (offset 104, u8) = 1.
+    fadt.write_u8(104, 1);
+    // IAPC_BOOT_ARCH (offset 109, u16).
+    fadt.write_u16(109, config.iapc_boot_arch);
+    // Flags (offset 112, u32).
+    // WBINVD | C1_SUPPORTED | SLEEP_BUTTON | S4_RTC_WAKE |
+    // PLATFORM_CLOCK | C2_MP_SUPPORTED
+    let flags: u32 = (1 << 0)   // WBINVD
+        | (1 << 2)              // C1_SUPPORTED
+        | (1 << 5)              // SLEEP_BUTTON
+        | (1 << 7)              // S4_RTC_WAKE
+        | (1 << 14)             // TMR_VAL_EXT (32-bit PM timer)
+        | (1 << 15); // PLATFORM_CLOCK
+    fadt.write_u32(112, flags);
+
+    // X_DSDT (offset 140, u64).
+    let dsdt_bytes = dsdt_addr.to_le_bytes();
+    for (i, &b) in dsdt_bytes.iter().enumerate() {
+        fadt.write_u8(140 + i, b);
+    }
+
+    // X_PM1a_EVT_BLK (offset 148, GAS — 12 bytes).
+    write_gas_io(&mut fadt, 148, config.pm1a_evt_blk, 32);
+    // X_PM1a_CNT_BLK (offset 172, GAS).
+    write_gas_io(&mut fadt, 172, config.pm1a_cnt_blk, 16);
+    // X_PM_TMR_BLK (offset 208, GAS).
+    write_gas_io(&mut fadt, 208, config.pm_tmr_blk, 32);
+    // X_GPE0_BLK (offset 220, GAS).
+    write_gas_io(&mut fadt, 220, config.gpe0_blk, 64);
+
+    fadt.update_checksum();
+
+    let mut bytes = Vec::new();
+    fadt.to_aml_bytes(&mut bytes);
+    bytes
+}
+
+/// Write a Generic Address Structure (GAS) for a System I/O port.
+fn write_gas_io(sdt: &mut acpi_tables::sdt::Sdt, offset: usize, port: u32, bit_width: u8) {
+    sdt.write_u8(offset, 1); // Address Space ID: System I/O
+    sdt.write_u8(offset + 1, bit_width);
+    sdt.write_u8(offset + 2, 0); // Bit Offset
+    sdt.write_u8(
+        offset + 3,
+        if bit_width <= 8 {
+            1
+        } else if bit_width <= 16 {
+            2
+        } else {
+            3
+        },
+    ); // Access Size
+    let addr_bytes = (port as u64).to_le_bytes();
+    for (i, &b) in addr_bytes.iter().enumerate() {
+        sdt.write_u8(offset + 4 + i, b);
+    }
 }
 
 /// Build the DSDT from collected device AML bytes.
@@ -310,6 +448,7 @@ mod tests {
             low_power_s0: false,
             arm_psci: false,
             pm_profile: PmProfile::Unspecified,
+            ..Default::default()
         };
 
         let data = assemble(0x1000_0000, &fadt_config, &[], &[], &[]);
@@ -344,6 +483,7 @@ mod tests {
             low_power_s0: true,
             arm_psci: false,
             pm_profile: PmProfile::PerformanceServer,
+            ..Default::default()
         };
 
         // Fake platform table (just needs to be a valid ACPI table-shaped blob).
