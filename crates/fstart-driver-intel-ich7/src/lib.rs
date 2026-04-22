@@ -365,9 +365,16 @@ impl Device for IntelIch7 {
 
 impl Southbridge for IntelIch7 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
-        
         let d = ich7::LPC_DEV;
         let f = ich7::LPC_FUNC;
+
+        // ---- 0. SPI prefetch + upper CMOS (bootblock-level on coreboot) ----
+        // On coreboot these run from bootblock_early_southbridge_init().
+        // We do them here since fstart has a single early_init path.
+        //
+        // SPI prefetch/caching: LPC reg 0xDC bits [3:2] = 10 (enable prefetch).
+        let spi = ecam::read8(0, d, f, 0xDC);
+        ecam::write8(0, d, f, 0xDC, (spi & !(3 << 2)) | (2 << 2));
 
         // ---- 1. Enable SMBus (must be first — raminit reads SPD) ----
         let smbus = I801SmBus::enable_on_ich7(self.config.smbus_base);
@@ -419,6 +426,9 @@ impl Southbridge for IntelIch7 {
         ecam::write32(0, d, f, 0x68, pirq_high);
 
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+
+        // Enable upper 128 bytes of CMOS.
+        rcba.write32(0x3400, 1 << 2);
 
         // ---- 6. Disable watchdog reboot ----
         rcba.write32(ich7::GCS, rcba.read32(ich7::GCS) | (1 << 5));

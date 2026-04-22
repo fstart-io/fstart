@@ -78,6 +78,15 @@ pub trait SuperIoChip: Send + Sync + 'static {
     /// Optional chip-specific init hook, invoked inside config mode
     /// after the ID check and before any LDN is configured.
     fn chip_init(_base_port: u16) {}
+
+    /// Optional override byte appended to the enter sequence.
+    ///
+    /// ITE parts use `0x55` for port 0x2E and `0xAA` for port 0x4E as
+    /// the fourth byte. Chips that don't need this return `None`.
+    fn enter_last_byte(base_port: u16) -> Option<u8> {
+        let _ = base_port;
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +240,10 @@ impl<C: SuperIoChip> SuperIo<C> {
         for b in C::ENTER_SEQ {
             // SAFETY: base_port is from the board RON, `b` is a chip constant.
             unsafe { fstart_pio::outb(self.idx_port(), *b) };
+        }
+        // Some chips (ITE) need a port-dependent final byte.
+        if let Some(last) = C::enter_last_byte(self.base_port) {
+            unsafe { fstart_pio::outb(self.idx_port(), last) };
         }
     }
 

@@ -23,7 +23,9 @@ pub use fstart_superio::{
 pub struct Ite8721fChip;
 
 impl SuperIoChip for Ite8721fChip {
-    const ENTER_SEQ: &'static [u8] = &[0x87, 0x01, 0x55, 0x55];
+    // First 3 bytes are constant; the 4th depends on port (0x55 for
+    // 0x2E, 0xAA for 0x4E) — handled by enter_last_byte().
+    const ENTER_SEQ: &'static [u8] = &[0x87, 0x01, 0x55];
     const EXIT_REG: u8 = 0x02;
     const EXIT_VAL: u8 = 0x02;
     const CHIP_ID: u16 = 0x8721;
@@ -35,6 +37,10 @@ impl SuperIoChip for Ite8721fChip {
     const GPIO_LDN: Option<u8> = Some(0x07);
     const CIR_LDN: Option<u8> = Some(0x0a);
     const PARALLEL_LDN: Option<u8> = Some(0x03);
+
+    fn enter_last_byte(base_port: u16) -> Option<u8> {
+        Some(if base_port == 0x4E { 0xAA } else { 0x55 })
+    }
 }
 
 /// IT8721F SuperIO driver — alias for `SuperIo<Ite8721fChip>`.
