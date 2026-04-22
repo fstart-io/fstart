@@ -449,6 +449,17 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                 inited.set(sb);
             }
 
+            CapOp::MpInit {
+                cpu_model,
+                num_cpus,
+                smm,
+            } => {
+                // MP initialization is handled by board-specific codegen
+                // which calls fstart_mp::mp_init().  The CapOp carries
+                // the config; the executor passes through.
+                let _ = (cpu_model, num_cpus, smm);
+            }
+
             CapOp::PciInit(id) => {
                 if board.init_device(id).is_err() {
                     board.halt();
