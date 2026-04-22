@@ -130,21 +130,24 @@
                 smbus_base: 0x0400,
                 // GPIO from coreboot foxconn/d41s/gpio.c.
                 // Mode: 0=native, 1=GPIO. Bits = pin numbers.
-                gpio_set1: (
-                    mode:      0x1F0F_F4C1,  // gpio0,6-10,12-15,24-28 = GPIO
-                    direction: 0x0000_0000,  // all outputs (zero = output)
-                    level:     0x0000_0000,  // all low
-                    blink:     0x0000_0000,
-                    invert:    0x0000_0000,
-                    reset:     0x0000_0000,
-                ),
-                gpio_set2: (
-                    mode:      0x0000_0066,  // gpio33,34,38,39 = GPIO
-                    direction: 0x0000_0066,  // those 4 are inputs
-                    level:     0x0000_0000,
-                    blink:     0x0000_0000,
-                    invert:    0x0000_0000,
-                    reset:     0x0000_0000,
+                gpio: (
+                    set1: (
+                        mode:      0x1F0F_F4C1,  // gpio0,6-10,12-15,24-28 = GPIO
+                        direction: 0x0000_0000,  // all outputs (zero = output)
+                        level:     0x0000_0000,  // all low
+                        blink:     0x0000_0000,
+                        invert:    0x0000_0000,
+                        reset:     0x0000_0000,
+                    ),
+                    set2: (
+                        mode:      0x0000_0066,  // gpio33,34,38,39 = GPIO
+                        direction: 0x0000_0066,  // those 4 are inputs
+                        level:     0x0000_0000,
+                        blink:     0x0000_0000,
+                        invert:    0x0000_0000,
+                        reset:     0x0000_0000,
+                    ),
+                    // set3 left at defaults — D41S doesn't use pins 64-75
                 ),
                 acpi_name: "LPCB",
                 c3_latency: 85,

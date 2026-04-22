@@ -11,6 +11,7 @@ acpi = ["fstart-acpi"]
 
 [dependencies]
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }
 heapless = { workspace = true }
 fstart-log = { workspace = true }

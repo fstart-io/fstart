@@ -1,0 +1,11 @@
+[package]
+name = "fstart-gpio-ich"
+version = "0.1.0"
+edition = "2021"
+description = "GPIO controller for Intel ICH/PCH southbridges (ICH7-ICH10, NM10, 5/6/7-series)"
+
+[dependencies]
+fstart-pio = { path = "../fstart-pio" }
+fstart-log = { path = "../fstart-log" }
+ufmt = { workspace = true }
+serde = { version = "1", default-features = false, features = ["derive"] }

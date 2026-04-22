@@ -626,6 +626,7 @@ name = "fstart-driver-intel-ich7"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-gpio-ich",
  "fstart-hda",
  "fstart-log",
  "fstart-mmio",
@@ -860,6 +861,16 @@ dependencies = [
  "fstart-crypto",
  "fstart-types",
  "heapless",
+]
+
+[[package]]
+name = "fstart-gpio-ich"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]

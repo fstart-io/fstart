@@ -55,6 +55,7 @@ members = [
   "crates/fstart-smbus-intel",
   "crates/fstart-pineview-regs",
   "crates/fstart-spd",
+  "crates/fstart-gpio-ich",
   "crates/fstart-hda",
   "crates/fstart-lapic",
   "crates/fstart-mp",
@@ -154,6 +155,7 @@ fstart-driver-i2c-ck505 = { path = "crates/fstart-driver-i2c-ck505" }
 fstart-smbus-intel = { path = "crates/fstart-smbus-intel" }
 fstart-pineview-regs = { path = "crates/fstart-pineview-regs" }
 fstart-spd = { path = "crates/fstart-spd" }
+fstart-gpio-ich = { path = "crates/fstart-gpio-ich" }
 fstart-hda = { path = "crates/fstart-hda" }
 fstart-lapic = { path = "crates/fstart-lapic" }
 fstart-mp = { path = "crates/fstart-mp" }
