@@ -124,6 +124,12 @@ pub struct SuperIoConfig {
     /// General-purpose I/O.
     #[serde(default)]
     pub gpio: Option<GpioConfig>,
+    /// ACPI namespace name for the SuperIO container device (e.g., "SIO0").
+    ///
+    /// When set, ACPI generation emits child device nodes for each
+    /// enabled LDN (COM1, KBC, mouse, etc.) with standard PNP HIDs.
+    #[serde(default)]
+    pub acpi_name: Option<heapless::String<8>>,
 }
 
 /// 16550-compatible UART settings exposed by the SuperIO.
@@ -443,3 +449,182 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
 // `com1.init()` via `ensure_device_ready`, so LPC decode is open and
 // the SuperIO LDN is programmed before the NS16550 code touches the
 // UART registers.
+
+// ---------------------------------------------------------------------------
+// ACPI device generation — one DSDT node per enabled logical device
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "acpi")]
+mod acpi_impl {
+    extern crate alloc;
+    use alloc::vec::Vec;
+    use fstart_acpi::device::AcpiDevice;
+
+    use super::*;
+
+    // PNP ACPI HIDs for standard SuperIO logical devices.
+    const HID_COM: &str = "PNP0501"; // 16550A-compatible COM port
+    const HID_KBC: &str = "PNP0303"; // IBM enhanced keyboard (101/102-key)
+    const HID_MOUSE: &str = "PNP0F13"; // PS/2 port for PS/2-style mice
+    const HID_LPT: &str = "PNP0400"; // Standard LPT parallel port
+    const HID_EC: &str = "PNP0C09"; // Embedded controller
+
+    /// Emit an IO resource descriptor for the given port/size, plus an
+    /// optional IRQ descriptor.
+    fn ldn_device(
+        name: &str,
+        hid: &str,
+        uid: u32,
+        io_base: u16,
+        io_size: u16,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        let gsiv = irq.unwrap_or(0) as u32;
+        if let Some(_irq) = irq {
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId(#{hid}));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(Decode16, #{io_base}, #{io_base}, 0x01u8, #{io_size});
+                        IRQ(Edge, ActiveHigh, Exclusive, #{gsiv});
+                    });
+                }
+            }
+        } else {
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId(#{hid}));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(Decode16, #{io_base}, #{io_base}, 0x01u8, #{io_size});
+                    });
+                }
+            }
+        }
+    }
+
+    /// KBC needs two I/O ranges (0x60 and 0x64).
+    fn kbc_device(cfg: &KbcConfig) -> Vec<u8> {
+        let base1 = cfg.io_base;
+        let base2 = cfg.io_ext;
+        let gsiv = cfg.irq as u32;
+        fstart_acpi_macros::acpi_dsl! {
+            Device("KBD0") {
+                Name("_HID", EisaId("PNP0303"));
+                Name("_UID", 0u32);
+                Name("_CRS", ResourceTemplate {
+                    IO(Decode16, #{base1}, #{base1}, 0x01u8, 0x01u8);
+                    IO(Decode16, #{base2}, #{base2}, 0x01u8, 0x01u8);
+                    IRQ(Edge, ActiveHigh, Exclusive, #{gsiv});
+                });
+            }
+        }
+    }
+
+    /// Mouse shares KBC ports but has its own IRQ.
+    fn mouse_device(kbc: &KbcConfig, mouse: &MouseConfig) -> Vec<u8> {
+        let base1 = kbc.io_base;
+        let base2 = kbc.io_ext;
+        let gsiv = mouse.irq as u32;
+        fstart_acpi_macros::acpi_dsl! {
+            Device("MOU0") {
+                Name("_HID", EisaId("PNP0F13"));
+                Name("_UID", 0u32);
+                Name("_CRS", ResourceTemplate {
+                    IO(Decode16, #{base1}, #{base1}, 0x01u8, 0x01u8);
+                    IO(Decode16, #{base2}, #{base2}, 0x01u8, 0x01u8);
+                    IRQ(Edge, ActiveHigh, Exclusive, #{gsiv});
+                });
+            }
+        }
+    }
+
+    /// EC needs two I/O ranges.
+    fn ec_device(cfg: &EcConfig) -> Vec<u8> {
+        let base1 = cfg.io_base;
+        let base2 = cfg.io_ext;
+        fstart_acpi_macros::acpi_dsl! {
+            Device("EC00") {
+                Name("_HID", EisaId("PNP0C09"));
+                Name("_UID", 0u32);
+                Name("_CRS", ResourceTemplate {
+                    IO(Decode16, #{base1}, #{base1}, 0x01u8, 0x08u8);
+                    IO(Decode16, #{base2}, #{base2}, 0x01u8, 0x08u8);
+                });
+            }
+        }
+    }
+
+    impl<C: SuperIoChip> AcpiDevice for SuperIo<C> {
+        type Config = SuperIoConfig;
+
+        /// Produce DSDT AML for all enabled SuperIO logical devices.
+        ///
+        /// Each enabled function gets its own Device node with the
+        /// appropriate PNP HID, `_UID`, and `_CRS` (IO + IRQ resources).
+        /// Nodes are nested inside the parent LPC bridge scope by the
+        /// ACPI assembler.
+        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
+            let mut aml = Vec::new();
+
+            // COM1
+            if let Some(ref com) = config.com1 {
+                aml.extend(ldn_device(
+                    "COM1",
+                    HID_COM,
+                    0,
+                    com.io_base,
+                    8,
+                    Some(com.irq),
+                ));
+            }
+
+            // COM2
+            if let Some(ref com) = config.com2 {
+                aml.extend(ldn_device(
+                    "COM2",
+                    HID_COM,
+                    1,
+                    com.io_base,
+                    8,
+                    Some(com.irq),
+                ));
+            }
+
+            // PS/2 Keyboard
+            if let Some(ref kbc) = config.keyboard {
+                aml.extend(kbc_device(kbc));
+            }
+
+            // PS/2 Mouse (needs KBC ports for shared I/O)
+            if let (Some(ref kbc), Some(ref mouse)) = (&config.keyboard, &config.mouse) {
+                aml.extend(mouse_device(kbc, mouse));
+            }
+
+            // Parallel port
+            if let Some(ref pp) = config.parallel {
+                aml.extend(ldn_device("LPT0", HID_LPT, 0, pp.io_base, 8, Some(pp.irq)));
+            }
+
+            // Environment controller
+            if let Some(ref ec) = config.env_controller {
+                aml.extend(ec_device(ec));
+            }
+
+            // Consumer IR
+            if let Some(ref cir) = config.cir {
+                aml.extend(ldn_device(
+                    "CIR0",
+                    "PNP0510",
+                    0,
+                    cir.io_base,
+                    8,
+                    Some(cir.irq),
+                ));
+            }
+
+            aml
+        }
+    }
+}
