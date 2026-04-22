@@ -218,6 +218,23 @@ pub enum Capability {
         /// Southbridge device name (implements `Southbridge`).
         southbridge: HString<32>,
     },
+    /// Initialize all logical CPUs (BSP + APs).
+    ///
+    /// Brings up application processors via INIT+SIPI, runs per-CPU
+    /// MSR configuration (C-states, SpeedStep, thermals), optionally
+    /// performs SMM relocation, and parks APs for later work dispatch.
+    ///
+    /// Must appear after `DramInit` — APs need stacks in DRAM.
+    MpInit {
+        /// CPU model identifier (selects which `CpuOps` to use).
+        cpu_model: HString<32>,
+        /// Expected logical CPU count (BSP + APs).
+        num_cpus: u16,
+        /// Enable SMM setup.  When true, the northbridge driver must
+        /// implement `SmmOps`.  Default: false.
+        #[serde(default)]
+        smm: bool,
+    },
     /// Enumerate and initialize all declared devices/drivers.
     DriverInit,
     /// Enumerate a PCI root bus, allocate BAR resources, and enable devices.

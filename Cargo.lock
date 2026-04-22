@@ -510,6 +510,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-cpu-pineview"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-mp",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-crabefi"
 version = "0.1.0"
 dependencies = [
@@ -853,6 +862,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-lapic"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
@@ -865,6 +882,15 @@ name = "fstart-mmio"
 version = "0.1.0"
 dependencies = [
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-mp"
+version = "0.1.0"
+dependencies = [
+ "fstart-lapic",
+ "fstart-log",
+ "ufmt",
 ]
 
 [[package]]

@@ -1,0 +1,11 @@
+[package]
+name = "fstart-cpu-pineview"
+description = "CpuOps implementation for Intel Atom Pineview (family 6 model 1Ch/26h)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-log = { workspace = true }
+fstart-mp = { workspace = true }
+ufmt = { workspace = true }

@@ -47,6 +47,12 @@ pub enum CapOp {
     DramInit(DeviceId),
     /// `ChipsetInit { northbridge, southbridge }` — x86 chipset unlock.
     ChipsetInit { nb: DeviceId, sb: DeviceId },
+    /// `MpInit` — bring up APs, per-CPU MSR config, park.
+    MpInit {
+        cpu_model: &'static str,
+        num_cpus: u16,
+        smm: bool,
+    },
     /// `PciInit { device }` — enumerate and allocate a PCI root bus.
     PciInit(DeviceId),
     /// `DriverInit` — init every remaining enabled device.
