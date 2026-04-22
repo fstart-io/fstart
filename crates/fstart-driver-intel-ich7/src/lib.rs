@@ -61,6 +61,28 @@ const LPC_EN_ALL: u16 = (1 << 13)
 
 /// RCBA offset: OIC (Other Interrupt Control — IOAPIC enable).
 const OIC: u32 = 0x31FE;
+/// RCBA offset: HPET Configuration register.
+const HPTC: u32 = 0x3404;
+/// HPET base address (after HPTC enable).
+const HPET_BASE: usize = 0xFED0_0000;
+/// PM1_CNT register (offset from PMBASE).
+const PM1_CNT_OFFSET: u16 = 0x04;
+/// SLP_TYP mask in PM1_CNT [12:10].
+const SLP_TYP_MASK: u32 = 0x1C00;
+/// S3 (STR) SLP_TYP value.
+const SLP_TYP_S3: u32 = 0x1400;
+
+// GPIO register offsets from GPIOBASE.
+const GPIO_USE_SEL: u16 = 0x00;
+const GP_IO_SEL: u16 = 0x04;
+const GP_LVL: u16 = 0x0C;
+const GPO_BLINK: u16 = 0x18;
+const GPI_INV: u16 = 0x2C;
+const GPIO_USE_SEL2: u16 = 0x30;
+const GP_IO_SEL2: u16 = 0x34;
+const GP_LVL2: u16 = 0x38;
+const GP_RST_SEL1: u16 = 0x60;
+const GP_RST_SEL2: u16 = 0x64;
 
 // ---------------------------------------------------------------------------
 // Configuration types
@@ -87,6 +109,29 @@ pub struct UsbConfig {
     pub ehci: bool,
     #[serde(default)]
     pub uhci: [bool; 4],
+}
+
+/// GPIO pad configuration for one set of 32 pins.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct GpioSet {
+    /// GPIO mode: 0 = native, 1 = GPIO. Bits correspond to GPIO pins.
+    #[serde(default)]
+    pub mode: u32,
+    /// Direction: 0 = output, 1 = input (only for pins in GPIO mode).
+    #[serde(default)]
+    pub direction: u32,
+    /// Output level: 0 = low, 1 = high.
+    #[serde(default)]
+    pub level: u32,
+    /// Blink enable (set 1 only).
+    #[serde(default)]
+    pub blink: u32,
+    /// Input inversion (set 1 only).
+    #[serde(default)]
+    pub invert: u32,
+    /// Reset select.
+    #[serde(default)]
+    pub reset: u32,
 }
 
 /// ICH7 southbridge configuration.
@@ -118,6 +163,12 @@ pub struct IntelIch7Config {
     /// SMBus I/O base address.
     #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
+    /// GPIO set 1 (pins 0..31).
+    #[serde(default)]
+    pub gpio_set1: GpioSet,
+    /// GPIO set 2 (pins 32..63).
+    #[serde(default)]
+    pub gpio_set2: GpioSet,
 }
 
 fn default_ecam_base() -> u64 {
@@ -152,9 +203,11 @@ impl IntelIch7 {
     /// CIR (Chipset Initialization Registers) magic writes.
     ///
     /// Ported from coreboot `ich7_setup_cir()`.
-    fn setup_cir(&self, rcba: &Rcba, _ecam: &EcamPci) {
+    fn setup_cir(&self, rcba: &Rcba, ecam: &EcamPci) {
         rcba.write32(0x0088, 0x0011_D000);
+        rcba.write16(0x01FC, 0x060F);
         rcba.write32(0x01F4, 0x8600_0040);
+        // Bit 6 is set but not read back.
         rcba.write32(0x0214, 0x1003_0549);
         rcba.write32(0x0218, 0x0002_0504);
         rcba.write8(0x0220, 0xC5);
@@ -162,7 +215,121 @@ impl IntelIch7 {
         let v = rcba.read32(0x3430);
         rcba.write32(0x3430, (v & !3) | 1);
 
-        fstart_log::info!("intel-ich7: CIR configured");
+        rcba.write16(0x0200, 0x2008);
+        rcba.write8(0x2027, 0x0D);
+
+        // PCIe link tuning.
+        let v = rcba.read16(0x3E08);
+        rcba.write16(0x3E08, v | (1 << 7));
+        let v = rcba.read16(0x3E48);
+        rcba.write16(0x3E48, v | (1 << 7));
+        let v = rcba.read32(0x3E0E);
+        rcba.write32(0x3E0E, v | (1 << 7));
+        let v = rcba.read32(0x3E4E);
+        rcba.write32(0x3E4E, v | (1 << 7));
+
+        // Mobile variant fixup: check PCI device ID.
+        let pci_id = ecam.read16(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x02);
+        match pci_id {
+            0x27B9 | 0x27BC | 0x27BD => {
+                let rev = ecam.read8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08);
+                if rev >= 2 {
+                    let v = rcba.read32(0x2034);
+                    rcba.write32(0x2034, (v & !(0x0F << 16)) | (5 << 16));
+                }
+                // FERR# MUX Enable.
+                let gcs = rcba.read32(ich7::GCS);
+                rcba.write32(ich7::GCS, gcs | (1 << 6));
+            }
+            _ => {}
+        }
+
+        fstart_log::info!("intel-ich7: CIR configured (pci_id={:#06x})", pci_id);
+    }
+
+    /// Program GPIO pads via GPIOBASE I/O ports.
+    ///
+    /// Ported from coreboot `setup_pch_gpios()`.
+    #[cfg(target_arch = "x86_64")]
+    fn setup_gpios(&self) {
+        let base = DEFAULT_GPIOBASE as u16;
+        let g1 = &self.config.gpio_set1;
+        let g2 = &self.config.gpio_set2;
+
+        // SAFETY: GPIOBASE was programmed above and is a valid I/O range.
+        unsafe {
+            // Set 1 — order matters on ICH7: level first, then mode/direction,
+            // then level again to avoid glitches.
+            fstart_pio::outl(base + GP_LVL, g1.level);
+            fstart_pio::outl(base + GPIO_USE_SEL, g1.mode);
+            fstart_pio::outl(base + GP_IO_SEL, g1.direction);
+            fstart_pio::outl(base + GP_LVL, g1.level);
+            fstart_pio::outl(base + GP_RST_SEL1, g1.reset);
+            fstart_pio::outl(base + GPI_INV, g1.invert);
+            fstart_pio::outl(base + GPO_BLINK, g1.blink);
+
+            // Set 2.
+            fstart_pio::outl(base + GP_LVL2, g2.level);
+            fstart_pio::outl(base + GPIO_USE_SEL2, g2.mode);
+            fstart_pio::outl(base + GP_IO_SEL2, g2.direction);
+            fstart_pio::outl(base + GP_LVL2, g2.level);
+            fstart_pio::outl(base + GP_RST_SEL2, g2.reset);
+        }
+
+        fstart_log::info!("intel-ich7: GPIOs configured");
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn setup_gpios(&self) {
+        fstart_log::info!("intel-ich7: GPIO setup (stub, non-x86)");
+    }
+
+    /// Enable HPET via RCBA.
+    ///
+    /// Ported from coreboot `enable_hpet()`. Raminit needs HPET for
+    /// microsecond-resolution delays (hpet_udelay).
+    fn enable_hpet(&self, rcba: &Rcba) {
+        let v = rcba.read32(HPTC);
+        rcba.write32(HPTC, (v & !0x03) | (1 << 7));
+        // Read back for posted write.
+        let _ = rcba.read32(HPTC);
+
+        // Enable the main HPET counter.
+        // SAFETY: HPET base is a fixed MMIO address enabled by HPTC.
+        unsafe {
+            let cfg = fstart_mmio::read32((HPET_BASE + 0x10) as *const u32);
+            fstart_mmio::write32((HPET_BASE + 0x10) as *mut u32, cfg | 1);
+        }
+
+        fstart_log::info!("intel-ich7: HPET enabled at {:#x}", HPET_BASE);
+    }
+
+    /// Detect S3 resume from PM1_CNT SLP_TYP field.
+    ///
+    /// Ported from coreboot `southbridge_detect_s3_resume()`.
+    #[cfg(target_arch = "x86_64")]
+    fn detect_s3_resume(&self) -> bool {
+        // SAFETY: PMBASE is a valid I/O base programmed during early_init.
+        let pm1_cnt = unsafe { fstart_pio::inl(DEFAULT_PMBASE as u16 + PM1_CNT_OFFSET) };
+        let slp_typ = pm1_cnt & SLP_TYP_MASK;
+        if slp_typ == SLP_TYP_S3 {
+            // Clear SLP_TYP so we don't re-detect on warm reset.
+            unsafe {
+                fstart_pio::outl(
+                    DEFAULT_PMBASE as u16 + PM1_CNT_OFFSET,
+                    pm1_cnt & !SLP_TYP_MASK,
+                );
+            }
+            fstart_log::info!("intel-ich7: S3 resume detected");
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn detect_s3_resume(&self) -> bool {
+        false
     }
 
     /// Compute the Function Disable (FD) bitmask.
@@ -294,8 +461,29 @@ impl Southbridge for IntelIch7 {
         let fd = self.function_disable_mask();
         rcba.write32(0x3418, fd);
 
+        // ---- 13. GPIO pad programming ----
+        self.setup_gpios();
+
+        // ---- 14. Enable HPET (needed by raminit for hpet_udelay) ----
+        self.enable_hpet(&rcba);
+
         fstart_log::info!("intel-ich7: early init complete (fd_mask={:#x})", fd);
         Ok(())
+    }
+}
+
+impl IntelIch7 {
+    /// Detect boot path: Normal, Reset (warm), or S3 Resume.
+    ///
+    /// Call this after `early_init()` but before raminit to determine
+    /// which raminit steps to skip.
+    pub fn detect_boot_path(&self) -> u8 {
+        if self.detect_s3_resume() {
+            return 2; // BOOT_PATH_RESUME
+        }
+        // Check MCHBAR PMSTS bit 8 for warm reset (done by NB driver).
+        // The SB just checks PM1_CNT.
+        0 // BOOT_PATH_NORMAL
     }
 }
 
