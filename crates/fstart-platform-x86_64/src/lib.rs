@@ -20,6 +20,7 @@
 #![no_std]
 
 pub mod car;
+pub mod car_teardown;
 pub mod cpuid;
 
 use fstart_services::memory_detect::E820Entry;

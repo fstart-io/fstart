@@ -490,67 +490,18 @@ core::arch::global_asm!(
 );
 
 // ---------------------------------------------------------------------------
-// CAR teardown — called after DRAM is trained, before switching to DRAM stack
-// ---------------------------------------------------------------------------
-
-core::arch::global_asm!(
-    ".att_syntax prefix",
-    ".section .text, \"ax\"",
-    ".code32",
-    ".global _car_teardown",
-    // ==================================================================
-    // _car_teardown — Tear down CAR after DRAM is online.
-    //
-    // Unified teardown for all variants:
-    // 1. Disable cache (CR0.CD = 1)
-    // 2. Disable MTRRs
-    // 3. For NEM: clear MSR 0x2E0 bits 1 then 0
-    // 4. Return to caller
-    //
-    // After this, the stack must be moved to DRAM before any further
-    // function calls or stack usage.
-    // ==================================================================
-    "_car_teardown:",
-    "popl %esp", // return address → ESP (no stack yet)
-    // Disable cache.
-    "movl %cr0, %eax",
-    "orl $0x40000000, %eax",
-    "movl %eax, %cr0",
-    // Disable MTRRs.
-    "movl $0x2FF, %ecx",
-    "rdmsr",
-    "andl $0xFFFFF7FF, %eax", // clear MTRR_DEF_TYPE_EN
-    "wrmsr",
-    // Check if NEM was used (Atom) — need to clear MSR 0x2E0.
-    // We detect this by reading MSR 0x2E0: if bits [1:0] are set, it's NEM.
-    "movl $0x2E0, %ecx",
-    "rdmsr",
-    "testl $3, %eax",
-    "jz 1f",
-    // Clear NEM: first bit 1 (RUN), then bit 0 (SETUP).
-    "andl $0xFFFFFFFD, %eax",
-    "wrmsr",
-    "andl $0xFFFFFFFE, %eax",
-    "wrmsr",
-    "1:",
-    // Return to caller (address in ESP).
-    "jmp *%esp",
-);
-
-// ---------------------------------------------------------------------------
-// Rust-callable wrappers
+// Rust-callable wrapper
 // ---------------------------------------------------------------------------
 
 extern "C" {
     fn _car_setup();
-    fn _car_teardown();
 }
 
 /// Set up Cache-as-RAM.
 ///
-/// This is called from the 32-bit entry point before page tables and
-/// long mode are set up. It detects the CPU variant via CPUID and uses
-/// the appropriate CAR method (NEM for Atom, standard for Core2/P4/P3).
+/// Called from the 32-bit entry point before page tables and long mode.
+/// Detects the CPU variant via CPUID and uses the appropriate CAR method
+/// (NEM for Atom, standard for Core2/P4/P3).
 ///
 /// # Safety
 ///
@@ -561,12 +512,7 @@ pub unsafe fn car_setup() {
     unsafe { _car_setup() }
 }
 
-/// Tear down Cache-as-RAM after DRAM is trained.
-///
-/// # Safety
-///
-/// Must be called after DRAM init and before switching the stack to DRAM.
-/// After this call, the old CAR stack is invalid.
-pub unsafe fn car_teardown() {
-    unsafe { _car_teardown() }
-}
+// CAR teardown lives in car_teardown.rs — it runs at the start of the
+// *next* stage (ramstage), after the stack has moved to DRAM. It cannot
+// run in the same stage that set up CAR because it destroys the cache
+// backing the current stack and BSS.
