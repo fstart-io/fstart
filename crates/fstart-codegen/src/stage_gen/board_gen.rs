@@ -2259,58 +2259,49 @@ fn platform_boot_protocol_stmts(
     payload: &PayloadConfig,
 ) -> TokenStream {
     let dtb_addr = hex_addr(payload.dtb_addr.unwrap_or(0));
-    match platform {
-        Platform::Riscv64 => {
-            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
-            quote! {
-                let _fw_info = fstart_platform::FwDynamicInfo::new(
-                    #kernel_addr,
-                    fstart_platform::boot_hart_id(),
-                );
-                fstart_log::info!("jumping to SBI firmware...");
-                fstart_platform::boot_linux_sbi(
-                    #fw_addr,
-                    fstart_platform::boot_hart_id(),
-                    #dtb_addr,
-                    &_fw_info,
-                );
-            }
-        }
-        Platform::Aarch64 => {
-            let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
-            quote! {
-                fstart_log::info!("jumping to ATF BL31...");
-                fstart_platform::boot_linux_atf_prepared(
-                    #kernel_addr,
-                    #dtb_addr,
-                    #fw_addr,
-                );
-            }
-        }
-        Platform::Armv7 => quote! {
-            fstart_log::info!("booting Linux (ARMv7)...");
-            fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
-            fstart_log::info!("  dtb    @ {:#x}", #dtb_addr as u64);
-            fstart_platform::cleanup_before_linux();
-            fstart_platform::boot_linux(#kernel_addr as u64, #dtb_addr);
+    let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
+    let bootargs_str = payload.bootargs.as_deref().unwrap_or("");
+
+    // Platform-specific preamble: RISC-V needs hart_id, x86 needs
+    // e820.  All other fields come from the board adapter's `self`.
+    let hart_id_expr = match platform {
+        Platform::Riscv64 => quote! { fstart_platform::boot_hart_id() },
+        _ => quote! { 0u64 },
+    };
+    let e820_setup = match platform {
+        Platform::X86_64 => quote! {
+            let _e820_state = unsafe { fstart_services::memory_detect::e820_state() };
         },
-        Platform::X86_64 => {
-            let bootargs_str = payload.bootargs.as_deref().unwrap_or("console=ttyS0");
-            quote! {
-                fstart_log::info!("booting Linux (x86_64)...");
-                fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
-                // e820 from the global E820State (populated by MemoryDetect).
-                let _e820_state =
-                    unsafe { fstart_services::memory_detect::e820_state() };
-                fstart_platform::boot_linux(
-                    #kernel_addr as u64,
-                    self._acpi_rsdp_addr,
-                    _e820_state.entries(),
-                    #bootargs_str,
-                    0x90000u64,
-                );
-            }
-        }
+        _ => quote! {},
+    };
+    let e820_expr = match platform {
+        Platform::X86_64 => quote! { _e820_state.entries() },
+        _ => quote! { &[] },
+    };
+    let zero_page_addr = match platform {
+        Platform::X86_64 => quote! { 0x90000u64 },
+        _ => quote! { 0u64 },
+    };
+    let rsdp_expr = match platform {
+        Platform::X86_64 => quote! { self._acpi_rsdp_addr },
+        _ => quote! { 0u64 },
+    };
+
+    quote! {
+        fstart_log::info!("booting Linux...");
+        fstart_log::info!("  kernel @ {:#x}", #kernel_addr as u64);
+        #e820_setup
+        let _boot_params = fstart_services::boot::BootLinuxParams {
+            kernel_addr: #kernel_addr as u64,
+            dtb_addr: #dtb_addr,
+            fw_addr: #fw_addr,
+            rsdp_addr: #rsdp_expr,
+            bootargs: #bootargs_str,
+            e820_entries: #e820_expr,
+            zero_page_addr: #zero_page_addr,
+            hart_id: #hart_id_expr,
+        };
+        fstart_platform::boot_linux(&_boot_params);
     }
 }
 
@@ -3233,8 +3224,8 @@ mod tests {
             "payload_load must call load_ffs_file_by_type for kernel/firmware; got:\n{src}"
         );
         assert!(
-            src.contains("fstart_platform::boot_linux_sbi"),
-            "riscv64 payload_load must use boot_linux_sbi; got:\n{src}"
+            src.contains("fstart_platform::boot_linux"),
+            "riscv64 payload_load must use boot_linux; got:\n{src}"
         );
         assert!(
             !src.contains("board_gen::payload_load: migration pending"),
@@ -3417,8 +3408,8 @@ mod tests {
             "riscv64 payload_load must load SBI firmware; got:\n{src}"
         );
         assert!(
-            src.contains("fstart_platform::boot_linux_sbi"),
-            "riscv64 payload_load must call boot_linux_sbi; got:\n{src}"
+            src.contains("fstart_platform::boot_linux"),
+            "riscv64 payload_load must call boot_linux; got:\n{src}"
         );
         assert!(
             src.contains("loading kernel..."),
@@ -3431,18 +3422,14 @@ mod tests {
         // qemu-aarch64: LinuxBoot + no firmware (TCG boots directly).
         let src = adapter_source_for_board("qemu-aarch64");
         assert!(
-            src.contains("fstart_platform::boot_linux_atf_prepared"),
-            "aarch64 payload_load must call boot_linux_atf_prepared; got:\n{src}"
+            src.contains("fstart_platform::boot_linux"),
+            "aarch64 payload_load must call boot_linux; got:\n{src}"
         );
     }
 
     #[test]
     fn payload_load_armv7_cleanup_before_linux() {
         let src = adapter_source_for_board("qemu-armv7");
-        assert!(
-            src.contains("fstart_platform::cleanup_before_linux"),
-            "armv7 payload_load must call cleanup_before_linux; got:\n{src}"
-        );
         assert!(
             src.contains("fstart_platform::boot_linux"),
             "armv7 payload_load must call boot_linux; got:\n{src}"
