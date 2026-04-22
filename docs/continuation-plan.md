@@ -657,29 +657,31 @@ All 10 board RON files updated: `platform: "riscv64"` → `platform: Riscv64`.
 
 ### Platform Scalability — Deferred Items
 
-These were identified during Phase 12 but deferred as lower priority:
+These were identified during Phase 12 but deferred pending actual need:
 
 1. **Uniform `boot_linux()` API** — Each platform crate exports different
    boot functions (`boot_linux_sbi`, `boot_linux_atf`, `boot_linux`).
    Unifying to a single `boot_linux(kernel, dtb, fw)` per-platform would
-   reduce codegen duplication in `generate_payload_load_linux` and
-   `generate_payload_load_fit_runtime`. Requires API changes in all 3
-   platform crates.
+   reduce codegen duplication.  Low priority: `board_gen`’s
+   `platform_boot_protocol_stmts` already abstracts the per-platform
+   differences at codegen time.
 
 2. **Abstract SoC boot header** — `LoadNextStage` and block-device
-   `AnchorScan` are eGON-only. A `SocBootHeader` trait would allow
-   other SoCs (e.g., Rockchip, MediaTek) to provide their own boot
-   media detection and header format.
+   boot-source detection are eGON-only.  A `SocBootHeader` trait would
+   allow other SoCs (Rockchip, MediaTek) to plug in their own boot
+   media detection and header format.  Deferred until a non-sunxi board
+   actually needs it.
 
-3. **Move BROM mapping out of codegen** — `boot_media_values_for_device()`
-   in capabilities.rs still hardcodes sunxi BROM constants. These should
-   move to the SoC crate or board RON.
+3. ~~**Move BROM mapping out of codegen**~~ — **DONE.** Moved to
+   `DriverInstance::boot_media_values()` in `fstart-device-registry`.
 
-4. **Fix ARMv7 sunxi bootblock size** — bananapi-m1 and orangepi-r1
-   debug builds overflow SRAM. Options: LTO, `opt-level = "s"` for
-   bootblock profile, or split crypto into the main stage only.
+4. ~~**Fix ARMv7 sunxi bootblock size**~~ — **DONE.** Added
+   `[profile.dev.package.fstart-stage] opt-level = "s"` so debug
+   bootblocks fit in SRAM.
 
-5. **AArch64 debug-mode hang** — see Phase 13 known limitations below.
+5. ~~**AArch64 debug-mode hang**~~ — **DONE.** Pl011 driver now stores
+   `base: usize` instead of `&'static Pl011Regs`, reconstructing the
+   pointer via `#[inline(always)] fn regs()` on every access.
 
 ### Phase 13: Stage Runtime / Codegen Split (COMPLETE)
 
@@ -767,27 +769,14 @@ Result: `stage_gen/mod.rs` shrunk from 1371 → 530 lines;
 - All 16 boards build (13 debug, 3 release-only due to SRAM constraints).
 - QEMU smoke test: firmware boots through full capability sequence.
 
-#### Known limitation: AArch64 debug-mode hang
+#### Known limitation (resolved): AArch64 debug-mode hang
 
-After the split, AArch64 debug builds hang silently during
-`Pl011::init()`.  The `impl Board::init_device` body constructs the
-driver into a `let mut _dev`, calls `_dev.init()?`, then moves `_dev`
-into `self.uart0: Option<Pl011>`.  In debug mode LLVM routes the
-16-byte `_dev` through a stack scratch copy such that `init()` programs
-a stale copy, and subsequent `Console` writes hang waiting for
-`LSR::THRE`.  RISC-V 64 is not affected (24-byte `Ns16550` stays in
-registers).  Release mode works on both archs.
-
-Workarounds tried and rejected:
-- `Option::insert`-based construction: works AArch64-debug but hangs
-  RISC-V-debug (inverse symptom).
-- `core::hint::black_box(&mut _dev)` barrier: same RISC-V regression.
-- MMIO probe at top of `run_stage`: fixes AArch64 but hardcodes
-  QEMU-virt-specific address in common code.
-
-The real fix is a driver-side rework: store `usize` base address instead
-of `&'static Pl011Regs`, or add a `construct_into(&mut MaybeUninit<Self>)`
-trait method.  Until then, AArch64 development must use `--release`.
+Previously, AArch64 debug builds hung during `Pl011::init()` because
+LLVM routed the 16-byte struct through a stack scratch copy, causing
+`init()` to program stale MMIO registers.  **Fixed** by storing
+`base: usize` instead of `&'static Pl011Regs` in the Pl011 driver
+and reconstructing the pointer via `#[inline(always)] fn regs()` on
+every access.  AArch64 debug builds now work correctly.
 
 ---
 
@@ -796,62 +785,6 @@ trait method.  Until then, AArch64 development must use `--release`.
 Investigate `crabtime` (Zig comptime-like macros for Rust) as an
 alternative or complement to `build.rs` codegen for enum dispatch
 generation. Low priority — current codegen approach works well.
-
----
-
----
-
-### Phase 10.5: Bootable FFS Image
-
-**Goal**: Make the FFS image directly bootable by QEMU.
-
-The current FFS format puts the anchor at offset 0, followed by manifest
-and file data. To make the image bootable, the bootblock binary needs to
-be at offset 0 (QEMU's `-bios` expects executable code at the start).
-
-- **Anchor embedding in bootblock**: Codegen emits a `#[link_section = ".fstart.anchor"]`
-  static containing the serialized `AnchorBlock` (placeholder offsets).
-  The linker already places this section. `xtask assemble` patches the
-  binary with real manifest offsets after layout.
-- **Bootable layout**: Rearrange `ffs_builder` so the bootblock binary
-  comes first in the image, with the anchor embedded inside it. The RO
-  manifest and file data follow after the bootblock. The bootblock then
-  references its own anchor static (no scanning needed — just a symbol).
-- **Test**: `cargo xtask run --board qemu-riscv64-multi` boots the FFS
-  image directly. The bootblock performs SigVerify → StageLoad → jumps
-  to main stage.
-
----
-
-### Phase 11: Payload + OS Handoff
-
-**Goal**: Boot Linux on QEMU.
-
-#### 11.1 FDT Generation
-
-- Generate FDT from board RON (memory map, devices, chosen node).
-- `DTS Override` escape hatch: merge board-provided DTS fragments.
-- Place FDT at known address for payload.
-
-#### 11.2 Linux Boot Protocol
-
-- RISC-V: OpenSBI-style boot (a0=hartid, a1=fdt_addr, jump to kernel).
-- AArch64: kernel image protocol (x0=fdt_addr, jump to kernel).
-
-#### 11.3 Test
-
-- Package a minimal Linux kernel (or test payload) in FFS.
-- `cargo xtask run --board qemu-riscv64` boots to kernel banner.
-
----
-
-### Phase 12: Polish + CI
-
-- Allocator (`fstart-alloc`): bump allocator for stages that need heap.
-- CI pipeline: GitHub Actions with `cargo check`, `clippy`, `fmt`, `test`,
-  cross-build all boards.
-- Measured boot hooks: TPM event log placeholder.
-- More drivers: SiFive UART, VirtIO block, etc.
 
 ---
 
