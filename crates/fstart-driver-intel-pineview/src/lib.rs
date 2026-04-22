@@ -319,6 +319,10 @@ impl PciHost for IntelPineview {
         rcba.write32(ich7::GCS, gcs & !0x04);
         rcba.write32(0x2010, rcba.read32(0x2010) | (1 << 10));
 
+        // 5. Virtual Channel 0 setup (from romstage rcba_config()).
+        rcba.write32(0x0014, 0x8000_0001);
+        rcba.write32(0x001C, 0x0312_8010);
+
         fstart_log::info!("intel-pineview: early init complete");
         Ok(())
     }

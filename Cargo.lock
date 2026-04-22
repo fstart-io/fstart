@@ -617,6 +617,7 @@ name = "fstart-driver-intel-ich7"
 version = "0.1.0"
 dependencies = [
  "fstart-log",
+ "fstart-mmio",
  "fstart-pineview-regs",
  "fstart-pio",
  "fstart-services",

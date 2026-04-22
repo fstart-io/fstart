@@ -178,7 +178,7 @@ pub fn sdram_initialize(
     timing::clk_crossing(&si, mch);
 
     // 6. Check for reset.
-    timing::check_reset(mch);
+    timing::check_reset(&si, ecam);
 
     // 7. Clock mode.
     timing::clkmode(&si, mch);
@@ -188,7 +188,7 @@ pub fn sdram_initialize(
 
     // 9. DLL timing (skip on reset path).
     if si.boot_path != BOOT_PATH_RESET {
-        phy::dll_timing(&si, mch);
+        phy::dll_timing(&mut si, mch);
     }
 
     // 10. RCOMP (skip on reset path).
@@ -243,7 +243,7 @@ pub fn sdram_initialize(
     }
 
     // 20. DRA/DRB.
-    mmap::sdram_dradrb(&si, mch);
+    mmap::sdram_dradrb(&mut si, mch);
 
     // 21. Receive enable calibration.
     phy::sdram_rcven(&mut si, mch);
@@ -255,7 +255,7 @@ pub fn sdram_initialize(
     mmap::sdram_mmap_regs(&si, mch, ecam);
 
     // 24. Enhanced mode.
-    phy::sdram_enhanced_mode(&si, mch);
+    phy::sdram_enhanced_mode(&si, mch, ecam);
 
     // 25. Power settings.
     phy::sdram_power_settings(&si, mch);
