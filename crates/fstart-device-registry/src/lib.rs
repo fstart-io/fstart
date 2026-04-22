@@ -573,7 +573,7 @@ impl DriverInstance {
                 // KBC, etc.) can nest for init-ordering.
                 services: &["SuperIoHost"],
                 compatible: &["ite,it8721f", "ite,8721f"],
-                has_acpi: false,
+                has_acpi: true,
                 is_bus_device: true,
             },
             #[cfg(feature = "intel-pineview")]
@@ -627,6 +627,8 @@ impl DriverInstance {
         match self {
             #[cfg(feature = "pl011")]
             Self::Pl011(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "ite8721f")]
+            Self::Ite8721f(cfg) => cfg.acpi_name.as_deref(),
             #[cfg(feature = "intel-pineview")]
             Self::IntelPineview(cfg) => cfg.acpi_name.as_deref(),
             #[cfg(feature = "intel-ich7")]

@@ -1034,9 +1034,11 @@ dependencies = [
 name = "fstart-superio"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-log",
  "fstart-pio",
  "fstart-services",
+ "heapless",
  "serde",
  "ufmt",
 ]

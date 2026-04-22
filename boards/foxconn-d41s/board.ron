@@ -150,6 +150,7 @@
                                 keyboard: ( io_base: 0x60, io_ext: 0x64, irq: 1 ),
                                 mouse: ( irq: 12 ),
                                 cir: ( io_base: 0x3e0, irq: 10 ),
+                                acpi_name: "SIO0",
                             )),
                             services: ["SuperIoHost"],
                             children: [
