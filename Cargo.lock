@@ -863,6 +863,7 @@ version = "0.1.0"
 name = "fstart-platform-aarch64"
 version = "0.1.0"
 dependencies = [
+ "fstart-services",
  "fstart-soc-sunxi",
 ]
 
@@ -871,6 +872,7 @@ name = "fstart-platform-armv7"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-services",
  "fstart-soc-sunxi",
 ]
 
@@ -878,6 +880,7 @@ dependencies = [
 name = "fstart-platform-riscv64"
 version = "0.1.0"
 dependencies = [
+ "fstart-services",
  "fstart-soc-sunxi",
 ]
 

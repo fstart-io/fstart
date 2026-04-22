@@ -13,6 +13,7 @@
 
 pub mod acpi_provider;
 pub mod block;
+pub mod boot;
 pub mod boot_media;
 pub mod clock;
 pub mod console;
@@ -27,6 +28,7 @@ pub mod network;
 pub mod pci;
 pub mod pci_host;
 pub mod smbus;
+pub mod soc_boot;
 pub mod southbridge;
 pub mod spi;
 pub mod timer;
