@@ -104,11 +104,27 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         platform_tables.push(hpet);
     }
 
+    // PMBASE = 0x0500 is the ICH7 default. The exact value is
+    // board-specific but hardcoded in ICH7 early_init.
+    let pmbase: u32 = 0x0500;
+
+    // IAPC Boot Arch: 8042 keyboard + legacy devices.
+    let mut iapc: u16 = 0;
+    if config.legacy_devices {
+        iapc |= 0x0003; // FADT_8042 | FADT_LEGACY_DEVICES
+    }
+
     let fadt_config = FadtConfig {
         hw_reduced: false,
         low_power_s0: false,
         arm_psci: false,
         pm_profile: acpi_tables::fadt::PmProfile::Desktop,
+        pm1a_evt_blk: pmbase,
+        pm1a_cnt_blk: pmbase + 0x04,
+        pm_tmr_blk: pmbase + 0x08,
+        gpe0_blk: pmbase + 0x28,
+        sci_int: config.sci_irq as u16,
+        iapc_boot_arch: iapc,
     };
 
     (platform_tables, fadt_config)

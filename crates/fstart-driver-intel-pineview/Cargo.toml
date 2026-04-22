@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+acpi = ["fstart-acpi"]
+
 [dependencies]
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+heapless = { workspace = true }
 fstart-log = { workspace = true }
 fstart-mmio = { workspace = true }
 fstart-pineview-regs = { workspace = true }

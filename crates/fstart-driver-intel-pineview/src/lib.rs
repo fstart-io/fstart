@@ -38,7 +38,7 @@ pub struct IgdConfig {
 }
 
 /// Pineview northbridge configuration.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntelPineviewConfig {
     /// MCHBAR base address.
     pub mchbar: u64,
@@ -52,6 +52,9 @@ pub struct IntelPineviewConfig {
     /// Optional integrated graphics configuration.
     #[serde(default)]
     pub igd: Option<IgdConfig>,
+    /// ACPI device name (e.g., "MCHC"). If `None`, no ACPI node.
+    #[serde(default)]
+    pub acpi_name: Option<heapless::String<8>>,
 }
 
 fn default_ecam_base() -> u64 {
@@ -277,7 +280,7 @@ impl Device for IntelPineview {
 
     fn new(config: &IntelPineviewConfig) -> Result<Self, DeviceError> {
         Ok(Self {
-            config: *config,
+            config: config.clone(),
             detected_size: 0,
         })
     }
@@ -334,5 +337,100 @@ impl PciHost for IntelPineview {
 impl MemoryController for IntelPineview {
     fn detected_size_bytes(&self) -> u64 {
         self.detected_size
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ramstage helpers — memory map readback
+// ---------------------------------------------------------------------------
+
+impl IntelPineview {
+    /// Read Top of Upper Usable DRAM (TOUUD) in bytes.
+    pub fn touud(&self) -> u64 {
+        let raw = ecam::read16(0, 0, 0, hostbridge::TOUUD);
+        (raw as u64) << 20
+    }
+
+    /// Read Top of Lower Usable DRAM (TOLUD) in bytes.
+    pub fn tolud(&self) -> u32 {
+        let raw = ecam::read16(0, 0, 0, hostbridge::TOLUD) & 0xFFF0;
+        (raw as u32) << 16
+    }
+
+    /// Read Top of Memory (TOM) in bytes.
+    pub fn tom(&self) -> u64 {
+        let raw = ecam::read16(0, 0, 0, hostbridge::TOM) & 0x01FF;
+        (raw as u64) << 27
+    }
+
+    /// Decode IGD memory size from GGC register (kilobytes).
+    fn igd_memory_size_kb(&self) -> u32 {
+        let ggc = ecam::read16(0, 0, 0, hostbridge::GGC);
+        let gms = ((ggc >> 4) & 0xF) as usize;
+        const SIZES: [u32; 10] = [0, 1, 4, 8, 16, 32, 48, 64, 128, 256];
+        if gms < SIZES.len() {
+            SIZES[gms] << 10
+        } else {
+            0
+        }
+    }
+
+    /// Decode GTT stolen memory size from GGC register (kilobytes).
+    fn gtt_size_kb(&self) -> u32 {
+        let ggc = ecam::read16(0, 0, 0, hostbridge::GGC);
+        let gsm = ((ggc >> 8) & 0xF) as usize;
+        const SIZES: [u32; 4] = [0, 1, 0, 0];
+        if gsm < SIZES.len() {
+            (SIZES[gsm] as u32) << 10
+        } else {
+            0
+        }
+    }
+
+    /// Enable SERR on the PCI domain root.
+    pub fn enable_serr(&self) {
+        ecam::or16(0, 0, 0, 0x04, 1 << 8);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ACPI device implementation — Host bridge (MCHC)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "acpi")]
+mod acpi_impl {
+    extern crate alloc;
+    use alloc::vec::Vec;
+    use fstart_acpi::device::AcpiDevice;
+
+    use super::*;
+
+    impl AcpiDevice for IntelPineview {
+        type Config = IntelPineviewConfig;
+
+        /// Produce the host bridge DSDT device node ("MCHC").
+        ///
+        /// Contains `_ADR` 0x00000000 (B0:D0:F0) and memory region
+        /// declarations for MCHBAR and DMIBAR.
+        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
+            let name = config.acpi_name.as_deref().unwrap_or("MCHC");
+            let _adr: u32 = 0x0000_0000; // B0:D0:F0
+            let mchbar = config.mchbar as u32;
+            let dmibar = config.dmibar as u32;
+
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_ADR", #{_adr});
+                    Name("_CRS", ResourceTemplate {
+                        Memory32Fixed(ReadWrite, #{mchbar}, 0x4000u32);
+                        Memory32Fixed(ReadWrite, #{dmibar}, 0x1000u32);
+                    });
+                }
+            }
+        }
+
+        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
     }
 }

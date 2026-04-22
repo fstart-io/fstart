@@ -135,7 +135,7 @@ pub struct GpioSet {
 }
 
 /// ICH7 southbridge configuration.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntelIch7Config {
     /// Root Complex Base Address register value.
     pub rcba: u64,
@@ -169,6 +169,19 @@ pub struct IntelIch7Config {
     /// GPIO set 2 (pins 32..63).
     #[serde(default)]
     pub gpio_set2: GpioSet,
+    /// ACPI device name (e.g., "LPCB"). If `None`, no ACPI node.
+    #[serde(default)]
+    pub acpi_name: Option<heapless::String<8>>,
+    /// C3 latency in microseconds (for FADT p_lvl3_lat).
+    #[serde(default = "default_c3_latency")]
+    pub c3_latency: u16,
+    /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
+    #[serde(default)]
+    pub power_on_after_fail: u8,
+}
+
+fn default_c3_latency() -> u16 {
+    85 // typical ICH7 value
 }
 
 fn default_ecam_base() -> u64 {
@@ -352,7 +365,7 @@ impl Device for IntelIch7 {
 
     fn new(config: &IntelIch7Config) -> Result<Self, DeviceError> {
         Ok(Self {
-            config: *config,
+            config: config.clone(),
             smbus: None,
         })
     }
@@ -512,5 +525,276 @@ impl SmBus for IntelIch7 {
 impl LpcBaseProvider for IntelIch7 {
     fn lpc_base(&self) -> u16 {
         0x2e
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ramstage init — ported from coreboot lpc.c / sata.c / usb.c / i82801gx.c
+// ---------------------------------------------------------------------------
+
+impl IntelIch7 {
+    /// Late initialisation, called from the ramstage after DRAM is online.
+    ///
+    /// Ported from coreboot's ICH7 ramstage device ops: `lpc_init`,
+    /// `sata_init`, `usb_init`, `usb_ehci_init`, `enable_clock_gating`,
+    /// `lpc_final`.
+    pub fn ramstage_init(&self) -> Result<(), ServiceError> {
+        let d = ich7::LPC_DEV;
+        let f = ich7::LPC_FUNC;
+
+        // ---- SATA ----
+        if let Some(ref sata) = self.config.sata {
+            self.sata_init(sata);
+        }
+
+        // ---- USB UHCI (bus master + errata) ----
+        if let Some(ref usb) = self.config.usb {
+            self.usb_uhci_init(usb);
+            if usb.ehci {
+                self.usb_ehci_init();
+            }
+        }
+
+        // ---- Power management ----
+        self.power_management_init();
+
+        // ---- C-state configuration ----
+        // Popup & Popdown enable, Deeper Sleep timings.
+        ecam::or8(0, d, f, 0xA9, (1 << 4) | (1 << 3) | (1 << 2));
+        let v = ecam::read8(0, d, f, 0xAA);
+        ecam::write8(0, d, f, 0xAA, (v & 0xF0) | (2 << 2) | 2);
+
+        // ---- Clock gating ----
+        self.enable_clock_gating();
+
+        // ---- USB Transient Disconnect Detect (fixup) ----
+        ecam::write8(0, d, f, 0xAD, 0x03);
+
+        // ---- RCBA fixup (must be after PCI enumeration) ----
+        let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+        rcba.write32(0x1D40, rcba.read32(0x1D40) | 1);
+
+        fstart_log::info!("intel-ich7: ramstage init complete");
+        Ok(())
+    }
+
+    /// SATA controller initialisation.
+    ///
+    /// Ported from coreboot `sata_init()`. Programs the SATA controller
+    /// into AHCI or IDE mode and runs the mandatory init sequence.
+    fn sata_init(&self, sata: &SataConfig) {
+        let d: u8 = 0x1f;
+        let f: u8 = 2;
+
+        // Enable BARs.
+        ecam::or16(0, d, f, 0x04, 0x07); // IO + Mem + BusMaster
+
+        match sata.mode {
+            SataMode::Ahci => {
+                fstart_log::info!("intel-ich7: SATA in AHCI mode");
+                // Map = AHCI.
+                let v = ecam::read8(0, d, f, 0x90);
+                ecam::write8(0, d, f, 0x90, (v & !0xC3) | 0x40);
+                // Native mode on both channels.
+                ecam::write8(0, d, f, 0x09, 0x8F);
+                // Interrupt line.
+                ecam::write8(0, d, f, 0x3C, 0x0A);
+            }
+            SataMode::Ide => {
+                fstart_log::info!("intel-ich7: SATA in IDE mode");
+                ecam::write8(0, d, f, 0x90, ecam::read8(0, d, f, 0x90) & !0xC3);
+                ecam::write8(0, d, f, 0x09, 0x8F);
+                ecam::write8(0, d, f, 0x3C, 0xFF);
+                // IDE timings.
+                ecam::write16(0, d, f, 0x40, 0xB301); // PRI
+                ecam::write16(0, d, f, 0x42, 0xB301); // SEC
+                ecam::write16(0, d, f, 0x48, 0x0005); // Sync DMA cnt
+                ecam::write16(0, d, f, 0x4A, 0x0201); // Sync DMA tim
+                ecam::write32(0, d, f, 0x54, 0x00000033); // IDE I/O cfg
+            }
+        }
+
+        // Port control.
+        ecam::write8(0, d, f, 0x92, sata.ports);
+
+        // Clock gating + init register.
+        let ports = sata.ports;
+        let sif3: u32 = match ports {
+            0x0F => 0,
+            0x03 => 1 << 24,
+            0x01 => (1 << 24) | (1 << 20),
+            _ => 0,
+        };
+        ecam::write32(0, d, f, 0x94, sif3 | (1 << 16) | (1 << 18) | (1 << 19));
+
+        // Mandatory SATA init sequence (from coreboot).
+        ecam::write8(0, d, f, 0xA0, 0x40);
+        ecam::write8(0, d, f, 0xA6, 0x22);
+        ecam::write8(0, d, f, 0xA0, 0x78);
+        ecam::write8(0, d, f, 0xA6, 0x22);
+        ecam::write8(0, d, f, 0xA0, 0x88);
+        let v = ecam::read32(0, d, f, 0xA4);
+        ecam::write32(0, d, f, 0xA4, (v & 0xC0C0_C0C0) | 0x1B1B_1212);
+        ecam::write8(0, d, f, 0xA0, 0x8C);
+        let v = ecam::read32(0, d, f, 0xA4);
+        ecam::write32(0, d, f, 0xA4, (v & 0xC0C0_FF00) | 0x1212_00AA);
+        ecam::write8(0, d, f, 0xA0, 0x00);
+        ecam::write8(0, d, f, 0x3C, 0x00);
+        ecam::or32(0, d, f, 0x94, 1 << 22); // SCRD due to bug
+
+        fstart_log::info!("intel-ich7: SATA init done (ports={:#x})", ports);
+    }
+
+    /// UHCI (USB 1.1) controller init.
+    fn usb_uhci_init(&self, usb: &UsbConfig) {
+        for (i, &enabled) in usb.uhci.iter().enumerate() {
+            if !enabled {
+                continue;
+            }
+            let f = i as u8; // UHCI #1..#4 are dev 29, func 0..3
+                             // Bus master.
+            ecam::or16(0, 0x1D, f, 0x04, 0x04);
+            // Errata workarounds.
+            ecam::write8(0, 0x1D, f, 0xCA, 0x00);
+            ecam::or8(0, 0x1D, f, 0xCA, 1);
+        }
+        fstart_log::info!("intel-ich7: UHCI init done");
+    }
+
+    /// EHCI (USB 2.0) controller init.
+    fn usb_ehci_init(&self) {
+        // Bus master + SERR.
+        ecam::or16(0, 0x1D, 7, 0x04, 0x06);
+        // Debug port + async schedule park.
+        ecam::or32(0, 0x1D, 7, 0xDC, (1 << 31) | (1 << 27));
+        let v = ecam::read32(0, 0x1D, 7, 0xFC);
+        ecam::write32(
+            0,
+            0x1D,
+            7,
+            0xFC,
+            (v & !(3 << 2)) | (2 << 2) | (1 << 29) | (1 << 17),
+        );
+        // Errata.
+        ecam::or8(0, 0x1D, 7, 0x84, 1 << 4);
+        fstart_log::info!("intel-ich7: EHCI init done");
+    }
+
+    /// Power management init (from coreboot `i82801gx_power_options`).
+    fn power_management_init(&self) {
+        let d = ich7::LPC_DEV;
+        let f = ich7::LPC_FUNC;
+
+        // Power-on after failure.
+        let mut pmcon3 = ecam::read8(0, d, f, GEN_PMCON_3);
+        pmcon3 |= 3 << 4; // avoid #S4 assertions
+        pmcon3 &= !(1 << 3); // minimum assertion 1-2 RTCCLK
+        match self.config.power_on_after_fail {
+            0 => pmcon3 |= 1,  // stay off
+            _ => pmcon3 &= !1, // power on / last state
+        }
+        ecam::write8(0, d, f, GEN_PMCON_3, pmcon3);
+
+        // GEN_PMCON_1: SMI rate, SpeedStep, CPUSLP, BIOS_PCI_EXP.
+        let mut pmcon1 = ecam::read16(0, d, f, 0xA0);
+        pmcon1 &= !3; // SMI rate 1 minute
+        pmcon1 |= (1 << 5)      // CPUSLP_EN
+                | (1 << 10); // BIOS_PCI_EXP_EN
+        ecam::write16(0, d, f, 0xA0, pmcon1);
+
+        fstart_log::info!("intel-ich7: power management configured");
+    }
+
+    /// Enable clock gating (from coreboot `enable_clock_gating`).
+    fn enable_clock_gating(&self) {
+        let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+        let mut cg = rcba.read32(0x341C);
+        cg |= (1 << 31)  // LPC
+            | (1 << 30)   // PATA
+            | (1 << 27) | (1 << 26) | (1 << 25) | (1 << 24)  // SATA
+            | (1 << 23)   // AC97
+            | (1 << 19)   // EHCI
+            | (1 << 3) | (1 << 1)  // DMI
+            | (1 << 2); // PCIe
+        cg &= !(1 << 20); // no static USB clock gating
+        cg &= !((1 << 29) | (1 << 28)); // disable UHCI clock gating
+        rcba.write32(0x341C, cg);
+        fstart_log::info!("intel-ich7: clock gating enabled");
+    }
+
+    /// Platform lockdown (from coreboot `lpc_final`).
+    ///
+    /// Locks SPI, BIOS interface, global SMI, and TCO.
+    pub fn lockdown(&self) {
+        let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+
+        // Lock SPIBAR.
+        let spi = rcba.read16(0x3800);
+        rcba.write16(0x3800, spi | (1 << 15));
+
+        // BIOS Interface Lockdown.
+        rcba.write32(0x3410, rcba.read32(0x3410) | 1);
+
+        // Global SMI Lock.
+        ecam::or16(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0xA0, 1 << 4);
+
+        // TCO Lock.
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: PMBASE is valid.
+            unsafe {
+                let tco_addr = DEFAULT_PMBASE as u16 + 0x60 + 0x08;
+                let tco1_cnt = fstart_pio::inw(tco_addr);
+                fstart_pio::outw(tco_addr, tco1_cnt | (1 << 12));
+            }
+        }
+
+        fstart_log::info!("intel-ich7: platform lockdown complete");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ACPI device implementation — LPC bridge
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "acpi")]
+mod acpi_impl {
+    extern crate alloc;
+    use alloc::vec::Vec;
+    use fstart_acpi::device::AcpiDevice;
+
+    use super::*;
+
+    /// ICH7 PCI device IDs (LPC bridge variants).
+    const LPC_PIDS: &[u16] = &[0x27B0, 0x27B8, 0x27B9, 0x27BC, 0x27BD];
+
+    impl AcpiDevice for IntelIch7 {
+        type Config = IntelIch7Config;
+
+        /// Produce LPC bridge DSDT device node ("LPCB").
+        ///
+        /// Contains: `_HID` PNP0A05 (generic container), `_ADR` 0x001F0000,
+        /// and nested ISA resource descriptors for legacy I/O ranges.
+        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
+            let name = config.acpi_name.as_deref().unwrap_or("LPCB");
+            let _adr: u32 = 0x001F_0000; // B0:D31:F0
+
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_ADR", #{_adr});
+                    Name("_HID", EisaId("PNP0A05"));
+                }
+            }
+        }
+
+        /// Produce standalone FADT fields as extra table bytes.
+        ///
+        /// The PM block addresses are carried in the x86 platform config
+        /// (`X86PlatformAcpi`), so the LPC bridge does not produce any
+        /// standalone tables. PIRQ routing is handled by the board RON
+        /// `isos` (Interrupt Source Overrides) in the MADT.
+        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
     }
 }

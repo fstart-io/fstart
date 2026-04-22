@@ -616,6 +616,7 @@ dependencies = [
 name = "fstart-driver-intel-ich7"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-log",
  "fstart-mmio",
  "fstart-pineview-regs",
@@ -623,6 +624,7 @@ dependencies = [
  "fstart-services",
  "fstart-smbus-intel",
  "fstart-superio",
+ "heapless",
  "serde",
  "ufmt",
 ]
@@ -631,6 +633,7 @@ dependencies = [
 name = "fstart-driver-intel-pineview"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-log",
  "fstart-mmio",
  "fstart-pineview-regs",
@@ -638,6 +641,7 @@ dependencies = [
  "fstart-services",
  "fstart-smbus-intel",
  "fstart-spd",
+ "heapless",
  "serde",
  "tock-registers",
  "ufmt",
