@@ -21,6 +21,10 @@ use fstart_smbus_intel::I801SmBus;
 use fstart_superio::LpcBaseProvider;
 use serde::{Deserialize, Serialize};
 
+// Re-export HDA types from the shared crate so board RON configs
+// can reference them via the ICH7 driver path.
+pub use fstart_hda::{HdaConfig, HdaController, HdaVerbTable};
+
 // ---------------------------------------------------------------------------
 // ICH7 LPC PCI config register offsets (bus 0, dev 0x1f, func 0)
 // ---------------------------------------------------------------------------
@@ -111,75 +115,8 @@ pub struct UsbConfig {
     pub uhci: [bool; 4],
 }
 
-/// HD Audio (Azalia) codec verb table entry.
-///
-/// Each entry describes one HDA codec's pin configuration and custom
-/// verb commands.  The verb table format follows coreboot's convention:
-/// each verb is a 32-bit word encoding codec address, NID, verb ID,
-/// and payload.
-///
-/// ## RON example
-///
-/// ```ron
-/// hda_verbs: [
-///     // Realtek ALC662 — Foxconn D41S
-///     ( vendor_id: 0x10ec0662, subsystem_id: 0x105b0d55, verbs: [
-///         // AZALIA_PIN_CFG(0, 0x14, 0x01014c10)  — rear line-out
-///         0x01471c10, 0x01471d4c, 0x01471e01, 0x01471f01,
-///         // pin 0x15 = NC
-///         0x01571cf0, 0x01571d11, 0x01571e11, 0x01571f41,
-///     ]),
-/// ]
-/// ```
-///
-/// Use the `hda_verb!` / `hda_pin_cfg!` macros to build verbs
-/// readably at the board level (see below).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HdaVerbTable {
-    /// Codec vendor/device ID (e.g. `0x10ec0662` for ALC662).
-    pub vendor_id: u32,
-    /// Subsystem ID written to the codec.
-    pub subsystem_id: u32,
-    /// Raw 32-bit HDA verbs.
-    pub verbs: heapless::Vec<u32, 64>,
-}
-
-/// HD Audio configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct HdaConfig {
-    /// Codec verb tables.
-    #[serde(default)]
-    pub verbs: heapless::Vec<HdaVerbTable, 4>,
-}
-
-/// Construct a single HDA verb word.
-///
-/// `AZALIA_VERB_12B(codec, nid, verb_id, payload)`
-///
-/// Encodes: `[31:28]=codec, [27:20]=nid, [19:8]=verb_id, [7:0]=payload`
-#[inline]
-const fn hda_verb(codec: u32, nid: u32, verb: u32, payload: u32) -> u32 {
-    (codec << 28) | (nid << 20) | (verb << 8) | payload
-}
-
-/// Expand a pin config value into the four SET_CONFIGURATION_DEFAULT verbs.
-///
-/// Equivalent to coreboot's `AZALIA_PIN_CFG(codec, pin, val)` macro.
-#[inline]
-const fn hda_pin_cfg(codec: u32, pin: u32, val: u32) -> [u32; 4] {
-    [
-        hda_verb(codec, pin, 0x71c, (val >> 0) & 0xff),
-        hda_verb(codec, pin, 0x71d, (val >> 8) & 0xff),
-        hda_verb(codec, pin, 0x71e, (val >> 16) & 0xff),
-        hda_verb(codec, pin, 0x71f, (val >> 24) & 0xff),
-    ]
-}
-
-/// Pin config value for "not connected" (coreboot `AZALIA_PIN_CFG_NC`).
-#[inline]
-const fn hda_pin_nc(seq: u32) -> u32 {
-    0x411111f0 | (seq & 0xf)
-}
+// HDA verb table types are defined in the shared fstart-hda crate.
+// See fstart_hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
 
 /// GPIO pad configuration for one set of 32 pins.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -1019,124 +956,14 @@ impl IntelIch7 {
         }
         let base = bar as usize;
 
-        // Codec detection: reset controller, read STATESTS.
-        let codec_mask = self.hda_codec_detect(base);
+        // Use the shared HDA controller for codec detection + verb programming.
+        let hda_ctrl = HdaController::new(base);
+        let codec_mask = hda_ctrl.detect_codecs();
         if codec_mask == 0 {
-            fstart_log::info!("intel-ich7: no HDA codecs found");
             return;
         }
-
         fstart_log::info!("intel-ich7: HDA codec mask = {:#x}", codec_mask);
-
-        // Program verb tables for detected codecs.
-        for table in &hda.verbs {
-            // Find which codec address has this vendor ID.
-            for addr in 0u8..4 {
-                if (codec_mask & (1 << addr)) == 0 {
-                    continue;
-                }
-                // Read codec vendor ID via immediate command.
-                let viddid = self.hda_send_verb(
-                    base,
-                    hda_verb(addr as u32, 0, 0xF00, 0x00), // GET_PARAMETER(VENDOR_ID)
-                );
-                if viddid == Some(table.vendor_id) {
-                    fstart_log::info!(
-                        "intel-ich7: programming HDA codec {} (vid={:#x})",
-                        addr,
-                        table.vendor_id
-                    );
-                    for &verb in &table.verbs {
-                        self.hda_send_verb(base, verb);
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    /// HDA codec detection.
-    ///
-    /// Resets the HDA controller, waits for codecs to signal, returns
-    /// a bitmask of detected codec addresses.
-    fn hda_codec_detect(&self, base: usize) -> u32 {
-        // SAFETY: base is the HDA BAR0 MMIO address.
-        unsafe {
-            let gctl = (base + 0x08) as *mut u32;
-            let statests = (base + 0x0E) as *mut u16;
-
-            // Enter reset (clear CRST).
-            let v = core::ptr::read_volatile(gctl);
-            core::ptr::write_volatile(gctl, v & !1);
-            // Wait for reset to take effect.
-            for _ in 0..1000 {
-                if core::ptr::read_volatile(gctl) & 1 == 0 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-
-            // Exit reset (set CRST).
-            let v = core::ptr::read_volatile(gctl);
-            core::ptr::write_volatile(gctl, v | 1);
-            // Wait for controller to be ready.
-            for _ in 0..1000 {
-                if core::ptr::read_volatile(gctl) & 1 != 0 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-
-            // Codecs have up to 521us to signal (25 frames at 48kHz).
-            for _ in 0..600 {
-                core::hint::spin_loop();
-            }
-
-            let mask = core::ptr::read_volatile(statests) as u32 & 0x0F;
-            mask
-        }
-    }
-
-    /// Send a single HDA immediate command and read the response.
-    ///
-    /// Uses the Immediate Command (IC), Immediate Response (IR),
-    /// and Immediate Command Status (ICS) registers.
-    fn hda_send_verb(&self, base: usize, verb: u32) -> Option<u32> {
-        // SAFETY: base is the HDA BAR0 MMIO address.
-        unsafe {
-            let ic = (base + 0x60) as *mut u32;
-            let ir = (base + 0x64) as *const u32;
-            let ics = (base + 0x68) as *mut u16;
-
-            // Wait for not busy.
-            for _ in 0..10000 {
-                if core::ptr::read_volatile(ics) & 1 == 0 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-            if core::ptr::read_volatile(ics) & 1 != 0 {
-                return None; // Timeout
-            }
-
-            // Write the verb.
-            core::ptr::write_volatile(ic, verb);
-            // Set ICB (Immediate Command Busy) to trigger send.
-            core::ptr::write_volatile(ics, core::ptr::read_volatile(ics) | 1);
-
-            // Wait for response (IRV bit = bit 1).
-            for _ in 0..10000 {
-                let status = core::ptr::read_volatile(ics);
-                if status & 2 != 0 {
-                    return Some(core::ptr::read_volatile(ir));
-                }
-                if status & 1 == 0 {
-                    return Some(core::ptr::read_volatile(ir));
-                }
-                core::hint::spin_loop();
-            }
-            None // Timeout
-        }
+        hda_ctrl.program_verb_tables(hda, codec_mask);
     }
 
     /// Platform lockdown (from coreboot `lpc_final`).
