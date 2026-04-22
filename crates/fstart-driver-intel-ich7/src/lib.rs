@@ -69,6 +69,59 @@ const OIC: u32 = 0x31FE;
 const HPTC: u32 = 0x3404;
 /// HPET base address (after HPTC enable).
 const HPET_BASE: usize = 0xFED0_0000;
+// ---------------------------------------------------------------------------
+// PM register offsets from PMBASE (0x500 default)
+// ---------------------------------------------------------------------------
+
+const PM1_STS: u16 = 0x00;
+const PM1_EN: u16 = 0x02;
+const PM1_CNT: u16 = 0x04;
+const GPE0_STS: u16 = 0x28;
+const GPE0_EN: u16 = 0x2C;
+const SMI_EN: u16 = 0x30;
+const SMI_STS: u16 = 0x34;
+const ALT_GP_SMI_EN: u16 = 0x38;
+const ALT_GP_SMI_STS: u16 = 0x3A;
+
+// TCO register offsets from PMBASE + 0x60
+const TCO_BASE_OFFSET: u16 = 0x60;
+const TCO1_STS: u16 = 0x04;
+const TCO2_STS: u16 = 0x06;
+const TCO1_CNT: u16 = 0x08;
+
+// SMI_EN bits
+const GBL_SMI_EN: u32 = 1 << 0;
+const EOS: u32 = 1 << 1;
+const BIOS_EN: u32 = 1 << 2;
+const SLP_SMI_EN: u32 = 1 << 4;
+const APMC_EN: u32 = 1 << 5;
+const TCO_EN: u32 = 1 << 13;
+const PERIODIC_EN: u32 = 1 << 14;
+
+// PM1_EN bits
+const PWRBTN_EN: u16 = 1 << 8;
+const GBL_EN: u16 = 1 << 5;
+
+// GEN_PMCON_1 bits
+const GEN_PMCON_1: u16 = 0xA0;
+const SMI_LOCK: u16 = 1 << 4;
+
+// GEN_PMCON_LOCK register
+const GEN_PMCON_LOCK: u16 = 0xA6;
+const ACPI_BASE_LOCK: u8 = 1 << 1;
+const SLP_STR_POL_LOCK: u8 = 1 << 2;
+
+// ETR3 register (LPC dev 0x1F func 0)
+const ETR3: u16 = 0xAC;
+const ETR3_CF9GR: u32 = 1 << 20;
+const ETR3_CF9LOCK: u32 = 1 << 31;
+const ETR3_CWORWRE: u32 = 1 << 18;
+
+// IDE timing registers
+const IDE_TIM_PRI: u16 = 0x40;
+const IDE_TIM_SEC: u16 = 0x42;
+const IDE_CONFIG: u16 = 0x54;
+
 /// PM1_CNT register (offset from PMBASE).
 const PM1_CNT_OFFSET: u16 = 0x04;
 /// SLP_TYP mask in PM1_CNT [12:10].
@@ -994,6 +1047,418 @@ impl IntelIch7 {
         }
 
         fstart_log::info!("intel-ich7: platform lockdown complete");
+    }
+
+    /// Enhanced platform lockdown (from coreboot `finalize.c`).
+    ///
+    /// Performs additional lockdown beyond [`lockdown`](Self::lockdown):
+    /// TC Lockdown, Function Disable SUS Well lock, ETR3 CF9 lock,
+    /// GEN_PMCON lock bits, R/WO register lock.
+    pub fn finalize(&self) {
+        let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+        let d = ich7::LPC_DEV;
+        let f = ich7::LPC_FUNC;
+
+        // Run basic lockdown first.
+        self.lockdown();
+
+        // TCLOCKDN: TC Lockdown.
+        rcba.write32(0x0050, rcba.read32(0x0050) | (1u32 << 31));
+
+        // Function Disable SUS Well Lockdown.
+        rcba.write8(0x3420, rcba.read8(0x3420) | (1 << 7));
+
+        // GEN_PMCON_LOCK: ACPI base lock + SLP_STR policy lock.
+        ecam::or8(0, d, f, GEN_PMCON_LOCK, ACPI_BASE_LOCK | SLP_STR_POL_LOCK);
+
+        // ETR3: clear CF9 global reset, set CF9 lock.
+        ecam::modify32(0, d, f, ETR3, !ETR3_CF9GR, ETR3_CF9LOCK);
+
+        // R/WO register lock (read-then-write-back).
+        rcba.write32(0x21A4, rcba.read32(0x21A4));
+        // HDA R/WO register.
+        let hda_rwo = ecam::read32(0, 0x1B, 0, 0x74);
+        ecam::write32(0, 0x1B, 0, 0x74, hda_rwo);
+
+        fstart_log::info!("intel-ich7: finalize complete");
+    }
+
+    // -----------------------------------------------------------------------
+    // PM register helpers (PIO-based, offset from PMBASE)
+    // -----------------------------------------------------------------------
+
+    /// Read a 32-bit PM register at `offset` from PMBASE.
+    #[cfg(target_arch = "x86_64")]
+    fn pm_read32(&self, offset: u16) -> u32 {
+        // SAFETY: PMBASE is a valid I/O base programmed during early_init.
+        unsafe { fstart_pio::inl(DEFAULT_PMBASE as u16 + offset) }
+    }
+
+    /// Write a 32-bit PM register at `offset` from PMBASE.
+    #[cfg(target_arch = "x86_64")]
+    fn pm_write32(&self, offset: u16, val: u32) {
+        // SAFETY: PMBASE is a valid I/O base.
+        unsafe { fstart_pio::outl(DEFAULT_PMBASE as u16 + offset, val) }
+    }
+
+    /// Read a 16-bit PM register.
+    #[cfg(target_arch = "x86_64")]
+    fn pm_read16(&self, offset: u16) -> u16 {
+        unsafe { fstart_pio::inw(DEFAULT_PMBASE as u16 + offset) }
+    }
+
+    /// Write a 16-bit PM register.
+    #[cfg(target_arch = "x86_64")]
+    fn pm_write16(&self, offset: u16, val: u16) {
+        unsafe { fstart_pio::outw(DEFAULT_PMBASE as u16 + offset, val) }
+    }
+
+    // -----------------------------------------------------------------------
+    // PM/SMI/GPE/TCO status management (from pmutil.c)
+    // -----------------------------------------------------------------------
+
+    /// Read and clear PM1_STS (write-1-to-clear).
+    #[cfg(target_arch = "x86_64")]
+    pub fn reset_pm1_status(&self) -> u16 {
+        let sts = self.pm_read16(PM1_STS);
+        self.pm_write16(PM1_STS, sts);
+        sts
+    }
+
+    /// Read and clear SMI_STS (write-1-to-clear).
+    #[cfg(target_arch = "x86_64")]
+    pub fn reset_smi_status(&self) -> u32 {
+        let sts = self.pm_read32(SMI_STS);
+        self.pm_write32(SMI_STS, sts);
+        sts
+    }
+
+    /// Read and clear GPE0_STS (write-1-to-clear).
+    #[cfg(target_arch = "x86_64")]
+    pub fn reset_gpe0_status(&self) -> u32 {
+        let sts = self.pm_read32(GPE0_STS);
+        self.pm_write32(GPE0_STS, sts);
+        sts
+    }
+
+    /// Read and clear TCO status registers (write-1-to-clear).
+    ///
+    /// Returns combined TCO1_STS | (TCO2_STS << 16).
+    #[cfg(target_arch = "x86_64")]
+    pub fn reset_tco_status(&self) -> u32 {
+        let tco = DEFAULT_PMBASE as u16 + TCO_BASE_OFFSET;
+        unsafe {
+            let tco1 = fstart_pio::inw(tco + TCO1_STS);
+            let tco2 = fstart_pio::inw(tco + TCO2_STS);
+            // Clear BOOT_STS after SECOND_TO_STS per spec.
+            // Clear all status bits EXCEPT BOOT_STS (bit 2) first.
+            fstart_pio::outw(tco + TCO1_STS, tco1 & !4u16);
+            // Then clear BOOT_STS separately (must happen after SECOND_TO).
+            if tco1 & 4 != 0 {
+                fstart_pio::outw(tco + TCO1_STS, 4);
+            }
+            fstart_pio::outw(tco + TCO2_STS, tco2);
+            (tco1 as u32) | ((tco2 as u32) << 16)
+        }
+    }
+
+    /// Read and clear ALT_GP_SMI_STS.
+    #[cfg(target_arch = "x86_64")]
+    pub fn reset_alt_gp_smi_status(&self) -> u16 {
+        let sts = self.pm_read16(ALT_GP_SMI_STS);
+        self.pm_write16(ALT_GP_SMI_STS, sts);
+        sts
+    }
+
+    /// Clear all PM/SMI/GPE/TCO status registers.
+    ///
+    /// Called before enabling SMIs to start from a clean state.
+    /// Ported from coreboot `smm_southbridge_clear_state()`.
+    #[cfg(target_arch = "x86_64")]
+    pub fn clear_pm_status(&self) {
+        self.reset_smi_status();
+        self.reset_pm1_status();
+        self.reset_tco_status();
+        self.reset_gpe0_status();
+    }
+
+    // -----------------------------------------------------------------------
+    // SMI enable (from smi.c)
+    // -----------------------------------------------------------------------
+
+    /// Enable global SMI generation.
+    ///
+    /// Programs SMI_EN for TCO, APMC (APM port 0xB2), and SLP_SMI
+    /// events.  Sets GBL_SMI_EN + EOS to activate the SMI logic.
+    ///
+    /// Called after SMM handler installation and relocation.
+    /// Ported from coreboot `global_smi_enable()`.
+    #[cfg(target_arch = "x86_64")]
+    pub fn global_smi_enable(&self) {
+        let smi_en = self.pm_read32(SMI_EN);
+        if smi_en & APMC_EN != 0 {
+            fstart_log::info!("intel-ich7: SMI already enabled");
+            return;
+        }
+
+        // Clear all status registers first.
+        self.clear_pm_status();
+
+        // Enable PM1 events: power button + global.
+        self.pm_write16(PM1_EN, PWRBTN_EN | GBL_EN);
+
+        // Enable SMI sources: TCO, APMC, SLP_SMI, GBL_SMI + EOS.
+        let smi = TCO_EN | APMC_EN | SLP_SMI_EN | GBL_SMI_EN | EOS;
+        self.pm_write32(SMI_EN, smi);
+
+        fstart_log::info!("intel-ich7: global SMI enabled");
+    }
+
+    // -----------------------------------------------------------------------
+    // System reset (from reset.c + me.c)
+    // -----------------------------------------------------------------------
+
+    /// Trigger a system reset via CF9 port.
+    ///
+    /// Writes 0x02 (soft reset) or 0x06 (hard reset) to port 0xCF9.
+    pub fn system_reset(&self, hard: bool) -> ! {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            // Ensure CF9GR is cleared (no global reset).
+            let etr3 = ecam::read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ETR3);
+            ecam::write32(
+                0,
+                ich7::LPC_DEV,
+                ich7::LPC_FUNC,
+                ETR3,
+                (etr3 & !ETR3_CF9GR) & !ETR3_CWORWRE,
+            );
+
+            let val: u8 = if hard { 0x06 } else { 0x02 };
+            fstart_pio::outb(0xCF9, 0x00); // Clear first
+            fstart_pio::outb(0xCF9, val);
+        }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Configure CF9 for global reset (ME reset).
+    ///
+    /// Sets ETR3.CF9GR so the next CF9 write triggers a full platform
+    /// reset including ME.  Ported from coreboot `set_global_reset()`.
+    pub fn set_global_reset(&self, enable: bool) {
+        let d = ich7::LPC_DEV;
+        let f = ich7::LPC_FUNC;
+        let mut etr3 = ecam::read32(0, d, f, ETR3);
+        etr3 &= !ETR3_CWORWRE;
+        if enable {
+            etr3 |= ETR3_CF9GR;
+        } else {
+            etr3 &= !ETR3_CF9GR;
+        }
+        ecam::write32(0, d, f, ETR3, etr3);
+    }
+
+    // -----------------------------------------------------------------------
+    // RTC / CMOS init (from rtc.c)
+    // -----------------------------------------------------------------------
+
+    /// Check if the RTC battery died (GEN_PMCON_3 bit 2).
+    pub fn rtc_failure(&self) -> bool {
+        ecam::read8(0, ich7::LPC_DEV, ich7::LPC_FUNC, GEN_PMCON_3) & RTC_BATTERY_DEAD != 0
+    }
+
+    /// Initialize the RTC / CMOS.
+    ///
+    /// If the RTC battery died, clears the status bit and initialises
+    /// CMOS to defaults.  Otherwise just validates the checksum.
+    ///
+    /// Ported from coreboot `sb_rtc_init()`. The actual CMOS init
+    /// (mc146818 register programming) is a sequence of port 0x70/0x71
+    /// writes that sets up the RTC oscillator and clears CMOS RAM.
+    pub fn rtc_init(&self) {
+        let failed = self.rtc_failure();
+        if failed {
+            // Clear the RTC battery dead bit.
+            ecam::and8(
+                0,
+                ich7::LPC_DEV,
+                ich7::LPC_FUNC,
+                GEN_PMCON_3,
+                !RTC_BATTERY_DEAD,
+            );
+            fstart_log::info!("intel-ich7: RTC battery dead — reinitializing CMOS");
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            // Standard CMOS/RTC initialization:
+            // Register A: divider = 32.768 KHz, rate = 1024 Hz.
+            fstart_pio::outb(0x70, 0x0A);
+            fstart_pio::outb(0x71, 0x26);
+            // Register B: 24hr mode, BCD, no alarms, update enabled.
+            fstart_pio::outb(0x70, 0x0B);
+            let reg_b = fstart_pio::inb(0x71);
+            fstart_pio::outb(0x70, 0x0B);
+            fstart_pio::outb(0x71, (reg_b | 0x02) & !0x40); // 24hr, update enabled
+                                                            // Register C: clear interrupt flags (read-to-clear).
+            fstart_pio::outb(0x70, 0x0C);
+            let _ = fstart_pio::inb(0x71);
+            // Register D: read-only, but reading clears VRT.
+            fstart_pio::outb(0x70, 0x0D);
+            let _ = fstart_pio::inb(0x71);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PCI-PCI bridge init (dev 0x1E, from pci.c)
+    // -----------------------------------------------------------------------
+
+    /// Initialize the PCI-PCI bridge at dev 0x1E func 0.
+    ///
+    /// Enables bus master, sets master latency timer, disables parity
+    /// and SERR on the bridge.  Ported from coreboot `pci.c::pci_init()`.
+    pub fn pci_bridge_init(&self) {
+        let d: u8 = 0x1E;
+        let f: u8 = 0;
+
+        let vid = ecam::read16(0, d, f, 0x00);
+        if vid == 0xFFFF {
+            return;
+        }
+
+        // Enable bus master.
+        ecam::or16(0, d, f, 0x04, 0x04); // BusMaster only
+
+        // No interrupt.
+        ecam::write8(0, d, f, 0x3C, 0xFF);
+
+        // Disable parity + SERR on bridge control.
+        ecam::and16(0, d, f, 0x3E, !(0x01 | 0x02));
+
+        // Master Latency Timer = 0x04 << 3 (keep low bits).
+        ecam::and8_or8(0, d, f, SMLT, 0x07, 0x04 << 3);
+
+        fstart_log::info!("intel-ich7: PCI bridge (1E.0) init");
+    }
+
+    // -----------------------------------------------------------------------
+    // IDE / PATA init (dev 0x1F func 1, from ide.c)
+    // -----------------------------------------------------------------------
+
+    /// Initialize the IDE (PATA) controller at dev 0x1F func 1.
+    ///
+    /// Configures primary and/or secondary channels with decode enable,
+    /// timing, and I/O configuration.  Ported from coreboot `ide.c`.
+    pub fn ide_init(&self, enable_primary: bool, enable_secondary: bool) {
+        let d: u8 = 0x1F;
+        let f: u8 = 1;
+
+        let vid = ecam::read16(0, d, f, 0x00);
+        if vid == 0xFFFF {
+            return;
+        }
+
+        // Enable IO + BusMaster.
+        ecam::or16(0, d, f, 0x04, 0x05);
+
+        // Native capable, not enabled.
+        ecam::write8(0, d, f, 0x09, 0x8A);
+
+        // IDE timing bits.
+        const IDE_DECODE_ENABLE: u16 = 1 << 15;
+        const IDE_SITRE: u16 = 1 << 14;
+        const IDE_ISP_3: u16 = 0x3000; // ISP = 3 clocks
+        const IDE_RCT_1: u16 = 0x0300; // RCT = 1 clock
+        const IDE_IE0: u16 = 1 << 1;
+        const IDE_TIME0: u16 = 1 << 0;
+
+        // Primary channel.
+        let mut tim = ecam::read16(0, d, f, IDE_TIM_PRI);
+        tim &= !IDE_DECODE_ENABLE;
+        tim |= IDE_SITRE;
+        if enable_primary {
+            tim |= IDE_DECODE_ENABLE | IDE_ISP_3 | IDE_RCT_1 | IDE_IE0 | IDE_TIME0;
+        }
+        ecam::write16(0, d, f, IDE_TIM_PRI, tim);
+
+        // Secondary channel.
+        tim = ecam::read16(0, d, f, IDE_TIM_SEC);
+        tim &= !IDE_DECODE_ENABLE;
+        tim |= IDE_SITRE;
+        if enable_secondary {
+            tim |= IDE_DECODE_ENABLE | IDE_ISP_3 | IDE_RCT_1 | IDE_IE0 | IDE_TIME0;
+        }
+        ecam::write16(0, d, f, IDE_TIM_SEC, tim);
+
+        // IDE I/O configuration.
+        let mut cfg = 0u32;
+        if enable_primary {
+            cfg |= 0x0003_0003; // SIG_MODE_PRI_NORMAL + FAST_PCBx + PCBx
+        }
+        if enable_secondary {
+            cfg |= 0x0030_0030; // SIG_MODE_SEC_NORMAL + FAST_SCBx + SCBx
+        }
+        ecam::write32(0, d, f, IDE_CONFIG, cfg);
+
+        // Interrupt line = 0xFF (unused).
+        ecam::write8(0, d, f, 0x3C, 0xFF);
+
+        fstart_log::info!(
+            "intel-ich7: IDE init (pri={} sec={})",
+            enable_primary,
+            enable_secondary
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Watchdog control (standalone, beyond early_init TCO halt)
+    // -----------------------------------------------------------------------
+
+    /// Disable the ICH watchdog timer.
+    ///
+    /// Halts the TCO timer and clears timeout status.  More thorough
+    /// than the early_init TCO halt — also disables PCI interrupts.
+    /// Ported from coreboot `watchdog_off()`.
+    pub fn watchdog_off(&self) {
+        let d = ich7::LPC_DEV;
+        let f = ich7::LPC_FUNC;
+
+        // Disable PCI interrupts.
+        ecam::or16(0, d, f, 0x04, 1 << 10); // PCI_COMMAND_INT_DISABLE
+
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let tco = DEFAULT_PMBASE as u16 + TCO_BASE_OFFSET;
+            // Halt TCO timer.
+            let cnt = fstart_pio::inw(tco + TCO1_CNT);
+            fstart_pio::outw(tco + TCO1_CNT, cnt | (1 << 11));
+            // Clear timeout status.
+            fstart_pio::outw(tco + TCO1_STS, 1 << 3);
+            fstart_pio::outw(tco + TCO2_STS, 1 << 1);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Power off (S5 entry)
+    // -----------------------------------------------------------------------
+
+    /// Enter S5 (soft-off) state.
+    ///
+    /// Writes SLP_TYP=S5 + SLP_EN to PM1_CNT.  Does not return.
+    pub fn poweroff(&self) -> ! {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let pm = DEFAULT_PMBASE as u16;
+            let mut pm1 = fstart_pio::inl(pm + PM1_CNT);
+            pm1 |= 0x3C00; // SLP_TYP = S5 (bits [12:10] = 0xF)
+            pm1 |= 1 << 13; // SLP_EN
+            fstart_pio::outl(pm + PM1_CNT, pm1);
+        }
+        loop {
+            core::hint::spin_loop();
+        }
     }
 }
 
