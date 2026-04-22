@@ -391,6 +391,94 @@ impl IntelPineview {
     pub fn enable_serr(&self) {
         ecam::or16(0, 0, 0, 0x04, 1 << 8);
     }
+
+    // ---------------------------------------------------------------
+    // TSEG / SMRAM (from memmap.c)
+    // ---------------------------------------------------------------
+
+    /// Decode TSEG size from ESMRAMC register (bytes).
+    ///
+    /// Returns 0 if T_EN (bit 0) is not set.
+    pub fn tseg_size(&self) -> u32 {
+        let esmramc = ecam::read8(0, 0, 0, hostbridge::ESMRAMC);
+        if esmramc & 1 == 0 {
+            return 0;
+        }
+        match (esmramc >> 1) & 3 {
+            0 => 1 * 1024 * 1024, // 1 MiB
+            1 => 2 * 1024 * 1024, // 2 MiB
+            2 => 8 * 1024 * 1024, // 8 MiB
+            _ => {
+                fstart_log::error!("pineview: bad TSEG size encoding");
+                0
+            }
+        }
+    }
+
+    /// Read the TSEG base address.
+    pub fn tseg_base(&self) -> u32 {
+        ecam::read32(0, 0, 0, hostbridge::TSEG)
+    }
+
+    /// Get the SMM region (base + size) as a `(base, size)` pair.
+    ///
+    /// Used by the MP init code to know where TSEG lives.
+    pub fn smm_region(&self) -> (u32, u32) {
+        (self.tseg_base(), self.tseg_size())
+    }
+
+    /// Compute CBMEM top (aligned down to 4 MiB).
+    ///
+    /// TSEG can start at any 1 MiB alignment; CBMEM needs 4 MiB
+    /// alignment for MTRR efficiency.
+    pub fn cbmem_top(&self) -> u32 {
+        self.tseg_base() & !((4 * 1024 * 1024) - 1)
+    }
+
+    /// Write the SMRAM register (used by SMM relocation).
+    pub fn write_smram(&self, val: u8) {
+        ecam::write8(0, 0, 0, hostbridge::SMRAM, val);
+    }
+
+    /// Read the SMRAM register.
+    pub fn read_smram(&self) -> u8 {
+        ecam::read8(0, 0, 0, hostbridge::SMRAM)
+    }
+
+    // ---------------------------------------------------------------
+    // Full memory map (from northbridge.c)
+    // ---------------------------------------------------------------
+
+    /// Read the graphics stolen memory base (GBSM register).
+    pub fn igd_base(&self) -> u32 {
+        ecam::read32(0, 0, 0, hostbridge::GBSM)
+    }
+
+    /// Read the GTT stolen memory base (BGSM register).
+    pub fn gtt_base(&self) -> u32 {
+        ecam::read32(0, 0, 0, hostbridge::BGSM)
+    }
+
+    /// Log the full memory map.
+    ///
+    /// Reads and prints TOUUD, TOLUD, TOM, IGD, GTT, and TSEG.
+    pub fn dump_memory_map(&self) {
+        let touud = self.touud();
+        let tolud = self.tolud();
+        let tom = self.tom();
+        let igd_kb = self.igd_memory_size_kb();
+        let gtt_kb = self.gtt_size_kb();
+        let tseg_base = self.tseg_base();
+        let tseg_size = self.tseg_size();
+
+        fstart_log::info!("pineview: TOUUD={:#x}", touud);
+        fstart_log::info!("pineview: TOLUD={:#x}", tolud);
+        fstart_log::info!("pineview: TOM={:#x}", tom);
+        fstart_log::info!("pineview: IGD stolen={}K", igd_kb);
+        fstart_log::info!("pineview: GTT stolen={}K", gtt_kb);
+        fstart_log::info!("pineview: TSEG base={:#x} size={:#x}", tseg_base, tseg_size);
+        fstart_log::info!("pineview: CBMEM top={:#x}", self.cbmem_top());
+    }
 }
 
 // ---------------------------------------------------------------------------

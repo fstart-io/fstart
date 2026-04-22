@@ -129,17 +129,7 @@ const SLP_TYP_MASK: u32 = 0x1C00;
 /// S3 (STR) SLP_TYP value.
 const SLP_TYP_S3: u32 = 0x1400;
 
-// GPIO register offsets from GPIOBASE.
-const GPIO_USE_SEL: u16 = 0x00;
-const GP_IO_SEL: u16 = 0x04;
-const GP_LVL: u16 = 0x0C;
-const GPO_BLINK: u16 = 0x18;
-const GPI_INV: u16 = 0x2C;
-const GPIO_USE_SEL2: u16 = 0x30;
-const GP_IO_SEL2: u16 = 0x34;
-const GP_LVL2: u16 = 0x38;
-const GP_RST_SEL1: u16 = 0x60;
-const GP_RST_SEL2: u16 = 0x64;
+// GPIO register offsets now live in the shared fstart-gpio-ich crate.
 
 // ---------------------------------------------------------------------------
 // Configuration types
@@ -171,28 +161,8 @@ pub struct UsbConfig {
 // HDA verb table types are defined in the shared fstart-hda crate.
 // See fstart_hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
 
-/// GPIO pad configuration for one set of 32 pins.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct GpioSet {
-    /// GPIO mode: 0 = native, 1 = GPIO. Bits correspond to GPIO pins.
-    #[serde(default)]
-    pub mode: u32,
-    /// Direction: 0 = output, 1 = input (only for pins in GPIO mode).
-    #[serde(default)]
-    pub direction: u32,
-    /// Output level: 0 = low, 1 = high.
-    #[serde(default)]
-    pub level: u32,
-    /// Blink enable (set 1 only).
-    #[serde(default)]
-    pub blink: u32,
-    /// Input inversion (set 1 only).
-    #[serde(default)]
-    pub invert: u32,
-    /// Reset select.
-    #[serde(default)]
-    pub reset: u32,
-}
+// GPIO pad types are defined in the shared fstart-gpio-ich crate.
+pub use fstart_gpio_ich::{GpioConfig, GpioSet, IchGpio};
 
 /// ICH7 southbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,12 +193,9 @@ pub struct IntelIch7Config {
     /// SMBus I/O base address.
     #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
-    /// GPIO set 1 (pins 0..31).
+    /// GPIO pad configuration (sets 1/2/3, all 76 pins).
     #[serde(default)]
-    pub gpio_set1: GpioSet,
-    /// GPIO set 2 (pins 32..63).
-    #[serde(default)]
-    pub gpio_set2: GpioSet,
+    pub gpio: GpioConfig,
     /// ACPI device name (e.g., "LPCB"). If `None`, no ACPI node.
     #[serde(default)]
     pub acpi_name: Option<heapless::String<8>>,
@@ -319,39 +286,12 @@ impl IntelIch7 {
 
     /// Program GPIO pads via GPIOBASE I/O ports.
     ///
-    /// Ported from coreboot `setup_pch_gpios()`.
-    #[cfg(target_arch = "x86_64")]
+    /// Delegates to the shared `fstart-gpio-ich` crate which handles
+    /// all three sets (76 pins) with the correct write ordering to
+    /// prevent glitches on ICH7/ICH9M.
     fn setup_gpios(&self) {
-        let base = DEFAULT_GPIOBASE as u16;
-        let g1 = &self.config.gpio_set1;
-        let g2 = &self.config.gpio_set2;
-
-        // SAFETY: GPIOBASE was programmed above and is a valid I/O range.
-        unsafe {
-            // Set 1 — order matters on ICH7: level first, then mode/direction,
-            // then level again to avoid glitches.
-            fstart_pio::outl(base + GP_LVL, g1.level);
-            fstart_pio::outl(base + GPIO_USE_SEL, g1.mode);
-            fstart_pio::outl(base + GP_IO_SEL, g1.direction);
-            fstart_pio::outl(base + GP_LVL, g1.level);
-            fstart_pio::outl(base + GP_RST_SEL1, g1.reset);
-            fstart_pio::outl(base + GPI_INV, g1.invert);
-            fstart_pio::outl(base + GPO_BLINK, g1.blink);
-
-            // Set 2.
-            fstart_pio::outl(base + GP_LVL2, g2.level);
-            fstart_pio::outl(base + GPIO_USE_SEL2, g2.mode);
-            fstart_pio::outl(base + GP_IO_SEL2, g2.direction);
-            fstart_pio::outl(base + GP_LVL2, g2.level);
-            fstart_pio::outl(base + GP_RST_SEL2, g2.reset);
-        }
-
-        fstart_log::info!("intel-ich7: GPIOs configured");
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    fn setup_gpios(&self) {
-        fstart_log::info!("intel-ich7: GPIO setup (stub, non-x86)");
+        let gpio = IchGpio::new(DEFAULT_GPIOBASE as u16);
+        gpio.setup(&self.config.gpio);
     }
 
     /// Enable HPET via RCBA.
