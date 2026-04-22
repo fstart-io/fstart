@@ -166,12 +166,21 @@ pub enum SocImageFormat {
 }
 
 /// Build mode determines how the firmware is compiled and how drivers are bound.
+///
+/// Historically fstart supported two modes: `Rigid` (single board,
+/// compile-time driver binding) and `Flexible` (runtime driver
+/// dispatch via per-service enums).  Flexible was removed when the
+/// stage executor was split off into `fstart-stage-runtime` — the
+/// runtime executor is generic over `B: Board` and already supports
+/// the target of Flexible (one binary, many boards) through
+/// per-device `Option<enum-of-variants>` fields on `_BoardDevices`.
+///
+/// The enum is retained for forward compatibility (more variants may
+/// return in a different form later).  All boards today use `Rigid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildMode {
     /// Single board, compile-time driver binding, maximum dead code elimination.
     Rigid,
-    /// Multiple boards possible, runtime driver binding via enum or trait objects.
-    Flexible,
 }
 
 /// Payload configuration: what to boot after firmware init.

@@ -1,7 +1,10 @@
 //! Code generation for ACPI table preparation.
 //!
-//! Generates per-device ACPI DSDT AML, extra tables (SPCR, MCFG),
-//! ACPI-only device contributions, and platform ACPI assembly.
+//! Emits the per-device DSDT AML + extra-table blocks that
+//! `board_gen::acpi_prepare_body` assembles into the board's
+//! `fstart_capabilities::acpi::prepare` invocation.  The capability
+//! orchestration itself lives in `board_gen`; this module only holds
+//! the per-variant struct emission.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
@@ -79,7 +82,13 @@ pub(in crate::stage_gen) fn generate_acpi_prepare(
 }
 
 /// Generate code for an ACPI-only device (from the devices[] list).
-fn generate_acpi_only_device(
+///
+/// Exposed at `pub(in crate::stage_gen)` so [`board_gen::acpi_prepare_body`]
+/// can reuse the per-variant struct literal emission without
+/// duplicating the `DriverInstance` match.
+///
+/// [`board_gen::acpi_prepare_body`]: crate::stage_gen::board_gen
+pub(in crate::stage_gen) fn generate_acpi_only_device(
     instance: &fstart_device_registry::DriverInstance,
     idx: usize,
 ) -> TokenStream {
@@ -146,7 +155,17 @@ fn generate_acpi_only_device(
 }
 
 /// Generate the platform ACPI config struct literal.
-fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenStream {
+///
+/// Emits `let platform_acpi = ...;` — a stateless binding usable in
+/// either the old `fstart_main` body or the new
+/// [`board_gen::acpi_prepare_body`] method body.
+///
+/// Exposed at `pub(in crate::stage_gen)` so `board_gen` can reuse it.
+///
+/// [`board_gen::acpi_prepare_body`]: crate::stage_gen::board_gen
+pub(in crate::stage_gen) fn generate_platform_acpi(
+    platform: &fstart_types::acpi::AcpiPlatform,
+) -> TokenStream {
     use fstart_types::acpi::AcpiPlatform;
 
     match platform {
