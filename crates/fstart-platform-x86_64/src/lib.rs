@@ -19,6 +19,8 @@
 
 #![no_std]
 
+pub mod cpuid;
+
 use fstart_services::memory_detect::E820Entry;
 
 // ---------------------------------------------------------------------------
