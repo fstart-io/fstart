@@ -37,11 +37,39 @@ fn div_round_up(a: u32, b: u32) -> u32 {
 // RAM speed detection
 // ===================================================================
 
-/// Detect the common RAM speed and CAS latency across all populated DIMMs.
+/// Detect FSB and DDR frequency from host bridge PCI config,
+/// then find the common CAS latency across all populated DIMMs.
 ///
 /// Ported from coreboot `sdram_detect_ram_speed()`.
-pub fn detect_ram_speed(si: &mut SysInfo) {
-    // Detect common CAS latency.
+pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar, ecam: &EcamPci) {
+    // --- Read FSB frequency from host bridge register 0xE3 ---
+    let e3 = ecam.read8(0, 0, 0, 0xE3);
+    let fsb_raw = (e3 & 0x70) >> 4;
+    let fsb: u8 = if fsb_raw != 0 {
+        // 5 - fsb_raw: 4→1(800), 3→2(invalid), 2→3(invalid), 1→4(invalid)
+        // In practice only 4 (=800MHz) and 0 (=800MHz default) appear on Pineview.
+        (5u8.saturating_sub(fsb_raw)).min(1)
+    } else {
+        1 // FSB_CLOCK_800MHz
+    };
+
+    // --- Read DDR frequency from host bridge registers 0xE3/0xE4 ---
+    let freq_raw = ((e3 & 0x80) >> 7) | ((ecam.read8(0, 0, 0, 0xE4) & 0x03) << 1);
+    let mut freq: u8 = if freq_raw != 0 {
+        // 6 - freq_raw: 5→1(800), 4→2(invalid), ... Only 5 (=800) and 0 used.
+        (6u8.saturating_sub(freq_raw)).min(1)
+    } else {
+        1 // MEM_CLOCK_800MHz
+    };
+
+    si.selected_timings.fsb_clock = fsb;
+    fstart_log::info!(
+        "raminit: HW strap: FSB={}MHz, DDR={}MHz",
+        if fsb == 1 { 800 } else { 667 },
+        if freq == 1 { 800 } else { 667 }
+    );
+
+    // --- Detect common CAS latency (SPD byte 18) ---
     let mut common_cas: u8 = 0xFF;
     for i in 0..super::TOTAL_DIMMS {
         if si.dimm_populated(i) {
@@ -58,28 +86,29 @@ pub fn detect_ram_speed(si: &mut SysInfo) {
     let lsb = lsbpos(common_cas);
     let mut highcas = msb as u8;
     let lowcas = (lsb.max(5)) as u8;
-    let mut freq: u8 = si.selected_timings.mem_clock; // default from config
     let mut cas: u8 = 0;
 
-    // Try to find a CAS that meets timing constraints.
+    // --- CAS / frequency negotiation loop ---
+    // For each populated DIMM, check if its tCK (SPD[9]) and
+    // tAA (SPD[10]) meet the current frequency's requirements.
     while cas == 0 && highcas >= lowcas {
-        let mut ok = true;
+        let mut all_ok = true;
         for i in 0..super::TOTAL_DIMMS {
             if !si.dimm_populated(i) {
                 continue;
             }
             let d = si.dimms[i].as_ref().expect("populated");
             let (max_tck, max_taa) = if freq == 1 {
-                (0x25u8, 0x40u8) // 800 MHz
+                (0x25u8, 0x40u8) // 800 MHz: tCK ≤ 2.5 ns, tAA ≤ 10 ns
             } else {
-                (0x30u8, 0x45u8) // 667 MHz
+                (0x30u8, 0x45u8) // 667 MHz: tCK ≤ 3.0 ns, tAA ≤ ~11 ns
             };
-            if d.tck_min > max_tck || d.taa_min > max_taa {
-                ok = false;
+            if d.spd_data[9] > max_tck || d.spd_data[10] > max_taa {
+                all_ok = false;
                 break;
             }
         }
-        if ok {
+        if all_ok {
             cas = highcas;
         } else {
             if highcas == 0 {
@@ -89,13 +118,31 @@ pub fn detect_ram_speed(si: &mut SysInfo) {
         }
     }
 
+    // If no CAS works at 800 MHz, drop to 667 MHz and retry.
     if cas == 0 && freq == 1 {
-        // Drop to 667 MHz.
         freq = 0;
         fstart_log::warn!("raminit: dropping to 667 MHz due to timing constraints");
         highcas = msb as u8;
         while cas == 0 && highcas >= lowcas {
-            cas = highcas;
+            let mut all_ok = true;
+            for i in 0..super::TOTAL_DIMMS {
+                if !si.dimm_populated(i) {
+                    continue;
+                }
+                let d = si.dimms[i].as_ref().expect("populated");
+                if d.spd_data[9] > 0x30 || d.spd_data[10] > 0x45 {
+                    all_ok = false;
+                    break;
+                }
+            }
+            if all_ok {
+                cas = highcas;
+            } else {
+                if highcas == 0 {
+                    break;
+                }
+                highcas -= 1;
+            }
         }
     }
 
@@ -106,10 +153,40 @@ pub fn detect_ram_speed(si: &mut SysInfo) {
 
     si.selected_timings.cas = cas;
     si.selected_timings.mem_clock = freq;
+    si.selected_timings.fsb_clock = fsb;
+
+    // --- Program the selected frequency into MCHBAR CLKCFG ---
+    if si.boot_path != super::BOOT_PATH_RESET {
+        mch.setbits32(mchbar::PMSTS, 1 << 0);
+
+        let clkcfg = mch.read32(mchbar::CLKCFG) & !0x70;
+        let freq_bits: u32 = if freq == 1 { 3 } else { 2 }; // 800→3, 667→2
+        mch.write32(mchbar::CLKCFG, clkcfg | (1 << 10) | (freq_bits << 4));
+
+        // Read back the MCH-validated frequency.
+        let validated = ((mch.read32(mchbar::CLKCFG) >> 4) & 0x07).wrapping_sub(2) as u8;
+        si.selected_timings.mem_clock = validated.min(1);
+
+        if si.selected_timings.mem_clock == 1 {
+            fstart_log::info!("raminit: MCH validated at 800MHz");
+            si.nodll = 0;
+            si.maxpi = 63;
+            si.pioffset = 0;
+        } else {
+            fstart_log::info!("raminit: MCH validated at 667MHz");
+            si.nodll = 1;
+            si.maxpi = 15;
+            si.pioffset = 1;
+        }
+    }
 
     fstart_log::info!(
         "raminit: DDR {}MHz, CAS={}, FSB={}",
-        if freq == 1 { 800 } else { 667 },
+        if si.selected_timings.mem_clock == 1 {
+            800
+        } else {
+            667
+        },
         cas,
         if si.selected_timings.fsb_clock == 1 {
             800
