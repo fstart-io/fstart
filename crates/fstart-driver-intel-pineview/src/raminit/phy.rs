@@ -7,7 +7,7 @@
 //! `sdram_programddr`, `sdram_programdqdqs`, `sdram_periodic_rcomp`.
 
 use super::{PllParam, SysInfo};
-use fstart_pineview_regs::{hostbridge, mchbar, EcamPci, MchBar};
+use fstart_pineview_regs::{ecam, mchbar, MchBar};
 
 // HPET microsecond delay (simplified spin-based).
 fn hpet_udelay(us: u32) {
@@ -959,7 +959,7 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
 /// Enhanced mode registers.
 ///
 /// Ported from coreboot `sdram_enhancedmode()`.
-pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar, ecam: &EcamPci) {
+pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     mch.setbits32(mchbar::C0ADDCSCTRL, 1 << 0);
     mch.setbits32(mchbar::C0REFRCTRL + 3, 1 << 0);
 
@@ -979,7 +979,7 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar, ecam: &EcamPci) {
     mch.setbits32(mchbar::C0CWBCTRL, 1 << 0);
     mch.setbits32(mchbar::C0ARBSPL, 1 << 8);
 
-    ecam.or8(0, 0, 0, 0xF0, 1);
+    ecam::or8(0, 0, 0, 0xF0, 1);
     mch.write32(mchbar::SBCTL, 0x0000_0002);
     mch.write32(mchbar::SBCTL2, 0x2031_0002);
     mch.write32(mchbar::SLIMCFGTMG, 0x0202_0302);
@@ -988,7 +988,7 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar, ecam: &EcamPci) {
     mch.write32(mchbar::HIT2, 0x0700_0000);
     mch.write32(mchbar::HIT3, 0x0101_4010);
     mch.write32(mchbar::HIT4, 0x0F03_8000);
-    ecam.and8(0, 0, 0, 0xF0, !1);
+    ecam::and8(0, 0, 0, 0xF0, !1);
 
     // Interleave configuration.
     let mut nranks = 0u32;

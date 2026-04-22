@@ -10,7 +10,7 @@
 
 #![no_std]
 
-use fstart_pineview_regs::EcamPci;
+use fstart_pineview_regs::ecam;
 use fstart_services::{ServiceError, SmBus};
 
 // ---------------------------------------------------------------------------
@@ -107,24 +107,24 @@ impl I801SmBus {
     ///
     /// The ECAM must already be enabled (PCIEXBAR programmed) before
     /// calling this.
-    pub fn enable_on_ich7(ecam: &EcamPci, smbus_base: u16) -> Self {
+    pub fn enable_on_ich7(smbus_base: u16) -> Self {
         use fstart_pineview_regs::ich7;
-        ecam.write32(
+        ecam::write32(
             0,
             ich7::SMBUS_DEV,
             ich7::SMBUS_FUNC,
             ich7::SMB_BASE,
             (smbus_base as u32) | 1,
         );
-        ecam.write32(
+        ecam::write32(
             0,
             ich7::SMBUS_DEV,
             ich7::SMBUS_FUNC,
             ich7::HOSTC,
             ich7::HST_EN as u32,
         );
-        let cmd = ecam.read16(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, ich7::PCI_COMMAND);
-        ecam.write16(
+        let cmd = ecam::read16(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, ich7::PCI_COMMAND);
+        ecam::write16(
             0,
             ich7::SMBUS_DEV,
             ich7::SMBUS_FUNC,

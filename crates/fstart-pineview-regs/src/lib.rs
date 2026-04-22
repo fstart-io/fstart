@@ -207,30 +207,125 @@ impl Rcba {
 }
 
 // ===================================================================
-// EcamPci — ECAM-based PCI config accessor
+// ecam — global ECAM PCI config access (free functions)
 // ===================================================================
 
-/// PCIe Enhanced Configuration Access Mechanism (ECAM).
+/// Global ECAM PCI config access.
 ///
-/// After the Pineview `early_init` programs PCIEXBAR via the one-time
-/// legacy CF8/CFC write, **all** subsequent PCI config access goes
-/// through this MMIO-based accessor. No more port I/O.
+/// Call [`ecam::init`] once after programming PCIEXBAR. After that,
+/// use the free functions directly — no struct to pass around:
 ///
-/// The ECAM region is 256 MiB for 256 buses (each bus = 1 MiB,
-/// each device = 32 KiB, each function = 4 KiB).
+/// ```ignore
+/// use fstart_pineview_regs::ecam;
+/// ecam::init(0xE000_0000);
+/// let rev = ecam::read8(0, 0, 0, 0x08);
+/// ecam::write16(0, 0, 0, 0x52, (1 << 8) | (3 << 4));
+/// ```
+pub mod ecam {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static BASE: AtomicUsize = AtomicUsize::new(0);
+
+    /// Set the ECAM base address. Call exactly once after the CF8/CFC
+    /// write that programs PCIEXBAR.
+    pub fn init(base: usize) {
+        BASE.store(base, Ordering::Release);
+    }
+
+    /// Return the current ECAM base (0 if uninitialised).
+    #[inline]
+    pub fn base() -> usize {
+        BASE.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn addr(bus: u8, dev: u8, func: u8, reg: u16) -> usize {
+        BASE.load(Ordering::Acquire)
+            | ((bus as usize) << 20)
+            | ((dev as usize) << 15)
+            | ((func as usize) << 12)
+            | ((reg as usize) & 0xFFF)
+    }
+
+    /// Read a 32-bit PCI config register.
+    #[inline]
+    pub fn read32(bus: u8, dev: u8, func: u8, reg: u16) -> u32 {
+        // SAFETY: ECAM region is memory-mapped PCI config space.
+        unsafe { fstart_mmio::read32(addr(bus, dev, func, reg) as *const u32) }
+    }
+
+    /// Write a 32-bit PCI config register.
+    #[inline]
+    pub fn write32(bus: u8, dev: u8, func: u8, reg: u16, val: u32) {
+        unsafe { fstart_mmio::write32(addr(bus, dev, func, reg) as *mut u32, val) }
+    }
+
+    /// Read a 16-bit PCI config register.
+    #[inline]
+    pub fn read16(bus: u8, dev: u8, func: u8, reg: u16) -> u16 {
+        unsafe { fstart_mmio::read16(addr(bus, dev, func, reg) as *const u16) }
+    }
+
+    /// Write a 16-bit PCI config register.
+    #[inline]
+    pub fn write16(bus: u8, dev: u8, func: u8, reg: u16, val: u16) {
+        unsafe { fstart_mmio::write16(addr(bus, dev, func, reg) as *mut u16, val) }
+    }
+
+    /// Read an 8-bit PCI config register.
+    #[inline]
+    pub fn read8(bus: u8, dev: u8, func: u8, reg: u16) -> u8 {
+        unsafe { fstart_mmio::read8(addr(bus, dev, func, reg) as *const u8) }
+    }
+
+    /// Write an 8-bit PCI config register.
+    #[inline]
+    pub fn write8(bus: u8, dev: u8, func: u8, reg: u16, val: u8) {
+        unsafe { fstart_mmio::write8(addr(bus, dev, func, reg) as *mut u8, val) }
+    }
+
+    /// Read-modify-write: `reg = (reg & mask) | set`.
+    #[inline]
+    pub fn modify32(bus: u8, dev: u8, func: u8, reg: u16, mask: u32, set: u32) {
+        let v = read32(bus, dev, func, reg);
+        write32(bus, dev, func, reg, (v & mask) | set);
+    }
+
+    /// OR bits into a 32-bit register.
+    #[inline]
+    pub fn or32(bus: u8, dev: u8, func: u8, reg: u16, bits: u32) {
+        modify32(bus, dev, func, reg, !0, bits);
+    }
+
+    /// AND bits out of an 8-bit register.
+    #[inline]
+    pub fn and8(bus: u8, dev: u8, func: u8, reg: u16, mask: u8) {
+        let v = read8(bus, dev, func, reg);
+        write8(bus, dev, func, reg, v & mask);
+    }
+
+    /// OR bits into an 8-bit register.
+    #[inline]
+    pub fn or8(bus: u8, dev: u8, func: u8, reg: u16, bits: u8) {
+        let v = read8(bus, dev, func, reg);
+        write8(bus, dev, func, reg, v | bits);
+    }
+}
+
+/// Legacy struct wrapper — delegates to [`ecam`] free functions.
+///
+/// Prefer the `ecam::` free functions for new code. This struct is
+/// retained for callers that construct an accessor before `ecam::init`
+/// (e.g., the one-off ECAM enable).
 pub struct EcamPci {
     base: usize,
 }
 
 impl EcamPci {
-    /// Create an accessor for ECAM at the given base address.
-    ///
-    /// Typical Pineview value: `0xE000_0000`.
     pub const fn new(base: usize) -> Self {
         Self { base }
     }
 
-    /// Compute the MMIO address for a PCI config register.
     #[inline]
     fn addr(&self, bus: u8, dev: u8, func: u8, reg: u16) -> usize {
         self.base
@@ -240,75 +335,44 @@ impl EcamPci {
             | ((reg as usize) & 0xFFF)
     }
 
-    /// Read a 32-bit PCI config register.
     #[inline]
     pub fn read32(&self, bus: u8, dev: u8, func: u8, reg: u16) -> u32 {
-        let a = self.addr(bus, dev, func, reg);
-        // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::read32(a as *const u32) }
+        unsafe { fstart_mmio::read32(self.addr(bus, dev, func, reg) as *const u32) }
     }
-
-    /// Write a 32-bit PCI config register.
     #[inline]
     pub fn write32(&self, bus: u8, dev: u8, func: u8, reg: u16, val: u32) {
-        let a = self.addr(bus, dev, func, reg);
-        // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::write32(a as *mut u32, val) }
+        unsafe { fstart_mmio::write32(self.addr(bus, dev, func, reg) as *mut u32, val) }
     }
-
-    /// Read a 16-bit PCI config register.
     #[inline]
     pub fn read16(&self, bus: u8, dev: u8, func: u8, reg: u16) -> u16 {
-        let a = self.addr(bus, dev, func, reg);
-        // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::read16(a as *const u16) }
+        unsafe { fstart_mmio::read16(self.addr(bus, dev, func, reg) as *const u16) }
     }
-
-    /// Write a 16-bit PCI config register.
     #[inline]
     pub fn write16(&self, bus: u8, dev: u8, func: u8, reg: u16, val: u16) {
-        let a = self.addr(bus, dev, func, reg);
-        // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::write16(a as *mut u16, val) }
+        unsafe { fstart_mmio::write16(self.addr(bus, dev, func, reg) as *mut u16, val) }
     }
-
-    /// Read an 8-bit PCI config register.
     #[inline]
     pub fn read8(&self, bus: u8, dev: u8, func: u8, reg: u16) -> u8 {
-        let a = self.addr(bus, dev, func, reg);
-        // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::read8(a as *const u8) }
+        unsafe { fstart_mmio::read8(self.addr(bus, dev, func, reg) as *const u8) }
     }
-
-    /// Write an 8-bit PCI config register.
     #[inline]
     pub fn write8(&self, bus: u8, dev: u8, func: u8, reg: u16, val: u8) {
-        let a = self.addr(bus, dev, func, reg);
-        // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::write8(a as *mut u8, val) }
+        unsafe { fstart_mmio::write8(self.addr(bus, dev, func, reg) as *mut u8, val) }
     }
-
-    /// Read-modify-write: `reg = (reg & mask) | set`.
     #[inline]
     pub fn modify32(&self, bus: u8, dev: u8, func: u8, reg: u16, mask: u32, set: u32) {
         let v = self.read32(bus, dev, func, reg);
         self.write32(bus, dev, func, reg, (v & mask) | set);
     }
-
-    /// OR bits into a 32-bit register.
     #[inline]
     pub fn or32(&self, bus: u8, dev: u8, func: u8, reg: u16, bits: u32) {
         self.modify32(bus, dev, func, reg, !0, bits);
     }
-
-    /// AND bits out of an 8-bit register.
     #[inline]
     pub fn and8(&self, bus: u8, dev: u8, func: u8, reg: u16, mask: u8) {
         let v = self.read8(bus, dev, func, reg);
         self.write8(bus, dev, func, reg, v & mask);
     }
-
-    /// OR bits into an 8-bit register.
     #[inline]
     pub fn or8(&self, bus: u8, dev: u8, func: u8, reg: u16, bits: u8) {
         let v = self.read8(bus, dev, func, reg);

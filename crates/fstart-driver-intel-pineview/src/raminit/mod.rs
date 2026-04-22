@@ -22,7 +22,7 @@ mod phy;
 mod spd;
 mod timing;
 
-use fstart_pineview_regs::{mchbar, EcamPci, MchBar};
+use fstart_pineview_regs::{ecam, mchbar, MchBar};
 use fstart_services::ServiceError;
 use fstart_spd::DimmInfo;
 
@@ -146,13 +146,11 @@ impl SysInfo {
 ///
 /// # Arguments
 /// * `mch` — MCHBAR MMIO accessor
-/// * `ecam` — ECAM PCI config accessor
 /// * `smbus` — SMBus controller for SPD reads
 /// * `boot_path` — 0 = normal, 1 = reset, 2 = S3 resume
 /// * `spd_addresses` — SMBus addresses of DIMM SPD EEPROMs (e.g., [0x50, 0x51, 0, 0])
 pub fn sdram_initialize(
     mch: &MchBar,
-    ecam: &EcamPci,
     smbus: &mut dyn fstart_services::SmBus,
     boot_path: u8,
     spd_addresses: &[u8; 4],
@@ -165,7 +163,7 @@ pub fn sdram_initialize(
     spd::read_spds(&mut si, smbus)?;
 
     // 2. Detect RAM speed (common frequency).
-    timing::detect_ram_speed(&mut si, mch, ecam);
+    timing::detect_ram_speed(&mut si, mch);
 
     // 3. Detect smallest common timings.
     timing::detect_smallest_params(&mut si);
@@ -178,7 +176,7 @@ pub fn sdram_initialize(
     timing::clk_crossing(&si, mch);
 
     // 6. Check for reset.
-    timing::check_reset(&si, ecam);
+    timing::check_reset(&si);
 
     // 7. Clock mode.
     timing::clkmode(&si, mch);
@@ -252,10 +250,10 @@ pub fn sdram_initialize(
     phy::sdram_new_trd(&si, mch);
 
     // 23. Memory map registers.
-    mmap::sdram_mmap_regs(&si, mch, ecam);
+    mmap::sdram_mmap_regs(&si, mch);
 
     // 24. Enhanced mode.
-    phy::sdram_enhanced_mode(&si, mch, ecam);
+    phy::sdram_enhanced_mode(&si, mch);
 
     // 25. Power settings.
     phy::sdram_power_settings(&si, mch);
@@ -273,8 +271,8 @@ pub fn sdram_initialize(
     mch.setbits32(mchbar::C0REFRCTRL2, 1 << 30);
 
     // 30. Tell ICH7 and northbridge we're done.
-    ecam.and8(0, 0x1f, 0, 0xA2, !(1 << 7));
-    ecam.or8(0, 0, 0, 0xF4, 1);
+    ecam::and8(0, 0x1f, 0, 0xA2, !(1 << 7));
+    ecam::or8(0, 0, 0, 0xF4, 1);
 
     // Compute total DRAM size from channel capacity.
     let total_mb = si.channel_capacity.iter().sum::<u32>();

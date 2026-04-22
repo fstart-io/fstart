@@ -4,7 +4,7 @@
 //! `sdram_mmap_regs()`.
 
 use super::SysInfo;
-use fstart_pineview_regs::{hostbridge, mchbar, EcamPci, MchBar};
+use fstart_pineview_regs::{ecam, hostbridge, mchbar, MchBar};
 
 /// Initial memory map setup before JEDEC init.
 ///
@@ -77,10 +77,9 @@ pub fn sdram_mmap(si: &SysInfo, mch: &MchBar) {
     static TOM_TAB: [u16; 7] = [2, 2, 4, 4, 8, 4, 8];
     static TOUUD_TAB: [u16; 7] = [128, 128, 256, 256, 512, 256, 512];
 
-    let ecam = EcamPci::new(0xE000_0000); // ECAM base is already live at this point.
-    ecam.write16(0, 0, 0, hostbridge::TOLUD, TOLUD_TAB[cfg] << 4);
-    ecam.write16(0, 0, 0, hostbridge::TOM, TOM_TAB[cfg] >> 6);
-    ecam.write16(0, 0, 0, hostbridge::TOUUD, TOUUD_TAB[cfg]);
+    ecam::write16(0, 0, 0, hostbridge::TOLUD, TOLUD_TAB[cfg] << 4);
+    ecam::write16(0, 0, 0, hostbridge::TOM, TOM_TAB[cfg] >> 6);
+    ecam::write16(0, 0, 0, hostbridge::TOUUD, TOUUD_TAB[cfg]);
 
     fstart_log::info!("raminit: memory map configured (dimm_config={})", cfg);
 }
@@ -187,8 +186,8 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
 /// Program memory-mapped registers: TOLUD, TOM, TOUUD, GBSM, BGSM, TSEG.
 ///
 /// Full port from coreboot `sdram_mmap_regs()`.
-pub fn sdram_mmap_regs(si: &SysInfo, mch: &MchBar, ecam: &EcamPci) {
-    let ggc = ecam.read16(0, 0, 0, hostbridge::GGC);
+pub fn sdram_mmap_regs(si: &SysInfo, mch: &MchBar) {
+    let ggc = ecam::read16(0, 0, 0, hostbridge::GGC);
 
     static GGC_TO_UMA: [u16; 10] = [0, 1, 4, 8, 16, 32, 48, 64, 128, 256];
     static GGC_TO_GTT: [u8; 4] = [0, 1, 0, 0];
@@ -219,20 +218,20 @@ pub fn sdram_mmap_regs(si: &SysInfo, mch: &MchBar, ecam: &EcamPci) {
     let gttbase = gfxbase.saturating_sub(gttsize);
     let tsegbase = gttbase.saturating_sub(tsegsize);
 
-    ecam.write16(0, 0, 0, hostbridge::TOLUD, (tolud << 4) as u16);
-    ecam.write16(0, 0, 0, hostbridge::TOM, (tom >> 6) as u16);
+    ecam::write16(0, 0, 0, hostbridge::TOLUD, (tolud << 4) as u16);
+    ecam::write16(0, 0, 0, hostbridge::TOM, (tom >> 6) as u16);
     if reclaim {
-        ecam.write16(0, 0, 0, 0x98, (reclaimbase >> 6) as u16);
-        ecam.write16(0, 0, 0, 0x9A, (reclaimlimit >> 6) as u16);
+        ecam::write16(0, 0, 0, 0x98, (reclaimbase >> 6) as u16);
+        ecam::write16(0, 0, 0, 0x9A, (reclaimlimit >> 6) as u16);
     }
-    ecam.write16(0, 0, 0, hostbridge::TOUUD, touud as u16);
-    ecam.write32(0, 0, 0, hostbridge::GBSM, gfxbase << 20);
-    ecam.write32(0, 0, 0, hostbridge::BGSM, gttbase << 20);
-    ecam.write32(0, 0, 0, hostbridge::TSEG, tsegbase << 20);
+    ecam::write16(0, 0, 0, hostbridge::TOUUD, touud as u16);
+    ecam::write32(0, 0, 0, hostbridge::GBSM, gfxbase << 20);
+    ecam::write32(0, 0, 0, hostbridge::BGSM, gttbase << 20);
+    ecam::write32(0, 0, 0, hostbridge::TSEG, tsegbase << 20);
 
     // ESMRAMC: 1M TSEG + enable.
-    let v = ecam.read8(0, 0, 0, hostbridge::ESMRAMC);
-    ecam.write8(0, 0, 0, hostbridge::ESMRAMC, (v & !0x07) | (1 << 0));
+    let v = ecam::read8(0, 0, 0, hostbridge::ESMRAMC);
+    ecam::write8(0, 0, 0, hostbridge::ESMRAMC, (v & !0x07) | (1 << 0));
 
     fstart_log::info!(
         "raminit: mmap regs: TOLUD={} GBSM={} BGSM={} TSEG={} MiB",

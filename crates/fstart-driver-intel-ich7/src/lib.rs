@@ -14,7 +14,7 @@
 
 #![no_std]
 
-use fstart_pineview_regs::{ich7, EcamPci, Rcba};
+use fstart_pineview_regs::{ecam, ich7, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{ServiceError, SmBus, Southbridge};
 use fstart_smbus_intel::I801SmBus;
@@ -196,14 +196,11 @@ unsafe impl Sync for IntelIch7 {}
 
 impl IntelIch7 {
     /// ECAM accessor.
-    fn ecam(&self) -> EcamPci {
-        EcamPci::new(self.config.ecam_base as usize)
-    }
 
     /// CIR (Chipset Initialization Registers) magic writes.
     ///
     /// Ported from coreboot `ich7_setup_cir()`.
-    fn setup_cir(&self, rcba: &Rcba, ecam: &EcamPci) {
+    fn setup_cir(&self, rcba: &Rcba) {
         rcba.write32(0x0088, 0x0011_D000);
         rcba.write16(0x01FC, 0x060F);
         rcba.write32(0x01F4, 0x8600_0040);
@@ -229,10 +226,10 @@ impl IntelIch7 {
         rcba.write32(0x3E4E, v | (1 << 7));
 
         // Mobile variant fixup: check PCI device ID.
-        let pci_id = ecam.read16(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x02);
+        let pci_id = ecam::read16(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x02);
         match pci_id {
             0x27B9 | 0x27BC | 0x27BD => {
-                let rev = ecam.read8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08);
+                let rev = ecam::read8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08);
                 if rev >= 2 {
                     let v = rcba.read32(0x2034);
                     rcba.write32(0x2034, (v & !(0x0F << 16)) | (5 << 16));
@@ -368,17 +365,17 @@ impl Device for IntelIch7 {
 
 impl Southbridge for IntelIch7 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
-        let ecam = self.ecam();
+        
         let d = ich7::LPC_DEV;
         let f = ich7::LPC_FUNC;
 
         // ---- 1. Enable SMBus (must be first — raminit reads SPD) ----
-        let smbus = I801SmBus::enable_on_ich7(&ecam, self.config.smbus_base);
+        let smbus = I801SmBus::enable_on_ich7(self.config.smbus_base);
         self.smbus = Some(smbus);
 
         // ---- 2. Setup BARs ----
         // RCBA
-        ecam.write32(
+        ecam::write32(
             0,
             d,
             f,
@@ -386,24 +383,24 @@ impl Southbridge for IntelIch7 {
             (self.config.rcba as u32 & 0xFFFF_C000) | 1,
         );
         // PMBASE + ACPI enable
-        ecam.write32(0, d, f, PMBASE_REG, DEFAULT_PMBASE | 1);
-        ecam.write8(0, d, f, ACPI_CNTL, ACPI_EN);
+        ecam::write32(0, d, f, PMBASE_REG, DEFAULT_PMBASE | 1);
+        ecam::write8(0, d, f, ACPI_CNTL, ACPI_EN);
         // GPIOBASE + GPIO enable
-        ecam.write32(0, d, f, GPIOBASE_REG, DEFAULT_GPIOBASE | 1);
-        ecam.write8(0, d, f, GPIO_CNTL, GPIO_EN);
+        ecam::write32(0, d, f, GPIOBASE_REG, DEFAULT_GPIOBASE | 1);
+        ecam::write8(0, d, f, GPIO_CNTL, GPIO_EN);
 
         // ---- 3. Serial IRQ configuration ----
-        ecam.write8(0, d, f, SERIRQ_CNTL, 0xD0);
+        ecam::write8(0, d, f, SERIRQ_CNTL, 0xD0);
 
         // ---- 4. LPC I/O decode and enable ----
-        ecam.write16(0, d, f, LPC_IO_DEC, 0x0010);
+        ecam::write16(0, d, f, LPC_IO_DEC, 0x0010);
         // Enable: SuperIO (CNF1/CNF2), KBC, COMA, COMB, LPT, FDD, GAME
-        ecam.write16(0, d, f, LPC_EN, LPC_EN_ALL);
+        ecam::write16(0, d, f, LPC_EN, LPC_EN_ALL);
         // Generic decode ranges (GEN1..GEN4) from board config.
-        ecam.write32(0, d, f, GEN1_DEC, self.config.lpc_decode[0]);
-        ecam.write32(0, d, f, GEN2_DEC, self.config.lpc_decode[1]);
-        ecam.write32(0, d, f, GEN3_DEC, self.config.lpc_decode[2]);
-        ecam.write32(0, d, f, GEN4_DEC, self.config.lpc_decode[3]);
+        ecam::write32(0, d, f, GEN1_DEC, self.config.lpc_decode[0]);
+        ecam::write32(0, d, f, GEN2_DEC, self.config.lpc_decode[1]);
+        ecam::write32(0, d, f, GEN3_DEC, self.config.lpc_decode[2]);
+        ecam::write32(0, d, f, GEN4_DEC, self.config.lpc_decode[3]);
 
         // ---- 5. PIRQ routing ----
         let pirq_low = u32::from_le_bytes([
@@ -418,8 +415,8 @@ impl Southbridge for IntelIch7 {
             self.config.pirq_routing[6],
             self.config.pirq_routing[7],
         ]);
-        ecam.write32(0, d, f, 0x60, pirq_low);
-        ecam.write32(0, d, f, 0x68, pirq_high);
+        ecam::write32(0, d, f, 0x60, pirq_low);
+        ecam::write32(0, d, f, 0x68, pirq_high);
 
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
 
@@ -440,22 +437,22 @@ impl Southbridge for IntelIch7 {
         }
 
         // ---- 7. PCI bridge secondary MLT ----
-        ecam.write8(0, 0x1e, 0, SMLT, 0x20);
+        ecam::write8(0, 0x1e, 0, SMLT, 0x20);
 
         // ---- 8. Reset RTC power status ----
-        ecam.and8(0, d, f, GEN_PMCON_3, !RTC_BATTERY_DEAD);
+        ecam::and8(0, d, f, GEN_PMCON_3, !RTC_BATTERY_DEAD);
 
         // ---- 9. USB pre-config ----
-        ecam.or8(0, d, f, 0xAD, 3);
-        ecam.or32(0, 0x1d, 7, 0xFC, (1 << 29) | (1 << 17));
-        ecam.or32(0, 0x1d, 7, 0xDC, (1 << 31) | (1 << 27));
+        ecam::or8(0, d, f, 0xAD, 3);
+        ecam::or32(0, 0x1d, 7, 0xFC, (1 << 29) | (1 << 17));
+        ecam::or32(0, 0x1d, 7, 0xDC, (1 << 31) | (1 << 27));
 
         // ---- 10. Enable IOAPIC ----
         rcba.write8(OIC, 0x03);
         let _ = rcba.read8(OIC); // flush
 
         // ---- 11. CIR (Chipset Initialization Registers) ----
-        self.setup_cir(&rcba, &ecam);
+        self.setup_cir(&rcba);
 
         // ---- 12. Function disable mask ----
         let fd = self.function_disable_mask();
