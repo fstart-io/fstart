@@ -617,8 +617,10 @@ name = "fstart-driver-intel-ich7"
 version = "0.1.0"
 dependencies = [
  "fstart-log",
+ "fstart-pineview-regs",
  "fstart-pio",
  "fstart-services",
+ "fstart-smbus-intel",
  "fstart-superio",
  "serde",
  "ufmt",
@@ -629,9 +631,14 @@ name = "fstart-driver-intel-pineview"
 version = "0.1.0"
 dependencies = [
  "fstart-log",
+ "fstart-mmio",
+ "fstart-pineview-regs",
  "fstart-pio",
  "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-spd",
  "serde",
+ "tock-registers",
  "ufmt",
 ]
 
@@ -856,6 +863,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-pineview-regs"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-pio"
 version = "0.1.0"
 
@@ -913,11 +928,30 @@ name = "fstart-smbios"
 version = "0.1.0"
 
 [[package]]
+name = "fstart-smbus-intel"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pineview-regs",
+ "fstart-pio",
+ "fstart-services",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-soc-sunxi"
 version = "0.1.0"
 dependencies = [
  "fstart-services",
  "fstart-types",
+]
+
+[[package]]
+name = "fstart-spd"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-services",
 ]
 
 [[package]]

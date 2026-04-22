@@ -1,36 +1,25 @@
 //! Intel Atom D4xx/D5xx (Pineview) northbridge driver.
 //!
 //! Covers the integrated memory controller hub on the Atom D410/D510/D525
-//! family (and the near-identical Cedarview N2600/N2800 with different
-//! PLL constants). Responsibilities:
+//! family. Responsibilities:
 //!
-//! - **Early init ([`PciHost::early_init`])**: program MCHBAR / DMIBAR /
-//!   EPBAR so chipset registers are reachable, unlock the BIOS shadow
-//!   (PAM) so `.rodata` accesses succeed when the bootblock is copied
-//!   to CAR, and prepare PCIe root config windows.
+//! - **Early init ([`PciHost::early_init`])**: enable ECAM (PCIEXBAR) via
+//!   the single legacy CF8/CFC write, then use ECAM MMIO for everything:
+//!   MCHBAR/DMIBAR/EPBAR setup, PAM unlock, graphics clocks, and
+//!   miscellaneous chipset init.
 //! - **DRAM training ([`MemoryController::init`])**: full DDR2 raminit.
-//!   **Currently a stub** — a future phase will port the ~1800-line
-//!   coreboot `northbridge/intel/pineview/raminit.c`. For now this
-//!   returns `Ok(0)` so the codegen pipeline compiles end-to-end.
+//!   **Currently a stub** — a future phase will port the ~2600-line
+//!   coreboot `raminit.c`.
 //!
-//! DRAM size detection, SPD reading, and PCI bus enumeration all live
-//! in separate crates / capabilities; this driver only owns the
-//! chipset-specific register programming.
+//! Register definitions live in `fstart-pineview-regs`.
 
 #![no_std]
 
+use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, EcamPci, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
 use fstart_services::{PciHost, ServiceError};
 use serde::{Deserialize, Serialize};
-
-// Touch ServiceError so unused-import lint doesn't fire when the
-// feature-gated PciHost impl collapses to an empty block on non-x86.
-#[doc(hidden)]
-#[allow(dead_code)]
-fn _touch_service_error() -> Option<ServiceError> {
-    None
-}
 
 /// Intel integrated graphics configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -49,16 +38,22 @@ pub struct IgdConfig {
 /// Pineview northbridge configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct IntelPineviewConfig {
-    /// Memory Controller Hub base register — where chipset memory
-    /// controller registers are mapped after early init.
+    /// MCHBAR base address.
     pub mchbar: u64,
-    /// DMI base address register.
+    /// DMIBAR base address.
     pub dmibar: u64,
-    /// EP base address register (ingress path).
+    /// EPBAR base address.
     pub epbar: u64,
+    /// ECAM (PCIEXBAR) base address. Default: `0xE000_0000`.
+    #[serde(default = "default_ecam_base")]
+    pub ecam_base: u64,
     /// Optional integrated graphics configuration.
     #[serde(default)]
     pub igd: Option<IgdConfig>,
+}
+
+fn default_ecam_base() -> u64 {
+    hostbridge::DEFAULT_ECAM_BASE as u64
 }
 
 /// Pineview NB driver.
@@ -73,6 +68,201 @@ pub struct IntelPineview {
 unsafe impl Send for IntelPineview {}
 unsafe impl Sync for IntelPineview {}
 
+impl IntelPineview {
+    /// ECAM accessor for this platform.
+    fn ecam(&self) -> EcamPci {
+        EcamPci::new(self.config.ecam_base as usize)
+    }
+
+    /// MCHBAR accessor.
+    fn mchbar(&self) -> MchBar {
+        MchBar::new(self.config.mchbar as usize)
+    }
+
+    /// DMIBAR accessor.
+    fn dmibar(&self) -> DmiBar {
+        DmiBar::new(self.config.dmibar as usize)
+    }
+
+    // ---------------------------------------------------------------
+    // Early init sub-routines (ported from coreboot early_init.c)
+    // ---------------------------------------------------------------
+
+    /// Enable ECAM by writing PCIEXBAR via legacy CF8/CFC.
+    ///
+    /// This is the **only** place legacy PIO is used. After this, all
+    /// PCI config access goes through [`EcamPci`].
+    #[cfg(target_arch = "x86_64")]
+    fn enable_ecam(&self) {
+        // PCIEXBAR value: base address | length encoding | enable.
+        // Length encoding: 0 = 256 buses, 1 = 128, 2 = 64.
+        // Pineview uses 64 buses → encoding = 2.
+        let pciexbar_val = (self.config.ecam_base as u32) | (2 << 1) | 1;
+        // SAFETY: one-time legacy PCI config write to the host bridge
+        // to enable ECAM. After this, ECAM MMIO is live.
+        unsafe {
+            fstart_pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR as u8, pciexbar_val);
+        }
+        fstart_log::info!("pineview: ECAM enabled at {:#x}", self.config.ecam_base);
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn enable_ecam(&self) {
+        fstart_log::info!("pineview: ECAM enable (stub, non-x86)");
+    }
+
+    /// Program northbridge BARs and PAM registers via ECAM.
+    ///
+    /// Ported from coreboot `pineview_setup_bars()`.
+    fn setup_bars(&self) {
+        let ecam = self.ecam();
+
+        // EPBAR, MCHBAR, DMIBAR — 32-bit writes with enable bit 0.
+        ecam.write32(0, 0, 0, hostbridge::EPBAR, (self.config.epbar as u32) | 1);
+        ecam.write32(0, 0, 0, hostbridge::MCHBAR, (self.config.mchbar as u32) | 1);
+        ecam.write32(0, 0, 0, hostbridge::DMIBAR, (self.config.dmibar as u32) | 1);
+        ecam.write32(
+            0,
+            0,
+            0,
+            hostbridge::PMIOBAR,
+            hostbridge::DEFAULT_PMIOBAR | 1,
+        );
+
+        // DEVEN — enable D0F0, D2F0, D2F1.
+        ecam.write8(0, 0, 0, hostbridge::DEVEN, hostbridge::BOARD_DEVEN);
+
+        // PAM0..PAM6: unlock BIOS shadow region C0000–FFFFF for RAM r/w.
+        ecam.write8(0, 0, 0, hostbridge::PAM0, 0x30);
+        ecam.write8(0, 0, 0, hostbridge::PAM1, 0x33);
+        ecam.write8(0, 0, 0, hostbridge::PAM2, 0x33);
+        ecam.write8(0, 0, 0, hostbridge::PAM3, 0x33);
+        ecam.write8(0, 0, 0, hostbridge::PAM4, 0x33);
+        ecam.write8(0, 0, 0, hostbridge::PAM5, 0x33);
+        ecam.write8(0, 0, 0, hostbridge::PAM6, 0x33);
+
+        fstart_log::info!("pineview: northbridge BARs and PAM configured");
+    }
+
+    /// Graphics clock and output setup.
+    ///
+    /// Ported from coreboot `early_graphics_setup()`.
+    fn early_graphics_setup(&self) {
+        let ecam = self.ecam();
+        let mch = self.mchbar();
+
+        // GGC: 1 MiB GTT (GGMS=1), 8 MiB stolen (GMS=3).
+        ecam.write16(0, 0, 0, hostbridge::GGC, (1 << 8) | (3 << 4));
+
+        // Graphics clock dividers.
+        const CRCLK_PINEVIEW: u32 = 0x02;
+        const CDCLK_PINEVIEW: u32 = 0x10;
+
+        let mut gcfgc = mch.read16(mchbar::MCH_GCFGC);
+        gcfgc |= 1 << 9; // set UPDATE
+        mch.write16(mchbar::MCH_GCFGC, gcfgc);
+        gcfgc &= !0x7F;
+        gcfgc |= (CDCLK_PINEVIEW | CRCLK_PINEVIEW) as u16;
+        gcfgc &= !(1 << 9); // clear UPDATE
+        mch.write16(mchbar::MCH_GCFGC, gcfgc);
+
+        // Graphics core — PLL VCO frequency determines IGD 0xCC value.
+        let hpllvco = mch.read8(mchbar::HPLLVCO) & 0x7;
+        let igd_cc = match hpllvco {
+            0x4 => 0xAD_u16, // 2666 MHz
+            0x0 => 0xA0,     // 3200 MHz
+            0x1 => 0xAD,     // 4000 MHz
+            _ => 0xA0,
+        };
+        let cc_val = ecam.read16(0, 2, 0, 0xCC) & !0x1FF;
+        ecam.write16(0, 2, 0, 0xCC, cc_val | igd_cc);
+
+        ecam.and8(0, 2, 0, 0x62, !0x3);
+        ecam.or8(0, 2, 0, 0x62, 2);
+
+        // VGA CRT / LVDS output control.
+        if let Some(ref igd) = self.config.igd {
+            if igd.use_crt {
+                mch.setbits32(mchbar::DACGIOCTRL1, 1 << 15);
+            } else {
+                mch.clrbits32(mchbar::DACGIOCTRL1, 1 << 15);
+            }
+            if igd.use_lvds {
+                let reg = mch.read32(mchbar::LVDSICR2);
+                mch.write32(mchbar::LVDSICR2, (reg & !0xF100_0000) | 0x9000_0000);
+                mch.setbits32(mchbar::IOCKTRR1, 1 << 9);
+            } else {
+                mch.setbits32(mchbar::DACGIOCTRL1, 3 << 25);
+            }
+        }
+
+        mch.write32(mchbar::CICTRL, 0xC6DB_8B5F);
+        mch.write16(mchbar::CISDCTRL, 0x024F);
+
+        mch.clrbits32(mchbar::DACGIOCTRL1, 0xFF);
+        mch.setbits32(mchbar::DACGIOCTRL1, 1 << 5);
+
+        // Legacy backlight control.
+        ecam.write8(0, 2, 0, 0xF4, 0x4C);
+
+        fstart_log::info!("pineview: graphics clocks configured");
+    }
+
+    /// Miscellaneous early chipset setup.
+    ///
+    /// Ported from coreboot `early_misc_setup()`.
+    fn early_misc_setup(&self) {
+        let ecam = self.ecam();
+        let mch = self.mchbar();
+        let dmi = self.dmibar();
+
+        mch.read32(mchbar::HIT0);
+        mch.write32(mchbar::HIT0, 0x0002_1800);
+
+        dmi.write32(0x2C, 0x8600_0040);
+
+        // PCI bridge (1E:0): secondary bus programming.
+        ecam.write32(0, 0x1e, 0, 0x18, 0x0002_0200);
+        ecam.write32(0, 0x1e, 0, 0x18, 0x0000_0000);
+
+        self.early_graphics_setup();
+
+        // HIT4 sequence.
+        mch.read32(mchbar::HIT4);
+        mch.write32(mchbar::HIT4, 0);
+        mch.read32(mchbar::HIT4);
+        mch.write32(mchbar::HIT4, 1 << 3);
+
+        // LPC device (1F:0) revision ID reset sequence.
+        ecam.write8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08, 0x1D);
+        ecam.write8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08, 0x00);
+
+        // RCBA routing registers. Read RCBA from ICH7 LPC config.
+        let rcba_val = ecam.read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ich7::RCBA_REG);
+        let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
+
+        rcba.write32(0x3410, 0x0002_0465);
+
+        // USB transient disconnect (1D:0..3 reg 0xCA).
+        for func in 0..4u8 {
+            ecam.or32(0, 0x1d, func, 0xCA, 0x1);
+        }
+
+        // RCBA routing table setup.
+        rcba.write32(0x3100, 0x0004_2210);
+        rcba.write32(0x3108, 0x1000_4321);
+        rcba.write32(0x310C, 0x0021_4321);
+        rcba.write32(0x3110, 1);
+        rcba.write32(0x3140, 0x0146_0132);
+        rcba.write32(0x3142, 0x0237_0146);
+        rcba.write32(0x3144, 0x3201_0237);
+        rcba.write32(0x3146, 0x0146_3201);
+        rcba.write32(0x3148, 0x0000_0146);
+
+        fstart_log::info!("pineview: early misc setup complete");
+    }
+}
+
 impl Device for IntelPineview {
     const NAME: &'static str = "intel-pineview";
     const COMPATIBLE: &'static [&'static str] = &["intel,pineview-mch", "intel,atom-d4xx-mch"];
@@ -86,14 +276,8 @@ impl Device for IntelPineview {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        // Full DRAM training runs here when this driver is referenced
-        // by a `DramInit` capability in the stage's capability list.
-        //
-        // TODO: port coreboot's DDR2 raminit.c (~1800 lines). Until
-        // then, assume DRAM is already present (QEMU-style) and expose
-        // a sentinel 1 GiB size so downstream code can link. On real
-        // hardware, this function will train DDR2 with full PHY setup
-        // via SPD data read from SMBus.
+        // Full DRAM training runs here when referenced by a `DramInit`
+        // capability. TODO: port coreboot's DDR2 raminit.c (~2600 lines).
         fstart_log::warn!("intel-pineview: DRAM training stub — assuming 1 GiB");
         self.detected_size = 1 << 30;
         fstart_log::info!("intel-pineview: mchbar={:#x}", self.config.mchbar);
@@ -103,29 +287,25 @@ impl Device for IntelPineview {
 
 impl PciHost for IntelPineview {
     fn early_init(&mut self) -> Result<(), ServiceError> {
-        // Program MCHBAR / DMIBAR / EPBAR via PCI config space on the
-        // host bridge (bus 0 device 0 function 0).
-        //
-        // coreboot reference: src/northbridge/intel/pineview/early_init.c
-        // Registers: MCHBAR = 0x48, DMIBAR = 0x68, EPBAR = 0x40.
-        //
-        // The write sequence is:
-        //   cfg_write32(reg + 4, base >> 32);
-        //   cfg_write32(reg,     (base & 0xFFFFFFF0) | 1);  // enable bit
-        //
-        // For the initial skeleton we emit the writes so the driver is
-        // functionally correct against real hardware but untested on QEMU.
+        // 1. Enable ECAM (single legacy CF8/CFC write).
+        self.enable_ecam();
 
-        // SAFETY: legacy PCI config access on x86 firmware — caller has
-        // ensured we are on an Intel Atom Pineview platform.
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            write_pci_bar(0x40, self.config.epbar);
-            write_pci_bar(0x48, self.config.mchbar);
-            write_pci_bar(0x68, self.config.dmibar);
-        }
+        // 2. Program BARs + PAM via ECAM.
+        self.setup_bars();
 
-        fstart_log::info!("intel-pineview: chipset early init complete");
+        // 3. Miscellaneous chipset init (graphics, DMI, USB, RCBA routing).
+        self.early_misc_setup();
+
+        // 4. Route port80 to LPC.
+        let rcba_val = self
+            .ecam()
+            .read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ich7::RCBA_REG);
+        let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
+        let gcs = rcba.read32(ich7::GCS);
+        rcba.write32(ich7::GCS, gcs & !0x04);
+        rcba.write32(0x2010, rcba.read32(0x2010) | (1 << 10));
+
+        fstart_log::info!("intel-pineview: early init complete");
         Ok(())
     }
 }
@@ -133,25 +313,5 @@ impl PciHost for IntelPineview {
 impl MemoryController for IntelPineview {
     fn detected_size_bytes(&self) -> u64 {
         self.detected_size
-    }
-}
-
-/// Write a 64-bit chipset BAR pair via legacy PCI config space.
-///
-/// Writes the high dword at `reg + 4`, then the low dword at `reg`
-/// with the lock/enable bit (bit 0) set — the Intel convention for
-/// MCHBAR / DMIBAR / EPBAR across the Nehalem / Penryn / Atom
-/// Pineview families.
-///
-/// # Safety
-/// Must only be called on x86 with a Pineview host bridge at 00:00.0.
-#[cfg(target_arch = "x86_64")]
-unsafe fn write_pci_bar(reg: u8, base: u64) {
-    // PCI config at bus=0, dev=0, func=0.
-    let lo = (base & 0xFFFF_FFF0) as u32 | 1;
-    let hi = (base >> 32) as u32;
-    unsafe {
-        fstart_pio::pci_cfg_write32(0, 0, 0, reg + 4, hi);
-        fstart_pio::pci_cfg_write32(0, 0, 0, reg, lo);
     }
 }
