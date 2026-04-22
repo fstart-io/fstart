@@ -165,7 +165,7 @@ pub fn sdram_initialize(
     spd::read_spds(&mut si, smbus)?;
 
     // 2. Detect RAM speed (common frequency).
-    timing::detect_ram_speed(&mut si);
+    timing::detect_ram_speed(&mut si, mch, ecam);
 
     // 3. Detect smallest common timings.
     timing::detect_smallest_params(&mut si);
