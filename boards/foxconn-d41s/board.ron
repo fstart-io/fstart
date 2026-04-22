@@ -178,18 +178,12 @@
         (
             name: "bootblock",
             capabilities: [
-                // Console chain: the codegen walks com1 → superio → lpc
-                // (structural, skipped) → southbridge. Init is emitted
-                // root-first: `southbridge.init()` programs RCBA and
-                // the LPC I/O decode windows; `superio.init()` enters
-                // config mode and maps LDN 1 to 0x3F8; finally
-                // `com1.init()` programs the 16550 UART registers
-                // (baud, FIFO, LCR). Only after all three complete
-                // is the Console service available for logging.
-                //
-                // The SuperIO provides Console directly via its
-                // `console_port: "com1"` config — change to
-                // `"com2"` to use the secondary UART instead.
+                // Console: codegen walks superio → lpc → southbridge,
+                // emitting init() root-first.  The SuperIO programs
+                // LDNs and initializes the 16550 UART for the COM port
+                // selected by `console_port`.  No separate NS16550
+                // driver needed.  Change `console_port: "com2"` in the
+                // SuperIO config to use the secondary UART instead.
                 ConsoleInit( device: "superio" ),
                 // ChipsetInit still calls the NB + SB early_init hooks.
                 // `southbridge.early_init()` is a no-op beyond what `init()`
