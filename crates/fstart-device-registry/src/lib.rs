@@ -584,7 +584,7 @@ impl DriverInstance {
                 config_type: "IntelPineviewConfig",
                 services: &["MemoryController", "PciHost"],
                 compatible: &["intel,pineview-mch", "intel,atom-d4xx-mch"],
-                has_acpi: false,
+                has_acpi: true,
                 is_bus_device: false,
             },
             #[cfg(feature = "intel-ich7")]
@@ -595,7 +595,7 @@ impl DriverInstance {
                 config_type: "IntelIch7Config",
                 services: &["Southbridge"],
                 compatible: &["intel,ich7", "intel,nm10"],
-                has_acpi: false,
+                has_acpi: true,
                 is_bus_device: false,
             },
             #[cfg(feature = "i2c-ck505")]
@@ -627,6 +627,10 @@ impl DriverInstance {
         match self {
             #[cfg(feature = "pl011")]
             Self::Pl011(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-pineview")]
+            Self::IntelPineview(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-ich7")]
+            Self::IntelIch7(cfg) => cfg.acpi_name.as_deref(),
             Self::Ahci(cfg) => Some(cfg.name.as_str()),
             Self::Xhci(cfg) => Some(cfg.name.as_str()),
             Self::PcieRoot(cfg) => Some(cfg.name.as_str()),

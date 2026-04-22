@@ -71,6 +71,7 @@
                 epbar:  0xFED19000,
                 ecam_base: 0xE0000000,
                 igd: ( use_crt: true, use_lvds: false, spread_spectrum: false ),
+                acpi_name: "MCHC",
             )),
             services: ["MemoryController", "PciHost"],
         ),
@@ -106,6 +107,9 @@
                     invert:    0x0000_0000,
                     reset:     0x0000_0000,
                 ),
+                acpi_name: "LPCB",
+                c3_latency: 85,
+                power_on_after_fail: 0,
             )),
             services: ["Southbridge"],
             children: [

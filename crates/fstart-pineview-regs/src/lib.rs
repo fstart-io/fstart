@@ -310,6 +310,13 @@ pub mod ecam {
         let v = read8(bus, dev, func, reg);
         write8(bus, dev, func, reg, v | bits);
     }
+
+    /// OR bits into a 16-bit register.
+    #[inline]
+    pub fn or16(bus: u8, dev: u8, func: u8, reg: u16, bits: u16) {
+        let v = read16(bus, dev, func, reg);
+        write16(bus, dev, func, reg, v | bits);
+    }
 }
 
 /// Legacy struct wrapper — delegates to [`ecam`] free functions.
