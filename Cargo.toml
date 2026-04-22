@@ -1,57 +1,57 @@
 [workspace]
 resolver = "2"
 members = [
-    "xtask",
-    "crates/fstart-types",
-    "crates/fstart-codegen",
-    "crates/fstart-ffs",
-    "crates/fstart-crypto",
-    "crates/fstart-mmio",
-    "crates/fstart-services",
-    "crates/fstart-arch",
-    "crates/fstart-capabilities",
-    "crates/fstart-alloc",
-    "crates/fstart-log",
-    "crates/fstart-runtime",
-    "crates/fstart-stage-runtime",
-    "crates/fstart-platform-riscv64",
-    "crates/fstart-platform-aarch64",
-    "crates/fstart-platform-armv7",
-    "crates/fstart-soc-sunxi",
-    "crates/fstart-sunxi-ccu-regs",
-    "crates/fstart-sunxi-pio",
-    "crates/fstart-driver-ns16550",
-    "crates/fstart-driver-pl011",
-    "crates/fstart-driver-designware-i2c",
-    "crates/fstart-driver-sunxi-ccu",
-    "crates/fstart-driver-sunxi-a20-dramc",
-    "crates/fstart-driver-sunxi-mmc",
-    "crates/fstart-driver-sunxi-spi",
-    "crates/fstart-driver-sunxi-h3-ccu",
-    "crates/fstart-driver-sunxi-h3-dramc",
-    "crates/fstart-driver-sunxi-d1-ccu",
-    "crates/fstart-driver-sunxi-d1-dramc",
-    "crates/fstart-driver-sifive-uart",
-    "crates/fstart-driver-fu740-prci",
-    "crates/fstart-driver-fu740-ddr",
-    "crates/fstart-driver-pci-ecam",
-    "crates/fstart-driver-bochs-display",
-    "crates/fstart-device-registry",
-    "crates/fstart-crabefi",
-    "crates/fstart-stage",
-    "crates/fstart-fit",
-    "crates/fstart-acpi",
-    "crates/fstart-acpi-macros",
-    "crates/fstart-smbios",
-    "crates/fstart-pio",
-    "crates/fstart-platform-x86_64",
-    "crates/fstart-driver-qemu-fw-cfg",
-    "crates/fstart-driver-q35-hostbridge",
-    "crates/fstart-superio",
-    "crates/fstart-driver-ite8721f",
-    "crates/fstart-driver-intel-pineview",
-    "crates/fstart-driver-intel-ich7",
-    "crates/fstart-driver-i2c-ck505",
+  "xtask",
+  "crates/fstart-types",
+  "crates/fstart-codegen",
+  "crates/fstart-ffs",
+  "crates/fstart-crypto",
+  "crates/fstart-mmio",
+  "crates/fstart-services",
+  "crates/fstart-arch",
+  "crates/fstart-capabilities",
+  "crates/fstart-alloc",
+  "crates/fstart-log",
+  "crates/fstart-runtime",
+  "crates/fstart-stage-runtime",
+  "crates/fstart-platform-riscv64",
+  "crates/fstart-platform-aarch64",
+  "crates/fstart-platform-armv7",
+  "crates/fstart-soc-sunxi",
+  "crates/fstart-sunxi-ccu-regs",
+  "crates/fstart-sunxi-pio",
+  "crates/fstart-driver-ns16550",
+  "crates/fstart-driver-pl011",
+  "crates/fstart-driver-designware-i2c",
+  "crates/fstart-driver-sunxi-ccu",
+  "crates/fstart-driver-sunxi-a20-dramc",
+  "crates/fstart-driver-sunxi-mmc",
+  "crates/fstart-driver-sunxi-spi",
+  "crates/fstart-driver-sunxi-h3-ccu",
+  "crates/fstart-driver-sunxi-h3-dramc",
+  "crates/fstart-driver-sunxi-d1-ccu",
+  "crates/fstart-driver-sunxi-d1-dramc",
+  "crates/fstart-driver-sifive-uart",
+  "crates/fstart-driver-fu740-prci",
+  "crates/fstart-driver-fu740-ddr",
+  "crates/fstart-driver-pci-ecam",
+  "crates/fstart-driver-bochs-display",
+  "crates/fstart-device-registry",
+  "crates/fstart-crabefi",
+  "crates/fstart-stage",
+  "crates/fstart-fit",
+  "crates/fstart-acpi",
+  "crates/fstart-acpi-macros",
+  "crates/fstart-smbios",
+  "crates/fstart-pio",
+  "crates/fstart-platform-x86_64",
+  "crates/fstart-driver-qemu-fw-cfg",
+  "crates/fstart-driver-q35-hostbridge",
+  "crates/fstart-superio",
+  "crates/fstart-driver-ite8721f",
+  "crates/fstart-driver-intel-pineview",
+  "crates/fstart-driver-intel-ich7",
+  "crates/fstart-driver-i2c-ck505",
 ]
 
 [workspace.package]
@@ -85,7 +85,11 @@ dtoolkit = { version = "0.1", default-features = false }
 lz4_flex = { version = "0.11", default-features = false }
 
 # ELF parsing (host-side only)
-goblin = { version = "0.10", default-features = false, features = ["elf32", "elf64", "endian_fd"] }
+goblin = { version = "0.10", default-features = false, features = [
+  "elf32",
+  "elf64",
+  "endian_fd",
+] }
 
 # xtask / host-side
 clap = { version = "4", features = ["derive"] }
@@ -143,6 +147,11 @@ fstart-driver-i2c-ck505 = { path = "crates/fstart-driver-i2c-ck505" }
 
 [profile.dev]
 panic = "abort"
+# Optimise fstart-stage for size even in dev builds.  SRAM-constrained
+# bootblocks (bananapi-m1, licheerv-dock, orangepi-r1) overflow at
+# opt-level 0; "s" keeps debug info while fitting in 24–32 KiB.
+[profile.dev.package.fstart-stage]
+opt-level = "s"
 
 # Crypto crates are unusably slow at opt-level 0 (minutes for a single
 # Ed25519 verify on emulated RISC-V).  Always compile them with optimizations.

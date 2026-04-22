@@ -108,7 +108,12 @@ mod acpi_support;
 
 /// PL011 UART driver.
 pub struct Pl011 {
-    regs: &'static Pl011Regs,
+    /// Base address stored as a raw integer rather than a `&'static`
+    /// reference.  This avoids the AArch64 debug-mode hang where LLVM
+    /// copies the 16-byte struct through a stack scratch location,
+    /// causing `init()` to program a stale copy's registers.  With
+    /// `usize` the pointer is reconstructed fresh on every access.
+    base: usize,
     clock_freq: u32,
     baud_rate: u32,
 }
@@ -118,6 +123,21 @@ pub struct Pl011 {
 unsafe impl Send for Pl011 {}
 unsafe impl Sync for Pl011 {}
 
+impl Pl011 {
+    /// Reconstruct the register pointer from the stored base address.
+    ///
+    /// # Safety
+    ///
+    /// The base address must point to a valid PL011 register block.
+    /// This is guaranteed by the board RON (validated at codegen time).
+    #[inline(always)]
+    fn regs(&self) -> &Pl011Regs {
+        // SAFETY: `self.base` was set from the board config's
+        // `base_addr` in `new()`.  The address is hardware-fixed.
+        unsafe { &*(self.base as *const Pl011Regs) }
+    }
+}
+
 impl Device for Pl011 {
     const NAME: &'static str = "pl011";
     const COMPATIBLE: &'static [&'static str] = &["arm,pl011", "pl011"];
@@ -125,17 +145,17 @@ impl Device for Pl011 {
 
     fn new(config: &Pl011Config) -> Result<Self, DeviceError> {
         Ok(Self {
-            // SAFETY: base_addr comes from the board RON and is validated
-            // by codegen at build time.
-            regs: unsafe { &*(config.base_addr as *const Pl011Regs) },
+            base: config.base_addr as usize,
             clock_freq: config.clock_freq,
             baud_rate: config.baud_rate,
         })
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
+        let regs = self.regs();
+
         // Disable UART
-        self.regs.cr.set(0);
+        regs.cr.set(0);
 
         // Set baud rate using u64 to avoid overflow in intermediate calculations.
         // BRD = UARTCLK / (16 * Baud Rate)
@@ -145,16 +165,14 @@ impl Device for Pl011 {
         let brd_i = (clk / divisor) as u32;
         let brd_f = (((clk % divisor) * 64 + baud / 2) / baud) as u32;
 
-        self.regs.ibrd.set(brd_i);
-        self.regs.fbrd.set(brd_f);
+        regs.ibrd.set(brd_i);
+        regs.fbrd.set(brd_f);
 
         // 8N1, FIFO enabled
-        self.regs.lcr_h.write(LCR_H::WLEN::Bits8 + LCR_H::FEN::SET);
+        regs.lcr_h.write(LCR_H::WLEN::Bits8 + LCR_H::FEN::SET);
 
         // Enable UART, TX, RX
-        self.regs
-            .cr
-            .write(CR::UARTEN::SET + CR::TXE::SET + CR::RXE::SET);
+        regs.cr.write(CR::UARTEN::SET + CR::TXE::SET + CR::RXE::SET);
 
         Ok(())
     }
@@ -162,17 +180,19 @@ impl Device for Pl011 {
 
 impl Console for Pl011 {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
+        let regs = self.regs();
         // Wait for TX FIFO not full
-        while self.regs.fr.is_set(FR::TXFF) {
+        while regs.fr.is_set(FR::TXFF) {
             core::hint::spin_loop();
         }
-        self.regs.dr.set(byte as u32);
+        regs.dr.set(byte as u32);
         Ok(())
     }
 
     fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
-        if !self.regs.fr.is_set(FR::RXFE) {
-            Ok(Some(self.regs.dr.get() as u8))
+        let regs = self.regs();
+        if !regs.fr.is_set(FR::RXFE) {
+            Ok(Some(regs.dr.get() as u8))
         } else {
             Ok(None)
         }

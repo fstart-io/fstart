@@ -72,12 +72,13 @@ pub(in crate::stage_gen) fn egon_sram_base(config: &BoardConfig) -> u64 {
 // Boot media value inference
 // ---------------------------------------------------------------------------
 
-/// Determine the eGON `boot_media` values that correspond to a device.
+/// Determine the SoC boot-source register values that correspond to a device.
 ///
-/// Maps a device name to the BROM boot_media constants based on the
-/// device's driver type and configuration.  Used by `plan_gen` and
-/// `board_gen` to emit match arms for runtime boot-device
-/// auto-detection.
+/// Delegates to [`DriverInstance::boot_media_values()`] on the device's
+/// driver instance.  The mapping constants live in
+/// `fstart-device-registry` (co-located with driver metadata), not here.
+///
+/// Returns an empty `Vec` for drivers that have no boot-source mapping.
 pub(crate) fn boot_media_values_for_device(
     dev_name: &str,
     devices: &[DeviceConfig],
@@ -89,32 +90,5 @@ pub(crate) fn boot_media_values_for_device(
             dev_name
         );
     };
-    let inst = &instances[idx];
-    let driver_name = inst.meta().name;
-
-    match driver_name {
-        "sunxi-mmc" => {
-            // All sunxi MMC controllers share the same eGON boot_media
-            // constants. Extract mmc_index via the SunxiMmcConfig helper.
-            if let DriverInstance::SunxiMmc(cfg) = inst {
-                match cfg.mmc_index() {
-                    0 => vec![0x00, 0x10], // BOOT_MEDIA_MMC0, BOOT_MEDIA_MMC0_HIGH
-                    2 => vec![0x02, 0x12], // BOOT_MEDIA_MMC2, BOOT_MEDIA_MMC2_HIGH
-                    other => panic!(
-                        "boot_media_values_for_device: unsupported mmc_index {} for device '{}'",
-                        other, dev_name
-                    ),
-                }
-            } else {
-                unreachable!("driver name is sunxi-mmc but instance is not SunxiMmc")
-            }
-        }
-        "sunxi-spi" => {
-            vec![0x03] // BOOT_MEDIA_SPI
-        }
-        other => panic!(
-            "boot_media_values_for_device: driver '{}' on device '{}' has no known boot_media mapping",
-            other, dev_name
-        ),
-    }
+    instances[idx].boot_media_values()
 }
