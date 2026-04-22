@@ -1,42 +1,47 @@
 //! Intel ICH/PCH southbridge GPIO controller.
 //!
-//! Provides GPIO pad configuration and runtime get/set/input/output for
-//! Intel southbridges that use the legacy GPIOBASE I/O port interface:
+//! Provides per-pin GPIO pad configuration and runtime get/set/input/output
+//! for Intel southbridges that use the legacy GPIOBASE I/O port interface:
 //! ICH7, ICH8, ICH9, ICH10, NM10, and 5/6-series PCH.
 //!
-//! The GPIO space is divided into three sets of 32 pins each:
+//! # GPIO space layout
 //!
-//! | Set | Pins   | GPIOBASE offsets |
-//! |-----|--------|------------------|
-//! | 1   | 0–31   | 0x00 / 0x04 / 0x0C / 0x18 / 0x2C / 0x60 |
-//! | 2   | 32–63  | 0x30 / 0x34 / 0x38 / 0x64 |
-//! | 3   | 64–75  | 0x40 / 0x44 / 0x48 / 0x68 |
+//! The GPIO space is divided into three sets of 32 pins each (76 total):
 //!
-//! Each set has registers for:
-//! - **USE_SEL**: 0 = native function, 1 = GPIO mode
-//! - **IO_SEL**: 0 = output, 1 = input (only meaningful in GPIO mode)
-//! - **LVL**: output level (0 = low, 1 = high) / input state read-back
-//! - **RST_SEL**: reset type (0 = PWROK, 1 = RSMRST#)
-//!
-//! Set 1 additionally has:
-//! - **BLINK**: 0 = no blink, 1 = blink
-//! - **INV**: input inversion (GPI_INV)
+//! | Set | Pins  | GPIOBASE offsets                          |
+//! |-----|-------|-------------------------------------------|
+//! | 1   | 0–31  | USE_SEL 0x00, IO_SEL 0x04, LVL 0x0C, ... |
+//! | 2   | 32–63 | USE_SEL2 0x30, IO_SEL2 0x34, LVL2 0x38   |
+//! | 3   | 64–75 | USE_SEL3 0x40, IO_SEL3 0x44, LVL3 0x48   |
 //!
 //! # Board configuration
 //!
 //! GPIO pads are configured from the board RON file using [`GpioConfig`],
-//! which contains three [`GpioSet`] bitfields.  The RON syntax is:
+//! which contains a list of [`GpioPin`] entries — one per pin that differs
+//! from the default (Native mode).  Pins not listed are left in their
+//! native/reset state.
 //!
 //! ```ron
-//! gpio: (
-//!     set1: ( mode: 0x1F0FF4C1, direction: 0, level: 0, blink: 0, invert: 0, reset: 0 ),
-//!     set2: ( mode: 0x00000066, direction: 0x00000066, level: 0, blink: 0, invert: 0, reset: 0 ),
-//!     set3: ( mode: 0, direction: 0, level: 0, blink: 0, invert: 0, reset: 0 ),
-//! )
+//! gpio: (pins: [
+//!     // GPIO outputs (default: mode=Gpio, dir=Output, level=Low)
+//!     ( pin: 0 ),
+//!     ( pin: 6 ),
+//!     ( pin: 7 ),
+//!     // GPIO input
+//!     ( pin: 33, dir: Input ),
+//!     // GPIO output, driven high
+//!     ( pin: 24, level: High ),
+//!     // Full explicit form
+//!     ( pin: 10, mode: Gpio, dir: Output, level: Low, reset: Rsmrst ),
+//! ])
 //! ```
+//!
+//! Since you only list pins that are GPIO (not Native), the default for
+//! `mode` is `Gpio` — if you list a pin, you want it in GPIO mode.
 
 #![no_std]
 
+use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -72,50 +77,198 @@ const IO_SEL_REGS: [u16; 3] = [GP_IO_SEL, GP_IO_SEL2, GP_IO_SEL3];
 const LVL_REGS: [u16; 3] = [GP_LVL, GP_LVL2, GP_LVL3];
 
 // ---------------------------------------------------------------------------
-// Configuration types (serde, for board RON)
+// Per-pin configuration types (serde, for board RON)
 // ---------------------------------------------------------------------------
 
-/// GPIO pad configuration for one set of 32 pins.
+/// GPIO pin function select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GpioMode {
+    /// Pin controlled by its native hardware function (USE_SEL = 0).
+    Native,
+    /// Pin is a general-purpose I/O (USE_SEL = 1).
+    Gpio,
+}
+
+impl Default for GpioMode {
+    /// Defaults to `Gpio` — if you list a pin, you want it in GPIO mode.
+    fn default() -> Self {
+        Self::Gpio
+    }
+}
+
+/// GPIO pin direction (only meaningful in GPIO mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GpioDir {
+    /// Pin drives an output (IO_SEL = 0).
+    Output,
+    /// Pin reads an input (IO_SEL = 1).
+    Input,
+}
+
+impl Default for GpioDir {
+    fn default() -> Self {
+        Self::Output
+    }
+}
+
+/// GPIO output level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GpioLevel {
+    /// Output driven low / reads as low (LVL = 0).
+    Low,
+    /// Output driven high / reads as high (LVL = 1).
+    High,
+}
+
+impl Default for GpioLevel {
+    fn default() -> Self {
+        Self::Low
+    }
+}
+
+/// GPIO reset type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GpioReset {
+    /// Reset on PWROK de-assertion (RST_SEL = 0).
+    Pwrok,
+    /// Reset on RSMRST# de-assertion — survives S3/S4 (RST_SEL = 1).
+    Rsmrst,
+}
+
+impl Default for GpioReset {
+    fn default() -> Self {
+        Self::Pwrok
+    }
+}
+
+/// Configuration for a single GPIO pin.
 ///
-/// Each bit position corresponds to a pin within the set.
-/// Unused fields default to 0.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct GpioSet {
-    /// GPIO mode select: 0 = native function, 1 = GPIO mode.
+/// Only pins that differ from the default (Native mode) need to be
+/// listed in the board RON.  For the most common case — a GPIO output
+/// driven low — just `( pin: N )` suffices.
+///
+/// # RON examples
+///
+/// ```ron
+/// ( pin: 0 )                          // GPIO output, low (all defaults)
+/// ( pin: 33, dir: Input )             // GPIO input
+/// ( pin: 24, level: High )            // GPIO output, high
+/// ( pin: 7, blink: true )             // GPIO output with blink
+/// ( pin: 10, reset: Rsmrst )          // survives S3/S4
+/// ( pin: 5, mode: Native )            // explicitly native (rare)
+/// ```
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct GpioPin {
+    /// Pin number (0–75).
+    pub pin: u8,
+    /// Function select: `Gpio` (default) or `Native`.
     #[serde(default)]
-    pub mode: u32,
-    /// I/O direction: 0 = output, 1 = input (GPIO-mode pins only).
+    pub mode: GpioMode,
+    /// I/O direction: `Output` (default) or `Input`.
     #[serde(default)]
-    pub direction: u32,
-    /// Output level: 0 = low, 1 = high.
+    pub dir: GpioDir,
+    /// Output level: `Low` (default) or `High`.
     #[serde(default)]
-    pub level: u32,
-    /// Blink enable (set 1 only; ignored for sets 2/3).
+    pub level: GpioLevel,
+    /// Blink enable (set 1 only, pins 0–31). Default: `false`.
     #[serde(default)]
-    pub blink: u32,
-    /// Input inversion (set 1 only; ignored for sets 2/3).
+    pub blink: bool,
+    /// Input inversion (set 1 only, pins 0–31). Default: `false`.
     #[serde(default)]
-    pub invert: u32,
-    /// Reset select: 0 = PWROK, 1 = RSMRST#.
+    pub invert: bool,
+    /// Reset type: `Pwrok` (default) or `Rsmrst`.
     #[serde(default)]
-    pub reset: u32,
+    pub reset: GpioReset,
 }
 
 /// Full GPIO configuration for an ICH/PCH southbridge.
 ///
-/// Three sets cover all 76 GPIO pins (0–75). Most boards only use
-/// sets 1 and 2; set 3 can be left at defaults.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+/// Contains a sparse list of per-pin configurations. Pins not listed
+/// remain in their power-on default state (typically Native mode).
+///
+/// # RON example
+///
+/// ```ron
+/// gpio: (pins: [
+///     // GPIO outputs (active-low LEDs, active-low resets)
+///     ( pin: 0 ),
+///     ( pin: 6 ),
+///     ( pin: 7 ),
+///     ( pin: 8 ),
+///     // GPIO inputs (buttons, jumpers, detect pins)
+///     ( pin: 33, dir: Input ),
+///     ( pin: 34, dir: Input ),
+/// ])
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GpioConfig {
-    /// GPIO set 1 — pins 0–31.
+    /// Per-pin configurations. Only list pins that differ from defaults.
     #[serde(default)]
-    pub set1: GpioSet,
-    /// GPIO set 2 — pins 32–63.
-    #[serde(default)]
-    pub set2: GpioSet,
-    /// GPIO set 3 — pins 64–75 (ICH7 has 12 pins here).
-    #[serde(default)]
-    pub set3: GpioSet,
+    pub pins: HVec<GpioPin, 76>,
+}
+
+// ---------------------------------------------------------------------------
+// Internal: register-level representation
+// ---------------------------------------------------------------------------
+
+/// Raw GPIO register values, computed from per-pin config.
+struct GpioRegisters {
+    use_sel: [u32; 3],
+    io_sel: [u32; 3],
+    lvl: [u32; 3],
+    blink: u32,
+    invert: u32,
+    rst_sel: [u32; 3],
+}
+
+impl GpioRegisters {
+    /// Convert a [`GpioConfig`] into raw register values.
+    fn from_config(cfg: &GpioConfig) -> Self {
+        let mut regs = Self {
+            use_sel: [0; 3],
+            io_sel: [0; 3],
+            lvl: [0; 3],
+            blink: 0,
+            invert: 0,
+            rst_sel: [0; 3],
+        };
+
+        for p in &cfg.pins {
+            if p.pin > MAX_GPIO {
+                continue;
+            }
+            let set = (p.pin / 32) as usize;
+            let bit = 1u32 << (p.pin % 32);
+
+            // USE_SEL: 1 = GPIO mode.
+            if p.mode == GpioMode::Gpio {
+                regs.use_sel[set] |= bit;
+            }
+            // IO_SEL: 1 = input.
+            if p.dir == GpioDir::Input {
+                regs.io_sel[set] |= bit;
+            }
+            // LVL: 1 = high.
+            if p.level == GpioLevel::High {
+                regs.lvl[set] |= bit;
+            }
+            // RST_SEL: 1 = RSMRST.
+            if p.reset == GpioReset::Rsmrst {
+                regs.rst_sel[set] |= bit;
+            }
+            // Blink and invert are set 1 only.
+            if set == 0 {
+                if p.blink {
+                    regs.blink |= bit;
+                }
+                if p.invert {
+                    regs.invert |= bit;
+                }
+            }
+        }
+
+        regs
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,45 +299,52 @@ impl IchGpio {
 
     /// Program all GPIO pads from a [`GpioConfig`].
     ///
-    /// Ported from coreboot `setup_pch_gpios()`. The write order
-    /// matters on ICH7/ICH9M and earlier: level is written both
-    /// *before* and *after* the mode/direction registers to prevent
-    /// glitches when pins transition between native and GPIO mode.
+    /// Converts the per-pin configuration into register values, then
+    /// writes all three sets with the correct glitch-free ordering
+    /// from coreboot `setup_pch_gpios()`:
+    ///
+    /// 1. Write level first (to set output values before pins switch)
+    /// 2. Write USE_SEL (switch pins to GPIO mode)
+    /// 3. Write IO_SEL (set direction)
+    /// 4. Write level again (in case pins were gated)
+    /// 5. Write RST_SEL, GPI_INV, GPO_BLINK
     #[cfg(target_arch = "x86_64")]
     pub fn setup(&self, cfg: &GpioConfig) {
+        let regs = GpioRegisters::from_config(cfg);
+
         // SAFETY: GPIOBASE was programmed by the southbridge driver
         // and is a valid I/O port range (0x80 bytes).
         unsafe {
-            // Set 1 (pins 0–31).
-            fstart_pio::outl(self.base + GP_LVL, cfg.set1.level);
-            fstart_pio::outl(self.base + GPIO_USE_SEL, cfg.set1.mode);
-            fstart_pio::outl(self.base + GP_IO_SEL, cfg.set1.direction);
-            fstart_pio::outl(self.base + GP_LVL, cfg.set1.level);
-            fstart_pio::outl(self.base + GP_RST_SEL1, cfg.set1.reset);
-            fstart_pio::outl(self.base + GPI_INV, cfg.set1.invert);
-            fstart_pio::outl(self.base + GPO_BLINK, cfg.set1.blink);
+            // Set 1 (pins 0–31): level-first ordering.
+            fstart_pio::outl(self.base + GP_LVL, regs.lvl[0]);
+            fstart_pio::outl(self.base + GPIO_USE_SEL, regs.use_sel[0]);
+            fstart_pio::outl(self.base + GP_IO_SEL, regs.io_sel[0]);
+            fstart_pio::outl(self.base + GP_LVL, regs.lvl[0]);
+            fstart_pio::outl(self.base + GP_RST_SEL1, regs.rst_sel[0]);
+            fstart_pio::outl(self.base + GPI_INV, regs.invert);
+            fstart_pio::outl(self.base + GPO_BLINK, regs.blink);
 
             // Set 2 (pins 32–63).
-            fstart_pio::outl(self.base + GP_LVL2, cfg.set2.level);
-            fstart_pio::outl(self.base + GPIO_USE_SEL2, cfg.set2.mode);
-            fstart_pio::outl(self.base + GP_IO_SEL2, cfg.set2.direction);
-            fstart_pio::outl(self.base + GP_LVL2, cfg.set2.level);
-            fstart_pio::outl(self.base + GP_RST_SEL2, cfg.set2.reset);
+            fstart_pio::outl(self.base + GP_LVL2, regs.lvl[1]);
+            fstart_pio::outl(self.base + GPIO_USE_SEL2, regs.use_sel[1]);
+            fstart_pio::outl(self.base + GP_IO_SEL2, regs.io_sel[1]);
+            fstart_pio::outl(self.base + GP_LVL2, regs.lvl[1]);
+            fstart_pio::outl(self.base + GP_RST_SEL2, regs.rst_sel[1]);
 
             // Set 3 (pins 64–75).
-            fstart_pio::outl(self.base + GP_LVL3, cfg.set3.level);
-            fstart_pio::outl(self.base + GPIO_USE_SEL3, cfg.set3.mode);
-            fstart_pio::outl(self.base + GP_IO_SEL3, cfg.set3.direction);
-            fstart_pio::outl(self.base + GP_LVL3, cfg.set3.level);
-            fstart_pio::outl(self.base + GP_RST_SEL3, cfg.set3.reset);
+            fstart_pio::outl(self.base + GP_LVL3, regs.lvl[2]);
+            fstart_pio::outl(self.base + GPIO_USE_SEL3, regs.use_sel[2]);
+            fstart_pio::outl(self.base + GP_IO_SEL3, regs.io_sel[2]);
+            fstart_pio::outl(self.base + GP_LVL3, regs.lvl[2]);
+            fstart_pio::outl(self.base + GP_RST_SEL3, regs.rst_sel[2]);
         }
 
-        fstart_log::info!("ich-gpio: pads configured (3 sets)");
+        fstart_log::info!("ich-gpio: {} pins configured", cfg.pins.len());
     }
 
     #[cfg(not(target_arch = "x86_64"))]
-    pub fn setup(&self, _cfg: &GpioConfig) {
-        fstart_log::info!("ich-gpio: setup (stub, non-x86)");
+    pub fn setup(&self, cfg: &GpioConfig) {
+        fstart_log::info!("ich-gpio: setup ({} pins, stub)", cfg.pins.len());
     }
 
     // -------------------------------------------------------------------
@@ -202,7 +362,6 @@ impl IchGpio {
         }
         let (set, bit) = (pin / 32, pin % 32);
         let reg = LVL_REGS[set as usize];
-        // SAFETY: GPIOBASE is valid.
         let val = unsafe { fstart_pio::inl(self.base + reg) };
         val & (1 << bit) != 0
     }
@@ -223,7 +382,6 @@ impl IchGpio {
         }
         let (set, bit) = (pin / 32, pin % 32);
         let reg = LVL_REGS[set as usize];
-        // SAFETY: GPIOBASE is valid.
         unsafe {
             let mut val = fstart_pio::inl(self.base + reg);
             if high {
@@ -351,4 +509,210 @@ impl IchGpio {
 
     #[cfg(not(target_arch = "x86_64"))]
     pub fn invert(&self, _pin: u8, _enable: bool) {}
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_config_produces_zero_registers() {
+        let cfg = GpioConfig::default();
+        let regs = GpioRegisters::from_config(&cfg);
+        for i in 0..3 {
+            assert_eq!(regs.use_sel[i], 0);
+            assert_eq!(regs.io_sel[i], 0);
+            assert_eq!(regs.lvl[i], 0);
+            assert_eq!(regs.rst_sel[i], 0);
+        }
+        assert_eq!(regs.blink, 0);
+        assert_eq!(regs.invert, 0);
+    }
+
+    #[test]
+    fn single_gpio_output_low() {
+        let mut cfg = GpioConfig::default();
+        cfg.pins
+            .push(GpioPin {
+                pin: 6,
+                mode: GpioMode::Gpio,
+                dir: GpioDir::Output,
+                level: GpioLevel::Low,
+                blink: false,
+                invert: false,
+                reset: GpioReset::Pwrok,
+            })
+            .ok();
+        let regs = GpioRegisters::from_config(&cfg);
+        assert_eq!(regs.use_sel[0], 1 << 6); // GPIO mode
+        assert_eq!(regs.io_sel[0], 0); // output
+        assert_eq!(regs.lvl[0], 0); // low
+    }
+
+    #[test]
+    fn gpio_input_pin_33() {
+        let mut cfg = GpioConfig::default();
+        cfg.pins
+            .push(GpioPin {
+                pin: 33,
+                mode: GpioMode::Gpio,
+                dir: GpioDir::Input,
+                level: GpioLevel::Low,
+                blink: false,
+                invert: false,
+                reset: GpioReset::Pwrok,
+            })
+            .ok();
+        let regs = GpioRegisters::from_config(&cfg);
+        // Pin 33 → set 1 (index 1), bit 1.
+        assert_eq!(regs.use_sel[1], 1 << 1);
+        assert_eq!(regs.io_sel[1], 1 << 1);
+    }
+
+    /// Verify the foxconn-d41s GPIO config produces correct register values.
+    ///
+    /// These values were manually verified against coreboot's
+    /// `mainboard/foxconn/d41s/gpio.c` per-pin definitions.
+    #[test]
+    fn foxconn_d41s_gpio_registers() {
+        let mut cfg = GpioConfig::default();
+
+        // Set 1: GPIO outputs, low.
+        for pin in [0, 6, 7, 8, 9, 10, 12, 13, 14, 15, 24, 25, 26, 27, 28] {
+            cfg.pins
+                .push(GpioPin {
+                    pin,
+                    mode: GpioMode::Gpio,
+                    dir: GpioDir::Output,
+                    level: GpioLevel::Low,
+                    blink: false,
+                    invert: false,
+                    reset: GpioReset::Pwrok,
+                })
+                .ok();
+        }
+        // Set 2: GPIO inputs.
+        for pin in [33, 34, 38, 39] {
+            cfg.pins
+                .push(GpioPin {
+                    pin,
+                    mode: GpioMode::Gpio,
+                    dir: GpioDir::Input,
+                    level: GpioLevel::Low,
+                    blink: false,
+                    invert: false,
+                    reset: GpioReset::Pwrok,
+                })
+                .ok();
+        }
+
+        let regs = GpioRegisters::from_config(&cfg);
+
+        // set1 mode: pins 0,6,7,8,9,10,12,13,14,15,24,25,26,27,28
+        assert_eq!(regs.use_sel[0], 0x1F00_F7C1, "set1 USE_SEL");
+        assert_eq!(regs.io_sel[0], 0, "set1 IO_SEL (all output)");
+        assert_eq!(regs.lvl[0], 0, "set1 LVL (all low)");
+
+        // set2 mode: pins 33,34,38,39 (bits 1,2,6,7 in set2)
+        assert_eq!(regs.use_sel[1], 0xC6, "set2 USE_SEL");
+        assert_eq!(regs.io_sel[1], 0xC6, "set2 IO_SEL (all input)");
+
+        // set3: nothing configured.
+        assert_eq!(regs.use_sel[2], 0);
+    }
+
+    #[test]
+    fn blink_and_invert_only_set1() {
+        let mut cfg = GpioConfig::default();
+        // Pin 3 with blink.
+        cfg.pins
+            .push(GpioPin {
+                pin: 3,
+                mode: GpioMode::Gpio,
+                dir: GpioDir::Output,
+                level: GpioLevel::Low,
+                blink: true,
+                invert: false,
+                reset: GpioReset::Pwrok,
+            })
+            .ok();
+        // Pin 40 with blink — should be ignored (set 2).
+        cfg.pins
+            .push(GpioPin {
+                pin: 40,
+                mode: GpioMode::Gpio,
+                dir: GpioDir::Output,
+                level: GpioLevel::Low,
+                blink: true,
+                invert: true,
+                reset: GpioReset::Pwrok,
+            })
+            .ok();
+
+        let regs = GpioRegisters::from_config(&cfg);
+        assert_eq!(regs.blink, 1 << 3); // only set 1 pin
+        assert_eq!(regs.invert, 0); // pin 40's invert ignored
+    }
+
+    #[test]
+    fn rsmrst_reset_type() {
+        let mut cfg = GpioConfig::default();
+        cfg.pins
+            .push(GpioPin {
+                pin: 10,
+                mode: GpioMode::Gpio,
+                dir: GpioDir::Output,
+                level: GpioLevel::High,
+                blink: false,
+                invert: false,
+                reset: GpioReset::Rsmrst,
+            })
+            .ok();
+        let regs = GpioRegisters::from_config(&cfg);
+        assert_eq!(regs.use_sel[0], 1 << 10);
+        assert_eq!(regs.lvl[0], 1 << 10); // high
+        assert_eq!(regs.rst_sel[0], 1 << 10); // rsmrst
+    }
+
+    #[test]
+    fn pin_out_of_range_ignored() {
+        let mut cfg = GpioConfig::default();
+        cfg.pins
+            .push(GpioPin {
+                pin: 80, // invalid
+                mode: GpioMode::Gpio,
+                dir: GpioDir::Output,
+                level: GpioLevel::High,
+                blink: false,
+                invert: false,
+                reset: GpioReset::Pwrok,
+            })
+            .ok();
+        let regs = GpioRegisters::from_config(&cfg);
+        for i in 0..3 {
+            assert_eq!(regs.use_sel[i], 0);
+        }
+    }
+
+    /// Verify RON deserialization works with minimal per-pin syntax.
+    #[test]
+    fn ron_deserialize_minimal() {
+        let ron_str = r#"(pins: [
+            ( pin: 0 ),
+            ( pin: 6 ),
+            ( pin: 33, dir: Input ),
+        ])"#;
+        let cfg: GpioConfig = ron::from_str(ron_str).expect("RON parse");
+        assert_eq!(cfg.pins.len(), 3);
+        assert_eq!(cfg.pins[0].pin, 0);
+        assert_eq!(cfg.pins[0].mode, GpioMode::Gpio);
+        assert_eq!(cfg.pins[0].dir, GpioDir::Output);
+        assert_eq!(cfg.pins[1].pin, 6);
+        assert_eq!(cfg.pins[2].pin, 33);
+        assert_eq!(cfg.pins[2].dir, GpioDir::Input);
+    }
 }

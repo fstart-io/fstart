@@ -7,5 +7,9 @@ description = "GPIO controller for Intel ICH/PCH southbridges (ICH7-ICH10, NM10,
 [dependencies]
 fstart-pio = { path = "../fstart-pio" }
 fstart-log = { path = "../fstart-log" }
+heapless = { workspace = true }
+serde = { workspace = true }
 ufmt = { workspace = true }
-serde = { version = "1", default-features = false, features = ["derive"] }
+
+[dev-dependencies]
+ron = { workspace = true }

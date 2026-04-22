@@ -162,7 +162,7 @@ pub struct UsbConfig {
 // See fstart_hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
 
 // GPIO pad types are defined in the shared fstart-gpio-ich crate.
-pub use fstart_gpio_ich::{GpioConfig, GpioSet, IchGpio};
+pub use fstart_gpio_ich::{GpioConfig, GpioPin, IchGpio};
 
 /// ICH7 southbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
