@@ -5,7 +5,7 @@
 //! `sdram_clkmode`, `sdram_timings`, `sdram_checkreset`.
 
 use super::SysInfo;
-use fstart_pineview_regs::{hostbridge, ich7, mchbar, EcamPci, MchBar};
+use fstart_pineview_regs::{ecam, hostbridge, ich7, mchbar, MchBar};
 
 // ===================================================================
 // Helpers
@@ -41,9 +41,9 @@ fn div_round_up(a: u32, b: u32) -> u32 {
 /// then find the common CAS latency across all populated DIMMs.
 ///
 /// Ported from coreboot `sdram_detect_ram_speed()`.
-pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar, ecam: &EcamPci) {
+pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
     // --- Read FSB frequency from host bridge register 0xE3 ---
-    let e3 = ecam.read8(0, 0, 0, 0xE3);
+    let e3 = ecam::read8(0, 0, 0, 0xE3);
     let fsb_raw = (e3 & 0x70) >> 4;
     let fsb: u8 = if fsb_raw != 0 {
         // 5 - fsb_raw: 4→1(800), 3→2(invalid), 2→3(invalid), 1→4(invalid)
@@ -54,7 +54,7 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar, ecam: &EcamPci) {
     };
 
     // --- Read DDR frequency from host bridge registers 0xE3/0xE4 ---
-    let freq_raw = ((e3 & 0x80) >> 7) | ((ecam.read8(0, 0, 0, 0xE4) & 0x03) << 1);
+    let freq_raw = ((e3 & 0x80) >> 7) | ((ecam::read8(0, 0, 0, 0xE4) & 0x03) << 1);
     let mut freq: u8 = if freq_raw != 0 {
         // 6 - freq_raw: 5→1(800), 4→2(invalid), ... Only 5 (=800) and 0 used.
         (6u8.saturating_sub(freq_raw)).min(1)
@@ -402,12 +402,12 @@ pub fn clkmode(si: &SysInfo, mch: &MchBar) {
 /// a full platform reset.
 ///
 /// Ported from coreboot `sdram_checkreset()`.
-pub fn check_reset(si: &SysInfo, ecam: &EcamPci) {
+pub fn check_reset(si: &SysInfo) {
     let d = ich7::LPC_DEV;
     let f = ich7::LPC_FUNC;
 
-    let mut pmcon2 = ecam.read8(0, d, f, 0xA2);
-    let mut pmcon3 = ecam.read8(0, d, f, 0xA4);
+    let mut pmcon2 = ecam::read8(0, d, f, 0xA2);
+    let mut pmcon3 = ecam::read8(0, d, f, 0xA4);
     pmcon3 &= !0x02;
 
     let reset = if pmcon2 & 0x80 != 0 {
@@ -424,8 +424,8 @@ pub fn check_reset(si: &SysInfo, ecam: &EcamPci) {
         pmcon3 |= 1 << 3;
     }
 
-    ecam.write8(0, d, f, 0xA2, pmcon2);
-    ecam.write8(0, d, f, 0xA4, pmcon3);
+    ecam::write8(0, d, f, 0xA2, pmcon2);
+    ecam::write8(0, d, f, 0xA4, pmcon3);
 
     if reset {
         fstart_log::info!("raminit: triggering full reset (PMCON2 bit 7 set)");

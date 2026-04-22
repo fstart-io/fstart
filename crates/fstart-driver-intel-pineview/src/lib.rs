@@ -17,7 +17,7 @@
 
 pub mod raminit;
 
-use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, EcamPci, MchBar, Rcba};
+use fstart_pineview_regs::{ecam, hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
 use fstart_services::{PciHost, ServiceError};
@@ -72,9 +72,6 @@ unsafe impl Sync for IntelPineview {}
 
 impl IntelPineview {
     /// ECAM accessor for this platform.
-    fn ecam(&self) -> EcamPci {
-        EcamPci::new(self.config.ecam_base as usize)
-    }
 
     /// MCHBAR accessor.
     fn mchbar(&self) -> MchBar {
@@ -105,11 +102,13 @@ impl IntelPineview {
         unsafe {
             fstart_pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR as u8, pciexbar_val);
         }
+        ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("pineview: ECAM enabled at {:#x}", self.config.ecam_base);
     }
 
     #[cfg(not(target_arch = "x86_64"))]
     fn enable_ecam(&self) {
+        ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("pineview: ECAM enable (stub, non-x86)");
     }
 
@@ -117,13 +116,11 @@ impl IntelPineview {
     ///
     /// Ported from coreboot `pineview_setup_bars()`.
     fn setup_bars(&self) {
-        let ecam = self.ecam();
-
         // EPBAR, MCHBAR, DMIBAR — 32-bit writes with enable bit 0.
-        ecam.write32(0, 0, 0, hostbridge::EPBAR, (self.config.epbar as u32) | 1);
-        ecam.write32(0, 0, 0, hostbridge::MCHBAR, (self.config.mchbar as u32) | 1);
-        ecam.write32(0, 0, 0, hostbridge::DMIBAR, (self.config.dmibar as u32) | 1);
-        ecam.write32(
+        ecam::write32(0, 0, 0, hostbridge::EPBAR, (self.config.epbar as u32) | 1);
+        ecam::write32(0, 0, 0, hostbridge::MCHBAR, (self.config.mchbar as u32) | 1);
+        ecam::write32(0, 0, 0, hostbridge::DMIBAR, (self.config.dmibar as u32) | 1);
+        ecam::write32(
             0,
             0,
             0,
@@ -132,16 +129,16 @@ impl IntelPineview {
         );
 
         // DEVEN — enable D0F0, D2F0, D2F1.
-        ecam.write8(0, 0, 0, hostbridge::DEVEN, hostbridge::BOARD_DEVEN);
+        ecam::write8(0, 0, 0, hostbridge::DEVEN, hostbridge::BOARD_DEVEN);
 
         // PAM0..PAM6: unlock BIOS shadow region C0000–FFFFF for RAM r/w.
-        ecam.write8(0, 0, 0, hostbridge::PAM0, 0x30);
-        ecam.write8(0, 0, 0, hostbridge::PAM1, 0x33);
-        ecam.write8(0, 0, 0, hostbridge::PAM2, 0x33);
-        ecam.write8(0, 0, 0, hostbridge::PAM3, 0x33);
-        ecam.write8(0, 0, 0, hostbridge::PAM4, 0x33);
-        ecam.write8(0, 0, 0, hostbridge::PAM5, 0x33);
-        ecam.write8(0, 0, 0, hostbridge::PAM6, 0x33);
+        ecam::write8(0, 0, 0, hostbridge::PAM0, 0x30);
+        ecam::write8(0, 0, 0, hostbridge::PAM1, 0x33);
+        ecam::write8(0, 0, 0, hostbridge::PAM2, 0x33);
+        ecam::write8(0, 0, 0, hostbridge::PAM3, 0x33);
+        ecam::write8(0, 0, 0, hostbridge::PAM4, 0x33);
+        ecam::write8(0, 0, 0, hostbridge::PAM5, 0x33);
+        ecam::write8(0, 0, 0, hostbridge::PAM6, 0x33);
 
         fstart_log::info!("pineview: northbridge BARs and PAM configured");
     }
@@ -150,11 +147,10 @@ impl IntelPineview {
     ///
     /// Ported from coreboot `early_graphics_setup()`.
     fn early_graphics_setup(&self) {
-        let ecam = self.ecam();
         let mch = self.mchbar();
 
         // GGC: 1 MiB GTT (GGMS=1), 8 MiB stolen (GMS=3).
-        ecam.write16(0, 0, 0, hostbridge::GGC, (1 << 8) | (3 << 4));
+        ecam::write16(0, 0, 0, hostbridge::GGC, (1 << 8) | (3 << 4));
 
         // Graphics clock dividers.
         const CRCLK_PINEVIEW: u32 = 0x02;
@@ -176,11 +172,11 @@ impl IntelPineview {
             0x1 => 0xAD,     // 4000 MHz
             _ => 0xA0,
         };
-        let cc_val = ecam.read16(0, 2, 0, 0xCC) & !0x1FF;
-        ecam.write16(0, 2, 0, 0xCC, cc_val | igd_cc);
+        let cc_val = ecam::read16(0, 2, 0, 0xCC) & !0x1FF;
+        ecam::write16(0, 2, 0, 0xCC, cc_val | igd_cc);
 
-        ecam.and8(0, 2, 0, 0x62, !0x3);
-        ecam.or8(0, 2, 0, 0x62, 2);
+        ecam::and8(0, 2, 0, 0x62, !0x3);
+        ecam::or8(0, 2, 0, 0x62, 2);
 
         // VGA CRT / LVDS output control.
         if let Some(ref igd) = self.config.igd {
@@ -205,7 +201,7 @@ impl IntelPineview {
         mch.setbits32(mchbar::DACGIOCTRL1, 1 << 5);
 
         // Legacy backlight control.
-        ecam.write8(0, 2, 0, 0xF4, 0x4C);
+        ecam::write8(0, 2, 0, 0xF4, 0x4C);
 
         fstart_log::info!("pineview: graphics clocks configured");
     }
@@ -214,7 +210,6 @@ impl IntelPineview {
     ///
     /// Ported from coreboot `early_misc_setup()`.
     fn early_misc_setup(&self) {
-        let ecam = self.ecam();
         let mch = self.mchbar();
         let dmi = self.dmibar();
 
@@ -224,8 +219,8 @@ impl IntelPineview {
         dmi.write32(0x2C, 0x8600_0040);
 
         // PCI bridge (1E:0): secondary bus programming.
-        ecam.write32(0, 0x1e, 0, 0x18, 0x0002_0200);
-        ecam.write32(0, 0x1e, 0, 0x18, 0x0000_0000);
+        ecam::write32(0, 0x1e, 0, 0x18, 0x0002_0200);
+        ecam::write32(0, 0x1e, 0, 0x18, 0x0000_0000);
 
         self.early_graphics_setup();
 
@@ -236,18 +231,18 @@ impl IntelPineview {
         mch.write32(mchbar::HIT4, 1 << 3);
 
         // LPC device (1F:0) revision ID reset sequence.
-        ecam.write8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08, 0x1D);
-        ecam.write8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08, 0x00);
+        ecam::write8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08, 0x1D);
+        ecam::write8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08, 0x00);
 
         // RCBA routing registers. Read RCBA from ICH7 LPC config.
-        let rcba_val = ecam.read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ich7::RCBA_REG);
+        let rcba_val = ecam::read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ich7::RCBA_REG);
         let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
 
         rcba.write32(0x3410, 0x0002_0465);
 
         // USB transient disconnect (1D:0..3 reg 0xCA).
         for func in 0..4u8 {
-            ecam.or32(0, 0x1d, func, 0xCA, 0x1);
+            ecam::or32(0, 0x1d, func, 0xCA, 0x1);
         }
 
         // RCBA routing table setup.
@@ -311,9 +306,7 @@ impl PciHost for IntelPineview {
         self.early_misc_setup();
 
         // 4. Route port80 to LPC.
-        let rcba_val = self
-            .ecam()
-            .read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ich7::RCBA_REG);
+        let rcba_val = ecam::read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ich7::RCBA_REG);
         let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
         let gcs = rcba.read32(ich7::GCS);
         rcba.write32(ich7::GCS, gcs & !0x04);
