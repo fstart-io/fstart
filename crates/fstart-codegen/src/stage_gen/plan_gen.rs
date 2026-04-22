@@ -225,6 +225,21 @@ fn cap_to_capop_tokens(cap: &Capability, ctx: &PlanCtx<'_>) -> TokenStream {
                 }
             }
         }
+        C::MpInit {
+            cpu_model,
+            num_cpus,
+            smm,
+        } => {
+            let model_str = cpu_model.as_str();
+            let nc = *num_cpus;
+            quote! {
+                fstart_stage_runtime::CapOp::MpInit {
+                    cpu_model: #model_str,
+                    num_cpus: #nc,
+                    smm: #smm,
+                }
+            }
+        }
         C::PciInit { device } => {
             let id = ctx.ids.lit(device.as_str(), "PciInit");
             quote! { fstart_stage_runtime::CapOp::PciInit(#id) }
