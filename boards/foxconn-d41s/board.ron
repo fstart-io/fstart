@@ -129,26 +129,35 @@
                 ecam_base: 0xE0000000,
                 smbus_base: 0x0400,
                 // GPIO from coreboot foxconn/d41s/gpio.c.
-                // Mode: 0=native, 1=GPIO. Bits = pin numbers.
-                gpio: (
-                    set1: (
-                        mode:      0x1F0F_F4C1,  // gpio0,6-10,12-15,24-28 = GPIO
-                        direction: 0x0000_0000,  // all outputs (zero = output)
-                        level:     0x0000_0000,  // all low
-                        blink:     0x0000_0000,
-                        invert:    0x0000_0000,
-                        reset:     0x0000_0000,
-                    ),
-                    set2: (
-                        mode:      0x0000_0066,  // gpio33,34,38,39 = GPIO
-                        direction: 0x0000_0066,  // those 4 are inputs
-                        level:     0x0000_0000,
-                        blink:     0x0000_0000,
-                        invert:    0x0000_0000,
-                        reset:     0x0000_0000,
-                    ),
-                    // set3 left at defaults — D41S doesn't use pins 64-75
-                ),
+                // Unlisted pins remain in their native hardware function.
+                gpio: (pins: [
+                    // Set 1: GPIO outputs, active-low (accent LEDs, resets, etc.)
+                    ( pin: 0 ),
+                    ( pin: 6 ),
+                    ( pin: 7 ),
+                    ( pin: 8 ),
+                    ( pin: 9 ),
+                    ( pin: 10 ),
+                    // pin 11: native (LAN_PHY_PWR_CTRL)
+                    ( pin: 12 ),
+                    ( pin: 13 ),
+                    ( pin: 14 ),
+                    ( pin: 15 ),
+                    // pins 16-23: native (SPI, PIRQ, SMBus, etc.)
+                    ( pin: 24 ),
+                    ( pin: 25 ),
+                    ( pin: 26 ),
+                    ( pin: 27 ),
+                    ( pin: 28 ),
+                    // pins 29-32: native (SLP_WLAN#, SUS_STAT#, etc.)
+                    // Set 2: GPIO inputs (jumpers, presence detect)
+                    ( pin: 33, dir: Input ),
+                    ( pin: 34, dir: Input ),
+                    // pins 35-37: native (NF_ALE, NF_WE, NF_RE)
+                    ( pin: 38, dir: Input ),
+                    ( pin: 39, dir: Input ),
+                    // pins 40-63: native
+                ]),
                 acpi_name: "LPCB",
                 c3_latency: 85,
                 power_on_after_fail: 0,
