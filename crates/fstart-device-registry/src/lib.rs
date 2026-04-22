@@ -651,6 +651,30 @@ impl DriverInstance {
         matches!(self, Self::Structural(_))
     }
 
+    /// Return the SoC boot-source register values that select this device.
+    ///
+    /// Used by `plan_gen` and `board_gen` to emit match arms for runtime
+    /// boot-device auto-detection (e.g. sunxi eGON `boot_media` byte).
+    /// Returns an empty `Vec` for drivers that have no boot-source
+    /// mapping (non-sunxi platforms, or devices that aren't boot media).
+    ///
+    /// The constants here mirror `fstart_soc_sunxi::BOOT_MEDIA_*` so
+    /// that the codegen (host-side, `std`) can use them without depending
+    /// on the `no_std` SoC crate.
+    pub fn boot_media_values(&self) -> Vec<u8> {
+        match self {
+            #[cfg(feature = "sunxi-mmc")]
+            Self::SunxiMmc(cfg) => match cfg.mmc_index() {
+                0 => vec![0x00, 0x10], // MMC0, MMC0_HIGH
+                2 => vec![0x02, 0x12], // MMC2, MMC2_HIGH
+                _ => Vec::new(),
+            },
+            #[cfg(feature = "sunxi-spi")]
+            Self::SunxiSpi(_) => vec![0x03], // SPI
+            _ => Vec::new(),
+        }
+    }
+
     /// Serialize just the inner config struct via the given serializer.
     ///
     /// This enables generic config-to-tokens conversion in `fstart-codegen`
