@@ -581,7 +581,22 @@ pub fn jump_to(addr: u64) -> ! {
 /// - `bootargs`: kernel command line string
 /// - `zero_page_addr`: physical address for boot_params (0x90000 on QEMU,
 ///   should be in e820-reported free conventional memory on real hardware)
-pub fn boot_linux(
+/// Unified Linux boot entry point.
+///
+/// All fields are used: `kernel_addr`, `rsdp_addr`, `e820_entries`,
+/// `bootargs`, `zero_page_addr`.
+/// Ignored fields: `dtb_addr`, `fw_addr`, `hart_id`.
+pub fn boot_linux(params: &fstart_services::boot::BootLinuxParams<'_>) -> ! {
+    boot_linux_direct(
+        params.kernel_addr,
+        params.rsdp_addr,
+        params.e820_entries,
+        params.bootargs,
+        params.zero_page_addr,
+    )
+}
+
+pub fn boot_linux_direct(
     kernel_addr: u64,
     rsdp_addr: u64,
     e820_entries: &[E820Entry],
