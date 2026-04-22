@@ -7,7 +7,12 @@ license.workspace = true
 
 [dependencies]
 fstart-log = { workspace = true }
+fstart-mmio = { workspace = true }
+fstart-pineview-regs = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
+fstart-spd = { workspace = true }
+fstart-smbus-intel = { workspace = true }
 serde = { workspace = true }
+tock-registers = { workspace = true }
 ufmt = { workspace = true }
