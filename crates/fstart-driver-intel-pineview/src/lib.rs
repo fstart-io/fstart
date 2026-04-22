@@ -83,6 +83,16 @@ impl IntelPineview {
         DmiBar::new(self.config.dmibar as usize)
     }
 
+    /// Detect warm reset via MCHBAR PMSTS bit 8.
+    ///
+    /// Called after SB's S3 detection. If S3 was not detected, this
+    /// checks whether the platform came from a warm reset (HOT RESET)
+    /// by reading PMSTS bit 8 in MCHBAR.
+    pub fn detect_warm_reset(&self) -> bool {
+        let mch = self.mchbar();
+        mch.read32(mchbar::PMSTS) & (1 << 8) != 0
+    }
+
     // ---------------------------------------------------------------
     // Early init sub-routines (ported from coreboot early_init.c)
     // ---------------------------------------------------------------
