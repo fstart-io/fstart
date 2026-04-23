@@ -546,9 +546,8 @@ fn test_non_bus_parent_is_compile_error() {
     });
     parsed.driver_instances.push(DriverInstance::I2cCk505(
         fstart_device_registry::i2c_ck505::I2cCk505Config {
-            num_regs: 5,
-            mask: [0; 16],
-            regs: [0; 16],
+            mask: heapless::Vec::new(),
+            regs: heapless::Vec::new(),
         },
     ));
     // uart0 is at index 0

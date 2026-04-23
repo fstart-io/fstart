@@ -470,9 +470,19 @@ core::arch::global_asm!(
     // Common exit point — CAR is live, stack is set.
     // ==================================================================
     "_car_done:",
-    // Continue to the normal 32-bit entry (page tables, long mode, etc.)
-    // The caller in _start32bit will continue after calling us.
-    "ret",
+    // CAR is now live.  Return to the caller via %ebp.
+    //
+    // _car_setup runs BEFORE there is a stack (the whole point is to
+    // create the stack in cache).  It cannot be called with `call` /
+    // returned from with `ret`.  Instead the entry asm does:
+    //
+    //     lea 1f(%rip), %ebp
+    //     jmp _car_setup
+    //   1:
+    //     /* post-CAR: set %esp, clear BSS, etc. */
+    //
+    // %ebp is callee-preserved across the NEM/evict paths above.
+    "jmp *%ebp",
     // Fixed MTRR list (shared by all paths).
     "_fixed_mtrr_list:",
     ".word 0x250", // MTRR_FIX_64K_00000
@@ -493,24 +503,19 @@ core::arch::global_asm!(
 // Rust-callable wrapper
 // ---------------------------------------------------------------------------
 
-extern "C" {
-    fn _car_setup();
-}
-
-/// Set up Cache-as-RAM.
-///
-/// Called from the 32-bit entry point before page tables and long mode.
-/// Detects the CPU variant via CPUID and uses the appropriate CAR method
-/// (NEM for Atom, standard for Core2/P4/P3).
-///
-/// # Safety
-///
-/// Must be called exactly once, very early, before any stack usage.
-/// The linker must provide `_car_base`, `_car_size`, `_ecar_stack`,
-/// `_rom_mtrr_base`, `_rom_mtrr_mask` symbols.
-pub unsafe fn car_setup() {
-    unsafe { _car_setup() }
-}
+// _car_setup is a global_asm label, not an extern "C" function.
+// It MUST be invoked via jmp (not call) because there is no stack
+// before CAR is enabled.  The caller stores a continuation address
+// in %ebp and jumps:
+//
+//     lea post_car(%rip), %ebp
+//     jmp _car_setup
+//   post_car:
+//     /* now CAR is live, set %esp, clear BSS, etc. */
+//
+// This matches coreboot's approach — CAR setup happens before ANY
+// stack operations.  The Rust wrapper is gone because Rust's
+// extern "C" fn call convention requires a stack.
 
 // CAR teardown lives in car_teardown.rs — it runs at the start of the
 // *next* stage (ramstage), after the stack has moved to DRAM. It cannot
