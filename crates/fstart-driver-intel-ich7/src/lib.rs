@@ -1649,6 +1649,31 @@ mod acpi_impl {
                         Name("_UID", 8u32);
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
+
+                    // PS2K — PS/2 Keyboard (PNP0303)
+                    // Uses i8042 controller at IO 0x60/0x64, IRQ 1.
+                    // Coreboot: lpc.asl Device(PS2K)
+                    Device("PS2K") {
+                        Name("_HID", EisaId("PNP0303"));
+                        Name("_CID", EisaId("PNP030B"));
+                        Name("_CRS", ResourceTemplate {
+                            IO(0x0060u16, 0x0060u16, 0x01u8, 0x01u8);
+                            IO(0x0064u16, 0x0064u16, 0x01u8, 0x01u8);
+                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 1u32);
+                        });
+                        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+                    }
+
+                    // PS2M — PS/2 Mouse (PNP0F13)
+                    // Shares the i8042 controller, IRQ 12.
+                    // Coreboot: lpc.asl Device(PS2M)
+                    Device("PS2M") {
+                        Name("_HID", EisaId("PNP0F13"));
+                        Name("_CRS", ResourceTemplate {
+                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 12u32);
+                        });
+                        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+                    }
                 }
             };
 
@@ -1796,17 +1821,16 @@ mod acpi_impl {
             aml.extend_from_slice(&emit_rp("RP04", 0x001C0003, 4));
             aml.extend_from_slice(&emit_rp("RP05", 0x001C0004, 5));
             aml.extend_from_slice(&emit_rp("RP06", 0x001C0005, 6));
+            aml.extend_from_slice(&emit_rp("RP07", 0x001C0006, 7));
+            aml.extend_from_slice(&emit_rp("RP08", 0x001C0007, 8));
 
             // PCIB — PCI-to-PCI bridge  0:1E.0
-            // Includes child slot devices with _PRW for wake support
-            // and _PRT interrupt routing (APIC mode: GSI 0x14-0x17).
+            // _PRT for devices behind the bridge (APIC mode).
             // Coreboot: pci.asl + mainboard ich7_pci_irqs.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Device("PCIB") {
                     Name("_ADR", 0x001E0000u32);
 
-                    // PCI bridge _PRT (APIC mode).
-                    // GSI mapping for devices behind the bridge.
                     Name("_PRT", Package(
                         Package(0x0000FFFFu32, 0u32, 0u32, 0x15u32),
                         Package(0x0000FFFFu32, 1u32, 0u32, 0x16u32),
@@ -1814,6 +1838,23 @@ mod acpi_impl {
                         Package(0x0000FFFFu32, 3u32, 0u32, 0x14u32),
                         Package(0x0001FFFFu32, 0u32, 0u32, 0x13u32)
                     ));
+                }
+            });
+
+            // AC’97 — audio (0:1E.2) and modem (0:1E.3).
+            // Legacy audio/modem on ICH7 — behind the PCI bridge.
+            // Most boards use HDA instead, but ICH7 variants still
+            // have these functions.  Modem can wake from S4.
+            // Coreboot: ac97.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("AUD0") {
+                    Name("_ADR", 0x001E0002u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("MODM") {
+                    Name("_ADR", 0x001E0003u32);
+                    Name("_PRW", Package(5u32, 4u32));
                 }
             });
 
@@ -1849,16 +1890,31 @@ mod acpi_impl {
             });
 
             // SATA — SATA controller  0:1F.2
+            // Primary channel (PRID) with two disk children.
+            // _GTM/_STM timing methods omitted (need CreateDwordField;
+            // Linux libata doesn’t use them in AHCI mode).
+            // Coreboot: sata.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Device("SATA") {
                     Name("_ADR", 0x001F0002u32);
+                    Device("PRID") {
+                        Name("_ADR", 0u32);
+                        Device("DSK0") { Name("_ADR", 0u32); }
+                        Device("DSK1") { Name("_ADR", 1u32); }
+                    }
                 }
             });
 
             // PATA — IDE / PATA controller  0:1F.1
+            // Coreboot: pata.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Device("PATA") {
                     Name("_ADR", 0x001F0001u32);
+                    Device("PRID") {
+                        Name("_ADR", 0u32);
+                        Device("DSK0") { Name("_ADR", 0u32); }
+                        Device("DSK1") { Name("_ADR", 1u32); }
+                    }
                 }
             });
 
