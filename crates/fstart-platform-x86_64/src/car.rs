@@ -4,6 +4,19 @@
 //! Non-Evict, P4 Netburst) with a single assembly sequence that detects
 //! the CPU variant via CPUID at runtime and dispatches accordingly.
 //!
+//! ## IMPORTANT: No stack before CAR is live
+//!
+//! This code runs BEFORE there is any writable memory.  All subroutine
+//! "calls" use `jmp` with a return address in `%esp` — never `call`/`ret`,
+//! which require a stack.  This matches coreboot's approach.
+//!
+//! Pattern:
+//! ```asm
+//!   movl $1f, %esp      // save return address
+//!   jmp  _helper         // jump to subroutine
+//! 1:                      // helper returns here via jmp *%esp
+//! ```
+//!
 //! ## Decision tree (all determined by CPUID at runtime)
 //!
 //! | Feature | P3 (Fam6 <0F) | Core2 (Fam6 0F+) | Atom/NEM | Netburst (FamF) |
@@ -17,85 +30,57 @@
 //!
 //! ## How this integrates
 //!
-//! The linker script provides `_car_base`, `_car_size`, `_ecar_stack`
-//! from the board RON's `memory.car` config. The assembly reads these
-//! symbols directly.
-//!
-//! Call order:
-//! 1. Reset vector → `_start16bit` → `_start32bit` (existing)
-//! 2. `_start32bit` calls `_car_setup` (this module) — still in 32-bit mode
-//! 3. `_car_setup` sets up MTRRs + fills cache + sets stack
-//! 4. Falls through to page table setup → long mode → `fstart_main`
-
-// ---------------------------------------------------------------------------
-// Unified CAR setup — 32-bit protected mode assembly
-// ---------------------------------------------------------------------------
-
-// MSR and register constants — documented here for reference; the actual
-// values are inlined in the global_asm! blocks below since Rust consts
-// cannot be interpolated into asm strings.
-//
-//   MTRR_DEF_TYPE  = 0x2FF      MTRR_CAP          = 0xFE
-//   MTRR_PHYS_BASE(n) = 0x200+2n  MTRR_PHYS_MASK(n) = 0x201+2n
-//   NEM_MSR        = 0x2E0      BBL_CR_CTL3        = 0x11E
-//   LAPIC_BASE_MSR = 0x1B
-//   MTRR_TYPE_WB   = 0x06       MTRR_TYPE_WP       = 0x05
-//   MTRR_DEF_TYPE_EN = 1<<11    MTRR_MASK_VALID    = 1<<11
-//   CR0_CD = 1<<30              CR0_NW = 1<<29
+//! The entry asm (`_start32bit`) invokes CAR setup via:
+//! ```asm
+//!   lea 1f, %ebp          // continuation address
+//!   jmp _car_setup
+//! 1:                       // returns here, CAR + stack live
+//! ```
 
 core::arch::global_asm!(
     ".att_syntax prefix",
-    // =====================================================================
-    // _car_setup — Unified CAR entry point (called from _start32bit)
-    //
-    // Preconditions: 32-bit protected mode, flat segments, no stack yet.
-    // Postconditions: CAR region is live, %esp set to _ecar_stack.
-    //
-    // Uses linker symbols: _car_base, _car_size, _ecar_stack, _rom_mtrr_base,
-    //                      _rom_mtrr_mask
-    // =====================================================================
     ".section .text, \"ax\"",
     ".code32",
     ".global _car_setup",
+    // =====================================================================
+    // _car_setup — Unified CAR entry point
+    //
+    // Preconditions:  32-bit protected mode, flat segments, NO STACK.
+    // Postconditions: CAR live, %esp = _ecar_stack (stack in CAR).
+    //
+    // Caller must store continuation address in %ebp before jumping here.
+    //
+    // Linker symbols: _car_base, _car_size, _ecar_stack,
+    //                 _rom_mtrr_base, _rom_mtrr_mask
+    // =====================================================================
     "_car_setup:",
     // ------------------------------------------------------------------
-    // Phase 0: Detect CPU family/model for variant dispatch.
-    //
-    //   CPUID leaf 1 → EAX = signature
-    //   Family = bits [11:8], ExtFamily = bits [27:20]
-    //   Model  = bits [7:4],  ExtModel  = bits [19:16]
-    //
-    //   DisplayFamily = (family == 0xF) ? family + ext_family : family
-    //   DisplayModel  = (family == 6 || 0xF) ? (ext_model << 4) | model : model
-    //
-    //   Pineview (Atom): family 6, model 0x1C → NEM path
-    //   Core 2:          family 6, model 0x0F..0x17 → Core2 path
-    //   Netburst (P4):   family 0xF → Netburst path
-    //   P3:              family 6, model < 0x0F → P3 path
+    // Phase 0: Detect CPU family/model via CPUID for variant dispatch.
     // ------------------------------------------------------------------
     "movl $1, %eax",
     "cpuid",
-    "movl %eax, %ebp", // save signature in EBP for later
+    // Save CPUID signature in %ebx (preserved across all paths).
+    // %ebp is reserved for the outer return address.
+    "movl %eax, %ebx",
     // Extract family (bits 11:8).
-    "movl %ebp, %eax",
+    "movl %ebx, %eax",
     "shrl $8, %eax",
-    "andl $0x0F, %eax", // EAX = base family
-    // Family 0xF → Netburst path
+    "andl $0x0F, %eax",
+    // Family 0xF → Netburst path.
     "cmpl $0x0F, %eax",
     "je _car_netburst",
-    // Family 6 — need to check model for Atom vs Core2 vs P3.
+    // Family 6 — check model for Atom vs Core2 vs P3.
     "cmpl $0x06, %eax",
     "jne _car_p3", // Anything else → P3 (safest fallback)
     // Extract display model: (ext_model << 4) | model
-    "movl %ebp, %eax",
+    "movl %ebx, %eax",
     "shrl $4, %eax",
     "andl $0x0F, %eax", // base model
-    "movl %ebp, %ecx",
+    "movl %ebx, %ecx",
     "shrl $12, %ecx",
     "andl $0xF0, %ecx", // ext_model << 4
     "orl %ecx, %eax",   // EAX = display model
-    // Atom models (NEM): 0x1C (Pineview/Bonnell), 0x26 (Lincroft),
-    //                     0x27 (Penwell), 0x35 (Cloverview), 0x36 (Cedarview)
+    // Atom models (NEM): 0x1C, 0x26, 0x27, 0x35, 0x36
     "cmpl $0x1C, %eax",
     "je _car_nem",
     "cmpl $0x26, %eax",
@@ -112,26 +97,35 @@ core::arch::global_asm!(
     // Fall through to P3 for older family 6.
     "jmp _car_p3",
     // ==================================================================
-    // Common subroutines (called from all paths)
+    // Subroutines — all return via jmp *%esp (no stack needed).
+    //
+    // Caller convention:
+    //   movl $1f, %esp
+    //   jmp _car_<helper>
+    // 1:
+    //
+    // Clobbers: listed per subroutine.  %ebp and %ebx preserved.
     // ==================================================================
 
     // --- clear_fixed_mtrrs: zero all fixed MTRRs ---
+    // Clobbers: %eax, %ecx, %edx, %esi
     "_car_clear_fixed_mtrrs:",
-    "movl $_fixed_mtrr_list, %ebx",
+    "movl $_fixed_mtrr_list, %esi",
     "xorl %eax, %eax",
     "xorl %edx, %edx",
     "1:",
-    "movzwl (%ebx), %ecx",
+    "movzwl (%esi), %ecx",
     "wrmsr",
-    "addl $2, %ebx",
-    "cmpl $_fixed_mtrr_list_end, %ebx",
+    "addl $2, %esi",
+    "cmpl $_fixed_mtrr_list_end, %esi",
     "jl 1b",
-    "ret",
+    "jmp *%esp",
     // --- clear_var_mtrrs: zero all variable MTRRs ---
+    // Clobbers: %eax, %ecx, %edx, %esi
     "_car_clear_var_mtrrs:",
     "movl $0xFE, %ecx", // MTRR_CAP
     "rdmsr",
-    "movzbl %al, %ebx",  // number of variable MTRRs
+    "movzbl %al, %esi",  // number of variable MTRRs
     "movl $0x200, %ecx", // MTRR_PHYS_BASE(0)
     "xorl %eax, %eax",
     "xorl %edx, %edx",
@@ -140,13 +134,12 @@ core::arch::global_asm!(
     "incl %ecx",
     "wrmsr",
     "incl %ecx",
-    "decl %ebx",
+    "decl %esi",
     "jnz 1b",
-    "ret",
-    // --- physmask_high: compute PHYSMASK high word based on CPU ---
-    // Returns result in %edx. Uses %eax, %ecx.
+    "jmp *%esp",
+    // --- physmask_high: compute PHYSMASK high word ---
+    // Returns result in %edx.  Clobbers: %eax, %ecx.
     "_car_physmask_high:",
-    // Try extended leaf 0x80000008 first (Core2, Atom, modern CPUs).
     "movl $0x80000000, %eax",
     "cpuid",
     "cmpl $0x80000008, %eax",
@@ -158,20 +151,20 @@ core::arch::global_asm!(
     "movl $1, %edx",
     "shll %cl, %edx",
     "subl $1, %edx",
-    "ret",
-    // Legacy fallback (P3, old P4): check PAE/PSE36.
+    "jmp *%esp",
     "_car_physmask_legacy:",
     "movl $1, %eax",
     "cpuid",
     "andl $(1 << 6 | 1 << 17), %edx", // PAE or PSE36
     "jz 1f",
     "movl $0x0F, %edx",
-    "ret",
+    "jmp *%esp",
     "1:",
     "xorl %edx, %edx",
-    "ret",
-    // --- setup_car_mtrrs: program MTRR0 = CAR (WB), preload MASK high ---
-    // Expects PHYSMASK high word in %edx on entry.
+    "jmp *%esp",
+    // --- setup_car_mtrrs: MTRR0 = CAR (WB) ---
+    // Expects PHYSMASK high word in %edx.
+    // Clobbers: %eax, %ecx (preserves %edx high-word pattern via rdmsr).
     "_car_setup_mtrrs:",
     // Preload PHYSMASK high word for MTRR0 and MTRR1.
     "xorl %eax, %eax",
@@ -192,8 +185,9 @@ core::arch::global_asm!(
     "negl %eax",        // ~(size - 1) for power-of-2 size
     "orl $0x800, %eax", // MTRR_PHYS_MASK_VALID
     "wrmsr",
-    "ret",
-    // --- setup_rom_mtrr: program MTRR1 = ROM (WRPROT) ---
+    "jmp *%esp",
+    // --- setup_rom_mtrr: MTRR1 = ROM (WRPROT) ---
+    // Clobbers: %eax, %ecx, %edx
     "_car_setup_rom_mtrr:",
     "movl $0x202, %ecx", // MTRR_PHYS_BASE(1)
     "xorl %edx, %edx",
@@ -205,28 +199,30 @@ core::arch::global_asm!(
     "movl $_rom_mtrr_mask, %eax",
     "orl $0x800, %eax", // MTRR_PHYS_MASK_VALID
     "wrmsr",
-    "ret",
+    "jmp *%esp",
     // --- enable_mtrrs: set MTRR_DEF_TYPE_EN ---
+    // Clobbers: %eax, %ecx, %edx
     "_car_enable_mtrrs:",
     "movl $0x2FF, %ecx", // MTRR_DEF_TYPE
     "rdmsr",
     "orl $0x800, %eax", // MTRR_DEF_TYPE_EN
     "wrmsr",
-    "ret",
+    "jmp *%esp",
     // --- enable_cache: clear CR0.CD and CR0.NW ---
     "_car_enable_cache:",
     "movl %cr0, %eax",
     "andl $0x9FFFFFFF, %eax", // ~(CD | NW)
     "invd",
     "movl %eax, %cr0",
-    "ret",
+    "jmp *%esp",
     // --- disable_cache: set CR0.CD ---
     "_car_disable_cache:",
     "movl %cr0, %eax",
     "orl $0x40000000, %eax", // CD
     "movl %eax, %cr0",
-    "ret",
-    // --- fill_car_rep_stosl: zero-fill CAR region via rep stosl ---
+    "jmp *%esp",
+    // --- fill_car_rep_stosl: zero-fill CAR region ---
+    // Clobbers: %eax, %ecx, %edi
     "_car_fill_stosl:",
     "cld",
     "xorl %eax, %eax",
@@ -234,37 +230,27 @@ core::arch::global_asm!(
     "movl $_car_size, %ecx",
     "shrl $2, %ecx",
     "rep stosl",
-    "ret",
-    // --- setup_stack: set ESP to _ecar_stack, aligned ---
-    "_car_setup_stack:",
-    "movl $_ecar_stack, %esp",
-    "andl $0xFFFFFFF0, %esp",
-    "ret",
-    // --- try_enable_l2: enable L2 via BBL_CR_CTL3 MSR if supported ---
-    // CPUID-gated: only family 6 models 0x00-0x1F and family 0xF
+    "jmp *%esp",
+    // --- try_enable_l2: BBL_CR_CTL3 MSR bit 8 ---
     "_car_try_enable_l2:",
     "movl $0x11E, %ecx", // BBL_CR_CTL3
     "rdmsr",
     "orl $0x100, %eax", // bit 8 = L2 enable
     "wrmsr",
-    "ret",
+    "jmp *%esp",
     // --- send_init_ipi: INIT IPI to all excluding self ---
+    // Clobbers: %eax, %esi
     "_car_send_init_ipi:",
     "movl $0x000C4500, %eax",
     "movl $0xFEE00300, %esi", // LAPIC ICR
     "movl %eax, (%esi)",
-    // Wait for delivery.
     "1:",
     "movl (%esi), %eax",
     "btl $12, %eax",
     "jc 1b",
-    "ret",
+    "jmp *%esp",
     // ==================================================================
     // Path: NEM (Non-Evict Mode) — Atom Pineview/Cedarview
-    //
-    // The key difference: instead of filling the cache by zeroing the
-    // region (which requires the region to be RAM), NEM pins cache lines
-    // by writing one byte per cacheline with eviction disabled.
     // ==================================================================
     "_car_nem:",
     // Check MTRR_DEF_TYPE for warm reset (must be clean).
@@ -279,28 +265,44 @@ core::arch::global_asm!(
     "2: hlt",
     "jmp 2b",
     "1:",
-    // Set up a temporary stack in the return address register for calls.
-    "movl $_car_nem_ret, %esp",
-    "call _car_clear_fixed_mtrrs",
-    "call _car_clear_var_mtrrs",
-    // Configure default type to uncacheable.
+    "movl $10f, %esp",
+    "jmp _car_clear_fixed_mtrrs",
+    "10:",
+    "movl $11f, %esp",
+    "jmp _car_clear_var_mtrrs",
+    "11:",
+    // Default type = UC.
     "movl $0x2FF, %ecx",
     "xorl %eax, %eax",
     "xorl %edx, %edx",
     "wrmsr",
-    "call _car_physmask_high",
+    "movl $12f, %esp",
+    "jmp _car_physmask_high",
+    "12:",
     // %edx = physmask high word
-    "call _car_setup_mtrrs",
-    "call _car_setup_rom_mtrr",
-    "call _car_enable_mtrrs",
-    // Enable L2 if supported (CPU_HAS_L2_ENABLE_MSR).
-    "call _car_try_enable_l2",
-    // Enable cache.
-    "call _car_enable_cache",
+    "movl $13f, %esp",
+    "jmp _car_setup_mtrrs",
+    "13:",
+    "movl $14f, %esp",
+    "jmp _car_setup_rom_mtrr",
+    "14:",
+    "movl $15f, %esp",
+    "jmp _car_enable_mtrrs",
+    "15:",
+    "movl $16f, %esp",
+    "jmp _car_try_enable_l2",
+    "16:",
+    "movl $17f, %esp",
+    "jmp _car_enable_cache",
+    "17:",
     // Disable cache for NEM fill sequence.
-    "call _car_disable_cache",
+    "movl $18f, %esp",
+    "jmp _car_disable_cache",
+    "18:",
     "invd",
-    "call _car_enable_cache",
+    "movl $19f, %esp",
+    "jmp _car_enable_cache",
+    "19:",
     // NEM step 1: set NO_EVICT_MODE_SETUP (MSR 0x2E0 bit 0).
     "movl $0x2E0, %ecx",
     "rdmsr",
@@ -311,10 +313,9 @@ core::arch::global_asm!(
     "movl $_car_base, %edi",
     "movl $_car_size, %ecx",
     "shrl $6, %ecx", // count = size / 64
-    "movl $64, %ebx",
     "3:",
     "movl %eax, (%edi)", // one write per cacheline
-    "addl %ebx, %edi",
+    "addl $64, %edi",
     "loop 3b",
     // NEM step 3: set NO_EVICT_MODE_RUN (MSR 0x2E0 bits 0+1).
     "movl $0x2E0, %ecx",
@@ -322,92 +323,137 @@ core::arch::global_asm!(
     "orl $3, %eax",
     "wrmsr",
     // Zero the CAR region (BSS must be clean).
-    "call _car_fill_stosl",
+    "movl $20f, %esp",
+    "jmp _car_fill_stosl",
+    "20:",
     // Send INIT IPI to APs.
-    "call _car_send_init_ipi",
-    // Set up stack and continue.
-    "call _car_setup_stack",
+    "movl $21f, %esp",
+    "jmp _car_send_init_ipi",
+    "21:",
+    // Set up stack (inline — can't use %esp as return reg here).
+    "movl $_ecar_stack, %esp",
+    "andl $0xFFFFFFF0, %esp",
     "jmp _car_done",
-    "_car_nem_ret:",
     // ==================================================================
-    // Path: Core2 (family 6, model >= 0x0F) — Sandy Bridge, etc.
-    //
-    // Standard fill method: enable cache, rep stosl to fill & zero,
-    // disable cache, set ROM MTRR, re-enable cache.
+    // Path: Core2 (family 6, model >= 0x0F)
     // ==================================================================
     "_car_core2:",
-    "movl $_car_core2_ret, %esp",
-    "call _car_send_init_ipi",
-    "call _car_clear_fixed_mtrrs",
-    "call _car_clear_var_mtrrs",
+    "movl $30f, %esp",
+    "jmp _car_send_init_ipi",
+    "30:",
+    "movl $31f, %esp",
+    "jmp _car_clear_fixed_mtrrs",
+    "31:",
+    "movl $32f, %esp",
+    "jmp _car_clear_var_mtrrs",
+    "32:",
     // Default type = UC.
     "movl $0x2FF, %ecx",
     "rdmsr",
     "andl $0xFFFFF300, %eax", // clear type + enable bits
     "wrmsr",
-    "call _car_physmask_high",
-    "call _car_setup_mtrrs",
-    "call _car_enable_mtrrs",
-    "call _car_try_enable_l2",
-    "call _car_enable_cache",
+    "movl $33f, %esp",
+    "jmp _car_physmask_high",
+    "33:",
+    "movl $34f, %esp",
+    "jmp _car_setup_mtrrs",
+    "34:",
+    "movl $35f, %esp",
+    "jmp _car_enable_mtrrs",
+    "35:",
+    "movl $36f, %esp",
+    "jmp _car_try_enable_l2",
+    "36:",
+    "movl $37f, %esp",
+    "jmp _car_enable_cache",
+    "37:",
     // Fill CAR by zeroing (fills cache as side effect).
-    "call _car_fill_stosl",
+    "movl $38f, %esp",
+    "jmp _car_fill_stosl",
+    "38:",
     // Disable cache to change MTRRs.
-    "call _car_disable_cache",
+    "movl $39f, %esp",
+    "jmp _car_disable_cache",
+    "39:",
     // Set ROM MTRR for XIP.
-    "call _car_setup_rom_mtrr",
+    "movl $40f, %esp",
+    "jmp _car_setup_rom_mtrr",
+    "40:",
     // Re-enable cache.
-    "call _car_enable_cache",
-    "call _car_setup_stack",
+    "movl $41f, %esp",
+    "jmp _car_enable_cache",
+    "41:",
+    // Set up stack (inline).
+    "movl $_ecar_stack, %esp",
+    "andl $0xFFFFFFF0, %esp",
     "jmp _car_done",
-    "_car_core2_ret:",
     // ==================================================================
     // Path: P3 (family 6, model < 0x0F)
-    //
-    // Simplest variant: no INIT IPI, no L2 MSR, legacy PHYSMASK.
     // ==================================================================
     "_car_p3:",
-    "movl $_car_p3_ret, %esp",
-    "call _car_clear_fixed_mtrrs",
-    "call _car_clear_var_mtrrs",
+    "movl $50f, %esp",
+    "jmp _car_clear_fixed_mtrrs",
+    "50:",
+    "movl $51f, %esp",
+    "jmp _car_clear_var_mtrrs",
+    "51:",
     // Default type = UC.
     "movl $0x2FF, %ecx",
     "rdmsr",
     "andl $0xFFFFF300, %eax",
     "wrmsr",
-    "call _car_physmask_high",
-    "call _car_setup_mtrrs",
-    "call _car_enable_mtrrs",
-    "call _car_enable_cache",
-    "call _car_fill_stosl",
-    "call _car_disable_cache",
-    "call _car_setup_rom_mtrr",
-    "call _car_enable_cache",
-    "call _car_setup_stack",
+    "movl $52f, %esp",
+    "jmp _car_physmask_high",
+    "52:",
+    "movl $53f, %esp",
+    "jmp _car_setup_mtrrs",
+    "53:",
+    "movl $54f, %esp",
+    "jmp _car_enable_mtrrs",
+    "54:",
+    "movl $55f, %esp",
+    "jmp _car_enable_cache",
+    "55:",
+    "movl $56f, %esp",
+    "jmp _car_fill_stosl",
+    "56:",
+    "movl $57f, %esp",
+    "jmp _car_disable_cache",
+    "57:",
+    "movl $58f, %esp",
+    "jmp _car_setup_rom_mtrr",
+    "58:",
+    "movl $59f, %esp",
+    "jmp _car_enable_cache",
+    "59:",
+    // Set up stack (inline).
+    "movl $_ecar_stack, %esp",
+    "andl $0xFFFFFFF0, %esp",
     "jmp _car_done",
-    "_car_p3_ret:",
     // ==================================================================
     // Path: Netburst / P4 (family 0xF)
-    //
-    // Like Core2 but with HT AP handling and family-F ROM MTRR quirk
-    // (disable WRPROT region on family F to avoid speculative invalidation).
     // ==================================================================
     "_car_netburst:",
-    "movl $_car_nb_ret, %esp",
     // Check if BSP.
     "movl $0x1B, %ecx", // LAPIC_BASE_MSR
     "rdmsr",
     "andl $0x100, %eax", // BSP flag
     "jz _car_nb_ap_halt",
-    "call _car_clear_fixed_mtrrs",
-    "call _car_clear_var_mtrrs",
+    "movl $60f, %esp",
+    "jmp _car_clear_fixed_mtrrs",
+    "60:",
+    "movl $61f, %esp",
+    "jmp _car_clear_var_mtrrs",
+    "61:",
     // Default type = UC.
     "movl $0x2FF, %ecx",
     "rdmsr",
     "andl $0xFFFFF300, %eax",
     "wrmsr",
-    "call _car_physmask_high",
-    // Preload + LAPIC enable.
+    "movl $62f, %esp",
+    "jmp _car_physmask_high",
+    "62:",
+    // Preload PHYSMASK high + LAPIC enable.
     "xorl %eax, %eax",
     "movl $0x201, %ecx",
     "wrmsr",
@@ -420,25 +466,37 @@ core::arch::global_asm!(
     "orl $0xFEE00900, %eax", // default base + enable
     "wrmsr",
     // Send INIT IPI.
-    "call _car_send_init_ipi",
-    "call _car_setup_mtrrs",
-    "call _car_enable_mtrrs",
-    // L2 enable — CPUID-gated for family 6 models.
-    // On family F, BBL_CR_CTL3 applies to some steppings.
-    "movl %ebp, %eax", // saved CPUID signature
+    "movl $63f, %esp",
+    "jmp _car_send_init_ipi",
+    "63:",
+    "movl $64f, %esp",
+    "jmp _car_setup_mtrrs",
+    "64:",
+    "movl $65f, %esp",
+    "jmp _car_enable_mtrrs",
+    "65:",
+    // L2 enable — CPUID-gated for family 6 models only.
+    "movl %ebx, %eax", // saved CPUID signature
     "andl $0x0F00, %eax",
     "cmpl $0x0600, %eax",
     "jne _car_nb_skip_l2",
-    "call _car_try_enable_l2",
+    "movl $66f, %esp",
+    "jmp _car_try_enable_l2",
+    "66:",
     "_car_nb_skip_l2:",
     // Cache ROM for microcode fetch.
-    "call _car_setup_rom_mtrr",
-    "call _car_enable_cache",
+    "movl $67f, %esp",
+    "jmp _car_setup_rom_mtrr",
+    "67:",
+    "movl $68f, %esp",
+    "jmp _car_enable_cache",
+    "68:",
     // Disable cache to change MTRRs safely.
-    "call _car_disable_cache",
-    // Family F quirk: disable WRPROT MTRR to avoid speculative
-    // invalidation on Netburst microarchitecture.
-    "movl %ebp, %eax",
+    "movl $69f, %esp",
+    "jmp _car_disable_cache",
+    "69:",
+    // Family F quirk: disable WRPROT MTRR.
+    "movl %ebx, %eax",
     "shrl $8, %eax",
     "andl $0x0F, %eax",
     "cmpl $0x0F, %eax",
@@ -450,12 +508,20 @@ core::arch::global_asm!(
     "wrmsr",
     "jmp _car_nb_fill",
     "_car_nb_keep_rom:",
-    "call _car_setup_rom_mtrr",
+    "movl $70f, %esp",
+    "jmp _car_setup_rom_mtrr",
+    "70:",
     "_car_nb_fill:",
-    "call _car_enable_cache",
+    "movl $71f, %esp",
+    "jmp _car_enable_cache",
+    "71:",
     // Fill + zero CAR.
-    "call _car_fill_stosl",
-    "call _car_setup_stack",
+    "movl $72f, %esp",
+    "jmp _car_fill_stosl",
+    "72:",
+    // Set up stack (inline).
+    "movl $_ecar_stack, %esp",
+    "andl $0xFFFFFFF0, %esp",
     "jmp _car_done",
     // AP halt (Netburst only — APs loop here).
     "_car_nb_ap_halt:",
@@ -465,23 +531,11 @@ core::arch::global_asm!(
     "cli",
     "4: hlt",
     "jmp 4b",
-    "_car_nb_ret:",
     // ==================================================================
-    // Common exit point — CAR is live, stack is set.
+    // Common exit — CAR is live, %esp = stack in CAR.
+    // Return to caller via %ebp (set before jmp _car_setup).
     // ==================================================================
     "_car_done:",
-    // CAR is now live.  Return to the caller via %ebp.
-    //
-    // _car_setup runs BEFORE there is a stack (the whole point is to
-    // create the stack in cache).  It cannot be called with `call` /
-    // returned from with `ret`.  Instead the entry asm does:
-    //
-    //     lea 1f(%rip), %ebp
-    //     jmp _car_setup
-    //   1:
-    //     /* post-CAR: set %esp, clear BSS, etc. */
-    //
-    // %ebp is callee-preserved across the NEM/evict paths above.
     "jmp *%ebp",
     // Fixed MTRR list (shared by all paths).
     "_fixed_mtrr_list:",
@@ -499,24 +553,16 @@ core::arch::global_asm!(
     "_fixed_mtrr_list_end:",
 );
 
-// ---------------------------------------------------------------------------
-// Rust-callable wrapper
-// ---------------------------------------------------------------------------
-
 // _car_setup is a global_asm label, not an extern "C" function.
 // It MUST be invoked via jmp (not call) because there is no stack
 // before CAR is enabled.  The caller stores a continuation address
 // in %ebp and jumps:
 //
-//     lea post_car(%rip), %ebp
+//     lea post_car, %ebp
 //     jmp _car_setup
 //   post_car:
-//     /* now CAR is live, set %esp, clear BSS, etc. */
+//     // CAR is live, %esp = stack, proceed with BSS clear etc.
 //
-// This matches coreboot's approach — CAR setup happens before ANY
-// stack operations.  The Rust wrapper is gone because Rust's
-// extern "C" fn call convention requires a stack.
-
 // CAR teardown lives in car_teardown.rs — it runs at the start of the
 // *next* stage (ramstage), after the stack has moved to DRAM. It cannot
 // run in the same stage that set up CAR because it destroys the cache
