@@ -85,10 +85,10 @@ pub(crate) fn boot_media_values_for_device(
     instances: &[DriverInstance],
 ) -> Vec<u8> {
     let Some(idx) = devices.iter().position(|d| d.name.as_str() == dev_name) else {
-        panic!(
-            "boot_media_values_for_device: device '{}' not found in board devices list",
-            dev_name
-        );
+        // Device not in the board's device list — return empty rather
+        // than panicking, so boards with multi-device BootMediaAuto
+        // degrade gracefully when a candidate is absent.
+        return Vec::new();
     };
     instances[idx].boot_media_values()
 }

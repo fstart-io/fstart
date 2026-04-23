@@ -108,8 +108,12 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
     //
     // Runtime-detectable fields (size_mb, speed_mhz, memory_type) may be
     // `None` in RON for x86 boards that rely on SPD probing over SMBus.
-    // We emit 0 / Unknown sentinels here; a future `SmBiosPrepare`
-    // extension will read SPD data at runtime when the RON value is `None`.
+    // We emit 0 / Unknown sentinels here.  These are deliberate
+    // runtime-detect placeholders — the `SmBiosPrepare` capability
+    // will overwrite them via CPUID (Type 4) and SPD (Type 17)
+    // at boot once the runtime probe path is wired.  Until then,
+    // boards that leave these fields `None` in RON will report
+    // `0 MHz` / `Unknown` to the OS.
     let memory_items: Vec<TokenStream> = smbios_cfg
         .memory_devices
         .iter()

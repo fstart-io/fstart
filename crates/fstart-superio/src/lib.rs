@@ -408,31 +408,80 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
 
         C::chip_init(self.base_port);
 
-        // Program each enabled function. If the chip doesn't support
-        // an LDN, we skip silently — the config for that field is ignored.
-        if let (Some(ldn), Some(cfg)) = (C::COM1_LDN, self.config.com1) {
-            self.program_com(ldn, &cfg);
+        // Program each enabled function.  If the board requests a
+        // function that the chip doesn't support (LDN is None), fail
+        // so the misconfiguration is caught at boot, not later.
+        if let Some(cfg) = self.config.com1 {
+            if let Some(ldn) = C::COM1_LDN {
+                self.program_com(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: com1 requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
         }
-        if let (Some(ldn), Some(cfg)) = (C::COM2_LDN, self.config.com2) {
-            self.program_com(ldn, &cfg);
+        if let Some(cfg) = self.config.com2 {
+            if let Some(ldn) = C::COM2_LDN {
+                self.program_com(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: com2 requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
         }
-        if let (Some(ldn), Some(cfg)) = (C::KBC_LDN, self.config.keyboard) {
-            self.program_kbc(ldn, &cfg);
+        if let Some(cfg) = self.config.keyboard {
+            if let Some(ldn) = C::KBC_LDN {
+                self.program_kbc(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: keyboard requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
         }
-        if let (Some(ldn), Some(cfg)) = (C::MOUSE_LDN, self.config.mouse) {
-            self.program_mouse(ldn, &cfg);
+        if let Some(cfg) = self.config.mouse {
+            if let Some(ldn) = C::MOUSE_LDN {
+                self.program_mouse(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: mouse requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
         }
-        if let (Some(ldn), Some(cfg)) = (C::EC_LDN, self.config.env_controller) {
-            self.program_ec(ldn, &cfg);
+        if let Some(cfg) = self.config.env_controller {
+            if let Some(ldn) = C::EC_LDN {
+                self.program_ec(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: env_controller requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
         }
-        if let (Some(ldn), Some(cfg)) = (C::PARALLEL_LDN, self.config.parallel) {
-            self.program_simple(ldn, cfg.io_base, cfg.irq);
+        if let Some(cfg) = self.config.parallel {
+            if let Some(ldn) = C::PARALLEL_LDN {
+                self.program_simple(ldn, cfg.io_base, cfg.irq);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: parallel requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
         }
-        if let (Some(ldn), Some(cfg)) = (C::CIR_LDN, self.config.cir) {
-            self.program_simple(ldn, cfg.io_base, cfg.irq);
+        if let Some(cfg) = self.config.cir {
+            if let Some(ldn) = C::CIR_LDN {
+                self.program_simple(ldn, cfg.io_base, cfg.irq);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: cir requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
         }
-        if let (Some(ldn), Some(cfg)) = (C::GPIO_LDN, self.config.gpio) {
-            self.program_gpio(ldn, &cfg);
+        if let Some(ref cfg) = self.config.gpio {
+            if let Some(ldn) = C::GPIO_LDN {
+                self.program_gpio(ldn, cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: gpio requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
         }
 
         self.exit_config();

@@ -39,7 +39,11 @@ impl SuperIoChip for Ite8721fChip {
     const PARALLEL_LDN: Option<u8> = Some(0x03);
 
     fn enter_last_byte(base_port: u16) -> Option<u8> {
-        Some(if base_port == 0x4E { 0xAA } else { 0x55 })
+        match base_port {
+            0x2E => Some(0x55),
+            0x4E => Some(0xAA),
+            _ => None,
+        }
     }
 }
 

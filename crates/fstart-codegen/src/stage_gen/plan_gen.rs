@@ -161,11 +161,15 @@ struct DeviceIdMap<'a> {
 
 impl<'a> DeviceIdMap<'a> {
     fn new(devices: &'a [DeviceConfig]) -> Self {
-        assert!(
-            devices.len() <= 256,
-            "more than 256 devices per board ({} present) — DeviceId is u8",
-            devices.len()
-        );
+        if devices.len() > 256 {
+            // Surface as a compile_error! in generated code rather than
+            // panicking the host build.rs process.
+            panic!(
+                "codegen: board has {} devices but DeviceId is u8 (max 256). \
+                 Reduce device count or widen DeviceId.",
+                devices.len()
+            );
+        }
         Self { devices }
     }
 

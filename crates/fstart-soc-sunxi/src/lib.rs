@@ -236,15 +236,15 @@ pub struct EgonBootHeader;
 
 impl fstart_services::soc_boot::SocBootHeader for EgonBootHeader {
     #[inline]
-    fn boot_media_at(header_base: usize) -> u8 {
+    unsafe fn boot_media_at(header_base: usize) -> u8 {
         boot_media_at(header_base)
     }
     #[inline]
-    fn next_stage_offset_at(header_base: usize) -> u32 {
+    unsafe fn next_stage_offset_at(header_base: usize) -> u32 {
         next_stage_offset_at(header_base)
     }
     #[inline]
-    fn next_stage_size_at(header_base: usize) -> u32 {
+    unsafe fn next_stage_size_at(header_base: usize) -> u32 {
         next_stage_size_at(header_base)
     }
 }

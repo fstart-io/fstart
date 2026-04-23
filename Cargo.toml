@@ -44,6 +44,7 @@ members = [
   "crates/fstart-acpi-macros",
   "crates/fstart-smbios",
   "crates/fstart-pio",
+  "crates/fstart-pmio-ich",
   "crates/fstart-platform-x86_64",
   "crates/fstart-driver-qemu-fw-cfg",
   "crates/fstart-driver-q35-hostbridge",
@@ -144,6 +145,7 @@ fstart-fit = { path = "crates/fstart-fit" }
 fstart-acpi = { path = "crates/fstart-acpi" }
 fstart-smbios = { path = "crates/fstart-smbios" }
 fstart-pio = { path = "crates/fstart-pio" }
+fstart-pmio-ich = { path = "crates/fstart-pmio-ich" }
 fstart-platform-x86_64 = { path = "crates/fstart-platform-x86_64" }
 fstart-driver-qemu-fw-cfg = { path = "crates/fstart-driver-qemu-fw-cfg" }
 fstart-driver-q35-hostbridge = { path = "crates/fstart-driver-q35-hostbridge" }

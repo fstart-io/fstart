@@ -176,11 +176,12 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
             }
         }
         AcpiPlatform::X86(x86) => {
-            // num_cpus = None → 0 sentinel; future: detect via CPUID at runtime.
+            // num_cpus = None → 0 sentinel; runtime MADT builder detects via CPUID.
             // For now we fall back to 1 CPU when unset to keep the MADT valid.
-            let num_cpus = Literal::u32_unsuffixed(x86.num_cpus.unwrap_or(1));
+            let num_cpus = Literal::u32_unsuffixed(x86.num_cpus.unwrap_or(0));
             let lapic_base = Literal::u64_unsuffixed(x86.lapic_base);
             let sci_irq = Literal::u8_unsuffixed(x86.sci_irq);
+            let pmbase = Literal::u16_unsuffixed(x86.pmbase);
             let legacy = x86.legacy_devices;
 
             let ioapic_entries: Vec<_> = x86
@@ -239,6 +240,7 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
                         hpet_base: #hpet_expr,
                         legacy_devices: #legacy,
                         sci_irq: #sci_irq,
+                        pmbase: #pmbase,
                     }
                 );
             }

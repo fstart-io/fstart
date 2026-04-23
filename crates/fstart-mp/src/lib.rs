@@ -806,6 +806,11 @@ impl<'scope, 'env> Scope<'scope, 'env> {
     /// Each CPU receives its logical index: 0 = BSP, 1..N = APs.
     /// Use for data-parallel work with per-CPU result slots.
     ///
+    /// **Ordering**: APs execute and complete *before* the BSP runs
+    /// `f(0)`. This is intentional — it guarantees the BSP can safely
+    /// read AP results without data races (e.g., collecting per-CPU
+    /// microcode versions or cache topology into a shared array).
+    ///
     /// ```ignore
     /// let results = [AtomicU32::new(0); MAX_CPUS];
     /// mp.scope(|s| {

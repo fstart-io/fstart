@@ -34,6 +34,7 @@ pub mod spi;
 pub mod timer;
 
 pub use block::BlockDevice;
+pub use boot::BootLinuxParams;
 pub use boot_media::{BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMapped, SubRegion};
 pub use clock::ClockController;
 pub use console::Console;
@@ -47,6 +48,7 @@ pub use network::Network;
 pub use pci::{PciAddr, PciRootBus, PciWindow, PciWindowKind};
 pub use pci_host::PciHost;
 pub use smbus::SmBus;
+pub use soc_boot::SocBootHeader;
 pub use southbridge::Southbridge;
 pub use spi::SpiBus;
 pub use timer::Timer;

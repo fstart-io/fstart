@@ -347,7 +347,7 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
         | (1 << 2)              // C1_SUPPORTED
         | (1 << 5)              // SLEEP_BUTTON
         | (1 << 7)              // S4_RTC_WAKE
-        | (1 << 14)             // TMR_VAL_EXT (32-bit PM timer)
+        | (1 << 8)              // TMR_VAL_EXT (32-bit PM timer)
         | (1 << 15); // PLATFORM_CLOCK
     fadt.write_u32(112, flags);
 

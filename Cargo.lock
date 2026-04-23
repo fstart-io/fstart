@@ -639,6 +639,7 @@ dependencies = [
  "fstart-mmio",
  "fstart-pineview-regs",
  "fstart-pio",
+ "fstart-pmio-ich",
  "fstart-services",
  "fstart-smbus-intel",
  "fstart-superio",
@@ -971,6 +972,13 @@ dependencies = [
  "fstart-pio",
  "fstart-services",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-pmio-ich"
+version = "0.1.0"
+dependencies = [
+ "fstart-pio",
 ]
 
 [[package]]

@@ -273,6 +273,12 @@ pub struct X86PlatformAcpi {
     /// SCI interrupt number (System Control Interrupt for ACPI events).
     #[serde(default = "default_sci_irq")]
     pub sci_irq: u8,
+    /// PMBASE I/O port base (chipset-specific, e.g. 0x500 for ICH7).
+    ///
+    /// Used by FADT to derive PM1a_EVT_BLK, PM1a_CNT_BLK, PM_TMR_BLK,
+    /// and GPE0_BLK register addresses.
+    #[serde(default = "default_pmbase")]
+    pub pmbase: u16,
 }
 
 /// I/O APIC configuration for x86 MADT.
@@ -310,4 +316,9 @@ fn default_lapic_base() -> u64 {
 
 fn default_sci_irq() -> u8 {
     9
+}
+
+/// Default PMBASE for ICH7-era southbridges.
+fn default_pmbase() -> u16 {
+    0x0500
 }

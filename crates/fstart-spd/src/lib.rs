@@ -197,7 +197,9 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
         return None;
     }
 
-    let ranks = (spd_data[SPD_NUM_DIMM_BANKS as usize] & 0x07).max(1);
+    // DDR2 SPD byte 5 bits[2:0] = "number of ranks minus 1".
+    // Value 0 → 1 rank, 1 → 2 ranks, 3 → 4 ranks.
+    let ranks = (spd_data[SPD_NUM_DIMM_BANKS as usize] & 0x07).saturating_add(1);
     let banks = spd_data[SPD_NUM_BANKS_PER_SDRAM as usize];
     let primary_width = spd_data[SPD_PRIMARY_SDRAM_WIDTH as usize];
 

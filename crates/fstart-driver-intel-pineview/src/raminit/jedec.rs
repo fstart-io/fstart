@@ -68,7 +68,12 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
         | (1 << 3) // BT = interleaved
         | 0x03; // BL = 4 (interleaved) + trailing 1
 
-    // RTT_NOM: 150 ohm (bit 2). If dual-rank, also bit 6.
+    // RTT_NOM: 150 Ω (bit 2). Dual-DIMM adds bit 6 for stronger
+    // termination (50 Ω) due to additional bus loading.  This
+    // matches coreboot’s `rank_is_populated(dimms, 0, 0) &&
+    // rank_is_populated(dimms, 0, 2)` check — rank 2 = DIMM 1’s
+    // first rank, so the condition is "both DIMMs populated".
+    // A single dual-rank DIMM keeps 150 Ω (correct for DDR2 ODT).
     let mut rttnom: u16 = 1 << 2;
     let d0_pop = si.dimm_populated(0);
     let d1_pop = si.dimm_populated(1);
