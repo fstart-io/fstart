@@ -76,6 +76,10 @@ core::arch::global_asm!(
     "rdmsr",
     "orl $0x800, %eax", // MTRR_DEF_TYPE_EN
     "wrmsr",
+    // Defensive flush after MTRR layout change. Caches should be empty
+    // from the first wbinvd (CD=1 prevented new fills), but some Intel
+    // errata recommend flushing again after MTRR reprogramming.
+    "wbinvd",
     // Re-enable cache.
     "movq %cr0, %rax",
     "andq $0xFFFFFFFF9FFFFFFF, %rax", // clear CD + NW

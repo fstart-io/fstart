@@ -229,7 +229,9 @@ pub mod ecam {
     /// Set the ECAM base address. Call exactly once after the CF8/CFC
     /// write that programs PCIEXBAR.
     pub fn init(base: usize) {
-        BASE.store(base, Ordering::Release);
+        // Mask off low 20 bits — callers may pass the raw PCIEXBAR value
+        // which includes enable/size bits.  ECAM addresses are 1 MiB-aligned.
+        BASE.store(base & !0xF_FFFF, Ordering::Release);
     }
 
     /// Return the current ECAM base (0 if uninitialised).

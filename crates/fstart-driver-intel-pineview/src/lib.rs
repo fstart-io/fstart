@@ -7,9 +7,9 @@
 //!   the single legacy CF8/CFC write, then use ECAM MMIO for everything:
 //!   MCHBAR/DMIBAR/EPBAR setup, PAM unlock, graphics clocks, and
 //!   miscellaneous chipset init.
-//! - **DRAM training ([`MemoryController::init`])**: full DDR2 raminit.
-//!   **Currently a stub** — a future phase will port the ~2600-line
-//!   coreboot `raminit.c`.
+//! - **DRAM training**: full DDR2 raminit ported from coreboot’s ~2600-line
+//!   `raminit.c`. Called via the generated board adapter's `dram_init()`
+//!   trampoline.
 //!
 //! Register definitions live in `fstart-pineview-regs`.
 

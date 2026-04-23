@@ -212,9 +212,6 @@ pub fn prepare_bl_params(
 ///
 /// # Arguments
 ///
-/// - `kernel_addr` — Linux kernel entry point.
-/// - `dtb_addr` — Patched DTB address (passed as x0 to Linux).
-/// - `fw_addr` — BL31 firmware load address.
 /// Unified Linux boot entry point.
 ///
 /// Delegates to [`boot_linux_atf_prepared`] with the standard ATF
