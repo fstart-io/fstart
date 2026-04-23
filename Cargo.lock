@@ -495,10 +495,16 @@ dependencies = [
 name = "fstart-codegen"
 version = "0.1.0"
 dependencies = [
+ "acpi_tables",
+ "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-device-registry",
  "fstart-driver-designware-i2c",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
+ "fstart-services",
  "fstart-types",
  "heapless",
  "prettyplease",

@@ -16,6 +16,12 @@ syn = { version = "2", features = ["full"] }
 prettyplease = "0.2"
 
 [dev-dependencies]
+acpi_tables = "0.2"
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-acpi-macros = { path = "../fstart-acpi-macros" }
+fstart-driver-intel-ich7 = { workspace = true, features = ["acpi"] }
+fstart-driver-intel-pineview = { workspace = true, features = ["acpi"] }
 fstart-driver-ns16550 = { workspace = true }
 fstart-driver-pl011 = { workspace = true }
 fstart-driver-designware-i2c = { workspace = true }
+fstart-services = { workspace = true }
