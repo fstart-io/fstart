@@ -153,9 +153,10 @@ pub fn core_thread_count() -> (u8, u8) {
     }
     let r = cpuid(4, 0);
     let max_cores = ((r.eax >> 26) & 0x3F) as u8 + 1;
-    let max_threads_sharing = ((r.eax >> 14) & 0xFFF) as u8 + 1;
+    // Bits 25:14 are 12 bits wide (max 4095) — use u16 to avoid truncation.
+    let max_threads_sharing = ((r.eax >> 14) & 0xFFF) as u16 + 1;
     let threads_per_core = if max_cores > 0 {
-        max_threads_sharing / max_cores
+        (max_threads_sharing / max_cores as u16) as u8
     } else {
         1
     };

@@ -48,25 +48,17 @@ impl BusDevice for I2cCk505 {
 
     fn init(&mut self) -> Result<(), DeviceError> {
         // Actual programming requires an SmBus provider at the parent.
-        // Without that plumbing we just log what would be written — the
-        // driver still compiles and the code path is ready for the SB
-        // driver to expose an `SmBus` implementation later.
-        for (i, (value, mask)) in self
-            .config
-            .regs
-            .iter()
-            .zip(self.config.mask.iter())
-            .enumerate()
-        {
-            fstart_log::info!(
-                "i2c-ck505: addr={:#x} reg{} <= value={:#04x} mask={:#04x}",
-                self.addr,
-                i,
-                *value,
-                *mask,
-            );
-        }
-        Ok(())
+        // Until the SB driver exposes SmBus write_byte(), we cannot
+        // perform the register writes.  Fail loudly so boards that
+        // depend on clock reconfiguration don’t silently boot with
+        // wrong frequencies.
+        fstart_log::warn!(
+            "i2c-ck505: addr={:#x} — {} registers to program, \
+             but SmBus write path not yet wired",
+            self.addr,
+            self.config.regs.len(),
+        );
+        Err(DeviceError::InitFailed)
     }
 }
 

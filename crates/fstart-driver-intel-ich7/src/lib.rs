@@ -69,38 +69,9 @@ const OIC: u32 = 0x31FE;
 const HPTC: u32 = 0x3404;
 /// HPET base address (after HPTC enable).
 const HPET_BASE: usize = 0xFED0_0000;
-// ---------------------------------------------------------------------------
-// PM register offsets from PMBASE (0x500 default)
-// ---------------------------------------------------------------------------
-
-const PM1_STS: u16 = 0x00;
-const PM1_EN: u16 = 0x02;
-const PM1_CNT: u16 = 0x04;
-const GPE0_STS: u16 = 0x28;
-const GPE0_EN: u16 = 0x2C;
-const SMI_EN: u16 = 0x30;
-const SMI_STS: u16 = 0x34;
-const ALT_GP_SMI_EN: u16 = 0x38;
-const ALT_GP_SMI_STS: u16 = 0x3A;
-
-// TCO register offsets from PMBASE + 0x60
-const TCO_BASE_OFFSET: u16 = 0x60;
-const TCO1_STS: u16 = 0x04;
-const TCO2_STS: u16 = 0x06;
-const TCO1_CNT: u16 = 0x08;
-
-// SMI_EN bits
-const GBL_SMI_EN: u32 = 1 << 0;
-const EOS: u32 = 1 << 1;
-const BIOS_EN: u32 = 1 << 2;
-const SLP_SMI_EN: u32 = 1 << 4;
-const APMC_EN: u32 = 1 << 5;
-const TCO_EN: u32 = 1 << 13;
-const PERIODIC_EN: u32 = 1 << 14;
-
-// PM1_EN bits
-const PWRBTN_EN: u16 = 1 << 8;
-const GBL_EN: u16 = 1 << 5;
+// PM register offsets and bit definitions live in the shared
+// fstart-pmio-ich crate.  Import the ones used locally.
+use fstart_pmio_ich::{self as pmio, PmIo};
 
 // GEN_PMCON_1 bits
 const GEN_PMCON_1: u16 = 0xA0;
@@ -122,10 +93,6 @@ const IDE_TIM_PRI: u16 = 0x40;
 const IDE_TIM_SEC: u16 = 0x42;
 const IDE_CONFIG: u16 = 0x54;
 
-/// PM1_CNT register (offset from PMBASE).
-const PM1_CNT_OFFSET: u16 = 0x04;
-/// SLP_TYP mask in PM1_CNT [12:10].
-const SLP_TYP_MASK: u32 = 0x1C00;
 /// S3 (STR) SLP_TYP value.
 const SLP_TYP_S3: u32 = 0x1400;
 
@@ -228,6 +195,8 @@ pub struct IntelIch7 {
     config: IntelIch7Config,
     /// I801 SMBus controller, initialised during `early_init`.
     smbus: Option<I801SmBus>,
+    /// PM I/O accessor (PMBASE, initialised during `early_init`).
+    pm: PmIo,
 }
 
 // SAFETY: All state is CPU-exclusive during firmware phase.
@@ -314,22 +283,17 @@ impl IntelIch7 {
         fstart_log::info!("intel-ich7: HPET enabled at {:#x}", HPET_BASE);
     }
 
-    /// Detect S3 resume from PM1_CNT SLP_TYP field.
+    /// Detect S3 resume from pmio::PM1_CNT SLP_TYP field.
     ///
     /// Ported from coreboot `southbridge_detect_s3_resume()`.
     #[cfg(target_arch = "x86_64")]
     fn detect_s3_resume(&self) -> bool {
-        // SAFETY: PMBASE is a valid I/O base programmed during early_init.
-        let pm1_cnt = unsafe { fstart_pio::inl(DEFAULT_PMBASE as u16 + PM1_CNT_OFFSET) };
-        let slp_typ = pm1_cnt & SLP_TYP_MASK;
+        let pm1_cnt = self.pm().read32(pmio::PM1_CNT);
+        let slp_typ = pm1_cnt & pmio::SLP_TYP_MASK;
         if slp_typ == SLP_TYP_S3 {
             // Clear SLP_TYP so we don't re-detect on warm reset.
-            unsafe {
-                fstart_pio::outl(
-                    DEFAULT_PMBASE as u16 + PM1_CNT_OFFSET,
-                    pm1_cnt & !SLP_TYP_MASK,
-                );
-            }
+            self.pm()
+                .write32(pmio::PM1_CNT, pm1_cnt & !pmio::SLP_TYP_MASK);
             fstart_log::info!("intel-ich7: S3 resume detected");
             true
         } else {
@@ -367,6 +331,7 @@ impl Device for IntelIch7 {
         Ok(Self {
             config: config.clone(),
             smbus: None,
+            pm: PmIo::new(DEFAULT_PMBASE as u16),
         })
     }
 
@@ -448,15 +413,11 @@ impl Southbridge for IntelIch7 {
         // Halt TCO timer, clear timeout status.
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: PMBASE is a valid I/O base programmed above.
-            unsafe {
-                let pm = DEFAULT_PMBASE as u16;
-                let tco = pm + 0x60;
-                let v = fstart_pio::inw(tco + 0x08);
-                fstart_pio::outw(tco + 0x08, v | (1 << 11));
-                fstart_pio::outw(tco + 0x04, 1 << 3);
-                fstart_pio::outw(tco + 0x06, 1 << 1);
-            }
+            let tco = self.pm().tco();
+            let v = tco.read16(pmio::TCO1_CNT);
+            tco.write16(pmio::TCO1_CNT, v | (1 << 11));
+            tco.write16(pmio::TCO1_STS, 1 << 3);
+            tco.write16(pmio::TCO2_STS, 1 << 1);
         }
 
         // ---- 7. PCI bridge secondary MLT ----
@@ -501,8 +462,14 @@ impl IntelIch7 {
         if self.detect_s3_resume() {
             return 2; // BOOT_PATH_RESUME
         }
-        // Check MCHBAR PMSTS bit 8 for warm reset (done by NB driver).
-        // The SB just checks PM1_CNT.
+        // Warm-reset detection (BOOT_PATH_RESET = 1) requires reading
+        // MCHBAR PMSTS bit 8, which is a northbridge register.  The
+        // southbridge can only detect S3 resume from pmio::PM1_CNT.  The NB
+        // driver (PciHost) should call its own warm-reset check and
+        // combine the result.  For now, the raminit path uses
+        // `sdram_checkreset()` which reads PMCON2/PMCON3 directly and
+        // triggers a CF9 reset when needed, so not returning
+        // BOOT_PATH_RESET here is safe for initial bring-up.
         0 // BOOT_PATH_NORMAL
     }
 }
@@ -573,7 +540,7 @@ impl IntelIch7 {
         // ---- i8259 PIC init ----
         self.i8259_init();
 
-        // ---- GPE0 enable + PM1_CNT (SCI, bus master C3->C0) ----
+        // ---- GPE0 enable + pmio::PM1_CNT (SCI, bus master C3->C0) ----
         self.power_options_late();
 
         // ---- SPI access request clear ----
@@ -812,23 +779,20 @@ impl IntelIch7 {
         }
     }
 
-    /// Late power options: GPE0 enable, NMI control, PM1_CNT.
+    /// Late power options: GPE0 enable, NMI control, pmio::PM1_CNT.
     ///
     /// Completes the power management setup started in early_init.
-    /// Programs GPE0_EN from the board config, sets PM1_CNT for
+    /// Programs pmio::GPE0_EN from the board config, sets pmio::PM1_CNT for
     /// SCI_EN and bus-master C3->C0 wakeup, configures NMI source
     /// control.
     fn power_options_late(&self) {
         #[cfg(target_arch = "x86_64")]
+        // GPE0_EN from board config.
+        self.pm().write32(pmio::GPE0_EN, self.config.gpe0_en);
+
+        // NMI source control (port 0x61).
         unsafe {
-            use fstart_pio::{inb, inl, outb, outl, outw};
-
-            let pm = DEFAULT_PMBASE as u16;
-
-            // GPE0_EN from board config.
-            outl(pm + 0x2C, self.config.gpe0_en);
-
-            // NMI source control (port 0x61).
+            use fstart_pio::{inb, outb};
             let mut nmi = inb(0x61);
             nmi &= 0x0F; // Upper nibble must be 0
             nmi |= 1 << 2; // PCI SERR# disable (for now)
@@ -838,14 +802,13 @@ impl IntelIch7 {
             // Disable NMI sources (port 0x70 bit 7).
             let nmi_ctl = inb(0x70);
             outb(0x70, nmi_ctl | (1 << 7));
-
-            // PM1_CNT: enable SCI, bus-master C3->C0 wakeup.
-            let mut pm1 = inl(pm + 0x04);
-            pm1 &= !0x1C00; // Clear SLP_TYP
-            pm1 |= 1 << 1; // BM_RLD: bus master C3->C0
-            pm1 |= 1 << 0; // SCI_EN
-            outl(pm + 0x04, pm1);
         }
+
+        // PM1_CNT: enable SCI, bus-master C3→C0 wakeup.
+        let mut pm1 = self.pm().read32(pmio::PM1_CNT);
+        pm1 &= !pmio::SLP_TYP_MASK;
+        pm1 |= pmio::BM_RLD | pmio::SCI_EN;
+        self.pm().write32(pmio::PM1_CNT, pm1);
     }
 
     /// PCIe root port initialization.
@@ -977,14 +940,7 @@ impl IntelIch7 {
 
         // TCO Lock.
         #[cfg(target_arch = "x86_64")]
-        {
-            // SAFETY: PMBASE is valid.
-            unsafe {
-                let tco_addr = DEFAULT_PMBASE as u16 + 0x60 + 0x08;
-                let tco1_cnt = fstart_pio::inw(tco_addr);
-                fstart_pio::outw(tco_addr, tco1_cnt | (1 << 12));
-            }
-        }
+        self.pm().tco().lock();
 
         fstart_log::info!("intel-ich7: platform lockdown complete");
     }
@@ -1027,86 +983,53 @@ impl IntelIch7 {
     // PM register helpers (PIO-based, offset from PMBASE)
     // -----------------------------------------------------------------------
 
-    /// Read a 32-bit PM register at `offset` from PMBASE.
-    #[cfg(target_arch = "x86_64")]
-    fn pm_read32(&self, offset: u16) -> u32 {
-        // SAFETY: PMBASE is a valid I/O base programmed during early_init.
-        unsafe { fstart_pio::inl(DEFAULT_PMBASE as u16 + offset) }
-    }
-
-    /// Write a 32-bit PM register at `offset` from PMBASE.
-    #[cfg(target_arch = "x86_64")]
-    fn pm_write32(&self, offset: u16, val: u32) {
-        // SAFETY: PMBASE is a valid I/O base.
-        unsafe { fstart_pio::outl(DEFAULT_PMBASE as u16 + offset, val) }
-    }
-
-    /// Read a 16-bit PM register.
-    #[cfg(target_arch = "x86_64")]
-    fn pm_read16(&self, offset: u16) -> u16 {
-        unsafe { fstart_pio::inw(DEFAULT_PMBASE as u16 + offset) }
-    }
-
-    /// Write a 16-bit PM register.
-    #[cfg(target_arch = "x86_64")]
-    fn pm_write16(&self, offset: u16, val: u16) {
-        unsafe { fstart_pio::outw(DEFAULT_PMBASE as u16 + offset, val) }
+    /// PM I/O accessor (shorthand).
+    #[inline]
+    fn pm(&self) -> &PmIo {
+        &self.pm
     }
 
     // -----------------------------------------------------------------------
     // PM/SMI/GPE/TCO status management (from pmutil.c)
     // -----------------------------------------------------------------------
 
-    /// Read and clear PM1_STS (write-1-to-clear).
+    /// Read and clear pmio::PM1_STS (write-1-to-clear).
     #[cfg(target_arch = "x86_64")]
     pub fn reset_pm1_status(&self) -> u16 {
-        let sts = self.pm_read16(PM1_STS);
-        self.pm_write16(PM1_STS, sts);
+        let sts = self.pm().read16(pmio::PM1_STS);
+        self.pm().write16(pmio::PM1_STS, sts);
         sts
     }
 
-    /// Read and clear SMI_STS (write-1-to-clear).
+    /// Read and clear pmio::SMI_STS (write-1-to-clear).
     #[cfg(target_arch = "x86_64")]
     pub fn reset_smi_status(&self) -> u32 {
-        let sts = self.pm_read32(SMI_STS);
-        self.pm_write32(SMI_STS, sts);
+        let sts = self.pm().read32(pmio::SMI_STS);
+        self.pm().write32(pmio::SMI_STS, sts);
         sts
     }
 
-    /// Read and clear GPE0_STS (write-1-to-clear).
+    /// Read and clear pmio::GPE0_STS (write-1-to-clear).
     #[cfg(target_arch = "x86_64")]
     pub fn reset_gpe0_status(&self) -> u32 {
-        let sts = self.pm_read32(GPE0_STS);
-        self.pm_write32(GPE0_STS, sts);
+        let sts = self.pm().read32(pmio::GPE0_STS);
+        self.pm().write32(pmio::GPE0_STS, sts);
         sts
     }
 
     /// Read and clear TCO status registers (write-1-to-clear).
     ///
-    /// Returns combined TCO1_STS | (TCO2_STS << 16).
+    /// Returns combined pmio::TCO1_STS | (pmio::TCO2_STS << 16).
     #[cfg(target_arch = "x86_64")]
     pub fn reset_tco_status(&self) -> u32 {
-        let tco = DEFAULT_PMBASE as u16 + TCO_BASE_OFFSET;
-        unsafe {
-            let tco1 = fstart_pio::inw(tco + TCO1_STS);
-            let tco2 = fstart_pio::inw(tco + TCO2_STS);
-            // Clear BOOT_STS after SECOND_TO_STS per spec.
-            // Clear all status bits EXCEPT BOOT_STS (bit 2) first.
-            fstart_pio::outw(tco + TCO1_STS, tco1 & !4u16);
-            // Then clear BOOT_STS separately (must happen after SECOND_TO).
-            if tco1 & 4 != 0 {
-                fstart_pio::outw(tco + TCO1_STS, 4);
-            }
-            fstart_pio::outw(tco + TCO2_STS, tco2);
-            (tco1 as u32) | ((tco2 as u32) << 16)
-        }
+        self.pm().tco().reset_tco_status()
     }
 
-    /// Read and clear ALT_GP_SMI_STS.
+    /// Read and clear pmio::ALT_GP_SMI_STS.
     #[cfg(target_arch = "x86_64")]
     pub fn reset_alt_gp_smi_status(&self) -> u16 {
-        let sts = self.pm_read16(ALT_GP_SMI_STS);
-        self.pm_write16(ALT_GP_SMI_STS, sts);
+        let sts = self.pm().read16(pmio::ALT_GP_SMI_STS);
+        self.pm().write16(pmio::ALT_GP_SMI_STS, sts);
         sts
     }
 
@@ -1128,15 +1051,15 @@ impl IntelIch7 {
 
     /// Enable global SMI generation.
     ///
-    /// Programs SMI_EN for TCO, APMC (APM port 0xB2), and SLP_SMI
-    /// events.  Sets GBL_SMI_EN + EOS to activate the SMI logic.
+    /// Programs pmio::SMI_EN for TCO, APMC (APM port 0xB2), and SLP_SMI
+    /// events.  Sets pmio::GBL_SMI_EN + pmio::EOS to activate the SMI logic.
     ///
     /// Called after SMM handler installation and relocation.
     /// Ported from coreboot `global_smi_enable()`.
     #[cfg(target_arch = "x86_64")]
     pub fn global_smi_enable(&self) {
-        let smi_en = self.pm_read32(SMI_EN);
-        if smi_en & APMC_EN != 0 {
+        let smi_en = self.pm().read32(pmio::SMI_EN);
+        if smi_en & pmio::APMC_EN != 0 {
             fstart_log::info!("intel-ich7: SMI already enabled");
             return;
         }
@@ -1145,11 +1068,12 @@ impl IntelIch7 {
         self.clear_pm_status();
 
         // Enable PM1 events: power button + global.
-        self.pm_write16(PM1_EN, PWRBTN_EN | GBL_EN);
+        self.pm()
+            .write16(pmio::PM1_EN, pmio::PWRBTN_EN | pmio::GBL_EN);
 
-        // Enable SMI sources: TCO, APMC, SLP_SMI, GBL_SMI + EOS.
-        let smi = TCO_EN | APMC_EN | SLP_SMI_EN | GBL_SMI_EN | EOS;
-        self.pm_write32(SMI_EN, smi);
+        // Enable SMI sources: TCO, APMC, SLP_SMI, GBL_SMI + pmio::EOS.
+        let smi = pmio::TCO_EN | pmio::APMC_EN | pmio::SLP_SMI_EN | pmio::GBL_SMI_EN | pmio::EOS;
+        self.pm().write32(pmio::SMI_EN, smi);
 
         fstart_log::info!("intel-ich7: global SMI enabled");
     }
@@ -1368,15 +1292,14 @@ impl IntelIch7 {
         // Disable PCI interrupts.
         ecam::or16(0, d, f, 0x04, 1 << 10); // PCI_COMMAND_INT_DISABLE
 
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            let tco = DEFAULT_PMBASE as u16 + TCO_BASE_OFFSET;
+        {
+            let tco = self.pm().tco();
             // Halt TCO timer.
-            let cnt = fstart_pio::inw(tco + TCO1_CNT);
-            fstart_pio::outw(tco + TCO1_CNT, cnt | (1 << 11));
+            let cnt = tco.read16(pmio::TCO1_CNT);
+            tco.write16(pmio::TCO1_CNT, cnt | (1 << 11));
             // Clear timeout status.
-            fstart_pio::outw(tco + TCO1_STS, 1 << 3);
-            fstart_pio::outw(tco + TCO2_STS, 1 << 1);
+            tco.write16(pmio::TCO1_STS, 1 << 3);
+            tco.write16(pmio::TCO2_STS, 1 << 1);
         }
     }
 
@@ -1388,17 +1311,7 @@ impl IntelIch7 {
     ///
     /// Writes SLP_TYP=S5 + SLP_EN to PM1_CNT.  Does not return.
     pub fn poweroff(&self) -> ! {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            let pm = DEFAULT_PMBASE as u16;
-            let mut pm1 = fstart_pio::inl(pm + PM1_CNT);
-            pm1 |= 0x3C00; // SLP_TYP = S5 (bits [12:10] = 0xF)
-            pm1 |= 1 << 13; // SLP_EN
-            fstart_pio::outl(pm + PM1_CNT, pm1);
-        }
-        loop {
-            core::hint::spin_loop();
-        }
+        self.pm().poweroff()
     }
 }
 
@@ -1945,7 +1858,7 @@ mod acpi_impl {
 
             // System sleep states.
             // S0 = working, S3 = suspend-to-RAM, S4 = hibernate, S5 = soft-off.
-            // SLP_TYP values match ICH7 PM1_CNT encoding.
+            // SLP_TYP values match ICH7 pmio::PM1_CNT encoding.
             // Coreboot: sleepstates.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));

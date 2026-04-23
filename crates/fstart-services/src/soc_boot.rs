@@ -20,24 +20,37 @@
 /// Implemented by SoC crates (e.g., `fstart-soc-sunxi`).  The board
 /// adapter calls these methods from its `boot_media_select` and
 /// `load_next_stage` trampolines.
+/// # Safety
+///
+/// All methods require that `header_base` points to a valid, mapped
+/// boot-header region for the implementing SoC.  The implementations
+/// dereference raw memory at fixed offsets from `header_base`.
 pub trait SocBootHeader {
     /// Read the hardware boot-source register value.
     ///
     /// The returned byte is matched against `BootMediaCandidate::media_ids`
     /// to select the active boot device.
     ///
-    /// # Arguments
-    /// * `header_base` — base address of the SoC boot header in memory
-    ///   (e.g., the eGON header's SRAM address on sunxi).
-    fn boot_media_at(header_base: usize) -> u8;
+    /// # Safety
+    ///
+    /// `header_base` must point to a valid, mapped boot-header region.
+    unsafe fn boot_media_at(header_base: usize) -> u8;
 
     /// Read the next-stage FFS offset from the boot header.
     ///
     /// Returns 0 if the header doesn't carry next-stage metadata.
-    fn next_stage_offset_at(header_base: usize) -> u32;
+    ///
+    /// # Safety
+    ///
+    /// `header_base` must point to a valid, mapped boot-header region.
+    unsafe fn next_stage_offset_at(header_base: usize) -> u32;
 
     /// Read the next-stage binary size from the boot header.
     ///
     /// Returns 0 if the header doesn't carry next-stage metadata.
-    fn next_stage_size_at(header_base: usize) -> u32;
+    ///
+    /// # Safety
+    ///
+    /// `header_base` must point to a valid, mapped boot-header region.
+    unsafe fn next_stage_size_at(header_base: usize) -> u32;
 }

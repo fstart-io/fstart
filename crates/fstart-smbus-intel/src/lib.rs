@@ -251,7 +251,7 @@ impl I801SmBus {
         {
             // SAFETY: base is the SMBus I/O region.
             let val = unsafe { fstart_pio::inb(self.base + SMBHSTDAT0) };
-            return Ok(val);
+            Ok(val)
         }
         #[cfg(not(target_arch = "x86_64"))]
         Err(ServiceError::HardwareError)
@@ -285,7 +285,7 @@ impl I801SmBus {
             // SAFETY: base is the SMBus I/O region.
             let lo = unsafe { fstart_pio::inb(self.base + SMBHSTDAT0) };
             let hi = unsafe { fstart_pio::inb(self.base + SMBHSTDAT1) };
-            return Ok((hi as u16) << 8 | lo as u16);
+            Ok((hi as u16) << 8 | lo as u16)
         }
         #[cfg(not(target_arch = "x86_64"))]
         Err(ServiceError::HardwareError)

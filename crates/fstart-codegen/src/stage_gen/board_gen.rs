@@ -1778,7 +1778,11 @@ fn boot_media_select_body(ctx: &BoardCtx<'_>) -> TokenStream {
         // `_egon_sram_base` is the first stage's `load_addr` from RON,
         // which is where the BROM dropped us and thus where the
         // header lives.
-        let _bm = fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize);
+        // SAFETY: _egon_sram_base is the BROM entry point where the
+        // eGON header is mapped in SRAM.
+        let _bm = unsafe {
+            fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize)
+        };
         fstart_log::info!("boot media detect: {:#x}", _bm);
         for candidate in candidates {
             if candidate.media_ids.iter().any(|&id| id == _bm) {
@@ -1956,9 +1960,11 @@ fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
 
         // eGON header read (patched by the FFS assembler at image build).
         let ns_ffs_offset =
-            fstart_soc_sunxi::next_stage_offset_at(self._egon_sram_base as usize) as u64;
+            // SAFETY: _egon_sram_base points to the eGON header in SRAM.
+            unsafe { fstart_soc_sunxi::next_stage_offset_at(self._egon_sram_base as usize) } as u64;
         let ns_size =
-            fstart_soc_sunxi::next_stage_size_at(self._egon_sram_base as usize) as usize;
+            // SAFETY: same as above.
+            unsafe { fstart_soc_sunxi::next_stage_size_at(self._egon_sram_base as usize) } as usize;
         if ns_ffs_offset == 0 || ns_size == 0 {
             fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
             fstart_platform::halt();
@@ -3022,7 +3028,10 @@ fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
     // Read sunxi's boot-media byte once up front if any gated arms exist.
     let bm_preamble = if has_any_gated && is_egon {
         quote! {
-            let _bm = fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize);
+            // SAFETY: _egon_sram_base is the BROM entry point.
+            let _bm = unsafe {
+                fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize)
+            };
         }
     } else {
         // Silence unused-var warnings on non-gated stages.

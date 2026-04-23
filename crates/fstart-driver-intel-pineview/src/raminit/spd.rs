@@ -19,6 +19,7 @@ pub fn read_spds(
     for i in 0..TOTAL_DIMMS {
         let addr = si.spd_map[i];
         if addr == 0 {
+            si.dimms[i] = Default::default();
             continue;
         }
 

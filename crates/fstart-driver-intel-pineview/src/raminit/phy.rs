@@ -10,8 +10,12 @@ use super::{PllParam, SysInfo};
 use fstart_pineview_regs::{ecam, mchbar, MchBar};
 
 // HPET microsecond delay (simplified spin-based).
+/// Microsecond delay for raminit sequences.
+///
+/// TODO: Read the HPET main counter (0xFED0_00F0) for accurate
+/// timing. The current spin-based delay is CPU-frequency-dependent
+/// and may over/under-shoot on different Atom D4xx steppings.
 fn hpet_udelay(us: u32) {
-    // On real hardware this reads the HPET counter. For now, spin.
     for _ in 0..us * 100 {
         core::hint::spin_loop();
     }
@@ -804,9 +808,11 @@ fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
         mch.setbits32(mchbar::C0RSTCTL, 1 << 1);
         hpet_udelay(1);
 
-        // Read from strobe address (address 0 in DRAM).
-        // On real hardware this would be a memory read. In the register
-        // model, we just issue the strobe.
+        // SAFETY: Intentionally reads from physical address 0 to trigger
+        // a DRAM read cycle for DQS sampling during receive-enable
+        // training.  This is valid only after the memory controller has
+        // been partially initialized and DRAM is mapped at address 0.
+        // A read fault here indicates raminit failed earlier.
         unsafe {
             core::ptr::read_volatile(0 as *const u32);
         }
