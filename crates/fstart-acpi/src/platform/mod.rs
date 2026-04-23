@@ -295,103 +295,86 @@ fn build_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
 
 /// Build an x86 FADT with full PM block addresses.
 ///
-/// FADT revision 6.1, 276 bytes. Layout matches coreboot's `acpi_fill_fadt`
+/// Uses `acpi_tables::fadt::FADTBuilder` with typed struct fields
+/// instead of raw byte-offset writes. Matches coreboot's `acpi_fill_fadt`
 /// for ICH7: PM1a event/control blocks, PM timer, GPE0, SCI interrupt,
 /// IAPC boot arch flags, and the standard ACPI flags.
 fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
-    use acpi_tables::sdt::Sdt;
+    use acpi_tables::fadt::{FADTBuilder, Flags};
+    use acpi_tables::gas::{AccessSize, AddressSpace, GAS};
     use acpi_tables::Aml;
 
-    // FADT is 276 bytes for ACPI 6.1 (revision 6).
-    let mut fadt = Sdt::new(
-        *b"FACP",
-        276,
-        6, // FADT revision 6 (ACPI 6.1)
-        crate::OEM_ID,
-        crate::OEM_TABLE_ID,
-        crate::OEM_REVISION,
-    );
-
-    // Preferred PM Profile (offset 45).
-    fadt.write_u8(45, config.pm_profile as u8);
-    // SCI_INT (offset 46, u16).
-    fadt.write_u16(46, config.sci_int);
-    // PM1a_EVT_BLK (offset 56, u32).
-    fadt.write_u32(56, config.pm1a_evt_blk);
-    // PM1a_CNT_BLK (offset 64, u32).
-    fadt.write_u32(64, config.pm1a_cnt_blk);
-    // PM_TMR_BLK (offset 76, u32).
-    fadt.write_u32(76, config.pm_tmr_blk);
-    // GPE0_BLK (offset 80, u32).
-    fadt.write_u32(80, config.gpe0_blk);
-    // PM1_EVT_LEN (offset 88, u8) = 4.
-    fadt.write_u8(88, 4);
-    // PM1_CNT_LEN (offset 89, u8) = 2.
-    fadt.write_u8(89, 2);
-    // PM_TMR_LEN (offset 91, u8) = 4.
-    fadt.write_u8(91, 4);
-    // GPE0_BLK_LEN (offset 92, u8) = 8.
-    fadt.write_u8(92, 8);
-    // P_LVL2_LAT (offset 96, u16) = 1.
-    fadt.write_u16(96, 1);
-    // P_LVL3_LAT (offset 98, u16) = 85.
-    fadt.write_u16(98, 85);
-    // DUTY_OFFSET (offset 104, u8) = 1.
-    fadt.write_u8(104, 1);
-    // IAPC_BOOT_ARCH (offset 109, u16).
-    fadt.write_u16(109, config.iapc_boot_arch);
-    // Flags (offset 112, u32).
-    // WBINVD | C1_SUPPORTED | SLEEP_BUTTON | S4_RTC_WAKE |
-    // PLATFORM_CLOCK | C2_MP_SUPPORTED
-    let flags: u32 = (1 << 0)   // WBINVD
-        | (1 << 2)              // C1_SUPPORTED
-        | (1 << 5)              // SLEEP_BUTTON
-        | (1 << 7)              // S4_RTC_WAKE
-        | (1 << 8)              // TMR_VAL_EXT (32-bit PM timer)
-        | (1 << 15); // PLATFORM_CLOCK
-    fadt.write_u32(112, flags);
-
-    // X_DSDT (offset 140, u64).
-    let dsdt_bytes = dsdt_addr.to_le_bytes();
-    for (i, &b) in dsdt_bytes.iter().enumerate() {
-        fadt.write_u8(140 + i, b);
+    /// Helper: build a GAS for a System I/O port.
+    fn gas_io(port: u32, bit_width: u8) -> GAS {
+        GAS::new(
+            AddressSpace::SystemIo,
+            bit_width,
+            0,
+            if bit_width <= 8 {
+                AccessSize::ByteAccess
+            } else if bit_width <= 16 {
+                AccessSize::WordAccess
+            } else if bit_width <= 32 {
+                AccessSize::DwordAccess
+            } else {
+                AccessSize::QwordAccess
+            },
+            port as u64,
+        )
     }
 
-    // X_PM1a_EVT_BLK (offset 148, GAS — 12 bytes).
-    write_gas_io(&mut fadt, 148, config.pm1a_evt_blk, 32);
-    // X_PM1a_CNT_BLK (offset 172, GAS).
-    write_gas_io(&mut fadt, 172, config.pm1a_cnt_blk, 16);
-    // X_PM_TMR_BLK (offset 208, GAS).
-    write_gas_io(&mut fadt, 208, config.pm_tmr_blk, 32);
-    // X_GPE0_BLK (offset 220, GAS).
-    write_gas_io(&mut fadt, 220, config.gpe0_blk, 64);
+    let mut b = FADTBuilder::new(crate::OEM_ID, crate::OEM_TABLE_ID, crate::OEM_REVISION);
 
-    fadt.update_checksum();
+    // DSDT pointer (64-bit).
+    b = b.dsdt_64(dsdt_addr);
 
+    // PM profile.
+    b = b.preferred_pm_profile(config.pm_profile);
+
+    // SCI interrupt.
+    b.sci_int = (config.sci_int).into();
+
+    // Legacy PM block addresses (32-bit I/O port).
+    b.pm1a_evt_blk = config.pm1a_evt_blk.into();
+    b.pm1a_cnt_blk = config.pm1a_cnt_blk.into();
+    b.pm_tmr_blk = config.pm_tmr_blk.into();
+    b.gpe0_blk = config.gpe0_blk.into();
+
+    // PM block lengths.
+    b.pm1_evt_len = 4;
+    b.pm1_cnt_len = 2;
+    b.pm_tmr_len = 4;
+    b.gpe0_blk_len = 8;
+
+    // C-state latencies.
+    b.p_lvl2_lat = 1u16.into();
+    b.p_lvl3_lat = 85u16.into();
+
+    // Duty cycle.
+    b.duty_offset = 1;
+
+    // IAPC boot architecture flags.
+    b.iapc_boot_arch = config.iapc_boot_arch.into();
+
+    // FADT flags.
+    b = b
+        .flag(Flags::Wbinvd)
+        .flag(Flags::ProcC1)
+        .flag(Flags::SlpButton)
+        .flag(Flags::RtcS4)
+        .flag(Flags::TmrValExt)
+        .flag(Flags::UsePlatformClock);
+
+    // Extended PM block addresses (GAS).
+    b.x_pm1a_evt_blk = gas_io(config.pm1a_evt_blk, 32);
+    b.x_pm1a_cnt_blk = gas_io(config.pm1a_cnt_blk, 16);
+    b.x_pm_tmr_blk = gas_io(config.pm_tmr_blk, 32);
+    b.x_gpe0_blk = gas_io(config.gpe0_blk, 64);
+
+    let fadt = b.finalize();
     let mut bytes = Vec::new();
     fadt.to_aml_bytes(&mut bytes);
     bytes
-}
-
-/// Write a Generic Address Structure (GAS) for a System I/O port.
-fn write_gas_io(sdt: &mut acpi_tables::sdt::Sdt, offset: usize, port: u32, bit_width: u8) {
-    sdt.write_u8(offset, 1); // Address Space ID: System I/O
-    sdt.write_u8(offset + 1, bit_width);
-    sdt.write_u8(offset + 2, 0); // Bit Offset
-    sdt.write_u8(
-        offset + 3,
-        if bit_width <= 8 {
-            1
-        } else if bit_width <= 16 {
-            2
-        } else {
-            3
-        },
-    ); // Access Size
-    let addr_bytes = (port as u64).to_le_bytes();
-    for (i, &b) in addr_bytes.iter().enumerate() {
-        sdt.write_u8(offset + 4 + i, b);
-    }
 }
 
 /// Build the DSDT from collected device AML bytes.
