@@ -881,6 +881,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-log",
  "heapless",
+ "ron",
  "serde",
  "ufmt",
 ]
