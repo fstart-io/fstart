@@ -33,6 +33,31 @@ use serde::{Deserialize, Serialize};
 
 use core::marker::PhantomData;
 
+// ===================================================================
+// Common SuperIO configuration register indices
+// ===================================================================
+
+/// Logical Device Number select register.
+const SIO_REG_LDN: u8 = 0x07;
+/// Device ID high byte.
+const SIO_REG_DEVID_HI: u8 = 0x20;
+/// Device ID low byte.
+const SIO_REG_DEVID_LO: u8 = 0x21;
+/// LDN activate/enable (bit 0 = enable).
+const SIO_REG_ENABLE: u8 = 0x30;
+/// I/O base address high byte.
+const SIO_REG_IO_BASE_HI: u8 = 0x60;
+/// I/O base address low byte.
+const SIO_REG_IO_BASE_LO: u8 = 0x61;
+/// Secondary I/O base address high byte.
+const SIO_REG_IO_BASE2_HI: u8 = 0x62;
+/// Secondary I/O base address low byte.
+const SIO_REG_IO_BASE2_LO: u8 = 0x63;
+/// IRQ select register 0 (primary).
+const SIO_REG_IRQ: u8 = 0x70;
+/// IRQ select register 1 (secondary, used by mouse on shared KBC LDN).
+const SIO_REG_IRQ1: u8 = 0x72;
+
 // ---------------------------------------------------------------------------
 // The SuperIoChip trait — per-chip specialization
 // ---------------------------------------------------------------------------
@@ -290,73 +315,79 @@ impl<C: SuperIoChip> SuperIo<C> {
         }
     }
 
-    /// Select the given Logical Device Number (LDN 0x07 register).
+    /// Select the given Logical Device Number.
     fn select_ldn(&self, ldn: u8) {
-        self.write_reg(0x07, ldn);
+        self.write_reg(SIO_REG_LDN, ldn);
     }
 
-    /// Read the 16-bit chip ID from config registers `0x20`/`0x21`.
+    /// Read the 16-bit chip ID from config registers.
     fn read_chip_id(&self) -> u16 {
-        let hi = self.read_reg(0x20) as u16;
-        let lo = self.read_reg(0x21) as u16;
+        let hi = self.read_reg(SIO_REG_DEVID_HI) as u16;
+        let lo = self.read_reg(SIO_REG_DEVID_LO) as u16;
         (hi << 8) | lo
     }
 
     /// Program a COM-port LDN (io_base, IRQ, enable).
     fn program_com(&self, ldn: u8, cfg: &ComPortConfig) {
         self.select_ldn(ldn);
-        // 0x60/0x61 = I/O base (high/low)
-        self.write_reg(0x60, (cfg.io_base >> 8) as u8);
-        self.write_reg(0x61, (cfg.io_base & 0xFF) as u8);
-        // 0x70 = IRQ
-        self.write_reg(0x70, cfg.irq);
-        // 0x30 = enable (bit 0)
-        self.write_reg(0x30, 0x01);
+        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_IRQ, cfg.irq);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
     }
 
     /// Program an EC/env-controller LDN (two I/O bases).
     fn program_ec(&self, ldn: u8, cfg: &EcConfig) {
         self.select_ldn(ldn);
-        self.write_reg(0x60, (cfg.io_base >> 8) as u8);
-        self.write_reg(0x61, (cfg.io_base & 0xFF) as u8);
-        self.write_reg(0x62, (cfg.io_ext >> 8) as u8);
-        self.write_reg(0x63, (cfg.io_ext & 0xFF) as u8);
-        self.write_reg(0x30, 0x01);
+        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_ext >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_ext & 0xFF) as u8);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
     }
 
     /// Program the keyboard controller LDN.
+    ///
+    /// On some chips, keyboard and mouse share one LDN. If the board
+    /// sets `mouse_ldn == kbc_ldn`, the mouse IRQ is programmed via
+    /// [`program_mouse`] on the same LDN (which is harmless — IRQ1
+    /// is set here, IRQ12 via register 0x72 in program_mouse).
     fn program_kbc(&self, ldn: u8, cfg: &KbcConfig) {
         self.select_ldn(ldn);
-        self.write_reg(0x60, (cfg.io_base >> 8) as u8);
-        self.write_reg(0x61, (cfg.io_base & 0xFF) as u8);
-        self.write_reg(0x62, (cfg.io_ext >> 8) as u8);
-        self.write_reg(0x63, (cfg.io_ext & 0xFF) as u8);
-        self.write_reg(0x70, cfg.irq);
-        self.write_reg(0x30, 0x01);
+        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_ext >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_ext & 0xFF) as u8);
+        self.write_reg(SIO_REG_IRQ, cfg.irq);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
     }
 
     /// Program the mouse LDN (IRQ only).
+    ///
+    /// Uses IRQ select register 1 (0x72) for the mouse IRQ. On chips
+    /// where KBC+mouse share one LDN, this writes a secondary IRQ
+    /// register on the same LDN — no conflict with KBC's primary IRQ.
     fn program_mouse(&self, ldn: u8, cfg: &MouseConfig) {
         self.select_ldn(ldn);
-        self.write_reg(0x70, cfg.irq);
-        self.write_reg(0x30, 0x01);
+        self.write_reg(SIO_REG_IRQ1, cfg.irq);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
     }
 
     /// Program a simple single-base LDN (parallel, CIR).
     fn program_simple(&self, ldn: u8, io_base: u16, irq: u8) {
         self.select_ldn(ldn);
-        self.write_reg(0x60, (io_base >> 8) as u8);
-        self.write_reg(0x61, (io_base & 0xFF) as u8);
-        self.write_reg(0x70, irq);
-        self.write_reg(0x30, 0x01);
+        self.write_reg(SIO_REG_IO_BASE_HI, (io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE_LO, (io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_IRQ, irq);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
     }
 
     /// Program the GPIO LDN (io_base, no IRQ).
     fn program_gpio(&self, ldn: u8, cfg: &GpioConfig) {
         self.select_ldn(ldn);
-        self.write_reg(0x62, (cfg.io_base >> 8) as u8);
-        self.write_reg(0x63, (cfg.io_base & 0xFF) as u8);
-        self.write_reg(0x30, 0x01);
+        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
     }
 }
 

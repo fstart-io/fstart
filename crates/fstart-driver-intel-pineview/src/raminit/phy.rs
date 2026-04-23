@@ -7,7 +7,8 @@
 //! `sdram_programddr`, `sdram_programdqdqs`, `sdram_periodic_rcomp`.
 
 use super::{PllParam, SysInfo};
-use fstart_pineview_regs::{ecam, mchbar, MchBar};
+use fstart_ecam as ecam;
+use fstart_pineview_regs::{mchbar, MchBar};
 
 // HPET microsecond delay (simplified spin-based).
 /// Microsecond delay for raminit sequences.

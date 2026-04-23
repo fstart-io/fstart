@@ -519,6 +519,7 @@ dependencies = [
 name = "fstart-cpu-pineview"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch",
  "fstart-log",
  "fstart-mp",
  "ufmt",
@@ -633,6 +634,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-ecam",
  "fstart-gpio-ich",
  "fstart-hda",
  "fstart-log",
@@ -654,6 +656,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-ecam",
  "fstart-log",
  "fstart-mmio",
  "fstart-pineview-regs",
@@ -850,6 +853,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-ecam"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+]
+
+[[package]]
 name = "fstart-ffs"
 version = "0.1.0"
 dependencies = [
@@ -931,6 +941,7 @@ dependencies = [
 name = "fstart-pineview-regs"
 version = "0.1.0"
 dependencies = [
+ "fstart-ecam",
  "fstart-mmio",
  "tock-registers",
 ]

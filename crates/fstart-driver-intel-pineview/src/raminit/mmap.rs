@@ -4,7 +4,8 @@
 //! `sdram_mmap_regs()`.
 
 use super::SysInfo;
-use fstart_pineview_regs::{ecam, hostbridge, mchbar, MchBar};
+use fstart_ecam as ecam;
+use fstart_pineview_regs::{hostbridge, mchbar, MchBar};
 
 /// Initial memory map setup before JEDEC init.
 ///
@@ -78,7 +79,7 @@ pub fn sdram_mmap(si: &SysInfo, mch: &MchBar) {
     static TOUUD_TAB: [u16; 7] = [128, 128, 256, 256, 512, 256, 512];
 
     ecam::write16(0, 0, 0, hostbridge::TOLUD, TOLUD_TAB[cfg] << 4);
-    ecam::write16(0, 0, 0, hostbridge::TOM, TOM_TAB[cfg] >> 6);
+    ecam::write16(0, 0, 0, hostbridge::TOM, TOM_TAB[cfg]);
     ecam::write16(0, 0, 0, hostbridge::TOUUD, TOUUD_TAB[cfg]);
 
     fstart_log::info!("raminit: memory map configured (dimm_config={})", cfg);

@@ -1,10 +1,9 @@
 [package]
-name = "fstart-pineview-regs"
+name = "fstart-ecam"
+description = "Global ECAM (Enhanced Configuration Access Mechanism) PCI config space access"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-fstart-ecam = { workspace = true }
 fstart-mmio = { workspace = true }
-tock-registers = { workspace = true }

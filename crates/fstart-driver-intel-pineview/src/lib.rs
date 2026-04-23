@@ -17,7 +17,8 @@
 
 pub mod raminit;
 
-use fstart_pineview_regs::{ecam, hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
+use fstart_ecam as ecam;
+use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
 use fstart_services::{PciHost, ServiceError};

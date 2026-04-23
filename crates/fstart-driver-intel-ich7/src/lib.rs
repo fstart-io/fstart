@@ -14,7 +14,34 @@
 
 #![no_std]
 
-use fstart_pineview_regs::{ecam, ich7, Rcba};
+use fstart_ecam as ecam;
+use fstart_pineview_regs::Rcba;
+
+/// ICH7 / NM10 PCI config and RCBA register constants.
+pub mod ich7 {
+    /// LPC bridge: bus 0, dev 0x1f, func 0.
+    pub const LPC_DEV: u8 = 0x1f;
+    pub const LPC_FUNC: u8 = 0;
+    /// RCBA register in LPC config.
+    pub const RCBA_REG: u16 = 0xF0;
+    /// SMBus: bus 0, dev 0x1f, func 3.
+    pub const SMBUS_DEV: u8 = 0x1f;
+    pub const SMBUS_FUNC: u8 = 3;
+    /// SMBus I/O base register.
+    pub const SMB_BASE: u16 = 0x20;
+    /// Host Configuration register.
+    pub const HOSTC: u16 = 0x40;
+    /// HOSTC enable bit.
+    pub const HST_EN: u8 = 1;
+    /// PCI Command register.
+    pub const PCI_COMMAND: u16 = 0x04;
+    /// PCI Command: I/O space enable.
+    pub const PCI_CMD_IO: u16 = 0x0001;
+    /// Default SMBus I/O base.
+    pub const DEFAULT_SMBUS_BASE: u16 = 0x0400;
+    /// GCS register in RCBA (General Control and Status).
+    pub const GCS: u32 = 0x3410;
+}
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{ServiceError, SmBus, Southbridge};
 use fstart_smbus_intel::I801SmBus;

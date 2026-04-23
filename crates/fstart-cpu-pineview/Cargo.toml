@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-log = { workspace = true }
 fstart-mp = { workspace = true }
 ufmt = { workspace = true }

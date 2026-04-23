@@ -299,4 +299,7 @@ impl SmBus for I801SmBus {
     fn write_byte(&mut self, addr: u8, cmd: u8, value: u8) -> Result<(), ServiceError> {
         self.write_byte_data(addr, cmd, value)
     }
+    fn read_word(&mut self, addr: u8, cmd: u8) -> Result<u16, ServiceError> {
+        self.read_word_data(addr, cmd)
+    }
 }
