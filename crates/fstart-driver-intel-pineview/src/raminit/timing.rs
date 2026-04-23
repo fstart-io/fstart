@@ -5,7 +5,8 @@
 //! `sdram_clkmode`, `sdram_timings`, `sdram_checkreset`.
 
 use super::SysInfo;
-use fstart_pineview_regs::{ecam, hostbridge, ich7, mchbar, MchBar};
+use fstart_ecam as ecam;
+use fstart_pineview_regs::{hostbridge, ich7, mchbar, MchBar};
 
 // ===================================================================
 // Helpers

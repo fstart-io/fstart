@@ -22,7 +22,8 @@ mod phy;
 mod spd;
 mod timing;
 
-use fstart_pineview_regs::{ecam, mchbar, MchBar};
+use fstart_ecam as ecam;
+use fstart_pineview_regs::{mchbar, MchBar};
 use fstart_services::ServiceError;
 use fstart_spd::DimmInfo;
 

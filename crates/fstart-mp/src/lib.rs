@@ -288,28 +288,28 @@ static FLIGHT_PLAN_LEN: AtomicUsize = AtomicUsize::new(0);
 /// fn() signature for flight plan callbacks.
 type FlightFn = fn();
 
-/// Global CpuOps callback (set before APs are released).
+/// Global CpuOps pointer — stores a `*const C` set by BSP before APs start.
+static CPU_OPS_PTR: AtomicUsize = AtomicUsize::new(0);
+/// Global cpu_init trampoline — monomorphized fn() that reads CPU_OPS_PTR.
 static CPU_INIT_FN: AtomicUsize = AtomicUsize::new(0);
+/// Global smm_relocate trampoline.
 static SMM_RELOCATE_FN: AtomicUsize = AtomicUsize::new(0);
 
-/// Per-CPU init — called as a flight plan step on all CPUs.
-fn flight_cpu_init() {
-    let ptr = CPU_INIT_FN.load(Ordering::Acquire);
-    if ptr != 0 {
-        // SAFETY: ptr was set by BSP to a valid fn() before APs started.
-        let f: fn() = unsafe { core::mem::transmute(ptr) };
-        f();
+/// Build a monomorphized cpu_init trampoline for concrete `CpuOps` type.
+///
+/// Returns a `fn()` that loads `CPU_OPS_PTR`, casts to `&C`, and calls
+/// `C::init_cpu()`. This avoids the recursion bug where `flight_cpu_init`
+/// would call itself through `CPU_INIT_FN`.
+fn make_cpu_init_trampoline<C: CpuOps>() -> fn() {
+    fn trampoline<C: CpuOps>() {
+        let ptr = CPU_OPS_PTR.load(Ordering::Acquire);
+        if ptr != 0 {
+            // SAFETY: ptr was set by BSP to a valid &C before APs started.
+            let ops: &C = unsafe { &*(ptr as *const C) };
+            ops.init_cpu();
+        }
     }
-}
-
-/// SMM relocate — called as a flight plan step on all CPUs.
-fn flight_smm_relocate() {
-    let ptr = SMM_RELOCATE_FN.load(Ordering::Acquire);
-    if ptr != 0 {
-        // SAFETY: ptr was set by BSP to a valid fn() before APs started.
-        let f: fn() = unsafe { core::mem::transmute(ptr) };
-        f();
-    }
+    trampoline::<C>
 }
 
 /// AP mailbox loop — the terminal flight plan step for APs.
@@ -480,44 +480,21 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
     AP_COUNT.store(0, Ordering::Release);
     AP_IN_MAILBOX_LOOP.store(0, Ordering::Release);
 
-    // Store cpu_ops.init_cpu as a function pointer for the flight plan.
-    // We use a wrapper that calls through the global pointer.
-    //
-    // For the flight plan, we need bare fn() pointers.  We store the
-    // concrete trait method as a type-erased fn() via a per-CpuOps
-    // monomorphized wrapper.
-    fn make_cpu_init_fn<C: CpuOps>(ops: &C) -> fn() {
-        // We can't capture `ops` in a fn() — so we store the init_cpu
-        // method separately.  For the flight plan, cpu_init runs the
-        // same code on every CPU, so we use a global fn pointer.
-        //
-        // This is a limitation of the flight plan approach.  The scoped
-        // API (post-init) can capture state via closures.
-        let _ = ops;
-        flight_cpu_init
-    }
+    // Store ops pointer globally so the monomorphized trampoline can access it.
+    CPU_OPS_PTR.store(config.cpu_ops as *const C as usize, Ordering::Release);
+    let cpu_init_trampoline = make_cpu_init_trampoline::<C>();
 
     // Build the flight plan.
     let mut step_count = 0usize;
 
     // If SMM is configured, add the SMM steps.
+    // SMM wiring is a future item — the trait + flight plan structure
+    // is in place but smm_relocate is not yet connected.
     if let Some(smm) = config.smm {
         if let Some(info) = smm.smm_info() {
-            // Step: BSP installs SMM handlers, APs blocked.
-            // We can't store the closure directly, so we use the global.
-            // For V1 (smm=None), these steps are simply not added.
             let _ = info;
 
-            // Store smm_relocate as the global fn.
-            SMM_RELOCATE_FN.store(flight_smm_relocate as usize, Ordering::Release);
-
             // Step 0: BSP loads SMM handlers (APs blocked).
-            // The BSP fn needs to call smm.install_smm_handlers.
-            // Since we can't capture, we skip the detailed SMM wiring
-            // for now — the trait + flight plan structure is in place.
-            // Future: use a static SmmOps pointer.
-
-            // Step 1: All CPUs relocate (no barrier).
             FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
             FLIGHT_PLAN[step_count]
                 .cpus_entered
@@ -526,32 +503,30 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
             FLIGHT_PLAN[step_count].bsp_fn.store(0, Ordering::Release);
             step_count += 1;
 
+            // Step 1: All CPUs relocate (barriered).
+            // TODO: wire smm_relocate via monomorphized SmmOps trampoline.
             FLIGHT_PLAN[step_count].barrier.store(1, Ordering::Release);
             FLIGHT_PLAN[step_count]
                 .cpus_entered
                 .store(0, Ordering::Release);
-            FLIGHT_PLAN[step_count]
-                .ap_fn
-                .store(flight_smm_relocate as usize, Ordering::Release);
-            FLIGHT_PLAN[step_count]
-                .bsp_fn
-                .store(flight_smm_relocate as usize, Ordering::Release);
+            FLIGHT_PLAN[step_count].ap_fn.store(0, Ordering::Release);
+            FLIGHT_PLAN[step_count].bsp_fn.store(0, Ordering::Release);
             step_count += 1;
         }
     }
 
     // Step: All CPUs run cpu_init (barriered).
-    CPU_INIT_FN.store(make_cpu_init_fn(config.cpu_ops) as usize, Ordering::Release);
+    CPU_INIT_FN.store(cpu_init_trampoline as usize, Ordering::Release);
     FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
     FLIGHT_PLAN[step_count]
         .cpus_entered
         .store(0, Ordering::Release);
     FLIGHT_PLAN[step_count]
         .ap_fn
-        .store(flight_cpu_init as usize, Ordering::Release);
+        .store(cpu_init_trampoline as usize, Ordering::Release);
     FLIGHT_PLAN[step_count]
         .bsp_fn
-        .store(flight_cpu_init as usize, Ordering::Release);
+        .store(cpu_init_trampoline as usize, Ordering::Release);
     step_count += 1;
 
     // Step: APs enter mailbox loop (barriered).

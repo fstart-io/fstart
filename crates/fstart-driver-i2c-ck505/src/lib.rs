@@ -1,11 +1,12 @@
 //! IDT CK505 clock generator driver (SMBus-attached).
 //!
 //! The CK505 is a common clock source on Atom D4xx / D5xx / NM10
-//! reference boards. It is programmed over SMBus: five registers
-//! select reference and bus clock dividers, spread-spectrum options,
-//! and output enables. Board authors provide a `regs` / `mask` pair
-//! that the driver applies as `(new_val & mask) | (read_val & !mask)`
-//! using byte-at-a-time SMBus read-modify-writes.
+//! reference boards. It is programmed over SMBus: a variable number
+//! of registers select reference and bus clock dividers,
+//! spread-spectrum options, and output enables. Board authors provide
+//! `num_regs`, `regs`, and `mask` arrays — the driver applies
+//! `(new_val & mask) | (read_val & !mask)` using byte-at-a-time
+//! SMBus read-modify-writes for `num_regs` registers.
 
 #![no_std]
 
@@ -13,13 +14,21 @@ use fstart_services::device::{BusDevice, DeviceError};
 use fstart_services::ServiceError;
 use serde::{Deserialize, Serialize};
 
+/// Maximum number of clock generator registers.
+///
+/// Most clock generators (CK505, CK410, CK804) have 5–10 registers.
+/// 16 is generous headroom.
+const MAX_REGS: usize = 16;
+
 /// Configuration for the CK505 clock generator.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct I2cCk505Config {
+    /// Number of registers to program (1..=MAX_REGS).
+    pub num_regs: u8,
     /// Mask bytes — bit set = register position is written from `regs`.
-    pub mask: [u8; 5],
+    pub mask: [u8; MAX_REGS],
     /// Register values to apply (AND-masked by `mask`).
-    pub regs: [u8; 5],
+    pub regs: [u8; MAX_REGS],
 }
 
 /// CK505 driver state.
@@ -56,7 +65,7 @@ impl BusDevice for I2cCk505 {
             "i2c-ck505: addr={:#x} — {} registers to program, \
              but SmBus write path not yet wired",
             self.addr,
-            self.config.regs.len(),
+            self.config.num_regs,
         );
         Err(DeviceError::InitFailed)
     }
