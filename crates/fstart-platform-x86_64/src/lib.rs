@@ -166,9 +166,20 @@ core::arch::global_asm!(
     "movw %ax, %ss",
     "movw %ax, %fs",
     "movw %ax, %gs",
-    // Clear the early-RAM region (CAR on real hardware, just RAM on QEMU).
-    // This ensures BSS is zero before we touch any Rust statics.
-    // The linker provides _bss_start and _bss_end.
+    // ---- CAR setup (real hardware only) ----
+    // On boards with Cache-as-RAM, we must enable it BEFORE any memory
+    // writes (BSS clear, page tables, stack pushes) because all writable
+    // memory lives in cache.  On QEMU / non-CAR boards, _has_car == 0
+    // and we skip straight to BSS clear.
+    //
+    // _car_setup returns via jmp *%ebp.
+    "cmpl $0, _has_car",
+    "je _post_car",
+    "movl $_post_car, %ebp",
+    "jmp _car_setup",
+    "_post_car:",
+    // Clear BSS.  On CAR boards this zeroes the CAR-backed BSS region
+    // (now live after _car_setup).  On QEMU it zeroes regular RAM.
     "movl $_bss_start, %edi",
     "movl $_bss_end, %ecx",
     "subl %edi, %ecx",

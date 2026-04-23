@@ -156,6 +156,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             is_first_stage,
             config.platform,
             page_size,
+            car_config,
         );
     } else {
         // RAM-only layout: everything in RAM at load_addr.
@@ -220,6 +221,7 @@ fn generate_xip_layout(
     is_first_stage: bool,
     platform: Platform,
     page_size: PageSize,
+    car_config: Option<(u64, u64)>,
 ) {
     // When data_addr is set, split RAM into two memory regions:
     // RAMRO for read-only data (unused currently, but reserved),
@@ -320,6 +322,26 @@ fn generate_xip_layout(
 
     // Stack: grows downward from top of RAM region.
     write_stack(out, stack_size, "RAM");
+
+    // CAR symbols — consumed by car.rs global_asm.
+    // Only emitted when the board declares memory.car.
+    if let Some((car_base, car_size)) = car_config {
+        writeln!(out).unwrap();
+        writeln!(out, "    /* Cache-as-RAM symbols for car.rs */").unwrap();
+        writeln!(out, "    _car_base = {car_base:#x};").unwrap();
+        writeln!(out, "    _car_size = {car_size:#x};").unwrap();
+        // Stack top inside CAR (same as _stack_top for CAR boards).
+        writeln!(out, "    _ecar_stack = _stack_top;").unwrap();
+        // ROM MTRR: cover the entire ROM region as write-protect.
+        writeln!(out, "    _rom_mtrr_base = {rom_origin:#x};").unwrap();
+        // MTRR mask for ROM size (power-of-2 size → negate for mask).
+        let rom_mask = !(rom_length - 1) & 0xFFFF_FFFF;
+        writeln!(out, "    _rom_mtrr_mask = {rom_mask:#x};").unwrap();
+        // Flag consumed by entry asm to decide whether to jmp _car_setup.
+        writeln!(out, "    _has_car = 1;").unwrap();
+    } else {
+        writeln!(out, "    _has_car = 0;").unwrap();
+    }
 
     // x86 bootblock entry code: only the first stage (bootblock) has the
     // 16-bit reset vector and mode transition code. Later stages in a
