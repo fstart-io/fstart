@@ -218,9 +218,8 @@
                         // plumbs the SMBus transaction API.
                         ( name: "ck505", bus: I2c(0x69), enabled: false,
                             driver: I2cCk505((
-                                num_regs: 5,
-                                mask: (0x00, 0x80, 0xff, 0xff, 0xff, 0,0,0,0,0,0,0,0,0,0,0),
-                                regs: (0x00, 0x80, 0xfe, 0xff, 0xfc, 0,0,0,0,0,0,0,0,0,0,0),
+                                mask: [0x00, 0x80, 0xff, 0xff, 0xff],
+                                regs: [0x00, 0x80, 0xfe, 0xff, 0xfc],
                             )),
                             services: [],
                         ),

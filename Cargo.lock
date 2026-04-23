@@ -624,6 +624,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-log",
  "fstart-services",
+ "heapless",
  "serde",
  "ufmt",
 ]

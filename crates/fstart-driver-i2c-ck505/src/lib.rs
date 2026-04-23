@@ -4,31 +4,28 @@
 //! reference boards. It is programmed over SMBus: a variable number
 //! of registers select reference and bus clock dividers,
 //! spread-spectrum options, and output enables. Board authors provide
-//! `num_regs`, `regs`, and `mask` arrays — the driver applies
+//! `regs` and `mask` vectors — the driver applies
 //! `(new_val & mask) | (read_val & !mask)` using byte-at-a-time
-//! SMBus read-modify-writes for `num_regs` registers.
+//! SMBus read-modify-writes for each register.
 
 #![no_std]
 
 use fstart_services::device::{BusDevice, DeviceError};
 use fstart_services::ServiceError;
+use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
-/// Maximum number of clock generator registers.
-///
-/// Most clock generators (CK505, CK410, CK804) have 5–10 registers.
-/// 16 is generous headroom.
-const MAX_REGS: usize = 16;
-
 /// Configuration for the CK505 clock generator.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+///
+/// `mask` and `regs` must have the same length — one entry per
+/// clock register. Typical clock generators have 5–21 registers;
+/// the `Vec<u8, 32>` capacity handles all known parts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct I2cCk505Config {
-    /// Number of registers to program (1..=MAX_REGS).
-    pub num_regs: u8,
     /// Mask bytes — bit set = register position is written from `regs`.
-    pub mask: [u8; MAX_REGS],
+    pub mask: Vec<u8, 32>,
     /// Register values to apply (AND-masked by `mask`).
-    pub regs: [u8; MAX_REGS],
+    pub regs: Vec<u8, 32>,
 }
 
 /// CK505 driver state.
@@ -49,9 +46,14 @@ impl BusDevice for I2cCk505 {
     type Bus = dyn SmBusAddrProvider;
 
     fn new_on_bus(config: &Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
+        if config.mask.len() != config.regs.len() {
+            return Err(DeviceError::MissingResource(
+                "ck505: mask/regs length mismatch",
+            ));
+        }
         Ok(Self {
             addr: bus.smbus_address(),
-            config: *config,
+            config: config.clone(),
         })
     }
 
@@ -59,13 +61,13 @@ impl BusDevice for I2cCk505 {
         // Actual programming requires an SmBus provider at the parent.
         // Until the SB driver exposes SmBus write_byte(), we cannot
         // perform the register writes.  Fail loudly so boards that
-        // depend on clock reconfiguration don’t silently boot with
+        // depend on clock reconfiguration don't silently boot with
         // wrong frequencies.
         fstart_log::warn!(
             "i2c-ck505: addr={:#x} — {} registers to program, \
              but SmBus write path not yet wired",
             self.addr,
-            self.config.num_regs,
+            self.config.regs.len(),
         );
         Err(DeviceError::InitFailed)
     }
