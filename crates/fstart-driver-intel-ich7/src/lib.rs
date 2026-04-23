@@ -1411,6 +1411,7 @@ mod acpi_impl {
     extern crate alloc;
     use alloc::vec::Vec;
     use fstart_acpi::device::AcpiDevice;
+    use fstart_acpi_macros::acpi_dsl;
 
     use super::*;
 
@@ -1420,20 +1421,281 @@ mod acpi_impl {
     impl AcpiDevice for IntelIch7 {
         type Config = IntelIch7Config;
 
-        /// Produce LPC bridge DSDT device node ("LPCB").
+        /// Produce ICH7 DSDT content for the LPC bridge and all its PCI
+        /// function siblings.
         ///
-        /// Contains: `_HID` PNP0A05 (generic container), `_ADR` 0x001F0000,
-        /// and nested ISA resource descriptors for legacy I/O ranges.
+        /// The output is a flat sequence of AML objects.  The caller is
+        /// expected to embed them inside the appropriate PCI0 scope.
+        /// Sleep-state objects (`_S0_`, `_S5_`) are appended at the end
+        /// for placement at root scope by the caller.
+        ///
+        /// # LPCB children (ISA legacy devices)
+        ///
+        /// `DMAC` — 8237 DMA controller (PNP0200)
+        /// `FWH_` — Firmware Hub (INT0800)
+        /// `HPET` — High Precision Event Timer (PNP0103)
+        /// `PIC_` — 8259 interrupt controller (PNP0000)
+        /// `MATH` — FPU / x87 (PNP0C04)
+        /// `LDRC` — LPC resource consumption (PNP0C02)
+        /// `RTC_` — Real Time Clock (PNP0B00)
+        /// `TIMR` — 8254 timer (PNP0100)
+        ///
+        /// # PCI function siblings (at PCI0 scope level)
+        ///
+        /// `HDEF` 0:1B.0, `USB1`–`USB4` 0:1D.0-3, `EHC1` 0:1D.7,
+        /// `RP01`–`RP06` 0:1C.0-5, `PCIB` 0:1E.0,
+        /// `SATA` 0:1F.2, `PATA` 0:1F.1, `SBUS` 0:1F.3.
+        ///
+        /// Ported from coreboot `src/southbridge/intel/i82801gx/acpi/`.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
             let name = config.acpi_name.as_deref().unwrap_or("LPCB");
             let _adr: u32 = 0x001F_0000; // B0:D31:F0
 
-            fstart_acpi_macros::acpi_dsl! {
+            // ---------------------------------------------------------------
+            // 1. LPCB device with all ISA legacy children.
+            //
+            // IRQNoFlags() is not a supported macro keyword; we substitute
+            // the extended Interrupt() descriptor (opcode 0x89) which Linux
+            // handles equivalently for ISA legacy IRQs.
+            //
+            // DMA() channel descriptor is also unsupported by the macro and
+            // is omitted — Linux does not require it for boot enumeration.
+            // ---------------------------------------------------------------
+            let mut aml = acpi_dsl! {
                 Device(#{name}) {
                     Name("_ADR", #{_adr});
                     Name("_HID", EisaId("PNP0A05"));
+
+                    // DMAC — 8237 DMA Controller (PNP0200)
+                    // Coreboot: lpc.asl Device(DMAC)
+                    Device("DMAC") {
+                        Name("_HID", EisaId("PNP0200"));
+                        Name("_CRS", ResourceTemplate {
+                            IO(0x0000u16, 0x0000u16, 0x01u8, 0x20u8);
+                            IO(0x0081u16, 0x0081u16, 0x01u8, 0x11u8);
+                            IO(0x0093u16, 0x0093u16, 0x01u8, 0x0Du8);
+                            IO(0x00C0u16, 0x00C0u16, 0x01u8, 0x20u8);
+                        });
+                    }
+
+                    // FWH_ — Firmware Hub (INT0800)
+                    // Coreboot: lpc.asl Device(FWH)
+                    Device("FWH_") {
+                        Name("_HID", EisaId("INT0800"));
+                        Name("_CRS", ResourceTemplate {
+                            Memory32Fixed(ReadOnly, 0xFF000000u32, 0x01000000u32);
+                        });
+                    }
+
+                    // HPET — High Precision Event Timer (PNP0103)
+                    // Fixed at 0xFED00000, 0x400 bytes.
+                    // Coreboot: lpc.asl Device(HPET)
+                    Device("HPET") {
+                        Name("_HID", EisaId("PNP0103"));
+                        Name("_CRS", ResourceTemplate {
+                            Memory32Fixed(ReadOnly, 0xFED00000u32, 0x400u32);
+                        });
+                    }
+
+                    // PIC_ — 8259 Programmable Interrupt Controller (PNP0000)
+                    // Coreboot: lpc.asl Device(PIC)
+                    Device("PIC_") {
+                        Name("_HID", EisaId("PNP0000"));
+                        Name("_CRS", ResourceTemplate {
+                            IO(0x0020u16, 0x0020u16, 0x01u8, 0x02u8);
+                            IO(0x0024u16, 0x0024u16, 0x01u8, 0x02u8);
+                            IO(0x0028u16, 0x0028u16, 0x01u8, 0x02u8);
+                            IO(0x002Cu16, 0x002Cu16, 0x01u8, 0x02u8);
+                            IO(0x0030u16, 0x0030u16, 0x01u8, 0x02u8);
+                            IO(0x0034u16, 0x0034u16, 0x01u8, 0x02u8);
+                            IO(0x0038u16, 0x0038u16, 0x01u8, 0x02u8);
+                            IO(0x003Cu16, 0x003Cu16, 0x01u8, 0x02u8);
+                            IO(0x00A0u16, 0x00A0u16, 0x01u8, 0x02u8);
+                            IO(0x00A4u16, 0x00A4u16, 0x01u8, 0x02u8);
+                            IO(0x00A8u16, 0x00A8u16, 0x01u8, 0x02u8);
+                            IO(0x00ACu16, 0x00ACu16, 0x01u8, 0x02u8);
+                            IO(0x00B0u16, 0x00B0u16, 0x01u8, 0x02u8);
+                            IO(0x00B4u16, 0x00B4u16, 0x01u8, 0x02u8);
+                            IO(0x00B8u16, 0x00B8u16, 0x01u8, 0x02u8);
+                            IO(0x00BCu16, 0x00BCu16, 0x01u8, 0x02u8);
+                            IO(0x04D0u16, 0x04D0u16, 0x01u8, 0x02u8);
+                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 2u32);
+                        });
+                    }
+
+                    // MATH — FPU / x87 co-processor (PNP0C04)
+                    // Coreboot: lpc.asl Device(MATH)
+                    Device("MATH") {
+                        Name("_HID", EisaId("PNP0C04"));
+                        Name("_CRS", ResourceTemplate {
+                            IO(0x00F0u16, 0x00F0u16, 0x01u8, 0x01u8);
+                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 13u32);
+                        });
+                    }
+
+                    // LDRC — LPC device resource consumption (PNP0C02)
+                    // Covers SuperIO ports, NMI, POST, ACPI I/O, PMBASE, GPIOBASE.
+                    // Coreboot: lpc.asl Device(LDRC)
+                    Device("LDRC") {
+                        Name("_HID", EisaId("PNP0C02"));
+                        Name("_UID", 2u32);
+                        Name("_CRS", ResourceTemplate {
+                            IO(0x002Eu16, 0x002Eu16, 0x01u8, 0x02u8);
+                            IO(0x004Eu16, 0x004Eu16, 0x01u8, 0x02u8);
+                            IO(0x0061u16, 0x0061u16, 0x01u8, 0x01u8);
+                            IO(0x0063u16, 0x0063u16, 0x01u8, 0x01u8);
+                            IO(0x0065u16, 0x0065u16, 0x01u8, 0x01u8);
+                            IO(0x0067u16, 0x0067u16, 0x01u8, 0x01u8);
+                            IO(0x0080u16, 0x0080u16, 0x01u8, 0x01u8);
+                            IO(0x0092u16, 0x0092u16, 0x01u8, 0x01u8);
+                            IO(0x00B2u16, 0x00B2u16, 0x01u8, 0x02u8);
+                            IO(0x0800u16, 0x0800u16, 0x01u8, 0x10u8);
+                            IO(0x0500u16, 0x0500u16, 0x01u8, 0x80u8);
+                            IO(0x0480u16, 0x0480u16, 0x01u8, 0x40u8);
+                        });
+                    }
+
+                    // RTC_ — Real Time Clock (PNP0B00)
+                    // Coreboot: lpc.asl Device(RTC)
+                    Device("RTC_") {
+                        Name("_HID", EisaId("PNP0B00"));
+                        Name("_CRS", ResourceTemplate {
+                            IO(0x0070u16, 0x0070u16, 0x01u8, 0x08u8);
+                        });
+                    }
+
+                    // TIMR — 8254 Programmable Interval Timer (PNP0100)
+                    // Coreboot: lpc.asl Device(TIMR)
+                    Device("TIMR") {
+                        Name("_HID", EisaId("PNP0100"));
+                        Name("_CRS", ResourceTemplate {
+                            IO(0x0040u16, 0x0040u16, 0x01u8, 0x04u8);
+                            IO(0x0050u16, 0x0050u16, 0x10u8, 0x04u8);
+                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 0u32);
+                        });
+                    }
                 }
-            }
+            };
+
+            // ---------------------------------------------------------------
+            // 2. Per-function PCI device nodes — siblings to LPCB at PCI0
+            //    scope level.  A bare _ADR is sufficient for Linux to
+            //    enumerate each function.
+            // ---------------------------------------------------------------
+
+            // HDEF — HD Audio controller  0:1B.0
+            // Coreboot: audio_ich.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("HDEF") {
+                    Name("_ADR", 0x001B0000u32);
+                }
+            });
+
+            // USB UHCI controllers  0:1D.0–3
+            // Coreboot: usb.asl USB1–USB4
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("USB1") {
+                    Name("_ADR", 0x001D0000u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("USB2") {
+                    Name("_ADR", 0x001D0001u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("USB3") {
+                    Name("_ADR", 0x001D0002u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("USB4") {
+                    Name("_ADR", 0x001D0003u32);
+                }
+            });
+
+            // EHC1 — EHCI USB 2.0 controller  0:1D.7
+            // Coreboot: usb.asl EHC1
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("EHC1") {
+                    Name("_ADR", 0x001D0007u32);
+                }
+            });
+
+            // RP01–RP06 — PCIe root ports  0:1C.0–5
+            // Coreboot: pcie port nodes
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("RP01") {
+                    Name("_ADR", 0x001C0000u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("RP02") {
+                    Name("_ADR", 0x001C0001u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("RP03") {
+                    Name("_ADR", 0x001C0002u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("RP04") {
+                    Name("_ADR", 0x001C0003u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("RP05") {
+                    Name("_ADR", 0x001C0004u32);
+                }
+            });
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("RP06") {
+                    Name("_ADR", 0x001C0005u32);
+                }
+            });
+
+            // PCIB — PCI-to-PCI bridge  0:1E.0
+            // Coreboot: pci.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("PCIB") {
+                    Name("_ADR", 0x001E0000u32);
+                }
+            });
+
+            // SATA — SATA controller  0:1F.2
+            // Coreboot: sata.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("SATA") {
+                    Name("_ADR", 0x001F0002u32);
+                }
+            });
+
+            // PATA — IDE / PATA controller  0:1F.1
+            // Coreboot: pata.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("PATA") {
+                    Name("_ADR", 0x001F0001u32);
+                }
+            });
+
+            // SBUS — SMBus controller  0:1F.3
+            // Coreboot: smbus.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("SBUS") {
+                    Name("_ADR", 0x001F0003u32);
+                }
+            });
+
+            // ---------------------------------------------------------------
+            // 3. System sleep states (caller places at root scope).
+            // ---------------------------------------------------------------
+            aml.extend_from_slice(&acpi_dsl! {
+                Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
+                Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
+            });
+
+            aml
         }
 
         /// Produce standalone FADT fields as extra table bytes.

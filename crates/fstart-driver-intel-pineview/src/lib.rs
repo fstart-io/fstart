@@ -496,25 +496,145 @@ mod acpi_impl {
     impl AcpiDevice for IntelPineview {
         type Config = IntelPineviewConfig;
 
-        /// Produce the host bridge DSDT device node ("MCHC").
+        /// Produce Pineview northbridge DSDT content.
         ///
-        /// Contains `_ADR` 0x00000000 (B0:D0:F0) and memory region
-        /// declarations for MCHBAR and DMIBAR.
+        /// Includes:
+        /// - **MCHC** (0:0.0): host bridge device with PCI config
+        ///   OperationRegion exposing EPBAR/MCHBAR/PCIEXBAR/DMIBAR/PAM/
+        ///   TOLUD/TOM fields for OS runtime use.
+        /// - **PDRC**: Platform Device Resource Consumption (PNP0C02)
+        ///   reserving RCBA, MCHBAR, DMIBAR, EPBAR, and ICH misc MMIO.
+        /// - **PCI0 `_HID`/`_CID`/`_BBN`**: PCIe host bridge identity.
+        ///
+        /// The full PCI0 `_CRS` with dynamic TOLUD patching is not
+        /// emitted here — Linux falls back to e820/PCI BAR probing.
+        /// A future phase can add the `_CRS` Method with
+        /// `CreateDwordField` / `ShiftLeft` fixups.
+        ///
+        /// Ported from coreboot `northbridge/intel/pineview/acpi/`.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
             let name = config.acpi_name.as_deref().unwrap_or("MCHC");
-            let _adr: u32 = 0x0000_0000; // B0:D0:F0
+            let _adr: u32 = 0x0000_0000;
             let mchbar = config.mchbar as u32;
             let dmibar = config.dmibar as u32;
+            let epbar = config.epbar as u32;
 
-            fstart_acpi_macros::acpi_dsl! {
+            // 1. MCHC device with PCI config OperationRegion.
+            //
+            // Coreboot hostbridge.asl: MCHP OpRegion in PCI_Config
+            // with fields for EPBAR, MCHBAR, PCIEXBAR, DMIBAR, PAM
+            // registers, TOM, and TOLUD.  These are read by the OS
+            // to discover memory topology.
+            let mut aml = fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
                     Name("_ADR", #{_adr});
+
+                    OperationRegion("MCHP", PciConfig, 0x00u32, 0x100u32);
+                    Field("MCHP", DWordAcc, NoLock, Preserve) {
+                        Offset(0x40),
+                        // EPBAR
+                        EPEN, 1,
+                        , 11,
+                        EPBR, 20,
+                        Offset(0x48),
+                        // MCHBAR
+                        MHEN, 1,
+                        , 13,
+                        MHBR, 18,
+                        Offset(0x60),
+                        // PCIEXBAR
+                        PXEN, 1,
+                        PXSZ, 2,
+                        , 23,
+                        PXBR, 6,
+                        Offset(0x68),
+                        // DMIBAR
+                        DMEN, 1,
+                        , 11,
+                        DMBR, 20,
+
+                        Offset(0x90),
+                        // PAM0
+                        , 4,
+                        PM0H, 2,
+                        , 2,
+                        // PAM1
+                        PM1L, 2,
+                        , 2,
+                        PM1H, 2,
+                        , 2,
+                        // PAM2
+                        PM2L, 2,
+                        , 2,
+                        PM2H, 2,
+                        , 2,
+                        // PAM3
+                        PM3L, 2,
+                        , 2,
+                        PM3H, 2,
+                        , 2,
+                        // PAM4
+                        PM4L, 2,
+                        , 2,
+                        PM4H, 2,
+                        , 2,
+                        // PAM5
+                        PM5L, 2,
+                        , 2,
+                        PM5H, 2,
+                        , 2,
+                        // PAM6
+                        PM6L, 2,
+                        , 2,
+                        PM6H, 2,
+                        , 2,
+
+                        Offset(0xA0),
+                        TOM_, 16,
+
+                        Offset(0xB0),
+                        , 4,
+                        TLUD, 12,
+                    }
+                }
+            };
+
+            // 2. PDRC — Platform Device Resource Consumption.
+            //
+            // Reserves MMIO ranges for RCBA, MCHBAR, DMIBAR, EPBAR,
+            // and miscellaneous ICH regions so the OS won't allocate
+            // PCI BARs over them.
+            // Coreboot: pineview.asl Device(PDRC)
+            let rcba: u32 = 0xFED1_C000; // ICH7 default RCBA
+            aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
+                Device("PDRC") {
+                    Name("_HID", EisaId("PNP0C02"));
+                    Name("_UID", 1u32);
                     Name("_CRS", ResourceTemplate {
+                        Memory32Fixed(ReadWrite, #{rcba}, 0x4000u32);
                         Memory32Fixed(ReadWrite, #{mchbar}, 0x4000u32);
                         Memory32Fixed(ReadWrite, #{dmibar}, 0x1000u32);
+                        Memory32Fixed(ReadWrite, #{epbar}, 0x1000u32);
+                        // Misc ICH MMIO (HPET area, TPM, etc.)
+                        Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
+                        Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
+                        Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);
                     });
                 }
-            }
+            });
+
+            // 3. PCI0 host bridge identity.
+            //
+            // _HID PNP0A08 (PCIe), _CID PNP0A03 (PCI), _BBN 0.
+            // These tell the OS this is the root PCI host bridge.
+            // Coreboot: hostbridge.asl top-level Names.
+            aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
+                Name("_HID", EisaId("PNP0A08"));
+                Name("_CID", EisaId("PNP0A03"));
+                Name("_BBN", 0u32);
+            });
+
+            aml
         }
 
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {

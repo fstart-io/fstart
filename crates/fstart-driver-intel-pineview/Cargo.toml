@@ -7,10 +7,11 @@ license.workspace = true
 
 [features]
 default = []
-acpi = ["fstart-acpi"]
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
 
 [dependencies]
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
 heapless = { workspace = true }
 fstart-log = { workspace = true }
 fstart-mmio = { workspace = true }

@@ -626,6 +626,7 @@ name = "fstart-driver-intel-ich7"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-gpio-ich",
  "fstart-hda",
  "fstart-log",
@@ -645,6 +646,7 @@ name = "fstart-driver-intel-pineview"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-log",
  "fstart-mmio",
  "fstart-pineview-regs",
