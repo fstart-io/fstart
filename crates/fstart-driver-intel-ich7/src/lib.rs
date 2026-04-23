@@ -1673,37 +1673,62 @@ mod acpi_impl {
 
             // USB UHCI controllers  0:1D.0–3
             // _PRW: GPE bit 3, can wake from S4.
+            // _S3D/_S4D: highest D-state in S3/S4 (D2 — USB stays
+            //   partially powered for wake-on-USB).
+            // Coreboot: usb.asl USB1–USB4
             aml.extend_from_slice(&acpi_dsl! {
                 Device("USB1") {
                     Name("_ADR", 0x001D0000u32);
                     Name("_PRW", Package(3u32, 4u32));
+                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
+                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
                 }
             });
             aml.extend_from_slice(&acpi_dsl! {
                 Device("USB2") {
                     Name("_ADR", 0x001D0001u32);
                     Name("_PRW", Package(3u32, 4u32));
+                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
+                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
                 }
             });
             aml.extend_from_slice(&acpi_dsl! {
                 Device("USB3") {
                     Name("_ADR", 0x001D0002u32);
                     Name("_PRW", Package(3u32, 4u32));
+                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
+                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
                 }
             });
             aml.extend_from_slice(&acpi_dsl! {
                 Device("USB4") {
                     Name("_ADR", 0x001D0003u32);
                     Name("_PRW", Package(3u32, 4u32));
+                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
+                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
                 }
             });
 
             // EHC1 — EHCI USB 2.0 controller  0:1D.7
+            // Includes root hub (HUB7) with 6 port child devices.
             // _PRW: GPE bit 13, can wake from S4.
+            // Coreboot: usb.asl EHC1 + HUB7
             aml.extend_from_slice(&acpi_dsl! {
                 Device("EHC1") {
                     Name("_ADR", 0x001D0007u32);
                     Name("_PRW", Package(13u32, 4u32));
+                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
+                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
+
+                    Device("HUB7") {
+                        Name("_ADR", 0x00000000u32);
+                        Device("PRT1") { Name("_ADR", 1u32); }
+                        Device("PRT2") { Name("_ADR", 2u32); }
+                        Device("PRT3") { Name("_ADR", 3u32); }
+                        Device("PRT4") { Name("_ADR", 4u32); }
+                        Device("PRT5") { Name("_ADR", 5u32); }
+                        Device("PRT6") { Name("_ADR", 6u32); }
+                    }
                 }
             });
 
@@ -1731,9 +1756,30 @@ mod acpi_impl {
                 let c = 16 + (base + 2) % 4;
                 let d = 16 + (base + 3) % 4;
 
+                // Each root port has:
+                //  - RPCS: PCI config OpRegion for hotplug status
+                //    (RPPN = root port number, PDC = presence detect,
+                //     HPCS = hot-plug capable slot)
+                //  - _PRT: APIC-mode interrupt routing table
+                //
+                // Coreboot: pcie.asl + pcie_port.asl
                 acpi_dsl! {
                     Device(#{name}) {
                         Name("_ADR", #{adr});
+
+                        OperationRegion("RPCS", PciConfig, 0x00u32, 0xFFu32);
+                        Field("RPCS", AnyAcc, NoLock, Preserve) {
+                            Offset(0x4C),
+                            , 24,
+                            RPPN, 8,
+                            Offset(0x5A),
+                            , 3,
+                            PDC_, 1,
+                            Offset(0xDF),
+                            , 6,
+                            HPCS, 1,
+                        }
+
                         Name("_PRT", Package(
                             Package(0x0000FFFFu32, 0u32, 0u32, #{a}),
                             Package(0x0000FFFFu32, 1u32, 0u32, #{b}),
@@ -1752,9 +1798,53 @@ mod acpi_impl {
             aml.extend_from_slice(&emit_rp("RP06", 0x001C0005, 6));
 
             // PCIB — PCI-to-PCI bridge  0:1E.0
+            // Includes child slot devices with _PRW for wake support
+            // and _PRT interrupt routing (APIC mode: GSI 0x14-0x17).
+            // Coreboot: pci.asl + mainboard ich7_pci_irqs.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Device("PCIB") {
                     Name("_ADR", 0x001E0000u32);
+
+                    // PCI bridge _PRT (APIC mode).
+                    // GSI mapping for devices behind the bridge.
+                    Name("_PRT", Package(
+                        Package(0x0000FFFFu32, 0u32, 0u32, 0x15u32),
+                        Package(0x0000FFFFu32, 1u32, 0u32, 0x16u32),
+                        Package(0x0000FFFFu32, 2u32, 0u32, 0x17u32),
+                        Package(0x0000FFFFu32, 3u32, 0u32, 0x14u32),
+                        Package(0x0001FFFFu32, 0u32, 0u32, 0x13u32)
+                    ));
+                }
+            });
+
+            // PEGP — PCI Express Graphics port  0:1.0
+            // PCIe x16 slot for discrete GPU (Pineview).
+            // Coreboot: peg.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("PEGP") {
+                    Name("_ADR", 0x00010000u32);
+                    Name("_PRT", Package(
+                        Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
+                        Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
+                        Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
+                        Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
+                    ));
+                }
+            });
+
+            // GFX0 — Integrated Graphics Device  0:2.0
+            // Stub power management methods for the Intel GMA.
+            // Coreboot: drivers/intel/gma/acpi/gfx.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Device("GFX0") {
+                    Name("_ADR", 0x00020000u32);
+                    // Power state stubs.
+                    Method("_PS0", 0, NotSerialized) { }
+                    Method("_PS3", 0, NotSerialized) { }
+                    // Highest D-state from which device can wake in S0.
+                    Method("_S0W", 0, NotSerialized) { Return(3u32); }
+                    // Highest D-state in S3.
+                    Method("_S3D", 0, NotSerialized) { Return(3u32); }
                 }
             });
 
@@ -1780,14 +1870,31 @@ mod acpi_impl {
             });
 
             // ---------------------------------------------------------------
-            // 3. System sleep states (caller places at root scope).
-            //
-            // S0 = working, S3 = suspend-to-RAM, S5 = soft-off.
-            // S3 SLP_TYP = 5 (ICH7 PM1_CNT encoding).
+            // 3. Root-scope objects.
             // ---------------------------------------------------------------
+
+            // _PIC method + PICM variable.
+            //
+            // The OS calls _PIC(1) during boot to signal APIC mode.
+            // PICM is used by _PRT methods to select PIC vs APIC routing.
+            // Since we only emit APIC-mode _PRT tables, PICM is
+            // informational — but Linux expects _PIC to exist.
+            // Coreboot: dsdt_top.asl
+            aml.extend_from_slice(&acpi_dsl! {
+                Name("PICM", 0u32);
+                Method("_PIC", 1, NotSerialized) {
+                    Store(#{fstart_acpi::aml::Arg(0)}, #{fstart_acpi::aml::Path::new("PICM")});
+                }
+            });
+
+            // System sleep states.
+            // S0 = working, S3 = suspend-to-RAM, S4 = hibernate, S5 = soft-off.
+            // SLP_TYP values match ICH7 PM1_CNT encoding.
+            // Coreboot: sleepstates.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
                 Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
+                Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
                 Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
             });
 
