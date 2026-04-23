@@ -1466,6 +1466,25 @@ mod acpi_impl {
                     Name("_ADR", #{_adr});
                     Name("_HID", EisaId("PNP0A05"));
 
+                    // LPC PCI config OpRegion for PIRQ routing registers.
+                    // PRTA-PRTH at offsets 0x60-0x63 and 0x68-0x6B.
+                    // Read by PIRQ link devices (LNKA-LNKH) and by the
+                    // OS to discover current IRQ assignments.
+                    // Coreboot: lpc.asl OperationRegion(LPC0)
+                    OperationRegion("LPC0", PciConfig, 0x00u32, 0x100u32);
+                    Field("LPC0", AnyAcc, NoLock, Preserve) {
+                        Offset(0x60),
+                        PRTA, 8,
+                        PRTB, 8,
+                        PRTC, 8,
+                        PRTD, 8,
+                        Offset(0x68),
+                        PRTE, 8,
+                        PRTF, 8,
+                        PRTG, 8,
+                        PRTH, 8,
+                    }
+
                     // DMAC — 8237 DMA Controller (PNP0200)
                     // Coreboot: lpc.asl Device(DMAC)
                     Device("DMAC") {
@@ -1574,89 +1593,165 @@ mod acpi_impl {
                             Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 0u32);
                         });
                     }
+
+                    // -------------------------------------------------------
+                    // PIRQ link devices LNKA-LNKH (PNP0C0F)
+                    //
+                    // These represent the ICH7’s 8 PCI interrupt routing
+                    // links.  Full _CRS/_SRS methods (which read/write
+                    // the PRTA-PRTH fields above) require CreateWordField
+                    // and FindSetRightBit, which are not yet supported
+                    // by the acpi_dsl macro.  The stubs below give each
+                    // link a _UID and _STA (active).  Linux uses the
+                    // APIC-mode _PRT entries on PCIe root ports (with
+                    // direct GSI numbers) when IOAPIC is available, so
+                    // these stubs are sufficient for APIC-mode boot.
+                    //
+                    // Coreboot: irqlinks.asl
+                    // -------------------------------------------------------
+                    Device("LNKA") {
+                        Name("_HID", EisaId("PNP0C0F"));
+                        Name("_UID", 1u32);
+                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
+                    }
+                    Device("LNKB") {
+                        Name("_HID", EisaId("PNP0C0F"));
+                        Name("_UID", 2u32);
+                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
+                    }
+                    Device("LNKC") {
+                        Name("_HID", EisaId("PNP0C0F"));
+                        Name("_UID", 3u32);
+                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
+                    }
+                    Device("LNKD") {
+                        Name("_HID", EisaId("PNP0C0F"));
+                        Name("_UID", 4u32);
+                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
+                    }
+                    Device("LNKE") {
+                        Name("_HID", EisaId("PNP0C0F"));
+                        Name("_UID", 5u32);
+                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
+                    }
+                    Device("LNKF") {
+                        Name("_HID", EisaId("PNP0C0F"));
+                        Name("_UID", 6u32);
+                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
+                    }
+                    Device("LNKG") {
+                        Name("_HID", EisaId("PNP0C0F"));
+                        Name("_UID", 7u32);
+                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
+                    }
+                    Device("LNKH") {
+                        Name("_HID", EisaId("PNP0C0F"));
+                        Name("_UID", 8u32);
+                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
+                    }
                 }
             };
 
             // ---------------------------------------------------------------
             // 2. Per-function PCI device nodes — siblings to LPCB at PCI0
-            //    scope level.  A bare _ADR is sufficient for Linux to
-            //    enumerate each function.
+            //    scope level.  Includes _PRW (Power Resources for Wake)
+            //    for USB and HDA devices.
+            //
+            //    Ported from coreboot:
+            //      audio_ich.asl, usb.asl, pcie.asl, pci.asl,
+            //      sata.asl, pata.asl, smbus.asl
             // ---------------------------------------------------------------
 
             // HDEF — HD Audio controller  0:1B.0
-            // Coreboot: audio_ich.asl
+            // _PRW: GPE bit 5, can wake from S4.
             aml.extend_from_slice(&acpi_dsl! {
                 Device("HDEF") {
                     Name("_ADR", 0x001B0000u32);
+                    Name("_PRW", Package(5u32, 4u32));
                 }
             });
 
             // USB UHCI controllers  0:1D.0–3
-            // Coreboot: usb.asl USB1–USB4
+            // _PRW: GPE bit 3, can wake from S4.
             aml.extend_from_slice(&acpi_dsl! {
                 Device("USB1") {
                     Name("_ADR", 0x001D0000u32);
+                    Name("_PRW", Package(3u32, 4u32));
                 }
             });
             aml.extend_from_slice(&acpi_dsl! {
                 Device("USB2") {
                     Name("_ADR", 0x001D0001u32);
+                    Name("_PRW", Package(3u32, 4u32));
                 }
             });
             aml.extend_from_slice(&acpi_dsl! {
                 Device("USB3") {
                     Name("_ADR", 0x001D0002u32);
+                    Name("_PRW", Package(3u32, 4u32));
                 }
             });
             aml.extend_from_slice(&acpi_dsl! {
                 Device("USB4") {
                     Name("_ADR", 0x001D0003u32);
+                    Name("_PRW", Package(3u32, 4u32));
                 }
             });
 
             // EHC1 — EHCI USB 2.0 controller  0:1D.7
-            // Coreboot: usb.asl EHC1
+            // _PRW: GPE bit 13, can wake from S4.
             aml.extend_from_slice(&acpi_dsl! {
                 Device("EHC1") {
                     Name("_ADR", 0x001D0007u32);
+                    Name("_PRW", Package(13u32, 4u32));
                 }
             });
 
-            // RP01–RP06 — PCIe root ports  0:1C.0–5
-            // Coreboot: pcie port nodes
-            aml.extend_from_slice(&acpi_dsl! {
-                Device("RP01") {
-                    Name("_ADR", 0x001C0000u32);
+            // ---------------------------------------------------------------
+            // PCIe root ports  0:1C.0–5 with APIC-mode _PRT routing.
+            //
+            // Each root port's _PRT maps INTA-INTD to IOAPIC GSIs 16-19
+            // with a rotation based on port number (matching coreboot's
+            // pcie.asl IRQM method).  The rotation is:
+            //   Port 1,5: A→16 B→17 C→18 D→19
+            //   Port 2,6: A→17 B→18 C→19 D→16
+            //   Port 3:   A→18 B→19 C→16 D→17
+            //   Port 4:   A→19 B→16 C→17 D→18
+            //
+            // We emit APIC-mode routing only (GSI values, no link
+            // devices) since the kernel uses IOAPIC when available.
+            // ---------------------------------------------------------------
+
+            // Helper: emit a PCIe root port with APIC-mode _PRT.
+            // `port_num` is 1-based (matches coreboot convention).
+            let emit_rp = |name: &str, adr: u32, port_num: u32| -> Vec<u8> {
+                let base = ((port_num - 1) % 4) as u32;
+                let a = 16 + base;
+                let b = 16 + (base + 1) % 4;
+                let c = 16 + (base + 2) % 4;
+                let d = 16 + (base + 3) % 4;
+
+                acpi_dsl! {
+                    Device(#{name}) {
+                        Name("_ADR", #{adr});
+                        Name("_PRT", Package(
+                            Package(0x0000FFFFu32, 0u32, 0u32, #{a}),
+                            Package(0x0000FFFFu32, 1u32, 0u32, #{b}),
+                            Package(0x0000FFFFu32, 2u32, 0u32, #{c}),
+                            Package(0x0000FFFFu32, 3u32, 0u32, #{d})
+                        ));
+                    }
                 }
-            });
-            aml.extend_from_slice(&acpi_dsl! {
-                Device("RP02") {
-                    Name("_ADR", 0x001C0001u32);
-                }
-            });
-            aml.extend_from_slice(&acpi_dsl! {
-                Device("RP03") {
-                    Name("_ADR", 0x001C0002u32);
-                }
-            });
-            aml.extend_from_slice(&acpi_dsl! {
-                Device("RP04") {
-                    Name("_ADR", 0x001C0003u32);
-                }
-            });
-            aml.extend_from_slice(&acpi_dsl! {
-                Device("RP05") {
-                    Name("_ADR", 0x001C0004u32);
-                }
-            });
-            aml.extend_from_slice(&acpi_dsl! {
-                Device("RP06") {
-                    Name("_ADR", 0x001C0005u32);
-                }
-            });
+            };
+
+            aml.extend_from_slice(&emit_rp("RP01", 0x001C0000, 1));
+            aml.extend_from_slice(&emit_rp("RP02", 0x001C0001, 2));
+            aml.extend_from_slice(&emit_rp("RP03", 0x001C0002, 3));
+            aml.extend_from_slice(&emit_rp("RP04", 0x001C0003, 4));
+            aml.extend_from_slice(&emit_rp("RP05", 0x001C0004, 5));
+            aml.extend_from_slice(&emit_rp("RP06", 0x001C0005, 6));
 
             // PCIB — PCI-to-PCI bridge  0:1E.0
-            // Coreboot: pci.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Device("PCIB") {
                     Name("_ADR", 0x001E0000u32);
@@ -1664,7 +1759,6 @@ mod acpi_impl {
             });
 
             // SATA — SATA controller  0:1F.2
-            // Coreboot: sata.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Device("SATA") {
                     Name("_ADR", 0x001F0002u32);
@@ -1672,7 +1766,6 @@ mod acpi_impl {
             });
 
             // PATA — IDE / PATA controller  0:1F.1
-            // Coreboot: pata.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Device("PATA") {
                     Name("_ADR", 0x001F0001u32);
@@ -1680,7 +1773,6 @@ mod acpi_impl {
             });
 
             // SBUS — SMBus controller  0:1F.3
-            // Coreboot: smbus.asl
             aml.extend_from_slice(&acpi_dsl! {
                 Device("SBUS") {
                     Name("_ADR", 0x001F0003u32);
@@ -1689,9 +1781,13 @@ mod acpi_impl {
 
             // ---------------------------------------------------------------
             // 3. System sleep states (caller places at root scope).
+            //
+            // S0 = working, S3 = suspend-to-RAM, S5 = soft-off.
+            // S3 SLP_TYP = 5 (ICH7 PM1_CNT encoding).
             // ---------------------------------------------------------------
             aml.extend_from_slice(&acpi_dsl! {
                 Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
+                Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
                 Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
             });
 
