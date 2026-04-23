@@ -472,7 +472,7 @@ core::arch::global_asm!(
     "_car_done:",
     // Continue to the normal 32-bit entry (page tables, long mode, etc.)
     // The caller in _start32bit will continue after calling us.
-
+    "ret",
     // Fixed MTRR list (shared by all paths).
     "_fixed_mtrr_list:",
     ".word 0x250", // MTRR_FIX_64K_00000

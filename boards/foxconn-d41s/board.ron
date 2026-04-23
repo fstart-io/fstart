@@ -37,13 +37,12 @@
         ],
         flash_base: 0xFFF00000,
         flash_size: 0x100000,
-        // Cache-as-RAM window used by bootblock and romstage. The Atom D4xx
-        // L2 is 512 KiB; we use a 1 MiB reservation to be compatible with
-        // future chips in the same family.
+        // Cache-as-RAM window. The Atom D410 has 512 KiB L2 cache;
+        // NEM can't pin more cache than the CPU physically has.
         car: (
             method: NonEvictMode,
-            base: 0xFEF00000,
-            size: 0x100000,
+            base: 0xFEF80000,
+            size: 0x80000,
         ),
     ),
 
@@ -219,8 +218,9 @@
                         // plumbs the SMBus transaction API.
                         ( name: "ck505", bus: I2c(0x69), enabled: false,
                             driver: I2cCk505((
-                                mask: (0x00, 0x80, 0xff, 0xff, 0xff),
-                                regs: (0x00, 0x80, 0xfe, 0xff, 0xfc),
+                                num_regs: 5,
+                                mask: (0x00, 0x80, 0xff, 0xff, 0xff, 0,0,0,0,0,0,0,0,0,0,0),
+                                regs: (0x00, 0x80, 0xfe, 0xff, 0xfc, 0,0,0,0,0,0,0,0,0,0,0),
                             )),
                             services: [],
                         ),

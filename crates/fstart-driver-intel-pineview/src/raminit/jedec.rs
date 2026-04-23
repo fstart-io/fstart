@@ -135,7 +135,9 @@ pub fn sdram_misc(si: &SysInfo, mch: &MchBar) {
     mch.write32(mchbar::C0DYNRDCTRL, (v & !(0x3FF << 8)) | reg32);
     let v = mch.read8(mchbar::C0DYNRDCTRL);
     mch.write8(mchbar::C0DYNRDCTRL, v & !(1 << 7));
-    mch.setbits32(mchbar::C0REFRCTRL + 3, 1 << 0);
+    // Byte access — coreboot: mchbar_setbits8(C0REFRCTRL + 3, 1 << 0)
+    let v = mch.read8(mchbar::C0REFRCTRL + 3);
+    mch.write8(mchbar::C0REFRCTRL + 3, v | (1 << 0));
 
     if si.boot_path != super::BOOT_PATH_RESUME {
         // Normal/Reset path: set NORMAL_OP command.
