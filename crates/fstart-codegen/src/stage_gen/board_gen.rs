@@ -506,6 +506,7 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let return_to_fel_body = return_to_fel_body(platform, ctx);
     let pci_init_body = pci_init_body(ctx);
     let chipset_init_body = chipset_init_body(ctx);
+    let chipset_pre_console_body = chipset_pre_console_body(ctx);
     let acpi_load_body = acpi_load_body(ctx);
     let memory_detect_body = memory_detect_body(ctx);
     let acpi_prepare_body = acpi_prepare_body(ctx);
@@ -582,6 +583,14 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
                 sb: fstart_types::DeviceId,
             ) -> Result<(), fstart_services::device::DeviceError> {
                 #chipset_init_body
+            }
+
+            fn chipset_pre_console(
+                &mut self,
+                nb: fstart_types::DeviceId,
+                sb: fstart_types::DeviceId,
+            ) -> Result<(), fstart_services::device::DeviceError> {
+                #chipset_pre_console_body
             }
 
             fn pci_init(
@@ -1393,6 +1402,70 @@ fn chipset_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
                     nb,
                     sb,
                 );
+                fstart_platform::halt();
+            }
+        }
+    }
+}
+
+/// Emit the body of `Board::chipset_pre_console`.
+///
+/// Calls `PciHost::pre_console_init(&mut self.<nb>)` followed by
+/// `Southbridge::pre_console_init(&mut self.<sb>)`.  This is the
+/// minimal pre-console setup (ECAM enable + LPC decode) — no logging
+/// banner since the console isn't available yet.
+fn chipset_pre_console_body(ctx: &BoardCtx<'_>) -> TokenStream {
+    let nb_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
+        ctx.devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "PciHost")
+    });
+    let sb_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
+        ctx.devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "Southbridge")
+    });
+
+    let Some(nb_idx) = nb_idx else {
+        return quote! {
+            let _ = (nb, sb);
+            fstart_platform::halt();
+        };
+    };
+    let Some(sb_idx) = sb_idx else {
+        return quote! {
+            let _ = (nb, sb);
+            fstart_platform::halt();
+        };
+    };
+
+    let nb_field = format_ident!("{}", ctx.devices[nb_idx].name.as_str());
+    let sb_field = format_ident!("{}", ctx.devices[sb_idx].name.as_str());
+    let nb_id_lit = proc_macro2::Literal::u8_unsuffixed(nb_idx as u8);
+    let sb_id_lit = proc_macro2::Literal::u8_unsuffixed(sb_idx as u8);
+
+    quote! {
+        use fstart_services::PciHost as _PciHost;
+        use fstart_services::Southbridge as _Southbridge;
+        match (nb, sb) {
+            (#nb_id_lit, #sb_id_lit) => {
+                _PciHost::pre_console_init(
+                    self.#nb_field
+                        .as_mut()
+                        .unwrap_or_else(|| fstart_platform::halt()),
+                )
+                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                _Southbridge::pre_console_init(
+                    self.#sb_field
+                        .as_mut()
+                        .unwrap_or_else(|| fstart_platform::halt()),
+                )
+                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                Ok(())
+            }
+            _ => {
                 fstart_platform::halt();
             }
         }
@@ -3916,6 +3989,22 @@ mod tests {
         assert!(
             !src.contains("board_gen::chipset_init: migration pending"),
             "chipset_init must have a real body; got:\n{src}"
+        );
+    }
+
+    #[test]
+    fn chipset_pre_console_emits_pre_console_init_calls_on_foxconn_d41s() {
+        // foxconn-d41s uses `ChipsetPreConsole(northbridge: "northbridge",
+        // southbridge: "southbridge")` in its bootblock.  The body must
+        // call PciHost::pre_console_init + Southbridge::pre_console_init.
+        let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
+        assert!(
+            src.contains("_PciHost::pre_console_init"),
+            "chipset_pre_console must call PciHost::pre_console_init; got:\n{src}"
+        );
+        assert!(
+            src.contains("_Southbridge::pre_console_init"),
+            "chipset_pre_console must call Southbridge::pre_console_init; got:\n{src}"
         );
     }
 

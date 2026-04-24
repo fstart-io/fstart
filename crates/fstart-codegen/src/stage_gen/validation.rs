@@ -66,6 +66,9 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            // ChipsetInit does heavy setup (BARs, GPIO, CIR) — needs
+            // console for diagnostics.  ChipsetPreConsole has no such
+            // requirement; it runs BEFORE ConsoleInit.
             Capability::ChipsetInit { .. } if !console_inited => {
                 return Some(
                     "ChipsetInit capability requires ConsoleInit to appear earlier \

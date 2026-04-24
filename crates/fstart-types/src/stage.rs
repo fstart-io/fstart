@@ -212,7 +212,28 @@ pub enum Capability {
     ///
     /// This is an x86-specific capability; other platforms use
     /// `DriverInit` + per-driver `Device::init()` instead.
+    ///
+    /// Should follow `ChipsetPreConsole` when the console device
+    /// sits behind the southbridge (SuperIO on LPC).
     ChipsetInit {
+        /// Northbridge device name (implements `PciHost`).
+        northbridge: HString<32>,
+        /// Southbridge device name (implements `Southbridge`).
+        southbridge: HString<32>,
+    },
+    /// Pre-console chipset initialization — the absolute minimum to
+    /// make the console device reachable.
+    ///
+    /// Calls `PciHost::pre_console_init()` (enable ECAM) and
+    /// `Southbridge::pre_console_init()` (open LPC decode). Must
+    /// appear before `ConsoleInit` when the console device sits on
+    /// a bus that needs chipset decode windows opened (e.g., SuperIO
+    /// behind ICH7 LPC).
+    ///
+    /// Full chipset init (`ChipsetInit`) follows after the console
+    /// is available, so diagnostics are visible during the heavier
+    /// BAR programming, GPIO, CIR, etc.
+    ChipsetPreConsole {
         /// Northbridge device name (implements `PciHost`).
         northbridge: HString<32>,
         /// Southbridge device name (implements `Southbridge`).

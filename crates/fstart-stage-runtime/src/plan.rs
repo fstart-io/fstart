@@ -47,6 +47,9 @@ pub enum CapOp {
     DramInit(DeviceId),
     /// `ChipsetInit { northbridge, southbridge }` — x86 chipset unlock.
     ChipsetInit { nb: DeviceId, sb: DeviceId },
+    /// `ChipsetPreConsole { northbridge, southbridge }` — minimal
+    /// chipset init before console (ECAM + LPC decode).
+    ChipsetPreConsole { nb: DeviceId, sb: DeviceId },
     /// `MpInit` — bring up APs, per-CPU MSR config, park.
     MpInit {
         cpu_model: &'static str,

@@ -229,6 +229,23 @@ fn cap_to_capop_tokens(cap: &Capability, ctx: &PlanCtx<'_>) -> TokenStream {
                 }
             }
         }
+        C::ChipsetPreConsole {
+            northbridge,
+            southbridge,
+        } => {
+            let nb = ctx
+                .ids
+                .lit(northbridge.as_str(), "ChipsetPreConsole.northbridge");
+            let sb = ctx
+                .ids
+                .lit(southbridge.as_str(), "ChipsetPreConsole.southbridge");
+            quote! {
+                fstart_stage_runtime::CapOp::ChipsetPreConsole {
+                    nb: #nb,
+                    sb: #sb,
+                }
+            }
+        }
         C::MpInit {
             cpu_model,
             num_cpus,
