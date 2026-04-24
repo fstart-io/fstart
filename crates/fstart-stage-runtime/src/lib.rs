@@ -247,7 +247,7 @@ pub trait Board: Sized {
     ///
     /// Generated adapter delegates to
     /// `fstart_capabilities::late_driver_init_complete`.
-    fn late_driver_init_complete(&self, count: usize);
+    fn late_driver_init_complete(&mut self, count: usize);
 
     /// Executor arm for [`CapOp::SigVerify`].
     ///
@@ -702,7 +702,7 @@ mod tests {
         fn memory_init(&self) {
             push(Event::MemoryInit);
         }
-        fn late_driver_init_complete(&self, count: usize) {
+        fn late_driver_init_complete(&mut self, count: usize) {
             push(Event::LateDriverInitComplete(count));
         }
         fn sig_verify(&self) {
@@ -1193,7 +1193,7 @@ mod tests {
             fn memory_init(&self) {
                 MockBoard.memory_init()
             }
-            fn late_driver_init_complete(&self, c: usize) {
+            fn late_driver_init_complete(&mut self, c: usize) {
                 MockBoard.late_driver_init_complete(c)
             }
             fn sig_verify(&self) {

@@ -658,25 +658,170 @@ mod acpi_impl {
         io_size: u16,
         irq: Option<u8>,
     ) -> Vec<u8> {
-        let gsiv = irq.unwrap_or(0) as u32;
-        if let Some(_irq) = irq {
+        match hid {
+            HID_COM => ldn_device_pnp0501(name, uid, io_base, io_size, irq),
+            HID_KBC => ldn_device_pnp0303(name, uid, io_base, io_size, irq),
+            HID_MOUSE => ldn_device_pnp0f13(name, uid, io_base, io_size, irq),
+            HID_LPT => ldn_device_pnp0400(name, uid, io_base, io_size, irq),
+            HID_EC => ldn_device_pnp0c09(name, uid, io_base, io_size, irq),
+            _ => Vec::new(),
+        }
+    }
+
+    fn ldn_device_pnp0501(
+        name: &str,
+        uid: u32,
+        io_base: u16,
+        io_size: u16,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        if let Some(irq) = irq {
+            let gsiv = irq as u32;
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
-                    Name("_HID", EisaId(#{hid}));
+                    Name("_HID", EisaId("PNP0501"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
-                        IO(Decode16, #{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        IRQ(Edge, ActiveHigh, Exclusive, #{gsiv});
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
                     });
                 }
             }
         } else {
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
-                    Name("_HID", EisaId(#{hid}));
+                    Name("_HID", EisaId("PNP0501"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
-                        IO(Decode16, #{io_base}, #{io_base}, 0x01u8, #{io_size});
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                    });
+                }
+            }
+        }
+    }
+
+    fn ldn_device_pnp0303(
+        name: &str,
+        uid: u32,
+        io_base: u16,
+        io_size: u16,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        if let Some(irq) = irq {
+            let gsiv = irq as u32;
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId("PNP0303"));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                    });
+                }
+            }
+        } else {
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId("PNP0303"));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                    });
+                }
+            }
+        }
+    }
+
+    fn ldn_device_pnp0f13(
+        name: &str,
+        uid: u32,
+        io_base: u16,
+        io_size: u16,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        if let Some(irq) = irq {
+            let gsiv = irq as u32;
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId("PNP0F13"));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                    });
+                }
+            }
+        } else {
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId("PNP0F13"));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                    });
+                }
+            }
+        }
+    }
+
+    fn ldn_device_pnp0400(
+        name: &str,
+        uid: u32,
+        io_base: u16,
+        io_size: u16,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        if let Some(irq) = irq {
+            let gsiv = irq as u32;
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId("PNP0400"));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                    });
+                }
+            }
+        } else {
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId("PNP0400"));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                    });
+                }
+            }
+        }
+    }
+
+    fn ldn_device_pnp0c09(
+        name: &str,
+        uid: u32,
+        io_base: u16,
+        io_size: u16,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        if let Some(irq) = irq {
+            let gsiv = irq as u32;
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId("PNP0C09"));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
+                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                    });
+                }
+            }
+        } else {
+            fstart_acpi_macros::acpi_dsl! {
+                Device(#{name}) {
+                    Name("_HID", EisaId("PNP0C09"));
+                    Name("_UID", #{uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
                     });
                 }
             }
@@ -693,9 +838,9 @@ mod acpi_impl {
                 Name("_HID", EisaId("PNP0303"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(Decode16, #{base1}, #{base1}, 0x01u8, 0x01u8);
-                    IO(Decode16, #{base2}, #{base2}, 0x01u8, 0x01u8);
-                    IRQ(Edge, ActiveHigh, Exclusive, #{gsiv});
+                    IO(#{base1}, #{base1}, 0x01u8, 0x01u8);
+                    IO(#{base2}, #{base2}, 0x01u8, 0x01u8);
+                    Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
                 });
             }
         }
@@ -711,9 +856,9 @@ mod acpi_impl {
                 Name("_HID", EisaId("PNP0F13"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(Decode16, #{base1}, #{base1}, 0x01u8, 0x01u8);
-                    IO(Decode16, #{base2}, #{base2}, 0x01u8, 0x01u8);
-                    IRQ(Edge, ActiveHigh, Exclusive, #{gsiv});
+                    IO(#{base1}, #{base1}, 0x01u8, 0x01u8);
+                    IO(#{base2}, #{base2}, 0x01u8, 0x01u8);
+                    Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
                 });
             }
         }
@@ -728,8 +873,8 @@ mod acpi_impl {
                 Name("_HID", EisaId("PNP0C09"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(Decode16, #{base1}, #{base1}, 0x01u8, 0x08u8);
-                    IO(Decode16, #{base2}, #{base2}, 0x01u8, 0x08u8);
+                    IO(#{base1}, #{base1}, 0x01u8, 0x08u8);
+                    IO(#{base2}, #{base2}, 0x01u8, 0x08u8);
                 });
             }
         }

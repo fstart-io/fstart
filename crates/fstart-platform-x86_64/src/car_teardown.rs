@@ -19,7 +19,8 @@
 //! 2. Invalidate all cachelines (WBINVD)
 //! 3. Disable MTRRs (clear MTRR_DEF_TYPE_EN)
 //! 4. If NEM was active (MSR 0x2E0 bits [1:0] set), clear RUN then SETUP
-//! 5. Re-enable cache with DRAM-appropriate MTRR config
+//! 5. Reprogram MTRR0 from CAR to a DRAM write-back range
+//! 6. Re-enable cache with DRAM-appropriate MTRR config
 //!
 //! After this, the CAR region is dead and the CPU uses normal DRAM-backed
 //! caching.
@@ -62,16 +63,21 @@ core::arch::global_asm!(
     "andl $0xFFFFFFFE, %eax",
     "wrmsr",
     "1:",
-    // Clear the CAR MTRR (MTRR0) so it doesn't shadow DRAM.
+    // Reprogram MTRR0 from the old CAR window to the board DRAM
+    // write-back range.  Coreboot does this in postcar before jumping
+    // to ramstage; fstart enters ramstage directly, so the ramstage
+    // entry performs the equivalent before Rust touches large data.
     "movl $0x200, %ecx", // MTRR_PHYS_BASE(0)
-    "xorl %eax, %eax",
+    "movl $_dram_mtrr_base, %eax",
+    "orl $0x06, %eax", // MTRR_TYPE_WRBACK
     "xorl %edx, %edx",
     "wrmsr",
     "movl $0x201, %ecx", // MTRR_PHYS_MASK(0)
-    "xorl %eax, %eax",
+    "movl $_dram_mtrr_mask, %eax",
+    "orl $0x800, %eax", // MTRR_PHYS_MASK_VALID
     "xorl %edx, %edx",
     "wrmsr",
-    // Re-enable MTRRs (the ROM MTRR1 is still valid for XIP).
+    // Re-enable MTRRs (MTRR0 = DRAM WB, MTRR1 = ROM WP).
     "movl $0x2FF, %ecx",
     "rdmsr",
     "orl $0x800, %eax", // MTRR_DEF_TYPE_EN

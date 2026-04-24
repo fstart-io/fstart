@@ -50,7 +50,10 @@ use serde::{Deserialize, Serialize};
 
 // Re-export HDA types from the shared crate so board RON configs
 // can reference them via the ICH7 driver path.
-pub use fstart_hda::{HdaConfig, HdaController, HdaVerbTable};
+pub use fstart_hda::{
+    HdaConfig, HdaController, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice,
+    PinGeoLoc, PinLoc,
+};
 
 // ---------------------------------------------------------------------------
 // ICH7 LPC PCI config register offsets (bus 0, dev 0x1f, func 0)
@@ -156,7 +159,7 @@ pub struct UsbConfig {
 // See fstart_hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
 
 // GPIO pad types are defined in the shared fstart-gpio-ich crate.
-pub use fstart_gpio_ich::{GpioConfig, GpioPin, IchGpio};
+pub use fstart_gpio_ich::{GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset, IchGpio};
 
 /// ICH7 southbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,10 +259,10 @@ impl IntelIch7 {
         rcba.write16(0x3E08, v | (1 << 7));
         let v = rcba.read16(0x3E48);
         rcba.write16(0x3E48, v | (1 << 7));
-        let v = rcba.read32(0x3E0E);
-        rcba.write32(0x3E0E, v | (1 << 7));
-        let v = rcba.read32(0x3E4E);
-        rcba.write32(0x3E4E, v | (1 << 7));
+        // Coreboot uses unaligned RCBA32_OR() here. In Rust, do the
+        // equivalent byte-sized RMW to avoid unaligned volatile u32 access.
+        rcba.write8(0x3E0E, rcba.read8(0x3E0E) | (1 << 7));
+        rcba.write8(0x3E4E, rcba.read8(0x3E4E) | (1 << 7));
 
         // Mobile variant fixup: check PCI device ID.
         let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
@@ -373,11 +376,47 @@ impl Southbridge for IntelIch7 {
     fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
 
-        // Open LPC I/O decode windows — the minimum needed to reach
-        // the SuperIO at ports 0x2E/0x2F (or 0x4E/0x4F).  Without
-        // this, PIO to the SuperIO config ports goes nowhere.
+        // Coreboot's bootblock_early_southbridge_init() order:
+        // SPI prefetch/caching -> fixed SB BARs -> upper CMOS ->
+        // watchdog disable -> LPC setup. Keep this pre-console and
+        // log-free: the SuperIO UART is not reachable yet.
+
+        // SPI prefetch/caching: LPC reg 0xDC bits [3:2] = 10.
+        let spi = lpc.read8(0xDC);
+        lpc.write8(0xDC, (spi & !(3 << 2)) | (2 << 2));
+
+        // Fixed southbridge BARs.
+        lpc.write32(ich7::RCBA_REG, (self.config.rcba as u32 & 0xFFFF_C000) | 1);
+        lpc.write32(PMBASE_REG, DEFAULT_PMBASE | 1);
+        lpc.write8(ACPI_CNTL, ACPI_EN);
+        lpc.write32(GPIOBASE_REG, DEFAULT_GPIOBASE | 1);
+        lpc.write8(GPIO_CNTL, GPIO_EN);
+
+        let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+
+        // Enable upper 128 bytes of CMOS and disable watchdog reboot.
+        rcba.write32(0x3400, 1 << 2);
+        rcba.write32(ich7::GCS, rcba.read32(ich7::GCS) | (1 << 5));
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            let tco = self.pm().tco();
+            let v = tco.read16(pmio::TCO1_CNT);
+            tco.write16(pmio::TCO1_CNT, v | (1 << 11));
+            tco.write16(pmio::TCO1_STS, 1 << 3);
+            tco.write16(pmio::TCO2_STS, 1 << 1);
+        }
+
+        // LPC setup: SERIRQ, fixed decode ranges, and board-specific
+        // generic decode windows. This makes SuperIO config ports and
+        // COM1/COM2 I/O decode live before ConsoleInit.
+        lpc.write8(SERIRQ_CNTL, 0xD0);
         lpc.write16(LPC_IO_DEC, 0x0010);
         lpc.write16(LPC_EN, LPC_EN_ALL);
+        lpc.write32(GEN1_DEC, self.config.lpc_decode[0]);
+        lpc.write32(GEN2_DEC, self.config.lpc_decode[1]);
+        lpc.write32(GEN3_DEC, self.config.lpc_decode[2]);
+        lpc.write32(GEN4_DEC, self.config.lpc_decode[3]);
 
         Ok(())
     }
@@ -482,6 +521,15 @@ impl Southbridge for IntelIch7 {
         self.enable_hpet(&rcba);
 
         fstart_log::info!("intel-ich7: early init complete (fd_mask={:#x})", fd);
+        Ok(())
+    }
+
+    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+        IntelIch7::ramstage_init(self)
+    }
+
+    fn finalize(&mut self) -> Result<(), ServiceError> {
+        IntelIch7::finalize(self);
         Ok(())
     }
 }
@@ -864,8 +912,9 @@ impl IntelIch7 {
             // Enable IO xAPIC on this port.
             port.or32(0xD8, 1 << 7);
 
-            // Enable backbone clock gating.
-            port.or32(0xE1, 0x0F);
+            // Enable backbone clock gating. Coreboot uses an unaligned
+            // dword config RMW at 0xE1; only the low byte bits are set.
+            port.or8(0xE1, 0x0F);
 
             // VC0 traffic class.
             let vc0 = port.read32(0x114);

@@ -516,6 +516,7 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let payload_load_body = payload_load_body(platform, ctx);
     let init_device_body = init_device_body(ctx);
     let init_all_devices_body = init_all_devices_body(ctx);
+    let late_driver_init_body = late_driver_init_body(ctx);
 
     quote! {
         #[allow(dead_code, unused_variables)]
@@ -549,7 +550,8 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
                 fstart_capabilities::memory_init();
             }
 
-            fn late_driver_init_complete(&self, count: usize) {
+            fn late_driver_init_complete(&mut self, count: usize) {
+                #late_driver_init_body
                 fstart_capabilities::late_driver_init_complete(count);
             }
 
@@ -1306,6 +1308,39 @@ fn pci_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
     }
 }
 
+/// Emit the body of `Board::late_driver_init_complete` before the
+/// generic completion banner.
+///
+/// For x86 boards this dispatches ramstage/post-DRAM southbridge work
+/// and final chipset lockdown through the `Southbridge` trait. Other
+/// boards reduce to an empty body.
+fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
+    let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .filter(|idx| {
+            ctx.devices[*idx]
+                .services
+                .iter()
+                .any(|s| s.as_str() == "Southbridge")
+        })
+        .map(|idx| {
+            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+            quote! {
+                if let Some(dev) = self.#field.as_mut() {
+                    use fstart_services::Southbridge as _Southbridge;
+                    _Southbridge::ramstage_init(dev)
+                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)
+                        .unwrap_or_else(|_| fstart_platform::halt());
+                    _Southbridge::finalize(dev)
+                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)
+                        .unwrap_or_else(|_| fstart_platform::halt());
+                }
+            }
+        })
+        .collect();
+
+    quote! { #(#arms)* }
+}
+
 /// Emit the body of `Board::chipset_init`.
 ///
 /// Calls `PciHost::early_init(&mut self.<nb>)` followed by
@@ -1703,9 +1738,13 @@ fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
             let cfg_name = format_ident!("{}_cfg", dev.name.as_str());
             let cfg_literal = config_ser::config_tokens(inst);
             let drv_ty = config_ser::driver_type_tokens(inst);
+            let cfg_ty = if dev.parent.is_some() {
+                quote! { <#drv_ty as fstart_services::device::BusDevice>::Config }
+            } else {
+                quote! { <#drv_ty as fstart_services::device::Device>::Config }
+            };
             config_lets.extend(quote! {
-                let #cfg_name: <#drv_ty as fstart_services::device::Device>::Config =
-                    #cfg_literal;
+                let #cfg_name: #cfg_ty = #cfg_literal;
             });
             device_blocks.extend(quote! {
                 dsdt_aml.extend(fstart_acpi::device::AcpiDevice::dsdt_aml(
