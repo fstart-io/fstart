@@ -23,9 +23,20 @@ use crate::ServiceError;
 /// 3. Enables access to PCI express config space via ECAM or
 ///    legacy CF8/CFC ports.
 pub trait PciHost: Send + Sync {
-    /// Perform early chipset initialization.
+    /// Minimal init before the console is available.
     ///
-    /// Must be idempotent — the same stage may call this multiple times
-    /// if the capability list has `ChipsetInit` after a `DriverInit`.
+    /// Called by `ChipsetPreConsole` — the absolute minimum needed to
+    /// make the console reachable. On x86 this typically enables ECAM
+    /// (PCIEXBAR) so the southbridge's PCI config space is accessible.
+    ///
+    /// Default: no-op. Drivers that need pre-console setup override this.
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Perform full early chipset initialization.
+    ///
+    /// Called by `ChipsetInit` after `pre_console_init` and `ConsoleInit`
+    /// have completed. Must be idempotent.
     fn early_init(&mut self) -> Result<(), ServiceError>;
 }

@@ -130,29 +130,24 @@ impl IntelPineview {
     ///
     /// Ported from coreboot `pineview_setup_bars()`.
     fn setup_bars(&self) {
+        let hb = ecam::PciDevBdf::new(0, 0, 0);
         // EPBAR, MCHBAR, DMIBAR — 32-bit writes with enable bit 0.
-        ecam::write32(0, 0, 0, hostbridge::EPBAR, (self.config.epbar as u32) | 1);
-        ecam::write32(0, 0, 0, hostbridge::MCHBAR, (self.config.mchbar as u32) | 1);
-        ecam::write32(0, 0, 0, hostbridge::DMIBAR, (self.config.dmibar as u32) | 1);
-        ecam::write32(
-            0,
-            0,
-            0,
-            hostbridge::PMIOBAR,
-            hostbridge::DEFAULT_PMIOBAR | 1,
-        );
+        hb.write32(hostbridge::EPBAR, (self.config.epbar as u32) | 1);
+        hb.write32(hostbridge::MCHBAR, (self.config.mchbar as u32) | 1);
+        hb.write32(hostbridge::DMIBAR, (self.config.dmibar as u32) | 1);
+        hb.write32(hostbridge::PMIOBAR, hostbridge::DEFAULT_PMIOBAR | 1);
 
         // DEVEN — enable D0F0, D2F0, D2F1.
-        ecam::write8(0, 0, 0, hostbridge::DEVEN, hostbridge::BOARD_DEVEN);
+        hb.write8(hostbridge::DEVEN, hostbridge::BOARD_DEVEN);
 
         // PAM0..PAM6: unlock BIOS shadow region C0000–FFFFF for RAM r/w.
-        ecam::write8(0, 0, 0, hostbridge::PAM0, 0x30);
-        ecam::write8(0, 0, 0, hostbridge::PAM1, 0x33);
-        ecam::write8(0, 0, 0, hostbridge::PAM2, 0x33);
-        ecam::write8(0, 0, 0, hostbridge::PAM3, 0x33);
-        ecam::write8(0, 0, 0, hostbridge::PAM4, 0x33);
-        ecam::write8(0, 0, 0, hostbridge::PAM5, 0x33);
-        ecam::write8(0, 0, 0, hostbridge::PAM6, 0x33);
+        hb.write8(hostbridge::PAM0, 0x30);
+        hb.write8(hostbridge::PAM1, 0x33);
+        hb.write8(hostbridge::PAM2, 0x33);
+        hb.write8(hostbridge::PAM3, 0x33);
+        hb.write8(hostbridge::PAM4, 0x33);
+        hb.write8(hostbridge::PAM5, 0x33);
+        hb.write8(hostbridge::PAM6, 0x33);
 
         fstart_log::info!("pineview: northbridge BARs and PAM configured");
     }
@@ -163,8 +158,9 @@ impl IntelPineview {
     fn early_graphics_setup(&self) {
         let mch = self.mchbar();
 
+        let hb = ecam::PciDevBdf::new(0, 0, 0);
         // GGC: 1 MiB GTT (GGMS=1), 8 MiB stolen (GMS=3).
-        ecam::write16(0, 0, 0, hostbridge::GGC, (1 << 8) | (3 << 4));
+        hb.write16(hostbridge::GGC, (1 << 8) | (3 << 4));
 
         // Graphics clock dividers.
         const CRCLK_PINEVIEW: u32 = 0x02;
@@ -186,11 +182,12 @@ impl IntelPineview {
             0x1 => 0xAD,     // 4000 MHz
             _ => 0xA0,
         };
-        let cc_val = ecam::read16(0, 2, 0, 0xCC) & !0x1FF;
-        ecam::write16(0, 2, 0, 0xCC, cc_val | igd_cc);
+        let igd = ecam::PciDevBdf::new(0, 2, 0);
+        let cc_val = igd.read16(0xCC) & !0x1FF;
+        igd.write16(0xCC, cc_val | igd_cc);
 
-        ecam::and8(0, 2, 0, 0x62, !0x3);
-        ecam::or8(0, 2, 0, 0x62, 2);
+        igd.and8(0x62, !0x3);
+        igd.or8(0x62, 2);
 
         // VGA CRT / LVDS output control.
         if let Some(ref igd) = self.config.igd {
@@ -215,7 +212,7 @@ impl IntelPineview {
         mch.setbits32(mchbar::DACGIOCTRL1, 1 << 5);
 
         // Legacy backlight control.
-        ecam::write8(0, 2, 0, 0xF4, 0x4C);
+        igd.write8(0xF4, 0x4C);
 
         fstart_log::info!("pineview: graphics clocks configured");
     }
@@ -233,8 +230,9 @@ impl IntelPineview {
         dmi.write32(0x2C, 0x8600_0040);
 
         // PCI bridge (1E:0): secondary bus programming.
-        ecam::write32(0, 0x1e, 0, 0x18, 0x0002_0200);
-        ecam::write32(0, 0x1e, 0, 0x18, 0x0000_0000);
+        let pci_bridge = ecam::PciDevBdf::new(0, 0x1e, 0);
+        pci_bridge.write32(0x18, 0x0002_0200);
+        pci_bridge.write32(0x18, 0x0000_0000);
 
         self.early_graphics_setup();
 
@@ -245,18 +243,19 @@ impl IntelPineview {
         mch.write32(mchbar::HIT4, 1 << 3);
 
         // LPC device (1F:0) revision ID reset sequence.
-        ecam::write8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08, 0x1D);
-        ecam::write8(0, ich7::LPC_DEV, ich7::LPC_FUNC, 0x08, 0x00);
+        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        lpc.write8(0x08, 0x1D);
+        lpc.write8(0x08, 0x00);
 
         // RCBA routing registers. Read RCBA from ICH7 LPC config.
-        let rcba_val = ecam::read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ich7::RCBA_REG);
+        let rcba_val = lpc.read32(ich7::RCBA_REG);
         let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
 
         rcba.write32(0x3410, 0x0002_0465);
 
         // USB transient disconnect (1D:0..3 reg 0xCA).
         for func in 0..4u8 {
-            ecam::or32(0, 0x1d, func, 0xCA, 0x1);
+            ecam::PciDevBdf::new(0, 0x1d, func).or32(0xCA, 0x1);
         }
 
         // RCBA routing table setup.
@@ -309,18 +308,26 @@ impl Device for IntelPineview {
 }
 
 impl PciHost for IntelPineview {
-    fn early_init(&mut self) -> Result<(), ServiceError> {
-        // 1. Enable ECAM (single legacy CF8/CFC write).
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        // Enable ECAM (single legacy CF8/CFC write).
+        // This is the only early step needed before the console —
+        // the southbridge needs ECAM to open LPC decode.
         self.enable_ecam();
+        Ok(())
+    }
 
-        // 2. Program BARs + PAM via ECAM.
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        // ECAM was enabled by pre_console_init (ChipsetPreConsole).
+
+        // 1. Program BARs + PAM via ECAM.
         self.setup_bars();
 
         // 3. Miscellaneous chipset init (graphics, DMI, USB, RCBA routing).
         self.early_misc_setup();
 
         // 4. Route port80 to LPC.
-        let rcba_val = ecam::read32(0, ich7::LPC_DEV, ich7::LPC_FUNC, ich7::RCBA_REG);
+        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let rcba_val = lpc.read32(ich7::RCBA_REG);
         let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
         let gcs = rcba.read32(ich7::GCS);
         rcba.write32(ich7::GCS, gcs & !0x04);
@@ -348,25 +355,25 @@ impl MemoryController for IntelPineview {
 impl IntelPineview {
     /// Read Top of Upper Usable DRAM (TOUUD) in bytes.
     pub fn touud(&self) -> u64 {
-        let raw = ecam::read16(0, 0, 0, hostbridge::TOUUD);
+        let raw = ecam::PciDevBdf::new(0, 0, 0).read16(hostbridge::TOUUD);
         (raw as u64) << 20
     }
 
     /// Read Top of Lower Usable DRAM (TOLUD) in bytes.
     pub fn tolud(&self) -> u32 {
-        let raw = ecam::read16(0, 0, 0, hostbridge::TOLUD) & 0xFFF0;
+        let raw = ecam::PciDevBdf::new(0, 0, 0).read16(hostbridge::TOLUD) & 0xFFF0;
         (raw as u32) << 16
     }
 
     /// Read Top of Memory (TOM) in bytes.
     pub fn tom(&self) -> u64 {
-        let raw = ecam::read16(0, 0, 0, hostbridge::TOM) & 0x01FF;
+        let raw = ecam::PciDevBdf::new(0, 0, 0).read16(hostbridge::TOM) & 0x01FF;
         (raw as u64) << 27
     }
 
     /// Decode IGD memory size from GGC register (kilobytes).
     fn igd_memory_size_kb(&self) -> u32 {
-        let ggc = ecam::read16(0, 0, 0, hostbridge::GGC);
+        let ggc = ecam::PciDevBdf::new(0, 0, 0).read16(hostbridge::GGC);
         let gms = ((ggc >> 4) & 0xF) as usize;
         const SIZES: [u32; 10] = [0, 1, 4, 8, 16, 32, 48, 64, 128, 256];
         if gms < SIZES.len() {
@@ -378,7 +385,7 @@ impl IntelPineview {
 
     /// Decode GTT stolen memory size from GGC register (kilobytes).
     fn gtt_size_kb(&self) -> u32 {
-        let ggc = ecam::read16(0, 0, 0, hostbridge::GGC);
+        let ggc = ecam::PciDevBdf::new(0, 0, 0).read16(hostbridge::GGC);
         let gsm = ((ggc >> 8) & 0xF) as usize;
         const SIZES: [u32; 4] = [0, 1, 0, 0];
         if gsm < SIZES.len() {
@@ -390,7 +397,7 @@ impl IntelPineview {
 
     /// Enable SERR on the PCI domain root.
     pub fn enable_serr(&self) {
-        ecam::or16(0, 0, 0, 0x04, 1 << 8);
+        ecam::PciDevBdf::new(0, 0, 0).or16(0x04, 1 << 8);
     }
 
     // ---------------------------------------------------------------
@@ -401,7 +408,7 @@ impl IntelPineview {
     ///
     /// Returns 0 if T_EN (bit 0) is not set.
     pub fn tseg_size(&self) -> u32 {
-        let esmramc = ecam::read8(0, 0, 0, hostbridge::ESMRAMC);
+        let esmramc = ecam::PciDevBdf::new(0, 0, 0).read8(hostbridge::ESMRAMC);
         if esmramc & 1 == 0 {
             return 0;
         }
@@ -418,7 +425,7 @@ impl IntelPineview {
 
     /// Read the TSEG base address.
     pub fn tseg_base(&self) -> u32 {
-        ecam::read32(0, 0, 0, hostbridge::TSEG)
+        ecam::PciDevBdf::new(0, 0, 0).read32(hostbridge::TSEG)
     }
 
     /// Get the SMM region (base + size) as a `(base, size)` pair.
@@ -438,12 +445,12 @@ impl IntelPineview {
 
     /// Write the SMRAM register (used by SMM relocation).
     pub fn write_smram(&self, val: u8) {
-        ecam::write8(0, 0, 0, hostbridge::SMRAM, val);
+        ecam::PciDevBdf::new(0, 0, 0).write8(hostbridge::SMRAM, val);
     }
 
     /// Read the SMRAM register.
     pub fn read_smram(&self) -> u8 {
-        ecam::read8(0, 0, 0, hostbridge::SMRAM)
+        ecam::PciDevBdf::new(0, 0, 0).read8(hostbridge::SMRAM)
     }
 
     // ---------------------------------------------------------------
@@ -452,12 +459,12 @@ impl IntelPineview {
 
     /// Read the graphics stolen memory base (GBSM register).
     pub fn igd_base(&self) -> u32 {
-        ecam::read32(0, 0, 0, hostbridge::GBSM)
+        ecam::PciDevBdf::new(0, 0, 0).read32(hostbridge::GBSM)
     }
 
     /// Read the GTT stolen memory base (BGSM register).
     pub fn gtt_base(&self) -> u32 {
-        ecam::read32(0, 0, 0, hostbridge::BGSM)
+        ecam::PciDevBdf::new(0, 0, 0).read32(hostbridge::BGSM)
     }
 
     /// Log the full memory map.

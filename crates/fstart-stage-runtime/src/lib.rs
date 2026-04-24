@@ -289,6 +289,14 @@ pub trait Board: Sized {
     /// with its SmbiosConfig descriptor (held in `&self`).
     fn smbios_prepare(&self);
 
+    /// Executor arm for [`CapOp::ChipsetPreConsole`].  `nb` and `sb`
+    /// come from the CapOp variant.
+    ///
+    /// Generated adapter calls `PciHost::pre_console_init(&self.<nb>)` and
+    /// `Southbridge::pre_console_init(&self.<sb>)` — the minimal
+    /// pre-console setup (ECAM enable + LPC decode).
+    fn chipset_pre_console(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError>;
+
     /// Executor arm for [`CapOp::ChipsetInit`].  `nb` and `sb` come
     /// from the CapOp variant.
     ///
@@ -449,6 +457,20 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                 inited.set(sb);
             }
 
+            CapOp::ChipsetPreConsole { nb, sb } => {
+                if board.init_device(nb).is_err() {
+                    board.halt();
+                }
+                if board.init_device(sb).is_err() {
+                    board.halt();
+                }
+                if board.chipset_pre_console(nb, sb).is_err() {
+                    board.halt();
+                }
+                inited.set(nb);
+                inited.set(sb);
+            }
+
             CapOp::MpInit {
                 cpu_model,
                 num_cpus,
@@ -592,6 +614,10 @@ mod tests {
             nb: DeviceId,
             sb: DeviceId,
         },
+        ChipsetPreConsole {
+            nb: DeviceId,
+            sb: DeviceId,
+        },
         PciInit(DeviceId),
         AcpiLoad(DeviceId),
         MemoryDetect(DeviceId),
@@ -703,6 +729,10 @@ mod tests {
         }
         fn chipset_init(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError> {
             push(Event::ChipsetInit { nb, sb });
+            Ok(())
+        }
+        fn chipset_pre_console(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError> {
+            push(Event::ChipsetPreConsole { nb, sb });
             Ok(())
         }
         fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
@@ -962,6 +992,28 @@ mod tests {
     }
 
     #[test]
+    fn chipset_pre_console_inits_both_and_runs_trampoline() {
+        static PLAN: StagePlan = StagePlan {
+            stage_name: "t",
+            is_first_stage: true,
+            ends_with_jump: false,
+            caps: &[CapOp::ChipsetPreConsole { nb: 3, sb: 4 }],
+            persistent_inited: &[],
+            boot_media_gated: &[],
+            all_devices: &[],
+        };
+        assert_eq!(
+            run(&PLAN),
+            [
+                Event::InitDevice(3),
+                Event::InitDevice(4),
+                Event::ChipsetPreConsole { nb: 3, sb: 4 },
+                Event::Halt,
+            ]
+        );
+    }
+
+    #[test]
     fn pci_init_inits_then_enumerates() {
         static PLAN: StagePlan = StagePlan {
             stage_name: "t",
@@ -1164,6 +1216,13 @@ mod tests {
             }
             fn chipset_init(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError> {
                 MockBoard.chipset_init(nb, sb)
+            }
+            fn chipset_pre_console(
+                &mut self,
+                nb: DeviceId,
+                sb: DeviceId,
+            ) -> Result<(), DeviceError> {
+                MockBoard.chipset_pre_console(nb, sb)
             }
             fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
                 MockBoard.pci_init(id)
