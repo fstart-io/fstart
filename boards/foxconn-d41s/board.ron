@@ -10,14 +10,15 @@
 //   - ITE IT8721F SuperIO on LPC (base port 0x2e) providing COM1, COM2,
 //     PS/2 keyboard/mouse, parallel port, environment controller, CIR.
 //
-// Boot flow (x86 three-stage CAR model):
-//   1. `bootblock` (XIP from flash): reset vector -> NEM Cache-as-RAM
-//      setup -> set up SuperIO COM1 -> load `romstage`.
-//   2. `romstage` (XIP from flash, stack in CAR): program NB+SB chipset
-//      registers (ChipsetInit), train DDR2 DRAM (DramInit), load
-//      `ramstage` into DRAM.
-//   3. `ramstage` (runs from DRAM): initialize PCI / NIC / SMBus / ACPI
-//      / SMBIOS, then hand off to the payload (Linux).
+// Boot flow (two-stage CAR model — matches coreboot's bootblock+romstage
+// merged into one):
+//   1. `bootblock` (XIP from flash, stack in CAR): reset vector -> NEM
+//      Cache-as-RAM setup -> ChipsetPreConsole (ECAM enable + LPC decode)
+//      -> ConsoleInit (SuperIO COM1, now reachable) -> ChipsetInit (full
+//      NB/SB init: BARs, PAM, SMBus, GPIO, CIR, HPET) -> DramInit (DDR2
+//      training, needs SMBus) -> load `ramstage`.
+//   2. `ramstage` (runs from DRAM): initialize PCI / NIC / ACPI / SMBIOS,
+//      then hand off to the payload (Linux).
 //
 // This is a chassis/chipset board — QEMU cannot execute it end-to-end.
 // Build-only verification ensures the RON schema, codegen, and driver
@@ -56,12 +57,11 @@
         // The console is provided by the IT8721F SuperIO (COM1 at
         // 0x3F8), which sits on the LPC bus under the ICH7 southbridge.
         // At reset the CPU can't reach LPC-space I/O — the ICH7 LPC
-        // decode windows must be programmed first. The device tree
-        // (superio → lpc → southbridge) captures this dependency
-        // and the codegen walks the chain: `southbridge.init()` opens
-        // LPC decode, `superio.init()` then enters config mode and
-        // programs COM1 at 0x3F8. Only after that chain completes does
-        // the Console service become available for logging.
+        // decode windows must be programmed first. The capability order
+        // (ChipsetPreConsole before ConsoleInit) enforces this:
+        // ChipsetPreConsole calls `Southbridge::pre_console_init()`
+        // which opens LPC decode before ConsoleInit touches the
+        // SuperIO at 0x2E/0x2F.
         (
             name: "northbridge",
             driver: IntelPineview((
@@ -237,19 +237,21 @@
         (
             name: "bootblock",
             capabilities: [
-                // Console: codegen walks superio → lpc → southbridge,
-                // emitting init() root-first.  The SuperIO programs
-                // LDNs and initializes the 16550 UART for the COM port
-                // selected by `console_port`.  No separate NS16550
-                // driver needed.  Change `console_port: "com2"` in the
-                // SuperIO config to use the secondary UART instead.
+                // ChipsetPreConsole: minimal chipset init before
+                // ConsoleInit — enables ECAM (NB PCIEXBAR) and opens
+                // LPC decode (SB) so the SuperIO at 0x2E/0x2F is reachable.
+                // This is the only chipset work needed before console.
+                ChipsetPreConsole( northbridge: "northbridge", southbridge: "southbridge" ),
+                // Console: SuperIO programs LDNs and initializes the
+                // 16550 UART at the COM port selected by `console_port`.
+                // LPC decode is now open, so PIO at 0x2E/0x2F works.
                 ConsoleInit( device: "superio" ),
-                // ChipsetInit still calls the NB + SB early_init hooks.
-                // `southbridge.early_init()` is a no-op beyond what `init()`
-                // already did; `northbridge.early_init()` opens MCHBAR/DMIBAR.
+                // ChipsetInit: full chipset early init with console
+                // available for diagnostics.  Opens NB BARs (MCHBAR,
+                // DMIBAR), PAM, graphics clocks; SB SMBus (needed by
+                // DramInit), BARs, PIRQ, GPIO, CIR, IOAPIC, HPET.
                 ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
-                // DDR2 training (currently stubbed, see
-                // fstart-driver-intel-pineview/src/lib.rs).
+                // DDR2 training needs SMBus (enabled by ChipsetInit).
                 DramInit( device: "northbridge" ),
                 // Load the ramstage from FFS in flash and jump to it.
                 BootMedia(MemoryMapped( base: 0xFFF00000, size: 0xFE000 )),
