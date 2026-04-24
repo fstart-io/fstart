@@ -111,6 +111,12 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     let needs_egon_header =
         is_first_stage && matches!(config.soc_image_format, SocImageFormat::AllwinnerEgon);
 
+    // x86 CAR/postcar symbols. First stages use `_has_car` to decide
+    // whether to enter CAR setup; non-first RAM stages use the same
+    // symbol to decide whether to tear CAR down before Rust code runs.
+    let has_x86_car = config.platform == Platform::X86_64 && config.memory.car.is_some();
+    let (dram_mtrr_base, dram_mtrr_mask) = x86_dram_mtrr(config);
+
     writeln!(
         out,
         "/* Auto-generated linker script for board: {} */\n",
@@ -157,6 +163,8 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             config.platform,
             page_size,
             car_config,
+            dram_mtrr_base,
+            dram_mtrr_mask,
         );
     } else {
         // RAM-only layout: everything in RAM at load_addr.
@@ -195,10 +203,59 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             needs_egon_header,
             config.platform,
             is_first_stage,
+            has_x86_car,
+            dram_mtrr_base,
+            dram_mtrr_mask,
         );
     }
 
     out
+}
+
+/// Compute a conservative x86 WB DRAM MTRR covering the configured low RAM.
+///
+/// Pineview ramstage follows coreboot's postcar model: the CAR MTRR is
+/// repurposed as a normal DRAM write-back MTRR before high-level code runs.
+/// Board RON only carries the upper-bound DRAM region, so use a
+/// power-of-two range from 0 to the top of the first RAM bank; this matches
+/// the classic low-DRAM WB MTRR shape used before the runtime memory map is
+/// fully refined.
+fn x86_dram_mtrr(config: &BoardConfig) -> (u64, u64) {
+    let top = config
+        .memory
+        .regions
+        .iter()
+        .filter(|r| r.kind == RegionKind::Ram)
+        .map(|r| r.base.saturating_add(r.size))
+        .max()
+        .unwrap_or(0x4000_0000);
+    let size = top.next_power_of_two().max(0x0010_0000);
+    (0, !(size - 1) & 0xFFFF_FFFF)
+}
+
+fn write_x86_car_symbols(
+    out: &mut String,
+    platform: Platform,
+    has_x86_car: bool,
+    dram_mtrr_base: u64,
+    dram_mtrr_mask: u64,
+) {
+    if platform != Platform::X86_64 {
+        return;
+    }
+    writeln!(out).unwrap();
+    writeln!(out, "    /* x86 CAR/postcar symbols */").unwrap();
+    writeln!(out, "    _has_car = {};", if has_x86_car { 1 } else { 0 }).unwrap();
+    // The platform crate always links the CAR setup object. Non-first
+    // RAM stages never execute `_car_setup`, but the labels it references
+    // still need absolute definitions so the object can link.
+    writeln!(out, "    _car_base = 0;").unwrap();
+    writeln!(out, "    _car_size = 0;").unwrap();
+    writeln!(out, "    _ecar_stack = _stack_top;").unwrap();
+    writeln!(out, "    _rom_mtrr_base = 0;").unwrap();
+    writeln!(out, "    _rom_mtrr_mask = 0;").unwrap();
+    writeln!(out, "    _dram_mtrr_base = {dram_mtrr_base:#x};").unwrap();
+    writeln!(out, "    _dram_mtrr_mask = {dram_mtrr_mask:#x};").unwrap();
 }
 
 /// Generate linker script for XIP from ROM with data/bss/stack in RAM.
@@ -222,6 +279,8 @@ fn generate_xip_layout(
     platform: Platform,
     page_size: PageSize,
     car_config: Option<(u64, u64)>,
+    dram_mtrr_base: u64,
+    dram_mtrr_mask: u64,
 ) {
     // When data_addr is set, split RAM into two memory regions:
     // RAMRO for read-only data (unused currently, but reserved),
@@ -339,8 +398,12 @@ fn generate_xip_layout(
         writeln!(out, "    _rom_mtrr_mask = {rom_mask:#x};").unwrap();
         // Flag consumed by entry asm to decide whether to jmp _car_setup.
         writeln!(out, "    _has_car = 1;").unwrap();
+        writeln!(out, "    _dram_mtrr_base = {dram_mtrr_base:#x};").unwrap();
+        writeln!(out, "    _dram_mtrr_mask = {dram_mtrr_mask:#x};").unwrap();
     } else {
         writeln!(out, "    _has_car = 0;").unwrap();
+        writeln!(out, "    _dram_mtrr_base = {dram_mtrr_base:#x};").unwrap();
+        writeln!(out, "    _dram_mtrr_mask = {dram_mtrr_mask:#x};").unwrap();
     }
 
     // x86 bootblock entry code: only the first stage (bootblock) has the
@@ -393,6 +456,9 @@ fn generate_ram_layout(
     needs_egon_header: bool,
     platform: Platform,
     is_first_stage: bool,
+    has_x86_car: bool,
+    dram_mtrr_base: u64,
+    dram_mtrr_mask: u64,
 ) {
     if let Some(bss_addr) = bss_origin {
         let code_length = bss_addr - ram_origin;
@@ -429,6 +495,7 @@ fn generate_ram_layout(
             is_first_stage,
         );
         write_stack(out, stack_size, "RWDATA");
+        write_x86_car_symbols(out, platform, has_x86_car, dram_mtrr_base, dram_mtrr_mask);
         writeln!(out, "}}").unwrap();
     } else {
         writeln!(out, "MEMORY\n{{").unwrap();
@@ -457,6 +524,7 @@ fn generate_ram_layout(
             is_first_stage,
         );
         write_stack(out, stack_size, "RAM");
+        write_x86_car_symbols(out, platform, has_x86_car, dram_mtrr_base, dram_mtrr_mask);
         writeln!(out, "}}").unwrap();
     }
 }

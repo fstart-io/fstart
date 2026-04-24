@@ -33,4 +33,23 @@ pub trait Southbridge: Send + Sync {
 
     /// Perform full early southbridge initialization.
     fn early_init(&mut self) -> Result<(), ServiceError>;
+
+    /// Perform DRAM-backed ramstage device initialization.
+    ///
+    /// This corresponds to coreboot ramstage device ops for the
+    /// southbridge: SATA/USB/HDA setup, power-management finalization,
+    /// PCIe-root-port tuning, and other work that must run after DRAM is
+    /// available.  Default: no-op for chipsets without a split early/late
+    /// model.
+    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Lock down chipset registers before payload handoff.
+    ///
+    /// Default: no-op. Real southbridge/PCH drivers can lock SPI, BIOS
+    /// interface, TCO, SMI, and other write-once registers here.
+    fn finalize(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
 }

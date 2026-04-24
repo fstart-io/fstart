@@ -364,7 +364,7 @@ impl SerializeSeq for SeqTokenSerializer {
 
     fn end(self) -> Result<TokenStream, TokenError> {
         let elems = &self.elements;
-        Ok(quote! { [#(#elems),*] })
+        Ok(quote! { heapless::Vec::from_slice(&[#(#elems),*]).unwrap() })
     }
 }
 

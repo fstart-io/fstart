@@ -13,9 +13,10 @@
 // Boot flow (two-stage CAR model — matches coreboot's bootblock+romstage
 // merged into one):
 //   1. `bootblock` (XIP from flash, stack in CAR): reset vector -> NEM
-//      Cache-as-RAM setup -> ChipsetPreConsole (ECAM enable + LPC decode)
+//      Cache-as-RAM setup -> ChipsetPreConsole (ECAM enable plus coreboot
+//      bootblock southbridge work: SPI prefetch, SB BARs, watchdog, LPC)
 //      -> ConsoleInit (SuperIO COM1, now reachable) -> ChipsetInit (full
-//      NB/SB init: BARs, PAM, SMBus, GPIO, CIR, HPET) -> DramInit (DDR2
+//      NB/SB romstage init: PAM, SMBus, GPIO, CIR, HPET) -> DramInit (DDR2
 //      training, needs SMBus) -> load `ramstage`.
 //   2. `ramstage` (runs from DRAM): initialize PCI / NIC / ACPI / SMBIOS,
 //      then hand off to the payload (Linux).
@@ -237,10 +238,11 @@
         (
             name: "bootblock",
             capabilities: [
-                // ChipsetPreConsole: minimal chipset init before
-                // ConsoleInit — enables ECAM (NB PCIEXBAR) and opens
-                // LPC decode (SB) so the SuperIO at 0x2E/0x2F is reachable.
-                // This is the only chipset work needed before console.
+                // ChipsetPreConsole: coreboot bootblock-equivalent init
+                // before ConsoleInit — enables ECAM (NB PCIEXBAR), then
+                // performs ICH7 SPI prefetch, fixed SB BAR setup, upper
+                // CMOS/watchdog disable, SERIRQ and LPC decode so the
+                // SuperIO at 0x2E/0x2F is reachable.
                 ChipsetPreConsole( northbridge: "northbridge", southbridge: "southbridge" ),
                 // Console: SuperIO programs LDNs and initializes the
                 // 16550 UART at the COM port selected by `console_port`.
@@ -279,6 +281,10 @@
             capabilities: [
                 ConsoleInit( device: "superio" ),
                 DriverInit,
+                // Coreboot ramstage-equivalent chipset/device finalization:
+                // SATA/USB/HDA, PM/C-state setup, PCIe root-port tuning,
+                // then SPI/SMI/TCO/BIOS-interface lockdown.
+                LateDriverInit,
                 AcpiPrepare,
                 SmBiosPrepare,
                 BootMedia(MemoryMapped(

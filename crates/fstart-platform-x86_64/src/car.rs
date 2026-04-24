@@ -253,7 +253,10 @@ core::arch::global_asm!(
     // Path: NEM (Non-Evict Mode) — Atom Pineview/Cedarview
     // ==================================================================
     "_car_nem:",
-    // Check MTRR_DEF_TYPE for warm reset (must be clean).
+    // Coreboot NEM first validates that MTRRs are clean, then sends
+    // INIT to APs before the BSP starts rewriting MTRRs/CAR state.
+    // Keeping APs in Wait-for-SIPI prevents them from observing the
+    // transient CAR MTRR layout.
     "movl $0x2FF, %ecx",
     "rdmsr",
     "andl $0xC00, %eax", // DEF_TYPE_EN | FIX_EN
@@ -265,17 +268,20 @@ core::arch::global_asm!(
     "2: hlt",
     "jmp 2b",
     "1:",
+    "movl $9f, %esp",
+    "jmp _car_send_init_ipi",
+    "9:",
+    // Clean-up MTRR_DEF_TYPE_MSR (default type UC, MTRRs disabled).
+    "movl $0x2FF, %ecx",
+    "xorl %eax, %eax",
+    "xorl %edx, %edx",
+    "wrmsr",
     "movl $10f, %esp",
     "jmp _car_clear_fixed_mtrrs",
     "10:",
     "movl $11f, %esp",
     "jmp _car_clear_var_mtrrs",
     "11:",
-    // Default type = UC.
-    "movl $0x2FF, %ecx",
-    "xorl %eax, %eax",
-    "xorl %edx, %edx",
-    "wrmsr",
     "movl $12f, %esp",
     "jmp _car_physmask_high",
     "12:",
@@ -326,10 +332,6 @@ core::arch::global_asm!(
     "movl $20f, %esp",
     "jmp _car_fill_stosl",
     "20:",
-    // Send INIT IPI to APs.
-    "movl $21f, %esp",
-    "jmp _car_send_init_ipi",
-    "21:",
     // Set up stack (inline — can't use %esp as return reg here).
     "movl $_ecar_stack, %esp",
     "andl $0xFFFFFFF0, %esp",

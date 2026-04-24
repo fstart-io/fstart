@@ -173,7 +173,8 @@ core::arch::global_asm!(
     // and we skip straight to BSS clear.
     //
     // _car_setup returns via jmp *%ebp.
-    "cmpl $0, _has_car",
+    "movl $_has_car, %eax",
+    "testl %eax, %eax",
     "je _post_car",
     "movl $_post_car, %ebp",
     "jmp _car_setup",
@@ -443,6 +444,17 @@ core::arch::global_asm!(
     ".code64",
     ".global _start_ram",
     "_start_ram:",
+    // Set up the DRAM-backed stack first.  Non-first x86 stages are
+    // entered after DRAM training; if the previous stage used CAR, the
+    // teardown routine needs a real stack before it disables NEM/MTRR0.
+    "movabs $_stack_top, %rsp",
+    // Tear down Cache-as-RAM before touching BSS/data in the RAM stage.
+    // `_has_car` is a linker-provided absolute symbol (0 or 1).
+    "movl $_has_car, %eax",
+    "testl %eax, %eax",
+    "je 0f",
+    "call _car_teardown",
+    "0:",
     // Zero BSS (64-bit mode)
     "movabs $_bss_start, %rdi",
     "movabs $_bss_end, %rcx",
@@ -450,8 +462,6 @@ core::arch::global_asm!(
     "shrq $3, %rcx", // count in qwords
     "xorl %eax, %eax",
     "rep stosq",
-    // Set up stack
-    "movabs $_stack_top, %rsp",
     // Copy .data initializers (skip if src == dst, i.e., RAM-only)
     "movabs $_data_load, %rsi",
     "movabs $_data_start, %rdi",
