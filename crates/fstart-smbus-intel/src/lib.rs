@@ -109,28 +109,11 @@ impl I801SmBus {
     /// calling this.
     pub fn enable_on_ich7(smbus_base: u16) -> Self {
         use fstart_pineview_regs::ich7;
-        ecam::write32(
-            0,
-            ich7::SMBUS_DEV,
-            ich7::SMBUS_FUNC,
-            ich7::SMB_BASE,
-            (smbus_base as u32) | 1,
-        );
-        ecam::write32(
-            0,
-            ich7::SMBUS_DEV,
-            ich7::SMBUS_FUNC,
-            ich7::HOSTC,
-            ich7::HST_EN as u32,
-        );
-        let cmd = ecam::read16(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, ich7::PCI_COMMAND);
-        ecam::write16(
-            0,
-            ich7::SMBUS_DEV,
-            ich7::SMBUS_FUNC,
-            ich7::PCI_COMMAND,
-            cmd | ich7::PCI_CMD_IO,
-        );
+        let smbus_pci = ecam::PciDevBdf::new(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC);
+        smbus_pci.write32(ich7::SMB_BASE, (smbus_base as u32) | 1);
+        smbus_pci.write32(ich7::HOSTC, ich7::HST_EN as u32);
+        let cmd = smbus_pci.read16(ich7::PCI_COMMAND);
+        smbus_pci.write16(ich7::PCI_COMMAND, cmd | ich7::PCI_CMD_IO);
         let s = Self { base: smbus_base };
         s.host_reset();
         fstart_log::info!("i801-smbus: enabled at I/O base {:#x}", smbus_base);
