@@ -21,7 +21,12 @@ x86_64 = ["dep:fstart-platform-x86_64"]
 # ARMv7 eGON boot for A20/H3, RISC-V eGON boot for D1).  Driven by
 # `soc_image_format: AllwinnerEgon` in the board RON, not by platform —
 # sunxi boards exist on multiple ISAs.
-sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi", "fstart-platform-armv7?/sunxi", "fstart-platform-riscv64?/sunxi"]
+sunxi = [
+  "dep:fstart-soc-sunxi",
+  "fstart-platform-aarch64?/sunxi",
+  "fstart-platform-armv7?/sunxi",
+  "fstart-platform-riscv64?/sunxi",
+]
 # SBSA entry point — copies firmware from flash to DRAM before executing.
 sbsa = ["fstart-platform-aarch64?/sbsa"]
 # Driver selection (enabled based on board.ron devices)
@@ -62,8 +67,16 @@ memory-detect = []
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
-sha2-digest = ["ffs", "fstart-capabilities/sha2-digest", "fstart-ffs/sha2-digest"]
-sha3-digest = ["ffs", "fstart-capabilities/sha3-digest", "fstart-ffs/sha3-digest"]
+sha2-digest = [
+  "ffs",
+  "fstart-capabilities/sha2-digest",
+  "fstart-ffs/sha2-digest",
+]
+sha3-digest = [
+  "ffs",
+  "fstart-capabilities/sha3-digest",
+  "fstart-ffs/sha3-digest",
+]
 # LZ4 decompression for compressed stage/payload segments
 lz4 = ["ffs", "fstart-capabilities/lz4"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
@@ -75,7 +88,17 @@ handoff = ["fstart-capabilities/handoff"]
 # ACPI table generation — routed through fstart-capabilities which owns
 # the prepare() entry point and depends on fstart-acpi internally.
 # fstart-acpi is also a direct dep for per-device AcpiDevice trait calls.
-acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-acpi?/x86", "fstart-driver-pl011?/acpi", "fstart-capabilities/acpi"]
+acpi = [
+  "dep:fstart-alloc",
+  "dep:fstart-acpi",
+  "fstart-acpi?/arm",
+  "fstart-acpi?/x86",
+  "fstart-driver-pl011?/acpi",
+  "fstart-driver-intel-pineview?/acpi",
+  "fstart-driver-intel-ich7?/acpi",
+  "fstart-driver-ite8721f?/acpi",
+  "fstart-capabilities/acpi",
+]
 # SMBIOS table generation — routed through fstart-capabilities which owns
 # the prepare() entry point and depends on fstart-smbios internally.
 smbios = ["fstart-capabilities/smbios"]

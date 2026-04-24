@@ -131,6 +131,9 @@ impl IntelPineview {
     /// Ported from coreboot `pineview_setup_bars()`.
     fn setup_bars(&self) {
         let hb = ecam::PciDevBdf::new(0, 0, 0);
+        // Match coreboot pineview_setup_bars(): set the host bridge
+        // revision scratch value before programming static BARs.
+        hb.write8(0x08, 0x69);
         // EPBAR, MCHBAR, DMIBAR — 32-bit writes with enable bit 0.
         hb.write32(hostbridge::EPBAR, (self.config.epbar as u32) | 1);
         hb.write32(hostbridge::MCHBAR, (self.config.mchbar as u32) | 1);
@@ -253,9 +256,11 @@ impl IntelPineview {
 
         rcba.write32(0x3410, 0x0002_0465);
 
-        // USB transient disconnect (1D:0..3 reg 0xCA).
+        // USB transient disconnect (1D:0..3 reg 0xCA). Coreboot uses
+        // pci_write_config32() at the unaligned offset; the effective
+        // change is bit 0 of byte 0xCA.
         for func in 0..4u8 {
-            ecam::PciDevBdf::new(0, 0x1d, func).or32(0xCA, 0x1);
+            ecam::PciDevBdf::new(0, 0x1d, func).or8(0xCA, 0x1);
         }
 
         // RCBA routing table setup.
@@ -263,10 +268,11 @@ impl IntelPineview {
         rcba.write32(0x3108, 0x1000_4321);
         rcba.write32(0x310C, 0x0021_4321);
         rcba.write32(0x3110, 1);
+        // Coreboot emits overlapping unaligned RCBA32 writes at 0x3142
+        // and 0x3146.  Their final byte pattern is exactly represented
+        // by these aligned writes, avoiding unaligned volatile u32 access.
         rcba.write32(0x3140, 0x0146_0132);
-        rcba.write32(0x3142, 0x0237_0146);
         rcba.write32(0x3144, 0x3201_0237);
-        rcba.write32(0x3146, 0x0146_3201);
         rcba.write32(0x3148, 0x0000_0146);
 
         fstart_log::info!("pineview: early misc setup complete");
