@@ -206,9 +206,9 @@ impl Rcba {
     }
 }
 
-// ECAM PCI config access has moved to the `fstart-ecam` crate.
-// Use `fstart_ecam::init()` / `fstart_ecam::read32()` etc.
-// Re-export for backward compat during transition.
+// ECAM PCI config access lives in the `fstart-ecam` crate.
+// Use `fstart_ecam::init()` then `PciDevBdf::new(b,d,f).read32(reg)` etc.
+// Re-export for convenience.
 pub use fstart_ecam as ecam;
 
 // ===================================================================

@@ -1,12 +1,13 @@
 //! Global ECAM PCI config space access.
 //!
-//! Call [`init`] once after programming PCIEXBAR. After that,
-//! use the free functions directly — no struct to pass around:
+//! Call [`init`] once after programming PCIEXBAR, then create
+//! [`PciDevBdf`] handles to access individual devices:
 //!
 //! ```ignore
 //! fstart_ecam::init(0xE000_0000);
-//! let rev = fstart_ecam::read8(0, 0, 0, 0x08);
-//! fstart_ecam::write16(0, 0, 0, 0x52, (1 << 8) | (3 << 4));
+//! let lpc = fstart_ecam::PciDevBdf::new(0, 0x1f, 0);
+//! let rev = lpc.read8(0x08);
+//! lpc.write16(0x52, (1 << 8) | (3 << 4));
 //! ```
 
 #![no_std]
@@ -29,103 +30,153 @@ pub fn base() -> usize {
     BASE.load(Ordering::Acquire)
 }
 
-#[inline]
-fn addr(bus: u8, dev: u8, func: u8, reg: u16) -> usize {
-    BASE.load(Ordering::Acquire)
-        | ((bus as usize) << 20)
-        | ((dev as usize) << 15)
-        | ((func as usize) << 12)
-        | ((reg as usize) & 0xFFF)
+/// A PCI device address (bus/device/function) bound to the global ECAM
+/// region.
+///
+/// Create with [`PciDevBdf::new`], then use the read/write methods to
+/// access the device's PCI configuration registers without repeating the
+/// BDF on every call.
+///
+/// ```ignore
+/// let lpc = PciDevBdf::new(0, 0x1f, 0);
+/// let rev = lpc.read8(0x08);
+/// lpc.write16(0x52, (1 << 8) | (3 << 4));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciDevBdf {
+    bus: u8,
+    dev: u8,
+    func: u8,
 }
 
-/// Read a 32-bit PCI config register.
-#[inline]
-pub fn read32(bus: u8, dev: u8, func: u8, reg: u16) -> u32 {
-    // SAFETY: ECAM region is memory-mapped PCI config space.
-    unsafe { fstart_mmio::read32(addr(bus, dev, func, reg) as *const u32) }
-}
+impl PciDevBdf {
+    /// Create a new PCI device handle for the given bus/device/function.
+    #[inline]
+    pub const fn new(bus: u8, dev: u8, func: u8) -> Self {
+        Self { bus, dev, func }
+    }
 
-/// Write a 32-bit PCI config register.
-#[inline]
-pub fn write32(bus: u8, dev: u8, func: u8, reg: u16, val: u32) {
-    unsafe { fstart_mmio::write32(addr(bus, dev, func, reg) as *mut u32, val) }
-}
+    /// Return the bus number.
+    #[inline]
+    pub const fn bus(&self) -> u8 {
+        self.bus
+    }
 
-/// Read a 16-bit PCI config register.
-#[inline]
-pub fn read16(bus: u8, dev: u8, func: u8, reg: u16) -> u16 {
-    unsafe { fstart_mmio::read16(addr(bus, dev, func, reg) as *const u16) }
-}
+    /// Return the device number.
+    #[inline]
+    pub const fn dev(&self) -> u8 {
+        self.dev
+    }
 
-/// Write a 16-bit PCI config register.
-#[inline]
-pub fn write16(bus: u8, dev: u8, func: u8, reg: u16, val: u16) {
-    unsafe { fstart_mmio::write16(addr(bus, dev, func, reg) as *mut u16, val) }
-}
+    /// Return the function number.
+    #[inline]
+    pub const fn func(&self) -> u8 {
+        self.func
+    }
 
-/// Read an 8-bit PCI config register.
-#[inline]
-pub fn read8(bus: u8, dev: u8, func: u8, reg: u16) -> u8 {
-    unsafe { fstart_mmio::read8(addr(bus, dev, func, reg) as *const u8) }
-}
+    #[inline]
+    fn addr(&self, reg: u16) -> usize {
+        BASE.load(Ordering::Acquire)
+            | ((self.bus as usize) << 20)
+            | ((self.dev as usize) << 15)
+            | ((self.func as usize) << 12)
+            | ((reg as usize) & 0xFFF)
+    }
 
-/// Write an 8-bit PCI config register.
-#[inline]
-pub fn write8(bus: u8, dev: u8, func: u8, reg: u16, val: u8) {
-    unsafe { fstart_mmio::write8(addr(bus, dev, func, reg) as *mut u8, val) }
-}
+    /// Read a 32-bit PCI config register.
+    #[inline]
+    pub fn read32(&self, reg: u16) -> u32 {
+        // SAFETY: ECAM region is memory-mapped PCI config space.
+        unsafe { fstart_mmio::read32(self.addr(reg) as *const u32) }
+    }
 
-/// Read-modify-write: `reg = (reg & mask) | set`.
-#[inline]
-pub fn modify32(bus: u8, dev: u8, func: u8, reg: u16, mask: u32, set: u32) {
-    let v = read32(bus, dev, func, reg);
-    write32(bus, dev, func, reg, (v & mask) | set);
-}
+    /// Write a 32-bit PCI config register.
+    #[inline]
+    pub fn write32(&self, reg: u16, val: u32) {
+        // SAFETY: ECAM region is memory-mapped PCI config space.
+        unsafe { fstart_mmio::write32(self.addr(reg) as *mut u32, val) }
+    }
 
-/// OR bits into a 32-bit register.
-#[inline]
-pub fn or32(bus: u8, dev: u8, func: u8, reg: u16, bits: u32) {
-    modify32(bus, dev, func, reg, !0, bits);
-}
+    /// Read a 16-bit PCI config register.
+    #[inline]
+    pub fn read16(&self, reg: u16) -> u16 {
+        // SAFETY: ECAM region is memory-mapped PCI config space.
+        unsafe { fstart_mmio::read16(self.addr(reg) as *const u16) }
+    }
 
-/// AND bits out of an 8-bit register.
-#[inline]
-pub fn and8(bus: u8, dev: u8, func: u8, reg: u16, mask: u8) {
-    let v = read8(bus, dev, func, reg);
-    write8(bus, dev, func, reg, v & mask);
-}
+    /// Write a 16-bit PCI config register.
+    #[inline]
+    pub fn write16(&self, reg: u16, val: u16) {
+        // SAFETY: ECAM region is memory-mapped PCI config space.
+        unsafe { fstart_mmio::write16(self.addr(reg) as *mut u16, val) }
+    }
 
-/// OR bits into an 8-bit register.
-#[inline]
-pub fn or8(bus: u8, dev: u8, func: u8, reg: u16, bits: u8) {
-    let v = read8(bus, dev, func, reg);
-    write8(bus, dev, func, reg, v | bits);
-}
+    /// Read an 8-bit PCI config register.
+    #[inline]
+    pub fn read8(&self, reg: u16) -> u8 {
+        // SAFETY: ECAM region is memory-mapped PCI config space.
+        unsafe { fstart_mmio::read8(self.addr(reg) as *const u8) }
+    }
 
-/// OR bits into a 16-bit register.
-#[inline]
-pub fn or16(bus: u8, dev: u8, func: u8, reg: u16, bits: u16) {
-    let v = read16(bus, dev, func, reg);
-    write16(bus, dev, func, reg, v | bits);
-}
+    /// Write an 8-bit PCI config register.
+    #[inline]
+    pub fn write8(&self, reg: u16, val: u8) {
+        // SAFETY: ECAM region is memory-mapped PCI config space.
+        unsafe { fstart_mmio::write8(self.addr(reg) as *mut u8, val) }
+    }
 
-/// AND mask a 16-bit register.
-#[inline]
-pub fn and16(bus: u8, dev: u8, func: u8, reg: u16, mask: u16) {
-    let v = read16(bus, dev, func, reg);
-    write16(bus, dev, func, reg, v & mask);
-}
+    /// Read-modify-write: `reg = (reg & mask) | set`.
+    #[inline]
+    pub fn modify32(&self, reg: u16, mask: u32, set: u32) {
+        let v = self.read32(reg);
+        self.write32(reg, (v & mask) | set);
+    }
 
-/// AND mask a 32-bit register.
-#[inline]
-pub fn and32(bus: u8, dev: u8, func: u8, reg: u16, mask: u32) {
-    let v = read32(bus, dev, func, reg);
-    write32(bus, dev, func, reg, v & mask);
-}
+    /// OR bits into a 32-bit register.
+    #[inline]
+    pub fn or32(&self, reg: u16, bits: u32) {
+        self.modify32(reg, !0, bits);
+    }
 
-/// AND-then-OR an 8-bit register.
-#[inline]
-pub fn and8_or8(bus: u8, dev: u8, func: u8, reg: u16, mask: u8, bits: u8) {
-    let v = read8(bus, dev, func, reg);
-    write8(bus, dev, func, reg, (v & mask) | bits);
+    /// AND bits out of an 8-bit register.
+    #[inline]
+    pub fn and8(&self, reg: u16, mask: u8) {
+        let v = self.read8(reg);
+        self.write8(reg, v & mask);
+    }
+
+    /// OR bits into an 8-bit register.
+    #[inline]
+    pub fn or8(&self, reg: u16, bits: u8) {
+        let v = self.read8(reg);
+        self.write8(reg, v | bits);
+    }
+
+    /// OR bits into a 16-bit register.
+    #[inline]
+    pub fn or16(&self, reg: u16, bits: u16) {
+        let v = self.read16(reg);
+        self.write16(reg, v | bits);
+    }
+
+    /// AND mask a 16-bit register.
+    #[inline]
+    pub fn and16(&self, reg: u16, mask: u16) {
+        let v = self.read16(reg);
+        self.write16(reg, v & mask);
+    }
+
+    /// AND mask a 32-bit register.
+    #[inline]
+    pub fn and32(&self, reg: u16, mask: u32) {
+        let v = self.read32(reg);
+        self.write32(reg, v & mask);
+    }
+
+    /// AND-then-OR an 8-bit register.
+    #[inline]
+    pub fn and8_or8(&self, reg: u16, mask: u8, bits: u8) {
+        let v = self.read8(reg);
+        self.write8(reg, (v & mask) | bits);
+    }
 }

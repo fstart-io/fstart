@@ -986,7 +986,8 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     mch.setbits32(mchbar::C0CWBCTRL, 1 << 0);
     mch.setbits32(mchbar::C0ARBSPL, 1 << 8);
 
-    ecam::or8(0, 0, 0, 0xF0, 1);
+    let hb = ecam::PciDevBdf::new(0, 0, 0);
+    hb.or8(0xF0, 1);
     mch.write32(mchbar::SBCTL, 0x0000_0002);
     mch.write32(mchbar::SBCTL2, 0x2031_0002);
     mch.write32(mchbar::SLIMCFGTMG, 0x0202_0302);
@@ -995,7 +996,7 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     mch.write32(mchbar::HIT2, 0x0700_0000);
     mch.write32(mchbar::HIT3, 0x0101_4010);
     mch.write32(mchbar::HIT4, 0x0F03_8000);
-    ecam::and8(0, 0, 0, 0xF0, !1);
+    hb.and8(0xF0, !1);
 
     // Interleave configuration.
     let mut nranks = 0u32;

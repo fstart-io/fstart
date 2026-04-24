@@ -272,8 +272,8 @@ pub fn sdram_initialize(
     mch.setbits32(mchbar::C0REFRCTRL2, 1 << 30);
 
     // 30. Tell ICH7 and northbridge we're done.
-    ecam::and8(0, 0x1f, 0, 0xA2, !(1 << 7));
-    ecam::or8(0, 0, 0, 0xF4, 1);
+    ecam::PciDevBdf::new(0, 0x1f, 0).and8(0xA2, !(1 << 7));
+    ecam::PciDevBdf::new(0, 0, 0).or8(0xF4, 1);
 
     // Compute total DRAM size from channel capacity.
     let total_mb = si.channel_capacity.iter().sum::<u32>();
