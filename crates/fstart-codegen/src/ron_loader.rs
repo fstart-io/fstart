@@ -73,6 +73,8 @@ struct RonBoardConfig {
     #[serde(default)]
     smbios: Option<fstart_types::smbios::SmbiosConfig>,
     #[serde(default)]
+    smm: Option<fstart_types::smm::SmmConfig>,
+    #[serde(default)]
     boot_hart_id: u32,
 }
 
@@ -187,6 +189,7 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
         soc_image_format: ron.soc_image_format,
         acpi: ron.acpi,
         smbios: ron.smbios,
+        smm: ron.smm,
         boot_hart_id: ron.boot_hart_id,
     };
 

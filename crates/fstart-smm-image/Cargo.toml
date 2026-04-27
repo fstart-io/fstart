@@ -1,0 +1,9 @@
+[package]
+name = "fstart-smm-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+fstart-smm = { workspace = true, features = ["std", "coreboot"] }

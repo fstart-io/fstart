@@ -285,6 +285,7 @@
                 // SATA/USB/HDA, PM/C-state setup, PCIe root-port tuning,
                 // then SPI/SMI/TCO/BIOS-interface lockdown.
                 LateDriverInit,
+                MpInit(cpu_model: "pineview", num_cpus: 1, smm: true),
                 AcpiPrepare,
                 SmBiosPrepare,
                 BootMedia(MemoryMapped(
@@ -360,6 +361,18 @@
             ( locator: "DIMM1" ),
             // size_mb, speed_mhz, memory_type: detected via SPD at runtime.
         ],
+    ),
+
+    smm: (
+        platform: PineviewIch7,
+        // Atom D410/D510-era Pineview boards expose up to four logical CPUs.
+        // The SMM image precompiles one PIC entry stub per configured slot.
+        entry_points: 4,
+        stack_size: 0x400,
+        coreboot: (
+            emit_header: true,
+            module_args: true,
+        ),
     ),
 
     payload: (
