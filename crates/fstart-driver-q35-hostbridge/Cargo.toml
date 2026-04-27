@@ -9,5 +9,8 @@ fstart-driver-pci-ecam = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
 fstart-log = { workspace = true }
+fstart-mp = { workspace = true }
+fstart-pmio-ich = { workspace = true }
+fstart-smm = { workspace = true }
 ufmt = { workspace = true }
 serde = { workspace = true }

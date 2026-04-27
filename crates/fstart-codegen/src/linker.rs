@@ -401,7 +401,17 @@ fn generate_xip_layout(
         writeln!(out, "    _dram_mtrr_base = {dram_mtrr_base:#x};").unwrap();
         writeln!(out, "    _dram_mtrr_mask = {dram_mtrr_mask:#x};").unwrap();
     } else {
+        writeln!(out).unwrap();
+        writeln!(out, "    /* x86 CAR/postcar symbols (CAR disabled) */").unwrap();
         writeln!(out, "    _has_car = 0;").unwrap();
+        // The platform crate always links the CAR setup object.  XIP boards
+        // without a CAR region (for example qemu-q35) never execute it, but
+        // the assembly labels it references still need definitions.
+        writeln!(out, "    _car_base = 0;").unwrap();
+        writeln!(out, "    _car_size = 0;").unwrap();
+        writeln!(out, "    _ecar_stack = _stack_top;").unwrap();
+        writeln!(out, "    _rom_mtrr_base = 0;").unwrap();
+        writeln!(out, "    _rom_mtrr_mask = 0;").unwrap();
         writeln!(out, "    _dram_mtrr_base = {dram_mtrr_base:#x};").unwrap();
         writeln!(out, "    _dram_mtrr_mask = {dram_mtrr_mask:#x};").unwrap();
     }

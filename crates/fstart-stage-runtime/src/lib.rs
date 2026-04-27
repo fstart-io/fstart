@@ -289,6 +289,17 @@ pub trait Board: Sized {
     /// with its SmbiosConfig descriptor (held in `&self`).
     fn smbios_prepare(&self);
 
+    /// Executor arm for [`CapOp::MpInit`].
+    ///
+    /// Board adapters that enable MP/SMM construct the concrete CPU and
+    /// platform SMM operations here and delegate to `fstart_mp::mp_init`.
+    /// The default no-op preserves existing non-x86 board adapters until
+    /// their codegen grows a real implementation.
+    fn mp_init(&mut self, cpu_model: &str, num_cpus: u16, smm: bool) -> Result<(), RuntimeError> {
+        let _ = (cpu_model, num_cpus, smm);
+        Ok(())
+    }
+
     /// Executor arm for [`CapOp::ChipsetPreConsole`].  `nb` and `sb`
     /// come from the CapOp variant.
     ///
@@ -476,10 +487,9 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                 num_cpus,
                 smm,
             } => {
-                // MP initialization is handled by board-specific codegen
-                // which calls fstart_mp::mp_init().  The CapOp carries
-                // the config; the executor passes through.
-                let _ = (cpu_model, num_cpus, smm);
+                if board.mp_init(cpu_model, num_cpus, smm).is_err() {
+                    board.halt();
+                }
             }
 
             CapOp::PciInit(id) => {
