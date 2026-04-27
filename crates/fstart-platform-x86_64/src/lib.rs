@@ -19,6 +19,10 @@
 
 #![no_std]
 
+pub mod car;
+pub mod car_teardown;
+pub mod cpuid;
+
 use fstart_services::memory_detect::E820Entry;
 
 // ---------------------------------------------------------------------------
@@ -162,9 +166,21 @@ core::arch::global_asm!(
     "movw %ax, %ss",
     "movw %ax, %fs",
     "movw %ax, %gs",
-    // Clear the early-RAM region (CAR on real hardware, just RAM on QEMU).
-    // This ensures BSS is zero before we touch any Rust statics.
-    // The linker provides _bss_start and _bss_end.
+    // ---- CAR setup (real hardware only) ----
+    // On boards with Cache-as-RAM, we must enable it BEFORE any memory
+    // writes (BSS clear, page tables, stack pushes) because all writable
+    // memory lives in cache.  On QEMU / non-CAR boards, _has_car == 0
+    // and we skip straight to BSS clear.
+    //
+    // _car_setup returns via jmp *%ebp.
+    "movl $_has_car, %eax",
+    "testl %eax, %eax",
+    "je _post_car",
+    "movl $_post_car, %ebp",
+    "jmp _car_setup",
+    "_post_car:",
+    // Clear BSS.  On CAR boards this zeroes the CAR-backed BSS region
+    // (now live after _car_setup).  On QEMU it zeroes regular RAM.
     "movl $_bss_start, %edi",
     "movl $_bss_end, %ecx",
     "subl %edi, %ecx",
@@ -428,6 +444,17 @@ core::arch::global_asm!(
     ".code64",
     ".global _start_ram",
     "_start_ram:",
+    // Set up the DRAM-backed stack first.  Non-first x86 stages are
+    // entered after DRAM training; if the previous stage used CAR, the
+    // teardown routine needs a real stack before it disables NEM/MTRR0.
+    "movabs $_stack_top, %rsp",
+    // Tear down Cache-as-RAM before touching BSS/data in the RAM stage.
+    // `_has_car` is a linker-provided absolute symbol (0 or 1).
+    "movl $_has_car, %eax",
+    "testl %eax, %eax",
+    "je 0f",
+    "call _car_teardown",
+    "0:",
     // Zero BSS (64-bit mode)
     "movabs $_bss_start, %rdi",
     "movabs $_bss_end, %rcx",
@@ -435,8 +462,6 @@ core::arch::global_asm!(
     "shrq $3, %rcx", // count in qwords
     "xorl %eax, %eax",
     "rep stosq",
-    // Set up stack
-    "movabs $_stack_top, %rsp",
     // Copy .data initializers (skip if src == dst, i.e., RAM-only)
     "movabs $_data_load, %rsi",
     "movabs $_data_start, %rdi",
@@ -461,6 +486,9 @@ core::arch::global_asm!(
 extern "Rust" {
     fn fstart_main(handoff_ptr: usize) -> !;
 }
+
+// Cache-as-RAM (NEM) setup has moved to car.rs.
+// See car::car_setup() and car::car_teardown().
 
 // ---------------------------------------------------------------------------
 // Exception handler — called from the IDT stub with register state
@@ -541,7 +569,22 @@ pub fn jump_to(addr: u64) -> ! {
 /// - `bootargs`: kernel command line string
 /// - `zero_page_addr`: physical address for boot_params (0x90000 on QEMU,
 ///   should be in e820-reported free conventional memory on real hardware)
-pub fn boot_linux(
+/// Unified Linux boot entry point.
+///
+/// All fields are used: `kernel_addr`, `rsdp_addr`, `e820_entries`,
+/// `bootargs`, `zero_page_addr`.
+/// Ignored fields: `dtb_addr`, `fw_addr`, `hart_id`.
+pub fn boot_linux(params: &fstart_services::boot::BootLinuxParams<'_>) -> ! {
+    boot_linux_direct(
+        params.kernel_addr,
+        params.rsdp_addr,
+        params.e820_entries,
+        params.bootargs,
+        params.zero_page_addr,
+    )
+}
+
+pub fn boot_linux_direct(
     kernel_addr: u64,
     rsdp_addr: u64,
     e820_entries: &[E820Entry],

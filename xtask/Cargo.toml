@@ -12,5 +12,6 @@ fstart-codegen = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-fit = { workspace = true, features = ["std"] }
 fstart-crypto = { workspace = true, features = ["all"] }
+fstart-smm-image = { workspace = true }
 ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }

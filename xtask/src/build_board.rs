@@ -29,6 +29,15 @@ pub struct StageBinary {
     pub load_addr: u64,
 }
 
+/// Generated standalone SMM artifacts for a board build.
+#[derive(Debug, Clone)]
+struct SmmArtifacts {
+    /// Native PIC SMM image consumed by fstart/coreboot loaders.
+    image_path: PathBuf,
+    /// Optional coreboot-compatible generated offsets header.
+    header_path: Option<PathBuf>,
+}
+
 impl BuildResult {
     /// Get the first (or only) binary — used for QEMU boot.
     pub fn primary_binary(&self) -> &StageBinary {
@@ -53,15 +62,29 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     eprintln!("[fstart] platform: {}", config.platform);
     eprintln!("[fstart] mode: {:?}", config.mode);
 
+    let smm_artifacts = build_smm_artifacts(&workspace_root, board_name, release, &config)?;
+
     // Determine target triple from the Platform enum.
     let target = config.platform.target_triple();
 
     // Base features: platform + all driver features (every stage constructs
     // all devices, so driver features are always needed globally).
+    //
+    // Structural (driverless) nodes use the sentinel driver name
+    // `_structural` and must be skipped here — there is no cargo
+    // feature by that name.  Similarly, ACPI-only devices (ahci,
+    // xhci, pcie-root) contribute only build-time ACPI table entries
+    // and have no runtime driver crate / no corresponding feature in
+    // fstart-stage's Cargo.toml.
+    const ACPI_ONLY_DRIVERS: &[&str] = &["ahci", "xhci", "pcie-root"];
     let mut base_features = Vec::new();
     base_features.push(config.platform.as_str().to_string());
     for device in &config.devices {
-        base_features.push(device.driver.to_string());
+        let drv = device.driver.as_str();
+        if drv == "_structural" || ACPI_ONLY_DRIVERS.contains(&drv) {
+            continue;
+        }
+        base_features.push(drv.to_string());
     }
 
     // Multi-stage boards need the handoff feature for inter-stage data passing.
@@ -135,6 +158,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 needs_flat_binary,
                 build_std,
                 soc_format,
+                smm_artifacts.as_ref(),
             )?;
             Ok(BuildResult {
                 stages: vec![StageBinary {
@@ -202,6 +226,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                     needs_flat_binary,
                     build_std,
                     stage_format,
+                    smm_artifacts.as_ref(),
                 )?;
                 result.push(StageBinary {
                     name: stage_name,
@@ -212,6 +237,88 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
             }
             Ok(BuildResult { stages: result })
         }
+    }
+}
+
+/// Build the standalone SMM image artifacts requested by the board.
+fn build_smm_artifacts(
+    workspace_root: &std::path::Path,
+    board_name: &str,
+    release: bool,
+    config: &fstart_types::BoardConfig,
+) -> Result<Option<SmmArtifacts>, String> {
+    let Some(smm) = config.smm else {
+        return Ok(None);
+    };
+
+    let smm_num_cpus = max_smm_num_cpus(&config.stages);
+    let entry_count = smm.entry_points.or(smm_num_cpus).unwrap_or(1);
+    if let Some(num_cpus) = smm_num_cpus {
+        if entry_count < num_cpus {
+            return Err(
+                "board.smm.entry_points must be greater than or equal to MpInit.num_cpus"
+                    .to_string(),
+            );
+        }
+    }
+
+    let profile = if release { "release" } else { "debug" };
+    let out_dir = workspace_root
+        .join("target")
+        .join("smm")
+        .join(board_name)
+        .join(profile);
+    let image_path = out_dir.join("fstart-smm.bin");
+    let header_path = smm
+        .coreboot
+        .emit_header
+        .then(|| out_dir.join("fstart_smm_offsets.h"));
+
+    let options = fstart_smm_image::ImageOptions {
+        entry_count,
+        stack_size: smm.stack_size,
+        coreboot_module_args: smm.coreboot.module_args,
+        coreboot_header: smm.coreboot.emit_header,
+    };
+    let built = fstart_smm_image::write_image(options, &image_path, header_path.as_deref())
+        .map_err(|e| format!("failed to build SMM image: {e}"))?;
+
+    eprintln!(
+        "[fstart] SMM image: {} ({} bytes, {} entries)",
+        image_path.display(),
+        built.image.len(),
+        entry_count
+    );
+    if let Some(path) = &header_path {
+        eprintln!("[fstart] SMM coreboot header: {}", path.display());
+    }
+
+    Ok(Some(SmmArtifacts {
+        image_path,
+        header_path,
+    }))
+}
+
+fn max_smm_num_cpus(stages: &StageLayout) -> Option<u16> {
+    fn max_in_caps(caps: &[Capability]) -> Option<u16> {
+        caps.iter()
+            .filter_map(|cap| match cap {
+                Capability::MpInit {
+                    num_cpus,
+                    smm: true,
+                    ..
+                } => Some(*num_cpus),
+                _ => None,
+            })
+            .max()
+    }
+
+    match stages {
+        StageLayout::Monolithic(stage) => max_in_caps(&stage.capabilities),
+        StageLayout::MultiStage(stages) => stages
+            .iter()
+            .filter_map(|stage| max_in_caps(&stage.capabilities))
+            .max(),
     }
 }
 
@@ -231,6 +338,7 @@ fn build_one_stage(
     needs_flat_binary: bool,
     build_std: &str,
     soc_format: SocImageFormat,
+    smm_artifacts: Option<&SmmArtifacts>,
 ) -> Result<(PathBuf, PathBuf), String> {
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
@@ -288,6 +396,12 @@ fn build_one_stage(
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
     if let Some(name) = stage_name {
         cmd.env("FSTART_STAGE_NAME", name);
+    }
+    if let Some(smm) = smm_artifacts {
+        cmd.env("FSTART_SMM_IMAGE", &smm.image_path);
+        if let Some(header) = &smm.header_path {
+            cmd.env("FSTART_SMM_COREBOOT_HEADER", header);
+        }
     }
 
     eprintln!("[fstart] building fstart-stage...");
@@ -645,6 +759,15 @@ fn capability_features(
 
     if stage_uses_smbios(capabilities) {
         features.push("smbios".to_string());
+    }
+
+    for cap in capabilities {
+        if let Capability::MpInit { cpu_model, .. } = cap {
+            features.push("mp".to_string());
+            if cpu_model.as_str().contains("pineview") || cpu_model.as_str().contains("106cx") {
+                features.push("pineview-cpu".to_string());
+            }
+        }
     }
 
     // AcpiLoad needs the fw_cfg driver and x86-boot support

@@ -26,6 +26,56 @@ pub struct MemoryMap {
     /// If `None`, the total image size from the FFS anchor is used instead.
     #[serde(default)]
     pub flash_size: Option<u64>,
+    /// Cache-as-RAM (CAR) region for pre-DRAM x86 stages.
+    ///
+    /// On x86 platforms, bootblock (and optionally romstage) runs
+    /// before DRAM is initialized. CAR uses the CPU's L1/L2 cache as
+    /// temporary writable RAM by programming MTRRs and entering
+    /// Non-Evict Mode (NEM) or a similar cache-locking mechanism.
+    ///
+    /// When this field is set, the linker **automatically** places
+    /// `.data`, `.bss`, and the stack of every XIP stage
+    /// (`runs_from: Rom` with `load_addr` in a ROM region) into this
+    /// CAR region instead of the first RAM region. RAM-loaded stages
+    /// (`runs_from: Ram`) are unaffected.
+    ///
+    /// `None` for boards that don't need CAR (ARM / RISC-V, where
+    /// DRAM is live at reset; QEMU virt; etc.).
+    #[serde(default)]
+    pub car: Option<CarConfig>,
+}
+
+/// Cache-as-RAM (CAR) configuration for pre-DRAM x86 stages.
+///
+/// Describes a region of cache-locked memory used as temporary writable
+/// storage before the DRAM controller is programmed. The firmware's
+/// bootblock enters this mode via MTRR programming + a CPU-specific
+/// mechanism (see [`CarMethod`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CarConfig {
+    /// How to enable CAR on this CPU.
+    pub method: CarMethod,
+    /// Base physical address of the CAR region.
+    ///
+    /// Typically in the 0xFEF0_0000 range for Intel Atom-class parts,
+    /// or a cache-sized window below 4 GiB for other CPUs.
+    pub base: u64,
+    /// Size of the CAR region in bytes.
+    ///
+    /// Must not exceed the cache size. For Intel Atom D4xx/D5xx
+    /// (Pineview), L2 cache is 512 KiB, so `size <= 0x8_0000`.
+    pub size: u64,
+}
+
+/// Mechanism used to enable Cache-as-RAM on the target CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CarMethod {
+    /// Intel Non-Evict Mode (NEM) — MSR `0x2E0` setup + cache fill.
+    ///
+    /// Used on Atom (Pineview, Cedarview), Core 2, early Nehalem, and
+    /// similar pre-NEM-deprecation Intel parts. Not supported on
+    /// Skylake and later.
+    NonEvictMode,
 }
 
 /// A single memory region.

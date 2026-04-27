@@ -29,6 +29,10 @@ fstart-driver-pci-ecam = { path = "../fstart-driver-pci-ecam", optional = true }
 fstart-driver-bochs-display = { path = "../fstart-driver-bochs-display", optional = true }
 fstart-driver-qemu-fw-cfg = { path = "../fstart-driver-qemu-fw-cfg", optional = true }
 fstart-driver-q35-hostbridge = { path = "../fstart-driver-q35-hostbridge", optional = true }
+fstart-driver-ite8721f = { path = "../fstart-driver-ite8721f", optional = true }
+fstart-driver-intel-pineview = { path = "../fstart-driver-intel-pineview", optional = true }
+fstart-driver-intel-ich7 = { path = "../fstart-driver-intel-ich7", optional = true }
+fstart-driver-i2c-ck505 = { path = "../fstart-driver-i2c-ck505", optional = true }
 
 [features]
 # Driver feature flags - enable to include that driver in the registry
@@ -51,6 +55,10 @@ pci-ecam = ["dep:fstart-driver-pci-ecam"]
 bochs-display = ["dep:fstart-driver-bochs-display"]
 qemu-fw-cfg = ["dep:fstart-driver-qemu-fw-cfg"]
 q35-hostbridge = ["dep:fstart-driver-q35-hostbridge"]
+ite8721f = ["dep:fstart-driver-ite8721f"]
+intel-pineview = ["dep:fstart-driver-intel-pineview"]
+intel-ich7 = ["dep:fstart-driver-intel-ich7"]
+i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
 
 # Meta-feature to enable all drivers (used by codegen on host)
 all-drivers = [
@@ -72,4 +80,8 @@ all-drivers = [
     "bochs-display",
     "qemu-fw-cfg",
     "q35-hostbridge",
+    "ite8721f",
+    "intel-pineview",
+    "intel-ich7",
+    "i2c-ck505",
 ]

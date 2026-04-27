@@ -107,6 +107,7 @@ pub fn build_platform_tables(config: &ArmConfig) -> (Vec<Vec<u8>>, FadtConfig) {
         low_power_s0: true,
         arm_psci: true,
         pm_profile: PmProfile::PerformanceServer,
+        ..Default::default()
     };
 
     (platform_tables, fadt_config)

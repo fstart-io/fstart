@@ -228,6 +228,27 @@ pub fn next_stage_size_at(sram_base: usize) -> u32 {
     unsafe { core::ptr::read_volatile((sram_base + 0x30) as *const u32) }
 }
 
+/// [`SocBootHeader`] implementation for Allwinner eGON.
+///
+/// Delegates to the free functions [`boot_media_at`],
+/// [`next_stage_offset_at`], and [`next_stage_size_at`].
+pub struct EgonBootHeader;
+
+impl fstart_services::soc_boot::SocBootHeader for EgonBootHeader {
+    #[inline]
+    unsafe fn boot_media_at(header_base: usize) -> u8 {
+        boot_media_at(header_base)
+    }
+    #[inline]
+    unsafe fn next_stage_offset_at(header_base: usize) -> u32 {
+        next_stage_offset_at(header_base)
+    }
+    #[inline]
+    unsafe fn next_stage_size_at(header_base: usize) -> u32 {
+        next_stage_size_at(header_base)
+    }
+}
+
 /// Read the total FFS image size from the eGON header at `sram_base`.
 ///
 /// This field is patched by the FFS assembler. Subsequent stages use

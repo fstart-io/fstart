@@ -1,0 +1,8 @@
+[package]
+name = "fstart-pmio-ich"
+version = "0.1.0"
+edition = "2021"
+description = "ACPI PM I/O register abstraction for Intel ICH southbridges"
+
+[dependencies]
+fstart-pio = { path = "../fstart-pio" }

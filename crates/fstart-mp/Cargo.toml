@@ -1,0 +1,11 @@
+[package]
+name = "fstart-mp"
+description = "x86 multi-processor initialization: AP bringup, scoped work dispatch, flight plan engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-lapic = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }

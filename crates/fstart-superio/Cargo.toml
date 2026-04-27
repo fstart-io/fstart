@@ -1,0 +1,20 @@
+[package]
+name = "fstart-superio"
+description = "Generic SuperIO chip framework for x86 LPC-attached peripheral controllers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+acpi = ["fstart-acpi", "fstart-acpi-macros"]
+
+[dependencies]
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
+heapless = { workspace = true }
+fstart-log = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true }
+serde = { workspace = true }
+ufmt = { workspace = true }

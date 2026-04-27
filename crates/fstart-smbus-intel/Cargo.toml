@@ -1,0 +1,12 @@
+[package]
+name = "fstart-smbus-intel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-log = { workspace = true }
+fstart-pineview-regs = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true }
+ufmt = { workspace = true }

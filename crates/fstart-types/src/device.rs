@@ -3,6 +3,38 @@
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
+/// How a device physically attaches to its parent bus.
+///
+/// Carries just the address portion of the attachment — the parent node
+/// identifies which bus type applies. For PCI devices the bus number
+/// is implicit from the parent bridge; only device and function are
+/// given here.
+///
+/// ```ron
+/// ( name: "nic0", bus: Pci(0, 0), driver: RealtekRtl8168((...)), ... )
+/// ( name: "superio", bus: Lpc(0x2e), driver: Ite8721f((...)), ... )
+/// ( name: "eeprom0", bus: I2c(0x50), driver: At24c02((...)), ... )
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BusAddress {
+    /// PCI or PCIe device: (device number, function number).
+    ///
+    /// Bus number is implicit from the parent bridge.
+    Pci(u8, u8),
+    /// LPC (Low Pin Count) / ISA Plug-and-Play: config index port.
+    ///
+    /// Typical values: `0x2e` for primary SuperIO, `0x4e` for secondary.
+    Lpc(u16),
+    /// I2C / SMBus 7-bit address.
+    I2c(u8),
+    /// SPI chip-select index.
+    Spi(u8),
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
 /// Stable device identifier — index into the flat device table.
 ///
 /// Maximum 256 devices per board (more than sufficient for firmware).
@@ -50,6 +82,9 @@ pub struct DeviceConfig {
     /// Driver name — derived from the `DriverInstance` variant
     /// (e.g., "ns16550", "pl011").  Used by xtask for feature derivation
     /// and by codegen for registry lookups.
+    ///
+    /// For **structural** nodes (driverless bus bridges like PCIe ports
+    /// or the SB's LPC bus), this is the sentinel `"_structural"`.
     pub driver: HString<32>,
     /// Which service traits this device provides (e.g., ["Console"]).
     pub services: heapless::Vec<HString<32>, 8>,
@@ -57,4 +92,21 @@ pub struct DeviceConfig {
     /// `None` for root-level devices.
     #[serde(default)]
     pub parent: Option<HString<32>>,
+    /// Physical attachment to the parent bus (optional).
+    ///
+    /// Set for leaf devices on PCI, LPC, I2C, SMBus, or SPI buses.
+    /// Absent for root devices and for internal structural nodes
+    /// (LPC bus, SMBus controller) that don't present a bus address
+    /// to their children.
+    #[serde(default)]
+    pub bus: Option<BusAddress>,
+    /// Whether this device is enabled.
+    ///
+    /// Disabled devices still appear in the device tree (and in ACPI
+    /// tables with `_STA` returning 0) but are not constructed or
+    /// initialized by the generated code.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
 }

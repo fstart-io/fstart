@@ -1,0 +1,387 @@
+// Foxconn D41S — Intel Atom D410 (Pineview NB) + ICH7 SB + ITE IT8721F SuperIO.
+//
+// The board has:
+//   - 1 MiB SPI NOR flash (mapped at 0xFFF00000..0xFFFFFFFF).
+//   - DDR2 SDRAM (size detected at runtime via SPD over SMBus).
+//   - 4 integrated SATA ports, 1 PATA header.
+//   - 4 PCIe lanes from the ICH7 (only port 1 is routed to the NIC).
+//   - Realtek RTL8168 gigabit NIC on PCIe root port 1.
+//   - IDT CK505 clock generator on SMBus.
+//   - ITE IT8721F SuperIO on LPC (base port 0x2e) providing COM1, COM2,
+//     PS/2 keyboard/mouse, parallel port, environment controller, CIR.
+//
+// Boot flow (two-stage CAR model — matches coreboot's bootblock+romstage
+// merged into one):
+//   1. `bootblock` (XIP from flash, stack in CAR): reset vector -> NEM
+//      Cache-as-RAM setup -> ChipsetPreConsole (ECAM enable plus coreboot
+//      bootblock southbridge work: SPI prefetch, SB BARs, watchdog, LPC)
+//      -> ConsoleInit (SuperIO COM1, now reachable) -> ChipsetInit (full
+//      NB/SB romstage init: PAM, SMBus, GPIO, CIR, HPET) -> DramInit (DDR2
+//      training, needs SMBus) -> load `ramstage`.
+//   2. `ramstage` (runs from DRAM): initialize PCI / NIC / ACPI / SMBIOS,
+//      then hand off to the payload (Linux).
+//
+// This is a chassis/chipset board — QEMU cannot execute it end-to-end.
+// Build-only verification ensures the RON schema, codegen, and driver
+// interfaces are consistent.
+
+(
+    name: "foxconn-d41s",
+    platform: X86_64,
+
+    memory: (
+        regions: [
+            ( name: "flash", base: 0xFFF00000, size: 0x100000, kind: Rom ),
+            // DRAM region covers the conventional 1 GiB the D410 typically ships with.
+            // Real size is detected at runtime via SPD — this is the upper bound
+            // used by the linker for the `ramstage` layout.
+            ( name: "ram",   base: 0x00100000, size: 0x3FF00000, kind: Ram ),
+        ],
+        flash_base: 0xFFF00000,
+        flash_size: 0x100000,
+        // Cache-as-RAM window. The Atom D410 has 512 KiB L2 cache;
+        // NEM can't pin more cache than the CPU physically has.
+        car: (
+            method: NonEvictMode,
+            base: 0xFEF80000,
+            size: 0x80000,
+        ),
+    ),
+
+    devices: [
+        // Northbridge and southbridge are separate chips connected by
+        // DMI — they are siblings at the top level, not a bus-parent
+        // hierarchy. This mirrors physical reality and lets ChipsetInit
+        // address both in stages (bootblock, romstage) that do not run
+        // a full DriverInit.
+        //
+        // The console is provided by the IT8721F SuperIO (COM1 at
+        // 0x3F8), which sits on the LPC bus under the ICH7 southbridge.
+        // At reset the CPU can't reach LPC-space I/O — the ICH7 LPC
+        // decode windows must be programmed first. The capability order
+        // (ChipsetPreConsole before ConsoleInit) enforces this:
+        // ChipsetPreConsole calls `Southbridge::pre_console_init()`
+        // which opens LPC decode before ConsoleInit touches the
+        // SuperIO at 0x2E/0x2F.
+        (
+            name: "northbridge",
+            driver: IntelPineview((
+                mchbar: 0xFED10000,
+                dmibar: 0xFED18000,
+                epbar:  0xFED19000,
+                ecam_base: 0xE0000000,
+                igd: ( use_crt: true, use_lvds: false, spread_spectrum: false ),
+                acpi_name: "MCHC",
+            )),
+            services: ["MemoryController", "PciHost"],
+        ),
+        (
+            name: "southbridge",
+            driver: IntelIch7((
+                rcba: 0xFED1C000,
+                pirq_routing: (0x0b, 0x0b, 0x0b, 0x0b,
+                               0x0b, 0x0b, 0x0b, 0x0b),
+                gpe0_en: 0x441,
+                lpc_decode: (0x00fc0a01, 0, 0, 0),
+                // HD Audio (Azalia) — Realtek ALC662 verb table from
+                // coreboot mainboard/foxconn/d41s/hda_verb.c.
+                //
+                // Each verb word encodes: [31:28]=codec, [27:20]=NID,
+                //   [19:8]=verb_id, [7:0]=payload.
+                // AZALIA_PIN_CFG(codec, pin, val) expands to 4 verbs
+                //   that program SET_CONFIGURATION_DEFAULT.
+                // HD Audio (Azalia) — Realtek ALC662 verb table.
+                // Pin configs match coreboot foxconn/d41s/hda_verb.c.
+                hda: (verbs: [(
+                    vendor_id: 0x10ec0662,
+                    subsystem_id: 0x105b0d55,
+                    pins: [
+                        // NID 0x14: rear line-out, green 3.5mm jack
+                        ( nid: 0x14, device: LineOut, conn: Jack,
+                          loc: External, geo: Rear, connector: StereoMono18,
+                          color: Green, misc: 0xC, group: 1, seq: 0 ),
+                        // NID 0x15: not connected
+                        ( nid: 0x15, nc: Some(0) ),
+                        // NID 0x16: not connected
+                        ( nid: 0x16, nc: Some(0) ),
+                        // NID 0x18: rear mic-in, pink 3.5mm jack
+                        ( nid: 0x18, device: MicIn, conn: Jack,
+                          loc: External, geo: Rear, connector: StereoMono18,
+                          color: Pink, misc: 0xC, group: 3, seq: 0 ),
+                        // NID 0x19: front mic-in, pink 3.5mm jack
+                        ( nid: 0x19, device: MicIn, conn: Jack,
+                          loc: External, geo: Front, connector: StereoMono18,
+                          color: Pink, misc: 0xC, group: 3, seq: 1 ),
+                        // NID 0x1a: rear line-in, blue 3.5mm jack
+                        ( nid: 0x1a, device: LineIn, conn: Jack,
+                          loc: External, geo: Rear, connector: StereoMono18,
+                          color: Blue, misc: 0x4, group: 3, seq: 15 ),
+                        // NID 0x1b: front headphone, green 3.5mm jack
+                        ( nid: 0x1b, device: HpOut, conn: Jack,
+                          loc: External, geo: Front, connector: StereoMono18,
+                          color: Green, misc: 0xC, group: 1, seq: 15 ),
+                        // NID 0x1c: not connected
+                        ( nid: 0x1c, nc: Some(0) ),
+                        // NID 0x1d: internal BIOS beep generator
+                        ( nid: 0x1d, device: DeviceOther, conn: Nc,
+                          loc: External, geo: NA, connector: Optical,
+                          color: Orange, misc: 0x6, group: 0, seq: 3 ),
+                        // NID 0x1e: SPDIF out, internal ATAPI
+                        ( nid: 0x1e, device: SpdifOut, conn: Integrated,
+                          loc: Internal, geo: Special9, connector: AtapiInternal,
+                          color: ColorUnknown, misc: 0x1, group: 2, seq: 0 ),
+                    ],
+                )]),
+                sata: ( mode: Ahci, ports: 0x3 ),
+                usb: ( ehci: true, uhci: (true, true, true, true) ),
+                pata: false,
+                ecam_base: 0xE0000000,
+                smbus_base: 0x0400,
+                // GPIO from coreboot foxconn/d41s/gpio.c.
+                // Unlisted pins remain in their native hardware function.
+                gpio: (pins: [
+                    // Set 1: GPIO outputs, active-low (accent LEDs, resets, etc.)
+                    ( pin: 0 ),
+                    ( pin: 6 ),
+                    ( pin: 7 ),
+                    ( pin: 8 ),
+                    ( pin: 9 ),
+                    ( pin: 10 ),
+                    // pin 11: native (LAN_PHY_PWR_CTRL)
+                    ( pin: 12 ),
+                    ( pin: 13 ),
+                    ( pin: 14 ),
+                    ( pin: 15 ),
+                    // pins 16-23: native (SPI, PIRQ, SMBus, etc.)
+                    ( pin: 24 ),
+                    ( pin: 25 ),
+                    ( pin: 26 ),
+                    ( pin: 27 ),
+                    ( pin: 28 ),
+                    // pins 29-32: native (SLP_WLAN#, SUS_STAT#, etc.)
+                    // Set 2: GPIO inputs (jumpers, presence detect)
+                    ( pin: 33, dir: Input ),
+                    ( pin: 34, dir: Input ),
+                    // pins 35-37: native (NF_ALE, NF_WE, NF_RE)
+                    ( pin: 38, dir: Input ),
+                    ( pin: 39, dir: Input ),
+                    // pins 40-63: native
+                ]),
+                acpi_name: "LPCB",
+                c3_latency: 85,
+                power_on_after_fail: 0,
+            )),
+            services: ["Southbridge"],
+            children: [
+                // PCIe root ports — structural PCI bridge nodes.
+                // Port 0 is empty on this board.
+                ( name: "pcie0", bus: Pci(0x1c, 0), services: ["PciBridge"] ),
+                // Port 1 hosts the RTL8168 NIC (runtime-enumerated).
+                ( name: "pcie1", bus: Pci(0x1c, 1), services: ["PciBridge"] ),
+                ( name: "pcie2", bus: Pci(0x1c, 2), enabled: false, services: ["PciBridge"] ),
+                ( name: "pcie3", bus: Pci(0x1c, 3), enabled: false, services: ["PciBridge"] ),
+
+                // LPC bus — structural internal SB function. The
+                // SuperIO is the only LPC peripheral on this board.
+                ( name: "lpc", services: ["LpcBus"],
+                    children: [
+                        // IT8721F SuperIO: programs LDNs and provides
+                        // Console directly via `console_port: "com1"`.
+                        // No separate NS16550 children needed — the
+                        // SuperIO initializes the 16550 registers and
+                        // does PIO at the configured io_base.
+                        ( name: "superio", bus: Lpc(0x2e),
+                            driver: Ite8721f((
+                                com1: ( io_base: 0x3f8, irq: 4, baud_rate: 115200 ),
+                                com2: ( io_base: 0x2f8, irq: 3, baud_rate: 115200 ),
+                                parallel: ( io_base: 0x378, irq: 7 ),
+                                env_controller: ( io_base: 0xa10, io_ext: 0xa00 ),
+                                keyboard: ( io_base: 0x60, io_ext: 0x64, irq: 1 ),
+                                mouse: ( irq: 12 ),
+                                cir: ( io_base: 0x3e0, irq: 10 ),
+                                acpi_name: "SIO0",
+                                console_port: "com1",
+                            )),
+                            services: ["SuperIoHost", "Console"],
+                        ),
+                    ],
+                ),
+
+                // SMBus — structural internal SB function. Hosts
+                // the CK505 clock generator and (at runtime) the
+                // DIMM SPD EEPROMs at 0x50..0x57.
+                ( name: "smbus", services: ["SmBus"],
+                    children: [
+                        // The CK505 driver is declared here but disabled
+                        // for the initial build: its `new_on_bus` needs
+                        // an SmBus bus provider which is not yet wired
+                        // into the ICH7 driver. Re-enable after Phase 6
+                        // plumbs the SMBus transaction API.
+                        ( name: "ck505", bus: I2c(0x69), enabled: false,
+                            driver: I2cCk505((
+                                mask: [0x00, 0x80, 0xff, 0xff, 0xff],
+                                regs: [0x00, 0x80, 0xfe, 0xff, 0xfc],
+                            )),
+                            services: [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ],
+
+    stages: MultiStage([
+        // Two stages: bootblock (XIP from flash, writable in CAR) does
+        // console bring-up, full chipset init, DRAM training, then loads
+        // the ramstage from the FFS image into DRAM. Ramstage (runs from
+        // DRAM) finishes driver init, ACPI/SMBIOS, and jumps to the payload.
+        (
+            name: "bootblock",
+            capabilities: [
+                // ChipsetPreConsole: coreboot bootblock-equivalent init
+                // before ConsoleInit — enables ECAM (NB PCIEXBAR), then
+                // performs ICH7 SPI prefetch, fixed SB BAR setup, upper
+                // CMOS/watchdog disable, SERIRQ and LPC decode so the
+                // SuperIO at 0x2E/0x2F is reachable.
+                ChipsetPreConsole( northbridge: "northbridge", southbridge: "southbridge" ),
+                // Console: SuperIO programs LDNs and initializes the
+                // 16550 UART at the COM port selected by `console_port`.
+                // LPC decode is now open, so PIO at 0x2E/0x2F works.
+                ConsoleInit( device: "superio" ),
+                // ChipsetInit: full chipset early init with console
+                // available for diagnostics.  Opens NB BARs (MCHBAR,
+                // DMIBAR), PAM, graphics clocks; SB SMBus (needed by
+                // DramInit), BARs, PIRQ, GPIO, CIR, IOAPIC, HPET.
+                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+                // DDR2 training needs SMBus (enabled by ChipsetInit).
+                DramInit( device: "northbridge" ),
+                // Load the ramstage from FFS in flash and jump to it.
+                BootMedia(MemoryMapped( base: 0xFFF00000, size: 0xFE000 )),
+                StageLoad( next_stage: "ramstage" ),
+            ],
+            // Code runs XIP from ROM (reset vector 0xFFFFFFF0). Writable
+            // state lives in Cache-as-RAM automatically because `memory.car`
+            // is declared above and the load_addr lands in a ROM region —
+            // the linker chooses CAR without any explicit `runs_from` flag.
+            // The NEM setup in the platform crate programs MTRRs + MSR
+            // 0x2E0 before Rust code touches any RAM-backed variable.
+            // The x86_64 bootblock entry code builds PML4/PDPT/PDTs at
+            // `_page_tables_start` (sized by `page_size`) during the
+            // 32→64-bit transition; the linker reserves that space in
+            // CAR automatically.
+            load_addr: 0xFFFF0000,
+            stack_size: 0x2000,
+            runs_from: Rom,
+            // Atom D410 (Bonnell core) has no PDPE1GB, so 2 MiB pages.
+            // Page-table reservation = 6 × 4 KiB = 24 KiB in CAR.
+            page_size: Size2MiB,
+        ),
+        (
+            name: "ramstage",
+            capabilities: [
+                ConsoleInit( device: "superio" ),
+                DriverInit,
+                // Coreboot ramstage-equivalent chipset/device finalization:
+                // SATA/USB/HDA, PM/C-state setup, PCIe root-port tuning,
+                // then SPI/SMI/TCO/BIOS-interface lockdown.
+                LateDriverInit,
+                MpInit(cpu_model: "pineview", num_cpus: 1, smm: true),
+                AcpiPrepare,
+                SmBiosPrepare,
+                BootMedia(MemoryMapped(
+                    base: 0xFFF00000, size: 0xFE000,
+                    ram_copy_addr: 0x2000000,
+                )),
+                SigVerify,
+                PayloadLoad,
+            ],
+            load_addr: 0x01000000,
+            stack_size: 0x8000,
+            heap_size: 0x40000,
+            // Ramstage runs from DRAM. It enters via `_start_ram` which
+            // inherits the page tables built by the bootblock — no
+            // `page_table_addr` / `page_size` needed here. The linker
+            // still emits an IDT section in the RAM region so the
+            // ramstage can install its own exception handler.
+            runs_from: Ram,
+        ),
+    ]),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    mode: Rigid,
+
+    // ACPI: chipset-fixed topology only. CPU count + LAPIC IDs detected
+    // at runtime via CPUID leaf 0x0B (future Phase 6 work).
+    acpi: (
+        platform: X86((
+            lapic_base: 0xFEE00000,
+            ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
+            isos: [
+                // PIT remapped from IRQ 0 to GSI 2 (standard on ICH7).
+                ( bus: 0, source: 0, gsi: 2, flags: 0 ),
+                // SCI on IRQ 9, active-low level-triggered.
+                ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
+            ],
+            hpet_base: 0xFED00000,
+            legacy_devices: true,
+            sci_irq: 9,
+        )),
+    ),
+
+    // SMBIOS: board identity strings only. Runtime-detected fields
+    // (CPU frequency, cores/threads, cache geometry, DIMM sizes/speeds)
+    // are omitted here — a future SmBiosPrepare extension reads them
+    // from CPUID / SPD at boot.
+    smbios: (
+        bios_vendor: "fstart",
+        bios_version: "0.1.0",
+        bios_release_date: "04/15/2026",
+        system_manufacturer: "Foxconn",
+        system_product: "D41S",
+        system_version: "1.0",
+        baseboard_manufacturer: "Foxconn",
+        baseboard_product: "D41S",
+        chassis_type: Desktop,
+        chassis_manufacturer: "Foxconn",
+        processors: [
+            (
+                socket: "FCBGA559",
+                manufacturer: "Intel",
+                processor_family: X86_64,
+                // max_speed_mhz, core_count, thread_count, caches:
+                // detected via CPUID at runtime.
+            ),
+        ],
+        memory_devices: [
+            ( locator: "DIMM0" ),
+            ( locator: "DIMM1" ),
+            // size_mb, speed_mhz, memory_type: detected via SPD at runtime.
+        ],
+    ),
+
+    smm: (
+        platform: PineviewIch7,
+        // Atom D410/D510-era Pineview boards expose up to four logical CPUs.
+        // The SMM image precompiles one PIC entry stub per configured slot.
+        entry_points: 4,
+        stack_size: 0x400,
+        coreboot: (
+            emit_header: true,
+            module_args: true,
+        ),
+    ),
+
+    payload: (
+        kind: LinuxBoot,
+        kernel_file: "bzImage",
+        kernel_load_addr: 0x1000000,
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: "console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8",
+        firmware: None,
+    ),
+)

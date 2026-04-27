@@ -46,6 +46,11 @@ pub struct X86Config {
     pub legacy_devices: bool,
     /// SCI interrupt number (System Control Interrupt for ACPI events).
     pub sci_irq: u8,
+    /// PMBASE I/O port base (chipset-specific, e.g. 0x500 for ICH7).
+    ///
+    /// Used to derive PM1a_EVT_BLK, PM1a_CNT_BLK, PM_TMR_BLK,
+    /// and GPE0_BLK addresses in the FADT.
+    pub pmbase: u16,
 }
 
 /// I/O APIC configuration.
@@ -104,11 +109,27 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         platform_tables.push(hpet);
     }
 
+    // PMBASE from board config. Feeds into FADT PM register blocks.
+    // board-specific but hardcoded in ICH7 early_init.
+    let pmbase: u32 = config.pmbase as u32;
+
+    // IAPC Boot Arch: 8042 keyboard + legacy devices.
+    let mut iapc: u16 = 0;
+    if config.legacy_devices {
+        iapc |= 0x0003; // FADT_8042 | FADT_LEGACY_DEVICES
+    }
+
     let fadt_config = FadtConfig {
         hw_reduced: false,
         low_power_s0: false,
         arm_psci: false,
         pm_profile: acpi_tables::fadt::PmProfile::Desktop,
+        pm1a_evt_blk: pmbase,
+        pm1a_cnt_blk: pmbase + 0x04,
+        pm_tmr_blk: pmbase + 0x08,
+        gpe0_blk: pmbase + 0x28,
+        sci_int: config.sci_irq as u16,
+        iapc_boot_arch: iapc,
     };
 
     (platform_tables, fadt_config)
@@ -245,6 +266,7 @@ mod tests {
             hpet_base: Some(0xFED0_0000),
             legacy_devices: true,
             sci_irq: 9,
+            pmbase: 0x0500,
         }
     }
 

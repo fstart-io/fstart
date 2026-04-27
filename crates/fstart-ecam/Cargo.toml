@@ -1,0 +1,9 @@
+[package]
+name = "fstart-ecam"
+description = "Global ECAM (Enhanced Configuration Access Mechanism) PCI config space access"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-mmio = { workspace = true }

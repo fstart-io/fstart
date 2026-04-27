@@ -4,7 +4,9 @@
 //! before anything that logs) and provides predicate functions used by the
 //! codegen orchestrator to decide which sections to emit.
 
-use fstart_types::{BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, StageLayout};
+use fstart_types::{
+    BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, Platform, StageLayout,
+};
 
 /// Validate that capabilities are in a legal order.
 ///
@@ -18,9 +20,11 @@ use fstart_types::{BoardConfig, BootMedium, Capability, FitParseMode, PayloadKin
 pub(super) fn validate_capability_ordering(
     capabilities: &[Capability],
     config: &BoardConfig,
+    stage_runs_from_ram: bool,
 ) -> Option<String> {
     let mut console_inited = false;
     let mut boot_media_declared = false;
+    let mut memory_ready = stage_runs_from_ram;
 
     // UefiPayload links CrabEFI statically and doesn't use FFS for the
     // payload itself. However, when firmware (BL31) is configured, it IS
@@ -59,6 +63,9 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::MemoryInit => {
+                memory_ready = true;
+            }
             Capability::DramInit { .. } if !console_inited => {
                 return Some(
                     "DramInit capability requires ConsoleInit to appear earlier \
@@ -66,6 +73,57 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::DramInit { .. } => {
+                memory_ready = true;
+            }
+            // ChipsetInit does heavy setup (BARs, GPIO, CIR) — needs
+            // console for diagnostics.  ChipsetPreConsole has no such
+            // requirement; it runs BEFORE ConsoleInit.
+            Capability::ChipsetInit { .. } if !console_inited => {
+                return Some(
+                    "ChipsetInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit { smm, .. } if !console_inited => {
+                return Some(
+                    "MpInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit { smm: true, .. } if config.platform != Platform::X86_64 => {
+                return Some("MpInit(smm: true) is currently supported only on X86_64".to_string());
+            }
+            Capability::MpInit { smm: true, .. } if config.smm.is_none() => {
+                return Some(
+                    "MpInit(smm: true) requires a top-level board.smm configuration block"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit {
+                smm: true,
+                num_cpus,
+                ..
+            } if config
+                .smm
+                .and_then(|s| s.entry_points)
+                .is_some_and(|entries| entries < *num_cpus) =>
+            {
+                return Some(
+                    "board.smm.entry_points must be greater than or equal to MpInit.num_cpus"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit { smm: true, .. } if !memory_ready => {
+                return Some(
+                    "MpInit(smm: true) must appear after MemoryInit or DramInit so SMRAM \
+                     installation runs from a DRAM-backed stage"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit { .. } => {}
             Capability::DriverInit if !console_inited => {
                 return Some(
                     "DriverInit capability requires ConsoleInit to appear earlier \

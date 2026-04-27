@@ -129,6 +129,11 @@ impl ProcessorFamily {
 }
 
 /// Processor description for SMBIOS Type 4.
+///
+/// RON carries board-fixed identity (socket, manufacturer, family).
+/// Runtime-discoverable fields (frequency, core/thread counts, cache
+/// hierarchy) are `Option<T>` so x86 boards can leave them `None` and
+/// let the `SmBiosPrepare` capability fill them in from CPUID at boot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmbiosProcessor {
     /// Socket designation string (e.g., "CPU0").
@@ -141,16 +146,28 @@ pub struct SmbiosProcessor {
     #[serde(default)]
     pub processor_family: ProcessorFamily,
     /// Maximum speed in MHz.
-    pub max_speed_mhz: u16,
+    ///
+    /// On x86 with `None`, the `SmBiosPrepare` capability probes MSR
+    /// `PLATFORM_INFO` (0xCE) or CPUID leaf 0x16 at runtime. On ARM,
+    /// this is fixed by the board.
+    #[serde(default)]
+    pub max_speed_mhz: Option<u16>,
     /// Number of physical cores.
-    pub core_count: u16,
+    ///
+    /// On x86 with `None`, detected via CPUID leaf 0x0B / 0x04.
+    #[serde(default)]
+    pub core_count: Option<u16>,
     /// Number of threads (logical processors).
-    pub thread_count: u16,
+    ///
+    /// On x86 with `None`, detected via CPUID leaf 0x0B.
+    #[serde(default)]
+    pub thread_count: Option<u16>,
     /// Cache hierarchy for this processor (Type 7 entries).
     ///
     /// Each entry produces an SMBIOS Type 7 (Cache Information) structure.
     /// The first three entries are linked as L1/L2/L3 cache handles
-    /// in the Type 4 processor entry.
+    /// in the Type 4 processor entry. Empty on x86 triggers CPUID
+    /// leaf 0x04 enumeration at runtime.
     #[serde(default)]
     pub caches: heapless::Vec<SmbiosCache, 6>,
 }
@@ -231,17 +248,30 @@ impl CacheType {
 }
 
 /// Memory device description for SMBIOS Type 17.
+///
+/// Size, speed, and type are `Option<T>` so x86 boards can rely on SPD
+/// (Serial Presence Detect) data read over SMBus at runtime. When all
+/// three are `None` in RON, `SmBiosPrepare` reads the corresponding SPD
+/// bytes from the DIMM's 256-byte EEPROM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmbiosMemoryDevice {
     /// Device locator string (e.g., "DIMM0", "Bank 0").
     pub locator: HString<32>,
     /// Memory size in megabytes.
-    pub size_mb: u32,
-    /// Memory speed in MHz (e.g., 2400, 3200).
-    pub speed_mhz: u16,
-    /// Memory type.
+    ///
+    /// `None` on x86 triggers SPD read at runtime.
     #[serde(default)]
-    pub memory_type: MemoryDeviceType,
+    pub size_mb: Option<u32>,
+    /// Memory speed in MHz (e.g., 2400, 3200).
+    ///
+    /// `None` on x86 triggers SPD read at runtime.
+    #[serde(default)]
+    pub speed_mhz: Option<u16>,
+    /// Memory type.
+    ///
+    /// `None` on x86 triggers SPD byte 2 (key byte) read at runtime.
+    #[serde(default)]
+    pub memory_type: Option<MemoryDeviceType>,
 }
 
 /// Memory device type (SMBIOS Type 17 field 0x12).
