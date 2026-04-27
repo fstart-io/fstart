@@ -118,6 +118,15 @@ pub struct BoardConfig {
     #[serde(default)]
     pub smbios: Option<crate::smbios::SmbiosConfig>,
 
+    /// System Management Mode handler/image configuration.
+    ///
+    /// Required when an x86 stage declares `MpInit(..., smm: true)`.  The
+    /// normal stage embeds the separately built SMM image and asks the
+    /// platform adapter selected here to copy its precompiled PIC entry
+    /// stubs into SMRAM.
+    #[serde(default)]
+    pub smm: Option<crate::smm::SmmConfig>,
+
     /// Boot hart ID for multi-hart platforms.
     ///
     /// On multi-hart SoCs (e.g., SiFive FU740 with 5 harts), the boot ROM

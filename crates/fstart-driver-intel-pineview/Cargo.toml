@@ -16,9 +16,12 @@ fstart-ecam = { workspace = true }
 heapless = { workspace = true }
 fstart-log = { workspace = true }
 fstart-mmio = { workspace = true }
+fstart-mp = { workspace = true }
 fstart-pineview-regs = { workspace = true }
 fstart-pio = { workspace = true }
+fstart-pmio-ich = { workspace = true }
 fstart-services = { workspace = true }
+fstart-smm = { workspace = true }
 fstart-spd = { workspace = true }
 fstart-smbus-intel = { workspace = true }
 serde = { workspace = true }

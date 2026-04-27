@@ -58,6 +58,9 @@ i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
 ns16550-pio = ["ns16550", "fstart-driver-ns16550?/pio"]
 # x86 boot protocol support (zero page construction in platform crate)
 x86-boot = []
+# x86 MP/SMM support.
+mp = ["dep:fstart-mp"]
+pineview-cpu = ["mp", "dep:fstart-cpu-pineview"]
 # x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
 x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
 # AcpiLoad capability (load ACPI tables from external provider)
@@ -148,6 +151,8 @@ fstart-driver-ite8721f = { workspace = true, optional = true }
 fstart-driver-intel-pineview = { workspace = true, optional = true }
 fstart-driver-intel-ich7 = { workspace = true, optional = true }
 fstart-driver-i2c-ck505 = { workspace = true, optional = true }
+fstart-mp = { workspace = true, optional = true }
+fstart-cpu-pineview = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

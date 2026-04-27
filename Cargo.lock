@@ -660,10 +660,13 @@ dependencies = [
  "fstart-ecam",
  "fstart-log",
  "fstart-mmio",
+ "fstart-mp",
  "fstart-pineview-regs",
  "fstart-pio",
+ "fstart-pmio-ich",
  "fstart-services",
  "fstart-smbus-intel",
+ "fstart-smm",
  "fstart-spd",
  "heapless",
  "serde",
@@ -719,8 +722,11 @@ version = "0.1.0"
 dependencies = [
  "fstart-driver-pci-ecam",
  "fstart-log",
+ "fstart-mp",
  "fstart-pio",
+ "fstart-pmio-ich",
  "fstart-services",
+ "fstart-smm",
  "serde",
  "ufmt",
 ]
@@ -1023,6 +1029,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-smm"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-smm-image"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fstart-smm",
+]
+
+[[package]]
 name = "fstart-soc-sunxi"
 version = "0.1.0"
 dependencies = [
@@ -1047,6 +1065,7 @@ dependencies = [
  "fstart-arch",
  "fstart-capabilities",
  "fstart-codegen",
+ "fstart-cpu-pineview",
  "fstart-crabefi",
  "fstart-driver-bochs-display",
  "fstart-driver-designware-i2c",
@@ -1073,6 +1092,7 @@ dependencies = [
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",
+ "fstart-mp",
  "fstart-platform-aarch64",
  "fstart-platform-armv7",
  "fstart-platform-riscv64",
@@ -1866,6 +1886,7 @@ dependencies = [
  "fstart-crypto",
  "fstart-ffs",
  "fstart-fit",
+ "fstart-smm-image",
  "fstart-types",
  "goblin",
  "rand_core",

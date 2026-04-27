@@ -72,8 +72,17 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         }
     };
 
+    let stage_runs_from_ram = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(_), _) => false,
+        (StageLayout::MultiStage(stages), Some(name)) => stages
+            .iter()
+            .find(|s| s.name.as_str() == name)
+            .is_some_and(|s| s.runs_from == fstart_types::stage::RunsFrom::Ram),
+        _ => false,
+    };
+
     // Validate capability ordering before generating code.
-    if let Some(err) = validate_capability_ordering(capabilities, config) {
+    if let Some(err) = validate_capability_ordering(capabilities, config, stage_runs_from_ram) {
         return format!("compile_error!(\"{err}\");\n");
     }
 
@@ -130,6 +139,10 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
 
     if embed_anchor {
         tokens.extend(generate_anchor_static());
+    }
+
+    if stage_uses_smm(capabilities) {
+        tokens.extend(generate_smm_image_static());
     }
 
     // When the allocator is needed, generate a sized heap backing store.
@@ -463,6 +476,23 @@ fn generate_anchor_static() -> TokenStream {
         static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock =
             fstart_types::ffs::AnchorBlock::placeholder();
     }
+}
+
+/// Emit the standalone SMM image bytes for stages that perform SMM setup.
+fn generate_smm_image_static() -> TokenStream {
+    quote! {
+        #[used]
+        static FSTART_SMM_IMAGE: &[u8] = include_bytes!(env!(
+            "FSTART_SMM_IMAGE",
+            "MpInit(smm: true) requires xtask to build and pass FSTART_SMM_IMAGE"
+        ));
+    }
+}
+
+fn stage_uses_smm(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|cap| matches!(cap, Capability::MpInit { smm: true, .. }))
 }
 
 /// Generate heap backing store and size constant for the bump allocator.

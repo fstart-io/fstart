@@ -17,7 +17,10 @@
 
 pub mod raminit;
 
+use core::cell::UnsafeCell;
+
 use fstart_ecam as ecam;
+use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
@@ -61,6 +64,43 @@ pub struct IntelPineviewConfig {
 fn default_ecam_base() -> u64 {
     hostbridge::DEFAULT_ECAM_BASE as u64
 }
+
+// Pineview/NM10 SMM constants.  SMRAM bits match coreboot's
+// `cpu/intel/smm/gen1/smmrelocate.c`; PM I/O bits live in
+// `fstart-pmio-ich`.
+const SMRAM_G_SMRAME: u8 = 1 << 3;
+const SMRAM_D_LCK: u8 = 1 << 4;
+const SMRAM_D_OPEN: u8 = 1 << 6;
+const SMRAM_C_BASE_SEG: u8 = 0b010;
+const ICH7_PMBASE: u16 = 0x0500;
+const APM_CNT: u16 = 0x00b2;
+const APM_CNT_SMI: u8 = 0xef;
+const SMM_DEFAULT_SMBASE: u64 = 0x30000;
+const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
+const EM64T101_SMBASE_SAVE_STATE_OFFSET: u16 = 0xfef8;
+
+const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
+    smbase: 0,
+    entry_addr: 0,
+    save_state_base: 0,
+    save_state_top: 0,
+    stack_bottom: 0,
+    stack_top: 0,
+};
+
+struct CpuLayoutStore(UnsafeCell<[fstart_smm::CpuSmmLayout; fstart_smm::runtime::MAX_SMM_CPUS]>);
+struct SmbaseStore(UnsafeCell<[u64; fstart_smm::runtime::MAX_SMM_CPUS]>);
+
+// SAFETY: firmware invokes SMM installation from the BSP while SMRAM is open;
+// these scratch buffers are not shared with APs or interrupt context.
+unsafe impl Sync for CpuLayoutStore {}
+unsafe impl Sync for SmbaseStore {}
+
+static PINEVIEW_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
+    [ZERO_CPU_LAYOUT; fstart_smm::runtime::MAX_SMM_CPUS],
+));
+static PINEVIEW_SMM_RELOCATION_SMBASES: SmbaseStore =
+    SmbaseStore(UnsafeCell::new([0; fstart_smm::runtime::MAX_SMM_CPUS]));
 
 /// Pineview NB driver.
 pub struct IntelPineview {
@@ -459,6 +499,35 @@ impl IntelPineview {
         ecam::PciDevBdf::new(0, 0, 0).read8(hostbridge::SMRAM)
     }
 
+    fn smm_open(&self) {
+        self.write_smram(SMRAM_D_OPEN | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
+    }
+
+    fn smm_close(&self) {
+        self.write_smram(SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
+    }
+
+    fn smm_lock(&self) {
+        self.write_smram(SMRAM_D_LCK | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
+    }
+
+    fn smi_enable_for_relocation() {
+        let pm = fstart_pmio_ich::PmIo::new(ICH7_PMBASE);
+        pm.setbits32(
+            fstart_pmio_ich::SMI_EN,
+            fstart_pmio_ich::APMC_EN | fstart_pmio_ich::GBL_SMI_EN | fstart_pmio_ich::EOS,
+        );
+    }
+
+    fn cr3() -> u64 {
+        let cr3: u64;
+        // SAFETY: reading CR3 is safe in firmware privileged mode.
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+        }
+        cr3
+    }
+
     // ---------------------------------------------------------------
     // Full memory map (from northbridge.c)
     // ---------------------------------------------------------------
@@ -492,6 +561,120 @@ impl IntelPineview {
         fstart_log::info!("pineview: GTT stolen={}K", gtt_kb);
         fstart_log::info!("pineview: TSEG base={:#x} size={:#x}", tseg_base, tseg_size);
         fstart_log::info!("pineview: CBMEM top={:#x}", self.cbmem_top());
+    }
+}
+
+impl SmmOps for IntelPineview {
+    fn smm_info(&self) -> Option<SmmInfo> {
+        let (base, size) = self.smm_region();
+        if size == 0 {
+            fstart_log::error!("pineview SMM: TSEG is disabled");
+            return None;
+        }
+        fstart_log::info!("pineview SMM: TSEG base={:#x} size={:#x}", base, size);
+        Some(SmmInfo {
+            smbase: base as u64,
+            smsize: size as usize,
+            save_state_size: EM64T101_SAVE_STATE_SIZE,
+        })
+    }
+
+    fn install_smm_handlers(
+        &self,
+        info: &SmmInfo,
+        num_cpus: u16,
+        image: &[u8],
+    ) -> Result<(), SmmError> {
+        self.smm_open();
+
+        let layouts = unsafe { &mut *PINEVIEW_SMM_CPU_LAYOUTS.0.get() };
+        let result = unsafe {
+            fstart_smm::install_pic_image(
+                image,
+                fstart_smm::InstallConfig {
+                    smram_base: info.smbase,
+                    smram_size: info.smsize as u64,
+                    num_cpus,
+                    save_state_size: info.save_state_size as u32,
+                    page_table_size: 0,
+                    cr3: Self::cr3(),
+                    platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
+                    platform_flags: 0,
+                    platform_data: [ICH7_PMBASE as u64, 0x28, 0, 0],
+                },
+                layouts,
+            )
+        };
+
+        match result {
+            Ok(installed) => {
+                let targets = &installed.cpus[..num_cpus as usize];
+                let smbases = unsafe { &mut *PINEVIEW_SMM_RELOCATION_SMBASES.0.get() };
+                smbases.fill(targets[0].smbase);
+                for (dst, cpu) in smbases.iter_mut().zip(targets.iter()) {
+                    *dst = cpu.smbase;
+                }
+                let default_handler = unsafe {
+                    fstart_smm::install_default_relocation_table_handler(
+                        fstart_smm::DefaultRelocationTableConfig {
+                            default_smbase: SMM_DEFAULT_SMBASE,
+                            target_smbases: smbases,
+                            save_state_smbase_offset: EM64T101_SMBASE_SAVE_STATE_OFFSET,
+                        },
+                    )
+                };
+                if default_handler.is_err() {
+                    self.smm_close();
+                    fstart_log::error!(
+                        "pineview SMM: failed to install default relocation handler"
+                    );
+                    return Err(SmmError::InstallFailed);
+                }
+
+                fstart_log::info!(
+                    "pineview SMM: installed image common={:#x} entry={:#x} cpus={}",
+                    installed.common_base,
+                    installed.common_entry,
+                    installed.cpus.len()
+                );
+                Ok(())
+            }
+            Err(_) => {
+                self.smm_close();
+                fstart_log::error!("pineview SMM: failed to install SMM image");
+                Err(SmmError::InstallFailed)
+            }
+        }
+    }
+
+    fn smm_relocate(&self) {
+        Self::smi_enable_for_relocation();
+        unsafe { fstart_pio::outb(APM_CNT, APM_CNT_SMI) };
+        core::hint::spin_loop();
+    }
+
+    fn pre_smm_init(&self) {
+        let pm = fstart_pmio_ich::PmIo::new(ICH7_PMBASE);
+        pm.reset_smi_status();
+        pm.write32(
+            fstart_pmio_ich::SMI_EN,
+            fstart_pmio_ich::APMC_EN | fstart_pmio_ich::GBL_SMI_EN | fstart_pmio_ich::EOS,
+        );
+    }
+
+    fn post_smm_init(&self) {
+        self.smm_close();
+        let pm = fstart_pmio_ich::PmIo::new(ICH7_PMBASE);
+        pm.write32(
+            fstart_pmio_ich::SMI_EN,
+            fstart_pmio_ich::TCO_EN
+                | fstart_pmio_ich::APMC_EN
+                | fstart_pmio_ich::SLP_SMI_EN
+                | fstart_pmio_ich::GBL_SMI_EN
+                | fstart_pmio_ich::EOS,
+        );
+        self.smm_lock();
+        fstart_log::info!("pineview SMM: global SMI enabled and SMRAM locked");
     }
 }
 

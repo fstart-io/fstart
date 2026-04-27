@@ -511,6 +511,7 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let memory_detect_body = memory_detect_body(ctx);
     let acpi_prepare_body = acpi_prepare_body(ctx);
     let smbios_prepare_body = smbios_prepare_body(ctx);
+    let mp_init_body = mp_init_body(ctx);
     let boot_media_select_body = boot_media_select_body(ctx);
     let load_next_stage_body = load_next_stage_body(ctx);
     let payload_load_body = payload_load_body(platform, ctx);
@@ -577,6 +578,15 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
 
             fn smbios_prepare(&self) {
                 #smbios_prepare_body
+            }
+
+            fn mp_init(
+                &mut self,
+                cpu_model: &str,
+                num_cpus: u16,
+                smm: bool,
+            ) -> Result<(), fstart_stage_runtime::RuntimeError> {
+                #mp_init_body
             }
 
             fn chipset_init(
@@ -670,6 +680,101 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
 // =======================================================================
 // Capability body helpers
 // =======================================================================
+
+fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
+    let uses_mp = ctx
+        .stage_capabilities
+        .iter()
+        .any(|cap| matches!(cap, Capability::MpInit { .. }));
+    if !uses_mp {
+        return quote! {
+            let _ = (cpu_model, num_cpus, smm);
+            Ok(())
+        };
+    }
+
+    let uses_smm = ctx
+        .stage_capabilities
+        .iter()
+        .any(|cap| matches!(cap, Capability::MpInit { smm: true, .. }));
+    let smm_image_expr = if uses_smm {
+        quote! { if smm { Some(FSTART_SMM_IMAGE) } else { None } }
+    } else {
+        quote! { None }
+    };
+
+    let smm_provider = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
+        matches!(
+            ctx.instances[*idx].meta().name,
+            "q35-hostbridge" | "intel-pineview"
+        )
+    });
+
+    let smm_ops_expr = if let Some(idx) = smm_provider {
+        let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+        quote! {
+            if smm {
+                Some(
+                    self.#field
+                        .as_ref()
+                        .ok_or(fstart_stage_runtime::RuntimeError::Failed)?
+                        as &dyn fstart_mp::SmmOps,
+                )
+            } else {
+                None
+            }
+        }
+    } else {
+        quote! {
+            if smm {
+                fstart_log::error!("mp: SMM requested but this board has no SmmOps provider");
+                return Err(fstart_stage_runtime::RuntimeError::Failed);
+            } else {
+                None
+            }
+        }
+    };
+
+    quote! {
+        let smm_ops: Option<&dyn fstart_mp::SmmOps> = #smm_ops_expr;
+        let smm_image: Option<&[u8]> = #smm_image_expr;
+
+        if cpu_model == "generic-x86" || cpu_model == "qemu-x86" || cpu_model == "qemu" {
+            let cpu_ops = fstart_mp::GenericX86CpuOps;
+            let config = fstart_mp::MpConfig {
+                cpu_ops: &cpu_ops,
+                smm: smm_ops,
+                smm_image,
+                num_cpus,
+            };
+            fstart_mp::mp_init(&config)
+                .map(|_| ())
+                .map_err(|_| fstart_stage_runtime::RuntimeError::Failed)
+        } else if cpu_model == "pineview" || cpu_model == "106cx" {
+            #[cfg(feature = "pineview-cpu")]
+            {
+                let cpu_ops = fstart_cpu_pineview::PineviewCpuOps::new(0x0500);
+                let config = fstart_mp::MpConfig {
+                    cpu_ops: &cpu_ops,
+                    smm: smm_ops,
+                    smm_image,
+                    num_cpus,
+                };
+                fstart_mp::mp_init(&config)
+                    .map(|_| ())
+                    .map_err(|_| fstart_stage_runtime::RuntimeError::Failed)
+            }
+            #[cfg(not(feature = "pineview-cpu"))]
+            {
+                fstart_log::error!("mp: Pineview CPU ops feature is not enabled");
+                Err(fstart_stage_runtime::RuntimeError::Failed)
+            }
+        } else {
+            fstart_log::error!("mp: unsupported CPU model '{}'; no CpuOps provider", cpu_model);
+            Err(fstart_stage_runtime::RuntimeError::Failed)
+        }
+    }
+}
 
 /// Emit the body of `Board::install_logger`.
 ///
