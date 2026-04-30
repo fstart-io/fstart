@@ -69,6 +69,7 @@ const GPIO_CNTL: u16 = 0x4C;
 const GPIO_EN: u8 = 0x10;
 const LPC_IO_DEC: u16 = 0x80;
 const LPC_EN: u16 = 0x82;
+const GPIO_ROUT: u16 = 0xB8;
 const GEN1_DEC: u16 = 0x84;
 const GEN2_DEC: u16 = 0x88;
 const GEN3_DEC: u16 = 0x8C;
@@ -93,8 +94,10 @@ const LPC_EN_ALL: u16 = (1 << 13)
     | (1 << 1)
     | (1 << 0);
 
+/// RCBA offset: SPI controller register window.
+const SPIBASE: u32 = 0x3020;
 /// RCBA offset: OIC (Other Interrupt Control — IOAPIC enable).
-const OIC: u32 = 0x31FE;
+const OIC: u32 = 0x31FF;
 /// RCBA offset: HPET Configuration register.
 const HPTC: u32 = 0x3404;
 /// HPET base address (after HPTC enable).
@@ -170,6 +173,15 @@ pub struct IntelIch7Config {
     pub pirq_routing: [u8; 8],
     /// GPE0 enable bits.
     pub gpe0_en: u32,
+    /// ALT_GP_SMI_EN bits.
+    #[serde(default)]
+    pub alt_gp_smi_en: u16,
+    /// GPI routing selectors for GPI0..GPI15.
+    ///
+    /// Each value uses the low two bits and is packed into LPC config
+    /// register GPIO_ROUT (0xB8), matching coreboot's ICH7 routing model.
+    #[serde(default)]
+    pub gpi_routing: [u8; 16],
     /// LPC I/O decode register values (GEN1..GEN4).
     pub lpc_decode: [u32; 4],
     /// HD Audio (Azalia) configuration with verb tables.
@@ -625,8 +637,8 @@ impl IntelIch7 {
 
         // ---- SPI access request clear ----
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
-        let spi_ctrl = rcba.read16(0x3802);
-        rcba.write16(0x3802, spi_ctrl & !(1u16));
+        let spi_ctrl = rcba.read16(SPIBASE + 2);
+        rcba.write16(SPIBASE + 2, spi_ctrl & !(1u16));
 
         // ---- PCIe root port init ----
         self.pcie_init();
@@ -740,6 +752,17 @@ impl IntelIch7 {
         ehci.or32(0xDC, (1 << 31) | (1 << 27));
         let v = ehci.read32(0xFC);
         ehci.write32(0xFC, (v & !(3 << 2)) | (2 << 2) | (1 << 29) | (1 << 17));
+        // Clear any pending port changes (USBSTS/PORTSC wake-change latch).
+        let bar0 = ehci.read32(0x10) & !0x0f;
+        if bar0 != 0 && bar0 != 0xffff_fff0 {
+            // SAFETY: BAR0 is the EHCI MMIO base assigned by PCI resource
+            // enumeration; offset 0x24 is PORTSC for port 1 on ICH7 EHCI.
+            unsafe {
+                let portsc = (bar0 as usize + 0x24) as *mut u32;
+                let value = fstart_mmio::read32(portsc as *const u32) | (1 << 2);
+                fstart_mmio::write32(portsc, value);
+            }
+        }
         // Errata.
         ehci.or8(0x84, 1 << 4);
         fstart_log::info!("intel-ich7: EHCI init done");
@@ -852,6 +875,17 @@ impl IntelIch7 {
         }
     }
 
+    /// Pack the board's GPI routing selectors into LPC GPIO_ROUT.
+    fn gpi_routing_value(&self) -> u32 {
+        self.config
+            .gpi_routing
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, route)| {
+                acc | (((*route as u32) & 0x03) << (i * 2))
+            })
+    }
+
     /// Late power options: GPE0 enable, NMI control, pmio::PM1_CNT.
     ///
     /// Completes the power management setup started in early_init.
@@ -859,9 +893,13 @@ impl IntelIch7 {
     /// SCI_EN and bus-master C3->C0 wakeup, configures NMI source
     /// control.
     fn power_options_late(&self) {
-        #[cfg(target_arch = "x86_64")]
-        // GPE0_EN from board config.
+        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+
+        // Board GPI routing and PM event enables.
+        lpc.write32(GPIO_ROUT, self.gpi_routing_value());
         self.pm().write32(pmio::GPE0_EN, self.config.gpe0_en);
+        self.pm()
+            .write16(pmio::ALT_GP_SMI_EN, self.config.alt_gp_smi_en);
 
         // NMI source control (port 0x61).
         unsafe {
@@ -1003,8 +1041,8 @@ impl IntelIch7 {
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
 
         // Lock SPIBAR.
-        let spi = rcba.read16(0x3800);
-        rcba.write16(0x3800, spi | (1 << 15));
+        let spi = rcba.read16(SPIBASE);
+        rcba.write16(SPIBASE, spi | (1 << 15));
 
         // BIOS Interface Lockdown.
         rcba.write32(0x3410, rcba.read32(0x3410) | 1);

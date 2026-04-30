@@ -180,7 +180,18 @@ pub unsafe fn install_pic_image<'a>(
         let needed = size_of::<CorebootModuleArgs>()
             .checked_mul(config.num_cpus as usize)
             .ok_or(InstallError::Overflow)?;
-        if (header.module_args_size as usize) < needed {
+        let module_args_end = header
+            .module_args_offset
+            .checked_add(header.module_args_size)
+            .ok_or(InstallError::Overflow)?;
+        let common_end = header
+            .common_offset
+            .checked_add(header.common_size)
+            .ok_or(InstallError::Overflow)?;
+        if (header.module_args_size as usize) < needed
+            || header.module_args_offset < header.common_offset
+            || module_args_end > common_end
+        {
             return Err(InstallError::BadModuleArgs);
         }
         Some(

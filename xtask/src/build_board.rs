@@ -764,7 +764,7 @@ fn capability_features(
     for cap in capabilities {
         if let Capability::MpInit { cpu_model, .. } = cap {
             features.push("mp".to_string());
-            if cpu_model.as_str().contains("pineview") || cpu_model.as_str().contains("106cx") {
+            if matches!(cpu_model.as_str(), "pineview" | "106cx") {
                 features.push("pineview-cpu".to_string());
             }
         }

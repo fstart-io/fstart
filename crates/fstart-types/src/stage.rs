@@ -21,7 +21,7 @@ pub enum StageLayout {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonolithicConfig {
     /// Ordered list of capabilities to execute
-    pub capabilities: heapless::Vec<Capability, 16>,
+    pub capabilities: heapless::Vec<Capability, 24>,
     /// Load/run address
     pub load_addr: u64,
     /// Stack size in bytes
@@ -66,7 +66,7 @@ pub struct StageConfig {
     /// Stage name (e.g., "bootblock", "main")
     pub name: HString<32>,
     /// Ordered list of capabilities for this stage
-    pub capabilities: heapless::Vec<Capability, 16>,
+    pub capabilities: heapless::Vec<Capability, 24>,
     /// Where this stage is loaded in memory
     pub load_addr: u64,
     /// Stack size in bytes
@@ -140,18 +140,13 @@ pub enum RunsFrom {
 ///
 /// Real boards should set this based on the target CPU's known capabilities.
 /// QEMU boards can use `Size1GiB` since QEMU always supports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PageSize {
     /// 2 MiB pages — universally supported on all x86_64 CPUs.
+    #[default]
     Size2MiB,
     /// 1 GiB pages — requires PDPE1GB (CPUID 0x80000001 EDX[26]).
     Size1GiB,
-}
-
-impl Default for PageSize {
-    fn default() -> Self {
-        Self::Size2MiB
-    }
 }
 
 /// A capability is a composable unit of firmware functionality.

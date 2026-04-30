@@ -208,7 +208,7 @@ fn flatten_device(
     rd: RonDevice,
     parent_idx: Option<DeviceId>,
     depth: u8,
-    devices: &mut heapless::Vec<DeviceConfig, 32>,
+    devices: &mut heapless::Vec<DeviceConfig, 64>,
     driver_instances: &mut Vec<DriverInstance>,
     device_tree: &mut Vec<DeviceNode>,
 ) {

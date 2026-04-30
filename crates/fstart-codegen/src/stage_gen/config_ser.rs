@@ -27,7 +27,7 @@ use super::tokens::hex_addr;
 #[cfg(test)]
 pub(super) fn serialize_to_tokens<T: Serialize>(value: &T) -> TokenStream {
     value
-        .serialize(ConfigTokenSerializer)
+        .serialize(ConfigTokenSerializer::unqualified())
         .unwrap_or_else(|e| panic!("failed to serialize to tokens: {e}"))
 }
 
@@ -42,7 +42,9 @@ pub(super) fn serialize_to_tokens<T: Serialize>(value: &T) -> TokenStream {
 /// serde serializer — no per-driver field knowledge needed.
 pub(super) fn config_tokens(instance: &DriverInstance) -> TokenStream {
     instance
-        .serialize_config(ConfigTokenSerializer)
+        .serialize_config(ConfigTokenSerializer::for_module(
+            instance.meta().module_path,
+        ))
         .unwrap_or_else(|e| panic!("failed to serialize driver config to tokens: {e}"))
 }
 
@@ -101,7 +103,36 @@ impl ser::Error for TokenError {
 ///
 /// Maps and floating-point values are not supported (uncommon in driver
 /// configs).
-struct ConfigTokenSerializer;
+#[derive(Clone)]
+struct ConfigTokenSerializer {
+    module_path: Option<TokenStream>,
+}
+
+impl ConfigTokenSerializer {
+    #[cfg(test)]
+    fn unqualified() -> Self {
+        Self { module_path: None }
+    }
+
+    fn for_module(module_path: &str) -> Self {
+        Self {
+            module_path: Some(module_path.parse().unwrap()),
+        }
+    }
+
+    fn child(&self) -> Self {
+        self.clone()
+    }
+
+    fn type_tokens(&self, name: &'static str) -> TokenStream {
+        let ident = format_ident!("{}", name);
+        if let Some(module_path) = &self.module_path {
+            quote! { #module_path::#ident }
+        } else {
+            quote! { #ident }
+        }
+    }
+}
 
 /// Helper macro for unsupported serializer methods.
 macro_rules! unsupported {
@@ -187,7 +218,7 @@ impl ser::Serializer for ConfigTokenSerializer {
     }
 
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<TokenStream, TokenError> {
-        let inner = value.serialize(ConfigTokenSerializer)?;
+        let inner = value.serialize(self.child())?;
         Ok(quote! { Some(#inner) })
     }
 
@@ -198,8 +229,8 @@ impl ser::Serializer for ConfigTokenSerializer {
     }
 
     fn serialize_unit_struct(self, name: &'static str) -> Result<TokenStream, TokenError> {
-        let ident = format_ident!("{}", name);
-        Ok(quote! { #ident })
+        let ty = self.type_tokens(name);
+        Ok(quote! { #ty })
     }
 
     /// Fieldless enum variant (e.g., `I2cSpeed::Fast`).
@@ -209,9 +240,9 @@ impl ser::Serializer for ConfigTokenSerializer {
         _variant_index: u32,
         variant: &'static str,
     ) -> Result<TokenStream, TokenError> {
-        let enum_ident = format_ident!("{}", name);
+        let enum_ty = self.type_tokens(name);
         let variant_ident = format_ident!("{}", variant);
-        Ok(quote! { #enum_ident::#variant_ident })
+        Ok(quote! { #enum_ty::#variant_ident })
     }
 
     // -- Newtype wrappers -------------------------------------------------
@@ -221,9 +252,9 @@ impl ser::Serializer for ConfigTokenSerializer {
         name: &'static str,
         value: &T,
     ) -> Result<TokenStream, TokenError> {
-        let ident = format_ident!("{}", name);
-        let inner = value.serialize(ConfigTokenSerializer)?;
-        Ok(quote! { #ident(#inner) })
+        let ty = self.type_tokens(name);
+        let inner = value.serialize(self.child())?;
+        Ok(quote! { #ty(#inner) })
     }
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
@@ -233,10 +264,10 @@ impl ser::Serializer for ConfigTokenSerializer {
         variant: &'static str,
         value: &T,
     ) -> Result<TokenStream, TokenError> {
-        let enum_ident = format_ident!("{}", name);
+        let enum_ty = self.type_tokens(name);
         let variant_ident = format_ident!("{}", variant);
-        let inner = value.serialize(ConfigTokenSerializer)?;
-        Ok(quote! { #enum_ident::#variant_ident(#inner) })
+        let inner = value.serialize(self.child())?;
+        Ok(quote! { #enum_ty::#variant_ident(#inner) })
     }
 
     // -- Compound types ---------------------------------------------------
@@ -248,19 +279,22 @@ impl ser::Serializer for ConfigTokenSerializer {
         _len: usize,
     ) -> Result<StructTokenSerializer, TokenError> {
         Ok(StructTokenSerializer {
-            name: name.to_string(),
+            ty: self.type_tokens(name),
+            module_path: self.module_path,
             fields: Vec::new(),
         })
     }
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, TokenError> {
         Ok(SeqTokenSerializer {
+            module_path: self.module_path,
             elements: Vec::new(),
         })
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, TokenError> {
         Ok(TupleTokenSerializer {
+            module_path: self.module_path,
             elements: Vec::new(),
         })
     }
@@ -271,7 +305,8 @@ impl ser::Serializer for ConfigTokenSerializer {
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, TokenError> {
         Ok(TupleStructTokenSerializer {
-            name: name.to_string(),
+            ty: self.type_tokens(name),
+            module_path: self.module_path,
             elements: Vec::new(),
         })
     }
@@ -284,7 +319,8 @@ impl ser::Serializer for ConfigTokenSerializer {
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, TokenError> {
         Ok(TupleVariantTokenSerializer {
-            enum_name: name.to_string(),
+            enum_ty: self.type_tokens(name),
+            module_path: self.module_path,
             variant: variant.to_string(),
             elements: Vec::new(),
         })
@@ -298,7 +334,8 @@ impl ser::Serializer for ConfigTokenSerializer {
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, TokenError> {
         Ok(StructVariantTokenSerializer {
-            enum_name: name.to_string(),
+            enum_ty: self.type_tokens(name),
+            module_path: self.module_path,
             variant: variant.to_string(),
             fields: Vec::new(),
         })
@@ -320,7 +357,8 @@ impl ser::Serializer for ConfigTokenSerializer {
 
 /// Accumulates struct fields: `StructName { field: value, ... }`
 struct StructTokenSerializer {
-    name: String,
+    ty: TokenStream,
+    module_path: Option<TokenStream>,
     fields: Vec<TokenStream>,
 }
 
@@ -334,22 +372,25 @@ impl SerializeStruct for StructTokenSerializer {
         value: &T,
     ) -> Result<(), TokenError> {
         let field_ident = format_ident!("{}", key);
-        let field_tokens = value.serialize(ConfigTokenSerializer)?;
+        let field_tokens = value.serialize(ConfigTokenSerializer {
+            module_path: self.module_path.clone(),
+        })?;
         self.fields.push(quote! { #field_ident: #field_tokens });
         Ok(())
     }
 
     fn end(self) -> Result<TokenStream, TokenError> {
-        let struct_ident = format_ident!("{}", self.name);
+        let ty = &self.ty;
         let fields = &self.fields;
         Ok(quote! {
-            #struct_ident { #(#fields,)* }
+            #ty { #(#fields,)* }
         })
     }
 }
 
 /// Accumulates sequence elements: `[elem, ...]`
 struct SeqTokenSerializer {
+    module_path: Option<TokenStream>,
     elements: Vec<TokenStream>,
 }
 
@@ -358,7 +399,9 @@ impl SerializeSeq for SeqTokenSerializer {
     type Error = TokenError;
 
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), TokenError> {
-        self.elements.push(value.serialize(ConfigTokenSerializer)?);
+        self.elements.push(value.serialize(ConfigTokenSerializer {
+            module_path: self.module_path.clone(),
+        })?);
         Ok(())
     }
 
@@ -373,6 +416,7 @@ impl SerializeSeq for SeqTokenSerializer {
 /// Serde serializes `[T; N]` arrays via `serialize_tuple`, so this
 /// emits array literal syntax.
 struct TupleTokenSerializer {
+    module_path: Option<TokenStream>,
     elements: Vec<TokenStream>,
 }
 
@@ -381,7 +425,9 @@ impl SerializeTuple for TupleTokenSerializer {
     type Error = TokenError;
 
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), TokenError> {
-        self.elements.push(value.serialize(ConfigTokenSerializer)?);
+        self.elements.push(value.serialize(ConfigTokenSerializer {
+            module_path: self.module_path.clone(),
+        })?);
         Ok(())
     }
 
@@ -393,7 +439,8 @@ impl SerializeTuple for TupleTokenSerializer {
 
 /// Accumulates tuple struct fields: `StructName(elem, ...)`
 struct TupleStructTokenSerializer {
-    name: String,
+    ty: TokenStream,
+    module_path: Option<TokenStream>,
     elements: Vec<TokenStream>,
 }
 
@@ -402,20 +449,23 @@ impl SerializeTupleStruct for TupleStructTokenSerializer {
     type Error = TokenError;
 
     fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), TokenError> {
-        self.elements.push(value.serialize(ConfigTokenSerializer)?);
+        self.elements.push(value.serialize(ConfigTokenSerializer {
+            module_path: self.module_path.clone(),
+        })?);
         Ok(())
     }
 
     fn end(self) -> Result<TokenStream, TokenError> {
-        let ident = format_ident!("{}", self.name);
+        let ty = &self.ty;
         let elems = &self.elements;
-        Ok(quote! { #ident(#(#elems),*) })
+        Ok(quote! { #ty(#(#elems),*) })
     }
 }
 
 /// Accumulates tuple variant fields: `EnumName::Variant(elem, ...)`
 struct TupleVariantTokenSerializer {
-    enum_name: String,
+    enum_ty: TokenStream,
+    module_path: Option<TokenStream>,
     variant: String,
     elements: Vec<TokenStream>,
 }
@@ -425,21 +475,24 @@ impl SerializeTupleVariant for TupleVariantTokenSerializer {
     type Error = TokenError;
 
     fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), TokenError> {
-        self.elements.push(value.serialize(ConfigTokenSerializer)?);
+        self.elements.push(value.serialize(ConfigTokenSerializer {
+            module_path: self.module_path.clone(),
+        })?);
         Ok(())
     }
 
     fn end(self) -> Result<TokenStream, TokenError> {
-        let enum_ident = format_ident!("{}", self.enum_name);
+        let enum_ty = &self.enum_ty;
         let variant_ident = format_ident!("{}", self.variant);
         let elems = &self.elements;
-        Ok(quote! { #enum_ident::#variant_ident(#(#elems),*) })
+        Ok(quote! { #enum_ty::#variant_ident(#(#elems),*) })
     }
 }
 
 /// Accumulates struct variant fields: `EnumName::Variant { field: value, ... }`
 struct StructVariantTokenSerializer {
-    enum_name: String,
+    enum_ty: TokenStream,
+    module_path: Option<TokenStream>,
     variant: String,
     fields: Vec<TokenStream>,
 }
@@ -454,17 +507,19 @@ impl SerializeStructVariant for StructVariantTokenSerializer {
         value: &T,
     ) -> Result<(), TokenError> {
         let field_ident = format_ident!("{}", key);
-        let field_tokens = value.serialize(ConfigTokenSerializer)?;
+        let field_tokens = value.serialize(ConfigTokenSerializer {
+            module_path: self.module_path.clone(),
+        })?;
         self.fields.push(quote! { #field_ident: #field_tokens });
         Ok(())
     }
 
     fn end(self) -> Result<TokenStream, TokenError> {
-        let enum_ident = format_ident!("{}", self.enum_name);
+        let enum_ty = &self.enum_ty;
         let variant_ident = format_ident!("{}", self.variant);
         let fields = &self.fields;
         Ok(quote! {
-            #enum_ident::#variant_ident { #(#fields,)* }
+            #enum_ty::#variant_ident { #(#fields,)* }
         })
     }
 }

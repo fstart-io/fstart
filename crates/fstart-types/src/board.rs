@@ -77,7 +77,7 @@ pub struct BoardConfig {
     /// Memory map: ROM, RAM, MMIO regions
     pub memory: MemoryMap,
     /// Device declarations with driver and service bindings
-    pub devices: heapless::Vec<DeviceConfig, 32>,
+    pub devices: heapless::Vec<DeviceConfig, 64>,
     /// Stage composition: monolithic or multi-stage
     pub stages: StageLayout,
     /// Security: signing algorithm, pubkey, digest requirements

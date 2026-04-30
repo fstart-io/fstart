@@ -99,8 +99,12 @@ const Q35_PMBASE: u16 = 0x0600;
 const APM_CNT: u16 = 0x00b2;
 const APM_CNT_SMI: u8 = 0xef;
 const SMM_DEFAULT_SMBASE: u64 = 0x30000;
-const AMD64_SAVE_STATE_SIZE: usize = 0x400;
+const AMD64_SAVE_STATE_SIZE: usize = 0x200;
 const AMD64_SMBASE_SAVE_STATE_OFFSET: u16 = 0xff00;
+const Q35_SMI_EN_BITS: u32 = fstart_pmio_ich::APMC_EN
+    | fstart_pmio_ich::SLP_SMI_EN
+    | fstart_pmio_ich::GBL_SMI_EN
+    | fstart_pmio_ich::EOS;
 
 const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
     smbase: 0,
@@ -318,7 +322,7 @@ impl Q35HostBridge {
             return MMIO64_LIMIT_DEFAULT;
         }
         let (eax, _, _, _) = unsafe { Self::cpuid(0x80000008) };
-        let phys_bits = (eax & 0xFF) as u32;
+        let phys_bits = eax & 0xFF;
         let limit = if phys_bits >= 64 {
             u64::MAX
         } else {
@@ -632,10 +636,7 @@ impl SmmOps for Q35HostBridge {
         // Refresh EOS before every relocation SMI so multi-CPU relocation is
         // not blocked by the previous SMI cycle.
         let pm = fstart_pmio_ich::PmIo::new(Q35_PMBASE);
-        pm.setbits32(
-            fstart_pmio_ich::SMI_EN,
-            fstart_pmio_ich::APMC_EN | fstart_pmio_ich::GBL_SMI_EN | fstart_pmio_ich::EOS,
-        );
+        pm.setbits32(fstart_pmio_ich::SMI_EN, Q35_SMI_EN_BITS);
         unsafe { fstart_pio::outb(APM_CNT, APM_CNT_SMI) };
         // QEMU TCG may defer SMI injection until the translation block ends.
         // `pause` forces a new TB so each CPU takes the SMI before it advances
@@ -647,19 +648,13 @@ impl SmmOps for Q35HostBridge {
         self.setup_ich9_pm_io();
         let pm = fstart_pmio_ich::PmIo::new(Q35_PMBASE);
         pm.reset_smi_status();
-        pm.write32(
-            fstart_pmio_ich::SMI_EN,
-            fstart_pmio_ich::APMC_EN | fstart_pmio_ich::GBL_SMI_EN | fstart_pmio_ich::EOS,
-        );
+        pm.write32(fstart_pmio_ich::SMI_EN, Q35_SMI_EN_BITS);
     }
 
     fn post_smm_init(&self) {
         self.smm_close();
         let pm = fstart_pmio_ich::PmIo::new(Q35_PMBASE);
-        pm.write32(
-            fstart_pmio_ich::SMI_EN,
-            fstart_pmio_ich::APMC_EN | fstart_pmio_ich::GBL_SMI_EN | fstart_pmio_ich::EOS,
-        );
+        pm.write32(fstart_pmio_ich::SMI_EN, Q35_SMI_EN_BITS);
         self.smm_lock();
         fstart_log::info!("Q35 SMM: global SMI enabled and SMRAM locked");
     }

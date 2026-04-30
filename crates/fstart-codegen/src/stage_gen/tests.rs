@@ -3,7 +3,7 @@ use crate::ron_loader::ParsedBoard;
 use fstart_device_registry::DriverInstance;
 
 /// Helper: create a minimal parsed board for testing.
-fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard {
+fn test_parsed_board(capabilities: heapless::Vec<Capability, 24>) -> ParsedBoard {
     use fstart_types::*;
     use heapless::String as HString;
 
@@ -123,7 +123,7 @@ fn test_memory_init_without_console_is_error() {
 // =======================================================================
 
 /// Helper: create a parsed board with UART + I2C bus + I2C child device.
-fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard {
+fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 24>) -> ParsedBoard {
     use fstart_types::*;
     use heapless::String as HString;
 
