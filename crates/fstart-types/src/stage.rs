@@ -151,6 +151,21 @@ pub enum Capability {
         /// Name of the next stage to load
         next_stage: HString<32>,
     },
+    /// Load the next stage from FFS and boot it via SBI firmware (OpenSBI).
+    ///
+    /// Combines loading both the SBI firmware and the next stage, then
+    /// boots the SBI firmware with `next_addr` pointing to the loaded
+    /// stage's entry point. The SBI firmware initializes in M-mode and
+    /// `mret`s to the next stage in S-mode.
+    ///
+    /// This is used for UEFI payloads where stage 0 does M-mode hardware
+    /// init (UART, PCI BARs) and stage 1 runs CrabEFI in S-mode with a
+    /// completely fresh stack frame — no stack corruption from the mode
+    /// transition.
+    FirmwareBoot {
+        /// Name of the next stage to load from FFS and boot via firmware.
+        next_stage: HString<32>,
+    },
     /// Device lockdown and security hardening — post-boot.
     ///
     /// Called after all payload/OS handoff preparation is complete but

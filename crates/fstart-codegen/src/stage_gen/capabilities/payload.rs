@@ -7,9 +7,10 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use fstart_device_registry::DriverInstance;
 use fstart_types::memory::RegionKind;
 use fstart_types::{
-    BoardConfig, FirmwareConfig, FirmwareKind, PayloadConfig, Platform, StageLayout,
+    BoardConfig, Capability, FirmwareConfig, FirmwareKind, PayloadConfig, Platform, StageLayout,
 };
 
 use super::super::tokens::{anchor_as_bytes_expr, anchor_expr, halt_expr, hex_addr};
@@ -20,9 +21,10 @@ pub(in crate::stage_gen) fn generate_payload_load(
     config: &BoardConfig,
     platform: Platform,
     embed_anchor: bool,
+    instances: &[DriverInstance],
 ) -> TokenStream {
     if is_uefi_payload(config) {
-        return generate_payload_load_uefi(config, platform, embed_anchor);
+        return generate_payload_load_uefi(config, platform, embed_anchor, instances);
     }
 
     if is_linux_boot(config) {
@@ -248,6 +250,7 @@ fn generate_payload_load_uefi(
     config: &BoardConfig,
     platform: Platform,
     _embed_anchor: bool,
+    instances: &[DriverInstance],
 ) -> TokenStream {
     // Collect static memory map entries (ROM, Reserved) from board config.
     // RAM regions are split at runtime by build_efi_memory_map().
@@ -336,9 +339,25 @@ fn generate_payload_load_uefi(
         .iter()
         .find(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
 
+    // Emit ecam_base as a compile-time literal rather than a runtime
+    // reference to the driver struct.  On RISC-V, the M→S mode transition
+    // via OpenSBI clobbers stack memory; using a literal avoids stale refs.
     let ecam_base_field = if let Some(pci_dev) = pci_device {
-        let dev = format_ident!("{}", pci_dev.name.as_str());
-        quote! { ecam_base: Some(#dev.ecam_base()), }
+        let pci_idx = config
+            .devices
+            .iter()
+            .position(|d| d.name.as_str() == pci_dev.name.as_str())
+            .expect("PCI device not found in devices list");
+        let ecam_val = match &instances[pci_idx] {
+            DriverInstance::PciEcam(cfg) => cfg.ecam_base,
+            other => panic!(
+                "PCI device '{}' is not a PciEcam instance (got {:?})",
+                pci_dev.name.as_str(),
+                other.meta().name,
+            ),
+        };
+        let ecam_lit = hex_addr(ecam_val);
+        quote! { ecam_base: Some(#ecam_lit), }
     } else {
         quote! { ecam_base: None, }
     };
@@ -378,11 +397,57 @@ fn generate_payload_load_uefi(
         (quote! {}, quote! { framebuffer: None, })
     };
 
-    // FDT sourcing
+    // Platform block devices — non-PCI BlockDevice-service devices.
+    //
+    // PCI block devices (NVMe, AHCI, SDHCI) are discovered internally by
+    // CrabEFI via the ECAM base address.  Platform devices (e.g. sunxi-mmc)
+    // must be wrapped in a BlockDeviceAdapter and passed through
+    // PlatformConfig::block_devices.
+    let platform_block_devs: Vec<&fstart_types::DeviceConfig> = config
+        .devices
+        .iter()
+        .filter(|d| {
+            d.services.iter().any(|s| s.as_str() == "BlockDevice")
+                && !d.services.iter().any(|s| s.as_str() == "PciRootBus")
+        })
+        .collect();
+
+    let (block_device_setup, block_devices_field) = if platform_block_devs.is_empty() {
+        (quote! {}, quote! { block_devices: &mut [], })
+    } else {
+        let mut adapter_decls = TokenStream::new();
+        let mut ref_exprs = Vec::new();
+        for dev in &platform_block_devs {
+            let dev_ident = format_ident!("{}", dev.name.as_str());
+            let adapter_ident = format_ident!("_blk_{}", dev.name.as_str());
+            let name_str = dev.name.as_str();
+            adapter_decls.extend(quote! {
+                let mut #adapter_ident =
+                    fstart_crabefi::BlockDeviceAdapter::new(&#dev_ident, #name_str);
+            });
+            ref_exprs.push(quote! {
+                &mut #adapter_ident as &mut dyn fstart_crabefi::CrabEfiBlockDevice
+            });
+        }
+        let setup = adapter_decls;
+        let field = quote! {
+            block_devices: &mut [#(#ref_exprs),*],
+        };
+        (setup, field)
+    };
+
+    // FDT sourcing.
+    //
+    // RISC-V UEFI stages are entered in S-mode by OpenSBI. After the
+    // M→S transition, mscratch is owned by OpenSBI; the DTB address is
+    // in sscratch (saved by entry_smode.rs). Use boot_dtb_addr_smode().
+    let is_riscv_uefi = platform == Platform::Riscv64 && is_uefi_payload(config);
     let payload = config.payload.as_ref();
     let fdt_addr_expr = if let Some(addr) = payload.and_then(|p| p.src_dtb_addr) {
         let addr_lit = hex_addr(addr);
         quote! { #addr_lit }
+    } else if is_riscv_uefi {
+        quote! { fstart_platform::boot_dtb_addr_smode() }
     } else {
         match platform {
             Platform::Aarch64 | Platform::Riscv64 => {
@@ -412,13 +477,27 @@ fn generate_payload_load_uefi(
         fdt: _fdt_blob,
     };
 
-    // Generate BL31 firmware loading when configured.
+    // Generate firmware boot-and-resume when firmware is configured.
+    //
+    // In multi-stage boards, FirmwareBoot in an earlier stage already loaded
+    // and booted the SBI firmware. Skip inline firmware loading here.
+    let firmware_handled_elsewhere = match &config.stages {
+        StageLayout::MultiStage(stages) => stages.iter().any(|s| {
+            s.capabilities
+                .iter()
+                .any(|c| matches!(c, Capability::FirmwareBoot { .. }))
+        }),
+        _ => false,
+    };
+
     let payload = config.payload.as_ref();
-    let bl31_boot = if let Some(fw) = payload.and_then(|p| p.firmware.as_ref()) {
+    let firmware_boot = if firmware_handled_elsewhere {
+        quote! {}
+    } else if let Some(fw) = payload.and_then(|p| p.firmware.as_ref()) {
+        let anchor_fw = anchor_as_bytes_expr();
+        let halt = halt_expr(platform);
+        let fw_load_addr = hex_addr(fw.load_addr);
         if platform == Platform::Aarch64 && fw.kind == FirmwareKind::ArmTrustedFirmware {
-            let anchor_fw = anchor_as_bytes_expr();
-            let halt = halt_expr(platform);
-            let fw_load_addr = hex_addr(fw.load_addr);
             quote! {
                 fstart_log::info!("loading TF-A BL31 firmware...");
                 if !fstart_capabilities::load_ffs_file_by_type(
@@ -436,6 +515,24 @@ fn generate_payload_load_uefi(
                 );
                 fstart_log::info!("resumed from BL31 at EL2 NS");
             }
+        } else if platform == Platform::Riscv64 && fw.kind == FirmwareKind::OpenSbi {
+            quote! {
+                fstart_log::info!("loading OpenSBI firmware...");
+                if !fstart_capabilities::load_ffs_file_by_type(
+                    #anchor_fw,
+                    &boot_media,
+                    fstart_types::ffs::FileType::Firmware,
+                ) {
+                    fstart_log::error!("FATAL: failed to load OpenSBI firmware");
+                    #halt;
+                }
+                fstart_log::info!("booting OpenSBI (SBI services init)...");
+                fstart_platform::boot_opensbi_and_resume(
+                    #fw_load_addr,
+                    fstart_platform::boot_dtb_addr(),
+                );
+                fstart_log::info!("resumed from OpenSBI at S-mode");
+            }
         } else {
             quote! {}
         }
@@ -443,13 +540,38 @@ fn generate_payload_load_uefi(
         quote! {}
     };
 
+    // Platform-specific timer and reset adapters.
+    let (timer_setup, reset_setup) = match platform {
+        Platform::Aarch64 => (
+            quote! { let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new(); },
+            quote! { let _crabefi_reset = fstart_crabefi::PsciReset; },
+        ),
+        Platform::Riscv64 => (
+            // The timer reads its frequency from the FDT's
+            // /cpus/timebase-frequency property. The DTB address is in
+            // sscratch after the OpenSBI M→S transition.
+            quote! {
+                let _crabefi_timer = unsafe {
+                    fstart_crabefi::RiscvSbiTimer::from_fdt(
+                        fstart_platform::boot_dtb_addr_smode()
+                    )
+                };
+            },
+            quote! { let _crabefi_reset = fstart_crabefi::SbiReset; },
+        ),
+        Platform::Armv7 => (
+            quote! { let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new(); },
+            quote! { let _crabefi_reset = fstart_crabefi::PsciReset; },
+        ),
+    };
+
     quote! {
         fstart_log::info!("Launching CrabEFI UEFI payload...");
 
-        #bl31_boot
+        #firmware_boot
 
-        let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new();
-        let _crabefi_reset = fstart_crabefi::PsciReset;
+        #timer_setup
+        #reset_setup
         #console_setup
 
         // Determine FDT address and prepare the blob.
@@ -495,12 +617,13 @@ fn generate_payload_load_uefi(
         fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
 
         #fb_setup
+        #block_device_setup
 
         let _crabefi_config = fstart_crabefi::PlatformConfig {
             memory_map: _crabefi_memory_map,
             timer: &_crabefi_timer,
             reset: &_crabefi_reset,
-            block_devices: &mut [],
+            #block_devices_field
             variable_backend: None,
             #debug_output_field
             console_input: None,
@@ -517,5 +640,103 @@ fn generate_payload_load_uefi(
 
         // init_platform() is -> ! (never returns).
         fstart_crabefi::init_platform(_crabefi_config);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FirmwareBoot
+// ---------------------------------------------------------------------------
+
+/// Generate code for the FirmwareBoot capability.
+///
+/// Loads the SBI firmware and the next stage from FFS, then boots via
+/// OpenSBI with `next_addr` = the loaded stage's entry point.  This is
+/// a `-> !` operation — the current stage never resumes.
+///
+/// Only supported on RISC-V (OpenSBI). AArch64 uses ATF BL31 via a
+/// resume trampoline (`boot_bl31_and_resume`) in `PayloadLoad` instead.
+pub(in crate::stage_gen) fn generate_firmware_boot(
+    next_stage: &str,
+    config: &BoardConfig,
+    platform: Platform,
+    embed_anchor: bool,
+) -> TokenStream {
+    let anchor = anchor_expr(embed_anchor);
+    let anchor_fw = anchor_as_bytes_expr();
+    let halt = halt_expr(platform);
+
+    let payload = config.payload.as_ref();
+    let fw = payload
+        .and_then(|p| p.firmware.as_ref())
+        .expect("FirmwareBoot requires payload.firmware in board RON");
+    let fw_load_addr = hex_addr(fw.load_addr);
+
+    // DTB address: use explicit dtb_addr when set (real hardware loads DTB
+    // via FdtPrepare into a fixed address), otherwise read from boot registers
+    // (QEMU passes DTB at reset via a1 → mscratch).
+    let dtb_addr_expr = if let Some(addr) = payload.and_then(|p| p.dtb_addr) {
+        let lit = hex_addr(addr);
+        quote! { #lit }
+    } else {
+        quote! { fstart_platform::boot_dtb_addr() }
+    };
+
+    match platform {
+        Platform::Riscv64 => {
+            quote! {
+                fstart_log::info!("capability: FirmwareBoot -> {}", #next_stage);
+
+                // Load OpenSBI firmware from FFS.
+                fstart_log::info!("loading OpenSBI firmware...");
+                if !fstart_capabilities::load_ffs_file_by_type(
+                    #anchor_fw,
+                    &boot_media,
+                    fstart_types::ffs::FileType::Firmware,
+                ) {
+                    fstart_log::error!("FATAL: failed to load OpenSBI firmware");
+                    #halt;
+                }
+
+                // Load the next stage from FFS into RAM.
+                let _next_entry = match fstart_capabilities::load_stage_entry(
+                    #next_stage,
+                    #anchor,
+                    &boot_media,
+                ) {
+                    Some(addr) => addr,
+                    None => {
+                        fstart_log::error!(
+                            "FATAL: failed to load stage '{}'",
+                            #next_stage
+                        );
+                        #halt;
+                    }
+                };
+
+                // Boot OpenSBI with next_addr = stage entry point.
+                // OpenSBI initializes SBI services in M-mode, then mrets
+                // to the next stage in S-mode with a0=hart_id, a1=DTB.
+                let _fw_info = fstart_platform::FwDynamicInfo::new(
+                    _next_entry,
+                    fstart_platform::boot_hart_id(),
+                );
+                fstart_log::info!(
+                    "booting OpenSBI -> stage '{}' at S-mode",
+                    #next_stage,
+                );
+                fstart_platform::boot_linux_sbi(
+                    #fw_load_addr,
+                    fstart_platform::boot_hart_id(),
+                    #dtb_addr_expr,
+                    &_fw_info,
+                );
+            }
+        }
+        _ => {
+            panic!(
+                "FirmwareBoot is only supported on RISC-V (got {:?})",
+                platform,
+            );
+        }
     }
 }
