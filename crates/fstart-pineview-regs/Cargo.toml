@@ -1,0 +1,10 @@
+[package]
+name = "fstart-pineview-regs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-ecam = { workspace = true }
+fstart-mmio = { workspace = true }
+tock-registers = { workspace = true }

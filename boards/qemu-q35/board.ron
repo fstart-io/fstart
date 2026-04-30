@@ -71,6 +71,7 @@
             // PCI enumeration — sizes BARs, allocates MMIO/IO resources,
             // enables devices. Must appear after MemoryInit (heap required).
             PciInit( device: "pci0" ),
+            MpInit(cpu_model: "qemu-x86", num_cpus: 4, smm: true),
             // FFS at flash offset 0x100000 (1 MiB) — after stage code, before boot block.
             // Stage code (.text + .rodata + .ltext) occupies ~640 KiB at the
             // start of flash; 1 MiB gives headroom for growth.
@@ -101,6 +102,17 @@
         required_digests: [Sha256],
     ),
     mode: Rigid,
+    smm: Some((
+        platform: QemuQ35,
+        // Match the intended QEMU `-smp` value; xtask/codegen will require
+        // this to be >= MpInit.num_cpus when SMM is enabled.
+        entry_points: Some(4),
+        stack_size: 0x400,
+        coreboot: (
+            emit_header: true,
+            module_args: true,
+        ),
+    )),
     payload: Some((
         kind: LinuxBoot,
         kernel_file: Some("bzImage"),

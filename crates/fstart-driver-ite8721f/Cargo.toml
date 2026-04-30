@@ -1,0 +1,13 @@
+[package]
+name = "fstart-driver-ite8721f"
+description = "ITE IT8721F SuperIO chip descriptor for the fstart-superio framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+acpi = ["fstart-superio/acpi"]
+
+[dependencies]
+fstart-superio = { workspace = true }

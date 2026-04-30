@@ -102,6 +102,78 @@ pub fn set_cntfrq(freq: u32) {
 pub fn set_cntfrq(_freq: u32) {}
 
 // ---------------------------------------------------------------------------
+// x86 MSR access
+// ---------------------------------------------------------------------------
+
+/// x86 Model-Specific Register (MSR) helpers.
+///
+/// Provides `rdmsr`/`wrmsr` and a typed `Msr { lo, hi }` struct with
+/// idiomatic `From<u64>` / `Into<u64>` conversions.
+#[cfg(feature = "x86_64")]
+pub mod msr {
+    /// MSR value split into 32-bit halves.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Msr {
+        pub lo: u32,
+        pub hi: u32,
+    }
+
+    impl From<u64> for Msr {
+        fn from(v: u64) -> Self {
+            Self {
+                lo: v as u32,
+                hi: (v >> 32) as u32,
+            }
+        }
+    }
+
+    impl From<Msr> for u64 {
+        fn from(m: Msr) -> Self {
+            (m.lo as u64) | ((m.hi as u64) << 32)
+        }
+    }
+
+    /// Read a 64-bit MSR.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `msr` is a valid MSR index for this CPU.
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    pub unsafe fn rdmsr(msr: u32) -> u64 {
+        let lo: u32;
+        let hi: u32;
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack),
+        );
+        ((hi as u64) << 32) | (lo as u64)
+    }
+
+    /// Write a 64-bit MSR.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `msr` and `val` are valid for this CPU.
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    pub unsafe fn wrmsr(msr: u32, val: u64) {
+        let lo = val as u32;
+        let hi = (val >> 32) as u32;
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") lo,
+            in("edx") hi,
+            options(nomem, nostack),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // halt — put processor in low-power wait state
 // ---------------------------------------------------------------------------
 

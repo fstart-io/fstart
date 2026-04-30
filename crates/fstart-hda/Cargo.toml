@@ -1,0 +1,15 @@
+[package]
+name = "fstart-hda"
+description = "Intel High Definition Audio controller interface — codec detection, verb programming, verb table types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-log = { workspace = true }
+heapless = { workspace = true }
+serde = { workspace = true }
+ufmt = { workspace = true }
+
+[dev-dependencies]
+ron = { workspace = true }

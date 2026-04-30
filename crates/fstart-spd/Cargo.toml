@@ -1,0 +1,9 @@
+[package]
+name = "fstart-spd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-log = { workspace = true }
+fstart-services = { workspace = true }

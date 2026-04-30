@@ -237,6 +237,8 @@ pub fn run(
                     if use_kvm { "host" } else { "max" }.to_string(),
                     "-m".to_string(),
                     default_mem.to_string(),
+                    "-smp".to_string(),
+                    if board_name == "qemu-q35" { "4" } else { "1" }.to_string(),
                     "-nographic".to_string(),
                     if use_kvm { "-bios" } else { "-drive" }.to_string(),
                     if use_kvm {

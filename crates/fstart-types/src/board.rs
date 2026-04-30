@@ -77,7 +77,7 @@ pub struct BoardConfig {
     /// Memory map: ROM, RAM, MMIO regions
     pub memory: MemoryMap,
     /// Device declarations with driver and service bindings
-    pub devices: heapless::Vec<DeviceConfig, 32>,
+    pub devices: heapless::Vec<DeviceConfig, 64>,
     /// Stage composition: monolithic or multi-stage
     pub stages: StageLayout,
     /// Security: signing algorithm, pubkey, digest requirements
@@ -117,6 +117,15 @@ pub struct BoardConfig {
     /// memory device declarations for SMBIOS Type 0/1/2/3/4/16/17/19.
     #[serde(default)]
     pub smbios: Option<crate::smbios::SmbiosConfig>,
+
+    /// System Management Mode handler/image configuration.
+    ///
+    /// Required when an x86 stage declares `MpInit(..., smm: true)`.  The
+    /// normal stage embeds the separately built SMM image and asks the
+    /// platform adapter selected here to copy its precompiled PIC entry
+    /// stubs into SMRAM.
+    #[serde(default)]
+    pub smm: Option<crate::smm::SmmConfig>,
 
     /// Boot hart ID for multi-hart platforms.
     ///
@@ -166,12 +175,21 @@ pub enum SocImageFormat {
 }
 
 /// Build mode determines how the firmware is compiled and how drivers are bound.
+///
+/// Historically fstart supported two modes: `Rigid` (single board,
+/// compile-time driver binding) and `Flexible` (runtime driver
+/// dispatch via per-service enums).  Flexible was removed when the
+/// stage executor was split off into `fstart-stage-runtime` — the
+/// runtime executor is generic over `B: Board` and already supports
+/// the target of Flexible (one binary, many boards) through
+/// per-device `Option<enum-of-variants>` fields on `_BoardDevices`.
+///
+/// The enum is retained for forward compatibility (more variants may
+/// return in a different form later).  All boards today use `Rigid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildMode {
     /// Single board, compile-time driver binding, maximum dead code elimination.
     Rigid,
-    /// Multiple boards possible, runtime driver binding via enum or trait objects.
-    Flexible,
 }
 
 /// Payload configuration: what to boot after firmware init.

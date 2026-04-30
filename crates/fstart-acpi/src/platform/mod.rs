@@ -74,6 +74,35 @@ pub struct FadtConfig {
     pub arm_psci: bool,
     /// ACPI PM profile.
     pub pm_profile: PmProfile,
+    /// PM1a Event Block I/O port base (x86 only, 0 = unused).
+    pub pm1a_evt_blk: u32,
+    /// PM1a Control Block I/O port base.
+    pub pm1a_cnt_blk: u32,
+    /// PM Timer Block I/O port base.
+    pub pm_tmr_blk: u32,
+    /// GPE0 Block I/O port base.
+    pub gpe0_blk: u32,
+    /// SCI interrupt number.
+    pub sci_int: u16,
+    /// IAPC boot arch flags (8042, legacy devices, etc.).
+    pub iapc_boot_arch: u16,
+}
+
+impl Default for FadtConfig {
+    fn default() -> Self {
+        Self {
+            hw_reduced: false,
+            low_power_s0: false,
+            arm_psci: false,
+            pm_profile: PmProfile::Unspecified,
+            pm1a_evt_blk: 0,
+            pm1a_cnt_blk: 0,
+            pm_tmr_blk: 0,
+            gpe0_blk: 0,
+            sci_int: 0,
+            iapc_boot_arch: 0,
+        }
+    }
 }
 
 /// Assemble a complete ACPI table set and write it to physical memory.
@@ -230,14 +259,22 @@ pub fn assemble(
 /// Build the FADT from architecture-neutral configuration.
 fn build_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // ARM platform has its own build_fadt that handles arm_boot_arch.
-    // For generic path, delegate to ARM when the feature is enabled
-    // and arm_psci is set.
     #[cfg(feature = "arm")]
     if config.arm_psci {
         return arm::build_fadt(dsdt_addr, config);
     }
 
-    // Generic (x86-like) FADT path.
+    // x86-style FADT with PM block addresses.
+    //
+    // If PM block addresses are set (non-zero), we build a full FADT
+    // with legacy PM register pointers (pm1a_evt_blk, pm1a_cnt_blk,
+    // pm_tmr_blk, gpe0_blk). Otherwise fall back to the builder for
+    // HW-reduced platforms.
+    if config.pm1a_evt_blk != 0 {
+        return build_x86_fadt(dsdt_addr, config);
+    }
+
+    // HW-reduced path (no PM registers).
     let mut fadt_builder =
         FADTBuilder::new(crate::OEM_ID, crate::OEM_TABLE_ID, crate::OEM_REVISION)
             .dsdt_64(dsdt_addr)
@@ -251,6 +288,90 @@ fn build_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     }
 
     let fadt = fadt_builder.finalize();
+    let mut bytes = Vec::new();
+    fadt.to_aml_bytes(&mut bytes);
+    bytes
+}
+
+/// Build an x86 FADT with full PM block addresses.
+///
+/// Uses `acpi_tables::fadt::FADTBuilder` with typed struct fields
+/// instead of raw byte-offset writes. Matches coreboot's `acpi_fill_fadt`
+/// for ICH7: PM1a event/control blocks, PM timer, GPE0, SCI interrupt,
+/// IAPC boot arch flags, and the standard ACPI flags.
+fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
+    use acpi_tables::fadt::{FADTBuilder, Flags};
+    use acpi_tables::gas::{AccessSize, AddressSpace, GAS};
+    use acpi_tables::Aml;
+
+    /// Helper: build a GAS for a System I/O port.
+    fn gas_io(port: u32, bit_width: u8) -> GAS {
+        GAS::new(
+            AddressSpace::SystemIo,
+            bit_width,
+            0,
+            if bit_width <= 8 {
+                AccessSize::ByteAccess
+            } else if bit_width <= 16 {
+                AccessSize::WordAccess
+            } else if bit_width <= 32 {
+                AccessSize::DwordAccess
+            } else {
+                AccessSize::QwordAccess
+            },
+            port as u64,
+        )
+    }
+
+    let mut b = FADTBuilder::new(crate::OEM_ID, crate::OEM_TABLE_ID, crate::OEM_REVISION);
+
+    // DSDT pointer (64-bit).
+    b = b.dsdt_64(dsdt_addr);
+
+    // PM profile.
+    b = b.preferred_pm_profile(config.pm_profile);
+
+    // SCI interrupt.
+    b.sci_int = (config.sci_int).into();
+
+    // Legacy PM block addresses (32-bit I/O port).
+    b.pm1a_evt_blk = config.pm1a_evt_blk.into();
+    b.pm1a_cnt_blk = config.pm1a_cnt_blk.into();
+    b.pm_tmr_blk = config.pm_tmr_blk.into();
+    b.gpe0_blk = config.gpe0_blk.into();
+
+    // PM block lengths.
+    b.pm1_evt_len = 4;
+    b.pm1_cnt_len = 2;
+    b.pm_tmr_len = 4;
+    b.gpe0_blk_len = 8;
+
+    // C-state latencies.
+    b.p_lvl2_lat = 1u16.into();
+    b.p_lvl3_lat = 85u16.into();
+
+    // Duty cycle.
+    b.duty_offset = 1;
+
+    // IAPC boot architecture flags.
+    b.iapc_boot_arch = config.iapc_boot_arch.into();
+
+    // FADT flags.
+    b = b
+        .flag(Flags::Wbinvd)
+        .flag(Flags::ProcC1)
+        .flag(Flags::SlpButton)
+        .flag(Flags::RtcS4)
+        .flag(Flags::TmrValExt)
+        .flag(Flags::UsePlatformClock);
+
+    // Extended PM block addresses (GAS).
+    b.x_pm1a_evt_blk = gas_io(config.pm1a_evt_blk, 32);
+    b.x_pm1a_cnt_blk = gas_io(config.pm1a_cnt_blk, 16);
+    b.x_pm_tmr_blk = gas_io(config.pm_tmr_blk, 32);
+    b.x_gpe0_blk = gas_io(config.gpe0_blk, 64);
+
+    let fadt = b.finalize();
     let mut bytes = Vec::new();
     fadt.to_aml_bytes(&mut bytes);
     bytes
@@ -310,6 +431,7 @@ mod tests {
             low_power_s0: false,
             arm_psci: false,
             pm_profile: PmProfile::Unspecified,
+            ..Default::default()
         };
 
         let data = assemble(0x1000_0000, &fadt_config, &[], &[], &[]);
@@ -344,6 +466,7 @@ mod tests {
             low_power_s0: true,
             arm_psci: false,
             pm_profile: PmProfile::PerformanceServer,
+            ..Default::default()
         };
 
         // Fake platform table (just needs to be a valid ACPI table-shaped blob).

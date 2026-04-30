@@ -212,9 +212,18 @@ pub fn prepare_bl_params(
 ///
 /// # Arguments
 ///
-/// - `kernel_addr` — Linux kernel entry point.
-/// - `dtb_addr` — Patched DTB address (passed as x0 to Linux).
-/// - `fw_addr` — BL31 firmware load address.
+/// Unified Linux boot entry point.
+///
+/// Delegates to [`boot_linux_atf_prepared`] with the standard ATF
+/// BL31 → Linux handoff.
+///
+/// Required fields: `kernel_addr`, `dtb_addr`, `fw_addr`.
+/// Ignored fields: `rsdp_addr`, `bootargs`, `e820_entries`,
+/// `zero_page_addr`, `hart_id`.
+pub fn boot_linux(params: &fstart_services::boot::BootLinuxParams<'_>) -> ! {
+    boot_linux_atf_prepared(params.kernel_addr, params.dtb_addr, params.fw_addr)
+}
+
 pub fn boot_linux_atf_prepared(kernel_addr: u64, dtb_addr: u64, fw_addr: u64) -> ! {
     // SAFETY: all three structs are repr(C) with only integer fields,
     // so zeroed bytes form a valid (if empty) representation.

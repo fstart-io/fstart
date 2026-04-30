@@ -26,7 +26,17 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=FSTART_BOARD_RON");
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_NAME");
+    println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
+    println!("cargo:rerun-if-env-changed=FSTART_SMM_COREBOOT_HEADER");
     println!("cargo:rerun-if-changed={board_ron_path}");
+    if let Ok(smm_image) = env::var("FSTART_SMM_IMAGE") {
+        println!("cargo:rerun-if-changed={smm_image}");
+        println!("cargo:rustc-env=FSTART_SMM_IMAGE={smm_image}");
+    }
+    if let Ok(smm_header) = env::var("FSTART_SMM_COREBOOT_HEADER") {
+        println!("cargo:rerun-if-changed={smm_header}");
+        println!("cargo:rustc-env=FSTART_SMM_COREBOOT_HEADER={smm_header}");
+    }
 
     // Parse board config (two-phase: typed driver configs + metadata)
     let parsed = ron_loader::load_parsed_board(&PathBuf::from(&board_ron_path))

@@ -313,7 +313,7 @@ pub struct PsciReset;
 
 impl crabefi::ResetHandler for PsciReset {
     fn reset(&self, reset_type: crabefi::ResetType) -> ! {
-        let _function_id: u32 = match reset_type {
+        let function_id: u32 = match reset_type {
             crabefi::ResetType::Cold | crabefi::ResetType::Warm => 0x8400_0009, // SYSTEM_RESET
             crabefi::ResetType::Shutdown => 0x8400_0008,                        // SYSTEM_OFF
             // ResetType is #[non_exhaustive]; default unknown variants to cold reset.

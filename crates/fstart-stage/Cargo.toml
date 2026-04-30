@@ -21,7 +21,12 @@ x86_64 = ["dep:fstart-platform-x86_64"]
 # ARMv7 eGON boot for A20/H3, RISC-V eGON boot for D1).  Driven by
 # `soc_image_format: AllwinnerEgon` in the board RON, not by platform —
 # sunxi boards exist on multiple ISAs.
-sunxi = ["dep:fstart-soc-sunxi", "fstart-platform-aarch64?/sunxi", "fstart-platform-armv7?/sunxi", "fstart-platform-riscv64?/sunxi"]
+sunxi = [
+  "dep:fstart-soc-sunxi",
+  "fstart-platform-aarch64?/sunxi",
+  "fstart-platform-armv7?/sunxi",
+  "fstart-platform-riscv64?/sunxi",
+]
 # SBSA entry point — copies firmware from flash to DRAM before executing.
 sbsa = ["fstart-platform-aarch64?/sbsa"]
 # Driver selection (enabled based on board.ron devices)
@@ -44,10 +49,18 @@ pci-ecam = ["dep:fstart-driver-pci-ecam", "dep:fstart-alloc"]
 q35-hostbridge = ["dep:fstart-driver-q35-hostbridge", "dep:fstart-alloc"]
 bochs-display = ["dep:fstart-driver-bochs-display"]
 qemu-fw-cfg = ["dep:fstart-driver-qemu-fw-cfg"]
+# x86 chipset drivers (Atom D41x / ICH7 / IT8721F / CK505)
+ite8721f = ["dep:fstart-driver-ite8721f"]
+intel-pineview = ["dep:fstart-driver-intel-pineview"]
+intel-ich7 = ["dep:fstart-driver-intel-ich7"]
+i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
 # NS16550 with x86 port I/O support
 ns16550-pio = ["ns16550", "fstart-driver-ns16550?/pio"]
 # x86 boot protocol support (zero page construction in platform crate)
 x86-boot = []
+# x86 MP/SMM support.
+mp = ["dep:fstart-mp"]
+pineview-cpu = ["mp", "dep:fstart-cpu-pineview"]
 # x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
 x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
 # AcpiLoad capability (load ACPI tables from external provider)
@@ -57,8 +70,16 @@ memory-detect = []
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
-sha2-digest = ["ffs", "fstart-capabilities/sha2-digest", "fstart-ffs/sha2-digest"]
-sha3-digest = ["ffs", "fstart-capabilities/sha3-digest", "fstart-ffs/sha3-digest"]
+sha2-digest = [
+  "ffs",
+  "fstart-capabilities/sha2-digest",
+  "fstart-ffs/sha2-digest",
+]
+sha3-digest = [
+  "ffs",
+  "fstart-capabilities/sha3-digest",
+  "fstart-ffs/sha3-digest",
+]
 # LZ4 decompression for compressed stage/payload segments
 lz4 = ["ffs", "fstart-capabilities/lz4"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
@@ -70,7 +91,17 @@ handoff = ["fstart-capabilities/handoff"]
 # ACPI table generation — routed through fstart-capabilities which owns
 # the prepare() entry point and depends on fstart-acpi internally.
 # fstart-acpi is also a direct dep for per-device AcpiDevice trait calls.
-acpi = ["dep:fstart-alloc", "dep:fstart-acpi", "fstart-acpi?/arm", "fstart-driver-pl011?/acpi", "fstart-capabilities/acpi"]
+acpi = [
+  "dep:fstart-alloc",
+  "dep:fstart-acpi",
+  "fstart-acpi?/arm",
+  "fstart-acpi?/x86",
+  "fstart-driver-pl011?/acpi",
+  "fstart-driver-intel-pineview?/acpi",
+  "fstart-driver-intel-ich7?/acpi",
+  "fstart-driver-ite8721f?/acpi",
+  "fstart-capabilities/acpi",
+]
 # SMBIOS table generation — routed through fstart-capabilities which owns
 # the prepare() entry point and depends on fstart-smbios internally.
 smbios = ["fstart-capabilities/smbios"]
@@ -86,6 +117,7 @@ fstart-capabilities = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
+fstart-stage-runtime = { workspace = true }
 fstart-types = { workspace = true }
 heapless = { workspace = true }
 
@@ -115,6 +147,12 @@ fstart-driver-pci-ecam = { workspace = true, optional = true }
 fstart-driver-bochs-display = { workspace = true, optional = true }
 fstart-driver-qemu-fw-cfg = { workspace = true, optional = true }
 fstart-driver-q35-hostbridge = { workspace = true, optional = true }
+fstart-driver-ite8721f = { workspace = true, optional = true }
+fstart-driver-intel-pineview = { workspace = true, optional = true }
+fstart-driver-intel-ich7 = { workspace = true, optional = true }
+fstart-driver-i2c-ck505 = { workspace = true, optional = true }
+fstart-mp = { workspace = true, optional = true }
+fstart-cpu-pineview = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

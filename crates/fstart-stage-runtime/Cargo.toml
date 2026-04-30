@@ -1,0 +1,20 @@
+[package]
+name = "fstart-stage-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Handwritten stage executor. Codegen emits a per-board `impl Board for
+# Devices` and a `static PLAN: StagePlan`; this crate's `run_stage`
+# consumes them. See docs/driver-model.md and
+# .opencode/plans/stage-runtime-codegen-split.md.
+
+[features]
+default = []
+# Pulls in the std-requiring `DeviceMask` tests. Host-only; firmware
+# builds leave this off.
+std = ["fstart-types/std"]
+
+[dependencies]
+fstart-types = { workspace = true }
+fstart-services = { workspace = true }

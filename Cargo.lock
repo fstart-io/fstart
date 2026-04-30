@@ -495,10 +495,16 @@ dependencies = [
 name = "fstart-codegen"
 version = "0.1.0"
 dependencies = [
+ "acpi_tables",
+ "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-device-registry",
  "fstart-driver-designware-i2c",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
+ "fstart-services",
  "fstart-types",
  "heapless",
  "prettyplease",
@@ -507,6 +513,16 @@ dependencies = [
  "ron",
  "serde",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "fstart-cpu-pineview"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-log",
+ "fstart-mp",
+ "ufmt",
 ]
 
 [[package]]
@@ -537,6 +553,10 @@ dependencies = [
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
+ "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
@@ -599,6 +619,69 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-i2c-ck505"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-services",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-ich7"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-ecam",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-pineview-regs",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-superio",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-pineview"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-ecam",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-mp",
+ "fstart-pineview-regs",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-smm",
+ "fstart-spd",
+ "heapless",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-ite8721f"
+version = "0.1.0"
+dependencies = [
+ "fstart-superio",
+]
+
+[[package]]
 name = "fstart-driver-ns16550"
 version = "0.1.0"
 dependencies = [
@@ -639,8 +722,11 @@ version = "0.1.0"
 dependencies = [
  "fstart-driver-pci-ecam",
  "fstart-log",
+ "fstart-mp",
  "fstart-pio",
+ "fstart-pmio-ich",
  "fstart-services",
+ "fstart-smm",
  "serde",
  "ufmt",
 ]
@@ -774,6 +860,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-ecam"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+]
+
+[[package]]
 name = "fstart-ffs"
 version = "0.1.0"
 dependencies = [
@@ -797,6 +890,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-gpio-ich"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "heapless",
+ "ron",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-hda"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "heapless",
+ "ron",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-lapic"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
@@ -812,6 +936,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-mp"
+version = "0.1.0"
+dependencies = [
+ "fstart-lapic",
+ "fstart-log",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-pineview-regs"
+version = "0.1.0"
+dependencies = [
+ "fstart-ecam",
+ "fstart-mmio",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-pio"
 version = "0.1.0"
 
@@ -819,6 +961,7 @@ version = "0.1.0"
 name = "fstart-platform-aarch64"
 version = "0.1.0"
 dependencies = [
+ "fstart-services",
  "fstart-soc-sunxi",
 ]
 
@@ -827,6 +970,7 @@ name = "fstart-platform-armv7"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-services",
  "fstart-soc-sunxi",
 ]
 
@@ -834,6 +978,7 @@ dependencies = [
 name = "fstart-platform-riscv64"
 version = "0.1.0"
 dependencies = [
+ "fstart-services",
  "fstart-soc-sunxi",
 ]
 
@@ -845,6 +990,13 @@ dependencies = [
  "fstart-pio",
  "fstart-services",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-pmio-ich"
+version = "0.1.0"
+dependencies = [
+ "fstart-pio",
 ]
 
 [[package]]
@@ -866,11 +1018,42 @@ name = "fstart-smbios"
 version = "0.1.0"
 
 [[package]]
+name = "fstart-smbus-intel"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pineview-regs",
+ "fstart-pio",
+ "fstart-services",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-smm"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-smm-image"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fstart-smm",
+]
+
+[[package]]
 name = "fstart-soc-sunxi"
 version = "0.1.0"
 dependencies = [
  "fstart-services",
  "fstart-types",
+]
+
+[[package]]
+name = "fstart-spd"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-services",
 ]
 
 [[package]]
@@ -882,11 +1065,16 @@ dependencies = [
  "fstart-arch",
  "fstart-capabilities",
  "fstart-codegen",
+ "fstart-cpu-pineview",
  "fstart-crabefi",
  "fstart-driver-bochs-display",
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
+ "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
@@ -904,6 +1092,7 @@ dependencies = [
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",
+ "fstart-mp",
  "fstart-platform-aarch64",
  "fstart-platform-armv7",
  "fstart-platform-riscv64",
@@ -911,9 +1100,18 @@ dependencies = [
  "fstart-runtime",
  "fstart-services",
  "fstart-soc-sunxi",
+ "fstart-stage-runtime",
  "fstart-types",
  "heapless",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-stage-runtime"
+version = "0.1.0"
+dependencies = [
+ "fstart-services",
+ "fstart-types",
 ]
 
 [[package]]
@@ -929,6 +1127,20 @@ name = "fstart-sunxi-pio"
 version = "0.1.0"
 dependencies = [
  "fstart-mmio",
+]
+
+[[package]]
+name = "fstart-superio"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "heapless",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
@@ -1674,6 +1886,7 @@ dependencies = [
  "fstart-crypto",
  "fstart-ffs",
  "fstart-fit",
+ "fstart-smm-image",
  "fstart-types",
  "goblin",
  "rand_core",
