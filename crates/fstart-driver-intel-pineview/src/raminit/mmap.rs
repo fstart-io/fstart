@@ -122,7 +122,7 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
         let rank_in_dimm = (r % 2) as u8;
         if let Some(ref d) = si.dimms[dimm_idx] {
             if d.card_type != 0 && rank_in_dimm < d.ranks {
-                let banks = (d.banks as usize).min(1);
+                let banks = usize::from(d.banks >= 8);
                 let width = match d.width {
                     fstart_spd::ChipWidth::X16 | fstart_spd::ChipWidth::X32 => 1,
                     _ => 0,
@@ -130,7 +130,7 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
                 let cols = (d.cols as usize).saturating_sub(9).min(1);
                 let rows = (d.rows as usize).saturating_sub(12).min(3);
                 let mut dra = DRATAB[banks][width][cols][rows];
-                if d.banks == 1 {
+                if d.banks >= 8 {
                     dra |= 1 << 7;
                 }
                 c0dra |= (dra as u32) << (r * 8);
@@ -188,7 +188,7 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
 /// Program memory-mapped registers: TOLUD, TOM, TOUUD, GBSM, BGSM, TSEG.
 ///
 /// Full port from coreboot `sdram_mmap_regs()`.
-pub fn sdram_mmap_regs(si: &SysInfo, mch: &MchBar) {
+pub fn sdram_mmap_regs(si: &SysInfo, _mch: &MchBar) {
     let hb = ecam::PciDevBdf::new(0, 0, 0);
     let ggc = hb.read16(hostbridge::GGC);
 

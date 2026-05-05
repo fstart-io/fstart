@@ -15,6 +15,7 @@
 //!   with FEL state saving for USB debug mode return.
 
 #![no_std]
+#![cfg(target_arch = "aarch64")]
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

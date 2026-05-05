@@ -239,6 +239,13 @@ pub enum DslItem {
         #[allow(dead_code)]
         span: Span,
     },
+    /// `METHOD(arg0, arg1, ...);`
+    MethodCall {
+        name: NameOrInterp,
+        args: Vec<DslExpr>,
+        #[allow(dead_code)]
+        span: Span,
+    },
 }
 
 /// Return value can be either a legacy DslValue or a new-style DslExpr.
@@ -568,14 +575,16 @@ impl Parser {
                     "Increment" => self.parse_increment_call(),
                     "Decrement" => self.parse_decrement_call(),
                     _ => {
-                        // Could be an assignment, increment, or decrement:
+                        // Could be an assignment, increment/decrement, or
+                        // ASL method invocation:
                         //   IDENT = expr;
                         //   LocalN = expr;
-                        //   ArgN = expr;
                         //   IDENT++;
-                        //   IDENT--;
+                        //   METHOD(arg0, arg1);
                         if self.is_assign_or_postfix() {
                             self.parse_assign_or_postfix()
+                        } else if self.is_method_call() {
+                            self.parse_method_call()
                         } else {
                             Err(Error::new(
                                 ident.span(),
@@ -585,11 +594,16 @@ impl Parser {
                     }
                 }
             }
-            // #{expr} -- bare interpolation at statement level
+            // #{expr} -- bare interpolation at statement level, or an
+            // interpolated method target: #{path_expr}(arg0, ...);
             TokenTree::Punct(p) if p.as_char() == '#' => {
-                self.advance(); // consume '#'
-                let (expr, _) = self.expect_group(Delimiter::Brace)?;
-                Ok(DslItem::RawExpr { expr })
+                if self.is_method_call() {
+                    self.parse_method_call()
+                } else {
+                    self.advance(); // consume '#'
+                    let (expr, _) = self.expect_group(Delimiter::Brace)?;
+                    Ok(DslItem::RawExpr { expr })
+                }
             }
             other => Err(Error::new(other.span(), "expected DSL keyword or #{expr}")),
         }
@@ -673,6 +687,55 @@ impl Parser {
             }
             _ => Err(Error::new(span, "expected `=`, `++`, or `--` after target")),
         }
+    }
+
+    /// Look ahead for an ASL method invocation statement:
+    /// `METHOD(arg0, ...)` or `#{path_expr}(arg0, ...)`.
+    fn is_method_call(&self) -> bool {
+        match self.peek() {
+            Some(TokenTree::Ident(ident)) => {
+                let name = ident.to_string();
+                !is_statement_keyword(&name)
+                    && matches!(self.peek_at(1), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis)
+            }
+            Some(TokenTree::Punct(p)) if p.as_char() == '#' => {
+                matches!(self.peek_at(1), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace)
+                    && matches!(self.peek_at(2), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis)
+            }
+            _ => false,
+        }
+    }
+
+    /// Parse an ASL method invocation statement.
+    fn parse_method_call(&mut self) -> Result<DslItem> {
+        let span = self.span();
+        let name = match self.advance() {
+            Some(TokenTree::Ident(ident)) => NameOrInterp::Literal(ident.to_string()),
+            Some(TokenTree::Punct(p)) if p.as_char() == '#' => {
+                let (expr, _) = self.expect_group(Delimiter::Brace)?;
+                NameOrInterp::Interpolation(expr)
+            }
+            Some(other) => return Err(Error::new(other.span(), "expected method name")),
+            None => return Err(Error::new(span, "expected method name")),
+        };
+
+        let (arg_tokens, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let args = Self::parse_expr_list(arg_tokens)?;
+        self.expect_punct(';')?;
+        Ok(DslItem::MethodCall { name, args, span })
+    }
+
+    fn parse_expr_list(tokens: TokenStream) -> Result<Vec<DslExpr>> {
+        let mut parser = Parser::new(tokens);
+        let mut args = Vec::new();
+        while !parser.at_end() {
+            args.push(parser.parse_expr(0)?);
+            if parser.at_end() {
+                break;
+            }
+            parser.expect_punct(',')?;
+        }
+        Ok(args)
     }
 
     // -------------------------------------------------------------------

@@ -76,6 +76,11 @@ fn validate_item(item: &DslItem) -> Result<()> {
         DslItem::While { body, .. } => {
             validate_items(body)?;
         }
+        DslItem::MethodCall { name, span, .. } => {
+            if let NameOrInterp::Literal(p) = name {
+                validate_acpi_path(p, *span)?;
+            }
+        }
         DslItem::Store { .. }
         | DslItem::ShiftLeft { .. }
         | DslItem::Subtract { .. }

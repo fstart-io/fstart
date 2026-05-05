@@ -47,8 +47,8 @@ use quote::{format_ident, quote};
 use fstart_device_registry::DriverInstance;
 use fstart_types::memory::RegionKind;
 use fstart_types::{
-    BoardConfig, Capability, DeviceConfig, DeviceNode, FdtSource, FirmwareConfig, FirmwareKind,
-    PayloadConfig, Platform, StageLayout,
+    BoardConfig, BootMedium, Capability, DeviceConfig, DeviceNode, FdtSource, FirmwareConfig,
+    FirmwareKind, PayloadConfig, Platform, StageLayout,
 };
 
 // `PayloadConfig` and `FdtSource` are used by [`fdt_prepare_platform_body`] and
@@ -86,7 +86,7 @@ pub(super) fn generate_board_adapter(
     capabilities: &[Capability],
     stage_name: Option<&str>,
 ) -> TokenStream {
-    let excluded = compute_excluded_indices(instances, device_tree, capabilities);
+    let excluded = compute_excluded_indices(&config.devices, instances, device_tree, capabilities);
     let platform = config.platform;
     let ffs_stage = needs_ffs(capabilities);
     let is_first_stage = compute_is_first_stage(&config.stages, stage_name);
@@ -198,6 +198,7 @@ struct BoardCtx<'a> {
 /// the old generator excludes bus children entirely.  We mirror that
 /// rule so the two adapters stay isomorphic during the transition.
 fn compute_excluded_indices(
+    devices: &[DeviceConfig],
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
     capabilities: &[Capability],
@@ -208,14 +209,57 @@ fn compute_excluded_indices(
     if has_driver_init {
         return Vec::new();
     }
+
+    let mut referenced: Vec<&str> = Vec::new();
+    for cap in capabilities {
+        match cap {
+            Capability::ClockInit { device }
+            | Capability::ConsoleInit { device }
+            | Capability::DramInit { device }
+            | Capability::PciInit { device }
+            | Capability::AcpiLoad { device }
+            | Capability::MemoryDetect { device } => referenced.push(device.as_str()),
+            Capability::ChipsetInit {
+                northbridge,
+                southbridge,
+            }
+            | Capability::ChipsetPreConsole {
+                northbridge,
+                southbridge,
+            } => {
+                referenced.push(northbridge.as_str());
+                referenced.push(southbridge.as_str());
+            }
+            Capability::BootMedia(BootMedium::Device { name, .. }) => {
+                referenced.push(name.as_str())
+            }
+            Capability::BootMedia(BootMedium::AutoDevice { devices }) => {
+                for dev in devices {
+                    referenced.push(dev.name.as_str());
+                }
+            }
+            Capability::LoadNextStage { devices, .. } => {
+                for dev in devices {
+                    referenced.push(dev.name.as_str());
+                }
+            }
+            _ => {}
+        }
+    }
+
     device_tree
         .iter()
         .enumerate()
         .filter(|(idx, node)| {
-            // Only exclude children whose enabled driver actually
-            // exists at runtime — acpi-only / structural devices are
-            // already filtered by `enabled_indices` below.
-            node.parent.is_some() && !instances[*idx].is_structural()
+            // Only exclude bus children that are not directly referenced by a
+            // stage capability. Capability targets (e.g. ConsoleInit on an LPC
+            // SuperIO/UART) must still be materialised even in tiny stages that
+            // intentionally omit DriverInit.
+            node.parent.is_some()
+                && !instances[*idx].is_structural()
+                && !referenced
+                    .iter()
+                    .any(|name| *name == devices[*idx].name.as_str())
         })
         .map(|(idx, _)| idx)
         .collect()
@@ -505,6 +549,7 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let stage_load_body = stage_load_body(ctx);
     let return_to_fel_body = return_to_fel_body(platform, ctx);
     let pci_init_body = pci_init_body(ctx);
+    let dram_init_body = dram_init_body(ctx);
     let chipset_init_body = chipset_init_body(ctx);
     let chipset_pre_console_body = chipset_pre_console_body(ctx);
     let acpi_load_body = acpi_load_body(ctx);
@@ -603,6 +648,13 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
                 sb: fstart_types::DeviceId,
             ) -> Result<(), fstart_services::device::DeviceError> {
                 #chipset_pre_console_body
+            }
+
+            fn dram_init(
+                &mut self,
+                id: fstart_types::DeviceId,
+            ) -> Result<(), fstart_services::device::DeviceError> {
+                #dram_init_body
             }
 
             fn pci_init(
@@ -1356,6 +1408,48 @@ fn return_to_fel_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     }
 }
 
+/// Emit the body of `Board::dram_init`.
+///
+/// Matches `id` against devices that provide the `MemoryController` service and
+/// dispatches `MemoryController::dram_init()` on the concrete driver. The
+/// device may already be constructed/inited by `ChipsetPreConsole`, so this is
+/// deliberately separate from `Board::init_device`.
+fn dram_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
+    let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .filter(|idx| {
+            ctx.devices[*idx]
+                .services
+                .iter()
+                .any(|s| s.as_str() == "MemoryController")
+        })
+        .map(|idx| {
+            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
+            quote! {
+                #id_lit => {
+                    use fstart_services::MemoryController as _MemoryController;
+                    let dev = self.#field
+                        .as_mut()
+                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                    _MemoryController::dram_init(dev)
+                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                    Ok(())
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        match id {
+            #(#arms)*
+            _ => {
+                fstart_log::error!("dram_init: unknown MemoryController id {}", id);
+                Err(fstart_services::device::DeviceError::InitFailed)
+            }
+        }
+    }
+}
+
 /// Emit the body of `Board::pci_init`.
 ///
 /// The executor has already run `init_device(id)` (which calls
@@ -1585,6 +1679,26 @@ fn chipset_pre_console_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let sb_field = format_ident!("{}", ctx.devices[sb_idx].name.as_str());
     let nb_id_lit = proc_macro2::Literal::u8_unsuffixed(nb_idx as u8);
     let sb_id_lit = proc_macro2::Literal::u8_unsuffixed(sb_idx as u8);
+    let mainboard_hooks = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .filter(|idx| {
+            ctx.devices[*idx]
+                .services
+                .iter()
+                .any(|s| s.as_str() == "Mainboard")
+        })
+        .map(|idx| {
+            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
+            quote! {
+                self.init_device(#id_lit)?;
+                fstart_services::Mainboard::pre_console_init(
+                    self.#field
+                        .as_mut()
+                        .unwrap_or_else(|| fstart_platform::halt()),
+                )
+                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+            }
+        });
 
     quote! {
         use fstart_services::PciHost as _PciHost;
@@ -1603,6 +1717,7 @@ fn chipset_pre_console_body(ctx: &BoardCtx<'_>) -> TokenStream {
                         .unwrap_or_else(|| fstart_platform::halt()),
                 )
                 .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                #(#mainboard_hooks)*
                 Ok(())
             }
             _ => {
@@ -3512,6 +3627,19 @@ mod tests {
         // Bootblock uses SigVerify, so it uses FFS and sig_verify is
         // real.
         assert!(src.contains("fstart_capabilities::sig_verify"));
+    }
+
+    #[test]
+    fn bootblock_without_driver_init_keeps_capability_referenced_child() {
+        // Foxconn's bootblock intentionally omits DriverInit, but ConsoleInit
+        // targets a SuperIO child under the LPC bus. Capability targets must be
+        // materialised even when unrelated bus children are excluded.
+        let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
+        assert!(
+            src.contains("superio: Option"),
+            "bootblock adapter must keep ConsoleInit child; got:\n{src}"
+        );
+        assert!(src.contains("fn dram_init"));
     }
 
     #[test]

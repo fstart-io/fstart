@@ -1,0 +1,26 @@
+[package]
+name = "fstart-driver-intel-gm965"
+description = "Intel GM965 (Crestline) northbridge driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
+
+[dependencies]
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-ecam = { workspace = true }
+fstart-log = { workspace = true }
+fstart-mmio = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true }
+fstart-smbus-intel = { workspace = true }
+fstart-spd = { workspace = true }
+heapless = { workspace = true }
+serde = { workspace = true }
+tock-registers = { workspace = true }
+ufmt = { workspace = true }

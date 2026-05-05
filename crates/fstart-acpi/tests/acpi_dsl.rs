@@ -1090,6 +1090,35 @@ fn test_assign_matches_store() {
     assert_eq!(aml_2, aml_1, "ASL 2.0 assignment should match legacy Store");
 }
 
+/// Test ASL method-call statement syntax.
+#[test]
+fn test_method_call_statement() {
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("TSTC", 0, NotSerialized) {
+            CALL(1u32, Arg0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.windows(4).any(|w| w == b"TSTC"));
+    assert!(aml.windows(4).any(|w| w == b"CALL"));
+}
+
+/// Test method-call statements with an interpolated absolute ACPI path.
+#[test]
+fn test_interpolated_method_call_statement() {
+    let path = fstart_acpi::aml::Path::new("\\_SB_.PCI0.LPCB.EC__.MUTE");
+    let aml: Vec<u8> = acpi_dsl! {
+        Method("TSTP", 1, NotSerialized) {
+            #{path}(Arg0);
+        }
+    };
+
+    assert_eq!(aml[0], 0x14);
+    assert!(aml.windows(4).any(|w| w == b"TSTP"));
+    assert!(aml.windows(4).any(|w| w == b"MUTE"));
+}
+
 /// Test postfix increment `Local0++` and decrement `Local0--`.
 #[test]
 fn test_postfix_inc_dec() {

@@ -2,6 +2,7 @@
 
 use super::{SysInfo, TOTAL_DIMMS};
 use fstart_services::ServiceError;
+use fstart_spd::ChipWidth;
 
 const UBDIMM: u8 = 1;
 const SODIMM: u8 = 2;
@@ -9,7 +10,8 @@ const SODIMM: u8 = 2;
 /// Read SPD data from all DIMMs and determine the memory configuration.
 ///
 /// Ported from coreboot `sdram_read_spds()` + `decode_spd()` +
-/// `find_ramconfig()`.
+/// `find_ramconfig()`, with common DDR2 SPD parsing delegated to
+/// `fstart-spd` so Pineview and GM965 share the same geometry/timing decode.
 pub fn read_spds(
     si: &mut SysInfo,
     smbus: &mut dyn fstart_services::SmBus,
@@ -19,95 +21,38 @@ pub fn read_spds(
     for i in 0..TOTAL_DIMMS {
         let addr = si.spd_map[i];
         if addr == 0 {
-            si.dimms[i] = Default::default();
+            si.dimms[i] = None;
             continue;
         }
 
-        // Read first 64 bytes of SPD (enough for DDR2 decode).
-        let mut spd_buf = [0u8; 256];
-        let mut ok = true;
-        for byte in 0..64u8 {
-            match smbus.read_byte(addr, byte) {
-                Ok(v) => spd_buf[byte as usize] = v,
-                Err(_) => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-
-        if !ok {
+        let Some(spd_buf) = fstart_spd::ddr2::read_spd(smbus, addr)? else {
             fstart_log::info!("raminit: DIMM {} (addr {:#x}) not present", i, addr);
             si.dimms[i] = None;
             continue;
-        }
+        };
 
-        let card_type = spd_buf[62] & 0x1F;
-        if card_type == 0 {
-            si.dimms[i] = None;
-            continue;
-        }
-
-        // Verify DDR2.
-        if spd_buf[2] != fstart_spd::DDR2 {
-            fstart_log::error!("raminit: DIMM {} is not DDR2 (type={:#x})", i, spd_buf[2]);
+        let Some(mut info) = fstart_spd::ddr2::decode_dimm(&spd_buf) else {
+            fstart_log::error!("raminit: DIMM {} is not valid DDR2", i);
             return Err(ServiceError::HardwareError);
-        }
+        };
+
         si.spd_type = fstart_spd::DDR2;
 
-        // Decode SPD fields (coreboot decode_spd).
-        let dimm_type = match spd_buf[20] {
+        // Preserve Pineview's coreboot CAS mask policy: only CAS3..CAS6 are
+        // considered, with a conservative CAS0..2 fallback if the advertised
+        // mask is unusable.
+        info.cas_latencies &= 0x78;
+        if info.cas_latencies == 0 {
+            info.cas_latencies = 7;
+        }
+
+        si.dt0mode |= (info.spd_data[49] & 0x2) >> 1;
+
+        let dimm_type = match info.spd_data[20] {
             0x02 => UBDIMM,
             0x04 => SODIMM,
             _ => 0,
         };
-        let sides = (spd_buf[5] & 0x7) + 1;
-        let banks = (spd_buf[17] >> 2).wrapping_sub(1);
-        let rows = spd_buf[3];
-        let cols = spd_buf[4];
-        let cas_latencies = 0x78 & spd_buf[18];
-        let cas_latencies = if cas_latencies == 0 { 7 } else { cas_latencies };
-        let width_raw = (spd_buf[13] >> 3).wrapping_sub(1);
-        let page_size = ((width_raw as u32) + 1) * (1u32 << cols as u32);
-
-        let info = fstart_spd::DimmInfo {
-            card_type,
-            mem_type: fstart_spd::DDR2,
-            width: match width_raw {
-                0 => fstart_spd::ChipWidth::X8,
-                1 => fstart_spd::ChipWidth::X16,
-                _ => fstart_spd::ChipWidth::X8,
-            },
-            chip_capacity: match banks {
-                0 => fstart_spd::ChipCapacity::Cap256M,
-                1 => fstart_spd::ChipCapacity::Cap512M,
-                2 => fstart_spd::ChipCapacity::Cap1G,
-                3 => fstart_spd::ChipCapacity::Cap2G,
-                _ => fstart_spd::ChipCapacity::Cap1G,
-            },
-            page_size,
-            sides,
-            banks,
-            ranks: sides,
-            rows,
-            cols,
-            cas_latencies,
-            taa_min: spd_buf[26],
-            tck_min: spd_buf[25],
-            twr: spd_buf[36],
-            trp: spd_buf[27],
-            trcd: spd_buf[29],
-            tras: spd_buf[30],
-            trfc: spd_buf[42] as u16 | ((spd_buf[40] as u16 & 0xF) << 8),
-            twtr: spd_buf[37],
-            trrd: spd_buf[28],
-            trtp: spd_buf[38],
-            rank_capacity_mb: 0, // computed later in mmap
-            spd_data: spd_buf,
-        };
-
-        si.dt0mode |= (spd_buf[49] & 0x2) >> 1;
-
         let type_str = if dimm_type == UBDIMM {
             "UB"
         } else if dimm_type == SODIMM {
@@ -116,14 +61,15 @@ pub fn read_spds(
             "??"
         };
         fstart_log::info!(
-            "raminit: {}-DIMM {} sides={} banks={} rows={} cols={} width={}",
+            "raminit: {}-DIMM {} ranks={} banks={} rows={} cols={} width=x{} page={}B",
             type_str,
             i,
-            sides,
-            banks,
-            rows,
-            cols,
-            (width_raw + 1) * 8
+            info.ranks as u32,
+            info.banks as u32,
+            info.rows as u32,
+            info.cols as u32,
+            chip_width_bits(info.width) as u32,
+            info.page_size,
         );
 
         si.dimms[i] = Some(info);
@@ -133,7 +79,7 @@ pub fn read_spds(
     let any_populated = si
         .dimms
         .iter()
-        .any(|d| d.as_ref().map_or(false, |d| d.card_type != 0));
+        .any(|d| d.as_ref().is_some_and(|d| d.card_type != 0));
     if !any_populated {
         fstart_log::error!("raminit: no DIMMs detected");
         return Err(ServiceError::HardwareError);
@@ -148,6 +94,15 @@ pub fn read_spds(
     Ok(())
 }
 
+fn chip_width_bits(width: ChipWidth) -> u8 {
+    match width {
+        ChipWidth::X4 => 4,
+        ChipWidth::X8 => 8,
+        ChipWidth::X16 => 16,
+        ChipWidth::X32 => 32,
+    }
+}
+
 /// Determine the DIMM configuration code for a channel.
 ///
 /// RAM Config: DIMMB-DIMMA
@@ -160,14 +115,14 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
 
     let a_sides = a.as_ref().map_or(0, |d| d.sides);
     let b_sides = b.as_ref().map_or(0, |d| d.sides);
-    let a_width = a.as_ref().map_or(0, |d| d.width as u8);
-    let b_width = b.as_ref().map_or(0, |d| d.width as u8);
+    let a_x8 = a.as_ref().is_some_and(|d| d.width == ChipWidth::X8);
+    let b_x8 = b.as_ref().is_some_and(|d| d.width == ChipWidth::X8);
 
     match (a_sides, b_sides) {
         (0, 0) => 0, // EMPTY-EMPTY
         (0, 1) => 1, // EMPTY-SS
         (0, s) if s > 1 => {
-            if b_width == 0 {
+            if b_x8 {
                 5
             } else {
                 2
@@ -176,14 +131,14 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
         (1, 0) => 1, // SS-EMPTY
         (1, 1) => 3, // SS-SS (same width assumed)
         (s, 0) if s > 1 => {
-            if a_width == 0 {
+            if a_x8 {
                 5
             } else {
                 4
             }
         } // DS-EMPTY
         (s1, s2) if s1 > 1 && s2 > 1 => {
-            if a_width == 0 && b_width == 0 {
+            if a_x8 && b_x8 {
                 6
             } else {
                 4
