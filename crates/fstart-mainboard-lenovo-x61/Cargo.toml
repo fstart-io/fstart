@@ -1,0 +1,19 @@
+[package]
+name = "fstart-mainboard-lenovo-x61"
+description = "Lenovo ThinkPad X61 mainboard glue (dock, DLPC, ACPI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
+
+[dependencies]
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
+fstart-log = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true }
+heapless = { workspace = true }
+serde = { workspace = true }

@@ -14,6 +14,7 @@
 //!   starts directly in RV64 M-mode — no mode switch is needed.
 
 #![no_std]
+#![cfg(target_arch = "riscv64")]
 
 #[cfg(not(feature = "sunxi"))]
 pub mod entry;

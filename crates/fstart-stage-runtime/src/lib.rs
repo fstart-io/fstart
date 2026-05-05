@@ -316,6 +316,15 @@ pub trait Board: Sized {
     /// constructed earlier by `init_device`).
     fn chipset_init(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError>;
 
+    /// Executor arm for [`CapOp::DramInit`]. `id` comes from the CapOp variant.
+    ///
+    /// Generated adapter dispatches to `MemoryController::dram_init()` on the
+    /// already-constructed controller. This deliberately does not go through
+    /// `init_device()`: x86 northbridges are usually constructed by
+    /// `ChipsetPreConsole`, while DRAM training must happen later after
+    /// chipset/SMBus setup.
+    fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;
+
     /// Executor arm for [`CapOp::PciInit`].  `id` comes from the
     /// CapOp variant.
     ///
@@ -427,7 +436,7 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
             CapOp::ReturnToFel => board.return_to_fel(),
 
             // ----- Single-device lifecycle capabilities ----------------------
-            CapOp::ClockInit(id) | CapOp::DramInit(id) => {
+            CapOp::ClockInit(id) => {
                 // Persistent hardware-level init — skip if a previous
                 // stage already did it.  The executor's `inited`
                 // bitset handles that uniformly.
@@ -435,6 +444,16 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                     continue;
                 }
                 if board.init_device(id).is_err() {
+                    board.halt();
+                }
+                inited.set(id);
+            }
+
+            CapOp::DramInit(id) => {
+                if board.init_device(id).is_err() {
+                    board.halt();
+                }
+                if board.dram_init(id).is_err() {
                     board.halt();
                 }
                 inited.set(id);
@@ -628,6 +647,7 @@ mod tests {
             nb: DeviceId,
             sb: DeviceId,
         },
+        DramInit(DeviceId),
         PciInit(DeviceId),
         AcpiLoad(DeviceId),
         MemoryDetect(DeviceId),
@@ -743,6 +763,10 @@ mod tests {
         }
         fn chipset_pre_console(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError> {
             push(Event::ChipsetPreConsole { nb, sb });
+            Ok(())
+        }
+        fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
+            push(Event::DramInit(id));
             Ok(())
         }
         fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
@@ -876,6 +900,33 @@ mod tests {
             all_devices: &[],
         };
         assert_eq!(run(&PLAN), [Event::InitDevice(3), Event::Halt]);
+    }
+
+    #[test]
+    fn dram_init_runs_even_after_device_was_constructed() {
+        static PLAN: StagePlan = StagePlan {
+            stage_name: "t",
+            is_first_stage: true,
+            ends_with_jump: false,
+            caps: &[
+                CapOp::ChipsetPreConsole { nb: 1, sb: 2 },
+                CapOp::DramInit(1),
+            ],
+            persistent_inited: &[],
+            boot_media_gated: &[],
+            all_devices: &[],
+        };
+        assert_eq!(
+            run(&PLAN),
+            [
+                Event::InitDevice(1),
+                Event::InitDevice(2),
+                Event::ChipsetPreConsole { nb: 1, sb: 2 },
+                Event::InitDevice(1),
+                Event::DramInit(1),
+                Event::Halt,
+            ]
+        );
     }
 
     #[test]
@@ -1233,6 +1284,9 @@ mod tests {
                 sb: DeviceId,
             ) -> Result<(), DeviceError> {
                 MockBoard.chipset_pre_console(nb, sb)
+            }
+            fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
+                MockBoard.dram_init(id)
             }
             fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
                 MockBoard.pci_init(id)

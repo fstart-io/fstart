@@ -32,6 +32,9 @@ fstart-driver-q35-hostbridge = { path = "../fstart-driver-q35-hostbridge", optio
 fstart-driver-ite8721f = { path = "../fstart-driver-ite8721f", optional = true }
 fstart-driver-intel-pineview = { path = "../fstart-driver-intel-pineview", optional = true }
 fstart-driver-intel-ich7 = { path = "../fstart-driver-intel-ich7", optional = true }
+fstart-driver-intel-gm965 = { path = "../fstart-driver-intel-gm965", optional = true }
+fstart-driver-intel-ich8 = { path = "../fstart-driver-intel-ich8", optional = true }
+fstart-mainboard-lenovo-x61 = { path = "../fstart-mainboard-lenovo-x61", optional = true }
 fstart-driver-i2c-ck505 = { path = "../fstart-driver-i2c-ck505", optional = true }
 
 [features]
@@ -58,30 +61,36 @@ q35-hostbridge = ["dep:fstart-driver-q35-hostbridge"]
 ite8721f = ["dep:fstart-driver-ite8721f"]
 intel-pineview = ["dep:fstart-driver-intel-pineview"]
 intel-ich7 = ["dep:fstart-driver-intel-ich7"]
+intel-gm965 = ["dep:fstart-driver-intel-gm965"]
+intel-ich8 = ["dep:fstart-driver-intel-ich8"]
+lenovo-x61-mainboard = ["dep:fstart-mainboard-lenovo-x61"]
 i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
 
 # Meta-feature to enable all drivers (used by codegen on host)
 all-drivers = [
-    "ns16550",
-    "pl011",
-    "designware-i2c",
-    "sunxi-a20-ccu",
-    "sunxi-a20-dramc",
-    "sunxi-mmc",
-    "sunxi-spi",
-    "sunxi-h3-ccu",
-    "sunxi-h3-dramc",
-    "sunxi-d1-ccu",
-    "sunxi-d1-dramc",
-    "sifive-uart",
-    "fu740-prci",
-    "fu740-ddr",
-    "pci-ecam",
-    "bochs-display",
-    "qemu-fw-cfg",
-    "q35-hostbridge",
-    "ite8721f",
-    "intel-pineview",
-    "intel-ich7",
-    "i2c-ck505",
+  "ns16550",
+  "pl011",
+  "designware-i2c",
+  "sunxi-a20-ccu",
+  "sunxi-a20-dramc",
+  "sunxi-mmc",
+  "sunxi-spi",
+  "sunxi-h3-ccu",
+  "sunxi-h3-dramc",
+  "sunxi-d1-ccu",
+  "sunxi-d1-dramc",
+  "sifive-uart",
+  "fu740-prci",
+  "fu740-ddr",
+  "pci-ecam",
+  "bochs-display",
+  "qemu-fw-cfg",
+  "q35-hostbridge",
+  "ite8721f",
+  "intel-pineview",
+  "intel-ich7",
+  "intel-gm965",
+  "intel-ich8",
+  "lenovo-x61-mainboard",
+  "i2c-ck505",
 ]

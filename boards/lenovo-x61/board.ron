@@ -1,0 +1,266 @@
+// Lenovo ThinkPad X61 — Intel GM965 (Crestline) + ICH8-M/HX.
+//
+// This board definition ports the early chipset/dock ordering from the latest
+// coreboot GM965/X61 work.  The dock path matters for early serial: when an X6
+// UltraBase is attached, the usable COM1 is behind the dock-side NSC PC87392.
+// Therefore ChipsetPreConsole first programs reusable GM965/ICH8 LPC/GPIO
+// decode, then invokes the LenovoX61Mainboard hook to initialise the DLPC
+// switch, connect the dock when present, and enable PC87392 LDN3 before the
+// NS16550 console driver touches port 0x3f8.
+(
+    name: "lenovo-x61",
+    platform: X86_64,
+
+    memory: (
+        regions: [
+            ( name: "flash", base: 0xFFC00000, size: 0x00400000, kind: Rom ),
+            // X61 commonly ships with 1-4 GiB DDR2.  The linker keeps firmware
+            // working state in the first 15 MiB; runtime sizing is read from
+            // GM965 TOLUD/TOUUD once RAM has been trained by future raminit.
+            ( name: "workram", base: 0x00100000, size: 0x00F00000, kind: Ram ),
+        ],
+        flash_base: Some(0xFFC00000),
+        flash_size: Some(0x00400000),
+        car: Some((
+            method: NonEvictMode,
+            base: 0xFEF00000,
+            size: 0x80000,
+        )),
+    ),
+
+    devices: [
+        (
+            name: "northbridge",
+            driver: IntelGm965((
+                mchbar: 0xFED14000,
+                dmibar: 0xFED18000,
+                epbar:  0xFED19000,
+                ecam_base: 0xE0000000,
+                ecam_buses: 64,
+                // IGD setup deliberately stops short of mode-setting.  It still
+                // enables GTTMMADR, creates the ACPI OpRegion, and looks for a
+                // raw VBT first at igd.vbt_addr (if configured), then in the
+                // legacy C0000 option-ROM window like coreboot.
+                igd: (
+                    enable_vga: true,
+                    enable_pipe_b: true,
+                    gtt_mmio_base: 0xFEB00000,
+                    legacy_vbt_probe: Some(0x000C0000),
+                ),
+                acpi_name: Some("PCI0"),
+            )),
+            services: ["MemoryController", "PciHost"],
+        ),
+        (
+            name: "southbridge",
+            driver: IntelIch8((
+                rcba: 0xFED1C000,
+                dmibar: 0xFED18000,
+                pirq_routing: (0x0b, 0x0b, 0x0b, 0x0b,
+                               0x0b, 0x0b, 0x0b, 0x0b),
+                gpe0_en: 0x01040046,
+                // Coreboot X61 routes GPI2, GPI8, and GPI13 to SCI.
+                gpi_routing: (0, 0, 2, 0, 0, 0, 0, 0,
+                              2, 0, 0, 0, 0, 2, 0, 0),
+                c4_on_c3: true,
+                lpc_iodec: 0x0210,
+                lpc_decode: (0x007c1601, 0x000c15e1, 0x001c1681, 0),
+                hda: Some((verbs: [(
+                    vendor_id: 0x11d41984,
+                    subsystem_id: 0x17aa20d6,
+                    pins: [
+                        // AD1984, Lenovo ThinkPad X61 pin defaults from coreboot.
+                        ( nid: 0x11, device: HpOut, conn: Jack,
+                          loc: External, geo: Right, connector: StereoMono18,
+                          color: Green, misc: 0, group: 1, seq: 15 ),
+                        ( nid: 0x12, device: Speaker, conn: Integrated,
+                          loc: Internal, geo: NA, connector: OtherAnalog,
+                          color: ColorUnknown, misc: 1, group: 1, seq: 0 ),
+                        ( nid: 0x13, nc: Some(0) ),
+                        ( nid: 0x14, device: MicIn, conn: Jack,
+                          loc: External, geo: Right, connector: StereoMono18,
+                          color: Red, misc: 0, group: 2, seq: 1 ),
+                        ( nid: 0x15, device: MicIn, conn: Integrated,
+                          loc: Internal, geo: NA, connector: OtherAnalog,
+                          color: ColorUnknown, misc: 1, group: 2, seq: 14 ),
+                        ( nid: 0x16, nc: Some(1) ),
+                        ( nid: 0x17, nc: Some(2) ),
+                        ( nid: 0x18, nc: Some(3) ),
+                        ( nid: 0x1a, nc: Some(4) ),
+                        ( nid: 0x1b, nc: Some(5) ),
+                        ( nid: 0x1c, device: MicIn, conn: Jack,
+                          loc: SeparateChassis, geo: Rear, connector: StereoMono18,
+                          color: Red, misc: 0, group: 2, seq: 0 ),
+                    ],
+                    extra_verbs: [
+                        0x00c3b027, 0x00d3b027,
+                        0x00737100, 0x00a37100,
+                        0x02037318, 0x0213b01f,
+                        0x0113b000, 0x0123b000,
+                        0x00370500, 0x00470500, 0x00570500, 0x00670500,
+                        0x00870500, 0x00970500, 0x01970500,
+                        0x01270c02,
+                    ],
+                )],)),
+                sata: Some(( mode: Ahci, ports: 0x01 )),
+                usb: Some((
+                    ehci: (true, true),
+                    uhci: (true, true, true, true, true, true),
+                )),
+                pcie_ports: (true, true, false, false, false, false),
+                ecam_base: 0xE0000000,
+                smbus_base: 0x0400,
+                // GPIOs from coreboot mainboard/lenovo/x61/gpio.c.  GPIO42 is
+                // driven high before raminit so the SMBus mux points at DIMM SPD.
+                gpio: (pins: [
+                    ( pin: 0, mode: Native, level: High, invert: true ),
+                    ( pin: 1, dir: Input, level: High, invert: true ),
+                    ( pin: 2, dir: Input, level: High, invert: true ),
+                    ( pin: 3, dir: Input, level: High, invert: true ),
+                    ( pin: 4, dir: Input, level: High, invert: true ),
+                    ( pin: 5, dir: Input, level: High, invert: true ),
+                    ( pin: 6, dir: Input, level: High, invert: true ),
+                    ( pin: 7, dir: Input, level: High, invert: true ),
+                    ( pin: 8, dir: Input, level: High, invert: true ),
+                    ( pin: 9 ),
+                    ( pin: 11, mode: Native, dir: Input, level: High, invert: true ),
+                    ( pin: 12, mode: Native, level: High, invert: true ),
+                    ( pin: 13, mode: Native, dir: Input, invert: true ),
+                    ( pin: 17, dir: Input, level: High ),
+                    ( pin: 18, dir: Input ),
+                    ( pin: 19, dir: Input ),
+                    ( pin: 20, level: High ),
+                    ( pin: 21, dir: Input ),
+                    ( pin: 22, dir: Input ),
+                    ( pin: 24, dir: Input, level: High ),
+                    ( pin: 27 ),
+                    ( pin: 28 ),
+                    ( pin: 29, level: High ),
+                    ( pin: 30, dir: Input, level: High ),
+                    ( pin: 31, dir: Input, level: High ),
+                    ( pin: 33, level: High ),
+                    ( pin: 34 ),
+                    ( pin: 36, dir: Input, level: High ),
+                    ( pin: 37, dir: Input, level: High ),
+                    ( pin: 38, dir: Input, level: High ),
+                    ( pin: 39, dir: Input ),
+                    ( pin: 41, level: High ),
+                    ( pin: 42, level: High ),
+                    ( pin: 43 ),
+                    ( pin: 48, dir: Input ),
+                ]),
+                acpi_name: Some("LPCB"),
+                c3_latency: 85,
+                power_on_after_fail: 0,
+                // Mainboard IRQ routing and ACPI SMI trap from coreboot
+                // mainboard/lenovo/x61/acpi/ich8_pci_irqs.asl + smi.h.
+                late_rcba: Some((
+                    d31ip: 0x00001230,
+                    d29ip: 0x40004321,
+                    d28ip: 0x00004321,
+                    d27ip: 0x00000002,
+                    d31ir: 0x1007,
+                    d30ir: 0x0076,
+                    d29ir: 0x3210,
+                    d28ir: 0x7654,
+                    d27ir: 0x0010,
+                    iotr3: Some((lo: 0x000c0801, hi: 0x000200f0)),
+                )),
+            )),
+            services: ["Southbridge"],
+            children: [
+                ( name: "lpc", services: ["LpcBus"],
+                    children: [
+                        // COM1 is enabled by the LenovoX61Mainboard pre-console hook
+                        // when the dock is present. The UART itself is standard 16550 PIO.
+                        ( name: "uart0", bus: Lpc(0x3f8),
+                            driver: Ns16550((
+                                regs: Pio(base: 0x3f8),
+                                clock_freq: 1843200,
+                                baud_rate: 115200,
+                            )),
+                            services: ["Console"],
+                        ),
+                    ],
+                ),
+                ( name: "smbus", services: ["SmBus"],
+                    children: [
+                        ( name: "ck505", bus: I2c(0x69), enabled: false,
+                            driver: I2cCk505((
+                                mask: [0xff, 0, 0, 0, 0],
+                                regs: [0x11, 0, 0, 0, 0],
+                            )),
+                            services: [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        (
+            name: "mainboard",
+            driver: LenovoX61Mainboard((
+                gpio_base: 0x0580,
+                dock_early_console: true,
+                acpi_name: Some("X61"),
+            )),
+            services: ["Mainboard"],
+        ),
+    ],
+
+    stages: Monolithic((
+        capabilities: [
+            ChipsetPreConsole( northbridge: "northbridge", southbridge: "southbridge" ),
+            ConsoleInit( device: "uart0" ),
+            ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+            DramInit( device: "northbridge" ),
+            DriverInit,
+            LateDriverInit,
+            AcpiPrepare,
+            BootMedia(MemoryMapped(
+                base: 0xFFC80000,
+                size: 0x0037F000,
+                ram_copy_addr: Some(0x02000000),
+            )),
+            SigVerify,
+            PayloadLoad,
+        ],
+        load_addr: 0xFFFF0000,
+        stack_size: 0x2000,
+        heap_size: Some(0x40000),
+        data_addr: Some(0xFEF00000),
+        runs_from: Rom,
+        page_size: Size2MiB,
+    )),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    mode: Rigid,
+
+    acpi: Some((
+        platform: X86((
+            num_cpus: Some(2),
+            lapic_base: 0xFEE00000,
+            ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
+            isos: [
+                ( bus: 0, source: 0, gsi: 2, flags: 0 ),
+                ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
+            ],
+            hpet_base: 0xFED00000,
+            legacy_devices: true,
+            sci_irq: 9,
+        )),
+    )),
+
+    payload: Some((
+        kind: LinuxBoot,
+        kernel_file: Some("../qemu-q35/bzImage"),
+        kernel_load_addr: Some(0x01000000),
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: Some("console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8"),
+        firmware: None,
+    )),
+)

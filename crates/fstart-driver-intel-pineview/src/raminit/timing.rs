@@ -6,7 +6,7 @@
 
 use super::SysInfo;
 use fstart_ecam as ecam;
-use fstart_pineview_regs::{hostbridge, ich7, mchbar, MchBar};
+use fstart_pineview_regs::{ich7, mchbar, MchBar};
 
 // ===================================================================
 // Helpers
@@ -31,7 +31,7 @@ fn msbpos(val: u8) -> i8 {
 }
 
 fn div_round_up(a: u32, b: u32) -> u32 {
-    (a + b - 1) / b
+    a.div_ceil(b)
 }
 
 // ===================================================================
@@ -404,7 +404,7 @@ pub fn clkmode(si: &SysInfo, mch: &MchBar) {
 /// a full platform reset.
 ///
 /// Ported from coreboot `sdram_checkreset()`.
-pub fn check_reset(si: &SysInfo) {
+pub fn check_reset(_si: &SysInfo) {
     let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
 
     let mut pmcon2 = lpc.read8(0xA2);
@@ -461,7 +461,7 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     for i in 0..super::TOTAL_DIMMS {
         if let Some(ref d) = si.dimms[i] {
             if d.card_type != 0 {
-                if d.banks == 1 {
+                if d.banks >= 8 {
                     trp_adj = 1;
                     bank = 0;
                 }

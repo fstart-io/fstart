@@ -53,6 +53,9 @@ qemu-fw-cfg = ["dep:fstart-driver-qemu-fw-cfg"]
 ite8721f = ["dep:fstart-driver-ite8721f"]
 intel-pineview = ["dep:fstart-driver-intel-pineview"]
 intel-ich7 = ["dep:fstart-driver-intel-ich7"]
+intel-gm965 = ["dep:fstart-driver-intel-gm965"]
+intel-ich8 = ["dep:fstart-driver-intel-ich8"]
+lenovo-x61-mainboard = ["dep:fstart-mainboard-lenovo-x61"]
 i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
 # NS16550 with x86 port I/O support
 ns16550-pio = ["ns16550", "fstart-driver-ns16550?/pio"]
@@ -99,6 +102,9 @@ acpi = [
   "fstart-driver-pl011?/acpi",
   "fstart-driver-intel-pineview?/acpi",
   "fstart-driver-intel-ich7?/acpi",
+  "fstart-driver-intel-gm965?/acpi",
+  "fstart-driver-intel-ich8?/acpi",
+  "fstart-mainboard-lenovo-x61?/acpi",
   "fstart-driver-ite8721f?/acpi",
   "fstart-capabilities/acpi",
 ]
@@ -150,6 +156,9 @@ fstart-driver-q35-hostbridge = { workspace = true, optional = true }
 fstart-driver-ite8721f = { workspace = true, optional = true }
 fstart-driver-intel-pineview = { workspace = true, optional = true }
 fstart-driver-intel-ich7 = { workspace = true, optional = true }
+fstart-driver-intel-gm965 = { workspace = true, optional = true }
+fstart-driver-intel-ich8 = { workspace = true, optional = true }
+fstart-mainboard-lenovo-x61 = { workspace = true, optional = true }
 fstart-driver-i2c-ck505 = { workspace = true, optional = true }
 fstart-mp = { workspace = true, optional = true }
 fstart-cpu-pineview = { workspace = true, optional = true }

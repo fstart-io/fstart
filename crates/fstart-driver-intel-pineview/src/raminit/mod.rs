@@ -132,7 +132,7 @@ impl SysInfo {
 
     /// Check if a DIMM slot is populated.
     pub fn dimm_populated(&self, idx: usize) -> bool {
-        self.dimms[idx].as_ref().map_or(false, |d| d.card_type != 0)
+        self.dimms[idx].as_ref().is_some_and(|d| d.card_type != 0)
     }
 }
 

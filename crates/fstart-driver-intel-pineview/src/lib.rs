@@ -435,7 +435,7 @@ impl IntelPineview {
         let gsm = ((ggc >> 8) & 0xF) as usize;
         const SIZES: [u32; 4] = [0, 1, 0, 0];
         if gsm < SIZES.len() {
-            (SIZES[gsm] as u32) << 10
+            SIZES[gsm] << 10
         } else {
             0
         }
@@ -459,7 +459,7 @@ impl IntelPineview {
             return 0;
         }
         match (esmramc >> 1) & 3 {
-            0 => 1 * 1024 * 1024, // 1 MiB
+            0 => 1024 * 1024,     // 1 MiB
             1 => 2 * 1024 * 1024, // 2 MiB
             2 => 8 * 1024 * 1024, // 8 MiB
             _ => {

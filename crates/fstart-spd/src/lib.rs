@@ -69,7 +69,7 @@ pub enum MemClock {
 /// needed by the DRAM init code.
 #[derive(Debug, Clone)]
 pub struct DimmInfo {
-    /// Raw card type (from SPD).
+    /// Non-zero module-present marker. For DDR2 this stores SPD revision byte 62.
     pub card_type: u8,
     /// Memory type (0x08 = DDR2, 0x0B = DDR3).
     pub mem_type: u8,
@@ -95,6 +95,10 @@ pub struct DimmInfo {
     pub taa_min: u8,
     /// Minimum cycle time at max CAS (tCK), raw SPD encoding.
     pub tck_min: u8,
+    /// Decoded tCK per CAS level, in units of 1/256 ns.
+    pub cycle_time_256ns: [u32; 8],
+    /// Decoded access time per CAS level, in units of 1/256 ns.
+    pub access_time_256ns: [u32; 8],
     /// tWR (write recovery).
     pub twr: u8,
     /// tRP (row precharge).
@@ -111,6 +115,22 @@ pub struct DimmInfo {
     pub trrd: u8,
     /// tRTP (read-to-precharge).
     pub trtp: u8,
+    /// Decoded tWR, in units of 1/256 ns.
+    pub twr_256ns: u32,
+    /// Decoded tRP, in units of 1/256 ns.
+    pub trp_256ns: u32,
+    /// Decoded tRCD, in units of 1/256 ns.
+    pub trcd_256ns: u32,
+    /// Decoded tRAS, in units of 1/256 ns.
+    pub tras_256ns: u32,
+    /// Decoded tRFC, in units of 1/256 ns.
+    pub trfc_256ns: u32,
+    /// Decoded tWTR, in units of 1/256 ns.
+    pub twtr_256ns: u32,
+    /// Decoded tRRD, in units of 1/256 ns.
+    pub trrd_256ns: u32,
+    /// Decoded tRTP, in units of 1/256 ns.
+    pub trtp_256ns: u32,
     /// Rank capacity in MiB.
     pub rank_capacity_mb: u32,
     /// Raw 256-byte SPD data (kept for direct access to uncommonly-used bytes).

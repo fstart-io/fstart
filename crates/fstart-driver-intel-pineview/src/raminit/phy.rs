@@ -343,7 +343,7 @@ pub fn dll_timing(si: &mut SysInfo, mch: &MchBar) {
         let rank_in_dimm = (r % 2) as u8;
         let populated = si.dimms[dimm]
             .as_ref()
-            .map_or(false, |d| d.card_type != 0 && rank_in_dimm < d.ranks);
+            .is_some_and(|d| d.card_type != 0 && rank_in_dimm < d.ranks);
         if !populated {
             rank_mask |= (1 << (r + 8)) | (1 << (r + 4)) | (1 << r);
         }
@@ -587,8 +587,8 @@ fn check_rcomp_override(mch: &MchBar) -> bool {
     let c = ((xcomp & 0x0000_3F00) >> 8) as u8;
     let d = (xcomp & 0x0000_003F) as u8;
 
-    let aa = if a > b { a - b } else { b - a };
-    let bb = if c > d { c - d } else { d - c };
+    let aa = a.abs_diff(b);
+    let bb = c.abs_diff(d);
 
     if aa > 18
         || bb > 7
@@ -610,7 +610,7 @@ fn check_rcomp_override(mch: &MchBar) -> bool {
 /// RCOMP update (post-calibration fixup).
 ///
 /// Ported from coreboot `sdram_rcompupdate()`.
-pub fn rcomp_update(si: &SysInfo, mch: &MchBar) {
+pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
     let mut ok = false;
     let v = mch.read8(mchbar::XCOMPDFCTRL);
     mch.write8(mchbar::XCOMPDFCTRL, v & !(1 << 3));
@@ -628,7 +628,7 @@ pub fn rcomp_update(si: &SysInfo, mch: &MchBar) {
 
     if !ok {
         let xcomp = mch.read32(mchbar::XCOMP);
-        let swapped = ((xcomp >> 16) & 0x0000_FFFF) | ((xcomp << 16) & 0xFFFF_0000);
+        let swapped = xcomp.rotate_left(16);
         mch.write32(mchbar::RCMEASBUFXOVR, swapped | (1 << 31) | (1 << 15));
     }
 
@@ -815,7 +815,7 @@ fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
         // been partially initialized and DRAM is mapped at address 0.
         // A read fault here indicates raminit failed earlier.
         unsafe {
-            core::ptr::read_volatile(0 as *const u32);
+            core::ptr::read_volatile(core::ptr::null::<u32>());
         }
         hpet_udelay(1);
 
@@ -1270,15 +1270,13 @@ pub fn sdram_program_ddr(mch: &MchBar) {
     mch.setbits32(mchbar::SHC2REGIII, 7);
     let v = mch.read16(mchbar::SHC2MINTM);
     mch.write16(mchbar::SHC2MINTM, v | (1 << 7));
-    let v = mch.read8(mchbar::SHC2IDLETM);
-    mch.write8(mchbar::SHC2IDLETM, (v & !0xFF) | 0x10);
+    mch.write8(mchbar::SHC2IDLETM, 0x10);
     mch.setbits32(mchbar::C0COREBONUS, 0x0F << 5);
     mch.setbits32(mchbar::CSHWRIOBONUS, 3 << 3);
     mch.setbits32(mchbar::CSHRMSTDYNDLLENB, 0x0D);
     mch.setbits32(mchbar::SHC3C4REG1, 0x0A3F);
     mch.setbits32(mchbar::C0STATRDCTRL, 3);
-    let v = mch.read8(mchbar::C0REFRCTRL2);
-    mch.write8(mchbar::C0REFRCTRL2, (v & !0xFF) | 0x4A);
+    mch.write8(mchbar::C0REFRCTRL2, 0x4A);
     let v = mch.read8(mchbar::C0COREBONUS + 4);
     mch.write8(mchbar::C0COREBONUS + 4, v & !(3 << 5));
     mch.setbits32(mchbar::C0DYNSLVDLLEN, 0x0321);

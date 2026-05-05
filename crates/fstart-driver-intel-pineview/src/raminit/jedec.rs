@@ -22,7 +22,7 @@ const NORMAL_OP_CMD: u8 = (1 << 3) | (1 << 2) | (1 << 1);
 /// to bits [5:1] of C0JEDEC. The MRS/EMRS value is used as a
 /// 32-bit address that is read (triggering the DRAM command).
 fn send_jedec_cmd(mch: &MchBar, rank: u8, jmode: u8, jval: u16) {
-    let addr: u32 = (jval as u32) << 3 | (rank as u32) * (1 << 27);
+    let addr: u32 = ((jval as u32) << 3) | ((rank as u32) * (1 << 27));
 
     let v = mch.read8(mchbar::C0JEDEC);
     mch.write8(mchbar::C0JEDEC, (v & !0x3E) | jmode);
@@ -92,7 +92,7 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
         let rank_in_dimm = (r % 2) as u8;
         let populated = si.dimms[dimm_idx]
             .as_ref()
-            .map_or(false, |d| d.card_type != 0 && rank_in_dimm < d.ranks);
+            .is_some_and(|d| d.card_type != 0 && rank_in_dimm < d.ranks);
         if !populated {
             continue;
         }

@@ -10,7 +10,7 @@
 
 #![no_std]
 
-use fstart_pineview_regs::ecam;
+use fstart_ecam as ecam;
 use fstart_services::{ServiceError, SmBus};
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,6 @@ const I801_WORD_DATA: u8 = 3 << 2;
 // ---------------------------------------------------------------------------
 
 const SMBHSTSTS_HOST_BUSY: u8 = 1 << 0;
-const SMBHSTSTS_INTR: u8 = 1 << 1;
 const SMBHSTSTS_DEV_ERR: u8 = 1 << 2;
 const SMBHSTSTS_BUS_ERR: u8 = 1 << 3;
 const SMBHSTSTS_FAILED: u8 = 1 << 4;
@@ -109,11 +108,26 @@ impl I801SmBus {
     /// calling this.
     pub fn enable_on_ich7(smbus_base: u16) -> Self {
         use fstart_pineview_regs::ich7;
-        let smbus_pci = ecam::PciDevBdf::new(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC);
-        smbus_pci.write32(ich7::SMB_BASE, (smbus_base as u32) | 1);
-        smbus_pci.write32(ich7::HOSTC, ich7::HST_EN as u32);
-        let cmd = smbus_pci.read16(ich7::PCI_COMMAND);
-        smbus_pci.write16(ich7::PCI_COMMAND, cmd | ich7::PCI_CMD_IO);
+        Self::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, smbus_base)
+    }
+
+    /// Enable an Intel I801-compatible SMBus controller via ECAM.
+    ///
+    /// This covers ICH7/NM10, ICH8/ICH8-M, ICH9, and later PCH parts that
+    /// keep the SMBus function at a board/chipset-supplied BDF with the
+    /// standard `SMB_BASE` (0x20), `HOSTC` (0x40) and PCI command registers.
+    pub fn enable_on_i801(bus: u8, dev: u8, func: u8, smbus_base: u16) -> Self {
+        const SMB_BASE: u16 = 0x20;
+        const HOSTC: u16 = 0x40;
+        const HST_EN: u32 = 1;
+        const PCI_COMMAND: u16 = 0x04;
+        const PCI_CMD_IO: u16 = 0x0001;
+
+        let smbus_pci = ecam::PciDevBdf::new(bus, dev, func);
+        smbus_pci.write32(SMB_BASE, (smbus_base as u32) | 1);
+        smbus_pci.write32(HOSTC, HST_EN);
+        let cmd = smbus_pci.read16(PCI_COMMAND);
+        smbus_pci.write16(PCI_COMMAND, cmd | PCI_CMD_IO);
         let s = Self { base: smbus_base };
         s.host_reset();
         fstart_log::info!("i801-smbus: enabled at I/O base {:#x}", smbus_base);
@@ -273,6 +287,19 @@ impl I801SmBus {
         #[cfg(not(target_arch = "x86_64"))]
         Err(ServiceError::HardwareError)
     }
+
+    /// Write a 16-bit word via I801_WORD_DATA command.
+    pub fn write_word_data(&self, addr: u8, cmd: u8, val: u16) -> Result<(), ServiceError> {
+        self.setup_command(I801_WORD_DATA, xmit_write(addr))?;
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: base is the SMBus I/O region.
+        unsafe {
+            fstart_pio::outb(self.base + SMBHSTCMD, cmd);
+            fstart_pio::outb(self.base + SMBHSTDAT0, val as u8);
+            fstart_pio::outb(self.base + SMBHSTDAT1, (val >> 8) as u8);
+        }
+        self.execute_and_complete()
+    }
 }
 
 impl SmBus for I801SmBus {
@@ -284,5 +311,8 @@ impl SmBus for I801SmBus {
     }
     fn read_word(&mut self, addr: u8, cmd: u8) -> Result<u16, ServiceError> {
         self.read_word_data(addr, cmd)
+    }
+    fn write_word(&mut self, addr: u8, cmd: u8, value: u16) -> Result<(), ServiceError> {
+        self.write_word_data(addr, cmd, value)
     }
 }
