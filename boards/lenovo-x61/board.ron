@@ -14,10 +14,10 @@
     memory: (
         regions: [
             ( name: "flash", base: 0xFFC00000, size: 0x00400000, kind: Rom ),
-            // X61 commonly ships with 1-4 GiB DDR2.  The linker keeps firmware
-            // working state in the first 15 MiB; runtime sizing is read from
-            // GM965 TOLUD/TOUUD once RAM has been trained by future raminit.
-            ( name: "workram", base: 0x00100000, size: 0x00F00000, kind: Ram ),
+            // X61 commonly ships with 1-4 GiB DDR2. The linker keeps firmware
+            // working state below the Linux payload load address; runtime sizing
+            // is read from GM965 TOLUD/TOUUD after DRAM training.
+            ( name: "workram", base: 0x00100000, size: 0x03F00000, kind: Ram ),
         ],
         flash_base: Some(0xFFC00000),
         flash_size: Some(0x00400000),
@@ -63,8 +63,24 @@
                 gpi_routing: (0, 0, 2, 0, 0, 0, 0, 0,
                               2, 0, 0, 0, 0, 2, 0, 0),
                 c4_on_c3: true,
-                lpc_iodec: 0x0210,
-                lpc_decode: (0x007c1601, 0x000c15e1, 0x001c1681, 0),
+                lpc_decode: (
+                    fixed_io: (
+                        com_a: Com1,
+                        com_b: Com2,
+                        // Coreboot's X61 `mainboard_lpc_decode()` writes
+                        // D31:F0 LPC_IODEC=0x0210: COM1 at 0x3f8, COM2 at
+                        // 0x2f8, and the dock/superio LPT selector at 0x3bc.
+                        lpt: Some(Lpt3bc),
+                    ),
+                    generic_io: [
+                        // Dock DLPC/PC87392 fixed ports from x61/dock.c.
+                        ( base: 0x1600, size: 0x0080 ),
+                        // DLPC index/data/switch ports around 0x15e0.
+                        ( base: 0x15e0, size: 0x0010 ),
+                        // Dock GPIO block at 0x1680.
+                        ( base: 0x1680, size: 0x0020 ),
+                    ],
+                ),
                 hda: Some((verbs: [(
                     vendor_id: 0x11d41984,
                     subsystem_id: 0x17aa20d6,
@@ -152,8 +168,10 @@
                 acpi_name: Some("LPCB"),
                 c3_latency: 85,
                 power_on_after_fail: 0,
-                // Mainboard IRQ routing and ACPI SMI trap from coreboot
-                // mainboard/lenovo/x61/acpi/ich8_pci_irqs.asl + smi.h.
+                // Board-specific late RCBA interrupt routing and I/O trap #3
+                // values from coreboot mainboard/lenovo/x61/early_init.c and
+                // acpi/ich8_pci_irqs.asl. These remain raw chipset values so
+                // the board definition can be compared directly with coreboot.
                 late_rcba: Some((
                     d31ip: 0x00001230,
                     d29ip: 0x40004321,
@@ -207,30 +225,51 @@
         ),
     ],
 
-    stages: Monolithic((
-        capabilities: [
-            ChipsetPreConsole( northbridge: "northbridge", southbridge: "southbridge" ),
-            ConsoleInit( device: "uart0" ),
-            ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
-            DramInit( device: "northbridge" ),
-            DriverInit,
-            LateDriverInit,
-            AcpiPrepare,
-            BootMedia(MemoryMapped(
-                base: 0xFFC80000,
-                size: 0x0037F000,
-                ram_copy_addr: Some(0x02000000),
-            )),
-            SigVerify,
-            PayloadLoad,
-        ],
-        load_addr: 0xFFFF0000,
-        stack_size: 0x2000,
-        heap_size: Some(0x40000),
-        data_addr: Some(0xFEF00000),
-        runs_from: Rom,
-        page_size: Size2MiB,
-    )),
+    stages: MultiStage([
+        // Bootblock/romstage: execute from flash with writable state in CAR.
+        // It mirrors coreboot's X61 bootblock+romstage ordering through DRAM
+        // training, then loads a DRAM ramstage from the FFS image.
+        (
+            name: "bootblock",
+            capabilities: [
+                ChipsetPreConsole( northbridge: "northbridge", southbridge: "southbridge" ),
+                ConsoleInit( device: "uart0" ),
+                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+                DramInit( device: "northbridge" ),
+                BootMedia(MemoryMapped( base: 0xFFC80000, size: 0x0037F000 )),
+                StageLoad( next_stage: "ramstage" ),
+            ],
+            load_addr: 0xFFFF0000,
+            stack_size: 0x2000,
+            runs_from: Rom,
+            page_size: Size2MiB,
+        ),
+        // Ramstage: entered in DRAM via `_start_ram`, which tears CAR down
+        // before touching BSS/data. This stage performs coreboot ramstage-
+        // equivalent device, board, ACPI/SMBIOS, and payload work.
+        (
+            name: "ramstage",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                DriverInit,
+                LateDriverInit,
+                MpInit(cpu_model: "generic-x86", num_cpus: 2, smm: false),
+                AcpiPrepare,
+                SmBiosPrepare,
+                BootMedia(MemoryMapped(
+                    base: 0xFFC80000,
+                    size: 0x0037F000,
+                    ram_copy_addr: Some(0x02000000),
+                )),
+                SigVerify,
+                PayloadLoad,
+            ],
+            load_addr: 0x00100000,
+            stack_size: 0x8000,
+            heap_size: Some(0x40000),
+            runs_from: Ram,
+        ),
+    ]),
 
     security: (
         signing_algorithm: Ed25519,
@@ -241,6 +280,7 @@
 
     acpi: Some((
         platform: X86((
+            // Platform ACPI constants for the X61 interrupt/timer topology.
             num_cpus: Some(2),
             lapic_base: 0xFEE00000,
             ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
@@ -253,6 +293,30 @@
             sci_irq: 9,
         )),
     )),
+
+    smbios: (
+        bios_vendor: "fstart",
+        bios_version: "0.1.0",
+        bios_release_date: "05/08/2026",
+        system_manufacturer: "LENOVO",
+        system_product: "ThinkPad X61",
+        system_version: "1.0",
+        baseboard_manufacturer: "LENOVO",
+        baseboard_product: "ThinkPad X61",
+        chassis_type: Other,
+        chassis_manufacturer: "LENOVO",
+        processors: [
+            (
+                socket: "Socket M",
+                manufacturer: "Intel",
+                processor_family: X86_64,
+            ),
+        ],
+        memory_devices: [
+            ( locator: "DIMM0" ),
+            ( locator: "DIMM1" ),
+        ],
+    ),
 
     payload: Some((
         kind: LinuxBoot,

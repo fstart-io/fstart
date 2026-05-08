@@ -1409,12 +1409,11 @@ impl Device for IntelGm965 {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        self.detected_size = self.read_detected_size();
-        fstart_log::info!(
-            "intel-gm965: mchbar={:#x}, detected_dram={} MiB",
-            self.config.mchbar,
-            (self.detected_size / 1024 / 1024) as u32,
-        );
+        // Keep construction side-effect free. `ChipsetPreConsole` calls
+        // `init_device()` before ECAM and MCHBAR are enabled; touching PCI
+        // config or MCHBAR here can hang silently before the console exists.
+        // Runtime DRAM sizing is updated by `dram_init()` and later readers
+        // fall back to TOLUD/TOUUD after chipset setup.
         Ok(())
     }
 }

@@ -978,6 +978,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-gpio-ich",
  "fstart-log",
  "fstart-pio",
  "fstart-services",

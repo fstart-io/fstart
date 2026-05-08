@@ -332,23 +332,11 @@ impl Device for IntelPineview {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        fstart_log::info!("intel-pineview: mchbar={:#x}", self.config.mchbar);
-
-        // DRAM training runs when referenced by a `DramInit` capability.
-        // The actual training is called from the generated board adapter's
-        // `dram_init()` trampoline, which passes in the SMBus handle and
-        // SPD addresses.  The `init()` here is for non-DRAM device setup.
-        //
-        // If no DramInit capability ran (e.g., ramstage re-init), assume
-        // DRAM is already trained and read size from DRB registers.
-        if self.detected_size == 0 {
-            let mch = self.mchbar();
-            let drb3 = mch.read16(fstart_pineview_regs::mchbar::C0DRB0 + 6);
-            self.detected_size = (drb3 as u64) * 32 * 1024 * 1024;
-            if self.detected_size == 0 {
-                fstart_log::warn!("intel-pineview: DRAM not yet trained");
-            }
-        }
+        // Keep construction side-effect free.  `ChipsetPreConsole` calls
+        // `init_device()` before the console exists, and before MCHBAR is
+        // enabled.  Touching MCHBAR here can hang silently on real Pineview
+        // hardware.  All hardware setup is performed explicitly by
+        // `pre_console_init()`, `early_init()`, and the `DramInit` trampoline.
         Ok(())
     }
 }

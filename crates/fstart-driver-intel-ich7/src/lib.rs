@@ -46,6 +46,7 @@ use fstart_services::device::{Device, DeviceError};
 use fstart_services::{ServiceError, SmBus, Southbridge};
 use fstart_smbus_intel::I801SmBus;
 use fstart_superio::LpcBaseProvider;
+use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 
 // Re-export HDA types from the shared crate so board RON configs
@@ -158,6 +159,162 @@ pub struct UsbConfig {
 // HDA verb table types are defined in the shared fstart-hda crate.
 // See fstart_hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
 
+/// Legacy serial-port decode selector in the LPC I/O decode register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LpcSerialDecode {
+    /// COM1 at 0x3f8.
+    Com1,
+    /// COM2 at 0x2f8.
+    Com2,
+    /// Serial decode at 0x220.
+    Io220,
+    /// Serial decode at 0x228.
+    Io228,
+    /// Serial decode at 0x238.
+    Io238,
+    /// Serial decode at 0x2e8.
+    Io2e8,
+    /// Serial decode at 0x338.
+    Io338,
+    /// Serial decode at 0x3e8.
+    Io3e8,
+}
+
+impl LpcSerialDecode {
+    const fn bits(self) -> u16 {
+        match self {
+            Self::Com1 => 0,
+            Self::Com2 => 1,
+            Self::Io220 => 2,
+            Self::Io228 => 3,
+            Self::Io238 => 4,
+            Self::Io2e8 => 5,
+            Self::Io338 => 6,
+            Self::Io3e8 => 7,
+        }
+    }
+}
+
+/// Parallel-port decode selector in the LPC I/O decode register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LpcParallelDecode {
+    /// LPT at 0x378.
+    Lpt378,
+    /// LPT at 0x278.
+    Lpt278,
+    /// LPT at 0x3bc.
+    Lpt3bc,
+}
+
+impl LpcParallelDecode {
+    const fn bits(self) -> u16 {
+        match self {
+            Self::Lpt378 => 0,
+            Self::Lpt278 => 1,
+            Self::Lpt3bc => 2,
+        }
+    }
+}
+
+/// Floppy-controller decode selector in the LPC I/O decode register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LpcFloppyDecode {
+    /// FDC at 0x3f0.
+    Fdd3f0,
+    /// FDC at 0x370.
+    Fdd370,
+}
+
+impl LpcFloppyDecode {
+    const fn bits(self) -> u16 {
+        match self {
+            Self::Fdd3f0 => 0,
+            Self::Fdd370 => 1,
+        }
+    }
+}
+
+const fn default_com_a() -> LpcSerialDecode {
+    LpcSerialDecode::Com1
+}
+
+const fn default_com_b() -> LpcSerialDecode {
+    LpcSerialDecode::Com2
+}
+
+/// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LpcFixedIoDecode {
+    /// COMA selector. COMA is enabled through `LPC_EN_ALL`.
+    #[serde(default = "default_com_a")]
+    pub com_a: LpcSerialDecode,
+    /// COMB selector. COMB is enabled through `LPC_EN_ALL`.
+    #[serde(default = "default_com_b")]
+    pub com_b: LpcSerialDecode,
+    /// Optional LPT selector.
+    #[serde(default)]
+    pub lpt: Option<LpcParallelDecode>,
+    /// Optional FDC selector.
+    #[serde(default)]
+    pub fdd: Option<LpcFloppyDecode>,
+}
+
+impl Default for LpcFixedIoDecode {
+    fn default() -> Self {
+        Self {
+            com_a: LpcSerialDecode::Com1,
+            com_b: LpcSerialDecode::Com2,
+            lpt: None,
+            fdd: None,
+        }
+    }
+}
+
+impl LpcFixedIoDecode {
+    const fn encode(self) -> u16 {
+        let mut value = self.com_a.bits() | (self.com_b.bits() << 4);
+        if let Some(lpt) = self.lpt {
+            value |= lpt.bits() << 8;
+        }
+        if let Some(fdd) = self.fdd {
+            value |= fdd.bits() << 12;
+        }
+        value
+    }
+}
+
+/// One LPC generic I/O decode window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LpcGenericIoDecode {
+    /// I/O base address. Must be 4-byte aligned.
+    pub base: u16,
+    /// Window size in bytes. Must be a non-zero multiple of 4 up to 256.
+    pub size: u16,
+}
+
+impl LpcGenericIoDecode {
+    fn encode(self) -> Option<u32> {
+        if self.base & 0x0003 != 0 || self.size == 0 || self.size > 0x0100 {
+            return None;
+        }
+        if self.size & 0x0003 != 0 {
+            return None;
+        }
+        Some(((u32::from(self.size) - 4) << 16) | u32::from(self.base & 0xfffc) | 1)
+    }
+}
+
+/// Board-level LPC decode policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LpcDecodeConfig {
+    /// Fixed COM/LPT/FDC decode selector register.
+    #[serde(default)]
+    pub fixed_io: LpcFixedIoDecode,
+    /// Up to four generic I/O decode windows, programmed to GEN1..GEN4.
+    #[serde(default)]
+    pub generic_io: HVec<LpcGenericIoDecode, 4>,
+}
+
 // GPIO pad types are defined in the shared fstart-gpio-ich crate.
 pub use fstart_gpio_ich::{GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset, IchGpio};
 
@@ -170,8 +327,9 @@ pub struct IntelIch7Config {
     pub pirq_routing: [u8; 8],
     /// GPE0 enable bits.
     pub gpe0_en: u32,
-    /// LPC I/O decode register values (GEN1..GEN4).
-    pub lpc_decode: [u32; 4],
+    /// LPC fixed and generic I/O decode policy.
+    #[serde(default)]
+    pub lpc_decode: LpcDecodeConfig,
     /// HD Audio (Azalia) configuration with verb tables.
     #[serde(default)]
     pub hda: Option<HdaConfig>,
@@ -314,6 +472,21 @@ impl IntelIch7 {
         fstart_log::info!("intel-ich7: HPET enabled at {:#x}", HPET_BASE);
     }
 
+    fn lpc_generic_decode_regs(&self) -> [u32; 4] {
+        let mut generic = [0u32; 4];
+        for (idx, range) in self
+            .config
+            .lpc_decode
+            .generic_io
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            generic[idx] = range.encode().unwrap_or(0);
+        }
+        generic
+    }
+
     /// Detect S3 resume from pmio::PM1_CNT SLP_TYP field.
     ///
     /// Ported from coreboot `southbridge_detect_s3_resume()`.
@@ -359,6 +532,16 @@ impl Device for IntelIch7 {
     type Config = IntelIch7Config;
 
     fn new(config: &IntelIch7Config) -> Result<Self, DeviceError> {
+        if config
+            .lpc_decode
+            .generic_io
+            .iter()
+            .copied()
+            .any(|range| range.encode().is_none())
+        {
+            return Err(DeviceError::ConfigError);
+        }
+
         Ok(Self {
             config: config.clone(),
             smbus: None,
@@ -367,7 +550,9 @@ impl Device for IntelIch7 {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        fstart_log::info!("intel-ich7: rcba={:#x}", self.config.rcba);
+        // Keep construction side-effect free. `ChipsetPreConsole` runs before
+        // the logger is installed; pre-console BAR/LPC setup is done in the
+        // `Southbridge::pre_console_init()` hook below.
         Ok(())
     }
 }
@@ -410,13 +595,14 @@ impl Southbridge for IntelIch7 {
         // LPC setup: SERIRQ, fixed decode ranges, and board-specific
         // generic decode windows. This makes SuperIO config ports and
         // COM1/COM2 I/O decode live before ConsoleInit.
+        let generic = self.lpc_generic_decode_regs();
         lpc.write8(SERIRQ_CNTL, 0xD0);
-        lpc.write16(LPC_IO_DEC, 0x0010);
+        lpc.write16(LPC_IO_DEC, self.config.lpc_decode.fixed_io.encode());
         lpc.write16(LPC_EN, LPC_EN_ALL);
-        lpc.write32(GEN1_DEC, self.config.lpc_decode[0]);
-        lpc.write32(GEN2_DEC, self.config.lpc_decode[1]);
-        lpc.write32(GEN3_DEC, self.config.lpc_decode[2]);
-        lpc.write32(GEN4_DEC, self.config.lpc_decode[3]);
+        lpc.write32(GEN1_DEC, generic[0]);
+        lpc.write32(GEN2_DEC, generic[1]);
+        lpc.write32(GEN3_DEC, generic[2]);
+        lpc.write32(GEN4_DEC, generic[3]);
 
         Ok(())
     }
@@ -453,10 +639,11 @@ impl Southbridge for IntelIch7 {
 
         // LPC decode was already enabled by pre_console_init.
         // Program the generic decode ranges (GEN1..GEN4) from board config.
-        lpc.write32(GEN1_DEC, self.config.lpc_decode[0]);
-        lpc.write32(GEN2_DEC, self.config.lpc_decode[1]);
-        lpc.write32(GEN3_DEC, self.config.lpc_decode[2]);
-        lpc.write32(GEN4_DEC, self.config.lpc_decode[3]);
+        let generic = self.lpc_generic_decode_regs();
+        lpc.write32(GEN1_DEC, generic[0]);
+        lpc.write32(GEN2_DEC, generic[1]);
+        lpc.write32(GEN3_DEC, generic[2]);
+        lpc.write32(GEN4_DEC, generic[3]);
 
         // ---- 5. PIRQ routing ----
         let pirq_low = u32::from_le_bytes([

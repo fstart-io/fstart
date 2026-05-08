@@ -68,13 +68,27 @@ impl Device for LenovoX61Mainboard {
 
 impl Mainboard for LenovoX61Mainboard {
     fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        dock::dlpc_init().map_err(|_| ServiceError::HardwareError)?;
-        if self.config.dock_early_console
-            && dock::dock_present(self.config.gpio_base)
-            && dock::dock_connect().is_ok()
-        {
+        // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
+        // dock connection failures are non-fatal before the console exists.
+        // When the dock-present GPIO is asserted, coreboot still attempts the
+        // PC87392 COM1 enable after dock_connect(); do the same so a marginal
+        // delay/timeout does not suppress all serial output.
+        let _ = dock::dlpc_init();
+        if self.config.dock_early_console && dock::dock_present(self.config.gpio_base) {
+            let _ = dock::dock_connect();
             dock::early_superio_config();
         }
+        Ok(())
+    }
+
+    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+        dock::post_raminit_setup(self.config.gpio_base);
+        dock::ec_dock_state_update();
+        dock::ultrabay_power_update();
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> Result<(), ServiceError> {
         Ok(())
     }
 }
@@ -350,6 +364,125 @@ pub mod dock {
     /// Enable the dock-side PC87392 COM1 at 0x3f8.
     #[cfg(not(target_arch = "x86_64"))]
     pub fn early_superio_config() {}
+
+    /// Switch the X61 SMBus mux back to the EEPROM side after SPD/raminit.
+    #[cfg(target_arch = "x86_64")]
+    pub fn post_raminit_setup(gpiobase: u16) {
+        fstart_gpio_ich::IchGpio::new(gpiobase).set(42, false);
+    }
+
+    /// Switch the X61 SMBus mux back to the EEPROM side after SPD/raminit.
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn post_raminit_setup(_gpiobase: u16) {}
+
+    const EC_DATA: u16 = 0x62;
+    const EC_SC: u16 = 0x66;
+    const EC_OBF: u8 = 1 << 0;
+    const EC_IBF: u8 = 1 << 1;
+    const EC_CMD_READ: u8 = 0x80;
+    const EC_CMD_WRITE: u8 = 0x81;
+
+    #[cfg(target_arch = "x86_64")]
+    fn ec_wait_input_clear() -> bool {
+        for _ in 0..100_000 {
+            // SAFETY: fixed ACPI EC status port decoded by ICH8 LPC setup.
+            if unsafe { inb(EC_SC) } & EC_IBF == 0 {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn ec_wait_output_full() -> bool {
+        for _ in 0..100_000 {
+            // SAFETY: fixed ACPI EC status port decoded by ICH8 LPC setup.
+            if unsafe { inb(EC_SC) } & EC_OBF != 0 {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn ec_read(index: u8) -> Option<u8> {
+        if !ec_wait_input_clear() {
+            return None;
+        }
+        // SAFETY: fixed ACPI EC command/data ports.
+        unsafe { outb(EC_SC, EC_CMD_READ) };
+        if !ec_wait_input_clear() {
+            return None;
+        }
+        unsafe { outb(EC_DATA, index) };
+        if !ec_wait_output_full() {
+            return None;
+        }
+        Some(unsafe { inb(EC_DATA) })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn ec_write(index: u8, value: u8) -> bool {
+        if !ec_wait_input_clear() {
+            return false;
+        }
+        // SAFETY: fixed ACPI EC command/data ports.
+        unsafe { outb(EC_SC, EC_CMD_WRITE) };
+        if !ec_wait_input_clear() {
+            return false;
+        }
+        unsafe { outb(EC_DATA, index) };
+        if !ec_wait_input_clear() {
+            return false;
+        }
+        unsafe { outb(EC_DATA, value) };
+        true
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn ec_update_bits(index: u8, clear: u8, set: u8) {
+        if let Some(value) = ec_read(index) {
+            let _ = ec_write(index, (value & !clear) | set);
+        }
+    }
+
+    /// Mirror coreboot X61 ramstage EC dock-bit update.
+    #[cfg(target_arch = "x86_64")]
+    pub fn ec_dock_state_update() {
+        ec_update_bits(0x03, 1 << 2, 0);
+        // SAFETY: DLPC switch base is fixed and active when dock connected.
+        if unsafe { inb(DLPC_SWITCH) } & 0x08 != 0 {
+            ec_update_bits(0x03, 0, 1 << 2);
+            let _ = ec_write(0x0c, 0x88);
+        }
+    }
+
+    /// Mirror coreboot X61 ramstage EC dock-bit update.
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn ec_dock_state_update() {}
+
+    /// Update UltraBay power and EC LED/state. This follows the coreboot X61
+    /// mainboard path; IDE-primary enabling itself still needs a PCI IDE
+    /// device model in fstart.
+    #[cfg(target_arch = "x86_64")]
+    pub fn ultrabay_power_update() {
+        // SAFETY: dock GPIO block is configured at 0x1620 when docked.
+        let present = unsafe { inb(DOCK_GPIO_BASE + 0x01) } & 0x02 == 0;
+        let power = unsafe { inb(DOCK_GPIO_BASE + 0x08) };
+        if present {
+            unsafe { outb(DOCK_GPIO_BASE + 0x08, power | 0x01) };
+            let _ = ec_write(0x0c, 0x84);
+        } else {
+            unsafe { outb(DOCK_GPIO_BASE + 0x08, power & !0x01) };
+            let _ = ec_write(0x0c, 0x04);
+        }
+    }
+
+    /// Update UltraBay power and EC LED/state.
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn ultrabay_power_update() {}
 }
 
 #[cfg(feature = "acpi")]

@@ -45,7 +45,16 @@ const DCC_CMD_CBR: u32 = 6 << 16;
 const CLKCFG_MEMCLK_MASK: u32 = 7 << 4;
 const CLKCFG_UPDATE: u32 = 1 << 12;
 const PMSTS_SELFREFRESH: u32 = 1 << 0;
+const PMSTS_WARM_RESET: u32 = 1 << 1;
 const TRAIN_ENABLE_BIT: u32 = 1 << 31;
+const LPC_DEV: u8 = 0x1f;
+const LPC_FUNC: u8 = 0;
+const GEN_PMCON_2: u16 = 0xa2;
+const GEN_PMCON_3: u16 = 0xa4;
+const GEN_PMCON_2_DRAM_INIT: u8 = 1 << 7;
+const GEN_PMCON_2_STATUS_CLR: u8 = 0xe6;
+const GEN_PMCON_3_RTC_PWR_STS: u8 = 1 << 1;
+const GEN_PMCON_3_SLP_S3_STRETCH: u8 = 1 << 3;
 const CX_DRC0_RMS_MASK: u32 = 7 << 8;
 const CX_DRC0_RMS_78_US: u32 = 2 << 8;
 
@@ -460,6 +469,63 @@ fn calculate_timings(info: &mut RaminitInfo) -> Result<(), ServiceError> {
 
 fn stepping() -> u8 {
     fstart_ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC).read8(0x08)
+}
+
+fn lpc() -> fstart_ecam::PciDevBdf {
+    fstart_ecam::PciDevBdf::new(0, LPC_DEV, LPC_FUNC)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn full_reset() -> ! {
+    // SAFETY: I/O port 0xcf9 is the standard Intel reset control register.
+    unsafe {
+        fstart_pio::outb(0xcf9, 0x06);
+        fstart_pio::outb(0xcf9, 0x0e);
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn full_reset() -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+fn reset_on_stale_rcomp(mch: &MchBar) {
+    if stepping() == 0x00 && (mch.read32(mchbar::RCOMP_CTRL) & 2) != 0 {
+        fstart_log::error!("gm965 raminit: stale A0 RCOMP state, issuing reset");
+        full_reset();
+    }
+}
+
+fn init_pmcon() {
+    let lpc = lpc();
+    if (lpc.read8(GEN_PMCON_3) & GEN_PMCON_3_SLP_S3_STRETCH) != 0 {
+        lpc.and8(
+            GEN_PMCON_3,
+            !(GEN_PMCON_3_RTC_PWR_STS | GEN_PMCON_3_SLP_S3_STRETCH),
+        );
+    }
+    lpc.and8(GEN_PMCON_2, GEN_PMCON_2_STATUS_CLR);
+    lpc.or8(GEN_PMCON_2, GEN_PMCON_2_DRAM_INIT);
+}
+
+fn check_bad_warmboot(mch: &MchBar) {
+    if (mch.read32(mchbar::PMSTS) & 3) == PMSTS_WARM_RESET {
+        fstart_log::error!("gm965 raminit: bad warm boot state, issuing reset");
+        let lpc = lpc();
+        lpc.or8(GEN_PMCON_3, GEN_PMCON_3_SLP_S3_STRETCH);
+        lpc.and8(GEN_PMCON_2, !GEN_PMCON_2_DRAM_INIT);
+        mch.setbits32(mchbar::PMSTS, PMSTS_WARM_RESET);
+        full_reset();
+    }
+}
+
+fn clear_dram_init_in_progress() {
+    lpc().and8(GEN_PMCON_2, !GEN_PMCON_2_DRAM_INIT);
 }
 
 fn channel_populated(info: &RaminitInfo, ch: usize) -> bool {
@@ -1247,8 +1313,11 @@ pub fn probe_dimms(
 /// The sequence follows coreboot's GM965 `raminit.c`: SPD/timing selection,
 /// CLKCFG PLL latch, temporary pre-JEDEC address map, RCOMP, timing/control
 /// programming, DDR2 JEDEC commands, final memory map, receive-enable
-/// calibration, EPD channel population, and DRAM power-management setup.
+/// calibration, guarded EPD channel population, and DRAM power-management setup.
 pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), ServiceError> {
+    reset_on_stale_rcomp(mch);
+    init_pmcon();
+
     let hb = fstart_ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
     let fsb_clock = read_fsb_clock(mch);
     let capid0 = hb.read32(hostbridge::CAPID0);
@@ -1256,6 +1325,7 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), Servi
     select_frequency_and_cas(info, fsb_clock, capid0)?;
     calculate_timings(info)?;
 
+    check_bad_warmboot(mch);
     mch.setbits32(mchbar::PMSTS, PMSTS_SELFREFRESH);
     program_clkcfg_lock(info, mch);
     program_gcfgc(info, mch);
@@ -1283,7 +1353,16 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), Servi
         mch.setbits8(mchbar::RCOMP_CTRL, 2);
     }
     mch.clrbits32(mchbar::IO_RCOMP_CLK_EN, 1 << 12);
-    program_channel_population(info, mch);
+
+    // Coreboot/vendor RAMINIT only programs the EPD/channel-population path
+    // when EPD_2E[4:0] shows a prior successful initialization. On a first
+    // cold boot these registers contain hardware defaults; programming the
+    // partial EPD path too early can break otherwise-working DRB/DRA decode.
+    if (mch.read8(0x0a2e) & 0x1f) != 0 {
+        program_channel_population(info, mch);
+    }
+
+    clear_dram_init_in_progress();
     dram_power_mgmt(mch);
     mch.write32(mchbar::SSKPD, 0xcafe);
 

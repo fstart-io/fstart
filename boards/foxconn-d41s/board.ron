@@ -82,7 +82,12 @@
                 pirq_routing: (0x0b, 0x0b, 0x0b, 0x0b,
                                0x0b, 0x0b, 0x0b, 0x0b),
                 gpe0_en: 0x441,
-                lpc_decode: (0x00fc0a01, 0, 0, 0),
+                lpc_decode: (
+                    generic_io: [
+                        // ITE8721F SuperIO runtime/config window used by D41S.
+                        ( base: 0x0a00, size: 0x0100 ),
+                    ],
+                ),
                 // HD Audio (Azalia) — Realtek ALC662 verb table from
                 // coreboot mainboard/foxconn/d41s/hda_verb.c.
                 //

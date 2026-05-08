@@ -1510,34 +1510,100 @@ fn pci_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// Emit the body of `Board::late_driver_init_complete` before the
 /// generic completion banner.
 ///
-/// For x86 boards this dispatches ramstage/post-DRAM southbridge work
-/// and final chipset lockdown through the `Southbridge` trait. Other
-/// boards reduce to an empty body.
+/// For x86 boards this dispatches ramstage/post-DRAM southbridge work,
+/// board-local mainboard work, and final lockdown through the `Southbridge`
+/// and `Mainboard` traits. Other boards reduce to an empty body.
 fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "Southbridge")
-        })
-        .map(|idx| {
-            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-            quote! {
-                if let Some(dev) = self.#field.as_mut() {
-                    use fstart_services::Southbridge as _Southbridge;
-                    _Southbridge::ramstage_init(dev)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)
-                        .unwrap_or_else(|_| fstart_platform::halt());
-                    _Southbridge::finalize(dev)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)
-                        .unwrap_or_else(|_| fstart_platform::halt());
+    let southbridge_ramstage: Vec<TokenStream> =
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+            .filter(|idx| {
+                ctx.devices[*idx]
+                    .services
+                    .iter()
+                    .any(|s| s.as_str() == "Southbridge")
+            })
+            .map(|idx| {
+                let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+                quote! {
+                    if let Some(dev) = self.#field.as_mut() {
+                        use fstart_services::Southbridge as _Southbridge;
+                        _Southbridge::ramstage_init(dev)
+                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)
+                            .unwrap_or_else(|_| fstart_platform::halt());
+                    }
                 }
-            }
-        })
-        .collect();
+            })
+            .collect();
 
-    quote! { #(#arms)* }
+    let mainboard_ramstage: Vec<TokenStream> =
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+            .filter(|idx| {
+                ctx.devices[*idx]
+                    .services
+                    .iter()
+                    .any(|s| s.as_str() == "Mainboard")
+            })
+            .map(|idx| {
+                let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+                quote! {
+                    if let Some(dev) = self.#field.as_mut() {
+                        use fstart_services::Mainboard as _Mainboard;
+                        _Mainboard::ramstage_init(dev)
+                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)
+                            .unwrap_or_else(|_| fstart_platform::halt());
+                    }
+                }
+            })
+            .collect();
+
+    let southbridge_finalize: Vec<TokenStream> =
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+            .filter(|idx| {
+                ctx.devices[*idx]
+                    .services
+                    .iter()
+                    .any(|s| s.as_str() == "Southbridge")
+            })
+            .map(|idx| {
+                let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+                quote! {
+                    if let Some(dev) = self.#field.as_mut() {
+                        use fstart_services::Southbridge as _Southbridge;
+                        _Southbridge::finalize(dev)
+                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)
+                            .unwrap_or_else(|_| fstart_platform::halt());
+                    }
+                }
+            })
+            .collect();
+
+    let mainboard_finalize: Vec<TokenStream> =
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+            .filter(|idx| {
+                ctx.devices[*idx]
+                    .services
+                    .iter()
+                    .any(|s| s.as_str() == "Mainboard")
+            })
+            .map(|idx| {
+                let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+                quote! {
+                    if let Some(dev) = self.#field.as_mut() {
+                        use fstart_services::Mainboard as _Mainboard;
+                        _Mainboard::finalize(dev)
+                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)
+                            .unwrap_or_else(|_| fstart_platform::halt());
+                    }
+                }
+            })
+            .collect();
+
+    quote! {
+        #(#southbridge_ramstage)*
+        #(#mainboard_ramstage)*
+        #(#southbridge_finalize)*
+        #(#mainboard_finalize)*
+    }
 }
 
 /// Emit the body of `Board::chipset_init`.
