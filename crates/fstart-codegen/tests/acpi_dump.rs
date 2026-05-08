@@ -49,7 +49,7 @@ fn dump_foxconn_d41s_dsdt() {
         rcba: 0xFED1C000,
         pirq_routing: (0x0A, 0x0A, 0x0A, 0x0A, 0x80, 0x80, 0x80, 0x80),
         gpe0_en: 0x00000400,
-        lpc_decode: (0, 0, 0, 0),
+        lpc_decode: (),
         hda: Some((verbs: [(
             vendor_id: 0x10ec0662,
             subsystem_id: 0x105b0d55,

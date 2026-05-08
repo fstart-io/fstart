@@ -13,6 +13,7 @@ use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{ServiceError, SmBus, Southbridge};
 use fstart_smbus_intel::I801SmBus;
+use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 
 pub use fstart_gpio_ich::{GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset};
@@ -29,6 +30,8 @@ pub mod ich8 {
     pub const SATA_FUNC: u8 = 2;
     pub const SMBUS_DEV: u8 = 0x1f;
     pub const SMBUS_FUNC: u8 = 3;
+    pub const HDA_DEV: u8 = 0x1b;
+    pub const HDA_FUNC: u8 = 0;
     pub const UHCI1_DEV: u8 = 0x1d;
     pub const EHCI1_DEV: u8 = 0x1d;
     pub const EHCI1_FUNC: u8 = 7;
@@ -177,6 +180,7 @@ pub mod ich8 {
 
 const HPET_BASE: usize = 0xfed0_0000;
 const SATA_ABAR_BASE: usize = 0xfea0_0000;
+const HDA_TEMP_BAR: usize = 0xfed1_0000;
 const EHCI_TEMP_BAR: usize = 0xfed1_b000;
 const GPE0_STS_ICH8: u16 = 0x20;
 const GPE0_EN_ICH8: u16 = 0x28;
@@ -213,6 +217,162 @@ pub struct UsbConfig {
     pub ehci: [bool; 2],
     #[serde(default)]
     pub uhci: [bool; 6],
+}
+
+/// Legacy serial-port decode selector in the LPC I/O decode register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LpcSerialDecode {
+    /// COM1 at 0x3f8.
+    Com1,
+    /// COM2 at 0x2f8.
+    Com2,
+    /// Serial decode at 0x220.
+    Io220,
+    /// Serial decode at 0x228.
+    Io228,
+    /// Serial decode at 0x238.
+    Io238,
+    /// Serial decode at 0x2e8.
+    Io2e8,
+    /// Serial decode at 0x338.
+    Io338,
+    /// Serial decode at 0x3e8.
+    Io3e8,
+}
+
+impl LpcSerialDecode {
+    const fn bits(self) -> u16 {
+        match self {
+            Self::Com1 => 0,
+            Self::Com2 => 1,
+            Self::Io220 => 2,
+            Self::Io228 => 3,
+            Self::Io238 => 4,
+            Self::Io2e8 => 5,
+            Self::Io338 => 6,
+            Self::Io3e8 => 7,
+        }
+    }
+}
+
+/// Parallel-port decode selector in the LPC I/O decode register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LpcParallelDecode {
+    /// LPT at 0x378.
+    Lpt378,
+    /// LPT at 0x278.
+    Lpt278,
+    /// LPT at 0x3bc.
+    Lpt3bc,
+}
+
+impl LpcParallelDecode {
+    const fn bits(self) -> u16 {
+        match self {
+            Self::Lpt378 => 0,
+            Self::Lpt278 => 1,
+            Self::Lpt3bc => 2,
+        }
+    }
+}
+
+/// Floppy-controller decode selector in the LPC I/O decode register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LpcFloppyDecode {
+    /// FDC at 0x3f0.
+    Fdd3f0,
+    /// FDC at 0x370.
+    Fdd370,
+}
+
+impl LpcFloppyDecode {
+    const fn bits(self) -> u16 {
+        match self {
+            Self::Fdd3f0 => 0,
+            Self::Fdd370 => 1,
+        }
+    }
+}
+
+const fn default_com_a() -> LpcSerialDecode {
+    LpcSerialDecode::Com1
+}
+
+const fn default_com_b() -> LpcSerialDecode {
+    LpcSerialDecode::Com2
+}
+
+/// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LpcFixedIoDecode {
+    /// COMA selector. COMA is enabled through `LPC_EN_ALL`.
+    #[serde(default = "default_com_a")]
+    pub com_a: LpcSerialDecode,
+    /// COMB selector. COMB is enabled through `LPC_EN_ALL`.
+    #[serde(default = "default_com_b")]
+    pub com_b: LpcSerialDecode,
+    /// Optional LPT selector.
+    #[serde(default)]
+    pub lpt: Option<LpcParallelDecode>,
+    /// Optional FDC selector.
+    #[serde(default)]
+    pub fdd: Option<LpcFloppyDecode>,
+}
+
+impl Default for LpcFixedIoDecode {
+    fn default() -> Self {
+        Self {
+            com_a: LpcSerialDecode::Com1,
+            com_b: LpcSerialDecode::Com2,
+            lpt: None,
+            fdd: None,
+        }
+    }
+}
+
+impl LpcFixedIoDecode {
+    const fn encode(self) -> u16 {
+        let mut value = self.com_a.bits() | (self.com_b.bits() << 4);
+        if let Some(lpt) = self.lpt {
+            value |= lpt.bits() << 8;
+        }
+        if let Some(fdd) = self.fdd {
+            value |= fdd.bits() << 12;
+        }
+        value
+    }
+}
+
+/// One LPC generic I/O decode window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LpcGenericIoDecode {
+    /// I/O base address. Must be 4-byte aligned.
+    pub base: u16,
+    /// Window size in bytes. Must be a non-zero multiple of 4 up to 256.
+    pub size: u16,
+}
+
+impl LpcGenericIoDecode {
+    fn encode(self) -> Option<u32> {
+        if self.base & 0x0003 != 0 || self.size == 0 || self.size > 0x0100 {
+            return None;
+        }
+        if self.size & 0x0003 != 0 {
+            return None;
+        }
+        Some(((u32::from(self.size) - 4) << 16) | u32::from(self.base & 0xfffc) | 1)
+    }
+}
+
+/// Board-level LPC decode policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LpcDecodeConfig {
+    /// Fixed COM/LPT/FDC decode selector register.
+    #[serde(default)]
+    pub fixed_io: LpcFixedIoDecode,
+    /// Up to four generic I/O decode windows, programmed to GEN1..GEN4.
+    #[serde(default)]
+    pub generic_io: HVec<LpcGenericIoDecode, 4>,
 }
 
 /// Board-provided I/O trap programming for ICH8 RCBA.
@@ -269,11 +429,9 @@ pub struct IntelIch8Config {
     /// Enable C6 exit timing when C5/C6 PMSYNC support is active.
     #[serde(default)]
     pub c6_enable: bool,
-    /// LPC generic decode ranges GEN1..GEN4.
-    pub lpc_decode: [u32; 4],
-    /// LPC fixed I/O decode selector.
-    #[serde(default = "default_lpc_iodec")]
-    pub lpc_iodec: u16,
+    /// LPC fixed and generic I/O decode policy.
+    #[serde(default)]
+    pub lpc_decode: LpcDecodeConfig,
     /// Optional HD Audio verb table.
     #[serde(default)]
     pub hda: Option<HdaConfig>,
@@ -307,10 +465,6 @@ pub struct IntelIch8Config {
     /// Optional board-provided late RCBA interrupt/trap routing.
     #[serde(default)]
     pub late_rcba: Option<Ich8LateRcbaConfig>,
-}
-
-fn default_lpc_iodec() -> u16 {
-    0x0010
 }
 
 fn default_pcie_ports() -> [bool; 6] {
@@ -407,13 +561,25 @@ impl IntelIch8 {
 
     fn program_lpc_decode(&self) {
         let lpc = self.lpc();
+        let mut generic = [0u32; 4];
+        for (idx, range) in self
+            .config
+            .lpc_decode
+            .generic_io
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            generic[idx] = range.encode().unwrap_or(0);
+        }
+
         lpc.write8(ich8::SERIRQ_CNTL, 0xd0);
-        lpc.write16(ich8::LPC_IO_DEC, self.config.lpc_iodec);
+        lpc.write16(ich8::LPC_IO_DEC, self.config.lpc_decode.fixed_io.encode());
         lpc.write16(ich8::LPC_EN, LPC_EN_ALL);
-        lpc.write32(ich8::GEN1_DEC, self.config.lpc_decode[0]);
-        lpc.write32(ich8::GEN2_DEC, self.config.lpc_decode[1]);
-        lpc.write32(ich8::GEN3_DEC, self.config.lpc_decode[2]);
-        lpc.write32(ich8::GEN4_DEC, self.config.lpc_decode[3]);
+        lpc.write32(ich8::GEN1_DEC, generic[0]);
+        lpc.write32(ich8::GEN2_DEC, generic[1]);
+        lpc.write32(ich8::GEN3_DEC, generic[2]);
+        lpc.write32(ich8::GEN4_DEC, generic[3]);
     }
 
     fn reset_watchdog_and_cmos(&self) {
@@ -850,6 +1016,42 @@ impl IntelIch8 {
         fstart_log::info!("intel-ich8: USB init complete");
     }
 
+    fn hda_init(&self, config: &HdaConfig) {
+        let hda = ecam::PciDevBdf::new(0, ich8::HDA_DEV, ich8::HDA_FUNC);
+        if hda.read16(0) == 0xffff {
+            fstart_log::info!("intel-ich8: HDA device not present");
+            return;
+        }
+
+        // Coreboot i82801hx/azalia.c: ESD/link/VC setup before codec reset.
+        hda.modify32(0x134, !0x00ff_0000, 2 << 16);
+        hda.modify32(0x140, !0x00ff_0000, 2 << 16);
+        hda.modify32(0x114, !0x0000_00ff, 1);
+        hda.or8(0x44, 7);
+        hda.or32(0x120, (1 << 31) | (1 << 24) | 0x80);
+        hda.and8(0x4d, !(1 << 7));
+        hda.write32(0x74, hda.read32(0x74));
+
+        // fstart has no full PCI resource allocator yet; use a fixed low MMIO
+        // BAR in the same reserved chipset window as other early ICH8 blocks.
+        hda.write32(ich8::PCI_BAR0, HDA_TEMP_BAR as u32);
+        hda.or16(
+            ich8::PCI_COMMAND,
+            ich8::PCI_CMD_MEMORY | ich8::PCI_CMD_MASTER,
+        );
+
+        let controller = HdaController::new(HDA_TEMP_BAR);
+        let codec_mask = controller.detect_codecs();
+        if codec_mask != 0 {
+            let programmed = controller.program_verb_tables(config, codec_mask);
+            fstart_log::info!(
+                "intel-ich8: HDA codec_mask={:#x}, programmed={} tables",
+                codec_mask as u32,
+                programmed as u32,
+            );
+        }
+    }
+
     fn pcie_init(&self) {
         for func in 0u8..6 {
             let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func);
@@ -1057,6 +1259,16 @@ impl Device for IntelIch8 {
     type Config = IntelIch8Config;
 
     fn new(config: &IntelIch8Config) -> Result<Self, DeviceError> {
+        if config
+            .lpc_decode
+            .generic_io
+            .iter()
+            .copied()
+            .any(|range| range.encode().is_none())
+        {
+            return Err(DeviceError::ConfigError);
+        }
+
         Ok(Self {
             config: config.clone(),
             smbus: None,
@@ -1065,7 +1277,8 @@ impl Device for IntelIch8 {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        fstart_log::info!("intel-ich8: rcba={:#x}", self.config.rcba);
+        // Keep construction side-effect free. The pre-console hook programs
+        // RCBA/PMBASE/GPIO/LPC before any hardware-dependent work runs.
         Ok(())
     }
 }
@@ -1104,6 +1317,9 @@ impl Southbridge for IntelIch8 {
         self.early_chipset_settings();
         self.pcie_init();
         self.usb_init();
+        if let Some(hda) = self.config.hda.as_ref() {
+            self.hda_init(hda);
+        }
         if let Some(sata) = self.config.sata.as_ref() {
             self.sata_init(sata);
         }

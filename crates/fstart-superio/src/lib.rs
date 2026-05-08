@@ -55,8 +55,6 @@ const SIO_REG_IO_BASE2_HI: u8 = 0x62;
 const SIO_REG_IO_BASE2_LO: u8 = 0x63;
 /// IRQ select register 0 (primary).
 const SIO_REG_IRQ: u8 = 0x70;
-/// IRQ select register 1 (secondary, used by mouse on shared KBC LDN).
-const SIO_REG_IRQ1: u8 = 0x72;
 
 // ---------------------------------------------------------------------------
 // The SuperIoChip trait — per-chip specialization
@@ -330,6 +328,9 @@ impl<C: SuperIoChip> SuperIo<C> {
     /// Program a COM-port LDN (io_base, IRQ, enable).
     fn program_com(&self, ldn: u8, cfg: &ComPortConfig) {
         self.select_ldn(ldn);
+        // Match coreboot's `ite_enable_serial()`: disable the LDN before
+        // moving its decode window, then enable it after the new base is set.
+        self.write_reg(SIO_REG_ENABLE, 0x00);
         self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
         self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
         self.write_reg(SIO_REG_IRQ, cfg.irq);
@@ -347,11 +348,6 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     /// Program the keyboard controller LDN.
-    ///
-    /// On some chips, keyboard and mouse share one LDN. If the board
-    /// sets `mouse_ldn == kbc_ldn`, the mouse IRQ is programmed via
-    /// [`program_mouse`] on the same LDN (which is harmless — IRQ1
-    /// is set here, IRQ12 via register 0x72 in program_mouse).
     fn program_kbc(&self, ldn: u8, cfg: &KbcConfig) {
         self.select_ldn(ldn);
         self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
@@ -364,12 +360,11 @@ impl<C: SuperIoChip> SuperIo<C> {
 
     /// Program the mouse LDN (IRQ only).
     ///
-    /// Uses IRQ select register 1 (0x72) for the mouse IRQ. On chips
-    /// where KBC+mouse share one LDN, this writes a secondary IRQ
-    /// register on the same LDN — no conflict with KBC's primary IRQ.
+    /// IT8721F exposes PS/2 mouse as its own LDN 0x06, and coreboot's
+    /// D41S devicetree programs IRQ register 0x70 on that LDN.
     fn program_mouse(&self, ldn: u8, cfg: &MouseConfig) {
         self.select_ldn(ldn);
-        self.write_reg(SIO_REG_IRQ1, cfg.irq);
+        self.write_reg(SIO_REG_IRQ, cfg.irq);
         self.write_reg(SIO_REG_ENABLE, 0x01);
     }
 
@@ -555,8 +550,6 @@ const UART_LSR: u16 = 5; // Line Status
 
 /// LSR bit: Transmitter Holding Register Empty.
 const LSR_THRE: u8 = 1 << 5;
-/// LSR bit: Transmitter Empty (shift register + THR).
-const LSR_TEMT: u8 = 1 << 6;
 /// LSR bit: Data Ready.
 const LSR_DR: u8 = 1 << 0;
 /// LCR bit: Divisor Latch Access Bit.
@@ -564,36 +557,32 @@ const LCR_DLAB: u8 = 1 << 7;
 
 /// Standard ISA UART input clock (1.8432 MHz).
 const ISA_UART_CLOCK: u32 = 1_843_200;
+/// Conservative transmit wait bound, matching coreboot's 8250 I/O driver.
+const UART_SINGLE_CHAR_TIMEOUT: u32 = 50_000;
 
 /// Initialize a 16550 UART at `io_base` to 8N1 at the given baud rate.
 ///
-/// Matches U-Boot `ns16550_init()` + `ns16550_setbrg()`.
+/// Matches coreboot's 8250 I/O init path: do not wait for TEMT before
+/// programming the UART.  A disabled or not-yet-decoded SuperIO UART may
+/// report LSR=0, and an unbounded pre-init wait would hang before the first
+/// console byte is possible.
 fn uart_init(io_base: u16, baud_rate: u32) {
     let baud = if baud_rate == 0 { 115_200 } else { baud_rate };
     let divisor = (ISA_UART_CLOCK + baud * 8) / (baud * 16);
 
     // SAFETY: io_base comes from the board RON config.
     unsafe {
-        // Wait until any in-progress transmission completes.
-        while fstart_pio::inb(io_base + UART_LSR) & LSR_TEMT == 0 {
-            core::hint::spin_loop();
-        }
-
         // Disable interrupts.
         fstart_pio::outb(io_base + UART_IER, 0);
-        // MCR: DTR + RTS.
-        fstart_pio::outb(io_base + UART_MCR, 0x03);
-        // FCR: enable FIFO, clear both.
+        // Enable FIFO and clear both FIFOs.
         fstart_pio::outb(io_base + UART_FCR, 0x07);
-        // LCR: 8N1 (WLS=3, no parity, 1 stop).
-        fstart_pio::outb(io_base + UART_LCR, 0x03);
-
-        // Set baud rate via divisor latch.
-        let lcr = fstart_pio::inb(io_base + UART_LCR);
-        fstart_pio::outb(io_base + UART_LCR, lcr | LCR_DLAB);
+        // Assert DTR + RTS.
+        fstart_pio::outb(io_base + UART_MCR, 0x03);
+        // Set baud via divisor latch, with 8N1 selected.
+        fstart_pio::outb(io_base + UART_LCR, LCR_DLAB | 0x03);
         fstart_pio::outb(io_base + UART_THR, divisor as u8);
         fstart_pio::outb(io_base + UART_IER, (divisor >> 8) as u8);
-        fstart_pio::outb(io_base + UART_LCR, lcr & !LCR_DLAB);
+        fstart_pio::outb(io_base + UART_LCR, 0x03);
     }
 }
 
@@ -605,7 +594,9 @@ impl<C: SuperIoChip> fstart_services::Console for SuperIo<C> {
         };
         // SAFETY: io_base from board config.
         unsafe {
-            while fstart_pio::inb(com.io_base + UART_LSR) & LSR_THRE == 0 {
+            let mut timeout = UART_SINGLE_CHAR_TIMEOUT;
+            while timeout != 0 && fstart_pio::inb(com.io_base + UART_LSR) & LSR_THRE == 0 {
+                timeout -= 1;
                 core::hint::spin_loop();
             }
             fstart_pio::outb(com.io_base + UART_THR, byte);

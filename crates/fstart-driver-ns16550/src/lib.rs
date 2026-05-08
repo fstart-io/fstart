@@ -325,13 +325,10 @@ impl Device for Ns16550 {
 
     fn new(config: &Ns16550Config) -> Result<Self, DeviceError> {
         let regs = match config.regs {
-            AccessMode::Pio { base } => {
-                #[cfg(not(feature = "pio"))]
-                return Err(DeviceError::ConfigError);
-
-                #[cfg(feature = "pio")]
-                ResolvedRegs::Pio { base: base as u16 }
-            }
+            #[cfg(feature = "pio")]
+            AccessMode::Pio { base } => ResolvedRegs::Pio { base: base as u16 },
+            #[cfg(not(feature = "pio"))]
+            AccessMode::Pio { .. } => return Err(DeviceError::ConfigError),
             AccessMode::Mmio {
                 base,
                 reg_shift,
@@ -373,12 +370,10 @@ impl Device for Ns16550 {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        // Exact match of U-Boot ns16550_init() + ns16550_setbrg().
-
-        // Wait until transmitter completely idle.
-        while !self.lsr().is_set(LSR::TEMT) {
-            core::hint::spin_loop();
-        }
+        // Match coreboot's 8250 init path: program the UART directly rather
+        // than waiting for TEMT first.  A disabled or floating LPC UART can
+        // report LSR=0 forever, which would otherwise hang before the first
+        // diagnostic byte can be printed.
 
         // 1. IER = 0 — disable all interrupts
         self.write_reg(REG_IER, 0);
@@ -404,8 +399,11 @@ impl Device for Ns16550 {
 
 impl Console for Ns16550 {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
-        // Wait for THR empty
-        while !self.lsr().is_set(LSR::THRE) {
+        // Wait for THR empty, but keep this bounded like coreboot's 8250
+        // driver so a missing dock/SuperIO cannot wedge the firmware.
+        let mut timeout = 50_000u32;
+        while timeout != 0 && !self.lsr().is_set(LSR::THRE) {
+            timeout -= 1;
             core::hint::spin_loop();
         }
         self.write_reg(REG_THR, byte);
