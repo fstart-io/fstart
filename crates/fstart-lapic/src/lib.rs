@@ -20,7 +20,6 @@
 #![no_std]
 
 use core::ptr;
-use core::sync::atomic::{fence, Ordering};
 
 // ---------------------------------------------------------------------------
 // MSR constants
@@ -51,16 +50,19 @@ const REG_EOI: u32 = 0x0B0;
 /// Spurious Interrupt Vector Register.
 const REG_SVR: u32 = 0x0F0;
 /// Error Status Register.
+#[allow(dead_code)]
 const REG_ESR: u32 = 0x280;
 /// Interrupt Command Register (low 32 bits).
 const REG_ICR_LO: u32 = 0x300;
 /// Interrupt Command Register (high 32 bits — destination field).
+#[allow(dead_code)]
 const REG_ICR_HI: u32 = 0x310;
 /// LVT Local Interrupt 0 (LINT0).
 const REG_LVT0: u32 = 0x350;
 /// LVT Local Interrupt 1 (LINT1).
 const REG_LVT1: u32 = 0x360;
 /// LVT Error.
+#[allow(dead_code)]
 const REG_LVTERR: u32 = 0x370;
 /// Timer Initial Count Register.
 const REG_TMICT: u32 = 0x380;

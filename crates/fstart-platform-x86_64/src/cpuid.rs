@@ -18,22 +18,15 @@ pub struct CpuidResult {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn cpuid(leaf: u32, subleaf: u32) -> CpuidResult {
-    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
-    // SAFETY: cpuid is always available on x86_64.
-    // We save/restore rbx because LLVM reserves it as a frame pointer.
-    unsafe {
-        core::arch::asm!(
-            "mov {tmp}, rbx",
-            "cpuid",
-            "xchg {tmp}, rbx",
-            tmp = out(reg) ebx,
-            inout("eax") leaf => eax,
-            inout("ecx") subleaf => ecx,
-            out("edx") edx,
-            options(nostack, preserves_flags),
-        );
+    // CPUID is always available on x86_64. The stdarch wrapper preserves
+    // RBX correctly for LLVM's x86_64 code model.
+    let result = core::arch::x86_64::__cpuid_count(leaf, subleaf);
+    CpuidResult {
+        eax: result.eax,
+        ebx: result.ebx,
+        ecx: result.ecx,
+        edx: result.edx,
     }
-    CpuidResult { eax, ebx, ecx, edx }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -203,7 +196,7 @@ pub fn enumerate_caches<const N: usize>() -> ([CacheInfo; N], usize) {
         }
         let level = ((r.eax >> 5) & 0x7) as u8;
         let assoc = ((r.ebx >> 22) & 0x3FF) as u16 + 1;
-        let partitions = ((r.ebx >> 12) & 0x3FF) as u32 + 1;
+        let partitions = ((r.ebx >> 12) & 0x3FF) + 1;
         let line_size = (r.ebx & 0xFFF) as u16 + 1;
         let sets = r.ecx + 1;
         let size = (assoc as u32) * partitions * (line_size as u32) * sets;

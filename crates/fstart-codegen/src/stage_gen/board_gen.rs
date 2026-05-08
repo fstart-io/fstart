@@ -2547,11 +2547,6 @@ fn payload_load_linux_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStrea
         #anchor
         #match_body
         #platform_boot
-        // Platform boot protocol is `-> !` for every platform (armv7
-        // `boot_linux`, aarch64 `boot_linux_atf_prepared`, etc.).
-        // If for any reason it returns, the surrounding `-> !` still
-        // requires a diverging expression.
-        fstart_platform::halt()
     }
 }
 
@@ -3289,7 +3284,7 @@ fn walk_to_real_parent<'a>(
 ) -> Option<&'a str> {
     let mut current = device_tree[child_idx].parent?;
     loop {
-        let idx = current as usize;
+        let idx = usize::from(current);
         if !instances[idx].is_structural() {
             return Some(devices[idx].name.as_str());
         }

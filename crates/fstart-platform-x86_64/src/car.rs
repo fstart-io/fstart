@@ -38,7 +38,6 @@
 //! ```
 
 core::arch::global_asm!(
-    ".att_syntax prefix",
     ".section .text, \"ax\"",
     ".code32",
     ".global _car_setup",
@@ -553,6 +552,7 @@ core::arch::global_asm!(
     ".word 0x26E", // MTRR_FIX_4K_F0000
     ".word 0x26F", // MTRR_FIX_4K_F8000
     "_fixed_mtrr_list_end:",
+    options(att_syntax),
 );
 
 // _car_setup is a global_asm label, not an extern "C" function.

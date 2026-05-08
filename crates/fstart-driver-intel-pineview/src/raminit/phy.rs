@@ -680,8 +680,8 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
         let v = mch.read8(mchbar::ly(0x560, lane as u32));
         mch.write8(mchbar::ly(0x560, lane as u32), v & !0x3F);
 
-        let mut savecoarse = coarse;
-        let mut savemedium = medium;
+        let mut savecoarse: u8;
+        let mut savemedium: u8;
         let mut savepi = pi;
 
         // Phase 1: sweep until DQS goes high.
@@ -724,7 +724,6 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
             savepi = pi;
             pi += 1;
             if pi > si.maxpi {
-                pi = si.maxpi;
                 savepi = si.maxpi;
                 break;
             }

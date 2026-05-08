@@ -29,22 +29,21 @@ use fstart_services::memory_detect::E820Entry;
 // Entry point — 16-bit real mode → 32-bit protected mode → 64-bit long mode
 // ---------------------------------------------------------------------------
 
-/// The entry sequence is written as `global_asm!` because it transitions
-/// through three CPU modes before reaching Rust code. The `_start16bit`
-/// label is placed in `.text.entry` by the linker script.
-///
-/// GDT layout (matches Linux __BOOT_CS/DS expectations):
-/// - 0x00: null descriptor
-/// - 0x08: 32-bit flat code (used only for 16→32 bit transition)
-/// - 0x10: 64-bit code (__BOOT_CS, Long mode, Execute/Read)
-/// - 0x18: flat data (__BOOT_DS, 4 GiB, Read/Write)
-///
-/// Page tables: identity-mapped 2 MiB pages covering 4 GiB.
-/// PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
+// The entry sequence is written as `global_asm!` because it transitions
+// through three CPU modes before reaching Rust code. The `_start16bit`
+// label is placed in `.text.entry` by the linker script.
+//
+// GDT layout (matches Linux __BOOT_CS/DS expectations):
+// - 0x00: null descriptor
+// - 0x08: 32-bit flat code (used only for 16→32 bit transition)
+// - 0x10: 64-bit code (__BOOT_CS, Long mode, Execute/Read)
+// - 0x18: flat data (__BOOT_DS, 4 GiB, Read/Write)
+//
+// Page tables: identity-mapped 2 MiB pages covering 4 GiB.
+// PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is
     // the natural syntax for 16-bit / mixed-mode x86 assembly.
-    ".att_syntax prefix",
     // =====================================================================
     // Entire entry sequence in .text.entry section.
     //
@@ -212,13 +211,13 @@ core::arch::global_asm!(
     "movl $_page_tables_start, %edi",
     "leal 0x1003(%edi), %eax", // PDPT = page_tables + 0x1000, flags = 0x3
     "movl %eax, (%edi)",
+    options(att_syntax),
 );
 
 // 1 GiB pages: PDPT[0..511] = 512 x 1 GiB identity-mapped pages.
 // Requires PDPE1GB. Covers 512 GiB. Compact: only 2 pages total.
 #[cfg(feature = "x86-1g-pages")]
 core::arch::global_asm!(
-    ".att_syntax prefix",
     ".section .text, \"ax\"",
     ".code32",
     "movl $_page_tables_start, %edi",
@@ -235,13 +234,13 @@ core::arch::global_asm!(
     "addl $8, %esi",
     "decl %ecx",
     "jnz 1b",
+    options(att_syntax),
 );
 
 // 2 MiB pages (default): PDPT[0..3] -> PD0..PD3, each PD 512 x 2 MiB.
 // Universally supported. Covers 4 GiB. Matches coreboot pt.S layout.
 #[cfg(not(feature = "x86-1g-pages"))]
 core::arch::global_asm!(
-    ".att_syntax prefix",
     ".section .text, \"ax\"",
     ".code32",
     "movl $_page_tables_start, %edi",
@@ -270,11 +269,11 @@ core::arch::global_asm!(
     "addl $8, %esi",
     "decl %ecx",
     "jnz 2b",
+    options(att_syntax),
 );
 
 // Continue the entry sequence after page table setup.
 core::arch::global_asm!(
-    ".att_syntax prefix",
     ".section .text, \"ax\"",
     ".code32",
     // Enable PAE (bit 5), OSFXSR (bit 9), OSXMMEXCPT (bit 10).
@@ -411,6 +410,7 @@ core::arch::global_asm!(
     "5:",
     "hlt",
     "jmp 5b",
+    options(att_syntax),
 );
 
 // IDT table at a fixed low address (after page tables).
@@ -428,18 +428,17 @@ core::arch::global_asm!(
 // RAM-stage entry (64-bit only — no 16-bit/32-bit transition)
 // ---------------------------------------------------------------------------
 
-/// Entry point for non-first x86_64 stages that run from RAM.
-///
-/// The bootblock already transitioned to 64-bit long mode with identity-
-/// mapped page tables. This entry zeros BSS, copies .data initializers
-/// (harmless no-op when src == dst), sets up the IDT and stack, then
-/// calls `fstart_main(0)`.
-///
-/// Placed in `.text.entry` so `KEEP(*(.text.entry))` in the linker script
-/// ensures it's at the start of the binary (= the load address that the
-/// bootblock's `jump_to()` targets).
+// Entry point for non-first x86_64 stages that run from RAM.
+//
+// The bootblock already transitioned to 64-bit long mode with identity-
+// mapped page tables. This entry zeros BSS, copies .data initializers
+// (harmless no-op when src == dst), sets up the IDT and stack, then
+// calls `fstart_main(0)`.
+//
+// Placed in `.text.entry` so `KEEP(*(.text.entry))` in the linker script
+// ensures it's at the start of the binary (= the load address that the
+// bootblock's `jump_to()` targets).
 core::arch::global_asm!(
-    ".att_syntax prefix",
     ".section .text.entry, \"ax\"",
     ".code64",
     ".global _start_ram",
@@ -480,9 +479,12 @@ core::arch::global_asm!(
     "2:",
     "hlt",
     "jmp 2b",
+    options(att_syntax),
 );
 
-// Make sure the linker pulls in the entry code
+// Make sure the linker pulls in the entry code. This symbol is called from
+// `global_asm!`, which Rust's dead-code analysis cannot see.
+#[allow(dead_code)]
 extern "Rust" {
     fn fstart_main(handoff_ptr: usize) -> !;
 }

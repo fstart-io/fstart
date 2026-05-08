@@ -35,6 +35,7 @@ pub const TOTAL_CHANNELS: usize = 1;
 pub const TOTAL_DIMMS: usize = 2;
 pub const RANKS_PER_CHANNEL: usize = 4;
 
+#[allow(dead_code)]
 const BOOT_PATH_NORMAL: u8 = 0;
 const BOOT_PATH_RESET: u8 = 1;
 const BOOT_PATH_RESUME: u8 = 2;

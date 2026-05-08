@@ -105,7 +105,9 @@ const HPET_BASE: usize = 0xFED0_0000;
 use fstart_pmio_ich::{self as pmio, PmIo};
 
 // GEN_PMCON_1 bits
+#[allow(dead_code)]
 const GEN_PMCON_1: u16 = 0xA0;
+#[allow(dead_code)]
 const SMI_LOCK: u16 = 1 << 4;
 
 // GEN_PMCON_LOCK register
@@ -1577,6 +1579,7 @@ mod acpi_impl {
     use super::*;
 
     /// ICH7 PCI device IDs (LPC bridge variants).
+    #[allow(dead_code)]
     const LPC_PIDS: &[u16] = &[0x27B0, 0x27B8, 0x27B9, 0x27BC, 0x27BD];
 
     impl AcpiDevice for IntelIch7 {

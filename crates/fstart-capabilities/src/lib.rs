@@ -167,9 +167,12 @@ pub fn acpi_load(
     buffer: &mut [u8],
     device_name: &str,
 ) -> Result<u64, fstart_services::ServiceError> {
-    use fstart_services::acpi_provider::AcpiTableProvider;
     let rsdp = provider.load_acpi_tables(buffer)?;
-    fstart_log::info!("ACPI tables loaded, RSDP at {:#x}", rsdp);
+    fstart_log::info!(
+        "ACPI tables loaded from {}, RSDP at {:#x}",
+        device_name,
+        rsdp
+    );
     Ok(rsdp)
 }
 
@@ -190,10 +193,14 @@ pub fn memory_detect(
     entries: &mut [fstart_services::memory_detect::E820Entry],
     device_name: &str,
 ) -> Result<(usize, u64), fstart_services::ServiceError> {
-    use fstart_services::memory_detect::MemoryDetector;
     let count = detector.detect_memory(entries)?;
     let total = detector.total_ram_bytes()?;
-    fstart_log::info!("Detected {} MiB RAM, {} e820 entries", total >> 20, count);
+    fstart_log::info!(
+        "Detected {} MiB RAM, {} e820 entries from {}",
+        total >> 20,
+        count,
+        device_name,
+    );
 
     // Store in global state so PCI host bridges (and other consumers)
     // can access e820 data without codegen passing it explicitly.

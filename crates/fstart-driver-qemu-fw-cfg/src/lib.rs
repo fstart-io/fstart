@@ -192,8 +192,6 @@ struct AllocEntry {
     name: [u8; 56],
     /// Offset within the output buffer where this file was placed.
     offset: usize,
-    /// Size of the file data.
-    size: usize,
 }
 
 impl AcpiTableProvider for QemuFwCfg {
@@ -296,7 +294,6 @@ impl AcpiTableProvider for QemuFwCfg {
                     allocs[alloc_count] = Some(AllocEntry {
                         name,
                         offset: cursor,
-                        size: file_size as usize,
                     });
                     alloc_count += 1;
                     cursor += file_size as usize;
@@ -317,8 +314,8 @@ impl AcpiTableProvider for QemuFwCfg {
                     let ptr_size = loader_buf[cmd_base + 120];
 
                     // Find dest and src allocations
-                    let dest_off = find_alloc(&allocs, dest_name).ok_or(ServiceError::IoError)?;
-                    let src_off = find_alloc(&allocs, src_name).ok_or(ServiceError::IoError)?;
+                    let dest_off = find_alloc(allocs, dest_name).ok_or(ServiceError::IoError)?;
+                    let src_off = find_alloc(allocs, src_name).ok_or(ServiceError::IoError)?;
 
                     // Read existing value, add src's physical address, write back
                     let patch_off = dest_off + ptr_offset;
@@ -361,7 +358,7 @@ impl AcpiTableProvider for QemuFwCfg {
                         loader_buf[cmd_base + 68..cmd_base + 72].try_into().unwrap(),
                     ) as usize;
 
-                    let file_off = find_alloc(&allocs, cksum_name).ok_or(ServiceError::IoError)?;
+                    let file_off = find_alloc(allocs, cksum_name).ok_or(ServiceError::IoError)?;
 
                     // Zero the checksum byte first
                     buffer[file_off + cksum_offset] = 0;
@@ -380,8 +377,7 @@ impl AcpiTableProvider for QemuFwCfg {
         }
 
         // Find the RSDP. It's typically in "etc/acpi/rsdp".
-        let rsdp_off =
-            find_alloc_by_name(&allocs, b"etc/acpi/rsdp").ok_or(ServiceError::IoError)?;
+        let rsdp_off = find_alloc_by_name(allocs, b"etc/acpi/rsdp").ok_or(ServiceError::IoError)?;
         let rsdp_phys = buffer.as_ptr() as u64 + rsdp_off as u64;
         Ok(rsdp_phys)
     }

@@ -234,7 +234,9 @@ fn generate_imports(
     let mut tokens = TokenStream::new();
 
     tokens.extend(quote! {
+        #[allow(unused_imports)]
         use fstart_services::Console;
+        #[allow(unused_imports)]
         use fstart_services::device::Device;
     });
 
@@ -243,7 +245,7 @@ fn generate_imports(
         .iter()
         .any(|d| d.services.iter().any(|s| s.as_str() == "BlockDevice"));
     if has_block_device {
-        tokens.extend(quote! { use fstart_services::BlockDevice; });
+        tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BlockDevice; });
     }
 
     // Import MemoryController trait when DramInit + LoadNextStage are both
@@ -256,14 +258,14 @@ fn generate_imports(
         .iter()
         .any(|c| matches!(c, Capability::LoadNextStage { .. }));
     if uses_dram_init && uses_load_next_stage {
-        tokens.extend(quote! { use fstart_services::MemoryController; });
+        tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::MemoryController; });
     }
 
     // BusDevice trait is needed when any device has a parent bus (e.g., PCI
     // child devices use BusDevice::new_on_bus).
     let has_bus_children = devices.iter().any(|d| d.parent.is_some());
     if has_bus_children {
-        tokens.extend(quote! { use fstart_services::device::BusDevice; });
+        tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::device::BusDevice; });
     }
 
     let has_i2c = devices
@@ -278,23 +280,25 @@ fn generate_imports(
 
     if has_i2c {
         tokens.extend(quote! {
+            #[allow(unused_imports)]
             use fstart_services::i2c::{I2c, ErrorType as I2cErrorType, ErrorKind as I2cErrorKind, Operation as I2cOperation};
         });
     }
     if has_spi {
         tokens.extend(quote! {
+            #[allow(unused_imports)]
             use fstart_services::spi::{SpiBus, ErrorType as SpiErrorType, ErrorKind as SpiErrorKind};
         });
     }
     if has_gpio {
-        tokens.extend(quote! { use fstart_services::GpioController; });
+        tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::GpioController; });
     }
 
     let has_pci = devices
         .iter()
         .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
     if has_pci {
-        tokens.extend(quote! { use fstart_services::PciRootBus; });
+        tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::PciRootBus; });
     }
 
     // Import BusDevice trait when any device has a parent (bus child).
@@ -308,7 +312,7 @@ fn generate_imports(
         .iter()
         .any(|d| d.services.iter().any(|s| s.as_str() == "Framebuffer"));
     if has_framebuffer {
-        tokens.extend(quote! { use fstart_services::Framebuffer; });
+        tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::Framebuffer; });
     }
 
     // Collect unique driver modules and import all public types via glob.
@@ -324,6 +328,7 @@ fn generate_imports(
         if !seen_modules.contains(&meta.module_path) {
             let module_path: TokenStream = meta.module_path.parse().unwrap();
             tokens.extend(quote! {
+                #[allow(unused_imports)]
                 use #module_path::*;
             });
             seen_modules.push(meta.module_path);
@@ -336,13 +341,31 @@ fn generate_imports(
     // `impl BootMedia`, so the trait doesn't need to be in scope here.
     match get_boot_medium(capabilities) {
         Some(BootMedium::MemoryMapped { .. }) => {
-            tokens.extend(quote! { use fstart_services::boot_media::MemoryMapped; });
+            tokens.extend(
+                quote! { #[allow(unused_imports)] use fstart_services::boot_media::MemoryMapped; },
+            );
+            // Import the BootMedia trait so as_slice() / read_at() are
+            // callable in FFS loading code (PayloadLoad, SigVerify, etc.).
+            if needs_ffs(capabilities) {
+                tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
+            }
         }
         Some(BootMedium::Device { .. }) => {
-            tokens.extend(quote! { use fstart_services::boot_media::BlockDeviceMedia; });
+            tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::boot_media::BlockDeviceMedia; });
+            // Import the BootMedia trait so read_at() is callable in the
+            // anchor scan and FFS loading code.
+            if needs_ffs(capabilities) {
+                tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
+            }
         }
         Some(BootMedium::AutoDevice { .. }) => {
-            tokens.extend(quote! { use fstart_services::boot_media::BlockDeviceMedia; });
+            tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::boot_media::BlockDeviceMedia; });
+            // AutoDevice generates a BlockDevice dispatch enum and
+            // wraps it in BlockDeviceMedia. BootMedia trait needed for
+            // anchor scan and FFS loading.
+            if needs_ffs(capabilities) {
+                tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
+            }
         }
         None => {}
     }
@@ -352,7 +375,7 @@ fn generate_imports(
         .iter()
         .any(|c| matches!(c, Capability::AcpiLoad { .. }));
     if uses_acpi_load {
-        tokens.extend(quote! { use fstart_services::acpi_provider::AcpiTableProvider; });
+        tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::acpi_provider::AcpiTableProvider; });
     }
 
     // AcpiPrepare: the board adapter’s `acpi_prepare` trampoline
@@ -364,6 +387,7 @@ fn generate_imports(
         .any(|c| matches!(c, Capability::AcpiPrepare));
     if uses_acpi_prepare {
         tokens.extend(quote! {
+            #[allow(unused_imports)]
             use fstart_acpi::device::AcpiDevice;
         });
     }
@@ -384,8 +408,10 @@ fn generate_flash_constants(base: u64, size: u64) -> TokenStream {
     let size_hex = hex_addr(size);
     quote! {
         /// CPU-visible base address of the firmware flash image.
+        #[allow(dead_code)]
         const FLASH_BASE: u64 = #base_hex;
         /// Size of the firmware flash image in bytes.
+        #[allow(dead_code)]
         const FLASH_SIZE: u64 = #size_hex;
     }
 }
