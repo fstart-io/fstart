@@ -824,7 +824,7 @@ mod tests {
     /// Internal beep: AZALIA_PIN_CFG(0, 0x1d, 0x4005c603)
     #[test]
     fn pin_desc_foxconn_beep() {
-        let p = PinConfig {
+        let _p = PinConfig {
             nid: 0x1d,
             nc: None,
             conn: PinConn::Integrated,
@@ -884,7 +884,7 @@ mod tests {
     /// SPDIF out: AZALIA_PIN_CFG(0, 0x1e, 0x99430120)
     #[test]
     fn pin_desc_foxconn_spdif() {
-        let p = PinConfig {
+        let _p = PinConfig {
             nid: 0x1e,
             nc: None,
             conn: PinConn::Integrated,

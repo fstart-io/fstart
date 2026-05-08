@@ -196,6 +196,7 @@ enum ResolvedRegs {
     /// MMIO: base address, shift, effective width (1 or 4).
     Mmio { base: usize, shift: u8, width: u8 },
     /// PIO: base I/O port.
+    #[cfg(feature = "pio")]
     Pio { base: u16 },
 }
 
@@ -217,10 +218,6 @@ impl Ns16550 {
             ResolvedRegs::Pio { base } => {
                 // SAFETY: I/O port address provided by board config.
                 unsafe { fstart_pio::inb(base + index as u16) }
-            }
-            #[cfg(not(feature = "pio"))]
-            ResolvedRegs::Pio { .. } => {
-                unreachable!("PIO mode without pio feature should be rejected by constructor")
             }
             ResolvedRegs::Mmio { base, shift, width } => {
                 let addr = base + (index << shift);
@@ -251,10 +248,6 @@ impl Ns16550 {
             ResolvedRegs::Pio { base } => {
                 // SAFETY: I/O port address provided by board config.
                 unsafe { fstart_pio::outb(base + index as u16, val) }
-            }
-            #[cfg(not(feature = "pio"))]
-            ResolvedRegs::Pio { .. } => {
-                unreachable!("PIO mode without pio feature should be rejected by constructor")
             }
             ResolvedRegs::Mmio { base, shift, width } => {
                 let addr = base + (index << shift);

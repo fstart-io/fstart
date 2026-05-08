@@ -26,7 +26,6 @@
 //! caching.
 
 core::arch::global_asm!(
-    ".att_syntax prefix",
     ".section .text, \"ax\"",
     ".code64",
     ".global _car_teardown",
@@ -91,6 +90,7 @@ core::arch::global_asm!(
     "andq $0xFFFFFFFF9FFFFFFF, %rax", // clear CD + NW
     "movq %rax, %cr0",
     "ret",
+    options(att_syntax),
 );
 
 extern "C" {

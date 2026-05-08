@@ -1444,7 +1444,7 @@ impl MemoryController for IntelGm965 {
     }
 
     fn detected_size_bytes(&self) -> u64 {
-        self.detected_size
+        self.read_detected_size()
     }
 }
 
