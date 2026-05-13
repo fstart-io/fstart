@@ -26,6 +26,7 @@ use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
+use fstart_services::memory_detect::{E820Entry, E820Kind};
 use fstart_services::{PciHost, ServiceError, SmBus};
 use serde::{Deserialize, Serialize};
 
@@ -487,11 +488,18 @@ impl MemoryController for IntelPineview {
     }
 
     fn memory_test(&self) -> Result<(), ServiceError> {
+        let tolud = self.tolud();
         let usable_top = self.usable_low_memory_top();
-        mtrr::set_low_wb_top(usable_top as u64);
-        fstart_log::info!("pineview: dynamic WB MTRR top set to {:#x}", usable_top);
+        mtrr::set_low_wb_top(tolud as u64);
+        fstart_log::info!(
+            "pineview: dynamic WB MTRR top set to {:#x} (usable top {:#x})",
+            tolud,
+            usable_top
+        );
+        self.publish_e820_map(usable_top);
         pineview_lower_memory_test(usable_top)
     }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +507,37 @@ impl MemoryController for IntelPineview {
 // ---------------------------------------------------------------------------
 
 impl IntelPineview {
+    fn publish_e820_map(&self, usable_top: u32) {
+        let total = self.detected_size;
+        let mut entries = [E820Entry::zeroed(); 5];
+        entries[0] = E820Entry::new(0x0000_0000, 0x0009_f000, E820Kind::Ram);
+        entries[1] = E820Entry::new(0x0009_f000, 0x0000_1000, E820Kind::Reserved);
+        entries[2] = E820Entry::new(0x000f_0000, 0x0001_0000, E820Kind::Reserved);
+
+        let usable_top = (usable_top as u64).max(0x0010_0000);
+        entries[3] = E820Entry::new(
+            0x0010_0000,
+            usable_top.saturating_sub(0x0010_0000),
+            E820Kind::Ram,
+        );
+        entries[4] = E820Entry::new(
+            usable_top,
+            total.saturating_sub(usable_top),
+            E820Kind::Reserved,
+        );
+
+        // SAFETY: DRAM init runs on the BSP before the generated ramstage
+        // payload handoff reads the global e820 state.
+        unsafe {
+            fstart_services::memory_detect::e820_state_mut().store(&entries, entries.len(), total);
+        }
+        fstart_log::info!(
+            "pineview: published e820 map (usable top {:#x}, total {:#x})",
+            usable_top,
+            total
+        );
+    }
+
     /// Read Top of Upper Usable DRAM (TOUUD) in bytes.
     pub fn touud(&self) -> u64 {
         let raw = ecam::PciDevBdf::new(0, 0, 0).read16(hostbridge::TOUUD);
