@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-log = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
@@ -15,3 +16,9 @@ default = []
 # Use 1 GiB pages for identity mapping (requires PDPE1GB).
 # Without this feature, 2 MiB pages are used (universally supported).
 x86-1g-pages = []
+# Build page tables at runtime in writable RAM. QEMU uses this with
+# page_table_addr; real XIP boards keep static page tables in ROM.
+x86-writable-page-tables = []
+# Emit prebuilt page tables into `.page_tables` for first-stage real XIP
+# boards. Non-first stages inherit CR3 and do not need their own tables.
+x86-static-page-tables = []

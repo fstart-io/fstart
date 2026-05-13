@@ -53,6 +53,9 @@ core::arch::global_asm!(
     //                 _rom_mtrr_base, _rom_mtrr_mask
     // =====================================================================
     "_car_setup:",
+    // POST 0x21: CAR setup entry.
+    "movb $0x21, %al",
+    "outb %al, $0x80",
     // ------------------------------------------------------------------
     // Phase 0: Detect CPU family/model via CPUID for variant dispatch.
     // ------------------------------------------------------------------
@@ -109,6 +112,9 @@ core::arch::global_asm!(
     // --- clear_fixed_mtrrs: zero all fixed MTRRs ---
     // Clobbers: %eax, %ecx, %edx, %esi
     "_car_clear_fixed_mtrrs:",
+    // POST 0x50: clearing fixed MTRRs.
+    "movb $0x50, %al",
+    "outb %al, $0x80",
     "movl $_fixed_mtrr_list, %esi",
     "xorl %eax, %eax",
     "xorl %edx, %edx",
@@ -122,6 +128,9 @@ core::arch::global_asm!(
     // --- clear_var_mtrrs: zero all variable MTRRs ---
     // Clobbers: %eax, %ecx, %edx, %esi
     "_car_clear_var_mtrrs:",
+    // POST 0x51: clearing variable MTRRs.
+    "movb $0x51, %al",
+    "outb %al, $0x80",
     "movl $0xFE, %ecx", // MTRR_CAP
     "rdmsr",
     "movzbl %al, %esi",  // number of variable MTRRs
@@ -139,6 +148,9 @@ core::arch::global_asm!(
     // --- physmask_high: compute PHYSMASK high word ---
     // Returns result in %edx.  Clobbers: %eax, %ecx.
     "_car_physmask_high:",
+    // POST 0x52: computing physical-address mask width.
+    "movb $0x52, %al",
+    "outb %al, $0x80",
     "movl $0x80000000, %eax",
     "cpuid",
     "cmpl $0x80000008, %eax",
@@ -165,6 +177,9 @@ core::arch::global_asm!(
     // Expects PHYSMASK high word in %edx.
     // Clobbers: %eax, %ecx (preserves %edx high-word pattern via rdmsr).
     "_car_setup_mtrrs:",
+    // POST 0x53: programming CAR write-back MTRR.
+    "movb $0x53, %al",
+    "outb %al, $0x80",
     // Preload PHYSMASK high word for MTRR0 and MTRR1.
     "xorl %eax, %eax",
     "movl $0x201, %ecx", // MTRR_PHYS_MASK(0)
@@ -188,6 +203,9 @@ core::arch::global_asm!(
     // --- setup_rom_mtrr: MTRR1 = ROM (WRPROT) ---
     // Clobbers: %eax, %ecx, %edx
     "_car_setup_rom_mtrr:",
+    // POST 0x54: programming ROM write-protect MTRR.
+    "movb $0x54, %al",
+    "outb %al, $0x80",
     "movl $0x202, %ecx", // MTRR_PHYS_BASE(1)
     "xorl %edx, %edx",
     "movl $_rom_mtrr_base, %eax",
@@ -202,6 +220,9 @@ core::arch::global_asm!(
     // --- enable_mtrrs: set MTRR_DEF_TYPE_EN ---
     // Clobbers: %eax, %ecx, %edx
     "_car_enable_mtrrs:",
+    // POST 0x55: enabling MTRRs.
+    "movb $0x55, %al",
+    "outb %al, $0x80",
     "movl $0x2FF, %ecx", // MTRR_DEF_TYPE
     "rdmsr",
     "orl $0x800, %eax", // MTRR_DEF_TYPE_EN
@@ -209,6 +230,9 @@ core::arch::global_asm!(
     "jmp *%esp",
     // --- enable_cache: clear CR0.CD and CR0.NW ---
     "_car_enable_cache:",
+    // POST 0x56: enabling cache.
+    "movb $0x56, %al",
+    "outb %al, $0x80",
     "movl %cr0, %eax",
     "andl $0x9FFFFFFF, %eax", // ~(CD | NW)
     "invd",
@@ -216,6 +240,9 @@ core::arch::global_asm!(
     "jmp *%esp",
     // --- disable_cache: set CR0.CD ---
     "_car_disable_cache:",
+    // POST 0x57: disabling cache.
+    "movb $0x57, %al",
+    "outb %al, $0x80",
     "movl %cr0, %eax",
     "orl $0x40000000, %eax", // CD
     "movl %eax, %cr0",
@@ -223,6 +250,9 @@ core::arch::global_asm!(
     // --- fill_car_rep_stosl: zero-fill CAR region ---
     // Clobbers: %eax, %ecx, %edi
     "_car_fill_stosl:",
+    // POST 0x58: filling/zeroing CAR.
+    "movb $0x58, %al",
+    "outb %al, $0x80",
     "cld",
     "xorl %eax, %eax",
     "movl $_car_base, %edi",
@@ -232,6 +262,9 @@ core::arch::global_asm!(
     "jmp *%esp",
     // --- try_enable_l2: BBL_CR_CTL3 MSR bit 8 ---
     "_car_try_enable_l2:",
+    // POST 0x59: enabling L2 cache if supported.
+    "movb $0x59, %al",
+    "outb %al, $0x80",
     "movl $0x11E, %ecx", // BBL_CR_CTL3
     "rdmsr",
     "orl $0x100, %eax", // bit 8 = L2 enable
@@ -240,6 +273,9 @@ core::arch::global_asm!(
     // --- send_init_ipi: INIT IPI to all excluding self ---
     // Clobbers: %eax, %esi
     "_car_send_init_ipi:",
+    // POST 0x5a: sending INIT IPI to APs.
+    "movb $0x5a, %al",
+    "outb %al, $0x80",
     "movl $0x000C4500, %eax",
     "movl $0xFEE00300, %esi", // LAPIC ICR
     "movl %eax, (%esi)",
@@ -252,6 +288,9 @@ core::arch::global_asm!(
     // Path: NEM (Non-Evict Mode) — Atom Pineview/Cedarview
     // ==================================================================
     "_car_nem:",
+    // POST 0x60: Atom/Pineview NEM CAR path selected.
+    "movb $0x60, %al",
+    "outb %al, $0x80",
     // Coreboot NEM first validates that MTRRs are clean, then sends
     // INIT to APs before the BSP starts rewriting MTRRs/CAR state.
     // Keeping APs in Wait-for-SIPI prevents them from observing the
@@ -261,6 +300,9 @@ core::arch::global_asm!(
     "andl $0xC00, %eax", // DEF_TYPE_EN | FIX_EN
     "jz 1f",
     // Warm reset detected — write 0x06 to CF9.
+    // POST 0xef: dirty MTRR state; forcing reset.
+    "movb $0xef, %al",
+    "outb %al, $0x80",
     "movw $0xCF9, %dx",
     "movb $0x06, %al",
     "outb %al, %dx",
@@ -309,36 +351,67 @@ core::arch::global_asm!(
     "jmp _car_enable_cache",
     "19:",
     // NEM step 1: set NO_EVICT_MODE_SETUP (MSR 0x2E0 bit 0).
+    // POST 0x61: entering NEM setup mode.
+    "movb $0x61, %al",
+    "outb %al, $0x80",
     "movl $0x2E0, %ecx",
     "rdmsr",
     "orl $1, %eax",
     "andl $0xFFFFFFFD, %eax", // clear bit 1 (RUN)
     "wrmsr",
-    // NEM step 2: fill CAR by writing one dword per 64-byte cacheline.
+    // NEM step 2: populate CAR by touching one dword per cache line while
+    // NO_EVICT_MODE_SETUP is set.  This mirrors coreboot's Pineview path:
+    // setup bit, cache-line fill, run bit, then clear the full CAR window.
+    // Do not use rep stosl here; coreboot intentionally uses a 64-byte stride
+    // before RUN mode is set.
+    // POST 0x62: filling CAR cache lines for NEM setup.
+    "movb $0x62, %al",
+    "outb %al, $0x80",
     "movl $_car_base, %edi",
     "movl $_car_size, %ecx",
-    "shrl $6, %ecx", // count = size / 64
-    "3:",
-    "movl %eax, (%edi)", // one write per cacheline
-    "addl $64, %edi",
-    "loop 3b",
-    // NEM step 3: set NO_EVICT_MODE_RUN (MSR 0x2E0 bits 0+1).
+    "shrl $6, %ecx",
+    "movl $0x40, %ebx",
+    "20:",
+    "movl %eax, (%edi)",
+    "addl %ebx, %edi",
+    "loop 20b",
+    // NEM step 3: set NO_EVICT_MODE_RUN (MSR 0x2E0 bit 1) after CAR
+    // lines are already populated.
+    // POST 0x63: switching NEM to run mode.
+    "movb $0x63, %al",
+    "outb %al, $0x80",
     "movl $0x2E0, %ecx",
     "rdmsr",
     "orl $3, %eax",
     "wrmsr",
-    // Zero the CAR region (BSS must be clean).
-    "movl $20f, %esp",
+    // Coreboot clears CAR after RUN mode is active.
+    "movl $21f, %esp",
     "jmp _car_fill_stosl",
-    "20:",
-    // Set up stack (inline — can't use %esp as return reg here).
+    "21:",
+    // Set up stack inline. Do not jump to the out-of-line `_car_done`
+    // from the NEM path.
+    // POST 0x64: about to load the CAR stack pointer.
+    "movb $0x64, %al",
+    "outb %al, $0x80",
     "movl $_ecar_stack, %esp",
+    // POST 0x68: ESP loaded with `_ecar_stack`.
+    "movb $0x68, %al",
+    "outb %al, $0x80",
     "andl $0xFFFFFFF0, %esp",
-    "jmp _car_done",
+    // POST 0x69: ESP aligned; returning to common 32-bit entry.
+    "movb $0x69, %al",
+    "outb %al, $0x80",
+    // POST 0x6f: CAR setup complete.
+    "movb $0x6f, %al",
+    "outb %al, $0x80",
+    "jmp *%ebp",
     // ==================================================================
     // Path: Core2 (family 6, model >= 0x0F)
     // ==================================================================
     "_car_core2:",
+    // POST 0x65: Core2-style CAR path selected.
+    "movb $0x65, %al",
+    "outb %al, $0x80",
     "movl $30f, %esp",
     "jmp _car_send_init_ipi",
     "30:",
@@ -392,6 +465,9 @@ core::arch::global_asm!(
     // Path: P3 (family 6, model < 0x0F)
     // ==================================================================
     "_car_p3:",
+    // POST 0x66: P6/P3-style CAR path selected.
+    "movb $0x66, %al",
+    "outb %al, $0x80",
     "movl $50f, %esp",
     "jmp _car_clear_fixed_mtrrs",
     "50:",
@@ -435,6 +511,9 @@ core::arch::global_asm!(
     // Path: Netburst / P4 (family 0xF)
     // ==================================================================
     "_car_netburst:",
+    // POST 0x67: NetBurst/P4 CAR path selected.
+    "movb $0x67, %al",
+    "outb %al, $0x80",
     // Check if BSP.
     "movl $0x1B, %ecx", // LAPIC_BASE_MSR
     "rdmsr",
@@ -526,6 +605,9 @@ core::arch::global_asm!(
     "jmp _car_done",
     // AP halt (Netburst only — APs loop here).
     "_car_nb_ap_halt:",
+    // POST 0xfe: AP halted during CAR setup.
+    "movb $0xfe, %al",
+    "outb %al, $0x80",
     "movl %cr0, %eax",
     "andl $0x9FFFFFFF, %eax",
     "movl %eax, %cr0",
@@ -537,6 +619,9 @@ core::arch::global_asm!(
     // Return to caller via %ebp (set before jmp _car_setup).
     // ==================================================================
     "_car_done:",
+    // POST 0x6f: CAR setup complete; returning to 32-bit entry.
+    "movb $0x6f, %al",
+    "outb %al, $0x80",
     "jmp *%ebp",
     // Fixed MTRR list (shared by all paths).
     "_fixed_mtrr_list:",

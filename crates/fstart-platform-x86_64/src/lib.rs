@@ -23,6 +23,7 @@ pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
 
+use fstart_arch::mtrr;
 use fstart_services::memory_detect::E820Entry;
 
 // ---------------------------------------------------------------------------
@@ -33,11 +34,11 @@ use fstart_services::memory_detect::E820Entry;
 // through three CPU modes before reaching Rust code. The `_start16bit`
 // label is placed in `.text.entry` by the linker script.
 //
-// GDT layout (matches Linux __BOOT_CS/DS expectations):
+// GDT layout (matches coreboot's early x86 GDT):
 // - 0x00: null descriptor
-// - 0x08: 32-bit flat code (used only for 16→32 bit transition)
-// - 0x10: 64-bit code (__BOOT_CS, Long mode, Execute/Read)
-// - 0x18: flat data (__BOOT_DS, 4 GiB, Read/Write)
+// - 0x08: 32-bit flat code (used for 16→32 bit transition)
+// - 0x10: flat data (used in both 32-bit mode and long mode)
+// - 0x18: 64-bit code (Long mode, Execute/Read)
 //
 // Page tables: identity-mapped 2 MiB pages covering 4 GiB.
 // PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
@@ -85,8 +86,10 @@ core::arch::global_asm!(
     ".global _start16bit",
     "_start16bit:",
     "cli",
-    // Save BIST result
     "movl %eax, %ebp",
+    // POST 0x01: reset vector reached the 16-bit entry.
+    "movb $0x01, %al",
+    "outb %al, $0x80",
     // Invalidate TLB
     "xorl %eax, %eax",
     "movl %eax, %cr3",
@@ -108,6 +111,9 @@ core::arch::global_asm!(
     "movw $(_gdt_desc - _start16bit + 0xf000), %bx",
     "subw %ax, %bx",
     "lgdtl %cs:(%bx)",
+    // POST 0x10: about to enter 32-bit protected mode.
+    "movb $0x10, %al",
+    "outb %al, $0x80",
     // Enable protected mode: set PE, disable caching (CD+NW)
     "movl %cr0, %eax",
     "andl $0x7FFAFFD1, %eax", // PG,AM,WP,NE,TS,EM,MP = 0
@@ -135,15 +141,13 @@ core::arch::global_asm!(
     // Used only for the 16-bit → 32-bit ljmpl transition.
     ".word 0xffff, 0x0000",
     ".byte 0x00, 0x9b, 0xcf, 0x00",
-    // Entry 0x10: 64-bit code (L=1, D=0, base=0, limit=4G)
-    // Linux __BOOT_CS = 0x10 — must be at this selector.
-    ".word 0xffff, 0x0000",
-    ".byte 0x00, 0x9b, 0xaf, 0x00",
-    // Entry 0x18: 64-bit/32-bit flat data (base=0, limit=4G, G=1, B=1)
-    // Linux __BOOT_DS = 0x18 — must be at this selector.
-    // Also used as the 32-bit data segment during early init.
+    // Entry 0x10: flat data (base=0, limit=4G, G=1, B=1)
+    // Used as the data segment in both 32-bit protected mode and long mode.
     ".word 0xffff, 0x0000",
     ".byte 0x00, 0x93, 0xcf, 0x00",
+    // Entry 0x18: 64-bit code (L=1, D=0, base=0, limit=4G)
+    ".word 0xffff, 0x0000",
+    ".byte 0x00, 0x9b, 0xaf, 0x00",
     "_gdt_end:",
     "_gdt_desc:",
     ".word _gdt_end - _gdt - 1", // limit
@@ -158,8 +162,11 @@ core::arch::global_asm!(
     ".code32",
     ".global _start32bit",
     "_start32bit:",
-    // Load data segment selectors (0x18 = flat data, __BOOT_DS)
-    "movw $0x18, %ax",
+    // POST 0x20: protected-mode entry reached.
+    "movb $0x20, %al",
+    "outb %al, $0x80",
+    // Load data segment selectors (0x10 = flat data, coreboot GDT_DATA_SEG)
+    "movw $0x10, %ax",
     "movw %ax, %ds",
     "movw %ax, %es",
     "movw %ax, %ss",
@@ -175,9 +182,15 @@ core::arch::global_asm!(
     "movl $_has_car, %eax",
     "testl %eax, %eax",
     "je _post_car",
+    // POST 0x21: entering Cache-as-RAM setup.
+    "movb $0x21, %al",
+    "outb %al, $0x80",
     "movl $_post_car, %ebp",
     "jmp _car_setup",
     "_post_car:",
+    // POST 0x22: CAR is available (or not required).
+    "movb $0x22, %al",
+    "outb %al, $0x80",
     // Clear BSS.  On CAR boards this zeroes the CAR-backed BSS region
     // (now live after _car_setup).  On QEMU it zeroes regular RAM.
     "movl $_bss_start, %edi",
@@ -189,86 +202,214 @@ core::arch::global_asm!(
     "stosl",
     // Set up identity-mapped page tables for long mode.
     //
-    // Page size is selected at build time via the `x86-1g-pages` feature:
+    // Real XIP boards keep prebuilt page tables in ROM: CR3 only needs
+    // the physical address and the CPU reads the descriptors during page
+    // walks. QEMU is the exception: its board RON supplies a writable
+    // `page_table_addr`, enabling `x86-writable-page-tables`, so the
+    // setup routine below builds the tables in low RAM.
     //
-    // x86-1g-pages (2 pages, 512 GiB):
-    //   PML4[0] -> PDPT, PDPT[0..511] = 512 x 1 GiB identity pages.
-    //   Requires PDPE1GB (CPUID 0x80000001 EDX[26]).
-    //
-    // Default / 2 MiB (6 pages, 4 GiB):
-    //   PML4[0] -> PDPT, PDPT[0..3] -> PD0..PD3, each PD has 512 x 2 MiB.
-    //   Universally supported. Matches coreboot pt.S layout.
-    //
-    // Clear page table area first
+    // Do not rely on multiple `global_asm!` blocks being laid out in Rust
+    // source order. Branch to a named setup routine; it branches back to
+    // `_after_page_tables` when complete.
+    // POST 0x23: page-table setup/selection begins.
+    "movb $0x23, %al",
+    "outb %al, $0x80",
+    "jmp _setup_page_tables",
+    options(att_syntax),
+);
+
+// Writable page-table setup for QEMU-style low-RAM page tables.
+// 1 GiB pages: PDPT[0..511] = 512 x 1 GiB identity-mapped pages.
+// Requires PDPE1GB. Covers 512 GiB. Compact: only 2 pages total.
+#[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
+core::arch::global_asm!(
+    ".section .text, \"ax\"",
+    ".code32",
+    ".global _setup_page_tables",
+    "_setup_page_tables:",
+    // Clear page table area first.
     "movl $_page_tables_start, %edi",
     "movl $_page_tables_end, %ecx",
     "subl %edi, %ecx",
     "shrl $2, %ecx",
     "xorl %eax, %eax",
-    "rep",
-    "stosl",
-    // PML4[0] = address of PDPT | Present | Writable
+    "rep stosl",
+    // PML4[0] = address of PDPT | User | Accessed | Present | Writable.
     "movl $_page_tables_start, %edi",
-    "leal 0x1003(%edi), %eax", // PDPT = page_tables + 0x1000, flags = 0x3
+    "leal 0x1027(%edi), %eax",
     "movl %eax, (%edi)",
-    options(att_syntax),
-);
-
-// 1 GiB pages: PDPT[0..511] = 512 x 1 GiB identity-mapped pages.
-// Requires PDPE1GB. Covers 512 GiB. Compact: only 2 pages total.
-#[cfg(feature = "x86-1g-pages")]
-core::arch::global_asm!(
-    ".section .text, \"ax\"",
-    ".code32",
-    "movl $_page_tables_start, %edi",
     "leal 0x1000(%edi), %esi", // ESI = PDPT base
     "xorl %edx, %edx",         // EDX = high 32 bits of PA (starts at 0)
     "xorl %eax, %eax",         // EAX = low 32 bits of PA (starts at 0)
-    "orl $0x83, %eax",         // PS=1, RW=1, P=1
+    "orl $0xe7, %eax",         // PS=1, D=1, A=1, US=1, RW=1, P=1
     "movl $512, %ecx",         // 512 entries x 1 GiB = 512 GiB
     "1:",
-    "movl %eax, (%esi)",      // low 32 bits
-    "movl %edx, 4(%esi)",     // high 32 bits
-    "addl $0x40000000, %eax", // next 1 GiB page (low 32 bits)
-    "adcl $0, %edx",          // carry into high 32 bits
+    "movl %eax, (%esi)",
+    "movl %edx, 4(%esi)",
+    "addl $0x40000000, %eax",
+    "adcl $0, %edx",
     "addl $8, %esi",
     "decl %ecx",
     "jnz 1b",
+    "jmp _after_page_tables",
     options(att_syntax),
 );
 
+// Writable page-table setup for QEMU-style low-RAM page tables.
 // 2 MiB pages (default): PDPT[0..3] -> PD0..PD3, each PD 512 x 2 MiB.
-// Universally supported. Covers 4 GiB. Matches coreboot pt.S layout.
-#[cfg(not(feature = "x86-1g-pages"))]
+#[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
+    ".global _setup_page_tables",
+    "_setup_page_tables:",
+    // Clear page table area first.
     "movl $_page_tables_start, %edi",
-    // PDPT[0..3] = address of PD0..PD3 | Present | Writable
-    "leal 0x1000(%edi), %esi", // ESI = PDPT base
-    "leal 0x2003(%edi), %eax", // PD0 = page_tables + 0x2000, flags = 0x3
+    "movl $_page_tables_end, %ecx",
+    "subl %edi, %ecx",
+    "shrl $2, %ecx",
+    "xorl %eax, %eax",
+    "rep stosl",
+    "movl $_page_tables_start, %edi",
+    // PML4[0] = address of PDPT | User | Accessed | Present | Writable.
+    "leal 0x1027(%edi), %eax",
+    "movl %eax, (%edi)",
+    // PDPT[0..3] = address of PD0..PD3 | User | Accessed | Present | Writable.
+    "leal 0x1000(%edi), %esi",
+    "leal 0x2027(%edi), %eax",
     "movl %eax, 0(%esi)",
-    "addl $0x1000, %eax", // PD1 = page_tables + 0x3000
+    "addl $0x1000, %eax",
     "movl %eax, 8(%esi)",
-    "addl $0x1000, %eax", // PD2 = page_tables + 0x4000
+    "addl $0x1000, %eax",
     "movl %eax, 16(%esi)",
-    "addl $0x1000, %eax", // PD3 = page_tables + 0x5000
+    "addl $0x1000, %eax",
     "movl %eax, 24(%esi)",
     // Fill PD0..PD3 with 2048 x 2 MiB identity-mapped pages.
-    // Each entry: physical_addr | PageSize(2MB) | Writable | Present = 0x83.
-    "leal 0x2000(%edi), %esi", // ESI = PD0 base
-    "xorl %edx, %edx",         // EDX = high 32 bits of PA
-    "xorl %eax, %eax",         // EAX = low 32 bits of PA
-    "orl $0x83, %eax",         // PS=1, RW=1, P=1
-    "movl $2048, %ecx",        // 4 PDs x 512 entries = 2048
+    "leal 0x2000(%edi), %esi",
+    "xorl %edx, %edx",
+    "xorl %eax, %eax",
+    "orl $0xe7, %eax",
+    "movl $2048, %ecx",
     "2:",
-    "movl %eax, (%esi)",    // low 32 bits
-    "movl %edx, 4(%esi)",   // high 32 bits
-    "addl $0x200000, %eax", // next 2 MiB page
-    "adcl $0, %edx",        // carry into high 32 bits
+    "movl %eax, (%esi)",
+    "movl %edx, 4(%esi)",
+    "addl $0x200000, %eax",
+    "adcl $0, %edx",
     "addl $8, %esi",
     "decl %ecx",
     "jnz 2b",
+    "jmp _after_page_tables",
+    options(att_syntax),
+);
+
+// Page table storage is defined by this assembly, not by the linker script.
+//
+// - Real XIP boards emit prebuilt page tables into ordinary `.rodata` and
+//   load CR3 from the assembly-defined `PML4E`, matching coreboot's
+//   `setup_longmode $PML4E` convention.
+// - QEMU/writable-PT boards reserve BSS storage here; `_setup_page_tables`
+//   fills it at runtime.
+#[cfg(not(feature = "x86-writable-page-tables"))]
+core::arch::global_asm!(
+    ".section .text, \"ax\"",
+    ".code32",
+    ".global _setup_page_tables",
+    "_setup_page_tables:",
+    "jmp _after_page_tables",
+    options(att_syntax),
+);
+
+#[cfg(all(feature = "x86-static-page-tables", feature = "x86-1g-pages"))]
+core::arch::global_asm!(
+    ".section .rodata, \"a\"",
+    ".balign 4096",
+    ".global PML4E",
+    ".global _page_tables_start",
+    ".global _page_tables_end",
+    "PML4E:",
+    "_page_tables_start:",
+    ".quad .Lpt_pdpt_1g + 0x027",
+    ".zero 4096 - 8",
+    ".Lpt_pdpt_1g:",
+    ".set .Lpt_addr_1g, 0",
+    ".rept 512",
+    ".quad .Lpt_addr_1g + 0x0e7",
+    ".set .Lpt_addr_1g, .Lpt_addr_1g + 0x40000000",
+    ".endr",
+    "_page_tables_end:",
+    options(att_syntax),
+);
+
+#[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
+core::arch::global_asm!(
+    ".section .bss, \"aw\", @nobits",
+    ".balign 4096",
+    ".global PML4E",
+    ".global _page_tables_start",
+    ".global _page_tables_end",
+    "PML4E:",
+    "_page_tables_start:",
+    ".skip 0x2000",
+    "_page_tables_end:",
+    options(att_syntax),
+);
+
+#[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
+core::arch::global_asm!(
+    ".section .bss, \"aw\", @nobits",
+    ".balign 4096",
+    ".global PML4E",
+    ".global _page_tables_start",
+    ".global _page_tables_end",
+    "PML4E:",
+    "_page_tables_start:",
+    ".skip 0x6000",
+    "_page_tables_end:",
+    options(att_syntax),
+);
+
+#[cfg(not(any(
+    feature = "x86-static-page-tables",
+    feature = "x86-writable-page-tables"
+)))]
+core::arch::global_asm!(
+    ".section .bss, \"aw\", @nobits",
+    ".balign 4096",
+    ".global PML4E",
+    ".global _page_tables_start",
+    ".global _page_tables_end",
+    "PML4E:",
+    "_page_tables_start:",
+    "_page_tables_end:",
+    options(att_syntax),
+);
+
+#[cfg(all(feature = "x86-static-page-tables", not(feature = "x86-1g-pages")))]
+core::arch::global_asm!(
+    ".section .rodata, \"a\"",
+    ".balign 4096",
+    ".global PML4E",
+    ".global _page_tables_start",
+    ".global _page_tables_end",
+    "PML4E:",
+    "_page_tables_start:",
+    ".quad .Lpt_pdpt_2m + 0x027",
+    ".zero 4096 - 8",
+    // Match coreboot's ROM PT order: PML4E, PDT, then PDPT.
+    ".Lpt_pdt_2m:",
+    ".set .Lpt_addr_2m, 0",
+    ".rept 2048",
+    ".quad .Lpt_addr_2m + 0x0e7",
+    ".set .Lpt_addr_2m, .Lpt_addr_2m + 0x200000",
+    ".endr",
+    ".balign 4096",
+    ".Lpt_pdpt_2m:",
+    ".quad .Lpt_pdt_2m + 0x027",
+    ".quad .Lpt_pdt_2m + 0x1000 + 0x027",
+    ".quad .Lpt_pdt_2m + 0x2000 + 0x027",
+    ".quad .Lpt_pdt_2m + 0x3000 + 0x027",
+    ".zero 4096 - 32",
+    "_page_tables_end:",
     options(att_syntax),
 );
 
@@ -276,43 +417,47 @@ core::arch::global_asm!(
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
-    // Enable PAE (bit 5), OSFXSR (bit 9), OSXMMEXCPT (bit 10).
-    // OSFXSR + OSXMMEXCPT enable SSE/SSE2 (compiler_builtins memcpy).
-    "movl %cr4, %eax",
-    "orl $0x620, %eax", // PAE | OSFXSR | OSXMMEXCPT
-    "movl %eax, %cr4",
-    // Load PML4 base into CR3
-    "movl $_page_tables_start, %eax",
+    ".global _after_page_tables",
+    "_after_page_tables:",
+    // Match coreboot's `setup_longmode $PML4E`: load CR3 from the
+    // assembler-defined PML4E label.
+    "movl $PML4E, %eax",
     "movl %eax, %cr3",
-    // Enable long mode + NX support:
+    "movl %cr4, %eax",
+    "btsl $5, %eax", // CR4.PAE
+    "movl %eax, %cr4",
+    // Enable long mode:
     //   IA32_EFER.LME (bit 8) — Long Mode Enable
-    //   IA32_EFER.NXE (bit 11) — No-Execute Enable
-    // NXE is required by CrabEFI and the Linux kernel for marking
-    // data pages as non-executable. Without it, bit 63 in page
-    // table entries is reserved and triggers #PF.
+    // Keep NXE disabled here to match coreboot's minimal pre-IDT path;
+    // platforms that need NX can enable it later after CPUID checks.
     "movl $0xC0000080, %ecx", // IA32_EFER MSR
     "rdmsr",
-    "orl $0x900, %eax", // LME | NXE
+    "btsl $8, %eax", // LME
     "wrmsr",
-    // Enable paging + SSE/AVX in one CR0 write:
-    //   Set:   PG (bit 31), MP (bit 1)
-    //   Clear: CD (bit 30), NW (bit 29), EM (bit 2)
+    // Enable paging. Match coreboot's setup_longmode path: set only PG here,
+    // then immediately far jump to reload CS with the 64-bit code selector.
     "movl %cr0, %eax",
-    "andl $0x9FFFFFFB, %eax", // clear CD, NW, EM
-    "orl $0x80000002, %eax",  // set PG, MP
+    "btsl $31, %eax", // CR0.PG
     "movl %eax, %cr0",
-    // Far jump to 64-bit code segment (GDT selector 0x10 = __BOOT_CS)
+    // Far jump to 64-bit code segment (0x18 = coreboot GDT_CODE_SEG64)
     ".byte 0xea",        // ljmpl opcode
     ".long _start64bit", // 32-bit offset
-    ".word 0x10",        // 64-bit code segment selector
+    ".word 0x18",        // 64-bit code segment selector
     // =====================================================================
     // 64-bit long mode entry
     // =====================================================================
     ".code64",
     ".global _start64bit",
     "_start64bit:",
-    // Reload data segments with 64-bit data selector (0x18 = __BOOT_DS)
-    "movw $0x18, %ax",
+    // Enable OS support for FXSAVE/FXRSTOR after long-mode entry.
+    "movq %cr4, %rax",
+    "btsq $9, %rax", // CR4.OSFXSR
+    "movq %rax, %cr4",
+    // POST 0x31: CR4.OSFXSR written.
+    "movb $0x31, %al",
+    "outb %al, $0x80",
+    // Reload data segments with the shared flat data selector (0x10).
+    "movw $0x10, %ax",
     "movw %ax, %ds",
     "movw %ax, %es",
     "movw %ax, %ss",
@@ -336,6 +481,9 @@ core::arch::global_asm!(
     // Set up IDT with exception handlers before calling Rust code.
     // Without an IDT, any exception causes a triple fault + silent reset.
     "call _setup_idt",
+    // POST 0x33: long-mode runtime setup complete; entering Rust.
+    "movb $0x33, %al",
+    "outb %al, $0x80",
     // Call fstart_main(handoff_ptr=0)
     "xorl %edi, %edi",
     "call fstart_main",
@@ -362,7 +510,7 @@ core::arch::global_asm!(
     "movl $256, %ecx",
     "4:",
     "movw %bx, (%rdi)",
-    "movw $0x10, 2(%rdi)", // CS = 0x10 (__BOOT_CS, 64-bit code)
+    "movw $0x18, 2(%rdi)", // CS = 0x18 (64-bit code)
     "movb $0, 4(%rdi)",
     "movb $0x8E, 5(%rdi)",
     "movl %ebx, %eax",
@@ -402,6 +550,9 @@ core::arch::global_asm!(
     // =====================================================================
     ".align 16",
     "_exc_stub:",
+    // POST 0xe0: CPU exception reached the IDT stub.
+    "movb $0xe0, %al",
+    "outb %al, $0x80",
     "movq (%rsp), %rdi",   // rdi = faulting RIP
     "movq 24(%rsp), %rsi", // rsi = pre-exception RSP
     "movq %cr2, %rdx",     // rdx = CR2 (page fault address)
@@ -413,11 +564,12 @@ core::arch::global_asm!(
     options(att_syntax),
 );
 
-// IDT table at a fixed low address (after page tables).
-// Page tables: 0x1000..0x3000 (2 pages: PML4 + PDPT, 1 GiB pages).
-// IDT: placed after page tables (1 page, 256 entries × 16 bytes).
+// IDT table storage. It is ordinary writable BSS: bootblock XIP boards
+// place it in CAR-backed BSS, and RAM stages place it in DRAM-backed BSS.
+// The assembly labels are sufficient; the linker script does not need a
+// dedicated IDT output section or linker-provided IDT symbols.
 core::arch::global_asm!(
-    ".section .idt_table, \"aw\", @nobits",
+    ".section .bss, \"aw\", @nobits",
     ".align 4096",
     ".global _idt_table",
     "_idt_table:",
@@ -443,6 +595,9 @@ core::arch::global_asm!(
     ".code64",
     ".global _start_ram",
     "_start_ram:",
+    // POST 0x40: RAM-stage 64-bit entry reached.
+    "movb $0x40, %al",
+    "outb %al, $0x80",
     // Set up the DRAM-backed stack first.  Non-first x86 stages are
     // entered after DRAM training; if the previous stage used CAR, the
     // teardown routine needs a real stack before it disables NEM/MTRR0.
@@ -472,6 +627,9 @@ core::arch::global_asm!(
     "1:",
     // Set up IDT
     "call _setup_idt",
+    // POST 0x43: RAM-stage runtime setup complete; entering Rust.
+    "movb $0x43, %al",
+    "outb %al, $0x80",
     // Call fstart_main(handoff_ptr=0)
     "xorl %edi, %edi",
     "call fstart_main",
@@ -692,14 +850,53 @@ pub fn boot_linux_direct(
     // ACPI RSDP address (offset 0x070, protocol 2.14+)
     params[0x070..0x078].copy_from_slice(&rsdp_addr.to_le_bytes());
 
-    // e820 map: count at 0x1E8, entries at 0x2D0 (20 bytes each)
-    let count = e820_entries.len().min(128) as u8;
+    // e820 map: count at 0x1E8, entries at 0x2D0 (20 bytes each).
+    // Real-hardware boards may not have a MemoryDetect provider yet; provide
+    // a conservative fallback map so Linux can choose a decompression area.
+    let fallback = [
+        E820Entry::new(
+            0x0000_0000,
+            0x0009_f000,
+            fstart_services::memory_detect::E820Kind::Ram,
+        ),
+        E820Entry::new(
+            0x0009_f000,
+            0x0000_1000,
+            fstart_services::memory_detect::E820Kind::Reserved,
+        ),
+        E820Entry::new(
+            0x000f_0000,
+            0x0001_0000,
+            fstart_services::memory_detect::E820Kind::Reserved,
+        ),
+        E820Entry::new(
+            0x0010_0000,
+            0x3e50_0000,
+            fstart_services::memory_detect::E820Kind::Ram,
+        ),
+        E820Entry::new(
+            0x3e60_0000,
+            0x01a0_0000,
+            fstart_services::memory_detect::E820Kind::Reserved,
+        ),
+    ];
+    let e820 = if e820_entries.is_empty() {
+        &fallback[..]
+    } else {
+        e820_entries
+    };
+    let count = e820.len().min(128) as u8;
     params[0x1E8] = count;
-    for (i, entry) in e820_entries.iter().take(128).enumerate() {
+    for (i, entry) in e820.iter().take(128).enumerate() {
+        // SAFETY: E820Entry is #[repr(C, packed)] to match Linux's ABI.
+        // Read fields unaligned before copying/logging them.
+        let addr = unsafe { core::ptr::addr_of!(entry.addr).read_unaligned() };
+        let size = unsafe { core::ptr::addr_of!(entry.size).read_unaligned() };
+        let kind = unsafe { core::ptr::addr_of!(entry.kind).read_unaligned() };
         let offset = 0x2D0 + i * 20;
-        params[offset..offset + 8].copy_from_slice(&entry.addr.to_le_bytes());
-        params[offset + 8..offset + 16].copy_from_slice(&entry.size.to_le_bytes());
-        params[offset + 16..offset + 20].copy_from_slice(&entry.kind.to_le_bytes());
+        params[offset..offset + 8].copy_from_slice(&addr.to_le_bytes());
+        params[offset + 8..offset + 16].copy_from_slice(&size.to_le_bytes());
+        params[offset + 16..offset + 20].copy_from_slice(&kind.to_le_bytes());
     }
 
     // 64-bit entry = protected-mode kernel base + 0x200
@@ -715,7 +912,28 @@ pub fn boot_linux_direct(
     fstart_log::info!("  entry64 @ {:#x}", entry64);
     fstart_log::info!("  zero_page @ {:#x}", zero_page);
     fstart_log::info!("  rsdp @ {:#x}", rsdp_addr);
-    fstart_log::info!("  e820 count: {}", e820_entries.len());
+    fstart_log::info!("  e820 count: {}", e820.len());
+    for entry in e820 {
+        // SAFETY: E820Entry is packed for ABI compatibility.
+        let addr = unsafe { core::ptr::addr_of!(entry.addr).read_unaligned() };
+        let size = unsafe { core::ptr::addr_of!(entry.size).read_unaligned() };
+        let kind = unsafe { core::ptr::addr_of!(entry.kind).read_unaligned() };
+        let kind_name = match kind {
+            1 => "RAM",
+            2 => "Reserved",
+            3 => "ACPI Reclaim",
+            4 => "ACPI NVS",
+            5 => "Unusable",
+            _ => "Unknown",
+        };
+        fstart_log::info!(
+            "  e820: base={:#x} size={:#x} kind={} ({})",
+            addr,
+            size,
+            kind,
+            kind_name
+        );
+    }
 
     // Log critical setup header fields for debugging.
     let init_size = u32::from_le_bytes(params[0x260..0x264].try_into().unwrap_or([0; 4]));
@@ -724,6 +942,12 @@ pub fn boot_linux_direct(
     fstart_log::info!("  init_size: {:#x}", init_size);
     fstart_log::info!("  kernel_alignment: {:#x}", kernel_alignment);
     fstart_log::info!("  xloadflags: {:#x}", xloadflags);
+
+    fstart_log::info!("mtrr: clearing temporary BSP ROM WP before payload handoff");
+    // The temporary BSP-only ROM WP MTRR must not leak to Linux: APs do not
+    // carry it, and OSes require coherent MTRR state across CPUs.
+    // SAFETY: this is the BSP immediately before payload handoff.
+    unsafe { mtrr::set_boot_rom_wp(false) };
 
     // Jump to the kernel's 64-bit entry.
     //

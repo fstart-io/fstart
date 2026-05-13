@@ -9,16 +9,50 @@
 // udelay — microsecond delay (generic spin loop)
 // ---------------------------------------------------------------------------
 
-#[cfg(any(
-    feature = "armv7",
-    feature = "aarch64",
-    feature = "riscv64",
-    feature = "x86_64"
+#[cfg(all(
+    not(all(feature = "x86_64", target_arch = "x86_64")),
+    any(feature = "armv7", feature = "aarch64", feature = "riscv64")
 ))]
 pub fn udelay(us: u32) {
     for _ in 0..us.saturating_mul(100) {
         core::hint::spin_loop();
     }
+}
+
+/// Read the x86 Time Stamp Counter.
+#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+#[inline(always)]
+pub fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    // SAFETY: `rdtsc` reads the architectural time-stamp counter and has no
+    // memory side effects. Firmware uses it only for delay loops.
+    unsafe {
+        core::arch::asm!(
+            "rdtsc",
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    ((hi as u64) << 32) | lo as u64
+}
+
+/// Delay for approximately `us` microseconds using the x86 TSC.
+#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+pub fn udelay_tsc(us: u32, tsc_hz: u64) {
+    let ticks = ((tsc_hz / 1_000_000).max(1)).saturating_mul(us as u64);
+    let start = rdtsc();
+    while rdtsc().wrapping_sub(start) < ticks {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+pub fn udelay(us: u32) {
+    // Conservative default for early x86 firmware. Platform drivers with a
+    // known clock should call `udelay_tsc()` directly.
+    udelay_tsc(us, 1_000_000_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +204,191 @@ pub mod msr {
             in("edx") hi,
             options(nomem, nostack),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// x86 MTRR helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "x86_64")]
+pub mod mtrr {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use super::msr::{rdmsr, wrmsr};
+
+    pub const IA32_MTRR_PHYSBASE0: u32 = 0x200;
+    pub const IA32_MTRR_PHYSMASK0: u32 = 0x201;
+    pub const IA32_MTRR_CAP: u32 = 0x0fe;
+    pub const IA32_MTRR_DEF_TYPE: u32 = 0x2ff;
+    pub const IA32_MTRR_FIX64K_00000: u32 = 0x250;
+    pub const IA32_MTRR_FIX16K_80000: u32 = 0x258;
+    pub const IA32_MTRR_FIX16K_A0000: u32 = 0x259;
+    pub const IA32_MTRR_FIX4K_C0000: u32 = 0x268;
+
+    pub const MTRR_TYPE_UNCACHEABLE: u64 = 0x00;
+    pub const MTRR_TYPE_WRITE_PROTECT: u64 = 0x05;
+    pub const MTRR_TYPE_WRITE_BACK: u64 = 0x06;
+    const MTRR_DEF_TYPE_FIXED_ENABLE: u64 = 1 << 10;
+    const MTRR_DEF_TYPE_ENABLE: u64 = 1 << 11;
+    const MTRR_PHYSMASK_VALID: u64 = 1 << 11;
+    const PHYS_MASK_36: u64 = 0x0000_000f_ffff_f000;
+    static LOW_WB_TOP: AtomicU64 = AtomicU64::new(0x4000_0000);
+
+    const fn repeat_type(ty: u64) -> u64 {
+        ty | (ty << 8) | (ty << 16) | (ty << 24) | (ty << 32) | (ty << 40) | (ty << 48) | (ty << 56)
+    }
+
+    /// Return the number of variable MTRR pairs reported by IA32_MTRR_CAP.
+    ///
+    /// # Safety
+    /// Caller must ensure the CPU supports MTRRs.
+    pub unsafe fn variable_count() -> u32 {
+        unsafe { (rdmsr(IA32_MTRR_CAP) & 0xff) as u32 }
+    }
+
+    /// Return whether fixed MTRRs are supported.
+    ///
+    /// # Safety
+    /// Caller must ensure the CPU supports MTRRs.
+    pub unsafe fn fixed_supported() -> bool {
+        unsafe { (rdmsr(IA32_MTRR_CAP) & (1 << 8)) != 0 }
+    }
+
+    /// Program one variable MTRR on the current CPU.
+    ///
+    /// `base` and `size` must be naturally aligned, and `size` must be a
+    /// power of two.  Pineview-class parts expose 36 physical address bits;
+    /// this helper uses that mask width because fstart's current x86_64
+    /// hardware support targets that generation.
+    ///
+    /// # Safety
+    ///
+    /// MTRR changes affect cacheability for physical memory. Caller must only
+    /// use valid ranges and must arrange for all CPUs to use coherent MTRRs.
+    pub unsafe fn set_variable(index: u32, base: u64, size: u64, ty: u64) {
+        let base_msr = IA32_MTRR_PHYSBASE0 + index * 2;
+        let mask_msr = IA32_MTRR_PHYSMASK0 + index * 2;
+        let base_val = (base & PHYS_MASK_36) | ty;
+        let mask_val = ((!size.wrapping_sub(1)) & PHYS_MASK_36) | MTRR_PHYSMASK_VALID;
+        unsafe {
+            wrmsr(base_msr, base_val);
+            wrmsr(mask_msr, mask_val);
+        }
+    }
+
+    /// Clear one variable MTRR on the current CPU.
+    ///
+    /// # Safety
+    /// See [`set_variable`].
+    pub unsafe fn clear_variable(index: u32) {
+        let base_msr = IA32_MTRR_PHYSBASE0 + index * 2;
+        let mask_msr = IA32_MTRR_PHYSMASK0 + index * 2;
+        unsafe {
+            wrmsr(mask_msr, 0);
+            wrmsr(base_msr, 0);
+        }
+    }
+
+    /// Read one variable MTRR on the current CPU.
+    ///
+    /// # Safety
+    /// Caller must ensure `index` is valid for this CPU.
+    pub unsafe fn read_variable(index: u32) -> (u64, u64) {
+        let base_msr = IA32_MTRR_PHYSBASE0 + index * 2;
+        let mask_msr = IA32_MTRR_PHYSMASK0 + index * 2;
+        unsafe { (rdmsr(base_msr), rdmsr(mask_msr)) }
+    }
+
+    /// Decode whether a variable MTRR mask is valid.
+    pub const fn is_valid_mask(mask: u64) -> bool {
+        (mask & MTRR_PHYSMASK_VALID) != 0
+    }
+
+    /// Decode the range base from a variable MTRR base value.
+    pub const fn decode_base(base: u64) -> u64 {
+        base & PHYS_MASK_36
+    }
+
+    /// Decode the type from a variable MTRR base value.
+    pub const fn decode_type(base: u64) -> u64 {
+        base & 0xff
+    }
+
+    /// Decode the range size from a variable MTRR mask value.
+    pub const fn decode_size(mask: u64) -> u64 {
+        (!(mask & PHYS_MASK_36) & PHYS_MASK_36).wrapping_add(0x1000)
+    }
+
+    /// Set the trained low-memory top used by runtime MTRR setup.
+    pub fn set_low_wb_top(top: u64) {
+        LOW_WB_TOP.store(top, Ordering::Release);
+    }
+
+    fn low_wb_size() -> u64 {
+        LOW_WB_TOP
+            .load(Ordering::Acquire)
+            .next_power_of_two()
+            .max(0x0010_0000)
+    }
+
+    /// Program fixed MTRRs for conventional low memory.
+    ///
+    /// 0x00000..0x9ffff is write-back RAM. 0xa0000..0xfffff remains
+    /// uncacheable for VGA/MMIO/legacy ROM holes.
+    ///
+    /// # Safety
+    /// Must be called on every active CPU with identical values.
+    pub unsafe fn setup_fixed_low_memory() {
+        unsafe {
+            if !fixed_supported() {
+                return;
+            }
+            wrmsr(IA32_MTRR_FIX64K_00000, repeat_type(MTRR_TYPE_WRITE_BACK));
+            wrmsr(IA32_MTRR_FIX16K_80000, repeat_type(MTRR_TYPE_WRITE_BACK));
+            wrmsr(IA32_MTRR_FIX16K_A0000, repeat_type(MTRR_TYPE_UNCACHEABLE));
+            for msr in IA32_MTRR_FIX4K_C0000..=0x26f {
+                wrmsr(msr, repeat_type(MTRR_TYPE_UNCACHEABLE));
+            }
+        }
+    }
+
+    /// Install fstart's Pineview ramstage cacheability layout on this CPU.
+    ///
+    /// MTRR0 covers the low 1 GiB address space as write-back so all usable
+    /// DRAM is cached.  MTRR1 is intentionally left for temporary BSP-only ROM
+    /// write-protect acceleration while reading SPI flash.
+    ///
+    /// # Safety
+    /// Must be called on every active CPU during MP setup.
+    pub unsafe fn setup_low_1g_wb() {
+        unsafe {
+            let fixed = if fixed_supported() {
+                MTRR_DEF_TYPE_FIXED_ENABLE
+            } else {
+                0
+            };
+            let def_type = rdmsr(IA32_MTRR_DEF_TYPE) | MTRR_DEF_TYPE_ENABLE | fixed;
+            setup_fixed_low_memory();
+            set_variable(0, 0, low_wb_size(), MTRR_TYPE_WRITE_BACK);
+            clear_variable(1);
+            wrmsr(IA32_MTRR_DEF_TYPE, def_type);
+        }
+    }
+
+    /// Install/remove the BSP-only 16 MiB top-of-4G flash ROM WP MTRR.
+    ///
+    /// # Safety
+    /// Caller must ensure this is only used on the BSP and removed before OS
+    /// handoff so AP MTRRs remain coherent with the BSP.
+    pub unsafe fn set_boot_rom_wp(enable: bool) {
+        unsafe {
+            if enable {
+                set_variable(1, 0xff00_0000, 0x0100_0000, MTRR_TYPE_WRITE_PROTECT);
+            } else {
+                clear_variable(1);
+            }
+        }
     }
 }
 
