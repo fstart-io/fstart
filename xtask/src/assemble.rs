@@ -570,10 +570,7 @@ fn assemble_linux_payload(
                 }],
             });
         } else {
-            eprintln!(
-                "[fstart] warning: kernel blob not found: {}",
-                k_path.display()
-            );
+            return Err(format!("kernel blob not found: {}", k_path.display()));
         }
     }
 

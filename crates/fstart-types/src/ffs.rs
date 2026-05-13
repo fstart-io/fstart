@@ -418,9 +418,9 @@ pub enum EntryContent {
     File {
         /// Type of file — influences how the loader treats it.
         file_type: FileType,
-        /// Segments that make up this file (max 8: text, rodata, data, bss,
-        /// plus additional sections for x86 boot code and reset vector).
-        segments: heapless::Vec<Segment, 8>,
+        /// Segments that make up this file (max 12: text, rodata, data, bss,
+        /// page tables/IDT, plus additional x86 boot/reset sections).
+        segments: heapless::Vec<Segment, 12>,
         /// Integrity digests over concatenated uncompressed segment data.
         digests: DigestSet,
     },
