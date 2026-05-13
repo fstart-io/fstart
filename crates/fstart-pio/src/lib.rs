@@ -183,3 +183,173 @@ pub unsafe fn io_delay() {
     // SAFETY: port 0x80 write is a standard x86 I/O delay mechanism.
     unsafe { outb(0x80, 0) };
 }
+
+// -----------------------------------------------------------------------
+// tock-registers-compatible port-I/O register types
+// -----------------------------------------------------------------------
+
+use core::marker::PhantomData;
+
+use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::{RegisterLongName, UIntLike};
+
+/// Integer widths supported by x86 port I/O registers.
+pub trait PioValue: UIntLike {
+    /// Read a value from `port`.
+    ///
+    /// # Safety
+    /// `port` must be valid for this register width.
+    unsafe fn port_read(port: u16) -> Self;
+
+    /// Write a value to `port`.
+    ///
+    /// # Safety
+    /// `port` must be valid for this register width.
+    unsafe fn port_write(port: u16, value: Self);
+}
+
+impl PioValue for u8 {
+    #[inline(always)]
+    unsafe fn port_read(port: u16) -> Self {
+        // SAFETY: caller upholds port validity.
+        unsafe { inb(port) }
+    }
+
+    #[inline(always)]
+    unsafe fn port_write(port: u16, value: Self) {
+        // SAFETY: caller upholds port validity.
+        unsafe { outb(port, value) };
+    }
+}
+
+impl PioValue for u16 {
+    #[inline(always)]
+    unsafe fn port_read(port: u16) -> Self {
+        // SAFETY: caller upholds port validity.
+        unsafe { inw(port) }
+    }
+
+    #[inline(always)]
+    unsafe fn port_write(port: u16, value: Self) {
+        // SAFETY: caller upholds port validity.
+        unsafe { outw(port, value) };
+    }
+}
+
+impl PioValue for u32 {
+    #[inline(always)]
+    unsafe fn port_read(port: u16) -> Self {
+        // SAFETY: caller upholds port validity.
+        unsafe { inl(port) }
+    }
+
+    #[inline(always)]
+    unsafe fn port_write(port: u16, value: Self) {
+        // SAFETY: caller upholds port validity.
+        unsafe { outl(port, value) };
+    }
+}
+
+/// A typed x86 port-I/O register compatible with `tock-registers`.
+///
+/// `PioRegister<u8, STATUS::Register>` implements [`Readable`] and
+/// [`Writeable`], so tock's generated field APIs work (`read`, `write`,
+/// `modify`, `matches_all`, etc.).
+#[derive(Clone, Copy)]
+pub struct PioRegister<T: PioValue, R: RegisterLongName = ()> {
+    port: u16,
+    _reg: PhantomData<(T, R)>,
+}
+
+impl<T: PioValue, R: RegisterLongName> PioRegister<T, R> {
+    /// Create a typed register at an absolute I/O port.
+    pub const fn new(port: u16) -> Self {
+        Self {
+            port,
+            _reg: PhantomData,
+        }
+    }
+
+    /// Return the absolute I/O port number.
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl<T: PioValue, R: RegisterLongName> Readable for PioRegister<T, R> {
+    type T = T;
+    type R = R;
+
+    #[inline(always)]
+    fn get(&self) -> T {
+        // SAFETY: `PioRegister` is only constructed by drivers for valid ports.
+        unsafe { T::port_read(self.port) }
+    }
+}
+
+impl<T: PioValue, R: RegisterLongName> Writeable for PioRegister<T, R> {
+    type T = T;
+    type R = R;
+
+    #[inline(always)]
+    fn set(&self, value: T) {
+        // SAFETY: `PioRegister` is only constructed by drivers for valid ports.
+        unsafe { T::port_write(self.port, value) };
+    }
+}
+
+/// Declare a small port-I/O register block with tock-compatible accessors.
+///
+/// Example:
+///
+/// ```ignore
+/// use fstart_pio::pio_register_structs;
+/// use fstart_pio::PioRegister;
+/// use tock_registers::register_bitfields;
+///
+/// register_bitfields![u8, STATUS [ INTR OFFSET(1) NUMBITS(1) [] ]];
+///
+/// pio_register_structs! {
+///     pub I801Regs {
+///         (0x00 => pub status: PioRegister<u8, STATUS::Register>),
+///         (0x02 => pub control: PioRegister<u8>),
+///     }
+/// }
+///
+/// let regs = I801Regs::new(0x400);
+/// let intr = regs.status().is_set(STATUS::INTR);
+/// ```
+#[macro_export]
+macro_rules! pio_register_structs {
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident {
+            $(($offset:expr => $field_vis:vis $field:ident : $reg_ty:ty)),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy)]
+        $vis struct $name {
+            base: u16,
+        }
+
+        impl $name {
+            /// Create a port-I/O register block at `base`.
+            pub const fn new(base: u16) -> Self {
+                Self { base }
+            }
+
+            /// Return the block base I/O port.
+            pub const fn base(&self) -> u16 {
+                self.base
+            }
+
+            $(
+                #[inline(always)]
+                $field_vis fn $field(&self) -> $reg_ty {
+                    <$reg_ty>::new(self.base + $offset)
+                }
+            )+
+        }
+    };
+}

@@ -10,4 +10,5 @@ fstart-log = { workspace = true }
 fstart-pineview-regs = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
+tock-registers = { workspace = true }
 ufmt = { workspace = true }
