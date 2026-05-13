@@ -140,18 +140,13 @@ pub enum RunsFrom {
 ///
 /// Real boards should set this based on the target CPU's known capabilities.
 /// QEMU boards can use `Size1GiB` since QEMU always supports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PageSize {
     /// 2 MiB pages — universally supported on all x86_64 CPUs.
+    #[default]
     Size2MiB,
     /// 1 GiB pages — requires PDPE1GB (CPUID 0x80000001 EDX[26]).
     Size1GiB,
-}
-
-impl Default for PageSize {
-    fn default() -> Self {
-        Self::Size2MiB
-    }
 }
 
 /// A capability is a composable unit of firmware functionality.

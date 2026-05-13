@@ -66,6 +66,11 @@ mp = ["dep:fstart-mp"]
 pineview-cpu = ["mp", "dep:fstart-cpu-pineview"]
 # x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
 x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
+# x86_64: build page tables at runtime in writable RAM. Enabled only for
+# boards with page_table_addr (QEMU); real XIP boards use ROM tables.
+x86-writable-page-tables = ["fstart-platform-x86_64?/x86-writable-page-tables"]
+# x86_64: emit static ROM page tables for first-stage real XIP boards.
+x86-static-page-tables = ["fstart-platform-x86_64?/x86-static-page-tables"]
 # AcpiLoad capability (load ACPI tables from external provider)
 acpi-load = []
 # MemoryDetect capability (runtime memory detection)
@@ -125,6 +130,7 @@ ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
 fstart-stage-runtime = { workspace = true }
 fstart-types = { workspace = true }
+fstart-pio = { workspace = true }
 heapless = { workspace = true }
 
 # Platform crates (exactly one enabled via feature)

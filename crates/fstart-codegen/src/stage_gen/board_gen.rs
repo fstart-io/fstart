@@ -1020,6 +1020,7 @@ fn match_boot_media(
                 #none_body
             }
             fstart_stage_runtime::BootMediaState::Mmio { base, size } => {
+                fstart_log::info!("boot-media match: MMIO base={:#x} size={:#x}", base, size);
                 // SAFETY: `base..base + size` is the board's
                 // memory-mapped flash window; the board author's
                 // RON declared this range is readable.
@@ -1029,6 +1030,7 @@ fn match_boot_media(
                         size as usize,
                     )
                 };
+                fstart_log::info!("boot-media match: media constructed");
                 #bm_usage
             }
             fstart_stage_runtime::BootMediaState::Block {
@@ -1320,6 +1322,47 @@ fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
     }
 
     let anchor = anchor_bytes_stmt();
+
+    if ctx.config.platform == Platform::X86_64 {
+        return quote! {
+            fstart_log::info!("stage_load: generated trampoline enter");
+            #anchor
+            fstart_log::info!("stage_load: anchor slice ready");
+            match self._boot_media {
+                fstart_stage_runtime::BootMediaState::Mmio { base, size } => {
+                    fstart_log::info!("stage_load: switching to DRAM stack for MMIO load");
+                    let stack_top: usize = 0x0300_0000;
+                    // SAFETY: DRAM has just been trained before StageLoad,
+                    // and this call never returns to the CAR-backed stack.
+                    unsafe {
+                        core::arch::asm!(
+                            "mov rsp, {stack}",
+                            "and rsp, -16",
+                            "sub rsp, 8",
+                            "jmp {tramp}",
+                            stack = in(reg) stack_top,
+                            tramp = sym __fstart_stage_load_mmio_trampoline,
+                            in("rdi") next_stage.as_ptr(),
+                            in("rsi") next_stage.len(),
+                            in("rdx") _anchor_bytes.as_ptr(),
+                            in("rcx") _anchor_bytes.len(),
+                            in("r8") base,
+                            in("r9") size,
+                            options(noreturn),
+                        );
+                    }
+                }
+                fstart_stage_runtime::BootMediaState::None => {
+                    fstart_log::error!("stage_load: no boot media configured");
+                }
+                fstart_stage_runtime::BootMediaState::Block { device_id, .. } => {
+                    fstart_log::error!("stage_load: x86 CAR stack switch supports MMIO only, device {}", device_id);
+                }
+            }
+            fstart_platform::halt()
+        };
+    }
+
     let bm_usage = quote! {
         fstart_capabilities::stage_load(
             next_stage,
@@ -1337,7 +1380,9 @@ fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let match_body = match_boot_media(ctx, &bm_usage, "stage_load", &none_body);
 
     quote! {
+        fstart_log::info!("stage_load: generated trampoline enter");
         #anchor
+        fstart_log::info!("stage_load: anchor slice ready");
         #match_body
         // Falls through here only when
         // `fstart_capabilities::stage_load` returned without jumping
@@ -2064,7 +2109,7 @@ fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
     quote! {
         #platform_block
         #config_lets
-        fstart_capabilities::acpi::prepare(&platform_acpi, |dsdt_aml, extra_tables| {
+        self._acpi_rsdp_addr = fstart_capabilities::acpi::prepare(&platform_acpi, |dsdt_aml, extra_tables| {
             #device_blocks
             #acpi_only_blocks
         });
@@ -3121,119 +3166,96 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
 fn init_device_body(ctx: &BoardCtx<'_>) -> TokenStream {
     use super::config_ser::{config_tokens, driver_type_tokens};
 
-    let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            let inst = &ctx.instances[*idx];
-            !inst.is_structural() && !inst.is_acpi_only()
-        })
-        .map(|idx| {
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            // Walk root→target collecting every non-structural,
-            // non-acpi-only, enabled device — this matches
-            // `ensure_device_ready`'s chain construction.
-            let chain = chain_from_root(idx, ctx.device_tree, ctx.devices, ctx.instances);
-            let steps = chain.iter().map(|&step_idx| {
-                let step_dev = &ctx.devices[step_idx];
-                let step_inst = &ctx.instances[step_idx];
-                let step_field = format_ident!("{}", step_dev.name.as_str());
-                let step_id_lit = proc_macro2::Literal::u8_unsuffixed(step_idx as u8);
-                let ty = driver_type_tokens(step_inst);
-                let cfg = config_tokens(step_inst);
-                // Construction — dispatch on `is_bus_device`.
-                //
-                // Emission pattern: `let mut _dev = T::new(&cfg)?;
-                // _dev.init()?; self.<field> = Some(_dev);`
-                //
-                // This matches the old pre-flip
-                // `capabilities::generate_console_init` output and
-                // keeps the freshly-constructed driver at a single
-                // stable stack location for the duration of
-                // `init()`.
-                //
-                // Known limitation (debug only): on AArch64 in
-                // debug mode, LLVM can still route the 16-byte
-                // `Pl011::init` call through a stack scratch copy.
-                // If the driver has internal state that `init()`
-                // depends on being at the eventual field address,
-                // that state ends up "stranded" in the scratch copy
-                // and the field's `Pl011` misses the init.  `Pl011`
-                // today has no such state — `init()` only writes
-                // MMIO — but the `&'static Pl011Regs` pointer does
-                // propagate from `new()` to the field and may read
-                // back stale on some codegen paths.  Release mode
-                // optimises the scratch chain away entirely.  The
-                // true fix is a driver-side rework (store `base:
-                // usize` instead of `&'static Regs`, or offer a
-                // `construct_into(slot: &mut MaybeUninit<Self>)`
-                // trait method).  Tracked as a follow-up in the
-                // stage-runtime-codegen-split plan.
-                //
-                // Earlier rejected alternatives:
-                //
-                // - `self.<field> = Some(T::new(&cfg)?);
-                //   self.<field>.as_mut().ok_or(...)?.init()?`:
-                //   chained `Try::branch` debug codegen corrupted
-                //   24-byte `Ns16550` struct copies (discriminant
-                //   → 1 → `unreachable!()` → silent panic).
-                // - `Option::insert` + init through returned `&mut`:
-                //   works on AArch64 debug but hangs RISC-V debug
-                //   (inverse of the current pattern's limitation).
-                // - `core::hint::black_box(&mut _dev)` barrier:
-                //   same RISC-V debug hang as `Option::insert`.
-                let construct = if step_inst.meta().is_bus_device {
-                    let parent_name =
-                        walk_to_real_parent(step_idx, ctx.device_tree, ctx.devices, ctx.instances);
-                    match parent_name {
-                        Some(pname) => {
-                            let parent = format_ident!("{}", pname);
-                            quote! {
-                                let _cfg = #cfg;
-                                let _parent_ref = self.#parent
-                                    .as_ref()
-                                    .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                                let mut _dev = <#ty>::new_on_bus(&_cfg, _parent_ref)?;
-                                _dev.init()?;
-                                self.#step_field = Some(_dev);
+    let entries: Vec<(TokenStream, TokenStream)> =
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+            .filter(|idx| {
+                let inst = &ctx.instances[*idx];
+                !inst.is_structural() && !inst.is_acpi_only()
+            })
+            .map(|idx| {
+                let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
+                let helper = format_ident!("__fstart_init_device_{}", idx);
+                // Walk root→target collecting every non-structural,
+                // non-acpi-only, enabled device — this matches
+                // `ensure_device_ready`'s chain construction.
+                let chain = chain_from_root(idx, ctx.device_tree, ctx.devices, ctx.instances);
+                let steps = chain.iter().map(|&step_idx| {
+                    let step_dev = &ctx.devices[step_idx];
+                    let step_inst = &ctx.instances[step_idx];
+                    let step_field = format_ident!("{}", step_dev.name.as_str());
+                    let step_id_lit = proc_macro2::Literal::u8_unsuffixed(step_idx as u8);
+                    let ty = driver_type_tokens(step_inst);
+                    let cfg = config_tokens(step_inst);
+                    // Construction — dispatch on `is_bus_device`.
+                    //
+                    // Keep construction in per-device out-of-line helpers.  A
+                    // single monolithic `match id` function gets one stack frame
+                    // large enough for the biggest board config on any arm, which
+                    // is too expensive for x86 CAR bootblocks.
+                    let construct = if step_inst.meta().is_bus_device {
+                        let parent_name = walk_to_real_parent(
+                            step_idx,
+                            ctx.device_tree,
+                            ctx.devices,
+                            ctx.instances,
+                        );
+                        match parent_name {
+                            Some(pname) => {
+                                let parent = format_ident!("{}", pname);
+                                quote! {
+                                    let _cfg = #cfg;
+                                    let _parent_ref = this.#parent
+                                        .as_ref()
+                                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                                    let mut _dev = <#ty>::new_on_bus(&_cfg, _parent_ref)?;
+                                    _dev.init()?;
+                                    this.#step_field = Some(_dev);
+                                }
                             }
+                            None => quote! {
+                                let _cfg = #cfg;
+                                let mut _dev = <#ty>::new(&_cfg)?;
+                                _dev.init()?;
+                                this.#step_field = Some(_dev);
+                            },
                         }
-                        None => quote! {
+                    } else {
+                        quote! {
                             let _cfg = #cfg;
                             let mut _dev = <#ty>::new(&_cfg)?;
                             _dev.init()?;
-                            self.#step_field = Some(_dev);
-                        },
-                    }
-                } else {
+                            this.#step_field = Some(_dev);
+                        }
+                    };
                     quote! {
-                        let _cfg = #cfg;
-                        let mut _dev = <#ty>::new(&_cfg)?;
-                        _dev.init()?;
-                        self.#step_field = Some(_dev);
+                        if !this._inited.contains(#step_id_lit) {
+                            #construct
+                            this._inited.set(#step_id_lit);
+                        }
+                    }
+                });
+                let helper_def = quote! {
+                    #[inline(never)]
+                    fn #helper(
+                        this: &mut _BoardDevices,
+                    ) -> Result<(), fstart_services::device::DeviceError> {
+                        if this._inited.contains(#id_lit) {
+                            return Ok(());
+                        }
+                        #(#steps)*
+                        Ok(())
                     }
                 };
-                quote! {
-                    if !self._inited.contains(#step_id_lit) {
-                        #construct
-                        self._inited.set(#step_id_lit);
-                    }
-                }
-            });
-            quote! {
-                #id_lit => {
-                    // Fast path: already inited.  Matches the
-                    // `inited.contains(id) { continue; }` check at
-                    // the top of the executor's `CapOp::ConsoleInit`
-                    // arm.
-                    if self._inited.contains(#id_lit) {
-                        return Ok(());
-                    }
-                    #(#steps)*
-                    Ok(())
-                }
-            }
-        });
+                let arm = quote! { #id_lit => #helper(self), };
+                (helper_def, arm)
+            })
+            .collect();
+
+    let helper_defs = entries.iter().map(|(helper, _)| helper);
+    let arms = entries.iter().map(|(_, arm)| arm);
 
     quote! {
+        #(#helper_defs)*
         match id {
             #(#arms)*
             _ => {
