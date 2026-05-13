@@ -221,27 +221,17 @@ where
         keys[i] = *key;
     }
 
-    // Scan the image for the `FSTART_ANCHOR` placeholder.  The placeholder
-    // is a full `AnchorBlock::placeholder()` (magic + version + zeros)
-    // embedded in whichever stage binary uses FFS (bootblock for monolithic,
-    // main stage for multi-stage).  If no placeholder is found, append
-    // space for the anchor at the end (fallback for builds without FFS).
-    let anchor_offset = match scan_for_placeholder(&image) {
-        Some(offset) => {
-            if offset + ANCHOR_SIZE > image.len() {
-                return Err(format!(
-                    "anchor placeholder at offset {offset} would extend past image end (need {ANCHOR_SIZE} bytes)"
-                ));
-            }
-            offset
-        }
-        None => {
-            // No embedded placeholder — append space for the anchor at end
-            let offset = image.len();
-            image.resize(offset + ANCHOR_SIZE, 0);
-            offset
-        }
-    };
+    // Scan the image for every `FSTART_ANCHOR` placeholder. Multi-stage
+    // images contain one placeholder per FFS-using stage; all must be
+    // patched because later stages reference their own embedded static.
+    // If no placeholder is found, append one at the end as a fallback.
+    let mut anchor_offsets = scan_for_placeholders(&image);
+    if anchor_offsets.is_empty() {
+        let offset = image.len();
+        image.resize(offset + ANCHOR_SIZE, 0);
+        anchor_offsets.push(offset);
+    }
+    let anchor_offset = anchor_offsets[0];
 
     // Compute total_image_size *after* potentially appending the anchor,
     // so it accurately reflects the final image size.
@@ -257,17 +247,20 @@ where
         keys,
     };
 
-    anchor.write_to(&mut image[anchor_offset..]);
+    for &offset in &anchor_offsets {
+        if offset + ANCHOR_SIZE > image.len() {
+            return Err(format!(
+                "anchor placeholder at offset {offset} would extend past image end (need {ANCHOR_SIZE} bytes)"
+            ));
+        }
+        anchor.write_to(&mut image[offset..]);
+    }
 
-    // ---- Phase 4: Recompute digest for the file containing the anchor ----
+    // ---- Phase 4: Recompute digests for files containing patched anchors ----
     //
-    // The anchor was patched after digests were computed, so the file's
-    // digest in the manifest is stale.  Find whichever file contains the
-    // patched anchor and recompute its digest from the actual image bytes.
-    //
-    // This works because the new serialized manifest has exactly the same
-    // size — only the 32-byte hash values change inside fixed-size fields.
-    let manifest = recompute_file_digest(&image, &manifest, anchor_offset)?;
+    // Anchors are patched after digests were computed, so each containing
+    // file's digest in the manifest is stale.
+    let manifest = recompute_file_digests(&image, &manifest, &anchor_offsets)?;
 
     let new_signed = sign_manifest(&manifest, sign)?;
     let new_manifest_serialized =
@@ -303,8 +296,9 @@ where
 /// zeros (the output of `AnchorBlock::placeholder()`).  Matching only the
 /// 8-byte magic would produce false positives against `FFS_MAGIC` constants
 /// embedded in other binaries' `.rodata` sections.
-fn scan_for_placeholder(image: &[u8]) -> Option<usize> {
+fn scan_for_placeholders(image: &[u8]) -> Vec<usize> {
     let magic = &FFS_MAGIC;
+    let mut offsets = Vec::new();
     let mut offset = 0;
     while offset + ANCHOR_SIZE <= image.len() {
         if &image[offset..offset + magic.len()] == magic {
@@ -317,12 +311,12 @@ fn scan_for_placeholder(image: &[u8]) -> Option<usize> {
             let manifest_sz = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
             let total_sz = u32::from_le_bytes([rest[12], rest[13], rest[14], rest[15]]);
             if version == FFS_VERSION && manifest_off == 0 && manifest_sz == 0 && total_sz == 0 {
-                return Some(offset);
+                offsets.push(offset);
             }
         }
         offset += 8;
     }
-    None
+    offsets
 }
 
 /// Lay out a file's segments in the image, returning a `RegionEntry`.
@@ -331,7 +325,7 @@ fn lay_out_file(
     file: &InputFile,
     region_base: u32,
 ) -> Result<RegionEntry, String> {
-    let mut segments: heapless::Vec<Segment, 8> = heapless::Vec::new();
+    let mut segments: heapless::Vec<Segment, 12> = heapless::Vec::new();
     let mut digest_input: Vec<u8> = Vec::new();
 
     let entry_offset = image.len() as u32 - region_base;
@@ -429,10 +423,10 @@ fn lay_out_file(
 /// After the anchor is patched, that file's on-image bytes differ from
 /// the data that was hashed during layout. This function reads the actual
 /// bytes from the image and updates the digest in the manifest.
-fn recompute_file_digest(
+fn recompute_file_digests(
     image: &[u8],
     manifest: &ImageManifest,
-    anchor_offset: usize,
+    anchor_offsets: &[usize],
 ) -> Result<ImageManifest, String> {
     let mut manifest = manifest.clone();
 
@@ -448,8 +442,10 @@ fn recompute_file_digest(
             let entry_abs = region_offset + entry.offset as usize;
             let entry_end = entry_abs + entry.size as usize;
 
-            // Check if the anchor falls within this file's byte range.
-            if anchor_offset < entry_abs || anchor_offset >= entry_end {
+            if !anchor_offsets
+                .iter()
+                .any(|&anchor_offset| anchor_offset >= entry_abs && anchor_offset < entry_end)
+            {
                 continue;
             }
 
@@ -460,19 +456,11 @@ fn recompute_file_digest(
                 _ => continue,
             };
 
-            // Re-read all segment data from the image (now with patched
-            // anchor) and recompute the concatenated digest.
-            //
-            // The file must be uncompressed because the anchor is patched
-            // directly into the image bytes (compressed data would be
-            // corrupted).
             let mut digest_input: Vec<u8> = Vec::new();
             for seg in segments.iter() {
                 if seg.compression != Compression::None {
                     return Err(format!(
-                        "segment '{}' in file '{}' uses {:?} compression — \
-                         the file containing FSTART_ANCHOR must be uncompressed \
-                         because the anchor is patched directly into the image",
+                        "segment '{}' in file '{}' uses {:?} compression —                          files containing FSTART_ANCHOR must be uncompressed                          because anchors are patched directly into the image",
                         seg.name, entry.name, seg.compression,
                     ));
                 }
@@ -489,12 +477,9 @@ fn recompute_file_digest(
 
             *digests = digest::hash_digest_set(&digest_input)
                 .map_err(|_| "no digest algorithms available")?;
-
-            return Ok(manifest);
         }
     }
 
-    // Anchor is outside all files (appended at end) — no digest to fix.
     Ok(manifest)
 }
 

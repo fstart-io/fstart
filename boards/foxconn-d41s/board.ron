@@ -1,7 +1,9 @@
 // Foxconn D41S — Intel Atom D410 (Pineview NB) + ICH7 SB + ITE IT8721F SuperIO.
 //
 // The board has:
-//   - 1 MiB SPI NOR flash (mapped at 0xFFF00000..0xFFFFFFFF).
+//   - 16 MiB SPI NOR flash (mapped at 0xFF000000..0xFFFFFFFF).
+//     The executable bootblock is linked into the top 1 MiB so the
+//     reset vector remains at 0xFFFFFFF0.
 //   - DDR2 SDRAM (size detected at runtime via SPD over SMBus).
 //   - 4 integrated SATA ports, 1 PATA header.
 //   - 4 PCIe lanes from the ICH7 (only port 1 is routed to the NIC).
@@ -31,20 +33,28 @@
 
     memory: (
         regions: [
-            ( name: "flash", base: 0xFFF00000, size: 0x100000, kind: Rom ),
+            // Full flash is 16 MiB, but the linker should place the XIP
+            // bootblock in the top 1 MiB. Keep the FFS/storage window and
+            // executable bootblock window as separate ROM regions so the
+            // bootblock binary can be top-aligned in the final image.
+            ( name: "flash_ffs", base: 0xFF000000, size: 0x00F00000, kind: Rom ),
+            ( name: "flash_bootblock", base: 0xFFF00000, size: 0x00100000, kind: Rom ),
             // DRAM region covers the conventional 1 GiB the D410 typically ships with.
             // Real size is detected at runtime via SPD — this is the upper bound
             // used by the linker for the `ramstage` layout.
             ( name: "ram",   base: 0x00100000, size: 0x3FF00000, kind: Ram ),
         ],
-        flash_base: 0xFFF00000,
-        flash_size: 0x100000,
-        // Cache-as-RAM window. The Atom D410 has 512 KiB L2 cache;
-        // NEM can't pin more cache than the CPU physically has.
+        flash_base: 0xFF000000,
+        flash_size: 0x01000000,
+        // Cache-as-RAM window. Match coreboot's foxconn/d41s Pineview
+        // configuration exactly: CONFIG_DCACHE_RAM_BASE=0xFEFC0000,
+        // CONFIG_DCACHE_RAM_SIZE=0x8000.  NEM is sensitive to the pinned
+        // cache window; using the whole 512 KiB L2 here diverges from the
+        // known-working coreboot bootblock.
         car: (
             method: NonEvictMode,
-            base: 0xFEF80000,
-            size: 0x80000,
+            base: 0xFEFC0000,
+            size: 0x8000,
         ),
     ),
 
@@ -71,6 +81,7 @@
                 epbar:  0xFED19000,
                 ecam_base: 0xE0000000,
                 igd: ( use_crt: true, use_lvds: false, spread_spectrum: false ),
+                ck505_pre_raminit: true,
                 acpi_name: "MCHC",
             )),
             services: ["MemoryController", "PciHost"],
@@ -83,6 +94,10 @@
                                0x0b, 0x0b, 0x0b, 0x0b),
                 gpe0_en: 0x441,
                 lpc_decode: (
+                    fixed_io: (
+                        com_a: Com1,
+                        com_b: Com2,
+                    ),
                     generic_io: [
                         // ITE8721F SuperIO runtime/config window used by D41S.
                         ( base: 0x0a00, size: 0x0100 ),
@@ -261,7 +276,7 @@
                 // DDR2 training needs SMBus (enabled by ChipsetInit).
                 DramInit( device: "northbridge" ),
                 // Load the ramstage from FFS in flash and jump to it.
-                BootMedia(MemoryMapped( base: 0xFFF00000, size: 0xFE000 )),
+                BootMedia(MemoryMapped( base: 0xFF000000, size: 0x01000000 )),
                 StageLoad( next_stage: "ramstage" ),
             ],
             // Code runs XIP from ROM (reset vector 0xFFFFFFF0). Writable
@@ -290,19 +305,19 @@
                 // SATA/USB/HDA, PM/C-state setup, PCIe root-port tuning,
                 // then SPI/SMI/TCO/BIOS-interface lockdown.
                 LateDriverInit,
-                MpInit(cpu_model: "pineview", num_cpus: 1, smm: true),
+                MpInit(cpu_model: "pineview", num_cpus: 4, smm: true),
                 AcpiPrepare,
                 SmBiosPrepare,
                 BootMedia(MemoryMapped(
-                    base: 0xFFF00000, size: 0xFE000,
+                    base: 0xFF000000, size: 0x01000000,
                     ram_copy_addr: 0x2000000,
                 )),
                 SigVerify,
                 PayloadLoad,
             ],
-            load_addr: 0x01000000,
+            load_addr: 0x04000000,
             stack_size: 0x8000,
-            heap_size: 0x40000,
+            heap_size: 0x200000,
             // Ramstage runs from DRAM. It enters via `_start_ram` which
             // inherits the page tables built by the bootblock — no
             // `page_table_addr` / `page_size` needed here. The linker
@@ -383,10 +398,10 @@
     payload: (
         kind: LinuxBoot,
         kernel_file: "bzImage",
-        kernel_load_addr: 0x1000000,
+        kernel_load_addr: 0x02000000,
         fdt: Platform,
         dtb_addr: None,
-        bootargs: "console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8",
+        bootargs: "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 ignore_loglevel loglevel=8",
         firmware: None,
     ),
 )

@@ -139,6 +139,13 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
             if mono.page_size == fstart_types::stage::PageSize::Size1GiB {
                 features.push("x86-1g-pages".to_string());
             }
+            if config.platform == Platform::X86_64 {
+                if mono.page_table_addr.is_some() {
+                    features.push("x86-writable-page-tables".to_string());
+                } else {
+                    features.push("x86-static-page-tables".to_string());
+                }
+            }
             let features_str = features.join(",");
             let needs_alloc = stage_uses_fdt(&mono.capabilities)
                 || stage_uses_acpi(&mono.capabilities)
@@ -185,6 +192,13 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 features.extend(cap_features);
                 if stage.page_size == fstart_types::stage::PageSize::Size1GiB {
                     features.push("x86-1g-pages".to_string());
+                }
+                if config.platform == Platform::X86_64 {
+                    if stage.page_table_addr.is_some() {
+                        features.push("x86-writable-page-tables".to_string());
+                    } else if i == 0 {
+                        features.push("x86-static-page-tables".to_string());
+                    }
                 }
                 let features_str = features.join(",");
 
@@ -340,6 +354,20 @@ fn build_one_stage(
     soc_format: SocImageFormat,
     smm_artifacts: Option<&SmmArtifacts>,
 ) -> Result<(PathBuf, PathBuf), String> {
+    let profile = if release { "release" } else { "debug" };
+    let board_label = board_ron
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("board");
+    let stage_label = stage_name.unwrap_or("stage");
+    let artifact_dir = workspace_root
+        .join("target")
+        .join("fstart-generated")
+        .join(board_label)
+        .join(profile)
+        .join(stage_label);
+
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("--package")
@@ -394,8 +422,12 @@ fn build_one_stage(
     }
     cmd.env("RUSTFLAGS", &rustflags);
 
-    // Pass board RON path to build.rs
+    // Pass board/stage context to build.rs.  FSTART_STAGE_ARTIFACT_DIR
+    // mirrors generated_stage.rs/link.ld to a stable, human-readable path;
+    // Cargo's OUT_DIR remains the canonical path used by include!/linking.
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
+    cmd.env("FSTART_STAGE_ARTIFACT_DIR", &artifact_dir);
+    cmd.env("FSTART_STAGE_FEATURES", features);
     if let Some(name) = stage_name {
         cmd.env("FSTART_STAGE_NAME", name);
     }
@@ -406,6 +438,7 @@ fn build_one_stage(
         }
     }
 
+    eprintln!("[fstart] generated artifacts: {}", artifact_dir.display());
     eprintln!("[fstart] building fstart-stage...");
     let status = cmd
         .status()
@@ -419,8 +452,7 @@ fn build_one_stage(
         ));
     }
 
-    // Determine output binary path
-    let profile = if release { "release" } else { "debug" };
+    // Determine output binary path.
     let elf_path = workspace_root
         .join("target")
         .join(target)
