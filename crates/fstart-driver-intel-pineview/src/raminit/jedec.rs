@@ -86,7 +86,10 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
         core::hint::spin_loop();
     }
 
-    // Execute JEDEC sequence for each populated rank.
+    // Execute JEDEC sequence for each populated rank.  The controller's
+    // JEDEC command rank field is packed over populated ranks, not physical
+    // rank slots, so DIMM1-only systems use JEDEC ranks 0/1.
+    let mut jedec_rank: u8 = 0;
     for r in 0..super::RANKS_PER_CHANNEL {
         let dimm_idx = r / 2;
         let rank_in_dimm = (r % 2) as u8;
@@ -97,7 +100,8 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
             continue;
         }
 
-        let rank = r as u8;
+        let rank = jedec_rank;
+        jedec_rank += 1;
 
         // 1. NOP
         send_jedec_cmd(mch, rank, NOP_CMD, 0);

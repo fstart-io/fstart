@@ -18,13 +18,15 @@
 pub mod raminit;
 
 use core::cell::UnsafeCell;
+use core::ptr;
 
+use fstart_arch::mtrr;
 use fstart_ecam as ecam;
 use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
-use fstart_services::{PciHost, ServiceError};
+use fstart_services::{PciHost, ServiceError, SmBus};
 use serde::{Deserialize, Serialize};
 
 /// Intel integrated graphics configuration.
@@ -56,9 +58,19 @@ pub struct IntelPineviewConfig {
     /// Optional integrated graphics configuration.
     #[serde(default)]
     pub igd: Option<IgdConfig>,
+    /// SPD EEPROM SMBus addresses for DIMM slots A/B. Zero means absent.
+    #[serde(default = "default_spd_addresses")]
+    pub spd_addresses: [u8; 4],
+    /// Apply Foxconn D41S/vendor CK505 clock-generator setup before raminit.
+    #[serde(default)]
+    pub ck505_pre_raminit: bool,
     /// ACPI device name (e.g., "MCHC"). If `None`, no ACPI node.
     #[serde(default)]
     pub acpi_name: Option<heapless::String<8>>,
+}
+
+fn default_spd_addresses() -> [u8; 4] {
+    [0x50, 0x51, 0, 0]
 }
 
 fn default_ecam_base() -> u64 {
@@ -135,6 +147,17 @@ impl IntelPineview {
     pub fn detect_warm_reset(&self) -> bool {
         let mch = self.mchbar();
         mch.read32(mchbar::PMSTS) & (1 << 8) != 0
+    }
+
+    fn platform_type(&self) -> u8 {
+        const PINEVIEW_DID_MASK: u16 = 0xfff0;
+        const PINEVIEW_MOBILE_DID: u16 = 0xa010;
+        let did = ecam::PciDevBdf::new(0, 0, 0).read16(0x02) & PINEVIEW_DID_MASK;
+        if did == PINEVIEW_MOBILE_DID {
+            raminit::PLATFORM_MOBILE
+        } else {
+            raminit::PLATFORM_DESKTOP
+        }
     }
 
     // ---------------------------------------------------------------
@@ -376,9 +399,98 @@ impl PciHost for IntelPineview {
     }
 }
 
+fn pineview_ck505_pre_raminit(smbus: &mut dyn SmBus) {
+    const CLOCKGEN_ADDR: u8 = 0x69;
+    const REGS: [u8; 5] = [0x00, 0x80, 0xfe, 0xff, 0xfc];
+
+    let mut block = [0u8; 5];
+    for (idx, byte) in block.iter_mut().enumerate() {
+        match smbus.read_byte(CLOCKGEN_ADDR, idx as u8) {
+            Ok(v) => *byte = v,
+            Err(_) => {
+                fstart_log::error!("pineview: failed reading CK505 configuration");
+                return;
+            }
+        }
+    }
+
+    block[1] |= 0x80;
+    block[2] = REGS[2];
+    block[3] = REGS[3];
+    block[4] = REGS[4];
+
+    for (idx, byte) in block.iter().copied().enumerate() {
+        if smbus.write_byte(CLOCKGEN_ADDR, idx as u8, byte).is_err() {
+            fstart_log::error!("pineview: failed writing CK505 configuration");
+            return;
+        }
+    }
+    fstart_log::info!("pineview: CK505 pre-raminit configuration applied");
+}
+
+fn pineview_lower_memory_test(test_top: u32) -> Result<(), ServiceError> {
+    let top = test_top as usize;
+    let test_addr = if top > (32 * 1024 * 1024) {
+        top - (16 * 1024 * 1024)
+    } else {
+        1024 * 1024
+    };
+    let p = test_addr as *mut u32;
+    const PATTERNS: [u32; 4] = [0x0000_0000, 0xffff_ffff, 0x5555_5555, 0xaaaa_aaaa];
+
+    fstart_log::info!(
+        "ramtest: testing lower DRAM at {:#x} below top {:#x}",
+        test_addr,
+        top,
+    );
+    // SAFETY: Called only after successful Pineview DRAM training. `test_top`
+    // is the top of fstart-usable low DRAM, not raw TOM, so the chosen address
+    // is below UMA/GTT/TSEG reservations.
+    unsafe {
+        let old = ptr::read_volatile(p);
+        for pattern in PATTERNS {
+            ptr::write_volatile(p, pattern);
+            if ptr::read_volatile(p) != pattern {
+                ptr::write_volatile(p, old);
+                fstart_log::error!("ramtest: failed at {:#x}", test_addr);
+                return Err(ServiceError::HardwareError);
+            }
+        }
+        ptr::write_volatile(p, old);
+    }
+    fstart_log::info!("ramtest: passed at {:#x}", test_addr);
+    Ok(())
+}
+
 impl MemoryController for IntelPineview {
+    fn dram_init(&mut self) -> Result<(), ServiceError> {
+        let mut smbus = fstart_smbus_intel::I801SmBus::new(0x0400);
+        if self.config.ck505_pre_raminit {
+            pineview_ck505_pre_raminit(&mut smbus);
+        }
+        let boot_path = if self.detect_warm_reset() { 1 } else { 0 };
+        let platform_type = self.platform_type();
+        let size = raminit::sdram_initialize(
+            &self.mchbar(),
+            &mut smbus,
+            boot_path,
+            platform_type,
+            &self.config.spd_addresses,
+        )?;
+        self.detected_size = size;
+        self.memory_test()?;
+        Ok(())
+    }
+
     fn detected_size_bytes(&self) -> u64 {
         self.detected_size
+    }
+
+    fn memory_test(&self) -> Result<(), ServiceError> {
+        let usable_top = self.usable_low_memory_top();
+        mtrr::set_low_wb_top(usable_top as u64);
+        fstart_log::info!("pineview: dynamic WB MTRR top set to {:#x}", usable_top);
+        pineview_lower_memory_test(usable_top)
     }
 }
 
@@ -469,12 +581,22 @@ impl IntelPineview {
         (self.tseg_base(), self.tseg_size())
     }
 
-    /// Compute CBMEM top (aligned down to 4 MiB).
-    ///
-    /// TSEG can start at any 1 MiB alignment; CBMEM needs 4 MiB
-    /// alignment for MTRR efficiency.
-    pub fn cbmem_top(&self) -> u32 {
-        self.tseg_base() & !((4 * 1024 * 1024) - 1)
+    /// Top of fstart-usable low DRAM, excluding top-of-memory reservations.
+    pub fn usable_low_memory_top(&self) -> u32 {
+        let mut top = self.tolud();
+        let igd = self.igd_base();
+        if igd != 0 {
+            top = top.min(igd);
+        }
+        let gtt = self.gtt_base();
+        if gtt != 0 {
+            top = top.min(gtt);
+        }
+        let tseg = self.tseg_base();
+        if tseg != 0 {
+            top = top.min(tseg);
+        }
+        top
     }
 
     /// Write the SMRAM register (used by SMM relocation).
@@ -548,7 +670,10 @@ impl IntelPineview {
         fstart_log::info!("pineview: IGD stolen={}K", igd_kb);
         fstart_log::info!("pineview: GTT stolen={}K", gtt_kb);
         fstart_log::info!("pineview: TSEG base={:#x} size={:#x}", tseg_base, tseg_size);
-        fstart_log::info!("pineview: CBMEM top={:#x}", self.cbmem_top());
+        fstart_log::info!(
+            "pineview: usable low memory top={:#x}",
+            self.usable_low_memory_top()
+        );
     }
 }
 
