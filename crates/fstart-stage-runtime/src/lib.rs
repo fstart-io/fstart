@@ -396,6 +396,137 @@ pub trait Board: Sized {
 }
 
 // ---------------------------------------------------------------------------
+// Board call boundaries
+// ---------------------------------------------------------------------------
+//
+// Keep these calls out-of-line.  Early x86 bootblocks run on a tiny CAR stack,
+// and a fully inlined monomorphised `run_stage()` otherwise inherits the maximum
+// stack frame of every possible capability arm (FFS/stage loading, ACPI, SMBIOS,
+// etc.), even when the current stage has not reached those arms yet.
+
+#[inline(never)]
+fn call_init_device<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
+    board.init_device(id)
+}
+
+#[inline(never)]
+fn call_memory_init<B: Board>(board: &mut B) {
+    board.memory_init();
+}
+
+#[inline(never)]
+fn call_late_driver_init_complete<B: Board>(board: &mut B, count: usize) {
+    board.late_driver_init_complete(count);
+}
+
+#[inline(never)]
+fn call_sig_verify<B: Board>(board: &B) {
+    board.sig_verify();
+}
+
+#[inline(never)]
+fn call_fdt_prepare<B: Board>(board: &mut B) {
+    board.fdt_prepare();
+}
+
+#[inline(never)]
+fn call_payload_load<B: Board>(board: &B) -> ! {
+    board.payload_load()
+}
+
+#[inline(never)]
+fn call_stage_load<B: Board>(board: &B, next_stage: &str) -> ! {
+    fstart_log::info!("stage-runtime: call_stage_load helper enter");
+    board.stage_load(next_stage)
+}
+
+#[inline(never)]
+fn call_acpi_prepare<B: Board>(board: &mut B) {
+    board.acpi_prepare();
+}
+
+#[inline(never)]
+fn call_smbios_prepare<B: Board>(board: &B) {
+    board.smbios_prepare();
+}
+
+#[inline(never)]
+fn call_chipset_pre_console<B: Board>(
+    board: &mut B,
+    nb: DeviceId,
+    sb: DeviceId,
+) -> Result<(), DeviceError> {
+    board.chipset_pre_console(nb, sb)
+}
+
+#[inline(never)]
+fn call_chipset_init<B: Board>(
+    board: &mut B,
+    nb: DeviceId,
+    sb: DeviceId,
+) -> Result<(), DeviceError> {
+    board.chipset_init(nb, sb)
+}
+
+#[inline(never)]
+fn call_dram_init<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
+    board.dram_init(id)
+}
+
+#[inline(never)]
+fn call_pci_init<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
+    board.pci_init(id)
+}
+
+#[inline(never)]
+fn call_acpi_load<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
+    board.acpi_load(id)
+}
+
+#[inline(never)]
+fn call_memory_detect<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
+    board.memory_detect(id)
+}
+
+#[inline(never)]
+fn call_mp_init<B: Board>(
+    board: &mut B,
+    cpu_model: &str,
+    num_cpus: u16,
+    smm: bool,
+) -> Result<(), RuntimeError> {
+    board.mp_init(cpu_model, num_cpus, smm)
+}
+
+#[inline(never)]
+fn call_init_all_devices<B: Board>(board: &mut B, skip: &DeviceMask, gated: &DeviceMask) {
+    board.init_all_devices(skip, gated);
+}
+
+#[inline(never)]
+fn call_boot_media_select<B: Board>(
+    board: &mut B,
+    candidates: &[BootMediaCandidate],
+) -> Option<DeviceId> {
+    board.boot_media_select(candidates)
+}
+
+#[inline(never)]
+fn call_boot_media_static<B: Board>(
+    board: &mut B,
+    device: Option<DeviceId>,
+    offset: u64,
+    size: u64,
+) {
+    board.boot_media_static(device, offset, size);
+}
+
+#[inline(never)]
+fn call_load_next_stage<B: Board>(board: &mut B, next_stage: &str) -> ! {
+    board.load_next_stage(next_stage)
+}
+
+// ---------------------------------------------------------------------------
 // run_stage — the handwritten executor
 // ---------------------------------------------------------------------------
 
@@ -422,17 +553,22 @@ pub trait Board: Sized {
 pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr: usize) -> ! {
     let mut inited = DeviceMask::from_slice(plan.persistent_inited);
 
+    fstart_log::info!("stage-runtime: entering stage '{}'", plan.stage_name);
     for op in plan.caps {
+        fstart_log::info!("stage-runtime: op begin");
         match *op {
             // ----- No-device capabilities ------------------------------------
-            CapOp::MemoryInit => board.memory_init(),
-            CapOp::LateDriverInit => board.late_driver_init_complete(0),
-            CapOp::SigVerify => board.sig_verify(),
-            CapOp::FdtPrepare => board.fdt_prepare(),
-            CapOp::PayloadLoad => board.payload_load(),
-            CapOp::StageLoad { next_stage } => board.stage_load(next_stage),
-            CapOp::AcpiPrepare => board.acpi_prepare(),
-            CapOp::SmBiosPrepare => board.smbios_prepare(),
+            CapOp::MemoryInit => call_memory_init(&mut board),
+            CapOp::LateDriverInit => call_late_driver_init_complete(&mut board, 0),
+            CapOp::SigVerify => call_sig_verify(&board),
+            CapOp::FdtPrepare => call_fdt_prepare(&mut board),
+            CapOp::PayloadLoad => call_payload_load(&board),
+            CapOp::StageLoad { next_stage } => {
+                fstart_log::info!("stage-runtime: StageLoad('{}')", next_stage);
+                call_stage_load(&board, next_stage)
+            }
+            CapOp::AcpiPrepare => call_acpi_prepare(&mut board),
+            CapOp::SmBiosPrepare => call_smbios_prepare(&board),
             CapOp::ReturnToFel => board.return_to_fel(),
 
             // ----- Single-device lifecycle capabilities ----------------------
@@ -443,24 +579,29 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                 if inited.contains(id) {
                     continue;
                 }
-                if board.init_device(id).is_err() {
+                if call_init_device(&mut board, id).is_err() {
                     board.halt();
                 }
                 inited.set(id);
             }
 
             CapOp::DramInit(id) => {
-                if board.init_device(id).is_err() {
+                fstart_log::info!("stage-runtime: DramInit({}) init_device", id);
+                if call_init_device(&mut board, id).is_err() {
+                    fstart_log::error!("stage-runtime: DramInit init_device failed");
                     board.halt();
                 }
-                if board.dram_init(id).is_err() {
+                fstart_log::info!("stage-runtime: DramInit({}) call", id);
+                if call_dram_init(&mut board, id).is_err() {
+                    fstart_log::error!("stage-runtime: DramInit failed");
                     board.halt();
                 }
+                fstart_log::info!("stage-runtime: DramInit({}) done", id);
                 inited.set(id);
             }
 
             CapOp::ConsoleInit(id) => {
-                if board.init_device(id).is_err() {
+                if call_init_device(&mut board, id).is_err() {
                     board.halt();
                 }
                 // SAFETY: `StagePlan` guarantees `id` provides Console;
@@ -474,13 +615,13 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
 
             // ----- Multi-device capabilities ---------------------------------
             CapOp::ChipsetInit { nb, sb } => {
-                if board.init_device(nb).is_err() {
+                if call_init_device(&mut board, nb).is_err() {
                     board.halt();
                 }
-                if board.init_device(sb).is_err() {
+                if call_init_device(&mut board, sb).is_err() {
                     board.halt();
                 }
-                if board.chipset_init(nb, sb).is_err() {
+                if call_chipset_init(&mut board, nb, sb).is_err() {
                     board.halt();
                 }
                 inited.set(nb);
@@ -488,13 +629,13 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
             }
 
             CapOp::ChipsetPreConsole { nb, sb } => {
-                if board.init_device(nb).is_err() {
+                if call_init_device(&mut board, nb).is_err() {
                     board.halt();
                 }
-                if board.init_device(sb).is_err() {
+                if call_init_device(&mut board, sb).is_err() {
                     board.halt();
                 }
-                if board.chipset_pre_console(nb, sb).is_err() {
+                if call_chipset_pre_console(&mut board, nb, sb).is_err() {
                     board.halt();
                 }
                 inited.set(nb);
@@ -506,36 +647,44 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                 num_cpus,
                 smm,
             } => {
-                if board.mp_init(cpu_model, num_cpus, smm).is_err() {
+                fstart_log::info!(
+                    "stage-runtime: MpInit cpu='{}' num_cpus={} smm={}",
+                    cpu_model,
+                    num_cpus,
+                    smm
+                );
+                if call_mp_init(&mut board, cpu_model, num_cpus, smm).is_err() {
+                    fstart_log::error!("stage-runtime: MpInit failed");
                     board.halt();
                 }
+                fstart_log::info!("stage-runtime: MpInit done");
             }
 
             CapOp::PciInit(id) => {
-                if board.init_device(id).is_err() {
+                if call_init_device(&mut board, id).is_err() {
                     board.halt();
                 }
-                if board.pci_init(id).is_err() {
+                if call_pci_init(&mut board, id).is_err() {
                     board.halt();
                 }
                 inited.set(id);
             }
 
             CapOp::AcpiLoad(id) => {
-                if board.init_device(id).is_err() {
+                if call_init_device(&mut board, id).is_err() {
                     board.halt();
                 }
-                if board.acpi_load(id).is_err() {
+                if call_acpi_load(&mut board, id).is_err() {
                     board.halt();
                 }
                 inited.set(id);
             }
 
             CapOp::MemoryDetect(id) => {
-                if board.init_device(id).is_err() {
+                if call_init_device(&mut board, id).is_err() {
                     board.halt();
                 }
-                if board.memory_detect(id).is_err() {
+                if call_memory_detect(&mut board, id).is_err() {
                     board.halt();
                 }
                 inited.set(id);
@@ -547,7 +696,12 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                 for (id, _) in plan.boot_media_gated {
                     gated.set(*id);
                 }
-                board.init_all_devices(&inited, &gated);
+                // Persistent ids mean the hardware was initialized by an earlier
+                // stage, but the new stage's board adapter still needs concrete
+                // driver objects in its fields. Construct all devices here; the
+                // per-driver init paths must be safe to re-enter in ramstage.
+                let no_skip = DeviceMask::new();
+                call_init_all_devices(&mut board, &no_skip, &gated);
                 for id in plan.all_devices {
                     inited.set(*id);
                 }
@@ -559,20 +713,27 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                 offset,
                 size,
             } => {
+                fstart_log::info!(
+                    "stage-runtime: BootMediaStatic offset={:#x} size={:#x}",
+                    offset,
+                    size
+                );
                 if let Some(id) = device {
-                    if board.init_device(id).is_err() {
+                    if call_init_device(&mut board, id).is_err() {
+                        fstart_log::error!("stage-runtime: boot media init_device failed");
                         board.halt();
                     }
                     inited.set(id);
                 }
-                board.boot_media_static(device, offset, size);
+                call_boot_media_static(&mut board, device, offset, size);
+                fstart_log::info!("stage-runtime: BootMediaStatic done");
             }
 
             CapOp::BootMediaAuto { candidates } => {
-                let Some(id) = board.boot_media_select(candidates) else {
+                let Some(id) = call_boot_media_select(&mut board, candidates) else {
                     board.halt();
                 };
-                if board.init_device(id).is_err() {
+                if call_init_device(&mut board, id).is_err() {
                     board.halt();
                 }
                 inited.set(id);
@@ -582,13 +743,13 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
                 candidates,
                 next_stage,
             } => {
-                let Some(id) = board.boot_media_select(candidates) else {
+                let Some(id) = call_boot_media_select(&mut board, candidates) else {
                     board.halt();
                 };
-                if board.init_device(id).is_err() {
+                if call_init_device(&mut board, id).is_err() {
                     board.halt();
                 }
-                board.load_next_stage(next_stage);
+                call_load_next_stage(&mut board, next_stage);
             }
         }
     }
