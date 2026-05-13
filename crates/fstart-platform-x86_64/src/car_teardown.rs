@@ -1,113 +1,100 @@
-//! Cache-as-RAM teardown — runs at the **start of ramstage**.
+//! Cache-as-RAM teardown for x86 platforms.
 //!
-//! This module is separate from [`car`] (setup) because teardown must
-//! run in a *different* stage: the one whose stack is already in DRAM.
-//! Calling teardown from the CAR stage would destroy its own stack.
+//! Mirrors coreboot's Intel non-evict postcar flow:
+//! 1. switch to a DRAM stack in the caller
+//! 2. disable cache, disable MTRRs, clear NEM RUN/SETUP
+//! 3. re-enable cache, `invd`
+//! 4. program post-CAR MTRRs and re-enable MTRRs
 //!
-//! ## When to call
-//!
-//! The generated ramstage entry calls `car_teardown()` as its very
-//! first action, before any capability handlers. At this point:
-//!
-//! - DRAM has been trained (romstage completed `DramInit`)
-//! - The linker placed ramstage's stack in DRAM
-//! - The old CAR MTRRs are still active but harmless
-//!
-//! ## What it does
-//!
-//! 1. Disable cache (CR0.CD = 1)
-//! 2. Invalidate all cachelines (WBINVD)
-//! 3. Disable MTRRs (clear MTRR_DEF_TYPE_EN)
-//! 4. If NEM was active (MSR 0x2E0 bits [1:0] set), clear RUN then SETUP
-//! 5. Reprogram MTRR0 from CAR to a DRAM write-back range
-//! 6. Re-enable cache with DRAM-appropriate MTRR config
-//!
-//! After this, the CAR region is dead and the CPU uses normal DRAM-backed
-//! caching.
+//! This must run after DRAM training and before large DRAM/FFS work.
 
-core::arch::global_asm!(
-    ".section .text, \"ax\"",
+use core::arch::global_asm;
+
+global_asm!(
+    ".text",
     ".code64",
     ".global _car_teardown",
-    // ==================================================================
-    // _car_teardown — Tear down CAR, called from ramstage (64-bit mode).
+    ".global _postcar_mtrr_setup",
+    // ------------------------------------------------------------------
+    // _car_teardown — Intel non-evict CAR teardown.
     //
-    // At this point we have a DRAM-backed stack, so normal call/ret works.
-    // The old CAR MTRR and NEM state are cleaned up so DRAM caching can
-    // be configured properly.
-    // ==================================================================
+    // Keep this deliberately close to coreboot
+    // cpu/intel/car/non-evict/exit_car.S. Do not WBINVD dirty CAR lines:
+    // NEM CAR has no backing memory and coreboot uses INVD later.
+    // ------------------------------------------------------------------
     "_car_teardown:",
-    // Disable cache.
+    // Disable cache: CR0.CD=1. Leave NW unchanged here, like coreboot.
     "movq %cr0, %rax",
-    "orq $0x40000000, %rax", // CR0.CD
+    "orq $0x40000000, %rax",
     "movq %rax, %cr0",
-    // Writeback + invalidate all cachelines.
-    // WBINVD flushes any dirty CAR lines (which write to nowhere since
-    // there's no backing RAM — but that's fine, the data is stale).
-    "wbinvd",
     // Disable MTRRs.
-    "movl $0x2FF, %ecx", // MTRR_DEF_TYPE
+    "movl $0x2ff, %ecx",
     "rdmsr",
-    "andl $0xFFFFF7FF, %eax", // clear MTRR_DEF_TYPE_EN
+    "andl $0xfffff7ff, %eax",
     "wrmsr",
-    // If NEM was active, clear MSR 0x2E0.
-    // Read the NEM MSR — if bits [1:0] are non-zero, NEM was used.
-    "movl $0x2E0, %ecx",
+    // Disable no-evict mode RUN then SETUP.
+    "movl $0x2e0, %ecx",
     "rdmsr",
-    "testl $3, %eax",
-    "jz 1f",
-    // Clear RUN (bit 1) first, then SETUP (bit 0).
-    "andl $0xFFFFFFFD, %eax",
+    "andl $0xfffffffd, %eax",
     "wrmsr",
-    "andl $0xFFFFFFFE, %eax",
+    "andl $0xfffffffe, %eax",
     "wrmsr",
-    "1:",
-    // Reprogram MTRR0 from the old CAR window to the board DRAM
-    // write-back range.  Coreboot does this in postcar before jumping
-    // to ramstage; fstart enters ramstage directly, so the ramstage
-    // entry performs the equivalent before Rust touches large data.
-    "movl $0x200, %ecx", // MTRR_PHYS_BASE(0)
-    "movl $_dram_mtrr_base, %eax",
-    "orl $0x06, %eax", // MTRR_TYPE_WRBACK
-    "xorl %edx, %edx",
-    "wrmsr",
-    "movl $0x201, %ecx", // MTRR_PHYS_MASK(0)
-    "movl $_dram_mtrr_mask, %eax",
-    "orl $0x800, %eax", // MTRR_PHYS_MASK_VALID
-    "xorl %edx, %edx",
-    "wrmsr",
-    // Re-enable MTRRs (MTRR0 = DRAM WB, MTRR1 = ROM WP).
-    "movl $0x2FF, %ecx",
-    "rdmsr",
-    "orl $0x800, %eax", // MTRR_DEF_TYPE_EN
-    "wrmsr",
-    // Defensive flush after MTRR layout change. Caches should be empty
-    // from the first wbinvd (CD=1 prevented new fills), but some Intel
-    // errata recommend flushing again after MTRR reprogramming.
-    "wbinvd",
-    // Re-enable cache.
+    "ret",
+    // ------------------------------------------------------------------
+    // _postcar_mtrr_setup — equivalent of coreboot exit_car.S tail plus
+    // postcar_mtrr_setup() for fstart's fixed early MTRR layout.
+    // ------------------------------------------------------------------
+    "_postcar_mtrr_setup:",
+    // Re-enable cache and invalidate stale cache contents.
     "movq %cr0, %rax",
-    "andq $0xFFFFFFFF9FFFFFFF, %rax", // clear CD + NW
+    "andq $0xffffffff9fffffff, %rax", // clear CD + NW
     "movq %rax, %cr0",
+    "invd",
+    // MTRR0 = DRAM write-back range supplied by linker.
+    "movl $0x200, %ecx",
+    "movl $_dram_mtrr_base, %eax",
+    "orl $0x06, %eax",
+    "xorl %edx, %edx",
+    "wrmsr",
+    "movl $0x201, %ecx",
+    "movl $_dram_mtrr_mask, %eax",
+    "orl $0x800, %eax",
+    // Pineview has 36 physical address bits; set high mask bits so the
+    // temporary post-CAR DRAM MTRR decodes as the intended low-DRAM range,
+    // not as a huge range extending over MMIO/ROM.
+    "movl $0x0000000f, %edx",
+    "wrmsr",
+    // MTRR1 was programmed by CAR setup as ROM WP and is preserved while
+    // MTRRs are disabled. Re-enable variable MTRRs with default type kept.
+    "movl $0x2ff, %ecx",
+    "rdmsr",
+    "andl $0xfffff0ff, %eax", // preserve default type low byte only
+    "orl $0x800, %eax",
+    "wrmsr",
     "ret",
     options(att_syntax),
 );
 
-extern "C" {
+unsafe extern "C" {
     fn _car_teardown();
+    fn _postcar_mtrr_setup();
 }
 
-/// Tear down Cache-as-RAM.
-///
-/// Call this at the very start of ramstage, after the stack has moved
-/// to DRAM. Disables NEM (if active), clears the CAR MTRR, and
-/// re-enables normal DRAM caching.
+/// Tear down Cache-as-RAM non-evict mode.
 ///
 /// # Safety
 ///
-/// - Must be called from a stage whose stack is in DRAM (not CAR).
-/// - Must be called before re-programming MTRRs for the DRAM layout.
-/// - After this, the old CAR region at `_car_base` is dead memory.
+/// Caller must already be executing on a DRAM stack and must not return to
+/// CAR-backed data after this call.
 pub unsafe fn car_teardown() {
     unsafe { _car_teardown() }
+}
+
+/// Re-enable normal caching and install post-CAR MTRRs.
+///
+/// # Safety
+///
+/// Must be called after [`car_teardown`] while still on a DRAM stack.
+pub unsafe fn postcar_mtrr_setup() {
+    unsafe { _postcar_mtrr_setup() }
 }

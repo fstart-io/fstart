@@ -282,6 +282,9 @@ static AP_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Flag: tells APs to enter the mailbox loop (vs flight plan).
 static AP_IN_MAILBOX_LOOP: AtomicU8 = AtomicU8::new(0);
 
+/// Total logical CPUs brought online by the most recent MP init.
+static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
+
 // ---------------------------------------------------------------------------
 // Flight plan (internal)
 // ---------------------------------------------------------------------------
@@ -541,6 +544,11 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
 ///    - Step "mailbox loop" (APs park, BSP continues)
 /// 6. BSP: `smm.post_smm_init()` (if SMM), `cpu_ops.post_mp_init()`
 /// 7. Return [`MpHandle`]
+/// Return the number of logical CPUs brought online by the most recent MP init.
+pub fn online_cpus() -> u16 {
+    ONLINE_CPUS.load(Ordering::Acquire) as u16
+}
+
 pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError> {
     let num_aps = config.num_cpus.saturating_sub(1);
 
@@ -561,24 +569,35 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
         // when requested; coreboot also relocates the BSP before enabling
         // global SMIs.
         if let Some(smm) = config.smm {
+            fstart_log::info!("mp: single-CPU SMM path");
             if let Some(info) = smm.smm_info() {
+                fstart_log::info!("mp: SMM pre init");
                 smm.pre_smm_init();
                 let image = config.smm_image.ok_or_else(|| {
                     fstart_log::error!("mp: SMM requested but no SMM image was provided");
                     MpError::MissingSmmImage
                 })?;
+                fstart_log::info!("mp: installing SMM handlers");
                 smm.install_smm_handlers(&info, config.num_cpus, image)
                     .map_err(|_| MpError::SmmInstallFailed)?;
                 // First SMI runs the default-SMRAM relocation handler; after
                 // post_smm_init() closes/locks SMRAM, the second SMI proves the
                 // permanent copied handler is usable.
+                fstart_log::info!("mp: SMM relocate #1");
                 smm.smm_relocate();
+                fstart_log::info!("mp: SMM post init");
                 smm.post_smm_init();
+                fstart_log::info!("mp: SMM relocate #2");
                 smm.smm_relocate();
+            } else {
+                fstart_log::info!("mp: SMM provider returned no SMRAM info");
             }
         }
+        fstart_log::info!("mp: BSP CPU init");
         config.cpu_ops.init_cpu();
+        fstart_log::info!("mp: BSP post MP init");
         config.cpu_ops.post_mp_init();
+        ONLINE_CPUS.store(1, Ordering::Release);
         return Ok(MpHandle { num_aps: 0 });
     }
 
@@ -763,16 +782,20 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
     clear_smm_ops();
     config.cpu_ops.post_mp_init();
 
+    ONLINE_CPUS.store((final_count + 1) as usize, Ordering::Release);
     fstart_log::info!("mp: initialization complete ({} CPUs)", final_count + 1);
 
     if final_count < num_aps {
-        return Err(MpError::PartialBringup {
-            expected: num_aps,
-            actual: final_count,
-        });
+        fstart_log::warn!(
+            "mp: fewer APs than max responded (expected max {}, actual {})",
+            num_aps,
+            final_count
+        );
     }
 
-    Ok(MpHandle { num_aps })
+    Ok(MpHandle {
+        num_aps: final_count,
+    })
 }
 
 // ---------------------------------------------------------------------------
