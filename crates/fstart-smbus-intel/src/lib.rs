@@ -11,20 +11,40 @@
 #![no_std]
 
 use fstart_ecam as ecam;
+use fstart_pio::{pio_register_structs, PioRegister};
 use fstart_services::{ServiceError, SmBus};
+use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::register_bitfields;
 
-// ---------------------------------------------------------------------------
-// SMBus host register offsets (from the I/O base)
-// ---------------------------------------------------------------------------
+register_bitfields![u8,
+    HSTSTAT [
+        HOST_BUSY OFFSET(0) NUMBITS(1) [],
+        INTR OFFSET(1) NUMBITS(1) [],
+        DEV_ERR OFFSET(2) NUMBITS(1) [],
+        BUS_ERR OFFSET(3) NUMBITS(1) [],
+        FAILED OFFSET(4) NUMBITS(1) [],
+        SMBALERT_STS OFFSET(5) NUMBITS(1) [],
+        INUSE_STS OFFSET(6) NUMBITS(1) [],
+        BYTE_DONE OFFSET(7) NUMBITS(1) []
+    ],
+    HSTCTL [
+        TYPE OFFSET(2) NUMBITS(3) [],
+        START OFFSET(6) NUMBITS(1) []
+    ]
+];
 
-const SMBHSTSTAT: u16 = 0x00;
-const SMBHSTCTL: u16 = 0x02;
-const SMBHSTCMD: u16 = 0x03;
-const SMBXMITADD: u16 = 0x04;
-const SMBHSTDAT0: u16 = 0x05;
-const SMBHSTDAT1: u16 = 0x06;
-#[allow(dead_code)]
-const SMBBLKDAT: u16 = 0x07;
+pio_register_structs! {
+    /// I801 SMBus host-controller I/O register block.
+    I801Regs {
+        (0x00 => status: PioRegister<u8, HSTSTAT::Register>),
+        (0x02 => control: PioRegister<u8, HSTCTL::Register>),
+        (0x03 => command: PioRegister<u8>),
+        (0x04 => xmit_addr: PioRegister<u8>),
+        (0x05 => data0: PioRegister<u8>),
+        (0x06 => data1: PioRegister<u8>),
+        (0x07 => block_data: PioRegister<u8>),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // I801 command types (written to SMBHSTCTL bits [4:2])
@@ -42,9 +62,17 @@ const I801_WORD_DATA: u8 = 3 << 2;
 // ---------------------------------------------------------------------------
 
 const SMBHSTSTS_HOST_BUSY: u8 = 1 << 0;
+const SMBHSTSTS_INTR: u8 = 1 << 1;
 const SMBHSTSTS_DEV_ERR: u8 = 1 << 2;
 const SMBHSTSTS_BUS_ERR: u8 = 1 << 3;
 const SMBHSTSTS_FAILED: u8 = 1 << 4;
+const SMBHSTSTS_SMBALERT_STS: u8 = 1 << 5;
+const SMBHSTSTS_INUSE_STS: u8 = 1 << 6;
+const SMBHSTSTS_BYTE_DONE: u8 = 1 << 7;
+
+const SMBHSTSTS_ERROR: u8 = SMBHSTSTS_DEV_ERR | SMBHSTSTS_BUS_ERR | SMBHSTSTS_FAILED;
+const SMBHSTSTS_NON_COMPLETION: u8 =
+    SMBHSTSTS_BYTE_DONE | SMBHSTSTS_INUSE_STS | SMBHSTSTS_SMBALERT_STS;
 
 // ---------------------------------------------------------------------------
 // Host control register bits
@@ -95,6 +123,11 @@ impl I801SmBus {
         Self { base }
     }
 
+    #[inline(always)]
+    fn regs(&self) -> I801Regs {
+        I801Regs::new(self.base)
+    }
+
     /// Enable the SMBus controller on an ICH7 southbridge via ECAM
     /// and return a ready-to-use driver.
     ///
@@ -141,14 +174,10 @@ impl I801SmBus {
     pub fn host_reset(&self) {
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: base points to the SMBus I/O region programmed
-            // by enable_on_ich7 / the board config.
-            unsafe {
-                fstart_pio::outb(self.base + SMBHSTCTL, 0);
-                // Write-to-clear all status bits.
-                let stat = fstart_pio::inb(self.base + SMBHSTSTAT);
-                fstart_pio::outb(self.base + SMBHSTSTAT, stat);
-            }
+            let regs = self.regs();
+            regs.control().set(0);
+            let stat = regs.status().get();
+            regs.status().set(stat);
         }
     }
 
@@ -158,8 +187,7 @@ impl I801SmBus {
         {
             let mut loops = SMBUS_TIMEOUT;
             loop {
-                // SAFETY: base is the SMBus I/O region.
-                let stat = unsafe { fstart_pio::inb(self.base + SMBHSTSTAT) };
+                let stat = self.regs().status().get();
                 if stat & SMBHSTSTS_HOST_BUSY == 0 {
                     return Ok(());
                 }
@@ -180,15 +208,12 @@ impl I801SmBus {
     fn setup_command(&self, ctrl: u8, xmitadd: u8) -> Result<(), ServiceError> {
         self.wait_not_busy()?;
         #[cfg(target_arch = "x86_64")]
-        // SAFETY: base is the SMBus I/O region.
-        unsafe {
-            // Clear any lingering status.
-            let stat = fstart_pio::inb(self.base + SMBHSTSTAT);
-            fstart_pio::outb(self.base + SMBHSTSTAT, stat);
-            // Set transaction type (disable interrupts).
-            fstart_pio::outb(self.base + SMBHSTCTL, ctrl);
-            // Set slave address + R/W bit.
-            fstart_pio::outb(self.base + SMBXMITADD, xmitadd);
+        {
+            let regs = self.regs();
+            let stat = regs.status().get();
+            regs.status().set(stat);
+            regs.control().set(ctrl);
+            regs.xmit_addr().set(xmitadd);
         }
         Ok(())
     }
@@ -197,29 +222,22 @@ impl I801SmBus {
     fn execute_and_complete(&self) -> Result<(), ServiceError> {
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: base is the SMBus I/O region.
-            unsafe {
-                // Start.
-                let ctl = fstart_pio::inb(self.base + SMBHSTCTL);
-                fstart_pio::outb(self.base + SMBHSTCTL, ctl | SMBHSTCNT_START);
-            }
+            let regs = self.regs();
+            let ctl = regs.control().get();
+            regs.control().set(ctl | SMBHSTCNT_START);
             // Wait for the controller to signal activity.
             let mut loops = SMBUS_TIMEOUT;
             loop {
-                // SAFETY: base is the SMBus I/O region.
-                let stat = unsafe { fstart_pio::inb(self.base + SMBHSTSTAT) };
-                // Mask out non-completion bits.
-                let relevant = stat & !(SMBHSTSTS_HOST_BUSY);
-                if relevant != 0 {
-                    // Check for errors.
-                    if stat & (SMBHSTSTS_DEV_ERR | SMBHSTSTS_BUS_ERR | SMBHSTSTS_FAILED) != 0 {
-                        fstart_log::error!("i801-smbus: transaction error, status={:#x}", stat);
-                        return Err(ServiceError::HardwareError);
-                    }
-                    // Wait for host to finish (not busy).
-                    if stat & SMBHSTSTS_HOST_BUSY == 0 {
+                let stat = regs.status().get();
+                let completion = stat & !(SMBHSTSTS_HOST_BUSY | SMBHSTSTS_NON_COMPLETION);
+                if completion != 0 && stat & SMBHSTSTS_HOST_BUSY == 0 {
+                    if completion & SMBHSTSTS_ERROR == 0 && completion & SMBHSTSTS_INTR != 0 {
+                        regs.status().set(stat);
                         return Ok(());
                     }
+                    regs.status().set(stat);
+                    fstart_log::error!("i801-smbus: transaction error, status={:#x}", stat);
+                    return Err(ServiceError::HardwareError);
                 }
                 loops -= 1;
                 if loops == 0 {
@@ -237,18 +255,16 @@ impl I801SmBus {
     pub fn read_byte_data(&self, addr: u8, cmd: u8) -> Result<u8, ServiceError> {
         self.setup_command(I801_BYTE_DATA, xmit_read(addr))?;
         #[cfg(target_arch = "x86_64")]
-        // SAFETY: base is the SMBus I/O region.
-        unsafe {
-            fstart_pio::outb(self.base + SMBHSTCMD, cmd);
-            fstart_pio::outb(self.base + SMBHSTDAT0, 0);
-            fstart_pio::outb(self.base + SMBHSTDAT1, 0);
+        {
+            let regs = self.regs();
+            regs.command().set(cmd);
+            regs.data0().set(0);
+            regs.data1().set(0);
         }
         self.execute_and_complete()?;
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: base is the SMBus I/O region.
-            let val = unsafe { fstart_pio::inb(self.base + SMBHSTDAT0) };
-            Ok(val)
+            Ok(self.regs().data0().get())
         }
         #[cfg(not(target_arch = "x86_64"))]
         Err(ServiceError::HardwareError)
@@ -258,10 +274,10 @@ impl I801SmBus {
     pub fn write_byte_data(&self, addr: u8, cmd: u8, val: u8) -> Result<(), ServiceError> {
         self.setup_command(I801_BYTE_DATA, xmit_write(addr))?;
         #[cfg(target_arch = "x86_64")]
-        // SAFETY: base is the SMBus I/O region.
-        unsafe {
-            fstart_pio::outb(self.base + SMBHSTCMD, cmd);
-            fstart_pio::outb(self.base + SMBHSTDAT0, val);
+        {
+            let regs = self.regs();
+            regs.command().set(cmd);
+            regs.data0().set(val);
         }
         self.execute_and_complete()
     }
@@ -270,18 +286,18 @@ impl I801SmBus {
     pub fn read_word_data(&self, addr: u8, cmd: u8) -> Result<u16, ServiceError> {
         self.setup_command(I801_WORD_DATA, xmit_read(addr))?;
         #[cfg(target_arch = "x86_64")]
-        // SAFETY: base is the SMBus I/O region.
-        unsafe {
-            fstart_pio::outb(self.base + SMBHSTCMD, cmd);
-            fstart_pio::outb(self.base + SMBHSTDAT0, 0);
-            fstart_pio::outb(self.base + SMBHSTDAT1, 0);
+        {
+            let regs = self.regs();
+            regs.command().set(cmd);
+            regs.data0().set(0);
+            regs.data1().set(0);
         }
         self.execute_and_complete()?;
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: base is the SMBus I/O region.
-            let lo = unsafe { fstart_pio::inb(self.base + SMBHSTDAT0) };
-            let hi = unsafe { fstart_pio::inb(self.base + SMBHSTDAT1) };
+            let regs = self.regs();
+            let lo = regs.data0().get();
+            let hi = regs.data1().get();
             Ok((hi as u16) << 8 | lo as u16)
         }
         #[cfg(not(target_arch = "x86_64"))]
@@ -292,11 +308,11 @@ impl I801SmBus {
     pub fn write_word_data(&self, addr: u8, cmd: u8, val: u16) -> Result<(), ServiceError> {
         self.setup_command(I801_WORD_DATA, xmit_write(addr))?;
         #[cfg(target_arch = "x86_64")]
-        // SAFETY: base is the SMBus I/O region.
-        unsafe {
-            fstart_pio::outb(self.base + SMBHSTCMD, cmd);
-            fstart_pio::outb(self.base + SMBHSTDAT0, val as u8);
-            fstart_pio::outb(self.base + SMBHSTDAT1, (val >> 8) as u8);
+        {
+            let regs = self.regs();
+            regs.command().set(cmd);
+            regs.data0().set(val as u8);
+            regs.data1().set((val >> 8) as u8);
         }
         self.execute_and_complete()
     }

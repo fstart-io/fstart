@@ -701,6 +701,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-arch",
  "fstart-ecam",
  "fstart-log",
  "fstart-mmio",
@@ -1014,6 +1015,9 @@ dependencies = [
 [[package]]
 name = "fstart-pio"
 version = "0.1.0"
+dependencies = [
+ "tock-registers",
+]
 
 [[package]]
 name = "fstart-platform-aarch64"
@@ -1044,6 +1048,7 @@ dependencies = [
 name = "fstart-platform-x86_64"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch",
  "fstart-log",
  "fstart-pio",
  "fstart-services",
@@ -1084,6 +1089,7 @@ dependencies = [
  "fstart-pineview-regs",
  "fstart-pio",
  "fstart-services",
+ "tock-registers",
  "ufmt",
 ]
 
@@ -1155,6 +1161,7 @@ dependencies = [
  "fstart-log",
  "fstart-mainboard-lenovo-x61",
  "fstart-mp",
+ "fstart-pio",
  "fstart-platform-aarch64",
  "fstart-platform-armv7",
  "fstart-platform-riscv64",
@@ -1172,8 +1179,10 @@ dependencies = [
 name = "fstart-stage-runtime"
 version = "0.1.0"
 dependencies = [
+ "fstart-log",
  "fstart-services",
  "fstart-types",
+ "ufmt",
 ]
 
 [[package]]
