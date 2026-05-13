@@ -657,6 +657,7 @@ pub fn payload_load_stub_no_flash() {
 /// Generic over [`BootMedia`] — works with both memory-mapped flash and
 /// block devices with zero overhead for the memory-mapped case.
 #[cfg(feature = "ffs")]
+#[inline(never)]
 pub fn stage_load(
     next_stage: &str,
     anchor_data: &[u8],
@@ -664,6 +665,11 @@ pub fn stage_load(
     jump_to: fn(u64) -> !,
 ) {
     fstart_log::info!("capability: StageLoad -> {}", next_stage);
+    fstart_log::info!(
+        "stage load: anchor_len={} media_size={:#x}",
+        anchor_data.len(),
+        media.size()
+    );
 
     if media.size() == 0 || anchor_data.is_empty() {
         fstart_log::info!("stage load: no flash image configured, skipping");
@@ -671,16 +677,24 @@ pub fn stage_load(
     }
 
     // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    fstart_log::info!("stage load: reading anchor");
     let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
-        Ok(a) => a,
+        Ok(a) => {
+            fstart_log::info!("stage load: anchor ok");
+            a
+        }
         Err(e) => {
             fstart_log::error!("stage load: failed to read anchor: {}", reader_error_str(e));
             return;
         }
     };
 
+    fstart_log::info!("stage load: reading manifest");
     let manifest = match read_manifest_from_media(media, &anchor) {
-        Ok(m) => m,
+        Ok(m) => {
+            fstart_log::info!("stage load: manifest ok, regions={}", m.regions.len());
+            m
+        }
         Err(e) => {
             fstart_log::error!("stage load: manifest error: {}", reader_error_str(e));
             return;
@@ -720,9 +734,13 @@ pub fn stage_load(
 
     // Load all segments to their load addresses
     let image_size = effective_image_size(media.size(), &anchor);
+    fstart_log::info!("stage load: loading segments, image_size={:#x}", image_size);
     let entry_addr = match load_entry_segments_from_media(media, entry, region, image_size) {
         Some(addr) => addr,
-        None => return,
+        None => {
+            fstart_log::error!("stage load: segment load failed");
+            return;
+        }
     };
 
     fstart_log::info!("stage load: jumping to {}", Hex(entry_addr));
