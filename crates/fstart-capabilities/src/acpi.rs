@@ -11,7 +11,7 @@
 
 extern crate alloc;
 
-use alloc::vec;
+use alloc::alloc::{alloc_zeroed, Layout};
 use alloc::vec::Vec;
 
 /// Prepare ACPI tables and write them to a heap-allocated DRAM buffer.
@@ -28,10 +28,161 @@ use alloc::vec::Vec;
 /// - `collect_devices` — Closure that appends per-device DSDT AML bytes
 ///   to the first `Vec<u8>` and per-device standalone tables (SPCR, MCFG)
 ///   to the second `Vec<Vec<u8>>`. Called exactly once.
+const RSDP_LEN: usize = 36;
+const XSDT_OFF: usize = 48;
+const FADT_X_DSDT_OFF: usize = 140;
+#[cfg(target_arch = "x86_64")]
+const EBDA_SEG_PTR: *mut u16 = 0x040e as *mut u16;
+#[cfg(target_arch = "x86_64")]
+const EBDA_BASE: usize = 0x0008_0000;
+#[cfg(target_arch = "x86_64")]
+const EBDA_RSDP_OFFSET: usize = 0;
+
+fn acpi_table_len(table: &[u8]) -> Option<usize> {
+    if table.len() < 36 {
+        return None;
+    }
+    let len = u32::from_le_bytes(table[4..8].try_into().ok()?) as usize;
+    (len >= 36 && len <= table.len()).then_some(len)
+}
+
+fn print_hex_byte(byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    fstart_log::raw_write_byte(HEX[(byte >> 4) as usize]);
+    fstart_log::raw_write_byte(HEX[(byte & 0x0f) as usize]);
+}
+
+fn print_acpixtract_hexdump(data: &[u8]) {
+    for (offset, line) in data.chunks(16).enumerate() {
+        let byte_offset = offset * 16;
+        let mut w = fstart_log::writer();
+        let _ = ufmt::uwrite!(w, "    {:04X}:", byte_offset);
+        for byte in line {
+            fstart_log::raw_write_byte(b' ');
+            print_hex_byte(*byte);
+        }
+        for _ in line.len()..16 {
+            let _ = ufmt::uwrite!(w, "   ");
+        }
+        let _ = ufmt::uwrite!(w, "  ");
+        for byte in line {
+            let ch = if byte.is_ascii_graphic() || *byte == b' ' {
+                *byte
+            } else {
+                b'.'
+            };
+            fstart_log::raw_write_byte(ch);
+        }
+        fstart_log::raw_write_byte(b'\r');
+        fstart_log::raw_write_byte(b'\n');
+    }
+}
+
+fn print_acpi_table(data: &[u8]) {
+    let Some(len) = acpi_table_len(data) else {
+        return;
+    };
+    let sig = &data[..4];
+    let sig_str = unsafe { core::str::from_utf8_unchecked(sig) };
+    let mut w = fstart_log::writer();
+    let _ = ufmt::uwriteln!(w, "{} @ 0x0000000000000000", sig_str);
+    print_acpixtract_hexdump(&data[..len]);
+    fstart_log::raw_write_byte(b'\r');
+    fstart_log::raw_write_byte(b'\n');
+}
+
+#[cfg(target_arch = "x86_64")]
+fn install_rsdp_in_ebda(rsdp: &[u8]) {
+    if rsdp.len() < RSDP_LEN {
+        return;
+    }
+    // SAFETY: 0x40e is the BIOS Data Area EBDA segment pointer on x86 PC
+    // compatibles. 0x80000 is reserved conventional memory used here as the
+    // EBDA base; copying 36 bytes there keeps RSDP discoverable by legacy OS
+    // scanners in addition to the Linux boot_params pointer.
+    unsafe {
+        core::ptr::write_volatile(EBDA_SEG_PTR, (EBDA_BASE >> 4) as u16);
+        core::ptr::copy_nonoverlapping(
+            rsdp.as_ptr(),
+            (EBDA_BASE + EBDA_RSDP_OFFSET) as *mut u8,
+            RSDP_LEN,
+        );
+    }
+    fstart_log::info!(
+        "ACPI: RSDP copied to EBDA at {}",
+        fstart_log::Hex((EBDA_BASE + EBDA_RSDP_OFFSET) as u64)
+    );
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn install_rsdp_in_ebda(_rsdp: &[u8]) {}
+
+fn print_acpi_tables_acpixtract(data: &[u8]) {
+    fstart_log::info!("Printing ACPI tables in ACPICA compatible format");
+    // Layout from fstart_acpi::platform::assemble(): RSDP, XSDT, DSDT, FADT,
+    // then platform/extra SDTs.  RSDP is not printed by coreboot's acpidump
+    // loop; it prints DSDT first, then every XSDT entry.
+    if data.len() < RSDP_LEN {
+        fstart_log::warn!("ACPI dump: buffer too small");
+        return;
+    }
+    let xsdt_addr = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+    let Some(base_addr) = xsdt_addr.checked_sub(XSDT_OFF as u64) else {
+        fstart_log::warn!(
+            "ACPI dump: invalid XSDT address {}",
+            fstart_log::Hex(xsdt_addr)
+        );
+        return;
+    };
+    let Some(xsdt_off) = xsdt_addr.checked_sub(base_addr).map(|v| v as usize) else {
+        return;
+    };
+    let Some(xsdt_len) = acpi_table_len(data.get(xsdt_off..).unwrap_or(&[])) else {
+        fstart_log::warn!("ACPI dump: XSDT not found at offset {}", xsdt_off);
+        return;
+    };
+    let xsdt = &data[xsdt_off..xsdt_off + xsdt_len];
+    fstart_log::info!("ACPI dump: XSDT offset {} length {}", xsdt_off, xsdt_len);
+    let entries = (xsdt_len.saturating_sub(36)) / 8;
+    if entries == 0 || xsdt.len() < 44 {
+        fstart_log::warn!("ACPI dump: XSDT has no entries");
+        return;
+    }
+    // Entry 0 is FADT; FADT bytes begin after DSDT, so use its DSDT pointer
+    // to print DSDT before the XSDT-listed tables like coreboot does.
+    let fadt_addr = u64::from_le_bytes(xsdt[36..44].try_into().unwrap_or([0; 8]));
+    let Some(fadt_off) = fadt_addr.checked_sub(base_addr).map(|v| v as usize) else {
+        return;
+    };
+    if fadt_off + FADT_X_DSDT_OFF + 8 <= data.len() {
+        let fadt = &data[fadt_off..];
+        let dsdt_addr = u64::from_le_bytes(
+            fadt[FADT_X_DSDT_OFF..FADT_X_DSDT_OFF + 8]
+                .try_into()
+                .unwrap_or([0; 8]),
+        );
+        if let Some(dsdt_off) = dsdt_addr.checked_sub(base_addr).map(|v| v as usize) {
+            if dsdt_off < data.len() {
+                print_acpi_table(&data[dsdt_off..]);
+            }
+        }
+    }
+    for i in 0..entries {
+        let off = 36 + i * 8;
+        let addr = u64::from_le_bytes(xsdt[off..off + 8].try_into().unwrap_or([0; 8]));
+        if let Some(table_off) = addr.checked_sub(base_addr).map(|v| v as usize) {
+            if table_off < data.len() {
+                print_acpi_table(&data[table_off..]);
+            }
+        }
+    }
+    fstart_log::info!("Done printing ACPI tables in ACPICA compatible format");
+}
+
 pub fn prepare(
     platform: &fstart_acpi::platform::PlatformConfig,
     collect_devices: impl FnOnce(&mut Vec<u8>, &mut Vec<Vec<u8>>),
-) {
+) -> u64 {
     fstart_log::info!("capability: AcpiPrepare");
 
     let mut dsdt_aml: Vec<u8> = Vec::new();
@@ -46,8 +197,16 @@ pub fn prepare(
     // (dozens of devices, IORT with many ID mappings). Increase if a
     // board exceeds this limit.
     const BUF_SIZE: usize = 128 * 1024;
-    let acpi_buf = vec![0u8; BUF_SIZE];
-    let acpi_addr = acpi_buf.as_ptr() as u64;
+    let layout = Layout::from_size_align(BUF_SIZE, 16)
+        .unwrap_or_else(|_| panic!("invalid ACPI buffer layout"));
+    // SAFETY: `layout` has non-zero size and a valid 16-byte alignment.
+    // The allocation is intentionally leaked below so ACPI tables remain
+    // available to the OS after firmware hands off control.
+    let acpi_ptr = unsafe { alloc_zeroed(layout) };
+    if acpi_ptr.is_null() {
+        panic!("failed to allocate ACPI table buffer");
+    }
+    let acpi_addr = acpi_ptr as u64;
 
     let acpi_len =
         fstart_acpi::platform::assemble_and_write(acpi_addr, platform, &dsdt_aml, &extra_tables);
@@ -59,8 +218,7 @@ pub fn prepare(
         BUF_SIZE,
     );
 
-    // Keep the buffer alive — tables must persist for the OS.
-    core::mem::forget(acpi_buf);
+    // Intentionally leak the allocation — tables must persist for the OS.
 
     fstart_log::info!(
         "AcpiPrepare: {} bytes written to {}",
@@ -68,9 +226,12 @@ pub fn prepare(
         fstart_log::Hex(acpi_addr),
     );
 
-    // Dump the ACPI tables as hex for offline disassembly with iasl.
-    // SAFETY: acpi_addr points to the buffer we just wrote, acpi_len
-    // bytes are valid and the buffer is leaked (alive forever).
+    // Dump the ACPI tables in coreboot's ACPICA/acpixtract-compatible format.
+    // SAFETY: acpi_addr points to the buffer we just wrote, acpi_len bytes are
+    // valid and the buffer is leaked (alive forever).
     let acpi_data = unsafe { core::slice::from_raw_parts(acpi_addr as *const u8, acpi_len) };
-    fstart_log::hex_dump(acpi_data);
+    install_rsdp_in_ebda(acpi_data);
+    print_acpi_tables_acpixtract(acpi_data);
+
+    acpi_addr
 }

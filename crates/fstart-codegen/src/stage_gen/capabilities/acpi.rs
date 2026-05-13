@@ -305,7 +305,7 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
                     [#(#iso_entries),*];
                 let platform_acpi = fstart_acpi::platform::PlatformConfig::X86(
                     fstart_acpi::platform::X86Config {
-                        num_cpus: #num_cpus,
+                        num_cpus: if #num_cpus == 0 { fstart_mp::online_cpus() as u32 } else { #num_cpus },
                         lapic_base: #lapic_base,
                         ioapics: &_IOAPICS,
                         isos: &_ISOS,

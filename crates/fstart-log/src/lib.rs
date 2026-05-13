@@ -126,6 +126,19 @@ pub unsafe fn init(console: &dyn Console) {
     ));
 }
 
+/// Replace the global console backend.
+///
+/// # Safety
+///
+/// The caller must ensure that `console` outlives all subsequent log calls.
+/// This is intended for x86 post-CAR transition, where the previous console
+/// object lived in Cache-as-RAM that is about to be torn down.
+pub unsafe fn replace_console(console: &'static dyn Console) {
+    // SAFETY: single-threaded boot — no concurrent access.
+    let slot = &mut *CONSOLE.0.get();
+    *slot = Some(console);
+}
+
 /// Set the maximum log level. Messages above this level are discarded.
 ///
 /// # Safety
@@ -255,7 +268,7 @@ impl ufmt::uDisplay for Hex {
 /// Used by [`hex_dump`] for efficient binary data output.
 /// Silently discarded if no console has been registered via [`init`].
 #[inline]
-fn raw_write_byte(b: u8) {
+pub fn raw_write_byte(b: u8) {
     // SAFETY: CONSOLE is written once during init, then only read.
     let console = unsafe { *CONSOLE.0.get() };
     if let Some(c) = console {
