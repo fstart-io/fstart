@@ -15,16 +15,16 @@ pub fn sdram_mmap(si: &SysInfo, mch: &MchBar) {
     let hb = ecam::PciDevBdf::new(0, 0, 0);
     let cfg = si.dimm_config[0] as usize;
 
-    static W260: [u32; 7] = [
+    static W260_MB: [u32; 7] = [
         0,
         0x0040_0001,
-        0x00C0_0001,
+        0x00c0_0001,
         0x0050_0000,
-        0x00F0_0000,
-        0x00C0_0001,
-        0x00F0_0000,
+        0x00f0_0000,
+        0x00c0_0001,
+        0x00f0_0000,
     ];
-    static W208: [u32; 7] = [
+    static W208_MB: [u32; 7] = [
         0,
         0x0001_0000,
         0x0101_0000,
@@ -33,8 +33,8 @@ pub fn sdram_mmap(si: &SysInfo, mch: &MchBar) {
         0x0101_0000,
         0x0101_0101,
     ];
-    static W200: [u32; 7] = [0, 0, 0, 0x0002_0002, 0x0004_0002, 0, 0x0004_0002];
-    static W204: [u32; 7] = [
+    static W200_MB: [u32; 7] = [0, 0, 0, 0x0002_0002, 0x0004_0002, 0, 0x0004_0002];
+    static W204_MB: [u32; 7] = [
         0,
         0x0002_0002,
         0x0004_0002,
@@ -44,24 +44,63 @@ pub fn sdram_mmap(si: &SysInfo, mch: &MchBar) {
         0x0008_0006,
     ];
 
-    if cfg < 3 && si.dimm_populated(0) {
+    static W260_DT: [u32; 16] = [
+        0x000000, 0x100001, 0x300001, 0x100001, 0x400001, 0x500000, 0x700000, 0x500000, 0xc00001,
+        0xd00000, 0xf00000, 0xd00000, 0x400001, 0x500000, 0x700000, 0x500000,
+    ];
+    static W208_DT: [u32; 16] = [
+        0x00000000, 0x00000001, 0x00000101, 0x00000001, 0x00010000, 0x00010001, 0x00010101,
+        0x00010001, 0x01010000, 0x01010001, 0x01010101, 0x01010001, 0x00010000, 0x00010001,
+        0x00010101, 0x00010001,
+    ];
+    static W200_DT: [u32; 16] = [
+        0x00000000, 0x00020002, 0x00040002, 0x00020002, 0x00000000, 0x00020002, 0x00040002,
+        0x00020002, 0x00000000, 0x00020002, 0x00040002, 0x00020002, 0x00000000, 0x00020002,
+        0x00040002, 0x00020002,
+    ];
+    static W204_DT: [u32; 16] = [
+        0x00000000, 0x00020002, 0x00040004, 0x00020002, 0x00020002, 0x00040004, 0x00060006,
+        0x00040004, 0x00040002, 0x00060004, 0x00080006, 0x00060004, 0x00020002, 0x00040004,
+        0x00060006, 0x00040004,
+    ];
+
+    let w260 = if si.is_sodimm() {
+        &W260_MB[..]
+    } else {
+        &W260_DT[..]
+    };
+    let w208 = if si.is_sodimm() {
+        &W208_MB[..]
+    } else {
+        &W208_DT[..]
+    };
+    let w200 = if si.is_sodimm() {
+        &W200_MB[..]
+    } else {
+        &W200_DT[..]
+    };
+    let w204 = if si.is_sodimm() {
+        &W204_MB[..]
+    } else {
+        &W204_DT[..]
+    };
+
+    if si.is_sodimm() && cfg < 3 && si.dimm_populated(0) {
         let d = si.dimms[0].as_ref().expect("populated");
         if d.ranks > 1 {
-            // 2R/NC
             let v = mch.read32(mchbar::C0CKECTRL);
             mch.write32(mchbar::C0CKECTRL, (v & !1) | 0x0030_0001);
             mch.write32(mchbar::C0DRA01, 0x0000_0101);
             mch.write32(mchbar::C0DRB0, 0x0004_0002);
-            mch.write32(mchbar::C0DRB2, W204[cfg]);
+            mch.write32(mchbar::C0DRB2, w204[cfg]);
         } else {
-            // 1R/NC
             let v = mch.read32(mchbar::C0CKECTRL);
             mch.write32(mchbar::C0CKECTRL, (v & !1) | 0x0010_0001);
             mch.write32(mchbar::C0DRA01, 0x0000_0001);
             mch.write32(mchbar::C0DRB0, 0x0002_0002);
-            mch.write32(mchbar::C0DRB2, W204[cfg]);
+            mch.write32(mchbar::C0DRB2, w204[cfg]);
         }
-    } else if cfg == 5 && si.dimm_populated(0) {
+    } else if si.is_sodimm() && cfg == 5 && si.dimm_populated(0) {
         let v = mch.read32(mchbar::C0CKECTRL);
         mch.write32(mchbar::C0CKECTRL, (v & !1) | 0x0030_0001);
         mch.write32(mchbar::C0DRA01, 0x0000_0101);
@@ -69,19 +108,141 @@ pub fn sdram_mmap(si: &SysInfo, mch: &MchBar) {
         mch.write32(mchbar::C0DRB2, 0x0004_0004);
     } else {
         let v = mch.read32(mchbar::C0CKECTRL);
-        mch.write32(mchbar::C0CKECTRL, (v & !1) | W260[cfg]);
-        mch.write32(mchbar::C0DRA01, W208[cfg]);
-        mch.write32(mchbar::C0DRB0, W200[cfg]);
-        mch.write32(mchbar::C0DRB2, W204[cfg]);
+        mch.write32(mchbar::C0CKECTRL, (v & !1) | w260[cfg]);
+        mch.write32(mchbar::C0DRA01, w208[cfg]);
+        mch.write32(mchbar::C0DRB0, w200[cfg]);
+        mch.write32(mchbar::C0DRB2, w204[cfg]);
     }
 
-    static TOLUD_TAB: [u16; 7] = [2048, 2048, 4096, 4096, 8192, 4096, 8192];
-    static TOM_TAB: [u16; 7] = [2, 2, 4, 4, 8, 4, 8];
-    static TOUUD_TAB: [u16; 7] = [128, 128, 256, 256, 512, 256, 512];
+    static TOLUD_MB: [u16; 7] = [2048, 2048, 4096, 4096, 8192, 4096, 8192];
+    static TOM_MB: [u16; 7] = [2, 2, 4, 4, 8, 4, 8];
+    static TOUUD_MB: [u16; 7] = [128, 128, 256, 256, 512, 256, 512];
+    static GBSM_MB: [u32; 7] = [
+        1 << 27,
+        1 << 27,
+        1 << 28,
+        1 << 27,
+        1 << 29,
+        1 << 28,
+        1 << 29,
+    ];
+    static BGSM_MB: [u32; 7] = [
+        1 << 27,
+        1 << 27,
+        1 << 28,
+        1 << 27,
+        1 << 29,
+        1 << 28,
+        1 << 29,
+    ];
+    static TSEGMB_MB: [u32; 7] = [
+        1 << 27,
+        1 << 27,
+        1 << 28,
+        1 << 27,
+        1 << 29,
+        1 << 28,
+        1 << 29,
+    ];
+    static TOLUD_DT: [u16; 16] = [
+        2048, 2048, 4096, 2048, 2048, 4096, 6144, 4096, 4096, 6144, 8192, 6144, 2048, 4096, 6144,
+        4096,
+    ];
+    static TOM_DT: [u16; 16] = [2, 2, 4, 2, 2, 4, 6, 4, 4, 6, 8, 6, 2, 4, 6, 4];
+    static TOUUD_DT: [u16; 16] = [
+        128, 128, 256, 128, 128, 256, 384, 256, 256, 384, 512, 384, 128, 256, 384, 256,
+    ];
+    static GBSM_DT: [u32; 16] = [
+        1 << 27,
+        1 << 27,
+        1 << 28,
+        1 << 27,
+        1 << 27,
+        1 << 27,
+        0x18000000,
+        1 << 27,
+        1 << 28,
+        0x18000000,
+        1 << 29,
+        0x18000000,
+        1 << 27,
+        1 << 27,
+        0x18000000,
+        1 << 27,
+    ];
+    static BGSM_DT: [u32; 16] = [
+        1 << 27,
+        1 << 27,
+        1 << 28,
+        1 << 27,
+        1 << 27,
+        1 << 28,
+        0x18000000,
+        1 << 28,
+        1 << 28,
+        0x18000000,
+        1 << 29,
+        0x18000000,
+        1 << 27,
+        1 << 28,
+        0x18000000,
+        1 << 28,
+    ];
+    static TSEGMB_DT: [u32; 16] = [
+        1 << 27,
+        1 << 27,
+        1 << 28,
+        1 << 27,
+        1 << 27,
+        1 << 28,
+        0x18000000,
+        1 << 28,
+        1 << 28,
+        0x18000000,
+        1 << 29,
+        0x18000000,
+        1 << 27,
+        1 << 28,
+        0x18000000,
+        1 << 28,
+    ];
+    let tolud = if si.is_sodimm() {
+        &TOLUD_MB[..]
+    } else {
+        &TOLUD_DT[..]
+    };
+    let tom = if si.is_sodimm() {
+        &TOM_MB[..]
+    } else {
+        &TOM_DT[..]
+    };
+    let touud = if si.is_sodimm() {
+        &TOUUD_MB[..]
+    } else {
+        &TOUUD_DT[..]
+    };
+    let gbsm = if si.is_sodimm() {
+        &GBSM_MB[..]
+    } else {
+        &GBSM_DT[..]
+    };
+    let bgsm = if si.is_sodimm() {
+        &BGSM_MB[..]
+    } else {
+        &BGSM_DT[..]
+    };
+    let tsegmb = if si.is_sodimm() {
+        &TSEGMB_MB[..]
+    } else {
+        &TSEGMB_DT[..]
+    };
 
-    hb.write16(hostbridge::TOLUD, TOLUD_TAB[cfg] << 4);
-    hb.write16(hostbridge::TOM, TOM_TAB[cfg]);
-    hb.write16(hostbridge::TOUUD, TOUUD_TAB[cfg]);
+    hb.write16(hostbridge::TOLUD, tolud[cfg]);
+    hb.write16(hostbridge::TOM, tom[cfg]);
+    hb.write16(hostbridge::TOUUD, touud[cfg]);
+    hb.write32(hostbridge::GBSM, gbsm[cfg]);
+    hb.write32(hostbridge::BGSM, bgsm[cfg]);
+    hb.write32(hostbridge::TSEG, tsegmb[cfg]);
 
     fstart_log::info!("raminit: memory map configured (dimm_config={})", cfg);
 }
@@ -94,7 +255,7 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
     static DRATAB: [[[[u8; 4]; 2]; 2]; 2] = [
         [
             [[0xFF, 0xFF, 0xFF, 0xFF], [0xFF, 0x00, 0x02, 0xFF]],
-            [[0xFF, 0x01, 0xFF, 0xFF], [0xFF, 0x03, 0xFF, 0x06]],
+            [[0xFF, 0x01, 0xFF, 0xFF], [0xFF, 0x03, 0xFF, 0xFF]],
         ],
         [
             [[0xFF, 0xFF, 0xFF, 0xFF], [0xFF, 0x04, 0x06, 0x08]],

@@ -12,6 +12,7 @@
 #![no_std]
 
 use fstart_arch::msr::{rdmsr, wrmsr};
+use fstart_arch::mtrr;
 use fstart_mp::CpuOps;
 
 // ---------------------------------------------------------------------------
@@ -88,6 +89,55 @@ fn configure_misc() {
     }
 }
 
+fn mtrr_type_name(ty: u64) -> &'static str {
+    match ty {
+        0x00 => "UC",
+        0x01 => "WC",
+        0x04 => "WT",
+        0x05 => "WP",
+        0x06 => "WB",
+        _ => "unknown",
+    }
+}
+
+fn log_variable_mtrr(index: u32) {
+    // SAFETY: `index` is bounded by IA32_MTRR_CAP.VCNT in the caller.
+    let (base_raw, mask_raw) = unsafe { mtrr::read_variable(index) };
+    if !mtrr::is_valid_mask(mask_raw) {
+        return;
+    }
+
+    let ty = mtrr::decode_type(base_raw);
+    fstart_log::info!(
+        "mtrr{}: base={:#x} size={:#x} type={} ({}) base_msr={:#x} mask_msr={:#x}",
+        index,
+        mtrr::decode_base(base_raw),
+        mtrr::decode_size(mask_raw),
+        ty,
+        mtrr_type_name(ty),
+        base_raw,
+        mask_raw
+    );
+}
+
+fn log_mtrr_solution(label: &str) {
+    // SAFETY: reading IA32_MTRR_CAP is valid on Pineview.
+    let count = unsafe { mtrr::variable_count() };
+    let fixed = unsafe { mtrr::fixed_supported() };
+    fstart_log::info!(
+        "mtrr solution: {} (variable_count={} fixed_supported={})",
+        label,
+        count,
+        fixed
+    );
+    if fixed {
+        fstart_log::info!("fixed mtrr: 0x00000-0x9ffff WB, 0xa0000-0xfffff UC");
+    }
+    for index in 0..count {
+        log_variable_mtrr(index);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CpuOps implementation
 // ---------------------------------------------------------------------------
@@ -112,16 +162,22 @@ impl CpuOps for PineviewCpuOps {
     const NAME: &'static str = "Intel Atom Pineview (106cx)";
 
     fn init_cpu(&self) {
+        // SAFETY: MP init runs this on every active logical CPU.  All CPUs
+        // receive the same low-DRAM WB MTRR layout before OS handoff.
+        unsafe { mtrr::setup_low_1g_wb() };
+        log_mtrr_solution("per-CPU ramstage layout");
         configure_c_states(self.pmbase);
         configure_misc();
         fstart_log::info!("cpu: Pineview MSR configuration complete");
     }
 
     fn pre_mp_init(&self) {
-        fstart_log::info!("cpu: Pineview pre-MP init (MTRR setup)");
-        // Future: x86_setup_mtrrs_with_detect(), microcode load.
-        // For now, MTRRs are configured by CAR setup and the BSP
-        // mirrors them to APs via the SIPI parameter block.
+        fstart_log::info!("cpu: Pineview pre-MP init (BSP ROM MTRR)");
+        // SAFETY: this runs on the BSP only.  The ROM WP MTRR speeds reads
+        // from memory-mapped SPI flash during signature verification and
+        // payload loading.  It is cleared before jumping to Linux.
+        unsafe { mtrr::set_boot_rom_wp(true) };
+        log_mtrr_solution("BSP temporary ROM WP enabled");
     }
 
     fn post_mp_init(&self) {

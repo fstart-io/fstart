@@ -290,7 +290,54 @@ pub fn clk_crossing(si: &SysInfo, mch: &MchBar) {
         mch.write32(mchbar::CLKXSSH2MD + 4, 0);
     }
 
-    static CLKCROSS2: [[[u32; 8]; 2]; 2] = [
+    static CLKCROSS2_DT: [[[u32; 8]; 2]; 2] = [
+        [
+            [
+                0x0000_0000,
+                0x0801_0204,
+                0x0000_0000,
+                0x0801_0204,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0408_0102,
+            ],
+            [
+                0x0408_0000,
+                0x1001_0200,
+                0x1000_0000,
+                0x2001_0408,
+                0x0000_0000,
+                0x0000_0200,
+                0x0204_0000,
+                0x0810_0102,
+            ],
+        ],
+        [
+            [
+                0x1000_0000,
+                0x2001_0408,
+                0x0408_0000,
+                0x1001_0200,
+                0x0000_0000,
+                0x0000_0000,
+                0x0800_0000,
+                0x1020_0204,
+            ],
+            [
+                0x0000_0000,
+                0x0801_0204,
+                0x0000_0000,
+                0x0801_0204,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0408_0102,
+            ],
+        ],
+    ];
+
+    static CLKCROSS2_MB: [[[u32; 8]; 2]; 2] = [
         [
             [
                 0x0000_0000,
@@ -337,7 +384,12 @@ pub fn clk_crossing(si: &SysInfo, mch: &MchBar) {
         ],
     ];
 
-    let c2 = &CLKCROSS2[fsb][ddr];
+    let clkcross2 = if si.platform_type == super::PLATFORM_MOBILE {
+        &CLKCROSS2_MB
+    } else {
+        &CLKCROSS2_DT
+    };
+    let c2 = &clkcross2[fsb][ddr];
     mch.write32(mchbar::CLKXSSH2MCBYP, c2[0]);
     mch.write32(mchbar::CLKXSSH2MCRDQ, c2[0]);
     mch.write32(mchbar::CLKXSSH2MCRDCST, c2[0]);
@@ -671,12 +723,21 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     let v = mch.read8(mchbar::SHBONUSREG);
     mch.write8(mchbar::SHBONUSREG, v & !0x03);
     mch.setbits32(mchbar::C0BYPCTRL, 1 << 0);
-    mch.setbits32(mchbar::CSHRMISCCTL1, 1 << 9);
+    if si.selected_timings.mem_clock == 0 {
+        mch.setbits32(mchbar::CSHRMISCCTL1, 1 << 9);
+    }
 
     // DLL receive control per lane.
+    let rcvctl = if si.is_sodimm() {
+        0x0C0C_0C0C
+    } else if si.selected_timings.mem_clock == 0 {
+        0x1010_1010
+    } else {
+        0x1414_1414
+    };
     for i in 0..8u32 {
         let v = mch.read32(mchbar::ly(0x540, i));
-        mch.write32(mchbar::ly(0x540, i), (v & !0x3F3F_3F3F) | 0x0C0C_0C0C);
+        mch.write32(mchbar::ly(0x540, i), (v & !0x3F3F_3F3F) | rcvctl);
     }
 
     // RDCS to RCVEN delay: coarse = CAS + 1.

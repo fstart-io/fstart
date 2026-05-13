@@ -10,16 +10,16 @@ use super::{PllParam, SysInfo};
 use fstart_ecam as ecam;
 use fstart_pineview_regs::{mchbar, MchBar};
 
-// HPET microsecond delay (simplified spin-based).
+const PINEVIEW_TSC_HZ: u64 = 1_666_666_667;
+
 /// Microsecond delay for raminit sequences.
 ///
-/// TODO: Read the HPET main counter (0xFED0_00F0) for accurate
-/// timing. The current spin-based delay is CPU-frequency-dependent
-/// and may over/under-shoot on different Atom D4xx steppings.
+/// Pineview boards supported here use Atom D410/D510-class parts with a
+/// constant 1.66 GHz TSC.  Use TSC-based delays instead of raw spin-loop
+/// guesses so the JEDEC/RCVEN waits match coreboot's `udelay()` much more
+/// closely once HPET is enabled.
 fn hpet_udelay(us: u32) {
-    for _ in 0..us * 100 {
-        core::hint::spin_loop();
-    }
+    fstart_arch::udelay_tsc(us, PINEVIEW_TSC_HZ);
 }
 
 // ===================================================================
@@ -78,10 +78,85 @@ fn calibrate_pll(si: &SysInfo, mch: &MchBar, pidelay: u8) {
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     ];
 
-    let pi_src = if f == 0 { &PI_667 } else { &PI_800 };
-    let dben_src = if f == 0 { &DBEN_667 } else { &DBEN_800 };
-    let dbsel_src = if f == 0 { &DBSEL_667 } else { &DBSEL_800 };
-    let clkd_src = if f == 0 { &CLKDELAY_667 } else { &CLKDELAY_800 };
+    static PI_DT_667: [u8; 72] = [
+        0, 0, 4, 4, 7, 7, 7, 7, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 0, 0, 0, 0, 1, 1,
+        1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 4, 4, 4, 4,
+        5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6,
+    ];
+    static PI_DT_800: [u8; 72] = [
+        53, 53, 10, 10, 0, 0, 0, 0, 35, 35, 35, 35, 41, 41, 41, 41, 41, 41, 41, 41, 46, 46, 46, 46,
+        54, 54, 54, 54, 48, 48, 48, 48, 48, 48, 48, 48, 45, 45, 45, 45, 3, 3, 3, 3, 10, 10, 10, 10,
+        10, 10, 10, 10, 15, 15, 15, 15, 23, 23, 23, 23, 18, 18, 18, 18, 18, 18, 18, 18, 15, 15, 15,
+        15,
+    ];
+    static DBEN_DT_667: [u8; 72] = [
+        0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    ];
+    static DBEN_DT_800: [u8; 72] = [
+        1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    static DBSEL_DT_667: [u8; 72] = DBEN_DT_667;
+    static DBSEL_DT_800: [u8; 72] = [
+        0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    static CLKDELAY_DT_667: [u8; 72] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    ];
+    static CLKDELAY_DT_800: [u8; 72] = CLKDELAY_DT_667;
+
+    let desktop = !si.is_sodimm();
+    let pi_src = if desktop {
+        if f == 0 {
+            &PI_DT_667
+        } else {
+            &PI_DT_800
+        }
+    } else if f == 0 {
+        &PI_667
+    } else {
+        &PI_800
+    };
+    let dben_src = if desktop {
+        if f == 0 {
+            &DBEN_DT_667
+        } else {
+            &DBEN_DT_800
+        }
+    } else if f == 0 {
+        &DBEN_667
+    } else {
+        &DBEN_800
+    };
+    let dbsel_src = if desktop {
+        if f == 0 {
+            &DBSEL_DT_667
+        } else {
+            &DBSEL_DT_800
+        }
+    } else if f == 0 {
+        &DBSEL_667
+    } else {
+        &DBSEL_800
+    };
+    let clkd_src = if desktop {
+        if f == 0 {
+            &CLKDELAY_DT_667
+        } else {
+            &CLKDELAY_DT_800
+        }
+    } else if f == 0 {
+        &CLKDELAY_667
+    } else {
+        &CLKDELAY_800
+    };
 
     for i in 0..72 {
         pll.pi[f][i] = pi_src[i].wrapping_add(pidelay);
@@ -329,8 +404,12 @@ pub fn dll_timing(si: &mut SysInfo, mch: &MchBar) {
     mch.write32(mchbar::CSHRDQSTXPGM, 0x0055_1803);
 
     // Enable clock groups (all clocks on).
+    let c0cktx_clkgate: [[u8; 4]; 2] = [[0x3f, 0x38, 0x07, 0x00], [0x3f, 0x3c, 0x27, 0x24]];
+    let pop_idx = ((si.dimm_populated(1) as usize) << 1) | (si.dimm_populated(0) as usize);
+    let platform_idx = if si.is_sodimm() { 1 } else { 0 };
+    let reg8 = c0cktx_clkgate[platform_idx][pop_idx] as u32;
     let v = mch.read32(mchbar::C0CKTX);
-    mch.write32(mchbar::C0CKTX, v & !(0x3F << 24));
+    mch.write32(mchbar::C0CKTX, (v & !(0x3F << 24)) | (reg8 << 24));
 
     // Enable DDR command output buffers.
     let v = mch.read8(mchbar::C0CMDTX1);
@@ -378,20 +457,21 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
     static RCOMPSTR: [u8; 7] = [0x66, 0x00, 0xAA, 0x55, 0x55, 0x77, 0x77];
     static RCOMPSCOMP: [u16; 7] = [0xA22A, 0x0000, 0xE22E, 0xE22E, 0xE22E, 0xA22A, 0xA22A];
     static RCOMPDELAY: [u8; 7] = [1, 0, 0, 0, 0, 1, 1];
+    static RCOMPSCOMPOFF: [u8; 7] = [0x09, 0x00, 0x00, 0x00, 0x00, 0x07, 0x07];
     static RCOMPF: [u16; 7] = [0x1114, 0x0000, 0x0505, 0x0909, 0x0909, 0x0A0A, 0x0A0A];
     static RCOMPSTR2: [u8; 7] = [0x00, 0x55, 0x55, 0xAA, 0xAA, 0x55, 0xAA];
     static RCOMPSCOMP2: [u16; 7] = [0x0000, 0xE22E, 0xE22E, 0xE22E, 0x8228, 0xE22E, 0x8228];
     static RCOMPDELAY2: [u8; 7] = [0, 0, 0, 0, 2, 0, 2];
 
-    let (rcomp1, rcomp2) = if si.selected_timings.mem_clock == 0 {
-        (0x0005_0431u32, 0x14C4_2827u32)
+    let rcomp1 = if si.selected_timings.mem_clock == 0 {
+        0x0005_0431u32
     } else {
-        (0x0005_0542u32, 0x1904_2827u32)
+        0x0005_0542u32
     };
     let rcomp2 = if si.selected_timings.fsb_clock == 0 {
         0x14C4_2827u32
     } else {
-        rcomp2
+        0x1904_2827u32
     };
 
     // Program per-group registers.
@@ -412,8 +492,11 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
         let v = mch.read8(base + 0x14);
         mch.write8(base + 0x14, (v & !0x03) | RCOMPDELAY[i]);
 
-        if i == 2 {
-            // Rewrite for group 2 with dimm_config-specific values.
+        if si.is_sodimm() && i == 2 {
+            // SO-DIMM group 2 uses config-dependent RCOMP values. Desktop
+            // UDIMM configs use the generic group values above; their
+            // dimm_config is the 0..15 vendor-MRC matrix and must not index
+            // these 0..6 SO-DIMM tables.
             let dc = si.dimm_config[0] as usize;
             mch.write8(base + 0x04, RCOMPSTR2[dc]);
             mch.write16(base + 0x0E, RCOMPSCOMP2[dc]);
@@ -431,10 +514,11 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
     }
 
     // ODT record.
+    let odt_record = if si.dimm_config[0] == 0 { 0x00 } else { 0x36 };
     let v = mch.read8(mchbar::C0ODTRECORDX);
-    mch.write8(mchbar::C0ODTRECORDX, (v & !0x3F) | 0x36);
+    mch.write8(mchbar::C0ODTRECORDX, (v & !0x3F) | odt_record);
     let v = mch.read8(mchbar::C0DQSODTRECORDX);
-    mch.write8(mchbar::C0DQSODTRECORDX, (v & !0x3F) | 0x36);
+    mch.write8(mchbar::C0DQSODTRECORDX, (v & !0x3F) | odt_record);
 
     // Clear per-group override/offset fields.
     for i in 0..7usize {
@@ -449,7 +533,10 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
         let v = mch.read16(base + 0x0A);
         mch.write16(base + 0x0A, v & !0x7F7F);
         let v = mch.read16(base + 0x12);
-        mch.write16(base + 0x12, v & !0x3F3F);
+        mch.write16(
+            base + 0x12,
+            (v & !0x3F3F) | ((RCOMPSCOMPOFF[i] as u16) * 0x0101),
+        );
         let v = mch.read16(base + 0x24);
         mch.write16(base + 0x24, v & !0x1F1F);
         let v = mch.read8(base + 0x24 + 2);
@@ -460,6 +547,15 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
         mch.write16(base + 0x20, 0x1219);
         mch.write16(base + 0x20 + 2, 0x000C);
     }
+
+    let v = mch.read16(mchbar::C0ODTRECORDX);
+    mch.write16(mchbar::C0ODTRECORDX, v & !0xffc0);
+    let v = mch.read16(mchbar::C0ODTRECORDX + 2);
+    mch.write16(mchbar::C0ODTRECORDX + 2, v & !0x000f);
+    let v = mch.read16(mchbar::C0DQSODTRECORDX);
+    mch.write16(mchbar::C0DQSODTRECORDX, v & !0xffc0);
+    let v = mch.read16(mchbar::C0DQSODTRECORDX + 2);
+    mch.write16(mchbar::C0DQSODTRECORDX + 2, v & !0x000f);
 
     let v = mch.read32(mchbar::DCMEASBUFOVR);
     mch.write32(mchbar::DCMEASBUFOVR, (v & !0x001F_1F1F) | 0x000C_1219);
@@ -500,22 +596,30 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
             core::hint::spin_loop();
         }
 
-        // Read back RCOMP results and program slew LUTs.
+        // Read back RCOMP results and program slew base + LUTs.
         let xcomp = mch.read32(mchbar::XCOMP);
         let rcompp = ((xcomp & !((1u32) << 31)) >> 24) as u8;
         let rcompn = ((xcomp & !(0xFF80_0000)) >> 16) as u8;
+        let mut last_srup = 0u8;
+        let mut last_srun = 0u8;
 
-        // The full 64×12 LUT programming is extensive. We program the slew
-        // base values which is the critical part for signal integrity.
         for i in 0..7usize {
             if i == 1 {
                 continue;
             }
             let srup = (mch.read8(RCOMPCTL[i] + 1) & 0xC0) >> 6;
             let srun = (mch.read8(RCOMPCTL[i] + 1) & 0x30) >> 4;
+            last_srup = srup;
+            last_srun = srun;
 
-            let base_p = rcompp.wrapping_sub(1 << (srup + 1));
-            let base_n = rcompn.wrapping_sub(1 << (srun + 1));
+            let p_step = 1u8 << (srup + 1);
+            let n_step = 1u8 << (srun + 1);
+            if rcompp < p_step || rcompn < n_step {
+                fstart_log::error!("raminit: RCOMP base underflow for group {}", i);
+                continue;
+            }
+            let base_p = rcompp - p_step;
+            let base_n = rcompn - n_step;
 
             let v = mch.read16(RCOMPCTL[i] + 0x16);
             mch.write16(
@@ -523,12 +627,61 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
                 (v & !0x7F7F) | ((base_p as u16) << 8) | (base_n as u16),
             );
         }
+
+        let lutpbase = rcompp.saturating_sub(1 << (last_srup + 1));
+        let lutnbase = rcompn.saturating_sub(1 << (last_srun + 1));
+        program_rcomp_luts(si, mch, lutpbase, last_srup, lutnbase, last_srun);
     }
 
     // Start final RCOMP.
     mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
 
     fstart_log::info!("raminit: RCOMP calibration done");
+}
+
+fn program_lut_byte(mch: &MchBar, off: u32, value: u8) {
+    let v = mch.read8(off);
+    mch.write8(off, (v & !0x3f) | (value & 0x3f));
+}
+
+fn program_rcomp_luts(si: &SysInfo, mch: &MchBar, lutpbase: u8, srup: u8, lutnbase: u8, srun: u8) {
+    use super::rcomplut::RCOMPLUT;
+
+    for i in 0..4u32 {
+        let j = lutpbase as usize + ((i as usize) << srup);
+        if j >= RCOMPLUT.len() {
+            fstart_log::error!("raminit: RCOMP P LUT index out of range");
+            return;
+        }
+        program_lut_byte(mch, RCOMPCTL[0] + 0x18 + i, RCOMPLUT[j][0]);
+        if !si.is_sodimm() {
+            program_lut_byte(mch, RCOMPCTL[2] + 0x18 + i, RCOMPLUT[j][4]);
+        } else if si.dimm_config[0] < 3 || si.dimm_config[0] == 5 {
+            program_lut_byte(mch, RCOMPCTL[2] + 0x18 + i, RCOMPLUT[j][10]);
+        }
+        program_lut_byte(mch, RCOMPCTL[3] + 0x18 + i, RCOMPLUT[j][6]);
+        program_lut_byte(mch, RCOMPCTL[4] + 0x18 + i, RCOMPLUT[j][6]);
+        program_lut_byte(mch, RCOMPCTL[5] + 0x18 + i, RCOMPLUT[j][8]);
+        program_lut_byte(mch, RCOMPCTL[6] + 0x18 + i, RCOMPLUT[j][8]);
+    }
+
+    for i in 0..4u32 {
+        let j = lutnbase as usize + ((i as usize) << srun);
+        if j >= RCOMPLUT.len() {
+            fstart_log::error!("raminit: RCOMP N LUT index out of range");
+            return;
+        }
+        program_lut_byte(mch, RCOMPCTL[0] + 0x1c + i, RCOMPLUT[j][1]);
+        if !si.is_sodimm() {
+            program_lut_byte(mch, RCOMPCTL[2] + 0x1c + i, RCOMPLUT[j][5]);
+        } else if si.dimm_config[0] < 3 || si.dimm_config[0] == 5 {
+            program_lut_byte(mch, RCOMPCTL[2] + 0x1c + i, RCOMPLUT[j][11]);
+        }
+        program_lut_byte(mch, RCOMPCTL[3] + 0x1c + i, RCOMPLUT[j][7]);
+        program_lut_byte(mch, RCOMPCTL[4] + 0x1c + i, RCOMPLUT[j][7]);
+        program_lut_byte(mch, RCOMPCTL[5] + 0x1c + i, RCOMPLUT[j][9]);
+        program_lut_byte(mch, RCOMPCTL[6] + 0x1c + i, RCOMPLUT[j][9]);
+    }
 }
 
 // ===================================================================
@@ -571,6 +724,26 @@ pub fn odt(si: &SysInfo, mch: &MchBar) {
 
     mch.write16(mchbar::C0ODT, ODT_MATRIX[rankindex]);
     mch.write16(mchbar::C0ODTRKCTRL, ODT_RANKCTRL[rankindex]);
+
+    let v = mch.read16(mchbar::C0ODTCTRL);
+    mch.write16(mchbar::C0ODTCTRL, (v & !0x0fff) | 0x0668);
+    let v = mch.read32(mchbar::C0CKECTRL);
+    mch.write32(
+        mchbar::C0CKECTRL,
+        (v & !((7 << 24) | (7 << 17) | (1 << 16) | (0x0f << 10)))
+            | (3 << 24)
+            | (3 << 17)
+            | (0x0f << 10),
+    );
+    if si.selected_timings.mem_clock == 1 && si.selected_timings.cas == 6 {
+        mch.write8(mchbar::C0CKEDELAY, 0x89);
+    } else {
+        mch.write8(mchbar::C0CKEDELAY, 0x78);
+    }
+    if !si.is_sodimm() {
+        let v = mch.read32(mchbar::C0COARSEDLY1);
+        mch.write32(mchbar::C0COARSEDLY1, (v & !0xcccc_cccc) | 0x4444_4444);
+    }
 
     fstart_log::info!("raminit: ODT configured (rankindex={})", rankindex);
 }
@@ -662,7 +835,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
     for lane in 0..maxlane {
         let dqshighaddr = mchbar::ly(mchbar::C0MISCCCTLY_BASE, lane as u32);
 
-        let mut coarse = si.selected_timings.cas + 1;
+        let mut coarse = si.selected_timings.cas;
         let mut pi: u8 = 0;
         let mut medium: u8 = 0;
 
@@ -686,22 +859,24 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
 
         // Phase 1: sweep until DQS goes high.
         while !sample_dqs(mch, dqshighaddr, 0, 3) {
-            rcven_clock(mch, &mut coarse, &mut medium, lane);
-            if coarse > 0x0F {
+            if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
+                fstart_log::error!("raminit: RCVEN lane {} failed before DQS-low search", lane);
                 break;
             }
         }
 
         savecoarse = coarse;
         savemedium = medium;
-        rcven_clock(mch, &mut coarse, &mut medium, lane);
+        if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
+            fstart_log::error!("raminit: RCVEN lane {} failed before DQS-high search", lane);
+        }
 
         // Phase 2: continue until DQS stays high.
         while !sample_dqs(mch, dqshighaddr, 1, 3) {
             savecoarse = coarse;
             savemedium = medium;
-            rcven_clock(mch, &mut coarse, &mut medium, lane);
-            if coarse > 0x0F {
+            if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
+                fstart_log::error!("raminit: RCVEN lane {} failed before PI search", lane);
                 break;
             }
         }
@@ -724,6 +899,11 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
             savepi = pi;
             pi += 1;
             if pi > si.maxpi {
+                if si.nodll != 0 {
+                    savepi = si.maxpi;
+                    break;
+                }
+                fstart_log::error!("raminit: RCVEN lane {} PI search failed", lane);
                 savepi = si.maxpi;
                 break;
             }
@@ -740,7 +920,9 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
             mchbar::ly(0x560, lane as u32),
             (v & !0x3F) | (pi << si.pioffset),
         );
-        rcven_clock(mch, &mut coarse, &mut medium, lane);
+        if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
+            fstart_log::error!("raminit: RCVEN lane {} failed after PI search", lane);
+        }
 
         // Phase 4: back off until DQS goes low.
         while !sample_dqs(mch, dqshighaddr, 0, 3) {
@@ -755,7 +937,9 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
             );
         }
 
-        rcven_clock(mch, &mut coarse, &mut medium, lane);
+        if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
+            fstart_log::error!("raminit: RCVEN lane {} failed at final clock step", lane);
+        }
         si.pi[lane as usize] = pi;
         lanecoarse[lane as usize] = coarse;
     }
@@ -767,7 +951,10 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
         }
     }
     for lane in (0..maxlane as usize).rev() {
-        let offset = lanecoarse[lane] - minlanecoarse;
+        let offset = lanecoarse[lane].saturating_sub(minlanecoarse);
+        if offset > 3 {
+            fstart_log::error!("raminit: RCVEN lane {} coarse offset too large", lane);
+        }
         let v = mch.read16(mchbar::C0COARSEDLY0);
         mch.write16(
             mchbar::C0COARSEDLY0,
@@ -826,28 +1013,27 @@ fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
 }
 
 /// Advance receive enable clock (medium, then coarse).
-fn rcven_clock(mch: &MchBar, coarse: &mut u8, medium: &mut u8, lane: u8) {
+fn rcven_clock(mch: &MchBar, coarse: &mut u8, medium: &mut u8, lane: u8) -> bool {
     if *medium < 3 {
         *medium += 1;
-        let v = mch.read16(mchbar::C0RCVMISCCTL2);
-        mch.write16(
-            mchbar::C0RCVMISCCTL2,
-            (v & !(3 << (lane * 2))) | ((*medium as u16) << (lane * 2)),
-        );
     } else {
         *medium = 0;
+        if *coarse >= 0x0f {
+            return false;
+        }
         *coarse += 1;
         let v = mch.read32(mchbar::C0STATRDCTRL);
         mch.write32(
             mchbar::C0STATRDCTRL,
             (v & !(0x0F << 16)) | ((*coarse as u32) << 16),
         );
-        let v = mch.read16(mchbar::C0RCVMISCCTL2);
-        mch.write16(
-            mchbar::C0RCVMISCCTL2,
-            (v & !(3 << (lane * 2))) | ((*medium as u16) << (lane * 2)),
-        );
     }
+    let v = mch.read16(mchbar::C0RCVMISCCTL2);
+    mch.write16(
+        mchbar::C0RCVMISCCTL2,
+        (v & !(3 << (lane * 2))) | ((*medium as u16) << (lane * 2)),
+    );
+    true
 }
 
 // ===================================================================
@@ -870,7 +1056,11 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
     };
     let freqgb: u32 = 110;
     let tmclk_adj = tmclk * 100 / freqgb;
-    let buffertocore: u32 = 5000;
+    let buffertocore: u32 = if si.platform_type == super::PLATFORM_MOBILE {
+        5500
+    } else {
+        5000
+    };
     let postcalib: u32 = if si.selected_timings.mem_clock == 0 {
         1250
     } else {
@@ -908,14 +1098,20 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
     let fifo_reg = (mch.read8(mchbar::CSHRFIFOCTL) & 0x0E) >> 1;
     let txfifo = TXFIFO_LUT[fifo_reg as usize] as u32;
 
-    let datadelay =
-        tmclk_adj * (2 * txfifo + 4 * si.coarsectrl as u32 + 4 * (bypass.wrapping_sub(1)) + 13) / 4
-            + tio
-            + maxrcvendelay
-            + pidelay
-            + buffertocore
-            + postcalib
-            + if si.r#async != 0 { tmclk_adj / 2 } else { 0 };
+    let datadelay_signed = tmclk_adj as i64
+        * (2 * txfifo as i64 + 4 * si.coarsectrl as i64 + 4 * (bypass as i64 - 1) + 13)
+        / 4
+        + tio as i64
+        + maxrcvendelay as i64
+        + pidelay as i64
+        + buffertocore as i64
+        + postcalib as i64
+        + if si.r#async != 0 {
+            (tmclk_adj / 2) as i64
+        } else {
+            0
+        };
+    let datadelay = datadelay_signed.max(0) as u32;
 
     let j = si.selected_timings.mem_clock as usize;
     let k = si.selected_timings.fsb_clock as usize;
@@ -945,8 +1141,12 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
     }
 
     if j == 0 && k == 0 {
-        // Subtract correction for FSB667/DDR667.
-        let _ = datadelay.saturating_sub(3084);
+        let corrected = datadelay.saturating_sub(3084);
+        let mut phase_trd = (corrected / thclk) as u8;
+        if phase_trd >= 2 {
+            phase_trd -= 2;
+        }
+        trd = trd.max(phase_trd + 1);
     }
 
     let v = mch.read16(mchbar::C0STATRDCTRL);
@@ -997,24 +1197,30 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     mch.write32(mchbar::HIT4, 0x0F03_8000);
     hb.and8(0xF0, !1);
 
-    // Interleave configuration.
+    // Interleave configuration.  Match coreboot: derive each populated
+    // rank's size from the DRA encoding rather than dividing total capacity.
+    static DRBTAB: [u32; 10] = [0x4, 0x2, 0x8, 0x4, 0x8, 0x4, 0x10, 0x8, 0x20, 0x10];
+    let dra01 = mch.read32(mchbar::C0DRA01);
     let mut nranks = 0u32;
     let mut maxranksize = 0u32;
     let mut rankmismatch = false;
-    for i in 0..super::TOTAL_DIMMS {
-        if let Some(ref d) = si.dimms[i] {
-            if d.card_type != 0 {
-                for _r in 0..d.ranks {
-                    nranks += 1;
-                    let sz = si.channel_capacity[0] / nranks;
-                    if maxranksize == 0 {
-                        maxranksize = sz;
-                    }
-                    if sz != maxranksize {
-                        rankmismatch = true;
-                    }
-                }
-            }
+    for r in 0..super::RANKS_PER_CHANNEL {
+        let dimm_idx = r / 2;
+        let rank_in_dimm = (r % 2) as u8;
+        let populated = si.dimms[dimm_idx]
+            .as_ref()
+            .is_some_and(|d| d.card_type != 0 && rank_in_dimm < d.ranks);
+        if !populated {
+            continue;
+        }
+        nranks += 1;
+        let dra = ((dra01 >> (8 * r)) & 0x7f) as usize;
+        let sz = DRBTAB.get(dra).copied().unwrap_or(0);
+        if maxranksize == 0 {
+            maxranksize = sz;
+        }
+        if sz != maxranksize {
+            rankmismatch = true;
         }
     }
 
@@ -1039,14 +1245,32 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     mch.write8(mchbar::CHDECMISC, (v & !0xFC) | (chdec & 0xFC));
     mch.clrbits32(mchbar::NOACFGBUSCTL, 1 << 31);
 
-    mch.write32(mchbar::HTBONUS0, 0x0F);
-    mch.setbits32(mchbar::C0COREBONUS + 4, 1 << 0);
+    if si.platform_type == super::PLATFORM_DESKTOP
+        && si.selected_timings.fsb_clock == 1
+        && si.selected_timings.mem_clock == 0
+    {
+        mch.write32(mchbar::HTBONUS0, 0x0C);
+    } else {
+        mch.write32(mchbar::HTBONUS0, 0x0F);
+        mch.setbits32(mchbar::C0COREBONUS + 4, 1 << 0);
+    }
     mch.clrbits32(mchbar::HIT3, 7 << 25);
     let v = mch.read32(mchbar::HIT4);
     mch.write32(mchbar::HIT4, (v & !(3 << 18)) | (1 << 18));
 
-    // Enhanced clock crossing.
-    static CLKCX: [[[u32; 3]; 2]; 2] = [
+    // Enhanced clock crossing. Desktop and mobile use different vendor-MRC
+    // tables; D41S is the desktop path.
+    static CLKCX_DT: [[[u32; 3]; 2]; 2] = [
+        [
+            [0x0000_0000, 0x0408_0102, 0x0801_0204],
+            [0x0204_0000, 0x0810_0102, 0x1001_0002],
+        ],
+        [
+            [0x0800_0000, 0x1020_0204, 0x2001_0208],
+            [0x0000_0000, 0x0c08_0302, 0x0801_0204],
+        ],
+    ];
+    static CLKCX_MB: [[[u32; 3]; 2]; 2] = [
         [
             [0x0000_0000, 0x0C08_0302, 0x0801_0204],
             [0x0204_0000, 0x0810_0102, 0x0000_0000],
@@ -1058,9 +1282,14 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     ];
     let fsb = si.selected_timings.fsb_clock as usize;
     let ddr = si.selected_timings.mem_clock as usize;
-    mch.write32(mchbar::CLKXSSH2X2MD, CLKCX[fsb][ddr][0]);
-    mch.write32(mchbar::CLKXSSH2X2MD + 4, CLKCX[fsb][ddr][1]);
-    mch.write32(mchbar::CLKXSSH2MCBYP + 4, CLKCX[fsb][ddr][2]);
+    let clkcx = if si.platform_type == super::PLATFORM_MOBILE {
+        &CLKCX_MB
+    } else {
+        &CLKCX_DT
+    };
+    mch.write32(mchbar::CLKXSSH2X2MD, clkcx[fsb][ddr][0]);
+    mch.write32(mchbar::CLKXSSH2X2MD + 4, clkcx[fsb][ddr][1]);
+    mch.write32(mchbar::CLKXSSH2MCBYP + 4, clkcx[fsb][ddr][2]);
 
     mch.clrbits32(mchbar::HIT4, 1 << 1);
 
@@ -1095,13 +1324,12 @@ pub fn sdram_power_settings(si: &SysInfo, mch: &MchBar) {
     let v = mch.read8(mchbar::CISDCTRL + 3);
     mch.write8(mchbar::CISDCTRL + 3, v & !(1 << 7));
     let v = mch.read16(mchbar::CICGDIS);
-    mch.write16(mchbar::CICGDIS, v & !0x1FFF);
+    mch.write16(mchbar::CICGDIS, v & !0x0FFF);
     let v = mch.read32(mchbar::SBCLKGATECTRL);
-    mch.write32(mchbar::SBCLKGATECTRL, v & !0x0001_FFFF);
+    mch.write32(mchbar::SBCLKGATECTRL, v & !0x0000_FFFF);
     let v = mch.read16(mchbar::HICLKGTCTL);
     mch.write16(mchbar::HICLKGTCTL, (v & !0x03FF) | 0x06);
-    let v = mch.read32(mchbar::HTCLKGTCTL);
-    mch.write32(mchbar::HTCLKGTCTL, v | 0x20);
+    mch.write32(mchbar::HTCLKGTCTL, 0x20);
     let v = mch.read8(mchbar::TSMISC);
     mch.write8(mchbar::TSMISC, v & !(1 << 0));
 
@@ -1110,12 +1338,14 @@ pub fn sdram_power_settings(si: &SysInfo, mch: &MchBar) {
         si.selected_timings.cas.saturating_sub(1) + 0x15,
     );
     let v = mch.read16(mchbar::CLOCKGATINGI);
-    mch.write16(mchbar::CLOCKGATINGI, (v & !0x07FC) | 0x0040);
+    mch.write16(mchbar::CLOCKGATINGI, (v & !0x03FC) | 0x0040);
     let v = mch.read16(mchbar::CLOCKGATINGII);
     mch.write16(mchbar::CLOCKGATINGII, (v & !0x0FFF) | 0x0D00);
     let v = mch.read16(mchbar::CLOCKGATINGIII);
     mch.write16(mchbar::CLOCKGATINGIII, v & !0x0D80);
-    mch.write16(mchbar::GTDPCGC + 2, 0xFFFF);
+    if si.platform_type == super::PLATFORM_MOBILE {
+        mch.write16(mchbar::GTDPCGC + 2, 0xFFFF);
+    }
 
     // Sequencing.
     let v = mch.read32(mchbar::HPWRCTL1);
@@ -1129,20 +1359,20 @@ pub fn sdram_power_settings(si: &SysInfo, mch: &MchBar) {
     let v = mch.read32(mchbar::GFXC3C4);
     mch.write32(mchbar::GFXC3C4, (v & !0xFFFF_0003) | 0x1010_0000);
     let v = mch.read32(mchbar::PMDSLFRC);
-    mch.write32(mchbar::PMDSLFRC, (v & !0x0001_BFF7) | 0x0000_0078);
-
-    let pmres = if si.selected_timings.fsb_clock == 0 {
-        0x00C8u16
+    let pmdslfrc = if si.platform_type == super::PLATFORM_MOBILE {
+        0x0000_007c
     } else {
-        0x0100u16
+        0x0000_0078
     };
+    mch.write32(mchbar::PMDSLFRC, (v & !0x0001_BFF7) | pmdslfrc);
+
     let v = mch.read16(mchbar::PMMSPMRES);
-    mch.write16(mchbar::PMMSPMRES, (v & !0x03FF) | pmres);
+    mch.write16(mchbar::PMMSPMRES, v & !0x03FF);
 
     let j = si.selected_timings.mem_clock as usize;
 
     let v = mch.read32(mchbar::PMCLKRC);
-    mch.write32(mchbar::PMCLKRC, (v & !0x01FF_F37F) | 0x1081_0700);
+    mch.write32(mchbar::PMCLKRC, (v & !0x1FFF_37FF) | 0x1081_0700);
     let v = mch.read8(mchbar::PMPXPRC);
     mch.write8(mchbar::PMPXPRC, (v & !7) | 1);
     let v = mch.read8(mchbar::PMBAK);
@@ -1267,8 +1497,7 @@ pub fn sdram_program_ddr(mch: &MchBar) {
     mch.setbits32(mchbar::CSHWRIOBONUS, 7);
     mch.setbits32(mchbar::C0DYNSLVDLLEN, 3 << 6);
     mch.setbits32(mchbar::SHC2REGIII, 7);
-    let v = mch.read16(mchbar::SHC2MINTM);
-    mch.write16(mchbar::SHC2MINTM, v | (1 << 7));
+    mch.write16(mchbar::SHC2MINTM, 1 << 7);
     mch.write8(mchbar::SHC2IDLETM, 0x10);
     mch.setbits32(mchbar::C0COREBONUS, 0x0F << 5);
     mch.setbits32(mchbar::CSHWRIOBONUS, 3 << 3);
@@ -1306,6 +1535,7 @@ pub fn sdram_program_dqdqs(si: &SysInfo, mch: &MchBar) {
     let mut cwb: u32 = 0;
     let mut feature = false;
     let mut repeat = 2u8;
+    let mut final_tmaxunmask = 0u32;
 
     while repeat > 0 {
         let txdelay = mdclk
@@ -1332,6 +1562,7 @@ pub fn sdram_program_dqdqs(si: &SysInfo, mch: &MchBar) {
                 mch.clrbits32(mchbar::C0COREBONUS, 1 << 23);
             }
             feature = true;
+            final_tmaxunmask = tmaxunmask;
             repeat = 0;
         } else {
             repeat -= 1;
@@ -1346,7 +1577,35 @@ pub fn sdram_program_dqdqs(si: &SysInfo, mch: &MchBar) {
         return;
     }
 
+    let pimdclk = final_tmaxunmask / mdclk;
+    let mut push = 0u32;
+    feature = false;
+    for repeat in 0..4u32 {
+        let reg32 = pimdclk * mdclk + (mdclk * repeat) / 4;
+        if reg32 >= 4692 + 3000 && reg32 <= final_tmaxunmask {
+            feature = true;
+            push = repeat;
+        }
+    }
+    if !feature {
+        let v = mch.read8(mchbar::CLOCKGATINGI);
+        mch.write8(mchbar::CLOCKGATINGI, v & !3);
+        return;
+    }
+
     mch.setbits32(mchbar::CLOCKGATINGI, 3);
+    let v = mch.read16(mchbar::CLOCKGATINGIII);
+    mch.write16(
+        mchbar::CLOCKGATINGIII,
+        (v & !(0x0f << 12)) | ((pimdclk as u16) << 12),
+    );
+    let v = mch.read8(mchbar::CSHWRIOBONUSX);
+    mch.write8(
+        mchbar::CSHWRIOBONUSX,
+        (v & !0x77) | ((push as u8) << 4) | (push as u8),
+    );
+    let v = mch.read32(mchbar::C0COREBONUS);
+    mch.write32(mchbar::C0COREBONUS, (v & !(0x0f << 24)) | (3 << 24));
 
     fstart_log::info!("raminit: DQ/DQS programmed");
 }
@@ -1358,15 +1617,17 @@ pub fn sdram_program_dqdqs(si: &SysInfo, mch: &MchBar) {
 /// Enable periodic RCOMP.
 ///
 /// Ported from coreboot `sdram_periodic_rcomp()`.
-pub fn sdram_periodic_rcomp(mch: &MchBar) {
-    let v = mch.read8(mchbar::COMPCTRL1);
-    mch.write8(mchbar::COMPCTRL1, v & !(1 << 1));
-    while mch.read32(mchbar::COMPCTRL1) & (1 << 31) != 0 {
-        core::hint::spin_loop();
-    }
+pub fn sdram_periodic_rcomp(si: &SysInfo, mch: &MchBar) {
+    if si.boot_path != super::BOOT_PATH_RESET {
+        let v = mch.read8(mchbar::COMPCTRL1);
+        mch.write8(mchbar::COMPCTRL1, v & !(1 << 1));
+        while mch.read32(mchbar::COMPCTRL1) & (1 << 31) != 0 {
+            core::hint::spin_loop();
+        }
 
-    let v = mch.read16(mchbar::CSHRMISCCTL);
-    mch.write16(mchbar::CSHRMISCCTL, v & !(3 << 12));
+        let v = mch.read16(mchbar::CSHRMISCCTL);
+        mch.write16(mchbar::CSHRMISCCTL, v & !(3 << 12));
+    }
     mch.setbits32(mchbar::CMNDQFIFORST, 1 << 7);
     let v = mch.read16(mchbar::XCOMPDFCTRL);
     mch.write16(mchbar::XCOMPDFCTRL, (v & !0x0F) | 0x09);

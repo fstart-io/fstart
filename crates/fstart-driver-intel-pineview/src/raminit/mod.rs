@@ -19,6 +19,7 @@
 mod jedec;
 mod mmap;
 mod phy;
+mod rcomplut;
 mod spd;
 mod timing;
 
@@ -34,6 +35,13 @@ use fstart_spd::DimmInfo;
 pub const TOTAL_CHANNELS: usize = 1;
 pub const TOTAL_DIMMS: usize = 2;
 pub const RANKS_PER_CHANNEL: usize = 4;
+
+pub const DIMM_TYPE_NONE: u8 = 0;
+pub const DIMM_TYPE_UBDIMM: u8 = 1;
+pub const DIMM_TYPE_SODIMM: u8 = 2;
+
+pub const PLATFORM_DESKTOP: u8 = 0;
+pub const PLATFORM_MOBILE: u8 = 1;
 
 #[allow(dead_code)]
 const BOOT_PATH_NORMAL: u8 = 0;
@@ -86,6 +94,8 @@ impl Default for PllParam {
 #[derive(Debug)]
 pub struct SysInfo {
     pub boot_path: u8,
+    pub platform_type: u8,
+    pub dimm_type: u8,
     pub spd_map: [u8; 4],
     pub dimms: [Option<DimmInfo>; TOTAL_DIMMS * TOTAL_CHANNELS],
     pub dimm_config: [u8; TOTAL_CHANNELS],
@@ -108,9 +118,11 @@ pub struct SysInfo {
 }
 
 impl SysInfo {
-    pub fn new(boot_path: u8, spd_map: [u8; 4]) -> Self {
+    pub fn new(boot_path: u8, platform_type: u8, spd_map: [u8; 4]) -> Self {
         Self {
             boot_path,
+            platform_type,
+            dimm_type: DIMM_TYPE_NONE,
             spd_map,
             dimms: [None, None],
             dimm_config: [0],
@@ -135,6 +147,10 @@ impl SysInfo {
     pub fn dimm_populated(&self, idx: usize) -> bool {
         self.dimms[idx].as_ref().is_some_and(|d| d.card_type != 0)
     }
+
+    pub fn is_sodimm(&self) -> bool {
+        self.dimm_type == DIMM_TYPE_SODIMM
+    }
 }
 
 // ===================================================================
@@ -155,11 +171,12 @@ pub fn sdram_initialize(
     mch: &MchBar,
     smbus: &mut dyn fstart_services::SmBus,
     boot_path: u8,
+    platform_type: u8,
     spd_addresses: &[u8; 4],
 ) -> Result<u64, ServiceError> {
     fstart_log::info!("raminit: starting DDR2 initialization");
 
-    let mut si = SysInfo::new(boot_path, *spd_addresses);
+    let mut si = SysInfo::new(boot_path, platform_type, *spd_addresses);
 
     // 1. Read SPD data from DIMMs.
     spd::read_spds(&mut si, smbus)?;
@@ -220,8 +237,10 @@ pub fn sdram_initialize(
     mch.write8(mchbar::C0IOBUFACTCTL, (iobuf & !0x3F) | 0x08);
     mch.setbits32(mchbar::C0RSTCTL, 1 << 0);
 
-    // 15. RCOMP update.
-    phy::rcomp_update(&si, mch);
+    // 15. RCOMP update (skip on warm-reset path, matching coreboot).
+    if si.boot_path != BOOT_PATH_RESET {
+        phy::rcomp_update(&si, mch);
+    }
 
     mch.setbits32(mchbar::HIT4, 1 << 1);
 
@@ -248,6 +267,10 @@ pub fn sdram_initialize(
     // 21. Receive enable calibration.
     phy::sdram_rcven(&mut si, mch);
 
+    // Coreboot now runs additional Vref margining here for desktop
+    // DDR2 UDIMMs.  fstart keeps this as a TODO until the temporary
+    // cache/MTRR dance used by that routine is ported safely.
+
     // 22. New tRD.
     phy::sdram_new_trd(&si, mch);
 
@@ -267,7 +290,7 @@ pub fn sdram_initialize(
     phy::sdram_program_dqdqs(&si, mch);
 
     // 28. Periodic RCOMP.
-    phy::sdram_periodic_rcomp(mch);
+    phy::sdram_periodic_rcomp(&si, mch);
 
     // 29. Set init done.
     mch.setbits32(mchbar::C0REFRCTRL2, 1 << 30);
