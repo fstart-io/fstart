@@ -377,10 +377,15 @@
             lapic_base: 0xFEE00000,
             ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
             isos: [
-                // PIT remapped from IRQ 0 to GSI 2 (standard on ICH7).
-                ( bus: 0, source: 0, gsi: 2, flags: 0 ),
-                // SCI on IRQ 9, active-low level-triggered.
-                ( bus: 0, source: 9, gsi: 9, flags: 0x000F ),
+                // PIT remapped from IRQ 0 to GSI 2 (standard on ICH7):
+                // edge-triggered, active-high, matching coreboot's default
+                // MADT GSI0 override.
+                ( bus: 0, source: 0, gsi: 2, flags: 0x0005 ),
+                // SCI on IRQ 9. ICH7/coreboot reports SCI as level-triggered,
+                // active-high (MP_IRQ_TRIGGER_LEVEL | MP_IRQ_POLARITY_HIGH =
+                // 0x000d). Active-low makes the IOAPIC see the deasserted SCI
+                // line as asserted, which causes an IRQ9 storm.
+                ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
             ],
             hpet_base: 0xFED00000,
             legacy_devices: true,
