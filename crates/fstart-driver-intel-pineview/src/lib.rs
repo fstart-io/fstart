@@ -1112,13 +1112,17 @@ mod acpi_impl {
             // The PCI host-bridge MMIO aperture begins at the live chipset
             // TOLUD value programmed by raminit. This is evaluated while ACPI
             // tables are generated in ramstage, not baked into the board RON.
+            #[cfg(target_os = "none")]
             let pci_mmio_base = self.tolud();
+            #[cfg(not(target_os = "none"))]
+            let pci_mmio_base = 0x8000_0000u32;
             let pci_mmio_limit = 0xFEBF_FFFFu32;
 
             aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
-                Name("_HID", EisaId("PNP0A08"));
-                Name("_CID", EisaId("PNP0A03"));
-                Name("_BBN", 0u32);
+                Device("PCI0") {
+                    Name("_HID", EisaId("PNP0A08"));
+                    Name("_CID", EisaId("PNP0A03"));
+                    Name("_BBN", 0u32);
 
                 // Named resource template for PCI0.  The PCI memory
                 // region (PM01) base address is patched in _CRS to
@@ -1196,6 +1200,7 @@ mod acpi_impl {
                     // The TOLUD value is baked in at firmware build time
                     // if needed, or Linux uses e820 + PCI BAR probing.
                     Return(#{p("MCRS")});
+                }
                 }
             });
 
