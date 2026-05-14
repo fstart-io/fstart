@@ -84,7 +84,27 @@
                 ck505_pre_raminit: true,
                 acpi_name: "MCHC",
             )),
-            services: ["MemoryController", "PciHost"],
+            services: ["MemoryController", "MemoryDetector", "PciHost"],
+        ),
+        (
+            name: "pci0",
+            driver: PciEcam((
+                ecam_base: 0xE0000000,
+                ecam_size: 0x10000000,
+                // Size 0 asks the ECAM allocator to derive the aperture from
+                // the runtime e820 map published by Pineview ramstage init.
+                mmio32_base: 0x80000000,
+                mmio32_size: 0x0,
+                mmio64_base: 0x0,
+                mmio64_size: 0x0,
+                // Leave 0x0000..0x0fff for legacy/LPC fixed decodes; use the
+                // remaining 60 KiB I/O port space for PCI BAR allocation.
+                pio_base: 0x1000,
+                pio_size: 0xF000,
+                bus_start: 0,
+                bus_end: 0xFF,
+            )),
+            services: ["PciRootBus"],
         ),
         (
             name: "southbridge",
@@ -291,6 +311,7 @@
             // CAR automatically.
             load_addr: 0xFFFF0000,
             stack_size: 0x2000,
+            heap_size: 0x100,
             runs_from: Rom,
             // Atom D410 (Bonnell core) has no PDPE1GB, so 2 MiB pages.
             // Page-table reservation = 6 × 4 KiB = 24 KiB in CAR.
@@ -301,11 +322,24 @@
             capabilities: [
                 ConsoleInit( device: "superio" ),
                 DriverInit,
+                // Re-initialize ramstage-local chipset access first: each stage
+                // has its own BSS, so ECAM's global base is zero again after
+                // the jump from bootblock. This does not publish TOM/TOLUD;
+                // it only rebinds PCIEXBAR/ECAM and chipset BAR access.
+                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+                // Now that ECAM is live in ramstage, rebuild the ramstage-local
+                // E820 state from DRAM controller registers programmed by
+                // bootblock raminit. Bootblock BSS globals do not carry over.
+                MemoryDetect( device: "northbridge" ),
+                PciInit( device: "pci0" ),
                 // Coreboot ramstage-equivalent chipset/device finalization:
                 // SATA/USB/HDA, PM/C-state setup, PCIe root-port tuning,
                 // then SPI/SMI/TCO/BIOS-interface lockdown.
                 LateDriverInit,
-                MpInit(cpu_model: "pineview", num_cpus: 4, smm: true),
+                // Temporarily skip SMM while debugging legacy IRQ/SERIRQ state.
+                // We clean ICH7 PM/GPE/SMI status in normal firmware code before
+                // Linux handoff instead of relying on the SMI handler.
+                MpInit(cpu_model: "pineview", num_cpus: 4, smm: false),
                 AcpiPrepare,
                 SmBiosPrepare,
                 BootMedia(MemoryMapped(
@@ -333,10 +367,12 @@
         required_digests: [Sha256],
     ),
     mode: Rigid,
+    full_flash_image: true,
 
     // ACPI: chipset-fixed topology only. CPU count + LAPIC IDs detected
     // at runtime via CPUID leaf 0x0B (future Phase 6 work).
     acpi: (
+        print_hex: false,
         platform: X86((
             lapic_base: 0xFEE00000,
             ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
@@ -344,7 +380,7 @@
                 // PIT remapped from IRQ 0 to GSI 2 (standard on ICH7).
                 ( bus: 0, source: 0, gsi: 2, flags: 0 ),
                 // SCI on IRQ 9, active-low level-triggered.
-                ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
+                ( bus: 0, source: 9, gsi: 9, flags: 0x000F ),
             ],
             hpet_base: 0xFED00000,
             legacy_devices: true,
@@ -402,6 +438,7 @@
         fdt: Platform,
         dtb_addr: None,
         bootargs: "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 ignore_loglevel loglevel=8",
+        print_x86_mtrrs: true,
         firmware: None,
     ),
 )
