@@ -69,6 +69,8 @@ struct RonBoardConfig {
     #[serde(default)]
     soc_image_format: SocImageFormat,
     #[serde(default)]
+    full_flash_image: bool,
+    #[serde(default)]
     acpi: Option<fstart_types::acpi::AcpiConfig>,
     #[serde(default)]
     smbios: Option<fstart_types::smbios::SmbiosConfig>,
@@ -187,6 +189,7 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
         mode: ron.mode,
         payload: ron.payload,
         soc_image_format: ron.soc_image_format,
+        full_flash_image: ron.full_flash_image,
         acpi: ron.acpi,
         smbios: ron.smbios,
         smm: ron.smm,

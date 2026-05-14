@@ -13,7 +13,7 @@ use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, I
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
-use fstart_types::{FdtSource, SocImageFormat, StageLayout};
+use fstart_types::{BoardConfig, FdtSource, SocImageFormat, StageLayout};
 use goblin::elf::{program_header, Elf};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -325,7 +325,128 @@ fn assemble_impl(
         if stage_count == 1 { "" } else { "s" }
     );
 
+    if config.full_flash_image {
+        create_full_flash_image(
+            &config,
+            &build_result.stages[0].path,
+            &image_bytes,
+            ffs_image.anchor_offset,
+            &image_path,
+        )?;
+    }
+
     Ok(image_path)
+}
+
+fn create_full_flash_image(
+    config: &BoardConfig,
+    bootblock_elf: &Path,
+    ffs_data: &[u8],
+    ffs_anchor_offset: usize,
+    ffs_path: &Path,
+) -> Result<PathBuf, String> {
+    let flash_base = config
+        .memory
+        .flash_base
+        .ok_or_else(|| "full_flash_image requires memory.flash_base".to_string())?;
+    let flash_size = config
+        .memory
+        .flash_size
+        .ok_or_else(|| "full_flash_image requires memory.flash_size".to_string())?
+        as usize;
+
+    if ffs_data.len() > flash_size {
+        return Err(format!(
+            "FFS image ({} bytes) exceeds flash size ({} bytes)",
+            ffs_data.len(),
+            flash_size
+        ));
+    }
+
+    let mut image = vec![0xffu8; flash_size];
+
+    // Keep the FFS blob at flash offset 0. Anchor offsets are defined from the
+    // firmware image base, and board BootMedia scans memory.flash_base..+size.
+    image[..ffs_data.len()].copy_from_slice(ffs_data);
+
+    let elf_data = fs::read(bootblock_elf).map_err(|e| {
+        format!(
+            "failed to read bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+    let elf = Elf::parse(&elf_data).map_err(|e| {
+        format!(
+            "failed to parse bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+
+    for phdr in &elf.program_headers {
+        if phdr.p_type != program_header::PT_LOAD || phdr.p_filesz == 0 {
+            continue;
+        }
+        let paddr = phdr.p_paddr;
+        if paddr < flash_base {
+            continue;
+        }
+        let off = (paddr - flash_base) as usize;
+        let size = phdr.p_filesz as usize;
+        if off + size > flash_size {
+            return Err(format!(
+                "bootblock segment paddr={paddr:#x} size={size:#x} outside flash image"
+            ));
+        }
+        let src = phdr.p_offset as usize;
+        image[off..off + size].copy_from_slice(&elf_data[src..src + size]);
+        eprintln!(
+            "[fstart] full flash: bootblock segment paddr={paddr:#x} -> offset={off:#x} size={size:#x}"
+        );
+    }
+
+    // Copy the patched anchor from the FFS blob into the XIP bootblock's own
+    // anchor section. The builder patches the anchor inside the FFS-stage file;
+    // the CPU reads the linked XIP copy at its physical flash address.
+    let anchor_size = fstart_types::ffs::ANCHOR_SIZE;
+    if ffs_anchor_offset + anchor_size > ffs_data.len() {
+        return Err(format!(
+            "FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"
+        ));
+    }
+    let placeholder = fstart_types::ffs::AnchorBlock::placeholder();
+    let placeholder_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &placeholder as *const fstart_types::ffs::AnchorBlock as *const u8,
+            anchor_size,
+        )
+    };
+    let xip_anchor = image
+        .windows(placeholder_bytes.len())
+        .position(|w| w == placeholder_bytes)
+        .ok_or_else(|| {
+            "bootblock XIP anchor placeholder not found in full flash image".to_string()
+        })?;
+    let anchor = ffs_data[ffs_anchor_offset..ffs_anchor_offset + anchor_size].to_vec();
+    image[xip_anchor..xip_anchor + anchor_size].copy_from_slice(&anchor);
+    eprintln!(
+        "[fstart] full flash: patched XIP anchor at offset {xip_anchor:#x} from FFS offset {ffs_anchor_offset:#x}"
+    );
+
+    let mib = flash_size / (1024 * 1024);
+    let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
+    fs::write(&out_path, &image).map_err(|e| {
+        format!(
+            "failed to write full flash image {}: {e}",
+            out_path.display()
+        )
+    })?;
+    eprintln!(
+        "[fstart] full flash image: {} ({} bytes, FFS {} bytes at offset 0)",
+        out_path.display(),
+        flash_size,
+        ffs_data.len()
+    );
+    Ok(out_path)
 }
 
 // ============================================================================
