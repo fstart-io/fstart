@@ -115,6 +115,81 @@ impl E820State {
     pub fn total_ram(&self) -> u64 {
         self.total_ram
     }
+
+    /// Carve a reserved range out of RAM entries in-place.
+    ///
+    /// RAM entries that overlap `[base, base + size)` are split into before /
+    /// reserved / after pieces. Non-RAM entries are preserved. Zero-sized
+    /// ranges are ignored. Intended for firmware-owned allocations (stage
+    /// image, heap tables) before OS handoff.
+    pub fn reserve_range(&mut self, base: u64, size: u64) {
+        if size == 0 {
+            return;
+        }
+        let Some(end) = base.checked_add(size) else {
+            return;
+        };
+
+        let mut out = [E820Entry::zeroed(); MAX_E820_ENTRIES];
+        let mut out_count = 0usize;
+        for entry in self.entries().iter().copied() {
+            let entry_end = entry.addr.saturating_add(entry.size);
+            if entry.kind != E820Kind::Ram as u32 || end <= entry.addr || base >= entry_end {
+                if out_count < MAX_E820_ENTRIES && entry.size != 0 {
+                    out[out_count] = entry;
+                    out_count += 1;
+                }
+                continue;
+            }
+
+            if entry.addr < base && out_count < MAX_E820_ENTRIES {
+                out[out_count] = E820Entry::new(entry.addr, base - entry.addr, E820Kind::Ram);
+                out_count += 1;
+            }
+
+            let res_base = entry.addr.max(base);
+            let res_end = entry_end.min(end);
+            if res_end > res_base && out_count < MAX_E820_ENTRIES {
+                out[out_count] = E820Entry::new(res_base, res_end - res_base, E820Kind::Reserved);
+                out_count += 1;
+            }
+
+            if entry_end > end && out_count < MAX_E820_ENTRIES {
+                out[out_count] = E820Entry::new(end, entry_end - end, E820Kind::Ram);
+                out_count += 1;
+            }
+        }
+
+        self.entries = out;
+        self.count = out_count;
+        self.coalesce_adjacent();
+    }
+
+    fn coalesce_adjacent(&mut self) {
+        if self.count < 2 {
+            return;
+        }
+
+        let mut out = [E820Entry::zeroed(); MAX_E820_ENTRIES];
+        let mut out_count = 0usize;
+        for entry in self.entries().iter().copied() {
+            if entry.size == 0 {
+                continue;
+            }
+            if out_count > 0 {
+                let prev = &mut out[out_count - 1];
+                if prev.kind == entry.kind && prev.addr.saturating_add(prev.size) == entry.addr {
+                    prev.size = prev.size.saturating_add(entry.size);
+                    continue;
+                }
+            }
+            out[out_count] = entry;
+            out_count += 1;
+        }
+
+        self.entries = out;
+        self.count = out_count;
+    }
 }
 
 /// Global e820 state instance.

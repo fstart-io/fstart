@@ -711,6 +711,96 @@ pub fn jump_to(addr: u64) -> ! {
     }
 }
 
+#[inline]
+fn read_cr0() -> u64 {
+    let value: u64;
+    // SAFETY: reading CR0 is side-effect free in firmware context.
+    unsafe { core::arch::asm!("mov {}, cr0", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+#[inline]
+fn read_cr3() -> u64 {
+    let value: u64;
+    // SAFETY: reading CR3 is side-effect free in firmware context.
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+#[inline]
+fn read_cr4() -> u64 {
+    let value: u64;
+    // SAFETY: reading CR4 is side-effect free in firmware context.
+    unsafe { core::arch::asm!("mov {}, cr4", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+fn log_bsp_x86_cache_state(label: &str) {
+    fstart_log::info!("BSP x86 cache/MTRR state: {}", label);
+    fstart_log::info!(
+        "  CR0={:#x} CR3={:#x} CR4={:#x}",
+        read_cr0(),
+        read_cr3(),
+        read_cr4()
+    );
+
+    // SAFETY: called on x86_64 BSP immediately before payload handoff.
+    unsafe {
+        let cap = fstart_arch::msr::rdmsr(mtrr::IA32_MTRR_CAP);
+        let def_type = fstart_arch::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
+        fstart_log::info!("  IA32_MTRR_CAP={:#x}", cap);
+        fstart_log::info!("  IA32_MTRR_DEF_TYPE={:#x}", def_type);
+
+        if mtrr::fixed_supported() {
+            let fixed_msrs = [
+                mtrr::IA32_MTRR_FIX64K_00000,
+                mtrr::IA32_MTRR_FIX16K_80000,
+                mtrr::IA32_MTRR_FIX16K_A0000,
+                mtrr::IA32_MTRR_FIX4K_C0000,
+                0x269,
+                0x26a,
+                0x26b,
+                0x26c,
+                0x26d,
+                0x26e,
+                0x26f,
+            ];
+            for msr in fixed_msrs {
+                fstart_log::info!(
+                    "  fixed MTRR {:#x}={:#x}",
+                    msr,
+                    fstart_arch::msr::rdmsr(msr)
+                );
+            }
+        } else {
+            fstart_log::info!("  fixed MTRRs unsupported");
+        }
+
+        let variable_count = mtrr::variable_count();
+        for index in 0..variable_count {
+            let (base, mask) = mtrr::read_variable(index);
+            if mtrr::is_valid_mask(mask) {
+                fstart_log::info!(
+                    "  var MTRR{}: base_msr={:#x} mask_msr={:#x} base={:#x} size={:#x} type={:#x}",
+                    index,
+                    base,
+                    mask,
+                    mtrr::decode_base(base),
+                    mtrr::decode_size(mask),
+                    mtrr::decode_type(base),
+                );
+            } else {
+                fstart_log::info!(
+                    "  var MTRR{}: base_msr={:#x} mask_msr={:#x} disabled",
+                    index,
+                    base,
+                    mask
+                );
+            }
+        }
+    }
+}
+
 /// Boot a Linux kernel using the x86 64-bit boot protocol.
 ///
 /// Uses the 64-bit entry point at `code32_start + 0x200` (available since
@@ -741,6 +831,7 @@ pub fn boot_linux(params: &fstart_services::boot::BootLinuxParams<'_>) -> ! {
         params.e820_entries,
         params.bootargs,
         params.zero_page_addr,
+        params.print_x86_mtrrs,
     )
 }
 
@@ -750,6 +841,7 @@ pub fn boot_linux_direct(
     e820_entries: &[E820Entry],
     bootargs: &str,
     zero_page_addr: u64,
+    print_x86_mtrrs: bool,
 ) -> ! {
     let zero_page = zero_page_addr;
     let cmd_line = zero_page + 0x1000; // command line follows zero page
@@ -943,11 +1035,21 @@ pub fn boot_linux_direct(
     fstart_log::info!("  kernel_alignment: {:#x}", kernel_alignment);
     fstart_log::info!("  xloadflags: {:#x}", xloadflags);
 
+    if print_x86_mtrrs {
+        log_bsp_x86_cache_state("before ROM WP clear");
+    }
+
     fstart_log::info!("mtrr: clearing temporary BSP ROM WP before payload handoff");
     // The temporary BSP-only ROM WP MTRR must not leak to Linux: APs do not
     // carry it, and OSes require coherent MTRR state across CPUs.
     // SAFETY: this is the BSP immediately before payload handoff.
     unsafe { mtrr::set_boot_rom_wp(false) };
+
+    if print_x86_mtrrs {
+        log_bsp_x86_cache_state("before Linux jump");
+    }
+
+    log_x86_irq_handoff_state();
 
     // Jump to the kernel's 64-bit entry.
     //
@@ -996,3 +1098,143 @@ pub fn boot_linux_direct(
         );
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+fn log_x86_irq_handoff_state() {
+    unsafe {
+        use fstart_pio::{inb, inl, outb, outl, outw};
+
+        unsafe fn pci_cfg_addr(dev: u8, func: u8, reg: u8) -> u32 {
+            0x8000_0000 | ((dev as u32) << 11) | ((func as u32) << 8) | ((reg as u32) & 0xfc)
+        }
+        unsafe fn pci_read8(dev: u8, func: u8, reg: u8) -> u8 {
+            outl(0xcf8, pci_cfg_addr(dev, func, reg));
+            ((inl(0xcfc) >> ((reg & 3) * 8)) & 0xff) as u8
+        }
+        unsafe fn pci_read16(dev: u8, func: u8, reg: u8) -> u16 {
+            outl(0xcf8, pci_cfg_addr(dev, func, reg));
+            ((inl(0xcfc) >> ((reg & 2) * 8)) & 0xffff) as u16
+        }
+        unsafe fn pci_read32(dev: u8, func: u8, reg: u8) -> u32 {
+            outl(0xcf8, pci_cfg_addr(dev, func, reg));
+            inl(0xcfc)
+        }
+        unsafe fn pm_read16(pm: u16, off: u16) -> u16 {
+            fstart_pio::inw(pm + off)
+        }
+        unsafe fn pm_read32(pm: u16, off: u16) -> u32 {
+            fstart_pio::inl(pm + off)
+        }
+        unsafe fn pm_write16(pm: u16, off: u16, val: u16) {
+            outw(pm + off, val)
+        }
+        unsafe fn pm_write32(pm: u16, off: u16, val: u32) {
+            outl(pm + off, val)
+        }
+        unsafe fn ioapic_read(reg: u32) -> u32 {
+            core::ptr::write_volatile(0xfec0_0000 as *mut u32, reg);
+            core::ptr::read_volatile(0xfec0_0010 as *const u32)
+        }
+
+        let lpc_id = pci_read32(0x1f, 0, 0x00);
+        let pm = (pci_read32(0x1f, 0, 0x40) & 0xff80) as u16;
+
+        // ICH7/NM10 handoff: keep ACPI SCI/GPE policy programmed by the
+        // southbridge driver.  An earlier debug path masked GPE0, PM1_EN, and
+        // PM1_CNT.SCI_EN here; Linux then saw ACPI tables that advertised SCI9
+        // while the chipset was left in a non-coreboot state.  Match the
+        // coreboot handoff more closely: disable SMI sources when no SMM handler
+        // is active, but only clear stale W1C status and leave SCI/GPE enables
+        // intact for the OS ACPI driver.
+        if lpc_id == 0x27bc_8086 && pm != 0 {
+            pm_write32(pm, 0x30, 0); // SMI_EN: no SMM handler active.
+            pm_write32(pm, 0x2c, 0); // GPE0_EN: no AML GPE methods yet.
+            pm_write16(pm, 0x02, (1 << 8) | (1 << 5)); // PM1_EN: power/global only.
+            pm_write16(pm, 0x00, pm_read16(pm, 0x00)); // PM1_STS W1C.
+            pm_write32(pm, 0x28, pm_read32(pm, 0x28)); // GPE0_STS W1C.
+            pm_write32(pm, 0x34, pm_read32(pm, 0x34)); // SMI_STS W1C.
+            pm_write32(pm, 0x04, (pm_read32(pm, 0x04) & !0x1c00) | 0x03); // ACPI mode.
+            let tco_sts = pm_read32(pm, 0x64);
+            pm_write32(pm, 0x64, tco_sts & !(1 << 18)); // TCO_STS except BOOT_STS.
+            if tco_sts & (1 << 18) != 0 {
+                pm_write32(pm, 0x64, 1 << 18);
+            }
+        }
+
+        fstart_log::info!(
+            "irq-handoff: LPC SERIRQ={:#04x} LPC_IO_DEC={:#06x} LPC_EN={:#06x}",
+            pci_read8(0x1f, 0, 0x64),
+            pci_read16(0x1f, 0, 0x80),
+            pci_read16(0x1f, 0, 0x82),
+        );
+        fstart_log::info!(
+            "irq-handoff: GEN1={:#010x} GEN2={:#010x} GEN3={:#010x} GEN4={:#010x}",
+            pci_read32(0x1f, 0, 0x84),
+            pci_read32(0x1f, 0, 0x88),
+            pci_read32(0x1f, 0, 0x8c),
+            pci_read32(0x1f, 0, 0x90),
+        );
+        fstart_log::info!(
+            "irq-handoff: PIC masks master={:#04x} slave={:#04x} ELCR={:#04x}/{:#04x}",
+            inb(0x21),
+            inb(0xa1),
+            inb(0x4d0),
+            inb(0x4d1),
+        );
+        fstart_log::info!(
+            "irq-handoff: PMBASE={:#06x} PM1_STS={:#06x} PM1_EN={:#06x} PM1_CNT={:#010x}",
+            pm,
+            pm_read16(pm, 0x00),
+            pm_read16(pm, 0x02),
+            pm_read32(pm, 0x04),
+        );
+        fstart_log::info!(
+            "irq-handoff: GPE0_STS={:#010x} GPE0_EN={:#010x} SMI_EN={:#010x} SMI_STS={:#010x}",
+            pm_read32(pm, 0x28),
+            pm_read32(pm, 0x2c),
+            pm_read32(pm, 0x30),
+            pm_read32(pm, 0x34),
+        );
+        fstart_log::info!(
+            "irq-handoff: TCO1_STS={:#06x} TCO2_STS={:#06x}",
+            pm_read16(pm, 0x64),
+            pm_read16(pm, 0x66),
+        );
+        fstart_log::info!(
+            "irq-handoff: IOAPIC redir1={:#010x}/{:#010x} redir4={:#010x}/{:#010x}",
+            ioapic_read(0x12),
+            ioapic_read(0x13),
+            ioapic_read(0x18),
+            ioapic_read(0x19),
+        );
+        fstart_log::info!(
+            "irq-handoff: IOAPIC redir9={:#010x}/{:#010x} redir12={:#010x}/{:#010x}",
+            ioapic_read(0x22),
+            ioapic_read(0x23),
+            ioapic_read(0x28),
+            ioapic_read(0x29),
+        );
+
+        let com1 = 0x3f8u16;
+        let lcr = inb(com1 + 3);
+        outb(com1 + 3, lcr & !0x80);
+        for _ in 0..16 {
+            if inb(com1 + 5) & 1 == 0 {
+                break;
+            }
+            let _ = inb(com1);
+        }
+        fstart_log::info!(
+            "irq-handoff: COM1 IER={:#04x} IIR={:#04x} LCR={:#04x} MCR={:#04x} LSR={:#04x} MSR={:#04x}",
+            inb(com1 + 1), inb(com1 + 2), inb(com1 + 3), inb(com1 + 4), inb(com1 + 5), inb(com1 + 6),
+        );
+        fstart_log::info!(
+            "irq-handoff: KBC status={:#04x} data={:#04x}",
+            inb(0x64),
+            inb(0x60)
+        );
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn log_x86_irq_handoff_state() {}

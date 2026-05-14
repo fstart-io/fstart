@@ -15,6 +15,13 @@ use serde::{Deserialize, Serialize};
 pub struct AcpiConfig {
     /// Platform-specific ACPI parameters (MADT, GTDT, FADT).
     pub platform: AcpiPlatform,
+    /// Print ACPICA/acpixtract-compatible hex dumps of generated tables.
+    #[serde(default = "default_print_hex")]
+    pub print_hex: bool,
+}
+
+fn default_print_hex() -> bool {
+    true
 }
 
 /// Platform-specific ACPI table parameters.
@@ -279,6 +286,23 @@ pub struct X86PlatformAcpi {
     /// and GPE0_BLK register addresses.
     #[serde(default = "default_pmbase")]
     pub pmbase: u16,
+    /// Optional SMI-based ACPI mode switch advertised in the FADT.
+    ///
+    /// Only set this when the board/stage installs an SMI handler that
+    /// implements these commands.
+    #[serde(default)]
+    pub acpi_smi: Option<AcpiSmiConfig>,
+}
+
+/// SMI command values for ACPI mode switching.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AcpiSmiConfig {
+    /// SMI command port, normally APM_CNT 0xb2 on PC chipsets.
+    pub smi_cmd: u32,
+    /// ACPI enable command value.
+    pub acpi_enable: u8,
+    /// ACPI disable command value.
+    pub acpi_disable: u8,
 }
 
 /// I/O APIC configuration for x86 MADT.

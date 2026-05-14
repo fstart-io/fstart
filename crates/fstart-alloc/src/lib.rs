@@ -28,7 +28,7 @@ extern "C" {
 
 /// Get the heap base address from the generated symbol.
 #[inline]
-fn heap_start() -> usize {
+pub fn heap_start() -> usize {
     // SAFETY: `_FSTART_HEAP` is a `#[no_mangle]` static defined in the
     // generated stage code; we only use its address.
     unsafe { &_FSTART_HEAP as *const u8 as usize }
@@ -36,7 +36,7 @@ fn heap_start() -> usize {
 
 /// Get the heap size from the generated symbol.
 #[inline]
-fn heap_size() -> usize {
+pub fn heap_size() -> usize {
     // SAFETY: `_FSTART_HEAP_SIZE` is a `#[no_mangle]` static defined in
     // the generated stage code.
     unsafe { _FSTART_HEAP_SIZE }

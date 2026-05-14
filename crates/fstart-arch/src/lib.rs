@@ -233,7 +233,7 @@ pub mod mtrr {
     const MTRR_DEF_TYPE_ENABLE: u64 = 1 << 11;
     const MTRR_PHYSMASK_VALID: u64 = 1 << 11;
     const PHYS_MASK_36: u64 = 0x0000_000f_ffff_f000;
-    static LOW_WB_TOP: AtomicU64 = AtomicU64::new(0x4000_0000);
+    static LOW_WB_TOP: AtomicU64 = AtomicU64::new(0);
 
     const fn repeat_type(ty: u64) -> u64 {
         ty | (ty << 8) | (ty << 16) | (ty << 24) | (ty << 32) | (ty << 40) | (ty << 48) | (ty << 56)
@@ -325,11 +325,53 @@ pub mod mtrr {
         LOW_WB_TOP.store(top, Ordering::Release);
     }
 
-    fn low_wb_size() -> u64 {
-        LOW_WB_TOP
-            .load(Ordering::Acquire)
-            .next_power_of_two()
-            .max(0x0010_0000)
+    fn low_wb_top() -> u64 {
+        LOW_WB_TOP.load(Ordering::Acquire) & PHYS_MASK_36
+    }
+
+    /// Disable normal caching on the current CPU by setting CR0.CD.
+    ///
+    /// # Safety
+    /// Caller must use the architectural MTRR update sequence and restore
+    /// caching before performance-sensitive code or OS handoff.
+    #[cfg(target_arch = "x86_64")]
+    pub unsafe fn disable_cache() {
+        unsafe {
+            core::arch::asm!(
+                "mov rax, cr0",
+                "or rax, 0x40000000",
+                "mov cr0, rax",
+                "wbinvd",
+                out("rax") _,
+                options(nostack),
+            );
+        }
+    }
+
+    /// Enable normal caching on the current CPU by clearing CR0.CD/NW.
+    ///
+    /// # Safety
+    /// Caller must ensure MTRRs/PAT describe valid cacheability state.
+    #[cfg(target_arch = "x86_64")]
+    pub unsafe fn enable_cache() {
+        unsafe {
+            core::arch::asm!(
+                "mov rax, cr0",
+                "and rax, 0xffffffff9fffffff",
+                "mov cr0, rax",
+                out("rax") _,
+                options(nostack),
+            );
+        }
+    }
+
+    fn largest_mtrr_chunk(base: u64, remaining: u64) -> u64 {
+        let max_by_remaining = 1u64 << (63 - remaining.leading_zeros());
+        if base == 0 {
+            return max_by_remaining;
+        }
+        let max_by_alignment = base & base.wrapping_neg();
+        max_by_remaining.min(max_by_alignment)
     }
 
     /// Program fixed MTRRs for conventional low memory.
@@ -353,26 +395,46 @@ pub mod mtrr {
         }
     }
 
-    /// Install fstart's Pineview ramstage cacheability layout on this CPU.
+    /// Install fstart's ramstage cacheability layout on this CPU.
     ///
-    /// MTRR0 covers the low 1 GiB address space as write-back so all usable
-    /// DRAM is cached.  MTRR1 is intentionally left for temporary BSP-only ROM
-    /// write-protect acceleration while reading SPI flash.
+    /// The write-back range is derived from the chipset-published low DRAM
+    /// top, then split into naturally aligned power-of-two MTRR chunks using
+    /// the same approach as coreboot's early MTRR helper. No artificial 1 GiB
+    /// ceiling or next-power-of-two expansion is applied.
     ///
     /// # Safety
     /// Must be called on every active CPU during MP setup.
     pub unsafe fn setup_low_1g_wb() {
         unsafe {
+            disable_cache();
             let fixed = if fixed_supported() {
                 MTRR_DEF_TYPE_FIXED_ENABLE
             } else {
                 0
             };
             let def_type = rdmsr(IA32_MTRR_DEF_TYPE) | MTRR_DEF_TYPE_ENABLE | fixed;
+            wrmsr(IA32_MTRR_DEF_TYPE, def_type & !MTRR_DEF_TYPE_ENABLE);
             setup_fixed_low_memory();
-            set_variable(0, 0, low_wb_size(), MTRR_TYPE_WRITE_BACK);
-            clear_variable(1);
+
+            let count = variable_count();
+            for index in 0..count {
+                clear_variable(index);
+            }
+
+            let mut base = 0u64;
+            let top = low_wb_top();
+            let mut index = 0u32;
+            // Keep the last variable MTRR free for temporary BSP-only ROM WP.
+            let usable_count = count.saturating_sub(1);
+            while base < top && index < usable_count {
+                let remaining = top - base;
+                let size = largest_mtrr_chunk(base, remaining).max(0x1000);
+                set_variable(index, base, size, MTRR_TYPE_WRITE_BACK);
+                base += size;
+                index += 1;
+            }
             wrmsr(IA32_MTRR_DEF_TYPE, def_type);
+            enable_cache();
         }
     }
 
@@ -383,10 +445,11 @@ pub mod mtrr {
     /// handoff so AP MTRRs remain coherent with the BSP.
     pub unsafe fn set_boot_rom_wp(enable: bool) {
         unsafe {
+            let index = variable_count().saturating_sub(1);
             if enable {
-                set_variable(1, 0xff00_0000, 0x0100_0000, MTRR_TYPE_WRITE_PROTECT);
+                set_variable(index, 0xff00_0000, 0x0100_0000, MTRR_TYPE_WRITE_PROTECT);
             } else {
-                clear_variable(1);
+                clear_variable(index);
             }
         }
     }

@@ -2105,11 +2105,12 @@ fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
     }
 
     let platform_block = cap_acpi::generate_platform_acpi(&acpi_cfg.platform);
+    let print_hex = acpi_cfg.print_hex;
 
     quote! {
         #platform_block
         #config_lets
-        self._acpi_rsdp_addr = fstart_capabilities::acpi::prepare(&platform_acpi, |dsdt_aml, extra_tables| {
+        self._acpi_rsdp_addr = fstart_capabilities::acpi::prepare_with_options(&platform_acpi, #print_hex, |dsdt_aml, extra_tables| {
             #device_blocks
             #acpi_only_blocks
         });
@@ -2705,6 +2706,7 @@ fn platform_boot_protocol_stmts(
     let dtb_addr = hex_addr(payload.dtb_addr.unwrap_or(0));
     let fw_addr = hex_addr(payload.firmware.as_ref().map(|f| f.load_addr).unwrap_or(0));
     let bootargs_str = payload.bootargs.as_deref().unwrap_or("");
+    let print_x86_mtrrs = payload.print_x86_mtrrs;
 
     // Platform-specific preamble: RISC-V needs hart_id, x86 needs
     // e820.  All other fields come from the board adapter's `self`.
@@ -2714,6 +2716,20 @@ fn platform_boot_protocol_stmts(
     };
     let e820_setup = match platform {
         Platform::X86_64 => quote! {
+            unsafe extern "C" {
+                static _text_start: u8;
+                static _writable_end: u8;
+            }
+            unsafe {
+                let _stage_start = &_text_start as *const u8 as u64;
+                let _stage_end = &_writable_end as *const u8 as u64;
+                // The generated heap backing store is a static in this range,
+                // so reserving the linked stage image also reserves all bump
+                // allocator contents, including ACPI/SMBIOS tables leaked for
+                // OS consumption.
+                fstart_services::memory_detect::e820_state_mut()
+                    .reserve_range(_stage_start, _stage_end.saturating_sub(_stage_start));
+            }
             let _e820_state = unsafe { fstart_services::memory_detect::e820_state() };
         },
         _ => quote! {},
@@ -2744,6 +2760,7 @@ fn platform_boot_protocol_stmts(
             e820_entries: #e820_expr,
             zero_page_addr: #zero_page_addr,
             hart_id: #hart_id_expr,
+            print_x86_mtrrs: #print_x86_mtrrs,
         };
         fstart_platform::boot_linux(&_boot_params);
     }
@@ -3363,6 +3380,9 @@ fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
             continue;
         }
         let dev = &ctx.devices[idx];
+        if dev.services.iter().any(|s| s.as_str() == "PciRootBus") {
+            continue;
+        }
         let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
         let is_framebuffer = dev.services.iter().any(|s| s.as_str() == "Framebuffer");
         // Framebuffer failures are non-fatal (UEFI path still uses
