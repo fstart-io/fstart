@@ -60,12 +60,17 @@ pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 
+/// Internal marker emitted by [`RootScope`] and consumed by the platform DSDT
+/// assembler before final AML is written.
+pub(crate) const ROOT_SCOPE_MARKER: &[u8; 8] = b"FSTROOT\0";
+
 /// AML root-scope container.
 ///
 /// AML `ScopeOp` requires a non-empty name path after a root prefix; emitting
 /// `Scope (\\)` produces corrupt AML that ACPICA repairs as bogus names. For
-/// DSL `Scope("\\")`, this container therefore emits its children directly at
-/// the current DSDT/root level instead of wrapping them in a `ScopeOp`.
+/// DSL `Scope("\\")`, this container emits an internal marker plus its child
+/// byte length. The platform DSDT assembler strips that marker and places the
+/// children at the real DSDT root, outside the generic `\\_SB` wrapper.
 pub struct RootScope<'a> {
     children: Vec<&'a dyn Aml>,
 }
@@ -79,9 +84,14 @@ impl<'a> RootScope<'a> {
 
 impl Aml for RootScope<'_> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        let mut bytes = Vec::new();
         for child in &self.children {
-            child.to_aml_bytes(sink);
+            child.to_aml_bytes(&mut bytes);
         }
+
+        sink.vec(ROOT_SCOPE_MARKER);
+        sink.vec(&(bytes.len() as u32).to_le_bytes());
+        sink.vec(&bytes);
     }
 }
 

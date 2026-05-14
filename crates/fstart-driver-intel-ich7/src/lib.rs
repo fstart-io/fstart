@@ -2359,9 +2359,11 @@ mod acpi_impl {
             // informational — but Linux expects _PIC to exist.
             // Coreboot: dsdt_top.asl
             aml.extend_from_slice(&acpi_dsl! {
-                Name("PICM", 0u32);
-                Method("_PIC", 1, NotSerialized) {
-                    Store(#{fstart_acpi::aml::Arg(0)}, #{fstart_acpi::aml::Path::new("PICM")});
+                Scope("\\") {
+                    Name("PICM", 0u32);
+                    Method("_PIC", 1, NotSerialized) {
+                        Store(#{fstart_acpi::aml::Arg(0)}, #{fstart_acpi::aml::Path::new("PICM")});
+                    }
                 }
             });
 
@@ -2370,10 +2372,12 @@ mod acpi_impl {
             // SLP_TYP values match ICH7 pmio::PM1_CNT encoding.
             // Coreboot: sleepstates.asl
             aml.extend_from_slice(&acpi_dsl! {
-                Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
-                Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
-                Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
-                Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
+                Scope("\\") {
+                    Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
+                    Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
+                    Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
+                    Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
+                }
             });
 
             aml
