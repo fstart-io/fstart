@@ -333,6 +333,13 @@ pub enum ResourceDesc {
         exclusive: bool,
         irq: DslValue,
     },
+    /// Small legacy ISA IRQ descriptor: `IRQ(Edge, ActiveHigh, Exclusive, irq);`.
+    Irq {
+        edge: bool,
+        active_high: bool,
+        exclusive: bool,
+        irq: DslValue,
+    },
     /// `IO(base, end, align, len);` -- legacy I/O port descriptor.
     IoPort {
         base: DslValue,
@@ -1348,6 +1355,7 @@ impl Parser {
         match tt {
             TokenTree::Ident(i) if *i == "Memory32Fixed" => self.parse_memory_32_fixed(),
             TokenTree::Ident(i) if *i == "Interrupt" => self.parse_interrupt(),
+            TokenTree::Ident(i) if *i == "IRQ" => self.parse_irq(),
             TokenTree::Ident(i) if *i == "IO" => self.parse_io_port(),
             TokenTree::Ident(i) if *i == "DWordIO" => self.parse_dword_io(),
             TokenTree::Ident(i) if *i == "WordBusNumber" => self.parse_word_bus_number(),
@@ -1460,6 +1468,62 @@ impl Parser {
         Ok(ResourceDesc::Interrupt {
             consumer,
             level,
+            active_high,
+            exclusive,
+            irq,
+        })
+    }
+
+    fn parse_irq(&mut self) -> Result<ResourceDesc> {
+        self.expect_ident("IRQ")?;
+        let (args, args_span) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+
+        let lvl_tt = p
+            .advance()
+            .ok_or_else(|| Error::new(args_span, "expected Level or Edge"))?;
+        let edge = match &lvl_tt {
+            TokenTree::Ident(i) if *i == "Edge" => true,
+            TokenTree::Ident(i) if *i == "Level" => false,
+            _ => return Err(Error::new(lvl_tt.span(), "expected `Level` or `Edge`")),
+        };
+        p.expect_punct(',')?;
+
+        let pol_tt = p
+            .advance()
+            .ok_or_else(|| Error::new(args_span, "expected ActiveHigh or ActiveLow"))?;
+        let active_high = match &pol_tt {
+            TokenTree::Ident(i) if *i == "ActiveHigh" => true,
+            TokenTree::Ident(i) if *i == "ActiveLow" => false,
+            _ => {
+                return Err(Error::new(
+                    pol_tt.span(),
+                    "expected `ActiveHigh` or `ActiveLow`",
+                ))
+            }
+        };
+        p.expect_punct(',')?;
+
+        let share_tt = p
+            .advance()
+            .ok_or_else(|| Error::new(args_span, "expected Exclusive or Shared"))?;
+        let exclusive = match &share_tt {
+            TokenTree::Ident(i) if *i == "Exclusive" => true,
+            TokenTree::Ident(i) if *i == "Shared" => false,
+            _ => {
+                return Err(Error::new(
+                    share_tt.span(),
+                    "expected `Exclusive` or `Shared`",
+                ))
+            }
+        };
+        p.expect_punct(',')?;
+
+        let irq = p.parse_value();
+        self.expect_punct(';')?;
+
+        Ok(ResourceDesc::Irq {
+            edge,
             active_high,
             exclusive,
             irq,

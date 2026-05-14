@@ -191,13 +191,22 @@ fn emit_scope(
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
         .collect();
 
-    let path_expr = emit_name_or_interp(path);
-    bindings.extend(quote! {
-        let #var = fstart_acpi::aml::Scope::new(
-            fstart_acpi::aml::Path::new(#path_expr),
-            alloc::vec![#(#refs),*],
-        );
-    });
+    match path {
+        NameOrInterp::Literal(s) if s == "\\" => {
+            bindings.extend(quote! {
+                let #var = fstart_acpi::RootScope::new(alloc::vec![#(#refs),*]);
+            });
+        }
+        _ => {
+            let path_expr = emit_name_or_interp(path);
+            bindings.extend(quote! {
+                let #var = fstart_acpi::aml::Scope::new(
+                    fstart_acpi::aml::Path::new(#path_expr),
+                    alloc::vec![#(#refs),*],
+                );
+            });
+        }
+    }
 
     (bindings, var)
 }
@@ -605,6 +614,27 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
                     #active_high,
                     #shared,
                     #irq_var as u32,
+                );
+            });
+            (bindings, var)
+        }
+        ResourceDesc::Irq {
+            edge,
+            active_high,
+            exclusive,
+            irq,
+        } => {
+            let mut bindings = TokenStream::new();
+            let (irq_binding, irq_var) = emit_value(irq, gen);
+            bindings.extend(irq_binding);
+
+            let var = gen.next("isa_irq");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::IsaIrq::new(
+                    #edge,
+                    #active_high,
+                    #exclusive,
+                    #irq_var as u8,
                 );
             });
             (bindings, var)

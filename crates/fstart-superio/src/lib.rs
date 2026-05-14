@@ -356,6 +356,156 @@ impl<C: SuperIoChip> SuperIo<C> {
         self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_ext & 0xFF) as u8);
         self.write_reg(SIO_REG_IRQ, cfg.irq);
         self.write_reg(SIO_REG_ENABLE, 0x01);
+        self.init_kbc_coreboot(cfg.io_base, cfg.io_ext, self.config.mouse.is_some());
+    }
+
+    fn init_kbc_coreboot(&self, data_port: u16, command_port: u16, mut enable_aux: bool) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            // Port the essential parts of coreboot pc_keyboard_init(): drain
+            // stale bytes, self-test the 8042, then enable IRQs only after the
+            // keyboard (and optional AUX mouse) have been reset/programmed.
+            // D41S exposes a real IT8721F KBCM LDN, so unlike the previous
+            // NO_AUX_DEVICE-only path we must not leave the AUX clock disabled
+            // while ACPI advertises a PNP0F13 mouse on IRQ12.
+            if !Self::kbc_flush(data_port, command_port) {
+                return;
+            }
+            if !Self::kbc_wait_input_empty(command_port) {
+                return;
+            }
+            fstart_pio::outb(command_port, 0xAA); // controller self-test
+            if !Self::kbc_wait_output_full(command_port) || fstart_pio::inb(data_port) != 0x55 {
+                return;
+            }
+            let _ = Self::kbc_flush(data_port, command_port);
+
+            if !Self::kbc_wait_input_empty(command_port) {
+                return;
+            }
+            fstart_pio::outb(command_port, 0xAB); // keyboard interface test
+            if !Self::kbc_wait_output_full(command_port) {
+                return;
+            }
+            let _ = fstart_pio::inb(data_port);
+
+            // Enable keyboard interface and keep AUX disabled until the mouse
+            // path is explicitly tested.  IRQs stay off while cleaning/programming.
+            if !Self::kbc_write_command_byte(data_port, command_port, 0x20) {
+                return;
+            }
+            let _ = Self::kbc_flush(data_port, command_port);
+
+            if enable_aux {
+                if !Self::kbc_wait_input_empty(command_port) {
+                    return;
+                }
+                fstart_pio::outb(command_port, 0xA8); // enable AUX interface
+                if !Self::kbc_wait_input_empty(command_port) {
+                    return;
+                }
+                fstart_pio::outb(command_port, 0xA9); // AUX interface test
+                if !Self::kbc_wait_output_full(command_port) || fstart_pio::inb(data_port) != 0x00 {
+                    enable_aux = false;
+                    let _ = Self::kbc_write_command_byte(data_port, command_port, 0x20);
+                } else {
+                    let _ = Self::kbc_flush(data_port, command_port);
+                }
+            }
+
+            // Reset keyboard and require the same ACK/self-test sequence as
+            // coreboot. If no keyboard is present, leave the 8042 command byte
+            // at 0x20 (keyboard interface enabled, IRQ1 disabled, AUX disabled)
+            // instead of unconditionally enabling IRQ1 on a floating line.
+            if Self::kbc_send_keyboard(data_port, command_port, 0xFF) != Some(0xFA) {
+                let _ = Self::kbc_flush(data_port, command_port);
+                return;
+            }
+            if !Self::kbc_wait_output_full(command_port) || fstart_pio::inb(data_port) != 0xAA {
+                let _ = Self::kbc_flush(data_port, command_port);
+                return;
+            }
+            if Self::kbc_send_keyboard(data_port, command_port, 0xF5) != Some(0xFA) {
+                return;
+            }
+            if Self::kbc_send_keyboard(data_port, command_port, 0xF0) != Some(0xFA) {
+                return;
+            }
+            if Self::kbc_send_keyboard(data_port, command_port, 0x02) != Some(0xFA) {
+                return;
+            }
+
+            // Leave the devices quiescent for the OS. Coreboot enables IRQ1
+            // here for many boards, but D41S currently reaches Linux with a
+            // pending/stuck i8042 SERIRQ when firmware has enabled KBC IRQs.
+            // Advertise the PNP devices through ACPI and leave IRQ generation
+            // disabled; Linux's i8042 driver will run its own controller
+            // setup, enable scanning, and unmask IRQ1/IRQ12 after its handlers
+            // are installed.
+            let _ = Self::kbc_flush(data_port, command_port);
+            let command_byte = if enable_aux { 0x44 } else { 0x64 };
+            let _ = Self::kbc_write_command_byte(data_port, command_port, command_byte);
+            let _ = Self::kbc_flush(data_port, command_port);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_wait_input_empty(status_port: u16) -> bool {
+        for _ in 0..100_000 {
+            if fstart_pio::inb(status_port) & 0x02 == 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_wait_output_full(status_port: u16) -> bool {
+        for _ in 0..100_000 {
+            if fstart_pio::inb(status_port) & 0x01 != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_flush(data_port: u16, status_port: u16) -> bool {
+        for _ in 0..1024 {
+            let status = fstart_pio::inb(status_port);
+            if status & 0x03 == 0 {
+                return true;
+            }
+            if status & 0x01 != 0 {
+                let _ = fstart_pio::inb(data_port);
+            }
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_write_command_byte(data_port: u16, command_port: u16, value: u8) -> bool {
+        if !Self::kbc_wait_input_empty(command_port) {
+            return false;
+        }
+        fstart_pio::outb(command_port, 0x60);
+        if !Self::kbc_wait_input_empty(command_port) {
+            return false;
+        }
+        fstart_pio::outb(data_port, value);
+        Self::kbc_wait_input_empty(command_port)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_send_keyboard(data_port: u16, status_port: u16, command: u8) -> Option<u8> {
+        if !Self::kbc_wait_input_empty(status_port) {
+            return None;
+        }
+        fstart_pio::outb(data_port, command);
+        if !Self::kbc_wait_output_full(status_port) {
+            return None;
+        }
+        Some(fstart_pio::inb(data_port))
     }
 
     /// Program the mouse LDN (IRQ only).
@@ -576,8 +726,10 @@ fn uart_init(io_base: u16, baud_rate: u32) {
         fstart_pio::outb(io_base + UART_IER, 0);
         // Enable FIFO and clear both FIFOs.
         fstart_pio::outb(io_base + UART_FCR, 0x07);
-        // Assert DTR + RTS.
-        fstart_pio::outb(io_base + UART_MCR, 0x03);
+        // Assert DTR + RTS + OUT2. OUT2 gates the 16550 interrupt output on
+        // PC-compatible SuperIO UARTs; leaving it low can produce confused
+        // legacy IRQ behaviour once Linux switches from earlycon to 8250.
+        fstart_pio::outb(io_base + UART_MCR, 0x0b);
         // Set baud via divisor latch, with 8N1 selected.
         fstart_pio::outb(io_base + UART_LCR, LCR_DLAB | 0x03);
         fstart_pio::outb(io_base + UART_THR, divisor as u8);
@@ -637,7 +789,7 @@ mod acpi_impl {
     const HID_KBC: &str = "PNP0303"; // IBM enhanced keyboard (101/102-key)
     const HID_MOUSE: &str = "PNP0F13"; // PS/2 port for PS/2-style mice
     const HID_LPT: &str = "PNP0400"; // Standard LPT parallel port
-    const HID_EC: &str = "PNP0C09"; // Embedded controller
+    const HID_EC: &str = "PNP0C02"; // SuperIO environment-controller resources
 
     /// Emit an IO resource descriptor for the given port/size, plus an
     /// optional IRQ descriptor.
@@ -654,7 +806,7 @@ mod acpi_impl {
             HID_KBC => ldn_device_pnp0303(name, uid, io_base, io_size, irq),
             HID_MOUSE => ldn_device_pnp0f13(name, uid, io_base, io_size, irq),
             HID_LPT => ldn_device_pnp0400(name, uid, io_base, io_size, irq),
-            HID_EC => ldn_device_pnp0c09(name, uid, io_base, io_size, irq),
+            HID_EC => ldn_device_pnp0c02(name, uid, io_base, io_size, irq),
             _ => Vec::new(),
         }
     }
@@ -787,7 +939,7 @@ mod acpi_impl {
         }
     }
 
-    fn ldn_device_pnp0c09(
+    fn ldn_device_pnp0c02(
         name: &str,
         uid: u32,
         io_base: u16,
@@ -798,7 +950,7 @@ mod acpi_impl {
             let gsiv = irq as u32;
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
-                    Name("_HID", EisaId("PNP0C09"));
+                    Name("_HID", EisaId("PNP0C02"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
                         IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
@@ -809,7 +961,7 @@ mod acpi_impl {
         } else {
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
-                    Name("_HID", EisaId("PNP0C09"));
+                    Name("_HID", EisaId("PNP0C02"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
                         IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
@@ -823,49 +975,48 @@ mod acpi_impl {
     fn kbc_device(cfg: &KbcConfig) -> Vec<u8> {
         let base1 = cfg.io_base;
         let base2 = cfg.io_ext;
-        let gsiv = cfg.irq as u32;
+        let irq = cfg.irq;
         fstart_acpi_macros::acpi_dsl! {
-            Device("KBD0") {
+            Device("PS2K") {
                 Name("_HID", EisaId("PNP0303"));
+                Name("_CID", EisaId("PNP030B"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
                     IO(#{base1}, #{base1}, 0x01u8, 0x01u8);
                     IO(#{base2}, #{base2}, 0x01u8, 0x01u8);
-                    Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                    IRQ(Edge, ActiveHigh, Exclusive, #{irq});
                 });
+                Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
             }
         }
     }
 
     /// Mouse shares KBC ports but has its own IRQ.
-    fn mouse_device(kbc: &KbcConfig, mouse: &MouseConfig) -> Vec<u8> {
-        let base1 = kbc.io_base;
-        let base2 = kbc.io_ext;
-        let gsiv = mouse.irq as u32;
+    fn mouse_device(_kbc: &KbcConfig, mouse: &MouseConfig) -> Vec<u8> {
+        let irq = mouse.irq;
         fstart_acpi_macros::acpi_dsl! {
-            Device("MOU0") {
+            Device("PS2M") {
                 Name("_HID", EisaId("PNP0F13"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(#{base1}, #{base1}, 0x01u8, 0x01u8);
-                    IO(#{base2}, #{base2}, 0x01u8, 0x01u8);
-                    Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                    IRQ(Edge, ActiveHigh, Exclusive, #{irq});
                 });
+                Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
             }
         }
     }
 
-    /// EC needs two I/O ranges.
+    /// Environment controller resources.
     fn ec_device(cfg: &EcConfig) -> Vec<u8> {
         let base1 = cfg.io_base;
         let base2 = cfg.io_ext;
         fstart_acpi_macros::acpi_dsl! {
             Device("EC00") {
-                Name("_HID", EisaId("PNP0C09"));
+                Name("_HID", EisaId("PNP0C02"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
                     IO(#{base1}, #{base1}, 0x01u8, 0x08u8);
-                    IO(#{base2}, #{base2}, 0x01u8, 0x08u8);
+                    IO(#{base2}, #{base2}, 0x01u8, 0x04u8);
                 });
             }
         }
