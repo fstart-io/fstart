@@ -9,6 +9,12 @@ clap = { workspace = true }
 goblin = { workspace = true }
 fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
+fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-driver-intel-pineview = { workspace = true, features = ["acpi"] }
+fstart-driver-intel-ich7 = { workspace = true, features = ["acpi"] }
+fstart-driver-ite8721f = { workspace = true, features = ["acpi"] }
+fstart-services = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-fit = { workspace = true, features = ["std"] }
 fstart-crypto = { workspace = true, features = ["all"] }
