@@ -762,7 +762,9 @@ pub fn stage_load_stub(next_stage: &str) {
 ///
 /// Manifests typically serialize to 1-4 KB with postcard. 8 KB provides
 /// generous headroom for boards with many files and regions.
-#[cfg(feature = "ffs")]
+#[cfg(all(feature = "ffs", target_arch = "x86_64"))]
+const MAX_MANIFEST_SIZE: usize = 4096;
+#[cfg(all(feature = "ffs", not(target_arch = "x86_64")))]
 const MAX_MANIFEST_SIZE: usize = 8192;
 
 /// Wrapper that implements `Sync` for `UnsafeCell`, allowing it to live

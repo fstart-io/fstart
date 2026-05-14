@@ -18,6 +18,8 @@ pub mod arm;
 
 #[cfg(feature = "x86")]
 pub mod x86;
+#[cfg(feature = "x86")]
+pub use x86::AcpiSmiConfig;
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -86,6 +88,12 @@ pub struct FadtConfig {
     pub sci_int: u16,
     /// IAPC boot arch flags (8042, legacy devices, etc.).
     pub iapc_boot_arch: u16,
+    /// Optional SMI command port used by OSPM to switch ACPI mode.
+    pub smi_cmd: u32,
+    /// Value written to `smi_cmd` to enable ACPI mode.
+    pub acpi_enable: u8,
+    /// Value written to `smi_cmd` to disable ACPI mode.
+    pub acpi_disable: u8,
 }
 
 impl Default for FadtConfig {
@@ -101,6 +109,9 @@ impl Default for FadtConfig {
             gpe0_blk: 0,
             sci_int: 0,
             iapc_boot_arch: 0,
+            smi_cmd: 0,
+            acpi_enable: 0,
+            acpi_disable: 0,
         }
     }
 }
@@ -331,8 +342,12 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // PM profile.
     b = b.preferred_pm_profile(config.pm_profile);
 
-    // SCI interrupt.
+    // SCI interrupt and optional ACPI mode switching.  Only platforms with
+    // a real SMI handler should advertise SMI_CMD/ACPI_ENABLE here.
     b.sci_int = (config.sci_int).into();
+    b.smi_cmd = config.smi_cmd.into();
+    b.acpi_enable = config.acpi_enable;
+    b.acpi_disable = config.acpi_disable;
 
     // Legacy PM block addresses (32-bit I/O port).
     b.pm1a_evt_blk = config.pm1a_evt_blk.into();

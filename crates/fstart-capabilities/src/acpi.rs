@@ -32,9 +32,13 @@ const RSDP_LEN: usize = 36;
 const XSDT_OFF: usize = 48;
 const FADT_X_DSDT_OFF: usize = 140;
 #[cfg(target_arch = "x86_64")]
-const EBDA_SEG_PTR: *mut u16 = 0x040e as *mut u16;
+const BDA_EBDA_SEG_PTR: *mut u16 = 0x040e as *mut u16;
 #[cfg(target_arch = "x86_64")]
-const EBDA_BASE: usize = 0x0008_0000;
+const BDA_CONVENTIONAL_MEM_KB: *mut u16 = 0x0413 as *mut u16;
+#[cfg(target_arch = "x86_64")]
+const EBDA_BASE: usize = 0x0009_f000;
+#[cfg(target_arch = "x86_64")]
+const EBDA_SIZE: usize = 0x1000;
 #[cfg(target_arch = "x86_64")]
 const EBDA_RSDP_OFFSET: usize = 0;
 
@@ -96,12 +100,16 @@ fn install_rsdp_in_ebda(rsdp: &[u8]) {
     if rsdp.len() < RSDP_LEN {
         return;
     }
-    // SAFETY: 0x40e is the BIOS Data Area EBDA segment pointer on x86 PC
-    // compatibles. 0x80000 is reserved conventional memory used here as the
-    // EBDA base; copying 36 bytes there keeps RSDP discoverable by legacy OS
-    // scanners in addition to the Linux boot_params pointer.
+    // SAFETY: 0x40e is the BIOS Data Area EBDA segment pointer and
+    // 0x413 is the conventional-memory size in KiB on x86 PC compatibles.
+    // Put EBDA at 0x9f000, matching the low-memory e820 reservation used by
+    // Pineview, then copy a low RSDP there like coreboot's low-table RSDP
+    // copy. This keeps ACPI discoverable for legacy scanners in addition to
+    // the Linux boot_params pointer to the high ACPI table set.
     unsafe {
-        core::ptr::write_volatile(EBDA_SEG_PTR, (EBDA_BASE >> 4) as u16);
+        core::ptr::write_volatile(BDA_EBDA_SEG_PTR, (EBDA_BASE >> 4) as u16);
+        core::ptr::write_volatile(BDA_CONVENTIONAL_MEM_KB, (EBDA_BASE / 1024) as u16);
+        core::ptr::write_bytes(EBDA_BASE as *mut u8, 0, EBDA_SIZE);
         core::ptr::copy_nonoverlapping(
             rsdp.as_ptr(),
             (EBDA_BASE + EBDA_RSDP_OFFSET) as *mut u8,
@@ -109,7 +117,8 @@ fn install_rsdp_in_ebda(rsdp: &[u8]) {
         );
     }
     fstart_log::info!(
-        "ACPI: RSDP copied to EBDA at {}",
+        "ACPI: EBDA at {}, RSDP copied to {}",
+        fstart_log::Hex(EBDA_BASE as u64),
         fstart_log::Hex((EBDA_BASE + EBDA_RSDP_OFFSET) as u64)
     );
 }
@@ -183,6 +192,14 @@ pub fn prepare(
     platform: &fstart_acpi::platform::PlatformConfig,
     collect_devices: impl FnOnce(&mut Vec<u8>, &mut Vec<Vec<u8>>),
 ) -> u64 {
+    prepare_with_options(platform, true, collect_devices)
+}
+
+pub fn prepare_with_options(
+    platform: &fstart_acpi::platform::PlatformConfig,
+    print_hex: bool,
+    collect_devices: impl FnOnce(&mut Vec<u8>, &mut Vec<Vec<u8>>),
+) -> u64 {
     fstart_log::info!("capability: AcpiPrepare");
 
     let mut dsdt_aml: Vec<u8> = Vec::new();
@@ -231,7 +248,9 @@ pub fn prepare(
     // valid and the buffer is leaked (alive forever).
     let acpi_data = unsafe { core::slice::from_raw_parts(acpi_addr as *const u8, acpi_len) };
     install_rsdp_in_ebda(acpi_data);
-    print_acpi_tables_acpixtract(acpi_data);
+    if print_hex {
+        print_acpi_tables_acpixtract(acpi_data);
+    }
 
     acpi_addr
 }

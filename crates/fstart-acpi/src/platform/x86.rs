@@ -51,6 +51,22 @@ pub struct X86Config {
     /// Used to derive PM1a_EVT_BLK, PM1a_CNT_BLK, PM_TMR_BLK,
     /// and GPE0_BLK addresses in the FADT.
     pub pmbase: u16,
+    /// Optional SMI command port and ACPI enable/disable values.
+    ///
+    /// Leave as `None` unless the platform has installed an SMI handler
+    /// that handles those commands.
+    pub acpi_smi: Option<AcpiSmiConfig>,
+}
+
+/// SMI-based ACPI mode switch advertised in the FADT.
+#[derive(Debug, Clone, Copy)]
+pub struct AcpiSmiConfig {
+    /// SMI command port, normally APM_CNT 0xb2 on PC chipsets.
+    pub smi_cmd: u32,
+    /// ACPI enable command value.
+    pub acpi_enable: u8,
+    /// ACPI disable command value.
+    pub acpi_disable: u8,
 }
 
 /// I/O APIC configuration.
@@ -119,6 +135,11 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         iapc |= 0x0003; // FADT_8042 | FADT_LEGACY_DEVICES
     }
 
+    let (smi_cmd, acpi_enable, acpi_disable) = config
+        .acpi_smi
+        .map(|smi| (smi.smi_cmd, smi.acpi_enable, smi.acpi_disable))
+        .unwrap_or((0, 0, 0));
+
     let fadt_config = FadtConfig {
         hw_reduced: false,
         low_power_s0: false,
@@ -130,6 +151,9 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         gpe0_blk: pmbase + 0x28,
         sci_int: config.sci_irq as u16,
         iapc_boot_arch: iapc,
+        smi_cmd,
+        acpi_enable,
+        acpi_disable,
     };
 
     (platform_tables, fadt_config)

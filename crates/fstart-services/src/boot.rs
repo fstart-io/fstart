@@ -39,6 +39,8 @@ pub struct BootLinuxParams<'a> {
     pub zero_page_addr: u64,
     /// Platform-specific hart ID (RISC-V only; ignored elsewhere).
     pub hart_id: u64,
+    /// Print BSP x86 MTRR/control-register state before handoff. x86_64 only.
+    pub print_x86_mtrrs: bool,
 }
 
 impl<'a> BootLinuxParams<'a> {
@@ -53,6 +55,7 @@ impl<'a> BootLinuxParams<'a> {
             e820_entries: &[],
             zero_page_addr: 0,
             hart_id: 0,
+            print_x86_mtrrs: false,
         }
     }
 }
