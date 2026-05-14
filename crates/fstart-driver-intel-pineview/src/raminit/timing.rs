@@ -479,6 +479,12 @@ pub fn check_reset(_si: &SysInfo) {
 
     lpc.write8(0xA2, pmcon2);
     lpc.write8(0xA4, pmcon3);
+    fstart_log::info!(
+        "raminit: check_reset PMCON2={:#x} PMCON3={:#x} reset={}",
+        pmcon2 as u32,
+        pmcon3 as u32,
+        reset,
+    );
 
     if reset {
         fstart_log::info!("raminit: triggering full reset (PMCON2 bit 7 set)");
