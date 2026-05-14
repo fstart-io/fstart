@@ -98,6 +98,16 @@ pub struct BoardConfig {
     #[serde(default)]
     pub soc_image_format: SocImageFormat,
 
+    /// Also emit a complete flash image padded/laid out to `memory.flash_size`.
+    ///
+    /// The normal `.ffs` output is a firmware filesystem blob. Hardware flash
+    /// programmers usually need the entire NOR image, with XIP stages overlaid
+    /// at their linked physical flash addresses and unused bytes filled with
+    /// `0xff`. When true, `xtask assemble` writes
+    /// `target/ffs/<board>-<size>m.pflash` in addition to `<board>.ffs`.
+    #[serde(default)]
+    pub full_flash_image: bool,
+
     /// ACPI table generation configuration.
     ///
     /// Required when any stage has the `AcpiPrepare` capability. Contains
@@ -218,6 +228,9 @@ pub struct PayloadConfig {
     pub src_dtb_addr: Option<u64>,
     /// Kernel command line (set in /chosen/bootargs)
     pub bootargs: Option<HString<256>>,
+    /// Print BSP x86 MTRR/control-register state immediately before Linux handoff.
+    #[serde(default)]
+    pub print_x86_mtrrs: bool,
     /// SBI / ATF firmware blob configuration
     pub firmware: Option<FirmwareConfig>,
     /// Path to a FIT (.itb) image file (relative to board directory).
