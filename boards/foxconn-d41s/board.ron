@@ -372,7 +372,7 @@
     // ACPI: chipset-fixed topology only. CPU count + LAPIC IDs detected
     // at runtime via CPUID leaf 0x0B (future Phase 6 work).
     acpi: (
-        print_hex: false,
+        print_hex: true,
         platform: X86((
             lapic_base: 0xFEE00000,
             ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],

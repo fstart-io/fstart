@@ -13,33 +13,17 @@ use fstart_driver_intel_ich7::{IntelIch7, IntelIch7Config};
 use fstart_driver_intel_pineview::{IntelPineview, IntelPineviewConfig};
 use fstart_services::device::Device;
 
-/// Build a minimal DSDT AML table wrapping the given body bytes.
-///
-/// Produces a valid ACPI table with signature "DSDT", proper length,
-/// and correct checksum — enough for `iasl -d` to disassemble.
-fn wrap_in_dsdt(body: &[u8]) -> Vec<u8> {
-    let total_len = (36 + body.len()) as u32;
-    let mut buf = Vec::with_capacity(total_len as usize);
-
-    // SDT header (36 bytes)
-    buf.extend_from_slice(b"DSDT"); // Signature
-    buf.extend_from_slice(&total_len.to_le_bytes()); // Length
-    buf.push(2); // Revision
-    buf.push(0); // Checksum (patched below)
-    buf.extend_from_slice(b"FSTART"); // OEM ID (6 bytes)
-    buf.extend_from_slice(b"D41SACPI"); // OEM Table ID (8 bytes)
-    buf.extend_from_slice(&1u32.to_le_bytes()); // OEM Revision
-    buf.extend_from_slice(b"FSTA"); // Creator ID
-    buf.extend_from_slice(&1u32.to_le_bytes()); // Creator Revision
-
-    // Body
-    buf.extend_from_slice(body);
-
-    // Fix checksum (byte 9): entire table must sum to 0.
-    let sum: u8 = buf.iter().fold(0u8, |a, &x| a.wrapping_add(x));
-    buf[9] = sum.wrapping_neg();
-
-    buf
+fn extract_dsdt(table_set: &[u8]) -> Vec<u8> {
+    let dsdt_off = table_set
+        .windows(4)
+        .position(|w| w == b"DSDT")
+        .expect("DSDT signature in ACPI table set");
+    let len = u32::from_le_bytes(
+        table_set[dsdt_off + 4..dsdt_off + 8]
+            .try_into()
+            .expect("DSDT length"),
+    ) as usize;
+    table_set[dsdt_off..dsdt_off + len].to_vec()
 }
 
 #[test]
@@ -95,7 +79,14 @@ fn dump_foxconn_d41s_dsdt() {
     body.extend_from_slice(&pv_aml);
     body.extend_from_slice(&ich7_aml);
 
-    let dsdt = wrap_in_dsdt(&body);
+    let tables = fstart_acpi::platform::assemble(
+        0x100000,
+        &fstart_acpi::platform::FadtConfig::default(),
+        &[],
+        &body,
+        &[],
+    );
+    let dsdt = extract_dsdt(&tables);
 
     // Write binary AML.
     let out_path = "/tmp/fstart-dsdt.aml";
