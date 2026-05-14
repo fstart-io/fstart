@@ -60,12 +60,12 @@ pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 
-/// AML root scope object (`Scope (\\)`).
+/// AML root-scope container.
 ///
-/// The upstream `acpi_tables::aml::Path::new` asserts that every name
-/// component is exactly four bytes, so it cannot represent the root-only path
-/// `\\`. Some x86 AML needs root-scope operation regions and fields even when
-/// generated from device contributors.
+/// AML `ScopeOp` requires a non-empty name path after a root prefix; emitting
+/// `Scope (\\)` produces corrupt AML that ACPICA repairs as bogus names. For
+/// DSL `Scope("\\")`, this container therefore emits its children directly at
+/// the current DSDT/root level instead of wrapping them in a `ScopeOp`.
 pub struct RootScope<'a> {
     children: Vec<&'a dyn Aml>,
 }
@@ -79,15 +79,9 @@ impl<'a> RootScope<'a> {
 
 impl Aml for RootScope<'_> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        let mut bytes = Vec::new();
-        bytes.push(b'\\');
         for child in &self.children {
-            child.to_aml_bytes(&mut bytes);
+            child.to_aml_bytes(sink);
         }
-
-        sink.byte(0x10); // ScopeOp
-        sink.vec(&encode_pkg_length(bytes.len()));
-        sink.vec(&bytes);
     }
 }
 
