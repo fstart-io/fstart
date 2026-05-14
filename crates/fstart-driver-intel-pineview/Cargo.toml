@@ -16,6 +16,7 @@ fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-ecam = { workspace = true }
 heapless = { workspace = true }
 fstart-log = { workspace = true }
+fstart-lapic = { workspace = true }
 fstart-mmio = { workspace = true }
 fstart-mp = { workspace = true }
 fstart-pineview-regs = { workspace = true }

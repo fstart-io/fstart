@@ -703,6 +703,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch",
  "fstart-ecam",
+ "fstart-lapic",
  "fstart-log",
  "fstart-mmio",
  "fstart-mp",

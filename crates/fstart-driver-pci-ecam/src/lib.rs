@@ -24,6 +24,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use fstart_services::device::{Device, DeviceError};
+use fstart_services::memory_detect::E820Kind;
 use fstart_services::pci::{
     PciAddr, PciRootBus, PciWindow, PciWindowKind, PCI_BAR0, PCI_CLASS_REVISION,
     PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND, PCI_HEADER_TYPE,
@@ -117,11 +118,14 @@ impl ResourcePool {
 
     /// Allocate `size` bytes with natural alignment.  Returns base address.
     fn allocate(&mut self, size: u64) -> Option<u64> {
-        if size == 0 {
+        self.allocate_aligned(size, size)
+    }
+
+    fn allocate_aligned(&mut self, size: u64, align: u64) -> Option<u64> {
+        if size == 0 || align == 0 {
             return None;
         }
-        // Align up to size (PCI BARs are naturally aligned).
-        let aligned = (self.next + size - 1) & !(size - 1);
+        let aligned = (self.next + align - 1) & !(align - 1);
         let end = aligned.checked_add(size)?;
         if end > self.limit {
             return None;
@@ -275,10 +279,19 @@ impl PciEcam {
             return (none, false);
         }
 
+        // Devices with BARs already programmed to a fixed legacy address may
+        // ignore the all-ones sizing write. Treat those as fixed resources;
+        // they are already decoded by chipset init and should not be allocated.
+        if sized == original && original != 0 {
+            return (none, false);
+        }
+
         if original & 1 == 1 {
-            // I/O BAR
-            let mask = sized | 0x3;
-            let size = (!mask).wrapping_add(1) as u64;
+            // I/O BAR. On x86 legacy PCI I/O port BARs are constrained to
+            // the 16-bit I/O port space even though the config register is
+            // 32 bits wide. Mask to bits 15:2 for sizing; otherwise ICH
+            // devices that return 0xffff_ffe0 become bogus 4 GiB allocations.
+            let size = (!(sized & 0x0000_FFFC)).wrapping_add(1) as u16 as u64;
             return (
                 BarInfo {
                     bar_type: BarType::Io,
@@ -297,8 +310,7 @@ impl PciEcam {
         match mem_type {
             0 => {
                 // 32-bit
-                let mask = sized | 0xF;
-                let size = (!mask).wrapping_add(1) as u64;
+                let size = (!(sized & 0xFFFF_FFF0)).wrapping_add(1) as u64;
                 (
                     BarInfo {
                         bar_type: BarType::Memory32,
@@ -318,8 +330,7 @@ impl PciEcam {
                 self.write32(addr, upper_reg, original_hi);
 
                 let full_sized = ((sized_hi as u64) << 32) | (sized as u64);
-                let mask = full_sized | 0xF;
-                let size = (!mask).wrapping_add(1);
+                let size = (!(full_sized & 0xFFFF_FFFF_FFFF_FFF0)).wrapping_add(1);
                 (
                     BarInfo {
                         bar_type: BarType::Memory64,
@@ -437,51 +448,90 @@ impl PciEcam {
     /// Allocate and program BARs for all non-bridge devices, then program
     /// bridge forwarding windows.
     fn allocate_resources(&mut self) {
-        // Phase 1: allocate endpoint BARs.
-        for i in 0..self.devices.len() {
-            if self.devices[i].header_type == PCI_HEADER_TYPE_BRIDGE {
-                continue;
-            }
-
-            let addr = self.devices[i].addr;
-            let mut bar_idx = 0;
-            while bar_idx < 6 {
-                let bar = self.devices[i].bars[bar_idx];
-                match bar.bar_type {
-                    BarType::Memory32 => {
-                        if let Some(base) = self.mmio32.allocate(bar.size) {
-                            self.write32(addr, bar.reg, base as u32);
-                        }
-                    }
-                    BarType::Memory64 => {
-                        // Prefer 64-bit pool, fall back to 32-bit.
-                        let base = self
-                            .mmio64
-                            .allocate(bar.size)
-                            .or_else(|| self.mmio32.allocate(bar.size));
-                        if let Some(base) = base {
-                            let lo = (base as u32 & 0xFFFF_FFF0)
-                                | 0x4
-                                | if bar.prefetchable { 0x8 } else { 0 };
-                            self.write32(addr, bar.reg, lo);
-                            self.write32(addr, bar.reg + 4, (base >> 32) as u32);
-                        }
-                        bar_idx += 1; // skip upper half slot
-                    }
-                    BarType::Io => {
-                        if let Some(base) = self.io_pool.allocate(bar.size) {
-                            self.write32(addr, bar.reg, (base as u32) | 0x1);
-                        }
-                    }
-                    BarType::None => {}
+        // Phase 1: allocate endpoint BARs. Allocate root-bus endpoints before
+        // devices behind bridges. Bridge windows are coarse-grained (1 MiB
+        // memory, 4 KiB I/O), so allocating children first can make the
+        // rounded bridge aperture cover later root-bus BARs. Linux then
+        // reports conflicts between the bridge window and host-bus devices.
+        for pass in 0..2 {
+            for i in 0..self.devices.len() {
+                if self.devices[i].header_type == PCI_HEADER_TYPE_BRIDGE {
+                    continue;
                 }
-                bar_idx += 1;
-            }
 
-            // Enable memory + IO + bus master.
-            let cmd = self.read32(addr, PCI_COMMAND) as u16;
-            let new_cmd = cmd | PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
-            self.write32(addr, PCI_COMMAND, new_cmd as u32);
+                let addr = self.devices[i].addr;
+                let behind_bridge = addr.bus != self.bus_start;
+                if (pass == 0 && behind_bridge) || (pass == 1 && !behind_bridge) {
+                    continue;
+                }
+
+                // PCI bridge memory windows decode at 1 MiB granularity and I/O
+                // windows at 4 KiB granularity.  Align child BARs to those
+                // granularities so the eventual bridge window does not round down
+                // over unrelated host-bridge devices and create Linux conflicts.
+                let mem_align = if behind_bridge { 0x100000 } else { 0 };
+                let io_align = if behind_bridge { 0x1000 } else { 0 };
+                let mut bar_idx = 0;
+                while bar_idx < 6 {
+                    let bar = self.devices[i].bars[bar_idx];
+                    match bar.bar_type {
+                        BarType::Memory32 => {
+                            let base = if mem_align != 0 {
+                                self.mmio32
+                                    .allocate_aligned(bar.size, bar.size.max(mem_align))
+                            } else {
+                                self.mmio32.allocate(bar.size)
+                            };
+                            if let Some(base) = base {
+                                let val = (base as u32 & 0xFFFF_FFF0)
+                                    | if bar.prefetchable { 0x8 } else { 0 };
+                                self.write32(addr, bar.reg, val);
+                            }
+                        }
+                        BarType::Memory64 => {
+                            // Prefer 64-bit pool, fall back to 32-bit.
+                            let base = if mem_align != 0 {
+                                self.mmio64
+                                    .allocate_aligned(bar.size, bar.size.max(mem_align))
+                                    .or_else(|| {
+                                        self.mmio32
+                                            .allocate_aligned(bar.size, bar.size.max(mem_align))
+                                    })
+                            } else {
+                                self.mmio64
+                                    .allocate(bar.size)
+                                    .or_else(|| self.mmio32.allocate(bar.size))
+                            };
+                            if let Some(base) = base {
+                                let lo = (base as u32 & 0xFFFF_FFF0)
+                                    | 0x4
+                                    | if bar.prefetchable { 0x8 } else { 0 };
+                                self.write32(addr, bar.reg, lo);
+                                self.write32(addr, bar.reg + 4, (base >> 32) as u32);
+                            }
+                            bar_idx += 1; // skip upper half slot
+                        }
+                        BarType::Io => {
+                            let base = if io_align != 0 {
+                                self.io_pool
+                                    .allocate_aligned(bar.size, bar.size.max(io_align))
+                            } else {
+                                self.io_pool.allocate(bar.size)
+                            };
+                            if let Some(base) = base {
+                                self.write32(addr, bar.reg, (base as u32) | 0x1);
+                            }
+                        }
+                        BarType::None => {}
+                    }
+                    bar_idx += 1;
+                }
+
+                // Enable memory + IO + bus master.
+                let cmd = self.read32(addr, PCI_COMMAND) as u16;
+                let new_cmd = cmd | PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
+                self.write32(addr, PCI_COMMAND, new_cmd as u32);
+            }
         }
 
         // Phase 2: program bridge forwarding windows.
@@ -499,13 +549,23 @@ impl PciEcam {
             let mut mem_hi: u64 = 0;
             let mut pref_lo: u64 = u64::MAX;
             let mut pref_hi: u64 = 0;
+            let mut io_lo: u64 = u64::MAX;
+            let mut io_hi: u64 = 0;
 
             for child in &self.devices {
                 if child.addr.bus < sec || child.addr.bus > sub {
                     continue;
                 }
                 for bar in &child.bars {
-                    if bar.bar_type == BarType::None || bar.bar_type == BarType::Io {
+                    if bar.bar_type == BarType::None {
+                        continue;
+                    }
+                    if bar.bar_type == BarType::Io {
+                        let base = (self.read32(child.addr, bar.reg) & 0x0000_FFFC) as u64;
+                        if base != 0 {
+                            io_lo = io_lo.min(base);
+                            io_hi = io_hi.max(base + bar.size);
+                        }
                         continue;
                     }
                     // Read back the programmed base.
@@ -562,8 +622,13 @@ impl PciEcam {
                 self.write32(baddr, PCI_PREF_LIMIT_UPPER32, 0);
             }
 
-            // Disable I/O forwarding (simplified: we don't allocate IO to bridges).
-            self.write32(baddr, PCI_IO_BASE, 0x00FF);
+            if io_lo < io_hi {
+                let base = ((io_lo >> 8) & 0xF0) as u8;
+                let limit = (((io_hi - 1) >> 8) & 0xF0) as u8;
+                self.write32(baddr, PCI_IO_BASE, (base as u32) | ((limit as u32) << 8));
+            } else {
+                self.write32(baddr, PCI_IO_BASE, 0x00FF);
+            }
 
             // Enable memory + IO + bus master on the bridge.
             let cmd = self.read32(baddr, PCI_COMMAND) as u16;
@@ -573,6 +638,32 @@ impl PciEcam {
     }
 
     /// Log discovered devices and their allocated BARs.
+    fn log_resource_result(&self) {
+        fstart_log::info!(
+            "PCI: allocation result mmio32 next={:#x} limit={:#x}, mmio64 next={:#x} limit={:#x}, io next={:#x} limit={:#x}",
+            self.mmio32.next,
+            self.mmio32.limit,
+            self.mmio64.next,
+            self.mmio64.limit,
+            self.io_pool.next,
+            self.io_pool.limit,
+        );
+        for window in self.windows.iter().take(self.window_count) {
+            let kind = match window.kind {
+                PciWindowKind::Mmio => "MMIO",
+                PciWindowKind::Io => "IO",
+                _ => "UNKNOWN",
+            };
+            fstart_log::info!(
+                "PCI: window {} base={:#x} size={:#x} prefetchable={}",
+                kind,
+                window.base,
+                window.size,
+                window.prefetchable,
+            );
+        }
+    }
+
     fn log_devices(&self) {
         for dev in &self.devices {
             let kind = if dev.header_type == PCI_HEADER_TYPE_BRIDGE {
@@ -630,6 +721,42 @@ impl PciEcam {
 // Device trait
 // -----------------------------------------------------------------------
 
+fn default_mmio32_window_from_e820(limit: u64) -> Option<(u64, u64)> {
+    let state = unsafe { fstart_services::memory_detect::e820_state() };
+    if state.count() == 0 {
+        return None;
+    }
+
+    let mut low_ram_top = 0x0010_0000u64;
+    let mut reserved_after_ram_top = 0u64;
+    for entry in state.entries() {
+        let addr = entry.addr;
+        let size = entry.size;
+        let kind = entry.kind;
+        let end = addr.saturating_add(size).min(0x1_0000_0000);
+        if kind == E820Kind::Ram as u32 && addr < 0x1_0000_0000 {
+            low_ram_top = low_ram_top.max(end);
+        }
+    }
+    for entry in state.entries() {
+        let addr = entry.addr;
+        let size = entry.size;
+        let kind = entry.kind;
+        let end = addr.saturating_add(size).min(0x1_0000_0000);
+        if kind != E820Kind::Ram as u32 && addr >= low_ram_top && addr < 0x1_0000_0000 {
+            reserved_after_ram_top = reserved_after_ram_top.max(end);
+        }
+    }
+
+    let low_mmio_base = reserved_after_ram_top.max(low_ram_top);
+    let base = (low_mmio_base + 0x000f_ffff) & !0x000f_ffff;
+    let limit = limit.min(0x1_0000_0000);
+    if base >= limit {
+        return None;
+    }
+    Some((base, limit - base))
+}
+
 impl Device for PciEcam {
     const NAME: &'static str = "pci-ecam";
     const COMPATIBLE: &'static [&'static str] = &["pci-host-ecam-generic"];
@@ -651,11 +778,17 @@ impl Device for PciEcam {
         let mut windows = [dummy; MAX_WINDOWS];
         let mut wc = 0;
 
-        if config.mmio32_size > 0 {
+        let (mmio32_base, mmio32_size) = if config.mmio32_size == 0 {
+            default_mmio32_window_from_e820(config.ecam_base).unwrap_or((config.mmio32_base, 0))
+        } else {
+            (config.mmio32_base, config.mmio32_size)
+        };
+
+        if mmio32_size > 0 {
             windows[wc] = PciWindow {
                 kind: PciWindowKind::Mmio,
-                base: config.mmio32_base,
-                size: config.mmio32_size,
+                base: mmio32_base,
+                size: mmio32_size,
                 prefetchable: false,
             };
             wc += 1;
@@ -687,7 +820,7 @@ impl Device for PciEcam {
             ecam_size: config.ecam_size as usize,
             bus_start: config.bus_start,
             bus_end: config.bus_end,
-            mmio32: ResourcePool::new(config.mmio32_base, config.mmio32_size),
+            mmio32: ResourcePool::new(mmio32_base, mmio32_size),
             mmio64: ResourcePool::new(config.mmio64_base, config.mmio64_size),
             io_pool: ResourcePool::new(config.pio_base, config.pio_size),
             windows,
@@ -709,6 +842,7 @@ impl Device for PciEcam {
         if !self.devices.is_empty() {
             fstart_log::info!("PCI: allocating resources...");
             self.allocate_resources();
+            self.log_resource_result();
             self.log_devices();
         }
 

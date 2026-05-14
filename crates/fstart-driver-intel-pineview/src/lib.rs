@@ -26,7 +26,7 @@ use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
-use fstart_services::memory_detect::{E820Entry, E820Kind};
+use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::{PciHost, ServiceError, SmBus};
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +87,6 @@ const SMRAM_D_OPEN: u8 = 1 << 6;
 const SMRAM_C_BASE_SEG: u8 = 0b010;
 const ICH7_PMBASE: u16 = 0x0500;
 const APM_CNT: u16 = 0x00b2;
-const APM_CNT_SMI: u8 = 0xef;
 const SMM_DEFAULT_SMBASE: u64 = 0x30000;
 const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
 const EM64T101_SMBASE_SAVE_STATE_OFFSET: u16 = 0xfef8;
@@ -375,7 +374,10 @@ impl PciHost for IntelPineview {
     }
 
     fn early_init(&mut self) -> Result<(), ServiceError> {
-        // ECAM was enabled by pre_console_init (ChipsetPreConsole).
+        // Each stage has its own BSS, so the global ECAM accessor must be
+        // rebound in ramstage too. The hardware PCIEXBAR programming is
+        // idempotent and matches coreboot's repeated hostbridge setup.
+        self.enable_ecam();
 
         // 1. Program BARs + PAM via ECAM.
         self.setup_bars();
@@ -463,6 +465,51 @@ fn pineview_lower_memory_test(test_top: u32) -> Result<(), ServiceError> {
     Ok(())
 }
 
+impl MemoryDetector for IntelPineview {
+    fn detect_memory(&self, entries: &mut [E820Entry]) -> Result<usize, ServiceError> {
+        let tom = self.tom();
+        let tolud = self.tolud();
+        let usable_top = self.usable_low_memory_top();
+        let raw_touud = self.touud();
+        let max_reclaim = 0x1_0000_0000u64.saturating_sub(tolud as u64);
+        let touud = if raw_touud > 0x1_0000_0000 && raw_touud <= tom.saturating_add(max_reclaim) {
+            raw_touud
+        } else {
+            tom
+        };
+
+        if tom <= 0x0010_0000
+            || tolud <= 0x0010_0000
+            || usable_top <= 0x0010_0000
+            || usable_top > tolud
+        {
+            fstart_log::error!(
+                "pineview: invalid post-raminit memory map TOM/TOUUD/TOLUD/usable {:#x}/{:#x}/{:#x}/{:#x}",
+                tom,
+                raw_touud,
+                tolud,
+                usable_top
+            );
+            return Err(ServiceError::HardwareError);
+        }
+
+        let count = self.build_e820_entries(entries, usable_top, touud, tolud)?;
+        mtrr::set_low_wb_top(tolud as u64);
+        fstart_log::info!(
+            "pineview: detected memory map (usable top {:#x}, TOLUD {:#x}, TOM {:#x}, TOUUD {:#x})",
+            usable_top,
+            tolud,
+            tom,
+            touud
+        );
+        Ok(count)
+    }
+
+    fn total_ram_bytes(&self) -> Result<u64, ServiceError> {
+        Ok(self.tom())
+    }
+}
+
 impl MemoryController for IntelPineview {
     fn dram_init(&mut self) -> Result<(), ServiceError> {
         let mut smbus = fstart_smbus_intel::I801SmBus::new(0x0400);
@@ -496,10 +543,9 @@ impl MemoryController for IntelPineview {
             tolud,
             usable_top
         );
-        self.publish_e820_map(usable_top);
+        self.publish_e820_map(usable_top, self.tom(), self.touud(), self.tolud());
         pineview_lower_memory_test(usable_top)
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -507,34 +553,63 @@ impl MemoryController for IntelPineview {
 // ---------------------------------------------------------------------------
 
 impl IntelPineview {
-    fn publish_e820_map(&self, usable_top: u32) {
-        let total = self.detected_size;
-        let mut entries = [E820Entry::zeroed(); 5];
-        entries[0] = E820Entry::new(0x0000_0000, 0x0009_f000, E820Kind::Ram);
-        entries[1] = E820Entry::new(0x0009_f000, 0x0000_1000, E820Kind::Reserved);
-        entries[2] = E820Entry::new(0x000f_0000, 0x0001_0000, E820Kind::Reserved);
+    fn build_e820_entries(
+        &self,
+        entries: &mut [E820Entry],
+        usable_top: u32,
+        touud: u64,
+        tolud: u32,
+    ) -> Result<usize, ServiceError> {
+        if entries.len() < 6 {
+            return Err(ServiceError::HardwareError);
+        }
+
+        let mut count = 0usize;
+        entries[count] = E820Entry::new(0x0000_0000, 0x0009_f000, E820Kind::Ram);
+        count += 1;
+        entries[count] = E820Entry::new(0x0009_f000, 0x0000_1000, E820Kind::Reserved);
+        count += 1;
+        entries[count] = E820Entry::new(0x000f_0000, 0x0001_0000, E820Kind::Reserved);
+        count += 1;
 
         let usable_top = (usable_top as u64).max(0x0010_0000);
-        entries[3] = E820Entry::new(
-            0x0010_0000,
-            usable_top.saturating_sub(0x0010_0000),
-            E820Kind::Ram,
-        );
-        entries[4] = E820Entry::new(
-            usable_top,
-            total.saturating_sub(usable_top),
-            E820Kind::Reserved,
-        );
+        let low_ram_size = usable_top.saturating_sub(0x0010_0000);
+        if low_ram_size != 0 {
+            entries[count] = E820Entry::new(0x0010_0000, low_ram_size, E820Kind::Ram);
+            count += 1;
+        }
+        let top_reserved_size = (tolud as u64).saturating_sub(usable_top);
+        if top_reserved_size != 0 {
+            entries[count] = E820Entry::new(usable_top, top_reserved_size, E820Kind::Reserved);
+            count += 1;
+        }
+        let upper_ram_size = touud.saturating_sub(0x1_0000_0000);
+        if upper_ram_size != 0 {
+            entries[count] = E820Entry::new(0x1_0000_0000, upper_ram_size, E820Kind::Ram);
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    fn publish_e820_map(&self, usable_top: u32, tom: u64, touud: u64, tolud: u32) {
+        let mut entries: [E820Entry; 6] = [E820Entry::zeroed(); 6];
+        let count = match self.build_e820_entries(&mut entries, usable_top, touud, tolud) {
+            Ok(count) => count,
+            Err(_) => return,
+        };
 
         // SAFETY: DRAM init runs on the BSP before the generated ramstage
         // payload handoff reads the global e820 state.
         unsafe {
-            fstart_services::memory_detect::e820_state_mut().store(&entries, entries.len(), total);
+            fstart_services::memory_detect::e820_state_mut().store(&entries, count, tom);
         }
         fstart_log::info!(
-            "pineview: published e820 map (usable top {:#x}, total {:#x})",
+            "pineview: published e820 map (usable top {:#x}, TOLUD {:#x}, TOM {:#x}, TOUUD {:#x})",
             usable_top,
-            total
+            tolud,
+            tom,
+            touud
         );
     }
 
@@ -553,7 +628,8 @@ impl IntelPineview {
     /// Read Top of Memory (TOM) in bytes.
     pub fn tom(&self) -> u64 {
         let raw = ecam::PciDevBdf::new(0, 0, 0).read16(hostbridge::TOM) & 0x01FF;
-        (raw as u64) << 27
+        // Coreboot programs TOM as `tom_mib >> 6`, i.e. units of 64 MiB.
+        (raw as u64) << 26
     }
 
     /// Decode IGD memory size from GGC register (kilobytes).
@@ -801,22 +877,52 @@ impl SmmOps for IntelPineview {
 
     fn smm_relocate(&self) {
         Self::smi_enable_for_relocation();
-        unsafe { fstart_pio::outb(APM_CNT, APM_CNT_SMI) };
-        core::hint::spin_loop();
+
+        // Match coreboot smm_initiate_relocation(): relocation is triggered
+        // with a local-APIC SMI IPI to *this* CPU, not by writing APM_CNT.
+        // APM_CNT is reserved for firmware/OS SMI commands such as ACPI
+        // enable/disable once the permanent SMI handler is installed.
+        let lapic = fstart_lapic::Lapic::from_msr();
+        lapic.send_ipi_self(fstart_lapic::INT_ASSERT | fstart_lapic::MT_SMI);
+        lapic.wait_ready();
     }
 
     fn pre_smm_init(&self) {
         let pm = fstart_pmio_ich::PmIo::new(ICH7_PMBASE);
+
+        // Keep the relocation SMI setup minimal. The permanent handler is not
+        // installed yet; enabling only APMC + global SMI matches the path that
+        // previously allowed CPU SMBASE relocation to complete. Full
+        // coreboot-style PM/TCO/GPE cleanup is done in post_smm_init(), after
+        // the permanent handler is installed.
         pm.reset_smi_status();
         pm.write32(
             fstart_pmio_ich::SMI_EN,
             fstart_pmio_ich::APMC_EN | fstart_pmio_ich::GBL_SMI_EN | fstart_pmio_ich::EOS,
+        );
+        fstart_log::info!(
+            "pineview SMM: relocation SMI_EN={:#x} PM1_CNT={:#x}",
+            pm.read32(fstart_pmio_ich::SMI_EN),
+            pm.read32(fstart_pmio_ich::PM1_CNT),
         );
     }
 
     fn post_smm_init(&self) {
         self.smm_close();
         let pm = fstart_pmio_ich::PmIo::new(ICH7_PMBASE);
+
+        // Match coreboot's smm_southbridge_clear_state() followed by
+        // global_smi_enable(): clear stale PM/SMI/TCO/GPE status before
+        // enabling permanent SMI sources, then enable TCO/APMC/SLP SMI plus
+        // EOS and the global SMI gate.
+        pm.reset_smi_status();
+        pm.reset_pm1_status();
+        pm.tco().reset_tco_status();
+        pm.reset_gpe0_status();
+        pm.write16(
+            fstart_pmio_ich::PM1_EN,
+            fstart_pmio_ich::PWRBTN_EN | fstart_pmio_ich::GBL_EN,
+        );
         pm.write32(
             fstart_pmio_ich::SMI_EN,
             fstart_pmio_ich::TCO_EN
@@ -825,6 +931,20 @@ impl SmmOps for IntelPineview {
                 | fstart_pmio_ich::GBL_SMI_EN
                 | fstart_pmio_ich::EOS,
         );
+
+        // Match coreboot i82801gx_set_acpi_mode() on a normal boot: after
+        // permanent SMM is installed, issue APM_CNT_ACPI_DISABLE so the SMI
+        // handler clears PM1_CNT.SCI_EN and all stale PM/GPE/TCO status.  The
+        // FADT advertises APM_CNT_ACPI_ENABLE (0xe1), so Linux will re-enable
+        // SCI only after ACPICA has installed its handler.
+        unsafe { fstart_pio::outb(APM_CNT, 0x1e) };
+
+        fstart_log::info!(
+            "pineview SMM: SMI_EN={:#x} PM1_CNT={:#x}",
+            pm.read32(fstart_pmio_ich::SMI_EN),
+            pm.read32(fstart_pmio_ich::PM1_CNT),
+        );
+
         self.smm_lock();
         fstart_log::info!("pineview SMM: global SMI enabled and SMRAM locked");
     }
@@ -955,6 +1075,8 @@ mod acpi_impl {
             // PCI BARs over them.
             // Coreboot: pineview.asl Device(PDRC)
             let rcba: u32 = 0xFED1_C000; // ICH7 default RCBA
+            let ecam_base = config.ecam_base as u32;
+            let ecam_size: u32 = 0x1000_0000; // 256 MiB, buses 0..255
             aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
                 Device("PDRC") {
                     Name("_HID", EisaId("PNP0C02"));
@@ -964,6 +1086,10 @@ mod acpi_impl {
                         Memory32Fixed(ReadWrite, #{mchbar}, 0x4000u32);
                         Memory32Fixed(ReadWrite, #{dmibar}, 0x1000u32);
                         Memory32Fixed(ReadWrite, #{epbar}, 0x1000u32);
+                        // PCI Express ECAM/MMCONFIG window. Linux requires
+                        // every MCFG range to be reserved by motherboard
+                        // resources (PNP0C02), otherwise it refuses ECAM.
+                        Memory32Fixed(ReadWrite, #{ecam_base}, #{ecam_size});
                         // Misc ICH MMIO (HPET area, TPM, etc.)
                         Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
                         Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
@@ -982,6 +1108,12 @@ mod acpi_impl {
             // Coreboot: hostbridge.asl Names + MCRS + _CRS Method.
             use fstart_acpi::aml::Path;
             let p = |s: &str| Path::new(s);
+
+            // The PCI host-bridge MMIO aperture begins at the live chipset
+            // TOLUD value programmed by raminit. This is evaluated while ACPI
+            // tables are generated in ramstage, not baked into the board RON.
+            let pci_mmio_base = self.tolud();
+            let pci_mmio_limit = 0xFEBF_FFFFu32;
 
             aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
                 Name("_HID", EisaId("PNP0A08"));
@@ -1003,9 +1135,10 @@ mod acpi_impl {
                     DWordIO(0x0D00u32, 0xFFFFu32);
                     // VGA memory (0xA0000-0xBFFFF).
                     DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
-                    // PCI MMIO window (TOLUD to 0xFEBFFFFF).
-                    // Base (0x00000000) is a placeholder — patched in _CRS.
-                    DWordMemory(NotCacheable, ReadWrite, 0x00000000u32, 0xFEBFFFFFu32);
+                    // PCI MMIO window: TOLUD..0xFEBFFFFF. Anything below
+                    // TOLUD is low DRAM; anything at/above TOLUD and below
+                    // the fixed chipset MMIO blocks is available for PCI.
+                    DWordMemory(NotCacheable, ReadWrite, #{pci_mmio_base}, #{pci_mmio_limit});
                 });
 
                 // _CRS method: patch PCI MMIO base from TOLUD register.
@@ -1022,6 +1155,10 @@ mod acpi_impl {
                 //   the address.  However, the coreboot code does << 27
                 //   on the raw 5-bit TLUD field; we match that exactly.)
                 // PLEN = PMAX - PMIN + 1
+                Method("_OSC", 4, NotSerialized) {
+                    Return(Arg3);
+                }
+
                 Method("_CRS", 0, Serialized) {
                     // Byte offsets into MCRS for the last DWordMemory:
                     //  _MIN is at a fixed offset within the resource
@@ -1095,8 +1232,16 @@ mod acpi_impl {
             aml
         }
 
-        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            Vec::new()
+        fn extra_tables(&self, config: &Self::Config) -> Vec<Vec<u8>> {
+            let mut mcfg = fstart_acpi::mcfg::MCFG::new(
+                fstart_acpi::OEM_ID,
+                fstart_acpi::OEM_TABLE_ID,
+                fstart_acpi::OEM_REVISION,
+            );
+            mcfg.add_ecam(config.ecam_base, 0, 0, 0xff);
+            let mut bytes = Vec::new();
+            fstart_acpi::Aml::to_aml_bytes(&mcfg, &mut bytes);
+            alloc::vec![bytes]
         }
     }
 }

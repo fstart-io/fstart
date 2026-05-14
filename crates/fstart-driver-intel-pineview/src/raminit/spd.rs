@@ -24,11 +24,20 @@ pub fn read_spds(
             continue;
         }
 
+        fstart_log::info!("raminit: probing DIMM {} SPD at {:#x}", i, addr);
         let Some(spd_buf) = fstart_spd::ddr2::read_spd(smbus, addr)? else {
             fstart_log::info!("raminit: DIMM {} (addr {:#x}) not present", i, addr);
             si.dimms[i] = None;
             continue;
         };
+        fstart_log::info!(
+            "raminit: DIMM {} SPD header [{:#x}, {:#x}, {:#x}, {:#x}]",
+            i,
+            spd_buf[0] as u32,
+            spd_buf[1] as u32,
+            spd_buf[2] as u32,
+            spd_buf[3] as u32,
+        );
 
         let Some(mut info) = fstart_spd::ddr2::decode_dimm(&spd_buf) else {
             fstart_log::error!(
