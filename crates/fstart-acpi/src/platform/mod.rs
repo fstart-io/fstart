@@ -406,27 +406,64 @@ fn build_dsdt(device_aml: &[u8]) -> Sdt {
     );
 
     if !device_aml.is_empty() {
-        // Build \_SB scope wrapping the device AML.
-        // We construct it manually because the pre-serialized device
-        // AML bytes can't be passed as `&dyn Aml` references.
-        let scope_name = Path::new("\\_SB_");
-        let empty_scope = Scope::new(scope_name, vec![]);
-        let mut _scope_bytes = Vec::new();
-        empty_scope.to_aml_bytes(&mut _scope_bytes);
+        let (root_aml, sb_aml) = split_root_scope_aml(device_aml);
+        dsdt.append_slice(&root_aml);
 
-        // Build scope manually: ScopeOp + PkgLength + "\\_SB_" + device_aml
-        let name_aml = encode_name_path(b"\\_SB_");
-        let content_len = name_aml.len() + device_aml.len();
-        let pkg_len = crate::encode_pkg_length(content_len);
+        if !sb_aml.is_empty() {
+            // Build \_SB scope wrapping normal device AML. Root-scope fragments
+            // have already been stripped and emitted above.
+            // We construct it manually because the pre-serialized device
+            // AML bytes can't be passed as `&dyn Aml` references.
+            let scope_name = Path::new("\\_SB_");
+            let empty_scope = Scope::new(scope_name, vec![]);
+            let mut _scope_bytes = Vec::new();
+            empty_scope.to_aml_bytes(&mut _scope_bytes);
 
-        dsdt.append_slice(&[0x10]); // ScopeOp
-        dsdt.append_slice(&pkg_len);
-        dsdt.append_slice(&name_aml);
-        dsdt.append_slice(device_aml);
+            // Build scope manually: ScopeOp + PkgLength + "\\_SB_" + sb_aml
+            let name_aml = encode_name_path(b"\\_SB_");
+            let content_len = name_aml.len() + sb_aml.len();
+            let pkg_len = crate::encode_pkg_length(content_len);
+
+            dsdt.append_slice(&[0x10]); // ScopeOp
+            dsdt.append_slice(&pkg_len);
+            dsdt.append_slice(&name_aml);
+            dsdt.append_slice(&sb_aml);
+        }
     }
 
     dsdt.update_checksum();
     dsdt
+}
+
+/// Split marked root-scope AML from normal device AML.
+fn split_root_scope_aml(device_aml: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let marker = crate::ROOT_SCOPE_MARKER;
+    let mut root = Vec::new();
+    let mut sb = Vec::new();
+    let mut i = 0usize;
+
+    while i < device_aml.len() {
+        if device_aml[i..].starts_with(marker) && i + marker.len() + 4 <= device_aml.len() {
+            let len_off = i + marker.len();
+            let len = u32::from_le_bytes([
+                device_aml[len_off],
+                device_aml[len_off + 1],
+                device_aml[len_off + 2],
+                device_aml[len_off + 3],
+            ]) as usize;
+            let data_off = len_off + 4;
+            if data_off + len <= device_aml.len() {
+                root.extend_from_slice(&device_aml[data_off..data_off + len]);
+                i = data_off + len;
+                continue;
+            }
+        }
+
+        sb.push(device_aml[i]);
+        i += 1;
+    }
+
+    (root, sb)
 }
 
 /// Encode an AML name path.
