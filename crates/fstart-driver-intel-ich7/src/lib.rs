@@ -94,10 +94,49 @@ const LPC_EN_ALL: u16 = (1 << 13)
     | (1 << 1)
     | (1 << 0);
 
+const D31IP: u32 = 0x3100;
+const D30IP: u32 = 0x3104;
+const D29IP: u32 = 0x3108;
+const D28IP: u32 = 0x310C;
+const D27IP: u32 = 0x3110;
+const D31IR: u32 = 0x3140;
+const D30IR: u32 = 0x3142;
+const D29IR: u32 = 0x3144;
+const D28IR: u32 = 0x3146;
+const D27IR: u32 = 0x3148;
+
+const NOINT: u32 = 0;
+const INTA: u32 = 1;
+const INTB: u32 = 2;
+const INTC: u32 = 3;
+const INTD: u32 = 4;
+
+const PIRQA: u32 = 0;
+const PIRQB: u32 = 1;
+const PIRQC: u32 = 2;
+const PIRQD: u32 = 3;
+const PIRQE: u32 = 4;
+const PIRQF: u32 = 5;
+const PIRQG: u32 = 6;
+const PIRQH: u32 = 7;
+
+const fn dir_route(a: u32, b: u32, c: u32, d: u32) -> u16 {
+    (a | (b << 4) | (c << 8) | (d << 12)) as u16
+}
+
 /// RCBA offset: OIC (Other Interrupt Control — IOAPIC enable).
-const OIC: u32 = 0x31FE;
+///
+/// ICH7/i82801gx exposes this as an 8-bit register at RCBA+0x31ff
+/// (coreboot `southbridge/intel/i82801gx/i82801gx.h`). Newer PCH parts use
+/// a 16-bit OIC at 0x31fe; using that offset on ICH7 writes the wrong byte and
+/// leaves the I/O APIC decode disabled, so Linux reads all-ones at FEC00000.
+const OIC: u32 = 0x31FF;
 /// RCBA offset: HPET Configuration register.
 const HPTC: u32 = 0x3404;
+/// ICH7 I/O APIC MMIO base.
+const IOAPIC_BASE: usize = 0xFEC0_0000;
+/// Local APIC MMIO base.
+const LAPIC_BASE: usize = 0xFEE0_0000;
 /// HPET base address (after HPTC enable).
 const HPET_BASE: usize = 0xFED0_0000;
 // PM register offsets and bit definitions live in the shared
@@ -454,6 +493,99 @@ impl IntelIch7 {
         gpio.setup(&self.config.gpio);
     }
 
+    fn ioapic_read(reg: u32) -> u32 {
+        // SAFETY: IOAPIC selector/data registers are fixed MMIO registers.
+        unsafe {
+            fstart_mmio::write32(IOAPIC_BASE as *mut u32, reg);
+            fstart_mmio::read32((IOAPIC_BASE + 0x10) as *const u32)
+        }
+    }
+
+    fn ioapic_write(reg: u32, value: u32) {
+        // SAFETY: IOAPIC selector/data registers are fixed MMIO registers.
+        unsafe {
+            fstart_mmio::write32(IOAPIC_BASE as *mut u32, reg);
+            fstart_mmio::write32((IOAPIC_BASE + 0x10) as *mut u32, value);
+        }
+    }
+
+    fn setup_ioapic(&self) {
+        const INT_DISABLED: u32 = 1 << 16;
+        const EXTINT: u32 = 7 << 8;
+        let id = Self::ioapic_read(0x00);
+        let version = Self::ioapic_read(0x01);
+        let max_redir = ((version >> 16) & 0xff).min(23);
+        fstart_log::info!(
+            "intel-ich7: IOAPIC id={:#x} version={:#x} redirs={}",
+            id,
+            version,
+            max_redir + 1,
+        );
+
+        // Match coreboot register_new_ioapic_gsi0(): set ID 0, mask all
+        // redirection entries, then route IRQ0 as ExtINT to the BSP LAPIC.
+        Self::ioapic_write(0x00, id & 0x00ff_ffff);
+        for irq in 0..=max_redir {
+            Self::ioapic_write(0x10 + irq * 2, INT_DISABLED);
+            Self::ioapic_write(0x11 + irq * 2, 0);
+        }
+
+        // SAFETY: LAPIC ID register is fixed MMIO when the local APIC is enabled.
+        let bsp_lapic_id = unsafe { fstart_mmio::read32((LAPIC_BASE + 0x20) as *const u32) >> 24 };
+        Self::ioapic_write(0x10, EXTINT);
+        Self::ioapic_write(0x11, bsp_lapic_id << 24);
+        fstart_log::info!(
+            "intel-ich7: IOAPIC IRQ0 ExtINT routed to LAPIC {}",
+            bsp_lapic_id
+        );
+    }
+
+    fn setup_interrupt_routing(&self, rcba: &Rcba) {
+        // Program the ICH7 RCBA device interrupt pin and route registers.
+        // These are the hardware side of the ACPI _PRT tables: each internal
+        // device first selects an INTx pin (DxxIP), then maps INT[A-D] to a
+        // PIRQ line (DxxIR).  Linux then maps PIRQ A-H to IOAPIC GSIs 16-23.
+        // Without these, ACPI can name a GSI but the chipset may still steer
+        // the interrupt to an unrelated/legacy line.
+        rcba.write32(
+            D31IP,
+            (NOINT << 24) | // thermal throttle
+            (NOINT << 20) | // second SATA pin, unused on ICH7 desktop AHCI
+            (INTB << 12) |  // SMBus 0:1f.3
+            (INTB << 8), // SATA 0:1f.2 reports/uses INTB on this board
+        );
+        rcba.write16(D31IR, dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
+
+        rcba.write32(D30IP, INTA); // PCI bridge 0:1e.0
+        rcba.write16(D30IR, dir_route(PIRQE, PIRQF, PIRQG, PIRQH));
+
+        rcba.write32(D29IP, INTA); // EHCI/UHCI group 0:1d.*
+        rcba.write16(D29IR, dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
+
+        rcba.write32(
+            D28IP,
+            (NOINT << 28) |
+            (NOINT << 24) |
+            (NOINT << 20) |
+            (NOINT << 16) |
+            (INTD << 12) | // RP04
+            (INTC << 8) |  // RP03
+            (INTB << 4) |  // RP02 (RTL8168 on D41S)
+            INTA, // RP01
+        );
+        rcba.write16(D28IR, dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
+
+        rcba.write32(D27IP, INTA); // HD Audio 0:1b.0
+        rcba.write16(D27IR, dir_route(PIRQA, PIRQA, PIRQA, PIRQA));
+
+        fstart_log::info!(
+            "intel-ich7: RCBA IRQ routing D31IP={:#x} D31IR={:#x} D28IP={:#x}",
+            rcba.read32(D31IP),
+            rcba.read16(D31IR),
+            rcba.read32(D28IP),
+        );
+    }
+
     /// Enable HPET via RCBA.
     ///
     /// Ported from coreboot `enable_hpet()`. Raminit needs HPET for
@@ -664,6 +796,7 @@ impl Southbridge for IntelIch7 {
         lpc.write32(0x68, pirq_high);
 
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+        self.setup_interrupt_routing(&rcba);
 
         // Enable upper 128 bytes of CMOS.
         rcba.write32(0x3400, 1 << 2);
@@ -694,7 +827,9 @@ impl Southbridge for IntelIch7 {
 
         // ---- 10. Enable IOAPIC ----
         rcba.write8(OIC, 0x03);
-        let _ = rcba.read8(OIC); // flush
+        let oic = rcba.read8(OIC); // flush
+        fstart_log::info!("intel-ich7: IOAPIC enabled (OIC={:#04x})", oic);
+        self.setup_ioapic();
 
         // ---- 11. CIR (Chipset Initialization Registers) ----
         self.setup_cir(&rcba);
@@ -876,15 +1011,25 @@ impl IntelIch7 {
         // Port control.
         sata_dev.write8(0x92, sata.ports);
 
-        // Clock gating + init register.
+        if sata.mode == SataMode::Ahci {
+            // Coreboot writes AHCI GHC_PI (ABAR+0x0c) after PCI resource
+            // assignment. If PI is left zero Linux guesses all 4 ports and
+            // prints "forcing PORTS_IMPL", then probes disabled ports.
+            let abar = sata_dev.read32(0x24) & 0xFFFF_FC00;
+            if abar != 0 {
+                // SAFETY: ABAR is a PCI BAR just assigned by PciInit and
+                // memory decoding was enabled above.
+                unsafe {
+                    fstart_mmio::write32((abar + 0x0c) as *mut u32, sata.ports as u32);
+                }
+            }
+        }
+
+        // Clock gating + init register. Match coreboot sata.h:
+        // SIF1=0x180, SIF2=bit23, SIF3=(~ports & 0xf)<<24, SCRE=bit28.
         let ports = sata.ports;
-        let sif3: u32 = match ports {
-            0x0F => 0,
-            0x03 => 1 << 24,
-            0x01 => (1 << 24) | (1 << 20),
-            _ => 0,
-        };
-        sata_dev.write32(0x94, sif3 | (1 << 16) | (1 << 18) | (1 << 19));
+        let sif3 = ((!ports as u32) & 0x0f) << 24;
+        sata_dev.write32(0x94, sif3 | 0x180 | (1 << 23) | (1 << 28));
 
         // Mandatory SATA init sequence (from coreboot).
         sata_dev.write8(0xA0, 0x40);
@@ -1030,8 +1175,9 @@ impl IntelIch7 {
             // ICW4: 8086 mode.
             outb(0x21, 0x01);
             outb(0xA1, 0x01);
-            // Mask all interrupts.
-            outb(0x21, 0xFF);
+            // Mask all slave IRQs and all master IRQs except IRQ2, so the
+            // cascade stays alive, matching coreboot setup_i8259().
+            outb(0x21, 0xFB);
             outb(0xA1, 0xFF);
 
             // Set IRQ 9 as level-triggered (ACPI SCI).
@@ -1049,8 +1195,16 @@ impl IntelIch7 {
     /// control.
     fn power_options_late(&self) {
         #[cfg(target_arch = "x86_64")]
-        // GPE0_EN from board config.
-        self.pm().write32(pmio::GPE0_EN, self.config.gpe0_en);
+        {
+            // Clear stale ACPI status before enabling SCI/GPE delivery.  The
+            // registers are write-one-to-clear; leaving firmware-era status
+            // pending can assert SCI before Linux has any useful event to
+            // consume, producing an IRQ9 "nobody cared" storm.
+            self.pm().write16(pmio::PM1_STS, 0xffff);
+            self.pm().write32(pmio::GPE0_STS, 0xffff_ffff);
+            // GPE0_EN from board config.
+            self.pm().write32(pmio::GPE0_EN, self.config.gpe0_en);
+        }
 
         // NMI source control (port 0x61).
         unsafe {
@@ -1198,12 +1352,17 @@ impl IntelIch7 {
         // BIOS Interface Lockdown.
         rcba.write32(0x3410, rcba.read32(0x3410) | 1);
 
-        // Global SMI Lock.
-        ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).or16(0xA0, 1 << 4);
-
-        // TCO Lock.
+        // Global SMI/TCO locks must not be taken before permanent SMM has
+        // enabled the final SMI sources.  Coreboot does global_smi_enable()
+        // before final lockdown; fstart currently runs this finalize hook
+        // before MpInit(smm), so skip these locks until GBL_SMI_EN is live.
         #[cfg(target_arch = "x86_64")]
-        self.pm().tco().lock();
+        if self.pm().read32(pmio::SMI_EN) & pmio::GBL_SMI_EN != 0 {
+            // Global SMI Lock.
+            ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).or16(0xA0, 1 << 4);
+            // TCO Lock.
+            self.pm().tco().lock();
+        }
 
         fstart_log::info!("intel-ich7: platform lockdown complete");
     }
@@ -1626,6 +1785,82 @@ mod acpi_impl {
             // is omitted — Linux does not require it for boot enumeration.
             // ---------------------------------------------------------------
             let mut aml = acpi_dsl! {
+                Scope("\\") {
+                    // Coreboot ich7.asl: PMBASE/GPIOBASE/RCBA operation regions.
+                    // These expose southbridge PM/GPIO/RCBA state to AML users
+                    // such as HPET _STA/_CRS, USB wake control, and board GPE
+                    // methods. Keep the fixed bases in sync with early init.
+                    OperationRegion("PMIO", SystemIO, 0x0500u32, 0x80u32);
+                    Field("PMIO", ByteAcc, NoLock, Preserve) {
+                        Offset(0x42),
+                        , 1,
+                        GPEC, 1,
+                        , 9,
+                        SCIS, 1,
+                    }
+
+                    OperationRegion("GPIO", SystemIO, 0x0480u32, 0x3Cu32);
+                    Field("GPIO", ByteAcc, NoLock, Preserve) {
+                        // GPIO Use Select
+                        GU00, 8, GU01, 8, GU02, 8, GU03, 8,
+                        // GPIO I/O Select
+                        GIO0, 8, GIO1, 8, GIO2, 8, GIO3, 8,
+                        Offset(0x0C),
+                        GP00, 1, GP01, 1, GP02, 1, GP03, 1,
+                        GP04, 1, GP05, 1, GP06, 1, GP07, 1,
+                        GP08, 1, GP09, 1, GP10, 1, GP11, 1,
+                        GP12, 1, GP13, 1, GP14, 1, GP15, 1,
+                        GP16, 1, GP17, 1, GP18, 1, GP19, 1,
+                        GP20, 1, GP21, 1, GP22, 1, GP23, 1,
+                        GP24, 1, GP25, 1, GP26, 1, GP27, 1,
+                        GP28, 1, GP29, 1, GP30, 1, GP31, 1,
+                        Offset(0x18),
+                        GB00, 8, GB01, 8, GB02, 8, GB03, 8,
+                        Offset(0x2C),
+                        GIV0, 8, GIV1, 8, GIV2, 8, GIV3, 8,
+                        GU04, 8, GU05, 8, GU06, 8, GU07, 8,
+                        GIO4, 8, GIO5, 8, GIO6, 8, GIO7, 8,
+                        GP32, 1, GP33, 1, GP34, 1, GP35, 1,
+                        GP36, 1, GP37, 1, GP38, 1, GP39, 1,
+                    }
+                }
+            };
+
+            aml.extend_from_slice(&acpi_dsl! {
+                Scope("\\_SB_.PCI0") {
+                    OperationRegion("RCRB", SystemMemory, 0xFED1C000u32, 0x4000u32);
+                    Field("RCRB", DWordAcc, Lock, Preserve) {
+                        Offset(0x3404),
+                        HPAS, 2,
+                        , 5,
+                        HPTE, 1,
+                        Offset(0x3418),
+                        , 1,
+                        PATD, 1,
+                        SATD, 1,
+                        SMBD, 1,
+                        HDAD, 1,
+                        A97D, 1,
+                        M97D, 1,
+                        ILND, 1,
+                        US1D, 1,
+                        US2D, 1,
+                        US3D, 1,
+                        US4D, 1,
+                        , 2,
+                        LPBD, 1,
+                        EHCD, 1,
+                        RP1D, 1,
+                        RP2D, 1,
+                        RP3D, 1,
+                        RP4D, 1,
+                        RP5D, 1,
+                        RP6D, 1,
+                    }
+                }
+            });
+
+            aml.extend_from_slice(&acpi_dsl! {
                 Device(#{name}) {
                     Name("_ADR", #{_adr});
                     Name("_HID", EisaId("PNP0A05"));
@@ -1702,7 +1937,7 @@ mod acpi_impl {
                             IO(0x00B8u16, 0x00B8u16, 0x01u8, 0x02u8);
                             IO(0x00BCu16, 0x00BCu16, 0x01u8, 0x02u8);
                             IO(0x04D0u16, 0x04D0u16, 0x01u8, 0x02u8);
-                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 2u32);
+                            IRQ(Edge, ActiveHigh, Exclusive, 2u32);
                         });
                     }
 
@@ -1712,7 +1947,7 @@ mod acpi_impl {
                         Name("_HID", EisaId("PNP0C04"));
                         Name("_CRS", ResourceTemplate {
                             IO(0x00F0u16, 0x00F0u16, 0x01u8, 0x01u8);
-                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 13u32);
+                            IRQ(Edge, ActiveHigh, Exclusive, 13u32);
                         });
                     }
 
@@ -1754,7 +1989,7 @@ mod acpi_impl {
                         Name("_CRS", ResourceTemplate {
                             IO(0x0040u16, 0x0040u16, 0x01u8, 0x04u8);
                             IO(0x0050u16, 0x0050u16, 0x10u8, 0x04u8);
-                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 0u32);
+                            IRQ(Edge, ActiveHigh, Exclusive, 0u32);
                         });
                     }
 
@@ -1776,70 +2011,67 @@ mod acpi_impl {
                     Device("LNKA") {
                         Name("_HID", EisaId("PNP0C0F"));
                         Name("_UID", 1u32);
+                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
+                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
                     Device("LNKB") {
                         Name("_HID", EisaId("PNP0C0F"));
                         Name("_UID", 2u32);
+                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
+                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
                     Device("LNKC") {
                         Name("_HID", EisaId("PNP0C0F"));
                         Name("_UID", 3u32);
+                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
+                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
                     Device("LNKD") {
                         Name("_HID", EisaId("PNP0C0F"));
                         Name("_UID", 4u32);
+                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
+                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
                     Device("LNKE") {
                         Name("_HID", EisaId("PNP0C0F"));
                         Name("_UID", 5u32);
+                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
+                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
                     Device("LNKF") {
                         Name("_HID", EisaId("PNP0C0F"));
                         Name("_UID", 6u32);
+                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
+                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
                     Device("LNKG") {
                         Name("_HID", EisaId("PNP0C0F"));
                         Name("_UID", 7u32);
+                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
+                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
                     Device("LNKH") {
                         Name("_HID", EisaId("PNP0C0F"));
                         Name("_UID", 8u32);
+                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
+                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
                         Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                     }
 
-                    // PS2K — PS/2 Keyboard (PNP0303)
-                    // Uses i8042 controller at IO 0x60/0x64, IRQ 1.
-                    // Coreboot: lpc.asl Device(PS2K)
-                    Device("PS2K") {
-                        Name("_HID", EisaId("PNP0303"));
-                        Name("_CID", EisaId("PNP030B"));
-                        Name("_CRS", ResourceTemplate {
-                            IO(0x0060u16, 0x0060u16, 0x01u8, 0x01u8);
-                            IO(0x0064u16, 0x0064u16, 0x01u8, 0x01u8);
-                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 1u32);
-                        });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                    }
-
-                    // PS2M — PS/2 Mouse (PNP0F13)
-                    // Shares the i8042 controller, IRQ 12.
-                    // Coreboot: lpc.asl Device(PS2M)
-                    Device("PS2M") {
-                        Name("_HID", EisaId("PNP0F13"));
-                        Name("_CRS", ResourceTemplate {
-                            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 12u32);
-                        });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                    }
+                    // PS/2 keyboard/mouse nodes are emitted by the concrete
+                    // SuperIO driver when the board enables those LDNs. D41S
+                    // has real IT8721F PS/2 keyboard and mouse functions, so
+                    // they are advertised by the IT8721F/SuperIO ACPI, not by
+                    // the reusable ICH7 LPC bridge.
                 }
-            };
+            });
 
             // ---------------------------------------------------------------
             // 2. Per-function PCI device nodes — siblings to LPCB at PCI0
@@ -1850,6 +2082,32 @@ mod acpi_impl {
             //      audio_ich.asl, usb.asl, pcie.asl, pci.asl,
             //      sata.asl, pata.asl, smbus.asl
             // ---------------------------------------------------------------
+
+            // Root-bus PCI interrupt routing.  Without this table Linux can
+            // enumerate the ICH7 functions but cannot derive GSIs for devices
+            // such as SATA (0:1f.2 INTB), so drivers fall back to "no GSI".
+            // APIC-mode direct GSIs use the chipset PIRQ range 16..23.
+            aml.extend_from_slice(&acpi_dsl! {
+                Name("_PRT", Package(
+                    Package(0x001BFFFFu32, 0u32, 0u32, 16u32),
+                    Package(0x001DFFFFu32, 0u32, 0u32, 16u32),
+                    Package(0x001DFFFFu32, 1u32, 0u32, 17u32),
+                    Package(0x001DFFFFu32, 2u32, 0u32, 18u32),
+                    Package(0x001DFFFFu32, 3u32, 0u32, 19u32),
+                    Package(0x001CFFFFu32, 0u32, 0u32, 16u32),
+                    Package(0x001CFFFFu32, 1u32, 0u32, 17u32),
+                    Package(0x001CFFFFu32, 2u32, 0u32, 18u32),
+                    Package(0x001CFFFFu32, 3u32, 0u32, 19u32),
+                    Package(0x001EFFFFu32, 0u32, 0u32, 20u32),
+                    Package(0x001EFFFFu32, 1u32, 0u32, 21u32),
+                    Package(0x001EFFFFu32, 2u32, 0u32, 22u32),
+                    Package(0x001EFFFFu32, 3u32, 0u32, 23u32),
+                    Package(0x001FFFFFu32, 0u32, 0u32, 16u32),
+                    Package(0x001FFFFFu32, 1u32, 0u32, 17u32),
+                    Package(0x001FFFFFu32, 2u32, 0u32, 18u32),
+                    Package(0x001FFFFFu32, 3u32, 0u32, 19u32)
+                ));
+            });
 
             // HDEF — HD Audio controller  0:1B.0
             // _PRW: GPE bit 5, can wake from S4.

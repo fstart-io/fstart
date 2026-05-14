@@ -60,6 +60,37 @@ pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 
+/// AML root scope object (`Scope (\\)`).
+///
+/// The upstream `acpi_tables::aml::Path::new` asserts that every name
+/// component is exactly four bytes, so it cannot represent the root-only path
+/// `\\`. Some x86 AML needs root-scope operation regions and fields even when
+/// generated from device contributors.
+pub struct RootScope<'a> {
+    children: Vec<&'a dyn Aml>,
+}
+
+impl<'a> RootScope<'a> {
+    /// Create a root scope containing `children`.
+    pub fn new(children: Vec<&'a dyn Aml>) -> Self {
+        Self { children }
+    }
+}
+
+impl Aml for RootScope<'_> {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        let mut bytes = Vec::new();
+        bytes.push(b'\\');
+        for child in &self.children {
+            child.to_aml_bytes(&mut bytes);
+        }
+
+        sink.byte(0x10); // ScopeOp
+        sink.vec(&encode_pkg_length(bytes.len()));
+        sink.vec(&bytes);
+    }
+}
+
 /// AML NullTarget -- used as the target for binary operations whose
 /// result is not stored (only returned as the expression value).
 ///
@@ -70,6 +101,54 @@ pub struct NullTarget;
 impl Aml for NullTarget {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         sink.byte(0x00);
+    }
+}
+
+/// Small legacy ISA IRQ resource descriptor.
+///
+/// ACPI has two IRQ resource encodings. `acpi_tables::aml::Interrupt` emits
+/// the large Extended Interrupt descriptor (`0x89`), which is appropriate for
+/// GSIs and non-ISA interrupt models. PC/AT legacy devices such as i8042,
+/// PIT, PIC, and x87 use the small `IRQ (...) { n }` descriptor (`0x23`) like
+/// coreboot's ASL. Linux treats these as ISA IRQ resources.
+#[derive(Debug, Clone, Copy)]
+pub struct IsaIrq {
+    edge: bool,
+    active_high: bool,
+    exclusive: bool,
+    irq_mask: u16,
+}
+
+impl IsaIrq {
+    /// Create a small IRQ descriptor for one ISA IRQ line.
+    pub const fn new(edge: bool, active_high: bool, exclusive: bool, irq: u8) -> Self {
+        Self {
+            edge,
+            active_high,
+            exclusive,
+            irq_mask: 1u16 << irq,
+        }
+    }
+
+    /// Create a small IRQ descriptor from an IRQ bitmask.
+    pub const fn from_mask(edge: bool, active_high: bool, exclusive: bool, irq_mask: u16) -> Self {
+        Self {
+            edge,
+            active_high,
+            exclusive,
+            irq_mask,
+        }
+    }
+}
+
+impl Aml for IsaIrq {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        // Small item: type=0, name=4 (IRQ), length=3 => 0x23.
+        sink.byte(0x23);
+        sink.word(self.irq_mask);
+        let flags =
+            (self.edge as u8) | ((!self.active_high as u8) << 3) | ((!self.exclusive as u8) << 4);
+        sink.byte(flags);
     }
 }
 
