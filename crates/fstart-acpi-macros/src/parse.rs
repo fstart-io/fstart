@@ -340,6 +340,8 @@ pub enum ResourceDesc {
         exclusive: bool,
         irq: DslValue,
     },
+    /// Small legacy ISA IRQNoFlags descriptor: `IRQNoFlags(irq);`.
+    IrqNoFlags { irq: DslValue },
     /// `IO(base, end, align, len);` -- legacy I/O port descriptor.
     IoPort {
         base: DslValue,
@@ -1356,6 +1358,7 @@ impl Parser {
             TokenTree::Ident(i) if *i == "Memory32Fixed" => self.parse_memory_32_fixed(),
             TokenTree::Ident(i) if *i == "Interrupt" => self.parse_interrupt(),
             TokenTree::Ident(i) if *i == "IRQ" => self.parse_irq(),
+            TokenTree::Ident(i) if *i == "IRQNoFlags" => self.parse_irq_no_flags(),
             TokenTree::Ident(i) if *i == "IO" => self.parse_io_port(),
             TokenTree::Ident(i) if *i == "DWordIO" => self.parse_dword_io(),
             TokenTree::Ident(i) if *i == "WordBusNumber" => self.parse_word_bus_number(),
@@ -1528,6 +1531,15 @@ impl Parser {
             exclusive,
             irq,
         })
+    }
+
+    fn parse_irq_no_flags(&mut self) -> Result<ResourceDesc> {
+        self.expect_ident("IRQNoFlags")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let irq = p.parse_value();
+        self.expect_punct(';')?;
+        Ok(ResourceDesc::IrqNoFlags { irq })
     }
 
     fn parse_io_port(&mut self) -> Result<ResourceDesc> {

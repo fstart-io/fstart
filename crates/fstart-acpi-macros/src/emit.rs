@@ -639,6 +639,17 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
             });
             (bindings, var)
         }
+        ResourceDesc::IrqNoFlags { irq } => {
+            let mut bindings = TokenStream::new();
+            let (irq_binding, irq_var) = emit_value(irq, gen);
+            bindings.extend(irq_binding);
+
+            let var = gen.next("isa_irq");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::IsaIrq::no_flags(#irq_var as u8);
+            });
+            (bindings, var)
+        }
         ResourceDesc::WordBusNumber { start, end } => {
             let mut bindings = TokenStream::new();
             let (s_bind, s_var) = emit_value(start, gen);
