@@ -819,14 +819,14 @@ mod acpi_impl {
         irq: Option<u8>,
     ) -> Vec<u8> {
         if let Some(irq) = irq {
-            let gsiv = irq as u32;
+            let irq = irq;
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
                     Name("_HID", EisaId("PNP0501"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
                         IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                        IRQNoFlags(#{irq});
                     });
                 }
             }
@@ -851,14 +851,14 @@ mod acpi_impl {
         irq: Option<u8>,
     ) -> Vec<u8> {
         if let Some(irq) = irq {
-            let gsiv = irq as u32;
+            let irq = irq;
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
                     Name("_HID", EisaId("PNP0303"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
                         IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                        IRQNoFlags(#{irq});
                     });
                 }
             }
@@ -883,14 +883,14 @@ mod acpi_impl {
         irq: Option<u8>,
     ) -> Vec<u8> {
         if let Some(irq) = irq {
-            let gsiv = irq as u32;
+            let irq = irq;
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
                     Name("_HID", EisaId("PNP0F13"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
                         IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                        IRQNoFlags(#{irq});
                     });
                 }
             }
@@ -915,14 +915,14 @@ mod acpi_impl {
         irq: Option<u8>,
     ) -> Vec<u8> {
         if let Some(irq) = irq {
-            let gsiv = irq as u32;
+            let irq = irq;
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
                     Name("_HID", EisaId("PNP0400"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
                         IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                        IRQNoFlags(#{irq});
                     });
                 }
             }
@@ -947,14 +947,14 @@ mod acpi_impl {
         irq: Option<u8>,
     ) -> Vec<u8> {
         if let Some(irq) = irq {
-            let gsiv = irq as u32;
+            let irq = irq;
             fstart_acpi_macros::acpi_dsl! {
                 Device(#{name}) {
                     Name("_HID", EisaId("PNP0C02"));
                     Name("_UID", #{uid});
                     Name("_CRS", ResourceTemplate {
                         IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{gsiv});
+                        IRQNoFlags(#{irq});
                     });
                 }
             }

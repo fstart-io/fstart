@@ -121,6 +121,7 @@ pub struct IsaIrq {
     active_high: bool,
     exclusive: bool,
     irq_mask: u16,
+    with_flags: bool,
 }
 
 impl IsaIrq {
@@ -131,6 +132,18 @@ impl IsaIrq {
             active_high,
             exclusive,
             irq_mask: 1u16 << irq,
+            with_flags: true,
+        }
+    }
+
+    /// Create a small IRQNoFlags descriptor for one ISA IRQ line.
+    pub const fn no_flags(irq: u8) -> Self {
+        Self {
+            edge: true,
+            active_high: true,
+            exclusive: true,
+            irq_mask: 1u16 << irq,
+            with_flags: false,
         }
     }
 
@@ -141,18 +154,27 @@ impl IsaIrq {
             active_high,
             exclusive,
             irq_mask,
+            with_flags: true,
         }
     }
 }
 
 impl Aml for IsaIrq {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        // Small item: type=0, name=4 (IRQ), length=3 => 0x23.
-        sink.byte(0x23);
-        sink.word(self.irq_mask);
-        let flags =
-            (self.edge as u8) | ((!self.active_high as u8) << 3) | ((!self.exclusive as u8) << 4);
-        sink.byte(flags);
+        if self.with_flags {
+            // Small item: type=0, name=4 (IRQ), length=3 => 0x23.
+            sink.byte(0x23);
+            sink.word(self.irq_mask);
+            let flags = (self.edge as u8)
+                | ((!self.active_high as u8) << 3)
+                | ((!self.exclusive as u8) << 4);
+            sink.byte(flags);
+        } else {
+            // Small item IRQNoFlags, length=2 => 0x22. ACPI defaults this to
+            // edge-triggered, active-high, exclusive for ISA IRQs.
+            sink.byte(0x22);
+            sink.word(self.irq_mask);
+        }
     }
 }
 
