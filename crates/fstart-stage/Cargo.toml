@@ -81,6 +81,7 @@ ffs = [
   "fstart-capabilities/ffs",
   "dep:fstart-ffs",
   "fstart-platform-x86_64?/early-ffs-anchor",
+  "fstart-platform-x86_64?/postcar-stage-load",
 ]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
 sha2-digest = [

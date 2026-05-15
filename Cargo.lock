@@ -1066,9 +1066,11 @@ name = "fstart-platform-x86_64"
 version = "0.1.0"
 dependencies = [
  "fstart-arch-x86",
+ "fstart-ffs",
  "fstart-log",
  "fstart-pio",
  "fstart-services",
+ "fstart-types",
  "ufmt",
 ]
 
