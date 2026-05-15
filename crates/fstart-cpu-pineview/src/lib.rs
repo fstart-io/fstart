@@ -11,8 +11,8 @@
 
 #![no_std]
 
-use fstart_arch::msr::{rdmsr, wrmsr};
-use fstart_arch::mtrr;
+use fstart_arch_x86::msr::{rdmsr, wrmsr};
+use fstart_arch_x86::mtrr;
 use fstart_mp::CpuOps;
 
 // ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ impl CpuOps for PineviewCpuOps {
     fn init_cpu(&self) {
         // SAFETY: MP init runs this on every active logical CPU.  All CPUs
         // receive the same low-DRAM WB MTRR layout before OS handoff.
-        unsafe { mtrr::setup_low_1g_wb() };
+        unsafe { mtrr::setup_ram_wb() };
         log_mtrr_solution("per-CPU ramstage layout");
         configure_c_states(self.pmbase);
         configure_misc();

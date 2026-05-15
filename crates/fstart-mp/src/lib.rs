@@ -126,7 +126,10 @@ impl CpuOps for GenericX86CpuOps {
     const NAME: &'static str = "generic-x86";
 
     fn init_cpu(&self) {
-        fstart_log::info!("cpu: generic x86 init complete");
+        // SAFETY: MP init runs this on every active CPU after memory detection
+        // has published the WB RAM ranges.
+        unsafe { fstart_arch_x86::mtrr::setup_ram_wb() };
+        fstart_log::info!("cpu: generic x86 MTRR setup complete");
     }
 }
 

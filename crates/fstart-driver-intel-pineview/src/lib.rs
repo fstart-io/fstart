@@ -20,7 +20,7 @@ pub mod raminit;
 use core::cell::UnsafeCell;
 use core::ptr;
 
-use fstart_arch::mtrr;
+use fstart_arch_x86::mtrr;
 use fstart_driver_pci_ecam::{PciEcam, PciEcamConfig};
 use fstart_ecam as ecam;
 use fstart_mp::{SmmError, SmmInfo, SmmOps};
@@ -31,6 +31,18 @@ use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::pci::{PciAddr, PciRootBus, PciWindow};
 use fstart_services::{PciHost, ServiceError, SmBus};
 use serde::{Deserialize, Serialize};
+
+fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
+    let mut ranges = [(0u64, 0u64); 8];
+    let mut count = 0usize;
+    for entry in entries {
+        if entry.kind == E820Kind::Ram as u32 && entry.size != 0 && count < ranges.len() {
+            ranges[count] = (entry.addr, entry.size);
+            count += 1;
+        }
+    }
+    mtrr::set_ram_wb_ranges(&ranges[..count]);
+}
 
 /// Intel integrated graphics configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -504,7 +516,7 @@ impl MemoryDetector for IntelPineview {
         }
 
         let count = self.build_e820_entries(entries, usable_top, touud, tolud)?;
-        mtrr::set_low_wb_top(tolud as u64);
+        publish_mtrr_wb_ranges(&entries[..count]);
         fstart_log::info!(
             "pineview: detected memory map (usable top {:#x}, TOLUD {:#x}, TOM {:#x}, TOUUD {:#x})",
             usable_top,
@@ -547,9 +559,12 @@ impl MemoryController for IntelPineview {
     fn memory_test(&self) -> Result<(), ServiceError> {
         let tolud = self.tolud();
         let usable_top = self.usable_low_memory_top();
-        mtrr::set_low_wb_top(tolud as u64);
+        let mut entries = [E820Entry::zeroed(); 6];
+        if let Ok(count) = self.build_e820_entries(&mut entries, usable_top, self.touud(), tolud) {
+            publish_mtrr_wb_ranges(&entries[..count]);
+        }
         fstart_log::info!(
-            "pineview: dynamic WB MTRR top set to {:#x} (usable top {:#x})",
+            "pineview: dynamic WB MTRR ranges set (TOLUD {:#x}, usable top {:#x})",
             tolud,
             usable_top
         );

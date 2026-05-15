@@ -65,10 +65,6 @@ const PAM0: u16 = 0x90;
 /// into this table.
 const Q35_IRQS: [u8; 8] = [10, 10, 11, 11, 10, 10, 11, 11];
 
-/// Default 64-bit MMIO limit: 39-bit physical = 512 GiB.
-/// Used as a conservative fallback when CPUID detection fails.
-const MMIO64_LIMIT_DEFAULT: u64 = 0x80_0000_0000;
-
 /// Expected Q35 MCH (host bridge) PCI vendor/device ID.
 /// Intel 82G33/G31/P35/P31 Express DRAM Controller (device 29c0).
 const Q35_MCH_VID: u16 = 0x8086;
@@ -302,57 +298,6 @@ impl Q35HostBridge {
         (tolud, touud)
     }
 
-    /// Read the CPU's physical address width from CPUID leaf 0x80000008.
-    ///
-    /// Returns the MMIO64 limit (1 << phys_bits). Falls back to
-    /// `MMIO64_LIMIT_DEFAULT` (39-bit / 512 GiB) if the leaf is
-    /// unavailable.
-    fn detect_phys_addr_limit() -> u64 {
-        // SAFETY: CPUID is always available on x86_64.
-        let (max_ext_leaf, _, _, _) = unsafe { Self::cpuid(0x80000000) };
-        if max_ext_leaf < 0x80000008 {
-            fstart_log::info!(
-                "Q35: CPUID 0x80000008 unavailable, using {}-bit default",
-                MMIO64_LIMIT_DEFAULT.trailing_zeros()
-            );
-            return MMIO64_LIMIT_DEFAULT;
-        }
-        let (eax, _, _, _) = unsafe { Self::cpuid(0x80000008) };
-        let phys_bits = eax & 0xFF;
-        let limit = if phys_bits >= 64 {
-            u64::MAX
-        } else {
-            1u64 << phys_bits
-        };
-        fstart_log::info!("Q35: physical address width: {} bits", phys_bits);
-        limit
-    }
-
-    /// Execute CPUID instruction.
-    ///
-    /// # Safety
-    /// Only valid on x86/x86_64 targets.
-    #[inline]
-    unsafe fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
-        let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
-        unsafe {
-            core::arch::asm!(
-                "push rbx",
-                "cpuid",
-                "mov {ebx_out:e}, ebx",
-                "pop rbx",
-                in("eax") leaf,
-                in("ecx") 0u32,
-                ebx_out = out(reg) ebx,
-                lateout("eax") eax,
-                lateout("ecx") ecx,
-                lateout("edx") edx,
-                options(nomem),
-            );
-        }
-        (eax, ebx, ecx, edx)
-    }
-
     /// Verify that the MCH at bus 0, dev 0, fn 0 is the expected Q35 device.
     ///
     /// Reads the PCI vendor/device ID via legacy CF8/CFC before ECAM is
@@ -409,11 +354,16 @@ impl Q35HostBridge {
 
         // MMIO64 starts above all RAM (including high RAM above 4 GiB).
         // Use CPUID to determine the CPU's actual physical address width.
-        let mmio64_limit = Self::detect_phys_addr_limit();
+        let mmio64_limit = fstart_arch_x86::physical_address_limit();
         let mmio64_base = touud;
         let mmio64_size = mmio64_limit.saturating_sub(mmio64_base);
 
-        fstart_log::info!("Q35: TOLUD={:#x} TOUUD={:#x}", tolud, touud);
+        fstart_log::info!(
+            "Q35: TOLUD={:#x} TOUUD={:#x} phys_bits={}",
+            tolud,
+            touud,
+            fstart_arch_x86::physical_address_bits()
+        );
         fstart_log::info!("Q35: MMIO32={:#x}..{:#x}", mmio32_base, MMIO32_LIMIT);
         fstart_log::info!(
             "Q35: MMIO64={:#x}..{:#x}",
