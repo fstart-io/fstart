@@ -7,6 +7,7 @@
 //! the dock-side LPC bus when present, and enables the dock PC87392 COM1 before
 //! the NS16550 console driver probes port 0x3f8.
 
+#![allow(clippy::result_unit_err)]
 #![no_std]
 
 use fstart_services::device::{Device, DeviceError};

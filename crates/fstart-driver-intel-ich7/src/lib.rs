@@ -12,6 +12,7 @@
 //! All PCI config access goes through ECAM MMIO (the Pineview
 //! `early_init` has already enabled PCIEXBAR before this driver runs).
 
+#![allow(clippy::empty_line_after_doc_comments, clippy::unnecessary_cast)]
 #![no_std]
 
 use fstart_ecam as ecam;

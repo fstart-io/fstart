@@ -6,6 +6,7 @@
 //! `sdram_new_trd`, `sdram_enhancedmode`, `sdram_powersettings`,
 //! `sdram_programddr`, `sdram_programdqdqs`, `sdram_periodic_rcomp`.
 
+#![allow(clippy::needless_range_loop)]
 use super::{PllParam, SysInfo};
 use crate::regs::{mchbar, MchBar};
 use fstart_ecam as ecam;

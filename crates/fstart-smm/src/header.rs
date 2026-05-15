@@ -70,6 +70,7 @@ pub struct SmmImageHeader {
 
 impl SmmImageHeader {
     /// Construct a header with ABI constants filled in.
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         flags: u32,
         image_size: u32,

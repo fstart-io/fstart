@@ -13,6 +13,7 @@
 //!
 //! Register definitions live in the crate-local [`regs`] module.
 
+#![allow(clippy::empty_line_after_doc_comments)]
 #![no_std]
 
 pub mod raminit;

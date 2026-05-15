@@ -26,6 +26,7 @@
 //! ([`ComPortConfig`], [`KbcConfig`], etc.) and the driver maps names
 //! to the chip's LDNs via the trait's associated constants.
 
+#![allow(clippy::redundant_locals)]
 #![no_std]
 
 use fstart_services::device::{BusDevice, DeviceError};

@@ -15,7 +15,7 @@ default = []
 riscv64 = ["dep:fstart-platform-riscv64"]
 aarch64 = ["dep:fstart-platform-aarch64"]
 armv7 = ["dep:fstart-platform-armv7"]
-x86_64 = ["dep:fstart-platform-x86_64"]
+x86_64 = ["dep:fstart-platform-x86_64", "dep:fstart-pio"]
 # Allwinner sunxi support — adds fstart-soc-sunxi and enables the sunxi
 # entry point on platforms that support it (AArch64 RMR switch for H5/A64,
 # ARMv7 eGON boot for A20/H3, RISC-V eGON boot for D1).  Driven by
@@ -136,7 +136,7 @@ ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
 fstart-stage-runtime = { workspace = true }
 fstart-types = { workspace = true }
-fstart-pio = { workspace = true }
+fstart-pio = { workspace = true, optional = true }
 heapless = { workspace = true }
 
 # Platform crates (exactly one enabled via feature)

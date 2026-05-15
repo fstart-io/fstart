@@ -1405,7 +1405,6 @@ fn fdt_prepare_override_body(ctx: &BoardCtx<'_>, platform: Platform) -> TokenStr
 /// trampoline is a plan bug (unreachable — the executor dispatches
 /// `StageLoad` only if the plan carries the capability).  Emits a
 /// `todo!()` in that case.
-
 fn x86_postcar_config_tokens(ctx: &BoardCtx<'_>) -> TokenStream {
     let ram_ranges: Vec<TokenStream> = ctx
         .config
@@ -3900,8 +3899,8 @@ mod tests {
         let src = adapter_source_for_board("qemu-riscv64");
         // Per-arm fast path: if already inited, return Ok.
         assert!(
-            src.contains("if self._inited.contains"),
-            "init_device arms must check self._inited; got:\n{src}"
+            src.contains("if this._inited.contains") || src.contains("if self._inited.contains"),
+            "init_device arms must check the init mask; got:\n{src}"
         );
         // Construction path uses Device::new (or ::new_on_bus for bus
         // children — but qemu-riscv64 is flat).  prettyplease emits
@@ -3916,8 +3915,8 @@ mod tests {
             "init_device must call .init() on each device; got:\n{src}"
         );
         assert!(
-            src.contains("self._inited.set"),
-            "init_device must set self._inited; got:\n{src}"
+            src.contains("this._inited.set") || src.contains("self._inited.set"),
+            "init_device must set the init mask; got:\n{src}"
         );
     }
 

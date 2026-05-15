@@ -382,7 +382,7 @@ fn ia32_fsb_x3() -> Option<u32> {
             ][idx],
             _ => None,
         }?;
-        return Some(100 * ((3 * fsb + 50) / 100));
+        Some(100 * ((3 * fsb + 50) / 100))
     }
 
     #[cfg(not(target_os = "none"))]
@@ -395,7 +395,7 @@ fn cpu_model_id() -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
         let (eax, _, _, _) = fstart_arch_x86::cpuid(1);
-        return (eax >> 4) & 0xffff;
+        (eax >> 4) & 0xffff
     }
 
     #[cfg(not(target_arch = "x86_64"))]
