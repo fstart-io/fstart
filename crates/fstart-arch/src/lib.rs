@@ -19,7 +19,7 @@ pub fn udelay(us: u32) {
     }
 }
 
-/// x86-specific TSC delay helpers live in `fstart-arch-x86`.
+// x86-specific TSC delay helpers live in `fstart-arch-x86`.
 // ---------------------------------------------------------------------------
 // mdelay — millisecond delay
 // ---------------------------------------------------------------------------

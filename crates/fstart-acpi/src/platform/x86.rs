@@ -291,6 +291,7 @@ mod tests {
             legacy_devices: true,
             sci_irq: 9,
             pmbase: 0x0500,
+            acpi_smi: None,
         }
     }
 

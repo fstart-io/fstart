@@ -305,13 +305,6 @@ fn generate_imports(
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::PciRootBus; });
     }
 
-    // Import BusDevice trait when any device has a parent (bus child).
-    // BusDevice provides new_on_bus() used by child device construction.
-    let has_bus_children = devices.iter().any(|d| d.parent.is_some());
-    if has_bus_children {
-        tokens.extend(quote! { use fstart_services::device::BusDevice; });
-    }
-
     let has_framebuffer = devices
         .iter()
         .any(|d| d.services.iter().any(|s| s.as_str() == "Framebuffer"));

@@ -19,6 +19,7 @@ use fstart_types::{BoardConfig, DeviceConfig};
 /// 2. Collects extra tables (SPCR, MCFG) from those devices
 /// 3. Collects DSDT AML from ACPI-only extra devices (AHCI, xHCI, PCIe)
 /// 4. Calls the platform assembler to build all tables and write to DRAM
+#[allow(dead_code)]
 pub(in crate::stage_gen) fn generate_acpi_prepare(
     config: &BoardConfig,
     devices: &[DeviceConfig],

@@ -39,6 +39,7 @@
 //! Since you only list pins that are GPIO (not Native), the default for
 //! `mode` is `Gpio` — if you list a pin, you want it in GPIO mode.
 
+#![allow(clippy::derivable_impls)]
 #![no_std]
 
 use heapless::Vec as HVec;

@@ -121,7 +121,7 @@
                 ),
             ],
             load_addr: 0x00000000,
-            stack_size: 0x1000,
+            stack_size: 0x800,
             runs_from: Ram,
         ),
         // Stage 2: main — runs from DRAM after being loaded by bootblock.

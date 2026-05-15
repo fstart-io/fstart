@@ -728,9 +728,7 @@ pub fn build_efi_memory_map_from_e820(
         } else {
             // Split around firmware holes.
             let mut cursor = r_start;
-            for i in 0..n_holes {
-                let (h_start, h_end) = holes[i];
-
+            for &(h_start, h_end) in holes.iter().take(n_holes) {
                 // Free RAM before this hole
                 if cursor < h_start && idx < buf.len() {
                     buf[idx] = MemoryRegion {

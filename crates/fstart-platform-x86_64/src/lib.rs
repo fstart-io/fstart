@@ -17,6 +17,7 @@
 //! MTRRs are no-ops. The firmware runs XIP from pflash mapped at the
 //! top of the 4 GiB address space.
 
+#![allow(clippy::doc_lazy_continuation)]
 #![no_std]
 
 pub mod car;

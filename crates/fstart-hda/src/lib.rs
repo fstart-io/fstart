@@ -29,6 +29,7 @@
 //! ])])
 //! ```
 
+#![allow(clippy::derivable_impls, clippy::identity_op)]
 #![no_std]
 
 use core::ptr;

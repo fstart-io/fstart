@@ -353,6 +353,9 @@ fn generate_xip_layout(
     writeln!(out, "        _writable_end = .;").unwrap();
     writeln!(out, "    }} > RAM\n").unwrap();
 
+    // AArch64 page tables are cleared explicitly by entry code.
+    write_page_tables_section(out, "RAM", platform);
+
     // Stack: grows downward from top of RAM region.
     write_stack(out, stack_size, "RAM");
 
@@ -472,6 +475,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
+        write_page_tables_section(out, "RWDATA", platform);
         write_stack(out, stack_size, "RWDATA");
         write_x86_car_symbols(out, platform, has_x86_car);
         writeln!(out, "}}").unwrap();
@@ -493,6 +497,7 @@ fn generate_ram_layout(
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
+        write_page_tables_section(out, "RAM", platform);
         write_stack(out, stack_size, "RAM");
         write_x86_car_symbols(out, platform, has_x86_car);
         writeln!(out, "}}").unwrap();
@@ -541,6 +546,17 @@ fn write_data_section(out: &mut String, region: &str) {
     // For RAM-only layouts, _data_load == _data_start (no ROM-to-RAM copy
     // needed). The _start assembly's copy loop will skip when src == dst.
     writeln!(out, "    _data_load = LOADADDR(.data);\n").unwrap();
+}
+
+fn write_page_tables_section(out: &mut String, region: &str, platform: Platform) {
+    if platform != Platform::Aarch64 {
+        return;
+    }
+    writeln!(out, "    .page_tables (NOLOAD) : ALIGN(4096) {{").unwrap();
+    writeln!(out, "        _page_tables_start = .;").unwrap();
+    writeln!(out, "        KEEP(*(.page_tables))").unwrap();
+    writeln!(out, "        _page_tables_end = .;").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
 }
 
 fn write_bss_section(out: &mut String, region: &str) {

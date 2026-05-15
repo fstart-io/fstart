@@ -687,8 +687,7 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
 
     mch.setbits32(mchbar::SHPENDREG, 0x1C00 | (0x1F << 5));
 
-    let v = mch.read8(mchbar::SHPAGECTRL);
-    mch.write8(mchbar::SHPAGECTRL, (v & !0xFF) | 0x40);
+    mch.write8(mchbar::SHPAGECTRL, 0x40);
     let v = mch.read8(mchbar::SHPAGECTRL + 1);
     mch.write8(mchbar::SHPAGECTRL + 1, (v & !0x07) | 0x05);
     let v = mch.read8(mchbar::SHCMPLWRCMD);

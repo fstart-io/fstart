@@ -53,6 +53,12 @@
 //! // timing still valid, all CPUs configured
 //! ```
 
+#![allow(
+    clippy::declare_interior_mutable_const,
+    clippy::doc_lazy_continuation,
+    clippy::missing_transmute_annotations,
+    clippy::needless_range_loop
+)]
 #![no_std]
 
 use core::marker::PhantomData;
