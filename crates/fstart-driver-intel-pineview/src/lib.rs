@@ -21,12 +21,14 @@ use core::cell::UnsafeCell;
 use core::ptr;
 
 use fstart_arch::mtrr;
+use fstart_driver_pci_ecam::{PciEcam, PciEcamConfig};
 use fstart_ecam as ecam;
 use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
 use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
+use fstart_services::pci::{PciAddr, PciRootBus, PciWindow};
 use fstart_services::{PciHost, ServiceError, SmBus};
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +92,12 @@ const APM_CNT: u16 = 0x00b2;
 const SMM_DEFAULT_SMBASE: u64 = 0x30000;
 const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
 const EM64T101_SMBASE_SAVE_STATE_OFFSET: u16 = 0xfef8;
+const PCI_ECAM_SIZE: u64 = 0x1000_0000;
+const PCI_MMIO32_FALLBACK_BASE: u64 = 0x8000_0000;
+const PCI_PIO_BASE: u64 = 0x1000;
+const PCI_PIO_SIZE: u64 = 0xf000;
+const PCI_BUS_START: u8 = 0;
+const PCI_BUS_END: u8 = 0xff;
 
 const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
     smbase: 0,
@@ -119,6 +127,7 @@ pub struct IntelPineview {
     config: IntelPineviewConfig,
     /// Detected DRAM size (bytes), populated by `init()`.
     detected_size: u64,
+    pci: Option<PciEcam>,
 }
 
 // SAFETY: Driver holds no unsynchronized shared state; MMIO and PCI
@@ -351,6 +360,7 @@ impl Device for IntelPineview {
         Ok(Self {
             config: config.clone(),
             detected_size: 0,
+            pci: None,
         })
     }
 
@@ -548,6 +558,44 @@ impl MemoryController for IntelPineview {
     }
 }
 
+impl PciRootBus for IntelPineview {
+    fn init_bus(&mut self) -> Result<(), ServiceError> {
+        self.ensure_pci_ecam()?.init_bus()
+    }
+
+    fn config_read32(&self, addr: PciAddr, reg: u16) -> Result<u32, ServiceError> {
+        self.pci_ecam()?.config_read32(addr, reg)
+    }
+
+    fn config_write32(&self, addr: PciAddr, reg: u16, val: u32) -> Result<(), ServiceError> {
+        self.pci_ecam()?.config_write32(addr, reg, val)
+    }
+
+    fn ecam_base(&self) -> u64 {
+        self.config.ecam_base
+    }
+
+    fn ecam_size(&self) -> u64 {
+        PCI_ECAM_SIZE
+    }
+
+    fn bus_start(&self) -> u8 {
+        PCI_BUS_START
+    }
+
+    fn bus_end(&self) -> u8 {
+        PCI_BUS_END
+    }
+
+    fn device_count(&self) -> usize {
+        self.pci.as_ref().map_or(0, PciRootBus::device_count)
+    }
+
+    fn windows(&self) -> &[PciWindow] {
+        self.pci.as_ref().map_or(&[], PciRootBus::windows)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Ramstage helpers — memory map readback
 // ---------------------------------------------------------------------------
@@ -659,6 +707,36 @@ impl IntelPineview {
     /// Enable SERR on the PCI domain root.
     pub fn enable_serr(&self) {
         ecam::PciDevBdf::new(0, 0, 0).or16(0x04, 1 << 8);
+    }
+
+    fn pci_ecam_config(&self) -> PciEcamConfig {
+        PciEcamConfig {
+            ecam_base: self.config.ecam_base,
+            ecam_size: PCI_ECAM_SIZE,
+            // Size 0 asks PciEcam to derive the 32-bit aperture from the
+            // runtime e820 map published by Pineview MemoryDetect.
+            mmio32_base: PCI_MMIO32_FALLBACK_BASE,
+            mmio32_size: 0,
+            mmio64_base: 0,
+            mmio64_size: 0,
+            // Reserve legacy/LPC fixed decodes below 0x1000.
+            pio_base: PCI_PIO_BASE,
+            pio_size: PCI_PIO_SIZE,
+            bus_start: PCI_BUS_START,
+            bus_end: PCI_BUS_END,
+        }
+    }
+
+    fn ensure_pci_ecam(&mut self) -> Result<&mut PciEcam, ServiceError> {
+        if self.pci.is_none() {
+            let config = self.pci_ecam_config();
+            self.pci = Some(PciEcam::new(&config).map_err(|_| ServiceError::HardwareError)?);
+        }
+        self.pci.as_mut().ok_or(ServiceError::NotInitialized)
+    }
+
+    fn pci_ecam(&self) -> Result<&PciEcam, ServiceError> {
+        self.pci.as_ref().ok_or(ServiceError::NotInitialized)
     }
 
     // ---------------------------------------------------------------

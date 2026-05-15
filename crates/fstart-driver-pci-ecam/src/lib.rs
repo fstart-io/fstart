@@ -19,9 +19,7 @@
 
 #![no_std]
 
-extern crate alloc;
-
-use alloc::vec::Vec;
+use heapless::Vec as HVec;
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::E820Kind;
@@ -144,6 +142,7 @@ impl ResourcePool {
 /// Three is typical (low MMIO, high MMIO, I/O) but a few extra slots
 /// accommodate unusual platforms.
 const MAX_WINDOWS: usize = 8;
+const MAX_PCI_DEVICES: usize = 128;
 
 /// PCI ECAM host bridge driver.
 pub struct PciEcam {
@@ -157,7 +156,7 @@ pub struct PciEcam {
     /// Decoded address windows (original config values, not modified by allocation).
     windows: [PciWindow; MAX_WINDOWS],
     window_count: usize,
-    devices: Vec<PciDev>,
+    devices: HVec<PciDev, MAX_PCI_DEVICES>,
     /// Next bus number to assign to a bridge.
     next_bus: u8,
 }
@@ -437,7 +436,10 @@ impl PciEcam {
                         );
                     }
 
-                    self.devices.push(pci_dev);
+                    if self.devices.push(pci_dev).is_err() {
+                        fstart_log::error!("PCI: device table full; remaining devices skipped");
+                        return;
+                    }
                 }
             }
         }
@@ -757,6 +759,28 @@ fn default_mmio32_window_from_e820(limit: u64) -> Option<(u64, u64)> {
     Some((base, limit - base))
 }
 
+impl PciEcam {
+    /// Enumerate the PCI hierarchy, allocate BAR resources, and enable decode.
+    pub fn enumerate_and_allocate(&mut self) -> Result<(), DeviceError> {
+        fstart_log::info!(
+            "PCI: enumerating buses {}..{}",
+            self.bus_start,
+            self.bus_end
+        );
+        self.enumerate_bus(self.bus_start);
+
+        fstart_log::info!("PCI: {} device(s) found", self.devices.len());
+        if !self.devices.is_empty() {
+            fstart_log::info!("PCI: allocating resources...");
+            self.allocate_resources();
+            self.log_resource_result();
+            self.log_devices();
+        }
+
+        Ok(())
+    }
+}
+
 impl Device for PciEcam {
     const NAME: &'static str = "pci-ecam";
     const COMPATIBLE: &'static [&'static str] = &["pci-host-ecam-generic"];
@@ -825,27 +849,12 @@ impl Device for PciEcam {
             io_pool: ResourcePool::new(config.pio_base, config.pio_size),
             windows,
             window_count: wc,
-            devices: Vec::new(),
+            devices: HVec::new(),
             next_bus: config.bus_start + 1,
         })
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        fstart_log::info!(
-            "PCI: enumerating buses {}..{}",
-            self.bus_start,
-            self.bus_end
-        );
-        self.enumerate_bus(self.bus_start);
-
-        fstart_log::info!("PCI: {} device(s) found", self.devices.len());
-        if !self.devices.is_empty() {
-            fstart_log::info!("PCI: allocating resources...");
-            self.allocate_resources();
-            self.log_resource_result();
-            self.log_devices();
-        }
-
         Ok(())
     }
 }
@@ -855,6 +864,11 @@ impl Device for PciEcam {
 // -----------------------------------------------------------------------
 
 impl PciRootBus for PciEcam {
+    fn init_bus(&mut self) -> Result<(), ServiceError> {
+        self.enumerate_and_allocate()
+            .map_err(|_| ServiceError::HardwareError)
+    }
+
     fn config_read32(&self, addr: PciAddr, reg: u16) -> Result<u32, ServiceError> {
         Ok(self.read32(addr, reg))
     }

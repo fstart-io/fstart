@@ -84,27 +84,7 @@
                 ck505_pre_raminit: true,
                 acpi_name: "MCHC",
             )),
-            services: ["MemoryController", "MemoryDetector", "PciHost"],
-        ),
-        (
-            name: "pci0",
-            driver: PciEcam((
-                ecam_base: 0xE0000000,
-                ecam_size: 0x10000000,
-                // Size 0 asks the ECAM allocator to derive the aperture from
-                // the runtime e820 map published by Pineview ramstage init.
-                mmio32_base: 0x80000000,
-                mmio32_size: 0x0,
-                mmio64_base: 0x0,
-                mmio64_size: 0x0,
-                // Leave 0x0000..0x0fff for legacy/LPC fixed decodes; use the
-                // remaining 60 KiB I/O port space for PCI BAR allocation.
-                pio_base: 0x1000,
-                pio_size: 0xF000,
-                bus_start: 0,
-                bus_end: 0xFF,
-            )),
-            services: ["PciRootBus"],
+            services: ["MemoryController", "MemoryDetector", "PciHost", "PciRootBus", "SmmOps"],
         ),
         (
             name: "southbridge",
@@ -331,7 +311,7 @@
                 // E820 state from DRAM controller registers programmed by
                 // bootblock raminit. Bootblock BSS globals do not carry over.
                 MemoryDetect( device: "northbridge" ),
-                PciInit( device: "pci0" ),
+                PciInit( device: "northbridge" ),
                 // Coreboot ramstage-equivalent chipset/device finalization:
                 // SATA/USB/HDA, PM/C-state setup, PCIe root-port tuning,
                 // then SPI/SMI/TCO/BIOS-interface lockdown.

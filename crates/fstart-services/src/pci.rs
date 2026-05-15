@@ -163,6 +163,11 @@ impl PciWindow {
 /// allocation.  The trait methods below allow post-init queries and raw
 /// config-space access for consumers that need it.
 pub trait PciRootBus: Send + Sync {
+    /// Enumerate the root bus and allocate PCI resources.
+    fn init_bus(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
     /// Read a 32-bit PCI configuration register via ECAM.
     fn config_read32(&self, addr: PciAddr, reg: u16) -> Result<u32, ServiceError>;
 

@@ -1540,8 +1540,15 @@ fn pci_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
             let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
             let dev_name = dev.name.as_str();
             let drv_name = inst.meta().name;
+            let field = format_ident!("{}", dev.name.as_str());
             quote! {
                 #id_lit => {
+                    let dev = self.#field
+                        .as_mut()
+                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                    use fstart_services::PciRootBus as _PciRootBus;
+                    _PciRootBus::init_bus(dev)
+                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
                     fstart_log::info!(
                         "PCI init complete: {} ({})",
                         #dev_name,

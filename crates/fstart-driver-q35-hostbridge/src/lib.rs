@@ -318,7 +318,7 @@ impl Q35HostBridge {
             return MMIO64_LIMIT_DEFAULT;
         }
         let (eax, _, _, _) = unsafe { Self::cpuid(0x80000008) };
-        let phys_bits = (eax & 0xFF) as u32;
+        let phys_bits = eax & 0xFF;
         let limit = if phys_bits >= 64 {
             u64::MAX
         } else {
@@ -698,18 +698,7 @@ impl Device for Q35HostBridge {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        // Read e820 data from the global state populated by MemoryDetect.
-        // SAFETY: single-threaded firmware init; MemoryDetect runs before
-        // PciInit in the capability pipeline order.
-        let state = unsafe { fstart_services::memory_detect::e820_state() };
-        if state.count() == 0 {
-            fstart_log::error!(
-                "Q35HostBridge::init(): no e820 data available. \
-                 Ensure MemoryDetect runs before PciInit."
-            );
-            return Err(DeviceError::InitFailed);
-        }
-        self.init_with_e820(state.entries())
+        Ok(())
     }
 }
 
@@ -718,6 +707,22 @@ impl Device for Q35HostBridge {
 // -----------------------------------------------------------------------
 
 impl PciRootBus for Q35HostBridge {
+    fn init_bus(&mut self) -> Result<(), ServiceError> {
+        // Read e820 data from the global state populated by MemoryDetect.
+        // SAFETY: single-threaded firmware init; MemoryDetect runs before
+        // PciInit in the capability pipeline order.
+        let state = unsafe { fstart_services::memory_detect::e820_state() };
+        if state.count() == 0 {
+            fstart_log::error!(
+                "Q35HostBridge::init_bus(): no e820 data available. \
+                 Ensure MemoryDetect runs before PciInit."
+            );
+            return Err(ServiceError::NotInitialized);
+        }
+        self.init_with_e820(state.entries())
+            .map_err(|_| ServiceError::HardwareError)
+    }
+
     fn config_read32(&self, addr: PciAddr, reg: u16) -> Result<u32, ServiceError> {
         self.ecam.config_read32(addr, reg)
     }
