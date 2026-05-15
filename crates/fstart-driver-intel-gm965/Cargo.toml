@@ -15,10 +15,14 @@ fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-ecam = { workspace = true }
 fstart-log = { workspace = true }
+fstart-lapic = { workspace = true }
 fstart-mmio = { workspace = true }
+fstart-mp = { workspace = true }
 fstart-pio = { workspace = true }
+fstart-pmio-ich = { workspace = true }
 fstart-services = { workspace = true }
 fstart-smbus-intel = { workspace = true }
+fstart-smm = { workspace = true }
 fstart-spd = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }

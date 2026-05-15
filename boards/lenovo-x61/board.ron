@@ -49,7 +49,7 @@
                 ),
                 acpi_name: Some("PCI0"),
             )),
-            services: ["MemoryController", "PciHost"],
+            services: ["MemoryController", "MemoryDetector", "PciHost", "SmmOps"],
         ),
         (
             name: "southbridge",
@@ -252,7 +252,15 @@
             capabilities: [
                 ConsoleInit( device: "uart0" ),
                 DriverInit,
+                // Rebind ramstage-local ECAM/chipset BAR access before reading
+                // GM965 TOM/TOLUD/TSEG registers for the runtime e820 map.
+                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+                MemoryDetect( device: "northbridge" ),
                 LateDriverInit,
+                // GM965 now provides SmmOps, but keep permanent SMM disabled
+                // until the X61-specific I/O-trap dock/EC SMI callbacks are
+                // ported; enabling only the generic ACPI APM handler would be
+                // incomplete for this mainboard.
                 MpInit(cpu_model: "generic-x86", num_cpus: 2, smm: false),
                 AcpiPrepare,
                 SmBiosPrepare,

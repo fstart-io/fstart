@@ -755,12 +755,25 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         quote! { None }
     };
 
-    let smm_provider = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-        matches!(
-            ctx.instances[*idx].meta().name,
-            "q35-hostbridge" | "intel-pineview"
-        )
+    let explicit_smm_provider = ctx.stage_capabilities.iter().find_map(|cap| match cap {
+        Capability::MpInit {
+            smm: true,
+            smm_provider: Some(provider),
+            ..
+        } => Some(provider.as_str()),
+        _ => None,
     });
+    let smm_provider = if let Some(provider) = explicit_smm_provider {
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+            .find(|idx| ctx.devices[*idx].name.as_str() == provider)
+    } else {
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
+            ctx.devices[*idx]
+                .services
+                .iter()
+                .any(|service| service.as_str() == "SmmOps")
+        })
+    };
 
     let smm_ops_expr = if let Some(idx) = smm_provider {
         let field = format_ident!("{}", ctx.devices[idx].name.as_str());

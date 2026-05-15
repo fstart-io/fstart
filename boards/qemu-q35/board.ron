@@ -47,7 +47,7 @@
                 bus_start: 0,
                 bus_end: 255,
             )),
-            services: ["PciRootBus"],
+            services: ["PciRootBus", "SmmOps"],
             children: [
                 (
                     name: "bochs0",
@@ -71,7 +71,7 @@
             // PCI enumeration — sizes BARs, allocates MMIO/IO resources,
             // enables devices. Must appear after MemoryInit (heap required).
             PciInit( device: "pci0" ),
-            MpInit(cpu_model: "qemu-x86", num_cpus: 4, smm: true),
+            MpInit(cpu_model: "qemu-x86", num_cpus: 4, smm: true, smm_provider: Some("pci0")),
             // FFS at flash offset 0x100000 (1 MiB) — after stage code, before boot block.
             // Stage code (.text + .rodata + .ltext) occupies ~640 KiB at the
             // start of flash; 1 MiB gives headroom for growth.
