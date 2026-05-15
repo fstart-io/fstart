@@ -1,4 +1,4 @@
-//! [`CpuOps`] implementation for Intel Atom Pineview (model 106cx).
+//! Intel Atom Pineview CPU support.
 //!
 //! The Pineview is a single- or dual-core Atom with up to 4 threads
 //! (D510 = 2C/4T).  Per-CPU configuration involves:
@@ -9,7 +9,8 @@
 //!
 //! This matches coreboot's `cpu/intel/model_106cx/model_106cx_init.c`.
 
-#![no_std]
+#[cfg(feature = "acpi")]
+pub mod acpi;
 
 use fstart_arch_x86::msr::{rdmsr, wrmsr};
 use fstart_arch_x86::mtrr;

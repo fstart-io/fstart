@@ -67,7 +67,7 @@ members = [
   "crates/fstart-mp",
   "crates/fstart-smm",
   "crates/fstart-smm-image",
-  "crates/fstart-cpu-pineview",
+  "crates/fstart-cpu-intel",
 ]
 
 [workspace.package]
@@ -175,7 +175,7 @@ fstart-lapic = { path = "crates/fstart-lapic" }
 fstart-mp = { path = "crates/fstart-mp" }
 fstart-smm = { path = "crates/fstart-smm" }
 fstart-smm-image = { path = "crates/fstart-smm-image" }
-fstart-cpu-pineview = { path = "crates/fstart-cpu-pineview" }
+fstart-cpu-intel = { path = "crates/fstart-cpu-intel" }
 
 [profile.dev]
 panic = "abort"

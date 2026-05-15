@@ -818,7 +818,7 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         } else if cpu_model == "pineview" || cpu_model == "106cx" {
             #[cfg(feature = "pineview-cpu")]
             {
-                let cpu_ops = fstart_cpu_pineview::PineviewCpuOps::new(0x0500);
+                let cpu_ops = fstart_cpu_intel::pineview::PineviewCpuOps::new(0x0500);
                 let config = fstart_mp::MpConfig {
                     cpu_ops: &cpu_ops,
                     smm: smm_ops,
