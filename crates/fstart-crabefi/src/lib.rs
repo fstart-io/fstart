@@ -54,6 +54,9 @@ impl<C: fstart_services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapt
 impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
+            if byte == b'\n' {
+                let _ = self.0.write_byte(b'\r');
+            }
             let _ = self.0.write_byte(byte);
         }
         Ok(())
