@@ -18,7 +18,6 @@ fstart-hda = { workspace = true }
 heapless = { workspace = true }
 fstart-log = { workspace = true }
 fstart-mmio = { workspace = true }
-fstart-pineview-regs = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-pmio-ich = { workspace = true }
 fstart-services = { workspace = true }

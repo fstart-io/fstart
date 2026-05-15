@@ -15,7 +15,53 @@
 #![no_std]
 
 use fstart_ecam as ecam;
-use fstart_pineview_regs::Rcba;
+
+/// Sparse RCBA (Root Complex Base Address) MMIO accessor.
+struct Rcba {
+    base: usize,
+}
+
+impl Rcba {
+    const fn new(base: usize) -> Self {
+        Self { base }
+    }
+
+    #[inline]
+    fn read32(&self, off: u32) -> u32 {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
+        unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
+    }
+
+    #[inline]
+    fn write32(&self, off: u32, val: u32) {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
+        unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
+    }
+
+    #[inline]
+    fn read16(&self, off: u32) -> u16 {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
+        unsafe { fstart_mmio::read16((self.base + off as usize) as *const u16) }
+    }
+
+    #[inline]
+    fn write16(&self, off: u32, val: u16) {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
+        unsafe { fstart_mmio::write16((self.base + off as usize) as *mut u16, val) }
+    }
+
+    #[inline]
+    fn read8(&self, off: u32) -> u8 {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
+        unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
+    }
+
+    #[inline]
+    fn write8(&self, off: u32, val: u8) {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
+        unsafe { fstart_mmio::write8((self.base + off as usize) as *mut u8, val) }
+    }
+}
 
 /// ICH7 / NM10 PCI config and RCBA register constants.
 pub mod ich7 {
@@ -755,7 +801,8 @@ impl Southbridge for IntelIch7 {
         lpc.write8(0xDC, (spi & !(3 << 2)) | (2 << 2));
 
         // ---- 1. Enable SMBus (must be first — raminit reads SPD) ----
-        let smbus = I801SmBus::enable_on_ich7(self.config.smbus_base);
+        let smbus =
+            I801SmBus::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, self.config.smbus_base);
         self.smbus = Some(smbus);
 
         // ---- 2. Setup BARs ----

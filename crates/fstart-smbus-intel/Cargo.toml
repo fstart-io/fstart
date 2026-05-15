@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 fstart-ecam = { workspace = true }
 fstart-log = { workspace = true }
-fstart-pineview-regs = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
 tock-registers = { workspace = true }

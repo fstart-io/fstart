@@ -12,7 +12,7 @@
 //! - **[`EcamPci`]** — ECAM-based PCI config accessor. After the single
 //!   CF8/CFC write that enables PCIEXBAR, *all* PCI config goes here.
 
-#![no_std]
+#![allow(dead_code)]
 #![allow(clippy::modulo_one)] // tock-registers alignment test
 
 use fstart_mmio::MmioReadWrite;
@@ -209,7 +209,6 @@ impl Rcba {
 // ECAM PCI config access lives in the `fstart-ecam` crate.
 // Use `fstart_ecam::init()` then `PciDevBdf::new(b,d,f).read32(reg)` etc.
 // Re-export for convenience.
-pub use fstart_ecam as ecam;
 
 // ===================================================================
 // Host Bridge PCI config register offsets (bus 0, dev 0, func 0)
