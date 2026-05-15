@@ -25,6 +25,19 @@ use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::{MemoryController, PciHost, ServiceError};
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::ReadWriteable;
+
+fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
+    let mut ranges = [(0u64, 0u64); 8];
+    let mut count = 0usize;
+    for entry in entries {
+        if entry.kind == E820Kind::Ram as u32 && entry.size != 0 && count < ranges.len() {
+            ranges[count] = (entry.addr, entry.size);
+            count += 1;
+        }
+    }
+    fstart_arch_x86::mtrr::set_ram_wb_ranges(&ranges[..count]);
+}
+
 use tock_registers::{register_bitfields, register_structs};
 
 /// GM965 host bridge PCI configuration register offsets and bit definitions.
@@ -1135,7 +1148,7 @@ impl IntelGm965 {
     fn cpu_supports_slfm(&self) -> bool {
         // SAFETY: MSR 0xee is the Intel Core/Core2 extended config MSR used by
         // coreboot to detect SLFM support on this platform.
-        unsafe { (fstart_arch::msr::rdmsr(0x00ee) & (1 << 27)) != 0 }
+        unsafe { (fstart_arch_x86::msr::rdmsr(0x00ee) & (1 << 27)) != 0 }
     }
 
     #[cfg(not(target_arch = "x86_64"))]
@@ -1537,7 +1550,7 @@ impl IntelGm965 {
         igd.and8_or8(hostbridge::IGD_MSAC, !0x3, 0x2);
         self.init_igd_opregion();
         igd.write8(hostbridge::IGD_GDRST, 1);
-        fstart_arch::udelay(50);
+        fstart_arch_x86::udelay(50);
         igd.write8(hostbridge::IGD_GDRST, 0);
         let mut timeout = 1_000_000u32;
         while (igd.read8(hostbridge::IGD_GDRST) & 1) != 0 && timeout != 0 {
@@ -1641,7 +1654,7 @@ impl MemoryDetector for IntelGm965 {
         }
 
         let count = self.build_e820_entries(entries, usable_top, touud, tolud)?;
-        fstart_arch::mtrr::set_low_wb_top(u64::from(tolud));
+        publish_mtrr_wb_ranges(&entries[..count]);
         fstart_log::info!(
             "gm965: detected memory map usable={:#x} TOLUD={:#x} TOM={:#x} TOUUD={:#x} TSEG={:#x}+{:#x}",
             usable_top,

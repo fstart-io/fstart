@@ -478,6 +478,10 @@ name = "fstart-arch"
 version = "0.1.0"
 
 [[package]]
+name = "fstart-arch-x86"
+version = "0.1.0"
+
+[[package]]
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
@@ -520,7 +524,7 @@ dependencies = [
 name = "fstart-cpu-pineview"
 version = "0.1.0"
 dependencies = [
- "fstart-arch",
+ "fstart-arch-x86",
  "fstart-log",
  "fstart-mp",
  "ufmt",
@@ -639,7 +643,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
- "fstart-arch",
+ "fstart-arch-x86",
  "fstart-ecam",
  "fstart-lapic",
  "fstart-log",
@@ -705,7 +709,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
- "fstart-arch",
+ "fstart-arch-x86",
  "fstart-driver-pci-ecam",
  "fstart-ecam",
  "fstart-lapic",
@@ -772,6 +776,7 @@ dependencies = [
 name = "fstart-driver-q35-hostbridge"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch-x86",
  "fstart-driver-pci-ecam",
  "fstart-log",
  "fstart-mp",
@@ -787,6 +792,7 @@ dependencies = [
 name = "fstart-driver-qemu-fw-cfg"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch-x86",
  "fstart-log",
  "fstart-pio",
  "fstart-services",
@@ -1005,6 +1011,7 @@ dependencies = [
 name = "fstart-mp"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch-x86",
  "fstart-lapic",
  "fstart-log",
  "ufmt",
@@ -1055,7 +1062,7 @@ dependencies = [
 name = "fstart-platform-x86_64"
 version = "0.1.0"
 dependencies = [
- "fstart-arch",
+ "fstart-arch-x86",
  "fstart-log",
  "fstart-pio",
  "fstart-services",

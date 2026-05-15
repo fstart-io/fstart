@@ -19,7 +19,7 @@ const PINEVIEW_TSC_HZ: u64 = 1_666_666_667;
 /// guesses so the JEDEC/RCVEN waits match coreboot's `udelay()` much more
 /// closely once HPET is enabled.
 fn hpet_udelay(us: u32) {
-    fstart_arch::udelay_tsc(us, PINEVIEW_TSC_HZ);
+    fstart_arch_x86::udelay_tsc(us, PINEVIEW_TSC_HZ);
 }
 
 // ===================================================================

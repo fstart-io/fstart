@@ -23,7 +23,7 @@ pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
 
-use fstart_arch::mtrr;
+use fstart_arch_x86::mtrr;
 use fstart_services::memory_detect::E820Entry;
 
 // ---------------------------------------------------------------------------
@@ -746,8 +746,8 @@ fn log_bsp_x86_cache_state(label: &str) {
 
     // SAFETY: called on x86_64 BSP immediately before payload handoff.
     unsafe {
-        let cap = fstart_arch::msr::rdmsr(mtrr::IA32_MTRR_CAP);
-        let def_type = fstart_arch::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
+        let cap = fstart_arch_x86::msr::rdmsr(mtrr::IA32_MTRR_CAP);
+        let def_type = fstart_arch_x86::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
         fstart_log::info!("  IA32_MTRR_CAP={:#x}", cap);
         fstart_log::info!("  IA32_MTRR_DEF_TYPE={:#x}", def_type);
 
@@ -769,7 +769,7 @@ fn log_bsp_x86_cache_state(label: &str) {
                 fstart_log::info!(
                     "  fixed MTRR {:#x}={:#x}",
                     msr,
-                    fstart_arch::msr::rdmsr(msr)
+                    fstart_arch_x86::msr::rdmsr(msr)
                 );
             }
         } else {

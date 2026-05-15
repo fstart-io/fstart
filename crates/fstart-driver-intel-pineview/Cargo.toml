@@ -12,7 +12,7 @@ acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
 [dependencies]
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
-fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-arch-x86 = { workspace = true }
 fstart-driver-pci-ecam = { workspace = true }
 fstart-ecam = { workspace = true }
 heapless = { workspace = true }

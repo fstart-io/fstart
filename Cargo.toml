@@ -9,6 +9,7 @@ members = [
   "crates/fstart-mmio",
   "crates/fstart-services",
   "crates/fstart-arch",
+  "crates/fstart-arch-x86",
   "crates/fstart-capabilities",
   "crates/fstart-alloc",
   "crates/fstart-log",
@@ -125,6 +126,7 @@ fstart-platform-riscv64 = { path = "crates/fstart-platform-riscv64" }
 fstart-platform-aarch64 = { path = "crates/fstart-platform-aarch64" }
 fstart-platform-armv7 = { path = "crates/fstart-platform-armv7" }
 fstart-arch = { path = "crates/fstart-arch" }
+fstart-arch-x86 = { path = "crates/fstart-arch-x86" }
 fstart-soc-sunxi = { path = "crates/fstart-soc-sunxi" }
 fstart-sunxi-ccu-regs = { path = "crates/fstart-sunxi-ccu-regs" }
 fstart-sunxi-pio = { path = "crates/fstart-sunxi-pio" }

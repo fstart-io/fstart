@@ -21,6 +21,18 @@ use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::ServiceError;
 
+fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
+    let mut ranges = [(0u64, 0u64); 8];
+    let mut count = 0usize;
+    for entry in entries {
+        if entry.kind == E820Kind::Ram as u32 && entry.size != 0 && count < ranges.len() {
+            ranges[count] = (entry.addr, entry.size);
+            count += 1;
+        }
+    }
+    fstart_arch_x86::mtrr::set_ram_wb_ranges(&ranges[..count]);
+}
+
 // ---------------------------------------------------------------------------
 // Well-known fw_cfg selectors
 // ---------------------------------------------------------------------------
@@ -418,6 +430,7 @@ impl MemoryDetector for QemuFwCfg {
                 raw_kind
             );
         }
+        publish_mtrr_wb_ranges(&entries[..count]);
 
         Ok(count)
     }
