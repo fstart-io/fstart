@@ -598,7 +598,6 @@ impl MemoryController for IntelPineview {
             tolud,
             usable_top
         );
-        self.publish_e820_map(usable_top, self.tom(), self.touud(), self.tolud());
         pineview_lower_memory_test(usable_top)
     }
 }
@@ -683,27 +682,6 @@ impl IntelPineview {
         }
 
         Ok(count)
-    }
-
-    fn publish_e820_map(&self, usable_top: u32, tom: u64, touud: u64, tolud: u32) {
-        let mut entries: [E820Entry; 6] = [E820Entry::zeroed(); 6];
-        let count = match self.build_e820_entries(&mut entries, usable_top, touud, tolud) {
-            Ok(count) => count,
-            Err(_) => return,
-        };
-
-        // SAFETY: DRAM init runs on the BSP before the generated ramstage
-        // payload handoff reads the global e820 state.
-        unsafe {
-            fstart_services::memory_detect::e820_state_mut().store(&entries, count, tom);
-        }
-        fstart_log::info!(
-            "pineview: published e820 map (usable top {:#x}, TOLUD {:#x}, TOM {:#x}, TOUUD {:#x})",
-            usable_top,
-            tolud,
-            tom,
-            touud
-        );
     }
 
     /// Read Top of Upper Usable DRAM (TOUUD) in bytes.
