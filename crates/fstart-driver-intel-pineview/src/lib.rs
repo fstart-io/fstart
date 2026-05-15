@@ -1298,34 +1298,14 @@ mod acpi_impl {
             });
 
             // ---------------------------------------------------------------
-            // 4. Processor devices (\._SB.CP00, CP01).
+            // 4. Processor power-management devices (\._SB.CP00, CP01).
             //
-            // The OS needs Processor/Device objects to enumerate CPUs.
-            // Pineview Atom D410 has 1 core, D510/D525 have 2 cores
-            // (+ HyperThreading = 2 or 4 threads).  We emit 2 logical
-            // CPU device objects — sufficient for the D510/D525.  The
-            // MADT Local APIC entries provide the authoritative count;
-            // extra Device objects for non-existent CPUs are harmless.
-            //
-            // P-state (SpeedStep) tables are not emitted here — the
-            // Atom D4xx/D5xx has very limited EIST support and Linux
-            // uses the intel_pstate driver which reads MSRs directly.
-            //
-            // Coreboot: cpu/intel/speedstep/acpi/cpu.asl (PNOT method)
-            //           + dynamically generated CPU SSDT.
+            // Ported from coreboot's `cpu/intel/speedstep` ACPI generator:
+            // each CPU device gets `_PCT`, `_PSD`, and an MSR-derived `_PSS`.
+            // Pineview board `get_cst_entries()` implementations return 0,
+            // so no `_CST` is emitted for this chipset.
             // ---------------------------------------------------------------
-            aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
-                Device("CP00") {
-                    Name("_HID", "ACPI0007");
-                    Name("_UID", 0u32);
-                }
-            });
-            aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
-                Device("CP01") {
-                    Name("_HID", "ACPI0007");
-                    Name("_UID", 1u32);
-                }
-            });
+            aml.extend_from_slice(&fstart_cpu_intel::pineview::acpi::cpu_devices_aml(2));
 
             aml
         }

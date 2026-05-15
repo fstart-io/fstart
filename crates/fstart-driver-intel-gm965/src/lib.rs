@@ -2052,9 +2052,11 @@ mod acpi_impl {
                 Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
                 Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
                 Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
-                Device("CP00") { Name("_HID", "ACPI0007"); Name("_UID", 0u32); }
-                Device("CP01") { Name("_HID", "ACPI0007"); Name("_UID", 1u32); }
+                // CPU power-management objects are appended below using the
+                // coreboot-derived SpeedStep/C-state generator.
             });
+
+            aml.extend_from_slice(&fstart_cpu_intel::core2::cpu_devices_aml(2));
 
             aml
         }

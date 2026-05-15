@@ -7,12 +7,18 @@ license.workspace = true
 
 [features]
 default = []
-acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
+acpi = [
+  "dep:fstart-acpi",
+  "dep:fstart-acpi-macros",
+  "dep:fstart-cpu-intel",
+  "fstart-cpu-intel/acpi",
+]
 
 [dependencies]
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
 fstart-arch-x86 = { workspace = true }
+fstart-cpu-intel = { workspace = true, optional = true }
 fstart-driver-pci-ecam = { workspace = true }
 fstart-ecam = { workspace = true }
 heapless = { workspace = true }
