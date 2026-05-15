@@ -104,6 +104,45 @@ pub(super) fn validate_capability_ordering(
             }
             Capability::MpInit {
                 smm: true,
+                smm_provider: Some(provider),
+                ..
+            } if !config.devices.iter().any(|dev| {
+                dev.name.as_str() == provider.as_str()
+                    && dev
+                        .services
+                        .iter()
+                        .any(|service| service.as_str() == "SmmOps")
+            }) =>
+            {
+                return Some(format!(
+                    "MpInit(smm: true, smm_provider: {:?}) requires that device to list \
+                     SmmOps in its services",
+                    provider.as_str()
+                ));
+            }
+            Capability::MpInit {
+                smm: true,
+                smm_provider: None,
+                ..
+            } if config
+                .devices
+                .iter()
+                .filter(|dev| {
+                    dev.services
+                        .iter()
+                        .any(|service| service.as_str() == "SmmOps")
+                })
+                .count()
+                != 1 =>
+            {
+                return Some(
+                    "MpInit(smm: true) without smm_provider requires exactly one device \
+                     with SmmOps in its services"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit {
+                smm: true,
                 num_cpus,
                 ..
             } if config

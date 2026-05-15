@@ -550,6 +550,14 @@ impl IntelIch8 {
         self.pm
     }
 
+    fn enable_spi_prefetching_and_caching(&self) {
+        let lpc = self.lpc();
+        // Match coreboot i82801hx bootblock: enable SPI prefetch/cache before
+        // extended flash reads from the memory-mapped boot medium.
+        let value = lpc.read8(0xdc);
+        lpc.write8(0xdc, (value & !(3 << 2)) | (2 << 2));
+    }
+
     fn program_fixed_bars(&self) {
         let lpc = self.lpc();
         lpc.write32(ich8::RCBA, (self.config.rcba as u32 & 0xffff_c000) | 1);
@@ -1285,6 +1293,7 @@ impl Device for IntelIch8 {
 
 impl Southbridge for IntelIch8 {
     fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        self.enable_spi_prefetching_and_caching();
         self.program_fixed_bars();
         self.reset_watchdog_and_cmos();
         self.program_lpc_decode();
@@ -1293,6 +1302,7 @@ impl Southbridge for IntelIch8 {
     }
 
     fn early_init(&mut self) -> Result<(), ServiceError> {
+        self.enable_spi_prefetching_and_caching();
         self.program_fixed_bars();
         self.program_lpc_decode();
         self.enable_smbus();

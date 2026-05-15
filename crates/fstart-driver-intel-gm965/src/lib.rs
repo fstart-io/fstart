@@ -19,7 +19,9 @@ use core::cell::UnsafeCell;
 
 use fstart_ecam as ecam;
 use fstart_mmio::MmioReadWrite;
+use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_services::device::{Device, DeviceError};
+use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::{MemoryController, PciHost, ServiceError};
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::ReadWriteable;
@@ -44,6 +46,7 @@ pub mod hostbridge {
     pub const PAM0: u16 = 0x90;
     pub const REMAPBASE: u16 = 0x98;
     pub const REMAPLIMIT: u16 = 0x9a;
+    pub const SMRAM: u16 = 0x9d;
     pub const ESMRAMC: u16 = 0x9e;
     pub const TOM: u16 = 0xa0;
     pub const TOUUD: u16 = 0xa2;
@@ -66,6 +69,7 @@ pub mod hostbridge {
     pub const IGD_FUNC: u8 = 0;
     pub const IGD_ALT_FUNC: u8 = 1;
     pub const IGD_BAR0_GTTMMADR: u16 = 0x10;
+    pub const IGD_BSM: u16 = 0x5c;
     pub const IGD_MSAC: u16 = 0x62;
     pub const IGD_SWSCI: u16 = 0xe8;
     pub const IGD_GDRST: u16 = 0xc0;
@@ -677,6 +681,41 @@ unsafe impl Sync for IgdOpRegionStore {}
 static IGD_OPREGION: IgdOpRegionStore =
     IgdOpRegionStore(UnsafeCell::new([0; IGD_OPREGION_TOTAL_SIZE]));
 
+// GM965/ICH8 SMM constants. SMRAM bit definitions match coreboot's
+// `cpu/intel/smm/gen1/smmrelocate.c`; PM I/O offsets live in
+// `fstart-pmio-ich`.
+const SMRAM_G_SMRAME: u8 = 1 << 3;
+const SMRAM_D_LCK: u8 = 1 << 4;
+const SMRAM_D_OPEN: u8 = 1 << 6;
+const SMRAM_C_BASE_SEG: u8 = 0b010;
+const ICH8_PMBASE: u16 = 0x0500;
+const SMM_DEFAULT_SMBASE: u64 = 0x30000;
+const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
+const EM64T101_SMBASE_SAVE_STATE_OFFSET: u16 = 0xfef8;
+
+const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
+    smbase: 0,
+    entry_addr: 0,
+    save_state_base: 0,
+    save_state_top: 0,
+    stack_bottom: 0,
+    stack_top: 0,
+};
+
+struct CpuLayoutStore(UnsafeCell<[fstart_smm::CpuSmmLayout; fstart_smm::runtime::MAX_SMM_CPUS]>);
+struct SmbaseStore(UnsafeCell<[u64; fstart_smm::runtime::MAX_SMM_CPUS]>);
+
+// SAFETY: firmware invokes SMM installation from the BSP while SMRAM is open;
+// these scratch buffers are not shared with APs or interrupt context.
+unsafe impl Sync for CpuLayoutStore {}
+unsafe impl Sync for SmbaseStore {}
+
+static GM965_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
+    [ZERO_CPU_LAYOUT; fstart_smm::runtime::MAX_SMM_CPUS],
+));
+static GM965_SMM_RELOCATION_SMBASES: SmbaseStore =
+    SmbaseStore(UnsafeCell::new([0; fstart_smm::runtime::MAX_SMM_CPUS]));
+
 /// GM965 northbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntelGm965Config {
@@ -815,6 +854,147 @@ impl IntelGm965 {
         } else {
             self.detected_size
         }
+    }
+
+    fn tom(&self) -> u64 {
+        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+        (u64::from(hb.read16(hostbridge::TOM) & 0x01ff)) << 27
+    }
+
+    fn touud(&self) -> u64 {
+        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+        u64::from(hb.read16(hostbridge::TOUUD)) << 20
+    }
+
+    fn tolud(&self) -> u32 {
+        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+        (u32::from(hb.read16(hostbridge::TOLUD) & 0xfff0)) << 16
+    }
+
+    fn igd_stolen_base(&self) -> u32 {
+        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+        if (hb.read32(hostbridge::DEVEN) & hostbridge::DEVEN_D2F0) == 0 {
+            return 0;
+        }
+        ecam::PciDevBdf::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC)
+            .read32(hostbridge::IGD_BSM)
+    }
+
+    fn tseg_size(&self) -> u32 {
+        let esmramc = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC)
+            .read8(hostbridge::ESMRAMC);
+        if esmramc & 1 == 0 {
+            return 0;
+        }
+        match (esmramc >> 1) & 3 {
+            0 => 1024 * 1024,
+            1 => 2 * 1024 * 1024,
+            2 => 8 * 1024 * 1024,
+            _ => {
+                fstart_log::error!("gm965: bad TSEG size encoding");
+                0
+            }
+        }
+    }
+
+    fn tseg_base(&self) -> u32 {
+        let top_reserved = match self.igd_stolen_base() {
+            0 => self.tolud(),
+            bsm => bsm,
+        };
+        top_reserved.saturating_sub(self.tseg_size())
+    }
+
+    fn usable_low_memory_top(&self) -> u32 {
+        let mut top = self.tolud();
+        let bsm = self.igd_stolen_base();
+        if bsm != 0 {
+            top = top.min(bsm);
+        }
+        let tseg = self.tseg_base();
+        if tseg != 0 {
+            top = top.min(tseg);
+        }
+        top
+    }
+
+    fn smm_region(&self) -> (u32, u32) {
+        (self.tseg_base(), self.tseg_size())
+    }
+
+    fn write_smram(&self, val: u8) {
+        ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC)
+            .write8(hostbridge::SMRAM, val);
+    }
+
+    fn smm_open(&self) {
+        self.write_smram(SMRAM_D_OPEN | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
+    }
+
+    fn smm_close(&self) {
+        self.write_smram(SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
+    }
+
+    fn smm_lock(&self) {
+        self.write_smram(SMRAM_D_LCK | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
+    }
+
+    fn smi_enable_for_relocation() {
+        let pm = fstart_pmio_ich::PmIo::new(ICH8_PMBASE);
+        pm.setbits32(
+            fstart_pmio_ich::SMI_EN,
+            fstart_pmio_ich::APMC_EN | fstart_pmio_ich::GBL_SMI_EN | fstart_pmio_ich::EOS,
+        );
+    }
+
+    fn cr3() -> u64 {
+        let cr3: u64;
+        // SAFETY: reading CR3 is safe in firmware privileged mode.
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+        }
+        cr3
+    }
+
+    fn build_e820_entries(
+        &self,
+        entries: &mut [E820Entry],
+        usable_top: u32,
+        touud: u64,
+        tolud: u32,
+    ) -> Result<usize, ServiceError> {
+        if entries.len() < 6 {
+            return Err(ServiceError::HardwareError);
+        }
+
+        let mut count = 0usize;
+        entries[count] = E820Entry::new(0x0000_0000, 0x0009_f000, E820Kind::Ram);
+        count += 1;
+        entries[count] = E820Entry::new(0x0009_f000, 0x0000_1000, E820Kind::Reserved);
+        count += 1;
+        entries[count] = E820Entry::new(0x000f_0000, 0x0001_0000, E820Kind::Reserved);
+        count += 1;
+
+        let usable_top = u64::from(usable_top).max(0x0010_0000);
+        let low_ram_size = usable_top.saturating_sub(0x0010_0000);
+        if low_ram_size != 0 {
+            entries[count] = E820Entry::new(0x0010_0000, low_ram_size, E820Kind::Ram);
+            count += 1;
+        }
+
+        let top_reserved_size = u64::from(tolud).saturating_sub(usable_top);
+        if top_reserved_size != 0 {
+            entries[count] = E820Entry::new(usable_top, top_reserved_size, E820Kind::Reserved);
+            count += 1;
+        }
+
+        let upper_ram_size = touud.saturating_sub(0x1_0000_0000);
+        if upper_ram_size != 0 {
+            entries[count] = E820Entry::new(0x1_0000_0000, upper_ram_size, E820Kind::Ram);
+            count += 1;
+        }
+
+        Ok(count)
     }
 
     fn init_egress(&self) -> Result<(), ServiceError> {
@@ -1429,6 +1609,174 @@ impl PciHost for IntelGm965 {
         self.early_mch_dmi_tweaks();
         fstart_log::info!("intel-gm965: early init complete");
         Ok(())
+    }
+}
+
+impl MemoryDetector for IntelGm965 {
+    fn detect_memory(&self, entries: &mut [E820Entry]) -> Result<usize, ServiceError> {
+        let tom = self.tom();
+        let tolud = self.tolud();
+        let usable_top = self.usable_low_memory_top();
+        let raw_touud = self.touud();
+        let max_reclaim = 0x1_0000_0000u64.saturating_sub(u64::from(tolud));
+        let touud = if raw_touud > 0x1_0000_0000 && raw_touud <= tom.saturating_add(max_reclaim) {
+            raw_touud
+        } else {
+            tom
+        };
+
+        if tom <= 0x0010_0000
+            || tolud <= 0x0010_0000
+            || usable_top <= 0x0010_0000
+            || usable_top > tolud
+        {
+            fstart_log::error!(
+                "gm965: invalid memory map TOM/TOUUD/TOLUD/usable {:#x}/{:#x}/{:#x}/{:#x}",
+                tom,
+                raw_touud,
+                tolud,
+                usable_top
+            );
+            return Err(ServiceError::HardwareError);
+        }
+
+        let count = self.build_e820_entries(entries, usable_top, touud, tolud)?;
+        fstart_arch::mtrr::set_low_wb_top(u64::from(tolud));
+        fstart_log::info!(
+            "gm965: detected memory map usable={:#x} TOLUD={:#x} TOM={:#x} TOUUD={:#x} TSEG={:#x}+{:#x}",
+            usable_top,
+            tolud,
+            tom,
+            touud,
+            self.tseg_base(),
+            self.tseg_size()
+        );
+        Ok(count)
+    }
+
+    fn total_ram_bytes(&self) -> Result<u64, ServiceError> {
+        Ok(self.tom())
+    }
+}
+
+impl SmmOps for IntelGm965 {
+    fn smm_info(&self) -> Option<SmmInfo> {
+        let (base, size) = self.smm_region();
+        if size == 0 {
+            fstart_log::error!("gm965 SMM: TSEG is disabled");
+            return None;
+        }
+        fstart_log::info!("gm965 SMM: TSEG base={:#x} size={:#x}", base, size);
+        Some(SmmInfo {
+            smbase: u64::from(base),
+            smsize: size as usize,
+            save_state_size: EM64T101_SAVE_STATE_SIZE,
+        })
+    }
+
+    fn install_smm_handlers(
+        &self,
+        info: &SmmInfo,
+        num_cpus: u16,
+        image: &[u8],
+    ) -> Result<(), SmmError> {
+        self.smm_open();
+
+        let layouts = unsafe { &mut *GM965_SMM_CPU_LAYOUTS.0.get() };
+        let result = unsafe {
+            fstart_smm::install_pic_image(
+                image,
+                fstart_smm::InstallConfig {
+                    smram_base: info.smbase,
+                    smram_size: info.smsize as u64,
+                    num_cpus,
+                    save_state_size: info.save_state_size as u32,
+                    page_table_size: 0,
+                    cr3: Self::cr3(),
+                    platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
+                    platform_flags: 0,
+                    platform_data: [ICH8_PMBASE as u64, 0x28, 0, 0],
+                },
+                layouts,
+            )
+        };
+
+        match result {
+            Ok(installed) => {
+                let targets = &installed.cpus[..num_cpus as usize];
+                let smbases = unsafe { &mut *GM965_SMM_RELOCATION_SMBASES.0.get() };
+                smbases.fill(targets[0].smbase);
+                for (dst, cpu) in smbases.iter_mut().zip(targets.iter()) {
+                    *dst = cpu.smbase;
+                }
+                let default_handler = unsafe {
+                    fstart_smm::install_default_relocation_table_handler(
+                        fstart_smm::DefaultRelocationTableConfig {
+                            default_smbase: SMM_DEFAULT_SMBASE,
+                            target_smbases: smbases,
+                            save_state_smbase_offset: EM64T101_SMBASE_SAVE_STATE_OFFSET,
+                        },
+                    )
+                };
+                if default_handler.is_err() {
+                    self.smm_close();
+                    fstart_log::error!("gm965 SMM: failed to install default relocation handler");
+                    return Err(SmmError::InstallFailed);
+                }
+
+                fstart_log::info!(
+                    "gm965 SMM: installed image common={:#x} entry={:#x} cpus={}",
+                    installed.common_base,
+                    installed.common_entry,
+                    installed.cpus.len()
+                );
+                Ok(())
+            }
+            Err(_) => {
+                self.smm_close();
+                fstart_log::error!("gm965 SMM: failed to install SMM image");
+                Err(SmmError::InstallFailed)
+            }
+        }
+    }
+
+    fn smm_relocate(&self) {
+        Self::smi_enable_for_relocation();
+        let lapic = fstart_lapic::Lapic::from_msr();
+        lapic.send_ipi_self(fstart_lapic::INT_ASSERT | fstart_lapic::MT_SMI);
+        lapic.wait_ready();
+    }
+
+    fn pre_smm_init(&self) {
+        let pm = fstart_pmio_ich::PmIo::new(ICH8_PMBASE);
+        pm.reset_smi_status();
+        pm.write32(
+            fstart_pmio_ich::SMI_EN,
+            fstart_pmio_ich::APMC_EN | fstart_pmio_ich::GBL_SMI_EN | fstart_pmio_ich::EOS,
+        );
+    }
+
+    fn post_smm_init(&self) {
+        self.smm_close();
+        let pm = fstart_pmio_ich::PmIo::new(ICH8_PMBASE);
+        pm.reset_smi_status();
+        pm.reset_pm1_status();
+        pm.tco().reset_tco_status();
+        pm.reset_gpe0_status();
+        pm.write16(
+            fstart_pmio_ich::PM1_EN,
+            fstart_pmio_ich::PWRBTN_EN | fstart_pmio_ich::GBL_EN,
+        );
+        pm.write32(
+            fstart_pmio_ich::SMI_EN,
+            fstart_pmio_ich::TCO_EN
+                | fstart_pmio_ich::APMC_EN
+                | fstart_pmio_ich::SLP_SMI_EN
+                | fstart_pmio_ich::GBL_SMI_EN
+                | fstart_pmio_ich::EOS,
+        );
+        self.smm_lock();
+        fstart_log::info!("gm965 SMM: permanent SMI enabled and SMRAM locked");
     }
 }
 

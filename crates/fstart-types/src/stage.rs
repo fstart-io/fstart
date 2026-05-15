@@ -246,10 +246,16 @@ pub enum Capability {
         cpu_model: HString<32>,
         /// Expected logical CPU count (BSP + APs).
         num_cpus: u16,
-        /// Enable SMM setup.  When true, the northbridge driver must
+        /// Enable SMM setup.  When true, the selected SMM provider must
         /// implement `SmmOps`.  Default: false.
         #[serde(default)]
         smm: bool,
+        /// Device name of the chipset driver that provides `SmmOps`.
+        ///
+        /// If omitted, codegen selects the sole enabled device whose RON
+        /// `services` list contains `SmmOps`.
+        #[serde(default)]
+        smm_provider: Option<HString<32>>,
     },
     /// Enumerate and initialize all declared devices/drivers.
     DriverInit,

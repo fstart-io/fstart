@@ -250,6 +250,7 @@ fn cap_to_capop_tokens(cap: &Capability, ctx: &PlanCtx<'_>) -> TokenStream {
             cpu_model,
             num_cpus,
             smm,
+            ..
         } => {
             let model_str = cpu_model.as_str();
             let nc = *num_cpus;
