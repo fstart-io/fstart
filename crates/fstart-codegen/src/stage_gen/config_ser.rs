@@ -318,6 +318,27 @@ impl ser::Serializer for ConfigTokenSerializer {
 // Compound type accumulators
 // =======================================================================
 
+fn qualified_struct_path(name: &str, fields: &[TokenStream]) -> TokenStream {
+    match name {
+        // `fstart_driver_intel_ich7` and `fstart_driver_ite8721f` both export
+        // a `GpioConfig`.  Qualify the generated struct literal to avoid the
+        // `ambiguous_glob_imports` future-compat warning in boards that use
+        // both drivers.
+        "GpioConfig"
+            if fields
+                .iter()
+                .any(|field| field.to_string().starts_with("pins")) =>
+        {
+            quote! { fstart_driver_intel_ich7::GpioConfig }
+        }
+        "GpioConfig" => quote! { fstart_driver_ite8721f::GpioConfig },
+        _ => {
+            let ident = format_ident!("{}", name);
+            quote! { #ident }
+        }
+    }
+}
+
 /// Accumulates struct fields: `StructName { field: value, ... }`
 struct StructTokenSerializer {
     name: String,
@@ -340,10 +361,10 @@ impl SerializeStruct for StructTokenSerializer {
     }
 
     fn end(self) -> Result<TokenStream, TokenError> {
-        let struct_ident = format_ident!("{}", self.name);
         let fields = &self.fields;
+        let struct_path = qualified_struct_path(&self.name, fields);
         Ok(quote! {
-            #struct_ident { #(#fields,)* }
+            #struct_path { #(#fields,)* }
         })
     }
 }
