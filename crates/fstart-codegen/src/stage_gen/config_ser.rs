@@ -320,16 +320,17 @@ impl ser::Serializer for ConfigTokenSerializer {
 
 fn qualified_struct_path(name: &str, fields: &[TokenStream]) -> TokenStream {
     match name {
-        // `fstart_driver_intel_ich7` and `fstart_driver_ite8721f` both export
-        // a `GpioConfig`.  Qualify the generated struct literal to avoid the
-        // `ambiguous_glob_imports` future-compat warning in boards that use
-        // both drivers.
+        // Intel ICH7 and ICH8 both re-export the shared `fstart-gpio-ich`
+        // `GpioConfig`, while the Super I/O driver exports a different
+        // `GpioConfig`.  Qualify the shared ICH GPIO struct via its owning
+        // crate to avoid both ambiguous glob imports and chipset-specific
+        // hard-coding in generated literals.
         "GpioConfig"
             if fields
                 .iter()
                 .any(|field| field.to_string().starts_with("pins")) =>
         {
-            quote! { fstart_driver_intel_ich7::GpioConfig }
+            quote! { fstart_gpio_ich::GpioConfig }
         }
         "GpioConfig" => quote! { fstart_driver_ite8721f::GpioConfig },
         _ => {

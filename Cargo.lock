@@ -522,9 +522,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-cpu-pineview"
+name = "fstart-cpu-intel"
 version = "0.1.0"
 dependencies = [
+ "acpi_tables",
  "fstart-arch-x86",
  "fstart-log",
  "fstart-mp",
@@ -645,6 +646,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
+ "fstart-cpu-intel",
  "fstart-ecam",
  "fstart-lapic",
  "fstart-log",
@@ -711,6 +713,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
+ "fstart-cpu-intel",
  "fstart-driver-pci-ecam",
  "fstart-ecam",
  "fstart-lapic",
@@ -1145,7 +1148,7 @@ dependencies = [
  "fstart-arch",
  "fstart-capabilities",
  "fstart-codegen",
- "fstart-cpu-pineview",
+ "fstart-cpu-intel",
  "fstart-crabefi",
  "fstart-driver-bochs-display",
  "fstart-driver-designware-i2c",
@@ -1173,6 +1176,7 @@ dependencies = [
  "fstart-driver-sunxi-spi",
  "fstart-ffs",
  "fstart-fit",
+ "fstart-gpio-ich",
  "fstart-log",
  "fstart-mainboard-lenovo-x61",
  "fstart-mp",
