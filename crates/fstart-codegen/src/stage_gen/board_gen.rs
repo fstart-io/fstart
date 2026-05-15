@@ -1405,6 +1405,40 @@ fn fdt_prepare_override_body(ctx: &BoardCtx<'_>, platform: Platform) -> TokenStr
 /// trampoline is a plan bug (unreachable — the executor dispatches
 /// `StageLoad` only if the plan carries the capability).  Emits a
 /// `todo!()` in that case.
+
+fn x86_postcar_config_tokens(ctx: &BoardCtx<'_>) -> TokenStream {
+    let ram_ranges: Vec<TokenStream> = ctx
+        .config
+        .memory
+        .regions
+        .iter()
+        .filter(|r| r.kind == RegionKind::Ram)
+        .map(|r| {
+            let base = r.base;
+            let size = r.size;
+            quote! { fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size } }
+        })
+        .collect();
+
+    let rom_range = match (ctx.config.memory.flash_base, ctx.config.memory.flash_size) {
+        (Some(base), Some(size)) => quote! {
+            Some(fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size })
+        },
+        _ => quote! { None },
+    };
+
+    quote! {
+        static _FSTART_POSTCAR_RAM_RANGES: &[fstart_platform::car_teardown::PhysicalRange] = &[
+            #(#ram_ranges),*
+        ];
+        static _FSTART_POSTCAR_CONFIG: fstart_platform::car_teardown::PostcarConfig =
+            fstart_platform::car_teardown::PostcarConfig {
+                ram_ranges: _FSTART_POSTCAR_RAM_RANGES,
+                rom_range: #rom_range,
+            };
+    }
+}
+
 fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
     if !ctx.ffs_stage {
         return quote! {
@@ -1416,31 +1450,25 @@ fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let anchor = anchor_bytes_stmt();
 
     if ctx.config.platform == Platform::X86_64 {
+        let postcar_config = x86_postcar_config_tokens(ctx);
         return quote! {
             fstart_log::info!("stage_load: generated trampoline enter");
             #anchor
+            #postcar_config
             fstart_log::info!("stage_load: anchor slice ready");
             match self._boot_media {
                 fstart_stage_runtime::BootMediaState::Mmio { base, size } => {
-                    fstart_log::info!("stage_load: switching to DRAM stack for MMIO load");
-                    let stack_top: usize = 0x0300_0000;
+                    fstart_log::info!("stage_load: switching to post-CAR DRAM stack for MMIO load");
                     // SAFETY: DRAM has just been trained before StageLoad,
-                    // and this call never returns to the CAR-backed stack.
+                    // `_FSTART_POSTCAR_CONFIG` describes a DRAM stack and
+                    // temporary MTRRs, and this call never returns to CAR.
                     unsafe {
-                        core::arch::asm!(
-                            "mov rsp, {stack}",
-                            "and rsp, -16",
-                            "sub rsp, 8",
-                            "jmp {tramp}",
-                            stack = in(reg) stack_top,
-                            tramp = sym __fstart_stage_load_mmio_trampoline,
-                            in("rdi") next_stage.as_ptr(),
-                            in("rsi") next_stage.len(),
-                            in("rdx") _anchor_bytes.as_ptr(),
-                            in("rcx") _anchor_bytes.len(),
-                            in("r8") base,
-                            in("r9") size,
-                            options(noreturn),
+                        fstart_platform::car_teardown::stage_load_mmio(
+                            &_FSTART_POSTCAR_CONFIG,
+                            next_stage,
+                            _anchor_bytes,
+                            base,
+                            size,
                         );
                     }
                 }
@@ -1448,7 +1476,7 @@ fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
                     fstart_log::error!("stage_load: no boot media configured");
                 }
                 fstart_stage_runtime::BootMediaState::Block { device_id, .. } => {
-                    fstart_log::error!("stage_load: x86 CAR stack switch supports MMIO only, device {}", device_id);
+                    fstart_log::error!("stage_load: x86 post-CAR StageLoad supports MMIO only, device {}", device_id);
                 }
             }
             fstart_platform::halt()
