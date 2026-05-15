@@ -8,5 +8,6 @@ license.workspace = true
 fstart-mmio = { workspace = true }
 fstart-services = { workspace = true }
 fstart-log = { workspace = true }
+heapless = { workspace = true }
 ufmt = { workspace = true }
 serde = { workspace = true }
