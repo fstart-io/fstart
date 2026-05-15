@@ -171,15 +171,6 @@ impl CpuOps for PineviewCpuOps {
         fstart_log::info!("cpu: Pineview MSR configuration complete");
     }
 
-    fn pre_mp_init(&self) {
-        fstart_log::info!("cpu: Pineview pre-MP init (BSP ROM MTRR)");
-        // SAFETY: this runs on the BSP only.  The ROM WP MTRR speeds reads
-        // from memory-mapped SPI flash during signature verification and
-        // payload loading.  It is cleared before jumping to Linux.
-        unsafe { mtrr::set_boot_rom_wp(true) };
-        log_mtrr_solution("BSP temporary ROM WP enabled");
-    }
-
     fn post_mp_init(&self) {
         fstart_log::info!("cpu: Pineview post-MP init complete");
     }
