@@ -197,42 +197,41 @@ pub enum Capability {
         /// Device name from the devices list (e.g., "dramc0")
         device: HString<32>,
     },
-    /// Early chipset initialization (x86 northbridge + southbridge).
+    /// Minimal platform/device setup before the console can be initialized.
     ///
-    /// Calls `PciHost::early_init()` on the northbridge and
-    /// `Southbridge::early_init()` on the southbridge. Used by the
-    /// x86 romstage before `DramInit` — the NB must be programmed to
-    /// expose its registers (MCHBAR, DMIBAR) and the SB must unlock
-    /// LPC decode ranges / BIOS shadow before DRAM training.
-    ///
-    /// This is an x86-specific capability; other platforms use
-    /// `DriverInit` + per-driver `Device::init()` instead.
-    ///
-    /// Should follow `ChipsetPreConsole` when the console device
-    /// sits behind the southbridge (SuperIO on LPC).
-    ChipsetInit {
-        /// Northbridge device name (implements `PciHost`).
-        northbridge: HString<32>,
-        /// Southbridge device name (implements `Southbridge`).
-        southbridge: HString<32>,
+    /// The referenced devices implement `PreConsoleInit`.  This is a portable
+    /// phase abstraction used for work such as opening UART clock gates,
+    /// applying pinmux, enabling ECAM, or opening LPC decode windows.
+    PreConsoleInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
     },
-    /// Pre-console chipset initialization — the absolute minimum to
-    /// make the console device reachable.
+    /// Logged early platform/device setup before DRAM training or bus probing.
     ///
-    /// Calls `PciHost::pre_console_init()` (enable ECAM) and
-    /// `Southbridge::pre_console_init()` (open LPC decode). Must
-    /// appear before `ConsoleInit` when the console device sits on
-    /// a bus that needs chipset decode windows opened (e.g., SuperIO
-    /// behind ICH7 LPC).
+    /// The referenced devices implement `EarlyInit`.  This replaces topology-
+    /// specific capability names such as x86 northbridge/southbridge init.
+    EarlyInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
+    },
+    /// Rebuild per-stage software state for already-programmed hardware.
     ///
-    /// Full chipset init (`ChipsetInit`) follows after the console
-    /// is available, so diagnostics are visible during the heavier
-    /// BAR programming, GPIO, CIR, etc.
-    ChipsetPreConsole {
-        /// Northbridge device name (implements `PciHost`).
-        northbridge: HString<32>,
-        /// Southbridge device name (implements `Southbridge`).
-        southbridge: HString<32>,
+    /// The referenced devices implement `StageLocalInit`.  Multi-stage boards
+    /// use this when a later stage has a fresh BSS and must rebind accessors
+    /// such as ECAM globals without repeating heavyweight hardware init.
+    StageLocalInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
+    },
+    /// DRAM-backed platform/device setup after memory is usable.
+    PostDramInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
+    },
+    /// Final platform/device lockdown before payload handoff.
+    FinalizeInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
     },
     /// Initialize all logical CPUs (BSP + APs).
     ///

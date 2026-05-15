@@ -300,28 +300,42 @@ pub trait Board: Sized {
         Ok(())
     }
 
-    /// Executor arm for [`CapOp::ChipsetPreConsole`].  `nb` and `sb`
-    /// come from the CapOp variant.
-    ///
-    /// Generated adapter calls `PciHost::pre_console_init(&self.<nb>)` and
-    /// `Southbridge::pre_console_init(&self.<sb>)` — the minimal
-    /// pre-console setup (ECAM enable + LPC decode).
-    fn chipset_pre_console(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError>;
+    /// Executor arm for [`CapOp::PreConsoleInit`].
+    fn pre_console_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+        let _ = ids;
+        Ok(())
+    }
 
-    /// Executor arm for [`CapOp::ChipsetInit`].  `nb` and `sb` come
-    /// from the CapOp variant.
-    ///
-    /// Generated adapter calls `PciHost::early_init(&self.<nb>)` and
-    /// `Southbridge::early_init(&self.<sb>)` (both having been
-    /// constructed earlier by `init_device`).
-    fn chipset_init(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError>;
+    /// Executor arm for [`CapOp::EarlyInit`].
+    fn early_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+        let _ = ids;
+        Ok(())
+    }
+
+    /// Executor arm for [`CapOp::StageLocalInit`].
+    fn stage_local_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+        let _ = ids;
+        Ok(())
+    }
+
+    /// Executor arm for [`CapOp::PostDramInit`].
+    fn post_dram_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+        let _ = ids;
+        Ok(())
+    }
+
+    /// Executor arm for [`CapOp::FinalizeInit`].
+    fn finalize_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+        let _ = ids;
+        Ok(())
+    }
 
     /// Executor arm for [`CapOp::DramInit`]. `id` comes from the CapOp variant.
     ///
     /// Generated adapter dispatches to `MemoryController::dram_init()` on the
     /// already-constructed controller. This deliberately does not go through
-    /// `init_device()`: x86 northbridges are usually constructed by
-    /// `ChipsetPreConsole`, while DRAM training must happen later after
+    /// only `init_device()`: memory controllers may already be constructed by
+    /// a `PreConsoleInit` phase, while DRAM training must happen later after
     /// chipset/SMBus setup.
     fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
@@ -451,21 +465,28 @@ fn call_smbios_prepare<B: Board>(board: &B) {
 }
 
 #[inline(never)]
-fn call_chipset_pre_console<B: Board>(
-    board: &mut B,
-    nb: DeviceId,
-    sb: DeviceId,
-) -> Result<(), DeviceError> {
-    board.chipset_pre_console(nb, sb)
+fn call_pre_console_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
+    board.pre_console_init(ids)
 }
 
 #[inline(never)]
-fn call_chipset_init<B: Board>(
-    board: &mut B,
-    nb: DeviceId,
-    sb: DeviceId,
-) -> Result<(), DeviceError> {
-    board.chipset_init(nb, sb)
+fn call_early_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
+    board.early_init(ids)
+}
+
+#[inline(never)]
+fn call_stage_local_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
+    board.stage_local_init(ids)
+}
+
+#[inline(never)]
+fn call_post_dram_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
+    board.post_dram_init(ids)
+}
+
+#[inline(never)]
+fn call_finalize_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
+    board.finalize_init(ids)
 }
 
 #[inline(never)]
@@ -614,32 +635,74 @@ pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr:
             }
 
             // ----- Multi-device capabilities ---------------------------------
-            CapOp::ChipsetInit { nb, sb } => {
-                if call_init_device(&mut board, nb).is_err() {
+            CapOp::PreConsoleInit(ids) => {
+                for id in ids {
+                    if call_init_device(&mut board, *id).is_err() {
+                        board.halt();
+                    }
+                }
+                if call_pre_console_init(&mut board, ids).is_err() {
                     board.halt();
                 }
-                if call_init_device(&mut board, sb).is_err() {
-                    board.halt();
+                for id in ids {
+                    inited.set(*id);
                 }
-                if call_chipset_init(&mut board, nb, sb).is_err() {
-                    board.halt();
-                }
-                inited.set(nb);
-                inited.set(sb);
             }
 
-            CapOp::ChipsetPreConsole { nb, sb } => {
-                if call_init_device(&mut board, nb).is_err() {
+            CapOp::EarlyInit(ids) => {
+                for id in ids {
+                    if call_init_device(&mut board, *id).is_err() {
+                        board.halt();
+                    }
+                }
+                if call_early_init(&mut board, ids).is_err() {
                     board.halt();
                 }
-                if call_init_device(&mut board, sb).is_err() {
+                for id in ids {
+                    inited.set(*id);
+                }
+            }
+
+            CapOp::StageLocalInit(ids) => {
+                for id in ids {
+                    if call_init_device(&mut board, *id).is_err() {
+                        board.halt();
+                    }
+                }
+                if call_stage_local_init(&mut board, ids).is_err() {
                     board.halt();
                 }
-                if call_chipset_pre_console(&mut board, nb, sb).is_err() {
+                for id in ids {
+                    inited.set(*id);
+                }
+            }
+
+            CapOp::PostDramInit(ids) => {
+                for id in ids {
+                    if call_init_device(&mut board, *id).is_err() {
+                        board.halt();
+                    }
+                }
+                if call_post_dram_init(&mut board, ids).is_err() {
                     board.halt();
                 }
-                inited.set(nb);
-                inited.set(sb);
+                for id in ids {
+                    inited.set(*id);
+                }
+            }
+
+            CapOp::FinalizeInit(ids) => {
+                for id in ids {
+                    if call_init_device(&mut board, *id).is_err() {
+                        board.halt();
+                    }
+                }
+                if call_finalize_init(&mut board, ids).is_err() {
+                    board.halt();
+                }
+                for id in ids {
+                    inited.set(*id);
+                }
             }
 
             CapOp::MpInit {
@@ -800,14 +863,11 @@ mod tests {
         StageLoad(String),
         AcpiPrepare,
         SmBiosPrepare,
-        ChipsetInit {
-            nb: DeviceId,
-            sb: DeviceId,
-        },
-        ChipsetPreConsole {
-            nb: DeviceId,
-            sb: DeviceId,
-        },
+        PreConsoleInit(Vec<DeviceId>),
+        EarlyInit(Vec<DeviceId>),
+        StageLocalInit(Vec<DeviceId>),
+        PostDramInit(Vec<DeviceId>),
+        FinalizeInit(Vec<DeviceId>),
         DramInit(DeviceId),
         PciInit(DeviceId),
         AcpiLoad(DeviceId),
@@ -918,12 +978,24 @@ mod tests {
         fn smbios_prepare(&self) {
             push(Event::SmBiosPrepare);
         }
-        fn chipset_init(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError> {
-            push(Event::ChipsetInit { nb, sb });
+        fn pre_console_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+            push(Event::PreConsoleInit(ids.into()));
             Ok(())
         }
-        fn chipset_pre_console(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError> {
-            push(Event::ChipsetPreConsole { nb, sb });
+        fn early_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+            push(Event::EarlyInit(ids.into()));
+            Ok(())
+        }
+        fn stage_local_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+            push(Event::StageLocalInit(ids.into()));
+            Ok(())
+        }
+        fn post_dram_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+            push(Event::PostDramInit(ids.into()));
+            Ok(())
+        }
+        fn finalize_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+            push(Event::FinalizeInit(ids.into()));
             Ok(())
         }
         fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
@@ -1069,10 +1141,7 @@ mod tests {
             stage_name: "t",
             is_first_stage: true,
             ends_with_jump: false,
-            caps: &[
-                CapOp::ChipsetPreConsole { nb: 1, sb: 2 },
-                CapOp::DramInit(1),
-            ],
+            caps: &[CapOp::PreConsoleInit(&[1, 2]), CapOp::DramInit(1)],
             persistent_inited: &[],
             boot_media_gated: &[],
             all_devices: &[],
@@ -1082,7 +1151,7 @@ mod tests {
             [
                 Event::InitDevice(1),
                 Event::InitDevice(2),
-                Event::ChipsetPreConsole { nb: 1, sb: 2 },
+                Event::PreConsoleInit(Vec::from([1, 2])),
                 Event::InitDevice(1),
                 Event::DramInit(1),
                 Event::Halt,
@@ -1132,8 +1201,9 @@ mod tests {
                 skip_had,
                 gated_had,
             } => {
-                // Console already init'd device 0.
-                assert_eq!(skip_had, &[0u8], "skip mask should include id 0");
+                // DriverInit constructs stage-local objects even when a prior
+                // capability initialized the hardware.
+                assert_eq!(skip_had, &[] as &[u8], "skip mask should be empty");
                 assert_eq!(gated_had, &[2u8], "gated mask should include id 2");
             }
             _ => unreachable!(),
@@ -1192,12 +1262,12 @@ mod tests {
     }
 
     #[test]
-    fn chipset_init_inits_both_and_runs_trampoline() {
+    fn early_init_inits_devices_and_runs_trampoline() {
         static PLAN: StagePlan = StagePlan {
             stage_name: "t",
             is_first_stage: true,
             ends_with_jump: false,
-            caps: &[CapOp::ChipsetInit { nb: 5, sb: 6 }],
+            caps: &[CapOp::EarlyInit(&[5, 6])],
             persistent_inited: &[],
             boot_media_gated: &[],
             all_devices: &[],
@@ -1207,19 +1277,19 @@ mod tests {
             [
                 Event::InitDevice(5),
                 Event::InitDevice(6),
-                Event::ChipsetInit { nb: 5, sb: 6 },
+                Event::EarlyInit(Vec::from([5, 6])),
                 Event::Halt,
             ]
         );
     }
 
     #[test]
-    fn chipset_pre_console_inits_both_and_runs_trampoline() {
+    fn pre_console_init_inits_devices_and_runs_trampoline() {
         static PLAN: StagePlan = StagePlan {
             stage_name: "t",
             is_first_stage: true,
             ends_with_jump: false,
-            caps: &[CapOp::ChipsetPreConsole { nb: 3, sb: 4 }],
+            caps: &[CapOp::PreConsoleInit(&[3, 4])],
             persistent_inited: &[],
             boot_media_gated: &[],
             all_devices: &[],
@@ -1229,7 +1299,7 @@ mod tests {
             [
                 Event::InitDevice(3),
                 Event::InitDevice(4),
-                Event::ChipsetPreConsole { nb: 3, sb: 4 },
+                Event::PreConsoleInit(Vec::from([3, 4])),
                 Event::Halt,
             ]
         );
@@ -1436,15 +1506,20 @@ mod tests {
             fn smbios_prepare(&self) {
                 MockBoard.smbios_prepare()
             }
-            fn chipset_init(&mut self, nb: DeviceId, sb: DeviceId) -> Result<(), DeviceError> {
-                MockBoard.chipset_init(nb, sb)
+            fn pre_console_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+                MockBoard.pre_console_init(ids)
             }
-            fn chipset_pre_console(
-                &mut self,
-                nb: DeviceId,
-                sb: DeviceId,
-            ) -> Result<(), DeviceError> {
-                MockBoard.chipset_pre_console(nb, sb)
+            fn early_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+                MockBoard.early_init(ids)
+            }
+            fn stage_local_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+                MockBoard.stage_local_init(ids)
+            }
+            fn post_dram_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+                MockBoard.post_dram_init(ids)
+            }
+            fn finalize_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
+                MockBoard.finalize_init(ids)
             }
             fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
                 MockBoard.dram_init(id)

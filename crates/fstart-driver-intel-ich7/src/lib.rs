@@ -89,7 +89,9 @@ pub mod ich7 {
     pub const GCS: u32 = 0x3410;
 }
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{ServiceError, SmBus, Southbridge};
+use fstart_services::{
+    EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
+};
 use fstart_smbus_intel::I801SmBus;
 use fstart_superio::LpcBaseProvider;
 use heapless::Vec as HVec;
@@ -737,7 +739,7 @@ impl Device for IntelIch7 {
     }
 }
 
-impl Southbridge for IntelIch7 {
+impl PreConsoleInit for IntelIch7 {
     fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
 
@@ -786,7 +788,9 @@ impl Southbridge for IntelIch7 {
 
         Ok(())
     }
+}
 
+impl EarlyInit for IntelIch7 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
         let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
 
@@ -894,14 +898,36 @@ impl Southbridge for IntelIch7 {
         fstart_log::info!("intel-ich7: early init complete (fd_mask={:#x})", fd);
         Ok(())
     }
+}
+
+impl PostDramInit for IntelIch7 {
+    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
+        IntelIch7::ramstage_init(self)
+    }
+}
+
+impl FinalizeInit for IntelIch7 {
+    fn finalize_init(&mut self) -> Result<(), ServiceError> {
+        IntelIch7::finalize(self);
+        Ok(())
+    }
+}
+
+impl Southbridge for IntelIch7 {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        PreConsoleInit::pre_console_init(self)
+    }
+
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        EarlyInit::early_init(self)
+    }
 
     fn ramstage_init(&mut self) -> Result<(), ServiceError> {
-        IntelIch7::ramstage_init(self)
+        PostDramInit::post_dram_init(self)
     }
 
     fn finalize(&mut self) -> Result<(), ServiceError> {
-        IntelIch7::finalize(self);
-        Ok(())
+        FinalizeInit::finalize_init(self)
     }
 }
 

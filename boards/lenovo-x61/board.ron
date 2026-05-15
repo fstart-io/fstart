@@ -3,7 +3,7 @@
 // This board definition ports the early chipset/dock ordering from the latest
 // coreboot GM965/X61 work.  The dock path matters for early serial: when an X6
 // UltraBase is attached, the usable COM1 is behind the dock-side NSC PC87392.
-// Therefore ChipsetPreConsole first programs reusable GM965/ICH8 LPC/GPIO
+// Therefore PreConsoleInit first programs reusable GM965/ICH8 LPC/GPIO
 // decode, then invokes the LenovoX61Mainboard hook to initialise the DLPC
 // switch, connect the dock when present, and enable PC87392 LDN3 before the
 // NS16550 console driver touches port 0x3f8.
@@ -49,7 +49,10 @@
                 ),
                 acpi_name: Some("PCI0"),
             )),
-            services: ["MemoryController", "MemoryDetector", "PciHost", "SmmOps"],
+            services: [
+                "MemoryController", "MemoryDetector", "PciHost", "SmmOps",
+                "PreConsoleInit", "EarlyInit", "StageLocalInit",
+            ],
         ),
         (
             name: "southbridge",
@@ -185,7 +188,7 @@
                     iotr3: Some((lo: 0x000c0801, hi: 0x000200f0)),
                 )),
             )),
-            services: ["Southbridge"],
+            services: ["Southbridge", "PreConsoleInit", "EarlyInit", "PostDramInit", "FinalizeInit"],
             children: [
                 ( name: "lpc", services: ["LpcBus"],
                     children: [
@@ -221,7 +224,7 @@
                 dock_early_console: true,
                 acpi_name: Some("X61"),
             )),
-            services: ["Mainboard"],
+            services: ["Mainboard", "PreConsoleInit", "PostDramInit", "FinalizeInit"],
         ),
     ],
 
@@ -232,9 +235,9 @@
         (
             name: "bootblock",
             capabilities: [
-                ChipsetPreConsole( northbridge: "northbridge", southbridge: "southbridge" ),
+                PreConsoleInit( devices: ["northbridge", "southbridge", "mainboard"] ),
                 ConsoleInit( device: "uart0" ),
-                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+                EarlyInit( devices: ["northbridge", "southbridge"] ),
                 DramInit( device: "northbridge" ),
                 BootMedia(MemoryMapped( base: 0xFFC80000, size: 0x0037F000 )),
                 StageLoad( next_stage: "ramstage" ),
@@ -254,9 +257,10 @@
                 DriverInit,
                 // Rebind ramstage-local ECAM/chipset BAR access before reading
                 // GM965 TOM/TOLUD/TSEG registers for the runtime e820 map.
-                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+                StageLocalInit( devices: ["northbridge"] ),
                 MemoryDetect( device: "northbridge" ),
-                LateDriverInit,
+                PostDramInit( devices: ["southbridge", "mainboard"] ),
+                FinalizeInit( devices: ["southbridge", "mainboard"] ),
                 // GM965 now provides SmmOps, but keep permanent SMM disabled
                 // until the X61-specific I/O-trap dock/EC SMI callbacks are
                 // ported; enabling only the generic ACPI APM handler would be

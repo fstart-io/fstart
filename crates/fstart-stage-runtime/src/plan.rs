@@ -45,11 +45,16 @@ pub enum CapOp {
     MemoryInit,
     /// `DramInit { device }` — real DRAM training on a controller.
     DramInit(DeviceId),
-    /// `ChipsetInit { northbridge, southbridge }` — x86 chipset unlock.
-    ChipsetInit { nb: DeviceId, sb: DeviceId },
-    /// `ChipsetPreConsole { northbridge, southbridge }` — minimal
-    /// chipset init before console (ECAM + LPC decode).
-    ChipsetPreConsole { nb: DeviceId, sb: DeviceId },
+    /// `PreConsoleInit { devices }` — minimal setup before console init.
+    PreConsoleInit(&'static [DeviceId]),
+    /// `EarlyInit { devices }` — logged early platform/device setup.
+    EarlyInit(&'static [DeviceId]),
+    /// `StageLocalInit { devices }` — rebuild per-stage software bindings.
+    StageLocalInit(&'static [DeviceId]),
+    /// `PostDramInit { devices }` — DRAM-backed platform/device setup.
+    PostDramInit(&'static [DeviceId]),
+    /// `FinalizeInit { devices }` — final platform/device lockdown.
+    FinalizeInit(&'static [DeviceId]),
     /// `MpInit` — bring up APs, per-CPU MSR config, park.
     MpInit {
         cpu_model: &'static str,

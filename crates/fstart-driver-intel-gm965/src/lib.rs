@@ -22,7 +22,9 @@ use fstart_mmio::MmioReadWrite;
 use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
-use fstart_services::{MemoryController, PciHost, ServiceError};
+use fstart_services::{
+    EarlyInit, MemoryController, PciHost, PreConsoleInit, ServiceError, StageLocalInit,
+};
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::ReadWriteable;
 
@@ -1611,17 +1613,46 @@ impl Device for IntelGm965 {
     }
 }
 
-impl PciHost for IntelGm965 {
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+impl IntelGm965 {
+    fn pre_console_phase(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         Ok(())
     }
 
-    fn early_init(&mut self) -> Result<(), ServiceError> {
+    fn early_phase(&mut self) -> Result<(), ServiceError> {
         self.setup_bars_and_pam();
         self.early_mch_dmi_tweaks();
         fstart_log::info!("intel-gm965: early init complete");
         Ok(())
+    }
+}
+
+impl PreConsoleInit for IntelGm965 {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        self.pre_console_phase()
+    }
+}
+
+impl EarlyInit for IntelGm965 {
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        self.early_phase()
+    }
+}
+
+impl StageLocalInit for IntelGm965 {
+    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
+        self.enable_ecam();
+        Ok(())
+    }
+}
+
+impl PciHost for IntelGm965 {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        self.pre_console_phase()
+    }
+
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        self.early_phase()
     }
 }
 

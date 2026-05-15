@@ -216,36 +216,36 @@ fn cap_to_capop_tokens(cap: &Capability, ctx: &PlanCtx<'_>) -> TokenStream {
             let id = ctx.ids.lit(device.as_str(), "DramInit");
             quote! { fstart_stage_runtime::CapOp::DramInit(#id) }
         }
-        C::ChipsetInit {
-            northbridge,
-            southbridge,
-        } => {
-            let nb = ctx.ids.lit(northbridge.as_str(), "ChipsetInit.northbridge");
-            let sb = ctx.ids.lit(southbridge.as_str(), "ChipsetInit.southbridge");
-            quote! {
-                fstart_stage_runtime::CapOp::ChipsetInit {
-                    nb: #nb,
-                    sb: #sb,
-                }
-            }
-        }
-        C::ChipsetPreConsole {
-            northbridge,
-            southbridge,
-        } => {
-            let nb = ctx
-                .ids
-                .lit(northbridge.as_str(), "ChipsetPreConsole.northbridge");
-            let sb = ctx
-                .ids
-                .lit(southbridge.as_str(), "ChipsetPreConsole.southbridge");
-            quote! {
-                fstart_stage_runtime::CapOp::ChipsetPreConsole {
-                    nb: #nb,
-                    sb: #sb,
-                }
-            }
-        }
+        C::PreConsoleInit { devices } => phase_capop_tokens(
+            "PreConsoleInit",
+            devices,
+            ctx,
+            |ids| quote! { fstart_stage_runtime::CapOp::PreConsoleInit(&[#(#ids),*]) },
+        ),
+        C::EarlyInit { devices } => phase_capop_tokens(
+            "EarlyInit",
+            devices,
+            ctx,
+            |ids| quote! { fstart_stage_runtime::CapOp::EarlyInit(&[#(#ids),*]) },
+        ),
+        C::StageLocalInit { devices } => phase_capop_tokens(
+            "StageLocalInit",
+            devices,
+            ctx,
+            |ids| quote! { fstart_stage_runtime::CapOp::StageLocalInit(&[#(#ids),*]) },
+        ),
+        C::PostDramInit { devices } => phase_capop_tokens(
+            "PostDramInit",
+            devices,
+            ctx,
+            |ids| quote! { fstart_stage_runtime::CapOp::PostDramInit(&[#(#ids),*]) },
+        ),
+        C::FinalizeInit { devices } => phase_capop_tokens(
+            "FinalizeInit",
+            devices,
+            ctx,
+            |ids| quote! { fstart_stage_runtime::CapOp::FinalizeInit(&[#(#ids),*]) },
+        ),
         C::MpInit {
             cpu_model,
             num_cpus,
@@ -296,6 +296,19 @@ fn cap_to_capop_tokens(cap: &Capability, ctx: &PlanCtx<'_>) -> TokenStream {
             next_stage,
         } => load_next_stage_to_capop(load_devs, next_stage.as_str(), ctx),
     }
+}
+
+fn phase_capop_tokens(
+    context: &str,
+    devices: &[heapless::String<32>],
+    ctx: &PlanCtx<'_>,
+    build: impl FnOnce(Vec<Literal>) -> TokenStream,
+) -> TokenStream {
+    let ids = devices
+        .iter()
+        .map(|device| ctx.ids.lit(device.as_str(), context))
+        .collect();
+    build(ids)
 }
 
 fn boot_medium_to_capop(medium: &BootMedium, ctx: &PlanCtx<'_>) -> TokenStream {

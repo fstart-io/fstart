@@ -15,9 +15,9 @@
 // Boot flow (two-stage CAR model — matches coreboot's bootblock+romstage
 // merged into one):
 //   1. `bootblock` (XIP from flash, stack in CAR): reset vector -> NEM
-//      Cache-as-RAM setup -> ChipsetPreConsole (ECAM enable plus coreboot
+//      Cache-as-RAM setup -> PreConsoleInit (ECAM enable plus coreboot
 //      bootblock southbridge work: SPI prefetch, SB BARs, watchdog, LPC)
-//      -> ConsoleInit (SuperIO COM1, now reachable) -> ChipsetInit (full
+//      -> ConsoleInit (SuperIO COM1, now reachable) -> EarlyInit (full
 //      NB/SB romstage init: PAM, SMBus, GPIO, CIR, HPET) -> DramInit (DDR2
 //      training, needs SMBus) -> load `ramstage`.
 //   2. `ramstage` (runs from DRAM): initialize PCI / NIC / ACPI / SMBIOS,
@@ -61,17 +61,17 @@
     devices: [
         // Northbridge and southbridge are separate chips connected by
         // DMI — they are siblings at the top level, not a bus-parent
-        // hierarchy. This mirrors physical reality and lets ChipsetInit
-        // address both in stages (bootblock, romstage) that do not run
-        // a full DriverInit.
+        // hierarchy. This mirrors physical reality and lets phase-init
+        // capabilities address both in stages that do not run a full
+        // DriverInit.
         //
         // The console is provided by the IT8721F SuperIO (COM1 at
         // 0x3F8), which sits on the LPC bus under the ICH7 southbridge.
         // At reset the CPU can't reach LPC-space I/O — the ICH7 LPC
         // decode windows must be programmed first. The capability order
-        // (ChipsetPreConsole before ConsoleInit) enforces this:
-        // ChipsetPreConsole calls `Southbridge::pre_console_init()`
-        // which opens LPC decode before ConsoleInit touches the
+        // (PreConsoleInit before ConsoleInit) enforces this:
+        // PreConsoleInit calls `PreConsoleInit::pre_console_init()` on
+        // the southbridge, opening LPC decode before ConsoleInit touches the
         // SuperIO at 0x2E/0x2F.
         (
             name: "northbridge",
@@ -84,7 +84,10 @@
                 ck505_pre_raminit: true,
                 acpi_name: "MCHC",
             )),
-            services: ["MemoryController", "MemoryDetector", "PciHost", "PciRootBus", "SmmOps"],
+            services: [
+                "MemoryController", "MemoryDetector", "PciHost", "PciRootBus", "SmmOps",
+                "PreConsoleInit", "EarlyInit", "StageLocalInit",
+            ],
         ),
         (
             name: "southbridge",
@@ -191,7 +194,7 @@
                 c3_latency: 85,
                 power_on_after_fail: 0,
             )),
-            services: ["Southbridge"],
+            services: ["Southbridge", "PreConsoleInit", "EarlyInit", "PostDramInit", "FinalizeInit"],
             children: [
                 // PCIe root ports — structural PCI bridge nodes.
                 // Port 0 is empty on this board.
@@ -258,22 +261,20 @@
         (
             name: "bootblock",
             capabilities: [
-                // ChipsetPreConsole: coreboot bootblock-equivalent init
-                // before ConsoleInit — enables ECAM (NB PCIEXBAR), then
-                // performs ICH7 SPI prefetch, fixed SB BAR setup, upper
-                // CMOS/watchdog disable, SERIRQ and LPC decode so the
-                // SuperIO at 0x2E/0x2F is reachable.
-                ChipsetPreConsole( northbridge: "northbridge", southbridge: "southbridge" ),
+                // Pre-console platform init: enable ECAM (northbridge PCIEXBAR),
+                // then perform ICH7 SPI prefetch, fixed SB BAR setup, upper
+                // CMOS/watchdog disable, SERIRQ and LPC decode so the SuperIO at
+                // 0x2E/0x2F is reachable.
+                PreConsoleInit( devices: ["northbridge", "southbridge"] ),
                 // Console: SuperIO programs LDNs and initializes the
                 // 16550 UART at the COM port selected by `console_port`.
                 // LPC decode is now open, so PIO at 0x2E/0x2F works.
                 ConsoleInit( device: "superio" ),
-                // ChipsetInit: full chipset early init with console
-                // available for diagnostics.  Opens NB BARs (MCHBAR,
-                // DMIBAR), PAM, graphics clocks; SB SMBus (needed by
-                // DramInit), BARs, PIRQ, GPIO, CIR, IOAPIC, HPET.
-                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
-                // DDR2 training needs SMBus (enabled by ChipsetInit).
+                // Early platform init with console available for diagnostics.
+                // Opens NB BARs (MCHBAR, DMIBAR), PAM, graphics clocks; SB SMBus
+                // (needed by DramInit), BARs, PIRQ, GPIO, CIR, IOAPIC, HPET.
+                EarlyInit( devices: ["northbridge", "southbridge"] ),
+                // DDR2 training needs SMBus (enabled by EarlyInit).
                 DramInit( device: "northbridge" ),
                 // Load the ramstage from FFS in flash and jump to it.
                 BootMedia(MemoryMapped( base: 0xFF000000, size: 0x01000000 )),
@@ -304,18 +305,18 @@
                 DriverInit,
                 // Re-initialize ramstage-local chipset access first: each stage
                 // has its own BSS, so ECAM's global base is zero again after
-                // the jump from bootblock. This does not publish TOM/TOLUD;
-                // it only rebinds PCIEXBAR/ECAM and chipset BAR access.
-                ChipsetInit( northbridge: "northbridge", southbridge: "southbridge" ),
+                // the jump from bootblock. This only rebinds stage-local accessors.
+                StageLocalInit( devices: ["northbridge"] ),
                 // Now that ECAM is live in ramstage, rebuild the ramstage-local
                 // E820 state from DRAM controller registers programmed by
                 // bootblock raminit. Bootblock BSS globals do not carry over.
                 MemoryDetect( device: "northbridge" ),
                 PciInit( device: "northbridge" ),
-                // Coreboot ramstage-equivalent chipset/device finalization:
+                // Coreboot ramstage-equivalent southbridge finalization:
                 // SATA/USB/HDA, PM/C-state setup, PCIe root-port tuning,
                 // then SPI/SMI/TCO/BIOS-interface lockdown.
-                LateDriverInit,
+                PostDramInit( devices: ["southbridge"] ),
+                FinalizeInit( devices: ["southbridge"] ),
                 // Temporarily skip SMM while debugging legacy IRQ/SERIRQ state.
                 // We clean ICH7 PM/GPE/SMI status in normal firmware code before
                 // Linux handoff instead of relying on the SMI handler.
