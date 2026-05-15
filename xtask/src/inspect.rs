@@ -119,12 +119,39 @@ pub fn inspect(path: &str) -> Result<(), String> {
                         segments,
                         digests,
                     } => {
+                        let stored_total: u64 =
+                            segments.iter().map(|seg| seg.stored_size as u64).sum();
+                        let loaded_total: u64 =
+                            segments.iter().map(|seg| seg.loaded_size as u64).sum();
+                        let compressed_count = segments
+                            .iter()
+                            .filter(|seg| seg.compression != Compression::None)
+                            .count();
+                        let compression_summary = format!(
+                            "  compressed={}  decompressed={}{}",
+                            stored_total,
+                            loaded_total,
+                            if compressed_count == 0 {
+                                String::new()
+                            } else {
+                                format!(
+                                    "  ratio={:.0}%",
+                                    if loaded_total > 0 {
+                                        stored_total as f64 / loaded_total as f64 * 100.0
+                                    } else {
+                                        0.0
+                                    }
+                                )
+                            }
+                        );
+
                         println!(
-                            "  {branch}\"{}\"  type={}  offset={:#x}  size={}",
+                            "  {branch}\"{}\"  type={}  offset={:#x}  size={}{}",
                             entry.name,
                             file_type_str(*file_type),
                             entry.offset,
                             entry.size,
+                            compression_summary,
                         );
 
                         // Digests
