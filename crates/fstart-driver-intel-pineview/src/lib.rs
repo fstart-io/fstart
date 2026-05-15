@@ -30,7 +30,7 @@ use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
 use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::pci::{PciAddr, PciRootBus, PciWindow};
-use fstart_services::{PciHost, ServiceError, SmBus};
+use fstart_services::{EarlyInit, PciHost, PreConsoleInit, ServiceError, SmBus, StageLocalInit};
 use serde::{Deserialize, Serialize};
 
 fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
@@ -387,8 +387,8 @@ impl Device for IntelPineview {
     }
 }
 
-impl PciHost for IntelPineview {
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+impl IntelPineview {
+    fn pre_console_phase(&mut self) -> Result<(), ServiceError> {
         // Enable ECAM (single legacy CF8/CFC write).
         // This is the only early step needed before the console —
         // the southbridge needs ECAM to open LPC decode.
@@ -396,10 +396,10 @@ impl PciHost for IntelPineview {
         Ok(())
     }
 
-    fn early_init(&mut self) -> Result<(), ServiceError> {
+    fn early_phase(&mut self) -> Result<(), ServiceError> {
         // Each stage has its own BSS, so the global ECAM accessor must be
-        // rebound in ramstage too. The hardware PCIEXBAR programming is
-        // idempotent and matches coreboot's repeated hostbridge setup.
+        // rebound whenever this phase runs. The hardware PCIEXBAR programming
+        // is idempotent and matches coreboot's repeated hostbridge setup.
         self.enable_ecam();
 
         // 1. Program BARs + PAM via ECAM.
@@ -422,6 +422,35 @@ impl PciHost for IntelPineview {
 
         fstart_log::info!("intel-pineview: early init complete");
         Ok(())
+    }
+}
+
+impl PreConsoleInit for IntelPineview {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        self.pre_console_phase()
+    }
+}
+
+impl EarlyInit for IntelPineview {
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        self.early_phase()
+    }
+}
+
+impl StageLocalInit for IntelPineview {
+    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
+        self.enable_ecam();
+        Ok(())
+    }
+}
+
+impl PciHost for IntelPineview {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        self.pre_console_phase()
+    }
+
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        self.early_phase()
     }
 }
 

@@ -10,7 +10,7 @@
 #![no_std]
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{Mainboard, ServiceError};
+use fstart_services::{FinalizeInit, Mainboard, PostDramInit, PreConsoleInit, ServiceError};
 use serde::{Deserialize, Serialize};
 
 /// Lenovo ThinkPad X61 mainboard configuration.
@@ -66,7 +66,7 @@ impl Device for LenovoX61Mainboard {
     }
 }
 
-impl Mainboard for LenovoX61Mainboard {
+impl PreConsoleInit for LenovoX61Mainboard {
     fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
         // dock connection failures are non-fatal before the console exists.
@@ -80,16 +80,34 @@ impl Mainboard for LenovoX61Mainboard {
         }
         Ok(())
     }
+}
 
-    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+impl PostDramInit for LenovoX61Mainboard {
+    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
         dock::post_raminit_setup(self.config.gpio_base);
         dock::ec_dock_state_update();
         dock::ultrabay_power_update();
         Ok(())
     }
+}
+
+impl FinalizeInit for LenovoX61Mainboard {
+    fn finalize_init(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+impl Mainboard for LenovoX61Mainboard {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        PreConsoleInit::pre_console_init(self)
+    }
+
+    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+        PostDramInit::post_dram_init(self)
+    }
 
     fn finalize(&mut self) -> Result<(), ServiceError> {
-        Ok(())
+        FinalizeInit::finalize_init(self)
     }
 }
 

@@ -76,13 +76,19 @@ pub(super) fn validate_capability_ordering(
             Capability::DramInit { .. } => {
                 memory_ready = true;
             }
-            // ChipsetInit does heavy setup (BARs, GPIO, CIR) — needs
-            // console for diagnostics.  ChipsetPreConsole has no such
-            // requirement; it runs BEFORE ConsoleInit.
-            Capability::ChipsetInit { .. } if !console_inited => {
+            Capability::PreConsoleInit { .. } => {
+                // Pre-console phases must be log-free and may run before the
+                // logger exists.
+            }
+            Capability::EarlyInit { .. }
+            | Capability::StageLocalInit { .. }
+            | Capability::PostDramInit { .. }
+            | Capability::FinalizeInit { .. }
+                if !console_inited =>
+            {
                 return Some(
-                    "ChipsetInit capability requires ConsoleInit to appear earlier \
-                     in the capability list (needed for logging)"
+                    "EarlyInit/StageLocalInit/PostDramInit/FinalizeInit require ConsoleInit to \
+                     appear earlier in the capability list (needed for logging)"
                         .to_string(),
                 );
             }

@@ -143,8 +143,8 @@ fn compute_is_first_stage(stages: &StageLayout, stage_name: Option<&str>) -> boo
 /// - `is_first_stage`: true for monolithic boards and for the first
 ///   stage of a `MultiStage` layout.  Non-first stages receive a
 ///   serialised [`StageHandoff`] in a platform register.  Today only
-///   `fdt_prepare` uses this, but `chipset_init` / `memory_detect`
-///   will need it once we migrate those trampolines.
+///   `fdt_prepare` uses this, but `memory_detect` may need it once that
+///   trampoline consumes previous-stage bookkeeping.
 ///
 /// - `dram_base` / `dram_size_static`: the DRAM region picked by
 ///   [`find_dram_region`].  Emitted into fields on `_BoardDevices`
@@ -172,9 +172,9 @@ struct BoardCtx<'a> {
     /// sunxi boards / stages using `ReturnToFel`).
     stage_capabilities: &'a [Capability],
     ffs_stage: bool,
-    /// Reserved for future migrations (`memory_detect`, `chipset_init`,
-    /// `stage_load`) that need to know whether a previous stage's
-    /// handoff should populate bookkeeping before capability dispatch.
+    /// Reserved for future migrations (`memory_detect`, `stage_load`) that
+    /// need to know whether a previous stage's handoff should populate
+    /// bookkeeping before capability dispatch.
     ///
     /// `#[allow(dead_code)]` for now — `fdt_prepare` already reads
     /// from `_handoff` unconditionally (the field is `None` on
@@ -219,16 +219,14 @@ fn compute_excluded_indices(
             | Capability::PciInit { device }
             | Capability::AcpiLoad { device }
             | Capability::MemoryDetect { device } => referenced.push(device.as_str()),
-            Capability::ChipsetInit {
-                northbridge,
-                southbridge,
-            }
-            | Capability::ChipsetPreConsole {
-                northbridge,
-                southbridge,
-            } => {
-                referenced.push(northbridge.as_str());
-                referenced.push(southbridge.as_str());
+            Capability::PreConsoleInit { devices }
+            | Capability::EarlyInit { devices }
+            | Capability::StageLocalInit { devices }
+            | Capability::PostDramInit { devices }
+            | Capability::FinalizeInit { devices } => {
+                for device in devices {
+                    referenced.push(device.as_str());
+                }
             }
             Capability::BootMedia(BootMedium::Device { name, .. }) => {
                 referenced.push(name.as_str())
@@ -472,11 +470,9 @@ fn emit_adapter_new(ctx: &BoardCtx<'_>) -> TokenStream {
 /// - `pci_init` — `match id { ... }` with one arm per `PciRootBus`
 ///   provider in the board; each arm logs the completion banner
 ///   with device + driver names and returns `Ok(())`.
-/// - `chipset_init` — looks up the single (`PciHost`, `Southbridge`)
-///   pair; emits `PciHost::early_init` + `Southbridge::early_init`
-///   calls against the respective fields, logs the banner, returns
-///   `Ok(())`.  Boards without one of the services emit a log + halt
-///   (dead code, since validation forbids the capability there).
+/// - generic phase init (`pre_console_init`, `early_init`,
+///   `stage_local_init`, `post_dram_init`, `finalize_init`) — iterates the
+///   executor-provided device ids and dispatches to the matching service trait.
 /// - `acpi_load` — `match id { ... }` with one arm per
 ///   `AcpiTableProvider` device.  Each arm allocates a method-local
 ///   256 KiB static `UnsafeCell` buffer and calls
@@ -550,8 +546,15 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let return_to_fel_body = return_to_fel_body(platform, ctx);
     let pci_init_body = pci_init_body(ctx);
     let dram_init_body = dram_init_body(ctx);
-    let chipset_init_body = chipset_init_body(ctx);
-    let chipset_pre_console_body = chipset_pre_console_body(ctx);
+    let pre_console_init_body =
+        phase_init_body(ctx, "PreConsoleInit", "PreConsoleInit", "pre_console_init");
+    let early_init_body = phase_init_body(ctx, "EarlyInit", "EarlyInit", "early_init");
+    let stage_local_init_body =
+        phase_init_body(ctx, "StageLocalInit", "StageLocalInit", "stage_local_init");
+    let post_dram_init_body =
+        phase_init_body(ctx, "PostDramInit", "PostDramInit", "post_dram_init");
+    let finalize_init_body = phase_init_body(ctx, "FinalizeInit", "FinalizeInit", "finalize_init");
+
     let acpi_load_body = acpi_load_body(ctx);
     let memory_detect_body = memory_detect_body(ctx);
     let acpi_prepare_body = acpi_prepare_body(ctx);
@@ -634,20 +637,39 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
                 #mp_init_body
             }
 
-            fn chipset_init(
+            fn pre_console_init(
                 &mut self,
-                nb: fstart_types::DeviceId,
-                sb: fstart_types::DeviceId,
+                ids: &[fstart_types::DeviceId],
             ) -> Result<(), fstart_services::device::DeviceError> {
-                #chipset_init_body
+                #pre_console_init_body
             }
 
-            fn chipset_pre_console(
+            fn early_init(
                 &mut self,
-                nb: fstart_types::DeviceId,
-                sb: fstart_types::DeviceId,
+                ids: &[fstart_types::DeviceId],
             ) -> Result<(), fstart_services::device::DeviceError> {
-                #chipset_pre_console_body
+                #early_init_body
+            }
+
+            fn stage_local_init(
+                &mut self,
+                ids: &[fstart_types::DeviceId],
+            ) -> Result<(), fstart_services::device::DeviceError> {
+                #stage_local_init_body
+            }
+
+            fn post_dram_init(
+                &mut self,
+                ids: &[fstart_types::DeviceId],
+            ) -> Result<(), fstart_services::device::DeviceError> {
+                #post_dram_init_body
+            }
+
+            fn finalize_init(
+                &mut self,
+                ids: &[fstart_types::DeviceId],
+            ) -> Result<(), fstart_services::device::DeviceError> {
+                #finalize_init_body
             }
 
             fn dram_init(
@@ -1527,7 +1549,7 @@ fn return_to_fel_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
 ///
 /// Matches `id` against devices that provide the `MemoryController` service and
 /// dispatches `MemoryController::dram_init()` on the concrete driver. The
-/// device may already be constructed/inited by `ChipsetPreConsole`, so this is
+/// device may already be constructed/inited by `PreConsoleInit`, so this is
 /// deliberately separate from `Board::init_device`.
 fn dram_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
@@ -1728,190 +1750,59 @@ fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
     }
 }
 
-/// Emit the body of `Board::chipset_init`.
+/// Emit the body for a generic phase-init trampoline.
 ///
-/// Calls `PciHost::early_init(&mut self.<nb>)` followed by
-/// `Southbridge::early_init(&mut self.<sb>)`, then logs the completion
-/// banner.  Returns `Ok(())` on success and the first `Err` otherwise.
-///
-/// The executor guarantees `init_device(nb)` and `init_device(sb)`
-/// ran before this trampoline, so both fields are `Some`.  We
-/// `.unwrap_or_else(|| halt())` defensively — the optimiser elides
-/// the branch.
-///
-/// The `match (nb, sb)` surface is there so future codegen with more
-/// than one northbridge/southbridge pair per board can add arms.
-/// Today every board has exactly one valid pair; non-matching pairs
-/// fall to the wildcard and halt.
-///
-/// Stages with no northbridge + southbridge pair (most boards)
-/// degenerate to a pure-wildcard body that halts.  The compiler
-/// still type-checks the trait impl, and the executor never
-/// dispatches `ChipsetInit` for such a board (validation upstream).
-fn chipset_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    // Find the (nb, sb) pair: one device with `PciHost` service and
-    // one with `Southbridge`.  RON validation enforces exactly one
-    // of each when `ChipsetInit` appears in capabilities, but we
-    // scan the device list here because `board_gen` does not see
-    // the original `Capability::ChipsetInit { northbridge, southbridge }`
-    // strings — it emits a generic `match (nb, sb)` suitable for
-    // any future multi-chipset board.
-    let nb_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-        ctx.devices[*idx]
-            .services
-            .iter()
-            .any(|s| s.as_str() == "PciHost")
-    });
-    let sb_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-        ctx.devices[*idx]
-            .services
-            .iter()
-            .any(|s| s.as_str() == "Southbridge")
-    });
+/// `service_name` is the service string in board RON (for selecting arms),
+/// `trait_name` is the exported `fstart_services` trait, and `method_name` is
+/// the trait method called for each selected device id.
+fn phase_init_body(
+    ctx: &BoardCtx<'_>,
+    service_name: &str,
+    trait_name: &str,
+    method_name: &str,
+) -> TokenStream {
+    let trait_ident = format_ident!("{}", trait_name);
+    let trait_alias = format_ident!("_{}", trait_name);
+    let method_ident = format_ident!("{}", method_name);
 
-    let Some(nb_idx) = nb_idx else {
-        return quote! {
-            let _ = (nb, sb);
-            fstart_log::error!("chipset_init: no PciHost device declared");
-            fstart_platform::halt();
-        };
-    };
-    let Some(sb_idx) = sb_idx else {
-        return quote! {
-            let _ = (nb, sb);
-            fstart_log::error!("chipset_init: no Southbridge device declared");
-            fstart_platform::halt();
-        };
-    };
-
-    let nb_field = format_ident!("{}", ctx.devices[nb_idx].name.as_str());
-    let sb_field = format_ident!("{}", ctx.devices[sb_idx].name.as_str());
-    let nb_name = ctx.devices[nb_idx].name.as_str();
-    let sb_name = ctx.devices[sb_idx].name.as_str();
-    let nb_id_lit = proc_macro2::Literal::u8_unsuffixed(nb_idx as u8);
-    let sb_id_lit = proc_macro2::Literal::u8_unsuffixed(sb_idx as u8);
-
-    quote! {
-        use fstart_services::PciHost as _PciHost;
-        use fstart_services::Southbridge as _Southbridge;
-        match (nb, sb) {
-            (#nb_id_lit, #sb_id_lit) => {
-                _PciHost::early_init(
-                    self.#nb_field
-                        .as_mut()
-                        .unwrap_or_else(|| fstart_platform::halt()),
-                )
-                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                _Southbridge::early_init(
-                    self.#sb_field
-                        .as_mut()
-                        .unwrap_or_else(|| fstart_platform::halt()),
-                )
-                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                fstart_log::info!(
-                    "chipset init complete: {} + {}",
-                    #nb_name,
-                    #sb_name,
-                );
-                Ok(())
-            }
-            _ => {
-                // Executor contract violation — `chipset_init(nb, sb)`
-                // should only be dispatched with the declared
-                // northbridge/southbridge pair.
-                fstart_log::error!(
-                    "chipset_init: unexpected (nb, sb) pair ({}, {})",
-                    nb,
-                    sb,
-                );
-                fstart_platform::halt();
-            }
-        }
-    }
-}
-
-/// Emit the body of `Board::chipset_pre_console`.
-///
-/// Calls `PciHost::pre_console_init(&mut self.<nb>)` followed by
-/// `Southbridge::pre_console_init(&mut self.<sb>)`.  This is the
-/// minimal pre-console setup (ECAM enable + LPC decode) — no logging
-/// banner since the console isn't available yet.
-fn chipset_pre_console_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let nb_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-        ctx.devices[*idx]
-            .services
-            .iter()
-            .any(|s| s.as_str() == "PciHost")
-    });
-    let sb_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-        ctx.devices[*idx]
-            .services
-            .iter()
-            .any(|s| s.as_str() == "Southbridge")
-    });
-
-    let Some(nb_idx) = nb_idx else {
-        return quote! {
-            let _ = (nb, sb);
-            fstart_platform::halt();
-        };
-    };
-    let Some(sb_idx) = sb_idx else {
-        return quote! {
-            let _ = (nb, sb);
-            fstart_platform::halt();
-        };
-    };
-
-    let nb_field = format_ident!("{}", ctx.devices[nb_idx].name.as_str());
-    let sb_field = format_ident!("{}", ctx.devices[sb_idx].name.as_str());
-    let nb_id_lit = proc_macro2::Literal::u8_unsuffixed(nb_idx as u8);
-    let sb_id_lit = proc_macro2::Literal::u8_unsuffixed(sb_idx as u8);
-    let mainboard_hooks = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+    let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
         .filter(|idx| {
             ctx.devices[*idx]
                 .services
                 .iter()
-                .any(|s| s.as_str() == "Mainboard")
+                .any(|s| s.as_str() == service_name)
         })
         .map(|idx| {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
             let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
             quote! {
-                self.init_device(#id_lit)?;
-                fstart_services::Mainboard::pre_console_init(
-                    self.#field
+                #id_lit => {
+                    use fstart_services::#trait_ident as #trait_alias;
+                    let dev = self.#field
                         .as_mut()
-                        .unwrap_or_else(|| fstart_platform::halt()),
-                )
-                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                    #trait_alias::#method_ident(dev)
+                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                }
             }
-        });
+        })
+        .collect();
 
     quote! {
-        use fstart_services::PciHost as _PciHost;
-        use fstart_services::Southbridge as _Southbridge;
-        match (nb, sb) {
-            (#nb_id_lit, #sb_id_lit) => {
-                _PciHost::pre_console_init(
-                    self.#nb_field
-                        .as_mut()
-                        .unwrap_or_else(|| fstart_platform::halt()),
-                )
-                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                _Southbridge::pre_console_init(
-                    self.#sb_field
-                        .as_mut()
-                        .unwrap_or_else(|| fstart_platform::halt()),
-                )
-                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                #(#mainboard_hooks)*
-                Ok(())
-            }
-            _ => {
-                fstart_platform::halt();
+        for id in ids {
+            match *id {
+                #(#arms)*
+                _ => {
+                    fstart_log::error!(
+                        "{}: unknown or unsupported device id {}",
+                        #method_name,
+                        *id,
+                    );
+                    return Err(fstart_services::device::DeviceError::InitFailed);
+                }
             }
         }
+        Ok(())
     }
 }
 
@@ -4370,7 +4261,7 @@ mod tests {
         }
     }
 
-    // ===== pci_init + chipset_init migration tests ======================
+    // ===== pci_init + generic phase-init migration tests ================
 
     #[test]
     fn pci_init_emits_real_body_on_aarch64_sbsa() {
@@ -4412,64 +4303,41 @@ mod tests {
     }
 
     #[test]
-    fn chipset_init_emits_early_init_calls_on_foxconn_d41s() {
-        // foxconn-d41s uses `ChipsetInit(northbridge: "northbridge",
-        // southbridge: "southbridge")` in its bootblock.  The body
-        // must call PciHost::early_init + Southbridge::early_init
-        // against the corresponding fields.
+    fn early_init_emits_generic_phase_calls_on_foxconn_d41s() {
         let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
         assert!(
-            src.contains("fstart_services::PciHost"),
-            "chipset_init must import PciHost trait; got:\n{src}"
+            src.contains("fstart_services::EarlyInit"),
+            "early_init must import EarlyInit trait; got:\n{src}"
         );
         assert!(
-            src.contains("fstart_services::Southbridge"),
-            "chipset_init must import Southbridge trait; got:\n{src}"
+            src.contains("_EarlyInit::early_init"),
+            "early_init must call EarlyInit::early_init; got:\n{src}"
         );
         assert!(
-            src.contains("_PciHost::early_init"),
-            "chipset_init must call PciHost::early_init; got:\n{src}"
-        );
-        assert!(
-            src.contains("_Southbridge::early_init"),
-            "chipset_init must call Southbridge::early_init; got:\n{src}"
-        );
-        assert!(
-            src.contains("chipset init complete"),
-            "chipset_init must log the completion banner; got:\n{src}"
-        );
-        assert!(
-            !src.contains("board_gen::chipset_init: migration pending"),
-            "chipset_init must have a real body; got:\n{src}"
+            !src.contains("fstart_services::PciHost as _PciHost"),
+            "generic phase init must not depend on PciHost topology; got:\n{src}"
         );
     }
 
     #[test]
-    fn chipset_pre_console_emits_pre_console_init_calls_on_foxconn_d41s() {
-        // foxconn-d41s uses `ChipsetPreConsole(northbridge: "northbridge",
-        // southbridge: "southbridge")` in its bootblock.  The body must
-        // call PciHost::pre_console_init + Southbridge::pre_console_init.
+    fn pre_console_init_emits_generic_phase_calls_on_foxconn_d41s() {
         let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
         assert!(
-            src.contains("_PciHost::pre_console_init"),
-            "chipset_pre_console must call PciHost::pre_console_init; got:\n{src}"
+            src.contains("fstart_services::PreConsoleInit"),
+            "pre_console_init must import PreConsoleInit trait; got:\n{src}"
         );
         assert!(
-            src.contains("_Southbridge::pre_console_init"),
-            "chipset_pre_console must call Southbridge::pre_console_init; got:\n{src}"
+            src.contains("_PreConsoleInit::pre_console_init"),
+            "pre_console_init must call PreConsoleInit::pre_console_init; got:\n{src}"
         );
     }
 
     #[test]
-    fn chipset_init_halts_on_board_without_pci_host() {
-        // qemu-riscv64 has neither a PciHost nor a Southbridge.  The
-        // body degenerates to a log + halt — dead code since validation
-        // forbids ChipsetInit on this board anyway.
+    fn phase_init_boards_without_provider_have_wildcard_only() {
         let src = adapter_source_for_board("qemu-riscv64");
         assert!(
-            src.contains("chipset_init: no PciHost device declared")
-                || src.contains("chipset_init: no Southbridge device declared"),
-            "boards without chipset must emit the no-device error log; got:\n{src}"
+            src.contains("unknown or unsupported device id"),
+            "boards without a phase provider must still emit wildcard errors; got:\n{src}"
         );
     }
 

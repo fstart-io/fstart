@@ -11,7 +11,9 @@ use fstart_ecam as ecam;
 use fstart_gpio_ich::IchGpio;
 use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{ServiceError, SmBus, Southbridge};
+use fstart_services::{
+    EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
+};
 use fstart_smbus_intel::I801SmBus;
 use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
@@ -1291,7 +1293,7 @@ impl Device for IntelIch8 {
     }
 }
 
-impl Southbridge for IntelIch8 {
+impl PreConsoleInit for IntelIch8 {
     fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         self.enable_spi_prefetching_and_caching();
         self.program_fixed_bars();
@@ -1300,7 +1302,9 @@ impl Southbridge for IntelIch8 {
         self.setup_gpios();
         Ok(())
     }
+}
 
+impl EarlyInit for IntelIch8 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
         self.enable_spi_prefetching_and_caching();
         self.program_fixed_bars();
@@ -1321,8 +1325,10 @@ impl Southbridge for IntelIch8 {
         fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd);
         Ok(())
     }
+}
 
-    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+impl PostDramInit for IntelIch8 {
+    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
         self.poll_vc1();
         self.early_chipset_settings();
         self.pcie_init();
@@ -1341,12 +1347,32 @@ impl Southbridge for IntelIch8 {
         fstart_log::info!("intel-ich8: ramstage init complete");
         Ok(())
     }
+}
 
-    fn finalize(&mut self) -> Result<(), ServiceError> {
+impl FinalizeInit for IntelIch8 {
+    fn finalize_init(&mut self) -> Result<(), ServiceError> {
         let rcba = self.rcba();
         rcba.write32(ich8::RCBA_FDSW, rcba.read32(ich8::RCBA_FDSW) | (1 << 7));
         rcba.write32(ich8::RCBA_MAP, rcba.read32(ich8::RCBA_MAP));
         Ok(())
+    }
+}
+
+impl Southbridge for IntelIch8 {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        PreConsoleInit::pre_console_init(self)
+    }
+
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        EarlyInit::early_init(self)
+    }
+
+    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+        PostDramInit::post_dram_init(self)
+    }
+
+    fn finalize(&mut self) -> Result<(), ServiceError> {
+        FinalizeInit::finalize_init(self)
     }
 }
 
