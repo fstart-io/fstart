@@ -362,10 +362,23 @@ fn make_cpu_init_trampoline<C: CpuOps>() -> fn() {
         if ptr != 0 {
             // SAFETY: ptr was set by BSP to a valid &C before APs started.
             let ops: &C = unsafe { &*(ptr as *const C) };
+            if let Some((blob, _parallel)) = ops.microcode() {
+                log_microcode_revision("before update");
+                // SAFETY: CpuOps implementors only return blobs that are
+                // identity-mapped/reachable by all CPUs during MP init.
+                unsafe { fstart_microcode_intel::update_current_cpu_logged(blob) };
+                log_microcode_revision("after update");
+            }
             ops.init_cpu();
         }
     }
     trampoline::<C>
+}
+
+fn log_microcode_revision(label: &str) {
+    let cpu = current_cpu_index();
+    let rev = fstart_microcode_intel::current_revision();
+    fstart_log::info!("microcode: cpu{} {} rev={:#x}", cpu, label, rev);
 }
 
 fn store_smm_ops(ops: &dyn SmmOps) {
@@ -595,6 +608,14 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
             } else {
                 fstart_log::info!("mp: SMM provider returned no SMRAM info");
             }
+        }
+        if let Some((blob, _parallel)) = config.cpu_ops.microcode() {
+            fstart_log::info!("mp: BSP microcode update");
+            log_microcode_revision("before update");
+            // SAFETY: CpuOps implementors only return blobs that are
+            // identity-mapped/reachable by the CPU during MP init.
+            unsafe { fstart_microcode_intel::update_current_cpu_logged(blob) };
+            log_microcode_revision("after update");
         }
         fstart_log::info!("mp: BSP CPU init");
         config.cpu_ops.init_cpu();

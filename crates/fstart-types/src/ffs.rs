@@ -60,8 +60,8 @@ pub const FFS_MAGIC: [u8; 8] = *b"FSTART01";
 
 /// Current FFS format version.
 ///
-/// Bumped to 4 for the unified region model (incompatible with v3 manifests).
-pub const FFS_VERSION: u32 = 4;
+/// Bumped to 5 to add anchor-patched early CPU microcode location fields.
+pub const FFS_VERSION: u32 = 5;
 
 // ============================================================================
 // Anchor block — embedded in the bootblock binary
@@ -111,6 +111,19 @@ pub struct AnchorBlock {
     pub manifest_size: u32,
     /// Total firmware image size in bytes (all regions combined).
     pub total_image_size: u32,
+    /// Offset of this anchor block from image base.
+    ///
+    /// Pre-Rust x86 entry code uses this with the link-time `FSTART_ANCHOR`
+    /// address to reconstruct the firmware image base before Rust is running.
+    pub anchor_offset: u32,
+    /// Offset of the concatenated CPU microcode blob from image base.
+    ///
+    /// Zero means no early microcode blob is present. This is deliberately
+    /// duplicated from the manifest so pre-Rust x86 entry code can apply BSP
+    /// microcode before it has a stack or postcard/FFS parser.
+    pub microcode_offset: u32,
+    /// Size of the concatenated CPU microcode blob in bytes.
+    pub microcode_size: u32,
     /// Number of valid keys in the `keys` array (0..=4).
     pub key_count: u32,
     /// Verification keys for manifest signatures.
@@ -133,6 +146,9 @@ impl AnchorBlock {
             manifest_offset: 0,
             manifest_size: 0,
             total_image_size: 0,
+            anchor_offset: 0,
+            microcode_offset: 0,
+            microcode_size: 0,
             key_count: 0,
             keys: [VerificationKey::ZERO; ANCHOR_MAX_KEYS],
         }
@@ -458,6 +474,9 @@ pub enum FileType {
     Firmware,
     /// FIT (Flattened Image Tree) image for runtime parsing.
     FitImage,
+    /// CPU microcode update blob. The CPU vendor authenticates update records;
+    /// fstart still records normal file digests when the entry is signed.
+    CpuMicrocode,
     /// Initial RAM filesystem (initramfs / initrd) — loaded to RAM and
     /// passed to the kernel via FDT `/chosen/linux,initrd-start` and
     /// `linux,initrd-end` properties.

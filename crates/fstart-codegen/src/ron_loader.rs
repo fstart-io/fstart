@@ -67,6 +67,8 @@ struct RonBoardConfig {
     mode: BuildMode,
     payload: Option<PayloadConfig>,
     #[serde(default)]
+    microcode: Option<fstart_types::board::MicrocodeConfig>,
+    #[serde(default)]
     soc_image_format: SocImageFormat,
     #[serde(default)]
     full_flash_image: bool,
@@ -188,6 +190,7 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
         security: ron.security,
         mode: ron.mode,
         payload: ron.payload,
+        microcode: ron.microcode,
         soc_image_format: ron.soc_image_format,
         full_flash_image: ron.full_flash_image,
         acpi: ron.acpi,

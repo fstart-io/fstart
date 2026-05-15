@@ -261,7 +261,7 @@
                 // until the X61-specific I/O-trap dock/EC SMI callbacks are
                 // ported; enabling only the generic ACPI APM handler would be
                 // incomplete for this mainboard.
-                MpInit(cpu_model: "generic-x86", num_cpus: 2, smm: false),
+                MpInit(cpu_model: "core2", num_cpus: 2, smm: false),
                 AcpiPrepare,
                 SmBiosPrepare,
                 BootMedia(MemoryMapped(
@@ -278,6 +278,20 @@
             runs_from: Ram,
         ),
     ]),
+
+    microcode: Some(Intel((
+        files: [
+            "../../../intel-microcode/intel-ucode/06-0f-02",
+            "../../../intel-microcode/intel-ucode/06-0f-06",
+            "../../../intel-microcode/intel-ucode/06-0f-07",
+            "../../../intel-microcode/intel-ucode/06-0f-0a",
+            "../../../intel-microcode/intel-ucode/06-0f-0b",
+            "../../../intel-microcode/intel-ucode/06-0f-0d",
+            "../../../intel-microcode/intel-ucode/06-16-01",
+        ],
+        early: true,
+        mp: true,
+    ))),
 
     security: (
         signing_algorithm: Ed25519,

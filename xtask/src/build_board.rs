@@ -801,6 +801,9 @@ fn capability_features(
             if cpu_model.as_str().contains("pineview") || cpu_model.as_str().contains("106cx") {
                 features.push("pineview-cpu".to_string());
             }
+            if cpu_model.as_str().contains("core2") || cpu_model.as_str().contains("6fx") {
+                features.push("core2-cpu".to_string());
+            }
         }
     }
 

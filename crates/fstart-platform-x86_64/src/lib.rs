@@ -184,6 +184,12 @@ core::arch::global_asm!(
     "movw %ax, %ss",
     "movw %ax, %fs",
     "movw %ax, %gs",
+    // ---- Very early BSP microcode update ----
+    // Uses only registers and the anchor-patched microcode offset.  It runs
+    // before CAR/Rust so CPU errata fixes are present for the rest of init.
+    "movl $_after_early_microcode, %esp",
+    "jmp _early_intel_microcode",
+    "_after_early_microcode:",
     // ---- CAR setup (real hardware only) ----
     // On boards with Cache-as-RAM, we must enable it BEFORE any memory
     // writes (BSS clear, page tables, stack pushes) because all writable
@@ -227,6 +233,97 @@ core::arch::global_asm!(
     "movb $0x23, %al",
     "outb %al, $0x80",
     "jmp _setup_page_tables",
+    options(att_syntax),
+);
+
+// Very-early Intel microcode update for BSP.
+//
+// Entry/return convention matches coreboot's no-stack helpers: `%esp` contains
+// the absolute return address. The routine may clobber all general registers.
+#[cfg(feature = "early-ffs-anchor")]
+core::arch::global_asm!(
+    ".section .text, \"ax\"",
+    ".code32",
+    ".global _early_intel_microcode",
+    "_early_intel_microcode:",
+    "cmpl $0, _fstart_early_microcode_enabled",
+    "je 9f",
+    "movl $_fstart_anchor_early, %esi",
+    // Anchor layout (u32 offsets): anchor_offset=24, microcode_offset=28,
+    // microcode_size=32. Reconstruct image base from link-time anchor addr.
+    "movl 28(%esi), %eax",
+    "testl %eax, %eax",
+    "jz 9f",
+    "movl 32(%esi), %ecx",
+    "testl %ecx, %ecx",
+    "jz 9f",
+    "movl %esi, %edi",
+    "subl 24(%esi), %edi",
+    "addl %edi, %eax",
+    "movl %eax, %esi", // ESI = first microcode record
+    "addl %eax, %ecx",
+    "movl %ecx, %edi", // EDI = end
+    // Platform flags: 1 << ((IA32_PLATFORM_ID.hi >> 18) & 7).
+    "movl $0x17, %ecx",
+    "rdmsr",
+    "shrl $18, %edx",
+    "andl $7, %edx",
+    "movl $1, %eax",
+    "movl %edx, %ecx",
+    "shll %cl, %eax",
+    "movl %eax, %ebp", // EBP = platform flag mask
+    // Current microcode revision -> EDX, CPUID(1).EAX signature -> EBX.
+    "xorl %eax, %eax",
+    "xorl %edx, %edx",
+    "movl $0x8b, %ecx",
+    "wrmsr",
+    "movl $1, %eax",
+    "cpuid",
+    "movl %eax, %ebx",
+    "movl $0x8b, %ecx",
+    "rdmsr",
+    "1:",
+    // Stop if fewer than the 48-byte Intel header remain.
+    "movl %edi, %eax",
+    "subl %esi, %eax",
+    "cmpl $48, %eax",
+    "jb 9f",
+    // Match processor signature and platform flags.
+    "cmpl 12(%esi), %ebx",
+    "jne 2f",
+    "movl 24(%esi), %eax",
+    "testl %ebp, %eax",
+    "jz 2f",
+    // Only load if update revision is newer than the currently installed one.
+    "cmpl 4(%esi), %edx",
+    "jge 9f",
+    "leal 48(%esi), %eax",
+    "xorl %edx, %edx",
+    "movl $0x79, %ecx",
+    "wrmsr",
+    "jmp 9f",
+    "2:",
+    // Advance by total_size, or 2048 for old updates with total_size == 0.
+    "movl 32(%esi), %eax",
+    "testl %eax, %eax",
+    "jnz 3f",
+    "movl $2048, %eax",
+    "3:",
+    "addl %eax, %esi",
+    "cmpl %esi, %edi",
+    "ja 1b",
+    "9:",
+    "jmp *%esp",
+    options(att_syntax),
+);
+
+#[cfg(not(feature = "early-ffs-anchor"))]
+core::arch::global_asm!(
+    ".section .text, \"ax\"",
+    ".code32",
+    ".global _early_intel_microcode",
+    "_early_intel_microcode:",
+    "jmp *%esp",
     options(att_syntax),
 );
 

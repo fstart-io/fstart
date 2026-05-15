@@ -341,6 +341,17 @@
         ),
     ]),
 
+    microcode: Some(Intel((
+        // Intel Atom Pineview / model_106cx microcode. Match coreboot's
+        // cpu/intel/model_106cx selection: intel-ucode/06-1c-*.
+        files: [
+            "../../../intel-microcode/intel-ucode/06-1c-02",
+            "../../../intel-microcode/intel-ucode/06-1c-0a",
+        ],
+        early: true,
+        mp: true,
+    ))),
+
     security: (
         signing_algorithm: Ed25519,
         pubkey_file: "keys/dev-signing.pub",
