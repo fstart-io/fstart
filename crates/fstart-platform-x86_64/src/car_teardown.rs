@@ -3,18 +3,19 @@
 //! Mirrors coreboot's Intel non-evict postcar flow:
 //! 1. switch to a DRAM stack in the caller
 //! 2. disable cache, disable MTRRs, clear NEM RUN/SETUP
-//! 3. re-enable cache, `invd`
-//! 4. program post-CAR MTRRs and re-enable MTRRs
+//! 3. program post-CAR MTRRs while cache/MTRRs are disabled
+//! 4. re-enable MTRRs, re-enable cache, `invd`
 //!
 //! This must run after DRAM training and before large DRAM/FFS work.
 
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
+
+use fstart_arch_x86::{msr, mtrr};
 
 global_asm!(
     ".text",
     ".code64",
     ".global _car_teardown",
-    ".global _postcar_mtrr_setup",
     // ------------------------------------------------------------------
     // _car_teardown — Intel non-evict CAR teardown.
     //
@@ -40,44 +41,16 @@ global_asm!(
     "andl $0xfffffffe, %eax",
     "wrmsr",
     "ret",
-    // ------------------------------------------------------------------
-    // _postcar_mtrr_setup — equivalent of coreboot exit_car.S tail plus
-    // postcar_mtrr_setup() for fstart's fixed early MTRR layout.
-    // ------------------------------------------------------------------
-    "_postcar_mtrr_setup:",
-    // Re-enable cache and invalidate stale cache contents.
-    "movq %cr0, %rax",
-    "andq $0xffffffff9fffffff, %rax", // clear CD + NW
-    "movq %rax, %cr0",
-    "invd",
-    // MTRR0 = DRAM write-back range supplied by linker.
-    "movl $0x200, %ecx",
-    "movl $_dram_mtrr_base, %eax",
-    "orl $0x06, %eax",
-    "xorl %edx, %edx",
-    "wrmsr",
-    "movl $0x201, %ecx",
-    "movl $_dram_mtrr_mask, %eax",
-    "orl $0x800, %eax",
-    // Pineview has 36 physical address bits; set high mask bits so the
-    // temporary post-CAR DRAM MTRR decodes as the intended low-DRAM range,
-    // not as a huge range extending over MMIO/ROM.
-    "movl $0x0000000f, %edx",
-    "wrmsr",
-    // MTRR1 was programmed by CAR setup as ROM WP and is preserved while
-    // MTRRs are disabled. Re-enable variable MTRRs with default type kept.
-    "movl $0x2ff, %ecx",
-    "rdmsr",
-    "andl $0xfffff0ff, %eax", // preserve default type low byte only
-    "orl $0x800, %eax",
-    "wrmsr",
-    "ret",
     options(att_syntax),
 );
 
 unsafe extern "C" {
     fn _car_teardown();
-    fn _postcar_mtrr_setup();
+
+    static _dram_mtrr_base: u8;
+    static _dram_mtrr_size: u8;
+    static _rom_mtrr_base: u8;
+    static _rom_mtrr_size: u8;
 }
 
 /// Tear down Cache-as-RAM non-evict mode.
@@ -90,11 +63,41 @@ pub unsafe fn car_teardown() {
     unsafe { _car_teardown() }
 }
 
+unsafe fn invalidate_cache_after_reenable() {
+    unsafe {
+        asm!("invd", options(nostack, preserves_flags));
+    }
+}
+
 /// Re-enable normal caching and install post-CAR MTRRs.
 ///
 /// # Safety
 ///
-/// Must be called after [`car_teardown`] while still on a DRAM stack.
+/// Must be called after [`car_teardown`] while still on a DRAM stack and before
+/// any large DRAM or memory-mapped flash copies. This function runs the MTRR
+/// update with cache and MTRRs still disabled by [`car_teardown`].
 pub unsafe fn postcar_mtrr_setup() {
-    unsafe { _postcar_mtrr_setup() }
+    unsafe {
+        let count = mtrr::variable_count();
+        for index in 0..count {
+            mtrr::clear_variable(index);
+        }
+
+        let dram_base = core::ptr::addr_of!(_dram_mtrr_base) as u64;
+        let dram_size = core::ptr::addr_of!(_dram_mtrr_size) as u64;
+        if dram_size != 0 && count > 0 {
+            mtrr::set_variable(0, dram_base, dram_size, mtrr::MTRR_TYPE_WRITE_BACK);
+        }
+
+        let rom_base = core::ptr::addr_of!(_rom_mtrr_base) as u64;
+        let rom_size = core::ptr::addr_of!(_rom_mtrr_size) as u64;
+        if rom_size != 0 && count > 1 {
+            mtrr::set_variable(1, rom_base, rom_size, mtrr::MTRR_TYPE_WRITE_PROTECT);
+        }
+
+        let def_type = msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
+        msr::wrmsr(mtrr::IA32_MTRR_DEF_TYPE, (def_type & 0xff) | (1 << 11));
+        mtrr::enable_cache();
+        invalidate_cache_after_reenable();
+    }
 }
