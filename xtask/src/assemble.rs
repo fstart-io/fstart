@@ -18,7 +18,7 @@ use fstart_types::device::BusAddress;
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
-use fstart_types::{BoardConfig, FdtSource, SocImageFormat, StageLayout};
+use fstart_types::{BoardConfig, Capability, FdtSource, SocImageFormat, StageLayout};
 use goblin::elf::{program_header, Elf};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -128,7 +128,7 @@ fn assemble_impl(
                 }],
             });
         }
-        StageLayout::MultiStage(_stages) => {
+        StageLayout::MultiStage(stages) => {
             for (i, stage_bin) in build_result.stages.iter().enumerate() {
                 if i == 0 {
                     // The bootblock must be uncompressed — it executes
@@ -170,9 +170,17 @@ fn assemble_impl(
                     });
                 } else {
                     // Subsequent stages are stored as flat binaries (the
-                    // objcopy .bin).  The bootblock copies this blob
-                    // directly to load_addr — no FFS parsing or LZ4
-                    // decompression required.
+                    // objcopy .bin). The StageLoad path loads the FFS segment
+                    // to load_addr and supports LZ4 in-place decompression, so
+                    // ramstages loaded via StageLoad can be stored compressed.
+                    // LoadNextStage users (e.g. tiny SoC bootblocks) copy raw
+                    // bytes and jump directly, so those stages must remain
+                    // uncompressed.
+                    let compression = if stage_loaded_via_stage_load(stages, &stage_bin.name) {
+                        Compression::Lz4
+                    } else {
+                        Compression::None
+                    };
                     let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
@@ -192,7 +200,7 @@ fn assemble_impl(
                             data: bin_data,
                             mem_size: None,
                             load_addr: stage_bin.load_addr,
-                            compression: Compression::None,
+                            compression,
                             flags: SegmentFlags::CODE,
                         }],
                     });
@@ -542,6 +550,17 @@ fn assemble_microcode(
     Ok(())
 }
 
+fn stage_loaded_via_stage_load(stages: &[fstart_types::StageConfig], stage_name: &str) -> bool {
+    stages.iter().any(|stage| {
+        stage.capabilities.iter().any(|cap| {
+            matches!(
+                cap,
+                Capability::StageLoad { next_stage } if next_stage.as_str() == stage_name
+            )
+        })
+    })
+}
+
 // ============================================================================
 // Payload assembly helpers
 // ============================================================================
@@ -663,7 +682,7 @@ fn assemble_fit_payload(
                     data: kernel_data.to_vec(),
                     mem_size: None,
                     load_addr: kernel_load,
-                    compression: Compression::None,
+                    compression: Compression::Lz4,
                     flags: SegmentFlags::CODE,
                 }],
             });
@@ -688,7 +707,7 @@ fn assemble_fit_payload(
                             data: rd_data.to_vec(),
                             mem_size: None,
                             load_addr: rd_load,
-                            compression: Compression::None,
+                            compression: Compression::Lz4,
                             flags: SegmentFlags::RODATA,
                         }],
                     });
