@@ -78,6 +78,14 @@ pub struct StageConfig {
     pub heap_size: Option<u32>,
     /// Where this stage executes from
     pub runs_from: RunsFrom,
+    /// Compression to use when this stage is packaged into FFS.
+    ///
+    /// The first stage is always stored uncompressed because it executes
+    /// directly and contains the patchable FFS anchor. Later stages may use
+    /// `Lz4` when loaded via `StageLoad`; stages loaded by `LoadNextStage`
+    /// must remain `None` because that path copies raw bytes and jumps.
+    #[serde(default = "default_stage_compression")]
+    pub compression: crate::ffs::Compression,
     /// Explicit address for data/BSS/stack in RAM (XIP stages only).
     ///
     /// Same semantics as [`MonolithicConfig::data_addr`]: when the stage
@@ -127,6 +135,10 @@ pub enum RunsFrom {
     /// flash into RAM by a prior stage's `StageLoad` capability and
     /// jumped to.
     Ram,
+}
+
+fn default_stage_compression() -> crate::ffs::Compression {
+    crate::ffs::Compression::None
 }
 
 /// x86_64 identity-map page size for page table construction.

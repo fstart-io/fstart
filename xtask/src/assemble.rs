@@ -18,7 +18,7 @@ use fstart_types::device::BusAddress;
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
-use fstart_types::{BoardConfig, Capability, FdtSource, SocImageFormat, StageLayout};
+use fstart_types::{BoardConfig, FdtSource, SocImageFormat, StageLayout};
 use goblin::elf::{program_header, Elf};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -176,10 +176,20 @@ fn assemble_impl(
                     // LoadNextStage users (e.g. tiny SoC bootblocks) copy raw
                     // bytes and jump directly, so those stages must remain
                     // uncompressed.
-                    let compression = if stage_loaded_via_stage_load(stages, &stage_bin.name) {
-                        Compression::Lz4
-                    } else {
-                        Compression::None
+                    let stage_cfg = stages
+                        .iter()
+                        .find(|stage| stage.name.as_str() == stage_bin.name)
+                        .ok_or_else(|| {
+                            format!("stage '{}' missing from board config", stage_bin.name)
+                        })?;
+                    let compression = stage_cfg.compression;
+                    if compression != Compression::None
+                        && !stage_loaded_via_stage_load(stages, &stage_bin.name)
+                    {
+                        return Err(format!(
+                            "stage '{}' requests {:?} compression but is not loaded via StageLoad",
+                            stage_bin.name, compression
+                        ));
                     };
                     let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
@@ -555,7 +565,7 @@ fn stage_loaded_via_stage_load(stages: &[fstart_types::StageConfig], stage_name:
         stage.capabilities.iter().any(|cap| {
             matches!(
                 cap,
-                Capability::StageLoad { next_stage } if next_stage.as_str() == stage_name
+                fstart_types::Capability::StageLoad { next_stage } if next_stage.as_str() == stage_name
             )
         })
     })
