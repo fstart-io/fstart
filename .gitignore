@@ -30,3 +30,6 @@ bl31.bin
 *.jpg
 *.png
 .pi-lens/
+
+# Linux kernel build artifacts
+bzImage
