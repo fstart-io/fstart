@@ -270,55 +270,25 @@ pub fn sig_verify(anchor_data: &[u8], media: &impl BootMedia) {
         }
     };
 
-    // Verify file digests — only possible with memory-mapped access
-    // (requires reading full file data for hashing). For non-memory-mapped
-    // media, the manifest signature already provides integrity.
-    if let Some(image) = media.as_slice() {
-        let image_size = effective_image_size(media.size(), &anchor);
-        let reader = fstart_ffs::FfsReader::new(&image[..image_size]);
-
-        let mut total_verified = 0usize;
-        let mut total_skipped = 0usize;
-
-        for region in &manifest.regions {
-            if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
-                fstart_log::info!(
-                    "sig verify: region '{}' ({} entries)",
-                    region.name.as_str(),
-                    children.len()
-                );
-
-                for entry in children {
-                    match reader.verify_entry_digests(entry, region) {
-                        Ok(()) => total_verified += 1,
-                        Err(fstart_ffs::ReaderError::CannotVerifyInPlace) => {
-                            total_skipped += 1;
-                        }
-                        Err(_) => {
-                            fstart_log::error!(
-                                "sig verify: digest FAILED for: {}",
-                                entry.name.as_str()
-                            );
-                            return;
-                        }
-                    }
-                }
-            }
+    let mut regions = 0usize;
+    let mut entries = 0usize;
+    for region in &manifest.regions {
+        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
+            fstart_log::info!(
+                "sig verify: region '{}' ({} entries)",
+                region.name.as_str(),
+                children.len()
+            );
+            regions += 1;
+            entries += children.len();
         }
-
-        fstart_log::info!(
-            "sig verify: {} files verified, {} skipped (multi-segment)",
-            total_verified,
-            total_skipped
-        );
-    } else {
-        // Non-memory-mapped media: manifest signature verified above;
-        // per-file digest verification requires incremental hashing
-        // (future enhancement).
-        fstart_log::info!(
-            "sig verify: manifest signature verified (per-file digests skipped on block device)"
-        );
     }
+
+    fstart_log::info!(
+        "sig verify: manifest signature verified ({} regions, {} entries); file digests verify after load",
+        regions,
+        entries
+    );
 }
 
 /// Stub SigVerify when FFS feature is not enabled.
@@ -625,6 +595,9 @@ pub fn payload_load(anchor_data: &[u8], media: &impl BootMedia, jump_to: fn(u64)
         Some(addr) => addr,
         None => return,
     };
+    if !verify_loaded_entry_digests(entry) {
+        return;
+    }
 
     fstart_log::info!("payload load: jumping to {}", Hex(entry_addr));
 
@@ -742,6 +715,10 @@ pub fn stage_load(
             return;
         }
     };
+    if !verify_loaded_entry_digests(entry) {
+        fstart_log::error!("stage load: digest verification failed");
+        return;
+    }
 
     fstart_log::info!("stage load: jumping to {}", Hex(entry_addr));
 
@@ -906,7 +883,12 @@ pub fn load_ffs_file_by_type(
     }
 
     let image_size = effective_image_size(media.size(), &anchor);
-    load_entry_segments_from_media(media, entry, region, image_size).is_some()
+    let loaded = load_entry_segments_from_media(media, entry, region, image_size).is_some();
+    if !loaded {
+        return false;
+    }
+
+    verify_loaded_entry_digests(entry)
 }
 
 /// Find a file in FFS by its `FileType` and return a slice to its raw data.
@@ -977,6 +959,48 @@ pub fn find_ffs_file_data<'a>(
 
     fstart_log::error!("find file data: file type not found in FFS");
     None
+}
+
+#[cfg(feature = "ffs")]
+fn verify_loaded_entry_digests(entry: &fstart_types::ffs::RegionEntry) -> bool {
+    let (segments, digests) = match &entry.content {
+        fstart_types::ffs::EntryContent::File {
+            segments, digests, ..
+        } => (segments, digests),
+        fstart_types::ffs::EntryContent::Raw { .. } => return true,
+    };
+
+    if segments.len() != 1 {
+        fstart_log::info!(
+            "load file: digest verify skipped for '{}' ({} loaded segments)",
+            entry.name.as_str(),
+            segments.len()
+        );
+        return true;
+    }
+
+    let seg = &segments[0];
+    let verify_size = seg.loaded_size as usize;
+    // SAFETY: the segment has just been loaded/decompressed to `load_addr`,
+    // and the FFS manifest's loaded_size describes the initialized bytes that
+    // the builder hashed when creating the file digest.
+    let data = unsafe { core::slice::from_raw_parts(seg.load_addr as *const u8, verify_size) };
+    match fstart_crypto::digest::verify_digest_set(data, digests) {
+        Ok(()) => {
+            fstart_log::info!(
+                "load file: '{}' digest verified after load",
+                entry.name.as_str()
+            );
+            true
+        }
+        Err(_) => {
+            fstart_log::error!(
+                "load file: '{}' digest FAILED after load",
+                entry.name.as_str()
+            );
+            false
+        }
+    }
 }
 
 /// Load all segments of a file entry to their load addresses from any boot medium.
