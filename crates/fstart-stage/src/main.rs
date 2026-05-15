@@ -102,20 +102,48 @@ fn __fstart_quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, si
                 continue;
             }
 
-            if seg.compression != Compression::None {
-                loop {}
-            }
             let src_off = (region.offset + entry.offset + seg.offset) as usize;
             let stored = seg.stored_size as usize;
             if src_off.saturating_add(stored) > image_size {
                 loop {}
             }
-            unsafe {
-                core::ptr::copy(
-                    image.as_ptr().add(src_off),
-                    seg.load_addr as *mut u8,
-                    stored,
-                );
+
+            match seg.compression {
+                Compression::None => unsafe {
+                    core::ptr::copy(
+                        image.as_ptr().add(src_off),
+                        seg.load_addr as *mut u8,
+                        stored,
+                    );
+                },
+                #[cfg(feature = "lz4")]
+                Compression::Lz4 => {
+                    let buf_size = seg.in_place_size as usize;
+                    let loaded = seg.loaded_size as usize;
+                    if buf_size < loaded || buf_size < stored {
+                        loop {}
+                    }
+
+                    let dest = seg.load_addr as *mut u8;
+                    let comp_offset = buf_size - stored;
+                    unsafe {
+                        let buf = core::slice::from_raw_parts_mut(dest, buf_size);
+                        core::ptr::copy(
+                            image.as_ptr().add(src_off),
+                            buf.as_mut_ptr().add(comp_offset),
+                            stored,
+                        );
+                        let src =
+                            core::slice::from_raw_parts(buf.as_ptr().add(comp_offset), stored);
+                        let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), loaded);
+                        match fstart_ffs::lz4::decompress_block(src, dst) {
+                            Ok(_) => {}
+                            Err(_) => loop {},
+                        }
+                    }
+                }
+                #[cfg(not(feature = "lz4"))]
+                Compression::Lz4 => loop {},
             }
         }
         if entry_addr != 0 {

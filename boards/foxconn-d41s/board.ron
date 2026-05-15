@@ -339,6 +339,7 @@
             // still emits an IDT section in the RAM region so the
             // ramstage can install its own exception handler.
             runs_from: Ram,
+            compression: Lz4,
         ),
     ]),
 

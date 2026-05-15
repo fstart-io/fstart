@@ -280,6 +280,7 @@
             stack_size: 0x8000,
             heap_size: Some(0x40000),
             runs_from: Ram,
+            compression: Lz4,
         ),
     ]),
 
