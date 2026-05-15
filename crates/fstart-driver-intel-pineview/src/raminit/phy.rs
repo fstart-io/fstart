@@ -7,8 +7,8 @@
 //! `sdram_programddr`, `sdram_programdqdqs`, `sdram_periodic_rcomp`.
 
 use super::{PllParam, SysInfo};
+use crate::regs::{mchbar, MchBar};
 use fstart_ecam as ecam;
-use fstart_pineview_regs::{mchbar, MchBar};
 
 const PINEVIEW_TSC_HZ: u64 = 1_666_666_667;
 

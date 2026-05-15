@@ -675,7 +675,6 @@ dependencies = [
  "fstart-hda",
  "fstart-log",
  "fstart-mmio",
- "fstart-pineview-regs",
  "fstart-pio",
  "fstart-pmio-ich",
  "fstart-services",
@@ -720,7 +719,6 @@ dependencies = [
  "fstart-log",
  "fstart-mmio",
  "fstart-mp",
- "fstart-pineview-regs",
  "fstart-pio",
  "fstart-pmio-ich",
  "fstart-services",
@@ -1022,15 +1020,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-pineview-regs"
-version = "0.1.0"
-dependencies = [
- "fstart-ecam",
- "fstart-mmio",
- "tock-registers",
-]
-
-[[package]]
 name = "fstart-pio"
 version = "0.1.0"
 dependencies = [
@@ -1104,7 +1093,6 @@ version = "0.1.0"
 dependencies = [
  "fstart-ecam",
  "fstart-log",
- "fstart-pineview-regs",
  "fstart-pio",
  "fstart-services",
  "tock-registers",

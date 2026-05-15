@@ -11,20 +11,21 @@
 //!   `raminit.c`. Called via the generated board adapter's `dram_init()`
 //!   trampoline.
 //!
-//! Register definitions live in `fstart-pineview-regs`.
+//! Register definitions live in the crate-local [`regs`] module.
 
 #![no_std]
 
 pub mod raminit;
+mod regs;
 
 use core::cell::UnsafeCell;
 use core::ptr;
 
+use crate::regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_arch_x86::mtrr;
 use fstart_driver_pci_ecam::{PciEcam, PciEcamConfig};
 use fstart_ecam as ecam;
 use fstart_mp::{SmmError, SmmInfo, SmmOps};
-use fstart_pineview_regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
 use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};

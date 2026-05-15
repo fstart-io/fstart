@@ -107,7 +107,7 @@ const fn xmit_write(addr: u8) -> u8 {
 ///
 /// Holds the I/O port base address and provides byte/word read/write
 /// transactions. Constructed via [`I801SmBus::new`] (known base) or
-/// [`I801SmBus::enable_on_ich7`] (auto-configure via PCI config space).
+/// [`I801SmBus::enable_on_i801`] (auto-configure via PCI config space).
 pub struct I801SmBus {
     base: u16,
 }
@@ -126,22 +126,6 @@ impl I801SmBus {
     #[inline(always)]
     fn regs(&self) -> I801Regs {
         I801Regs::new(self.base)
-    }
-
-    /// Enable the SMBus controller on an ICH7 southbridge via ECAM
-    /// and return a ready-to-use driver.
-    ///
-    /// Programs PCI function 00:1F.3 through ECAM MMIO:
-    /// - SMB_BASE (reg 0x20) = `smbus_base` | 1
-    /// - HOSTC (reg 0x40) = HST_EN (1)
-    /// - PCI_COMMAND |= I/O space enable
-    /// Then resets the host controller.
-    ///
-    /// The ECAM must already be enabled (PCIEXBAR programmed) before
-    /// calling this.
-    pub fn enable_on_ich7(smbus_base: u16) -> Self {
-        use fstart_pineview_regs::ich7;
-        Self::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, smbus_base)
     }
 
     /// Enable an Intel I801-compatible SMBus controller via ECAM.
