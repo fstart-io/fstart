@@ -64,6 +64,7 @@ x86-boot = []
 # x86 MP/SMM support.
 mp = ["dep:fstart-mp"]
 pineview-cpu = ["mp", "dep:fstart-cpu-intel"]
+core2-cpu = ["mp", "dep:fstart-cpu-intel"]
 # x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
 x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
 # x86_64: build page tables at runtime in writable RAM. Enabled only for
@@ -76,7 +77,11 @@ acpi-load = []
 # MemoryDetect capability (runtime memory detection)
 memory-detect = []
 # FFS / crypto features (forwarded to fstart-capabilities)
-ffs = ["fstart-capabilities/ffs", "dep:fstart-ffs"]
+ffs = [
+  "fstart-capabilities/ffs",
+  "dep:fstart-ffs",
+  "fstart-platform-x86_64?/early-ffs-anchor",
+]
 ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
 sha2-digest = [
   "ffs",

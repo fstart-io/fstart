@@ -64,6 +64,7 @@ members = [
   "crates/fstart-hda",
   "crates/fstart-lapic",
   "crates/fstart-mp",
+  "crates/fstart-microcode-intel",
   "crates/fstart-smm",
   "crates/fstart-smm-image",
   "crates/fstart-cpu-intel",
@@ -171,6 +172,7 @@ fstart-gpio-ich = { path = "crates/fstart-gpio-ich" }
 fstart-hda = { path = "crates/fstart-hda" }
 fstart-lapic = { path = "crates/fstart-lapic" }
 fstart-mp = { path = "crates/fstart-mp" }
+fstart-microcode-intel = { path = "crates/fstart-microcode-intel" }
 fstart-smm = { path = "crates/fstart-smm" }
 fstart-smm-image = { path = "crates/fstart-smm-image" }
 fstart-cpu-intel = { path = "crates/fstart-cpu-intel" }

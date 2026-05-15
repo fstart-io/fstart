@@ -208,6 +208,10 @@ fn assemble_impl(
     //   2. Board RON payload config (payload.firmware.file, payload.kernel_file,
     //      payload.fit_file) resolved relative to the board directory
     //   3. Skip — no external blob added
+    if let Some(ref microcode) = config.microcode {
+        assemble_microcode(microcode, &board_dir, &mut ro_files)?;
+    }
+
     if let Some(ref payload) = config.payload {
         // Handle FIT image payloads
         if payload.kind == fstart_types::PayloadKind::FitImage {
@@ -445,7 +449,18 @@ fn create_full_flash_image(
         .ok_or_else(|| {
             "bootblock XIP anchor placeholder not found in full flash image".to_string()
         })?;
-    let anchor = ffs_data[ffs_anchor_offset..ffs_anchor_offset + anchor_size].to_vec();
+    let mut xip_anchor_block = unsafe {
+        core::ptr::read_unaligned(
+            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_types::ffs::AnchorBlock
+        )
+    };
+    // The FFS copy of the anchor lives near offset 0, but real hardware jumps
+    // into the top-aligned XIP bootblock copy. Pre-Rust x86 code has only the
+    // linked anchor address, so the XIP anchor must describe its full-flash
+    // offset to reconstruct `memory.flash_base` correctly.
+    xip_anchor_block.anchor_offset = xip_anchor as u32;
+    let mut anchor = vec![0u8; anchor_size];
+    xip_anchor_block.write_to(&mut anchor);
     image[xip_anchor..xip_anchor + anchor_size].copy_from_slice(&anchor);
     eprintln!(
         "[fstart] full flash: patched XIP anchor at offset {xip_anchor:#x} from FFS offset {ffs_anchor_offset:#x}"
@@ -466,6 +481,65 @@ fn create_full_flash_image(
         ffs_data.len()
     );
     Ok(out_path)
+}
+
+// ============================================================================
+// Microcode assembly helpers
+// ============================================================================
+
+fn assemble_microcode(
+    microcode: &fstart_types::board::MicrocodeConfig,
+    board_dir: &Path,
+    ro_files: &mut Vec<InputFile>,
+) -> Result<(), String> {
+    match microcode {
+        fstart_types::board::MicrocodeConfig::Intel(config) => {
+            let mut blob = Vec::new();
+            for file in &config.files {
+                let path = Path::new(file.as_str());
+                let path = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    board_dir.join(path)
+                };
+                let data = fs::read(&path).map_err(|e| {
+                    format!("failed to read Intel microcode {}: {e}", path.display())
+                })?;
+                eprintln!(
+                    "[fstart] Intel microcode: {} ({} bytes)",
+                    path.display(),
+                    data.len()
+                );
+                blob.extend_from_slice(&data);
+            }
+
+            if blob.is_empty() {
+                return Err("Intel microcode config did not include any bytes".to_string());
+            }
+
+            eprintln!(
+                "[fstart] Intel microcode blob: {} bytes (early={}, mp={})",
+                blob.len(),
+                config.early,
+                config.mp
+            );
+            ro_files.push(InputFile {
+                name: "cpu_microcode_blob.bin".to_string(),
+                file_type: FileType::CpuMicrocode,
+                segments: vec![InputSegment {
+                    name: ".microcode".to_string(),
+                    kind: SegmentKind::ReadOnlyData,
+                    data: blob,
+                    mem_size: None,
+                    load_addr: 0,
+                    compression: Compression::None,
+                    flags: SegmentFlags::RODATA,
+                }],
+            });
+        }
+    }
+
+    Ok(())
 }
 
 // ============================================================================

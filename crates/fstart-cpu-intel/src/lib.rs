@@ -5,6 +5,7 @@
 
 #![no_std]
 
+pub mod core2_cpu;
 pub mod pineview;
 
 #[cfg(feature = "acpi")]

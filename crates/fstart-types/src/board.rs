@@ -86,6 +86,13 @@ pub struct BoardConfig {
     pub mode: BuildMode,
     /// Optional payload configuration
     pub payload: Option<PayloadConfig>,
+    /// Optional CPU microcode updates to package into FFS.
+    ///
+    /// x86 stages can use this blob twice: very early BSP assembly reads the
+    /// anchor-patched location before Rust starts, and MP init reloads the
+    /// matching patch on BSP/APs during CPU bring-up.
+    #[serde(default)]
+    pub microcode: Option<MicrocodeConfig>,
     /// SoC-specific binary image format required by the boot ROM.
     ///
     /// Each SoC family has its own boot ROM that expects a particular
@@ -150,6 +157,30 @@ pub struct BoardConfig {
     /// without S-mode; hart 1 is the first U74 application core).
     #[serde(default)]
     pub boot_hart_id: u32,
+}
+
+/// CPU microcode packaging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MicrocodeConfig {
+    /// Intel concatenated microcode update files.
+    Intel(IntelMicrocodeConfig),
+}
+
+/// Intel microcode files to concatenate into `cpu_microcode_blob.bin`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntelMicrocodeConfig {
+    /// Source files, resolved relative to the board directory unless absolute.
+    pub files: heapless::Vec<HString<128>, 16>,
+    /// Patch the blob location into the FFS anchor for pre-Rust BSP update.
+    #[serde(default = "default_true")]
+    pub early: bool,
+    /// Use the blob again during MP init for BSP/AP updates.
+    #[serde(default = "default_true")]
+    pub mp: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// SoC-specific binary image format required by the boot ROM.

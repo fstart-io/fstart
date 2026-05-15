@@ -150,12 +150,22 @@ fn log_mtrr_solution(label: &str) {
 pub struct PineviewCpuOps {
     /// PM base I/O port (programmed by the ICH7 southbridge).
     pmbase: u32,
+    /// Optional concatenated Intel microcode blob packaged in FFS.
+    microcode: Option<&'static [u8]>,
 }
 
 impl PineviewCpuOps {
     /// Create with the southbridge's PM base I/O address.
     pub fn new(pmbase: u32) -> Self {
-        Self { pmbase }
+        Self {
+            pmbase,
+            microcode: None,
+        }
+    }
+
+    /// Create with the southbridge's PM base I/O address and microcode blob.
+    pub fn with_microcode(pmbase: u32, microcode: Option<&'static [u8]>) -> Self {
+        Self { pmbase, microcode }
     }
 }
 
@@ -174,5 +184,9 @@ impl CpuOps for PineviewCpuOps {
 
     fn post_mp_init(&self) {
         fstart_log::info!("cpu: Pineview post-MP init complete");
+    }
+
+    fn microcode(&self) -> Option<(&[u8], bool)> {
+        self.microcode.map(|blob| (blob, true))
     }
 }

@@ -37,6 +37,16 @@ pub fn inspect(path: &str) -> Result<(), String> {
     println!("  version:          {}", anchor.version);
     println!("  image size:       {} bytes", anchor.total_image_size);
     println!(
+        "  anchor offset:    {:#x} ({})",
+        anchor.anchor_offset, anchor.anchor_offset
+    );
+    if anchor.microcode_size != 0 {
+        println!(
+            "  microcode:        offset={:#x} size={}",
+            anchor.microcode_offset, anchor.microcode_size
+        );
+    }
+    println!(
         "  manifest offset:  {:#x} ({})",
         anchor.manifest_offset, anchor.manifest_offset
     );
@@ -196,6 +206,7 @@ fn file_type_str(ft: FileType) -> &'static str {
         FileType::Raw => "Raw",
         FileType::Firmware => "Firmware",
         FileType::FitImage => "FitImage",
+        FileType::CpuMicrocode => "CpuMicrocode",
         FileType::Initramfs => "Initramfs",
     }
 }

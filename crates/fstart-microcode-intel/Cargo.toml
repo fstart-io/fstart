@@ -1,0 +1,10 @@
+[package]
+name = "fstart-microcode-intel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-arch-x86 = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }

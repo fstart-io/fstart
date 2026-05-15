@@ -1003,6 +1003,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-microcode-intel"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-log",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-mmio"
 version = "0.1.0"
 dependencies = [
@@ -1016,6 +1025,7 @@ dependencies = [
  "fstart-arch-x86",
  "fstart-lapic",
  "fstart-log",
+ "fstart-microcode-intel",
  "ufmt",
 ]
 

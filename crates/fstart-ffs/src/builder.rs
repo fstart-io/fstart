@@ -236,6 +236,9 @@ where
     // Compute total_image_size *after* potentially appending the anchor,
     // so it accurately reflects the final image size.
     let total_image_size = image.len() as u32;
+    let microcode = file_data
+        .iter()
+        .find(|file| file.name == "cpu_microcode_blob.bin");
 
     let anchor = AnchorBlock {
         magic: FFS_MAGIC,
@@ -243,6 +246,9 @@ where
         manifest_offset,
         manifest_size,
         total_image_size,
+        anchor_offset: anchor_offset as u32,
+        microcode_offset: microcode.map_or(0, |file| file.data_offset),
+        microcode_size: microcode.map_or(0, |file| file.data_size),
         key_count: config.keys.len() as u32,
         keys,
     };

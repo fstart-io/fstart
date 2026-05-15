@@ -22,3 +22,5 @@ x86-writable-page-tables = []
 # Emit prebuilt page tables into `.page_tables` for first-stage real XIP
 # boards. Non-first stages inherit CR3 and do not need their own tables.
 x86-static-page-tables = []
+# Expose the generated FFS anchor to the pre-Rust microcode updater.
+early-ffs-anchor = []

@@ -138,7 +138,11 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     }
 
     if embed_anchor {
-        tokens.extend(generate_anchor_static());
+        let early_microcode = matches!(
+            config.microcode.as_ref(),
+            Some(fstart_types::board::MicrocodeConfig::Intel(microcode)) if microcode.early
+        );
+        tokens.extend(generate_anchor_static(early_microcode));
     }
 
     if stage_uses_smm(capabilities) {
@@ -489,16 +493,33 @@ fn generate_allwinner_egon_header(platform: Platform) -> TokenStream {
 
 /// Emit the `FSTART_ANCHOR` static — a placeholder anchor block embedded
 /// in the bootblock binary via `#[link_section = ".fstart.anchor"]`.
-fn generate_anchor_static() -> TokenStream {
+fn generate_anchor_static(early_microcode: bool) -> TokenStream {
+    let early_microcode_value = u32::from(early_microcode);
     quote! {
         /// FFS anchor block — patched by `xtask assemble` with real offsets.
         ///
         /// The bootblock reads this via volatile to find the FFS manifest.
         /// No scanning required at runtime.
+        #[no_mangle]
         #[link_section = ".fstart.anchor"]
         #[used]
         static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock =
             fstart_types::ffs::AnchorBlock::placeholder();
+
+        // Early x86 assembly runs before Rust and cannot refer to a Rust item
+        // unless it has an unmangled linker-visible name.  Keep the platform
+        // crate's reference on a separate weak alias so non-FFS x86 stages can
+        // still link with the alias resolving to 0.
+        #[cfg(feature = "x86_64")]
+        core::arch::global_asm!(
+            ".global _fstart_anchor_early",
+            ".set _fstart_anchor_early, FSTART_ANCHOR",
+        );
+
+        #[cfg(feature = "x86_64")]
+        #[no_mangle]
+        #[used]
+        static _fstart_early_microcode_enabled: u32 = #early_microcode_value;
     }
 }
 
