@@ -316,6 +316,19 @@ fn generate_xip_layout(
 
     writeln!(out, "SECTIONS\n{{").unwrap();
 
+    let x86_top_aligned_bootblock = platform == Platform::X86_64 && is_first_stage;
+    if x86_top_aligned_bootblock {
+        let bootblock_top = rom_origin + rom_length - 0x1000;
+        writeln!(
+            out,
+            "    /* x86 bootblock: place the C environment at the top of ROM. */"
+        )
+        .unwrap();
+        writeln!(out, "    _bootblock_top = {bootblock_top:#x};").unwrap();
+        writeln!(out, "    _bootblock_program_size = SIZEOF(.text) + SIZEOF(.fstart.anchor) + SIZEOF(.rodata) + SIZEOF(.data);").unwrap();
+        writeln!(out, "    _bootblock_base = ((_bootblock_top - _bootblock_program_size) & ~0xfff) - 0x1000;\n").unwrap();
+    }
+
     // Allwinner eGON header — placed before code, contains a branch
     // instruction at offset 0 that jumps over the header to _start.
     // KEEP() ensures --gc-sections doesn't strip these; the raw
@@ -329,9 +342,16 @@ fn generate_xip_layout(
     }
 
     // Code in ROM.
-    writeln!(out, "    .text : {{").unwrap();
+    if x86_top_aligned_bootblock {
+        writeln!(out, "    .text _bootblock_base : {{").unwrap();
+        writeln!(out, "        _bootblock = .;").unwrap();
+    } else {
+        writeln!(out, "    .text : {{").unwrap();
+    }
+    writeln!(out, "        _text_start = .;").unwrap();
     writeln!(out, "        KEEP(*(.text.entry))").unwrap();
-    writeln!(out, "        *(.text .text.*)").unwrap();
+    writeln!(out, "        *(.text .text.* .ltext .ltext.*)").unwrap();
+    writeln!(out, "        _text_end = .;").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
     // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
@@ -342,6 +362,8 @@ fn generate_xip_layout(
     // Read-only data in ROM.
     // .lrodata: large code model (x86_64) puts read-only data in .lrodata.
     writeln!(out, "    .rodata : ALIGN(16) {{").unwrap();
+    writeln!(out, "        _rodata_start = .;").unwrap();
+    writeln!(out, "        *(.eh_frame_hdr .eh_frame)").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
@@ -437,6 +459,13 @@ fn generate_xip_layout(
         writeln!(out, "    }} > ROM").unwrap();
         writeln!(out).unwrap();
         writeln!(out, "    _binary_end = .;").unwrap();
+        writeln!(
+            out,
+            "    ASSERT(_bootblock >= ORIGIN(ROM), \"x86 bootblock does not fit in ROM\")"
+        )
+        .unwrap();
+        writeln!(out, "    ASSERT(_data_load + SIZEOF(.data) <= _bootblock_top, \"x86 bootblock overlaps reset entry area\")")
+            .unwrap();
     }
 
     writeln!(out, "}}").unwrap();
