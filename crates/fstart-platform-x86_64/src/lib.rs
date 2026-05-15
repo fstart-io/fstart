@@ -26,6 +26,18 @@ pub mod cpuid;
 use fstart_arch_x86::mtrr;
 use fstart_services::memory_detect::E820Entry;
 
+/// Enable the BSP-local ROM cacheability MTRR for memory-mapped boot media.
+///
+/// MP setup installs identical RAM MTRRs on all CPUs, so the temporary ROM WP
+/// MTRR must be installed after MP setup and only on the BSP when firmware is
+/// about to read memory-mapped flash. It is cleared before Linux handoff.
+pub fn enable_boot_media_rom_cache() {
+    fstart_log::info!("mtrr: enabling temporary BSP ROM WP for memory-mapped boot media");
+    // SAFETY: generated stage code calls this on the BSP immediately before
+    // memory-mapped boot-media reads. The MTRR is cleared before OS handoff.
+    unsafe { mtrr::set_boot_rom_wp(true) };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point — 16-bit real mode → 32-bit protected mode → 64-bit long mode
 // ---------------------------------------------------------------------------

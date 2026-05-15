@@ -1034,6 +1034,8 @@ fn match_boot_media(
             }
             fstart_stage_runtime::BootMediaState::Mmio { base, size } => {
                 fstart_log::info!("boot-media match: MMIO base={:#x} size={:#x}", base, size);
+                #[cfg(feature = "x86_64")]
+                fstart_platform::enable_boot_media_rom_cache();
                 // SAFETY: `base..base + size` is the board's
                 // memory-mapped flash window; the board author's
                 // RON declared this range is readable.
