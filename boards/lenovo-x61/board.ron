@@ -369,13 +369,15 @@
         ],
     ),
 
-    payload: Some((
-        kind: LinuxBoot,
-        kernel_file: Some("../qemu-q35/bzImage"),
-        kernel_load_addr: Some(0x01000000),
+    // CrabEFI UEFI payload — linked as a library.
+    // No kernel file — CrabEFI boots via its EFI boot manager.
+    payload: (
+        kind: UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
         fdt: Platform,
         dtb_addr: None,
-        bootargs: Some("console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8"),
+        bootargs: None,
         firmware: None,
-    )),
+    ),
 )
