@@ -278,7 +278,7 @@ static MAILBOXES: [ApMailbox; MAX_CPUS] = {
     [MB; MAX_CPUS]
 };
 
-const AP_STACK_SIZE: usize = 16 * 1024;
+const AP_STACK_SIZE: usize = 4 * 1024;
 
 #[repr(C, align(16))]
 struct ApStacks([[u8; AP_STACK_SIZE]; MAX_CPUS]);
@@ -1130,16 +1130,6 @@ fn trampoline_indexed<F: Fn(u32)>(data: *const (), cpu: u32) {
 // ---------------------------------------------------------------------------
 
 /// Spin-delay for approximately `us` microseconds.
-///
-/// Uses a simple calibrated loop.  On x86, each iteration of PAUSE is
-/// ~10-140 cycles depending on the microarchitecture.  We assume a
-/// conservative 100 ns per PAUSE (10 MHz effective).
 fn delay_us(us: u64) {
-    // Rough approximation: 10 PAUSE iterations per microsecond at ~1 GHz.
-    // This is intentionally conservative.  For precise timing, use
-    // the LAPIC timer or TSC.
-    let iterations = us * 10;
-    for _ in 0..iterations {
-        core::hint::spin_loop();
-    }
+    fstart_arch_x86::udelay(us.min(u32::MAX as u64) as u32);
 }

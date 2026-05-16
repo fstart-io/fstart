@@ -23,6 +23,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use fstart_types::acpi::AcpiSmiConfig;
+
 use super::FadtConfig;
 
 /// x86 platform configuration for ACPI table generation.
@@ -56,17 +58,6 @@ pub struct X86Config {
     /// Leave as `None` unless the platform has installed an SMI handler
     /// that handles those commands.
     pub acpi_smi: Option<AcpiSmiConfig>,
-}
-
-/// SMI-based ACPI mode switch advertised in the FADT.
-#[derive(Debug, Clone, Copy)]
-pub struct AcpiSmiConfig {
-    /// SMI command port, normally APM_CNT 0xb2 on PC chipsets.
-    pub smi_cmd: u32,
-    /// ACPI enable command value.
-    pub acpi_enable: u8,
-    /// ACPI disable command value.
-    pub acpi_disable: u8,
 }
 
 /// I/O APIC configuration.

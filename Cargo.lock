@@ -218,7 +218,7 @@ dependencies = [
 [[package]]
 name = "crabefi"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git#8a822016bb3ed5514dc6abe9ae031219874b63f1"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git#5b33abfa505086627527fc1106400b0c3e57601e"
 dependencies = [
  "atomic_refcell",
  "bitflags",
@@ -994,6 +994,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-arch-x86",
  "fstart-gpio-ich",
  "fstart-log",
  "fstart-pio",

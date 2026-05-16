@@ -18,8 +18,6 @@ pub mod arm;
 
 #[cfg(feature = "x86")]
 pub mod x86;
-#[cfg(feature = "x86")]
-pub use x86::AcpiSmiConfig;
 
 use alloc::vec;
 use alloc::vec::Vec;

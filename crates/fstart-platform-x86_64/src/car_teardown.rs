@@ -32,13 +32,34 @@ global_asm!(
     "rdmsr",
     "andl $0xfffff7ff, %eax",
     "wrmsr",
-    // Disable no-evict mode RUN then SETUP.
+    // Disable no-evict mode RUN then SETUP only on Atom/NEM models.
+    "movl $1, %eax",
+    "cpuid",
+    "movl %eax, %edx",
+    "shrl $4, %edx",
+    "andl $0x0f, %edx",
+    "movl %eax, %ebx",
+    "shrl $12, %ebx",
+    "andl $0xf0, %ebx",
+    "orl %ebx, %edx",
+    "cmpl $0x1c, %edx",
+    "je 1f",
+    "cmpl $0x26, %edx",
+    "je 1f",
+    "cmpl $0x27, %edx",
+    "je 1f",
+    "cmpl $0x35, %edx",
+    "je 1f",
+    "cmpl $0x36, %edx",
+    "jne 2f",
+    "1:",
     "movl $0x2e0, %ecx",
     "rdmsr",
     "andl $0xfffffffd, %eax",
     "wrmsr",
     "andl $0xfffffffe, %eax",
     "wrmsr",
+    "2:",
     "ret",
     options(att_syntax),
 );
@@ -68,28 +89,27 @@ pub struct PostcarConfig {
 
 impl PostcarConfig {
     /// Choose a temporary post-CAR stack in DRAM.
-    pub fn stack_top(&self) -> usize {
-        let Some(ram) = self.ram_ranges.first() else {
-            return 0x0300_0000;
-        };
-        let end = ram.base.saturating_add(ram.size);
+    pub fn stack_top(&self) -> Option<usize> {
+        let ram = self.ram_ranges.first()?;
+        let end = ram.base.checked_add(ram.size)?;
         let preferred = ram.base.saturating_add(0x0300_0000);
         let top = if preferred > ram.base && preferred <= end {
             preferred
         } else {
             end
         };
-        (top & !0xf) as usize
+        Some((top & !0xf) as usize)
     }
 
-    fn low_dram_mtrr_size(&self) -> u64 {
-        self.ram_ranges
-            .iter()
-            .map(|r| r.base.saturating_add(r.size))
-            .max()
-            .unwrap_or(0x4000_0000)
-            .next_power_of_two()
-            .max(0x0010_0000)
+    fn low_dram_mtrr_size(&self) -> Option<u64> {
+        Some(
+            self.ram_ranges
+                .iter()
+                .map(|r| r.base.saturating_add(r.size))
+                .max()?
+                .next_power_of_two()
+                .max(0x0010_0000),
+        )
     }
 }
 
@@ -123,13 +143,8 @@ pub unsafe fn postcar_mtrr_setup(config: &PostcarConfig) {
             mtrr::clear_variable(index);
         }
 
-        if count > 0 {
-            mtrr::set_variable(
-                0,
-                0,
-                config.low_dram_mtrr_size(),
-                mtrr::MTRR_TYPE_WRITE_BACK,
-            );
+        if let (true, Some(size)) = (count > 0, config.low_dram_mtrr_size()) {
+            mtrr::set_variable(0, 0, size, mtrr::MTRR_TYPE_WRITE_BACK);
         }
 
         if let Some(rom) = config.rom_range {
@@ -161,6 +176,10 @@ pub unsafe fn stage_load_mmio(
     base: u64,
     size: u64,
 ) -> ! {
+    let Some(stack_top) = config.stack_top() else {
+        crate::halt();
+    };
+
     unsafe {
         asm!(
             "mov rsp, {stack}",
@@ -168,7 +187,7 @@ pub unsafe fn stage_load_mmio(
             "sub rsp, 8",
             "mov qword ptr [rsp + 8], {image_size}",
             "jmp {tramp}",
-            stack = in(reg) config.stack_top(),
+            stack = in(reg) stack_top,
             image_size = in(reg) size,
             tramp = sym stage_load_mmio_trampoline,
             in("rdi") config as *const PostcarConfig,

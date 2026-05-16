@@ -133,9 +133,7 @@ pub mod dock {
 
     #[cfg(target_arch = "x86_64")]
     fn delay_us(us: u32) {
-        for _ in 0..us.saturating_mul(100) {
-            core::hint::spin_loop();
-        }
+        fstart_arch_x86::udelay(us);
     }
 
     #[cfg(target_arch = "x86_64")]

@@ -262,7 +262,7 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
                     let acpi_enable = Literal::u8_unsuffixed(smi.acpi_enable);
                     let acpi_disable = Literal::u8_unsuffixed(smi.acpi_disable);
                     quote! {
-                        Some(fstart_acpi::platform::AcpiSmiConfig {
+                        Some(fstart_types::acpi::AcpiSmiConfig {
                             smi_cmd: #smi_cmd,
                             acpi_enable: #acpi_enable,
                             acpi_disable: #acpi_disable,
