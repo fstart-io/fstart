@@ -3,7 +3,9 @@
 use std::fmt::Write;
 
 use fstart_types::memory::FlashLayout;
-use fstart_types::{BoardConfig, Platform, RegionKind, SocImageFormat, StageLayout};
+use fstart_types::{
+    effective_stage_load_addr, BoardConfig, Platform, RegionKind, SocImageFormat, StageLayout,
+};
 
 /// Generate a linker script for the given board and (optional) stage.
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
@@ -22,9 +24,13 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             mono.page_table_addr,
         ),
         (StageLayout::MultiStage(stages), Some(name)) => {
-            if let Some(stage) = stages.iter().find(|s| s.name.as_str() == name) {
+            if let Some((index, stage)) = stages
+                .iter()
+                .enumerate()
+                .find(|(_, s)| s.name.as_str() == name)
+            {
                 (
-                    stage.load_addr,
+                    effective_stage_load_addr(config, index, stage),
                     stage.stack_size as u64,
                     stage.data_addr,
                     stage.page_table_addr,

@@ -67,7 +67,12 @@ pub struct StageConfig {
     pub name: HString<32>,
     /// Ordered list of capabilities for this stage
     pub capabilities: heapless::Vec<Capability, 16>,
-    /// Where this stage is loaded in memory
+    /// Where this stage is loaded in memory.
+    ///
+    /// For the first x86_64 ROM/XIP stage this may be omitted/zero; tooling
+    /// then selects the topmost ROM region and the linker/FFS place the
+    /// bootblock top-aligned in that region.
+    #[serde(default)]
     pub load_addr: u64,
     /// Stack size in bytes
     pub stack_size: u32,
@@ -139,6 +144,38 @@ pub enum RunsFrom {
 
 fn default_stage_compression() -> crate::ffs::Compression {
     crate::ffs::Compression::None
+}
+
+/// Resolve the effective load address for a multi-stage entry.
+///
+/// A `load_addr` of zero is treated as "auto" only for the first x86_64
+/// ROM/XIP stage. In that case the address is chosen inside the topmost ROM
+/// region; x86 linker and FFS assembly then top-align the actual bootblock
+/// bytes within that region.
+pub fn effective_stage_load_addr(
+    config: &crate::board::BoardConfig,
+    stage_index: usize,
+    stage: &StageConfig,
+) -> u64 {
+    if stage.load_addr != 0 {
+        return stage.load_addr;
+    }
+
+    if config.platform == crate::board::Platform::X86_64
+        && stage_index == 0
+        && stage.runs_from == RunsFrom::Rom
+    {
+        return config
+            .memory
+            .regions
+            .iter()
+            .filter(|region| region.kind == crate::memory::RegionKind::Rom && region.size > 0)
+            .max_by_key(|region| region.base.saturating_add(region.size))
+            .map(|region| region.base.saturating_add(region.size).saturating_sub(1))
+            .unwrap_or(0);
+    }
+
+    stage.load_addr
 }
 
 /// x86_64 identity-map page size for page table construction.

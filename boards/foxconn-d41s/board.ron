@@ -279,17 +279,15 @@
                 BootMedia(MemoryMapped( base: 0xFF000000, size: 0x01000000 )),
                 StageLoad( next_stage: "ramstage" ),
             ],
-            // Code runs XIP from ROM (reset vector 0xFFFFFFF0). Writable
-            // state lives in Cache-as-RAM automatically because `memory.car`
-            // is declared above and the load_addr lands in a ROM region —
-            // the linker chooses CAR without any explicit `runs_from` flag.
-            // The NEM setup in the platform crate programs MTRRs + MSR
-            // 0x2E0 before Rust code touches any RAM-backed variable.
-            // The x86_64 bootblock entry code builds PML4/PDPT/PDTs at
-            // `_page_tables_start` (sized by `page_size`) during the
-            // 32→64-bit transition; the linker reserves that space in
-            // CAR automatically.
-            load_addr: 0xFFFF0000,
+            // Code runs XIP from top-aligned ROM (reset vector 0xFFFFFFF0).
+            // Writable state lives in Cache-as-RAM automatically because
+            // `memory.car` is declared above and `runs_from: Rom` selects the
+            // x86 XIP linker layout. The NEM setup in the platform crate
+            // programs MTRRs + MSR 0x2E0 before Rust code touches any
+            // RAM-backed variable. The x86_64 bootblock entry code builds
+            // PML4/PDPT/PDTs at `_page_tables_start` (sized by `page_size`)
+            // during the 32→64-bit transition; the linker reserves that
+            // space in CAR automatically.
             stack_size: 0x2000,
             heap_size: 0x100,
             runs_from: Rom,

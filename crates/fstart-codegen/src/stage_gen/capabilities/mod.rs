@@ -61,9 +61,10 @@ pub(super) fn find_dram_region(config: &BoardConfig) -> Option<(u64, u64)> {
 /// `_egon_sram_base` field on `_BoardDevices`.
 pub(in crate::stage_gen) fn egon_sram_base(config: &BoardConfig) -> u64 {
     match &config.stages {
-        fstart_types::StageLayout::MultiStage(stages) => {
-            stages.first().map(|s| s.load_addr).unwrap_or(0)
-        }
+        fstart_types::StageLayout::MultiStage(stages) => stages
+            .first()
+            .map(|s| fstart_types::effective_stage_load_addr(config, 0, s))
+            .unwrap_or(0),
         _ => 0,
     }
 }

@@ -266,7 +266,6 @@
                 BootMedia(MemoryMapped( base: 0xFFE80000, size: 0x00180000 )),
                 StageLoad( next_stage: "ramstage" ),
             ],
-            load_addr: 0xFFFF0000,
             stack_size: 0x2000,
             runs_from: Rom,
             page_size: Size2MiB,
@@ -328,6 +327,7 @@
         required_digests: [Sha256],
     ),
     mode: Rigid,
+    full_flash_image: true,
 
     acpi: Some((
         platform: X86((

@@ -6,7 +6,9 @@
 //! 4. Return the path(s) to the built binary(ies)
 
 use fstart_codegen::ron_loader;
-use fstart_types::{Capability, Platform, SecurityConfig, SocImageFormat, StageLayout};
+use fstart_types::{
+    effective_stage_load_addr, Capability, Platform, SecurityConfig, SocImageFormat, StageLayout,
+};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -246,7 +248,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                     name: stage_name,
                     path: elf_path,
                     run_path,
-                    load_addr: stage.load_addr,
+                    load_addr: effective_stage_load_addr(&config, i, stage),
                 });
             }
             Ok(BuildResult { stages: result })

@@ -2207,10 +2207,13 @@ fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let stage_arms = match &ctx.config.stages {
         StageLayout::MultiStage(stages) => stages
             .iter()
-            .map(|s| {
+            .enumerate()
+            .map(|(index, s)| {
                 let name = s.name.as_str();
-                let load_addr = hex_addr(s.load_addr);
-                let handoff_addr = hex_addr(s.load_addr.saturating_sub(0x1000));
+                let effective_load_addr =
+                    fstart_types::effective_stage_load_addr(ctx.config, index, s);
+                let load_addr = hex_addr(effective_load_addr);
+                let handoff_addr = hex_addr(effective_load_addr.saturating_sub(0x1000));
                 quote! {
                     #name => (#load_addr, #handoff_addr),
                 }

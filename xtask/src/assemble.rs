@@ -12,14 +12,16 @@
 use fstart_acpi::device::AcpiDevice;
 use fstart_device_registry::DriverInstance;
 use fstart_driver_ite8721f::LpcBaseProvider;
-use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, InputSegment};
+use fstart_ffs::builder::{
+    build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
+};
 use fstart_services::device::{BusDevice, Device};
 use fstart_types::device::BusAddress;
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
-use fstart_types::{BoardConfig, FdtSource, SocImageFormat, StageLayout};
+use fstart_types::{BoardConfig, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout};
 use goblin::elf::{program_header, Elf};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -377,6 +379,7 @@ fn assemble_impl(
             &config,
             &board_dir,
             &build_result.stages[0].path,
+            &build_result.stages[0].run_path,
             &image_bytes,
             ffs_image.anchor_offset,
             &image_path,
@@ -391,6 +394,28 @@ fn ffs_input_regions(
     ro_files: Vec<InputFile>,
 ) -> Result<Vec<InputRegion>, String> {
     let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
+        if config.full_flash_image {
+            let flash_size = config
+                .memory
+                .flash_size
+                .ok_or_else(|| "full_flash_image requires memory.flash_size".to_string())?;
+            let flash_size_u32 = u32::try_from(flash_size)
+                .map_err(|_| format!("flash size {flash_size:#x} exceeds FFS u32 limits"))?;
+            let (files, external_files) =
+                externalize_xip_bootblock(config, ro_files, flash_size_u32)?;
+            if !external_files.is_empty() {
+                return Ok(vec![InputRegion::ContainerWithExternal {
+                    name: "ro".to_string(),
+                    files,
+                    external_files,
+                    size: Some(flash_size_u32),
+                }]);
+            }
+            return Ok(vec![InputRegion::Container {
+                name: "ro".to_string(),
+                files,
+            }]);
+        }
         return Ok(vec![InputRegion::Container {
             name: "ro".to_string(),
             files: ro_files,
@@ -416,18 +441,89 @@ fn ffs_input_regions(
             fill: 0xff,
         });
     }
-    regions.push(InputRegion::Container {
+    let (files, external_files) = externalize_xip_bootblock(config, ro_files, bios.size)?;
+
+    regions.push(InputRegion::ContainerWithExternal {
         name: "ro".to_string(),
-        files: ro_files,
+        files,
+        external_files,
+        size: Some(bios.size),
     });
 
     Ok(regions)
+}
+
+fn externalize_xip_bootblock(
+    config: &BoardConfig,
+    mut files: Vec<InputFile>,
+    container_size: u32,
+) -> Result<(Vec<InputFile>, Vec<ExternalInputFile>), String> {
+    let first_stage_is_xip = match &config.stages {
+        StageLayout::MultiStage(stages) => stages
+            .first()
+            .is_some_and(|stage| stage.runs_from == RunsFrom::Rom),
+        _ => false,
+    };
+    if config.platform != Platform::X86_64
+        || !first_stage_is_xip
+        || files.first().is_none_or(|file| file.name != "bootblock")
+    {
+        return Ok((files, Vec::new()));
+    }
+
+    let image_base = config
+        .memory
+        .flash_base
+        .ok_or_else(|| "x86 XIP bootblock requires memory.flash_base".to_string())?;
+    let mut bootblock = files.remove(0);
+    let bootblock_size = input_file_stored_size(&bootblock)?;
+    if bootblock_size > container_size {
+        return Err(format!(
+            "bootblock size {bootblock_size:#x} exceeds container size {container_size:#x}"
+        ));
+    }
+    let bootblock_offset = container_size - bootblock_size;
+
+    let mut segment_offset = 0u64;
+    for segment in &mut bootblock.segments {
+        segment.load_addr = image_base + u64::from(bootblock_offset) + segment_offset;
+        segment_offset += u64::try_from(segment.data.len()).map_err(|_| {
+            format!(
+                "file '{}' segment '{}' is too large",
+                bootblock.name, segment.name
+            )
+        })?;
+    }
+
+    Ok((
+        files,
+        vec![ExternalInputFile {
+            name: bootblock.name,
+            file_type: bootblock.file_type,
+            offset: bootblock_offset,
+            segments: bootblock.segments,
+        }],
+    ))
+}
+
+fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
+    file.segments.iter().try_fold(0u32, |acc, segment| {
+        let len = u32::try_from(segment.data.len()).map_err(|_| {
+            format!(
+                "file '{}' segment '{}' is too large",
+                file.name, segment.name
+            )
+        })?;
+        acc.checked_add(len)
+            .ok_or_else(|| format!("file '{}' size overflows u32", file.name))
+    })
 }
 
 fn create_full_flash_image(
     config: &BoardConfig,
     board_dir: &Path,
     bootblock_elf: &Path,
+    bootblock_bin: &Path,
     ffs_data: &[u8],
     ffs_anchor_offset: usize,
     ffs_path: &Path,
@@ -438,6 +534,7 @@ fn create_full_flash_image(
             board_dir,
             layout,
             bootblock_elf,
+            bootblock_bin,
             ffs_data,
             ffs_anchor_offset,
             ffs_path,
@@ -481,6 +578,7 @@ fn create_full_flash_image(
         )
     })?;
 
+    let mut first_flash_load: Option<usize> = None;
     for phdr in &elf.program_headers {
         if phdr.p_type != program_header::PT_LOAD || phdr.p_filesz == 0 {
             continue;
@@ -496,12 +594,44 @@ fn create_full_flash_image(
                 "bootblock segment paddr={paddr:#x} size={size:#x} outside flash image"
             ));
         }
-        let src = phdr.p_offset as usize;
-        image[off..off + size].copy_from_slice(&elf_data[src..src + size]);
+        first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
         eprintln!(
             "[fstart] full flash: bootblock segment paddr={paddr:#x} -> offset={off:#x} size={size:#x}"
         );
     }
+
+    let bootblock_data = fs::read(bootblock_bin).map_err(|e| {
+        format!(
+            "failed to read bootblock flat binary {}: {e}",
+            bootblock_bin.display()
+        )
+    })?;
+    if bootblock_data.len() > flash_size {
+        return Err(format!(
+            "bootblock flat binary is {} bytes, larger than flash size {}",
+            bootblock_data.len(),
+            flash_size
+        ));
+    }
+    let xip_offset = flash_size - bootblock_data.len();
+    if ffs_data.len() > xip_offset {
+        return Err(format!(
+            "FFS image ({} bytes) overlaps top-aligned bootblock at flash offset {xip_offset:#x}",
+            ffs_data.len()
+        ));
+    }
+    if let Some(first_flash_load) = first_flash_load {
+        if xip_offset != first_flash_load {
+            return Err(format!(
+                "top-aligned bootblock offset {xip_offset:#x} does not match first ELF load offset {first_flash_load:#x}"
+            ));
+        }
+    }
+    image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
+    eprintln!(
+        "[fstart] full flash: bootblock flat binary -> offset={xip_offset:#x} size={:#x}",
+        bootblock_data.len()
+    );
 
     // Copy the patched anchor from the FFS blob into the XIP bootblock's own
     // anchor section. The builder patches the anchor inside the FFS-stage file;
@@ -564,6 +694,7 @@ fn create_intel_ifd_flash_image(
     board_dir: &Path,
     layout: &IntelIfdFlashLayout,
     bootblock_elf: &Path,
+    bootblock_bin: &Path,
     ffs_data: &[u8],
     ffs_anchor_offset: usize,
     ffs_path: &Path,
@@ -644,6 +775,7 @@ fn create_intel_ifd_flash_image(
         )
     })?;
 
+    let mut first_flash_load: Option<usize> = None;
     for phdr in &elf.program_headers {
         if phdr.p_type != program_header::PT_LOAD || phdr.p_filesz == 0 {
             continue;
@@ -659,12 +791,44 @@ fn create_intel_ifd_flash_image(
                 "bootblock segment paddr={paddr:#x} size={size:#x} outside Intel IFD flash image"
             ));
         }
-        let src = phdr.p_offset as usize;
-        image[off..off + size].copy_from_slice(&elf_data[src..src + size]);
+        first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
         eprintln!(
             "[fstart] Intel IFD full flash: bootblock segment paddr={paddr:#x} -> offset={off:#x} size={size:#x}"
         );
     }
+
+    let bootblock_data = fs::read(bootblock_bin).map_err(|e| {
+        format!(
+            "failed to read bootblock flat binary {}: {e}",
+            bootblock_bin.display()
+        )
+    })?;
+    if bootblock_data.len() > bios.size as usize {
+        return Err(format!(
+            "bootblock flat binary is {} bytes, larger than BIOS region size {}",
+            bootblock_data.len(),
+            bios.size
+        ));
+    }
+    let xip_offset = bios_end as usize - bootblock_data.len();
+    let ffs_end = bios_start + ffs_data.len();
+    if ffs_end > xip_offset {
+        return Err(format!(
+            "BIOS FFS image [{bios_start:#x}..{ffs_end:#x}) overlaps top-aligned bootblock at flash offset {xip_offset:#x}"
+        ));
+    }
+    if let Some(first_flash_load) = first_flash_load {
+        if xip_offset != first_flash_load {
+            return Err(format!(
+                "top-aligned bootblock offset {xip_offset:#x} does not match first ELF load offset {first_flash_load:#x}"
+            ));
+        }
+    }
+    image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
+    eprintln!(
+        "[fstart] Intel IFD full flash: bootblock flat binary -> offset={xip_offset:#x} size={:#x}",
+        bootblock_data.len()
+    );
 
     patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
 

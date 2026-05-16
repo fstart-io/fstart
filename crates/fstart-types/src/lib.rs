@@ -33,13 +33,13 @@ pub use ffs::{
     SignedManifest, VerificationKey, FFS_MAGIC, FFS_VERSION,
 };
 pub use memory::{
-    CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig,
-    MemoryMap, MemoryRegion, RegionKind,
+    CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,
+    MemoryRegion, RegionKind,
 };
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
 pub use smm::{CorebootSmmCompat, SmmConfig, SmmPlatform};
 pub use stage::{
-    AutoBootDevice, BootMedium, Capability, LoadDevice, MonolithicConfig, RunsFrom, StageConfig,
-    StageLayout,
+    effective_stage_load_addr, AutoBootDevice, BootMedium, Capability, LoadDevice,
+    MonolithicConfig, RunsFrom, StageConfig, StageLayout,
 };
