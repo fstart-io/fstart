@@ -58,11 +58,9 @@ pub struct MemoryMap {
 /// Describes a region of cache-locked memory used as temporary writable
 /// storage before the DRAM controller is programmed. The firmware's
 /// bootblock enters this mode via MTRR programming + a CPU-specific
-/// mechanism (see [`CarMethod`]).
+/// which  is detected at runtime using cpuid
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CarConfig {
-    /// How to enable CAR on this CPU.
-    pub method: CarMethod,
     /// Base physical address of the CAR region.
     ///
     /// Typically in the 0xFEF0_0000 range for Intel Atom-class parts,
@@ -73,17 +71,6 @@ pub struct CarConfig {
     /// Must not exceed the cache size. For Intel Atom D4xx/D5xx
     /// (Pineview), L2 cache is 512 KiB, so `size <= 0x8_0000`.
     pub size: u64,
-}
-
-/// Mechanism used to enable Cache-as-RAM on the target CPU.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CarMethod {
-    /// Intel Non-Evict Mode (NEM) — MSR `0x2E0` setup + cache fill.
-    ///
-    /// Used on Atom (Pineview, Cedarview), Core 2, early Nehalem, and
-    /// similar pre-NEM-deprecation Intel parts. Not supported on
-    /// Skylake and later.
-    NonEvictMode,
 }
 
 /// A single memory region.

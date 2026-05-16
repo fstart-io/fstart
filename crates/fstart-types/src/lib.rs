@@ -33,7 +33,7 @@ pub use ffs::{
     SignedManifest, VerificationKey, FFS_MAGIC, FFS_VERSION,
 };
 pub use memory::{
-    CarConfig, CarMethod, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig,
+    CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig,
     MemoryMap, MemoryRegion, RegionKind,
 };
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
