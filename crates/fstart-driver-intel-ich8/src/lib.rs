@@ -26,22 +26,33 @@ pub use fstart_hda::{
 
 /// ICH8/ICH8-M PCI config and RCBA constants.
 pub mod ich8 {
+    pub const LAN_DEV: u8 = 0x19;
+    pub const LAN_FUNC: u8 = 0;
+    pub const HDA_DEV: u8 = 0x1b;
+    pub const HDA_FUNC: u8 = 0;
+    pub const PCIE_DEV: u8 = 0x1c;
+    pub const PCI_BRIDGE_DEV: u8 = 0x1e;
+    pub const PCI_BRIDGE_FUNC: u8 = 0;
     pub const LPC_DEV: u8 = 0x1f;
     pub const LPC_FUNC: u8 = 0;
+    pub const IDE_DEV: u8 = 0x1f;
+    pub const IDE_FUNC: u8 = 1;
     pub const SATA_DEV: u8 = 0x1f;
     pub const SATA_FUNC: u8 = 2;
     pub const SMBUS_DEV: u8 = 0x1f;
     pub const SMBUS_FUNC: u8 = 3;
-    pub const HDA_DEV: u8 = 0x1b;
-    pub const HDA_FUNC: u8 = 0;
+    pub const SATA2_DEV: u8 = 0x1f;
+    pub const SATA2_FUNC: u8 = 5;
+    pub const THERMAL_DEV: u8 = 0x1f;
+    pub const THERMAL_FUNC: u8 = 6;
     pub const UHCI1_DEV: u8 = 0x1d;
     pub const EHCI1_DEV: u8 = 0x1d;
     pub const EHCI1_FUNC: u8 = 7;
     pub const UHCI2_DEV: u8 = 0x1a;
     pub const EHCI2_DEV: u8 = 0x1a;
     pub const EHCI2_FUNC: u8 = 7;
-    pub const PCIE_DEV: u8 = 0x1c;
 
+    pub const PCI_DEVICE_ID: u16 = 0x02;
     pub const PCI_COMMAND: u16 = 0x04;
     pub const PCI_CMD_IO: u16 = 0x0001;
     pub const PCI_CMD_MEMORY: u16 = 0x0002;
@@ -76,7 +87,8 @@ pub mod ich8 {
     pub const C5_EXIT_TIMING: u16 = 0xa8;
     pub const CXSTATE_CNF: u16 = 0xa9;
     pub const C4TIMING_CNT: u16 = 0xaa;
-    pub const ETR3: u16 = 0xac;
+    pub const PMIR: u16 = 0xac;
+    pub const PMIR_CF9GR: u32 = 1 << 20;
     pub const GPIO_ROUT: u16 = 0xb8;
     pub const RCBA: u16 = 0xf0;
 
@@ -87,6 +99,10 @@ pub mod ich8 {
     pub const DEFAULT_PMBASE: u16 = 0x0500;
     pub const DEFAULT_GPIOBASE: u16 = 0x0580;
     pub const DEFAULT_SMBUS_BASE: u16 = 0x0400;
+
+    pub const DID_82801HBM_SATA: u16 = 0x2828;
+    pub const DID_82801HBM_SATA_AHCI: u16 = 0x2829;
+    pub const DID_82801HBM_SATA_RAID: u16 = 0x282a;
 
     pub const RCBA_V0CTL: u32 = 0x0014;
     pub const RCBA_V1CAP: u32 = 0x001c;
@@ -102,6 +118,7 @@ pub mod ich8 {
     pub const RCBA_LSTS: u32 = 0x01aa;
     pub const RCBA_CIR2: u32 = 0x01f4;
     pub const RCBA_CIR3: u32 = 0x01fc;
+    pub const RCBA_CIR4: u32 = 0x0200;
     pub const RCBA_BCR: u32 = 0x0220;
     pub const RCBA_DMIC: u32 = 0x0234;
     pub const RCBA_RPFN: u32 = 0x0238;
@@ -116,14 +133,17 @@ pub mod ich8 {
     pub const D28IP: u32 = 0x310c;
     pub const D27IP: u32 = 0x3110;
     pub const D26IP: u32 = 0x3114;
+    pub const D25IP: u32 = 0x3118;
     pub const D31IR: u32 = 0x3140;
     pub const D30IR: u32 = 0x3142;
     pub const D29IR: u32 = 0x3144;
     pub const D28IR: u32 = 0x3146;
     pub const D27IR: u32 = 0x3148;
     pub const D26IR: u32 = 0x314c;
+    pub const D25IR: u32 = 0x3150;
     pub const OIC: u32 = 0x31ff;
     pub const OIC_AEN: u8 = 1 << 0;
+    pub const OIC_OAEN: u8 = 1 << 1;
     pub const IOTR3_LO: u32 = 0x1e98;
     pub const IOTR3_HI: u32 = 0x1e9c;
     pub const RCBA_HPTC: u32 = 0x3404;
@@ -131,11 +151,14 @@ pub mod ich8 {
     pub const RCBA_FD: u32 = 0x3418;
     pub const RCBA_CG: u32 = 0x341c;
     pub const RCBA_FDSW: u32 = 0x3420;
+    pub const FDSW_LAND: u32 = 1 << 0;
     pub const RCBA_CIR8: u32 = 0x3430;
     pub const RCBA_CIR9: u32 = 0x350c;
     pub const RCBA_CIR10: u32 = 0x352c;
     pub const RCBA_MAP: u32 = 0x35f0;
 
+    pub const FD_SAD2: u32 = 1 << 25;
+    pub const FD_TTD: u32 = 1 << 24;
     pub const FD_PE6D: u32 = 1 << 21;
     pub const FD_PE5D: u32 = 1 << 20;
     pub const FD_PE4D: u32 = 1 << 19;
@@ -153,6 +176,24 @@ pub mod ich8 {
     pub const FD_SD: u32 = 1 << 3;
     pub const FD_SAD1: u32 = 1 << 2;
 
+    pub const IDE_TIM_PRI: u16 = 0x40;
+    pub const IDE_TIM_SEC: u16 = 0x42;
+    pub const IDE_CONFIG: u16 = 0x54;
+    pub const IDE_DECODE_ENABLE: u16 = 1 << 15;
+    pub const IDE_SITRE: u16 = 1 << 14;
+    pub const IDE_ISP_3_CLOCKS: u16 = 2 << 12;
+    pub const IDE_RCT_1_CLOCKS: u16 = 3 << 8;
+    pub const IDE_IE0: u16 = 1 << 1;
+    pub const IDE_TIME0: u16 = 1 << 0;
+    pub const FAST_SCB1: u32 = 1 << 15;
+    pub const FAST_SCB0: u32 = 1 << 14;
+    pub const FAST_PCB1: u32 = 1 << 13;
+    pub const FAST_PCB0: u32 = 1 << 12;
+    pub const SCB1: u32 = 1 << 3;
+    pub const SCB0: u32 = 1 << 2;
+    pub const PCB1: u32 = 1 << 1;
+    pub const PCB0: u32 = 1 << 0;
+
     pub const SATA_IDE_TIM_PRI: u16 = 0x40;
     pub const SATA_IDE_TIM_SEC: u16 = 0x42;
     pub const SATA_MAP: u16 = 0x90;
@@ -166,7 +207,10 @@ pub mod ich8 {
     pub const EHCI_USBCMD_HCRST: u32 = 1 << 1;
     pub const EHCI_INTEL_FCREG: u16 = 0xfc;
 
+    pub const D30F0_SMLT: u16 = 0x1b;
+
     pub const D28FX_XCAP: u16 = 0x42;
+    pub const D28FX_XCAP_SLOT: u32 = 1 << 8;
     pub const D28FX_LCAP: u16 = 0x4c;
     pub const D28FX_LCTL: u16 = 0x50;
     pub const D28FX_SLCAP: u16 = 0x54;
@@ -178,6 +222,9 @@ pub mod ich8 {
     pub const D28FX_CEMASK: u16 = 0x154;
     pub const D28FX_CIR_300: u16 = 0x300;
     pub const D28FX_CIR_324: u16 = 0x324;
+    pub const D28_SLCAP_SLOTNUM_SHIFT: u32 = 19;
+    pub const D28_SLCAP_SCALE_SHIFT: u32 = 16;
+    pub const D28_SLCAP_POWER_SHIFT: u32 = 7;
 }
 
 const HPET_BASE: usize = 0xfed0_0000;
@@ -187,22 +234,55 @@ const EHCI_TEMP_BAR: usize = 0xfed1_b000;
 const GPE0_STS_ICH8: u16 = 0x20;
 const GPE0_EN_ICH8: u16 = 0x28;
 const SLP_TYP_S3: u32 = 0x1400;
-const LPC_EN_ALL: u16 = (1 << 13)
-    | (1 << 12)
-    | (1 << 11)
-    | (1 << 10)
-    | (1 << 9)
-    | (1 << 8)
-    | (1 << 3)
-    | (1 << 2)
-    | (1 << 1)
-    | (1 << 0);
+const GEN_PMCON_3_RTC_POWER_FAILED: u8 = 1 << 1;
+const GEN_PMCON_3_RTC_BATTERY_DEAD: u8 = 1 << 2;
+const LPC_EN_CNF2: u16 = 1 << 13;
+const LPC_EN_CNF1: u16 = 1 << 12;
+const LPC_EN_MC: u16 = 1 << 11;
+const LPC_EN_KBC: u16 = 1 << 10;
+const LPC_EN_FDD: u16 = 1 << 3;
+const LPC_EN_LPT: u16 = 1 << 2;
+const LPC_EN_COMB: u16 = 1 << 1;
+const LPC_EN_COMA: u16 = 1 << 0;
+const LPC_EN_COREBOOT_BASE: u16 =
+    LPC_EN_CNF2 | LPC_EN_CNF1 | LPC_EN_MC | LPC_EN_KBC | LPC_EN_COMB | LPC_EN_COMA;
 
 /// SATA configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SataConfig {
     pub mode: SataMode,
     pub ports: u8,
+    /// AHCI hot-plug port bitmap.
+    #[serde(default)]
+    pub hotplug_map: u8,
+    /// Enable the SATA clock-request path when GPIO35 indicates it is usable.
+    #[serde(default)]
+    pub clock_request: bool,
+    /// Enable the mobile SATA traffic monitor when C-state popup/popdown is enabled.
+    #[serde(default)]
+    pub traffic_monitor: bool,
+}
+
+/// ICH8-M PATA/IDE controller configuration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct IdeConfig {
+    /// Enable the primary PATA channel.
+    #[serde(default)]
+    pub enable_primary: bool,
+    /// Enable the secondary PATA channel.
+    #[serde(default)]
+    pub enable_secondary: bool,
+}
+
+/// PCIe slot power-limit fields.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct PciePowerLimit {
+    /// Power-limit value encoded in PCIe Slot Capabilities.
+    #[serde(default)]
+    pub value: u8,
+    /// Power-limit scale encoded in PCIe Slot Capabilities.
+    #[serde(default)]
+    pub scale: u8,
 }
 
 /// SATA controller operating mode.
@@ -391,15 +471,25 @@ pub struct Ich8IoTrapConfig {
 pub struct Ich8LateRcbaConfig {
     /// Device interrupt pin routes.
     pub d31ip: u32,
+    #[serde(default)]
+    pub d30ip: Option<u32>,
     pub d29ip: u32,
     pub d28ip: u32,
     pub d27ip: u32,
+    #[serde(default)]
+    pub d26ip: Option<u32>,
+    #[serde(default)]
+    pub d25ip: Option<u32>,
     /// Device interrupt route registers.
     pub d31ir: u16,
     pub d30ir: u16,
     pub d29ir: u16,
     pub d28ir: u16,
     pub d27ir: u16,
+    #[serde(default)]
+    pub d26ir: Option<u16>,
+    #[serde(default)]
+    pub d25ir: Option<u16>,
     /// Optional I/O trap #3 programming.
     #[serde(default)]
     pub iotr3: Option<Ich8IoTrapConfig>,
@@ -437,6 +527,9 @@ pub struct IntelIch8Config {
     /// Optional HD Audio verb table.
     #[serde(default)]
     pub hda: Option<HdaConfig>,
+    /// Optional PATA/IDE controller configuration.
+    #[serde(default)]
+    pub ide: Option<IdeConfig>,
     /// SATA configuration.
     #[serde(default)]
     pub sata: Option<SataConfig>,
@@ -446,6 +539,12 @@ pub struct IntelIch8Config {
     /// PCIe root ports 1..6 enabled.
     #[serde(default = "default_pcie_ports")]
     pub pcie_ports: [bool; 6],
+    /// PCIe root ports implemented as slots.
+    #[serde(default)]
+    pub pcie_slots: [bool; 6],
+    /// PCIe slot power limits for ports 1..6.
+    #[serde(default)]
+    pub pcie_power_limits: [PciePowerLimit; 6],
     /// ECAM base address.
     #[serde(default = "default_ecam_base")]
     pub ecam_base: u64,
@@ -464,6 +563,18 @@ pub struct IntelIch8Config {
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
     #[serde(default)]
     pub power_on_after_fail: u8,
+    /// Hardware throttle duty cycle (PMBASE+0x10 bits [7:5]).
+    #[serde(default)]
+    pub throttle_duty: u8,
+    /// Disable the integrated LAN function through the SUS-well FD register.
+    #[serde(default)]
+    pub disable_lan: bool,
+    /// Disable the second SATA function. ICH8-M boards commonly leave it hidden.
+    #[serde(default = "default_true")]
+    pub disable_sata2: bool,
+    /// Disable the desktop thermal-throttle function. ICH8-M does not expose it.
+    #[serde(default = "default_true")]
+    pub disable_thermal: bool,
     /// Optional board-provided late RCBA interrupt/trap routing.
     #[serde(default)]
     pub late_rcba: Option<Ich8LateRcbaConfig>,
@@ -471,6 +582,10 @@ pub struct IntelIch8Config {
 
 fn default_pcie_ports() -> [bool; 6] {
     [true, true, true, true, true, true]
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_ecam_base() -> u64 {
@@ -512,6 +627,12 @@ impl Rcba {
     fn read16(&self, off: u32) -> u16 {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
         unsafe { fstart_mmio::read16((self.base + off as usize) as *const u16) }
+    }
+
+    #[inline]
+    fn read8(&self, off: u32) -> u8 {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
+        unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
     }
 
     #[inline]
@@ -583,9 +704,17 @@ impl IntelIch8 {
             generic[idx] = range.encode().unwrap_or(0);
         }
 
+        let mut lpc_en = LPC_EN_COREBOOT_BASE;
+        if self.config.lpc_decode.fixed_io.lpt.is_some() {
+            lpc_en |= LPC_EN_LPT;
+        }
+        if self.config.lpc_decode.fixed_io.fdd.is_some() {
+            lpc_en |= LPC_EN_FDD;
+        }
+
         lpc.write8(ich8::SERIRQ_CNTL, 0xd0);
         lpc.write16(ich8::LPC_IO_DEC, self.config.lpc_decode.fixed_io.encode());
-        lpc.write16(ich8::LPC_EN, LPC_EN_ALL);
+        lpc.write16(ich8::LPC_EN, lpc_en);
         lpc.write32(ich8::GEN1_DEC, generic[0]);
         lpc.write32(ich8::GEN2_DEC, generic[1]);
         lpc.write32(ich8::GEN3_DEC, generic[2]);
@@ -613,6 +742,8 @@ impl IntelIch8 {
     }
 
     fn enable_smbus(&mut self) {
+        let smbus_pci = ecam::PciDevBdf::new(0, ich8::SMBUS_DEV, ich8::SMBUS_FUNC);
+        smbus_pci.and16(0x80, !((1 << 8) | (1 << 10) | (1 << 12) | (1 << 14)));
         let smbus =
             I801SmBus::enable_on_i801(0, ich8::SMBUS_DEV, ich8::SMBUS_FUNC, self.config.smbus_base);
         self.smbus = Some(smbus);
@@ -648,6 +779,7 @@ impl IntelIch8 {
         rcba.write32(ich8::RCBA_CIR1, 0x0010_9000);
         rcba.write16(ich8::RCBA_CIR3, 0x060b);
         rcba.write32(ich8::RCBA_CIR2, 0x8600_0040);
+        rcba.write32(ich8::RCBA_CIR4, 0x0000_2008);
         rcba.write8(ich8::RCBA_BCR, 0x45);
         rcba.write32(ich8::RCBA_CIR6, rcba.read32(ich8::RCBA_CIR6) & !(1 << 7));
 
@@ -720,7 +852,7 @@ impl IntelIch8 {
 
     fn configure_power_options(&self) {
         let lpc = self.lpc();
-        lpc.or32(ich8::ETR3, (1 << 30) | (3 << 8));
+        lpc.or32(ich8::PMIR, ich8::PMIR_CF9GR);
 
         let mut gen_pmcon3 = lpc.read8(ich8::GEN_PMCON_3) & !1;
         if self.config.power_on_after_fail == 0 {
@@ -761,6 +893,7 @@ impl IntelIch8 {
         self.pm().write16(pmio::PM1_STS, sts);
         let mut throttle = self.pm().read32(0x10);
         throttle &= !(7 << 5);
+        throttle |= (u32::from(self.config.throttle_duty & 7)) << 5;
         self.pm().write32(0x10, throttle);
 
         #[cfg(target_arch = "x86_64")]
@@ -798,12 +931,31 @@ impl IntelIch8 {
         rcba.write32(0x38c0, rcba.read32(0x38c0) | 7);
     }
 
+    fn enable_ioapic(&self) {
+        let rcba = self.rcba();
+        rcba.write8(ich8::OIC, ich8::OIC_AEN | ich8::OIC_OAEN);
+        let _ = rcba.read8(ich8::OIC);
+    }
+
+    fn rtc_init_status(&self) {
+        let lpc = self.lpc();
+        let gen_pmcon3 = lpc.read8(ich8::GEN_PMCON_3);
+        if (gen_pmcon3 & GEN_PMCON_3_RTC_BATTERY_DEAD) != 0 {
+            lpc.write8(
+                ich8::GEN_PMCON_3,
+                gen_pmcon3 & !GEN_PMCON_3_RTC_BATTERY_DEAD,
+            );
+            fstart_log::info!("intel-ich8: RTC battery-dead flag was set");
+        }
+    }
+
     fn ramstage_lpc_init(&self) {
         let rcba = self.rcba();
-        rcba.write8(ich8::OIC, ich8::OIC_AEN);
-        let _ = rcba.read32(ich8::OIC & !3);
+        self.enable_ioapic();
+        self.lpc().write8(ich8::SERIRQ_CNTL, 0xc0);
         self.configure_power_options();
         self.configure_cstates();
+        self.rtc_init_status();
         self.isa_dma_init();
         self.i8259_init();
         self.enable_hpet();
@@ -878,8 +1030,10 @@ impl IntelIch8 {
         sata.write32(ich8::SATA_SDAT, (val & !clear) | set);
     }
 
-    fn sata_enable_ahci_mmap(&self, sata: &SataConfig) {
-        let port_map = sata.ports & 0x3f;
+    fn sata_enable_ahci_mmap(&self, sata: &SataConfig, is_mobile: bool) {
+        let port_mask = if is_mobile { 0x07 } else { 0x3f };
+        let port_map = sata.ports & port_mask;
+        let num_ports = if is_mobile { 3 } else { 6 };
         // SAFETY: `sata_init` programs BAR5 to this fixed ABAR before use.
         unsafe {
             let abar = SATA_ABAR_BASE;
@@ -894,14 +1048,18 @@ impl IntelIch8 {
             let _ = fstart_mmio::read32((abar + 0x0c) as *const u32);
             let vsp = fstart_mmio::read32((abar + 0xa0) as *const u32) & !1;
             fstart_mmio::write32((abar + 0xa0) as *mut u32, vsp);
-            for port in 0..3usize {
+            for port in 0..num_ports {
                 let cmd = abar + 0x118 + port * 0x80;
-                fstart_mmio::write32(cmd as *mut u32, fstart_mmio::read32(cmd as *const u32));
+                let mut value = fstart_mmio::read32(cmd as *const u32);
+                if (sata.hotplug_map & (1 << port)) != 0 {
+                    value |= 1 << 18;
+                }
+                fstart_mmio::write32(cmd as *mut u32, value);
             }
         }
     }
 
-    fn sata_program_indexed(&self) {
+    fn sata_program_indexed(&self, is_mobile: bool) {
         self.sata_indexed_rmw32(0x18, (7 << 6) | (7 << 3) | 7, (3 << 3) | 3);
         self.sata_indexed_write32(0x28, 0x00cc_2080);
         let sata = ecam::PciDevBdf::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
@@ -909,15 +1067,31 @@ impl IntelIch8 {
         sata.write8(ich8::SATA_SDAT + 2, 0x22);
         sata.write8(ich8::SATA_SIDX, 0x78);
         sata.write8(ich8::SATA_SDAT + 2, 0x22);
+        if !is_mobile {
+            self.sata_indexed_rmw32(0x84, (7 << 3) | 7, (3 << 3) | 3);
+        }
+        let desktop_88_clear_set = if is_mobile {
+            (0, 0)
+        } else {
+            (
+                (7 << 27) | (7 << 24) | (7 << 11) | (7 << 8),
+                (4 << 27) | (4 << 24) | (2 << 11) | (2 << 8),
+            )
+        };
         self.sata_indexed_rmw32(
             0x88,
-            (7 << 19) | (7 << 16) | (7 << 3) | 7,
-            (4 << 19) | (4 << 16) | (2 << 3) | 2,
+            desktop_88_clear_set.0 | (7 << 19) | (7 << 16) | (7 << 3) | 7,
+            desktop_88_clear_set.1 | (4 << 19) | (4 << 16) | (2 << 3) | 2,
         );
+        let desktop_8c_clear_set = if is_mobile {
+            (0, 0)
+        } else {
+            ((7 << 27) | (7 << 24), (2 << 27) | (2 << 24))
+        };
         self.sata_indexed_rmw32(
             0x8c,
-            (7 << 19) | (7 << 16) | 0xffff,
-            (2 << 19) | (2 << 16) | 0x00aa,
+            desktop_8c_clear_set.0 | (7 << 19) | (7 << 16) | 0xffff,
+            desktop_8c_clear_set.1 | (2 << 19) | (2 << 16) | 0x00aa,
         );
         self.sata_indexed_write32(0x94, 0x0000_0022);
         self.sata_indexed_rmw32(0xa0, (7 << 3) | 7, (3 << 3) | 3);
@@ -938,7 +1112,13 @@ impl IntelIch8 {
         if sata.read16(0) == 0xffff {
             return;
         }
-        let ports = config.ports & 0x07;
+        let devid = sata.read16(ich8::PCI_DEVICE_ID);
+        let is_mobile = matches!(
+            devid,
+            ich8::DID_82801HBM_SATA | ich8::DID_82801HBM_SATA_AHCI | ich8::DID_82801HBM_SATA_RAID
+        );
+        let port_mask = if is_mobile { 0x07 } else { 0x3f };
+        let ports = config.ports & port_mask;
         sata.or16(
             ich8::PCI_COMMAND,
             ich8::PCI_CMD_IO | ich8::PCI_CMD_MEMORY | ich8::PCI_CMD_MASTER,
@@ -957,17 +1137,28 @@ impl IntelIch8 {
         sata.write16(ich8::SATA_IDE_TIM_PRI, 1 << 15);
         sata.write16(ich8::SATA_IDE_TIM_SEC, 1 << 15);
         let pcs_ports = if matches!(config.mode, SataMode::Ahci) {
-            0x07
+            port_mask
         } else {
             ports
         };
         let pcs = (sata.read16(ich8::SATA_PCS) & !0x3f) | (1 << 15) | pcs_ports as u16;
         sata.write16(ich8::SATA_PCS, pcs);
-        sata.write32(ich8::SATA_CLK, (((!ports as u32) & 0x3f) << 24) | 0x193);
-        if matches!(config.mode, SataMode::Ahci) {
-            self.sata_enable_ahci_mmap(config);
+        let mut sclkcg = (((!config.ports as u32) & 0x3f) << 24) | 0x193;
+        #[cfg(target_arch = "x86_64")]
+        if config.clock_request {
+            // SAFETY: GPIOBASE is programmed before SATA init; GPIO35 is in the second bank.
+            if unsafe { fstart_pio::inb(ich8::DEFAULT_GPIOBASE + 0x30) } & (1 << (35 - 32)) == 0 {
+                sclkcg |= 1 << 30;
+            }
         }
-        self.sata_program_indexed();
+        sata.write32(ich8::SATA_CLK, sclkcg);
+        if config.traffic_monitor && ((self.lpc().read8(ich8::CXSTATE_CNF) >> 3) & 3) == 3 {
+            sata.and8_or8(0x9c, !(0x1f << 2), 3 << 2);
+        }
+        if matches!(config.mode, SataMode::Ahci) {
+            self.sata_enable_ahci_mmap(config, is_mobile);
+        }
+        self.sata_program_indexed(is_mobile);
         fstart_log::info!("intel-ich8: SATA init complete ports={:#x}", ports as u32);
     }
 
@@ -1009,9 +1200,13 @@ impl IntelIch8 {
         };
         if usb.ehci[0] {
             self.ehci_reset_controller(ich8::EHCI1_DEV, ich8::EHCI1_FUNC, ich8::FD_EHCI1D);
+            ecam::PciDevBdf::new(0, ich8::EHCI1_DEV, ich8::EHCI1_FUNC)
+                .or16(ich8::PCI_COMMAND, ich8::PCI_CMD_MASTER);
         }
         if usb.ehci[1] {
             self.ehci_reset_controller(ich8::EHCI2_DEV, ich8::EHCI2_FUNC, ich8::FD_EHCI2D);
+            ecam::PciDevBdf::new(0, ich8::EHCI2_DEV, ich8::EHCI2_FUNC)
+                .or16(ich8::PCI_COMMAND, ich8::PCI_CMD_MASTER);
         }
         const UHCI: [(u8, u8); 5] = [(0x1d, 0), (0x1d, 1), (0x1d, 2), (0x1a, 0), (0x1a, 1)];
         for (idx, (dev, func)) in UHCI.iter().copied().enumerate() {
@@ -1087,7 +1282,6 @@ impl IntelIch8 {
             port.write32(ich8::D28FX_CEMASK, port.read32(ich8::D28FX_CEMASK));
             port.write16(ich8::PCI_STATUS, port.read16(ich8::PCI_STATUS));
             port.write16(ich8::PCI_SEC_STATUS, port.read16(ich8::PCI_SEC_STATUS));
-            port.write32(ich8::D28FX_LCAP, port.read32(ich8::D28FX_LCAP));
         }
         let fd = self.rcba().read32(ich8::RCBA_FD);
         for func in (0usize..6).rev() {
@@ -1107,7 +1301,95 @@ impl IntelIch8 {
             }
         }
         rcba.write32(ich8::RCBA_RPFN, rpfn);
+        self.pcie_slot_config();
+        self.pcie_aspm_lock();
         fstart_log::info!("intel-ich8: PCIe root port init complete");
+    }
+
+    fn pcie_slot_config(&self) {
+        let mut slot_number = 1u32;
+        for func in 0usize..6 {
+            let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func as u8);
+            if port.read16(0) == 0xffff {
+                continue;
+            }
+            if self.config.pcie_slots[func] {
+                port.or32(ich8::D28FX_XCAP, ich8::D28FX_XCAP_SLOT);
+                let limit = self.config.pcie_power_limits[func];
+                let mut slcap = port.read32(ich8::D28FX_SLCAP);
+                slcap &= !(0x1fff << ich8::D28_SLCAP_SLOTNUM_SHIFT);
+                slcap |= slot_number << ich8::D28_SLCAP_SLOTNUM_SHIFT;
+                slcap &= !(0x03 << ich8::D28_SLCAP_SCALE_SHIFT);
+                slcap |= (u32::from(limit.scale) & 0x03) << ich8::D28_SLCAP_SCALE_SHIFT;
+                slcap &= !(0xff << ich8::D28_SLCAP_POWER_SHIFT);
+                slcap |= u32::from(limit.value) << ich8::D28_SLCAP_POWER_SHIFT;
+                port.write32(ich8::D28FX_SLCAP, slcap);
+                slot_number += 1;
+            } else {
+                port.and32(ich8::D28FX_XCAP, !ich8::D28FX_XCAP_SLOT);
+            }
+        }
+    }
+
+    fn pcie_aspm_lock(&self) {
+        for func in 0u8..6 {
+            let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func);
+            if port.read16(0) != 0xffff {
+                port.write32(ich8::D28FX_LCAP, port.read32(ich8::D28FX_LCAP));
+            }
+        }
+    }
+
+    fn ide_init(&self, config: &IdeConfig) {
+        let ide = ecam::PciDevBdf::new(0, ich8::IDE_DEV, ich8::IDE_FUNC);
+        if ide.read16(0) == 0xffff {
+            return;
+        }
+        ide.or16(ich8::PCI_COMMAND, ich8::PCI_CMD_IO | ich8::PCI_CMD_MASTER);
+        ide.write8(ich8::PCI_CLASS_PROG, 0x8a);
+
+        let timing_base = ich8::IDE_SITRE
+            | ich8::IDE_ISP_3_CLOCKS
+            | ich8::IDE_RCT_1_CLOCKS
+            | ich8::IDE_IE0
+            | ich8::IDE_TIME0;
+        let primary_timing = (ide.read16(ich8::IDE_TIM_PRI) & !ich8::IDE_DECODE_ENABLE)
+            | timing_base
+            | if config.enable_primary {
+                ich8::IDE_DECODE_ENABLE
+            } else {
+                0
+            };
+        let secondary_timing = (ide.read16(ich8::IDE_TIM_SEC) & !ich8::IDE_DECODE_ENABLE)
+            | timing_base
+            | if config.enable_secondary {
+                ich8::IDE_DECODE_ENABLE
+            } else {
+                0
+            };
+        ide.write16(ich8::IDE_TIM_PRI, primary_timing);
+        ide.write16(ich8::IDE_TIM_SEC, secondary_timing);
+
+        let mut ide_config = 0u32;
+        if config.enable_primary {
+            ide_config |= ich8::FAST_PCB0 | ich8::PCB0 | ich8::FAST_PCB1 | ich8::PCB1;
+        }
+        if config.enable_secondary {
+            ide_config |= ich8::FAST_SCB0 | ich8::SCB0 | ich8::FAST_SCB1 | ich8::SCB1;
+        }
+        ide.write32(ich8::IDE_CONFIG, ide_config);
+        ide.write8(ich8::PCI_INTERRUPT_LINE, 0xff);
+    }
+
+    fn pci_bridge_init(&self) {
+        let bridge = ecam::PciDevBdf::new(0, ich8::PCI_BRIDGE_DEV, ich8::PCI_BRIDGE_FUNC);
+        if bridge.read16(0) == 0xffff {
+            return;
+        }
+        bridge.write8(ich8::PCI_INTERRUPT_LINE, 0xff);
+        bridge.and8_or8(ich8::D30F0_SMLT, 0x07, 0x04 << 3);
+        bridge.write16(ich8::PCI_STATUS, bridge.read16(ich8::PCI_STATUS));
+        bridge.write16(ich8::PCI_SEC_STATUS, bridge.read16(ich8::PCI_SEC_STATUS));
     }
 
     fn isa_dma_init(&self) {
@@ -1161,6 +1443,12 @@ impl IntelIch8 {
         if self.config.sata.is_none() {
             fd |= ich8::FD_SAD1;
         }
+        if self.config.disable_sata2 {
+            fd |= ich8::FD_SAD2;
+        }
+        if self.config.disable_thermal {
+            fd |= ich8::FD_TTD;
+        }
         match self.config.usb {
             Some(usb) => {
                 const UHCI: [(u8, u8); 5] = [(0x1d, 0), (0x1d, 1), (0x1d, 2), (0x1a, 0), (0x1a, 1)];
@@ -1194,7 +1482,57 @@ impl IntelIch8 {
         fd
     }
 
+    fn clear_pci_command(dev: u8, func: u8) {
+        let pci = ecam::PciDevBdf::new(0, dev, func);
+        if pci.read16(0) != 0xffff {
+            pci.and16(
+                ich8::PCI_COMMAND,
+                !(ich8::PCI_CMD_IO | ich8::PCI_CMD_MEMORY | ich8::PCI_CMD_MASTER),
+            );
+        }
+    }
+
+    fn clear_disabled_device_commands(&self) {
+        if self.config.disable_lan {
+            Self::clear_pci_command(ich8::LAN_DEV, ich8::LAN_FUNC);
+        }
+        if self.config.hda.is_none() {
+            Self::clear_pci_command(ich8::HDA_DEV, ich8::HDA_FUNC);
+        }
+        if self.config.sata.is_none() {
+            Self::clear_pci_command(ich8::SATA_DEV, ich8::SATA_FUNC);
+        }
+        if self.config.disable_sata2 {
+            Self::clear_pci_command(ich8::SATA2_DEV, ich8::SATA2_FUNC);
+        }
+        if self.config.disable_thermal {
+            Self::clear_pci_command(ich8::THERMAL_DEV, ich8::THERMAL_FUNC);
+        }
+        if let Some(usb) = self.config.usb {
+            const UHCI: [(u8, u8); 5] = [(0x1d, 0), (0x1d, 1), (0x1d, 2), (0x1a, 0), (0x1a, 1)];
+            for (idx, (dev, func)) in UHCI.iter().copied().enumerate() {
+                if !usb.uhci[idx] {
+                    Self::clear_pci_command(dev, func);
+                }
+            }
+            if !usb.ehci[0] {
+                Self::clear_pci_command(ich8::EHCI1_DEV, ich8::EHCI1_FUNC);
+            }
+            if !usb.ehci[1] {
+                Self::clear_pci_command(ich8::EHCI2_DEV, ich8::EHCI2_FUNC);
+            }
+        }
+        for (idx, enabled) in self.config.pcie_ports.iter().enumerate() {
+            if !*enabled {
+                Self::clear_pci_command(ich8::PCIE_DEV, idx as u8);
+            }
+        }
+    }
+
     fn detect_s3_resume(&self) -> bool {
+        if (self.lpc().read8(ich8::GEN_PMCON_3) & GEN_PMCON_3_RTC_POWER_FAILED) != 0 {
+            return false;
+        }
         let pm1_cnt = self.pm().read32(pmio::PM1_CNT);
         let slp_typ = pm1_cnt & pmio::SLP_TYP_MASK;
         if slp_typ == SLP_TYP_S3 {
@@ -1226,35 +1564,51 @@ impl IntelIch8 {
 
     fn configure_default_intmap(&self) {
         let rcba = self.rcba();
-        rcba.write32(ich8::D31IP, 0x0000_1230);
-        rcba.write32(ich8::D30IP, 0x0000_0000);
-        rcba.write32(ich8::D29IP, 0x4000_4321);
-        rcba.write32(ich8::D28IP, 0x0000_3210);
-        rcba.write32(ich8::D27IP, 0x0000_0000);
-        rcba.write32(ich8::D26IP, 0x0000_0010);
+        rcba.write32(ich8::D31IP, 0x0400_3210);
+        rcba.write32(ich8::D30IP, 0x0000_0001);
+        rcba.write32(ich8::D29IP, 0x1000_0321);
+        rcba.write32(ich8::D28IP, 0x0021_4321);
+        rcba.write32(ich8::D27IP, 0x0000_0001);
+        rcba.write32(ich8::D26IP, 0x1000_0021);
+        rcba.write32(ich8::D25IP, 0x0000_0001);
 
         rcba.write16(ich8::D31IR, 0x1100);
         rcba.write16(ich8::D30IR, 0x0000);
-        rcba.write16(ich8::D29IR, 0x0020);
+        rcba.write16(ich8::D29IR, 0x0002);
         rcba.write16(ich8::D28IR, 0x3210);
-        rcba.write16(ich8::D27IR, 0x0030);
-        rcba.write16(ich8::D26IR, 0x0030);
-        rcba.write8(ich8::OIC, ich8::OIC_AEN);
-        let _ = rcba.read32(ich8::OIC & !3);
+        rcba.write16(ich8::D27IR, 0x0003);
+        rcba.write16(ich8::D26IR, 0x0003);
+        rcba.write16(ich8::D25IR, 0x0001);
+        self.enable_ioapic();
     }
 
     fn configure_late_rcba(&self, config: &Ich8LateRcbaConfig) {
         let rcba = self.rcba();
         rcba.write32(ich8::D31IP, config.d31ip);
+        if let Some(d30ip) = config.d30ip {
+            rcba.write32(ich8::D30IP, d30ip);
+        }
         rcba.write32(ich8::D29IP, config.d29ip);
         rcba.write32(ich8::D28IP, config.d28ip);
         rcba.write32(ich8::D27IP, config.d27ip);
+        if let Some(d26ip) = config.d26ip {
+            rcba.write32(ich8::D26IP, d26ip);
+        }
+        if let Some(d25ip) = config.d25ip {
+            rcba.write32(ich8::D25IP, d25ip);
+        }
 
         rcba.write16(ich8::D31IR, config.d31ir);
         rcba.write16(ich8::D30IR, config.d30ir);
         rcba.write16(ich8::D29IR, config.d29ir);
         rcba.write16(ich8::D28IR, config.d28ir);
         rcba.write16(ich8::D27IR, config.d27ir);
+        if let Some(d26ir) = config.d26ir {
+            rcba.write16(ich8::D26IR, d26ir);
+        }
+        if let Some(d25ir) = config.d25ir {
+            rcba.write16(ich8::D25IR, d25ir);
+        }
 
         if let Some(iotr3) = config.iotr3 {
             rcba.write32(ich8::IOTR3_LO, iotr3.lo);
@@ -1312,9 +1666,16 @@ impl EarlyInit for IntelIch8 {
         self.enable_smbus();
         self.write_pirq_routes();
         self.reset_watchdog_and_cmos();
+        self.clear_disabled_device_commands();
         let rcba = self.rcba();
         let fd = self.function_disable_mask();
         rcba.write32(ich8::RCBA_FD, fd);
+        if self.config.disable_lan {
+            rcba.write32(
+                ich8::RCBA_FDSW,
+                rcba.read32(ich8::RCBA_FDSW) | ich8::FDSW_LAND,
+            );
+        }
         self.early_chipset_settings();
         self.pm().write32(GPE0_STS_ICH8, 0xffff_ffff);
         self.pm().write32(GPE0_EN_ICH8, self.config.gpe0_en);
@@ -1332,7 +1693,11 @@ impl PostDramInit for IntelIch8 {
         self.poll_vc1();
         self.early_chipset_settings();
         self.pcie_init();
+        self.pci_bridge_init();
         self.usb_init();
+        if let Some(ide) = self.config.ide.as_ref() {
+            self.ide_init(ide);
+        }
         if let Some(hda) = self.config.hda.as_ref() {
             self.hda_init(hda);
         }

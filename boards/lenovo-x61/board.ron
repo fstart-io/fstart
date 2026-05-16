@@ -141,6 +141,10 @@
                         0x01270c02,
                     ],
                 )],)),
+                // Coreboot enables the ICH8-M PATA primary channel for the
+                // dock UltraBay path; power remains controlled by the
+                // LenovoX61Mainboard dock hook.
+                ide: Some(( enable_primary: true, enable_secondary: false )),
                 sata: Some(( mode: Ahci, ports: 0x01 )),
                 usb: Some((
                     ehci: (true, true),
