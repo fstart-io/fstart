@@ -353,8 +353,9 @@ pub struct ImageManifest {
     /// All top-level regions in the image.
     ///
     /// Typically: one Container "ro", optionally Container "rw-a"/"rw-b",
-    /// optionally Raw "nvs". Max 4 regions.
-    pub regions: heapless::Vec<Region, 4>,
+    /// optionally Raw "nvs". Descriptor-based x86 images may also list
+    /// descriptor/GbE/ME raw regions that are outside the BIOS image.
+    pub regions: heapless::Vec<Region, 8>,
 }
 
 // ============================================================================

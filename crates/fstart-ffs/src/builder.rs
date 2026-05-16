@@ -67,13 +67,29 @@ pub enum InputRegion {
         /// Files in this container.
         files: Vec<InputFile>,
     },
-    /// Raw reserved space.
+    /// Raw reserved space that is physically present in this image.
     Raw {
         /// Region name (e.g., "nvs").
         name: String,
         /// Size in bytes.
         size: u32,
         /// Fill byte (0xFF for erased flash).
+        fill: u8,
+    },
+    /// Raw flash region described in the manifest but not stored in this image.
+    ///
+    /// This is used for descriptor-based x86 platforms where a BIOS-region
+    /// image needs to carry signed layout metadata for descriptor/GbE/ME
+    /// regions without embedding those vendor blobs or computing digests for
+    /// them.
+    ExternalRaw {
+        /// Region name (e.g., "descriptor", "gbe", "me").
+        name: String,
+        /// Region offset in the physical flash layout.
+        offset: u32,
+        /// Region size in bytes.
+        size: u32,
+        /// Erased fill byte convention for the region.
         fill: u8,
     },
 }
@@ -136,7 +152,7 @@ where
     let mut file_data: Vec<FileDataLocation> = Vec::new();
 
     // ---- Phase 1: Lay out all regions ----
-    let mut manifest_regions: heapless::Vec<Region, 4> = heapless::Vec::new();
+    let mut manifest_regions: heapless::Vec<Region, 8> = heapless::Vec::new();
 
     for input_region in &config.regions {
         match input_region {
@@ -176,7 +192,7 @@ where
                         size: region_size,
                         content: RegionContent::Container { children },
                     })
-                    .map_err(|_| "too many regions (max 4)".to_string())?;
+                    .map_err(|_| "too many regions (max 8)".to_string())?;
             }
             InputRegion::Raw { name, size, fill } => {
                 let offset = image.len() as u32;
@@ -192,7 +208,25 @@ where
                         size: *size,
                         content: RegionContent::Raw { fill: *fill },
                     })
-                    .map_err(|_| "too many regions (max 4)".to_string())?;
+                    .map_err(|_| "too many regions (max 8)".to_string())?;
+            }
+            InputRegion::ExternalRaw {
+                name,
+                offset,
+                size,
+                fill,
+            } => {
+                let region_name: HString<64> = HString::try_from(name.as_str())
+                    .map_err(|_| format!("region name too long: {name}"))?;
+
+                manifest_regions
+                    .push(Region {
+                        name: region_name,
+                        offset: *offset,
+                        size: *size,
+                        content: RegionContent::Raw { fill: *fill },
+                    })
+                    .map_err(|_| "too many regions (max 8)".to_string())?;
             }
         }
     }

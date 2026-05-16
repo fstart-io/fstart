@@ -8,6 +8,14 @@ use serde::{Deserialize, Serialize};
 pub struct MemoryMap {
     /// Named memory regions (ROM, RAM only — not per-device MMIO)
     pub regions: heapless::Vec<MemoryRegion, 16>,
+    /// Optional physical flash partition map.
+    ///
+    /// Intel descriptor based systems split the SPI flash into descriptor,
+    /// GbE, ME, BIOS, and other regions.  fstart executes from and reads only
+    /// the BIOS region, but host-side image assembly can still describe and
+    /// optionally populate the non-BIOS regions.
+    #[serde(default)]
+    pub flash_layout: Option<FlashLayout>,
     /// Base address where the firmware flash image is mapped in memory.
     ///
     /// For XIP flash, this is the flash memory-mapped region start.
@@ -102,4 +110,100 @@ pub enum RegionKind {
     Ram,
     /// Reserved (firmware-owned, not passed to OS)
     Reserved,
+}
+
+/// Physical flash layout for platforms with non-BIOS firmware regions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FlashLayout {
+    /// Intel Firmware Descriptor controlled SPI flash.
+    IntelIfd(IntelIfdFlashLayout),
+}
+
+/// Intel Firmware Descriptor flash layout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntelIfdFlashLayout {
+    /// Physical address where the entire SPI flash aperture is memory-mapped.
+    pub base: u64,
+    /// Total flash size in bytes.
+    pub size: u32,
+    /// Regions described by the descriptor.
+    pub regions: heapless::Vec<IntelIfdRegionConfig, 8>,
+}
+
+impl IntelIfdFlashLayout {
+    /// Return the configured BIOS region.
+    pub fn bios_region(&self) -> Option<&IntelIfdRegionConfig> {
+        self.regions
+            .iter()
+            .find(|region| region.kind == IntelIfdRegion::Bios)
+    }
+
+    /// Memory-mapped BIOS base address.
+    pub fn bios_base(&self) -> Option<u64> {
+        self.bios_region()
+            .map(|region| self.base + u64::from(region.offset))
+    }
+
+    /// Memory-mapped end of the whole flash aperture.
+    pub fn end(&self) -> u64 {
+        self.base + u64::from(self.size)
+    }
+}
+
+/// One Intel IFD flash region declared in board RON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntelIfdRegionConfig {
+    /// Descriptor region kind.
+    pub kind: IntelIfdRegion,
+    /// Offset from the start of the physical flash image.
+    pub offset: u32,
+    /// Region size in bytes.  Zero means the region is unused.
+    pub size: u32,
+    /// Optional binary blob to place in this region when a full flash image is
+    /// generated.  Paths are resolved relative to the board directory.
+    #[serde(default)]
+    pub file: Option<HString<128>>,
+}
+
+/// Intel IFD region identifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IntelIfdRegion {
+    /// Flash descriptor.
+    Descriptor,
+    /// Host-visible BIOS region.
+    Bios,
+    /// Intel Management Engine region.
+    Me,
+    /// Intel GbE region.
+    Gbe,
+    /// Platform data region.
+    Pdr,
+    /// Reserved or unsupported region number.
+    Reserved,
+}
+
+impl IntelIfdRegion {
+    /// Numeric FLREG index used by Intel descriptors.
+    pub fn flreg_index(self) -> Option<usize> {
+        match self {
+            IntelIfdRegion::Descriptor => Some(0),
+            IntelIfdRegion::Bios => Some(1),
+            IntelIfdRegion::Me => Some(2),
+            IntelIfdRegion::Gbe => Some(3),
+            IntelIfdRegion::Pdr => Some(4),
+            IntelIfdRegion::Reserved => None,
+        }
+    }
+
+    /// Conventional lower-case region name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IntelIfdRegion::Descriptor => "descriptor",
+            IntelIfdRegion::Bios => "bios",
+            IntelIfdRegion::Me => "me",
+            IntelIfdRegion::Gbe => "gbe",
+            IntelIfdRegion::Pdr => "pdr",
+            IntelIfdRegion::Reserved => "reserved",
+        }
+    }
 }

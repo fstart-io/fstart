@@ -13,14 +13,34 @@
 
     memory: (
         regions: [
-            ( name: "flash", base: 0xFFC00000, size: 0x00400000, kind: Rom ),
+            // The host CPU can execute and read only the IFD BIOS region.
+            // The full 4 MiB SPI aperture is 0xFFC00000..0xFFFFFFFF; the
+            // descriptor/GbE/ME regions below BIOS are tracked in
+            // flash_layout for image assembly and validation.
+            ( name: "flash", base: 0xFFE80000, size: 0x00180000, kind: Rom ),
             // X61 commonly ships with 1-4 GiB DDR2. The linker keeps firmware
             // working state below the Linux payload load address; runtime sizing
             // is read from GM965 TOLUD/TOUUD after DRAM training.
             ( name: "workram", base: 0x00100000, size: 0x03F00000, kind: Ram ),
         ],
-        flash_base: Some(0xFFC00000),
-        flash_size: Some(0x00400000),
+        flash_layout: Some(IntelIfd((
+            base: 0xFFC00000,
+            size: 0x00400000,
+            regions: [
+                // BIOS-only images list these raw regions in the signed FFS
+                // manifest without embedding data or digests for them.  To
+                // build a complete flash image, add `file: "descriptor.bin"`,
+                // `file: "gbe.bin"`, and `file: "me.bin"` to the matching
+                // regions; the descriptor file is then parsed and validated
+                // against these offsets/sizes.
+                ( kind: Descriptor, offset: 0x000000, size: 0x001000 ),
+                ( kind: Gbe,        offset: 0x001000, size: 0x002000 ),
+                ( kind: Me,         offset: 0x003000, size: 0x27D000 ),
+                ( kind: Bios,       offset: 0x280000, size: 0x180000 ),
+            ],
+        ))),
+        flash_base: Some(0xFFE80000),
+        flash_size: Some(0x00180000),
         car: Some((
             method: NonEvictMode,
             base: 0xFEF00000,
@@ -239,7 +259,7 @@
                 ConsoleInit( device: "uart0" ),
                 EarlyInit( devices: ["northbridge", "southbridge"] ),
                 DramInit( device: "northbridge" ),
-                BootMedia(MemoryMapped( base: 0xFFC80000, size: 0x0037F000 )),
+                BootMedia(MemoryMapped( base: 0xFFE80000, size: 0x00180000 )),
                 StageLoad( next_stage: "ramstage" ),
             ],
             load_addr: 0xFFFF0000,
@@ -269,8 +289,8 @@
                 AcpiPrepare,
                 SmBiosPrepare,
                 BootMedia(MemoryMapped(
-                    base: 0xFFC80000,
-                    size: 0x0037F000,
+                    base: 0xFFE80000,
+                    size: 0x00180000,
                     ram_copy_addr: Some(0x02000000),
                 )),
                 SigVerify,

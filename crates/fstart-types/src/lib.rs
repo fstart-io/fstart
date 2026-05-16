@@ -32,7 +32,10 @@ pub use ffs::{
     RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,
     SignedManifest, VerificationKey, FFS_MAGIC, FFS_VERSION,
 };
-pub use memory::{CarConfig, CarMethod, MemoryMap, MemoryRegion, RegionKind};
+pub use memory::{
+    CarConfig, CarMethod, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig,
+    MemoryMap, MemoryRegion, RegionKind,
+};
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
 pub use smm::{CorebootSmmCompat, SmmConfig, SmmPlatform};

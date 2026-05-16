@@ -18,6 +18,7 @@ use fstart_types::device::BusAddress;
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
+use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_types::{BoardConfig, FdtSource, SocImageFormat, StageLayout};
 use goblin::elf::{program_header, Elf};
 use std::fs;
@@ -279,12 +280,11 @@ fn assemble_impl(
         }
     }
 
+    validate_flash_layout(&config, &board_dir)?;
+
     let image_config = FfsImageConfig {
         keys: vec![verification_key],
-        regions: vec![InputRegion::Container {
-            name: "ro".to_string(),
-            files: ro_files,
-        }],
+        regions: ffs_input_regions(&config, ro_files)?,
     };
 
     // Build the image with signing
@@ -366,9 +366,16 @@ fn assemble_impl(
         if stage_count == 1 { "" } else { "s" }
     );
 
-    if config.full_flash_image {
+    let flash_layout_files = match &config.memory.flash_layout {
+        Some(FlashLayout::IntelIfd(layout)) => {
+            layout.regions.iter().any(|region| region.file.is_some())
+        }
+        None => false,
+    };
+    if config.full_flash_image || flash_layout_files {
         create_full_flash_image(
             &config,
+            &board_dir,
             &build_result.stages[0].path,
             &image_bytes,
             ffs_image.anchor_offset,
@@ -379,13 +386,64 @@ fn assemble_impl(
     Ok(image_path)
 }
 
+fn ffs_input_regions(
+    config: &BoardConfig,
+    ro_files: Vec<InputFile>,
+) -> Result<Vec<InputRegion>, String> {
+    let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
+        return Ok(vec![InputRegion::Container {
+            name: "ro".to_string(),
+            files: ro_files,
+        }]);
+    };
+
+    let bios = layout
+        .bios_region()
+        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+    if bios.size == 0 {
+        return Err("Intel IFD BIOS region must not be empty".to_string());
+    }
+
+    let mut regions = Vec::new();
+    for region in &layout.regions {
+        if region.size == 0 {
+            continue;
+        }
+        regions.push(InputRegion::ExternalRaw {
+            name: region.kind.as_str().to_string(),
+            offset: region.offset,
+            size: region.size,
+            fill: 0xff,
+        });
+    }
+    regions.push(InputRegion::Container {
+        name: "ro".to_string(),
+        files: ro_files,
+    });
+
+    Ok(regions)
+}
+
 fn create_full_flash_image(
     config: &BoardConfig,
+    board_dir: &Path,
     bootblock_elf: &Path,
     ffs_data: &[u8],
     ffs_anchor_offset: usize,
     ffs_path: &Path,
 ) -> Result<PathBuf, String> {
+    if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
+        return create_intel_ifd_flash_image(
+            config,
+            board_dir,
+            layout,
+            bootblock_elf,
+            ffs_data,
+            ffs_anchor_offset,
+            ffs_path,
+        );
+    }
+
     let flash_base = config
         .memory
         .flash_base
@@ -499,6 +557,322 @@ fn create_full_flash_image(
         ffs_data.len()
     );
     Ok(out_path)
+}
+
+fn create_intel_ifd_flash_image(
+    config: &BoardConfig,
+    board_dir: &Path,
+    layout: &IntelIfdFlashLayout,
+    bootblock_elf: &Path,
+    ffs_data: &[u8],
+    ffs_anchor_offset: usize,
+    ffs_path: &Path,
+) -> Result<PathBuf, String> {
+    let bios = layout
+        .bios_region()
+        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+    let bios_end = bios
+        .offset
+        .checked_add(bios.size)
+        .ok_or_else(|| "Intel IFD BIOS region overflows u32".to_string())?;
+    if bios_end > layout.size {
+        return Err(format!(
+            "Intel IFD BIOS region [{:#x}..{:#x}) exceeds flash size {:#x}",
+            bios.offset, bios_end, layout.size
+        ));
+    }
+    if ffs_data.len() > bios.size as usize {
+        return Err(format!(
+            "FFS image ({} bytes) exceeds Intel IFD BIOS region ({} bytes)",
+            ffs_data.len(),
+            bios.size
+        ));
+    }
+
+    let mut image = vec![0xffu8; layout.size as usize];
+
+    for region in &layout.regions {
+        let Some(file) = &region.file else {
+            continue;
+        };
+        let path = resolve_board_path(board_dir, file.as_str());
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read flash region {}: {e}", path.display()))?;
+        if data.len() > region.size as usize {
+            return Err(format!(
+                "flash region {} file {} is {} bytes, larger than region size {}",
+                region.kind.as_str(),
+                path.display(),
+                data.len(),
+                region.size
+            ));
+        }
+        let start = region.offset as usize;
+        let end = start + region.size as usize;
+        if end > image.len() {
+            return Err(format!(
+                "flash region {} [{:#x}..{:#x}) exceeds flash size {:#x}",
+                region.kind.as_str(),
+                region.offset,
+                region.offset + region.size,
+                layout.size
+            ));
+        }
+        image[start..start + data.len()].copy_from_slice(&data);
+        eprintln!(
+            "[fstart] flash region {}: {} ({} bytes at offset {:#x})",
+            region.kind.as_str(),
+            path.display(),
+            data.len(),
+            region.offset
+        );
+    }
+
+    let bios_start = bios.offset as usize;
+    image[bios_start..bios_start + ffs_data.len()].copy_from_slice(ffs_data);
+
+    let elf_data = fs::read(bootblock_elf).map_err(|e| {
+        format!(
+            "failed to read bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+    let elf = Elf::parse(&elf_data).map_err(|e| {
+        format!(
+            "failed to parse bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+
+    for phdr in &elf.program_headers {
+        if phdr.p_type != program_header::PT_LOAD || phdr.p_filesz == 0 {
+            continue;
+        }
+        let paddr = phdr.p_paddr;
+        if paddr < layout.base || paddr >= layout.end() {
+            continue;
+        }
+        let off = (paddr - layout.base) as usize;
+        let size = phdr.p_filesz as usize;
+        if off + size > image.len() {
+            return Err(format!(
+                "bootblock segment paddr={paddr:#x} size={size:#x} outside Intel IFD flash image"
+            ));
+        }
+        let src = phdr.p_offset as usize;
+        image[off..off + size].copy_from_slice(&elf_data[src..src + size]);
+        eprintln!(
+            "[fstart] Intel IFD full flash: bootblock segment paddr={paddr:#x} -> offset={off:#x} size={size:#x}"
+        );
+    }
+
+    patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
+
+    let mib = layout.size as usize / (1024 * 1024);
+    let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
+    fs::write(&out_path, &image).map_err(|e| {
+        format!(
+            "failed to write Intel IFD flash image {}: {e}",
+            out_path.display()
+        )
+    })?;
+    eprintln!(
+        "[fstart] Intel IFD full flash image: {} ({} bytes, BIOS FFS {} bytes at offset {:#x})",
+        out_path.display(),
+        image.len(),
+        ffs_data.len(),
+        bios.offset
+    );
+    Ok(out_path)
+}
+
+fn patch_xip_anchor(
+    image: &mut [u8],
+    ffs_data: &[u8],
+    ffs_anchor_offset: usize,
+    image_base_delta: u32,
+) -> Result<(), String> {
+    let anchor_size = fstart_types::ffs::ANCHOR_SIZE;
+    if ffs_anchor_offset + anchor_size > ffs_data.len() {
+        return Err(format!(
+            "FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"
+        ));
+    }
+    let placeholder = fstart_types::ffs::AnchorBlock::placeholder();
+    let placeholder_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &placeholder as *const fstart_types::ffs::AnchorBlock as *const u8,
+            anchor_size,
+        )
+    };
+    let xip_anchor = image
+        .windows(placeholder_bytes.len())
+        .position(|w| w == placeholder_bytes)
+        .ok_or_else(|| {
+            "bootblock XIP anchor placeholder not found in full flash image".to_string()
+        })?;
+    let mut xip_anchor_block = unsafe {
+        core::ptr::read_unaligned(
+            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_types::ffs::AnchorBlock
+        )
+    };
+    xip_anchor_block.anchor_offset = (xip_anchor as u32)
+        .checked_sub(image_base_delta)
+        .ok_or_else(|| "XIP anchor lies before BIOS image base".to_string())?;
+    let mut anchor = vec![0u8; anchor_size];
+    xip_anchor_block.write_to(&mut anchor);
+    image[xip_anchor..xip_anchor + anchor_size].copy_from_slice(&anchor);
+    eprintln!(
+        "[fstart] full flash: patched XIP anchor at offset {xip_anchor:#x} \
+         (image-relative {:#x}) from FFS offset {ffs_anchor_offset:#x}",
+        xip_anchor_block.anchor_offset
+    );
+    Ok(())
+}
+
+fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), String> {
+    let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
+        return Ok(());
+    };
+
+    let bios = layout
+        .bios_region()
+        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+    let expected_bios_base = layout.base + u64::from(bios.offset);
+    if config.memory.flash_base != Some(expected_bios_base)
+        || config.memory.flash_size != Some(u64::from(bios.size))
+    {
+        return Err(format!(
+            "memory.flash_base/flash_size must describe the Intel IFD BIOS region: \
+             expected base={expected_bios_base:#x} size={:#x}, got base={:?} size={:?}",
+            bios.size, config.memory.flash_base, config.memory.flash_size
+        ));
+    }
+
+    let aperture_end = layout
+        .base
+        .checked_add(u64::from(layout.size))
+        .ok_or_else(|| "Intel IFD flash aperture overflows u64".to_string())?;
+    for region in &layout.regions {
+        let region_end = region
+            .offset
+            .checked_add(region.size)
+            .ok_or_else(|| format!("Intel IFD region {} overflows u32", region.kind.as_str()))?;
+        if region_end > layout.size {
+            return Err(format!(
+                "Intel IFD region {} [{:#x}..{:#x}) exceeds flash size {:#x}",
+                region.kind.as_str(),
+                region.offset,
+                region_end,
+                layout.size
+            ));
+        }
+        let mapped_start = layout.base + u64::from(region.offset);
+        let mapped_end = layout.base + u64::from(region_end);
+        if mapped_start < layout.base || mapped_end > aperture_end {
+            return Err(format!(
+                "Intel IFD region {} maps outside flash aperture",
+                region.kind.as_str()
+            ));
+        }
+    }
+
+    let descriptor = layout
+        .regions
+        .iter()
+        .find(|region| region.kind == IntelIfdRegion::Descriptor)
+        .and_then(|region| region.file.as_ref().map(|file| (region, file)));
+    if let Some((_region, file)) = descriptor {
+        let path = resolve_board_path(board_dir, file.as_str());
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read Intel descriptor {}: {e}", path.display()))?;
+        let parsed = parse_ifd_regions(&data)?;
+        for region in &layout.regions {
+            let Some(idx) = region.kind.flreg_index() else {
+                continue;
+            };
+            let Some((offset, size)) = parsed.get(idx).copied().flatten() else {
+                if region.size == 0 {
+                    continue;
+                }
+                return Err(format!(
+                    "Intel descriptor {} has no FLREG{} for configured {} region",
+                    path.display(),
+                    idx,
+                    region.kind.as_str()
+                ));
+            };
+            if offset != region.offset || size != region.size {
+                return Err(format!(
+                    "Intel descriptor {} FLREG{} ({}) is offset={offset:#x} size={size:#x}, \
+                     but board RON declares offset={:#x} size={:#x}",
+                    path.display(),
+                    idx,
+                    region.kind.as_str(),
+                    region.offset,
+                    region.size
+                ));
+            }
+        }
+        eprintln!(
+            "[fstart] Intel descriptor layout validated: {}",
+            path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn parse_ifd_regions(data: &[u8]) -> Result<[Option<(u32, u32)>; 16], String> {
+    let sig_offset = data
+        .windows(4)
+        .enumerate()
+        .step_by(4)
+        .find_map(|(offset, bytes)| {
+            let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            (value == 0x0ff0_a55a).then_some(offset)
+        })
+        .ok_or_else(|| "Intel flash descriptor signature 0x0ff0a55a not found".to_string())?;
+
+    if sig_offset + 8 > data.len() {
+        return Err("Intel flash descriptor too small for FLMAP0".to_string());
+    }
+    let flmap0 = u32::from_le_bytes([
+        data[sig_offset + 4],
+        data[sig_offset + 5],
+        data[sig_offset + 6],
+        data[sig_offset + 7],
+    ]);
+    let frba = (((flmap0 >> 16) & 0xff) << 4) as usize;
+    if frba + 4 > data.len() {
+        return Err(format!(
+            "Intel flash descriptor FRBA {frba:#x} outside descriptor file"
+        ));
+    }
+
+    let mut regions = [None; 16];
+    for (idx, slot) in regions.iter_mut().enumerate() {
+        let off = frba + idx * 4;
+        if off + 4 > data.len() {
+            break;
+        }
+        let flreg = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+        let base = (flreg & 0x7fff) << 12;
+        let limit = ((flreg >> 16) & 0x7fff) << 12 | 0xfff;
+        if limit >= base {
+            *slot = Some((base, limit - base + 1));
+        }
+    }
+    Ok(regions)
+}
+
+fn resolve_board_path(board_dir: &Path, file: &str) -> PathBuf {
+    let path = Path::new(file);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        board_dir.join(path)
+    }
 }
 
 // ============================================================================

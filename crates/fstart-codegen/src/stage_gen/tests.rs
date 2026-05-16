@@ -47,6 +47,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
                 });
                 v
             },
+            flash_layout: None,
             flash_base: None,
             flash_size: None,
             car: None,
@@ -190,6 +191,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
                 });
                 v
             },
+            flash_layout: None,
             flash_base: None,
             flash_size: None,
             car: None,
@@ -671,6 +673,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
                 });
                 v
             },
+            flash_layout: None,
             flash_base: None,
             flash_size: None,
             car: None,

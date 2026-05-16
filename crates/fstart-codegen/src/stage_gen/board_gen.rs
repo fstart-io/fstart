@@ -45,7 +45,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use fstart_device_registry::DriverInstance;
-use fstart_types::memory::RegionKind;
+use fstart_types::memory::{FlashLayout, RegionKind};
 use fstart_types::{
     BoardConfig, BootMedium, Capability, DeviceConfig, DeviceNode, FdtSource, FirmwareConfig,
     FirmwareKind, PayloadConfig, Platform, StageLayout,
@@ -1320,11 +1320,20 @@ fn x86_postcar_config_tokens(ctx: &BoardCtx<'_>) -> TokenStream {
         })
         .collect();
 
-    let rom_range = match (ctx.config.memory.flash_base, ctx.config.memory.flash_size) {
-        (Some(base), Some(size)) => quote! {
-            Some(fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size })
+    let rom_range = match &ctx.config.memory.flash_layout {
+        Some(FlashLayout::IntelIfd(layout)) => {
+            let base = layout.base;
+            let size = layout.size as u64;
+            quote! {
+                Some(fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size })
+            }
+        }
+        None => match (ctx.config.memory.flash_base, ctx.config.memory.flash_size) {
+            (Some(base), Some(size)) => quote! {
+                Some(fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size })
+            },
+            _ => quote! { None },
         },
-        _ => quote! { None },
     };
 
     quote! {

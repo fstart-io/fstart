@@ -2,6 +2,7 @@
 
 use std::fmt::Write;
 
+use fstart_types::memory::FlashLayout;
 use fstart_types::{BoardConfig, Platform, RegionKind, SocImageFormat, StageLayout};
 
 /// Generate a linker script for the given board and (optional) stage.
@@ -154,9 +155,12 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         // bootblock subregion.  This matches coreboot's `_rom_mtrr_base`
         // / `_rom_mtrr_mask` for foxconn/d41s: 0xff000000 / 0xff000000.
         let (x86_rom_mtrr_base, x86_rom_mtrr_size) = if config.platform == Platform::X86_64 {
-            match (config.memory.flash_base, config.memory.flash_size) {
-                (Some(base), Some(size)) => (base, size),
-                _ => (rom.base, rom.size),
+            match &config.memory.flash_layout {
+                Some(FlashLayout::IntelIfd(layout)) => (layout.base, u64::from(layout.size)),
+                None => match (config.memory.flash_base, config.memory.flash_size) {
+                    (Some(base), Some(size)) => (base, size),
+                    _ => (rom.base, rom.size),
+                },
             }
         } else {
             (rom.base, rom.size)
