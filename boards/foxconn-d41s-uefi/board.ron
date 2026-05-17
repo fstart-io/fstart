@@ -52,7 +52,6 @@
         // cache window; using the whole 512 KiB L2 here diverges from the
         // known-working coreboot bootblock.
         car: (
-            method: NonEvictMode,
             base: 0xFEFC0000,
             size: 0x8000,
         ),
@@ -339,6 +338,7 @@
             // still emits an IDT section in the RAM region so the
             // ramstage can install its own exception handler.
             runs_from: Ram,
+            compression: Lz4,
         ),
     ]),
 

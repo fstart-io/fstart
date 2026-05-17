@@ -21,7 +21,7 @@
             // X61 commonly ships with 1-4 GiB DDR2. The linker keeps firmware
             // working state below the Linux payload load address; runtime sizing
             // is read from GM965 TOLUD/TOUUD after DRAM training.
-            ( name: "workram", base: 0x00100000, size: 0x03F00000, kind: Ram ),
+            ( name: "workram", base: 0x00100000, size: 0x3FF00000, kind: Ram ),
         ],
         flash_layout: Some(IntelIfd((
             base: 0xFFC00000,
@@ -299,9 +299,9 @@
                 SigVerify,
                 PayloadLoad,
             ],
-            load_addr: 0x00100000,
-            stack_size: 0x8000,
-            heap_size: Some(0x40000),
+            load_addr: 0x04000000,
+            stack_size: 0x400000,
+            heap_size: 0x200000,
             runs_from: Ram,
             compression: Lz4,
         ),
@@ -330,6 +330,7 @@
     full_flash_image: true,
 
     acpi: Some((
+        print_hex: false,
         platform: X86((
             // Platform ACPI constants for the X61 interrupt/timer topology.
             num_cpus: Some(2),
