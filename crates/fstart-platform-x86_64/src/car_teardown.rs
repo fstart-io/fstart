@@ -1,11 +1,12 @@
 //! Cache-as-RAM teardown and post-CAR stage loading for x86 platforms.
 //!
-//! Mirrors coreboot's Intel non-evict postcar flow:
+//! Mirrors coreboot's Intel post-CAR flow:
 //! 1. switch to a DRAM stack
-//! 2. disable cache, disable MTRRs, clear NEM RUN/SETUP
-//! 3. program post-CAR MTRRs while cache/MTRRs are disabled
-//! 4. re-enable MTRRs, re-enable cache, `invd`
-//! 5. load ramstage from FFS while DRAM and ROM are cacheable
+//! 2. disable cache and MTRRs
+//! 3. clear NEM RUN/SETUP only on Atom models that use the no-evict MSR
+//! 4. program post-CAR MTRRs while cache/MTRRs are disabled
+//! 5. re-enable MTRRs, re-enable cache, `invd`
+//! 6. load ramstage from FFS while DRAM and ROM are cacheable
 
 use core::arch::{asm, global_asm};
 
@@ -16,13 +17,15 @@ global_asm!(
     ".code64",
     ".global _car_teardown",
     // ------------------------------------------------------------------
-    // _car_teardown — Intel non-evict CAR teardown.
+    // _car_teardown — Intel CAR teardown.
     //
-    // Keep this deliberately close to coreboot
-    // cpu/intel/car/non-evict/exit_car.S. Do not WBINVD dirty CAR lines:
-    // NEM CAR has no backing memory and coreboot uses INVD later.
+    // Core2/X61 uses MTRR-backed CAR and must not touch the no-evict MSR.
+    // Atom/NEM systems clear MSR 0x2e0 below after CPUID model gating.
     // ------------------------------------------------------------------
     "_car_teardown:",
+    // Preserve RBX for the x86_64 C ABI. CPUID below clobbers EBX, and this
+    // routine returns to Rust code that may keep live state in RBX.
+    "movq %rbx, %r8",
     // Disable cache: CR0.CD=1. Leave NW unchanged here, like coreboot.
     "movq %cr0, %rax",
     "orq $0x40000000, %rax",
@@ -60,6 +63,7 @@ global_asm!(
     "andl $0xfffffffe, %eax",
     "wrmsr",
     "2:",
+    "movq %r8, %rbx",
     "ret",
     options(att_syntax),
 );
@@ -129,6 +133,23 @@ unsafe fn invalidate_cache_after_reenable() {
     }
 }
 
+fn highest_power_of_two_le(value: u64) -> u64 {
+    1u64 << (u64::BITS - 1 - value.leading_zeros())
+}
+
+fn mtrr_chunk_size(base: u64, remaining: u64) -> u64 {
+    let base_alignment = if base == 0 {
+        1u64 << 63
+    } else {
+        1u64 << base.trailing_zeros()
+    };
+    let mut size = highest_power_of_two_le(remaining);
+    while size > base_alignment {
+        size >>= 1;
+    }
+    size
+}
+
 /// Re-enable normal caching and install post-CAR MTRRs.
 ///
 /// # Safety
@@ -143,13 +164,21 @@ pub unsafe fn postcar_mtrr_setup(config: &PostcarConfig) {
             mtrr::clear_variable(index);
         }
 
+        let mut next_mtrr = 0;
         if let (true, Some(size)) = (count > 0, config.low_dram_mtrr_size()) {
-            mtrr::set_variable(0, 0, size, mtrr::MTRR_TYPE_WRITE_BACK);
+            mtrr::set_variable(next_mtrr, 0, size, mtrr::MTRR_TYPE_WRITE_BACK);
+            next_mtrr += 1;
         }
 
         if let Some(rom) = config.rom_range {
-            if rom.size != 0 && count > 1 {
-                mtrr::set_variable(1, rom.base, rom.size, mtrr::MTRR_TYPE_WRITE_PROTECT);
+            let mut base = rom.base;
+            let mut remaining = rom.size;
+            while remaining != 0 && next_mtrr < count {
+                let size = mtrr_chunk_size(base, remaining);
+                mtrr::set_variable(next_mtrr, base, size, mtrr::MTRR_TYPE_WRITE_PROTECT);
+                base += size;
+                remaining -= size;
+                next_mtrr += 1;
             }
         }
 

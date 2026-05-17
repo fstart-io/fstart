@@ -15,7 +15,7 @@
 
 pub mod raminit;
 
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, ptr};
 
 use fstart_ecam as ecam;
 use fstart_mmio::MmioReadWrite;
@@ -23,7 +23,8 @@ use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::{
-    EarlyInit, MemoryController, PciHost, PreConsoleInit, ServiceError, StageLocalInit,
+    EarlyInit, MemoryController, PciHost, PostDramInit, PreConsoleInit, ServiceError,
+    StageLocalInit,
 };
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::ReadWriteable;
@@ -1656,6 +1657,76 @@ impl PciHost for IntelGm965 {
     }
 }
 
+impl PostDramInit for IntelGm965 {
+    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
+        self.post_dram_chipset_init()
+    }
+}
+
+fn gm965_ramtest_probe(addr: usize, top: usize) -> Result<(), ServiceError> {
+    let addr = addr & !0x3;
+    let Some(end) = addr.checked_add(core::mem::size_of::<u32>()) else {
+        return Err(ServiceError::HardwareError);
+    };
+    if addr < 0x0010_0000 || end > top {
+        return Ok(());
+    }
+
+    let p = addr as *mut u32;
+    let addr_pattern = (addr as u32).rotate_left(13) ^ 0xa5a5_5a5a;
+    const FIXED_PATTERNS: [u32; 4] = [0x0000_0000, 0xffff_ffff, 0x5555_5555, 0xaaaa_aaaa];
+
+    fstart_log::info!("gm965 ramtest: testing DRAM at {:#x}", addr);
+    // SAFETY: Called only after successful GM965 DRAM training. The caller
+    // passes the top of fstart-usable low DRAM, so the probed address is below
+    // IGD stolen memory, GTT, and TSEG reservations. The original word is
+    // restored before returning.
+    unsafe {
+        let old = ptr::read_volatile(p);
+        for pattern in FIXED_PATTERNS
+            .iter()
+            .copied()
+            .chain(core::iter::once(addr_pattern))
+        {
+            ptr::write_volatile(p, pattern);
+            let got = ptr::read_volatile(p);
+            if got != pattern {
+                ptr::write_volatile(p, old);
+                fstart_log::error!(
+                    "gm965 ramtest: failed at {:#x}: wrote {:#x}, read {:#x}",
+                    addr,
+                    pattern,
+                    got
+                );
+                return Err(ServiceError::HardwareError);
+            }
+        }
+        ptr::write_volatile(p, old);
+    }
+    fstart_log::info!("gm965 ramtest: passed at {:#x}", addr);
+    Ok(())
+}
+
+fn gm965_lower_memory_test(test_top: u32) -> Result<(), ServiceError> {
+    let top = test_top as usize;
+    if top <= 0x0010_0000 + core::mem::size_of::<u32>() {
+        fstart_log::error!("gm965 ramtest: invalid usable top {:#x}", top);
+        return Err(ServiceError::HardwareError);
+    }
+
+    gm965_ramtest_probe(0x0010_0000, top)?;
+
+    let postcar_stack_probe = 0x0310_0000usize.saturating_sub(core::mem::size_of::<u32>());
+    gm965_ramtest_probe(postcar_stack_probe, top)?;
+
+    let high_probe = if top > 32 * 1024 * 1024 {
+        top - 16 * 1024 * 1024
+    } else {
+        top - 4096
+    };
+    gm965_ramtest_probe(high_probe, top)
+}
+
 impl MemoryDetector for IntelGm965 {
     fn detect_memory(&self, entries: &mut [E820Entry]) -> Result<usize, ServiceError> {
         let tom = self.tom();
@@ -1831,12 +1902,36 @@ impl MemoryController for IntelGm965 {
         let mut info = raminit::probe_dimms(&mut smbus, &self.config.spd_addresses)?;
         self.detected_size = info.total_bytes();
         raminit::cold_boot_train(&mut info, &self.mchbar())?;
+        self.memory_test()?;
         self.thermal_sensor_init(&info, &mut smbus);
-        self.post_dram_chipset_init()
+        Ok(())
     }
 
     fn detected_size_bytes(&self) -> u64 {
         self.read_detected_size()
+    }
+
+    fn memory_test(&self) -> Result<(), ServiceError> {
+        let tom = self.tom();
+        let tolud = self.tolud();
+        let usable_top = self.usable_low_memory_top();
+        let raw_touud = self.touud();
+        let max_reclaim = 0x1_0000_0000u64.saturating_sub(u64::from(tolud));
+        let touud = if raw_touud > 0x1_0000_0000 && raw_touud <= tom.saturating_add(max_reclaim) {
+            raw_touud
+        } else {
+            tom
+        };
+
+        let mut entries = [E820Entry::zeroed(); 6];
+        let count = self.build_e820_entries(&mut entries, usable_top, touud, tolud)?;
+        publish_mtrr_wb_ranges(&entries[..count]);
+        fstart_log::info!(
+            "gm965: dynamic WB MTRR ranges set (TOLUD {:#x}, usable top {:#x})",
+            tolud,
+            usable_top
+        );
+        gm965_lower_memory_test(usable_top)
     }
 }
 

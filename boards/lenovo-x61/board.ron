@@ -71,7 +71,7 @@
             )),
             services: [
                 "MemoryController", "MemoryDetector", "PciHost", "SmmOps",
-                "PreConsoleInit", "EarlyInit", "StageLocalInit",
+                "PreConsoleInit", "EarlyInit", "StageLocalInit", "PostDramInit",
             ],
         ),
         (
@@ -282,7 +282,7 @@
                 // GM965 TOM/TOLUD/TSEG registers for the runtime e820 map.
                 StageLocalInit( devices: ["northbridge"] ),
                 MemoryDetect( device: "northbridge" ),
-                PostDramInit( devices: ["southbridge", "mainboard"] ),
+                PostDramInit( devices: ["northbridge", "southbridge", "mainboard"] ),
                 FinalizeInit( devices: ["southbridge", "mainboard"] ),
                 // GM965 now provides SmmOps, but keep permanent SMM disabled
                 // until the X61-specific I/O-trap dock/EC SMI callbacks are
