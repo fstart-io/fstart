@@ -274,17 +274,47 @@ fn generate_xip_layout(
     let rw_origin = data_addr.unwrap_or(ram_origin);
     let rw_length = ram_length - (rw_origin - ram_origin);
 
+    // CAR/XIP stages need an explicit stack in the CAR window, but placing it
+    // immediately after BSS broke early x86 boot on real hardware. Keep CAR
+    // stack storage as a separate linker-owned region at the top of CAR (the
+    // traditional/coreboot-style CAR stack location) while still reserving it
+    // explicitly in the linker script. Post-DRAM RAM stages use the normal
+    // contiguous .bss + .stack layout below.
+    let xip_stack_region = if car_config.is_some() {
+        if stack_size >= rw_length {
+            panic!(
+                "stack_size ({stack_size:#x}) does not fit in writable XIP region \
+                 [{rw_origin:#x}..{:#x}]",
+                rw_origin + rw_length
+            );
+        }
+        let stack_origin = rw_origin + rw_length - stack_size;
+        Some((stack_origin, stack_size, rw_length - stack_size))
+    } else {
+        None
+    };
+
     writeln!(out, "MEMORY\n{{").unwrap();
     writeln!(
         out,
         "    ROM (rx)  : ORIGIN = {rom_origin:#x}, LENGTH = {rom_length:#x}"
     )
     .unwrap();
+    let ram_decl_length = xip_stack_region
+        .map(|(_, _, data_length)| data_length)
+        .unwrap_or(rw_length);
     writeln!(
         out,
-        "    RAM (rwx) : ORIGIN = {rw_origin:#x}, LENGTH = {rw_length:#x}"
+        "    RAM (rwx) : ORIGIN = {rw_origin:#x}, LENGTH = {ram_decl_length:#x}"
     )
     .unwrap();
+    if let Some((stack_origin, stack_length, _)) = xip_stack_region {
+        writeln!(
+            out,
+            "    STACK (rw) : ORIGIN = {stack_origin:#x}, LENGTH = {stack_length:#x}"
+        )
+        .unwrap();
+    }
     writeln!(out, "}}\n").unwrap();
 
     writeln!(out, "SECTIONS\n{{").unwrap();
@@ -360,14 +390,19 @@ fn generate_xip_layout(
     writeln!(out, "        *(.bss .bss.* .lbss .lbss.*)").unwrap();
     writeln!(out, "        *(COMMON)").unwrap();
     writeln!(out, "        _bss_end = .;").unwrap();
-    writeln!(out, "        _writable_end = .;").unwrap();
     writeln!(out, "    }} > RAM\n").unwrap();
 
     // AArch64 page tables are cleared explicitly by entry code.
     write_page_tables_section(out, "RAM", platform);
 
-    // Stack: grows downward from top of RAM region.
-    write_stack(out, stack_size, "RAM");
+    // Stack: CAR/XIP stages use a dedicated CAR stack region; other XIP
+    // stages allocate stack after BSS in RAM.
+    let stack_region = if xip_stack_region.is_some() {
+        "STACK"
+    } else {
+        "RAM"
+    };
+    write_stack(out, stack_size, stack_region);
 
     // CAR symbols — consumed by car.rs global_asm.
     // Only emitted when the board declares memory.car.
@@ -577,7 +612,6 @@ fn write_bss_section(out: &mut String, region: &str) {
     writeln!(out, "        *(.bss .bss.* .lbss .lbss.*)").unwrap();
     writeln!(out, "        *(COMMON)").unwrap();
     writeln!(out, "        _bss_end = .;").unwrap();
-    writeln!(out, "        _writable_end = .;").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
@@ -595,20 +629,29 @@ fn write_allwinner_egon_section(out: &mut String, region: &str) {
 }
 
 fn write_stack(out: &mut String, stack_size: u64, region: &str) {
-    // Stack grows downward from the top of the memory region.
-    // The ASSERT verifies there is at least stack_size bytes between
-    // the end of writable allocations (BSS and writable page tables as
-    // applicable) and the top of the writable region.
-    writeln!(out, "    _stack_top = ORIGIN({region}) + LENGTH({region});").unwrap();
+    // Allocate the stack immediately after the stage's writable sections,
+    // matching coreboot's model where stack storage is part of the stage
+    // allocation rather than an implicit carve-out at the top of RAM.
+    //
+    // The stack still grows downward from `_stack_top`; `_stack_bottom` and
+    // `_writable_end` delimit the complete writable stage footprint that must
+    // remain reserved while firmware is running.
+    writeln!(out, "    .stack (NOLOAD) : ALIGN(16) {{").unwrap();
+    writeln!(out, "        _stack_bottom = .;").unwrap();
+    writeln!(out, "        . = . + {stack_size:#x};").unwrap();
+    writeln!(out, "        . = ALIGN(16);").unwrap();
+    writeln!(out, "        _stack_top = .;").unwrap();
+    writeln!(out, "        _writable_end = .;").unwrap();
+    writeln!(out, "    }} > {region}\n").unwrap();
     writeln!(
         out,
-        "    ASSERT(_stack_top - _writable_end >= {stack_size:#x}, \"insufficient stack space\")"
+        "    ASSERT(_stack_top <= ORIGIN({region}) + LENGTH({region}), \"insufficient stack space\")"
     )
     .unwrap();
 
     // _binary_end marks the end of all loadable content. Used by entry
     // stubs that need to copy the entire binary (e.g., SBSA flash→DRAM).
     // For XIP layouts this is the end of .rodata in ROM; for RAM layouts
-    // it's the end of .data (BSS is not stored).
+    // it's the end of .data (BSS and stack are not stored).
     writeln!(out, "    _binary_end = _data_end;").unwrap();
 }
