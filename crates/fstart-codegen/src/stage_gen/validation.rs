@@ -4,7 +4,9 @@
 //! before anything that logs) and provides predicate functions used by the
 //! codegen orchestrator to decide which sections to emit.
 
-use fstart_types::{BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, StageLayout};
+use fstart_types::{
+    BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, Platform, StageLayout,
+};
 
 /// Validate that capabilities are in a legal order.
 ///
@@ -18,9 +20,11 @@ use fstart_types::{BoardConfig, BootMedium, Capability, FitParseMode, PayloadKin
 pub(super) fn validate_capability_ordering(
     capabilities: &[Capability],
     config: &BoardConfig,
+    stage_runs_from_ram: bool,
 ) -> Option<String> {
     let mut console_inited = false;
     let mut boot_media_declared = false;
+    let mut memory_ready = stage_runs_from_ram;
 
     // UefiPayload links CrabEFI statically and doesn't use FFS for the
     // payload itself. However, when firmware (BL31) is configured, it IS
@@ -59,6 +63,9 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::MemoryInit => {
+                memory_ready = true;
+            }
             Capability::DramInit { .. } if !console_inited => {
                 return Some(
                     "DramInit capability requires ConsoleInit to appear earlier \
@@ -66,6 +73,102 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::DramInit { .. } => {
+                memory_ready = true;
+            }
+            Capability::PreConsoleInit { .. } => {
+                // Pre-console phases must be log-free and may run before the
+                // logger exists.
+            }
+            Capability::EarlyInit { .. }
+            | Capability::StageLocalInit { .. }
+            | Capability::PostDramInit { .. }
+            | Capability::FinalizeInit { .. }
+                if !console_inited =>
+            {
+                return Some(
+                    "EarlyInit/StageLocalInit/PostDramInit/FinalizeInit require ConsoleInit to \
+                     appear earlier in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit { smm, .. } if !console_inited => {
+                return Some(
+                    "MpInit capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit { smm: true, .. } if config.platform != Platform::X86_64 => {
+                return Some("MpInit(smm: true) is currently supported only on X86_64".to_string());
+            }
+            Capability::MpInit { smm: true, .. } if config.smm.is_none() => {
+                return Some(
+                    "MpInit(smm: true) requires a top-level board.smm configuration block"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit {
+                smm: true,
+                smm_provider: Some(provider),
+                ..
+            } if !config.devices.iter().any(|dev| {
+                dev.name.as_str() == provider.as_str()
+                    && dev
+                        .services
+                        .iter()
+                        .any(|service| service.as_str() == "SmmOps")
+            }) =>
+            {
+                return Some(format!(
+                    "MpInit(smm: true, smm_provider: {:?}) requires that device to list \
+                     SmmOps in its services",
+                    provider.as_str()
+                ));
+            }
+            Capability::MpInit {
+                smm: true,
+                smm_provider: None,
+                ..
+            } if config
+                .devices
+                .iter()
+                .filter(|dev| {
+                    dev.services
+                        .iter()
+                        .any(|service| service.as_str() == "SmmOps")
+                })
+                .count()
+                != 1 =>
+            {
+                return Some(
+                    "MpInit(smm: true) without smm_provider requires exactly one device \
+                     with SmmOps in its services"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit {
+                smm: true,
+                num_cpus,
+                ..
+            } if config
+                .smm
+                .and_then(|s| s.entry_points)
+                .is_some_and(|entries| entries < *num_cpus) =>
+            {
+                return Some(
+                    "board.smm.entry_points must be greater than or equal to MpInit.num_cpus"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit { smm: true, .. } if !memory_ready => {
+                return Some(
+                    "MpInit(smm: true) must appear after MemoryInit or DramInit so SMRAM \
+                     installation runs from a DRAM-backed stage"
+                        .to_string(),
+                );
+            }
+            Capability::MpInit { .. } => {}
             Capability::DriverInit if !console_inited => {
                 return Some(
                     "DriverInit capability requires ConsoleInit to appear earlier \
@@ -146,6 +249,20 @@ pub(super) fn validate_capability_ordering(
             Capability::SmBiosPrepare if !console_inited => {
                 return Some(
                     "SmBiosPrepare capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::AcpiLoad { .. } if !console_inited => {
+                return Some(
+                    "AcpiLoad capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::MemoryDetect { .. } if !console_inited => {
+                return Some(
+                    "MemoryDetect capability requires ConsoleInit to appear earlier \
                      in the capability list (needed for logging)"
                         .to_string(),
                 );

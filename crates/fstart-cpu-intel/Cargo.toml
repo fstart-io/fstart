@@ -1,0 +1,17 @@
+[package]
+name = "fstart-cpu-intel"
+description = "Intel x86 CPU initialization and ACPI power-management support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+acpi = ["dep:acpi_tables"]
+
+[dependencies]
+acpi_tables = { version = "0.2", optional = true }
+fstart-arch-x86 = { workspace = true }
+fstart-log = { workspace = true }
+fstart-mp = { workspace = true }
+ufmt = { workspace = true }

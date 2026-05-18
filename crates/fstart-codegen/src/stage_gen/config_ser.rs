@@ -35,7 +35,7 @@ pub(super) fn serialize_to_tokens<T: Serialize>(value: &T) -> TokenStream {
 ///
 /// Returns tokens like:
 /// ```text
-/// Ns16550Config { base_addr: 0x10000000, clock_freq: 3686400u32, baud_rate: 115200u32 }
+/// Ns16550Config { regs: Mmio(0x10000000, 0, 0), clock_freq: 3686400u32, baud_rate: 115200u32 }
 /// ```
 ///
 /// This delegates to [`DriverInstance::serialize_config`] with a custom
@@ -318,6 +318,28 @@ impl ser::Serializer for ConfigTokenSerializer {
 // Compound type accumulators
 // =======================================================================
 
+fn qualified_struct_path(name: &str, fields: &[TokenStream]) -> TokenStream {
+    match name {
+        // Intel ICH7 and ICH8 both re-export the shared `fstart-gpio-ich`
+        // `GpioConfig`, while the Super I/O driver exports a different
+        // `GpioConfig`.  Qualify the shared ICH GPIO struct via its owning
+        // crate to avoid both ambiguous glob imports and chipset-specific
+        // hard-coding in generated literals.
+        "GpioConfig"
+            if fields
+                .iter()
+                .any(|field| field.to_string().starts_with("pins")) =>
+        {
+            quote! { fstart_gpio_ich::GpioConfig }
+        }
+        "GpioConfig" => quote! { fstart_superio::GpioConfig },
+        _ => {
+            let ident = format_ident!("{}", name);
+            quote! { #ident }
+        }
+    }
+}
+
 /// Accumulates struct fields: `StructName { field: value, ... }`
 struct StructTokenSerializer {
     name: String,
@@ -340,10 +362,10 @@ impl SerializeStruct for StructTokenSerializer {
     }
 
     fn end(self) -> Result<TokenStream, TokenError> {
-        let struct_ident = format_ident!("{}", self.name);
         let fields = &self.fields;
+        let struct_path = qualified_struct_path(&self.name, fields);
         Ok(quote! {
-            #struct_ident { #(#fields,)* }
+            #struct_path { #(#fields,)* }
         })
     }
 }
@@ -364,7 +386,7 @@ impl SerializeSeq for SeqTokenSerializer {
 
     fn end(self) -> Result<TokenStream, TokenError> {
         let elems = &self.elements;
-        Ok(quote! { [#(#elems),*] })
+        Ok(quote! { heapless::Vec::from_slice(&[#(#elems),*]).unwrap() })
     }
 }
 

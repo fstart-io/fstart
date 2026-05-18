@@ -9,11 +9,20 @@
 //! critical for XIP boards that read the anchor at its link-time VMA.
 //! ELF parsing is retained only for diagnostic logging.
 
-use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, InputSegment};
-use fstart_types::ffs::{
-    Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
+use fstart_acpi::device::AcpiDevice;
+use fstart_device_registry::DriverInstance;
+use fstart_driver_ite8721f::LpcBaseProvider;
+use fstart_ffs::builder::{
+    build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
 };
-use fstart_types::{FdtSource, SocImageFormat, StageLayout};
+use fstart_services::device::{BusDevice, Device};
+use fstart_types::device::BusAddress;
+use fstart_types::ffs::{
+    Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_SIZE,
+    FFS_MAGIC, FFS_VERSION,
+};
+use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
+use fstart_types::{BoardConfig, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout};
 use goblin::elf::{program_header, Elf};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,7 +52,21 @@ pub fn assemble_with_opts(
     kernel: Option<&str>,
     firmware: Option<&str>,
 ) -> Result<PathBuf, String> {
-    assemble_impl(board_name, release, kernel, firmware)
+    assemble_with_opts_and_acpi_check(board_name, release, kernel, firmware, false)
+}
+
+pub fn assemble_with_opts_and_acpi_check(
+    board_name: &str,
+    release: bool,
+    kernel: Option<&str>,
+    firmware: Option<&str>,
+    acpi_check: bool,
+) -> Result<PathBuf, String> {
+    let image = assemble_impl(board_name, release, kernel, firmware)?;
+    if acpi_check {
+        dry_run_acpi_check(board_name)?;
+    }
+    Ok(image)
 }
 
 fn assemble_impl(
@@ -61,7 +84,8 @@ fn assemble_impl(
     }
 
     eprintln!("[fstart] loading board config: {}", board_ron.display());
-    let config = fstart_codegen::ron_loader::load_board_config(&board_ron)?;
+    let parsed = fstart_codegen::ron_loader::load_parsed_board(&board_ron)?;
+    let config = parsed.config.clone();
 
     eprintln!("[fstart] assembling FFS image for: {}", config.name);
 
@@ -109,7 +133,7 @@ fn assemble_impl(
                 }],
             });
         }
-        StageLayout::MultiStage(_stages) => {
+        StageLayout::MultiStage(stages) => {
             for (i, stage_bin) in build_result.stages.iter().enumerate() {
                 if i == 0 {
                     // The bootblock must be uncompressed — it executes
@@ -151,9 +175,27 @@ fn assemble_impl(
                     });
                 } else {
                     // Subsequent stages are stored as flat binaries (the
-                    // objcopy .bin).  The bootblock copies this blob
-                    // directly to load_addr — no FFS parsing or LZ4
-                    // decompression required.
+                    // objcopy .bin). The StageLoad path loads the FFS segment
+                    // to load_addr and supports LZ4 in-place decompression, so
+                    // ramstages loaded via StageLoad can be stored compressed.
+                    // LoadNextStage users (e.g. tiny SoC bootblocks) copy raw
+                    // bytes and jump directly, so those stages must remain
+                    // uncompressed.
+                    let stage_cfg = stages
+                        .iter()
+                        .find(|stage| stage.name.as_str() == stage_bin.name)
+                        .ok_or_else(|| {
+                            format!("stage '{}' missing from board config", stage_bin.name)
+                        })?;
+                    let compression = stage_cfg.compression;
+                    if compression != Compression::None
+                        && !stage_loaded_via_stage_load(stages, &stage_bin.name)
+                    {
+                        return Err(format!(
+                            "stage '{}' requests {:?} compression but is not loaded via StageLoad",
+                            stage_bin.name, compression
+                        ));
+                    };
                     let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
@@ -173,7 +215,7 @@ fn assemble_impl(
                             data: bin_data,
                             mem_size: None,
                             load_addr: stage_bin.load_addr,
-                            compression: Compression::None,
+                            compression,
                             flags: SegmentFlags::CODE,
                         }],
                     });
@@ -189,6 +231,12 @@ fn assemble_impl(
     //   2. Board RON payload config (payload.firmware.file, payload.kernel_file,
     //      payload.fit_file) resolved relative to the board directory
     //   3. Skip — no external blob added
+    if let Some(ref microcode) = config.microcode {
+        assemble_microcode(microcode, &board_dir, &mut ro_files)?;
+    }
+
+    assemble_board_vbt_blobs(&parsed.driver_instances, &board_dir, &mut ro_files)?;
+
     if let Some(ref payload) = config.payload {
         // Handle FIT image payloads
         if payload.kind == fstart_types::PayloadKind::FitImage {
@@ -238,18 +286,24 @@ fn assemble_impl(
         }
     }
 
-    let image_config = FfsImageConfig {
+    validate_flash_layout(&config, &board_dir)?;
+
+    let mut image_config = FfsImageConfig {
         keys: vec![verification_key],
-        regions: vec![InputRegion::Container {
-            name: "ro".to_string(),
-            files: ro_files,
-        }],
+        regions: ffs_input_regions(&config, ro_files)?,
     };
 
-    // Build the image with signing
-    let ffs_image = build_image(&image_config, &move |manifest_bytes| {
-        sign_with_ed25519(&signing_key, manifest_bytes)
-    })?;
+    // Build the image with signing. Compressed stages that use FFS contain a
+    // linked FSTART_ANCHOR static inside their uncompressed bytes; patch those
+    // source bytes before the final compression pass so runtime anchor reads
+    // remain static and do not require scanning flash.
+    let compressed_anchor_slots = compressed_anchor_slots(&image_config.regions)?;
+    let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
+    let ffs_image = build_image_with_static_compressed_anchors(
+        &mut image_config,
+        &compressed_anchor_slots,
+        &sign,
+    )?;
 
     let mut image_bytes = ffs_image.image;
 
@@ -325,7 +379,919 @@ fn assemble_impl(
         if stage_count == 1 { "" } else { "s" }
     );
 
+    let flash_layout_files = match &config.memory.flash_layout {
+        Some(FlashLayout::IntelIfd(layout)) => {
+            layout.regions.iter().any(|region| region.file.is_some())
+        }
+        None => false,
+    };
+    if config.full_flash_image || flash_layout_files {
+        create_full_flash_image(
+            &config,
+            &board_dir,
+            &build_result.stages[0].path,
+            &build_result.stages[0].run_path,
+            &image_bytes,
+            ffs_image.anchor_offset,
+            &image_path,
+        )?;
+    }
+
     Ok(image_path)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompressedAnchorSlot {
+    region_idx: usize,
+    file_idx: usize,
+    segment_idx: usize,
+    offset: usize,
+}
+
+fn build_image_with_static_compressed_anchors<F>(
+    config: &mut FfsImageConfig,
+    slots: &[CompressedAnchorSlot],
+    sign: &F,
+) -> Result<fstart_ffs::builder::FfsImage, String>
+where
+    F: Fn(&[u8]) -> Result<Signature, String>,
+{
+    if slots.is_empty() {
+        return build_image(config, sign);
+    }
+
+    let mut patched_anchor: Option<Vec<u8>> = None;
+    for _ in 0..8 {
+        let image = build_image(config, sign)?;
+        if patched_anchor.as_deref() == Some(image.anchor_bytes.as_slice()) {
+            return Ok(image);
+        }
+        patch_compressed_anchor_slots(&mut config.regions, slots, &image.anchor_bytes)?;
+        patched_anchor = Some(image.anchor_bytes);
+    }
+
+    Err("compressed FSTART_ANCHOR patching did not converge".to_string())
+}
+
+fn compressed_anchor_slots(regions: &[InputRegion]) -> Result<Vec<CompressedAnchorSlot>, String> {
+    let mut slots = Vec::new();
+    for (region_idx, region) in regions.iter().enumerate() {
+        let files = match region {
+            InputRegion::Container { files, .. }
+            | InputRegion::ContainerWithExternal { files, .. } => files,
+            InputRegion::Raw { .. } | InputRegion::ExternalRaw { .. } => continue,
+        };
+
+        for (file_idx, file) in files.iter().enumerate() {
+            for (segment_idx, segment) in file.segments.iter().enumerate() {
+                if segment.compression == Compression::None {
+                    continue;
+                }
+                for offset in anchor_placeholder_offsets(&segment.data) {
+                    slots.push(CompressedAnchorSlot {
+                        region_idx,
+                        file_idx,
+                        segment_idx,
+                        offset,
+                    });
+                }
+            }
+        }
+    }
+    Ok(slots)
+}
+
+fn anchor_placeholder_offsets(data: &[u8]) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut offset = 0usize;
+    while offset + ANCHOR_SIZE <= data.len() {
+        if data[offset..offset + FFS_MAGIC.len()] == FFS_MAGIC {
+            let rest = &data[offset + FFS_MAGIC.len()..offset + ANCHOR_SIZE];
+            let version = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
+            let manifest_off = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]);
+            let manifest_sz = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
+            let total_sz = u32::from_le_bytes([rest[12], rest[13], rest[14], rest[15]]);
+            if version == FFS_VERSION && manifest_off == 0 && manifest_sz == 0 && total_sz == 0 {
+                offsets.push(offset);
+            }
+        }
+        offset += 8;
+    }
+    offsets
+}
+
+fn patch_compressed_anchor_slots(
+    regions: &mut [InputRegion],
+    slots: &[CompressedAnchorSlot],
+    anchor_bytes: &[u8],
+) -> Result<(), String> {
+    if anchor_bytes.len() != ANCHOR_SIZE {
+        return Err(format!(
+            "patched anchor has {} bytes, expected {}",
+            anchor_bytes.len(),
+            ANCHOR_SIZE
+        ));
+    }
+
+    for slot in slots {
+        let Some(region) = regions.get_mut(slot.region_idx) else {
+            return Err("compressed anchor slot region index is stale".to_string());
+        };
+        let files = match region {
+            InputRegion::Container { files, .. }
+            | InputRegion::ContainerWithExternal { files, .. } => files,
+            InputRegion::Raw { .. } | InputRegion::ExternalRaw { .. } => {
+                return Err("compressed anchor slot points at a raw region".to_string());
+            }
+        };
+        let Some(file) = files.get_mut(slot.file_idx) else {
+            return Err("compressed anchor slot file index is stale".to_string());
+        };
+        let Some(segment) = file.segments.get_mut(slot.segment_idx) else {
+            return Err("compressed anchor slot segment index is stale".to_string());
+        };
+        let end = slot.offset + ANCHOR_SIZE;
+        if end > segment.data.len() {
+            return Err(format!(
+                "compressed anchor slot in '{}'/'{}' exceeds segment size",
+                file.name, segment.name
+            ));
+        }
+        segment.data[slot.offset..end].copy_from_slice(anchor_bytes);
+    }
+
+    Ok(())
+}
+
+fn ffs_input_regions(
+    config: &BoardConfig,
+    ro_files: Vec<InputFile>,
+) -> Result<Vec<InputRegion>, String> {
+    let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
+        if config.full_flash_image {
+            let flash_size = config
+                .memory
+                .flash_size
+                .ok_or_else(|| "full_flash_image requires memory.flash_size".to_string())?;
+            let flash_size_u32 = u32::try_from(flash_size)
+                .map_err(|_| format!("flash size {flash_size:#x} exceeds FFS u32 limits"))?;
+            let (files, external_files) =
+                externalize_xip_bootblock(config, ro_files, flash_size_u32)?;
+            if !external_files.is_empty() {
+                return Ok(vec![InputRegion::ContainerWithExternal {
+                    name: "ro".to_string(),
+                    files,
+                    external_files,
+                    size: Some(flash_size_u32),
+                }]);
+            }
+            return Ok(vec![InputRegion::Container {
+                name: "ro".to_string(),
+                files,
+            }]);
+        }
+        return Ok(vec![InputRegion::Container {
+            name: "ro".to_string(),
+            files: ro_files,
+        }]);
+    };
+
+    let bios = layout
+        .bios_region()
+        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+    if bios.size == 0 {
+        return Err("Intel IFD BIOS region must not be empty".to_string());
+    }
+
+    let mut regions = Vec::new();
+    for region in &layout.regions {
+        if region.size == 0 {
+            continue;
+        }
+        regions.push(InputRegion::ExternalRaw {
+            name: region.kind.as_str().to_string(),
+            offset: region.offset,
+            size: region.size,
+            fill: 0xff,
+        });
+    }
+    let (files, external_files) = externalize_xip_bootblock(config, ro_files, bios.size)?;
+
+    regions.push(InputRegion::ContainerWithExternal {
+        name: "ro".to_string(),
+        files,
+        external_files,
+        size: Some(bios.size),
+    });
+
+    Ok(regions)
+}
+
+fn externalize_xip_bootblock(
+    config: &BoardConfig,
+    mut files: Vec<InputFile>,
+    container_size: u32,
+) -> Result<(Vec<InputFile>, Vec<ExternalInputFile>), String> {
+    let first_stage_is_xip = match &config.stages {
+        StageLayout::MultiStage(stages) => stages
+            .first()
+            .is_some_and(|stage| stage.runs_from == RunsFrom::Rom),
+        _ => false,
+    };
+    if config.platform != Platform::X86_64
+        || !first_stage_is_xip
+        || files.first().is_none_or(|file| file.name != "bootblock")
+    {
+        return Ok((files, Vec::new()));
+    }
+
+    let image_base = config
+        .memory
+        .flash_base
+        .ok_or_else(|| "x86 XIP bootblock requires memory.flash_base".to_string())?;
+    let mut bootblock = files.remove(0);
+    let bootblock_size = input_file_stored_size(&bootblock)?;
+    if bootblock_size > container_size {
+        return Err(format!(
+            "bootblock size {bootblock_size:#x} exceeds container size {container_size:#x}"
+        ));
+    }
+    let bootblock_offset = container_size - bootblock_size;
+
+    let mut segment_offset = 0u64;
+    for segment in &mut bootblock.segments {
+        segment.load_addr = image_base + u64::from(bootblock_offset) + segment_offset;
+        segment_offset += u64::try_from(segment.data.len()).map_err(|_| {
+            format!(
+                "file '{}' segment '{}' is too large",
+                bootblock.name, segment.name
+            )
+        })?;
+    }
+
+    Ok((
+        files,
+        vec![ExternalInputFile {
+            name: bootblock.name,
+            file_type: bootblock.file_type,
+            offset: bootblock_offset,
+            segments: bootblock.segments,
+        }],
+    ))
+}
+
+fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
+    file.segments.iter().try_fold(0u32, |acc, segment| {
+        let len = u32::try_from(segment.data.len()).map_err(|_| {
+            format!(
+                "file '{}' segment '{}' is too large",
+                file.name, segment.name
+            )
+        })?;
+        acc.checked_add(len)
+            .ok_or_else(|| format!("file '{}' size overflows u32", file.name))
+    })
+}
+
+fn create_full_flash_image(
+    config: &BoardConfig,
+    board_dir: &Path,
+    bootblock_elf: &Path,
+    bootblock_bin: &Path,
+    ffs_data: &[u8],
+    ffs_anchor_offset: usize,
+    ffs_path: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
+        return create_intel_ifd_flash_image(
+            config,
+            board_dir,
+            layout,
+            bootblock_elf,
+            bootblock_bin,
+            ffs_data,
+            ffs_anchor_offset,
+            ffs_path,
+        );
+    }
+
+    let flash_base = config
+        .memory
+        .flash_base
+        .ok_or_else(|| "full_flash_image requires memory.flash_base".to_string())?;
+    let flash_size = config
+        .memory
+        .flash_size
+        .ok_or_else(|| "full_flash_image requires memory.flash_size".to_string())?
+        as usize;
+
+    if ffs_data.len() > flash_size {
+        return Err(format!(
+            "FFS image ({} bytes) exceeds flash size ({} bytes)",
+            ffs_data.len(),
+            flash_size
+        ));
+    }
+
+    let mut image = vec![0xffu8; flash_size];
+
+    // Keep the FFS blob at flash offset 0. Anchor offsets are defined from the
+    // firmware image base, and board BootMedia scans memory.flash_base..+size.
+    image[..ffs_data.len()].copy_from_slice(ffs_data);
+
+    let elf_data = fs::read(bootblock_elf).map_err(|e| {
+        format!(
+            "failed to read bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+    let elf = Elf::parse(&elf_data).map_err(|e| {
+        format!(
+            "failed to parse bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+
+    let mut first_flash_load: Option<usize> = None;
+    for phdr in &elf.program_headers {
+        if phdr.p_type != program_header::PT_LOAD || phdr.p_filesz == 0 {
+            continue;
+        }
+        let paddr = phdr.p_paddr;
+        if paddr < flash_base {
+            continue;
+        }
+        let off = (paddr - flash_base) as usize;
+        let size = phdr.p_filesz as usize;
+        if off + size > flash_size {
+            return Err(format!(
+                "bootblock segment paddr={paddr:#x} size={size:#x} outside flash image"
+            ));
+        }
+        first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
+        eprintln!(
+            "[fstart] full flash: bootblock segment paddr={paddr:#x} -> offset={off:#x} size={size:#x}"
+        );
+    }
+
+    let bootblock_data = fs::read(bootblock_bin).map_err(|e| {
+        format!(
+            "failed to read bootblock flat binary {}: {e}",
+            bootblock_bin.display()
+        )
+    })?;
+    if bootblock_data.len() > flash_size {
+        return Err(format!(
+            "bootblock flat binary is {} bytes, larger than flash size {}",
+            bootblock_data.len(),
+            flash_size
+        ));
+    }
+    let xip_offset = flash_size - bootblock_data.len();
+    if ffs_data.len() > xip_offset {
+        return Err(format!(
+            "FFS image ({} bytes) overlaps top-aligned bootblock at flash offset {xip_offset:#x}",
+            ffs_data.len()
+        ));
+    }
+    if let Some(first_flash_load) = first_flash_load {
+        if xip_offset != first_flash_load {
+            return Err(format!(
+                "top-aligned bootblock offset {xip_offset:#x} does not match first ELF load offset {first_flash_load:#x}"
+            ));
+        }
+    }
+    image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
+    eprintln!(
+        "[fstart] full flash: bootblock flat binary -> offset={xip_offset:#x} size={:#x}",
+        bootblock_data.len()
+    );
+
+    // Copy the patched anchor from the FFS blob into the XIP bootblock's own
+    // anchor section. The builder patches the anchor inside the FFS-stage file;
+    // the CPU reads the linked XIP copy at its physical flash address.
+    let anchor_size = fstart_types::ffs::ANCHOR_SIZE;
+    if ffs_anchor_offset + anchor_size > ffs_data.len() {
+        return Err(format!(
+            "FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"
+        ));
+    }
+    let placeholder = fstart_types::ffs::AnchorBlock::placeholder();
+    let placeholder_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &placeholder as *const fstart_types::ffs::AnchorBlock as *const u8,
+            anchor_size,
+        )
+    };
+    let xip_anchor = image
+        .windows(placeholder_bytes.len())
+        .position(|w| w == placeholder_bytes)
+        .ok_or_else(|| {
+            "bootblock XIP anchor placeholder not found in full flash image".to_string()
+        })?;
+    let mut xip_anchor_block = unsafe {
+        core::ptr::read_unaligned(
+            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_types::ffs::AnchorBlock
+        )
+    };
+    // The FFS copy of the anchor lives near offset 0, but real hardware jumps
+    // into the top-aligned XIP bootblock copy. Pre-Rust x86 code has only the
+    // linked anchor address, so the XIP anchor must describe its full-flash
+    // offset to reconstruct `memory.flash_base` correctly.
+    xip_anchor_block.anchor_offset = xip_anchor as u32;
+    let mut anchor = vec![0u8; anchor_size];
+    xip_anchor_block.write_to(&mut anchor);
+    image[xip_anchor..xip_anchor + anchor_size].copy_from_slice(&anchor);
+    eprintln!(
+        "[fstart] full flash: patched XIP anchor at offset {xip_anchor:#x} from FFS offset {ffs_anchor_offset:#x}"
+    );
+
+    let mib = flash_size / (1024 * 1024);
+    let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
+    fs::write(&out_path, &image).map_err(|e| {
+        format!(
+            "failed to write full flash image {}: {e}",
+            out_path.display()
+        )
+    })?;
+    eprintln!(
+        "[fstart] full flash image: {} ({} bytes, FFS {} bytes at offset 0)",
+        out_path.display(),
+        flash_size,
+        ffs_data.len()
+    );
+    Ok(out_path)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_intel_ifd_flash_image(
+    config: &BoardConfig,
+    board_dir: &Path,
+    layout: &IntelIfdFlashLayout,
+    bootblock_elf: &Path,
+    bootblock_bin: &Path,
+    ffs_data: &[u8],
+    ffs_anchor_offset: usize,
+    ffs_path: &Path,
+) -> Result<PathBuf, String> {
+    let bios = layout
+        .bios_region()
+        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+    let bios_end = bios
+        .offset
+        .checked_add(bios.size)
+        .ok_or_else(|| "Intel IFD BIOS region overflows u32".to_string())?;
+    if bios_end > layout.size {
+        return Err(format!(
+            "Intel IFD BIOS region [{:#x}..{:#x}) exceeds flash size {:#x}",
+            bios.offset, bios_end, layout.size
+        ));
+    }
+    if ffs_data.len() > bios.size as usize {
+        return Err(format!(
+            "FFS image ({} bytes) exceeds Intel IFD BIOS region ({} bytes)",
+            ffs_data.len(),
+            bios.size
+        ));
+    }
+
+    let mut image = vec![0xffu8; layout.size as usize];
+
+    for region in &layout.regions {
+        let Some(file) = &region.file else {
+            continue;
+        };
+        let path = resolve_board_path(board_dir, file.as_str());
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read flash region {}: {e}", path.display()))?;
+        if data.len() > region.size as usize {
+            return Err(format!(
+                "flash region {} file {} is {} bytes, larger than region size {}",
+                region.kind.as_str(),
+                path.display(),
+                data.len(),
+                region.size
+            ));
+        }
+        let start = region.offset as usize;
+        let end = start + region.size as usize;
+        if end > image.len() {
+            return Err(format!(
+                "flash region {} [{:#x}..{:#x}) exceeds flash size {:#x}",
+                region.kind.as_str(),
+                region.offset,
+                region.offset + region.size,
+                layout.size
+            ));
+        }
+        image[start..start + data.len()].copy_from_slice(&data);
+        eprintln!(
+            "[fstart] flash region {}: {} ({} bytes at offset {:#x})",
+            region.kind.as_str(),
+            path.display(),
+            data.len(),
+            region.offset
+        );
+    }
+
+    let bios_start = bios.offset as usize;
+    image[bios_start..bios_start + ffs_data.len()].copy_from_slice(ffs_data);
+
+    let elf_data = fs::read(bootblock_elf).map_err(|e| {
+        format!(
+            "failed to read bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+    let elf = Elf::parse(&elf_data).map_err(|e| {
+        format!(
+            "failed to parse bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+
+    let mut first_flash_load: Option<usize> = None;
+    for phdr in &elf.program_headers {
+        if phdr.p_type != program_header::PT_LOAD || phdr.p_filesz == 0 {
+            continue;
+        }
+        let paddr = phdr.p_paddr;
+        if paddr < layout.base || paddr >= layout.end() {
+            continue;
+        }
+        let off = (paddr - layout.base) as usize;
+        let size = phdr.p_filesz as usize;
+        if off + size > image.len() {
+            return Err(format!(
+                "bootblock segment paddr={paddr:#x} size={size:#x} outside Intel IFD flash image"
+            ));
+        }
+        first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
+        eprintln!(
+            "[fstart] Intel IFD full flash: bootblock segment paddr={paddr:#x} -> offset={off:#x} size={size:#x}"
+        );
+    }
+
+    let bootblock_data = fs::read(bootblock_bin).map_err(|e| {
+        format!(
+            "failed to read bootblock flat binary {}: {e}",
+            bootblock_bin.display()
+        )
+    })?;
+    if bootblock_data.len() > bios.size as usize {
+        return Err(format!(
+            "bootblock flat binary is {} bytes, larger than BIOS region size {}",
+            bootblock_data.len(),
+            bios.size
+        ));
+    }
+    let xip_offset = bios_end as usize - bootblock_data.len();
+    let ffs_end = bios_start + ffs_data.len();
+    if ffs_end > xip_offset {
+        return Err(format!(
+            "BIOS FFS image [{bios_start:#x}..{ffs_end:#x}) overlaps top-aligned bootblock at flash offset {xip_offset:#x}"
+        ));
+    }
+    if let Some(first_flash_load) = first_flash_load {
+        if xip_offset != first_flash_load {
+            return Err(format!(
+                "top-aligned bootblock offset {xip_offset:#x} does not match first ELF load offset {first_flash_load:#x}"
+            ));
+        }
+    }
+    image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
+    eprintln!(
+        "[fstart] Intel IFD full flash: bootblock flat binary -> offset={xip_offset:#x} size={:#x}",
+        bootblock_data.len()
+    );
+
+    patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
+
+    let mib = layout.size as usize / (1024 * 1024);
+    let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
+    fs::write(&out_path, &image).map_err(|e| {
+        format!(
+            "failed to write Intel IFD flash image {}: {e}",
+            out_path.display()
+        )
+    })?;
+    eprintln!(
+        "[fstart] Intel IFD full flash image: {} ({} bytes, BIOS FFS {} bytes at offset {:#x})",
+        out_path.display(),
+        image.len(),
+        ffs_data.len(),
+        bios.offset
+    );
+    Ok(out_path)
+}
+
+fn patch_xip_anchor(
+    image: &mut [u8],
+    ffs_data: &[u8],
+    ffs_anchor_offset: usize,
+    image_base_delta: u32,
+) -> Result<(), String> {
+    let anchor_size = fstart_types::ffs::ANCHOR_SIZE;
+    if ffs_anchor_offset + anchor_size > ffs_data.len() {
+        return Err(format!(
+            "FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"
+        ));
+    }
+    let placeholder = fstart_types::ffs::AnchorBlock::placeholder();
+    let placeholder_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &placeholder as *const fstart_types::ffs::AnchorBlock as *const u8,
+            anchor_size,
+        )
+    };
+    let xip_anchor = image
+        .windows(placeholder_bytes.len())
+        .position(|w| w == placeholder_bytes)
+        .ok_or_else(|| {
+            "bootblock XIP anchor placeholder not found in full flash image".to_string()
+        })?;
+    let mut xip_anchor_block = unsafe {
+        core::ptr::read_unaligned(
+            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_types::ffs::AnchorBlock
+        )
+    };
+    xip_anchor_block.anchor_offset = (xip_anchor as u32)
+        .checked_sub(image_base_delta)
+        .ok_or_else(|| "XIP anchor lies before BIOS image base".to_string())?;
+    let mut anchor = vec![0u8; anchor_size];
+    xip_anchor_block.write_to(&mut anchor);
+    image[xip_anchor..xip_anchor + anchor_size].copy_from_slice(&anchor);
+    eprintln!(
+        "[fstart] full flash: patched XIP anchor at offset {xip_anchor:#x} \
+         (image-relative {:#x}) from FFS offset {ffs_anchor_offset:#x}",
+        xip_anchor_block.anchor_offset
+    );
+    Ok(())
+}
+
+fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), String> {
+    let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
+        return Ok(());
+    };
+
+    let bios = layout
+        .bios_region()
+        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+    let expected_bios_base = layout.base + u64::from(bios.offset);
+    if config.memory.flash_base != Some(expected_bios_base)
+        || config.memory.flash_size != Some(u64::from(bios.size))
+    {
+        return Err(format!(
+            "memory.flash_base/flash_size must describe the Intel IFD BIOS region: \
+             expected base={expected_bios_base:#x} size={:#x}, got base={:?} size={:?}",
+            bios.size, config.memory.flash_base, config.memory.flash_size
+        ));
+    }
+
+    let aperture_end = layout
+        .base
+        .checked_add(u64::from(layout.size))
+        .ok_or_else(|| "Intel IFD flash aperture overflows u64".to_string())?;
+    for region in &layout.regions {
+        let region_end = region
+            .offset
+            .checked_add(region.size)
+            .ok_or_else(|| format!("Intel IFD region {} overflows u32", region.kind.as_str()))?;
+        if region_end > layout.size {
+            return Err(format!(
+                "Intel IFD region {} [{:#x}..{:#x}) exceeds flash size {:#x}",
+                region.kind.as_str(),
+                region.offset,
+                region_end,
+                layout.size
+            ));
+        }
+        let mapped_start = layout.base + u64::from(region.offset);
+        let mapped_end = layout.base + u64::from(region_end);
+        if mapped_start < layout.base || mapped_end > aperture_end {
+            return Err(format!(
+                "Intel IFD region {} maps outside flash aperture",
+                region.kind.as_str()
+            ));
+        }
+    }
+
+    let descriptor = layout
+        .regions
+        .iter()
+        .find(|region| region.kind == IntelIfdRegion::Descriptor)
+        .and_then(|region| region.file.as_ref().map(|file| (region, file)));
+    if let Some((_region, file)) = descriptor {
+        let path = resolve_board_path(board_dir, file.as_str());
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read Intel descriptor {}: {e}", path.display()))?;
+        let parsed = parse_ifd_regions(&data)?;
+        for region in &layout.regions {
+            let Some(idx) = region.kind.flreg_index() else {
+                continue;
+            };
+            let Some((offset, size)) = parsed.get(idx).copied().flatten() else {
+                if region.size == 0 {
+                    continue;
+                }
+                return Err(format!(
+                    "Intel descriptor {} has no FLREG{} for configured {} region",
+                    path.display(),
+                    idx,
+                    region.kind.as_str()
+                ));
+            };
+            if offset != region.offset || size != region.size {
+                return Err(format!(
+                    "Intel descriptor {} FLREG{} ({}) is offset={offset:#x} size={size:#x}, \
+                     but board RON declares offset={:#x} size={:#x}",
+                    path.display(),
+                    idx,
+                    region.kind.as_str(),
+                    region.offset,
+                    region.size
+                ));
+            }
+        }
+        eprintln!(
+            "[fstart] Intel descriptor layout validated: {}",
+            path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn parse_ifd_regions(data: &[u8]) -> Result<[Option<(u32, u32)>; 16], String> {
+    let sig_offset = data
+        .windows(4)
+        .enumerate()
+        .step_by(4)
+        .find_map(|(offset, bytes)| {
+            let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            (value == 0x0ff0_a55a).then_some(offset)
+        })
+        .ok_or_else(|| "Intel flash descriptor signature 0x0ff0a55a not found".to_string())?;
+
+    if sig_offset + 8 > data.len() {
+        return Err("Intel flash descriptor too small for FLMAP0".to_string());
+    }
+    let flmap0 = u32::from_le_bytes([
+        data[sig_offset + 4],
+        data[sig_offset + 5],
+        data[sig_offset + 6],
+        data[sig_offset + 7],
+    ]);
+    let frba = (((flmap0 >> 16) & 0xff) << 4) as usize;
+    if frba + 4 > data.len() {
+        return Err(format!(
+            "Intel flash descriptor FRBA {frba:#x} outside descriptor file"
+        ));
+    }
+
+    let mut regions = [None; 16];
+    for (idx, slot) in regions.iter_mut().enumerate() {
+        let off = frba + idx * 4;
+        if off + 4 > data.len() {
+            break;
+        }
+        let flreg = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+        let base = (flreg & 0x7fff) << 12;
+        let limit = ((flreg >> 16) & 0x7fff) << 12 | 0xfff;
+        if limit >= base {
+            *slot = Some((base, limit - base + 1));
+        }
+    }
+    Ok(regions)
+}
+
+fn resolve_board_path(board_dir: &Path, file: &str) -> PathBuf {
+    let path = Path::new(file);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        board_dir.join(path)
+    }
+}
+
+// ============================================================================
+// Board asset assembly helpers
+// ============================================================================
+
+fn assemble_board_vbt_blobs(
+    instances: &[DriverInstance],
+    board_dir: &Path,
+    ro_files: &mut Vec<InputFile>,
+) -> Result<(), String> {
+    for instance in instances {
+        let vbt_file = match instance {
+            DriverInstance::IntelGm965(config) => config.igd.vbt_file.as_ref(),
+            DriverInstance::IntelPineview(config) => {
+                config.igd.as_ref().and_then(|igd| igd.vbt_file.as_ref())
+            }
+            _ => None,
+        };
+        let Some(vbt_file) = vbt_file else {
+            continue;
+        };
+        if ro_files.iter().any(|file| file.name == vbt_file.as_str()) {
+            continue;
+        }
+
+        let path = resolve_board_path(board_dir, vbt_file.as_str());
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read VBT file {}: {e}", path.display()))?;
+        eprintln!(
+            "[fstart] VBT: {} ({} bytes, lz4)",
+            path.display(),
+            data.len()
+        );
+        ro_files.push(InputFile {
+            name: vbt_file.to_string(),
+            file_type: FileType::Data,
+            segments: vec![InputSegment {
+                name: ".vbt".to_string(),
+                kind: SegmentKind::ReadOnlyData,
+                data,
+                mem_size: None,
+                load_addr: 0,
+                compression: Compression::Lz4,
+                flags: SegmentFlags::RODATA,
+            }],
+        });
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Microcode assembly helpers
+// ============================================================================
+
+fn assemble_microcode(
+    microcode: &fstart_types::board::MicrocodeConfig,
+    board_dir: &Path,
+    ro_files: &mut Vec<InputFile>,
+) -> Result<(), String> {
+    match microcode {
+        fstart_types::board::MicrocodeConfig::Intel(config) => {
+            let mut blob = Vec::new();
+            for file in &config.files {
+                let path = Path::new(file.as_str());
+                let path = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    board_dir.join(path)
+                };
+                let data = fs::read(&path).map_err(|e| {
+                    format!("failed to read Intel microcode {}: {e}", path.display())
+                })?;
+                eprintln!(
+                    "[fstart] Intel microcode: {} ({} bytes)",
+                    path.display(),
+                    data.len()
+                );
+                blob.extend_from_slice(&data);
+            }
+
+            if blob.is_empty() {
+                return Err("Intel microcode config did not include any bytes".to_string());
+            }
+
+            eprintln!(
+                "[fstart] Intel microcode blob: {} bytes (early={}, mp={})",
+                blob.len(),
+                config.early,
+                config.mp
+            );
+            ro_files.push(InputFile {
+                name: "cpu_microcode_blob.bin".to_string(),
+                file_type: FileType::CpuMicrocode,
+                segments: vec![InputSegment {
+                    name: ".microcode".to_string(),
+                    kind: SegmentKind::ReadOnlyData,
+                    data: blob,
+                    mem_size: None,
+                    load_addr: 0,
+                    compression: Compression::None,
+                    flags: SegmentFlags::RODATA,
+                }],
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn stage_loaded_via_stage_load(stages: &[fstart_types::StageConfig], stage_name: &str) -> bool {
+    stages.iter().any(|stage| {
+        stage.capabilities.iter().any(|cap| {
+            matches!(
+                cap,
+                fstart_types::Capability::StageLoad { next_stage } if next_stage.as_str() == stage_name
+            )
+        })
+    })
 }
 
 // ============================================================================
@@ -449,7 +1415,7 @@ fn assemble_fit_payload(
                     data: kernel_data.to_vec(),
                     mem_size: None,
                     load_addr: kernel_load,
-                    compression: Compression::None,
+                    compression: Compression::Lz4,
                     flags: SegmentFlags::CODE,
                 }],
             });
@@ -474,7 +1440,7 @@ fn assemble_fit_payload(
                             data: rd_data.to_vec(),
                             mem_size: None,
                             load_addr: rd_load,
-                            compression: Compression::None,
+                            compression: Compression::Lz4,
                             flags: SegmentFlags::RODATA,
                         }],
                     });
@@ -562,19 +1528,12 @@ fn assemble_linux_payload(
                     data: kernel_data,
                     mem_size: None,
                     load_addr: kernel_load_addr,
-                    // TODO: make compression configurable per-board via RON
-                    // (e.g. payload.compression field). For now LZ4 is always
-                    // used — the runtime decompressor is enabled whenever FFS
-                    // is active, and smaller images benefit all targets.
-                    compression: Compression::Lz4,
+                    compression: payload.compression,
                     flags: SegmentFlags::CODE,
                 }],
             });
         } else {
-            eprintln!(
-                "[fstart] warning: kernel blob not found: {}",
-                k_path.display()
-            );
+            return Err(format!("kernel blob not found: {}", k_path.display()));
         }
     }
 
@@ -852,4 +1811,159 @@ fn sign_with_ed25519(
 
     let sig = signing_key.sign(message);
     Ok(Signature::ed25519(0, sig.to_bytes()))
+}
+
+struct DryLpcBus {
+    base: u16,
+}
+
+impl LpcBaseProvider for DryLpcBus {
+    fn lpc_base(&self) -> u16 {
+        self.base
+    }
+}
+
+fn dry_run_acpi_check(board_name: &str) -> Result<(), String> {
+    let workspace_root = crate::build_board::workspace_root_pub()?;
+    let board_ron = workspace_root
+        .join("boards")
+        .join(board_name)
+        .join("board.ron");
+    let parsed = fstart_codegen::ron_loader::load_parsed_board(&board_ron)?;
+
+    if parsed.config.acpi.is_none() {
+        eprintln!("[fstart] ACPI check: board has no acpi config, skipping");
+        return Ok(());
+    }
+
+    let mut dsdt_aml = Vec::new();
+    let mut extra_tables: Vec<Vec<u8>> = Vec::new();
+
+    for (idx, inst) in parsed.driver_instances.iter().enumerate() {
+        let dev = &parsed.config.devices[idx];
+        if !dev.enabled {
+            continue;
+        }
+
+        match inst {
+            DriverInstance::IntelPineview(cfg) if cfg.acpi_name.is_some() => {
+                let driver = fstart_driver_intel_pineview::IntelPineview::new(cfg)
+                    .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
+                dsdt_aml.extend(driver.dsdt_aml(cfg));
+                extra_tables.extend(driver.extra_tables(cfg));
+            }
+            DriverInstance::IntelIch7(cfg) if cfg.acpi_name.is_some() => {
+                let driver = fstart_driver_intel_ich7::IntelIch7::new(cfg)
+                    .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
+                dsdt_aml.extend(driver.dsdt_aml(cfg));
+                extra_tables.extend(driver.extra_tables(cfg));
+            }
+            DriverInstance::Ite8721f(cfg) if cfg.acpi_name.is_some() => {
+                let base = match dev.bus {
+                    Some(BusAddress::Lpc(base)) => base,
+                    _ => 0x2e,
+                };
+                let bus = DryLpcBus { base };
+                let driver = fstart_driver_ite8721f::Ite8721f::new_on_bus(cfg, &bus)
+                    .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
+                dsdt_aml.extend(driver.dsdt_aml(cfg));
+                extra_tables.extend(driver.extra_tables(cfg));
+            }
+            _ => {}
+        }
+    }
+
+    let table_set = fstart_acpi::platform::assemble(
+        0x0010_0000,
+        &fstart_acpi::platform::FadtConfig::default(),
+        &[],
+        &dsdt_aml,
+        &extra_tables,
+    );
+    let dsdt = extract_dsdt(&table_set)?;
+
+    let out_dir = workspace_root.join("target/acpi");
+    fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("ACPI check: failed to create {}: {e}", out_dir.display()))?;
+    let aml_path = out_dir.join(format!("{board_name}-dsdt.aml"));
+    let dsl_prefix = out_dir.join(format!("{board_name}-dsdt"));
+    let dsl_path = out_dir.join(format!("{board_name}-dsdt.dsl"));
+    fs::write(&aml_path, &dsdt)
+        .map_err(|e| format!("ACPI check: failed to write {}: {e}", aml_path.display()))?;
+
+    eprintln!(
+        "[fstart] ACPI check: wrote DSDT {} ({} bytes)",
+        aml_path.display(),
+        dsdt.len()
+    );
+    run_iasl_check(&aml_path, &dsl_prefix, &dsl_path)?;
+    Ok(())
+}
+
+fn extract_dsdt(table_set: &[u8]) -> Result<Vec<u8>, String> {
+    let dsdt_off = table_set
+        .windows(4)
+        .position(|w| w == b"DSDT")
+        .ok_or_else(|| "ACPI check: DSDT signature not found".to_string())?;
+    if dsdt_off + 8 > table_set.len() {
+        return Err("ACPI check: truncated DSDT header".to_string());
+    }
+    let len = u32::from_le_bytes(
+        table_set[dsdt_off + 4..dsdt_off + 8]
+            .try_into()
+            .map_err(|_| "ACPI check: invalid DSDT length field".to_string())?,
+    ) as usize;
+    if dsdt_off + len > table_set.len() {
+        return Err(format!(
+            "ACPI check: DSDT length {len} extends past table set size {}",
+            table_set.len()
+        ));
+    }
+    let dsdt = table_set[dsdt_off..dsdt_off + len].to_vec();
+    let sum = dsdt.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+    if sum != 0 {
+        return Err(format!("ACPI check: DSDT checksum failed ({sum:#04x})"));
+    }
+    Ok(dsdt)
+}
+
+fn run_iasl_check(aml_path: &Path, dsl_prefix: &Path, dsl_path: &Path) -> Result<(), String> {
+    let disassemble = format!(
+        "iasl -d -p '{}' '{}'",
+        dsl_prefix.display(),
+        aml_path.display()
+    );
+    run_acpica_command(&disassemble, "disassemble")?;
+
+    let compile = format!("iasl -tc '{}'", dsl_path.display());
+    run_acpica_command(&compile, "compile")?;
+
+    eprintln!("[fstart] ACPI check: iasl disassemble/compile passed");
+    Ok(())
+}
+
+fn run_acpica_command(command: &str, phase: &str) -> Result<(), String> {
+    let shell = if crate::which_in_path("iasl").is_some() {
+        command.to_string()
+    } else if crate::which_in_path("nix-shell").is_some() {
+        format!("nix-shell -p acpica-tools --run {:?}", command)
+    } else {
+        return Err(
+            "ACPI check requires `iasl` in PATH or `nix-shell -p acpica-tools`".to_string(),
+        );
+    };
+
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&shell)
+        .output()
+        .map_err(|e| format!("ACPI check: failed to run iasl {phase}: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "ACPI check: iasl {phase} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
 }

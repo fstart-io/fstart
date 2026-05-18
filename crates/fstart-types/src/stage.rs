@@ -42,6 +42,22 @@ pub struct MonolithicConfig {
     /// (e.g., QEMU places the DTB at the base of RAM on AArch64).
     #[serde(default)]
     pub data_addr: Option<u64>,
+    /// Separate low-memory region for page tables and IDT (x86_64).
+    ///
+    /// On x86_64, page tables and the IDT must be in writable RAM at
+    /// addresses below the main data region. When set, the linker
+    /// creates a separate LOW memory region at `(addr, size)` for
+    /// `.pagetables` and `.idt` sections. When unset, these sections
+    /// go in the normal RAM region (or in ROM for platforms that
+    /// support ROM-resident page tables).
+    #[serde(default)]
+    pub page_table_addr: Option<(u64, u64)>,
+    /// x86_64 identity-map page size (default: 2 MiB).
+    ///
+    /// Controls page table layout and total memory used. Use `Size1GiB`
+    /// only on CPUs known to support PDPE1GB.
+    #[serde(default)]
+    pub page_size: PageSize,
 }
 
 /// Configuration for one stage in a multi-stage build.
@@ -51,7 +67,12 @@ pub struct StageConfig {
     pub name: HString<32>,
     /// Ordered list of capabilities for this stage
     pub capabilities: heapless::Vec<Capability, 16>,
-    /// Where this stage is loaded in memory
+    /// Where this stage is loaded in memory.
+    ///
+    /// For the first x86_64 ROM/XIP stage this may be omitted/zero; tooling
+    /// then selects the topmost ROM region and the linker/FFS place the
+    /// bootblock top-aligned in that region.
+    #[serde(default)]
     pub load_addr: u64,
     /// Stack size in bytes
     pub stack_size: u32,
@@ -62,6 +83,14 @@ pub struct StageConfig {
     pub heap_size: Option<u32>,
     /// Where this stage executes from
     pub runs_from: RunsFrom,
+    /// Compression to use when this stage is packaged into FFS.
+    ///
+    /// The first stage is always stored uncompressed because it executes
+    /// directly and contains the patchable FFS anchor. Later stages may use
+    /// `Lz4` when loaded via `StageLoad`; stages loaded by `LoadNextStage`
+    /// must remain `None` because that path copies raw bytes and jumps.
+    #[serde(default = "default_stage_compression")]
+    pub compression: crate::ffs::Compression,
     /// Explicit address for data/BSS/stack in RAM (XIP stages only).
     ///
     /// Same semantics as [`MonolithicConfig::data_addr`]: when the stage
@@ -70,15 +99,103 @@ pub struct StageConfig {
     /// the base of RAM.
     #[serde(default)]
     pub data_addr: Option<u64>,
+    /// Separate low-memory region for page tables and IDT (x86_64).
+    ///
+    /// Same semantics as [`MonolithicConfig::page_table_addr`].
+    #[serde(default)]
+    pub page_table_addr: Option<(u64, u64)>,
+    /// x86_64 identity-map page size (default: 2 MiB).
+    ///
+    /// Same semantics as [`MonolithicConfig::page_size`].
+    #[serde(default)]
+    pub page_size: PageSize,
 }
 
 /// Where a stage executes from.
+///
+/// Describes the **code** location only. The writable landing spot
+/// (`.data`, `.bss`, stack) is chosen by the linker from whatever
+/// writable memory is actually available at the time the stage runs:
+///
+/// - On ARM / RISC-V / x86 post-DRAM: the first RAM region.
+/// - On x86 pre-DRAM stages (bootblock, romstage) where the board
+///   declares [`crate::memory::MemoryMap::car`]: the CAR region.
+///
+/// The choice is automatic — an XIP stage (`Rom`) on a board with
+/// `memory.car` declared lands its writable sections in CAR; on a
+/// board without, it lands them in RAM. No separate `Car` variant is
+/// required; the distinction is fully expressed by the presence of
+/// `memory.car` in the memory map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunsFrom {
-    /// Execute in place from ROM (XIP)
+    /// Execute in place from ROM (XIP).
+    ///
+    /// Code runs from flash-mapped ROM. Writable sections go into
+    /// `memory.car` if declared (x86 pre-DRAM pattern), else the
+    /// first RAM region (everything else).
     Rom,
-    /// Execute from RAM after being loaded
+    /// Execute from RAM after being loaded.
+    ///
+    /// Load address must lie inside a RAM region. Code is copied from
+    /// flash into RAM by a prior stage's `StageLoad` capability and
+    /// jumped to.
     Ram,
+}
+
+fn default_stage_compression() -> crate::ffs::Compression {
+    crate::ffs::Compression::None
+}
+
+/// Resolve the effective load address for a multi-stage entry.
+///
+/// A `load_addr` of zero is treated as "auto" only for the first x86_64
+/// ROM/XIP stage. In that case the address is chosen inside the topmost ROM
+/// region; x86 linker and FFS assembly then top-align the actual bootblock
+/// bytes within that region.
+pub fn effective_stage_load_addr(
+    config: &crate::board::BoardConfig,
+    stage_index: usize,
+    stage: &StageConfig,
+) -> u64 {
+    if stage.load_addr != 0 {
+        return stage.load_addr;
+    }
+
+    if config.platform == crate::board::Platform::X86_64
+        && stage_index == 0
+        && stage.runs_from == RunsFrom::Rom
+    {
+        return config
+            .memory
+            .regions
+            .iter()
+            .filter(|region| region.kind == crate::memory::RegionKind::Rom && region.size > 0)
+            .max_by_key(|region| region.base.saturating_add(region.size))
+            .map(|region| region.base.saturating_add(region.size).saturating_sub(1))
+            .unwrap_or(0);
+    }
+
+    stage.load_addr
+}
+
+/// x86_64 identity-map page size for page table construction.
+///
+/// Controls the page table depth and total size:
+/// - `Size2MiB`: 4-level (PML4 + PDPT + PD tables), 6 pages for 4 GiB.
+///   Compatible with all x86_64 CPUs.
+/// - `Size1GiB`: 3-level (PML4 + PDPT with PS=1), 2 pages for 512 GiB.
+///   Requires CPUID 0x80000001 EDX bit 26 (PDPE1GB).  Not supported on
+///   early Atom, some Xeon E3, and Goldmont-class CPUs.
+///
+/// Real boards should set this based on the target CPU's known capabilities.
+/// QEMU boards can use `Size1GiB` since QEMU always supports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PageSize {
+    /// 2 MiB pages — universally supported on all x86_64 CPUs.
+    #[default]
+    Size2MiB,
+    /// 1 GiB pages — requires PDPE1GB (CPUID 0x80000001 EDX[26]).
+    Size1GiB,
 }
 
 /// A capability is a composable unit of firmware functionality.
@@ -129,6 +246,65 @@ pub enum Capability {
         /// Device name from the devices list (e.g., "dramc0")
         device: HString<32>,
     },
+    /// Minimal platform/device setup before the console can be initialized.
+    ///
+    /// The referenced devices implement `PreConsoleInit`.  This is a portable
+    /// phase abstraction used for work such as opening UART clock gates,
+    /// applying pinmux, enabling ECAM, or opening LPC decode windows.
+    PreConsoleInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
+    },
+    /// Logged early platform/device setup before DRAM training or bus probing.
+    ///
+    /// The referenced devices implement `EarlyInit`.  This replaces topology-
+    /// specific capability names such as x86 northbridge/southbridge init.
+    EarlyInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
+    },
+    /// Rebuild per-stage software state for already-programmed hardware.
+    ///
+    /// The referenced devices implement `StageLocalInit`.  Multi-stage boards
+    /// use this when a later stage has a fresh BSS and must rebind accessors
+    /// such as ECAM globals without repeating heavyweight hardware init.
+    StageLocalInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
+    },
+    /// DRAM-backed platform/device setup after memory is usable.
+    PostDramInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
+    },
+    /// Final platform/device lockdown before payload handoff.
+    FinalizeInit {
+        /// Ordered device list participating in the phase.
+        devices: heapless::Vec<HString<32>, 8>,
+    },
+    /// Initialize all logical CPUs (BSP + APs).
+    ///
+    /// Brings up application processors via INIT+SIPI, runs per-CPU
+    /// MSR configuration (C-states, SpeedStep, thermals), optionally
+    /// performs SMM relocation, and parks APs for later work dispatch.
+    ///
+    /// Must appear after `DramInit` — APs need stacks in DRAM.
+    MpInit {
+        /// CPU model identifier (selects which `CpuOps` to use).
+        cpu_model: HString<32>,
+        /// Expected logical CPU count (BSP + APs).
+        num_cpus: u16,
+        /// Enable SMM setup.  When true, the selected SMM provider must
+        /// implement `SmmOps`.  Default: false.
+        #[serde(default)]
+        smm: bool,
+        /// Device name of the chipset driver that provides `SmmOps`.
+        ///
+        /// If omitted, codegen selects the sole enabled device whose RON
+        /// `services` list contains `SmmOps`.
+        #[serde(default)]
+        smm_provider: Option<HString<32>>,
+    },
     /// Enumerate and initialize all declared devices/drivers.
     DriverInit,
     /// Enumerate a PCI root bus, allocate BAR resources, and enable devices.
@@ -178,6 +354,35 @@ pub enum Capability {
     /// 4/16/17/19/32/127) from the board RON's `smbios` config section.
     /// Does not require a heap — writes directly to the target address.
     SmBiosPrepare,
+    /// Load ACPI tables from an external provider device.
+    ///
+    /// Calls the referenced device's `AcpiTableProvider` implementation
+    /// to load pre-built ACPI tables into memory. Used when the platform
+    /// provides ACPI tables externally (e.g., QEMU's fw_cfg device)
+    /// rather than generating them from the board RON.
+    ///
+    /// The loaded RSDP address is stored for the payload boot protocol
+    /// (e.g., x86 zero page, or UEFI system table).
+    ///
+    /// For platforms that generate their own ACPI tables, use
+    /// `AcpiPrepare` instead.
+    AcpiLoad {
+        /// Device name implementing `AcpiTableProvider` (e.g., "fw_cfg0")
+        device: HString<32>,
+    },
+    /// Detect system memory layout at runtime.
+    ///
+    /// Calls the referenced device's `MemoryDetector` implementation
+    /// to discover the memory map. On QEMU this reads e820 entries from
+    /// the fw_cfg device. On real hardware, a future implementation
+    /// might read SPD data and perform memory training.
+    ///
+    /// Results are stored for later use by the boot protocol (e.g.,
+    /// x86 zero page e820 table, or FDT `/memory` node updates).
+    MemoryDetect {
+        /// Device name implementing `MemoryDetector` (e.g., "fw_cfg0")
+        device: HString<32>,
+    },
     /// Return to the BROM's FEL (USB recovery) mode.
     ///
     /// Restores the saved BROM state (SP, LR, CPSR, SCTLR, VBAR) from
@@ -266,6 +471,18 @@ pub enum BootMedium {
         base: u64,
         /// Size of the mapped flash region in bytes.
         size: u64,
+        /// Optional RAM address to copy FFS data before accessing it.
+        ///
+        /// On x86_64 with code-model=large, FFS operations (postcard
+        /// deserialization, LZ4 decompression) are significantly faster
+        /// when operating on RAM rather than flash-mapped MMIO. When
+        /// set, generated code copies `size` bytes from `base` to this
+        /// address before constructing the `MemoryMapped` accessor.
+        ///
+        /// On platforms with true XIP (ARM, RISC-V), this should be
+        /// `None` — the flash is accessed directly.
+        #[serde(default)]
+        ram_copy_addr: Option<u64>,
     },
     /// A named device that implements `BlockDevice`.
     ///

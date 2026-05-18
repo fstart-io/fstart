@@ -1,0 +1,13 @@
+[package]
+name = "fstart-driver-nsc-pc87392"
+description = "National Semiconductor PC87392 SuperIO descriptor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+acpi = ["fstart-superio/acpi"]
+
+[dependencies]
+fstart-superio = { workspace = true }

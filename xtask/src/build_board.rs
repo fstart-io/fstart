@@ -6,7 +6,9 @@
 //! 4. Return the path(s) to the built binary(ies)
 
 use fstart_codegen::ron_loader;
-use fstart_types::{Capability, Platform, SecurityConfig, SocImageFormat, StageLayout};
+use fstart_types::{
+    effective_stage_load_addr, Capability, Platform, SecurityConfig, SocImageFormat, StageLayout,
+};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -27,6 +29,15 @@ pub struct StageBinary {
     pub run_path: PathBuf,
     /// Load address from the board config.
     pub load_addr: u64,
+}
+
+/// Generated standalone SMM artifacts for a board build.
+#[derive(Debug, Clone)]
+struct SmmArtifacts {
+    /// Native PIC SMM image consumed by fstart/coreboot loaders.
+    image_path: PathBuf,
+    /// Optional coreboot-compatible generated offsets header.
+    header_path: Option<PathBuf>,
 }
 
 impl BuildResult {
@@ -53,21 +64,29 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     eprintln!("[fstart] platform: {}", config.platform);
     eprintln!("[fstart] mode: {:?}", config.mode);
 
+    let smm_artifacts = build_smm_artifacts(&workspace_root, board_name, release, &config)?;
+
     // Determine target triple from the Platform enum.
     let target = config.platform.target_triple();
 
     // Base features: platform + all driver features (every stage constructs
     // all devices, so driver features are always needed globally).
-    // ACPI-only devices (ahci, xhci, pcie-root) have no driver crate and
-    // no corresponding cargo feature — skip them.
+    //
+    // Structural (driverless) nodes use the sentinel driver name
+    // `_structural` and must be skipped here — there is no cargo
+    // feature by that name. Similarly, ACPI-only devices (ahci,
+    // xhci, pcie-root) contribute only build-time ACPI table entries
+    // and have no runtime driver crate / no corresponding feature in
+    // fstart-stage's Cargo.toml.
     const ACPI_ONLY_DRIVERS: &[&str] = &["ahci", "xhci", "pcie-root"];
     let mut base_features = Vec::new();
     base_features.push(config.platform.as_str().to_string());
     for device in &config.devices {
         let drv = device.driver.as_str();
-        if !ACPI_ONLY_DRIVERS.contains(&drv) {
-            base_features.push(drv.to_string());
+        if drv == "_structural" || ACPI_ONLY_DRIVERS.contains(&drv) {
+            continue;
         }
+        base_features.push(drv.to_string());
     }
 
     // Multi-stage boards need the handoff feature for inter-stage data passing.
@@ -108,7 +127,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     // boot ROM loads raw binary from SD/SPI/eMMC.
     let needs_flat_binary = matches!(
         config.platform,
-        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7
+        Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7 | Platform::X86_64
     );
 
     let soc_format = config.soc_image_format;
@@ -119,6 +138,16 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
             let mut features = base_features.clone();
             let cap_features = capability_features(&mono.capabilities, &config.security, &config);
             features.extend(cap_features);
+            if mono.page_size == fstart_types::stage::PageSize::Size1GiB {
+                features.push("x86-1g-pages".to_string());
+            }
+            if config.platform == Platform::X86_64 {
+                if mono.page_table_addr.is_some() {
+                    features.push("x86-writable-page-tables".to_string());
+                } else {
+                    features.push("x86-static-page-tables".to_string());
+                }
+            }
             let features_str = features.join(",");
             let needs_alloc = stage_uses_fdt(&mono.capabilities)
                 || stage_uses_acpi(&mono.capabilities)
@@ -138,6 +167,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 needs_flat_binary,
                 build_std,
                 soc_format,
+                smm_artifacts.as_ref(),
             )?;
             Ok(BuildResult {
                 stages: vec![StageBinary {
@@ -162,11 +192,35 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 let cap_features =
                     capability_features(&stage.capabilities, &config.security, &config);
                 features.extend(cap_features);
+                if stage.page_size == fstart_types::stage::PageSize::Size1GiB {
+                    features.push("x86-1g-pages".to_string());
+                }
+                if config.platform == Platform::X86_64 {
+                    if stage.page_table_addr.is_some() {
+                        features.push("x86-writable-page-tables".to_string());
+                    } else if i == 0 {
+                        features.push("x86-static-page-tables".to_string());
+                    }
+                }
                 let features_str = features.join(",");
 
+                let stage_has_crabefi = stage
+                    .capabilities
+                    .iter()
+                    .any(|c| matches!(c, Capability::PayloadLoad))
+                    && stage_uses_crabefi(&config);
+                // PCI and Q35 driver features pull in fstart-alloc, which
+                // needs alloc in build-std even for stages that don't
+                // directly use PCI. Driver features are global.
+                let has_pci_driver = config
+                    .devices
+                    .iter()
+                    .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
                 let needs_alloc = stage_uses_fdt(&stage.capabilities)
                     || stage_uses_acpi(&stage.capabilities)
-                    || stage.heap_size.is_some();
+                    || stage_has_crabefi
+                    || stage.heap_size.is_some()
+                    || has_pci_driver;
                 let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
                 eprintln!("[fstart] features: {features_str}");
@@ -188,16 +242,99 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                     needs_flat_binary,
                     build_std,
                     stage_format,
+                    smm_artifacts.as_ref(),
                 )?;
                 result.push(StageBinary {
                     name: stage_name,
                     path: elf_path,
                     run_path,
-                    load_addr: stage.load_addr,
+                    load_addr: effective_stage_load_addr(&config, i, stage),
                 });
             }
             Ok(BuildResult { stages: result })
         }
+    }
+}
+
+/// Build the standalone SMM image artifacts requested by the board.
+fn build_smm_artifacts(
+    workspace_root: &std::path::Path,
+    board_name: &str,
+    release: bool,
+    config: &fstart_types::BoardConfig,
+) -> Result<Option<SmmArtifacts>, String> {
+    let Some(smm) = config.smm else {
+        return Ok(None);
+    };
+
+    let smm_num_cpus = max_smm_num_cpus(&config.stages);
+    let entry_count = smm.entry_points.or(smm_num_cpus).unwrap_or(1);
+    if let Some(num_cpus) = smm_num_cpus {
+        if entry_count < num_cpus {
+            return Err(
+                "board.smm.entry_points must be greater than or equal to MpInit.num_cpus"
+                    .to_string(),
+            );
+        }
+    }
+
+    let profile = if release { "release" } else { "debug" };
+    let out_dir = workspace_root
+        .join("target")
+        .join("smm")
+        .join(board_name)
+        .join(profile);
+    let image_path = out_dir.join("fstart-smm.bin");
+    let header_path = smm
+        .coreboot
+        .emit_header
+        .then(|| out_dir.join("fstart_smm_offsets.h"));
+
+    let options = fstart_smm_image::ImageOptions {
+        entry_count,
+        stack_size: smm.stack_size,
+        coreboot_module_args: smm.coreboot.module_args,
+        coreboot_header: smm.coreboot.emit_header,
+    };
+    let built = fstart_smm_image::write_image(options, &image_path, header_path.as_deref())
+        .map_err(|e| format!("failed to build SMM image: {e}"))?;
+
+    eprintln!(
+        "[fstart] SMM image: {} ({} bytes, {} entries)",
+        image_path.display(),
+        built.image.len(),
+        entry_count
+    );
+    if let Some(path) = &header_path {
+        eprintln!("[fstart] SMM coreboot header: {}", path.display());
+    }
+
+    Ok(Some(SmmArtifacts {
+        image_path,
+        header_path,
+    }))
+}
+
+fn max_smm_num_cpus(stages: &StageLayout) -> Option<u16> {
+    fn max_in_caps(caps: &[Capability]) -> Option<u16> {
+        caps.iter()
+            .filter_map(|cap| match cap {
+                Capability::MpInit {
+                    num_cpus,
+                    smm: true,
+                    ..
+                } => Some(*num_cpus),
+                _ => None,
+            })
+            .max()
+    }
+
+    match stages {
+        StageLayout::Monolithic(stage) => max_in_caps(&stage.capabilities),
+        StageLayout::MultiStage(stages) => stages
+            .iter()
+            .filter_map(|stage| max_in_caps(&stage.capabilities))
+            .max(),
     }
 }
 
@@ -217,7 +354,22 @@ fn build_one_stage(
     needs_flat_binary: bool,
     build_std: &str,
     soc_format: SocImageFormat,
+    smm_artifacts: Option<&SmmArtifacts>,
 ) -> Result<(PathBuf, PathBuf), String> {
+    let profile = if release { "release" } else { "debug" };
+    let board_label = board_ron
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("board");
+    let stage_label = stage_name.unwrap_or("stage");
+    let artifact_dir = workspace_root
+        .join("target")
+        .join("fstart-generated")
+        .join(board_label)
+        .join(profile)
+        .join(stage_label);
+
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("--package")
@@ -239,24 +391,56 @@ fn build_one_stage(
     //
     // Note: +strict-align is NOT set here — the ARM target specs
     // (armv7a-none-eabi, aarch64-unknown-none) already include it by
-    // default.  Passing it via -Ctarget-feature triggers an "unknown and
+    // default. Passing it via -Ctarget-feature triggers an "unknown and
     // unstable feature" warning from rustc even though LLVM accepts it.
-    //
+    let mut rustflags = if target.starts_with("x86_64") {
+        // x86_64 firmware: static relocation, large code model.
+        // Large model is needed because ROM at the top of 4 GiB and RAM/BSS
+        // can be ~4 GiB apart, exceeding small/medium/kernel model ±2 GiB
+        // limits.
+        //
+        // Force curve25519-dalek to use the scalar ("serial") backend.
+        // This must be in RUSTFLAGS (not Cargo.toml) because:
+        // 1. Cargo features can't set --cfg on transitive dependencies
+        // 2. .cargo/config.toml would affect host builds too
+        // 3. This only applies to x86_64-unknown-none (firmware target)
+        //
+        // The auto-detected "simd" backend (AVX2) causes LLVM crashes
+        // when compiling for x86_64-unknown-none: adding +avx2 globally
+        // breaks compiler_builtins (f16/f128 getCopyFromParts mismatch),
+        // and without it LLVM can't lower AVX2 intrinsics. The scalar
+        // backend is correct and sufficient for firmware signature verify.
+        "-Zub-checks=no -Crelocation-model=static -Ccode-model=large \
+         --cfg curve25519_dalek_backend=\"serial\""
+            .to_string()
+    } else {
+        "-Zub-checks=no".to_string()
+    };
     // FSTART_EXTRA_RUSTFLAGS (if set) is appended — CI uses this for
     // -Dwarnings to catch generated-code regressions.
-    let mut rustflags = String::from("-Zub-checks=no");
     if let Ok(extra) = std::env::var("FSTART_EXTRA_RUSTFLAGS") {
         rustflags.push(' ');
         rustflags.push_str(&extra);
     }
     cmd.env("RUSTFLAGS", &rustflags);
 
-    // Pass board RON path to build.rs
+    // Pass board/stage context to build.rs.  FSTART_STAGE_ARTIFACT_DIR
+    // mirrors generated_stage.rs/link.ld to a stable, human-readable path;
+    // Cargo's OUT_DIR remains the canonical path used by include!/linking.
     cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
+    cmd.env("FSTART_STAGE_ARTIFACT_DIR", &artifact_dir);
+    cmd.env("FSTART_STAGE_FEATURES", features);
     if let Some(name) = stage_name {
         cmd.env("FSTART_STAGE_NAME", name);
     }
+    if let Some(smm) = smm_artifacts {
+        cmd.env("FSTART_SMM_IMAGE", &smm.image_path);
+        if let Some(header) = &smm.header_path {
+            cmd.env("FSTART_SMM_COREBOOT_HEADER", header);
+        }
+    }
 
+    eprintln!("[fstart] generated artifacts: {}", artifact_dir.display());
     eprintln!("[fstart] building fstart-stage...");
     let status = cmd
         .status()
@@ -270,8 +454,7 @@ fn build_one_stage(
         ));
     }
 
-    // Determine output binary path
-    let profile = if release { "release" } else { "debug" };
+    // Determine output binary path.
     let elf_path = workspace_root
         .join("target")
         .join(target)
@@ -583,11 +766,26 @@ fn capability_features(
         features.push("fdt".to_string());
     }
 
+    // PCI features are determined by the actual driver, not the platform.
+    // The Q35 host bridge handles CF8/CFC bootstrap internally.
     if stage_uses_pci(capabilities) {
-        features.push("pci-ecam".to_string());
+        // Find the PCI root bus device to determine which driver is used.
+        let pci_driver = config
+            .devices
+            .iter()
+            .find(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+        match pci_driver.map(|d| d.driver.as_str()) {
+            Some("q35-hostbridge") => features.push("q35-hostbridge".to_string()),
+            _ => features.push("pci-ecam".to_string()),
+        }
     }
 
-    if stage_uses_crabefi(config) {
+    // CrabEFI is only needed by stages that actually have PayloadLoad.
+    // For multi-stage boards, the bootblock doesn't need CrabEFI.
+    let has_payload_load = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::PayloadLoad));
+    if has_payload_load && stage_uses_crabefi(config) {
         features.push("crabefi".to_string());
     }
 
@@ -597,6 +795,40 @@ fn capability_features(
 
     if stage_uses_smbios(capabilities) {
         features.push("smbios".to_string());
+    }
+
+    for cap in capabilities {
+        if let Capability::MpInit { cpu_model, .. } = cap {
+            features.push("mp".to_string());
+            if cpu_model.as_str().contains("pineview") || cpu_model.as_str().contains("106cx") {
+                features.push("pineview-cpu".to_string());
+            }
+            if cpu_model.as_str().contains("core2") || cpu_model.as_str().contains("6fx") {
+                features.push("core2-cpu".to_string());
+            }
+        }
+    }
+
+    // AcpiLoad needs the fw_cfg driver and x86-boot support
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }))
+    {
+        features.push("acpi-load".to_string());
+    }
+
+    // MemoryDetect needs the memory-detect feature
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MemoryDetect { .. }))
+    {
+        features.push("memory-detect".to_string());
+    }
+
+    // NS16550 PIO mode needs the pio feature propagated
+    if config.platform == Platform::X86_64 {
+        features.push("ns16550-pio".to_string());
+        features.push("x86-boot".to_string());
     }
 
     features
@@ -620,7 +852,7 @@ fn stage_uses_pci(capabilities: &[Capability]) -> bool {
 fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
-        .any(|c| matches!(c, Capability::AcpiPrepare))
+        .any(|c| matches!(c, Capability::AcpiPrepare | Capability::AcpiLoad { .. }))
 }
 
 /// Check if the board uses CrabEFI as a UEFI payload.

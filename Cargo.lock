@@ -99,6 +99,12 @@ checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
 name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
+name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
@@ -218,10 +224,10 @@ dependencies = [
 [[package]]
 name = "crabefi"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git#8a822016bb3ed5514dc6abe9ae031219874b63f1"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git#5b33abfa505086627527fc1106400b0c3e57601e"
 dependencies = [
  "atomic_refcell",
- "bitflags",
+ "bitflags 2.10.0",
  "cms",
  "const-oid",
  "der",
@@ -478,10 +484,18 @@ name = "fstart-arch"
 version = "0.1.0"
 
 [[package]]
+name = "fstart-arch-x86"
+version = "0.1.0"
+dependencies = [
+ "x86",
+]
+
+[[package]]
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-crypto",
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",
@@ -496,10 +510,16 @@ dependencies = [
 name = "fstart-codegen"
 version = "0.1.0"
 dependencies = [
+ "acpi_tables",
+ "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-device-registry",
  "fstart-driver-designware-i2c",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
+ "fstart-services",
  "fstart-types",
  "heapless",
  "prettyplease",
@@ -511,10 +531,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-cpu-intel"
+version = "0.1.0"
+dependencies = [
+ "acpi_tables",
+ "fstart-arch-x86",
+ "fstart-log",
+ "fstart-mp",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-crabefi"
 version = "0.1.0"
 dependencies = [
  "crabefi",
+ "fstart-arch-x86",
+ "fstart-pio",
  "fstart-services",
 ]
 
@@ -537,9 +570,19 @@ dependencies = [
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-gm965",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-ich8",
+ "fstart-driver-intel-pineview",
+ "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
+ "fstart-driver-q35-hostbridge",
+ "fstart-driver-qemu-fw-cfg",
  "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
@@ -549,6 +592,7 @@ dependencies = [
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",
  "fstart-driver-sunxi-spi",
+ "fstart-mainboard-lenovo-x61",
  "fstart-services",
  "fstart-types",
  "serde",
@@ -597,13 +641,144 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-i2c-ck505"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-services",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-gm965"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
+ "fstart-cpu-intel",
+ "fstart-crypto",
+ "fstart-driver-pci-ecam",
+ "fstart-ecam",
+ "fstart-ffs",
+ "fstart-lapic",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-mp",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-smm",
+ "fstart-spd",
+ "fstart-types",
+ "heapless",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-ich7"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-ecam",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-superio",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-ich8"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
+ "fstart-ecam",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-superio",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-pineview"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
+ "fstart-cpu-intel",
+ "fstart-driver-pci-ecam",
+ "fstart-ecam",
+ "fstart-lapic",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-mp",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-smm",
+ "fstart-spd",
+ "heapless",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-ite8721f"
+version = "0.1.0"
+dependencies = [
+ "fstart-superio",
+]
+
+[[package]]
 name = "fstart-driver-ns16550"
 version = "0.1.0"
 dependencies = [
  "fstart-mmio",
+ "fstart-pio",
  "fstart-services",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-nsc-pc87382"
+version = "0.1.0"
+dependencies = [
+ "fstart-superio",
+]
+
+[[package]]
+name = "fstart-driver-nsc-pc87392"
+version = "0.1.0"
+dependencies = [
+ "fstart-superio",
 ]
 
 [[package]]
@@ -613,6 +788,7 @@ dependencies = [
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
+ "heapless",
  "serde",
  "ufmt",
 ]
@@ -628,6 +804,34 @@ dependencies = [
  "heapless",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-q35-hostbridge"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-driver-pci-ecam",
+ "fstart-log",
+ "fstart-mp",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smm",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-qemu-fw-cfg"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
@@ -748,6 +952,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-ecam"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+]
+
+[[package]]
 name = "fstart-ffs"
 version = "0.1.0"
 dependencies = [
@@ -771,10 +982,65 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-gpio-ich"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "heapless",
+ "ron",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-hda"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "heapless",
+ "ron",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-lapic"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-log",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
  "fstart-services",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-mainboard-lenovo-x61"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
+ "fstart-gpio-ich",
+ "fstart-pio",
+ "fstart-services",
+ "heapless",
+ "serde",
+]
+
+[[package]]
+name = "fstart-microcode-intel"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-log",
  "ufmt",
 ]
 
@@ -786,9 +1052,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-mp"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-lapic",
+ "fstart-log",
+ "fstart-microcode-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-pio"
+version = "0.1.0"
+dependencies = [
+ "tock-registers",
+ "x86",
+]
+
+[[package]]
 name = "fstart-platform-aarch64"
 version = "0.1.0"
 dependencies = [
+ "fstart-services",
  "fstart-soc-sunxi",
 ]
 
@@ -797,6 +1083,7 @@ name = "fstart-platform-armv7"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-services",
  "fstart-soc-sunxi",
 ]
 
@@ -804,7 +1091,28 @@ dependencies = [
 name = "fstart-platform-riscv64"
 version = "0.1.0"
 dependencies = [
+ "fstart-services",
  "fstart-soc-sunxi",
+]
+
+[[package]]
+name = "fstart-platform-x86_64"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-ffs",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "fstart-types",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-pmio-ich"
+version = "0.1.0"
+dependencies = [
+ "fstart-pio",
 ]
 
 [[package]]
@@ -826,11 +1134,43 @@ name = "fstart-smbios"
 version = "0.1.0"
 
 [[package]]
+name = "fstart-smbus-intel"
+version = "0.1.0"
+dependencies = [
+ "fstart-ecam",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-smm"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-smm-image"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fstart-smm",
+]
+
+[[package]]
 name = "fstart-soc-sunxi"
 version = "0.1.0"
 dependencies = [
  "fstart-services",
  "fstart-types",
+]
+
+[[package]]
+name = "fstart-spd"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-services",
 ]
 
 [[package]]
@@ -842,14 +1182,25 @@ dependencies = [
  "fstart-arch",
  "fstart-capabilities",
  "fstart-codegen",
+ "fstart-cpu-intel",
  "fstart-crabefi",
  "fstart-driver-bochs-display",
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-gm965",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-ich8",
+ "fstart-driver-intel-pineview",
+ "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
+ "fstart-driver-q35-hostbridge",
+ "fstart-driver-qemu-fw-cfg",
  "fstart-driver-sifive-uart",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
@@ -861,15 +1212,32 @@ dependencies = [
  "fstart-driver-sunxi-spi",
  "fstart-ffs",
  "fstart-fit",
+ "fstart-gpio-ich",
  "fstart-log",
+ "fstart-mainboard-lenovo-x61",
+ "fstart-mp",
+ "fstart-pio",
  "fstart-platform-aarch64",
  "fstart-platform-armv7",
  "fstart-platform-riscv64",
+ "fstart-platform-x86_64",
  "fstart-runtime",
  "fstart-services",
  "fstart-soc-sunxi",
+ "fstart-stage-runtime",
+ "fstart-superio",
  "fstart-types",
  "heapless",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-stage-runtime"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-services",
+ "fstart-types",
  "ufmt",
 ]
 
@@ -889,10 +1257,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-superio"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-types"
 version = "0.1.0"
 dependencies = [
- "bitflags",
+ "bitflags 2.10.0",
  "heapless",
  "serde",
 ]
@@ -1249,6 +1631,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "raw-cpuid"
+version = "10.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c297679cb867470fa8c9f67dbba74a78d78e3e98d7cf2b08d6d71540f797332"
+dependencies = [
+ "bitflags 1.3.2",
+]
+
+[[package]]
 name = "rfc6979"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1265,7 +1656,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b91f7eff05f748767f183df4320a63d6936e9c6107d97c9e6bdd9784f4289c94"
 dependencies = [
  "base64",
- "bitflags",
+ "bitflags 2.10.0",
  "serde",
  "serde_derive",
 ]
@@ -1609,13 +2000,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "x86"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2781db97787217ad2a2845c396a5efe286f87467a5810836db6d74926e94a385"
+dependencies = [
+ "bit_field",
+ "bitflags 1.3.2",
+ "raw-cpuid",
+]
+
+[[package]]
 name = "x86_64"
 version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7841fa0098ceb15c567d93d3fae292c49e10a7662b4936d5f6a9728594555ba"
 dependencies = [
  "bit_field",
- "bitflags",
+ "bitflags 2.10.0",
  "const_fn",
  "rustversion",
  "volatile",
@@ -1627,10 +2029,17 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
+ "fstart-acpi",
  "fstart-codegen",
  "fstart-crypto",
+ "fstart-device-registry",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
+ "fstart-driver-ite8721f",
  "fstart-ffs",
  "fstart-fit",
+ "fstart-services",
+ "fstart-smm-image",
  "fstart-types",
  "goblin",
  "rand_core",

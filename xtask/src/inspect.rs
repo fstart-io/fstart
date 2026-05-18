@@ -8,8 +8,8 @@ use std::path::Path;
 
 use fstart_ffs::FfsReader;
 use fstart_types::ffs::{
-    Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind, SignatureKind,
-    ANCHOR_SIZE, FFS_VERSION,
+    AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind,
+    SignatureKind, ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
 };
 
 /// Read an FFS image from disk, find the anchor, and print the filesystem.
@@ -20,27 +20,56 @@ pub fn inspect(path: &str) -> Result<(), String> {
     println!("FFS image: {} ({} bytes)", path.display(), data.len());
     println!();
 
-    let reader = FfsReader::new(&data);
+    let _full_reader = FfsReader::new(&data);
 
     // --- Anchor ---
-    let anchor_offset = reader
-        .scan_for_anchor()
-        .map_err(|_| "no FFS anchor found (FSTART01 magic not present)".to_string())?;
+    let anchors = find_anchors(&data);
+    let (anchor_offset, anchor) = choose_display_anchor(&anchors)
+        .ok_or_else(|| "no FFS anchor found (FSTART01 magic not present)".to_string())?;
 
-    let anchor = reader
-        .read_anchor(anchor_offset)
-        .map_err(|e| format!("failed to read anchor at offset {anchor_offset:#x}: {e:?}"))?;
+    // Anchors store offsets relative to the FFS/BIOS image base.  Full-flash
+    // images (e.g. Intel IFD pflash) embed that image at a non-zero offset, so
+    // inspect the slice whose base makes the scanned anchor line up with the
+    // anchor's own image-relative offset.
+    let image_base = anchor_offset
+        .checked_sub(anchor.anchor_offset as usize)
+        .ok_or_else(|| {
+            format!(
+                "anchor at {anchor_offset:#x} reports larger image-relative offset {:#x}",
+                anchor.anchor_offset
+            )
+        })?;
+    let image_data = data
+        .get(image_base..)
+        .ok_or_else(|| format!("computed image base {image_base:#x} is outside input"))?;
+    let reader = FfsReader::new(image_data);
 
     println!("Anchor");
+    if image_base != 0 {
+        println!("  image base:       {image_base:#x} ({image_base})");
+    }
     println!("  offset:           {anchor_offset:#x} ({anchor_offset})");
     println!("  size:             {ANCHOR_SIZE} bytes");
     println!("  version:          {}", anchor.version);
     println!("  image size:       {} bytes", anchor.total_image_size);
     println!(
+        "  anchor offset:    {:#x} ({})",
+        anchor.anchor_offset, anchor.anchor_offset
+    );
+    if anchor.microcode_size != 0 {
+        println!(
+            "  microcode:        offset={:#x} size={}",
+            anchor.microcode_offset, anchor.microcode_size
+        );
+    }
+    println!(
         "  manifest offset:  {:#x} ({})",
         anchor.manifest_offset, anchor.manifest_offset
     );
     println!("  manifest size:    {} bytes", anchor.manifest_size);
+    if anchor.anchor_offset >= anchor.total_image_size {
+        println!("  note:             XIP anchor outside FFS blob (top-aligned XIP bootblock)");
+    }
     println!("  keys:             {}", anchor.key_count);
 
     for (i, key) in anchor.valid_keys().iter().enumerate() {
@@ -75,6 +104,50 @@ pub fn inspect(path: &str) -> Result<(), String> {
     );
     println!();
 
+    let ro_parent = if image_base != 0 {
+        manifest
+            .regions
+            .iter()
+            .find_map(|region| match &region.content {
+                RegionContent::Raw { .. }
+                    if image_base >= region.offset as usize
+                        && image_base < (region.offset as usize + region.size as usize) =>
+                {
+                    Some(region.name.as_str())
+                }
+                _ => None,
+            })
+    } else {
+        None
+    };
+
+    let xip_bootblock_file_offset = if anchor.anchor_offset >= anchor.total_image_size {
+        manifest.regions.iter().find_map(|region| {
+            if let RegionContent::Container { children } = &region.content {
+                children.iter().find_map(|entry| {
+                    if entry.name.as_str() == "bootblock" {
+                        let region_end = ro_parent.and_then(|parent| {
+                            manifest.regions.iter().find_map(|region| {
+                                if region.name.as_str() == parent {
+                                    Some(region.offset as usize + region.size as usize)
+                                } else {
+                                    None
+                                }
+                            })
+                        })?;
+                        Some(region_end.saturating_sub(entry.size as usize))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+
     // --- Regions ---
     for region in &manifest.regions {
         let kind_label = match &region.content {
@@ -88,9 +161,24 @@ pub fn inspect(path: &str) -> Result<(), String> {
             RegionContent::Raw { fill } => format!("Raw (fill={fill:#04x})"),
         };
 
+        let region_location = match &region.content {
+            RegionContent::Container { .. } if image_base != 0 => format!(
+                "offset={:#x}  file_offset={:#x}",
+                region.offset,
+                image_base + region.offset as usize
+            ),
+            _ => format!("offset={:#x}", region.offset),
+        };
+        let display_name = if region.name.as_str() == "ro" {
+            ro_parent
+                .map(|parent| format!("{parent}/{}", region.name))
+                .unwrap_or_else(|| region.name.to_string())
+        } else {
+            region.name.to_string()
+        };
         println!(
-            "Region \"{}\"  offset={:#x}  size={} ({:#x})  [{}]",
-            region.name, region.offset, region.size, region.size, kind_label,
+            "Region \"{}\"  {}  size={} ({:#x})  [{}]",
+            display_name, region_location, region.size, region.size, kind_label,
         );
 
         if let RegionContent::Container { children } = &region.content {
@@ -109,12 +197,63 @@ pub fn inspect(path: &str) -> Result<(), String> {
                         segments,
                         digests,
                     } => {
+                        let stored_total: u64 =
+                            segments.iter().map(|seg| seg.stored_size as u64).sum();
+                        let loaded_total: u64 =
+                            segments.iter().map(|seg| seg.loaded_size as u64).sum();
+                        let compressed_count = segments
+                            .iter()
+                            .filter(|seg| seg.compression != Compression::None)
+                            .count();
+                        let compression_summary = if compressed_count == 0 {
+                            String::new()
+                        } else {
+                            format!(
+                                "  compressed={}  decompressed={}  ratio={:.0}%",
+                                stored_total,
+                                loaded_total,
+                                if loaded_total > 0 {
+                                    stored_total as f64 / loaded_total as f64 * 100.0
+                                } else {
+                                    0.0
+                                }
+                            )
+                        };
+
+                        let entry_location = if image_base != 0 {
+                            format!(
+                                "offset={:#x}  file_offset={:#x}",
+                                entry.offset,
+                                image_base + region.offset as usize + entry.offset as usize
+                            )
+                        } else {
+                            format!("offset={:#x}", entry.offset)
+                        };
+                        let bootblock_note = if entry.name.as_str() == "bootblock" {
+                            let entry_file_offset =
+                                image_base + region.offset as usize + entry.offset as usize;
+                            xip_bootblock_file_offset
+                                .map(|off| {
+                                    if off == entry_file_offset {
+                                        "  note=XIP top-aligned".to_string()
+                                    } else {
+                                        format!(
+                                            "  note=FFS copy; XIP top-aligned at file_offset={off:#x}"
+                                        )
+                                    }
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
                         println!(
-                            "  {branch}\"{}\"  type={}  offset={:#x}  size={}",
+                            "  {branch}\"{}\"  type={}  {}  size={}{}{}",
                             entry.name,
                             file_type_str(*file_type),
-                            entry.offset,
+                            entry_location,
                             entry.size,
+                            compression_summary,
+                            bootblock_note,
                         );
 
                         // Digests
@@ -171,9 +310,18 @@ pub fn inspect(path: &str) -> Result<(), String> {
                         }
                     }
                     EntryContent::Raw { fill } => {
+                        let entry_location = if image_base != 0 {
+                            format!(
+                                "offset={:#x}  file_offset={:#x}",
+                                entry.offset,
+                                image_base + region.offset as usize + entry.offset as usize
+                            )
+                        } else {
+                            format!("offset={:#x}", entry.offset)
+                        };
                         println!(
-                            "  {branch}\"{}\"  type=Raw  offset={:#x}  size={}  fill={fill:#04x}",
-                            entry.name, entry.offset, entry.size,
+                            "  {branch}\"{}\"  type=Raw  {}  size={}  fill={fill:#04x}",
+                            entry.name, entry_location, entry.size,
                         );
                     }
                 }
@@ -186,6 +334,33 @@ pub fn inspect(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn find_anchors(data: &[u8]) -> Vec<(usize, AnchorBlock)> {
+    let reader = FfsReader::new(data);
+    let mut anchors = Vec::new();
+    let mut offset = 0usize;
+    while offset + ANCHOR_SIZE <= data.len() {
+        if data[offset..offset + FFS_MAGIC.len()] == FFS_MAGIC {
+            if let Ok(anchor) = reader.read_anchor(offset) {
+                anchors.push((offset, anchor));
+            }
+        }
+        offset += 8;
+    }
+    anchors
+}
+
+fn choose_display_anchor(anchors: &[(usize, AnchorBlock)]) -> Option<(usize, AnchorBlock)> {
+    // Full-flash x86 images contain both the FFS copy of the anchor and the
+    // XIP bootblock's top-of-flash anchor. Prefer the XIP anchor when present;
+    // it has the same image base but an image-relative offset beyond the FFS
+    // blob's signed total_image_size.
+    anchors
+        .iter()
+        .copied()
+        .find(|(_, anchor)| anchor.anchor_offset >= anchor.total_image_size)
+        .or_else(|| anchors.first().copied())
+}
+
 fn file_type_str(ft: FileType) -> &'static str {
     match ft {
         FileType::StageCode => "StageCode",
@@ -196,6 +371,7 @@ fn file_type_str(ft: FileType) -> &'static str {
         FileType::Raw => "Raw",
         FileType::Firmware => "Firmware",
         FileType::FitImage => "FitImage",
+        FileType::CpuMicrocode => "CpuMicrocode",
         FileType::Initramfs => "Initramfs",
     }
 }

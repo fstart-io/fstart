@@ -14,6 +14,7 @@
 //!   starts directly in RV64 M-mode — no mode switch is needed.
 
 #![no_std]
+#![cfg(target_arch = "riscv64")]
 
 #[cfg(not(feature = "sunxi"))]
 pub mod entry;
@@ -166,6 +167,19 @@ pub fn boot_linux_sbi(sbi_addr: u64, hart_id: u64, dtb_addr: u64, info: &FwDynam
             options(noreturn),
         );
     }
+}
+
+/// Unified Linux boot entry point.
+///
+/// Builds an [`FwDynamicInfo`] from `params.kernel_addr` and
+/// `params.hart_id`, then jumps to the SBI firmware at `params.fw_addr`
+/// which will `mret` into the kernel in S-mode.
+///
+/// Required fields: `kernel_addr`, `dtb_addr`, `fw_addr`, `hart_id`.
+/// Ignored fields: `rsdp_addr`, `bootargs`, `e820_entries`, `zero_page_addr`.
+pub fn boot_linux(params: &fstart_services::boot::BootLinuxParams<'_>) -> ! {
+    let info = FwDynamicInfo::new(params.kernel_addr, params.hart_id);
+    boot_linux_sbi(params.fw_addr, params.hart_id, params.dtb_addr, &info)
 }
 
 /// Copy an SBI firmware blob to its load address, then jump to it

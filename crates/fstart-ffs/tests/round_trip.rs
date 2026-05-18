@@ -1,7 +1,9 @@
 //! Integration tests: build an FFS image, then read it back and verify.
 
 use ed25519_dalek::{Signer, SigningKey};
-use fstart_ffs::builder::{build_image, FfsImageConfig, InputFile, InputRegion, InputSegment};
+use fstart_ffs::builder::{
+    build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
+};
 use fstart_ffs::reader::FfsReader;
 use fstart_types::ffs::{
     AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind,
@@ -616,6 +618,122 @@ fn test_region_not_found() {
     assert_eq!(
         result.err(),
         Some(fstart_ffs::reader::ReaderError::RegionNotFound)
+    );
+}
+
+#[test]
+fn test_external_bootblock_digest_valid_after_xip_anchor_patch() {
+    let (signing_key, vk) = dev_keypair();
+    let bootblock_offset = 0x1000usize;
+    let mut external_bootblock = stage_data_with_anchor(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![InputRegion::ContainerWithExternal {
+            name: "ro".to_string(),
+            files: vec![InputFile {
+                name: "config".to_string(),
+                file_type: FileType::BoardConfig,
+                segments: vec![InputSegment {
+                    name: "data".to_string(),
+                    kind: SegmentKind::ReadOnlyData,
+                    data: vec![0xBB; 32],
+                    mem_size: None,
+                    load_addr: 0x0,
+                    compression: Compression::None,
+                    flags: SegmentFlags::RODATA,
+                }],
+            }],
+            external_files: vec![ExternalInputFile {
+                name: "bootblock".to_string(),
+                file_type: FileType::StageCode,
+                offset: bootblock_offset as u32,
+                segments: vec![InputSegment {
+                    name: ".flat".to_string(),
+                    kind: SegmentKind::Code,
+                    data: external_bootblock.clone(),
+                    mem_size: None,
+                    load_addr: 0xFFFF_F000,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
+            }],
+            size: Some(0x2000),
+        }],
+    };
+
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor = reader
+        .read_anchor(ffs.anchor_offset)
+        .expect("should read fallback anchor");
+    let manifest = reader
+        .read_manifest(&anchor)
+        .expect("should verify manifest");
+    let region = FfsReader::find_region(&manifest, "ro").expect("find ro");
+    let bootblock = FfsReader::find_entry(region, "bootblock").expect("find bootblock");
+
+    let mut xip_anchor = anchor;
+    xip_anchor.anchor_offset = bootblock_offset as u32;
+    xip_anchor.write_to(&mut external_bootblock[..ANCHOR_SIZE]);
+
+    let mut full_image = vec![0xff; 0x2000];
+    full_image[..ffs.image.len()].copy_from_slice(&ffs.image);
+    full_image[bootblock_offset..bootblock_offset + external_bootblock.len()]
+        .copy_from_slice(&external_bootblock);
+
+    let full_reader = FfsReader::new(&full_image);
+    full_reader
+        .verify_entry_digests(bootblock, region)
+        .expect("external bootblock digest should match patched XIP anchor bytes");
+}
+
+#[test]
+fn test_external_file_rejects_ffs_overlap() {
+    let (signing_key, vk) = dev_keypair();
+
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![InputRegion::ContainerWithExternal {
+            name: "ro".to_string(),
+            files: vec![InputFile {
+                name: "config".to_string(),
+                file_type: FileType::BoardConfig,
+                segments: vec![InputSegment {
+                    name: "data".to_string(),
+                    kind: SegmentKind::ReadOnlyData,
+                    data: vec![0xBB; 64],
+                    mem_size: None,
+                    load_addr: 0x0,
+                    compression: Compression::None,
+                    flags: SegmentFlags::RODATA,
+                }],
+            }],
+            external_files: vec![ExternalInputFile {
+                name: "bootblock".to_string(),
+                file_type: FileType::StageCode,
+                offset: 0x80,
+                segments: vec![InputSegment {
+                    name: ".flat".to_string(),
+                    kind: SegmentKind::Code,
+                    data: stage_data_with_anchor(&[0xDE, 0xAD, 0xBE, 0xEF]),
+                    mem_size: None,
+                    load_addr: 0xFFFF_F000,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
+            }],
+            size: Some(0x2000),
+        }],
+    };
+
+    let err = match build_image(&config, &make_signer(&signing_key)) {
+        Ok(_) => panic!("overlap accepted"),
+        Err(err) => err,
+    };
+    assert!(
+        err.contains("overlaps external file"),
+        "unexpected error: {err}"
     );
 }
 

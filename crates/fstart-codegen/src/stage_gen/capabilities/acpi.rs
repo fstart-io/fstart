@@ -1,7 +1,10 @@
 //! Code generation for ACPI table preparation.
 //!
-//! Generates per-device ACPI DSDT AML, extra tables (SPCR, MCFG),
-//! ACPI-only device contributions, and platform ACPI assembly.
+//! Emits the per-device DSDT AML + extra-table blocks that
+//! `board_gen::acpi_prepare_body` assembles into the board's
+//! `fstart_capabilities::acpi::prepare` invocation.  The capability
+//! orchestration itself lives in `board_gen`; this module only holds
+//! the per-variant struct emission.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
@@ -16,6 +19,7 @@ use fstart_types::{BoardConfig, DeviceConfig};
 /// 2. Collects extra tables (SPCR, MCFG) from those devices
 /// 3. Collects DSDT AML from ACPI-only extra devices (AHCI, xHCI, PCIe)
 /// 4. Calls the platform assembler to build all tables and write to DRAM
+#[allow(dead_code)]
 pub(in crate::stage_gen) fn generate_acpi_prepare(
     config: &BoardConfig,
     devices: &[DeviceConfig],
@@ -79,7 +83,13 @@ pub(in crate::stage_gen) fn generate_acpi_prepare(
 }
 
 /// Generate code for an ACPI-only device (from the devices[] list).
-fn generate_acpi_only_device(
+///
+/// Exposed at `pub(in crate::stage_gen)` so [`board_gen::acpi_prepare_body`]
+/// can reuse the per-variant struct literal emission without
+/// duplicating the `DriverInstance` match.
+///
+/// [`board_gen::acpi_prepare_body`]: crate::stage_gen::board_gen
+pub(in crate::stage_gen) fn generate_acpi_only_device(
     instance: &fstart_device_registry::DriverInstance,
     idx: usize,
 ) -> TokenStream {
@@ -146,7 +156,17 @@ fn generate_acpi_only_device(
 }
 
 /// Generate the platform ACPI config struct literal.
-fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenStream {
+///
+/// Emits `let platform_acpi = ...;` — a stateless binding usable in
+/// either the old `fstart_main` body or the new
+/// [`board_gen::acpi_prepare_body`] method body.
+///
+/// Exposed at `pub(in crate::stage_gen)` so `board_gen` can reuse it.
+///
+/// [`board_gen::acpi_prepare_body`]: crate::stage_gen::board_gen
+pub(in crate::stage_gen) fn generate_platform_acpi(
+    platform: &fstart_types::acpi::AcpiPlatform,
+) -> TokenStream {
     use fstart_types::acpi::AcpiPlatform;
 
     match platform {
@@ -229,10 +249,28 @@ fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenS
             }
         }
         AcpiPlatform::X86(x86) => {
-            let num_cpus = Literal::u32_unsuffixed(x86.num_cpus);
+            // num_cpus = None → 0 sentinel; runtime MADT builder detects via CPUID.
+            // For now we fall back to 1 CPU when unset to keep the MADT valid.
+            let num_cpus = Literal::u32_unsuffixed(x86.num_cpus.unwrap_or(0));
             let lapic_base = Literal::u64_unsuffixed(x86.lapic_base);
             let sci_irq = Literal::u8_unsuffixed(x86.sci_irq);
+            let pmbase = Literal::u16_unsuffixed(x86.pmbase);
             let legacy = x86.legacy_devices;
+            let acpi_smi_expr = match x86.acpi_smi {
+                Some(smi) => {
+                    let smi_cmd = Literal::u32_unsuffixed(smi.smi_cmd);
+                    let acpi_enable = Literal::u8_unsuffixed(smi.acpi_enable);
+                    let acpi_disable = Literal::u8_unsuffixed(smi.acpi_disable);
+                    quote! {
+                        Some(fstart_types::acpi::AcpiSmiConfig {
+                            smi_cmd: #smi_cmd,
+                            acpi_enable: #acpi_enable,
+                            acpi_disable: #acpi_disable,
+                        })
+                    }
+                }
+                None => quote! { None },
+            };
 
             let ioapic_entries: Vec<_> = x86
                 .ioapics
@@ -283,13 +321,15 @@ fn generate_platform_acpi(platform: &fstart_types::acpi::AcpiPlatform) -> TokenS
                     [#(#iso_entries),*];
                 let platform_acpi = fstart_acpi::platform::PlatformConfig::X86(
                     fstart_acpi::platform::X86Config {
-                        num_cpus: #num_cpus,
+                        num_cpus: if #num_cpus == 0 { fstart_mp::online_cpus() as u32 } else { #num_cpus },
                         lapic_base: #lapic_base,
                         ioapics: &_IOAPICS,
                         isos: &_ISOS,
                         hpet_base: #hpet_expr,
                         legacy_devices: #legacy,
                         sci_irq: #sci_irq,
+                        pmbase: #pmbase,
+                        acpi_smi: #acpi_smi_expr,
                     }
                 );
             }

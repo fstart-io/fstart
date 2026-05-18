@@ -99,6 +99,61 @@ pub mod bochs_display {
     pub use fstart_driver_bochs_display::BochsDisplayConfig;
 }
 
+#[cfg(feature = "qemu-fw-cfg")]
+pub mod qemu_fw_cfg {
+    pub use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
+}
+
+#[cfg(feature = "q35-hostbridge")]
+pub mod q35_hostbridge {
+    pub use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
+}
+
+#[cfg(feature = "ite8721f")]
+pub mod ite8721f {
+    pub use fstart_driver_ite8721f::Ite8721fConfig;
+}
+
+#[cfg(feature = "nsc-pc87382")]
+pub mod nsc_pc87382 {
+    pub use fstart_driver_nsc_pc87382::Pc87382Config;
+}
+
+#[cfg(feature = "nsc-pc87392")]
+pub mod nsc_pc87392 {
+    pub use fstart_driver_nsc_pc87392::Pc87392Config;
+}
+
+#[cfg(feature = "intel-pineview")]
+pub mod intel_pineview {
+    pub use fstart_driver_intel_pineview::IntelPineviewConfig;
+}
+
+#[cfg(feature = "intel-ich7")]
+pub mod intel_ich7 {
+    pub use fstart_driver_intel_ich7::IntelIch7Config;
+}
+
+#[cfg(feature = "intel-gm965")]
+pub mod intel_gm965 {
+    pub use fstart_driver_intel_gm965::IntelGm965Config;
+}
+
+#[cfg(feature = "intel-ich8")]
+pub mod intel_ich8 {
+    pub use fstart_driver_intel_ich8::IntelIch8Config;
+}
+
+#[cfg(feature = "lenovo-x61-mainboard")]
+pub mod lenovo_x61_mainboard {
+    pub use fstart_mainboard_lenovo_x61::LenovoX61MainboardConfig;
+}
+
+#[cfg(feature = "i2c-ck505")]
+pub mod i2c_ck505 {
+    pub use fstart_driver_i2c_ck505::I2cCk505Config;
+}
+
 // ---------------------------------------------------------------------------
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
@@ -124,11 +179,30 @@ pub struct DriverMeta {
     pub compatible: &'static [&'static str],
     /// Whether this driver implements `AcpiDevice` (behind `acpi` feature).
     pub has_acpi: bool,
+    /// Whether this driver implements
+    /// [`fstart_services::device::BusDevice`] (`true`) vs only
+    /// [`fstart_services::device::Device`] (`false`).
+    ///
+    /// Drives construction codegen: a bus-device child is built with
+    /// `BusDevice::new_on_bus(&cfg, &parent)`, a plain-device child (or
+    /// a root) with `Device::new(&cfg)`. Plain-device children still
+    /// benefit from the parent link for init ordering (see
+    /// `ensure_device_ready`) but don't take the parent as an argument.
+    pub is_bus_device: bool,
 }
 
 // ---------------------------------------------------------------------------
 // DriverInstance — typed enum of all known driver configs
 // ---------------------------------------------------------------------------
+
+/// Empty configuration for structural (driverless) device tree nodes.
+///
+/// Used by `DriverInstance::Structural`. Carries no data — the node's
+/// identity is fully captured by `DeviceConfig` (name, parent, bus,
+/// services). Needed so the parallel `driver_instances` array stays
+/// aligned with `devices`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StructuralConfig {}
 
 /// A driver instance with its typed configuration.
 ///
@@ -145,6 +219,13 @@ pub struct DriverMeta {
 /// target, only the drivers the board actually uses are compiled in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DriverInstance {
+    /// Structural (driverless) node — a bus bridge managed by its parent.
+    ///
+    /// Used for internal chipset sub-functions (PCIe root ports, LPC
+    /// bus, SMBus) that exist only to give downstream devices a parent
+    /// in the tree. Skipped by the driver init loop.
+    Structural(StructuralConfig),
+
     /// NS16550(A) UART
     #[cfg(feature = "ns16550")]
     Ns16550(ns16550::Ns16550Config),
@@ -228,12 +309,67 @@ pub enum DriverInstance {
     /// Bochs VBE display (QEMU bochs-display, PCI MMIO mode).
     #[cfg(feature = "bochs-display")]
     BochsDisplay(bochs_display::BochsDisplayConfig),
+
+    /// QEMU fw_cfg device — provides ACPI tables and e820 memory map.
+    #[cfg(feature = "qemu-fw-cfg")]
+    QemuFwCfg(qemu_fw_cfg::QemuFwCfgConfig),
+
+    /// Q35 PCI host bridge — ECAM with CF8/CFC bootstrap and runtime
+    /// MMIO window computation from e820.
+    #[cfg(feature = "q35-hostbridge")]
+    Q35HostBridge(q35_hostbridge::Q35HostBridgeConfig),
+
+    /// ITE IT8721F SuperIO — LPC-attached multi-function peripheral.
+    #[cfg(feature = "ite8721f")]
+    Ite8721f(ite8721f::Ite8721fConfig),
+
+    /// NSC PC87382 SuperIO / DLPC block.
+    #[cfg(feature = "nsc-pc87382")]
+    NscPc87382(nsc_pc87382::Pc87382Config),
+
+    /// NSC PC87392 SuperIO — dock-side X61 peripheral.
+    #[cfg(feature = "nsc-pc87392")]
+    NscPc87392(nsc_pc87392::Pc87392Config),
+
+    /// Intel Atom D4xx/D5xx (Pineview) northbridge / MCH.
+    #[cfg(feature = "intel-pineview")]
+    IntelPineview(intel_pineview::IntelPineviewConfig),
+
+    /// Intel ICH7 / NM10 southbridge.
+    #[cfg(feature = "intel-ich7")]
+    IntelIch7(intel_ich7::IntelIch7Config),
+
+    /// Intel GM965 (Crestline) northbridge / MCH.
+    #[cfg(feature = "intel-gm965")]
+    IntelGm965(intel_gm965::IntelGm965Config),
+
+    /// Intel ICH8 / ICH8-M southbridge.
+    #[cfg(feature = "intel-ich8")]
+    IntelIch8(intel_ich8::IntelIch8Config),
+
+    /// Lenovo ThinkPad X61 mainboard glue.
+    #[cfg(feature = "lenovo-x61-mainboard")]
+    LenovoX61Mainboard(lenovo_x61_mainboard::LenovoX61MainboardConfig),
+
+    /// IDT CK505 clock generator (SMBus-attached).
+    #[cfg(feature = "i2c-ck505")]
+    I2cCk505(i2c_ck505::I2cCk505Config),
 }
 
 impl DriverInstance {
     /// Static metadata for this driver variant.
     pub fn meta(&self) -> &'static DriverMeta {
         match self {
+            Self::Structural(_) => &DriverMeta {
+                name: "_structural",
+                type_name: "_Structural",
+                module_path: "fstart_device_registry",
+                config_type: "StructuralConfig",
+                services: &[],
+                compatible: &[],
+                has_acpi: false,
+                is_bus_device: false,
+            },
             #[cfg(feature = "ns16550")]
             Self::Ns16550(_) => &DriverMeta {
                 name: "ns16550",
@@ -248,6 +384,7 @@ impl DriverInstance {
                     "allwinner,sun7i-a20-uart",
                 ],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "pl011")]
             Self::Pl011(_) => &DriverMeta {
@@ -258,6 +395,7 @@ impl DriverInstance {
                 services: &["Console"],
                 compatible: &["arm,pl011", "pl011"],
                 has_acpi: true,
+                is_bus_device: false,
             },
             #[cfg(feature = "designware-i2c")]
             Self::DesignwareI2c(_) => &DriverMeta {
@@ -268,6 +406,7 @@ impl DriverInstance {
                 services: &["I2cBus"],
                 compatible: &["snps,designware-i2c", "dw-apb-i2c"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "sunxi-a20-ccu")]
             Self::SunxiA20Ccu(_) => &DriverMeta {
@@ -278,6 +417,7 @@ impl DriverInstance {
                 services: &["ClockController"],
                 compatible: &["allwinner,sun7i-a20-ccu"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "sunxi-h3-ccu")]
             Self::SunxiH3Ccu(_) => &DriverMeta {
@@ -288,6 +428,7 @@ impl DriverInstance {
                 services: &["ClockController"],
                 compatible: &["allwinner,sun8i-h3-ccu"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "sunxi-a20-dramc")]
             Self::SunxiA20Dramc(_) => &DriverMeta {
@@ -298,6 +439,7 @@ impl DriverInstance {
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun7i-a20-dramc"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "sunxi-h3-dramc")]
             Self::SunxiH3Dramc(_) => &DriverMeta {
@@ -308,6 +450,7 @@ impl DriverInstance {
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "sunxi-mmc")]
             Self::SunxiMmc(_) => &DriverMeta {
@@ -322,6 +465,7 @@ impl DriverInstance {
                     "allwinner,sun50i-h5-mmc",
                 ],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "sunxi-spi")]
             Self::SunxiSpi(_) => &DriverMeta {
@@ -332,6 +476,7 @@ impl DriverInstance {
                 services: &["BlockDevice"],
                 compatible: &["allwinner,sun4i-a10-spi", "allwinner,sun8i-h3-spi"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "sunxi-d1-ccu")]
             Self::SunxiD1Ccu(_) => &DriverMeta {
@@ -342,6 +487,7 @@ impl DriverInstance {
                 services: &["ClockController"],
                 compatible: &["allwinner,sun20i-d1-ccu"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "sunxi-d1-dramc")]
             Self::SunxiD1Dramc(_) => &DriverMeta {
@@ -352,6 +498,7 @@ impl DriverInstance {
                 services: &["MemoryController"],
                 compatible: &["allwinner,sun20i-d1-mbus"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             Self::Ahci(_) => &DriverMeta {
                 name: "ahci",
@@ -361,6 +508,7 @@ impl DriverInstance {
                 services: &[],
                 compatible: &[],
                 has_acpi: true,
+                is_bus_device: false,
             },
             Self::Xhci(_) => &DriverMeta {
                 name: "xhci",
@@ -370,6 +518,7 @@ impl DriverInstance {
                 services: &[],
                 compatible: &[],
                 has_acpi: true,
+                is_bus_device: false,
             },
             Self::PcieRoot(_) => &DriverMeta {
                 name: "pcie-root",
@@ -379,6 +528,7 @@ impl DriverInstance {
                 services: &[],
                 compatible: &[],
                 has_acpi: true,
+                is_bus_device: false,
             },
             #[cfg(feature = "sifive-uart")]
             Self::SifiveUart(_) => &DriverMeta {
@@ -389,6 +539,7 @@ impl DriverInstance {
                 services: &["Console"],
                 compatible: &["sifive,fu740-c000-uart", "sifive,uart0"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "fu740-prci")]
             Self::Fu740Prci(_) => &DriverMeta {
@@ -399,6 +550,7 @@ impl DriverInstance {
                 services: &["ClockController"],
                 compatible: &["sifive,fu740-c000-prci"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "fu740-ddr")]
             Self::Fu740Ddr(_) => &DriverMeta {
@@ -409,6 +561,7 @@ impl DriverInstance {
                 services: &["MemoryController"],
                 compatible: &["sifive,fu740-c000-ddr"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "pci-ecam")]
             Self::PciEcam(_) => &DriverMeta {
@@ -419,6 +572,7 @@ impl DriverInstance {
                 services: &["PciRootBus"],
                 compatible: &["pci-host-ecam-generic"],
                 has_acpi: false,
+                is_bus_device: false,
             },
             #[cfg(feature = "bochs-display")]
             Self::BochsDisplay(_) => &DriverMeta {
@@ -429,6 +583,139 @@ impl DriverInstance {
                 services: &["Framebuffer"],
                 compatible: &["bochs-display", "qemu-stdvga"],
                 has_acpi: false,
+                is_bus_device: true,
+            },
+            #[cfg(feature = "qemu-fw-cfg")]
+            Self::QemuFwCfg(_) => &DriverMeta {
+                name: "qemu-fw-cfg",
+                type_name: "QemuFwCfg",
+                module_path: "fstart_driver_qemu_fw_cfg",
+                config_type: "QemuFwCfgConfig",
+                services: &["AcpiTableProvider", "MemoryDetector"],
+                compatible: &["qemu,fw-cfg"],
+                has_acpi: false,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "q35-hostbridge")]
+            Self::Q35HostBridge(_) => &DriverMeta {
+                name: "q35-hostbridge",
+                type_name: "Q35HostBridge",
+                module_path: "fstart_driver_q35_hostbridge",
+                config_type: "Q35HostBridgeConfig",
+                services: &["PciRootBus", "SmmOps"],
+                compatible: &["q35-hostbridge"],
+                has_acpi: false,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "ite8721f")]
+            Self::Ite8721f(_) => &DriverMeta {
+                name: "ite8721f",
+                type_name: "Ite8721f",
+                module_path: "fstart_driver_ite8721f",
+                config_type: "Ite8721fConfig",
+                // SuperIOs program LDNs and optionally provide Console
+                // directly when `console_port` is set — no separate
+                // NS16550 child needed.  Also expose `SuperIoHost` for
+                // init-ordering of any remaining children.
+                services: &["SuperIoHost", "Console"],
+                compatible: &["ite,it8721f", "ite,8721f"],
+                has_acpi: true,
+                is_bus_device: true,
+            },
+            #[cfg(feature = "nsc-pc87382")]
+            Self::NscPc87382(_) => &DriverMeta {
+                name: "nsc-pc87382",
+                type_name: "Pc87382",
+                module_path: "fstart_driver_nsc_pc87382",
+                config_type: "Pc87382Config",
+                services: &["SuperIoHost", "Console"],
+                compatible: &["nsc,pc87382"],
+                has_acpi: true,
+                is_bus_device: true,
+            },
+            #[cfg(feature = "nsc-pc87392")]
+            Self::NscPc87392(_) => &DriverMeta {
+                name: "nsc-pc87392",
+                type_name: "Pc87392",
+                module_path: "fstart_driver_nsc_pc87392",
+                config_type: "Pc87392Config",
+                services: &["SuperIoHost", "Console"],
+                compatible: &["nsc,pc87392"],
+                has_acpi: true,
+                is_bus_device: true,
+            },
+            #[cfg(feature = "intel-pineview")]
+            Self::IntelPineview(_) => &DriverMeta {
+                name: "intel-pineview",
+                type_name: "IntelPineview",
+                module_path: "fstart_driver_intel_pineview",
+                config_type: "IntelPineviewConfig",
+                services: &["MemoryController", "PciHost", "PciRootBus", "SmmOps"],
+                compatible: &["intel,pineview-mch", "intel,atom-d4xx-mch"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "intel-ich7")]
+            Self::IntelIch7(_) => &DriverMeta {
+                name: "intel-ich7",
+                type_name: "IntelIch7",
+                module_path: "fstart_driver_intel_ich7",
+                config_type: "IntelIch7Config",
+                services: &["Southbridge"],
+                compatible: &["intel,ich7", "intel,nm10"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "intel-gm965")]
+            Self::IntelGm965(_) => &DriverMeta {
+                name: "intel-gm965",
+                type_name: "IntelGm965",
+                module_path: "fstart_driver_intel_gm965",
+                config_type: "IntelGm965Config",
+                services: &[
+                    "MemoryController",
+                    "MemoryDetector",
+                    "PciHost",
+                    "PciRootBus",
+                    "SmmOps",
+                    "PostDramInit",
+                ],
+                compatible: &["intel,gm965", "intel,crestline"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "intel-ich8")]
+            Self::IntelIch8(_) => &DriverMeta {
+                name: "intel-ich8",
+                type_name: "IntelIch8",
+                module_path: "fstart_driver_intel_ich8",
+                config_type: "IntelIch8Config",
+                services: &["Southbridge"],
+                compatible: &["intel,ich8", "intel,ich8m", "intel,82801hx"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "lenovo-x61-mainboard")]
+            Self::LenovoX61Mainboard(_) => &DriverMeta {
+                name: "lenovo-x61-mainboard",
+                type_name: "LenovoX61Mainboard",
+                module_path: "fstart_mainboard_lenovo_x61",
+                config_type: "LenovoX61MainboardConfig",
+                services: &["Mainboard"],
+                compatible: &["lenovo,thinkpad-x61"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "i2c-ck505")]
+            Self::I2cCk505(_) => &DriverMeta {
+                name: "i2c-ck505",
+                type_name: "I2cCk505",
+                module_path: "fstart_driver_i2c_ck505",
+                config_type: "I2cCk505Config",
+                services: &[],
+                compatible: &["idt,ck505"],
+                has_acpi: false,
+                is_bus_device: true,
             },
         }
     }
@@ -448,6 +735,18 @@ impl DriverInstance {
         match self {
             #[cfg(feature = "pl011")]
             Self::Pl011(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "ite8721f")]
+            Self::Ite8721f(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-pineview")]
+            Self::IntelPineview(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-ich7")]
+            Self::IntelIch7(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-gm965")]
+            Self::IntelGm965(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-ich8")]
+            Self::IntelIch8(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "lenovo-x61-mainboard")]
+            Self::LenovoX61Mainboard(cfg) => cfg.acpi_name.as_deref(),
             Self::Ahci(cfg) => Some(cfg.name.as_str()),
             Self::Xhci(cfg) => Some(cfg.name.as_str()),
             Self::PcieRoot(cfg) => Some(cfg.name.as_str()),
@@ -463,12 +762,46 @@ impl DriverInstance {
         matches!(self, Self::Ahci(_) | Self::Xhci(_) | Self::PcieRoot(_))
     }
 
+    /// Returns `true` if this is a structural (driverless) bus node.
+    ///
+    /// Structural nodes exist in the device tree to give downstream
+    /// devices a parent, but have no driver code. They are skipped by
+    /// device construction and `DriverInit`.
+    pub fn is_structural(&self) -> bool {
+        matches!(self, Self::Structural(_))
+    }
+
+    /// Return the SoC boot-source register values that select this device.
+    ///
+    /// Used by `plan_gen` and `board_gen` to emit match arms for runtime
+    /// boot-device auto-detection (e.g. sunxi eGON `boot_media` byte).
+    /// Returns an empty `Vec` for drivers that have no boot-source
+    /// mapping (non-sunxi platforms, or devices that aren't boot media).
+    ///
+    /// The constants here mirror `fstart_soc_sunxi::BOOT_MEDIA_*` so
+    /// that the codegen (host-side, `std`) can use them without depending
+    /// on the `no_std` SoC crate.
+    pub fn boot_media_values(&self) -> Vec<u8> {
+        match self {
+            #[cfg(feature = "sunxi-mmc")]
+            Self::SunxiMmc(cfg) => match cfg.mmc_index() {
+                0 => vec![0x00, 0x10], // MMC0, MMC0_HIGH
+                2 => vec![0x02, 0x12], // MMC2, MMC2_HIGH
+                _ => Vec::new(),
+            },
+            #[cfg(feature = "sunxi-spi")]
+            Self::SunxiSpi(_) => vec![0x03], // SPI
+            _ => Vec::new(),
+        }
+    }
+
     /// Serialize just the inner config struct via the given serializer.
     ///
     /// This enables generic config-to-tokens conversion in `fstart-codegen`
     /// without per-driver match arms there.
     pub fn serialize_config<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         match self {
+            Self::Structural(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "ns16550")]
             Self::Ns16550(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "pl011")]
@@ -504,6 +837,28 @@ impl DriverInstance {
             Self::PciEcam(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "bochs-display")]
             Self::BochsDisplay(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "qemu-fw-cfg")]
+            Self::QemuFwCfg(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "q35-hostbridge")]
+            Self::Q35HostBridge(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "ite8721f")]
+            Self::Ite8721f(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "nsc-pc87382")]
+            Self::NscPc87382(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "nsc-pc87392")]
+            Self::NscPc87392(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-pineview")]
+            Self::IntelPineview(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-ich7")]
+            Self::IntelIch7(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-gm965")]
+            Self::IntelGm965(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-ich8")]
+            Self::IntelIch8(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "lenovo-x61-mainboard")]
+            Self::LenovoX61Mainboard(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "i2c-ck505")]
+            Self::I2cCk505(cfg) => serde::Serialize::serialize(cfg, ser),
         }
     }
 }

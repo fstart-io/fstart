@@ -23,6 +23,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use fstart_types::acpi::AcpiSmiConfig;
+
 use super::FadtConfig;
 
 /// x86 platform configuration for ACPI table generation.
@@ -46,6 +48,16 @@ pub struct X86Config {
     pub legacy_devices: bool,
     /// SCI interrupt number (System Control Interrupt for ACPI events).
     pub sci_irq: u8,
+    /// PMBASE I/O port base (chipset-specific, e.g. 0x500 for ICH7).
+    ///
+    /// Used to derive PM1a_EVT_BLK, PM1a_CNT_BLK, PM_TMR_BLK,
+    /// and GPE0_BLK addresses in the FADT.
+    pub pmbase: u16,
+    /// Optional SMI command port and ACPI enable/disable values.
+    ///
+    /// Leave as `None` unless the platform has installed an SMI handler
+    /// that handles those commands.
+    pub acpi_smi: Option<AcpiSmiConfig>,
 }
 
 /// I/O APIC configuration.
@@ -104,11 +116,35 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         platform_tables.push(hpet);
     }
 
+    // PMBASE from board config. Feeds into FADT PM register blocks.
+    // board-specific but hardcoded in ICH7 early_init.
+    let pmbase: u32 = config.pmbase as u32;
+
+    // IAPC Boot Arch: 8042 keyboard + legacy devices.
+    let mut iapc: u16 = 0;
+    if config.legacy_devices {
+        iapc |= 0x0003; // FADT_8042 | FADT_LEGACY_DEVICES
+    }
+
+    let (smi_cmd, acpi_enable, acpi_disable) = config
+        .acpi_smi
+        .map(|smi| (smi.smi_cmd, smi.acpi_enable, smi.acpi_disable))
+        .unwrap_or((0, 0, 0));
+
     let fadt_config = FadtConfig {
         hw_reduced: false,
         low_power_s0: false,
         arm_psci: false,
         pm_profile: acpi_tables::fadt::PmProfile::Desktop,
+        pm1a_evt_blk: pmbase,
+        pm1a_cnt_blk: pmbase + 0x04,
+        pm_tmr_blk: pmbase + 0x08,
+        gpe0_blk: pmbase + 0x28,
+        sci_int: config.sci_irq as u16,
+        iapc_boot_arch: iapc,
+        smi_cmd,
+        acpi_enable,
+        acpi_disable,
     };
 
     (platform_tables, fadt_config)
@@ -245,6 +281,8 @@ mod tests {
             hpet_base: Some(0xFED0_0000),
             legacy_devices: true,
             sci_irq: 9,
+            pmbase: 0x0500,
+            acpi_smi: None,
         }
     }
 

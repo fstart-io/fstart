@@ -1,47 +1,75 @@
 [workspace]
 resolver = "2"
 members = [
-    "xtask",
-    "crates/fstart-types",
-    "crates/fstart-codegen",
-    "crates/fstart-ffs",
-    "crates/fstart-crypto",
-    "crates/fstart-mmio",
-    "crates/fstart-services",
-    "crates/fstart-arch",
-    "crates/fstart-capabilities",
-    "crates/fstart-alloc",
-    "crates/fstart-log",
-    "crates/fstart-runtime",
-    "crates/fstart-platform-riscv64",
-    "crates/fstart-platform-aarch64",
-    "crates/fstart-platform-armv7",
-    "crates/fstart-soc-sunxi",
-    "crates/fstart-sunxi-ccu-regs",
-    "crates/fstart-sunxi-pio",
-    "crates/fstart-driver-ns16550",
-    "crates/fstart-driver-pl011",
-    "crates/fstart-driver-designware-i2c",
-    "crates/fstart-driver-sunxi-ccu",
-    "crates/fstart-driver-sunxi-a20-dramc",
-    "crates/fstart-driver-sunxi-mmc",
-    "crates/fstart-driver-sunxi-spi",
-    "crates/fstart-driver-sunxi-h3-ccu",
-    "crates/fstart-driver-sunxi-h3-dramc",
-    "crates/fstart-driver-sunxi-d1-ccu",
-    "crates/fstart-driver-sunxi-d1-dramc",
-    "crates/fstart-driver-sifive-uart",
-    "crates/fstart-driver-fu740-prci",
-    "crates/fstart-driver-fu740-ddr",
-    "crates/fstart-driver-pci-ecam",
-    "crates/fstart-driver-bochs-display",
-    "crates/fstart-device-registry",
-    "crates/fstart-crabefi",
-    "crates/fstart-stage",
-    "crates/fstart-fit",
-    "crates/fstart-acpi",
-    "crates/fstart-acpi-macros",
-    "crates/fstart-smbios",
+  "xtask",
+  "crates/fstart-types",
+  "crates/fstart-codegen",
+  "crates/fstart-ffs",
+  "crates/fstart-crypto",
+  "crates/fstart-mmio",
+  "crates/fstart-services",
+  "crates/fstart-arch",
+  "crates/fstart-arch-x86",
+  "crates/fstart-capabilities",
+  "crates/fstart-alloc",
+  "crates/fstart-log",
+  "crates/fstart-runtime",
+  "crates/fstart-stage-runtime",
+  "crates/fstart-platform-riscv64",
+  "crates/fstart-platform-aarch64",
+  "crates/fstart-platform-armv7",
+  "crates/fstart-soc-sunxi",
+  "crates/fstart-sunxi-ccu-regs",
+  "crates/fstart-sunxi-pio",
+  "crates/fstart-driver-ns16550",
+  "crates/fstart-driver-pl011",
+  "crates/fstart-driver-designware-i2c",
+  "crates/fstart-driver-sunxi-ccu",
+  "crates/fstart-driver-sunxi-a20-dramc",
+  "crates/fstart-driver-sunxi-mmc",
+  "crates/fstart-driver-sunxi-spi",
+  "crates/fstart-driver-sunxi-h3-ccu",
+  "crates/fstart-driver-sunxi-h3-dramc",
+  "crates/fstart-driver-sunxi-d1-ccu",
+  "crates/fstart-driver-sunxi-d1-dramc",
+  "crates/fstart-driver-sifive-uart",
+  "crates/fstart-driver-fu740-prci",
+  "crates/fstart-driver-fu740-ddr",
+  "crates/fstart-driver-pci-ecam",
+  "crates/fstart-ecam",
+  "crates/fstart-driver-bochs-display",
+  "crates/fstart-device-registry",
+  "crates/fstart-crabefi",
+  "crates/fstart-stage",
+  "crates/fstart-fit",
+  "crates/fstart-acpi",
+  "crates/fstart-acpi-macros",
+  "crates/fstart-smbios",
+  "crates/fstart-pio",
+  "crates/fstart-pmio-ich",
+  "crates/fstart-platform-x86_64",
+  "crates/fstart-driver-qemu-fw-cfg",
+  "crates/fstart-driver-q35-hostbridge",
+  "crates/fstart-superio",
+  "crates/fstart-driver-ite8721f",
+  "crates/fstart-driver-nsc-pc87382",
+  "crates/fstart-driver-nsc-pc87392",
+  "crates/fstart-driver-intel-pineview",
+  "crates/fstart-driver-intel-ich7",
+  "crates/fstart-driver-intel-gm965",
+  "crates/fstart-driver-intel-ich8",
+  "crates/fstart-mainboard-lenovo-x61",
+  "crates/fstart-driver-i2c-ck505",
+  "crates/fstart-smbus-intel",
+  "crates/fstart-spd",
+  "crates/fstart-gpio-ich",
+  "crates/fstart-hda",
+  "crates/fstart-lapic",
+  "crates/fstart-mp",
+  "crates/fstart-microcode-intel",
+  "crates/fstart-smm",
+  "crates/fstart-smm-image",
+  "crates/fstart-cpu-intel",
 ]
 
 [workspace.package]
@@ -67,6 +95,7 @@ heapless = { version = "0.8", features = ["serde"] }
 ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
 tock-registers = "0.10"
+x86 = { version = "0.52", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
@@ -75,7 +104,11 @@ dtoolkit = { version = "0.1", default-features = false }
 lz4_flex = { version = "0.11", default-features = false }
 
 # ELF parsing (host-side only)
-goblin = { version = "0.10", default-features = false, features = ["elf32", "elf64", "endian_fd"] }
+goblin = { version = "0.10", default-features = false, features = [
+  "elf32",
+  "elf64",
+  "endian_fd",
+] }
 
 # xtask / host-side
 clap = { version = "4", features = ["derive"] }
@@ -91,10 +124,12 @@ fstart-capabilities = { path = "crates/fstart-capabilities" }
 fstart-alloc = { path = "crates/fstart-alloc" }
 fstart-log = { path = "crates/fstart-log" }
 fstart-runtime = { path = "crates/fstart-runtime" }
+fstart-stage-runtime = { path = "crates/fstart-stage-runtime" }
 fstart-platform-riscv64 = { path = "crates/fstart-platform-riscv64" }
 fstart-platform-aarch64 = { path = "crates/fstart-platform-aarch64" }
 fstart-platform-armv7 = { path = "crates/fstart-platform-armv7" }
 fstart-arch = { path = "crates/fstart-arch" }
+fstart-arch-x86 = { path = "crates/fstart-arch-x86" }
 fstart-soc-sunxi = { path = "crates/fstart-soc-sunxi" }
 fstart-sunxi-ccu-regs = { path = "crates/fstart-sunxi-ccu-regs" }
 fstart-sunxi-pio = { path = "crates/fstart-sunxi-pio" }
@@ -113,6 +148,7 @@ fstart-driver-sifive-uart = { path = "crates/fstart-driver-sifive-uart" }
 fstart-driver-fu740-prci = { path = "crates/fstart-driver-fu740-prci" }
 fstart-driver-fu740-ddr = { path = "crates/fstart-driver-fu740-ddr" }
 fstart-driver-pci-ecam = { path = "crates/fstart-driver-pci-ecam" }
+fstart-ecam = { path = "crates/fstart-ecam" }
 fstart-driver-bochs-display = { path = "crates/fstart-driver-bochs-display" }
 fstart-device-registry = { path = "crates/fstart-device-registry" }
 fstart-crabefi = { path = "crates/fstart-crabefi" }
@@ -120,9 +156,39 @@ fstart-stage = { path = "crates/fstart-stage" }
 fstart-fit = { path = "crates/fstart-fit" }
 fstart-acpi = { path = "crates/fstart-acpi" }
 fstart-smbios = { path = "crates/fstart-smbios" }
+fstart-pio = { path = "crates/fstart-pio" }
+fstart-pmio-ich = { path = "crates/fstart-pmio-ich" }
+fstart-platform-x86_64 = { path = "crates/fstart-platform-x86_64" }
+fstart-driver-qemu-fw-cfg = { path = "crates/fstart-driver-qemu-fw-cfg" }
+fstart-driver-q35-hostbridge = { path = "crates/fstart-driver-q35-hostbridge" }
+fstart-superio = { path = "crates/fstart-superio" }
+fstart-driver-ite8721f = { path = "crates/fstart-driver-ite8721f" }
+fstart-driver-nsc-pc87382 = { path = "crates/fstart-driver-nsc-pc87382" }
+fstart-driver-nsc-pc87392 = { path = "crates/fstart-driver-nsc-pc87392" }
+fstart-driver-intel-pineview = { path = "crates/fstart-driver-intel-pineview" }
+fstart-driver-intel-ich7 = { path = "crates/fstart-driver-intel-ich7" }
+fstart-driver-intel-gm965 = { path = "crates/fstart-driver-intel-gm965" }
+fstart-driver-intel-ich8 = { path = "crates/fstart-driver-intel-ich8" }
+fstart-mainboard-lenovo-x61 = { path = "crates/fstart-mainboard-lenovo-x61" }
+fstart-driver-i2c-ck505 = { path = "crates/fstart-driver-i2c-ck505" }
+fstart-smbus-intel = { path = "crates/fstart-smbus-intel" }
+fstart-spd = { path = "crates/fstart-spd" }
+fstart-gpio-ich = { path = "crates/fstart-gpio-ich" }
+fstart-hda = { path = "crates/fstart-hda" }
+fstart-lapic = { path = "crates/fstart-lapic" }
+fstart-mp = { path = "crates/fstart-mp" }
+fstart-microcode-intel = { path = "crates/fstart-microcode-intel" }
+fstart-smm = { path = "crates/fstart-smm" }
+fstart-smm-image = { path = "crates/fstart-smm-image" }
+fstart-cpu-intel = { path = "crates/fstart-cpu-intel" }
 
 [profile.dev]
 panic = "abort"
+# Optimise fstart-stage for size even in dev builds.  SRAM-constrained
+# bootblocks (bananapi-m1, licheerv-dock, orangepi-r1) overflow at
+# opt-level 0; "s" keeps debug info while fitting in 24–32 KiB.
+[profile.dev.package.fstart-stage]
+opt-level = "s"
 
 # Crypto crates are unusably slow at opt-level 0 (minutes for a single
 # Ed25519 verify on emulated RISC-V).  Always compile them with optimizations.

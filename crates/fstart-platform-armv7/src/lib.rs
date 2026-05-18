@@ -132,6 +132,27 @@ pub fn cleanup_before_linux() {
     }
 }
 
+/// Unified Linux boot entry point.
+///
+/// Calls [`cleanup_before_linux`] then delegates to the ARM boot
+/// protocol jump.
+///
+/// Required fields: `kernel_addr`, `dtb_addr`.
+/// Ignored fields: `fw_addr`, `rsdp_addr`, `bootargs`, `e820_entries`,
+/// `zero_page_addr`, `hart_id`.
+/// Unified Linux boot entry point.
+///
+/// Calls [`cleanup_before_linux`] then jumps to the kernel.
+///
+/// Required fields: `kernel_addr`, `dtb_addr`.
+/// Ignored fields: `fw_addr`, `rsdp_addr`, `bootargs`, `e820_entries`,
+/// `zero_page_addr`, `hart_id`.
+#[cfg(target_arch = "arm")]
+pub fn boot_linux(params: &fstart_services::boot::BootLinuxParams<'_>) -> ! {
+    cleanup_before_linux();
+    boot_linux_direct(params.kernel_addr, params.dtb_addr)
+}
+
 /// Boot a Linux kernel using the ARM boot protocol.
 ///
 /// Sets up the registers per the ARM Linux boot protocol:
@@ -152,7 +173,7 @@ pub fn cleanup_before_linux() {
 /// - MMU is off, D-cache is off/clean
 #[cfg(target_arch = "arm")]
 #[inline(always)]
-pub fn boot_linux(kernel_addr: u64, dtb_addr: u64) -> ! {
+pub fn boot_linux_direct(kernel_addr: u64, dtb_addr: u64) -> ! {
     let kernel = kernel_addr as u32;
     let dtb = dtb_addr as u32;
     unsafe {

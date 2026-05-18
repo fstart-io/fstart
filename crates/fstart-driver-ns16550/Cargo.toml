@@ -4,8 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+pio = ["dep:fstart-pio"]
+
 [dependencies]
 fstart-mmio = { workspace = true }
+fstart-pio = { workspace = true, optional = true }
 fstart-services = { workspace = true }
 serde = { workspace = true }
 tock-registers = { workspace = true }

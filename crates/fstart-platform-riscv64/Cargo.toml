@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fstart-services = { workspace = true }
 fstart-soc-sunxi = { workspace = true, optional = true }
 
 [features]

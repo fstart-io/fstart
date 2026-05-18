@@ -19,10 +19,21 @@ use crate::ServiceError;
 /// After `init()` succeeds, `detected_size_bytes()` returns the usable
 /// DRAM capacity.
 pub trait MemoryController: Send + Sync {
+    /// Run DRAM initialization/training for this controller.
+    ///
+    /// This is separate from [`Device::init`](crate::device::Device::init)
+    /// because x86 northbridge drivers are constructed before the console and
+    /// chipset init are available. Real DRAM training is dispatched later by
+    /// the `DramInit` capability, after SMBus/GPIO/BAR setup has completed.
+    fn dram_init(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
     /// Return the detected DRAM size in bytes.
     ///
-    /// Only valid after `Device::init()` has completed successfully.
-    /// Returns 0 if DRAM init failed or has not been run.
+    /// Only valid after `dram_init()` or equivalent platform firmware has
+    /// completed successfully. Returns 0 if DRAM init failed or has not been
+    /// run.
     fn detected_size_bytes(&self) -> u64;
 
     /// Perform a basic memory test (optional, default no-op).

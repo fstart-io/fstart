@@ -15,7 +15,7 @@
 
 use fstart_types::ffs::{
     AnchorBlock, EntryContent, ImageManifest, Region, RegionContent, RegionEntry, Segment,
-    SignedManifest, FFS_MAGIC,
+    SignedManifest, ANCHOR_MAX_KEYS, ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
 };
 
 use fstart_crypto::digest;
@@ -99,13 +99,37 @@ impl<'a> FfsReader<'a> {
     pub fn scan_for_anchor(&self) -> Result<usize, ReaderError> {
         let magic = &FFS_MAGIC;
         let mut offset = 0;
-        while offset + magic.len() <= self.image.len() {
-            if &self.image[offset..offset + magic.len()] == magic {
+        while offset + ANCHOR_SIZE <= self.image.len() {
+            if &self.image[offset..offset + magic.len()] == magic
+                && self.anchor_header_is_plausible(offset)
+            {
                 return Ok(offset);
             }
             offset += 8; // 8-byte aligned scan
         }
         Err(ReaderError::BadMagic)
+    }
+
+    fn anchor_header_is_plausible(&self, offset: usize) -> bool {
+        let Some(header) = self.image.get(offset..offset + 40) else {
+            return false;
+        };
+        let version = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+        let manifest_offset = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+        let manifest_size = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
+        let total_image_size = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
+        let key_count = u32::from_le_bytes([header[36], header[37], header[38], header[39]]);
+
+        if version != FFS_VERSION || manifest_size == 0 || key_count as usize > ANCHOR_MAX_KEYS {
+            return false;
+        }
+
+        let Some(manifest_end) = (manifest_offset as usize).checked_add(manifest_size as usize)
+        else {
+            return false;
+        };
+        manifest_end <= self.image.len()
+            && (total_image_size == 0 || total_image_size as usize <= self.image.len())
     }
 
     /// Read and verify the signed image manifest referenced by the anchor.

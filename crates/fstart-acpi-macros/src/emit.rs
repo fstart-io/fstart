@@ -149,6 +149,7 @@ fn emit_item(item: &DslItem, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
         DslItem::Break { .. } => emit_break(gen),
         DslItem::Increment { target, .. } => emit_increment(target, gen),
         DslItem::Decrement { target, .. } => emit_decrement(target, gen),
+        DslItem::MethodCall { name, args, .. } => emit_method_call(name, args, gen),
     }
 }
 
@@ -159,6 +160,13 @@ fn emit_item(item: &DslItem, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
 fn emit_name_or_interp(name: &NameOrInterp) -> TokenStream {
     match name {
         NameOrInterp::Literal(s) => quote! { #s },
+        NameOrInterp::Interpolation(expr) => quote! { #expr },
+    }
+}
+
+fn emit_path_from_name_or_interp(name: &NameOrInterp) -> TokenStream {
+    match name {
+        NameOrInterp::Literal(s) => quote! { fstart_acpi::aml::Path::new(#s) },
         NameOrInterp::Interpolation(expr) => quote! { #expr },
     }
 }
@@ -183,13 +191,22 @@ fn emit_scope(
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
         .collect();
 
-    let path_expr = emit_name_or_interp(path);
-    bindings.extend(quote! {
-        let #var = fstart_acpi::aml::Scope::new(
-            fstart_acpi::aml::Path::new(#path_expr),
-            alloc::vec![#(#refs),*],
-        );
-    });
+    match path {
+        NameOrInterp::Literal(s) if s == "\\" => {
+            bindings.extend(quote! {
+                let #var = fstart_acpi::RootScope::new(alloc::vec![#(#refs),*]);
+            });
+        }
+        _ => {
+            let path_expr = emit_name_or_interp(path);
+            bindings.extend(quote! {
+                let #var = fstart_acpi::aml::Scope::new(
+                    fstart_acpi::aml::Path::new(#path_expr),
+                    alloc::vec![#(#refs),*],
+                );
+            });
+        }
+    }
 
     (bindings, var)
 }
@@ -598,6 +615,38 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
                     #shared,
                     #irq_var as u32,
                 );
+            });
+            (bindings, var)
+        }
+        ResourceDesc::Irq {
+            edge,
+            active_high,
+            exclusive,
+            irq,
+        } => {
+            let mut bindings = TokenStream::new();
+            let (irq_binding, irq_var) = emit_value(irq, gen);
+            bindings.extend(irq_binding);
+
+            let var = gen.next("isa_irq");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::IsaIrq::new(
+                    #edge,
+                    #active_high,
+                    #exclusive,
+                    #irq_var as u8,
+                );
+            });
+            (bindings, var)
+        }
+        ResourceDesc::IrqNoFlags { irq } => {
+            let mut bindings = TokenStream::new();
+            let (irq_binding, irq_var) = emit_value(irq, gen);
+            bindings.extend(irq_binding);
+
+            let var = gen.next("isa_irq");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::IsaIrq::no_flags(#irq_var as u8);
             });
             (bindings, var)
         }
@@ -1164,6 +1213,35 @@ fn emit_decrement(target: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macr
     let var = gen.next("dec");
     bindings.extend(quote! {
         let #var = fstart_acpi::ext::inc_dec::Decrement::new(&#tgt_var);
+    });
+    (bindings, var)
+}
+
+/// Emit a method invocation statement: `METHOD(arg0, arg1, ...)`.
+fn emit_method_call(
+    name: &NameOrInterp,
+    args: &[DslExpr],
+    gen: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let mut arg_vars = Vec::new();
+    for arg in args {
+        let (arg_bind, arg_var) = emit_expr(arg, gen);
+        bindings.extend(arg_bind);
+        arg_vars.push(arg_var);
+    }
+
+    let arg_refs: Vec<_> = arg_vars
+        .iter()
+        .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
+        .collect();
+    let path_expr = emit_path_from_name_or_interp(name);
+    let var = gen.next("call");
+    bindings.extend(quote! {
+        let #var = fstart_acpi::aml::MethodCall::new(
+            #path_expr,
+            alloc::vec![#(#arg_refs),*],
+        );
     });
     (bindings, var)
 }

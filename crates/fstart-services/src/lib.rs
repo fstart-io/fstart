@@ -11,20 +11,33 @@
 
 #![no_std]
 
+pub mod acpi_provider;
 pub mod block;
+pub mod boot;
 pub mod boot_media;
 pub mod clock;
 pub mod console;
 pub mod device;
+pub mod ffs_context;
 pub mod framebuffer;
 pub mod gpio;
 pub mod i2c;
+pub mod init;
+pub mod lpc;
+pub mod mainboard;
 pub mod memory_controller;
+pub mod memory_detect;
+pub mod network;
 pub mod pci;
+pub mod pci_host;
+pub mod smbus;
+pub mod soc_boot;
+pub mod southbridge;
 pub mod spi;
 pub mod timer;
 
 pub use block::BlockDevice;
+pub use boot::BootLinuxParams;
 pub use boot_media::{BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMapped, SubRegion};
 pub use clock::ClockController;
 pub use console::Console;
@@ -32,8 +45,16 @@ pub use device::{BusDevice, Device, DeviceError};
 pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use gpio::GpioController;
 pub use i2c::I2c;
+pub use init::{EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, StageLocalInit};
+pub use lpc::LpcBus;
+pub use mainboard::Mainboard;
 pub use memory_controller::MemoryController;
-pub use pci::{PciAddr, PciRootBus};
+pub use network::Network;
+pub use pci::{PciAddr, PciRootBus, PciWindow, PciWindowKind};
+pub use pci_host::PciHost;
+pub use smbus::SmBus;
+pub use soc_boot::SocBootHeader;
+pub use southbridge::Southbridge;
 pub use spi::SpiBus;
 pub use timer::Timer;
 

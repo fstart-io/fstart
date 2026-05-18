@@ -36,6 +36,22 @@ pub struct InputFile {
     pub segments: Vec<InputSegment>,
 }
 
+/// A file described by the manifest but stored outside the sequential FFS blob.
+///
+/// This is used for XIP bootblocks that are top-aligned in flash. The manifest
+/// records their real image-relative offset and digest, while the bytes are
+/// supplied separately by the full-flash assembler.
+pub struct ExternalInputFile {
+    /// File name.
+    pub name: String,
+    /// File type.
+    pub file_type: FileType,
+    /// Offset from the parent region's base.
+    pub offset: u32,
+    /// Segments of this file, with their raw data for digest generation.
+    pub segments: Vec<InputSegment>,
+}
+
 /// A segment with its raw data, ready for inclusion in the image.
 pub struct InputSegment {
     /// Segment name (e.g., ".text").
@@ -67,13 +83,40 @@ pub enum InputRegion {
         /// Files in this container.
         files: Vec<InputFile>,
     },
-    /// Raw reserved space.
+    /// A container with additional externally placed files.
+    ContainerWithExternal {
+        /// Region name (e.g., "ro").
+        name: String,
+        /// Files physically stored in this image blob.
+        files: Vec<InputFile>,
+        /// Files described by the manifest but placed by a full-flash assembler.
+        external_files: Vec<ExternalInputFile>,
+        /// Optional explicit region size.
+        size: Option<u32>,
+    },
+    /// Raw reserved space that is physically present in this image.
     Raw {
         /// Region name (e.g., "nvs").
         name: String,
         /// Size in bytes.
         size: u32,
         /// Fill byte (0xFF for erased flash).
+        fill: u8,
+    },
+    /// Raw flash region described in the manifest but not stored in this image.
+    ///
+    /// This is used for descriptor-based x86 platforms where a BIOS-region
+    /// image needs to carry signed layout metadata for descriptor/GbE/ME
+    /// regions without embedding those vendor blobs or computing digests for
+    /// them.
+    ExternalRaw {
+        /// Region name (e.g., "descriptor", "gbe", "me").
+        name: String,
+        /// Region offset in the physical flash layout.
+        offset: u32,
+        /// Region size in bytes.
+        size: u32,
+        /// Erased fill byte convention for the region.
         fill: u8,
     },
 }
@@ -136,7 +179,7 @@ where
     let mut file_data: Vec<FileDataLocation> = Vec::new();
 
     // ---- Phase 1: Lay out all regions ----
-    let mut manifest_regions: heapless::Vec<Region, 4> = heapless::Vec::new();
+    let mut manifest_regions: heapless::Vec<Region, 8> = heapless::Vec::new();
 
     for input_region in &config.regions {
         match input_region {
@@ -176,7 +219,60 @@ where
                         size: region_size,
                         content: RegionContent::Container { children },
                     })
-                    .map_err(|_| "too many regions (max 4)".to_string())?;
+                    .map_err(|_| "too many regions (max 8)".to_string())?;
+            }
+            InputRegion::ContainerWithExternal {
+                name,
+                files,
+                external_files,
+                size,
+            } => {
+                let region_base = image.len() as u32;
+                let mut children: heapless::Vec<RegionEntry, 16> = heapless::Vec::new();
+
+                for file in files {
+                    let entry = lay_out_file(&mut image, file, region_base)?;
+
+                    if let EntryContent::File { segments, .. } = &entry.content {
+                        if let Some(first_seg) = segments.first() {
+                            let abs_offset = region_base + entry.offset + first_seg.offset;
+                            let total_stored: u32 = segments.iter().map(|s| s.stored_size).sum();
+                            file_data.push(FileDataLocation {
+                                name: file.name.clone(),
+                                data_offset: abs_offset,
+                                data_size: total_stored,
+                            });
+                        }
+                    }
+
+                    children
+                        .push(entry)
+                        .map_err(|_| "too many files in container (max 16)".to_string())?;
+                }
+
+                let mut region_size = image.len() as u32 - region_base;
+                for file in external_files {
+                    let entry = external_file_entry(file)?;
+                    region_size = region_size.max(entry.offset + entry.size);
+                    children
+                        .push(entry)
+                        .map_err(|_| "too many files in container (max 16)".to_string())?;
+                }
+                if let Some(size) = size {
+                    region_size = region_size.max(*size);
+                }
+
+                let region_name: HString<64> = HString::try_from(name.as_str())
+                    .map_err(|_| format!("region name too long: {name}"))?;
+
+                manifest_regions
+                    .push(Region {
+                        name: region_name,
+                        offset: region_base,
+                        size: region_size,
+                        content: RegionContent::Container { children },
+                    })
+                    .map_err(|_| "too many regions (max 8)".to_string())?;
             }
             InputRegion::Raw { name, size, fill } => {
                 let offset = image.len() as u32;
@@ -192,13 +288,31 @@ where
                         size: *size,
                         content: RegionContent::Raw { fill: *fill },
                     })
-                    .map_err(|_| "too many regions (max 4)".to_string())?;
+                    .map_err(|_| "too many regions (max 8)".to_string())?;
+            }
+            InputRegion::ExternalRaw {
+                name,
+                offset,
+                size,
+                fill,
+            } => {
+                let region_name: HString<64> = HString::try_from(name.as_str())
+                    .map_err(|_| format!("region name too long: {name}"))?;
+
+                manifest_regions
+                    .push(Region {
+                        name: region_name,
+                        offset: *offset,
+                        size: *size,
+                        content: RegionContent::Raw { fill: *fill },
+                    })
+                    .map_err(|_| "too many regions (max 8)".to_string())?;
             }
         }
     }
 
     // ---- Phase 2: Build and sign the image manifest ----
-    let manifest = ImageManifest {
+    let mut manifest = ImageManifest {
         regions: manifest_regions,
     };
 
@@ -221,31 +335,26 @@ where
         keys[i] = *key;
     }
 
-    // Scan the image for the `FSTART_ANCHOR` placeholder.  The placeholder
-    // is a full `AnchorBlock::placeholder()` (magic + version + zeros)
-    // embedded in whichever stage binary uses FFS (bootblock for monolithic,
-    // main stage for multi-stage).  If no placeholder is found, append
-    // space for the anchor at the end (fallback for builds without FFS).
-    let anchor_offset = match scan_for_placeholder(&image) {
-        Some(offset) => {
-            if offset + ANCHOR_SIZE > image.len() {
-                return Err(format!(
-                    "anchor placeholder at offset {offset} would extend past image end (need {ANCHOR_SIZE} bytes)"
-                ));
-            }
-            offset
-        }
-        None => {
-            // No embedded placeholder — append space for the anchor at end
-            let offset = image.len();
-            image.resize(offset + ANCHOR_SIZE, 0);
-            offset
-        }
-    };
+    // Scan the image for every `FSTART_ANCHOR` placeholder. Multi-stage
+    // images contain one placeholder per FFS-using stage; all must be
+    // patched because later stages reference their own embedded static.
+    // If no placeholder is found, append one at the end as a fallback.
+    let mut anchor_offsets = scan_for_placeholders(&image);
+    if anchor_offsets.is_empty() {
+        let pad = (8 - (image.len() % 8)) % 8;
+        image.extend(core::iter::repeat_n(0u8, pad));
+        let offset = image.len();
+        image.resize(offset + ANCHOR_SIZE, 0);
+        anchor_offsets.push(offset);
+    }
+    let anchor_offset = anchor_offsets[0];
 
     // Compute total_image_size *after* potentially appending the anchor,
     // so it accurately reflects the final image size.
     let total_image_size = image.len() as u32;
+    let microcode = file_data
+        .iter()
+        .find(|file| file.name == "cpu_microcode_blob.bin");
 
     let anchor = AnchorBlock {
         magic: FFS_MAGIC,
@@ -253,21 +362,33 @@ where
         manifest_offset,
         manifest_size,
         total_image_size,
+        anchor_offset: anchor_offset as u32,
+        microcode_offset: microcode.map_or(0, |file| file.data_offset),
+        microcode_size: microcode.map_or(0, |file| file.data_size),
         key_count: config.keys.len() as u32,
         keys,
     };
 
-    anchor.write_to(&mut image[anchor_offset..]);
+    for &offset in &anchor_offsets {
+        if offset + ANCHOR_SIZE > image.len() {
+            return Err(format!(
+                "anchor placeholder at offset {offset} would extend past image end (need {ANCHOR_SIZE} bytes)"
+            ));
+        }
+        anchor.write_to(&mut image[offset..]);
+    }
 
-    // ---- Phase 4: Recompute digest for the file containing the anchor ----
+    // ---- Phase 4: Recompute digests for files containing patched anchors ----
     //
-    // The anchor was patched after digests were computed, so the file's
-    // digest in the manifest is stale.  Find whichever file contains the
-    // patched anchor and recompute its digest from the actual image bytes.
-    //
-    // This works because the new serialized manifest has exactly the same
-    // size — only the 32-byte hash values change inside fixed-size fields.
-    let manifest = recompute_file_digest(&image, &manifest, anchor_offset)?;
+    // Anchors are patched after digests were computed, so each containing
+    // file's digest in the manifest is stale.
+    recompute_file_digests(
+        &image,
+        &mut manifest,
+        &anchor_offsets,
+        &config.regions,
+        &anchor,
+    )?;
 
     let new_signed = sign_manifest(&manifest, sign)?;
     let new_manifest_serialized =
@@ -284,6 +405,8 @@ where
 
     image[manifest_offset as usize..manifest_offset as usize + manifest_size as usize]
         .copy_from_slice(&new_manifest_serialized);
+
+    validate_external_layout(&config.regions, &manifest, image.len())?;
 
     // Return the raw anchor bytes for logging/debugging
     let mut anchor_bytes = vec![0u8; ANCHOR_SIZE];
@@ -303,8 +426,9 @@ where
 /// zeros (the output of `AnchorBlock::placeholder()`).  Matching only the
 /// 8-byte magic would produce false positives against `FFS_MAGIC` constants
 /// embedded in other binaries' `.rodata` sections.
-fn scan_for_placeholder(image: &[u8]) -> Option<usize> {
+fn scan_for_placeholders(image: &[u8]) -> Vec<usize> {
     let magic = &FFS_MAGIC;
+    let mut offsets = Vec::new();
     let mut offset = 0;
     while offset + ANCHOR_SIZE <= image.len() {
         if &image[offset..offset + magic.len()] == magic {
@@ -317,12 +441,12 @@ fn scan_for_placeholder(image: &[u8]) -> Option<usize> {
             let manifest_sz = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
             let total_sz = u32::from_le_bytes([rest[12], rest[13], rest[14], rest[15]]);
             if version == FFS_VERSION && manifest_off == 0 && manifest_sz == 0 && total_sz == 0 {
-                return Some(offset);
+                offsets.push(offset);
             }
         }
         offset += 8;
     }
-    None
+    offsets
 }
 
 /// Lay out a file's segments in the image, returning a `RegionEntry`.
@@ -331,7 +455,7 @@ fn lay_out_file(
     file: &InputFile,
     region_base: u32,
 ) -> Result<RegionEntry, String> {
-    let mut segments: heapless::Vec<Segment, 4> = heapless::Vec::new();
+    let mut segments: heapless::Vec<Segment, 12> = heapless::Vec::new();
     let mut digest_input: Vec<u8> = Vec::new();
 
     let entry_offset = image.len() as u32 - region_base;
@@ -424,18 +548,162 @@ fn lay_out_file(
     })
 }
 
+fn external_file_entry(file: &ExternalInputFile) -> Result<RegionEntry, String> {
+    let mut segments: heapless::Vec<Segment, 12> = heapless::Vec::new();
+    let mut digest_input: Vec<u8> = Vec::new();
+    let mut entry_size = 0u32;
+
+    for seg in &file.segments {
+        if seg.compression != Compression::None {
+            return Err(format!(
+                "external file '{}' segment '{}' cannot be compressed",
+                file.name, seg.name
+            ));
+        }
+        let seg_offset = entry_size;
+        digest_input.extend_from_slice(&seg.data);
+        let loaded_size = seg
+            .mem_size
+            .map(|m| m as u32)
+            .unwrap_or(seg.data.len() as u32);
+        segments
+            .push(Segment {
+                name: HString::try_from(seg.name.as_str())
+                    .map_err(|_| format!("segment name too long: {}", seg.name))?,
+                kind: seg.kind,
+                offset: seg_offset,
+                stored_size: seg.data.len() as u32,
+                loaded_size,
+                in_place_size: 0,
+                load_addr: seg.load_addr,
+                compression: Compression::None,
+                flags: seg.flags,
+            })
+            .map_err(|_| format!("too many segments in file '{}'", file.name))?;
+        entry_size = entry_size.saturating_add(seg.data.len() as u32);
+    }
+
+    let digests =
+        digest::hash_digest_set(&digest_input).map_err(|_| "no digest algorithms available")?;
+    let name: HString<64> = HString::try_from(file.name.as_str())
+        .map_err(|_| format!("file name too long: {}", file.name))?;
+
+    Ok(RegionEntry {
+        name,
+        offset: file.offset,
+        size: entry_size,
+        content: EntryContent::File {
+            file_type: file.file_type,
+            segments,
+            digests,
+        },
+    })
+}
+
 /// Recompute the digest for whichever file contains `anchor_offset`.
 ///
 /// After the anchor is patched, that file's on-image bytes differ from
 /// the data that was hashed during layout. This function reads the actual
 /// bytes from the image and updates the digest in the manifest.
-fn recompute_file_digest(
+fn recompute_file_digests(
     image: &[u8],
-    manifest: &ImageManifest,
-    anchor_offset: usize,
-) -> Result<ImageManifest, String> {
-    let mut manifest = manifest.clone();
+    manifest: &mut ImageManifest,
+    anchor_offsets: &[usize],
+    input_regions: &[InputRegion],
+    anchor: &AnchorBlock,
+) -> Result<(), String> {
+    recompute_inline_file_digests(image, manifest, anchor_offsets)?;
+    recompute_external_file_digests(manifest, input_regions, anchor)?;
+    Ok(())
+}
 
+fn validate_external_layout(
+    input_regions: &[InputRegion],
+    manifest: &ImageManifest,
+    image_len: usize,
+) -> Result<(), String> {
+    let image_end = u64::try_from(image_len)
+        .map_err(|_| format!("FFS image length {image_len:#x} exceeds u64"))?;
+
+    for input_region in input_regions {
+        let InputRegion::ContainerWithExternal {
+            name,
+            external_files,
+            ..
+        } = input_region
+        else {
+            continue;
+        };
+        if external_files.is_empty() {
+            continue;
+        }
+
+        let region = manifest
+            .regions
+            .iter()
+            .find(|region| region.name.as_str() == name.as_str())
+            .ok_or_else(|| format!("container '{name}' missing from manifest"))?;
+        let region_start = u64::from(region.offset);
+        let region_end = region_start
+            .checked_add(u64::from(region.size))
+            .ok_or_else(|| format!("container '{name}' size overflows u64"))?;
+        let children = match &region.content {
+            RegionContent::Container { children } => children,
+            RegionContent::Raw { .. } => continue,
+        };
+
+        let mut external_ranges: Vec<(u64, u64, &str)> = Vec::new();
+        for file in external_files {
+            let entry = children
+                .iter()
+                .find(|entry| entry.name.as_str() == file.name.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "external file '{}' missing from container '{name}'",
+                        file.name
+                    )
+                })?;
+            let start = region_start
+                .checked_add(u64::from(entry.offset))
+                .ok_or_else(|| format!("external file '{}' offset overflows u64", file.name))?;
+            let end = start
+                .checked_add(u64::from(entry.size))
+                .ok_or_else(|| format!("external file '{}' size overflows u64", file.name))?;
+            if end > region_end {
+                return Err(format!(
+                    "external file '{}' range [{start:#x}..{end:#x}) exceeds container '{name}' end {region_end:#x}",
+                    file.name
+                ));
+            }
+            if start < image_end {
+                return Err(format!(
+                    "FFS blob length {image_end:#x} overlaps external file '{}' at [{start:#x}..{end:#x})",
+                    file.name
+                ));
+            }
+            external_ranges.push((start, end, file.name.as_str()));
+        }
+
+        external_ranges.sort_by_key(|(start, _, _)| *start);
+        for pair in external_ranges.windows(2) {
+            let (_, prev_end, prev_name) = pair[0];
+            let (next_start, next_end, next_name) = pair[1];
+            if next_start < prev_end {
+                return Err(format!(
+                    "external file '{next_name}' range [{next_start:#x}..{next_end:#x}) overlaps external file '{prev_name}' ending at {prev_end:#x}"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn recompute_inline_file_digests(
+    image: &[u8],
+    manifest: &mut ImageManifest,
+    anchor_offsets: &[usize],
+) -> Result<(), String> {
     for region in manifest.regions.iter_mut() {
         let region_offset = region.offset as usize;
 
@@ -448,8 +716,10 @@ fn recompute_file_digest(
             let entry_abs = region_offset + entry.offset as usize;
             let entry_end = entry_abs + entry.size as usize;
 
-            // Check if the anchor falls within this file's byte range.
-            if anchor_offset < entry_abs || anchor_offset >= entry_end {
+            if !anchor_offsets
+                .iter()
+                .any(|&anchor_offset| anchor_offset >= entry_abs && anchor_offset < entry_end)
+            {
                 continue;
             }
 
@@ -460,19 +730,11 @@ fn recompute_file_digest(
                 _ => continue,
             };
 
-            // Re-read all segment data from the image (now with patched
-            // anchor) and recompute the concatenated digest.
-            //
-            // The file must be uncompressed because the anchor is patched
-            // directly into the image bytes (compressed data would be
-            // corrupted).
             let mut digest_input: Vec<u8> = Vec::new();
             for seg in segments.iter() {
                 if seg.compression != Compression::None {
                     return Err(format!(
-                        "segment '{}' in file '{}' uses {:?} compression — \
-                         the file containing FSTART_ANCHOR must be uncompressed \
-                         because the anchor is patched directly into the image",
+                        "segment '{}' in file '{}' uses {:?} compression —                          files containing FSTART_ANCHOR must be uncompressed                          because anchors are patched directly into the image",
                         seg.name, entry.name, seg.compression,
                     ));
                 }
@@ -489,13 +751,90 @@ fn recompute_file_digest(
 
             *digests = digest::hash_digest_set(&digest_input)
                 .map_err(|_| "no digest algorithms available")?;
-
-            return Ok(manifest);
         }
     }
 
-    // Anchor is outside all files (appended at end) — no digest to fix.
-    Ok(manifest)
+    Ok(())
+}
+
+fn recompute_external_file_digests(
+    manifest: &mut ImageManifest,
+    input_regions: &[InputRegion],
+    anchor: &AnchorBlock,
+) -> Result<(), String> {
+    for input_region in input_regions {
+        let InputRegion::ContainerWithExternal {
+            name,
+            external_files,
+            ..
+        } = input_region
+        else {
+            continue;
+        };
+
+        let Some(region) = manifest
+            .regions
+            .iter_mut()
+            .find(|region| region.name.as_str() == name.as_str())
+        else {
+            continue;
+        };
+        let region_offset = region.offset;
+        let children = match &mut region.content {
+            RegionContent::Container { children } => children,
+            _ => continue,
+        };
+
+        for file in external_files {
+            let Some(entry) = children
+                .iter_mut()
+                .find(|entry| entry.name.as_str() == file.name.as_str())
+            else {
+                continue;
+            };
+            let EntryContent::File {
+                segments, digests, ..
+            } = &mut entry.content
+            else {
+                continue;
+            };
+
+            let mut digest_input: Vec<u8> = Vec::new();
+            let mut segment_base = 0u32;
+            for (input_segment, segment) in file.segments.iter().zip(segments.iter()) {
+                if segment.compression != Compression::None {
+                    return Err(format!(
+                        "segment '{}' in external file '{}' uses {:?} compression — external files containing FSTART_ANCHOR must be uncompressed",
+                        segment.name, entry.name, segment.compression,
+                    ));
+                }
+
+                let mut data = input_segment.data.clone();
+                let placeholders = scan_for_placeholders(&data);
+                for placeholder_offset in placeholders {
+                    let anchor_offset = region_offset
+                        .checked_add(file.offset)
+                        .and_then(|offset| offset.checked_add(segment_base))
+                        .and_then(|offset| offset.checked_add(placeholder_offset as u32))
+                        .ok_or_else(|| {
+                            format!("external file '{}' anchor offset overflows u32", file.name)
+                        })?;
+                    let mut patched_anchor = *anchor;
+                    patched_anchor.anchor_offset = anchor_offset;
+                    patched_anchor.write_to(&mut data[placeholder_offset..]);
+                }
+                digest_input.extend_from_slice(&data);
+                segment_base = segment_base
+                    .checked_add(segment.stored_size)
+                    .ok_or_else(|| format!("external file '{}' size overflows u32", file.name))?;
+            }
+
+            *digests = digest::hash_digest_set(&digest_input)
+                .map_err(|_| "no digest algorithms available")?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Serialize a manifest, sign it, and return a `SignedManifest`.

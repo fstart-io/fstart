@@ -22,6 +22,8 @@ pub enum Platform {
     Aarch64,
     /// ARMv7-A (armv7a-none-eabi)
     Armv7,
+    /// x86-64 / AMD64 (x86_64-unknown-none)
+    X86_64,
 }
 
 impl Platform {
@@ -31,6 +33,7 @@ impl Platform {
             Platform::Riscv64 => "riscv64gc-unknown-none-elf",
             Platform::Aarch64 => "aarch64-unknown-none",
             Platform::Armv7 => "armv7a-none-eabi",
+            Platform::X86_64 => "x86_64-unknown-none",
         }
     }
 
@@ -40,6 +43,7 @@ impl Platform {
             Platform::Riscv64 => "riscv",
             Platform::Aarch64 => "aarch64",
             Platform::Armv7 => "arm",
+            Platform::X86_64 => "i386:x86-64",
         }
     }
 
@@ -49,6 +53,7 @@ impl Platform {
             Platform::Riscv64 => "riscv64",
             Platform::Aarch64 => "aarch64",
             Platform::Armv7 => "armv7",
+            Platform::X86_64 => "x86_64",
         }
     }
 }
@@ -81,6 +86,13 @@ pub struct BoardConfig {
     pub mode: BuildMode,
     /// Optional payload configuration
     pub payload: Option<PayloadConfig>,
+    /// Optional CPU microcode updates to package into FFS.
+    ///
+    /// x86 stages can use this blob twice: very early BSP assembly reads the
+    /// anchor-patched location before Rust starts, and MP init reloads the
+    /// matching patch on BSP/APs during CPU bring-up.
+    #[serde(default)]
+    pub microcode: Option<MicrocodeConfig>,
     /// SoC-specific binary image format required by the boot ROM.
     ///
     /// Each SoC family has its own boot ROM that expects a particular
@@ -92,6 +104,16 @@ pub struct BoardConfig {
     /// carries the exact semantics of one SoC family's boot ROM.
     #[serde(default)]
     pub soc_image_format: SocImageFormat,
+
+    /// Also emit a complete flash image padded/laid out to `memory.flash_size`.
+    ///
+    /// The normal `.ffs` output is a firmware filesystem blob. Hardware flash
+    /// programmers usually need the entire NOR image, with XIP stages overlaid
+    /// at their linked physical flash addresses and unused bytes filled with
+    /// `0xff`. When true, `xtask assemble` writes
+    /// `target/ffs/<board>-<size>m.pflash` in addition to `<board>.ffs`.
+    #[serde(default)]
+    pub full_flash_image: bool,
 
     /// ACPI table generation configuration.
     ///
@@ -113,6 +135,15 @@ pub struct BoardConfig {
     #[serde(default)]
     pub smbios: Option<crate::smbios::SmbiosConfig>,
 
+    /// System Management Mode handler/image configuration.
+    ///
+    /// Required when an x86 stage declares `MpInit(..., smm: true)`.  The
+    /// normal stage embeds the separately built SMM image and asks the
+    /// platform adapter selected here to copy its precompiled PIC entry
+    /// stubs into SMRAM.
+    #[serde(default)]
+    pub smm: Option<crate::smm::SmmConfig>,
+
     /// Boot hart ID for multi-hart platforms.
     ///
     /// On multi-hart SoCs (e.g., SiFive FU740 with 5 harts), the boot ROM
@@ -126,6 +157,30 @@ pub struct BoardConfig {
     /// without S-mode; hart 1 is the first U74 application core).
     #[serde(default)]
     pub boot_hart_id: u32,
+}
+
+/// CPU microcode packaging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MicrocodeConfig {
+    /// Intel concatenated microcode update files.
+    Intel(IntelMicrocodeConfig),
+}
+
+/// Intel microcode files to concatenate into `cpu_microcode_blob.bin`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntelMicrocodeConfig {
+    /// Source files, resolved relative to the board directory unless absolute.
+    pub files: heapless::Vec<HString<128>, 16>,
+    /// Patch the blob location into the FFS anchor for pre-Rust BSP update.
+    #[serde(default = "default_true")]
+    pub early: bool,
+    /// Use the blob again during MP init for BSP/AP updates.
+    #[serde(default = "default_true")]
+    pub mp: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// SoC-specific binary image format required by the boot ROM.
@@ -161,12 +216,21 @@ pub enum SocImageFormat {
 }
 
 /// Build mode determines how the firmware is compiled and how drivers are bound.
+///
+/// Historically fstart supported two modes: `Rigid` (single board,
+/// compile-time driver binding) and `Flexible` (runtime driver
+/// dispatch via per-service enums).  Flexible was removed when the
+/// stage executor was split off into `fstart-stage-runtime` — the
+/// runtime executor is generic over `B: Board` and already supports
+/// the target of Flexible (one binary, many boards) through
+/// per-device `Option<enum-of-variants>` fields on `_BoardDevices`.
+///
+/// The enum is retained for forward compatibility (more variants may
+/// return in a different form later).  All boards today use `Rigid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildMode {
     /// Single board, compile-time driver binding, maximum dead code elimination.
     Rigid,
-    /// Multiple boards possible, runtime driver binding via enum or trait objects.
-    Flexible,
 }
 
 /// Payload configuration: what to boot after firmware init.
@@ -195,6 +259,12 @@ pub struct PayloadConfig {
     pub src_dtb_addr: Option<u64>,
     /// Kernel command line (set in /chosen/bootargs)
     pub bootargs: Option<HString<256>>,
+    /// Print BSP x86 MTRR/control-register state immediately before Linux handoff.
+    #[serde(default)]
+    pub print_x86_mtrrs: bool,
+    /// Compression to use for raw kernel payload segments stored in FFS.
+    #[serde(default = "default_payload_compression")]
+    pub compression: crate::ffs::Compression,
     /// SBI / ATF firmware blob configuration
     pub firmware: Option<FirmwareConfig>,
     /// Path to a FIT (.itb) image file (relative to board directory).
@@ -213,6 +283,10 @@ pub struct PayloadConfig {
     /// Defaults to `None` (same as `Buildtime` when `kind` is `FitImage`).
     #[serde(default)]
     pub fit_parse: Option<FitParseMode>,
+}
+
+fn default_payload_compression() -> crate::ffs::Compression {
+    crate::ffs::Compression::Lz4
 }
 
 /// What kind of payload to boot.

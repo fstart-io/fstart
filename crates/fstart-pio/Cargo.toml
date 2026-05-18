@@ -1,0 +1,11 @@
+[package]
+name = "fstart-pio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tock-registers = { workspace = true }
+
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
+x86 = { workspace = true }

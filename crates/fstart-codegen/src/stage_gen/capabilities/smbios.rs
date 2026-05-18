@@ -53,6 +53,11 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
     };
 
     // Type 4/7: Processors with caches
+    //
+    // Runtime-detectable fields (max_speed_mhz, core_count, thread_count)
+    // may be `None` in RON for x86 boards that rely on CPUID probing.
+    // For the codegen output we fall back to 0; a future `SmBiosPrepare`
+    // extension will probe CPUID at runtime when the RON value is `None`.
     let processor_items: Vec<TokenStream> = smbios_cfg
         .processors
         .iter()
@@ -60,9 +65,9 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
             let socket = proc.socket.as_str();
             let manufacturer = proc.manufacturer.as_str();
             let family = Literal::u16_unsuffixed(proc.processor_family.to_smbios_u16());
-            let max_speed = Literal::u16_unsuffixed(proc.max_speed_mhz);
-            let cores = Literal::u16_unsuffixed(proc.core_count);
-            let threads = Literal::u16_unsuffixed(proc.thread_count);
+            let max_speed = Literal::u16_unsuffixed(proc.max_speed_mhz.unwrap_or(0));
+            let cores = Literal::u16_unsuffixed(proc.core_count.unwrap_or(0));
+            let threads = Literal::u16_unsuffixed(proc.thread_count.unwrap_or(0));
 
             let cache_items: Vec<TokenStream> = proc
                 .caches
@@ -100,14 +105,27 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
         .collect();
 
     // Type 16/17: Memory devices
+    //
+    // Runtime-detectable fields (size_mb, speed_mhz, memory_type) may be
+    // `None` in RON for x86 boards that rely on SPD probing over SMBus.
+    // We emit 0 / Unknown sentinels here.  These are deliberate
+    // runtime-detect placeholders — the `SmBiosPrepare` capability
+    // will overwrite them via CPUID (Type 4) and SPD (Type 17)
+    // at boot once the runtime probe path is wired.  Until then,
+    // boards that leave these fields `None` in RON will report
+    // `0 MHz` / `Unknown` to the OS.
     let memory_items: Vec<TokenStream> = smbios_cfg
         .memory_devices
         .iter()
         .map(|dev| {
             let locator = dev.locator.as_str();
-            let size_mb = Literal::u32_unsuffixed(dev.size_mb);
-            let speed = Literal::u16_unsuffixed(dev.speed_mhz);
-            let mem_type = Literal::u8_unsuffixed(dev.memory_type.to_smbios_byte());
+            let size_mb = Literal::u32_unsuffixed(dev.size_mb.unwrap_or(0));
+            let speed = Literal::u16_unsuffixed(dev.speed_mhz.unwrap_or(0));
+            let mem_type = Literal::u8_unsuffixed(
+                dev.memory_type
+                    .unwrap_or(fstart_types::smbios::MemoryDeviceType::Unknown)
+                    .to_smbios_byte(),
+            );
             quote! {
                 fstart_capabilities::smbios::MemoryDeviceDesc {
                     locator: #locator,

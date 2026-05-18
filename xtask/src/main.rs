@@ -77,6 +77,9 @@ enum Command {
         /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
         #[arg(short, long)]
         firmware: Option<String>,
+        /// Dry-run ACPI DSDT generation from board.ron and validate with iasl.
+        #[arg(long, default_value_t = false)]
+        acpi_check: bool,
     },
     /// Inspect an FFS firmware image (find anchor, display filesystem)
     Inspect {
@@ -310,8 +313,15 @@ fn main() {
             release,
             kernel,
             firmware,
-        } => assemble::assemble_with_opts(&board, release, kernel.as_deref(), firmware.as_deref())
-            .map(|_| ()),
+            acpi_check,
+        } => assemble::assemble_with_opts_and_acpi_check(
+            &board,
+            release,
+            kernel.as_deref(),
+            firmware.as_deref(),
+            acpi_check,
+        )
+        .map(|_| ()),
         Command::Inspect { image } => inspect::inspect(&image),
         Command::Flash {
             board,
