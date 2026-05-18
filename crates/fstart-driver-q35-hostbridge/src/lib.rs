@@ -485,15 +485,6 @@ impl Q35HostBridge {
     fn smm_lock(&self) {
         Self::pci_write_host8(SMRAMC, D_LCK | G_SMRAME | C_BASE_SEG);
     }
-
-    fn cr3() -> u64 {
-        let cr3: u64;
-        // SAFETY: reading CR3 is safe in firmware privileged mode.
-        unsafe {
-            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
-        }
-        cr3
-    }
 }
 
 impl SmmOps for Q35HostBridge {
@@ -529,7 +520,7 @@ impl SmmOps for Q35HostBridge {
                     num_cpus,
                     save_state_size: info.save_state_size as u32,
                     page_table_size: 0,
-                    cr3: Self::cr3(),
+                    cr3: fstart_arch_x86::x86::controlregs::cr3(),
                     platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
                     platform_flags: 0,
                     platform_data: [Q35_PMBASE as u64, 0x20, 0, 0],

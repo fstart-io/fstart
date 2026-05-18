@@ -13,33 +13,29 @@
 #![no_std]
 #![allow(clippy::modulo_one)]
 
+#[cfg(feature = "ffs-vbt")]
+extern crate alloc;
+
 pub mod raminit;
 
+#[cfg(feature = "ffs-vbt")]
+use alloc::vec::Vec;
 use core::{cell::UnsafeCell, ptr};
 
+use fstart_driver_pci_ecam::{PciEcam, PciEcamConfig};
 use fstart_ecam as ecam;
 use fstart_mmio::MmioReadWrite;
 use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
+use fstart_services::memory_detect::{
+    build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
+};
 use fstart_services::{
-    EarlyInit, MemoryController, PciHost, PostDramInit, PreConsoleInit, ServiceError,
-    StageLocalInit,
+    EarlyInit, MemoryController, PciAddr, PciHost, PciRootBus, PciWindow, PostDramInit,
+    PreConsoleInit, ServiceError, StageLocalInit,
 };
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::ReadWriteable;
-
-fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
-    let mut ranges = [(0u64, 0u64); 8];
-    let mut count = 0usize;
-    for entry in entries {
-        if entry.kind == E820Kind::Ram as u32 && entry.size != 0 && count < ranges.len() {
-            ranges[count] = (entry.addr, entry.size);
-            count += 1;
-        }
-    }
-    fstart_arch_x86::mtrr::set_ram_wb_ranges(&ranges[..count]);
-}
 
 use tock_registers::{register_bitfields, register_structs};
 
@@ -581,7 +577,7 @@ impl EpBar {
 }
 
 /// Integrated graphics configuration.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Gm965IgdConfig {
     /// Enable the integrated VGA function (D2:F0).
     #[serde(default = "default_true")]
@@ -592,6 +588,9 @@ pub struct Gm965IgdConfig {
     /// Fixed GTTMMADR BAR0 address used for non-display GMA setup.
     #[serde(default = "default_gtt_mmio_base")]
     pub gtt_mmio_base: u64,
+    /// Board-relative VBT file path stored as a compressed FFS data file.
+    #[serde(default)]
+    pub vbt_file: Option<heapless::String<128>>,
     /// Raw VBT physical address, if firmware has staged a `vbt.bin` blob.
     #[serde(default)]
     pub vbt_addr: Option<u64>,
@@ -630,6 +629,7 @@ impl Default for Gm965IgdConfig {
             enable_vga: true,
             enable_pipe_b: true,
             gtt_mmio_base: default_gtt_mmio_base(),
+            vbt_file: None,
             vbt_addr: None,
             vbt_size: 0,
             legacy_vbt_probe: default_legacy_vbt_probe(),
@@ -680,12 +680,33 @@ fn default_backlight_duty_cycle() -> u8 {
     100
 }
 
+const PCI_MMIO32_FALLBACK_BASE: u64 = 0x8000_0000;
+const PCI_PIO_BASE: u64 = 0x1000;
+const PCI_PIO_SIZE: u64 = 0xf000;
+
 const IGD_OPREGION_BASE_SIZE: usize = 8 * 1024;
 const IGD_OPREGION_TOTAL_SIZE: usize = 16 * 1024;
 const IGD_VBT_INLINE_OFFSET: usize = 0x400;
 const IGD_VBT_INLINE_SIZE: usize = 6 * 1024;
 const IGD_VBT_EXT_OFFSET: usize = IGD_OPREGION_BASE_SIZE;
 const VBT_SIGNATURE: u32 = 0x5442_5624;
+
+#[allow(clippy::large_enum_variant)]
+enum VbtBytes<'a> {
+    Borrowed(&'a [u8]),
+    #[cfg(feature = "ffs-vbt")]
+    Owned(Vec<u8>),
+}
+
+impl VbtBytes<'_> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            #[cfg(feature = "ffs-vbt")]
+            Self::Owned(bytes) => bytes.as_slice(),
+        }
+    }
+}
 
 #[repr(align(4096))]
 struct IgdOpRegionStore(UnsafeCell<[u8; IGD_OPREGION_TOTAL_SIZE]>);
@@ -781,6 +802,7 @@ fn default_spd_addresses() -> [u8; 4] {
 pub struct IntelGm965 {
     config: IntelGm965Config,
     detected_size: u64,
+    pci: Option<PciEcam>,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -963,56 +985,6 @@ impl IntelGm965 {
         );
     }
 
-    fn cr3() -> u64 {
-        let cr3: u64;
-        // SAFETY: reading CR3 is safe in firmware privileged mode.
-        unsafe {
-            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
-        }
-        cr3
-    }
-
-    fn build_e820_entries(
-        &self,
-        entries: &mut [E820Entry],
-        usable_top: u32,
-        touud: u64,
-        tolud: u32,
-    ) -> Result<usize, ServiceError> {
-        if entries.len() < 6 {
-            return Err(ServiceError::HardwareError);
-        }
-
-        let mut count = 0usize;
-        entries[count] = E820Entry::new(0x0000_0000, 0x0009_f000, E820Kind::Ram);
-        count += 1;
-        entries[count] = E820Entry::new(0x0009_f000, 0x0000_1000, E820Kind::Reserved);
-        count += 1;
-        entries[count] = E820Entry::new(0x000f_0000, 0x0001_0000, E820Kind::Reserved);
-        count += 1;
-
-        let usable_top = u64::from(usable_top).max(0x0010_0000);
-        let low_ram_size = usable_top.saturating_sub(0x0010_0000);
-        if low_ram_size != 0 {
-            entries[count] = E820Entry::new(0x0010_0000, low_ram_size, E820Kind::Ram);
-            count += 1;
-        }
-
-        let top_reserved_size = u64::from(tolud).saturating_sub(usable_top);
-        if top_reserved_size != 0 {
-            entries[count] = E820Entry::new(usable_top, top_reserved_size, E820Kind::Reserved);
-            count += 1;
-        }
-
-        let upper_ram_size = touud.saturating_sub(0x1_0000_0000);
-        if upper_ram_size != 0 {
-            entries[count] = E820Entry::new(0x1_0000_0000, upper_ram_size, E820Kind::Ram);
-            count += 1;
-        }
-
-        Ok(count)
-    }
-
     fn init_egress(&self) -> Result<(), ServiceError> {
         let ep = self.epbar();
         ep.clrbits8(epbar::EPVC0RCTL, !1u8);
@@ -1151,7 +1123,7 @@ impl IntelGm965 {
     fn cpu_supports_slfm(&self) -> bool {
         // SAFETY: MSR 0xee is the Intel Core/Core2 extended config MSR used by
         // coreboot to detect SLFM support on this platform.
-        unsafe { (fstart_arch_x86::msr::rdmsr(0x00ee) & (1 << 27)) != 0 }
+        unsafe { (fstart_arch_x86::x86::msr::rdmsr(0x00ee) & (1 << 27)) != 0 }
     }
 
     #[cfg(not(target_arch = "x86_64"))]
@@ -1311,6 +1283,70 @@ impl IntelGm965 {
         }
     }
 
+    #[cfg(feature = "ffs-vbt")]
+    fn ffs_vbt(&self) -> Option<Vec<u8>> {
+        let file_name = self.config.igd.vbt_file.as_ref()?;
+        let ctx = fstart_services::ffs_context::memory_mapped()?;
+        // SAFETY: the generated stage publishes a static anchor and a valid
+        // memory-mapped boot-media window when BootMedia runs.
+        let anchor_bytes = unsafe { ctx.anchor_bytes() };
+        let image = unsafe { ctx.image_bytes() };
+        let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes).ok()? };
+        let image_size = if anchor.total_image_size > 0 {
+            (anchor.total_image_size as usize).min(image.len())
+        } else {
+            image.len()
+        };
+        let image = &image[..image_size];
+        let manifest = fstart_ffs::FfsReader::new(image)
+            .read_manifest(&anchor)
+            .ok()?;
+
+        for region in &manifest.regions {
+            let fstart_types::ffs::RegionContent::Container { children } = &region.content else {
+                continue;
+            };
+            for entry in children {
+                if entry.name.as_str() != file_name.as_str() {
+                    continue;
+                }
+                let fstart_types::ffs::EntryContent::File {
+                    file_type,
+                    segments,
+                    digests,
+                } = &entry.content
+                else {
+                    return None;
+                };
+                if *file_type != fstart_types::ffs::FileType::Data || segments.len() != 1 {
+                    return None;
+                }
+                let seg = segments.first()?;
+                let offset = (region.offset + entry.offset + seg.offset) as usize;
+                let stored_size = seg.stored_size as usize;
+                let end = offset.checked_add(stored_size)?;
+                let stored = image.get(offset..end)?;
+                let mut out = Vec::new();
+                match seg.compression {
+                    fstart_types::ffs::Compression::None => {
+                        out.extend_from_slice(stored);
+                    }
+                    fstart_types::ffs::Compression::Lz4 => {
+                        out.resize(seg.loaded_size as usize, 0);
+                        let len =
+                            fstart_ffs::lz4::decompress_block(stored, out.as_mut_slice()).ok()?;
+                        out.truncate(len);
+                    }
+                }
+                fstart_crypto::digest::verify_digest_set(out.as_slice(), digests).ok()?;
+                let vbt_size = Self::vbt_size(out.as_slice())?;
+                out.truncate(vbt_size);
+                return Some(out);
+            }
+        }
+        None
+    }
+
     fn configured_vbt(&self) -> Option<&'static [u8]> {
         let addr = self.config.igd.vbt_addr? as usize;
         let size = self.config.igd.vbt_size as usize;
@@ -1340,8 +1376,14 @@ impl IntelGm965 {
         None
     }
 
-    fn locate_vbt(&self) -> Option<&'static [u8]> {
-        self.configured_vbt().or_else(|| self.legacy_vbt())
+    fn locate_vbt(&self) -> Option<VbtBytes<'static>> {
+        #[cfg(feature = "ffs-vbt")]
+        if let Some(vbt) = self.ffs_vbt() {
+            return Some(VbtBytes::Owned(vbt));
+        }
+        self.configured_vbt()
+            .or_else(|| self.legacy_vbt())
+            .map(VbtBytes::Borrowed)
     }
 
     fn init_igd_opregion(&self) {
@@ -1353,6 +1395,7 @@ impl IntelGm965 {
             fstart_log::error!("intel-gm965: no valid VBT found for IGD opregion");
             return;
         };
+        let vbt = vbt.as_slice();
 
         // SAFETY: BSP-only initialization before handing ASLS to the OS.
         let opregion = unsafe { &mut *IGD_OPREGION.0.get() };
@@ -1601,6 +1644,7 @@ impl Device for IntelGm965 {
         Ok(Self {
             config: config.clone(),
             detected_size: 0,
+            pci: None,
         })
     }
 
@@ -1660,6 +1704,78 @@ impl PciHost for IntelGm965 {
 impl PostDramInit for IntelGm965 {
     fn post_dram_init(&mut self) -> Result<(), ServiceError> {
         self.post_dram_chipset_init()
+    }
+}
+
+impl IntelGm965 {
+    fn pci_ecam_config(&self) -> PciEcamConfig {
+        PciEcamConfig {
+            ecam_base: self.config.ecam_base,
+            ecam_size: self.ecam_size(),
+            // Size 0 asks PciEcam to derive the 32-bit aperture from the
+            // runtime e820 map published by GM965 MemoryDetect. The upper
+            // limit is PCIEXBAR, because GM965 decodes ECAM at 0xe000_0000
+            // on X61 and chipset fixed MMIO lives above that.
+            mmio32_base: PCI_MMIO32_FALLBACK_BASE,
+            mmio32_size: 0,
+            mmio64_base: 0,
+            mmio64_size: 0,
+            // Reserve legacy/LPC fixed decodes below 0x1000.
+            pio_base: PCI_PIO_BASE,
+            pio_size: PCI_PIO_SIZE,
+            bus_start: self.bus_start(),
+            bus_end: self.bus_end(),
+        }
+    }
+
+    fn ensure_pci_ecam(&mut self) -> Result<&mut PciEcam, ServiceError> {
+        if self.pci.is_none() {
+            let config = self.pci_ecam_config();
+            self.pci = Some(PciEcam::new(&config).map_err(|_| ServiceError::HardwareError)?);
+        }
+        self.pci.as_mut().ok_or(ServiceError::NotInitialized)
+    }
+
+    fn pci_ecam(&self) -> Result<&PciEcam, ServiceError> {
+        self.pci.as_ref().ok_or(ServiceError::NotInitialized)
+    }
+}
+
+impl PciRootBus for IntelGm965 {
+    fn init_bus(&mut self) -> Result<(), ServiceError> {
+        self.ensure_pci_ecam()?.init_bus()
+    }
+
+    fn config_read32(&self, addr: PciAddr, reg: u16) -> Result<u32, ServiceError> {
+        self.pci_ecam()?.config_read32(addr, reg)
+    }
+
+    fn config_write32(&self, addr: PciAddr, reg: u16, val: u32) -> Result<(), ServiceError> {
+        self.pci_ecam()?.config_write32(addr, reg, val)
+    }
+
+    fn ecam_base(&self) -> u64 {
+        self.config.ecam_base
+    }
+
+    fn ecam_size(&self) -> u64 {
+        u64::from(self.config.ecam_buses) * 1024 * 1024
+    }
+
+    fn bus_start(&self) -> u8 {
+        0
+    }
+
+    fn bus_end(&self) -> u8 {
+        self.config.ecam_buses.saturating_sub(1).min(255) as u8
+    }
+
+    fn device_count(&self) -> usize {
+        self.pci.as_ref().map_or(0, PciRootBus::device_count)
+    }
+
+    fn windows(&self) -> &[PciWindow] {
+        self.pci.as_ref().map_or(&[], PciRootBus::windows)
     }
 }
 
@@ -1755,8 +1871,13 @@ impl MemoryDetector for IntelGm965 {
             return Err(ServiceError::HardwareError);
         }
 
-        let count = self.build_e820_entries(entries, usable_top, touud, tolud)?;
-        publish_mtrr_wb_ranges(&entries[..count]);
+        let count = build_pc_compatible_e820(entries, usable_top, touud, tolud)?;
+        fstart_arch_x86::mtrr::set_ram_wb_ranges_from(
+            entries[..count]
+                .iter()
+                .filter(|entry| entry.kind == E820Kind::Ram as u32)
+                .map(|entry| (entry.addr, entry.size)),
+        );
         fstart_log::info!(
             "gm965: detected memory map usable={:#x} TOLUD={:#x} TOM={:#x} TOUUD={:#x} TSEG={:#x}+{:#x}",
             usable_top,
@@ -1807,7 +1928,7 @@ impl SmmOps for IntelGm965 {
                     num_cpus,
                     save_state_size: info.save_state_size as u32,
                     page_table_size: 0,
-                    cr3: Self::cr3(),
+                    cr3: fstart_arch_x86::x86::controlregs::cr3(),
                     platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
                     platform_flags: 0,
                     platform_data: [ICH8_PMBASE as u64, 0x28, 0, 0],
@@ -1924,8 +2045,13 @@ impl MemoryController for IntelGm965 {
         };
 
         let mut entries = [E820Entry::zeroed(); 6];
-        let count = self.build_e820_entries(&mut entries, usable_top, touud, tolud)?;
-        publish_mtrr_wb_ranges(&entries[..count]);
+        let count = build_pc_compatible_e820(&mut entries, usable_top, touud, tolud)?;
+        fstart_arch_x86::mtrr::set_ram_wb_ranges_from(
+            entries[..count]
+                .iter()
+                .filter(|entry| entry.kind == E820Kind::Ram as u32)
+                .map(|entry| (entry.addr, entry.size)),
+        );
         fstart_log::info!(
             "gm965: dynamic WB MTRR ranges set (TOLUD {:#x}, usable top {:#x})",
             tolud,
@@ -1966,6 +2092,11 @@ mod acpi_impl {
             let mchbar = config.mchbar as u32;
             let dmibar = config.dmibar as u32;
             let epbar = config.epbar as u32;
+            let ecam_base = config.ecam_base as u32;
+            let ecam_size =
+                (u64::from(config.ecam_buses) * 1024 * 1024).min(u64::from(u32::MAX)) as u32;
+            let pci_mmio_base = self.tolud().max(0x8000_0000);
+            let pci_mmio_limit = ecam_base.saturating_sub(1);
             let gttmmio = config.igd.gtt_mmio_base as u32;
             let rcba: u32 = 0xfed1_c000;
             let p = |s: &str| fstart_acpi::aml::Path::new(s);
@@ -2048,7 +2179,7 @@ mod acpi_impl {
                         DWordIO(0x0D00u32, 0xFFFFu32);
                         DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
                         DWordMemory(Cacheable, ReadWrite, 0x000C0000u32, 0x000FFFFFu32);
-                        DWordMemory(NotCacheable, ReadWrite, 0x80000000u32, 0xFEBFFFFFu32);
+                        DWordMemory(NotCacheable, ReadWrite, #{pci_mmio_base}, #{pci_mmio_limit});
                         Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
                     });
                     Method("_CRS", 0, Serialized) {
@@ -2066,6 +2197,7 @@ mod acpi_impl {
                             Memory32Fixed(ReadWrite, #{mchbar}, 0x4000u32);
                             Memory32Fixed(ReadWrite, #{dmibar}, 0x1000u32);
                             Memory32Fixed(ReadWrite, #{epbar}, 0x1000u32);
+                            Memory32Fixed(ReadWrite, #{ecam_base}, #{ecam_size});
                             Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
                             Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
                             Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);

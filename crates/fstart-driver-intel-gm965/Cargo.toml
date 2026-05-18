@@ -13,13 +13,17 @@ acpi = [
   "dep:fstart-cpu-intel",
   "fstart-cpu-intel/acpi",
 ]
+ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-types"]
 
 [dependencies]
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
 fstart-arch-x86 = { workspace = true }
 fstart-cpu-intel = { workspace = true, optional = true }
+fstart-crypto = { workspace = true, optional = true }
+fstart-driver-pci-ecam = { workspace = true }
 fstart-ecam = { workspace = true }
+fstart-ffs = { workspace = true, optional = true }
 fstart-log = { workspace = true }
 fstart-lapic = { workspace = true }
 fstart-mmio = { workspace = true }
@@ -29,6 +33,7 @@ fstart-pmio-ich = { workspace = true }
 fstart-services = { workspace = true }
 fstart-smbus-intel = { workspace = true }
 fstart-smm = { workspace = true }
+fstart-types = { workspace = true, optional = true }
 fstart-spd = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }

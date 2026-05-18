@@ -119,6 +119,8 @@ unsafe fn debug_trace(cpu: u32) {
     pio_write8(DEBUGCON, b'\n');
 }
 
+// Keep these PIO helpers local: build.rs compiles this SMM handler as a
+// standalone text blob without linking workspace crates.
 unsafe fn pio_read8(port: u16) -> u8 {
     let value: u8;
     asm!(

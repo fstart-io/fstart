@@ -26,9 +26,9 @@ use fstart_services::memory_detect::E820Kind;
 use fstart_services::pci::{
     PciAddr, PciRootBus, PciWindow, PciWindowKind, PCI_BAR0, PCI_CLASS_REVISION,
     PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND, PCI_HEADER_TYPE,
-    PCI_HEADER_TYPE_BRIDGE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_IO_BASE, PCI_MEMORY_BASE,
-    PCI_PREF_BASE_UPPER32, PCI_PREF_LIMIT_UPPER32, PCI_PREF_MEMORY_BASE, PCI_PRIMARY_BUS,
-    PCI_VENDOR_ID, PCI_VENDOR_INVALID,
+    PCI_HEADER_TYPE_BRIDGE, PCI_HEADER_TYPE_CARDBUS, PCI_HEADER_TYPE_MULTI_FUNC, PCI_IO_BASE,
+    PCI_MEMORY_BASE, PCI_PREF_BASE_UPPER32, PCI_PREF_LIMIT_UPPER32, PCI_PREF_MEMORY_BASE,
+    PCI_PRIMARY_BUS, PCI_VENDOR_ID, PCI_VENDOR_INVALID,
 };
 use fstart_services::ServiceError;
 use serde::{Deserialize, Serialize};
@@ -86,6 +86,8 @@ struct BarInfo {
     prefetchable: bool,
     /// BAR register offset (0x10..0x24).
     reg: u16,
+    /// Whether this BAR has been successfully assigned by the allocator.
+    allocated: bool,
 }
 
 /// A discovered PCI device or bridge.
@@ -112,11 +114,6 @@ impl ResourcePool {
             next: base,
             limit: base.saturating_add(size),
         }
-    }
-
-    /// Allocate `size` bytes with natural alignment.  Returns base address.
-    fn allocate(&mut self, size: u64) -> Option<u64> {
-        self.allocate_aligned(size, size)
     }
 
     fn allocate_aligned(&mut self, size: u64, align: u64) -> Option<u64> {
@@ -272,6 +269,7 @@ impl PciEcam {
             size: 0,
             prefetchable: false,
             reg,
+            allocated: false,
         };
 
         if sized == 0 || sized == 0xFFFF_FFFF {
@@ -297,6 +295,7 @@ impl PciEcam {
                     size,
                     prefetchable: false,
                     reg,
+                    allocated: false,
                 },
                 false,
             );
@@ -316,6 +315,7 @@ impl PciEcam {
                         size,
                         prefetchable,
                         reg,
+                        allocated: false,
                     },
                     false,
                 )
@@ -336,6 +336,7 @@ impl PciEcam {
                         size,
                         prefetchable,
                         reg,
+                        allocated: false,
                     },
                     true,
                 )
@@ -353,10 +354,13 @@ impl PciEcam {
         let hdr = self.read32(addr, PCI_HEADER_TYPE);
         let header_type = (hdr >> 16) as u8 & 0x7F;
 
-        let max_bars = if header_type == PCI_HEADER_TYPE_BRIDGE {
-            2
-        } else {
-            6
+        let max_bars = match header_type {
+            PCI_HEADER_TYPE_BRIDGE => 2,
+            // PCI-to-CardBus bridges use header type 2. Only BAR0 is a base
+            // address register; offsets that look like BAR2..BAR5 are CardBus
+            // bus/window registers and must not be sized as endpoint BARs.
+            PCI_HEADER_TYPE_CARDBUS => 1,
+            _ => 6,
         };
 
         let none_bar = BarInfo {
@@ -364,6 +368,7 @@ impl PciEcam {
             size: 0,
             prefetchable: false,
             reg: 0,
+            allocated: false,
         };
         let mut bars = [none_bar; 6];
 
@@ -447,93 +452,124 @@ impl PciEcam {
 
     // -- Resource allocation --
 
+    fn endpoint_in_pass(&self, dev_idx: usize, pass: usize) -> bool {
+        if self.devices[dev_idx].header_type == PCI_HEADER_TYPE_BRIDGE {
+            return false;
+        }
+        let behind_bridge = self.devices[dev_idx].addr.bus != self.bus_start;
+        (pass == 0 && !behind_bridge) || (pass == 1 && behind_bridge)
+    }
+
+    fn bar_allocation_alignment(&self, dev_idx: usize, bar_idx: usize) -> u64 {
+        let bar = self.devices[dev_idx].bars[bar_idx];
+        let behind_bridge = self.devices[dev_idx].addr.bus != self.bus_start;
+        match bar.bar_type {
+            BarType::Memory32 | BarType::Memory64 => {
+                if behind_bridge {
+                    bar.size.max(0x100000)
+                } else {
+                    bar.size
+                }
+            }
+            BarType::Io => {
+                if behind_bridge {
+                    bar.size.max(0x1000)
+                } else {
+                    bar.size
+                }
+            }
+            BarType::None => 0,
+        }
+    }
+
+    fn next_bar_to_allocate(&self, pass: usize) -> Option<(usize, usize)> {
+        let mut best: Option<(usize, usize, u64)> = None;
+        for dev_idx in 0..self.devices.len() {
+            if !self.endpoint_in_pass(dev_idx, pass) {
+                continue;
+            }
+            for bar_idx in 0..6 {
+                let bar = self.devices[dev_idx].bars[bar_idx];
+                if bar.bar_type == BarType::None || bar.allocated {
+                    continue;
+                }
+                let rank = self.bar_allocation_alignment(dev_idx, bar_idx);
+                if best.is_none_or(|(_, _, best_rank)| rank > best_rank) {
+                    best = Some((dev_idx, bar_idx, rank));
+                }
+            }
+        }
+        best.map(|(dev_idx, bar_idx, _)| (dev_idx, bar_idx))
+    }
+
+    fn allocate_one_bar(&mut self, dev_idx: usize, bar_idx: usize) {
+        let addr = self.devices[dev_idx].addr;
+        let bar = self.devices[dev_idx].bars[bar_idx];
+        let align = self.bar_allocation_alignment(dev_idx, bar_idx);
+        let base = match bar.bar_type {
+            BarType::Memory32 => self.mmio32.allocate_aligned(bar.size, align),
+            BarType::Memory64 => self
+                .mmio64
+                .allocate_aligned(bar.size, align)
+                .or_else(|| self.mmio32.allocate_aligned(bar.size, align)),
+            BarType::Io => self.io_pool.allocate_aligned(bar.size, align),
+            BarType::None => None,
+        };
+
+        if let Some(base) = base {
+            match bar.bar_type {
+                BarType::Memory32 => {
+                    let val = (base as u32 & 0xFFFF_FFF0) | if bar.prefetchable { 0x8 } else { 0 };
+                    self.write32(addr, bar.reg, val);
+                }
+                BarType::Memory64 => {
+                    let lo =
+                        (base as u32 & 0xFFFF_FFF0) | 0x4 | if bar.prefetchable { 0x8 } else { 0 };
+                    self.write32(addr, bar.reg, lo);
+                    self.write32(addr, bar.reg + 4, (base >> 32) as u32);
+                }
+                BarType::Io => {
+                    self.write32(addr, bar.reg, (base as u32) | 0x1);
+                }
+                BarType::None => {}
+            }
+        } else {
+            fstart_log::error!(
+                "PCI: failed to allocate BAR{} for {:02x}:{:02x}.{} size={:#x}",
+                (bar.reg - PCI_BAR0) / 4,
+                addr.bus,
+                addr.dev,
+                addr.func,
+                bar.size,
+            );
+        }
+
+        // Mark the BAR as handled even on allocation failure. Otherwise the
+        // largest-first allocation loop will keep selecting the same BAR
+        // forever on systems whose firmware aperture cannot satisfy it.
+        self.devices[dev_idx].bars[bar_idx].allocated = true;
+    }
+
     /// Allocate and program BARs for all non-bridge devices, then program
     /// bridge forwarding windows.
     fn allocate_resources(&mut self) {
-        // Phase 1: allocate endpoint BARs. Allocate root-bus endpoints before
-        // devices behind bridges. Bridge windows are coarse-grained (1 MiB
-        // memory, 4 KiB I/O), so allocating children first can make the
-        // rounded bridge aperture cover later root-bus BARs. Linux then
-        // reports conflicts between the bridge window and host-bus devices.
+        // Phase 1: allocate endpoint BARs. Within each topology pass, allocate
+        // largest-alignment BARs first. This avoids consuming the front of a
+        // constrained 32-bit aperture with a small BAR, then aligning a large
+        // framebuffer BAR up and stranding the remaining space below it.
         for pass in 0..2 {
-            for i in 0..self.devices.len() {
-                if self.devices[i].header_type == PCI_HEADER_TYPE_BRIDGE {
-                    continue;
-                }
-
-                let addr = self.devices[i].addr;
-                let behind_bridge = addr.bus != self.bus_start;
-                if (pass == 0 && behind_bridge) || (pass == 1 && !behind_bridge) {
-                    continue;
-                }
-
-                // PCI bridge memory windows decode at 1 MiB granularity and I/O
-                // windows at 4 KiB granularity.  Align child BARs to those
-                // granularities so the eventual bridge window does not round down
-                // over unrelated host-bridge devices and create Linux conflicts.
-                let mem_align = if behind_bridge { 0x100000 } else { 0 };
-                let io_align = if behind_bridge { 0x1000 } else { 0 };
-                let mut bar_idx = 0;
-                while bar_idx < 6 {
-                    let bar = self.devices[i].bars[bar_idx];
-                    match bar.bar_type {
-                        BarType::Memory32 => {
-                            let base = if mem_align != 0 {
-                                self.mmio32
-                                    .allocate_aligned(bar.size, bar.size.max(mem_align))
-                            } else {
-                                self.mmio32.allocate(bar.size)
-                            };
-                            if let Some(base) = base {
-                                let val = (base as u32 & 0xFFFF_FFF0)
-                                    | if bar.prefetchable { 0x8 } else { 0 };
-                                self.write32(addr, bar.reg, val);
-                            }
-                        }
-                        BarType::Memory64 => {
-                            // Prefer 64-bit pool, fall back to 32-bit.
-                            let base = if mem_align != 0 {
-                                self.mmio64
-                                    .allocate_aligned(bar.size, bar.size.max(mem_align))
-                                    .or_else(|| {
-                                        self.mmio32
-                                            .allocate_aligned(bar.size, bar.size.max(mem_align))
-                                    })
-                            } else {
-                                self.mmio64
-                                    .allocate(bar.size)
-                                    .or_else(|| self.mmio32.allocate(bar.size))
-                            };
-                            if let Some(base) = base {
-                                let lo = (base as u32 & 0xFFFF_FFF0)
-                                    | 0x4
-                                    | if bar.prefetchable { 0x8 } else { 0 };
-                                self.write32(addr, bar.reg, lo);
-                                self.write32(addr, bar.reg + 4, (base >> 32) as u32);
-                            }
-                            bar_idx += 1; // skip upper half slot
-                        }
-                        BarType::Io => {
-                            let base = if io_align != 0 {
-                                self.io_pool
-                                    .allocate_aligned(bar.size, bar.size.max(io_align))
-                            } else {
-                                self.io_pool.allocate(bar.size)
-                            };
-                            if let Some(base) = base {
-                                self.write32(addr, bar.reg, (base as u32) | 0x1);
-                            }
-                        }
-                        BarType::None => {}
-                    }
-                    bar_idx += 1;
-                }
-
-                // Enable memory + IO + bus master.
-                let cmd = self.read32(addr, PCI_COMMAND) as u16;
-                let new_cmd = cmd | PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
-                self.write32(addr, PCI_COMMAND, new_cmd as u32);
+            while let Some((dev_idx, bar_idx)) = self.next_bar_to_allocate(pass) {
+                self.allocate_one_bar(dev_idx, bar_idx);
             }
+        }
+
+        for dev in &self.devices {
+            if dev.header_type == PCI_HEADER_TYPE_BRIDGE {
+                continue;
+            }
+            let cmd = self.read32(dev.addr, PCI_COMMAND) as u16;
+            let new_cmd = cmd | PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
+            self.write32(dev.addr, PCI_COMMAND, new_cmd as u32);
         }
 
         // Phase 2: program bridge forwarding windows.

@@ -58,6 +58,53 @@ impl E820Entry {
     }
 }
 
+/// Build a conventional PC-compatible e820 map from chipset-discovered RAM
+/// limits.
+///
+/// The caller supplies the top of usable low memory, TOLUD/top of low DRAM
+/// decode, and TOUUD/top of reclaim/high memory.  The helper emits standard
+/// legacy holes plus RAM/reserved ranges suitable for ACPI/SMBIOS/payload
+/// handoff.
+pub fn build_pc_compatible_e820(
+    entries: &mut [E820Entry],
+    usable_low_top: u32,
+    touud: u64,
+    tolud: u32,
+) -> Result<usize, ServiceError> {
+    if entries.len() < 6 {
+        return Err(ServiceError::HardwareError);
+    }
+
+    let mut count = 0usize;
+    entries[count] = E820Entry::new(0x0000_0000, 0x0009_f000, E820Kind::Ram);
+    count += 1;
+    entries[count] = E820Entry::new(0x0009_f000, 0x0000_1000, E820Kind::Reserved);
+    count += 1;
+    entries[count] = E820Entry::new(0x000f_0000, 0x0001_0000, E820Kind::Reserved);
+    count += 1;
+
+    let usable_low_top = u64::from(usable_low_top).max(0x0010_0000);
+    let low_ram_size = usable_low_top.saturating_sub(0x0010_0000);
+    if low_ram_size != 0 {
+        entries[count] = E820Entry::new(0x0010_0000, low_ram_size, E820Kind::Ram);
+        count += 1;
+    }
+
+    let top_reserved_size = u64::from(tolud).saturating_sub(usable_low_top);
+    if top_reserved_size != 0 {
+        entries[count] = E820Entry::new(usable_low_top, top_reserved_size, E820Kind::Reserved);
+        count += 1;
+    }
+
+    let upper_ram_size = touud.saturating_sub(0x1_0000_0000);
+    if upper_ram_size != 0 {
+        entries[count] = E820Entry::new(0x1_0000_0000, upper_ram_size, E820Kind::Ram);
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 // ---------------------------------------------------------------------------
 // Global e820 state — populated by MemoryDetect, read by PCI host bridges
 // ---------------------------------------------------------------------------

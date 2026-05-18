@@ -85,6 +85,8 @@ pub const PCI_CMD_BUS_MASTER: u16 = 0x0004;
 // -- Header type field values --
 /// Type 1 (PCI-to-PCI bridge).
 pub const PCI_HEADER_TYPE_BRIDGE: u8 = 0x01;
+/// Type 2 (PCI-to-CardBus bridge).
+pub const PCI_HEADER_TYPE_CARDBUS: u8 = 0x02;
 /// Multi-function device flag (bit 7 of header type).
 pub const PCI_HEADER_TYPE_MULTI_FUNC: u8 = 0x80;
 

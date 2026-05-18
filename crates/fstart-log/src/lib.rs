@@ -276,6 +276,16 @@ pub fn raw_write_byte(b: u8) {
     }
 }
 
+/// Flush the registered console, if any.
+#[inline]
+pub fn flush() {
+    // SAFETY: CONSOLE is written once during init, then only read.
+    let console = unsafe { *CONSOLE.0.get() };
+    if let Some(c) = console {
+        let _ = c.flush();
+    }
+}
+
 /// Dump a byte slice as hex to the console.
 ///
 /// Output format (compatible with `xxd -r -p` for binary reconstruction):
@@ -304,6 +314,7 @@ pub fn hex_dump(data: &[u8]) {
         }
         raw_write_byte(b'\r');
         raw_write_byte(b'\n');
+        flush();
     }
 
     // Write end marker.
@@ -329,6 +340,7 @@ macro_rules! error {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[ERROR] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
+            $crate::flush();
         }
     }};
 }
@@ -345,6 +357,7 @@ macro_rules! warn {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[WARN ] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
+            $crate::flush();
         }
     }};
 }
@@ -361,6 +374,7 @@ macro_rules! info {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[INFO ] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
+            $crate::flush();
         }
     }};
 }
@@ -377,6 +391,7 @@ macro_rules! debug {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[DEBUG] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
+            $crate::flush();
         }
     }};
 }
@@ -393,6 +408,7 @@ macro_rules! trace {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[TRACE] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
+            $crate::flush();
         }
     }};
 }

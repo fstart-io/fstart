@@ -79,6 +79,7 @@ fn print_acpixtract_hexdump(data: &[u8]) {
         }
         fstart_log::raw_write_byte(b'\r');
         fstart_log::raw_write_byte(b'\n');
+        fstart_log::flush();
     }
 }
 
@@ -87,7 +88,7 @@ fn print_acpi_table(data: &[u8]) {
         return;
     };
     let sig = &data[..4];
-    let sig_str = unsafe { core::str::from_utf8_unchecked(sig) };
+    let sig_str = core::str::from_utf8(sig).unwrap_or("????");
     let mut w = fstart_log::writer();
     let _ = ufmt::uwriteln!(w, "{} @ 0x0000000000000000", sig_str);
     print_acpixtract_hexdump(&data[..len]);
