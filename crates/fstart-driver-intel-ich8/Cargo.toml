@@ -10,6 +10,7 @@ default = []
 acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
 
 [dependencies]
+fstart-arch-x86.workspace = true
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
 fstart-ecam = { workspace = true }
@@ -21,6 +22,7 @@ fstart-pio = { workspace = true }
 fstart-pmio-ich = { workspace = true }
 fstart-services = { workspace = true }
 fstart-smbus-intel = { workspace = true }
+fstart-superio = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }
 ufmt = { workspace = true }

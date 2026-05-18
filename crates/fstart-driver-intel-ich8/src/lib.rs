@@ -722,17 +722,26 @@ impl IntelIch8 {
     }
 
     fn reset_watchdog_and_cmos(&self) {
+        // Disable PCI interrupts.
+        self.lpc().or16(0x04, 1 << 10); // PCI_COMMAND_INT_DISABLE
+
         let rcba = self.rcba();
+        /*
+         * Enable upper 128 bytes of CMOS (RCBA offset 0x3400).
+         * Bit 2 enables the extended CMOS range.
+         */
         rcba.write32(0x3400, 1 << 2);
         rcba.write32(ich8::GCS, rcba.read32(ich8::GCS) | (1 << 5));
 
         #[cfg(target_arch = "x86_64")]
         {
             let tco = self.pm().tco();
-            tco.write16(pmio::TCO1_STS, 0x0008);
-            tco.write16(pmio::TCO2_STS, 0x0002);
+            // Halt TCO timer.
             let cnt = tco.read16(pmio::TCO1_CNT);
             tco.write16(pmio::TCO1_CNT, cnt | (1 << 11));
+            // Clear timeout status.
+            tco.write16(pmio::TCO1_STS, 1 << 3);
+            tco.write16(pmio::TCO2_STS, 1 << 1);
         }
     }
 
@@ -904,7 +913,7 @@ impl IntelIch8 {
             port61 &= !(1 << 3);
             port61 |= 1 << 2;
             fstart_pio::outb(0x61, port61);
-            let mut nmi = fstart_pio::inb(0x74);
+            let mut nmi = fstart_pio::inb(0x70);
             nmi |= 1 << 7;
             fstart_pio::outb(0x70, nmi);
         }
@@ -952,7 +961,7 @@ impl IntelIch8 {
     fn ramstage_lpc_init(&self) {
         let rcba = self.rcba();
         self.enable_ioapic();
-        self.lpc().write8(ich8::SERIRQ_CNTL, 0xc0);
+        self.lpc().write8(ich8::SERIRQ_CNTL, 0xd0);
         self.configure_power_options();
         self.configure_cstates();
         self.rtc_init_status();
@@ -1732,12 +1741,31 @@ impl Southbridge for IntelIch8 {
         EarlyInit::early_init(self)
     }
 
+    fn gpio_get(&self, pin: u32) -> Result<bool, ServiceError> {
+        Ok(IchGpio::new(ich8::DEFAULT_GPIOBASE).get(pin as u8))
+    }
+
+    fn gpio_set(&self, pin: u32, value: bool) -> Result<(), ServiceError> {
+        IchGpio::new(ich8::DEFAULT_GPIOBASE).set(pin as u8, value);
+        Ok(())
+    }
+
     fn ramstage_init(&mut self) -> Result<(), ServiceError> {
         PostDramInit::post_dram_init(self)
     }
 
     fn finalize(&mut self) -> Result<(), ServiceError> {
         FinalizeInit::finalize_init(self)
+    }
+}
+
+impl fstart_superio::LpcBaseProvider for IntelIch8 {
+    fn lpc_base(&self) -> u16 {
+        // The X61 laptop-side NSC PC87382/DLPC uses extended PnP config port
+        // 0x164e.  The dock-side PC87392 at 0x2e is board-switched and handled
+        // directly by the X61 mainboard hook while disconnected from generic
+        // driver init.
+        0x164e
     }
 }
 

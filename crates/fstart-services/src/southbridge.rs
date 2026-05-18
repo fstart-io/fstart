@@ -34,6 +34,16 @@ pub trait Southbridge: Send + Sync {
     /// Perform full early southbridge initialization.
     fn early_init(&mut self) -> Result<(), ServiceError>;
 
+    /// Read a southbridge-owned GPIO pin.
+    fn gpio_get(&self, _pin: u32) -> Result<bool, ServiceError> {
+        Err(ServiceError::NotSupported)
+    }
+
+    /// Set a southbridge-owned GPIO pin.
+    fn gpio_set(&self, _pin: u32, _value: bool) -> Result<(), ServiceError> {
+        Err(ServiceError::NotSupported)
+    }
+
     /// Perform DRAM-backed ramstage device initialization.
     ///
     /// This corresponds to coreboot ramstage device ops for the

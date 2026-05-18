@@ -575,9 +575,10 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
     fn init(&mut self) -> Result<(), DeviceError> {
         self.enter_config();
 
-        // Chip ID sanity check.
+        // Chip ID sanity check.  A CHIP_ID of 0 means the board uses a fixed
+        // PnP resource where the chip ID registers are not reliable/available.
         let id = self.read_chip_id();
-        if id != C::CHIP_ID {
+        if C::CHIP_ID != 0 && id != C::CHIP_ID {
             self.exit_config();
             fstart_log::error!("superio: chip ID mismatch: read {:#06x}", id);
             return Err(DeviceError::InitFailed);

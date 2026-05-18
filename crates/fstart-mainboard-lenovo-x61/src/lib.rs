@@ -17,9 +17,6 @@ use serde::{Deserialize, Serialize};
 /// Lenovo ThinkPad X61 mainboard configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LenovoX61MainboardConfig {
-    /// ICH GPIO base used to sample the dock-present GPIO.
-    #[serde(default = "default_gpio_base")]
-    pub gpio_base: u16,
     /// Initialize dock LPC and the dock-side PC87392 COM1 before console init.
     #[serde(default = "default_true")]
     pub dock_early_console: bool,
@@ -31,15 +28,10 @@ pub struct LenovoX61MainboardConfig {
 impl Default for LenovoX61MainboardConfig {
     fn default() -> Self {
         Self {
-            gpio_base: default_gpio_base(),
             dock_early_console: true,
             acpi_name: None,
         }
     }
-}
-
-fn default_gpio_base() -> u16 {
-    0x0580
 }
 
 fn default_true() -> bool {
@@ -74,20 +66,12 @@ impl PreConsoleInit for LenovoX61Mainboard {
         // When the dock-present GPIO is asserted, coreboot still attempts the
         // PC87392 COM1 enable after dock_connect(); do the same so a marginal
         // delay/timeout does not suppress all serial output.
-        let _ = dock::dlpc_init();
-        if self.config.dock_early_console && dock::dock_present(self.config.gpio_base) {
-            let _ = dock::dock_connect();
-            dock::early_superio_config();
-        }
         Ok(())
     }
 }
 
 impl PostDramInit for LenovoX61Mainboard {
     fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        dock::post_raminit_setup(self.config.gpio_base);
-        dock::ec_dock_state_update();
-        dock::ultrabay_power_update();
         Ok(())
     }
 }
@@ -103,8 +87,28 @@ impl Mainboard for LenovoX61Mainboard {
         PreConsoleInit::pre_console_init(self)
     }
 
+    fn pre_console_init_with_southbridge(
+        &mut self,
+        southbridge: &mut dyn fstart_services::Southbridge,
+    ) -> Result<(), ServiceError> {
+        let _ = dock::dlpc_init();
+        if self.config.dock_early_console && dock::dock_present(southbridge) {
+            let _ = dock::dock_connect();
+            dock::early_superio_config();
+        }
+        Ok(())
+    }
+
     fn ramstage_init(&mut self) -> Result<(), ServiceError> {
         PostDramInit::post_dram_init(self)
+    }
+
+    fn ramstage_init_with_southbridge(
+        &mut self,
+        southbridge: &mut dyn fstart_services::Southbridge,
+    ) -> Result<(), ServiceError> {
+        dock::post_raminit_setup(southbridge);
+        Ok(())
     }
 
     fn finalize(&mut self) -> Result<(), ServiceError> {
@@ -115,7 +119,7 @@ impl Mainboard for LenovoX61Mainboard {
 /// X61 dock and DLPC helpers ported from coreboot `mainboard/lenovo/x61/dock.c`.
 pub mod dock {
     #[cfg(target_arch = "x86_64")]
-    use fstart_pio::{inb, inw, outb};
+    use fstart_pio::{inb, outb};
 
     const DLPC_INDEX: u16 = 0x164e;
     const DLPC_DATA: u16 = 0x164f;
@@ -125,11 +129,11 @@ pub mod dock {
     const DOCK_DATA: u16 = 0x002f;
     const DOCK_GPIO_BASE: u16 = 0x1620;
 
-    const PC87392_GPIO_PIN_DEBOUNCE: u8 = 1 << 0;
-    const PC87392_GPIO_PIN_PULLUP: u8 = 1 << 1;
-    const PC87392_GPIO_PIN_TRIGGERS_SMI: u8 = 1 << 2;
-    const PC87392_GPIO_PIN_TYPE_PUSH_PULL: u8 = 1 << 3;
-    const PC87392_GPIO_PIN_OE: u8 = 1 << 4;
+    const PC87392_GPIO_PIN_OE: u8 = 0x01;
+    const PC87392_GPIO_PIN_TYPE_PUSH_PULL: u8 = 0x02;
+    const PC87392_GPIO_PIN_PULLUP: u8 = 0x04;
+    const PC87392_GPIO_PIN_DEBOUNCE: u8 = 0x40;
+    const PC87392_GPIO_PIN_TRIGGERS_SMI: u8 = 0x02;
 
     #[cfg(target_arch = "x86_64")]
     fn delay_us(us: u32) {
@@ -236,22 +240,22 @@ pub mod dock {
     }
 
     /// Return whether an X6 UltraBase dock is attached.
-    #[cfg(target_arch = "x86_64")]
-    pub fn dock_present(gpiobase: u16) -> bool {
-        // SAFETY: GPIOBASE is programmed by the ICH8 pre-console path.
-        unsafe { ((inw(gpiobase + 0x0c) >> 13) & 1) == 0 }
-    }
-
-    /// Return whether an X6 UltraBase dock is attached.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn dock_present(_gpiobase: u16) -> bool {
-        false
+    pub fn dock_present(southbridge: &dyn fstart_services::Southbridge) -> bool {
+        // Coreboot samples ICH GPIO13 low for dock present.  Ask the reusable
+        // southbridge driver instead of duplicating its GPIOBASE in board config.
+        southbridge.gpio_get(13).is_ok_and(|high| !high)
     }
 
     /// Connect the dock-side LPC bus and initialize dock GPIO/power.
     #[cfg(target_arch = "x86_64")]
     pub fn dock_connect() -> Result<(), ()> {
         let mut timeout = 1000;
+        // Start from the vendor/coreboot state: dock reset asserted and DLPC
+        // powered down, preserving unrelated GPIO bits in the DLPC GPIO data
+        // register.  The dock UART is behind this LPC switch, so marginal
+        // reset/power sequencing shows up later as serial corruption.
+        unsafe { outb(DLPC_GPIO, inb(DLPC_GPIO) & 0xfc) };
+
         // SAFETY: DLPC switch I/O base was activated by dlpc_init().
         unsafe { outb(DLPC_SWITCH, 0x07) };
         while unsafe { inb(DLPC_SWITCH) } & 8 == 0 && timeout != 0 {
@@ -265,11 +269,11 @@ pub mod dock {
             return Err(());
         }
 
-        // SAFETY: dock GPIO base is activated by dlpc_init().
-        unsafe { outb(DLPC_GPIO, 0xfe) };
+        // Power up DLPC while keeping D_PLTRST# asserted, then deassert
+        // D_PLTRST#.  Match coreboot's read-modify-write sequence exactly.
+        unsafe { outb(DLPC_GPIO, (inb(DLPC_GPIO) & 0xfe) | 0x02) };
         delay_ms(100);
-        // SAFETY: dock GPIO base is activated by dlpc_init().
-        unsafe { outb(DLPC_GPIO, 0xff) };
+        unsafe { outb(DLPC_GPIO, inb(DLPC_GPIO) | 0x03) };
         delay_ms(100);
 
         dock_write(0x29, 0x06);
@@ -336,6 +340,7 @@ pub mod dock {
         }
         dock_write(0x07, 0x03);
         dock_write(0x30, 0x01);
+        disable_dock_watchdog();
         Ok(())
     }
 
@@ -375,131 +380,28 @@ pub mod dock {
         dock_write(0x07, 0x03);
         dock_write(0x60, 0x03);
         dock_write(0x61, 0xf8);
+        dock_write(0x70, 4);
         dock_write(0x30, 0x01);
+        disable_dock_watchdog();
     }
 
     /// Enable the dock-side PC87392 COM1 at 0x3f8.
     #[cfg(not(target_arch = "x86_64"))]
     pub fn early_superio_config() {}
 
-    /// Switch the X61 SMBus mux back to the EEPROM side after SPD/raminit.
+    /// Keep the dock-side PC87392 watchdog LDN disabled, matching coreboot's
+    /// `device pnp 2e.a off end # WDT` for the X61 dock SuperIO.
     #[cfg(target_arch = "x86_64")]
-    pub fn post_raminit_setup(gpiobase: u16) {
-        fstart_gpio_ich::IchGpio::new(gpiobase).set(42, false);
+    fn disable_dock_watchdog() {
+        const PC87392_WDT_LDN: u8 = 0x0a;
+        dock_write(0x07, PC87392_WDT_LDN);
+        dock_write(0x30, 0x00);
     }
 
     /// Switch the X61 SMBus mux back to the EEPROM side after SPD/raminit.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn post_raminit_setup(_gpiobase: u16) {}
-
-    const EC_DATA: u16 = 0x62;
-    const EC_SC: u16 = 0x66;
-    const EC_OBF: u8 = 1 << 0;
-    const EC_IBF: u8 = 1 << 1;
-    const EC_CMD_READ: u8 = 0x80;
-    const EC_CMD_WRITE: u8 = 0x81;
-
-    #[cfg(target_arch = "x86_64")]
-    fn ec_wait_input_clear() -> bool {
-        for _ in 0..100_000 {
-            // SAFETY: fixed ACPI EC status port decoded by ICH8 LPC setup.
-            if unsafe { inb(EC_SC) } & EC_IBF == 0 {
-                return true;
-            }
-            core::hint::spin_loop();
-        }
-        false
+    pub fn post_raminit_setup(southbridge: &dyn fstart_services::Southbridge) {
+        let _ = southbridge.gpio_set(42, false);
     }
-
-    #[cfg(target_arch = "x86_64")]
-    fn ec_wait_output_full() -> bool {
-        for _ in 0..100_000 {
-            // SAFETY: fixed ACPI EC status port decoded by ICH8 LPC setup.
-            if unsafe { inb(EC_SC) } & EC_OBF != 0 {
-                return true;
-            }
-            core::hint::spin_loop();
-        }
-        false
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn ec_read(index: u8) -> Option<u8> {
-        if !ec_wait_input_clear() {
-            return None;
-        }
-        // SAFETY: fixed ACPI EC command/data ports.
-        unsafe { outb(EC_SC, EC_CMD_READ) };
-        if !ec_wait_input_clear() {
-            return None;
-        }
-        unsafe { outb(EC_DATA, index) };
-        if !ec_wait_output_full() {
-            return None;
-        }
-        Some(unsafe { inb(EC_DATA) })
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn ec_write(index: u8, value: u8) -> bool {
-        if !ec_wait_input_clear() {
-            return false;
-        }
-        // SAFETY: fixed ACPI EC command/data ports.
-        unsafe { outb(EC_SC, EC_CMD_WRITE) };
-        if !ec_wait_input_clear() {
-            return false;
-        }
-        unsafe { outb(EC_DATA, index) };
-        if !ec_wait_input_clear() {
-            return false;
-        }
-        unsafe { outb(EC_DATA, value) };
-        true
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn ec_update_bits(index: u8, clear: u8, set: u8) {
-        if let Some(value) = ec_read(index) {
-            let _ = ec_write(index, (value & !clear) | set);
-        }
-    }
-
-    /// Mirror coreboot X61 ramstage EC dock-bit update.
-    #[cfg(target_arch = "x86_64")]
-    pub fn ec_dock_state_update() {
-        ec_update_bits(0x03, 1 << 2, 0);
-        // SAFETY: DLPC switch base is fixed and active when dock connected.
-        if unsafe { inb(DLPC_SWITCH) } & 0x08 != 0 {
-            ec_update_bits(0x03, 0, 1 << 2);
-            let _ = ec_write(0x0c, 0x88);
-        }
-    }
-
-    /// Mirror coreboot X61 ramstage EC dock-bit update.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn ec_dock_state_update() {}
-
-    /// Update UltraBay power and EC LED/state. This follows the coreboot X61
-    /// mainboard path; IDE-primary enabling itself still needs a PCI IDE
-    /// device model in fstart.
-    #[cfg(target_arch = "x86_64")]
-    pub fn ultrabay_power_update() {
-        // SAFETY: dock GPIO block is configured at 0x1620 when docked.
-        let present = unsafe { inb(DOCK_GPIO_BASE + 0x01) } & 0x02 == 0;
-        let power = unsafe { inb(DOCK_GPIO_BASE + 0x08) };
-        if present {
-            unsafe { outb(DOCK_GPIO_BASE + 0x08, power | 0x01) };
-            let _ = ec_write(0x0c, 0x84);
-        } else {
-            unsafe { outb(DOCK_GPIO_BASE + 0x08, power & !0x01) };
-            let _ = ec_write(0x0c, 0x04);
-        }
-    }
-
-    /// Update UltraBay power and EC LED/state.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn ultrabay_power_update() {}
 }
 
 #[cfg(feature = "acpi")]

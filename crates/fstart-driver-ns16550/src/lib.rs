@@ -110,7 +110,9 @@ register_bitfields! [u8,
         /// Data Terminal Ready.
         DTR OFFSET(0) NUMBITS(1) [],
         /// Request To Send.
-        RTS OFFSET(1) NUMBITS(1) []
+        RTS OFFSET(1) NUMBITS(1) [],
+        /// OUT2. On PC-compatible UARTs this gates the UART interrupt output.
+        OUT2 OFFSET(3) NUMBITS(1) []
     ]
 ];
 
@@ -371,14 +373,11 @@ impl Device for Ns16550 {
         // 1. IER = 0 — disable all interrupts
         self.write_reg(REG_IER, 0);
 
-        // 2. MCR = DTR + RTS
+        // 2. MCR = DTR + RTS. Match coreboot's 8250 init path.
         self.write_reg(REG_MCR, (MCR::DTR::SET + MCR::RTS::SET).value);
 
-        // 3. FCR = FIFO enable + clear both FIFOs
-        self.write_reg(
-            REG_FCR,
-            (FCR::FIFO_EN::SET + FCR::RX_RST::SET + FCR::TX_RST::SET).value,
-        );
+        // 3. FCR = FIFO enable. Match coreboot: do not clear FIFOs here.
+        self.write_reg(REG_FCR, FCR::FIFO_EN::SET.value);
 
         // 4. LCR = 8N1 (clears DLAB)
         self.write_reg(REG_LCR, LCR::WLS.val(3).value);
@@ -394,6 +393,8 @@ impl Console for Ns16550 {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
         // Wait for THR empty, but keep this bounded like coreboot's 8250
         // driver so a missing dock/SuperIO cannot wedge the firmware.
+        // coreboot's I/O-port path uses SINGLE_CHAR_TIMEOUT = 50_000 and then
+        // writes the byte even if the timeout expires.
         let mut timeout = 50_000u32;
         while timeout != 0 && !self.lsr().is_set(LSR::THRE) {
             timeout -= 1;
@@ -409,5 +410,16 @@ impl Console for Ns16550 {
         } else {
             Ok(None)
         }
+    }
+
+    fn flush(&self) -> Result<(), ServiceError> {
+        // Match coreboot's FIFO_TIMEOUT = 16 * SINGLE_CHAR_TIMEOUT and wait
+        // for TEMT (shift register + holding register empty).
+        let mut timeout = 16 * 50_000u32;
+        while timeout != 0 && !self.lsr().is_set(LSR::TEMT) {
+            timeout -= 1;
+            core::hint::spin_loop();
+        }
+        Ok(())
     }
 }

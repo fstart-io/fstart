@@ -150,6 +150,7 @@ pub const SW_TCO_STS: u32 = 1 << 1;
 pub const NMI2SMI_STS: u32 = 1 << 0;
 
 // TCO1_CNT bits
+/// Halt the TCO watchdog timer.
 pub const TCO_LOCK: u16 = 1 << 12;
 
 // TCO combined (TCO1_STS + TCO2_STS as u32)

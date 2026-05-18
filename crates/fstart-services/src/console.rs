@@ -23,9 +23,15 @@ pub trait Console: Send + Sync {
         self.write_bytes(s.as_bytes())
     }
 
+    /// Wait until all queued/transmitting console bytes have drained.
+    fn flush(&self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
     /// Write a string followed by a newline.
     fn write_line(&self, s: &str) -> Result<(), ServiceError> {
         self.write_str(s)?;
-        self.write_byte(b'\n')
+        self.write_byte(b'\n')?;
+        self.flush()
     }
 }
