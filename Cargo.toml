@@ -52,6 +52,8 @@ members = [
   "crates/fstart-driver-q35-hostbridge",
   "crates/fstart-superio",
   "crates/fstart-driver-ite8721f",
+  "crates/fstart-driver-nsc-pc87382",
+  "crates/fstart-driver-nsc-pc87392",
   "crates/fstart-driver-intel-pineview",
   "crates/fstart-driver-intel-ich7",
   "crates/fstart-driver-intel-gm965",
@@ -161,6 +163,8 @@ fstart-driver-qemu-fw-cfg = { path = "crates/fstart-driver-qemu-fw-cfg" }
 fstart-driver-q35-hostbridge = { path = "crates/fstart-driver-q35-hostbridge" }
 fstart-superio = { path = "crates/fstart-superio" }
 fstart-driver-ite8721f = { path = "crates/fstart-driver-ite8721f" }
+fstart-driver-nsc-pc87382 = { path = "crates/fstart-driver-nsc-pc87382" }
+fstart-driver-nsc-pc87392 = { path = "crates/fstart-driver-nsc-pc87392" }
 fstart-driver-intel-pineview = { path = "crates/fstart-driver-intel-pineview" }
 fstart-driver-intel-ich7 = { path = "crates/fstart-driver-intel-ich7" }
 fstart-driver-intel-gm965 = { path = "crates/fstart-driver-intel-gm965" }

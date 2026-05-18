@@ -30,6 +30,8 @@ fstart-driver-bochs-display = { path = "../fstart-driver-bochs-display", optiona
 fstart-driver-qemu-fw-cfg = { path = "../fstart-driver-qemu-fw-cfg", optional = true }
 fstart-driver-q35-hostbridge = { path = "../fstart-driver-q35-hostbridge", optional = true }
 fstart-driver-ite8721f = { path = "../fstart-driver-ite8721f", optional = true }
+fstart-driver-nsc-pc87382 = { path = "../fstart-driver-nsc-pc87382", optional = true }
+fstart-driver-nsc-pc87392 = { path = "../fstart-driver-nsc-pc87392", optional = true }
 fstart-driver-intel-pineview = { path = "../fstart-driver-intel-pineview", optional = true }
 fstart-driver-intel-ich7 = { path = "../fstart-driver-intel-ich7", optional = true }
 fstart-driver-intel-gm965 = { path = "../fstart-driver-intel-gm965", optional = true }
@@ -59,6 +61,8 @@ bochs-display = ["dep:fstart-driver-bochs-display"]
 qemu-fw-cfg = ["dep:fstart-driver-qemu-fw-cfg"]
 q35-hostbridge = ["dep:fstart-driver-q35-hostbridge"]
 ite8721f = ["dep:fstart-driver-ite8721f"]
+nsc-pc87382 = ["dep:fstart-driver-nsc-pc87382"]
+nsc-pc87392 = ["dep:fstart-driver-nsc-pc87392"]
 intel-pineview = ["dep:fstart-driver-intel-pineview"]
 intel-ich7 = ["dep:fstart-driver-intel-ich7"]
 intel-gm965 = ["dep:fstart-driver-intel-gm965"]
@@ -87,6 +91,8 @@ all-drivers = [
   "qemu-fw-cfg",
   "q35-hostbridge",
   "ite8721f",
+  "nsc-pc87382",
+  "nsc-pc87392",
   "intel-pineview",
   "intel-ich7",
   "intel-gm965",

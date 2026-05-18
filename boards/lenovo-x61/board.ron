@@ -39,6 +39,8 @@
                 ( kind: Bios,       offset: 0x280000, size: 0x180000 ),
             ],
         ))),
+        // Runtime memory-mapped BIOS window used by BootMedia; the complete
+        // SPI flash layout above still starts at 0xFFC00000.
         flash_base: Some(0xFFE80000),
         flash_size: Some(0x00180000),
         car: Some((
@@ -58,19 +60,20 @@
                 ecam_base: 0xE0000000,
                 ecam_buses: 64,
                 // IGD setup deliberately stops short of mode-setting.  It still
-                // enables GTTMMADR, creates the ACPI OpRegion, and looks for a
-                // raw VBT first at igd.vbt_addr (if configured), then in the
-                // legacy C0000 option-ROM window like coreboot.
+                // enables GTTMMADR, creates the ACPI OpRegion, and loads the
+                // board VBT from signed FFS, falling back to vbt_addr / the
+                // legacy C0000 option-ROM window if needed.
                 igd: (
                     enable_vga: true,
                     enable_pipe_b: true,
                     gtt_mmio_base: 0xFEB00000,
+                    vbt_file: Some("data.vbt"),
                     legacy_vbt_probe: Some(0x000C0000),
                 ),
                 acpi_name: Some("PCI0"),
             )),
             services: [
-                "MemoryController", "MemoryDetector", "PciHost", "SmmOps",
+                "MemoryController", "MemoryDetector", "PciRootBus", "SmmOps",
                 "PreConsoleInit", "EarlyInit", "StageLocalInit", "PostDramInit",
             ],
         ),
@@ -216,6 +219,27 @@
             children: [
                 ( name: "lpc", services: ["LpcBus"],
                     children: [
+                        // Laptop-side NSC PC87382/DLPC functions from coreboot
+                        // `superio/nsc/pc87382` nodes. Board-specific DLPC switch
+                        // sequencing still lives in LenovoX61Mainboard.
+                        ( name: "dlpc_superio", bus: Lpc(0x164e),
+                            driver: NscPc87382((
+                                com2: Some(( io_base: 0x2f8, irq: 0 )),
+                                cir: Some(( io_base: 0x200, irq: 5 )),
+                                gpio: Some(( io_base: 0x1680 )),
+                            )),
+                            services: ["SuperIoHost"],
+                        ),
+                        // Dock-side NSC PC87392 functions. The dock WDT LDN 0x0a
+                        // is kept disabled by LenovoX61Mainboard, matching coreboot.
+                        ( name: "dock_superio", bus: Lpc(0x2e), enabled: false,
+                            driver: NscPc87392((
+                                parallel: Some(( io_base: 0x3bc, irq: 7 )),
+                                com1: Some(( io_base: 0x3f8, irq: 4 )),
+                                gpio: Some(( io_base: 0x1620 )),
+                            )),
+                            services: ["SuperIoHost"],
+                        ),
                         // COM1 is enabled by the LenovoX61Mainboard pre-console hook
                         // when the dock is present. The UART itself is standard 16550 PIO.
                         ( name: "uart0", bus: Lpc(0x3f8),
@@ -244,7 +268,6 @@
         (
             name: "mainboard",
             driver: LenovoX61Mainboard((
-                gpio_base: 0x0580,
                 dock_early_console: true,
                 acpi_name: Some("X61"),
             )),
@@ -277,11 +300,18 @@
             name: "ramstage",
             capabilities: [
                 ConsoleInit( device: "uart0" ),
+                BootMedia(MemoryMapped(
+                    base: 0xFFE80000,
+                    size: 0x00180000,
+                    ram_copy_addr: Some(0x02000000),
+                )),
+                SigVerify,
                 DriverInit,
                 // Rebind ramstage-local ECAM/chipset BAR access before reading
                 // GM965 TOM/TOLUD/TSEG registers for the runtime e820 map.
                 StageLocalInit( devices: ["northbridge"] ),
                 MemoryDetect( device: "northbridge" ),
+                PciInit( device: "northbridge" ),
                 PostDramInit( devices: ["northbridge", "southbridge", "mainboard"] ),
                 FinalizeInit( devices: ["southbridge", "mainboard"] ),
                 // GM965 now provides SmmOps, but keep permanent SMM disabled
@@ -291,12 +321,6 @@
                 MpInit(cpu_model: "core2", num_cpus: 2, smm: false),
                 AcpiPrepare,
                 SmBiosPrepare,
-                BootMedia(MemoryMapped(
-                    base: 0xFFE80000,
-                    size: 0x00180000,
-                    ram_copy_addr: Some(0x02000000),
-                )),
-                SigVerify,
                 PayloadLoad,
             ],
             load_addr: 0x04000000,
@@ -330,7 +354,7 @@
     full_flash_image: true,
 
     acpi: Some((
-        print_hex: false,
+        print_hex: true,
         platform: X86((
             // Platform ACPI constants for the X61 interrupt/timer topology.
             num_cpus: Some(2),

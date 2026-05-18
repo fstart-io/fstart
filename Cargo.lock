@@ -99,6 +99,12 @@ checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
 name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
+name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
@@ -221,7 +227,7 @@ version = "0.1.0"
 source = "git+https://github.com/ArthurHeymans/CrabEFI.git#5b33abfa505086627527fc1106400b0c3e57601e"
 dependencies = [
  "atomic_refcell",
- "bitflags",
+ "bitflags 2.10.0",
  "cms",
  "const-oid",
  "der",
@@ -480,6 +486,9 @@ version = "0.1.0"
 [[package]]
 name = "fstart-arch-x86"
 version = "0.1.0"
+dependencies = [
+ "x86",
+]
 
 [[package]]
 name = "fstart-capabilities"
@@ -537,6 +546,7 @@ name = "fstart-crabefi"
 version = "0.1.0"
 dependencies = [
  "crabefi",
+ "fstart-arch-x86",
  "fstart-pio",
  "fstart-services",
 ]
@@ -567,6 +577,8 @@ dependencies = [
  "fstart-driver-intel-pineview",
  "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-driver-q35-hostbridge",
@@ -647,7 +659,10 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch-x86",
  "fstart-cpu-intel",
+ "fstart-crypto",
+ "fstart-driver-pci-ecam",
  "fstart-ecam",
+ "fstart-ffs",
  "fstart-lapic",
  "fstart-log",
  "fstart-mmio",
@@ -658,6 +673,7 @@ dependencies = [
  "fstart-smbus-intel",
  "fstart-smm",
  "fstart-spd",
+ "fstart-types",
  "heapless",
  "serde",
  "tock-registers",
@@ -691,6 +707,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-arch-x86",
  "fstart-ecam",
  "fstart-gpio-ich",
  "fstart-hda",
@@ -700,6 +717,7 @@ dependencies = [
  "fstart-pmio-ich",
  "fstart-services",
  "fstart-smbus-intel",
+ "fstart-superio",
  "heapless",
  "serde",
  "ufmt",
@@ -747,6 +765,20 @@ dependencies = [
  "fstart-services",
  "serde",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-nsc-pc87382"
+version = "0.1.0"
+dependencies = [
+ "fstart-superio",
+]
+
+[[package]]
+name = "fstart-driver-nsc-pc87392"
+version = "0.1.0"
+dependencies = [
+ "fstart-superio",
 ]
 
 [[package]]
@@ -976,6 +1008,7 @@ dependencies = [
 name = "fstart-lapic"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch-x86",
  "fstart-log",
  "ufmt",
 ]
@@ -996,7 +1029,6 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch-x86",
  "fstart-gpio-ich",
- "fstart-log",
  "fstart-pio",
  "fstart-services",
  "heapless",
@@ -1035,6 +1067,7 @@ name = "fstart-pio"
 version = "0.1.0"
 dependencies = [
  "tock-registers",
+ "x86",
 ]
 
 [[package]]
@@ -1162,6 +1195,8 @@ dependencies = [
  "fstart-driver-intel-pineview",
  "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-driver-q35-hostbridge",
@@ -1190,6 +1225,7 @@ dependencies = [
  "fstart-services",
  "fstart-soc-sunxi",
  "fstart-stage-runtime",
+ "fstart-superio",
  "fstart-types",
  "heapless",
  "ufmt",
@@ -1238,7 +1274,7 @@ dependencies = [
 name = "fstart-types"
 version = "0.1.0"
 dependencies = [
- "bitflags",
+ "bitflags 2.10.0",
  "heapless",
  "serde",
 ]
@@ -1595,6 +1631,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "raw-cpuid"
+version = "10.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c297679cb867470fa8c9f67dbba74a78d78e3e98d7cf2b08d6d71540f797332"
+dependencies = [
+ "bitflags 1.3.2",
+]
+
+[[package]]
 name = "rfc6979"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1611,7 +1656,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b91f7eff05f748767f183df4320a63d6936e9c6107d97c9e6bdd9784f4289c94"
 dependencies = [
  "base64",
- "bitflags",
+ "bitflags 2.10.0",
  "serde",
  "serde_derive",
 ]
@@ -1955,13 +2000,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "x86"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2781db97787217ad2a2845c396a5efe286f87467a5810836db6d74926e94a385"
+dependencies = [
+ "bit_field",
+ "bitflags 1.3.2",
+ "raw-cpuid",
+]
+
+[[package]]
 name = "x86_64"
 version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7841fa0098ceb15c567d93d3fae292c49e10a7662b4936d5f6a9728594555ba"
 dependencies = [
  "bit_field",
- "bitflags",
+ "bitflags 2.10.0",
  "const_fn",
  "rustversion",
  "volatile",

@@ -114,6 +114,16 @@ pub mod ite8721f {
     pub use fstart_driver_ite8721f::Ite8721fConfig;
 }
 
+#[cfg(feature = "nsc-pc87382")]
+pub mod nsc_pc87382 {
+    pub use fstart_driver_nsc_pc87382::Pc87382Config;
+}
+
+#[cfg(feature = "nsc-pc87392")]
+pub mod nsc_pc87392 {
+    pub use fstart_driver_nsc_pc87392::Pc87392Config;
+}
+
 #[cfg(feature = "intel-pineview")]
 pub mod intel_pineview {
     pub use fstart_driver_intel_pineview::IntelPineviewConfig;
@@ -312,6 +322,14 @@ pub enum DriverInstance {
     /// ITE IT8721F SuperIO — LPC-attached multi-function peripheral.
     #[cfg(feature = "ite8721f")]
     Ite8721f(ite8721f::Ite8721fConfig),
+
+    /// NSC PC87382 SuperIO / DLPC block.
+    #[cfg(feature = "nsc-pc87382")]
+    NscPc87382(nsc_pc87382::Pc87382Config),
+
+    /// NSC PC87392 SuperIO — dock-side X61 peripheral.
+    #[cfg(feature = "nsc-pc87392")]
+    NscPc87392(nsc_pc87392::Pc87392Config),
 
     /// Intel Atom D4xx/D5xx (Pineview) northbridge / MCH.
     #[cfg(feature = "intel-pineview")]
@@ -604,6 +622,28 @@ impl DriverInstance {
                 has_acpi: true,
                 is_bus_device: true,
             },
+            #[cfg(feature = "nsc-pc87382")]
+            Self::NscPc87382(_) => &DriverMeta {
+                name: "nsc-pc87382",
+                type_name: "Pc87382",
+                module_path: "fstart_driver_nsc_pc87382",
+                config_type: "Pc87382Config",
+                services: &["SuperIoHost", "Console"],
+                compatible: &["nsc,pc87382"],
+                has_acpi: true,
+                is_bus_device: true,
+            },
+            #[cfg(feature = "nsc-pc87392")]
+            Self::NscPc87392(_) => &DriverMeta {
+                name: "nsc-pc87392",
+                type_name: "Pc87392",
+                module_path: "fstart_driver_nsc_pc87392",
+                config_type: "Pc87392Config",
+                services: &["SuperIoHost", "Console"],
+                compatible: &["nsc,pc87392"],
+                has_acpi: true,
+                is_bus_device: true,
+            },
             #[cfg(feature = "intel-pineview")]
             Self::IntelPineview(_) => &DriverMeta {
                 name: "intel-pineview",
@@ -636,6 +676,7 @@ impl DriverInstance {
                     "MemoryController",
                     "MemoryDetector",
                     "PciHost",
+                    "PciRootBus",
                     "SmmOps",
                     "PostDramInit",
                 ],
@@ -802,6 +843,10 @@ impl DriverInstance {
             Self::Q35HostBridge(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "ite8721f")]
             Self::Ite8721f(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "nsc-pc87382")]
+            Self::NscPc87382(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "nsc-pc87392")]
+            Self::NscPc87392(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "intel-pineview")]
             Self::IntelPineview(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "intel-ich7")]
