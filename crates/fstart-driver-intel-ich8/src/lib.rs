@@ -1195,9 +1195,13 @@ impl IntelIch8 {
         for _ in 0..1000 {
             core::hint::spin_loop();
         }
-        ehci.write32(
+        // Program EHCIIR the same way as coreboot's ICH7/ICH9-family EHCI
+        // setup: EHCIIR[3:2] = 10b, plus Intel-specific bits 17 and 29, while
+        // preserving all unrelated bits.
+        ehci.modify32(
             ich8::EHCI_INTEL_FCREG,
-            (ehci.read32(ich8::EHCI_INTEL_FCREG) & !(3 << 2)) | (1 << 29) | (1 << 17) | (2 << 2),
+            !(3 << 2),
+            (2 << 2) | (1 << 29) | (1 << 17),
         );
         ehci.write16(ich8::PCI_COMMAND, original_cmd);
         ehci.write32(ich8::PCI_BAR0, original_bar0);
@@ -1670,12 +1674,11 @@ impl PreConsoleInit for IntelIch8 {
 
 impl EarlyInit for IntelIch8 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
-        self.enable_spi_prefetching_and_caching();
-        self.program_fixed_bars();
-        self.program_lpc_decode();
+        // Bootblock-level SPI, fixed BAR, CMOS/watchdog, LPC decode, and GPIO
+        // setup was already done by pre_console_init(). Avoid replaying those
+        // writes here; early_init is the raminit-era southbridge path.
         self.enable_smbus();
         self.write_pirq_routes();
-        self.reset_watchdog_and_cmos();
         self.clear_disabled_device_commands();
         let rcba = self.rcba();
         let fd = self.function_disable_mask();
@@ -1689,7 +1692,6 @@ impl EarlyInit for IntelIch8 {
         self.early_chipset_settings();
         self.pm().write32(GPE0_STS_ICH8, 0xffff_ffff);
         self.pm().write32(GPE0_EN_ICH8, self.config.gpe0_en);
-        self.setup_gpios();
         self.enable_hpet();
         self.setup_dmi();
         let _ = self.detect_s3_resume();

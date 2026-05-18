@@ -795,41 +795,15 @@ impl EarlyInit for IntelIch7 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
         let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
 
-        // LPC decode was opened by pre_console_init (ChipsetPreConsole).
-
-        // ---- 0. SPI prefetch + upper CMOS (bootblock-level on coreboot) ----
-        // On coreboot these run from bootblock_early_southbridge_init().
-        // We do them here since fstart has a single early_init path.
-        //
-        // SPI prefetch/caching: LPC reg 0xDC bits [3:2] = 10 (enable prefetch).
-        let spi = lpc.read8(0xDC);
-        lpc.write8(0xDC, (spi & !(3 << 2)) | (2 << 2));
+        // Bootblock-level SPI, fixed BAR, CMOS/watchdog, and LPC decode setup
+        // was already done by pre_console_init(). Do not repeat it here: this
+        // hook runs after the SuperIO console is live and should only do the
+        // raminit-era southbridge work.
 
         // ---- 1. Enable SMBus (must be first — raminit reads SPD) ----
         let smbus =
             I801SmBus::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, self.config.smbus_base);
         self.smbus = Some(smbus);
-
-        // ---- 2. Setup BARs ----
-        // RCBA
-        lpc.write32(ich7::RCBA_REG, (self.config.rcba as u32 & 0xFFFF_C000) | 1);
-        // PMBASE + ACPI enable
-        lpc.write32(PMBASE_REG, DEFAULT_PMBASE | 1);
-        lpc.write8(ACPI_CNTL, ACPI_EN);
-        // GPIOBASE + GPIO enable
-        lpc.write32(GPIOBASE_REG, DEFAULT_GPIOBASE | 1);
-        lpc.write8(GPIO_CNTL, GPIO_EN);
-
-        // ---- 3. Serial IRQ configuration ----
-        lpc.write8(SERIRQ_CNTL, 0xD0);
-
-        // LPC decode was already enabled by pre_console_init.
-        // Program the generic decode ranges (GEN1..GEN4) from board config.
-        let generic = self.lpc_generic_decode_regs();
-        lpc.write32(GEN1_DEC, generic[0]);
-        lpc.write32(GEN2_DEC, generic[1]);
-        lpc.write32(GEN3_DEC, generic[2]);
-        lpc.write32(GEN4_DEC, generic[3]);
 
         // ---- 5. PIRQ routing ----
         let pirq_low = u32::from_le_bytes([
@@ -850,21 +824,6 @@ impl EarlyInit for IntelIch7 {
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
         self.setup_interrupt_routing(&rcba);
 
-        // Enable upper 128 bytes of CMOS.
-        rcba.write32(0x3400, 1 << 2);
-
-        // ---- 6. Disable watchdog reboot ----
-        rcba.write32(ich7::GCS, rcba.read32(ich7::GCS) | (1 << 5));
-        // Halt TCO timer, clear timeout status.
-        #[cfg(target_arch = "x86_64")]
-        {
-            let tco = self.pm().tco();
-            let v = tco.read16(pmio::TCO1_CNT);
-            tco.write16(pmio::TCO1_CNT, v | (1 << 11));
-            tco.write16(pmio::TCO1_STS, 1 << 3);
-            tco.write16(pmio::TCO2_STS, 1 << 1);
-        }
-
         // ---- 7. PCI bridge secondary MLT ----
         ecam::PciDevBdf::new(0, 0x1e, 0).write8(SMLT, 0x20);
 
@@ -874,7 +833,9 @@ impl EarlyInit for IntelIch7 {
         // ---- 9. USB pre-config ----
         lpc.or8(0xAD, 3);
         let ehci = ecam::PciDevBdf::new(0, 0x1d, 7);
-        ehci.or32(0xFC, (1 << 29) | (1 << 17));
+        // Coreboot i82801gx usb_ehci.c programs EHCIIR[3:2] to 10b in
+        // addition to setting bits 17 and 29. Preserve all unrelated bits.
+        ehci.modify32(0xFC, !(3 << 2), (2 << 2) | (1 << 29) | (1 << 17));
         ehci.or32(0xDC, (1 << 31) | (1 << 27));
 
         // ---- 10. Enable IOAPIC ----
