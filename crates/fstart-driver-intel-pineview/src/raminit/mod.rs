@@ -268,7 +268,7 @@ pub fn sdram_initialize(
     phy::sdram_rcven(&mut si, mch);
 
     // Coreboot now runs additional Vref margining here for desktop
-    // DDR2 UDIMMs.  fstart keeps this as a TODO until the temporary
+    // DDR2 UDIMMs. fstart intentionally skips it until the temporary
     // cache/MTRR dance used by that routine is ported safely.
 
     // 22. New tRD.

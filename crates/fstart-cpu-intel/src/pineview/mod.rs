@@ -12,8 +12,8 @@
 #[cfg(feature = "acpi")]
 pub mod acpi;
 
-use fstart_arch_x86::msr::{rdmsr, wrmsr};
 use fstart_arch_x86::mtrr;
+use fstart_arch_x86::x86::msr::{rdmsr, wrmsr};
 use fstart_mp::CpuOps;
 
 // ---------------------------------------------------------------------------

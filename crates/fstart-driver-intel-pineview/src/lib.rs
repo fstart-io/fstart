@@ -47,7 +47,7 @@ fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
 }
 
 /// Intel integrated graphics configuration.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IgdConfig {
     /// Enable the VGA CRT output.
     #[serde(default)]
@@ -58,6 +58,9 @@ pub struct IgdConfig {
     /// Enable PLL spread spectrum.
     #[serde(default)]
     pub spread_spectrum: bool,
+    /// Board-relative VBT file path stored as a compressed FFS data file.
+    #[serde(default)]
+    pub vbt_file: Option<heapless::String<128>>,
 }
 
 /// Pineview northbridge configuration.

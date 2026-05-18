@@ -79,7 +79,12 @@
                 dmibar: 0xFED18000,
                 epbar:  0xFED19000,
                 ecam_base: 0xE0000000,
-                igd: ( use_crt: true, use_lvds: false, spread_spectrum: false ),
+                igd: (
+                    use_crt: true,
+                    use_lvds: false,
+                    spread_spectrum: false,
+                    vbt_file: Some("data.vbt"),
+                ),
                 ck505_pre_raminit: true,
                 acpi_name: "MCHC",
             )),
@@ -299,6 +304,11 @@
             name: "ramstage",
             capabilities: [
                 ConsoleInit( device: "superio" ),
+                BootMedia(MemoryMapped(
+                    base: 0xFF000000, size: 0x01000000,
+                    ram_copy_addr: 0x2000000,
+                )),
+                SigVerify,
                 DriverInit,
                 // Re-initialize ramstage-local chipset access first: each stage
                 // has its own BSS, so ECAM's global base is zero again after
@@ -320,11 +330,6 @@
                 MpInit(cpu_model: "pineview", num_cpus: 4, smm: false),
                 AcpiPrepare,
                 SmBiosPrepare,
-                BootMedia(MemoryMapped(
-                    base: 0xFF000000, size: 0x01000000,
-                    ram_copy_addr: 0x2000000,
-                )),
-                SigVerify,
                 PayloadLoad,
             ],
             load_addr: 0x04000000,
