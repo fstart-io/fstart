@@ -1178,10 +1178,11 @@ impl IntelIch8 {
         }
         let rcba = self.rcba();
         let fd = rcba.read32(ich8::RCBA_FD);
+        let original_bar0 = ehci.read32(ich8::PCI_BAR0);
+        let original_cmd = ehci.read16(ich8::PCI_COMMAND);
         rcba.write32(ich8::RCBA_FD, fd & !fd_bit);
         ehci.write32(ich8::PCI_BAR0, EHCI_TEMP_BAR as u32);
-        let cmd = ehci.read16(ich8::PCI_COMMAND);
-        ehci.write16(ich8::PCI_COMMAND, cmd | ich8::PCI_CMD_MEMORY);
+        ehci.write16(ich8::PCI_COMMAND, original_cmd | ich8::PCI_CMD_MEMORY);
         // SAFETY: temporary EHCI BAR0 maps the controller MMIO window.
         unsafe {
             let usbcmd = (EHCI_TEMP_BAR + ich8::EHCI_USBCMD) as *mut u32;
@@ -1198,8 +1199,8 @@ impl IntelIch8 {
             ich8::EHCI_INTEL_FCREG,
             (ehci.read32(ich8::EHCI_INTEL_FCREG) & !(3 << 2)) | (1 << 29) | (1 << 17) | (2 << 2),
         );
-        ehci.write16(ich8::PCI_COMMAND, cmd & !ich8::PCI_CMD_MEMORY);
-        ehci.write32(ich8::PCI_BAR0, 0);
+        ehci.write16(ich8::PCI_COMMAND, original_cmd);
+        ehci.write32(ich8::PCI_BAR0, original_bar0);
         rcba.write32(ich8::RCBA_FD, fd);
     }
 
