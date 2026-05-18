@@ -823,6 +823,7 @@ fn create_full_flash_image(
     Ok(out_path)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_intel_ifd_flash_image(
     config: &BoardConfig,
     board_dir: &Path,
