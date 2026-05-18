@@ -332,7 +332,7 @@ fn qualified_struct_path(name: &str, fields: &[TokenStream]) -> TokenStream {
         {
             quote! { fstart_gpio_ich::GpioConfig }
         }
-        "GpioConfig" => quote! { fstart_driver_ite8721f::GpioConfig },
+        "GpioConfig" => quote! { fstart_superio::GpioConfig },
         _ => {
             let ident = format_ident!("{}", name);
             quote! { #ident }

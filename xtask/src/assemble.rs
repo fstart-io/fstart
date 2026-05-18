@@ -18,7 +18,8 @@ use fstart_ffs::builder::{
 use fstart_services::device::{BusDevice, Device};
 use fstart_types::device::BusAddress;
 use fstart_types::ffs::{
-    Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
+    Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_SIZE,
+    FFS_MAGIC, FFS_VERSION,
 };
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_types::{BoardConfig, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout};
@@ -83,7 +84,8 @@ fn assemble_impl(
     }
 
     eprintln!("[fstart] loading board config: {}", board_ron.display());
-    let config = fstart_codegen::ron_loader::load_board_config(&board_ron)?;
+    let parsed = fstart_codegen::ron_loader::load_parsed_board(&board_ron)?;
+    let config = parsed.config.clone();
 
     eprintln!("[fstart] assembling FFS image for: {}", config.name);
 
@@ -233,6 +235,8 @@ fn assemble_impl(
         assemble_microcode(microcode, &board_dir, &mut ro_files)?;
     }
 
+    assemble_board_vbt_blobs(&parsed.driver_instances, &board_dir, &mut ro_files)?;
+
     if let Some(ref payload) = config.payload {
         // Handle FIT image payloads
         if payload.kind == fstart_types::PayloadKind::FitImage {
@@ -284,15 +288,22 @@ fn assemble_impl(
 
     validate_flash_layout(&config, &board_dir)?;
 
-    let image_config = FfsImageConfig {
+    let mut image_config = FfsImageConfig {
         keys: vec![verification_key],
         regions: ffs_input_regions(&config, ro_files)?,
     };
 
-    // Build the image with signing
-    let ffs_image = build_image(&image_config, &move |manifest_bytes| {
-        sign_with_ed25519(&signing_key, manifest_bytes)
-    })?;
+    // Build the image with signing. Compressed stages that use FFS contain a
+    // linked FSTART_ANCHOR static inside their uncompressed bytes; patch those
+    // source bytes before the final compression pass so runtime anchor reads
+    // remain static and do not require scanning flash.
+    let compressed_anchor_slots = compressed_anchor_slots(&image_config.regions)?;
+    let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
+    let ffs_image = build_image_with_static_compressed_anchors(
+        &mut image_config,
+        &compressed_anchor_slots,
+        &sign,
+    )?;
 
     let mut image_bytes = ffs_image.image;
 
@@ -387,6 +398,129 @@ fn assemble_impl(
     }
 
     Ok(image_path)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompressedAnchorSlot {
+    region_idx: usize,
+    file_idx: usize,
+    segment_idx: usize,
+    offset: usize,
+}
+
+fn build_image_with_static_compressed_anchors<F>(
+    config: &mut FfsImageConfig,
+    slots: &[CompressedAnchorSlot],
+    sign: &F,
+) -> Result<fstart_ffs::builder::FfsImage, String>
+where
+    F: Fn(&[u8]) -> Result<Signature, String>,
+{
+    if slots.is_empty() {
+        return build_image(config, sign);
+    }
+
+    let mut patched_anchor: Option<Vec<u8>> = None;
+    for _ in 0..8 {
+        let image = build_image(config, sign)?;
+        if patched_anchor.as_deref() == Some(image.anchor_bytes.as_slice()) {
+            return Ok(image);
+        }
+        patch_compressed_anchor_slots(&mut config.regions, slots, &image.anchor_bytes)?;
+        patched_anchor = Some(image.anchor_bytes);
+    }
+
+    Err("compressed FSTART_ANCHOR patching did not converge".to_string())
+}
+
+fn compressed_anchor_slots(regions: &[InputRegion]) -> Result<Vec<CompressedAnchorSlot>, String> {
+    let mut slots = Vec::new();
+    for (region_idx, region) in regions.iter().enumerate() {
+        let files = match region {
+            InputRegion::Container { files, .. }
+            | InputRegion::ContainerWithExternal { files, .. } => files,
+            InputRegion::Raw { .. } | InputRegion::ExternalRaw { .. } => continue,
+        };
+
+        for (file_idx, file) in files.iter().enumerate() {
+            for (segment_idx, segment) in file.segments.iter().enumerate() {
+                if segment.compression == Compression::None {
+                    continue;
+                }
+                for offset in anchor_placeholder_offsets(&segment.data) {
+                    slots.push(CompressedAnchorSlot {
+                        region_idx,
+                        file_idx,
+                        segment_idx,
+                        offset,
+                    });
+                }
+            }
+        }
+    }
+    Ok(slots)
+}
+
+fn anchor_placeholder_offsets(data: &[u8]) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut offset = 0usize;
+    while offset + ANCHOR_SIZE <= data.len() {
+        if data[offset..offset + FFS_MAGIC.len()] == FFS_MAGIC {
+            let rest = &data[offset + FFS_MAGIC.len()..offset + ANCHOR_SIZE];
+            let version = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
+            let manifest_off = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]);
+            let manifest_sz = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
+            let total_sz = u32::from_le_bytes([rest[12], rest[13], rest[14], rest[15]]);
+            if version == FFS_VERSION && manifest_off == 0 && manifest_sz == 0 && total_sz == 0 {
+                offsets.push(offset);
+            }
+        }
+        offset += 8;
+    }
+    offsets
+}
+
+fn patch_compressed_anchor_slots(
+    regions: &mut [InputRegion],
+    slots: &[CompressedAnchorSlot],
+    anchor_bytes: &[u8],
+) -> Result<(), String> {
+    if anchor_bytes.len() != ANCHOR_SIZE {
+        return Err(format!(
+            "patched anchor has {} bytes, expected {}",
+            anchor_bytes.len(),
+            ANCHOR_SIZE
+        ));
+    }
+
+    for slot in slots {
+        let Some(region) = regions.get_mut(slot.region_idx) else {
+            return Err("compressed anchor slot region index is stale".to_string());
+        };
+        let files = match region {
+            InputRegion::Container { files, .. }
+            | InputRegion::ContainerWithExternal { files, .. } => files,
+            InputRegion::Raw { .. } | InputRegion::ExternalRaw { .. } => {
+                return Err("compressed anchor slot points at a raw region".to_string());
+            }
+        };
+        let Some(file) = files.get_mut(slot.file_idx) else {
+            return Err("compressed anchor slot file index is stale".to_string());
+        };
+        let Some(segment) = file.segments.get_mut(slot.segment_idx) else {
+            return Err("compressed anchor slot segment index is stale".to_string());
+        };
+        let end = slot.offset + ANCHOR_SIZE;
+        if end > segment.data.len() {
+            return Err(format!(
+                "compressed anchor slot in '{}'/'{}' exceeds segment size",
+                file.name, segment.name
+            ));
+        }
+        segment.data[slot.offset..end].copy_from_slice(anchor_bytes);
+    }
+
+    Ok(())
 }
 
 fn ffs_input_regions(
@@ -1040,6 +1174,56 @@ fn resolve_board_path(board_dir: &Path, file: &str) -> PathBuf {
 }
 
 // ============================================================================
+// Board asset assembly helpers
+// ============================================================================
+
+fn assemble_board_vbt_blobs(
+    instances: &[DriverInstance],
+    board_dir: &Path,
+    ro_files: &mut Vec<InputFile>,
+) -> Result<(), String> {
+    for instance in instances {
+        let vbt_file = match instance {
+            DriverInstance::IntelGm965(config) => config.igd.vbt_file.as_ref(),
+            DriverInstance::IntelPineview(config) => {
+                config.igd.as_ref().and_then(|igd| igd.vbt_file.as_ref())
+            }
+            _ => None,
+        };
+        let Some(vbt_file) = vbt_file else {
+            continue;
+        };
+        if ro_files.iter().any(|file| file.name == vbt_file.as_str()) {
+            continue;
+        }
+
+        let path = resolve_board_path(board_dir, vbt_file.as_str());
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read VBT file {}: {e}", path.display()))?;
+        eprintln!(
+            "[fstart] VBT: {} ({} bytes, lz4)",
+            path.display(),
+            data.len()
+        );
+        ro_files.push(InputFile {
+            name: vbt_file.to_string(),
+            file_type: FileType::Data,
+            segments: vec![InputSegment {
+                name: ".vbt".to_string(),
+                kind: SegmentKind::ReadOnlyData,
+                data,
+                mem_size: None,
+                load_addr: 0,
+                compression: Compression::Lz4,
+                flags: SegmentFlags::RODATA,
+            }],
+        });
+    }
+
+    Ok(())
+}
+
+// ============================================================================
 // Microcode assembly helpers
 // ============================================================================
 
@@ -1343,10 +1527,7 @@ fn assemble_linux_payload(
                     data: kernel_data,
                     mem_size: None,
                     load_addr: kernel_load_addr,
-                    // LZ4 compression — the x86 FFS-to-RAM copy ensures
-                    // decompression runs on fast RAM, not flash XIP.
-                    // TODO: make compression configurable per-board via RON.
-                    compression: Compression::Lz4,
+                    compression: payload.compression,
                     flags: SegmentFlags::CODE,
                 }],
             });

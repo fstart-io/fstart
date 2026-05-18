@@ -18,6 +18,7 @@ pub mod boot_media;
 pub mod clock;
 pub mod console;
 pub mod device;
+pub mod ffs_context;
 pub mod framebuffer;
 pub mod gpio;
 pub mod i2c;

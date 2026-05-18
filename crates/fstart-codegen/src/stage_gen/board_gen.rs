@@ -467,6 +467,17 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let init_device_body = init_device_body(ctx);
     let init_all_devices_body = init_all_devices_body(ctx);
     let late_driver_init_body = late_driver_init_body(ctx);
+    let boot_media_context_publish = if ctx.ffs_stage {
+        let anchor = anchor_bytes_stmt();
+        quote! {
+            if device.is_none() {
+                #anchor
+                fstart_services::ffs_context::set_memory_mapped(_anchor_bytes, offset, size);
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     quote! {
         #[allow(dead_code, unused_variables)]
@@ -631,6 +642,7 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
                 // device is constructed.
                 self._boot_media =
                     fstart_stage_runtime::BootMediaState::from_static(device, offset, size);
+                #boot_media_context_publish
             }
 
             fn load_next_stage(&mut self, next_stage: &str) -> ! {
@@ -1616,26 +1628,49 @@ fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
             })
             .collect();
 
-    let mainboard_ramstage: Vec<TokenStream> =
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .filter(|idx| {
-                ctx.devices[*idx]
-                    .services
-                    .iter()
-                    .any(|s| s.as_str() == "Mainboard")
-            })
-            .map(|idx| {
-                let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-                quote! {
-                    if let Some(dev) = self.#field.as_mut() {
-                        use fstart_services::Mainboard as _Mainboard;
-                        _Mainboard::ramstage_init(dev)
-                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)
-                            .unwrap_or_else(|_| fstart_platform::halt());
-                    }
+    let southbridge_field = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .find(|idx| {
+            ctx.devices[*idx]
+                .services
+                .iter()
+                .any(|s| s.as_str() == "Southbridge")
+        })
+        .map(|idx| format_ident!("{}", ctx.devices[idx].name.as_str()));
+
+    let mainboard_ramstage: Vec<TokenStream> = enabled_indices(
+        ctx.devices,
+        ctx.instances,
+        ctx.excluded,
+    )
+    .filter(|idx| {
+        ctx.devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "Mainboard")
+    })
+    .map(|idx| {
+        let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+        if let Some(sb_field) = southbridge_field.as_ref() {
+            quote! {
+                if let (Some(dev), Some(sb)) = (self.#field.as_mut(), self.#sb_field.as_mut()) {
+                    use fstart_services::Mainboard as _Mainboard;
+                    _Mainboard::ramstage_init_with_southbridge(dev, sb)
+                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)
+                        .unwrap_or_else(|_| fstart_platform::halt());
                 }
-            })
-            .collect();
+            }
+        } else {
+            quote! {
+                if let Some(dev) = self.#field.as_mut() {
+                    use fstart_services::Mainboard as _Mainboard;
+                    _Mainboard::ramstage_init(dev)
+                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)
+                        .unwrap_or_else(|_| fstart_platform::halt());
+                }
+            }
+        }
+    })
+    .collect();
 
     let southbridge_finalize: Vec<TokenStream> =
         enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
@@ -1698,9 +1733,33 @@ fn phase_init_body(
     trait_name: &str,
     method_name: &str,
 ) -> TokenStream {
+    let stage_declares_phase = ctx.stage_capabilities.iter().any(|capability| {
+        matches!(
+            (service_name, capability),
+            ("PreConsoleInit", Capability::PreConsoleInit { .. })
+                | ("EarlyInit", Capability::EarlyInit { .. })
+                | ("StageLocalInit", Capability::StageLocalInit { .. })
+                | ("PostDramInit", Capability::PostDramInit { .. })
+                | ("FinalizeInit", Capability::FinalizeInit { .. })
+        )
+    });
+    if service_name == "PostDramInit" && !stage_declares_phase {
+        let msg = format!("board_gen::{method_name}: stage does not declare {service_name}");
+        return quote! { todo!(#msg) };
+    }
+
     let trait_ident = format_ident!("{}", trait_name);
     let trait_alias = format_ident!("_{}", trait_name);
     let method_ident = format_ident!("{}", method_name);
+
+    let southbridge_field = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .find(|idx| {
+            ctx.devices[*idx]
+                .services
+                .iter()
+                .any(|s| s.as_str() == "Southbridge")
+        })
+        .map(|idx| format_ident!("{}", ctx.devices[idx].name.as_str()));
 
     let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
         .filter(|idx| {
@@ -1712,14 +1771,47 @@ fn phase_init_body(
         .map(|idx| {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
             let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            quote! {
-                #id_lit => {
-                    use fstart_services::#trait_ident as #trait_alias;
-                    let dev = self.#field
-                        .as_mut()
-                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                    #trait_alias::#method_ident(dev)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+            let is_mainboard = ctx.devices[idx]
+                .services
+                .iter()
+                .any(|s| s.as_str() == "Mainboard");
+            if service_name == "PreConsoleInit" && is_mainboard {
+                if let Some(sb_field) = southbridge_field.as_ref() {
+                    quote! {
+                        #id_lit => {
+                            use fstart_services::Mainboard as _Mainboard;
+                            let dev = self.#field
+                                .as_mut()
+                                .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                            let sb = self.#sb_field
+                                .as_mut()
+                                .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                            _Mainboard::pre_console_init_with_southbridge(dev, sb)
+                                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                        }
+                    }
+                } else {
+                    quote! {
+                        #id_lit => {
+                            use fstart_services::Mainboard as _Mainboard;
+                            let dev = self.#field
+                                .as_mut()
+                                .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                            _Mainboard::pre_console_init(dev)
+                                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    #id_lit => {
+                        use fstart_services::#trait_ident as #trait_alias;
+                        let dev = self.#field
+                            .as_mut()
+                            .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                        #trait_alias::#method_ident(dev)
+                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                    }
                 }
             }
         })

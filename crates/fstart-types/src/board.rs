@@ -262,6 +262,9 @@ pub struct PayloadConfig {
     /// Print BSP x86 MTRR/control-register state immediately before Linux handoff.
     #[serde(default)]
     pub print_x86_mtrrs: bool,
+    /// Compression to use for raw kernel payload segments stored in FFS.
+    #[serde(default = "default_payload_compression")]
+    pub compression: crate::ffs::Compression,
     /// SBI / ATF firmware blob configuration
     pub firmware: Option<FirmwareConfig>,
     /// Path to a FIT (.itb) image file (relative to board directory).
@@ -280,6 +283,10 @@ pub struct PayloadConfig {
     /// Defaults to `None` (same as `Buildtime` when `kind` is `FitImage`).
     #[serde(default)]
     pub fit_parse: Option<FitParseMode>,
+}
+
+fn default_payload_compression() -> crate::ffs::Compression {
+    crate::ffs::Compression::Lz4
 }
 
 /// What kind of payload to boot.
