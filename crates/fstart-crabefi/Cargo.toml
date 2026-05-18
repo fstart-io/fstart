@@ -9,4 +9,5 @@ fstart-services = { workspace = true }
 crabefi = { git = "https://github.com/ArthurHeymans/CrabEFI.git", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+fstart-arch-x86 = { workspace = true }
 fstart-pio = { workspace = true }

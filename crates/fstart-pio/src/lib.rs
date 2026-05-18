@@ -16,23 +16,16 @@
 
 #![no_std]
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub use x86::io;
+
 /// Read a byte from an I/O port.
 ///
 /// # Safety
 /// `port` must be a valid I/O port address for the target device.
 #[inline(always)]
 pub unsafe fn inb(port: u16) -> u8 {
-    let val: u8;
-    // SAFETY: caller guarantees port validity.
-    unsafe {
-        core::arch::asm!(
-            "in al, dx",
-            out("al") val,
-            in("dx") port,
-            options(nostack, nomem, preserves_flags),
-        );
-    }
-    val
+    unsafe { x86::io::inb(port) }
 }
 
 /// Write a byte to an I/O port.
@@ -41,15 +34,7 @@ pub unsafe fn inb(port: u16) -> u8 {
 /// `port` must be a valid I/O port address for the target device.
 #[inline(always)]
 pub unsafe fn outb(port: u16, val: u8) {
-    // SAFETY: caller guarantees port validity.
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port,
-            in("al") val,
-            options(nostack, nomem, preserves_flags),
-        );
-    }
+    unsafe { x86::io::outb(port, val) }
 }
 
 /// Read a 16-bit word from an I/O port.
@@ -58,17 +43,7 @@ pub unsafe fn outb(port: u16, val: u8) {
 /// `port` must be a valid I/O port address for the target device.
 #[inline(always)]
 pub unsafe fn inw(port: u16) -> u16 {
-    let val: u16;
-    // SAFETY: caller guarantees port validity.
-    unsafe {
-        core::arch::asm!(
-            "in ax, dx",
-            out("ax") val,
-            in("dx") port,
-            options(nostack, nomem, preserves_flags),
-        );
-    }
-    val
+    unsafe { x86::io::inw(port) }
 }
 
 /// Write a 16-bit word to an I/O port.
@@ -77,15 +52,7 @@ pub unsafe fn inw(port: u16) -> u16 {
 /// `port` must be a valid I/O port address for the target device.
 #[inline(always)]
 pub unsafe fn outw(port: u16, val: u16) {
-    // SAFETY: caller guarantees port validity.
-    unsafe {
-        core::arch::asm!(
-            "out dx, ax",
-            in("dx") port,
-            in("ax") val,
-            options(nostack, nomem, preserves_flags),
-        );
-    }
+    unsafe { x86::io::outw(port, val) }
 }
 
 /// Read a 32-bit doubleword from an I/O port.
@@ -94,17 +61,7 @@ pub unsafe fn outw(port: u16, val: u16) {
 /// `port` must be a valid I/O port address for the target device.
 #[inline(always)]
 pub unsafe fn inl(port: u16) -> u32 {
-    let val: u32;
-    // SAFETY: caller guarantees port validity.
-    unsafe {
-        core::arch::asm!(
-            "in eax, dx",
-            out("eax") val,
-            in("dx") port,
-            options(nostack, nomem, preserves_flags),
-        );
-    }
-    val
+    unsafe { x86::io::inl(port) }
 }
 
 /// Write a 32-bit doubleword to an I/O port.
@@ -113,15 +70,7 @@ pub unsafe fn inl(port: u16) -> u32 {
 /// `port` must be a valid I/O port address for the target device.
 #[inline(always)]
 pub unsafe fn outl(port: u16, val: u32) {
-    // SAFETY: caller guarantees port validity.
-    unsafe {
-        core::arch::asm!(
-            "out dx, eax",
-            in("dx") port,
-            in("eax") val,
-            options(nostack, nomem, preserves_flags),
-        );
-    }
+    unsafe { x86::io::outl(port, val) }
 }
 
 // -----------------------------------------------------------------------

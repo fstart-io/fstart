@@ -897,13 +897,9 @@ unsafe fn patch_u64(base: *mut u8, offset: usize, value: u64) {
 }
 
 fn read_cr3() -> u64 {
-    let value: u64;
     // SAFETY: reading CR3 is side-effect-free and needed to let APs enter the
     // same identity-mapped long-mode address space as the BSP.
-    unsafe {
-        core::arch::asm!("mov {}, cr3", out(reg) value, options(nomem, nostack, preserves_flags))
-    };
-    value
+    unsafe { fstart_arch_x86::x86::controlregs::cr3() }
 }
 
 // ---------------------------------------------------------------------------

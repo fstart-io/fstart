@@ -6,23 +6,15 @@
 
 #![no_std]
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub use x86;
+
 /// Read the x86 Time Stamp Counter.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn rdtsc() -> u64 {
-    let lo: u32;
-    let hi: u32;
-    // SAFETY: `rdtsc` reads the architectural time-stamp counter and has no
-    // memory side effects. Firmware uses it only for delay loops.
-    unsafe {
-        core::arch::asm!(
-            "rdtsc",
-            out("eax") lo,
-            out("edx") hi,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    ((hi as u64) << 32) | lo as u64
+    // SAFETY: firmware runs at CPL0 and uses RDTSC only for delay loops.
+    unsafe { x86::time::rdtsc() }
 }
 
 /// Delay for approximately `us` microseconds using the x86 TSC.
@@ -36,35 +28,107 @@ pub fn udelay_tsc(us: u32, tsc_hz: u64) {
 }
 
 #[cfg(target_arch = "x86_64")]
+pub fn timestamp_us() -> u64 {
+    rdtsc() / (tsc_frequency_hz() / 1_000_000).max(1)
+}
+
+#[cfg(target_arch = "x86_64")]
 pub fn udelay(us: u32) {
-    // Conservative default for early x86 firmware. Platform drivers with a
-    // known clock should call `udelay_tsc()` directly.
-    udelay_tsc(us, 1_000_000_000);
+    // Compute the TSC frequency once per delay.  `tsc_frequency_hz()` may use
+    // CPUID/MSR reads on Core 2-era CPUs; doing that inside the polling loop is
+    // both extremely slow and unsafe for early firmware delay paths.
+    let hz = sanitize_tsc_frequency_hz(tsc_frequency_hz());
+    udelay_tsc(us, hz);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn sanitize_tsc_frequency_hz(hz: u64) -> u64 {
+    // Firmware delay loops must never turn into effectively infinite waits if
+    // early CPU frequency discovery sees a bogus MSR/CPUID value.  Core 2 / X61
+    // and the other x86 boards in this tree are comfortably inside this range.
+    const MIN_TSC_HZ: u64 = 100_000_000;
+    const MAX_TSC_HZ: u64 = 5_000_000_000;
+    if (MIN_TSC_HZ..=MAX_TSC_HZ).contains(&hz) {
+        hz
+    } else {
+        1_000_000_000
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+const MSR_FSB_FREQ: u32 = 0x00cd;
+#[cfg(target_arch = "x86_64")]
+const IA32_PERF_STATUS: u32 = 0x0198;
+
+/// Best-effort TSC frequency for pre-Skylake firmware delays.
+///
+/// Core 2-era CPUs (GM965/X61) do not report CPUID.15h, so mirror coreboot's
+/// `cpu/intel/common/fsb.c`: derive FSB MHz from `MSR_FSB_FREQ`, multiply by
+/// the maximum bus ratio from `IA32_PERF_STATUS`, then round to the nearest
+/// 100 MHz. Fall back to the old conservative 1 GHz default only for
+/// unsupported CPUs.
+#[cfg(target_arch = "x86_64")]
+pub fn tsc_frequency_hz() -> u64 {
+    if let Some(freq) = cpuid_tsc_frequency_hz() {
+        return freq;
+    }
+    core2_tsc_frequency_hz().unwrap_or(1_000_000_000)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn cpuid_tsc_frequency_hz() -> Option<u64> {
+    let (max_leaf, _, _, _) = cpuid(0);
+    if max_leaf < 0x15 {
+        return None;
+    }
+    let (denom, numer, crystal, _) = cpuid(0x15);
+    if denom == 0 || numer == 0 || crystal == 0 {
+        return None;
+    }
+    Some((crystal as u64).saturating_mul(numer as u64) / denom as u64)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn core2_tsc_frequency_hz() -> Option<u64> {
+    let (eax, _, _, _) = cpuid(1);
+    let family = ((eax >> 8) & 0x0f) + ((eax >> 20) & 0xff);
+    let model = ((eax >> 4) & 0x0f) + ((eax >> 12) & 0xf0);
+    if family != 6 || !(model == 0x0f || model == 0x17) {
+        return None;
+    }
+
+    const CORE2_FSB_MHZ: [u32; 8] = [266, 133, 200, 166, 333, 100, 400, 0];
+    let fsb_idx = unsafe { (x86::msr::rdmsr(MSR_FSB_FREQ) & 7) as usize };
+    let fsb_mhz = CORE2_FSB_MHZ[fsb_idx];
+    if fsb_mhz == 0 {
+        return None;
+    }
+    let ratio = unsafe { ((x86::msr::rdmsr(IA32_PERF_STATUS) >> 40) & 0x1f) as u32 };
+    if ratio == 0 {
+        return None;
+    }
+
+    // coreboot: 100 * DIV_ROUND_CLOSEST(ratio * fsb, 100), in MHz.
+    let raw_mhz = ratio.saturating_mul(fsb_mhz);
+    let rounded_mhz = ((raw_mhz + 50) / 100) * 100;
+    Some(rounded_mhz as u64 * 1_000_000)
 }
 
 /// Execute CPUID with ECX=0.
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
-    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
-    // SAFETY: CPUID is architectural on x86_64. RBX is preserved manually
-    // because LLVM may reserve it for position-independent code.
-    unsafe {
-        core::arch::asm!(
-            "push rbx",
-            "cpuid",
-            "mov {ebx_out:e}, ebx",
-            "pop rbx",
-            in("eax") leaf,
-            in("ecx") 0u32,
-            ebx_out = out(reg) ebx,
-            lateout("eax") eax,
-            lateout("ecx") ecx,
-            lateout("edx") edx,
-            options(nomem),
-        );
-    }
-    (eax, ebx, ecx, edx)
+    cpuid_count(leaf, 0)
+}
+
+/// Execute CPUID with an explicit ECX subleaf.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn cpuid_count(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
+    // CPUID is architectural on x86_64. The stdarch wrapper preserves RBX
+    // correctly for LLVM's x86_64 code model.
+    let result = core::arch::x86_64::__cpuid_count(leaf, subleaf);
+    (result.eax, result.ebx, result.ecx, result.edx)
 }
 
 /// Return the CPU physical address width, falling back to 36 bits.
@@ -101,84 +165,13 @@ pub fn physical_address_limit() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// x86 MSR access
-// ---------------------------------------------------------------------------
-
-/// x86 Model-Specific Register (MSR) helpers.
-///
-/// Provides `rdmsr`/`wrmsr` and a typed `Msr { lo, hi }` struct with
-/// idiomatic `From<u64>` / `Into<u64>` conversions.
-pub mod msr {
-    /// MSR value split into 32-bit halves.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Msr {
-        pub lo: u32,
-        pub hi: u32,
-    }
-
-    impl From<u64> for Msr {
-        fn from(v: u64) -> Self {
-            Self {
-                lo: v as u32,
-                hi: (v >> 32) as u32,
-            }
-        }
-    }
-
-    impl From<Msr> for u64 {
-        fn from(m: Msr) -> Self {
-            (m.lo as u64) | ((m.hi as u64) << 32)
-        }
-    }
-
-    /// Read a 64-bit MSR.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `msr` is a valid MSR index for this CPU.
-    #[cfg(target_arch = "x86_64")]
-    #[inline]
-    pub unsafe fn rdmsr(msr: u32) -> u64 {
-        let lo: u32;
-        let hi: u32;
-        core::arch::asm!(
-            "rdmsr",
-            in("ecx") msr,
-            out("eax") lo,
-            out("edx") hi,
-            options(nomem, nostack),
-        );
-        ((hi as u64) << 32) | (lo as u64)
-    }
-
-    /// Write a 64-bit MSR.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `msr` and `val` are valid for this CPU.
-    #[cfg(target_arch = "x86_64")]
-    #[inline]
-    pub unsafe fn wrmsr(msr: u32, val: u64) {
-        let lo = val as u32;
-        let hi = (val >> 32) as u32;
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") msr,
-            in("eax") lo,
-            in("edx") hi,
-            options(nomem, nostack),
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
 // x86 MTRR helpers
 // ---------------------------------------------------------------------------
 
 pub mod mtrr {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::msr::{rdmsr, wrmsr};
+    use crate::x86::msr::{rdmsr, wrmsr};
 
     pub const IA32_MTRR_PHYSBASE0: u32 = 0x200;
     pub const IA32_MTRR_PHYSMASK0: u32 = 0x201;
@@ -300,8 +293,16 @@ pub mod mtrr {
     /// physical RAM ranges in ascending order; zero-sized ranges are ignored.
     /// Ranges beyond the fixed storage limit are dropped.
     pub fn set_ram_wb_ranges(ranges: &[(u64, u64)]) {
+        set_ram_wb_ranges_from(ranges.iter().copied());
+    }
+
+    /// Replace the RAM ranges from an iterator of `(base, size)` pairs.
+    pub fn set_ram_wb_ranges_from<I>(ranges: I)
+    where
+        I: IntoIterator<Item = (u64, u64)>,
+    {
         let mut out = 0usize;
-        for &(base, size) in ranges.iter() {
+        for (base, size) in ranges {
             if size == 0 || out >= MAX_WB_RANGES {
                 continue;
             }
@@ -315,6 +316,7 @@ pub mod mtrr {
             }
             out += 1;
         }
+        let count = out;
         // SAFETY: clear stale entries after the new logical end.
         unsafe {
             while out < MAX_WB_RANGES {
@@ -322,7 +324,7 @@ pub mod mtrr {
                 out += 1;
             }
         }
-        WB_RANGE_COUNT.store(ranges.len().min(MAX_WB_RANGES), Ordering::Release);
+        WB_RANGE_COUNT.store(count.min(MAX_WB_RANGES), Ordering::Release);
     }
 
     fn wb_range(index: usize) -> Option<WbRange> {
@@ -343,14 +345,10 @@ pub mod mtrr {
     #[cfg(target_arch = "x86_64")]
     pub unsafe fn disable_cache() {
         unsafe {
-            core::arch::asm!(
-                "mov rax, cr0",
-                "or rax, 0x40000000",
-                "mov cr0, rax",
-                "wbinvd",
-                out("rax") _,
-                options(nostack),
-            );
+            let cr0 = x86::controlregs::cr0() | x86::controlregs::Cr0::CR0_CACHE_DISABLE;
+            x86::controlregs::cr0_write(cr0);
+            // x86 0.52 does not expose WBINVD, so keep the one instruction here.
+            core::arch::asm!("wbinvd", options(nostack));
         }
     }
 
@@ -361,13 +359,10 @@ pub mod mtrr {
     #[cfg(target_arch = "x86_64")]
     pub unsafe fn enable_cache() {
         unsafe {
-            core::arch::asm!(
-                "mov rax, cr0",
-                "and rax, 0xffffffff9fffffff",
-                "mov cr0, rax",
-                out("rax") _,
-                options(nostack),
-            );
+            let cr0 = x86::controlregs::cr0()
+                & !(x86::controlregs::Cr0::CR0_CACHE_DISABLE
+                    | x86::controlregs::Cr0::CR0_NOT_WRITE_THROUGH);
+            x86::controlregs::cr0_write(cr0);
         }
     }
 

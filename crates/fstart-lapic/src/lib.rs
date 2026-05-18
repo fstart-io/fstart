@@ -128,49 +128,7 @@ const SVR_ENABLE: u32 = 0x100;
 /// Default LAPIC MMIO base address.
 pub const DEFAULT_BASE: usize = 0xFEE0_0000;
 
-// ---------------------------------------------------------------------------
-// MSR helpers (inline asm)
-// ---------------------------------------------------------------------------
-
-/// Read a 64-bit Model-Specific Register.
-///
-/// # Safety
-///
-/// Caller must ensure `msr` is a valid MSR index for this CPU.
-#[inline]
-unsafe fn rdmsr(msr: u32) -> u64 {
-    let lo: u32;
-    let hi: u32;
-    // SAFETY: caller guarantees valid MSR index.
-    core::arch::asm!(
-        "rdmsr",
-        in("ecx") msr,
-        out("eax") lo,
-        out("edx") hi,
-        options(nomem, nostack),
-    );
-    ((hi as u64) << 32) | (lo as u64)
-}
-
-/// Write a 64-bit Model-Specific Register.
-///
-/// # Safety
-///
-/// Caller must ensure `msr` is a valid MSR index and `val` is a
-/// legal value for that MSR.
-#[inline]
-unsafe fn wrmsr(msr: u32, val: u64) {
-    let lo = val as u32;
-    let hi = (val >> 32) as u32;
-    // SAFETY: caller guarantees valid MSR index and value.
-    core::arch::asm!(
-        "wrmsr",
-        in("ecx") msr,
-        in("eax") lo,
-        in("edx") hi,
-        options(nomem, nostack),
-    );
-}
+use fstart_arch_x86::x86::msr::{rdmsr, wrmsr};
 
 // ---------------------------------------------------------------------------
 // Lapic struct

@@ -609,13 +609,14 @@ core::arch::global_asm!(
     "pushq %rbx",
     "pushq %rcx",
     "pushq %rdi",
+    "pushq %rsi",
     // Zero the IDT area
     "xorl %eax, %eax",
     "movabs $_idt_table, %rdi",
     "movl $512, %ecx",
     "rep stosq",
-    // Fill all 256 entries → _exc_stub
-    "movabs $_exc_stub, %rbx",
+    // Fill all 256 entries → unknown-vector stub first.
+    "movabs $_exc_stub_unknown, %rbx",
     "movabs $_idt_table, %rdi",
     "movl $256, %ecx",
     "4:",
@@ -633,9 +634,31 @@ core::arch::global_asm!(
     "addq $16, %rdi",
     "decl %ecx",
     "jnz 4b",
+    // Overwrite exception vectors 0..31 with vector-specific stubs.
+    "movabs $_exc_stub_ptrs, %rsi",
+    "movabs $_idt_table, %rdi",
+    "movl $32, %ecx",
+    "6:",
+    "lodsq",
+    "movq %rax, %rbx",
+    "movw %bx, (%rdi)",
+    "movw $0x18, 2(%rdi)",
+    "movb $0, 4(%rdi)",
+    "movb $0x8E, 5(%rdi)",
+    "movl %ebx, %eax",
+    "shrl $16, %eax",
+    "movw %ax, 6(%rdi)",
+    "movq %rbx, %rax",
+    "shrq $32, %rax",
+    "movl %eax, 8(%rdi)",
+    "movl $0, 12(%rdi)",
+    "addq $16, %rdi",
+    "decl %ecx",
+    "jnz 6b",
     // Load the IDT
     "movabs $_idt_desc, %rax",
     "lidt (%rax)",
+    "popq %rsi",
     "popq %rdi",
     "popq %rcx",
     "popq %rbx",
@@ -646,31 +669,94 @@ core::arch::global_asm!(
     ".word 256 * 16 - 1",
     ".quad _idt_table",
     // =====================================================================
-    // Exception stub — saves frame and calls the Rust exception handler.
+    // Exception stubs — normalize x86 exception frames and call Rust.
     //
-    // The CPU pushes SS, RSP, RFLAGS, CS, RIP (and error code for some
-    // vectors). Since we use a single stub for all vectors, we can't
-    // distinguish error-code vs no-error-code exceptions by vector.
-    // The Rust handler reads CR2 directly for page faults.
-    //
-    // We pass RIP, RSP, and CR2 as arguments to the Rust handler:
-    //   rdi = RIP (from exception frame)
-    //   rsi = RSP at exception time
-    //   rdx = CR2 (page fault address)
+    // For same-privilege exceptions in long mode, the CPU pushes:
+    //   no error code: RIP, CS, RFLAGS
+    //   error code:    ERR, RIP, CS, RFLAGS
+    // The vector-specific stubs normalize both forms to:
+    //   [rsp+0]  vector
+    //   [rsp+8]  error_code (0 for no-error-code vectors)
+    //   [rsp+16] RIP
+    //   [rsp+24] CS
+    //   [rsp+32] RFLAGS
+    // and common code passes an approximate interrupted RSP as rsp+40.
     // =====================================================================
     ".align 16",
-    "_exc_stub:",
+    "_exc_common:",
     // POST 0xe0: CPU exception reached the IDT stub.
     "movb $0xe0, %al",
     "outb %al, $0x80",
-    "movq (%rsp), %rdi",   // rdi = faulting RIP
-    "movq 24(%rsp), %rsi", // rsi = pre-exception RSP
-    "movq %cr2, %rdx",     // rdx = CR2 (page fault address)
+    "movq 0(%rsp), %rdi",  // vector
+    "movq 8(%rsp), %rsi",  // error code
+    "movq 16(%rsp), %rdx", // RIP
+    "movq 24(%rsp), %rcx", // CS
+    "movq 32(%rsp), %r8",  // RFLAGS
+    "leaq 40(%rsp), %r9",  // approximate interrupted RSP
+    "movq %cr2, %rax",
+    "subq $16, %rsp",    // stack arg slot + preserve SysV call alignment
+    "movq %rax, (%rsp)", // 7th arg: CR2
     "call x86_exception_handler",
     // Should not return, but halt if it does
     "5:",
     "hlt",
     "jmp 5b",
+    ".macro EXC_NOERR num",
+    "  .align 16",
+    "  _exc_\\num:",
+    "  pushq $0",
+    "  pushq $\\num",
+    "  jmp _exc_common",
+    ".endm",
+    ".macro EXC_ERR num",
+    "  .align 16",
+    "  _exc_\\num:",
+    "  pushq $\\num",
+    "  jmp _exc_common",
+    ".endm",
+    "EXC_NOERR 0",
+    "EXC_NOERR 1",
+    "EXC_NOERR 2",
+    "EXC_NOERR 3",
+    "EXC_NOERR 4",
+    "EXC_NOERR 5",
+    "EXC_NOERR 6",
+    "EXC_NOERR 7",
+    "EXC_ERR 8",
+    "EXC_NOERR 9",
+    "EXC_ERR 10",
+    "EXC_ERR 11",
+    "EXC_ERR 12",
+    "EXC_ERR 13",
+    "EXC_ERR 14",
+    "EXC_NOERR 15",
+    "EXC_NOERR 16",
+    "EXC_ERR 17",
+    "EXC_NOERR 18",
+    "EXC_NOERR 19",
+    "EXC_NOERR 20",
+    "EXC_ERR 21",
+    "EXC_NOERR 22",
+    "EXC_NOERR 23",
+    "EXC_NOERR 24",
+    "EXC_NOERR 25",
+    "EXC_NOERR 26",
+    "EXC_NOERR 27",
+    "EXC_NOERR 28",
+    "EXC_ERR 29",
+    "EXC_ERR 30",
+    "EXC_NOERR 31",
+    ".align 16",
+    "_exc_stub_unknown:",
+    "pushq $0",
+    "pushq $255",
+    "jmp _exc_common",
+    ".align 8",
+    "_exc_stub_ptrs:",
+    ".quad _exc_0, _exc_1, _exc_2, _exc_3, _exc_4, _exc_5, _exc_6, _exc_7",
+    ".quad _exc_8, _exc_9, _exc_10, _exc_11, _exc_12, _exc_13, _exc_14, _exc_15",
+    ".quad _exc_16, _exc_17, _exc_18, _exc_19, _exc_20, _exc_21, _exc_22, _exc_23",
+    ".quad _exc_24, _exc_25, _exc_26, _exc_27, _exc_28, _exc_29, _exc_30, _exc_31",
     options(att_syntax),
 );
 
@@ -764,31 +850,79 @@ extern "Rust" {
 // Exception handler — called from the IDT stub with register state
 // ---------------------------------------------------------------------------
 
+fn x86_raw_serial_byte(byte: u8) {
+    unsafe { fstart_pio::outb(0x3F8, byte) };
+}
+
+fn x86_raw_serial_str(s: &str) {
+    for byte in s.bytes() {
+        if byte == b'\n' {
+            x86_raw_serial_byte(b'\r');
+        }
+        x86_raw_serial_byte(byte);
+    }
+}
+
+fn x86_raw_serial_hex(mut value: u64) {
+    x86_raw_serial_str("0x");
+    let mut buf = [0u8; 16];
+    for idx in (0..16).rev() {
+        let nibble = (value & 0xf) as u8;
+        buf[idx] = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + (nibble - 10)
+        };
+        value >>= 4;
+    }
+    for byte in buf {
+        x86_raw_serial_byte(byte);
+    }
+}
+
 /// Rust exception handler called from the assembly IDT stub.
 ///
-/// Prints exception details using fstart_log (which uses the already-
-/// initialized NS16550 UART), then halts. This gives useful diagnostics
-/// instead of a silent triple-fault reset.
+/// First prints a minimal raw COM1 diagnostic that does not depend on the log
+/// infrastructure, then prints the same data through fstart_log when possible.
 ///
 /// # Arguments
+/// - `vector`: exception vector number, or 255 for non-exception vectors
+/// - `error_code`: x86 exception error code, or 0 for vectors without one
 /// - `rip`: instruction pointer at the time of the exception
-/// - `rsp`: stack pointer at the time of the exception
+/// - `cs`: code segment selector at the time of the exception
+/// - `rflags`: flags at the time of the exception
+/// - `rsp`: approximate stack pointer at the time of the exception
 /// - `cr2`: CR2 register (faulting address for page faults)
 #[no_mangle]
-pub extern "C" fn x86_exception_handler(rip: u64, rsp: u64, cr2: u64) -> ! {
-    fstart_log::error!("*** x86 EXCEPTION ***");
-    fstart_log::error!("  RIP = {:#x}", rip);
+pub extern "C" fn x86_exception_handler(
+    vector: u64,
+    error_code: u64,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    cr2: u64,
+) -> ! {
+    x86_raw_serial_str("\n!X86 EXCEPTION vector=");
+    x86_raw_serial_hex(vector);
+    x86_raw_serial_str(" error=");
+    x86_raw_serial_hex(error_code);
+    x86_raw_serial_str(" rip=");
+    x86_raw_serial_hex(rip);
+    x86_raw_serial_str(" rsp=");
+    x86_raw_serial_hex(rsp);
+    x86_raw_serial_str(" cr2=");
+    x86_raw_serial_hex(cr2);
+    x86_raw_serial_str("!\n");
+
+    fstart_log::error!(
+        "*** x86 EXCEPTION vector={} error={:#x} ***",
+        vector,
+        error_code
+    );
+    fstart_log::error!("  RIP = {:#x} CS = {:#x} RFLAGS = {:#x}", rip, cs, rflags);
     fstart_log::error!("  RSP = {:#x}", rsp);
     fstart_log::error!("  CR2 = {:#x}", cr2);
-
-    // Also print via raw PIO in case the log infrastructure is broken
-    // (e.g., exception during console init).
-    unsafe {
-        let msg = b"\r\n!EXCEPTION HALT!\r\n";
-        for &b in msg {
-            fstart_pio::outb(0x3F8, b);
-        }
-    }
 
     loop {
         unsafe { core::arch::asm!("hlt", options(nostack, nomem, preserves_flags)) };
@@ -823,26 +957,20 @@ pub fn jump_to(addr: u64) -> ! {
 
 #[inline]
 fn read_cr0() -> u64 {
-    let value: u64;
     // SAFETY: reading CR0 is side-effect free in firmware context.
-    unsafe { core::arch::asm!("mov {}, cr0", out(reg) value, options(nomem, nostack)) };
-    value
+    unsafe { fstart_arch_x86::x86::controlregs::cr0().bits() as u64 }
 }
 
 #[inline]
 fn read_cr3() -> u64 {
-    let value: u64;
     // SAFETY: reading CR3 is side-effect free in firmware context.
-    unsafe { core::arch::asm!("mov {}, cr3", out(reg) value, options(nomem, nostack)) };
-    value
+    unsafe { fstart_arch_x86::x86::controlregs::cr3() }
 }
 
 #[inline]
 fn read_cr4() -> u64 {
-    let value: u64;
     // SAFETY: reading CR4 is side-effect free in firmware context.
-    unsafe { core::arch::asm!("mov {}, cr4", out(reg) value, options(nomem, nostack)) };
-    value
+    unsafe { fstart_arch_x86::x86::controlregs::cr4().bits() as u64 }
 }
 
 fn log_bsp_x86_cache_state(label: &str) {
@@ -856,8 +984,8 @@ fn log_bsp_x86_cache_state(label: &str) {
 
     // SAFETY: called on x86_64 BSP immediately before payload handoff.
     unsafe {
-        let cap = fstart_arch_x86::msr::rdmsr(mtrr::IA32_MTRR_CAP);
-        let def_type = fstart_arch_x86::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
+        let cap = fstart_arch_x86::x86::msr::rdmsr(mtrr::IA32_MTRR_CAP);
+        let def_type = fstart_arch_x86::x86::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
         fstart_log::info!("  IA32_MTRR_CAP={:#x}", cap);
         fstart_log::info!("  IA32_MTRR_DEF_TYPE={:#x}", def_type);
 
@@ -879,7 +1007,7 @@ fn log_bsp_x86_cache_state(label: &str) {
                 fstart_log::info!(
                     "  fixed MTRR {:#x}={:#x}",
                     msr,
-                    fstart_arch_x86::msr::rdmsr(msr)
+                    fstart_arch_x86::x86::msr::rdmsr(msr)
                 );
             }
         } else {
@@ -1210,141 +1338,7 @@ pub fn boot_linux_direct(
 }
 
 #[cfg(target_arch = "x86_64")]
-fn log_x86_irq_handoff_state() {
-    unsafe {
-        use fstart_pio::{inb, inl, outb, outl, outw};
-
-        unsafe fn pci_cfg_addr(dev: u8, func: u8, reg: u8) -> u32 {
-            0x8000_0000 | ((dev as u32) << 11) | ((func as u32) << 8) | ((reg as u32) & 0xfc)
-        }
-        unsafe fn pci_read8(dev: u8, func: u8, reg: u8) -> u8 {
-            outl(0xcf8, pci_cfg_addr(dev, func, reg));
-            ((inl(0xcfc) >> ((reg & 3) * 8)) & 0xff) as u8
-        }
-        unsafe fn pci_read16(dev: u8, func: u8, reg: u8) -> u16 {
-            outl(0xcf8, pci_cfg_addr(dev, func, reg));
-            ((inl(0xcfc) >> ((reg & 2) * 8)) & 0xffff) as u16
-        }
-        unsafe fn pci_read32(dev: u8, func: u8, reg: u8) -> u32 {
-            outl(0xcf8, pci_cfg_addr(dev, func, reg));
-            inl(0xcfc)
-        }
-        unsafe fn pm_read16(pm: u16, off: u16) -> u16 {
-            fstart_pio::inw(pm + off)
-        }
-        unsafe fn pm_read32(pm: u16, off: u16) -> u32 {
-            fstart_pio::inl(pm + off)
-        }
-        unsafe fn pm_write16(pm: u16, off: u16, val: u16) {
-            outw(pm + off, val)
-        }
-        unsafe fn pm_write32(pm: u16, off: u16, val: u32) {
-            outl(pm + off, val)
-        }
-        unsafe fn ioapic_read(reg: u32) -> u32 {
-            core::ptr::write_volatile(0xfec0_0000 as *mut u32, reg);
-            core::ptr::read_volatile(0xfec0_0010 as *const u32)
-        }
-
-        let lpc_id = pci_read32(0x1f, 0, 0x00);
-        let pm = (pci_read32(0x1f, 0, 0x40) & 0xff80) as u16;
-
-        // ICH7/NM10 handoff: keep ACPI SCI/GPE policy programmed by the
-        // southbridge driver.  An earlier debug path masked GPE0, PM1_EN, and
-        // PM1_CNT.SCI_EN here; Linux then saw ACPI tables that advertised SCI9
-        // while the chipset was left in a non-coreboot state.  Match the
-        // coreboot handoff more closely: disable SMI sources when no SMM handler
-        // is active, but only clear stale W1C status and leave SCI/GPE enables
-        // intact for the OS ACPI driver.
-        if lpc_id == 0x27bc_8086 && pm != 0 {
-            pm_write32(pm, 0x30, 0); // SMI_EN: no SMM handler active.
-            pm_write32(pm, 0x2c, 0); // GPE0_EN: no AML GPE methods yet.
-            pm_write16(pm, 0x02, (1 << 8) | (1 << 5)); // PM1_EN: power/global only.
-            pm_write16(pm, 0x00, pm_read16(pm, 0x00)); // PM1_STS W1C.
-            pm_write32(pm, 0x28, pm_read32(pm, 0x28)); // GPE0_STS W1C.
-            pm_write32(pm, 0x34, pm_read32(pm, 0x34)); // SMI_STS W1C.
-            pm_write32(pm, 0x04, (pm_read32(pm, 0x04) & !0x1c00) | 0x03); // ACPI mode.
-            let tco_sts = pm_read32(pm, 0x64);
-            pm_write32(pm, 0x64, tco_sts & !(1 << 18)); // TCO_STS except BOOT_STS.
-            if tco_sts & (1 << 18) != 0 {
-                pm_write32(pm, 0x64, 1 << 18);
-            }
-        }
-
-        fstart_log::info!(
-            "irq-handoff: LPC SERIRQ={:#04x} LPC_IO_DEC={:#06x} LPC_EN={:#06x}",
-            pci_read8(0x1f, 0, 0x64),
-            pci_read16(0x1f, 0, 0x80),
-            pci_read16(0x1f, 0, 0x82),
-        );
-        fstart_log::info!(
-            "irq-handoff: GEN1={:#010x} GEN2={:#010x} GEN3={:#010x} GEN4={:#010x}",
-            pci_read32(0x1f, 0, 0x84),
-            pci_read32(0x1f, 0, 0x88),
-            pci_read32(0x1f, 0, 0x8c),
-            pci_read32(0x1f, 0, 0x90),
-        );
-        fstart_log::info!(
-            "irq-handoff: PIC masks master={:#04x} slave={:#04x} ELCR={:#04x}/{:#04x}",
-            inb(0x21),
-            inb(0xa1),
-            inb(0x4d0),
-            inb(0x4d1),
-        );
-        fstart_log::info!(
-            "irq-handoff: PMBASE={:#06x} PM1_STS={:#06x} PM1_EN={:#06x} PM1_CNT={:#010x}",
-            pm,
-            pm_read16(pm, 0x00),
-            pm_read16(pm, 0x02),
-            pm_read32(pm, 0x04),
-        );
-        fstart_log::info!(
-            "irq-handoff: GPE0_STS={:#010x} GPE0_EN={:#010x} SMI_EN={:#010x} SMI_STS={:#010x}",
-            pm_read32(pm, 0x28),
-            pm_read32(pm, 0x2c),
-            pm_read32(pm, 0x30),
-            pm_read32(pm, 0x34),
-        );
-        fstart_log::info!(
-            "irq-handoff: TCO1_STS={:#06x} TCO2_STS={:#06x}",
-            pm_read16(pm, 0x64),
-            pm_read16(pm, 0x66),
-        );
-        fstart_log::info!(
-            "irq-handoff: IOAPIC redir1={:#010x}/{:#010x} redir4={:#010x}/{:#010x}",
-            ioapic_read(0x12),
-            ioapic_read(0x13),
-            ioapic_read(0x18),
-            ioapic_read(0x19),
-        );
-        fstart_log::info!(
-            "irq-handoff: IOAPIC redir9={:#010x}/{:#010x} redir12={:#010x}/{:#010x}",
-            ioapic_read(0x22),
-            ioapic_read(0x23),
-            ioapic_read(0x28),
-            ioapic_read(0x29),
-        );
-
-        let com1 = 0x3f8u16;
-        let lcr = inb(com1 + 3);
-        outb(com1 + 3, lcr & !0x80);
-        for _ in 0..16 {
-            if inb(com1 + 5) & 1 == 0 {
-                break;
-            }
-            let _ = inb(com1);
-        }
-        fstart_log::info!(
-            "irq-handoff: COM1 IER={:#04x} IIR={:#04x} LCR={:#04x} MCR={:#04x} LSR={:#04x} MSR={:#04x}",
-            inb(com1 + 1), inb(com1 + 2), inb(com1 + 3), inb(com1 + 4), inb(com1 + 5), inb(com1 + 6),
-        );
-        fstart_log::info!(
-            "irq-handoff: KBC status={:#04x} data={:#04x}",
-            inb(0x64),
-            inb(0x60)
-        );
-    }
-}
+fn log_x86_irq_handoff_state() {}
 
 #[cfg(not(target_arch = "x86_64"))]
 fn log_x86_irq_handoff_state() {}

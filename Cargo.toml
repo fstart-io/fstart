@@ -93,6 +93,7 @@ heapless = { version = "0.8", features = ["serde"] }
 ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
 tock-registers = "0.10"
+x86 = { version = "0.52", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }

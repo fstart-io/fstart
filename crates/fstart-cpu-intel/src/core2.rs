@@ -364,27 +364,28 @@ fn speedstep_limits() -> SpeedstepParams {
             | SPEEDSTEP_VID_MASK;
         let mut params = SpeedstepParams::default();
 
-        if ((fstart_arch_x86::msr::rdmsr(MSR_EXTENDED_CONFIG) >> 27) & 3) == 3 {
-            let lo = fstart_arch_x86::msr::rdmsr(MSR_FSB_CLOCK_VCC) as u32;
+        if ((fstart_arch_x86::x86::msr::rdmsr(MSR_EXTENDED_CONFIG) >> 27) & 3) == 3 {
+            let lo = fstart_arch_x86::x86::msr::rdmsr(MSR_FSB_CLOCK_VCC) as u32;
             params.slfm = state_from_msr(lo, state_mask);
             params.slfm.dynfsb = true;
             params.slfm.is_slfm = true;
         }
 
         params.min = state_from_msr(
-            fstart_arch_x86::msr::rdmsr(MSR_THERM2_CTL) as u32,
+            fstart_arch_x86::x86::msr::rdmsr(MSR_THERM2_CTL) as u32,
             state_mask,
         );
         params.max = state_from_msr(
-            fstart_arch_x86::msr::rdmsr(IA32_PLATFORM_ID) as u32,
+            fstart_arch_x86::x86::msr::rdmsr(IA32_PLATFORM_ID) as u32,
             state_mask,
         );
         if cpu_id == 0x006e {
-            params.max.ratio = ((fstart_arch_x86::msr::rdmsr(IA32_PERF_STATUS) >> 40) & 0x1f) as u8;
+            params.max.ratio =
+                ((fstart_arch_x86::x86::msr::rdmsr(IA32_PERF_STATUS) >> 40) & 0x1f) as u8;
         }
 
-        let fsb_clock_vcc = fstart_arch_x86::msr::rdmsr(MSR_FSB_CLOCK_VCC);
-        let misc = fstart_arch_x86::msr::rdmsr(IA32_MISC_ENABLE);
+        let fsb_clock_vcc = fstart_arch_x86::x86::msr::rdmsr(MSR_FSB_CLOCK_VCC);
+        let misc = fstart_arch_x86::x86::msr::rdmsr(IA32_MISC_ENABLE);
         if (fsb_clock_vcc & (1u64 << 63)) != 0 && (misc & (1u64 << 38)) == 0 {
             params.turbo = state_from_msr((fsb_clock_vcc >> 32) as u32, state_mask);
             params.turbo.is_turbo = true;
@@ -441,7 +442,7 @@ fn ia32_fsb_x3() -> Option<u32> {
     #[cfg(target_os = "none")]
     unsafe {
         let cpu_id = cpu_model_id();
-        let idx = (fstart_arch_x86::msr::rdmsr(MSR_FSB_FREQ) & 7) as usize;
+        let idx = (fstart_arch_x86::x86::msr::rdmsr(MSR_FSB_FREQ) & 7) as usize;
         let fsb = match cpu_id {
             0x006e | 0x106c => [
                 None,

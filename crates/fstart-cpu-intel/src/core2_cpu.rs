@@ -3,8 +3,8 @@
 //! Mirrors the per-CPU MSR setup in coreboot's `cpu/intel/model_6fx` driver
 //! and optionally supplies an Intel microcode blob to `fstart-mp`.
 
-use fstart_arch_x86::msr::{rdmsr, wrmsr};
 use fstart_arch_x86::mtrr;
+use fstart_arch_x86::x86::msr::{rdmsr, wrmsr};
 use fstart_mp::CpuOps;
 
 const MSR_PKG_CST_CONFIG_CONTROL: u32 = 0xe2;

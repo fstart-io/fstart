@@ -18,15 +18,8 @@ pub struct CpuidResult {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn cpuid(leaf: u32, subleaf: u32) -> CpuidResult {
-    // CPUID is always available on x86_64. The stdarch wrapper preserves
-    // RBX correctly for LLVM's x86_64 code model.
-    let result = core::arch::x86_64::__cpuid_count(leaf, subleaf);
-    CpuidResult {
-        eax: result.eax,
-        ebx: result.ebx,
-        ecx: result.ecx,
-        edx: result.edx,
-    }
+    let (eax, ebx, ecx, edx) = fstart_arch_x86::cpuid_count(leaf, subleaf);
+    CpuidResult { eax, ebx, ecx, edx }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
