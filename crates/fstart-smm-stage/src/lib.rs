@@ -18,6 +18,14 @@ use fstart_smm_runtime::{
     SMM_PLATFORM_NONE,
 };
 
+/// SMM entry point called by the assembly/runtime trampoline.
+///
+/// # Safety
+///
+/// `params` must be a valid pointer to the SMM entry parameter block provided
+/// by the SMM trampoline for the current CPU, or null to indicate no work. The
+/// caller must invoke this only while executing in SMM with the expected CPU and
+/// platform state.
 #[no_mangle]
 pub unsafe extern "C" fn fstart_smm_handler(params: *mut SmmEntryParams) {
     unsafe {
