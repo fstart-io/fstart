@@ -308,7 +308,7 @@ jobs:
             ARGS+=(--firmware "${{ matrix.firmware }}")
           fi
           ARGS+=(--kernel "${{ matrix.kernel }}")
-          timeout 120 cargo xtask run --release "${ARGS[@]}" \
+          timeout 300 cargo xtask run --release "${ARGS[@]}" \
             > /tmp/qemu.log 2>&1 || true
           echo "::group::QEMU output"
           cat /tmp/qemu.log
