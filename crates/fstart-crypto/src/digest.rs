@@ -84,6 +84,7 @@ pub fn verify_digest_set(data: &[u8], expected: &DigestSet) -> Result<(), Digest
     // Suppress unused-variable warnings when no features are enabled
     let _ = data;
 
+    #[allow(unused_mut)]
     let mut verified_count: u32 = 0;
 
     #[cfg(feature = "sha2-digest")]

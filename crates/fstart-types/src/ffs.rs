@@ -355,7 +355,10 @@ pub struct ImageManifest {
     /// Typically: one Container "ro", optionally Container "rw-a"/"rw-b",
     /// optionally Raw "nvs". Descriptor-based x86 images may also list
     /// descriptor/GbE/ME raw regions that are outside the BIOS image.
-    pub regions: heapless::Vec<Region, 8>,
+    ///
+    /// Keep the bound modest: this type is used in firmware without `alloc`,
+    /// and larger `heapless` capacities directly increase stack/BSS pressure.
+    pub regions: heapless::Vec<Region, 6>,
 }
 
 // ============================================================================
@@ -392,7 +395,10 @@ pub enum RegionContent {
     /// file entries are covered by the image manifest's signature.
     Container {
         /// File entries and other children within this container.
-        children: heapless::Vec<RegionEntry, 16>,
+        ///
+        /// Eight covers current images (QEMU/Sifive: 3, x86 full-flash: 4)
+        /// while avoiding large no_std stack frames from unused capacity.
+        children: heapless::Vec<RegionEntry, 8>,
     },
 
     /// Raw reserved space with no internal structure.

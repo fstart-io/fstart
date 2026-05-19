@@ -769,27 +769,18 @@ static MANIFEST_BUF: SyncBuf = SyncBuf(core::cell::UnsafeCell::new([0u8; MAX_MAN
 
 /// Read and verify the FFS manifest from any boot medium.
 ///
-/// For memory-mapped media, uses the existing [`FfsReader`] fast path
-/// (the `as_slice()` branch). For non-memory-mapped media, reads the
-/// signed manifest into a static buffer and verifies it there.
+/// Reads the signed manifest into a static buffer, verifies it, and returns the
+/// inner [`ImageManifest`](fstart_types::ffs::ImageManifest).
 ///
-/// In both cases, the manifest signature is verified and the inner
-/// [`ImageManifest`](fstart_types::ffs::ImageManifest) is returned.
+/// Keeping the serialized manifest off-stack and avoiding deserialization of
+/// the 8 KiB signed envelope keeps firmware stack usage predictable.
 #[cfg(feature = "ffs")]
 fn read_manifest_from_media(
     media: &impl BootMedia,
     anchor: &fstart_types::ffs::AnchorBlock,
 ) -> Result<fstart_types::ffs::ImageManifest, fstart_ffs::ReaderError> {
-    // Fast path: memory-mapped — use existing FfsReader (zero-cost)
-    if let Some(image) = media.as_slice() {
-        let image_size = effective_image_size(media.size(), anchor);
-        let reader = fstart_ffs::FfsReader::new(&image[..image_size]);
-        return reader.read_manifest(anchor);
-    }
-
-    // Slow path: read signed manifest into the static buffer.
-    // Uses a static rather than a stack allocation to keep stack usage
-    // predictable for bootblocks with small stacks (e.g., 32 KiB).
+    // Read signed manifest into the static buffer. Uses a static rather than a
+    // stack allocation to keep stack usage predictable for firmware stages.
     let manifest_offset = anchor.manifest_offset as usize;
     let manifest_size = anchor.manifest_size as usize;
 
@@ -798,8 +789,8 @@ fn read_manifest_from_media(
     }
 
     // SAFETY: firmware boot is single-threaded; no concurrent access to
-    // MANIFEST_BUF. The buffer is only used within this function scope
-    // and the parsed manifest is returned by value (no references escape).
+    // MANIFEST_BUF. The parsed manifest is returned by value after signature
+    // verification.
     let buf = unsafe { &mut *MANIFEST_BUF.0.get() };
     media
         .read_at(manifest_offset, &mut buf[..manifest_size])

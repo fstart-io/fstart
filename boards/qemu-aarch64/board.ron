@@ -49,9 +49,7 @@
             PayloadLoad,
         ],
         load_addr: 0x00000000,
-        // 2 MiB — Ed25519 plus bounded FFS manifest metadata can use
-        // substantial stack during LinuxBoot payload verification/loading.
-        stack_size: 0x200000,
+        stack_size: 0x40000,
         // 256 KiB heap for the bump allocator (FDT manipulation).
         heap_size: Some(0x40000),
         // Place data/BSS/stack at 2 MiB into RAM to avoid QEMU's DTB.

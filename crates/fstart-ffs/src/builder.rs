@@ -179,13 +179,13 @@ where
     let mut file_data: Vec<FileDataLocation> = Vec::new();
 
     // ---- Phase 1: Lay out all regions ----
-    let mut manifest_regions: heapless::Vec<Region, 8> = heapless::Vec::new();
+    let mut manifest_regions: heapless::Vec<Region, 6> = heapless::Vec::new();
 
     for input_region in &config.regions {
         match input_region {
             InputRegion::Container { name, files } => {
                 let region_base = image.len() as u32;
-                let mut children: heapless::Vec<RegionEntry, 16> = heapless::Vec::new();
+                let mut children: heapless::Vec<RegionEntry, 8> = heapless::Vec::new();
 
                 for file in files {
                     let entry = lay_out_file(&mut image, file, region_base)?;
@@ -205,7 +205,7 @@ where
 
                     children
                         .push(entry)
-                        .map_err(|_| "too many files in container (max 16)".to_string())?;
+                        .map_err(|_| "too many files in container (max 8)".to_string())?;
                 }
 
                 let region_size = image.len() as u32 - region_base;
@@ -219,7 +219,7 @@ where
                         size: region_size,
                         content: RegionContent::Container { children },
                     })
-                    .map_err(|_| "too many regions (max 8)".to_string())?;
+                    .map_err(|_| "too many regions (max 6)".to_string())?;
             }
             InputRegion::ContainerWithExternal {
                 name,
@@ -228,7 +228,7 @@ where
                 size,
             } => {
                 let region_base = image.len() as u32;
-                let mut children: heapless::Vec<RegionEntry, 16> = heapless::Vec::new();
+                let mut children: heapless::Vec<RegionEntry, 8> = heapless::Vec::new();
 
                 for file in files {
                     let entry = lay_out_file(&mut image, file, region_base)?;
@@ -247,7 +247,7 @@ where
 
                     children
                         .push(entry)
-                        .map_err(|_| "too many files in container (max 16)".to_string())?;
+                        .map_err(|_| "too many files in container (max 8)".to_string())?;
                 }
 
                 let mut region_size = image.len() as u32 - region_base;
@@ -256,7 +256,7 @@ where
                     region_size = region_size.max(entry.offset + entry.size);
                     children
                         .push(entry)
-                        .map_err(|_| "too many files in container (max 16)".to_string())?;
+                        .map_err(|_| "too many files in container (max 8)".to_string())?;
                 }
                 if let Some(size) = size {
                     region_size = region_size.max(*size);
@@ -272,7 +272,7 @@ where
                         size: region_size,
                         content: RegionContent::Container { children },
                     })
-                    .map_err(|_| "too many regions (max 8)".to_string())?;
+                    .map_err(|_| "too many regions (max 6)".to_string())?;
             }
             InputRegion::Raw { name, size, fill } => {
                 let offset = image.len() as u32;
@@ -288,7 +288,7 @@ where
                         size: *size,
                         content: RegionContent::Raw { fill: *fill },
                     })
-                    .map_err(|_| "too many regions (max 8)".to_string())?;
+                    .map_err(|_| "too many regions (max 6)".to_string())?;
             }
             InputRegion::ExternalRaw {
                 name,
@@ -306,7 +306,7 @@ where
                         size: *size,
                         content: RegionContent::Raw { fill: *fill },
                     })
-                    .map_err(|_| "too many regions (max 8)".to_string())?;
+                    .map_err(|_| "too many regions (max 6)".to_string())?;
             }
         }
     }
