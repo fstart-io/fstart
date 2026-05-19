@@ -143,7 +143,7 @@ impl Device for Pl011 {
     const COMPATIBLE: &'static [&'static str] = &["arm,pl011", "pl011"];
     type Config = Pl011Config;
 
-    fn new(config: &Pl011Config) -> Result<Self, DeviceError> {
+    fn new(config: &'static Pl011Config) -> Result<Self, DeviceError> {
         Ok(Self {
             base: config.base_addr as usize,
             clock_freq: config.clock_freq,

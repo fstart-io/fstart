@@ -3203,6 +3203,7 @@ fn init_device_body(ctx: &BoardCtx<'_>) -> TokenStream {
                     let step_id_lit = proc_macro2::Literal::u8_unsuffixed(step_idx as u8);
                     let ty = driver_type_tokens(step_inst);
                     let cfg = config_tokens(step_inst);
+                    let cfg_static = format_ident!("__FSTART_CFG_{}", step_idx);
                     // Construction — dispatch on `is_bus_device`.
                     //
                     // Keep construction in per-device out-of-line helpers.  A
@@ -3220,26 +3221,50 @@ fn init_device_body(ctx: &BoardCtx<'_>) -> TokenStream {
                             Some(pname) => {
                                 let parent = format_ident!("{}", pname);
                                 quote! {
-                                    let _cfg = #cfg;
+                                    static mut #cfg_static: core::mem::MaybeUninit<<#ty as fstart_services::BusDevice>::Config> = core::mem::MaybeUninit::uninit();
+                                    // SAFETY: generated stage init is single-threaded and writes this
+                                    // config before constructing the device. The returned reference is
+                                    // retained for the firmware lifetime.
+                                    let _cfg_ref: &'static <#ty as fstart_services::BusDevice>::Config = unsafe {
+                                        let _cfg_ptr = core::ptr::addr_of_mut!(#cfg_static).cast::<<#ty as fstart_services::BusDevice>::Config>();
+                                        _cfg_ptr.write(#cfg);
+                                        &*_cfg_ptr
+                                    };
                                     let _parent_ref = this.#parent
                                         .as_ref()
                                         .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                                    let mut _dev = <#ty>::new_on_bus(&_cfg, _parent_ref)?;
+                                    let mut _dev = <#ty>::new_on_bus(_cfg_ref, _parent_ref)?;
                                     _dev.init()?;
                                     this.#step_field = Some(_dev);
                                 }
                             }
                             None => quote! {
-                                let _cfg = #cfg;
-                                let mut _dev = <#ty>::new(&_cfg)?;
+                                static mut #cfg_static: core::mem::MaybeUninit<<#ty as fstart_services::Device>::Config> = core::mem::MaybeUninit::uninit();
+                                // SAFETY: generated stage init is single-threaded and writes this
+                                // config before constructing the device. The returned reference is
+                                // retained for the firmware lifetime.
+                                let _cfg_ref: &'static <#ty as fstart_services::Device>::Config = unsafe {
+                                    let _cfg_ptr = core::ptr::addr_of_mut!(#cfg_static).cast::<<#ty as fstart_services::Device>::Config>();
+                                    _cfg_ptr.write(#cfg);
+                                    &*_cfg_ptr
+                                };
+                                let mut _dev = <#ty>::new(_cfg_ref)?;
                                 _dev.init()?;
                                 this.#step_field = Some(_dev);
                             },
                         }
                     } else {
                         quote! {
-                            let _cfg = #cfg;
-                            let mut _dev = <#ty>::new(&_cfg)?;
+                            static mut #cfg_static: core::mem::MaybeUninit<<#ty as fstart_services::Device>::Config> = core::mem::MaybeUninit::uninit();
+                            // SAFETY: generated stage init is single-threaded and writes this
+                            // config before constructing the device. The returned reference is
+                            // retained for the firmware lifetime.
+                            let _cfg_ref: &'static <#ty as fstart_services::Device>::Config = unsafe {
+                                let _cfg_ptr = core::ptr::addr_of_mut!(#cfg_static).cast::<<#ty as fstart_services::Device>::Config>();
+                                _cfg_ptr.write(#cfg);
+                                &*_cfg_ptr
+                            };
+                            let mut _dev = <#ty>::new(_cfg_ref)?;
                             _dev.init()?;
                             this.#step_field = Some(_dev);
                         }

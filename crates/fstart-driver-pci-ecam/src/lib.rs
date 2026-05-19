@@ -815,14 +815,13 @@ impl PciEcam {
 
         Ok(())
     }
-}
 
-impl Device for PciEcam {
-    const NAME: &'static str = "pci-ecam";
-    const COMPATIBLE: &'static [&'static str] = &["pci-host-ecam-generic"];
-    type Config = PciEcamConfig;
-
-    fn new(config: &PciEcamConfig) -> Result<Self, DeviceError> {
+    /// Construct an ECAM root bridge from a temporary config.
+    ///
+    /// `PciEcam` copies only scalar window values into runtime pools and does
+    /// not retain a reference to the config, so composed host bridges can build
+    /// this from hardware-derived local values without cloning a board config.
+    pub fn from_config(config: &PciEcamConfig) -> Result<Self, DeviceError> {
         if config.bus_end < config.bus_start {
             return Err(DeviceError::ConfigError);
         }
@@ -888,6 +887,16 @@ impl Device for PciEcam {
             devices: HVec::new(),
             next_bus: config.bus_start + 1,
         })
+    }
+}
+
+impl Device for PciEcam {
+    const NAME: &'static str = "pci-ecam";
+    const COMPATIBLE: &'static [&'static str] = &["pci-host-ecam-generic"];
+    type Config = PciEcamConfig;
+
+    fn new(config: &'static PciEcamConfig) -> Result<Self, DeviceError> {
+        Self::from_config(config)
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {

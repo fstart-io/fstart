@@ -32,7 +32,7 @@ pub struct I2cCk505Config {
 pub struct I2cCk505 {
     /// 7-bit SMBus slave address (supplied by the bus attachment).
     addr: u8,
-    config: I2cCk505Config,
+    config: &'static I2cCk505Config,
 }
 
 // SAFETY: state is CPU-exclusive during firmware phase.
@@ -45,7 +45,7 @@ impl BusDevice for I2cCk505 {
     type Config = I2cCk505Config;
     type Bus = dyn SmBusAddrProvider;
 
-    fn new_on_bus(config: &Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
+    fn new_on_bus(config: &'static Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
         if config.mask.len() != config.regs.len() {
             return Err(DeviceError::MissingResource(
                 "ck505: mask/regs length mismatch",
@@ -53,7 +53,7 @@ impl BusDevice for I2cCk505 {
         }
         Ok(Self {
             addr: bus.smbus_address(),
-            config: config.clone(),
+            config,
         })
     }
 

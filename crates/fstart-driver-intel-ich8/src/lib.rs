@@ -849,7 +849,7 @@ impl Rcba {
 
 /// Intel ICH8 southbridge driver.
 pub struct IntelIch8 {
-    config: IntelIch8Config,
+    config: &'static IntelIch8Config,
     smbus: Option<I801SmBus>,
     pm: PmIo,
 }
@@ -1863,7 +1863,7 @@ impl Device for IntelIch8 {
     const COMPATIBLE: &'static [&'static str] = &["intel,ich8", "intel,ich8m", "intel,82801hx"];
     type Config = IntelIch8Config;
 
-    fn new(config: &IntelIch8Config) -> Result<Self, DeviceError> {
+    fn new(config: &'static IntelIch8Config) -> Result<Self, DeviceError> {
         if config
             .lpc_decode
             .generic_io
@@ -1875,7 +1875,7 @@ impl Device for IntelIch8 {
         }
 
         Ok(Self {
-            config: config.clone(),
+            config,
             smbus: None,
             pm: PmIo::new(ich8::DEFAULT_PMBASE),
         })

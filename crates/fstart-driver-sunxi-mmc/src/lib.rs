@@ -286,7 +286,7 @@ impl Device for SunxiMmc {
     ];
     type Config = SunxiMmcConfig;
 
-    fn new(config: &SunxiMmcConfig) -> Result<Self, DeviceError> {
+    fn new(config: &'static SunxiMmcConfig) -> Result<Self, DeviceError> {
         let (base_addr, ccu_base, pio_base, mmc_index, gen) = match *config {
             SunxiMmcConfig::Sun7iA20 {
                 base_addr,

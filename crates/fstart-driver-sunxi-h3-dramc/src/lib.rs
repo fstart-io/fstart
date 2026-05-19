@@ -701,7 +701,7 @@ impl Device for SunxiH3Dramc {
         &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"];
     type Config = SunxiH3DramcConfig;
 
-    fn new(config: &SunxiH3DramcConfig) -> Result<Self, DeviceError> {
+    fn new(config: &'static SunxiH3DramcConfig) -> Result<Self, DeviceError> {
         let base = config.dramc_base as usize;
         Ok(Self {
             // SAFETY: addresses from board RON.

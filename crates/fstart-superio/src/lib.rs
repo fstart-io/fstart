@@ -253,7 +253,7 @@ pub struct SuperIo<C: SuperIoChip> {
     /// LPC config index port (e.g., `0x2e` or `0x4e`).
     base_port: u16,
     /// Saved config (used at `init()` time to actually program the chip).
-    config: SuperIoConfig,
+    config: &'static SuperIoConfig,
     _phantom: PhantomData<C>,
 }
 
@@ -560,14 +560,14 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
     type Config = SuperIoConfig;
     type Bus = dyn LpcBaseProvider;
 
-    fn new_on_bus(config: &Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
+    fn new_on_bus(config: &'static Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
         let base_port = bus.lpc_base();
         if base_port == 0 {
             return Err(DeviceError::MissingResource("lpc_base"));
         }
         Ok(Self {
             base_port,
-            config: config.clone(),
+            config,
             _phantom: PhantomData,
         })
     }

@@ -174,7 +174,7 @@ impl Device for QemuFwCfg {
     const COMPATIBLE: &'static [&'static str] = &["qemu,fw-cfg"];
     type Config = QemuFwCfgConfig;
 
-    fn new(config: &QemuFwCfgConfig) -> Result<Self, DeviceError> {
+    fn new(config: &'static QemuFwCfgConfig) -> Result<Self, DeviceError> {
         Ok(Self {
             ctl_port: config.ctl_port,
             data_port: config.data_port,

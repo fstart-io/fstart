@@ -65,14 +65,17 @@ fn dump_foxconn_d41s_dsdt() {
         acpi_name: Some("MCHC"),
     )"#;
 
-    let ich7_cfg: IntelIch7Config = ron::from_str(ich7_ron).expect("ICH7 config parse");
-    let pv_cfg: IntelPineviewConfig = ron::from_str(pv_ron).expect("PV config parse");
+    let ich7_cfg: &'static IntelIch7Config = Box::leak(Box::new(
+        ron::from_str(ich7_ron).expect("ICH7 config parse"),
+    ));
+    let pv_cfg: &'static IntelPineviewConfig =
+        Box::leak(Box::new(ron::from_str(pv_ron).expect("PV config parse")));
 
-    let ich7 = IntelIch7::new(&ich7_cfg).expect("ICH7 new");
-    let pineview = IntelPineview::new(&pv_cfg).expect("PV new");
+    let ich7 = IntelIch7::new(ich7_cfg).expect("ICH7 new");
+    let pineview = IntelPineview::new(pv_cfg).expect("PV new");
 
-    let pv_aml = pineview.dsdt_aml(&pv_cfg);
-    let ich7_aml = ich7.dsdt_aml(&ich7_cfg);
+    let pv_aml = pineview.dsdt_aml(pv_cfg);
+    let ich7_aml = ich7.dsdt_aml(ich7_cfg);
 
     // Concatenate all AML fragments.
     let mut body = Vec::new();

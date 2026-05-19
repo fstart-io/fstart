@@ -42,7 +42,7 @@ pub trait Device: Send + Sync + Sized {
     type Config;
 
     /// Construct from typed config.  Does NOT touch hardware.
-    fn new(config: &Self::Config) -> Result<Self, DeviceError>;
+    fn new(config: &'static Self::Config) -> Result<Self, DeviceError>;
 
     /// Initialise hardware.  Called after `new()`, in capability order.
     fn init(&mut self) -> Result<(), DeviceError>;
@@ -62,7 +62,7 @@ pub trait Device: Send + Sync + Sized {
 ///     type Bus = B;
 ///     type Config = Slb9670Config;
 ///
-///     fn new_on_bus(config: &Slb9670Config, bus: &B) -> Result<Self, DeviceError> {
+///     fn new_on_bus(config: &'static Slb9670Config, bus: &B) -> Result<Self, DeviceError> {
 ///         Ok(Self { bus, addr: config.addr })
 ///     }
 /// }
@@ -89,7 +89,7 @@ pub trait BusDevice: Send + Sync + Sized {
     type Bus: ?Sized;
 
     /// Construct from config + parent bus reference.  Does NOT touch hardware.
-    fn new_on_bus(config: &Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
+    fn new_on_bus(config: &'static Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
 
     /// Initialise hardware.  Called after `new_on_bus()`, in capability order.
     fn init(&mut self) -> Result<(), DeviceError>;

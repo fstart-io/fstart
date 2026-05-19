@@ -29,7 +29,7 @@ fstart-mp = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-pmio-ich = { workspace = true }
-fstart-services = { workspace = true }
+fstart-services = { workspace = true, features = ["pci"] }
 fstart-smm = { workspace = true }
 fstart-spd = { workspace = true }
 fstart-smbus-intel = { workspace = true }

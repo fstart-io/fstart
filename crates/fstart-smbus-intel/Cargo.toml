@@ -8,6 +8,6 @@ license.workspace = true
 fstart-ecam = { workspace = true }
 fstart-log = { workspace = true }
 fstart-pio = { workspace = true }
-fstart-services = { workspace = true }
+fstart-services = { workspace = true, features = ["pci"] }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }

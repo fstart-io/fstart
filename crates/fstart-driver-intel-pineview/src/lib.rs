@@ -138,7 +138,7 @@ static PINEVIEW_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new
 
 /// Pineview NB driver.
 pub struct IntelPineview {
-    config: IntelPineviewConfig,
+    config: &'static IntelPineviewConfig,
     /// Detected DRAM size (bytes), populated by `init()`.
     detected_size: u64,
     pci: Option<PciEcam>,
@@ -407,9 +407,9 @@ impl Device for IntelPineview {
     const COMPATIBLE: &'static [&'static str] = &["intel,pineview-mch", "intel,atom-d4xx-mch"];
     type Config = IntelPineviewConfig;
 
-    fn new(config: &IntelPineviewConfig) -> Result<Self, DeviceError> {
+    fn new(config: &'static IntelPineviewConfig) -> Result<Self, DeviceError> {
         Ok(Self {
-            config: config.clone(),
+            config,
             detected_size: 0,
             pci: None,
         })
@@ -791,7 +791,8 @@ impl IntelPineview {
     fn ensure_pci_ecam(&mut self) -> Result<&mut PciEcam, ServiceError> {
         if self.pci.is_none() {
             let config = self.pci_ecam_config();
-            self.pci = Some(PciEcam::new(&config).map_err(|_| ServiceError::HardwareError)?);
+            self.pci =
+                Some(PciEcam::from_config(&config).map_err(|_| ServiceError::HardwareError)?);
         }
         self.pci.as_mut().ok_or(ServiceError::NotInitialized)
     }

@@ -42,7 +42,7 @@ fn default_true() -> bool {
 
 /// Lenovo ThinkPad X61 mainboard hook driver.
 pub struct LenovoX61Mainboard {
-    config: LenovoX61MainboardConfig,
+    config: &'static LenovoX61MainboardConfig,
 }
 
 impl Device for LenovoX61Mainboard {
@@ -50,10 +50,8 @@ impl Device for LenovoX61Mainboard {
     const COMPATIBLE: &'static [&'static str] = &["lenovo,thinkpad-x61"];
     type Config = LenovoX61MainboardConfig;
 
-    fn new(config: &Self::Config) -> Result<Self, DeviceError> {
-        Ok(Self {
-            config: config.clone(),
-        })
+    fn new(config: &'static Self::Config) -> Result<Self, DeviceError> {
+        Ok(Self { config })
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {

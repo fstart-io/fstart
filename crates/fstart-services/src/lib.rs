@@ -28,6 +28,7 @@ pub mod mainboard;
 pub mod memory_controller;
 pub mod memory_detect;
 pub mod network;
+#[cfg(feature = "pci")]
 pub mod pci;
 pub mod pci_host;
 pub mod smbus;
@@ -50,6 +51,7 @@ pub use lpc::LpcBus;
 pub use mainboard::Mainboard;
 pub use memory_controller::MemoryController;
 pub use network::Network;
+#[cfg(feature = "pci")]
 pub use pci::{PciBdf, PciRootBus, PciWindow, PciWindowKind};
 pub use pci_host::PciHost;
 pub use smbus::SmBus;

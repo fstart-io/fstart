@@ -318,7 +318,7 @@ impl Device for Ns16550 {
     ];
     type Config = Ns16550Config;
 
-    fn new(config: &Ns16550Config) -> Result<Self, DeviceError> {
+    fn new(config: &'static Ns16550Config) -> Result<Self, DeviceError> {
         let regs = match config.regs {
             #[cfg(feature = "pio")]
             AccessMode::Pio { base } => ResolvedRegs::Pio { base: base as u16 },

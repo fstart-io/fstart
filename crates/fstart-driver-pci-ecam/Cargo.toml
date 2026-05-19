@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 fstart-mmio = { workspace = true }
-fstart-services = { workspace = true }
+fstart-services = { workspace = true, features = ["pci"] }
 fstart-log = { workspace = true }
 heapless = { workspace = true }
 ufmt = { workspace = true }

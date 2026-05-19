@@ -1847,13 +1847,15 @@ fn dry_run_acpi_check(board_name: &str) -> Result<(), String> {
 
         match inst {
             DriverInstance::IntelPineview(cfg) if cfg.acpi_name.is_some() => {
-                let driver = fstart_driver_intel_pineview::IntelPineview::new(cfg)
+                let static_cfg = Box::leak(Box::new(cfg.clone()));
+                let driver = fstart_driver_intel_pineview::IntelPineview::new(static_cfg)
                     .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
                 dsdt_aml.extend(driver.dsdt_aml(cfg));
                 extra_tables.extend(driver.extra_tables(cfg));
             }
             DriverInstance::IntelIch7(cfg) if cfg.acpi_name.is_some() => {
-                let driver = fstart_driver_intel_ich7::IntelIch7::new(cfg)
+                let static_cfg = Box::leak(Box::new(cfg.clone()));
+                let driver = fstart_driver_intel_ich7::IntelIch7::new(static_cfg)
                     .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
                 dsdt_aml.extend(driver.dsdt_aml(cfg));
                 extra_tables.extend(driver.extra_tables(cfg));
@@ -1864,7 +1866,8 @@ fn dry_run_acpi_check(board_name: &str) -> Result<(), String> {
                     _ => 0x2e,
                 };
                 let bus = DryLpcBus { base };
-                let driver = fstart_driver_ite8721f::Ite8721f::new_on_bus(cfg, &bus)
+                let static_cfg = Box::leak(Box::new(cfg.clone()));
+                let driver = fstart_driver_ite8721f::Ite8721f::new_on_bus(static_cfg, &bus)
                     .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
                 dsdt_aml.extend(driver.dsdt_aml(cfg));
                 extra_tables.extend(driver.extra_tables(cfg));

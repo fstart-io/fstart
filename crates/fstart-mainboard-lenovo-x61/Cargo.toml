@@ -15,7 +15,7 @@ fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
 fstart-arch-x86 = { workspace = true }
 fstart-gpio-ich = { workspace = true }
 fstart-pio = { workspace = true }
-fstart-services = { workspace = true }
+fstart-services = { workspace = true, features = ["pci"] }
 fstart-smm-runtime = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }

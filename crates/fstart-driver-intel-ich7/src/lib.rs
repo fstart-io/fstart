@@ -599,7 +599,7 @@ fn default_smbus_base() -> u16 {
 
 /// Intel ICH7 southbridge driver.
 pub struct IntelIch7 {
-    config: IntelIch7Config,
+    config: &'static IntelIch7Config,
     /// I801 SMBus controller, initialised during `early_init`.
     smbus: Option<I801SmBus>,
     /// PM I/O accessor (PMBASE, initialised during `early_init`).
@@ -860,7 +860,7 @@ impl Device for IntelIch7 {
     const COMPATIBLE: &'static [&'static str] = &["intel,ich7", "intel,nm10"];
     type Config = IntelIch7Config;
 
-    fn new(config: &IntelIch7Config) -> Result<Self, DeviceError> {
+    fn new(config: &'static IntelIch7Config) -> Result<Self, DeviceError> {
         if config
             .lpc_decode
             .generic_io
@@ -872,7 +872,7 @@ impl Device for IntelIch7 {
         }
 
         Ok(Self {
-            config: config.clone(),
+            config,
             smbus: None,
             pm: PmIo::new(DEFAULT_PMBASE as u16),
         })

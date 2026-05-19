@@ -285,7 +285,7 @@ impl Device for SunxiH3Ccu {
     const COMPATIBLE: &'static [&'static str] = &["allwinner,sun8i-h3-ccu"];
     type Config = SunxiH3CcuConfig;
 
-    fn new(config: &SunxiH3CcuConfig) -> Result<Self, DeviceError> {
+    fn new(config: &'static SunxiH3CcuConfig) -> Result<Self, DeviceError> {
         Ok(Self {
             // SAFETY: addresses come from the board RON, validated by codegen.
             ccu: unsafe { &*(config.ccu_base as *const SunxiH3CcuRegs) },
