@@ -229,7 +229,6 @@ pub mod ich8 {
 
 const HPET_BASE: usize = 0xfed0_0000;
 const SATA_ABAR_BASE: usize = 0xfea0_0000;
-const HDA_TEMP_BAR: usize = 0xfed1_0000;
 const GPE0_STS_ICH8: u16 = 0x20;
 const GPE0_EN_ICH8: u16 = 0x28;
 const SLP_TYP_S3: u32 = 0x1400;
@@ -1227,15 +1226,17 @@ impl IntelIch8 {
         hda.and8(0x4d, !(1 << 7));
         hda.write32(0x74, hda.read32(0x74));
 
-        // fstart has no full PCI resource allocator yet; use a fixed low MMIO
-        // BAR in the same reserved chipset window as other early ICH8 blocks.
-        hda.write32(ich8::PCI_BAR0, HDA_TEMP_BAR as u32);
+        let bar0 = hda.read32(ich8::PCI_BAR0) & !0x0f;
+        if bar0 == 0 {
+            fstart_log::error!("intel-ich8: HDA BAR0 is unassigned");
+            return;
+        }
         hda.or16(
             ich8::PCI_COMMAND,
             ich8::PCI_CMD_MEMORY | ich8::PCI_CMD_MASTER,
         );
 
-        let controller = HdaController::new(HDA_TEMP_BAR);
+        let controller = HdaController::new(bar0 as usize);
         let codec_mask = controller.detect_codecs();
         if codec_mask != 0 {
             let programmed = controller.program_verb_tables(config, codec_mask);
