@@ -24,7 +24,7 @@
 use fstart_services::device::{BusDevice, DeviceError};
 use fstart_services::framebuffer::{Framebuffer, FramebufferInfo};
 use fstart_services::pci::{
-    PciAddr, PciRootBus, PCI_BAR0, PCI_BAR2, PCI_VENDOR_ID, PCI_VENDOR_INVALID,
+    PciBdf, PciRootBus, PCI_BAR0, PCI_BAR2, PCI_VENDOR_ID, PCI_VENDOR_INVALID,
 };
 use serde::{Deserialize, Serialize};
 
@@ -106,7 +106,7 @@ impl BochsDisplay {
     /// Read a BAR value from PCI config space via the parent bus.
     ///
     /// For 64-bit BARs, reads both the low and high 32-bit halves.
-    fn read_bar(bus: &dyn PciRootBus, addr: PciAddr, bar_offset: u16) -> u64 {
+    fn read_bar(bus: &dyn PciRootBus, addr: PciBdf, bar_offset: u16) -> u64 {
         let lo = bus.config_read32(addr, bar_offset).unwrap_or(0);
         if lo & 1 != 0 {
             // I/O BAR
@@ -156,7 +156,7 @@ impl BusDevice for BochsDisplay {
     type Bus = dyn PciRootBus;
 
     fn new_on_bus(config: &BochsDisplayConfig, bus: &dyn PciRootBus) -> Result<Self, DeviceError> {
-        let addr = PciAddr {
+        let addr = PciBdf {
             bus: bus.bus_start(),
             dev: config.device,
             func: config.function,

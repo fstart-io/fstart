@@ -18,6 +18,7 @@ fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }
 fstart-log = { workspace = true }
 fstart-mmio = { workspace = true }
+fstart-pci = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-pmio-ich = { workspace = true }
 fstart-services = { workspace = true }

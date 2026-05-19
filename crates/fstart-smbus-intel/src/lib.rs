@@ -140,7 +140,7 @@ impl I801SmBus {
         const PCI_COMMAND: u16 = 0x04;
         const PCI_CMD_IO: u16 = 0x0001;
 
-        let smbus_pci = ecam::PciDevBdf::new(bus, dev, func);
+        let smbus_pci = ecam::EcamDevice::new(bus, dev, func);
         smbus_pci.write32(SMB_BASE, (smbus_base as u32) | 1);
         smbus_pci.write32(HOSTC, HST_EN);
         let cmd = smbus_pci.read16(PCI_COMMAND);

@@ -12,7 +12,7 @@ use fstart_ecam as ecam;
 /// Ported from coreboot `sdram_mmap()`. Uses lookup tables indexed
 /// by dimm_config rather than computing from geometry.
 pub fn sdram_mmap(si: &SysInfo, mch: &MchBar) {
-    let hb = ecam::PciDevBdf::new(0, 0, 0);
+    let hb = ecam::EcamDevice::new(0, 0, 0);
     let cfg = si.dimm_config[0] as usize;
 
     static W260_MB: [u32; 7] = [
@@ -350,7 +350,7 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
 ///
 /// Full port from coreboot `sdram_mmap_regs()`.
 pub fn sdram_mmap_regs(si: &SysInfo, _mch: &MchBar) {
-    let hb = ecam::PciDevBdf::new(0, 0, 0);
+    let hb = ecam::EcamDevice::new(0, 0, 0);
     let ggc = hb.read16(hostbridge::GGC);
 
     static GGC_TO_UMA: [u16; 10] = [0, 1, 4, 8, 16, 32, 48, 64, 128, 256];

@@ -19,6 +19,7 @@ pub mod smm;
 
 use fstart_ecam as ecam;
 use fstart_mmio::MmioReadWrite;
+use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_BITS};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -57,9 +58,22 @@ register_bitfields! [u32,
     CIR_2034_REG [
         FIELD_19_16 OFFSET(16) NUMBITS(4) []
     ],
+    /// LPC ETR3 reset-control register.
+    ETR3_REG [
+        CWORWRE OFFSET(18) NUMBITS(1) [],
+        CF9GR OFFSET(20) NUMBITS(1) [],
+        CF9LOCK OFFSET(31) NUMBITS(1) []
+    ],
 ];
 
 register_bitfields! [u16,
+    /// LPC GEN_PMCON_1 register.
+    GEN_PMCON_1_REG [
+        SMI_RATE OFFSET(0) NUMBITS(2) [],
+        SMI_LOCK OFFSET(4) NUMBITS(1) [],
+        CPUSLP_EN OFFSET(5) NUMBITS(1) [],
+        BIOS_PCI_EXP_EN OFFSET(10) NUMBITS(1) []
+    ],
     /// SPI control register.
     SPI_REG [
         LOCK OFFSET(15) NUMBITS(1) []
@@ -74,6 +88,22 @@ register_bitfields! [u16,
 ];
 
 register_bitfields! [u8,
+    /// LPC ACPI control register.
+    ACPI_CNTL_REG [
+        ACPI_EN OFFSET(7) NUMBITS(1) []
+    ],
+    /// LPC GEN_PMCON_3 register.
+    GEN_PMCON_3_REG [
+        STATE_AFTER_G3 OFFSET(0) NUMBITS(1) [],
+        RTC_BATTERY_DEAD OFFSET(2) NUMBITS(1) [],
+        MIN_SLP_S4_ASSERT OFFSET(3) NUMBITS(1) [],
+        SLP_S3_STRETCH OFFSET(4) NUMBITS(2) []
+    ],
+    /// LPC GEN_PMCON_LOCK register.
+    GEN_PMCON_LOCK_REG [
+        ACPI_BASE_LOCK OFFSET(1) NUMBITS(1) [],
+        SLP_STR_POL_LOCK OFFSET(2) NUMBITS(1) []
+    ],
     /// Other Interrupt Control.
     OIC_REG [
         AEN OFFSET(0) NUMBITS(1) [],
@@ -217,21 +247,9 @@ pub use fstart_hda::{
 // ---------------------------------------------------------------------------
 
 const SMLT: u16 = 0x1B;
-const SERIRQ_CNTL: u16 = 0x64;
 const GEN_PMCON_3: u16 = 0xA4;
 const RTC_BATTERY_DEAD: u8 = 1 << 2;
-const ACPI_CNTL: u16 = 0x44;
-const ACPI_EN: u8 = 0x80;
-const GPIO_CNTL: u16 = 0x4C;
 const GPIO_EN: u8 = 0x10;
-const LPC_IO_DEC: u16 = 0x80;
-const LPC_EN: u16 = 0x82;
-const GEN1_DEC: u16 = 0x84;
-const GEN2_DEC: u16 = 0x88;
-const GEN3_DEC: u16 = 0x8C;
-const GEN4_DEC: u16 = 0x90;
-const PMBASE_REG: u16 = 0x40;
-const GPIOBASE_REG: u16 = 0x48;
 
 const DEFAULT_PMBASE: u32 = 0x0500;
 const DEFAULT_GPIOBASE: u32 = 0x0480;
@@ -285,16 +303,40 @@ const GEN_PMCON_1: u16 = 0xA0;
 #[allow(dead_code)]
 const SMI_LOCK: u16 = 1 << 4;
 
-// GEN_PMCON_LOCK register
-const GEN_PMCON_LOCK: u16 = 0xA6;
-const ACPI_BASE_LOCK: u8 = 1 << 1;
-const SLP_STR_POL_LOCK: u8 = 1 << 2;
-
 // ETR3 register (LPC dev 0x1F func 0)
 const ETR3: u16 = 0xAC;
 const ETR3_CF9GR: u32 = 1 << 20;
-const ETR3_CF9LOCK: u32 = 1 << 31;
 const ETR3_CWORWRE: u32 = 1 << 18;
+
+pci_type0_config! {
+    /// ICH7 LPC bridge PCI configuration space.
+    pub struct Ich7LpcPciConfig {
+        (0x40 => pub pmbase: MmioReadWrite<u32>),
+        (0x44 => pub acpi_cntl: MmioReadWrite<u8, ACPI_CNTL_REG::Register>),
+        (0x45 => _reserved_lpc0),
+        (0x48 => pub gpio_base: MmioReadWrite<u32>),
+        (0x4c => pub gpio_cntl: MmioReadWrite<u8>),
+        (0x4d => _reserved_lpc1),
+        (0x60 => pub pirqa_rout: MmioReadWrite<u32>),
+        (0x64 => pub serirq_cntl: MmioReadWrite<u8>),
+        (0x65 => _reserved_lpc2),
+        (0x68 => pub pirqe_rout: MmioReadWrite<u32>),
+        (0x6c => _reserved_lpc8),
+        (0x80 => pub lpc_io_dec: MmioReadWrite<u16>),
+        (0x82 => pub lpc_en: MmioReadWrite<u16>),
+        (0x84 => pub gen_dec: [MmioReadWrite<u32>; 4]),
+        (0x94 => _reserved_lpc3),
+        (0xa0 => pub gen_pmcon_1: MmioReadWrite<u16, GEN_PMCON_1_REG::Register>),
+        (0xa2 => _reserved_lpc4),
+        (0xa4 => pub gen_pmcon_3: MmioReadWrite<u8, GEN_PMCON_3_REG::Register>),
+        (0xa5 => _reserved_lpc5),
+        (0xa6 => pub gen_pmcon_lock: MmioReadWrite<u8, GEN_PMCON_LOCK_REG::Register>),
+        (0xa7 => _reserved_lpc6),
+        (0xac => pub etr3: MmioReadWrite<u32, ETR3_REG::Register>),
+        (0xb0 => _reserved_lpc7),
+        (0x1000 => @END),
+    }
+}
 
 // IDE timing registers
 const IDE_TIM_PRI: u16 = 0x40;
@@ -569,7 +611,28 @@ unsafe impl Send for IntelIch7 {}
 unsafe impl Sync for IntelIch7 {}
 
 impl IntelIch7 {
-    /// ECAM accessor.
+    /// Typed PCI config overlay for the LPC bridge.
+    fn lpc_regs(&self) -> &'static Ich7LpcPciConfig {
+        let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+
+        // SAFETY: the ICH7 LPC bridge is a fixed chipset device at 00:1f.0,
+        // ECAM is initialized by the platform before this driver runs, and the
+        // overlay contains the standard Type 0 header plus documented LPC
+        // registers. Exact-write/W1C/BAR sequences still use raw helpers.
+        unsafe { lpc.regs::<Ich7LpcPciConfig>() }
+    }
+
+    fn type0_regs(dev: ecam::EcamDevice) -> &'static PciType0Config {
+        // SAFETY: callers use this for present Type 0 devices and avoid typed
+        // access for BAR sizing, W1C status, and exact-write errata sequences.
+        unsafe { dev.regs::<PciType0Config>() }
+    }
+
+    fn type1_regs(dev: ecam::EcamDevice) -> &'static PciType1Config {
+        // SAFETY: callers use this for present Type 1 bridge devices and avoid
+        // typed access for W1C status and exact-write errata sequences.
+        unsafe { dev.regs::<PciType1Config>() }
+    }
 
     /// CIR (Chipset Initialization Registers) magic writes.
     ///
@@ -597,7 +660,7 @@ impl IntelIch7 {
         rcba.regs().port_3e4e.modify(PCIE_TUNING8::BIT7::SET);
 
         // Mobile variant fixup: check PCI device ID.
-        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
         let pci_id = lpc.read16(0x02);
         match pci_id {
             0x27B9 | 0x27BC | 0x27BD => {
@@ -825,23 +888,25 @@ impl Device for IntelIch7 {
 
 impl PreConsoleInit for IntelIch7 {
     fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let lpc = self.lpc_regs();
 
         // Coreboot's bootblock_early_southbridge_init() order:
         // SPI prefetch/caching -> fixed SB BARs -> upper CMOS ->
         // watchdog disable -> LPC setup. Keep this pre-console and
         // log-free: the SuperIO UART is not reachable yet.
 
-        // SPI prefetch/caching: LPC reg 0xDC bits [3:2] = 10.
-        let spi = lpc.read8(0xDC);
-        lpc.write8(0xDC, (spi & !(3 << 2)) | (2 << 2));
+        // SPI prefetch/caching: LPC reg 0xDC bits [3:2] = 10. This register
+        // is not typed yet, so keep the exact raw sequence.
+        let lpc_raw = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let spi = lpc_raw.read8(0xDC);
+        lpc_raw.write8(0xDC, (spi & !(3 << 2)) | (2 << 2));
 
         // Fixed southbridge BARs.
-        lpc.write32(ich7::RCBA_REG, (self.config.rcba as u32 & 0xFFFF_C000) | 1);
-        lpc.write32(PMBASE_REG, DEFAULT_PMBASE | 1);
-        lpc.write8(ACPI_CNTL, ACPI_EN);
-        lpc.write32(GPIOBASE_REG, DEFAULT_GPIOBASE | 1);
-        lpc.write8(GPIO_CNTL, GPIO_EN);
+        lpc_raw.write32(ich7::RCBA_REG, (self.config.rcba as u32 & 0xFFFF_C000) | 1);
+        lpc.pmbase.set(DEFAULT_PMBASE | 1);
+        lpc.acpi_cntl.set(0x80);
+        lpc.gpio_base.set(DEFAULT_GPIOBASE | 1);
+        lpc.gpio_cntl.set(GPIO_EN);
 
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
 
@@ -862,13 +927,12 @@ impl PreConsoleInit for IntelIch7 {
         // generic decode windows. This makes SuperIO config ports and
         // COM1/COM2 I/O decode live before ConsoleInit.
         let generic = self.lpc_generic_decode_regs();
-        lpc.write8(SERIRQ_CNTL, 0xD0);
-        lpc.write16(LPC_IO_DEC, self.config.lpc_decode.fixed_io.encode());
-        lpc.write16(LPC_EN, LPC_EN_ALL);
-        lpc.write32(GEN1_DEC, generic[0]);
-        lpc.write32(GEN2_DEC, generic[1]);
-        lpc.write32(GEN3_DEC, generic[2]);
-        lpc.write32(GEN4_DEC, generic[3]);
+        lpc.serirq_cntl.set(0xD0);
+        lpc.lpc_io_dec.set(self.config.lpc_decode.fixed_io.encode());
+        lpc.lpc_en.set(LPC_EN_ALL);
+        for (idx, value) in generic.iter().copied().enumerate() {
+            lpc.gen_dec[idx].set(value);
+        }
 
         Ok(())
     }
@@ -876,7 +940,7 @@ impl PreConsoleInit for IntelIch7 {
 
 impl EarlyInit for IntelIch7 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
-        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let lpc = self.lpc_regs();
 
         // Bootblock-level SPI, fixed BAR, CMOS/watchdog, and LPC decode setup
         // was already done by pre_console_init(). Do not repeat it here: this
@@ -901,21 +965,24 @@ impl EarlyInit for IntelIch7 {
             self.config.pirq_routing[6],
             self.config.pirq_routing[7],
         ]);
-        lpc.write32(0x60, pirq_low);
-        lpc.write32(0x68, pirq_high);
+        lpc.pirqa_rout.set(pirq_low);
+        lpc.pirqe_rout.set(pirq_high);
 
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
         self.setup_interrupt_routing(&rcba);
 
         // ---- 7. PCI bridge secondary MLT ----
-        ecam::PciDevBdf::new(0, 0x1e, 0).write8(SMLT, 0x20);
+        Self::type1_regs(ecam::EcamDevice::new(0, 0x1e, 0))
+            .secondary_latency_timer
+            .set(0x20);
 
         // ---- 8. Reset RTC power status ----
-        lpc.and8(GEN_PMCON_3, !RTC_BATTERY_DEAD);
+        lpc.gen_pmcon_3
+            .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
 
         // ---- 9. USB pre-config ----
-        lpc.or8(0xAD, 3);
-        let ehci = ecam::PciDevBdf::new(0, 0x1d, 7);
+        ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).or8(0xAD, 3);
+        let ehci = ecam::EcamDevice::new(0, 0x1d, 7);
         // Coreboot i82801gx usb_ehci.c programs EHCIIR[3:2] to 10b in
         // addition to setting bits 17 and 29. Preserve all unrelated bits.
         ehci.modify32(0xFC, !(3 << 2), (2 << 2) | (1 << 29) | (1 << 17));
@@ -1029,7 +1096,7 @@ impl IntelIch7 {
     /// `sata_init`, `usb_init`, `usb_ehci_init`, `enable_clock_gating`,
     /// `lpc_final`.
     pub fn ramstage_init(&self) -> Result<(), ServiceError> {
-        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
 
         // ---- SATA ----
         if let Some(ref sata) = self.config.sata {
@@ -1101,10 +1168,14 @@ impl IntelIch7 {
     /// Ported from coreboot `sata_init()`. Programs the SATA controller
     /// into AHCI or IDE mode and runs the mandatory init sequence.
     fn sata_init(&self, sata: &SataConfig) {
-        let sata_dev = ecam::PciDevBdf::new(0, 0x1f, 2);
+        let sata_dev = ecam::EcamDevice::new(0, 0x1f, 2);
 
         // Enable BARs.
-        sata_dev.or16(0x04, 0x07); // IO + Mem + BusMaster
+        Self::type0_regs(sata_dev).command.modify(
+            PCI_COMMAND_BITS::IO_SPACE::SET
+                + PCI_COMMAND_BITS::MEMORY_SPACE::SET
+                + PCI_COMMAND_BITS::BUS_MASTER::SET,
+        );
 
         match sata.mode {
             SataMode::Ahci => {
@@ -1115,13 +1186,13 @@ impl IntelIch7 {
                 // Native mode on both channels.
                 sata_dev.write8(0x09, 0x8F);
                 // Interrupt line.
-                sata_dev.write8(0x3C, 0x0A);
+                Self::type0_regs(sata_dev).interrupt_line.set(0x0A);
             }
             SataMode::Ide => {
                 fstart_log::info!("intel-ich7: SATA in IDE mode");
                 sata_dev.write8(0x90, sata_dev.read8(0x90) & !0xC3);
                 sata_dev.write8(0x09, 0x8F);
-                sata_dev.write8(0x3C, 0xFF);
+                Self::type0_regs(sata_dev).interrupt_line.set(0xFF);
                 // IDE timings.
                 sata_dev.write16(0x40, 0xB301); // PRI
                 sata_dev.write16(0x42, 0xB301); // SEC
@@ -1178,9 +1249,11 @@ impl IntelIch7 {
             if !enabled {
                 continue;
             }
-            let uhci = ecam::PciDevBdf::new(0, 0x1D, i as u8);
+            let uhci = ecam::EcamDevice::new(0, 0x1D, i as u8);
             // Bus master.
-            uhci.or16(0x04, 0x04);
+            Self::type0_regs(uhci)
+                .command
+                .modify(PCI_COMMAND_BITS::BUS_MASTER::SET);
             // Errata workarounds.
             uhci.write8(0xCA, 0x00);
             uhci.or8(0xCA, 1);
@@ -1190,9 +1263,11 @@ impl IntelIch7 {
 
     /// EHCI (USB 2.0) controller init.
     fn usb_ehci_init(&self) {
-        let ehci = ecam::PciDevBdf::new(0, 0x1D, 7);
-        // Bus master + SERR.
-        ehci.or16(0x04, 0x06);
+        let ehci = ecam::EcamDevice::new(0, 0x1D, 7);
+        // Bus master + memory decode.
+        Self::type0_regs(ehci)
+            .command
+            .modify(PCI_COMMAND_BITS::MEMORY_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
         // Debug port + async schedule park.
         ehci.or32(0xDC, (1 << 31) | (1 << 27));
         let v = ehci.read32(0xFC);
@@ -1204,24 +1279,24 @@ impl IntelIch7 {
 
     /// Power management init (from coreboot `i82801gx_power_options`).
     fn power_management_init(&self) {
-        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let lpc = self.lpc_regs();
 
         // Power-on after failure.
-        let mut pmcon3 = lpc.read8(GEN_PMCON_3);
-        pmcon3 |= 3 << 4; // avoid #S4 assertions
-        pmcon3 &= !(1 << 3); // minimum assertion 1-2 RTCCLK
-        match self.config.power_on_after_fail {
-            0 => pmcon3 |= 1,  // stay off
-            _ => pmcon3 &= !1, // power on / last state
-        }
-        lpc.write8(GEN_PMCON_3, pmcon3);
+        lpc.gen_pmcon_3.modify(
+            GEN_PMCON_3_REG::STATE_AFTER_G3.val(if self.config.power_on_after_fail == 0 {
+                1
+            } else {
+                0
+            }) + GEN_PMCON_3_REG::SLP_S3_STRETCH.val(3)
+                + GEN_PMCON_3_REG::MIN_SLP_S4_ASSERT::CLEAR,
+        );
 
         // GEN_PMCON_1: SMI rate, SpeedStep, CPUSLP, BIOS_PCI_EXP.
-        let mut pmcon1 = lpc.read16(0xA0);
-        pmcon1 &= !3; // SMI rate 1 minute
-        pmcon1 |= (1 << 5)      // CPUSLP_EN
-                | (1 << 10); // BIOS_PCI_EXP_EN
-        lpc.write16(0xA0, pmcon1);
+        lpc.gen_pmcon_1.modify(
+            GEN_PMCON_1_REG::SMI_RATE.val(0)
+                + GEN_PMCON_1_REG::CPUSLP_EN::SET
+                + GEN_PMCON_1_REG::BIOS_PCI_EXP_EN::SET,
+        );
 
         fstart_log::info!("intel-ich7: power management configured");
     }
@@ -1360,20 +1435,26 @@ impl IntelIch7 {
     fn pcie_init(&self) {
         // ICH7 has up to 6 PCIe root ports at dev 0x1C func 0..5.
         for func in 0u8..6 {
-            let port = ecam::PciDevBdf::new(0, 0x1C, func);
+            let port = ecam::EcamDevice::new(0, 0x1C, func);
             let vid = port.read16(0x00);
             if vid == 0xFFFF {
                 continue; // Function not present
             }
 
-            // Enable bus master.
-            port.or16(0x04, 0x07); // IO+Mem+BusMaster
+            let regs = Self::type1_regs(port);
+
+            // Enable IO, memory, and bus mastering.
+            regs.command.modify(
+                PCI_COMMAND_BITS::IO_SPACE::SET
+                    + PCI_COMMAND_BITS::MEMORY_SPACE::SET
+                    + PCI_COMMAND_BITS::BUS_MASTER::SET,
+            );
 
             // Cache line size = 0x10.
-            port.write8(0x0C, 0x10);
+            regs.cache_line_size.set(0x10);
 
             // Disable parity error response on bridge control.
-            port.and16(0x3E, !1u16);
+            regs.bridge_control.set(regs.bridge_control.get() & !1u16);
 
             // Enable IO xAPIC on this port.
             port.or32(0xD8, 1 << 7);
@@ -1404,7 +1485,7 @@ impl IntelIch7 {
     ///
     /// Ported from coreboot `azalia.c::azalia_init()`.
     fn hda_init(&self, hda: &HdaConfig) {
-        let hda_dev = ecam::PciDevBdf::new(0, 0x1B, 0);
+        let hda_dev = ecam::EcamDevice::new(0, 0x1B, 0);
 
         let vid = hda_dev.read16(0x00);
         if vid == 0xFFFF {
@@ -1430,8 +1511,12 @@ impl IntelIch7 {
         // VCi resource control: enable, ID, TC mapping.
         hda_dev.or32(0x120, (1 << 31) | (1 << 24) | 0x80);
 
-        // Enable bus master.
-        hda_dev.or16(0x04, 0x06); // Mem + BusMaster
+        let hda_regs = Self::type0_regs(hda_dev);
+
+        // Enable memory decode and bus mastering.
+        hda_regs
+            .command
+            .modify(PCI_COMMAND_BITS::MEMORY_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
 
         // Clock detect cycle.
         hda_dev.or8(0x40, 1 << 3); // Set CLKDETCLR
@@ -1445,7 +1530,7 @@ impl IntelIch7 {
         hda_dev.and8(0x4D, !(1 << 7));
 
         // Read BAR0 for MMIO base.
-        let bar = hda_dev.read32(0x10) & !0xF;
+        let bar = hda_regs.bar[0].get() & !0xF;
         if bar == 0 {
             fstart_log::error!("intel-ich7: HDA BAR0 not assigned");
             return;
@@ -1481,7 +1566,9 @@ impl IntelIch7 {
         #[cfg(target_arch = "x86_64")]
         if self.pm().read32(pmio::SMI_EN) & pmio::GBL_SMI_EN != 0 {
             // Global SMI Lock.
-            ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).or16(0xA0, 1 << 4);
+            self.lpc_regs()
+                .gen_pmcon_1
+                .modify(GEN_PMCON_1_REG::SMI_LOCK::SET);
             // TCO Lock.
             self.pm().tco().lock();
         }
@@ -1496,7 +1583,7 @@ impl IntelIch7 {
     /// GEN_PMCON lock bits, R/WO register lock.
     pub fn finalize(&self) {
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
-        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let lpc = self.lpc_regs();
 
         // Run basic lockdown first.
         self.lockdown();
@@ -1508,15 +1595,18 @@ impl IntelIch7 {
         rcba.regs().fdsw8.modify(FDSW8::LOCK::SET);
 
         // GEN_PMCON_LOCK: ACPI base lock + SLP_STR policy lock.
-        lpc.or8(GEN_PMCON_LOCK, ACPI_BASE_LOCK | SLP_STR_POL_LOCK);
+        lpc.gen_pmcon_lock.modify(
+            GEN_PMCON_LOCK_REG::ACPI_BASE_LOCK::SET + GEN_PMCON_LOCK_REG::SLP_STR_POL_LOCK::SET,
+        );
 
         // ETR3: clear CF9 global reset, set CF9 lock.
-        lpc.modify32(ETR3, !ETR3_CF9GR, ETR3_CF9LOCK);
+        lpc.etr3
+            .modify(ETR3_REG::CF9GR::CLEAR + ETR3_REG::CF9LOCK::SET);
 
         // R/WO register lock (read-then-write-back).
         rcba.regs().cir_21a4.set(rcba.regs().cir_21a4.get());
         // HDA R/WO register.
-        let hda_dev = ecam::PciDevBdf::new(0, 0x1B, 0);
+        let hda_dev = ecam::EcamDevice::new(0, 0x1B, 0);
         let hda_rwo = hda_dev.read32(0x74);
         hda_dev.write32(0x74, hda_rwo);
 
@@ -1633,7 +1723,7 @@ impl IntelIch7 {
         #[cfg(target_arch = "x86_64")]
         unsafe {
             // Ensure CF9GR is cleared (no global reset).
-            let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+            let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
             let etr3 = lpc.read32(ETR3);
             lpc.write32(ETR3, (etr3 & !ETR3_CF9GR) & !ETR3_CWORWRE);
 
@@ -1651,7 +1741,7 @@ impl IntelIch7 {
     /// Sets ETR3.CF9GR so the next CF9 write triggers a full platform
     /// reset including ME.  Ported from coreboot `set_global_reset()`.
     pub fn set_global_reset(&self, enable: bool) {
-        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
         let mut etr3 = lpc.read32(ETR3);
         etr3 &= !ETR3_CWORWRE;
         if enable {
@@ -1668,7 +1758,8 @@ impl IntelIch7 {
 
     /// Check if the RTC battery died (GEN_PMCON_3 bit 2).
     pub fn rtc_failure(&self) -> bool {
-        ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).read8(GEN_PMCON_3) & RTC_BATTERY_DEAD
+        ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).read8(GEN_PMCON_3)
+            & RTC_BATTERY_DEAD
             != 0
     }
 
@@ -1684,8 +1775,9 @@ impl IntelIch7 {
         let failed = self.rtc_failure();
         if failed {
             // Clear the RTC battery dead bit.
-            ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC)
-                .and8(GEN_PMCON_3, !RTC_BATTERY_DEAD);
+            self.lpc_regs()
+                .gen_pmcon_3
+                .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
             fstart_log::info!("intel-ich7: RTC battery dead — reinitializing CMOS");
         }
 
@@ -1718,21 +1810,27 @@ impl IntelIch7 {
     /// Enables bus master, sets master latency timer, disables parity
     /// and SERR on the bridge.  Ported from coreboot `pci.c::pci_init()`.
     pub fn pci_bridge_init(&self) {
-        let pci_bridge = ecam::PciDevBdf::new(0, 0x1E, 0);
+        let pci_bridge = ecam::EcamDevice::new(0, 0x1E, 0);
 
         let vid = pci_bridge.read16(0x00);
         if vid == 0xFFFF {
             return;
         }
 
+        let bridge_regs = Self::type1_regs(pci_bridge);
+
         // Enable bus master.
-        pci_bridge.or16(0x04, 0x04); // BusMaster only
+        bridge_regs
+            .command
+            .modify(PCI_COMMAND_BITS::BUS_MASTER::SET);
 
         // No interrupt.
-        pci_bridge.write8(0x3C, 0xFF);
+        bridge_regs.interrupt_line.set(0xFF);
 
         // Disable parity + SERR on bridge control.
-        pci_bridge.and16(0x3E, !(0x01 | 0x02));
+        bridge_regs
+            .bridge_control
+            .set(bridge_regs.bridge_control.get() & !(0x01 | 0x02));
 
         // Master Latency Timer = 0x04 << 3 (keep low bits).
         pci_bridge.and8_or8(SMLT, 0x07, 0x04 << 3);
@@ -1749,17 +1847,22 @@ impl IntelIch7 {
     /// Configures primary and/or secondary channels with decode enable,
     /// timing, and I/O configuration.  Ported from coreboot `ide.c`.
     pub fn ide_init(&self, enable_primary: bool, enable_secondary: bool) {
-        let ide = ecam::PciDevBdf::new(0, 0x1F, 1);
+        let ide = ecam::EcamDevice::new(0, 0x1F, 1);
 
         let vid = ide.read16(0x00);
         if vid == 0xFFFF {
             return;
         }
 
-        // Enable IO + BusMaster.
-        ide.or16(0x04, 0x05);
+        let ide_regs = Self::type0_regs(ide);
 
-        // Native capable, not enabled.
+        // Enable IO + BusMaster.
+        ide_regs
+            .command
+            .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
+
+        // Native capable, not enabled. Prog IF is modeled read-only in the
+        // generic header overlay, so keep this exact raw programming write.
         ide.write8(0x09, 0x8A);
 
         // IDE timing bits.
@@ -1799,7 +1902,7 @@ impl IntelIch7 {
         ide.write32(IDE_CONFIG, cfg);
 
         // Interrupt line = 0xFF (unused).
-        ide.write8(0x3C, 0xFF);
+        ide_regs.interrupt_line.set(0xFF);
 
         fstart_log::info!(
             "intel-ich7: IDE init (pri={} sec={})",
@@ -1818,10 +1921,10 @@ impl IntelIch7 {
     /// than the early_init TCO halt — also disables PCI interrupts.
     /// Ported from coreboot `watchdog_off()`.
     pub fn watchdog_off(&self) {
-        let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let lpc = self.lpc_regs();
 
         // Disable PCI interrupts.
-        lpc.or16(0x04, 1 << 10); // PCI_COMMAND_INT_DISABLE
+        lpc.command.modify(PCI_COMMAND_BITS::INT_DISABLE::SET);
 
         {
             let tco = self.pm().tco();

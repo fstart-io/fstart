@@ -207,7 +207,7 @@ impl Rcba {
 }
 
 // ECAM PCI config access lives in the `fstart-ecam` crate.
-// Use `fstart_ecam::init()` then `PciDevBdf::new(b,d,f).read32(reg)` etc.
+// Use `fstart_ecam::init()` then `EcamDevice::new(b,d,f).read32(reg)` etc.
 // Re-export for convenience.
 
 // ===================================================================

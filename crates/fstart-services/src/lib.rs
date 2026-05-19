@@ -50,7 +50,7 @@ pub use lpc::LpcBus;
 pub use mainboard::Mainboard;
 pub use memory_controller::MemoryController;
 pub use network::Network;
-pub use pci::{PciAddr, PciRootBus, PciWindow, PciWindowKind};
+pub use pci::{PciBdf, PciRootBus, PciWindow, PciWindowKind};
 pub use pci_host::PciHost;
 pub use smbus::SmBus;
 pub use soc_boot::SocBootHeader;

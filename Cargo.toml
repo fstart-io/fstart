@@ -36,6 +36,7 @@ members = [
   "crates/fstart-driver-fu740-prci",
   "crates/fstart-driver-fu740-ddr",
   "crates/fstart-driver-pci-ecam",
+  "crates/fstart-pci",
   "crates/fstart-ecam",
   "crates/fstart-driver-bochs-display",
   "crates/fstart-device-registry",
@@ -118,6 +119,7 @@ clap = { version = "4", features = ["derive"] }
 # Internal workspace crates
 fstart-types = { path = "crates/fstart-types" }
 fstart-codegen = { path = "crates/fstart-codegen" }
+fstart-pci = { path = "crates/fstart-pci" }
 fstart-ffs = { path = "crates/fstart-ffs" }
 fstart-crypto = { path = "crates/fstart-crypto" }
 fstart-mmio = { path = "crates/fstart-mmio" }

@@ -667,6 +667,7 @@ dependencies = [
  "fstart-log",
  "fstart-mmio",
  "fstart-mp",
+ "fstart-pci",
  "fstart-pio",
  "fstart-pmio-ich",
  "fstart-services",
@@ -691,6 +692,7 @@ dependencies = [
  "fstart-hda",
  "fstart-log",
  "fstart-mmio",
+ "fstart-pci",
  "fstart-pio",
  "fstart-pmio-ich",
  "fstart-services",
@@ -715,6 +717,7 @@ dependencies = [
  "fstart-hda",
  "fstart-log",
  "fstart-mmio",
+ "fstart-pci",
  "fstart-pio",
  "fstart-pmio-ich",
  "fstart-services",
@@ -741,6 +744,7 @@ dependencies = [
  "fstart-log",
  "fstart-mmio",
  "fstart-mp",
+ "fstart-pci",
  "fstart-pio",
  "fstart-pmio-ich",
  "fstart-services",
@@ -960,6 +964,7 @@ name = "fstart-ecam"
 version = "0.1.0"
 dependencies = [
  "fstart-mmio",
+ "fstart-pci",
 ]
 
 [[package]]
@@ -1069,6 +1074,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-pci"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-pio"
 version = "0.1.0"
 dependencies = [
@@ -1133,6 +1146,7 @@ name = "fstart-services"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-pci",
 ]
 
 [[package]]

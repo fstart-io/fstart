@@ -26,16 +26,17 @@ use fstart_driver_pci_ecam::{PciEcam, PciEcamConfig};
 use fstart_ecam as ecam;
 use fstart_mmio::MmioReadWrite;
 use fstart_mp::{SmmError, SmmInfo, SmmOps};
+use fstart_pci::pci_type0_config;
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::{
     build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
 };
 use fstart_services::{
-    EarlyInit, MemoryController, PciAddr, PciHost, PciRootBus, PciWindow, PostDramInit,
+    EarlyInit, MemoryController, PciBdf, PciHost, PciRootBus, PciWindow, PostDramInit,
     PreConsoleInit, ServiceError, StageLocalInit,
 };
 use serde::{Deserialize, Serialize};
-use tock_registers::interfaces::ReadWriteable;
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use tock_registers::{register_bitfields, register_structs};
 
@@ -804,7 +805,47 @@ unsafe impl Send for IntelGm965 {}
 // SAFETY: the struct contains only immutable config and hardware register bases.
 unsafe impl Sync for IntelGm965 {}
 
+pci_type0_config! {
+    /// GM965 host bridge PCI configuration space.
+    pub struct Gm965HostBridgePciConfig {
+        (0x40 => pub epbar_lo: MmioReadWrite<u32>),
+        (0x44 => pub epbar_hi: MmioReadWrite<u32>),
+        (0x48 => pub mchbar_lo: MmioReadWrite<u32>),
+        (0x4c => pub mchbar_hi: MmioReadWrite<u32>),
+        (0x50 => _reserved_hb0),
+        (0x52 => pub ggc: MmioReadWrite<u16>),
+        (0x54 => pub deven: MmioReadWrite<u32>),
+        (0x58 => _reserved_hb1),
+        (0x68 => pub dmibar_lo: MmioReadWrite<u32>),
+        (0x6c => pub dmibar_hi: MmioReadWrite<u32>),
+        (0x70 => _reserved_hb2),
+        (0x90 => pub pam: [MmioReadWrite<u8>; 7]),
+        (0x97 => _reserved_hb3),
+        (0x98 => pub remapbase: MmioReadWrite<u16>),
+        (0x9a => pub remaplimit: MmioReadWrite<u16>),
+        (0x9c => _reserved_hb4),
+        (0x9d => pub smram: MmioReadWrite<u8>),
+        (0x9e => pub esmramc: MmioReadWrite<u8>),
+        (0x9f => _reserved_hb5),
+        (0xa0 => pub tom: MmioReadWrite<u16>),
+        (0xa2 => pub touud: MmioReadWrite<u16>),
+        (0xa4 => _reserved_hb6),
+        (0xb0 => pub tolud: MmioReadWrite<u16>),
+        (0xb2 => _reserved_hb7),
+        (0xdc => pub skpd: MmioReadWrite<u32>),
+        (0xe0 => pub capid0: MmioReadWrite<u32>),
+        (0xe4 => @END),
+    }
+}
+
 impl IntelGm965 {
+    fn hostbridge_regs(&self) -> &'static Gm965HostBridgePciConfig {
+        let hb = ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+        // SAFETY: GM965 host bridge is fixed at 00:00.0 and ECAM is live
+        // before callers use the overlay.
+        unsafe { hb.regs::<Gm965HostBridgePciConfig>() }
+    }
+
     fn mchbar(&self) -> MchBar {
         MchBar::new(self.config.mchbar as usize)
     }
@@ -845,18 +886,18 @@ impl IntelGm965 {
     }
 
     fn setup_bars_and_pam(&self) {
-        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+        let hb = self.hostbridge_regs();
 
-        hb.write32(hostbridge::MCHBAR_LO, (self.config.mchbar as u32) | 1);
-        hb.write32(hostbridge::MCHBAR_HI, 0);
-        hb.write32(hostbridge::DMIBAR_LO, (self.config.dmibar as u32) | 1);
-        hb.write32(hostbridge::DMIBAR_HI, 0);
-        hb.write32(hostbridge::EPBAR_LO, (self.config.epbar as u32) | 1);
-        hb.write32(hostbridge::EPBAR_HI, 0);
+        hb.mchbar_lo.set((self.config.mchbar as u32) | 1);
+        hb.mchbar_hi.set(0);
+        hb.dmibar_lo.set((self.config.dmibar as u32) | 1);
+        hb.dmibar_hi.set(0);
+        hb.epbar_lo.set((self.config.epbar as u32) | 1);
+        hb.epbar_hi.set(0);
 
-        hb.write8(hostbridge::PAM0, 0x30);
-        for idx in 1..=6 {
-            hb.write8(hostbridge::PAM0 + idx, 0x33);
+        hb.pam[0].set(0x30);
+        for pam in &hb.pam[1..] {
+            pam.set(0x33);
         }
 
         let mut deven = hostbridge::DEVEN_D0F0 | hostbridge::DEVEN_D1F0;
@@ -866,7 +907,7 @@ impl IntelGm965 {
         if self.config.igd.enable_pipe_b {
             deven |= hostbridge::DEVEN_D2F1;
         }
-        hb.write32(hostbridge::DEVEN, deven);
+        hb.deven.set(deven);
     }
 
     fn early_mch_dmi_tweaks(&self) {
@@ -875,12 +916,12 @@ impl IntelGm965 {
     }
 
     fn read_detected_size(&self) -> u64 {
-        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
-        let touud = (hb.read16(hostbridge::TOUUD) as u64) << 20;
+        let hb = self.hostbridge_regs();
+        let touud = (hb.touud.get() as u64) << 20;
         if touud != 0 {
             return touud;
         }
-        let tolud = ((hb.read16(hostbridge::TOLUD) as u64) & 0xfff0) << 16;
+        let tolud = ((hb.tolud.get() as u64) & 0xfff0) << 16;
         if tolud != 0 {
             tolud
         } else {
@@ -889,32 +930,31 @@ impl IntelGm965 {
     }
 
     fn tom(&self) -> u64 {
-        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
-        (u64::from(hb.read16(hostbridge::TOM) & 0x01ff)) << 27
+        let hb = self.hostbridge_regs();
+        (u64::from(hb.tom.get() & 0x01ff)) << 27
     }
 
     fn touud(&self) -> u64 {
-        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
-        u64::from(hb.read16(hostbridge::TOUUD)) << 20
+        let hb = self.hostbridge_regs();
+        u64::from(hb.touud.get()) << 20
     }
 
     fn tolud(&self) -> u32 {
-        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
-        (u32::from(hb.read16(hostbridge::TOLUD) & 0xfff0)) << 16
+        let hb = self.hostbridge_regs();
+        (u32::from(hb.tolud.get() & 0xfff0)) << 16
     }
 
     fn igd_stolen_base(&self) -> u32 {
-        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
-        if (hb.read32(hostbridge::DEVEN) & hostbridge::DEVEN_D2F0) == 0 {
+        let hb = self.hostbridge_regs();
+        if (hb.deven.get() & hostbridge::DEVEN_D2F0) == 0 {
             return 0;
         }
-        ecam::PciDevBdf::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC)
+        ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC)
             .read32(hostbridge::IGD_BSM)
     }
 
     fn tseg_size(&self) -> u32 {
-        let esmramc = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC)
-            .read8(hostbridge::ESMRAMC);
+        let esmramc = self.hostbridge_regs().esmramc.get();
         if esmramc & 1 == 0 {
             return 0;
         }
@@ -955,8 +995,7 @@ impl IntelGm965 {
     }
 
     fn write_smram(&self, val: u8) {
-        ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC)
-            .write8(hostbridge::SMRAM, val);
+        self.hostbridge_regs().smram.set(val);
     }
 
     fn smm_open(&self) {
@@ -1060,7 +1099,7 @@ impl IntelGm965 {
         ep.clrsetbits32(epbar::EPLE1D, 0xff << 16, (1 << 16) | 1);
         ep.write32(epbar::EPLE1A, self.config.dmibar as u32);
 
-        let peg = ecam::PciDevBdf::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
+        let peg = ecam::EcamDevice::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
         if peg.read8(0) != 0xff {
             ep.clrsetbits32(epbar::EPLE2D, 0xff << 16, (1 << 16) | 1);
             peg.modify32(0x0144, !(0xff << 16), 1 << 16);
@@ -1101,7 +1140,7 @@ impl IntelGm965 {
     }
 
     fn stepping(&self) -> u8 {
-        ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC).read8(0x08)
+        ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC).read8(0x08)
     }
 
     fn fsb_clock_index(&self) -> usize {
@@ -1135,7 +1174,7 @@ impl IntelGm965 {
         let mch = self.mchbar();
         let fsb = self.fsb_clock_index();
         let stepping = self.stepping();
-        let peg = ecam::PciDevBdf::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
+        let peg = ecam::EcamDevice::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
 
         mch.write16(mchbar::CLKCFG_C14, 0x0010);
         if peg.read8(0) == 0xff {
@@ -1240,13 +1279,13 @@ impl IntelGm965 {
         }
     }
 
-    fn igd(&self) -> ecam::PciDevBdf {
-        ecam::PciDevBdf::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC)
+    fn igd(&self) -> ecam::EcamDevice {
+        ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC)
     }
 
     fn igd_enabled(&self) -> bool {
         self.config.igd.enable_vga
-            && (ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC)
+            && (ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC)
                 .read32(hostbridge::DEVEN)
                 & hostbridge::DEVEN_D2F0)
                 != 0
@@ -1532,7 +1571,7 @@ impl IntelGm965 {
     fn gtt_setup(&self) {
         const GFX_FLSH_CNTL: usize = 0x02170;
         const PGETBL_CTL: usize = 0x02020;
-        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+        let hb = ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
         let tolud = ((hb.read16(hostbridge::TOLUD) as u32) & 0xfff0) << 16;
         if tolud < 512 * 1024 {
             return;
@@ -1544,9 +1583,9 @@ impl IntelGm965 {
     }
 
     fn gm965_igd_init_no_display(&self) {
-        let hb = ecam::PciDevBdf::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+        let hb = ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
         let deven = hb.read32(hostbridge::DEVEN);
-        let peg = ecam::PciDevBdf::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
+        let peg = ecam::EcamDevice::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
         let peg_enabled = (deven & hostbridge::DEVEN_D1F0) != 0 && peg.read16(0) != 0xffff;
         let mch = self.mchbar();
         if peg_enabled {
@@ -1604,7 +1643,7 @@ impl IntelGm965 {
         }
         self.gtt_setup();
         if self.config.igd.enable_pipe_b {
-            let igd_alt = ecam::PciDevBdf::new(0, hostbridge::IGD_DEV, hostbridge::IGD_ALT_FUNC);
+            let igd_alt = ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_ALT_FUNC);
             if igd_alt.read16(0) != 0xffff {
                 igd_alt.or16(hostbridge::PCI_COMMAND, hostbridge::PCI_CMD_MASTER);
             }
@@ -1740,11 +1779,11 @@ impl PciRootBus for IntelGm965 {
         self.ensure_pci_ecam()?.init_bus()
     }
 
-    fn config_read32(&self, addr: PciAddr, reg: u16) -> Result<u32, ServiceError> {
+    fn config_read32(&self, addr: PciBdf, reg: u16) -> Result<u32, ServiceError> {
         self.pci_ecam()?.config_read32(addr, reg)
     }
 
-    fn config_write32(&self, addr: PciAddr, reg: u16, val: u32) -> Result<(), ServiceError> {
+    fn config_write32(&self, addr: PciBdf, reg: u16, val: u32) -> Result<(), ServiceError> {
         self.pci_ecam()?.config_write32(addr, reg, val)
     }
 

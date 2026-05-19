@@ -44,7 +44,7 @@ fn div_round_up(a: u32, b: u32) -> u32 {
 /// Ported from coreboot `sdram_detect_ram_speed()`.
 pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
     // --- Read FSB frequency from host bridge register 0xE3 ---
-    let hb = ecam::PciDevBdf::new(0, 0, 0);
+    let hb = ecam::EcamDevice::new(0, 0, 0);
     let e3 = hb.read8(0xE3);
     let fsb_raw = (e3 & 0x70) >> 4;
     let fsb: u8 = if fsb_raw != 0 {
@@ -457,7 +457,7 @@ pub fn clkmode(si: &SysInfo, mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_checkreset()`.
 pub fn check_reset(_si: &SysInfo) {
-    let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+    let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
 
     let mut pmcon2 = lpc.read8(0xA2);
     let mut pmcon3 = lpc.read8(0xA4);

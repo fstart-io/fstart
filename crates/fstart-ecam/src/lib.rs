@@ -1,18 +1,14 @@
 //! Global ECAM PCI config space access.
 //!
-//! Call [`init`] once after programming PCIEXBAR, then create
-//! [`PciDevBdf`] handles to access individual devices:
-//!
-//! ```ignore
-//! fstart_ecam::init(0xE000_0000);
-//! let lpc = fstart_ecam::PciDevBdf::new(0, 0x1f, 0);
-//! let rev = lpc.read8(0x08);
-//! lpc.write16(0x52, (1 << 8) | (3 << 4));
-//! ```
+//! Call [`init`] once after programming PCIEXBAR, then create [`EcamDevice`]
+//! handles to access individual devices.
 
 #![no_std]
 
+use core::convert::Infallible;
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+use fstart_pci::{PciBdf, PciConfigAccess};
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
 
@@ -20,7 +16,7 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 /// write that programs PCIEXBAR.
 pub fn init(base: usize) {
     // Mask off low 20 bits — callers may pass the raw PCIEXBAR value
-    // which includes enable/size bits.  ECAM addresses are 1 MiB-aligned.
+    // which includes enable/size bits. ECAM addresses are 1 MiB-aligned.
     BASE.store(base & !0xF_FFFF, Ordering::Release);
 }
 
@@ -30,57 +26,74 @@ pub fn base() -> usize {
     BASE.load(Ordering::Acquire)
 }
 
-/// A PCI device address (bus/device/function) bound to the global ECAM
-/// region.
-///
-/// Create with [`PciDevBdf::new`], then use the read/write methods to
-/// access the device's PCI configuration registers without repeating the
-/// BDF on every call.
-///
-/// ```ignore
-/// let lpc = PciDevBdf::new(0, 0x1f, 0);
-/// let rev = lpc.read8(0x08);
-/// lpc.write16(0x52, (1 << 8) | (3 << 4));
-/// ```
+/// A PCI device handle bound to the global ECAM region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PciDevBdf {
-    bus: u8,
-    dev: u8,
-    func: u8,
+pub struct EcamDevice {
+    bdf: PciBdf,
 }
 
-impl PciDevBdf {
-    /// Create a new PCI device handle for the given bus/device/function.
+impl EcamDevice {
+    /// Create a new ECAM device handle for a segment-local BDF.
+    #[inline]
+    pub const fn new_bdf(bdf: PciBdf) -> Self {
+        Self { bdf }
+    }
+
+    /// Create a new ECAM device handle for the given bus/device/function.
     #[inline]
     pub const fn new(bus: u8, dev: u8, func: u8) -> Self {
-        Self { bus, dev, func }
+        Self {
+            bdf: PciBdf::new(bus, dev, func),
+        }
+    }
+
+    /// Return the segment-local BDF.
+    #[inline]
+    pub const fn bdf(&self) -> PciBdf {
+        self.bdf
     }
 
     /// Return the bus number.
     #[inline]
     pub const fn bus(&self) -> u8 {
-        self.bus
+        self.bdf.bus
     }
 
     /// Return the device number.
     #[inline]
     pub const fn dev(&self) -> u8 {
-        self.dev
+        self.bdf.dev
     }
 
     /// Return the function number.
     #[inline]
     pub const fn func(&self) -> u8 {
-        self.func
+        self.bdf.func
     }
 
     #[inline]
     fn addr(&self, reg: u16) -> usize {
         BASE.load(Ordering::Acquire)
-            | ((self.bus as usize) << 20)
-            | ((self.dev as usize) << 15)
-            | ((self.func as usize) << 12)
+            | ((self.bdf.bus as usize) << 20)
+            | ((self.bdf.dev as usize) << 15)
+            | ((self.bdf.func as usize) << 12)
             | ((reg as usize) & 0xFFF)
+    }
+
+    /// Return a typed config-space overlay for this device.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that ECAM is initialized and stable, this BDF is
+    /// present, `T` is a valid `register_structs!` overlay for PCI config
+    /// space, and each accessed register is safe to manipulate through typed
+    /// volatile register methods. Do not use typed overlays for BAR sizing,
+    /// write-1-to-clear status handling, capability traversal, or exact-write
+    /// errata sequences unless the replacement has been proven equivalent.
+    #[inline]
+    pub unsafe fn regs<T>(&self) -> &'static T {
+        // SAFETY: guaranteed by the caller of this unsafe function.
+        unsafe { &*(self.addr(0) as *const T) }
     }
 
     /// Read a 32-bit PCI config register.
@@ -178,5 +191,36 @@ impl PciDevBdf {
     pub fn and8_or8(&self, reg: u16, mask: u8, bits: u8) {
         let v = self.read8(reg);
         self.write8(reg, (v & mask) | bits);
+    }
+}
+
+impl PciConfigAccess for EcamDevice {
+    type Error = Infallible;
+
+    fn read8(&self, bdf: PciBdf, reg: u16) -> Result<u8, Self::Error> {
+        Ok(Self::new_bdf(bdf).read8(reg))
+    }
+
+    fn read16(&self, bdf: PciBdf, reg: u16) -> Result<u16, Self::Error> {
+        Ok(Self::new_bdf(bdf).read16(reg))
+    }
+
+    fn read32(&self, bdf: PciBdf, reg: u16) -> Result<u32, Self::Error> {
+        Ok(Self::new_bdf(bdf).read32(reg))
+    }
+
+    fn write8(&self, bdf: PciBdf, reg: u16, val: u8) -> Result<(), Self::Error> {
+        Self::new_bdf(bdf).write8(reg, val);
+        Ok(())
+    }
+
+    fn write16(&self, bdf: PciBdf, reg: u16, val: u16) -> Result<(), Self::Error> {
+        Self::new_bdf(bdf).write16(reg, val);
+        Ok(())
+    }
+
+    fn write32(&self, bdf: PciBdf, reg: u16, val: u32) -> Result<(), Self::Error> {
+        Self::new_bdf(bdf).write32(reg, val);
+        Ok(())
     }
 }

@@ -1186,7 +1186,7 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     mch.setbits32(mchbar::C0CWBCTRL, 1 << 0);
     mch.setbits32(mchbar::C0ARBSPL, 1 << 8);
 
-    let hb = ecam::PciDevBdf::new(0, 0, 0);
+    let hb = ecam::EcamDevice::new(0, 0, 0);
     hb.or8(0xF0, 1);
     mch.write32(mchbar::SBCTL, 0x0000_0002);
     mch.write32(mchbar::SBCTL2, 0x2031_0002);

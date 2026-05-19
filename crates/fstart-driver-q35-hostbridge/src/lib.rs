@@ -30,8 +30,8 @@ use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::E820Entry;
 use fstart_services::pci::{
-    PciAddr, PciRootBus, PciWindow, PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC,
-    PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PCI_VENDOR_ID,
+    PciBdf, PciRootBus, PciWindow, PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE,
+    PCI_INTERRUPT_PIN, PCI_VENDOR_ID,
 };
 use fstart_services::ServiceError;
 use serde::{Deserialize, Serialize};
@@ -194,7 +194,7 @@ impl Q35HostBridge {
     ///
     /// Matches coreboot `qemu_nb_init()` in `qemu-q35/mainboard.c`.
     fn program_pam(&self) {
-        let mch = PciAddr::new(0, 0, 0);
+        let mch = PciBdf::new(0, 0, 0);
 
         // PAM0: preserve lower nibble, set upper nibble to 0x3 (DRAM R/W
         // for 0xF0000-0xFFFFF).
@@ -221,7 +221,7 @@ impl Q35HostBridge {
         let bus = self.ecam.bus_start();
         for slot in 0u8..32 {
             // Check if a device exists at this slot (function 0).
-            let addr = PciAddr::new(bus, slot, 0);
+            let addr = PciBdf::new(bus, slot, 0);
             let vendor = self
                 .ecam
                 .config_read16(addr, PCI_VENDOR_ID)
@@ -235,7 +235,7 @@ impl Q35HostBridge {
             // Assign IRQs for all functions of this device.
             let max_func = if self.is_multifunction(addr) { 8 } else { 1 };
             for func in 0..max_func {
-                let faddr = PciAddr::new(bus, slot, func);
+                let faddr = PciBdf::new(bus, slot, func);
                 if func > 0 {
                     let fv = self
                         .ecam
@@ -263,7 +263,7 @@ impl Q35HostBridge {
     }
 
     /// Check if device at `addr` is multi-function (bit 7 of header type).
-    fn is_multifunction(&self, addr: PciAddr) -> bool {
+    fn is_multifunction(&self, addr: PciBdf) -> bool {
         let hdr = self.ecam.config_read8(addr, PCI_HEADER_TYPE).unwrap_or(0);
         hdr & PCI_HEADER_TYPE_MULTI_FUNC != 0
     }
@@ -432,7 +432,7 @@ impl Q35HostBridge {
             _ => {
                 let mb = self
                     .ecam
-                    .config_read16(PciAddr::new(0, 0, 0), EXT_TSEG_MBYTES as u16)
+                    .config_read16(PciBdf::new(0, 0, 0), EXT_TSEG_MBYTES as u16)
                     .unwrap_or(8);
                 (mb as usize) << 20
             }
@@ -657,11 +657,11 @@ impl PciRootBus for Q35HostBridge {
             .map_err(|_| ServiceError::HardwareError)
     }
 
-    fn config_read32(&self, addr: PciAddr, reg: u16) -> Result<u32, ServiceError> {
+    fn config_read32(&self, addr: PciBdf, reg: u16) -> Result<u32, ServiceError> {
         self.ecam.config_read32(addr, reg)
     }
 
-    fn config_write32(&self, addr: PciAddr, reg: u16, val: u32) -> Result<(), ServiceError> {
+    fn config_write32(&self, addr: PciBdf, reg: u16, val: u32) -> Result<(), ServiceError> {
         self.ecam.config_write32(addr, reg, val)
     }
 

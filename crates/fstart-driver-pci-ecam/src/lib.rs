@@ -24,11 +24,11 @@ use heapless::Vec as HVec;
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::E820Kind;
 use fstart_services::pci::{
-    PciAddr, PciRootBus, PciWindow, PciWindowKind, PCI_BAR0, PCI_CLASS_REVISION,
-    PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND, PCI_HEADER_TYPE,
-    PCI_HEADER_TYPE_BRIDGE, PCI_HEADER_TYPE_CARDBUS, PCI_HEADER_TYPE_MULTI_FUNC, PCI_IO_BASE,
-    PCI_MEMORY_BASE, PCI_PREF_BASE_UPPER32, PCI_PREF_LIMIT_UPPER32, PCI_PREF_MEMORY_BASE,
-    PCI_PRIMARY_BUS, PCI_VENDOR_ID, PCI_VENDOR_INVALID,
+    PciBdf, PciRootBus, PciWindow, PciWindowKind, PCI_BAR0, PCI_CLASS_REVISION, PCI_CMD_BUS_MASTER,
+    PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND, PCI_HEADER_TYPE, PCI_HEADER_TYPE_BRIDGE,
+    PCI_HEADER_TYPE_CARDBUS, PCI_HEADER_TYPE_MULTI_FUNC, PCI_IO_BASE, PCI_MEMORY_BASE,
+    PCI_PREF_BASE_UPPER32, PCI_PREF_LIMIT_UPPER32, PCI_PREF_MEMORY_BASE, PCI_PRIMARY_BUS,
+    PCI_VENDOR_ID, PCI_VENDOR_INVALID,
 };
 use fstart_services::ServiceError;
 use serde::{Deserialize, Serialize};
@@ -92,7 +92,7 @@ struct BarInfo {
 
 /// A discovered PCI device or bridge.
 struct PciDev {
-    addr: PciAddr,
+    addr: PciBdf,
     header_type: u8,
     bars: [BarInfo; 6],
     /// For bridges: secondary bus number.
@@ -221,7 +221,7 @@ impl PciEcam {
 
     // -- ECAM helpers --
 
-    fn ecam_addr(&self, addr: PciAddr, reg: u16) -> Option<usize> {
+    fn ecam_addr(&self, addr: PciBdf, reg: u16) -> Option<usize> {
         if addr.bus < self.bus_start || addr.bus > self.bus_end {
             return None;
         }
@@ -236,7 +236,7 @@ impl PciEcam {
         }
     }
 
-    fn read32(&self, addr: PciAddr, reg: u16) -> u32 {
+    fn read32(&self, addr: PciBdf, reg: u16) -> u32 {
         match self.ecam_addr(addr, reg) {
             // SAFETY: ECAM region is memory-mapped PCI config space.
             Some(a) => unsafe { fstart_mmio::read32(a as *const u32) },
@@ -244,7 +244,7 @@ impl PciEcam {
         }
     }
 
-    fn write32(&self, addr: PciAddr, reg: u16, val: u32) {
+    fn write32(&self, addr: PciBdf, reg: u16, val: u32) {
         if let Some(a) = self.ecam_addr(addr, reg) {
             // SAFETY: ECAM region is memory-mapped PCI config space.
             unsafe { fstart_mmio::write32(a as *mut u32, val) };
@@ -255,7 +255,7 @@ impl PciEcam {
 
     /// Size a single BAR.  Returns the BAR info and whether it consumed
     /// two BAR slots (64-bit).
-    fn size_bar(&self, addr: PciAddr, bar_idx: usize) -> (BarInfo, bool) {
+    fn size_bar(&self, addr: PciBdf, bar_idx: usize) -> (BarInfo, bool) {
         let reg = PCI_BAR0 + (bar_idx as u16) * 4;
         let original = self.read32(addr, reg);
 
@@ -346,7 +346,7 @@ impl PciEcam {
     }
 
     /// Probe a single device/function, size its BARs.
-    fn probe_device(&self, addr: PciAddr) -> Option<PciDev> {
+    fn probe_device(&self, addr: PciBdf) -> Option<PciDev> {
         let vendor_device = self.read32(addr, PCI_VENDOR_ID);
         if vendor_device == PCI_VENDOR_INVALID {
             return None;
@@ -397,7 +397,7 @@ impl PciEcam {
     /// to bridges, and recurses behind them.
     fn enumerate_bus(&mut self, bus: u8) {
         for dev in 0..32u8 {
-            let addr = PciAddr::new(bus, dev, 0);
+            let addr = PciBdf::new(bus, dev, 0);
             if self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                 continue;
             }
@@ -408,7 +408,7 @@ impl PciEcam {
             let max_func = if multi_func != 0 { 8 } else { 1 };
 
             for func in 0..max_func {
-                let faddr = PciAddr::new(bus, dev, func);
+                let faddr = PciBdf::new(bus, dev, func);
                 if func > 0 && self.read32(faddr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                     continue;
                 }
@@ -905,11 +905,11 @@ impl PciRootBus for PciEcam {
             .map_err(|_| ServiceError::HardwareError)
     }
 
-    fn config_read32(&self, addr: PciAddr, reg: u16) -> Result<u32, ServiceError> {
+    fn config_read32(&self, addr: PciBdf, reg: u16) -> Result<u32, ServiceError> {
         Ok(self.read32(addr, reg))
     }
 
-    fn config_write32(&self, addr: PciAddr, reg: u16, val: u32) -> Result<(), ServiceError> {
+    fn config_write32(&self, addr: PciBdf, reg: u16, val: u32) -> Result<(), ServiceError> {
         self.write32(addr, reg, val);
         Ok(())
     }

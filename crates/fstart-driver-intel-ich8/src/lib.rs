@@ -13,6 +13,7 @@ pub mod smm;
 use fstart_ecam as ecam;
 use fstart_gpio_ich::IchGpio;
 use fstart_mmio::MmioReadWrite;
+use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_BITS};
 use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
@@ -258,9 +259,24 @@ register_bitfields! [u32,
     SPI_PREFETCH_REG [
         ENABLE OFFSET(0) NUMBITS(3) []
     ],
+    /// LPC PMIR register.
+    PMIR_REG [
+        USB_TRANSIENT_DISCONNECT OFFSET(8) NUMBITS(2) [],
+        CF9GR OFFSET(20) NUMBITS(1) []
+    ],
 ];
 
 register_bitfields! [u16,
+    /// LPC GEN_PMCON_1 register.
+    GEN_PMCON_1_REG [
+        AFTERG3_EN OFFSET(0) NUMBITS(2) [],
+        SLP_S4_ASST_EN OFFSET(2) NUMBITS(1) [],
+        SUS_PWR_FLR OFFSET(3) NUMBITS(1) [],
+        DIS_SLP_X_STRCH_SUS_UP OFFSET(5) NUMBITS(1) [],
+        C4_ON_C3_EN OFFSET(7) NUMBITS(1) [],
+        BIOS_PCI_EXP_EN OFFSET(10) NUMBITS(1) [],
+        C5_EN OFFSET(11) NUMBITS(1) []
+    ],
     /// DMI link status.
     LSTS [
         NEGOTIATED_WIDTH OFFSET(4) NUMBITS(6) []
@@ -277,12 +293,77 @@ register_bitfields! [u16,
 ];
 
 register_bitfields! [u8,
+    /// LPC ACPI control register.
+    ACPI_CNTL_REG [
+        ACPI_EN OFFSET(7) NUMBITS(1) []
+    ],
+    /// LPC GPIO control register.
+    GPIO_CNTL_REG [
+        GPIO_EN OFFSET(4) NUMBITS(1) []
+    ],
+    /// LPC GEN_PMCON_3 register.
+    GEN_PMCON_3_REG [
+        STATE_AFTER_G3 OFFSET(0) NUMBITS(1) [],
+        RTC_POWER_FAILED OFFSET(1) NUMBITS(1) [],
+        RTC_BATTERY_DEAD OFFSET(2) NUMBITS(1) [],
+        MIN_SLP_S4_ASSERT OFFSET(3) NUMBITS(1) [],
+        SLP_S3_STRETCH OFFSET(4) NUMBITS(2) []
+    ],
+    /// LPC C-state configuration.
+    CXSTATE_CNF_REG [
+        C3_POPUP_ENABLE OFFSET(2) NUMBITS(1) [],
+        BM_STS_ZERO_ENABLE OFFSET(3) NUMBITS(1) [],
+        C3_POPDOWN_ENABLE OFFSET(4) NUMBITS(1) []
+    ],
+    /// LPC C4 timing control.
+    C4TIMING_CNT_REG [
+        VALUE OFFSET(0) NUMBITS(4) []
+    ],
+    /// LPC C5 exit timing.
+    C5_EXIT_TIMING_REG [
+        C5_EXIT OFFSET(0) NUMBITS(3) [],
+        C6_EXIT OFFSET(3) NUMBITS(3) []
+    ],
     /// Other Interrupt Control.
     OIC_REG [
         AEN OFFSET(0) NUMBITS(1) [],
         OAEN OFFSET(1) NUMBITS(1) []
     ],
 ];
+
+pci_type0_config! {
+    /// ICH8 LPC bridge PCI configuration space.
+    pub struct Ich8LpcPciConfig {
+        (0x40 => pub pmbase: MmioReadWrite<u32>),
+        (0x44 => pub acpi_cntl: MmioReadWrite<u8, ACPI_CNTL_REG::Register>),
+        (0x45 => _reserved_lpc0),
+        (0x48 => pub gpio_base: MmioReadWrite<u32>),
+        (0x4c => pub gpio_cntl: MmioReadWrite<u8, GPIO_CNTL_REG::Register>),
+        (0x4d => _reserved_lpc1),
+        (0x60 => pub pirqa_rout: MmioReadWrite<u32>),
+        (0x64 => pub serirq_cntl: MmioReadWrite<u8>),
+        (0x65 => _reserved_lpc2),
+        (0x68 => pub pirqe_rout: MmioReadWrite<u32>),
+        (0x6c => _reserved_lpc3),
+        (0x80 => pub lpc_io_dec: MmioReadWrite<u16>),
+        (0x82 => pub lpc_en: MmioReadWrite<u16>),
+        (0x84 => pub gen_dec: [MmioReadWrite<u32>; 4]),
+        (0x94 => _reserved_lpc4),
+        (0xa0 => pub gen_pmcon_1: MmioReadWrite<u16, GEN_PMCON_1_REG::Register>),
+        (0xa2 => _reserved_lpc5),
+        (0xa4 => pub gen_pmcon_3: MmioReadWrite<u8, GEN_PMCON_3_REG::Register>),
+        (0xa5 => _reserved_lpc6),
+        (0xa8 => pub c5_exit_timing: MmioReadWrite<u8, C5_EXIT_TIMING_REG::Register>),
+        (0xa9 => pub cxstate_cnf: MmioReadWrite<u8, CXSTATE_CNF_REG::Register>),
+        (0xaa => pub c4timing_cnt: MmioReadWrite<u8, C4TIMING_CNT_REG::Register>),
+        (0xab => _reserved_lpc7),
+        (0xac => pub pmir: MmioReadWrite<u32, PMIR_REG::Register>),
+        (0xb0 => _reserved_lpc8),
+        (0xb8 => pub gpio_rout: MmioReadWrite<u32>),
+        (0xbc => _reserved_lpc9),
+        (0x1000 => @END),
+    }
+}
 
 register_structs! {
     /// ICH8 Root Complex Base Address MMIO register block.
@@ -384,8 +465,6 @@ const SATA_ABAR_BASE: usize = 0xfea0_0000;
 const GPE0_STS_ICH8: u16 = 0x20;
 const GPE0_EN_ICH8: u16 = 0x28;
 const SLP_TYP_S3: u32 = 0x1400;
-const GEN_PMCON_3_RTC_POWER_FAILED: u8 = 1 << 1;
-const GEN_PMCON_3_RTC_BATTERY_DEAD: u8 = 1 << 2;
 const LPC_EN_CNF2: u16 = 1 << 13;
 const LPC_EN_CNF1: u16 = 1 << 12;
 const LPC_EN_MC: u16 = 1 << 11;
@@ -781,8 +860,30 @@ unsafe impl Send for IntelIch8 {}
 unsafe impl Sync for IntelIch8 {}
 
 impl IntelIch8 {
-    fn lpc(&self) -> ecam::PciDevBdf {
-        ecam::PciDevBdf::new(0, ich8::LPC_DEV, ich8::LPC_FUNC)
+    fn lpc(&self) -> ecam::EcamDevice {
+        ecam::EcamDevice::new(0, ich8::LPC_DEV, ich8::LPC_FUNC)
+    }
+
+    fn lpc_regs(&self) -> &'static Ich8LpcPciConfig {
+        let lpc = self.lpc();
+
+        // SAFETY: the ICH8 LPC bridge is a fixed chipset device at 00:1f.0,
+        // ECAM is initialized by the platform before this driver runs, and the
+        // overlay contains the standard Type 0 header plus documented LPC
+        // registers. Exact-write/W1C/BAR sequences still use raw helpers.
+        unsafe { lpc.regs::<Ich8LpcPciConfig>() }
+    }
+
+    fn type0_regs(dev: ecam::EcamDevice) -> &'static PciType0Config {
+        // SAFETY: callers use this for present Type 0 devices and avoid typed
+        // access for BAR sizing, W1C status, and exact-write errata sequences.
+        unsafe { dev.regs::<PciType0Config>() }
+    }
+
+    fn type1_regs(dev: ecam::EcamDevice) -> &'static PciType1Config {
+        // SAFETY: callers use this for present Type 1 bridge devices and avoid
+        // typed access for W1C status and exact-write errata sequences.
+        unsafe { dev.regs::<PciType1Config>() }
     }
 
     fn rcba(&self) -> Rcba {
@@ -802,16 +903,18 @@ impl IntelIch8 {
     }
 
     fn program_fixed_bars(&self) {
-        let lpc = self.lpc();
-        lpc.write32(ich8::RCBA, (self.config.rcba as u32 & 0xffff_c000) | 1);
-        lpc.write32(ich8::PMBASE, (ich8::DEFAULT_PMBASE as u32) | 1);
-        lpc.write8(ich8::ACPI_CNTL, ich8::ACPI_EN);
-        lpc.write32(ich8::GPIOBASE, ich8::DEFAULT_GPIOBASE as u32);
-        lpc.or8(ich8::GPIO_CNTL, ich8::GPIO_EN);
+        let lpc = self.lpc_regs();
+        // RCBA is a fixed southbridge BAR; keep this as an exact raw write.
+        self.lpc()
+            .write32(ich8::RCBA, (self.config.rcba as u32 & 0xffff_c000) | 1);
+        lpc.pmbase.set((ich8::DEFAULT_PMBASE as u32) | 1);
+        lpc.acpi_cntl.set(0x80);
+        lpc.gpio_base.set(ich8::DEFAULT_GPIOBASE as u32);
+        lpc.gpio_cntl.modify(GPIO_CNTL_REG::GPIO_EN::SET);
     }
 
     fn program_lpc_decode(&self) {
-        let lpc = self.lpc();
+        let lpc = self.lpc_regs();
         let mut generic = [0u32; 4];
         for (idx, range) in self
             .config
@@ -832,18 +935,19 @@ impl IntelIch8 {
             lpc_en |= LPC_EN_FDD;
         }
 
-        lpc.write8(ich8::SERIRQ_CNTL, 0xd0);
-        lpc.write16(ich8::LPC_IO_DEC, self.config.lpc_decode.fixed_io.encode());
-        lpc.write16(ich8::LPC_EN, lpc_en);
-        lpc.write32(ich8::GEN1_DEC, generic[0]);
-        lpc.write32(ich8::GEN2_DEC, generic[1]);
-        lpc.write32(ich8::GEN3_DEC, generic[2]);
-        lpc.write32(ich8::GEN4_DEC, generic[3]);
+        lpc.serirq_cntl.set(0xd0);
+        lpc.lpc_io_dec.set(self.config.lpc_decode.fixed_io.encode());
+        lpc.lpc_en.set(lpc_en);
+        for (idx, value) in generic.iter().copied().enumerate() {
+            lpc.gen_dec[idx].set(value);
+        }
     }
 
     fn reset_watchdog_and_cmos(&self) {
         // Disable PCI interrupts.
-        self.lpc().or16(0x04, 1 << 10); // PCI_COMMAND_INT_DISABLE
+        self.lpc_regs()
+            .command
+            .modify(PCI_COMMAND_BITS::INT_DISABLE::SET);
 
         let rcba = self.rcba();
         /*
@@ -871,7 +975,7 @@ impl IntelIch8 {
     }
 
     fn enable_smbus(&mut self) {
-        let smbus_pci = ecam::PciDevBdf::new(0, ich8::SMBUS_DEV, ich8::SMBUS_FUNC);
+        let smbus_pci = ecam::EcamDevice::new(0, ich8::SMBUS_DEV, ich8::SMBUS_FUNC);
         smbus_pci.and16(0x80, !((1 << 8) | (1 << 10) | (1 << 12) | (1 << 14)));
         let smbus =
             I801SmBus::enable_on_i801(0, ich8::SMBUS_DEV, ich8::SMBUS_FUNC, self.config.smbus_base);
@@ -965,42 +1069,46 @@ impl IntelIch8 {
     }
 
     fn configure_power_options(&self) {
-        let lpc = self.lpc();
+        let lpc = self.lpc_regs();
         // Match coreboot/vendor BIOS: enable USB transient-disconnect detect
         // (D31:F0 0xad bits [1:0]) and global reset on CF9 writes.
-        lpc.or32(
-            ich8::PMIR,
-            ich8::PMIR_USB_TRANSIENT_DISCONNECT | ich8::PMIR_CF9GR,
+        lpc.pmir
+            .modify(PMIR_REG::USB_TRANSIENT_DISCONNECT.val(3) + PMIR_REG::CF9GR::SET);
+
+        lpc.gen_pmcon_3.modify(
+            GEN_PMCON_3_REG::STATE_AFTER_G3.val(if self.config.power_on_after_fail == 0 {
+                1
+            } else {
+                0
+            }) + GEN_PMCON_3_REG::SLP_S3_STRETCH.val(3)
+                + GEN_PMCON_3_REG::MIN_SLP_S4_ASSERT::CLEAR,
         );
 
-        let mut gen_pmcon3 = lpc.read8(ich8::GEN_PMCON_3) & !1;
-        if self.config.power_on_after_fail == 0 {
-            gen_pmcon3 |= 1;
-        }
-        gen_pmcon3 |= 3 << 4;
-        gen_pmcon3 &= !(1 << 3);
-        lpc.write8(ich8::GEN_PMCON_3, gen_pmcon3);
-
-        let mut gen_pmcon1 = lpc.read16(ich8::GEN_PMCON_1);
-        gen_pmcon1 &= !0x3;
-        gen_pmcon1 |= (1 << 2) | (1 << 3) | (1 << 5) | (1 << 10);
-        if self.config.c4_on_c3 {
-            gen_pmcon1 |= 1 << 7;
-        }
-        if self.config.c5_enable {
-            gen_pmcon1 |= 1 << 11;
-        }
-        lpc.write16(ich8::GEN_PMCON_1, gen_pmcon1);
+        let gen_pmcon_1 = GEN_PMCON_1_REG::AFTERG3_EN.val(0)
+            + GEN_PMCON_1_REG::SLP_S4_ASST_EN::SET
+            + GEN_PMCON_1_REG::SUS_PWR_FLR::SET
+            + GEN_PMCON_1_REG::DIS_SLP_X_STRCH_SUS_UP::SET
+            + GEN_PMCON_1_REG::BIOS_PCI_EXP_EN::SET;
+        let gen_pmcon_1 = match (self.config.c4_on_c3, self.config.c5_enable) {
+            (true, true) => {
+                gen_pmcon_1 + GEN_PMCON_1_REG::C4_ON_C3_EN::SET + GEN_PMCON_1_REG::C5_EN::SET
+            }
+            (true, false) => gen_pmcon_1 + GEN_PMCON_1_REG::C4_ON_C3_EN::SET,
+            (false, true) => gen_pmcon_1 + GEN_PMCON_1_REG::C5_EN::SET,
+            (false, false) => gen_pmcon_1,
+        };
+        lpc.gen_pmcon_1.modify(gen_pmcon_1);
 
         if self.config.c5_enable {
-            let mut c5 = lpc.read8(ich8::C5_EXIT_TIMING);
-            c5 &= !((7 << 3) | 7);
-            c5 |= if self.config.c6_enable {
-                (5 << 3) | 3
+            if self.config.c6_enable {
+                lpc.c5_exit_timing.modify(
+                    C5_EXIT_TIMING_REG::C6_EXIT.val(5) + C5_EXIT_TIMING_REG::C5_EXIT.val(3),
+                );
             } else {
-                1
-            };
-            lpc.write8(ich8::C5_EXIT_TIMING, c5);
+                lpc.c5_exit_timing.modify(
+                    C5_EXIT_TIMING_REG::C6_EXIT.val(0) + C5_EXIT_TIMING_REG::C5_EXIT.val(1),
+                );
+            }
         }
 
         self.configure_gpi_routing();
@@ -1030,9 +1138,13 @@ impl IntelIch8 {
     }
 
     fn configure_cstates(&self) {
-        let lpc = self.lpc();
-        lpc.or8(ich8::CXSTATE_CNF, (1 << 4) | (1 << 3) | (1 << 2));
-        lpc.and8_or8(ich8::C4TIMING_CNT, !0x0f, (2 << 2) | 2);
+        let lpc = self.lpc_regs();
+        lpc.cxstate_cnf.modify(
+            CXSTATE_CNF_REG::C3_POPUP_ENABLE::SET
+                + CXSTATE_CNF_REG::BM_STS_ZERO_ENABLE::SET
+                + CXSTATE_CNF_REG::C3_POPDOWN_ENABLE::SET,
+        );
+        lpc.c4timing_cnt.modify(C4TIMING_CNT_REG::VALUE.val(0x0a));
     }
 
     fn enable_clock_gating(&self) {
@@ -1060,13 +1172,10 @@ impl IntelIch8 {
     }
 
     fn rtc_init_status(&self) {
-        let lpc = self.lpc();
-        let gen_pmcon3 = lpc.read8(ich8::GEN_PMCON_3);
-        if (gen_pmcon3 & GEN_PMCON_3_RTC_BATTERY_DEAD) != 0 {
-            lpc.write8(
-                ich8::GEN_PMCON_3,
-                gen_pmcon3 & !GEN_PMCON_3_RTC_BATTERY_DEAD,
-            );
+        let lpc = self.lpc_regs();
+        if lpc.gen_pmcon_3.is_set(GEN_PMCON_3_REG::RTC_BATTERY_DEAD) {
+            lpc.gen_pmcon_3
+                .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
             fstart_log::info!("intel-ich8: RTC battery-dead flag was set");
         }
     }
@@ -1074,7 +1183,7 @@ impl IntelIch8 {
     fn ramstage_lpc_init(&self) {
         let rcba = self.rcba();
         self.enable_ioapic();
-        self.lpc().write8(ich8::SERIRQ_CNTL, 0xd0);
+        self.lpc_regs().serirq_cntl.set(0xd0);
         self.configure_power_options();
         self.configure_cstates();
         self.rtc_init_status();
@@ -1129,17 +1238,17 @@ impl IntelIch8 {
         for (idx, route) in self.config.gpi_routing.iter().enumerate() {
             value |= ((*route as u32) & 0x03) << (idx * 2);
         }
-        self.lpc().write32(ich8::GPIO_ROUT, value);
+        self.lpc_regs().gpio_rout.set(value);
     }
 
     fn sata_indexed_write32(&self, idx: u8, val: u32) {
-        let sata = ecam::PciDevBdf::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
+        let sata = ecam::EcamDevice::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
         sata.write8(ich8::SATA_SIDX, idx);
         sata.write32(ich8::SATA_SDAT, val);
     }
 
     fn sata_indexed_rmw32(&self, idx: u8, clear: u32, set: u32) {
-        let sata = ecam::PciDevBdf::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
+        let sata = ecam::EcamDevice::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
         sata.write8(ich8::SATA_SIDX, idx);
         let val = sata.read32(ich8::SATA_SDAT);
         sata.write32(ich8::SATA_SDAT, (val & !clear) | set);
@@ -1177,7 +1286,7 @@ impl IntelIch8 {
     fn sata_program_indexed(&self, is_mobile: bool) {
         self.sata_indexed_rmw32(0x18, (7 << 6) | (7 << 3) | 7, (3 << 3) | 3);
         self.sata_indexed_write32(0x28, 0x00cc_2080);
-        let sata = ecam::PciDevBdf::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
+        let sata = ecam::EcamDevice::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
         sata.write8(ich8::SATA_SIDX, 0x40);
         sata.write8(ich8::SATA_SDAT + 2, 0x22);
         sata.write8(ich8::SATA_SIDX, 0x78);
@@ -1223,7 +1332,7 @@ impl IntelIch8 {
     }
 
     fn sata_init(&self, config: &SataConfig) {
-        let sata = ecam::PciDevBdf::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
+        let sata = ecam::EcamDevice::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
         if sata.read16(0) == 0xffff {
             return;
         }
@@ -1234,9 +1343,11 @@ impl IntelIch8 {
         );
         let port_mask = if is_mobile { 0x07 } else { 0x3f };
         let ports = config.ports & port_mask;
-        sata.or16(
-            ich8::PCI_COMMAND,
-            ich8::PCI_CMD_IO | ich8::PCI_CMD_MEMORY | ich8::PCI_CMD_MASTER,
+        let sata_regs = Self::type0_regs(sata);
+        sata_regs.command.modify(
+            PCI_COMMAND_BITS::IO_SPACE::SET
+                + PCI_COMMAND_BITS::MEMORY_SPACE::SET
+                + PCI_COMMAND_BITS::BUS_MASTER::SET,
         );
         match config.mode {
             SataMode::Ahci => {
@@ -1245,6 +1356,8 @@ impl IntelIch8 {
             }
             SataMode::Ide => {
                 sata.write8(ich8::SATA_MAP, 0);
+                // Prog IF is modeled read-only in the generic header overlay,
+                // so keep this exact raw programming write.
                 sata.write8(ich8::PCI_CLASS_PROG, 0x8f);
                 sata.write32(ich8::PCI_BAR5, 0);
             }
@@ -1278,7 +1391,7 @@ impl IntelIch8 {
     }
 
     fn ehci_init_controller(&self, dev: u8, func: u8) {
-        let ehci = ecam::PciDevBdf::new(0, dev, func);
+        let ehci = ecam::EcamDevice::new(0, dev, func);
         if ehci.read16(0) == 0xffff {
             return;
         }
@@ -1286,7 +1399,9 @@ impl IntelIch8 {
         // Match coreboot's current ICH8 EHCI init: do not assign a temporary
         // BAR or reset the controller here. Resource assignment owns BAR0;
         // ramstage only enables bus mastering and sets Intel EHCIIR bits.
-        ehci.or16(ich8::PCI_COMMAND, ich8::PCI_CMD_MASTER);
+        Self::type0_regs(ehci)
+            .command
+            .modify(PCI_COMMAND_BITS::BUS_MASTER::SET);
         ehci.or32(ich8::EHCI_INTEL_FCREG, (1 << 29) | (1 << 17));
     }
 
@@ -1305,16 +1420,18 @@ impl IntelIch8 {
             if !usb.uhci[idx] {
                 continue;
             }
-            let uhci = ecam::PciDevBdf::new(0, dev, func);
+            let uhci = ecam::EcamDevice::new(0, dev, func);
             if uhci.read16(0) != 0xffff {
-                uhci.or16(ich8::PCI_COMMAND, ich8::PCI_CMD_IO | ich8::PCI_CMD_MASTER);
+                Self::type0_regs(uhci)
+                    .command
+                    .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
             }
         }
         fstart_log::info!("intel-ich8: USB init complete");
     }
 
     fn hda_init(&self, config: &HdaConfig) {
-        let hda = ecam::PciDevBdf::new(0, ich8::HDA_DEV, ich8::HDA_FUNC);
+        let hda = ecam::EcamDevice::new(0, ich8::HDA_DEV, ich8::HDA_FUNC);
         if hda.read16(0) == 0xffff {
             fstart_log::info!("intel-ich8: HDA device not present");
             return;
@@ -1329,15 +1446,15 @@ impl IntelIch8 {
         hda.and8(0x4d, !(1 << 7));
         hda.write32(0x74, hda.read32(0x74));
 
-        let bar0 = hda.read32(ich8::PCI_BAR0) & !0x0f;
+        let hda_regs = Self::type0_regs(hda);
+        let bar0 = hda_regs.bar[0].get() & !0x0f;
         if bar0 == 0 {
             fstart_log::error!("intel-ich8: HDA BAR0 is unassigned");
             return;
         }
-        hda.or16(
-            ich8::PCI_COMMAND,
-            ich8::PCI_CMD_MEMORY | ich8::PCI_CMD_MASTER,
-        );
+        hda_regs
+            .command
+            .modify(PCI_COMMAND_BITS::MEMORY_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
 
         let controller = HdaController::new(bar0 as usize);
         let codec_mask = controller.detect_codecs();
@@ -1353,7 +1470,7 @@ impl IntelIch8 {
 
     fn pcie_port_cir_init(&self) {
         for func in 0u8..6 {
-            let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func);
+            let port = ecam::EcamDevice::new(0, ich8::PCIE_DEV, func);
             if port.read16(0) == 0xffff {
                 continue;
             }
@@ -1370,7 +1487,7 @@ impl IntelIch8 {
         self.pcie_port_cir_init();
 
         for func in 0u8..6 {
-            let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func);
+            let port = ecam::EcamDevice::new(0, ich8::PCIE_DEV, func);
             if port.read16(0) == 0xffff {
                 continue;
             }
@@ -1378,9 +1495,14 @@ impl IntelIch8 {
             if (port.read32(ich8::D28FX_LCTL) & 3) == 3 {
                 port.or32(ich8::D28FX_ASPM_MOBILE, 1 << 1);
             }
-            port.or16(ich8::PCI_COMMAND, ich8::PCI_CMD_MASTER | ich8::PCI_CMD_SERR);
-            port.write8(ich8::PCI_CACHE_LINE_SIZE, 0x10);
-            port.and16(ich8::PCI_BRIDGE_CONTROL, !1u16);
+            let port_regs = Self::type1_regs(port);
+            port_regs
+                .command
+                .modify(PCI_COMMAND_BITS::BUS_MASTER::SET + PCI_COMMAND_BITS::SERR_ENABLE::SET);
+            port_regs.cache_line_size.set(0x10);
+            port_regs
+                .bridge_control
+                .set(port_regs.bridge_control.get() & !1u16);
             port.or32(ich8::D28FX_IOXAPIC, 1 << 7);
             port.or8(ich8::D28FX_BBCLKG, 0x0f);
             port.write32(
@@ -1397,7 +1519,7 @@ impl IntelIch8 {
             if (fd & Self::pcie_fd_bit(func)) == 0 {
                 break;
             }
-            let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func as u8);
+            let port = ecam::EcamDevice::new(0, ich8::PCIE_DEV, func as u8);
             if port.read16(0) != 0xffff {
                 port.or32(ich8::D28FX_CIR_300, 0x3 << 16);
             }
@@ -1418,7 +1540,7 @@ impl IntelIch8 {
     fn pcie_slot_config(&self) {
         let mut slot_number = 1u32;
         for func in 0usize..6 {
-            let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func as u8);
+            let port = ecam::EcamDevice::new(0, ich8::PCIE_DEV, func as u8);
             if port.read16(0) == 0xffff {
                 continue;
             }
@@ -1442,7 +1564,7 @@ impl IntelIch8 {
 
     fn pcie_aspm_lock(&self) {
         for func in 0u8..6 {
-            let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func);
+            let port = ecam::EcamDevice::new(0, ich8::PCIE_DEV, func);
             if port.read16(0) != 0xffff {
                 port.write32(ich8::D28FX_LCAP, port.read32(ich8::D28FX_LCAP));
             }
@@ -1450,11 +1572,16 @@ impl IntelIch8 {
     }
 
     fn ide_init(&self, config: &IdeConfig) {
-        let ide = ecam::PciDevBdf::new(0, ich8::IDE_DEV, ich8::IDE_FUNC);
+        let ide = ecam::EcamDevice::new(0, ich8::IDE_DEV, ich8::IDE_FUNC);
         if ide.read16(0) == 0xffff {
             return;
         }
-        ide.or16(ich8::PCI_COMMAND, ich8::PCI_CMD_IO | ich8::PCI_CMD_MASTER);
+        let ide_regs = Self::type0_regs(ide);
+        ide_regs
+            .command
+            .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
+        // Prog IF is modeled read-only in the generic header overlay, so keep
+        // this exact raw programming write.
         ide.write8(ich8::PCI_CLASS_PROG, 0x8a);
 
         let timing_base = ich8::IDE_SITRE
@@ -1487,15 +1614,15 @@ impl IntelIch8 {
             ide_config |= ich8::FAST_SCB0 | ich8::SCB0 | ich8::FAST_SCB1 | ich8::SCB1;
         }
         ide.write32(ich8::IDE_CONFIG, ide_config);
-        ide.write8(ich8::PCI_INTERRUPT_LINE, 0xff);
+        ide_regs.interrupt_line.set(0xff);
     }
 
     fn pci_bridge_init(&self) {
-        let bridge = ecam::PciDevBdf::new(0, ich8::PCI_BRIDGE_DEV, ich8::PCI_BRIDGE_FUNC);
+        let bridge = ecam::EcamDevice::new(0, ich8::PCI_BRIDGE_DEV, ich8::PCI_BRIDGE_FUNC);
         if bridge.read16(0) == 0xffff {
             return;
         }
-        bridge.write8(ich8::PCI_INTERRUPT_LINE, 0xff);
+        Self::type1_regs(bridge).interrupt_line.set(0xff);
         bridge.and8_or8(ich8::D30F0_SMLT, 0x07, 0x04 << 3);
         bridge.write16(ich8::PCI_STATUS, bridge.read16(ich8::PCI_STATUS));
         bridge.write16(ich8::PCI_SEC_STATUS, bridge.read16(ich8::PCI_SEC_STATUS));
@@ -1592,11 +1719,12 @@ impl IntelIch8 {
     }
 
     fn clear_pci_command(dev: u8, func: u8) {
-        let pci = ecam::PciDevBdf::new(0, dev, func);
+        let pci = ecam::EcamDevice::new(0, dev, func);
         if pci.read16(0) != 0xffff {
-            pci.and16(
-                ich8::PCI_COMMAND,
-                !(ich8::PCI_CMD_IO | ich8::PCI_CMD_MEMORY | ich8::PCI_CMD_MASTER),
+            Self::type0_regs(pci).command.modify(
+                PCI_COMMAND_BITS::IO_SPACE::CLEAR
+                    + PCI_COMMAND_BITS::MEMORY_SPACE::CLEAR
+                    + PCI_COMMAND_BITS::BUS_MASTER::CLEAR,
             );
         }
     }
@@ -1639,7 +1767,11 @@ impl IntelIch8 {
     }
 
     fn detect_s3_resume(&self) -> bool {
-        if (self.lpc().read8(ich8::GEN_PMCON_3) & GEN_PMCON_3_RTC_POWER_FAILED) != 0 {
+        if self
+            .lpc_regs()
+            .gen_pmcon_3
+            .is_set(GEN_PMCON_3_REG::RTC_POWER_FAILED)
+        {
             return false;
         }
         let pm1_cnt = self.pm().read32(pmio::PM1_CNT);
@@ -1654,7 +1786,7 @@ impl IntelIch8 {
     }
 
     fn write_pirq_routes(&self) {
-        let lpc = self.lpc();
+        let lpc = self.lpc_regs();
         let pirq_low = u32::from_le_bytes([
             self.config.pirq_routing[0],
             self.config.pirq_routing[1],
@@ -1667,8 +1799,8 @@ impl IntelIch8 {
             self.config.pirq_routing[6],
             self.config.pirq_routing[7],
         ]);
-        lpc.write32(ich8::PIRQA_ROUT, pirq_low);
-        lpc.write32(ich8::PIRQE_ROUT, pirq_high);
+        lpc.pirqa_rout.set(pirq_low);
+        lpc.pirqe_rout.set(pirq_high);
     }
 
     fn configure_default_intmap(&self) {
