@@ -295,6 +295,7 @@ fn build_smm_artifacts(
         stack_size: smm.stack_size,
         coreboot_module_args: smm.coreboot.module_args,
         coreboot_header: smm.coreboot.emit_header,
+        platform: smm.platform,
     };
     let built = fstart_smm_image::write_image(options, &image_path, header_path.as_deref())
         .map_err(|e| format!("failed to build SMM image: {e}"))?;

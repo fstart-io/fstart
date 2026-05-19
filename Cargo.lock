@@ -695,6 +695,7 @@ dependencies = [
  "fstart-pmio-ich",
  "fstart-services",
  "fstart-smbus-intel",
+ "fstart-smm-runtime",
  "fstart-superio",
  "heapless",
  "serde",
@@ -717,6 +718,7 @@ dependencies = [
  "fstart-pmio-ich",
  "fstart-services",
  "fstart-smbus-intel",
+ "fstart-smm-runtime",
  "fstart-superio",
  "heapless",
  "serde",
@@ -1031,6 +1033,7 @@ dependencies = [
  "fstart-gpio-ich",
  "fstart-pio",
  "fstart-services",
+ "fstart-smm-runtime",
  "heapless",
  "serde",
 ]
@@ -1059,6 +1062,7 @@ dependencies = [
  "fstart-lapic",
  "fstart-log",
  "fstart-microcode-intel",
+ "fstart-smm",
  "ufmt",
 ]
 
@@ -1155,6 +1159,25 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "fstart-smm",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-smm-runtime"
+version = "0.1.0"
+dependencies = [
+ "fstart-pio",
+ "fstart-smm",
+]
+
+[[package]]
+name = "fstart-smm-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-ich8",
+ "fstart-mainboard-lenovo-x61",
+ "fstart-smm-runtime",
 ]
 
 [[package]]

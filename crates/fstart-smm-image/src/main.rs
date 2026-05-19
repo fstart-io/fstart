@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use fstart_smm_image::{write_image, ImageOptions};
+use fstart_types::SmmPlatform;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -26,6 +27,9 @@ struct Args {
     /// Include coreboot-style module argument storage in the handler/data region.
     #[arg(long, default_value_t = false)]
     coreboot_module_args: bool,
+    /// SMM platform handler composition.
+    #[arg(long, value_parser = parse_platform, default_value = "pineview-ich7")]
+    platform: SmmPlatform,
 }
 
 fn main() {
@@ -35,6 +39,7 @@ fn main() {
         stack_size: args.stack_size,
         coreboot_module_args: args.coreboot_module_args,
         coreboot_header: args.coreboot_header.is_some(),
+        platform: args.platform,
     };
 
     match write_image(options, &args.out, args.coreboot_header.as_deref()) {
@@ -53,6 +58,15 @@ fn main() {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+fn parse_platform(s: &str) -> Result<SmmPlatform, String> {
+    match s {
+        "qemu-q35" => Ok(SmmPlatform::QemuQ35),
+        "pineview-ich7" => Ok(SmmPlatform::PineviewIch7),
+        "lenovo-x61" => Ok(SmmPlatform::LenovoX61),
+        _ => Err("expected qemu-q35, pineview-ich7, or lenovo-x61".to_string()),
     }
 }
 

@@ -10,6 +10,8 @@
 #![allow(clippy::result_unit_err)]
 #![no_std]
 
+pub mod smm;
+
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{FinalizeInit, Mainboard, PostDramInit, PreConsoleInit, ServiceError};
 use serde::{Deserialize, Serialize};
@@ -631,18 +633,23 @@ mod acpi_impl {
                         , 3,
                         DSTA, 1,
                     }
+                    OperationRegion("TCOX", SystemIO, 0x0560u32, 0x20u32);
+                    Field("TCOX", ByteAcc, NoLock, Preserve) {
+                        Offset(0x02),
+                        TDIN, 8,
+                        TDOT, 8,
+                    }
                     Device("DOCK") {
                         Name("_HID", "ACPI0003");
                         Name("_UID", 0u32);
                         Name("_PCL", Package(#{p("\\_SB_")}));
-                        Method("_DCK", 1, NotSerialized) {
+                        Method("_DCK", 1, Serialized) {
                             If (Arg0) {
-                                TRAP(1u32);
+                                TDIN = 1u32;
                             } Else {
-                                TRAP(2u32);
+                                TDIN = 2u32;
                             }
-                            Local0 = Arg0 ^ DSTA;
-                            Return(Local0);
+                            Return(TDOT);
                         }
                         Method("_STA", 0, NotSerialized) {
                             Return(DSTA);

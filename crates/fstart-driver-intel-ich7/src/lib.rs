@@ -15,6 +15,8 @@
 #![allow(clippy::empty_line_after_doc_comments, clippy::unnecessary_cast)]
 #![no_std]
 
+pub mod smm;
+
 use fstart_ecam as ecam;
 
 /// Sparse RCBA (Root Complex Base Address) MMIO accessor.

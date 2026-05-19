@@ -6,8 +6,6 @@ use std::process::Command;
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(rust_analyzer)");
     println!("cargo:rerun-if-changed=asm/entry_stub.S");
-    println!("cargo:rerun-if-changed=handler/src/lib.rs");
-    println!("cargo:rerun-if-changed=handler/src/intel_ich.rs");
     println!("cargo:rerun-if-changed=../fstart-smm/src/runtime_abi.rs");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"));
@@ -19,19 +17,14 @@ fn main() {
         "entry_stub",
         "fstart_smm_stub_params",
     );
-    let handler = build_rust_handler(&manifest_dir.join("handler/src/lib.rs"), &out_dir);
 
     fs::write(
         out_dir.join("smm_image_asm.rs"),
         format!(
             "pub const ENTRY_STUB: &[u8] = include_bytes!(r#\"{}\"#);\n\
-             pub const ENTRY_PARAMS_OFFSET: usize = {:#x};\n\
-             pub const SMM_HANDLER: &[u8] = include_bytes!(r#\"{}\"#);\n\
-             pub const SMM_HANDLER_ENTRY_OFFSET: usize = {:#x};\n",
+             pub const ENTRY_PARAMS_OFFSET: usize = {:#x};\n",
             entry.bin.display(),
             entry.symbol_offset,
-            handler.bin.display(),
-            handler.symbol_offset,
         ),
     )
     .unwrap();
@@ -40,36 +33,6 @@ fn main() {
 struct BuiltBlob {
     bin: PathBuf,
     symbol_offset: usize,
-}
-
-fn build_rust_handler(source: &Path, out_dir: &Path) -> BuiltBlob {
-    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let object = out_dir.join("smm_handler.o");
-    let elf = out_dir.join("smm_handler.elf");
-    let bin = out_dir.join("smm_handler.bin");
-
-    run(Command::new(rustc)
-        .arg("--edition=2021")
-        .arg("--target")
-        .arg("x86_64-unknown-none")
-        .arg("--crate-type")
-        .arg("lib")
-        .arg("--emit=obj")
-        .arg("-C")
-        .arg("panic=abort")
-        .arg("-C")
-        .arg("opt-level=s")
-        .arg("-C")
-        .arg("relocation-model=pic")
-        .arg("-C")
-        .arg("no-redzone=yes")
-        .arg(source)
-        .arg("-o")
-        .arg(&object));
-    link_text_blob(object.as_path(), elf.as_path(), bin.as_path());
-
-    let symbol_offset = find_symbol_offset(elf.as_path(), "fstart_smm_handler");
-    BuiltBlob { bin, symbol_offset }
 }
 
 fn build_asm_blob(source: &Path, out_dir: &Path, stem: &str, symbol: &str) -> BuiltBlob {
@@ -98,6 +61,10 @@ fn link_text_blob(object: &Path, elf: &Path, bin: &Path) {
         .arg("-o")
         .arg(elf)
         .arg(object));
+    objcopy_text(elf, bin);
+}
+
+fn objcopy_text(elf: &Path, bin: &Path) {
     run(Command::new("objcopy")
         .arg("-O")
         .arg("binary")

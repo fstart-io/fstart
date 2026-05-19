@@ -134,6 +134,10 @@ pub const USB4_STS: u32 = 1 << 14;
 /// TCO I/O block offset from PMBASE.
 pub const TCO_BASE_OFFSET: u16 = 0x60;
 
+/// TCO Data In: OS/ACPI command byte to SMI handler. Writes trigger SW_TCO_SMI.
+pub const TCO_DAT_IN: u16 = 0x02;
+/// TCO Data Out: SMI handler response byte to OS/ACPI.
+pub const TCO_DAT_OUT: u16 = 0x03;
 /// TCO1 Status (16-bit, W1C).
 pub const TCO1_STS: u16 = 0x04;
 /// TCO2 Status (16-bit, W1C).
@@ -147,6 +151,8 @@ pub const TCO2_CNT: u16 = 0x0A;
 pub const TIMEOUT_STS: u32 = 1 << 3;
 pub const TCO_INT_STS: u32 = 1 << 2;
 pub const SW_TCO_STS: u32 = 1 << 1;
+/// Alias matching the ICH8 datasheet name for software TCO command SMIs.
+pub const SW_TCO_SMI: u32 = SW_TCO_STS;
 pub const NMI2SMI_STS: u32 = 1 << 0;
 
 // TCO1_CNT bits
@@ -375,6 +381,32 @@ pub struct TcoIo {
 }
 
 impl TcoIo {
+    /// Read an 8-bit TCO register.
+    #[inline]
+    pub fn read8(&self, offset: u16) -> u8 {
+        debug_assert!(offset < 0x20);
+        unsafe { fstart_pio::inb(self.base + offset) }
+    }
+
+    /// Write an 8-bit TCO register.
+    #[inline]
+    pub fn write8(&self, offset: u16, val: u8) {
+        debug_assert!(offset < 0x20);
+        unsafe { fstart_pio::outb(self.base + offset, val) }
+    }
+
+    /// Read the OS/ACPI command byte written to TCO_DAT_IN.
+    #[inline]
+    pub fn read_dat_in(&self) -> u8 {
+        self.read8(TCO_DAT_IN)
+    }
+
+    /// Write the SMI handler response byte to TCO_DAT_OUT.
+    #[inline]
+    pub fn write_dat_out(&self, value: u8) {
+        self.write8(TCO_DAT_OUT, value);
+    }
+
     /// Read a 16-bit TCO register.
     #[inline]
     pub fn read16(&self, offset: u16) -> u16 {

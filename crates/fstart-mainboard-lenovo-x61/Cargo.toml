@@ -16,5 +16,6 @@ fstart-arch-x86 = { workspace = true }
 fstart-gpio-ich = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
+fstart-smm-runtime = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }

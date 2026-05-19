@@ -4,7 +4,8 @@
 //! optional coreboot loader integration.  Entry stubs are part of the image:
 //! loaders only copy bytes into SMRAM and patch data parameter blocks.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use fstart_smm::header::{
     render_coreboot_header, CorebootOffsets, EntryDescriptor, SmmImageHeader, FLAG_COREBOOT_HEADER,
@@ -13,6 +14,7 @@ use fstart_smm::header::{
 #[cfg(test)]
 use fstart_smm::runtime::SmmEntryParams;
 use fstart_smm::runtime::{CorebootModuleArgs, SmmRuntime, MAX_SMM_CPUS};
+use fstart_types::SmmPlatform;
 
 #[cfg(not(rust_analyzer))]
 mod asm {
@@ -23,8 +25,6 @@ mod asm {
 mod asm {
     pub const ENTRY_STUB: &[u8] = &[];
     pub const ENTRY_PARAMS_OFFSET: usize = 0;
-    pub const SMM_HANDLER: &[u8] = &[];
-    pub const SMM_HANDLER_ENTRY_OFFSET: usize = 0;
 }
 
 /// Errors returned while building or writing an SMM image.
@@ -40,6 +40,8 @@ pub enum BuildError {
     Overflow,
     /// Filesystem I/O failed.
     Io(std::io::Error),
+    /// A tool used to build the generated SMM stage failed.
+    Tool(String),
 }
 
 impl std::fmt::Display for BuildError {
@@ -53,6 +55,7 @@ impl std::fmt::Display for BuildError {
             Self::BadStackSize => write!(f, "SMM stack size must be non-zero"),
             Self::Overflow => write!(f, "SMM image layout arithmetic overflowed"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::Tool(e) => write!(f, "SMM stage build failed: {e}"),
         }
     }
 }
@@ -76,6 +79,8 @@ pub struct ImageOptions {
     pub coreboot_module_args: bool,
     /// Mark the image as having been built with a generated coreboot header.
     pub coreboot_header: bool,
+    /// SMM handler composition to build into the stage.
+    pub platform: SmmPlatform,
 }
 
 /// A generated SMM image and its optional coreboot offset header text.
@@ -98,7 +103,8 @@ pub fn build_image(options: ImageOptions) -> Result<BuiltImage, BuildError> {
     validate_options(options)?;
 
     let stub = asm::ENTRY_STUB;
-    let common_code = asm::SMM_HANDLER;
+    let handler = build_smm_stage(options.platform)?;
+    let common_code = handler.code.as_slice();
 
     let header_size = size_of::<SmmImageHeader>();
     let desc_size = size_of::<EntryDescriptor>();
@@ -152,7 +158,7 @@ pub fn build_image(options: ImageOptions) -> Result<BuiltImage, BuildError> {
         as_u32(entries_offset)?,
         as_u32(common_offset)?,
         as_u32(common_size)?,
-        as_u32(asm::SMM_HANDLER_ENTRY_OFFSET)?,
+        as_u32(handler.entry_offset)?,
         as_u32(common_runtime_offset)?,
         if options.coreboot_module_args {
             as_u32(common_offset + module_args_offset)?
@@ -194,7 +200,7 @@ pub fn build_image(options: ImageOptions) -> Result<BuiltImage, BuildError> {
                 native_header: 0,
                 entries: entries_offset as u32,
                 common: common_offset as u32,
-                common_entry: asm::SMM_HANDLER_ENTRY_OFFSET as u32,
+                common_entry: handler.entry_offset as u32,
                 runtime: common_runtime_offset as u32,
                 module_args: header.module_args_offset,
                 entry_count: options.entry_count,
@@ -230,6 +236,131 @@ pub fn write_image(
     }
 
     Ok(built)
+}
+
+struct BuiltHandler {
+    code: Vec<u8>,
+    entry_offset: usize,
+}
+
+fn build_smm_stage(platform: SmmPlatform) -> Result<BuiltHandler, BuildError> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or(BuildError::Overflow)?
+        .to_path_buf();
+    let profile = "release";
+    let out_dir = workspace_root
+        .join("target")
+        .join("smm-stage")
+        .join(platform_env(platform));
+    let target_dir = out_dir.join("target");
+    let elf = out_dir.join("smm_handler.elf");
+    let bin = out_dir.join("smm_handler.bin");
+    std::fs::create_dir_all(&out_dir)?;
+
+    run_tool(
+        Command::new("cargo")
+            .arg("rustc")
+            .arg("-p")
+            .arg("fstart-smm-stage")
+            .arg("--target")
+            .arg("x86_64-unknown-none")
+            .arg("--target-dir")
+            .arg(&target_dir)
+            .arg("--release")
+            .arg("--")
+            .arg("-C")
+            .arg("panic=abort")
+            .arg("-C")
+            .arg("opt-level=s")
+            .arg("-C")
+            .arg("relocation-model=pic")
+            .arg("-C")
+            .arg("no-redzone=yes")
+            .env("FSTART_SMM_PLATFORM", platform_env(platform))
+            .current_dir(&workspace_root),
+    )?;
+
+    let archive = target_dir
+        .join("x86_64-unknown-none")
+        .join(profile)
+        .join("libfstart_smm_stage.a");
+    run_tool(
+        Command::new("ld")
+            .arg("-nostdlib")
+            .arg("-Ttext=0")
+            .arg("--oformat=elf64-x86-64")
+            .arg("-o")
+            .arg(&elf)
+            .arg("--whole-archive")
+            .arg(&archive)
+            .arg("--no-whole-archive"),
+    )?;
+    run_tool(
+        Command::new("objcopy")
+            .arg("-O")
+            .arg("binary")
+            .arg("-j")
+            .arg(".text")
+            .arg(&elf)
+            .arg(&bin),
+    )?;
+
+    Ok(BuiltHandler {
+        code: std::fs::read(&bin)?,
+        entry_offset: find_symbol_offset(&elf, "fstart_smm_handler")?,
+    })
+}
+
+fn platform_env(platform: SmmPlatform) -> &'static str {
+    match platform {
+        SmmPlatform::QemuQ35 => "qemu-q35",
+        SmmPlatform::PineviewIch7 => "pineview-ich7",
+        SmmPlatform::LenovoX61 => "lenovo-x61",
+    }
+}
+
+fn find_symbol_offset(elf: &Path, symbol: &str) -> Result<usize, BuildError> {
+    let output = Command::new("nm")
+        .arg("--defined-only")
+        .arg("--numeric-sort")
+        .arg(elf)
+        .output()?;
+    if !output.status.success() {
+        return Err(BuildError::Tool(format!(
+            "nm failed for {}: {}",
+            elf.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<_> = line.split_whitespace().collect();
+        if parts.len() >= 3 && parts[2] == symbol {
+            return usize::from_str_radix(parts[0], 16)
+                .map_err(|e| BuildError::Tool(format!("bad nm address for {symbol}: {e}")));
+        }
+    }
+    Err(BuildError::Tool(format!(
+        "symbol {symbol} not found in {}",
+        elf.display()
+    )))
+}
+
+fn run_tool(cmd: &mut Command) -> Result<(), BuildError> {
+    let output = cmd.output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(BuildError::Tool(format!(
+            "command failed: {:?}\nstdout:\n{}\nstderr:\n{}",
+            cmd,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
 }
 
 fn validate_options(options: ImageOptions) -> Result<(), BuildError> {
@@ -302,6 +433,7 @@ mod tests {
             stack_size: 0x400,
             coreboot_module_args: true,
             coreboot_header: true,
+            platform: SmmPlatform::PineviewIch7,
         })
         .unwrap();
 
@@ -332,6 +464,7 @@ mod tests {
             stack_size: 0x400,
             coreboot_module_args: false,
             coreboot_header: false,
+            platform: SmmPlatform::PineviewIch7,
         })
         .unwrap_err();
         assert!(matches!(err, BuildError::NoEntries));
@@ -344,6 +477,7 @@ mod tests {
             stack_size: 0x800,
             coreboot_module_args: false,
             coreboot_header: true,
+            platform: SmmPlatform::PineviewIch7,
         })
         .unwrap();
         let header = SmmImageHeader::parse(&built.image).unwrap();

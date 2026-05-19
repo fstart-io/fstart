@@ -21,6 +21,7 @@ fstart-mmio = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-pmio-ich = { workspace = true }
 fstart-services = { workspace = true }
+fstart-smm-runtime = { workspace = true }
 fstart-smbus-intel = { workspace = true }
 fstart-superio = { workspace = true }
 heapless = { workspace = true }

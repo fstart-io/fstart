@@ -7,6 +7,8 @@
 
 #![no_std]
 
+pub mod smm;
+
 use fstart_ecam as ecam;
 use fstart_gpio_ich::IchGpio;
 use fstart_pmio_ich::{self as pmio, PmIo};

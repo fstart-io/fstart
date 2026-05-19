@@ -68,6 +68,8 @@ members = [
   "crates/fstart-mp",
   "crates/fstart-microcode-intel",
   "crates/fstart-smm",
+  "crates/fstart-smm-runtime",
+  "crates/fstart-smm-stage",
   "crates/fstart-smm-image",
   "crates/fstart-cpu-intel",
 ]
@@ -179,6 +181,8 @@ fstart-lapic = { path = "crates/fstart-lapic" }
 fstart-mp = { path = "crates/fstart-mp" }
 fstart-microcode-intel = { path = "crates/fstart-microcode-intel" }
 fstart-smm = { path = "crates/fstart-smm" }
+fstart-smm-runtime = { path = "crates/fstart-smm-runtime" }
+fstart-smm-stage = { path = "crates/fstart-smm-stage" }
 fstart-smm-image = { path = "crates/fstart-smm-image" }
 fstart-cpu-intel = { path = "crates/fstart-cpu-intel" }
 

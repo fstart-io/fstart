@@ -13,6 +13,8 @@ pub enum SmmPlatform {
     QemuQ35,
     /// Intel Pineview northbridge with ICH7 southbridge.
     PineviewIch7,
+    /// Lenovo ThinkPad X61: GM965 northbridge with ICH8-M southbridge and dock SMM policy.
+    LenovoX61,
 }
 
 /// Optional coreboot compatibility outputs for the standalone SMM image.
