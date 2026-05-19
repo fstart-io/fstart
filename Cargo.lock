@@ -699,6 +699,7 @@ dependencies = [
  "fstart-superio",
  "heapless",
  "serde",
+ "tock-registers",
  "ufmt",
 ]
 
@@ -722,6 +723,7 @@ dependencies = [
  "fstart-superio",
  "heapless",
  "serde",
+ "tock-registers",
  "ufmt",
 ]
 

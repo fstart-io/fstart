@@ -25,4 +25,5 @@ fstart-smm-runtime = { workspace = true }
 fstart-smbus-intel = { workspace = true }
 fstart-superio = { workspace = true }
 serde = { workspace = true }
+tock-registers = { workspace = true }
 ufmt = { workspace = true }

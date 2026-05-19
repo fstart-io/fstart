@@ -18,6 +18,141 @@
 pub mod smm;
 
 use fstart_ecam as ecam;
+use fstart_mmio::MmioReadWrite;
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::{register_bitfields, register_structs};
+
+register_bitfields! [u32,
+    /// General Control and Status.
+    GCS_REG [
+        FERR_MUX_ENABLE OFFSET(6) NUMBITS(1) [],
+        NO_REBOOT OFFSET(5) NUMBITS(1) [],
+        BILD OFFSET(0) NUMBITS(1) []
+    ],
+    /// HPET Configuration.
+    HPTC_REG [
+        ADDRESS_SELECT OFFSET(0) NUMBITS(2) [],
+        ENABLE OFFSET(7) NUMBITS(1) []
+    ],
+    /// Function Disable register.
+    FD_REG [
+        PERFORMANCE_COUNTER_DISABLE OFFSET(0) NUMBITS(1) [],
+        RAW OFFSET(0) NUMBITS(32) []
+    ],
+    /// Function Disable 2 / TC lockdown register.
+    FD2_REG [
+        TCLOCKDN OFFSET(31) NUMBITS(1) []
+    ],
+    /// Clock-gating control.
+    CG_REG [
+        RAW OFFSET(0) NUMBITS(32) []
+    ],
+    /// SATA prefetch/caching control.
+    SATA_PREFETCH_REG [
+        ENABLE OFFSET(0) NUMBITS(1) []
+    ],
+    CIR8_REG [
+        FIELD_1_0 OFFSET(0) NUMBITS(2) []
+    ],
+    CIR_2034_REG [
+        FIELD_19_16 OFFSET(16) NUMBITS(4) []
+    ],
+];
+
+register_bitfields! [u16,
+    /// SPI control register.
+    SPI_REG [
+        LOCK OFFSET(15) NUMBITS(1) []
+    ],
+    /// SPI access/request control register.
+    SPI_CTRL_REG [
+        ACCESS_REQUEST OFFSET(0) NUMBITS(1) []
+    ],
+    PCIE_TUNING16 [
+        BIT7 OFFSET(7) NUMBITS(1) []
+    ],
+];
+
+register_bitfields! [u8,
+    /// Other Interrupt Control.
+    OIC_REG [
+        AEN OFFSET(0) NUMBITS(1) [],
+        OAEN OFFSET(1) NUMBITS(1) []
+    ],
+    /// Function Disable SUS Well byte used during final lockdown.
+    FDSW8 [
+        LOCK OFFSET(7) NUMBITS(1) []
+    ],
+    PCIE_TUNING8 [
+        BIT7 OFFSET(7) NUMBITS(1) []
+    ],
+];
+
+register_structs! {
+    /// ICH7 Root Complex Base Address MMIO register block.
+    RcbaRegs {
+        (0x0000 => _reserved_start),
+        (0x0050 => pub fd2: MmioReadWrite<u32, FD2_REG::Register>),
+        (0x0054 => _reserved0),
+        (0x0088 => pub cir1: MmioReadWrite<u32>),
+        (0x008c => _reserved1),
+        (0x01f4 => pub cir2: MmioReadWrite<u32>),
+        (0x01f8 => _reserved2),
+        (0x01fc => pub cir3: MmioReadWrite<u16>),
+        (0x01fe => _reserved3),
+        (0x0200 => pub cir4: MmioReadWrite<u16>),
+        (0x0202 => _reserved4),
+        (0x0214 => pub cir5: MmioReadWrite<u32>),
+        (0x0218 => pub cir6: MmioReadWrite<u32>),
+        (0x021c => _reserved5),
+        (0x0220 => pub bcr: MmioReadWrite<u8>),
+        (0x0221 => _reserved6),
+        (0x1d40 => pub sata_prefetch: MmioReadWrite<u32, SATA_PREFETCH_REG::Register>),
+        (0x1d44 => _reserved7),
+        (0x2027 => pub cir_2027: MmioReadWrite<u8>),
+        (0x2028 => _reserved8),
+        (0x2034 => pub cir_2034: MmioReadWrite<u32, CIR_2034_REG::Register>),
+        (0x2038 => _reserved9),
+        (0x21a4 => pub cir_21a4: MmioReadWrite<u32>),
+        (0x21a8 => _reserved10),
+        (0x3100 => pub d31ip: MmioReadWrite<u32>),
+        (0x3104 => pub d30ip: MmioReadWrite<u32>),
+        (0x3108 => pub d29ip: MmioReadWrite<u32>),
+        (0x310c => pub d28ip: MmioReadWrite<u32>),
+        (0x3110 => pub d27ip: MmioReadWrite<u32>),
+        (0x3114 => _reserved11),
+        (0x3140 => pub d31ir: MmioReadWrite<u16>),
+        (0x3142 => pub d30ir: MmioReadWrite<u16>),
+        (0x3144 => pub d29ir: MmioReadWrite<u16>),
+        (0x3146 => pub d28ir: MmioReadWrite<u16>),
+        (0x3148 => pub d27ir: MmioReadWrite<u16>),
+        (0x314a => _reserved12),
+        (0x31ff => pub oic: MmioReadWrite<u8, OIC_REG::Register>),
+        (0x3200 => _reserved13),
+        (0x3400 => pub bios_cntl: MmioReadWrite<u32>),
+        (0x3404 => pub hptc: MmioReadWrite<u32, HPTC_REG::Register>),
+        (0x3408 => _reserved14),
+        (0x3410 => pub gcs: MmioReadWrite<u32, GCS_REG::Register>),
+        (0x3414 => _reserved15),
+        (0x3418 => pub fd: MmioReadWrite<u32, FD_REG::Register>),
+        (0x341c => pub cg: MmioReadWrite<u32, CG_REG::Register>),
+        (0x3420 => pub fdsw8: MmioReadWrite<u8, FDSW8::Register>),
+        (0x3421 => _reserved16),
+        (0x3430 => pub cir8: MmioReadWrite<u32, CIR8_REG::Register>),
+        (0x3434 => _reserved17),
+        (0x3800 => pub spi: MmioReadWrite<u16, SPI_REG::Register>),
+        (0x3802 => pub spi_ctrl: MmioReadWrite<u16, SPI_CTRL_REG::Register>),
+        (0x3804 => _reserved18),
+        (0x3e08 => pub port_3e08: MmioReadWrite<u16, PCIE_TUNING16::Register>),
+        (0x3e0a => _reserved19),
+        (0x3e0e => pub port_3e0e: MmioReadWrite<u8, PCIE_TUNING8::Register>),
+        (0x3e0f => _reserved20),
+        (0x3e48 => pub port_3e48: MmioReadWrite<u16, PCIE_TUNING16::Register>),
+        (0x3e4a => _reserved21),
+        (0x3e4e => pub port_3e4e: MmioReadWrite<u8, PCIE_TUNING8::Register>),
+        (0x3e4f => @END),
+    }
+}
 
 /// Sparse RCBA (Root Complex Base Address) MMIO accessor.
 struct Rcba {
@@ -30,39 +165,9 @@ impl Rcba {
     }
 
     #[inline]
-    fn read32(&self, off: u32) -> u32 {
+    fn regs(&self) -> &'static RcbaRegs {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
-    }
-
-    #[inline]
-    fn write32(&self, off: u32, val: u32) {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
-    }
-
-    #[inline]
-    fn read16(&self, off: u32) -> u16 {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::read16((self.base + off as usize) as *const u16) }
-    }
-
-    #[inline]
-    fn write16(&self, off: u32, val: u16) {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::write16((self.base + off as usize) as *mut u16, val) }
-    }
-
-    #[inline]
-    fn read8(&self, off: u32) -> u8 {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
-    }
-
-    #[inline]
-    fn write8(&self, off: u32, val: u8) {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::write8((self.base + off as usize) as *mut u8, val) }
+        unsafe { &*(self.base as *const RcbaRegs) }
     }
 }
 
@@ -145,17 +250,6 @@ const LPC_EN_ALL: u16 = (1 << 13)
     | (1 << 1)
     | (1 << 0);
 
-const D31IP: u32 = 0x3100;
-const D30IP: u32 = 0x3104;
-const D29IP: u32 = 0x3108;
-const D28IP: u32 = 0x310C;
-const D27IP: u32 = 0x3110;
-const D31IR: u32 = 0x3140;
-const D30IR: u32 = 0x3142;
-const D29IR: u32 = 0x3144;
-const D28IR: u32 = 0x3146;
-const D27IR: u32 = 0x3148;
-
 const NOINT: u32 = 0;
 const INTA: u32 = 1;
 const INTB: u32 = 2;
@@ -175,15 +269,6 @@ const fn dir_route(a: u32, b: u32, c: u32, d: u32) -> u16 {
     (a | (b << 4) | (c << 8) | (d << 12)) as u16
 }
 
-/// RCBA offset: OIC (Other Interrupt Control — IOAPIC enable).
-///
-/// ICH7/i82801gx exposes this as an 8-bit register at RCBA+0x31ff
-/// (coreboot `southbridge/intel/i82801gx/i82801gx.h`). Newer PCH parts use
-/// a 16-bit OIC at 0x31fe; using that offset on ICH7 writes the wrong byte and
-/// leaves the I/O APIC decode disabled, so Linux reads all-ones at FEC00000.
-const OIC: u32 = 0x31FF;
-/// RCBA offset: HPET Configuration register.
-const HPTC: u32 = 0x3404;
 /// ICH7 I/O APIC MMIO base.
 const IOAPIC_BASE: usize = 0xFEC0_0000;
 /// Local APIC MMIO base.
@@ -490,29 +575,26 @@ impl IntelIch7 {
     ///
     /// Ported from coreboot `ich7_setup_cir()`.
     fn setup_cir(&self, rcba: &Rcba) {
-        rcba.write32(0x0088, 0x0011_D000);
-        rcba.write16(0x01FC, 0x060F);
-        rcba.write32(0x01F4, 0x8600_0040);
+        rcba.regs().cir1.set(0x0011_D000);
+        rcba.regs().cir3.set(0x060F);
+        rcba.regs().cir2.set(0x8600_0040);
         // Bit 6 is set but not read back.
-        rcba.write32(0x0214, 0x1003_0549);
-        rcba.write32(0x0218, 0x0002_0504);
-        rcba.write8(0x0220, 0xC5);
+        rcba.regs().cir5.set(0x1003_0549);
+        rcba.regs().cir6.set(0x0002_0504);
+        rcba.regs().bcr.set(0xC5);
         // RCBA 0x3430: clear bits [1:0], set bit 0.
-        let v = rcba.read32(0x3430);
-        rcba.write32(0x3430, (v & !3) | 1);
+        rcba.regs().cir8.modify(CIR8_REG::FIELD_1_0.val(1));
 
-        rcba.write16(0x0200, 0x2008);
-        rcba.write8(0x2027, 0x0D);
+        rcba.regs().cir4.set(0x2008);
+        rcba.regs().cir_2027.set(0x0D);
 
         // PCIe link tuning.
-        let v = rcba.read16(0x3E08);
-        rcba.write16(0x3E08, v | (1 << 7));
-        let v = rcba.read16(0x3E48);
-        rcba.write16(0x3E48, v | (1 << 7));
+        rcba.regs().port_3e08.modify(PCIE_TUNING16::BIT7::SET);
+        rcba.regs().port_3e48.modify(PCIE_TUNING16::BIT7::SET);
         // Coreboot uses unaligned RCBA32_OR() here. In Rust, do the
         // equivalent byte-sized RMW to avoid unaligned volatile u32 access.
-        rcba.write8(0x3E0E, rcba.read8(0x3E0E) | (1 << 7));
-        rcba.write8(0x3E4E, rcba.read8(0x3E4E) | (1 << 7));
+        rcba.regs().port_3e0e.modify(PCIE_TUNING8::BIT7::SET);
+        rcba.regs().port_3e4e.modify(PCIE_TUNING8::BIT7::SET);
 
         // Mobile variant fixup: check PCI device ID.
         let lpc = ecam::PciDevBdf::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
@@ -521,12 +603,12 @@ impl IntelIch7 {
             0x27B9 | 0x27BC | 0x27BD => {
                 let rev = lpc.read8(0x08);
                 if rev >= 2 {
-                    let v = rcba.read32(0x2034);
-                    rcba.write32(0x2034, (v & !(0x0F << 16)) | (5 << 16));
+                    rcba.regs()
+                        .cir_2034
+                        .modify(CIR_2034_REG::FIELD_19_16.val(5));
                 }
                 // FERR# MUX Enable.
-                let gcs = rcba.read32(ich7::GCS);
-                rcba.write32(ich7::GCS, gcs | (1 << 6));
+                rcba.regs().gcs.modify(GCS_REG::FERR_MUX_ENABLE::SET);
             }
             _ => {}
         }
@@ -598,23 +680,21 @@ impl IntelIch7 {
         // PIRQ line (DxxIR).  Linux then maps PIRQ A-H to IOAPIC GSIs 16-23.
         // Without these, ACPI can name a GSI but the chipset may still steer
         // the interrupt to an unrelated/legacy line.
-        rcba.write32(
-            D31IP,
+        rcba.regs().d31ip.set(
             (NOINT << 24) | // thermal throttle
             (NOINT << 20) | // second SATA pin, unused on ICH7 desktop AHCI
             (INTB << 12) |  // SMBus 0:1f.3
             (INTB << 8), // SATA 0:1f.2 reports/uses INTB on this board
         );
-        rcba.write16(D31IR, dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
+        rcba.regs().d31ir.set(dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
 
-        rcba.write32(D30IP, INTA); // PCI bridge 0:1e.0
-        rcba.write16(D30IR, dir_route(PIRQE, PIRQF, PIRQG, PIRQH));
+        rcba.regs().d30ip.set(INTA); // PCI bridge 0:1e.0
+        rcba.regs().d30ir.set(dir_route(PIRQE, PIRQF, PIRQG, PIRQH));
 
-        rcba.write32(D29IP, INTA); // EHCI/UHCI group 0:1d.*
-        rcba.write16(D29IR, dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
+        rcba.regs().d29ip.set(INTA); // EHCI/UHCI group 0:1d.*
+        rcba.regs().d29ir.set(dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
 
-        rcba.write32(
-            D28IP,
+        rcba.regs().d28ip.set(
             (NOINT << 28) |
             (NOINT << 24) |
             (NOINT << 20) |
@@ -624,16 +704,16 @@ impl IntelIch7 {
             (INTB << 4) |  // RP02 (RTL8168 on D41S)
             INTA, // RP01
         );
-        rcba.write16(D28IR, dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
+        rcba.regs().d28ir.set(dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
 
-        rcba.write32(D27IP, INTA); // HD Audio 0:1b.0
-        rcba.write16(D27IR, dir_route(PIRQA, PIRQA, PIRQA, PIRQA));
+        rcba.regs().d27ip.set(INTA); // HD Audio 0:1b.0
+        rcba.regs().d27ir.set(dir_route(PIRQA, PIRQA, PIRQA, PIRQA));
 
         fstart_log::info!(
             "intel-ich7: RCBA IRQ routing D31IP={:#x} D31IR={:#x} D28IP={:#x}",
-            rcba.read32(D31IP),
-            rcba.read16(D31IR),
-            rcba.read32(D28IP),
+            rcba.regs().d31ip.get(),
+            rcba.regs().d31ir.get(),
+            rcba.regs().d28ip.get(),
         );
     }
 
@@ -642,10 +722,11 @@ impl IntelIch7 {
     /// Ported from coreboot `enable_hpet()`. Raminit needs HPET for
     /// microsecond-resolution delays (hpet_udelay).
     fn enable_hpet(&self, rcba: &Rcba) {
-        let v = rcba.read32(HPTC);
-        rcba.write32(HPTC, (v & !0x03) | (1 << 7));
+        rcba.regs()
+            .hptc
+            .modify(HPTC_REG::ENABLE::SET + HPTC_REG::ADDRESS_SELECT.val(0));
         // Read back for posted write.
-        let _ = rcba.read32(HPTC);
+        let _ = rcba.regs().hptc.get();
 
         // Enable the main HPET counter.
         // SAFETY: HPET base is a fixed MMIO address enabled by HPTC.
@@ -765,8 +846,8 @@ impl PreConsoleInit for IntelIch7 {
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
 
         // Enable upper 128 bytes of CMOS and disable watchdog reboot.
-        rcba.write32(0x3400, 1 << 2);
-        rcba.write32(ich7::GCS, rcba.read32(ich7::GCS) | (1 << 5));
+        rcba.regs().bios_cntl.set(1 << 2);
+        rcba.regs().gcs.modify(GCS_REG::NO_REBOOT::SET);
 
         #[cfg(target_arch = "x86_64")]
         {
@@ -841,8 +922,8 @@ impl EarlyInit for IntelIch7 {
         ehci.or32(0xDC, (1 << 31) | (1 << 27));
 
         // ---- 10. Enable IOAPIC ----
-        rcba.write8(OIC, 0x03);
-        let oic = rcba.read8(OIC); // flush
+        rcba.regs().oic.set(0x03);
+        let oic = rcba.regs().oic.get(); // flush
         fstart_log::info!("intel-ich7: IOAPIC enabled (OIC={:#04x})", oic);
         self.setup_ioapic();
 
@@ -851,7 +932,7 @@ impl EarlyInit for IntelIch7 {
 
         // ---- 12. Function disable mask ----
         let fd = self.function_disable_mask();
-        rcba.write32(0x3418, fd);
+        rcba.regs().fd.set(fd);
 
         // ---- 13. GPIO pad programming ----
         self.setup_gpios();
@@ -986,8 +1067,9 @@ impl IntelIch7 {
 
         // ---- SPI access request clear ----
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
-        let spi_ctrl = rcba.read16(0x3802);
-        rcba.write16(0x3802, spi_ctrl & !(1u16));
+        rcba.regs()
+            .spi_ctrl
+            .modify(SPI_CTRL_REG::ACCESS_REQUEST::CLEAR);
 
         // ---- PCIe root port init ----
         self.pcie_init();
@@ -1001,10 +1083,14 @@ impl IntelIch7 {
         lpc.write8(0xAD, 0x03);
 
         // ---- RCBA fixup (must be after PCI enumeration) ----
-        rcba.write32(0x1D40, rcba.read32(0x1D40) | 1);
+        rcba.regs()
+            .sata_prefetch
+            .modify(SATA_PREFETCH_REG::ENABLE::SET);
 
         // ---- Disable performance counter (RCBA FD bit 0) ----
-        rcba.write32(0x3418, rcba.read32(0x3418) | 1);
+        rcba.regs()
+            .fd
+            .modify(FD_REG::PERFORMANCE_COUNTER_DISABLE::SET);
 
         fstart_log::info!("intel-ich7: ramstage init complete");
         Ok(())
@@ -1143,7 +1229,7 @@ impl IntelIch7 {
     /// Enable clock gating (from coreboot `enable_clock_gating`).
     fn enable_clock_gating(&self) {
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
-        let mut cg = rcba.read32(0x341C);
+        let mut cg = rcba.regs().cg.get();
         cg |= (1 << 31)  // LPC
             | (1 << 30)   // PATA
             | (1 << 27) | (1 << 26) | (1 << 25) | (1 << 24)  // SATA
@@ -1153,7 +1239,7 @@ impl IntelIch7 {
             | (1 << 2); // PCIe
         cg &= !(1 << 20); // no static USB clock gating
         cg &= !((1 << 29) | (1 << 28)); // disable UHCI clock gating
-        rcba.write32(0x341C, cg);
+        rcba.regs().cg.set(cg);
         fstart_log::info!("intel-ich7: clock gating enabled");
     }
 
@@ -1383,11 +1469,10 @@ impl IntelIch7 {
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
 
         // Lock SPIBAR.
-        let spi = rcba.read16(0x3800);
-        rcba.write16(0x3800, spi | (1 << 15));
+        rcba.regs().spi.modify(SPI_REG::LOCK::SET);
 
         // BIOS Interface Lockdown.
-        rcba.write32(0x3410, rcba.read32(0x3410) | 1);
+        rcba.regs().gcs.modify(GCS_REG::BILD::SET);
 
         // Global SMI/TCO locks must not be taken before permanent SMM has
         // enabled the final SMI sources.  Coreboot does global_smi_enable()
@@ -1417,10 +1502,10 @@ impl IntelIch7 {
         self.lockdown();
 
         // TCLOCKDN: TC Lockdown.
-        rcba.write32(0x0050, rcba.read32(0x0050) | (1u32 << 31));
+        rcba.regs().fd2.modify(FD2_REG::TCLOCKDN::SET);
 
         // Function Disable SUS Well Lockdown.
-        rcba.write8(0x3420, rcba.read8(0x3420) | (1 << 7));
+        rcba.regs().fdsw8.modify(FDSW8::LOCK::SET);
 
         // GEN_PMCON_LOCK: ACPI base lock + SLP_STR policy lock.
         lpc.or8(GEN_PMCON_LOCK, ACPI_BASE_LOCK | SLP_STR_POL_LOCK);
@@ -1429,7 +1514,7 @@ impl IntelIch7 {
         lpc.modify32(ETR3, !ETR3_CF9GR, ETR3_CF9LOCK);
 
         // R/WO register lock (read-then-write-back).
-        rcba.write32(0x21A4, rcba.read32(0x21A4));
+        rcba.regs().cir_21a4.set(rcba.regs().cir_21a4.get());
         // HDA R/WO register.
         let hda_dev = ecam::PciDevBdf::new(0, 0x1B, 0);
         let hda_rwo = hda_dev.read32(0x74);

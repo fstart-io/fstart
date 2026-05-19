@@ -26,4 +26,5 @@ fstart-smbus-intel = { workspace = true }
 fstart-superio = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }
+tock-registers = { workspace = true }
 ufmt = { workspace = true }

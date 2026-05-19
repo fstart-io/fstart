@@ -5,12 +5,14 @@
 //! board hooks. X61-specific DLPC/dock SuperIO setup lives in the
 //! `fstart-mainboard-lenovo-x61` crate.
 
+#![recursion_limit = "256"]
 #![no_std]
 
 pub mod smm;
 
 use fstart_ecam as ecam;
 use fstart_gpio_ich::IchGpio;
+use fstart_mmio::MmioReadWrite;
 use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
@@ -19,6 +21,8 @@ use fstart_services::{
 use fstart_smbus_intel::I801SmBus;
 use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::{register_bitfields, register_structs};
 
 pub use fstart_gpio_ich::{GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset};
 pub use fstart_hda::{
@@ -107,59 +111,6 @@ pub mod ich8 {
     pub const DID_82801HBM_SATA_AHCI: u16 = 0x2829;
     pub const DID_82801HBM_SATA_RAID: u16 = 0x282a;
 
-    pub const RCBA_V0CTL: u32 = 0x0014;
-    pub const RCBA_V1CAP: u32 = 0x001c;
-    pub const RCBA_V1CTL: u32 = 0x0020;
-    pub const RCBA_V1STS: u32 = 0x0026;
-    pub const RCBA_PAT: u32 = 0x0030;
-    pub const RCBA_CIR1: u32 = 0x0088;
-    pub const RCBA_ESD: u32 = 0x0104;
-    pub const RCBA_ULD: u32 = 0x0110;
-    pub const RCBA_ULBA: u32 = 0x0118;
-    pub const RCBA_LCAP: u32 = 0x01a4;
-    pub const RCBA_LCTL: u32 = 0x01a8;
-    pub const RCBA_LSTS: u32 = 0x01aa;
-    pub const RCBA_CIR2: u32 = 0x01f4;
-    pub const RCBA_CIR3: u32 = 0x01fc;
-    pub const RCBA_CIR4: u32 = 0x0200;
-    pub const RCBA_BCR: u32 = 0x0220;
-    pub const RCBA_DMIC: u32 = 0x0234;
-    pub const RCBA_RPFN: u32 = 0x0238;
-    pub const RCBA_CIR13: u32 = 0x0f20;
-    pub const RCBA_CIR5: u32 = 0x1d40;
-    pub const RCBA_DMC: u32 = 0x2010;
-    pub const RCBA_CIR6: u32 = 0x2024;
-    pub const RCBA_CIR7: u32 = 0x2034;
-    pub const D31IP: u32 = 0x3100;
-    pub const D30IP: u32 = 0x3104;
-    pub const D29IP: u32 = 0x3108;
-    pub const D28IP: u32 = 0x310c;
-    pub const D27IP: u32 = 0x3110;
-    pub const D26IP: u32 = 0x3114;
-    pub const D25IP: u32 = 0x3118;
-    pub const D31IR: u32 = 0x3140;
-    pub const D30IR: u32 = 0x3142;
-    pub const D29IR: u32 = 0x3144;
-    pub const D28IR: u32 = 0x3146;
-    pub const D27IR: u32 = 0x3148;
-    pub const D26IR: u32 = 0x314c;
-    pub const D25IR: u32 = 0x3150;
-    pub const OIC: u32 = 0x31ff;
-    pub const OIC_AEN: u8 = 1 << 0;
-    pub const OIC_OAEN: u8 = 1 << 1;
-    pub const IOTR3_LO: u32 = 0x1e98;
-    pub const IOTR3_HI: u32 = 0x1e9c;
-    pub const RCBA_HPTC: u32 = 0x3404;
-    pub const GCS: u32 = 0x3410;
-    pub const RCBA_FD: u32 = 0x3418;
-    pub const RCBA_CG: u32 = 0x341c;
-    pub const RCBA_FDSW: u32 = 0x3420;
-    pub const FDSW_LAND: u32 = 1 << 0;
-    pub const RCBA_CIR8: u32 = 0x3430;
-    pub const RCBA_CIR9: u32 = 0x350c;
-    pub const RCBA_CIR10: u32 = 0x352c;
-    pub const RCBA_MAP: u32 = 0x35f0;
-
     pub const FD_SAD2: u32 = 1 << 25;
     pub const FD_TTD: u32 = 1 << 24;
     pub const FD_PE6D: u32 = 1 << 21;
@@ -225,6 +176,207 @@ pub mod ich8 {
     pub const D28_SLCAP_SLOTNUM_SHIFT: u32 = 19;
     pub const D28_SLCAP_SCALE_SHIFT: u32 = 16;
     pub const D28_SLCAP_POWER_SHIFT: u32 = 7;
+}
+
+register_bitfields! [u32,
+    /// Virtual channel control/status registers.
+    VCTL [
+        ENABLE OFFSET(31) NUMBITS(1) [],
+        VC_NEGOTIATION_PENDING OFFSET(16) NUMBITS(1) [],
+        VC_ARB_SELECT OFFSET(17) NUMBITS(3) [],
+        ID OFFSET(24) NUMBITS(3) [],
+        TC_MAP OFFSET(1) NUMBITS(7) []
+    ],
+    /// Virtual channel capability register.
+    VCAP [
+        REFERENCE_CLOCK OFFSET(16) NUMBITS(7) []
+    ],
+    /// Function Disable register.
+    FD [
+        RAW OFFSET(0) NUMBITS(32) []
+    ],
+    /// General Control and Status.
+    GCS_REG [
+        BBS OFFSET(10) NUMBITS(1) [],
+        BOOT_SMI_EN OFFSET(6) NUMBITS(1) [],
+        NO_REBOOT OFFSET(5) NUMBITS(1) [],
+        SMI_LOCK OFFSET(4) NUMBITS(1) []
+    ],
+    /// Function Disable SUS Well register.
+    FDSW [
+        FUNCTION_DISABLE_LOCK OFFSET(7) NUMBITS(1) [],
+        LAN_DISABLE OFFSET(0) NUMBITS(1) []
+    ],
+    /// HPET Configuration.
+    HPTC [
+        ADDRESS_SELECT OFFSET(0) NUMBITS(2) [],
+        ENABLE OFFSET(7) NUMBITS(1) []
+    ],
+    /// Clock gating control.
+    CG [
+        RAW OFFSET(0) NUMBITS(32) []
+    ],
+    /// Root-port function-number map.
+    RPFN [
+        RAW OFFSET(0) NUMBITS(32) []
+    ],
+    /// DMI controls.
+    DMC [
+        MOBILE_POWER_SAVINGS OFFSET(19) NUMBITS(1) []
+    ],
+    DMIC [
+        VIRTUAL_CHANNEL_ENABLE OFFSET(0) NUMBITS(2) []
+    ],
+    LCAP_REG [
+        ASPM_SUPPORT OFFSET(10) NUMBITS(2) []
+    ],
+    CIR5_REG [
+        BIT0 OFFSET(0) NUMBITS(1) []
+    ],
+    CIR6_REG [
+        BIT7 OFFSET(7) NUMBITS(1) [],
+        FIELD_23_21 OFFSET(21) NUMBITS(3) []
+    ],
+    CIR8_REG [
+        FIELD_1_0 OFFSET(0) NUMBITS(2) []
+    ],
+    CIR9_REG [
+        FIELD_27_26 OFFSET(26) NUMBITS(2) []
+    ],
+    CIR7_REG [
+        FIELD_19_16 OFFSET(16) NUMBITS(4) []
+    ],
+    CIR13_REG [
+        FIELD_19_16 OFFSET(16) NUMBITS(4) []
+    ],
+    CIR10_REG [
+        FIELD_17_16 OFFSET(16) NUMBITS(2) []
+    ],
+    BIOS_CNTL_REG [
+        EXTENDED_CMOS_ENABLE OFFSET(2) NUMBITS(1) []
+    ],
+    SPI_PREFETCH_REG [
+        ENABLE OFFSET(0) NUMBITS(3) []
+    ],
+];
+
+register_bitfields! [u16,
+    /// DMI link status.
+    LSTS [
+        NEGOTIATED_WIDTH OFFSET(4) NUMBITS(6) []
+    ],
+    LCTL_REG [
+        ASPM_CONTROL OFFSET(0) NUMBITS(2) []
+    ],
+    CIR_20C4_REG [
+        BIT15 OFFSET(15) NUMBITS(1) []
+    ],
+    CIR_20E4_REG [
+        BIT15 OFFSET(15) NUMBITS(1) []
+    ],
+];
+
+register_bitfields! [u8,
+    /// Other Interrupt Control.
+    OIC_REG [
+        AEN OFFSET(0) NUMBITS(1) [],
+        OAEN OFFSET(1) NUMBITS(1) []
+    ],
+];
+
+register_structs! {
+    /// ICH8 Root Complex Base Address MMIO register block.
+    RcbaRegs {
+        (0x0000 => _reserved_start),
+        (0x0014 => pub v0ctl: MmioReadWrite<u32, VCTL::Register>),
+        (0x0018 => _reserved_v0ctl),
+        (0x001c => pub v1cap: MmioReadWrite<u32, VCAP::Register>),
+        (0x0020 => pub v1ctl: MmioReadWrite<u32, VCTL::Register>),
+        (0x0024 => _reserved_v1ctl),
+        (0x0026 => pub v1sts: MmioReadWrite<u16>),
+        (0x0028 => _reserved0),
+        (0x0030 => pub pat: [MmioReadWrite<u8>; 64]),
+        (0x0070 => _reserved1),
+        (0x0088 => pub cir1: MmioReadWrite<u32>),
+        (0x008c => _reserved2),
+        (0x0104 => pub esd: [MmioReadWrite<u8>; 4]),
+        (0x0108 => _reserved3),
+        (0x0110 => pub uld: [MmioReadWrite<u8>; 4]),
+        (0x0114 => _reserved4),
+        (0x0118 => pub ulba: MmioReadWrite<u32>),
+        (0x011c => _reserved5),
+        (0x01a4 => pub lcap: MmioReadWrite<u32, LCAP_REG::Register>),
+        (0x01a8 => pub lctl: MmioReadWrite<u16, LCTL_REG::Register>),
+        (0x01aa => pub lsts: MmioReadWrite<u16, LSTS::Register>),
+        (0x01ac => _reserved6),
+        (0x01f4 => pub cir2: MmioReadWrite<u32>),
+        (0x01f8 => _reserved7),
+        (0x01fc => pub cir3: MmioReadWrite<u16>),
+        (0x01fe => _reserved8),
+        (0x0200 => pub cir4: MmioReadWrite<u32>),
+        (0x0204 => _reserved9),
+        (0x0220 => pub bcr: MmioReadWrite<u8>),
+        (0x0221 => _reserved10),
+        (0x0234 => pub dmic: MmioReadWrite<u32, DMIC::Register>),
+        (0x0238 => pub rpfn: MmioReadWrite<u32, RPFN::Register>),
+        (0x023c => _reserved11),
+        (0x0f20 => pub cir13: MmioReadWrite<u32, CIR13_REG::Register>),
+        (0x0f24 => _reserved12),
+        (0x1d40 => pub cir5: MmioReadWrite<u32, CIR5_REG::Register>),
+        (0x1d44 => _reserved13),
+        (0x1e98 => pub iotr3_lo: MmioReadWrite<u32>),
+        (0x1e9c => pub iotr3_hi: MmioReadWrite<u32>),
+        (0x1ea0 => _reserved14),
+        (0x2010 => pub dmc: MmioReadWrite<u32, DMC::Register>),
+        (0x2014 => _reserved15),
+        (0x2024 => pub cir6: MmioReadWrite<u32, CIR6_REG::Register>),
+        (0x2028 => _reserved16),
+        (0x2034 => pub cir7: MmioReadWrite<u32, CIR7_REG::Register>),
+        (0x2038 => _reserved17),
+        (0x20c4 => pub cir_20c4: MmioReadWrite<u16, CIR_20C4_REG::Register>),
+        (0x20c6 => _reserved18),
+        (0x20e4 => pub cir_20e4: MmioReadWrite<u16, CIR_20E4_REG::Register>),
+        (0x20e6 => _reserved19),
+        (0x3100 => pub d31ip: MmioReadWrite<u32>),
+        (0x3104 => pub d30ip: MmioReadWrite<u32>),
+        (0x3108 => pub d29ip: MmioReadWrite<u32>),
+        (0x310c => pub d28ip: MmioReadWrite<u32>),
+        (0x3110 => pub d27ip: MmioReadWrite<u32>),
+        (0x3114 => pub d26ip: MmioReadWrite<u32>),
+        (0x3118 => pub d25ip: MmioReadWrite<u32>),
+        (0x311c => _reserved20),
+        (0x3140 => pub d31ir: MmioReadWrite<u16>),
+        (0x3142 => pub d30ir: MmioReadWrite<u16>),
+        (0x3144 => pub d29ir: MmioReadWrite<u16>),
+        (0x3146 => pub d28ir: MmioReadWrite<u16>),
+        (0x3148 => pub d27ir: MmioReadWrite<u16>),
+        (0x314a => _reserved21),
+        (0x314c => pub d26ir: MmioReadWrite<u16>),
+        (0x314e => _reserved22),
+        (0x3150 => pub d25ir: MmioReadWrite<u16>),
+        (0x3152 => _reserved23),
+        (0x31ff => pub oic: MmioReadWrite<u8, OIC_REG::Register>),
+        (0x3200 => _reserved24),
+        (0x3400 => pub bios_cntl: MmioReadWrite<u32, BIOS_CNTL_REG::Register>),
+        (0x3404 => pub hptc: MmioReadWrite<u32, HPTC::Register>),
+        (0x3408 => _reserved25),
+        (0x3410 => pub gcs: MmioReadWrite<u32, GCS_REG::Register>),
+        (0x3414 => _reserved26),
+        (0x3418 => pub fd: MmioReadWrite<u32, FD::Register>),
+        (0x341c => pub cg: MmioReadWrite<u32, CG::Register>),
+        (0x3420 => pub fdsw: MmioReadWrite<u32, FDSW::Register>),
+        (0x3424 => _reserved27),
+        (0x3430 => pub cir8: MmioReadWrite<u32, CIR8_REG::Register>),
+        (0x3434 => _reserved28),
+        (0x350c => pub cir9: MmioReadWrite<u32, CIR9_REG::Register>),
+        (0x3510 => _reserved29),
+        (0x352c => pub cir10: MmioReadWrite<u32, CIR10_REG::Register>),
+        (0x3530 => _reserved30),
+        (0x35f0 => pub map: MmioReadWrite<u32>),
+        (0x35f4 => _reserved31),
+        (0x38c0 => pub spi_prefetch: MmioReadWrite<u32, SPI_PREFETCH_REG::Register>),
+        (0x38c4 => @END),
+    }
 }
 
 const HPET_BASE: usize = 0xfed0_0000;
@@ -610,39 +762,9 @@ impl Rcba {
     }
 
     #[inline]
-    fn read32(&self, off: u32) -> u32 {
+    fn regs(&self) -> &'static RcbaRegs {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
-    }
-
-    #[inline]
-    fn write32(&self, off: u32, val: u32) {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
-    }
-
-    #[inline]
-    fn read16(&self, off: u32) -> u16 {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::read16((self.base + off as usize) as *const u16) }
-    }
-
-    #[inline]
-    fn read8(&self, off: u32) -> u8 {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
-    }
-
-    #[inline]
-    fn write16(&self, off: u32, val: u16) {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::write16((self.base + off as usize) as *mut u16, val) }
-    }
-
-    #[inline]
-    fn write8(&self, off: u32, val: u8) {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
-        unsafe { fstart_mmio::write8((self.base + off as usize) as *mut u8, val) }
+        unsafe { &*(self.base as *const RcbaRegs) }
     }
 }
 
@@ -728,8 +850,8 @@ impl IntelIch8 {
          * Enable upper 128 bytes of CMOS (RCBA offset 0x3400).
          * Bit 2 enables the extended CMOS range.
          */
-        rcba.write32(0x3400, 1 << 2);
-        rcba.write32(ich8::GCS, rcba.read32(ich8::GCS) | (1 << 5));
+        rcba.regs().bios_cntl.set(1 << 2);
+        rcba.regs().gcs.modify(GCS_REG::NO_REBOOT::SET);
 
         #[cfg(target_arch = "x86_64")]
         {
@@ -758,9 +880,10 @@ impl IntelIch8 {
 
     fn enable_hpet(&self) {
         let rcba = self.rcba();
-        let v = rcba.read32(ich8::RCBA_HPTC);
-        rcba.write32(ich8::RCBA_HPTC, (v & !0x03) | (1 << 7));
-        let _ = rcba.read32(ich8::RCBA_HPTC);
+        rcba.regs()
+            .hptc
+            .modify(HPTC::ENABLE::SET + HPTC::ADDRESS_SELECT.val(0));
+        let _ = rcba.regs().hptc.get();
 
         // SAFETY: HPET base is fixed once enabled through HPTC.
         unsafe {
@@ -779,58 +902,45 @@ impl IntelIch8 {
         ];
 
         let rcba = self.rcba();
-        rcba.write32(
-            ich8::RCBA_V1CAP,
-            (rcba.read32(ich8::RCBA_V1CAP) & !(0x7f << 16)) | (0x12 << 16),
-        );
-        rcba.write32(ich8::RCBA_CIR1, 0x0010_9000);
-        rcba.write16(ich8::RCBA_CIR3, 0x060b);
-        rcba.write32(ich8::RCBA_CIR2, 0x8600_0040);
-        rcba.write32(ich8::RCBA_CIR4, 0x0000_2008);
-        rcba.write8(ich8::RCBA_BCR, 0x45);
-        rcba.write32(ich8::RCBA_CIR6, rcba.read32(ich8::RCBA_CIR6) & !(1 << 7));
+        rcba.regs().v1cap.modify(VCAP::REFERENCE_CLOCK.val(0x12));
+        rcba.regs().cir1.set(0x0010_9000);
+        rcba.regs().cir3.set(0x060b);
+        rcba.regs().cir2.set(0x8600_0040);
+        rcba.regs().cir4.set(0x0000_2008);
+        rcba.regs().bcr.set(0x45);
+        rcba.regs().cir6.modify(CIR6_REG::BIT7::CLEAR);
 
-        rcba.write32(
-            ich8::RCBA_V1CTL,
-            (rcba.read32(ich8::RCBA_V1CTL) & !(0x7 << 24)) | (1 << 24),
-        );
-        rcba.write32(
-            ich8::RCBA_V1CTL,
-            (rcba.read32(ich8::RCBA_V1CTL) & !(0x7f << 1)) | (1 << 7),
-        );
-        rcba.write32(
-            ich8::RCBA_V0CTL,
-            rcba.read32(ich8::RCBA_V0CTL) & !(0x7f << 1),
-        );
-        rcba.write32(
-            ich8::RCBA_V1CTL,
-            (rcba.read32(ich8::RCBA_V1CTL) & !(0x7 << 17)) | (0x4 << 17),
-        );
+        rcba.regs().v1ctl.modify(VCTL::ID.val(1));
+        rcba.regs().v1ctl.modify(VCTL::TC_MAP.val(0x40));
+        rcba.regs().v0ctl.modify(VCTL::TC_MAP.val(0));
+        rcba.regs().v1ctl.modify(VCTL::VC_ARB_SELECT.val(4));
         for (i, val) in VC1_PAT.iter().enumerate() {
-            rcba.write8(ich8::RCBA_PAT + i as u32, *val);
+            rcba.regs().pat[i].set(*val);
         }
-        rcba.write32(ich8::RCBA_V1CTL, rcba.read32(ich8::RCBA_V1CTL) | (1 << 16));
-        rcba.write32(ich8::RCBA_V1CTL, rcba.read32(ich8::RCBA_V1CTL) | (1 << 31));
+        rcba.regs().v1ctl.modify(VCTL::VC_NEGOTIATION_PENDING::SET);
+        rcba.regs().v1ctl.modify(VCTL::ENABLE::SET);
 
-        rcba.write8(ich8::RCBA_ESD + 2, 2);
-        rcba.write8(ich8::RCBA_ULD + 3, 1);
-        rcba.write8(ich8::RCBA_ULD + 2, 1);
-        rcba.write32(ich8::RCBA_ULBA, self.config.dmibar as u32 & 0xffff_f000);
+        rcba.regs().esd[2].set(2);
+        rcba.regs().uld[3].set(1);
+        rcba.regs().uld[2].set(1);
+        rcba.regs()
+            .ulba
+            .set(self.config.dmibar as u32 & 0xffff_f000);
 
         // Mobile ICH8-M/HX path: enable DMI mobile power savings, then
         // advertise and enable L0s+L1.
-        let mut dmc = rcba.read32(ich8::RCBA_DMC);
+        let mut dmc = rcba.regs().dmc.get();
         dmc = (dmc & !(3 << 10)) | (1 << 10);
-        rcba.write32(ich8::RCBA_DMC, dmc);
-        rcba.write32(ich8::RCBA_DMC, dmc | (1 << 19));
-        rcba.write32(ich8::RCBA_LCAP, rcba.read32(ich8::RCBA_LCAP) | (3 << 10));
-        rcba.write32(ich8::RCBA_LCTL, rcba.read32(ich8::RCBA_LCTL) | 3);
+        rcba.regs().dmc.set(dmc);
+        rcba.regs().dmc.modify(DMC::MOBILE_POWER_SAVINGS::SET);
+        rcba.regs().lcap.modify(LCAP_REG::ASPM_SUPPORT.val(3));
+        rcba.regs().lctl.modify(LCTL_REG::ASPM_CONTROL.val(3));
     }
 
     fn poll_vc1(&self) {
         let rcba = self.rcba();
         let mut timeout = 0x7ffff;
-        while (rcba.read32(ich8::RCBA_V1STS) & (1 << 1)) != 0 && timeout != 0 {
+        while (rcba.regs().v1sts.get() & (1 << 1)) != 0 && timeout != 0 {
             timeout -= 1;
             core::hint::spin_loop();
         }
@@ -838,17 +948,14 @@ impl IntelIch8 {
             fstart_log::error!("intel-ich8: VC1 negotiation timeout");
         }
 
-        if ((rcba.read16(ich8::RCBA_LSTS) >> 4) & 0x3f) == 2 {
-            rcba.write32(
-                ich8::RCBA_CIR6,
-                (rcba.read32(ich8::RCBA_CIR6) & !(7 << 21)) | (3 << 21),
-            );
-            rcba.write16(0x20c4, rcba.read16(0x20c4) | (1 << 15));
-            rcba.write16(0x20e4, rcba.read16(0x20e4) | (1 << 15));
+        if ((rcba.regs().lsts.get() >> 4) & 0x3f) == 2 {
+            rcba.regs().cir6.modify(CIR6_REG::FIELD_23_21.val(3));
+            rcba.regs().cir_20c4.modify(CIR_20C4_REG::BIT15::SET);
+            rcba.regs().cir_20e4.modify(CIR_20E4_REG::BIT15::SET);
         }
 
         timeout = 0x7ffff;
-        while (rcba.read32(ich8::RCBA_V1STS) & 1) != 0 && timeout != 0 {
+        while (rcba.regs().v1sts.get() & 1) != 0 && timeout != 0 {
             timeout -= 1;
             core::hint::spin_loop();
         }
@@ -930,8 +1037,8 @@ impl IntelIch8 {
 
     fn enable_clock_gating(&self) {
         let rcba = self.rcba();
-        rcba.write32(ich8::RCBA_DMIC, rcba.read32(ich8::RCBA_DMIC) | 3);
-        let mut cg = rcba.read32(ich8::RCBA_CG);
+        rcba.regs().dmic.modify(DMIC::VIRTUAL_CHANNEL_ENABLE.val(3));
+        let mut cg = rcba.regs().cg.get();
         cg |= (1 << 31) | (1 << 29) | (1 << 28);
         cg |= (1 << 27) | (1 << 26) | (1 << 25) | (1 << 24);
         cg |= (1 << 23) | (1 << 22);
@@ -939,14 +1046,17 @@ impl IntelIch8 {
         cg &= !(1 << 20);
         cg |= (1 << 19) | (1 << 18) | (1 << 17) | (1 << 16);
         cg |= (1 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | 1;
-        rcba.write32(ich8::RCBA_CG, cg);
-        rcba.write32(0x38c0, rcba.read32(0x38c0) | 7);
+        rcba.regs().cg.set(cg);
+        rcba.regs()
+            .spi_prefetch
+            .modify(SPI_PREFETCH_REG::ENABLE.val(7));
     }
 
     fn enable_ioapic(&self) {
         let rcba = self.rcba();
-        rcba.write8(ich8::OIC, ich8::OIC_AEN | ich8::OIC_OAEN);
-        let _ = rcba.read8(ich8::OIC);
+        // Keep APIC range select at zero; coreboot writes this byte exactly.
+        rcba.regs().oic.set(0x03);
+        let _ = rcba.regs().oic.get();
     }
 
     fn rtc_init_status(&self) {
@@ -971,7 +1081,9 @@ impl IntelIch8 {
         self.isa_dma_init();
         self.i8259_init();
         self.enable_hpet();
-        rcba.write32(0x3400, rcba.read32(0x3400) | (1 << 2));
+        rcba.regs()
+            .bios_cntl
+            .modify(BIOS_CNTL_REG::EXTENDED_CMOS_ENABLE::SET);
         self.enable_clock_gating();
         self.enable_acpi_pm1();
     }
@@ -1003,22 +1115,13 @@ impl IntelIch8 {
 
     fn early_chipset_settings(&self) {
         let rcba = self.rcba();
-        rcba.write32(ich8::GCS, rcba.read32(ich8::GCS) | (1 << 6));
-        rcba.write32(ich8::RCBA_CIR8, (rcba.read32(ich8::RCBA_CIR8) & !0x3) | 0x2);
-        rcba.write32(
-            ich8::RCBA_CIR9,
-            (rcba.read32(ich8::RCBA_CIR9) & !(0x3 << 26)) | (0x2 << 26),
-        );
-        rcba.write32(
-            ich8::RCBA_CIR7,
-            (rcba.read32(ich8::RCBA_CIR7) & !(0xf << 16)) | (0x5 << 16),
-        );
-        rcba.write32(
-            ich8::RCBA_CIR13,
-            (rcba.read32(ich8::RCBA_CIR13) & !(0xf << 16)) | (0x5 << 16),
-        );
-        rcba.write32(ich8::RCBA_CIR5, rcba.read32(ich8::RCBA_CIR5) | 1);
-        rcba.write32(ich8::RCBA_CIR10, rcba.read32(ich8::RCBA_CIR10) | (3 << 16));
+        rcba.regs().gcs.modify(GCS_REG::BOOT_SMI_EN::SET);
+        rcba.regs().cir8.modify(CIR8_REG::FIELD_1_0.val(2));
+        rcba.regs().cir9.modify(CIR9_REG::FIELD_27_26.val(2));
+        rcba.regs().cir7.modify(CIR7_REG::FIELD_19_16.val(5));
+        rcba.regs().cir13.modify(CIR13_REG::FIELD_19_16.val(5));
+        rcba.regs().cir5.modify(CIR5_REG::BIT0::SET);
+        rcba.regs().cir10.modify(CIR10_REG::FIELD_17_16.val(3));
     }
 
     fn configure_gpi_routing(&self) {
@@ -1289,7 +1392,7 @@ impl IntelIch8 {
             port.write16(ich8::PCI_STATUS, port.read16(ich8::PCI_STATUS));
             port.write16(ich8::PCI_SEC_STATUS, port.read16(ich8::PCI_SEC_STATUS));
         }
-        let fd = self.rcba().read32(ich8::RCBA_FD);
+        let fd = self.rcba().regs().fd.get();
         for func in (0usize..6).rev() {
             if (fd & Self::pcie_fd_bit(func)) == 0 {
                 break;
@@ -1300,13 +1403,13 @@ impl IntelIch8 {
             }
         }
         let rcba = self.rcba();
-        let mut rpfn = rcba.read32(ich8::RCBA_RPFN);
+        let mut rpfn = rcba.regs().rpfn.get();
         for func in 0usize..6 {
             if (fd & Self::pcie_fd_bit(func)) != 0 {
                 rpfn |= 1 << (func * 4 + 3);
             }
         }
-        rcba.write32(ich8::RCBA_RPFN, rpfn);
+        rcba.regs().rpfn.set(rpfn);
         self.pcie_slot_config();
         self.pcie_aspm_lock();
         fstart_log::info!("intel-ich8: PCIe root port init complete");
@@ -1570,55 +1673,55 @@ impl IntelIch8 {
 
     fn configure_default_intmap(&self) {
         let rcba = self.rcba();
-        rcba.write32(ich8::D31IP, 0x0400_3210);
-        rcba.write32(ich8::D30IP, 0x0000_0001);
-        rcba.write32(ich8::D29IP, 0x1000_0321);
-        rcba.write32(ich8::D28IP, 0x0021_4321);
-        rcba.write32(ich8::D27IP, 0x0000_0001);
-        rcba.write32(ich8::D26IP, 0x1000_0021);
-        rcba.write32(ich8::D25IP, 0x0000_0001);
+        rcba.regs().d31ip.set(0x0400_3210);
+        rcba.regs().d30ip.set(0x0000_0001);
+        rcba.regs().d29ip.set(0x1000_0321);
+        rcba.regs().d28ip.set(0x0021_4321);
+        rcba.regs().d27ip.set(0x0000_0001);
+        rcba.regs().d26ip.set(0x1000_0021);
+        rcba.regs().d25ip.set(0x0000_0001);
 
-        rcba.write16(ich8::D31IR, 0x1100);
-        rcba.write16(ich8::D30IR, 0x0000);
-        rcba.write16(ich8::D29IR, 0x0002);
-        rcba.write16(ich8::D28IR, 0x3210);
-        rcba.write16(ich8::D27IR, 0x0003);
-        rcba.write16(ich8::D26IR, 0x0003);
-        rcba.write16(ich8::D25IR, 0x0001);
+        rcba.regs().d31ir.set(0x1100);
+        rcba.regs().d30ir.set(0x0000);
+        rcba.regs().d29ir.set(0x0002);
+        rcba.regs().d28ir.set(0x3210);
+        rcba.regs().d27ir.set(0x0003);
+        rcba.regs().d26ir.set(0x0003);
+        rcba.regs().d25ir.set(0x0001);
         self.enable_ioapic();
     }
 
     fn configure_late_rcba(&self, config: &Ich8LateRcbaConfig) {
         let rcba = self.rcba();
-        rcba.write32(ich8::D31IP, config.d31ip);
+        rcba.regs().d31ip.set(config.d31ip);
         if let Some(d30ip) = config.d30ip {
-            rcba.write32(ich8::D30IP, d30ip);
+            rcba.regs().d30ip.set(d30ip);
         }
-        rcba.write32(ich8::D29IP, config.d29ip);
-        rcba.write32(ich8::D28IP, config.d28ip);
-        rcba.write32(ich8::D27IP, config.d27ip);
+        rcba.regs().d29ip.set(config.d29ip);
+        rcba.regs().d28ip.set(config.d28ip);
+        rcba.regs().d27ip.set(config.d27ip);
         if let Some(d26ip) = config.d26ip {
-            rcba.write32(ich8::D26IP, d26ip);
+            rcba.regs().d26ip.set(d26ip);
         }
         if let Some(d25ip) = config.d25ip {
-            rcba.write32(ich8::D25IP, d25ip);
+            rcba.regs().d25ip.set(d25ip);
         }
 
-        rcba.write16(ich8::D31IR, config.d31ir);
-        rcba.write16(ich8::D30IR, config.d30ir);
-        rcba.write16(ich8::D29IR, config.d29ir);
-        rcba.write16(ich8::D28IR, config.d28ir);
-        rcba.write16(ich8::D27IR, config.d27ir);
+        rcba.regs().d31ir.set(config.d31ir);
+        rcba.regs().d30ir.set(config.d30ir);
+        rcba.regs().d29ir.set(config.d29ir);
+        rcba.regs().d28ir.set(config.d28ir);
+        rcba.regs().d27ir.set(config.d27ir);
         if let Some(d26ir) = config.d26ir {
-            rcba.write16(ich8::D26IR, d26ir);
+            rcba.regs().d26ir.set(d26ir);
         }
         if let Some(d25ir) = config.d25ir {
-            rcba.write16(ich8::D25IR, d25ir);
+            rcba.regs().d25ir.set(d25ir);
         }
 
         if let Some(iotr3) = config.iotr3 {
-            rcba.write32(ich8::IOTR3_LO, iotr3.lo);
-            rcba.write32(ich8::IOTR3_HI, iotr3.hi);
+            rcba.regs().iotr3_lo.set(iotr3.lo);
+            rcba.regs().iotr3_hi.set(iotr3.hi);
         }
     }
 }
@@ -1674,12 +1777,9 @@ impl EarlyInit for IntelIch8 {
         self.clear_disabled_device_commands();
         let rcba = self.rcba();
         let fd = self.function_disable_mask();
-        rcba.write32(ich8::RCBA_FD, fd);
+        rcba.regs().fd.set(fd);
         if self.config.disable_lan {
-            rcba.write32(
-                ich8::RCBA_FDSW,
-                rcba.read32(ich8::RCBA_FDSW) | ich8::FDSW_LAND,
-            );
+            rcba.regs().fdsw.modify(FDSW::LAN_DISABLE::SET);
         }
         self.early_chipset_settings();
         self.pm().write32(GPE0_STS_ICH8, 0xffff_ffff);
@@ -1721,8 +1821,8 @@ impl PostDramInit for IntelIch8 {
 impl FinalizeInit for IntelIch8 {
     fn finalize_init(&mut self) -> Result<(), ServiceError> {
         let rcba = self.rcba();
-        rcba.write32(ich8::RCBA_FDSW, rcba.read32(ich8::RCBA_FDSW) | (1 << 7));
-        rcba.write32(ich8::RCBA_MAP, rcba.read32(ich8::RCBA_MAP));
+        rcba.regs().fdsw.modify(FDSW::FUNCTION_DISABLE_LOCK::SET);
+        rcba.regs().map.set(rcba.regs().map.get());
         Ok(())
     }
 }
