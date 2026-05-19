@@ -10,4 +10,5 @@ fstart-arch-x86 = { workspace = true }
 fstart-lapic = { workspace = true }
 fstart-log = { workspace = true }
 fstart-microcode-intel = { workspace = true }
+fstart-smm = { workspace = true }
 ufmt = { workspace = true }

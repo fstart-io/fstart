@@ -15,12 +15,14 @@ pub mod runtime;
 
 pub use header::{CorebootOffsets, EntryDescriptor, HeaderError, SmmImageHeader};
 pub use installer::{
-    install_default_relocation_handler, install_default_relocation_table_handler,
-    install_pic_image, DefaultRelocationConfig, DefaultRelocationTableConfig, InstallConfig,
-    InstallError, InstalledSmmImage,
+    install_default_relocation_callback_stub, install_default_relocation_handler,
+    install_default_relocation_table_handler, install_pic_image, DefaultRelocationCallbackConfig,
+    DefaultRelocationConfig, DefaultRelocationTableConfig, InstallConfig, InstallError,
+    InstalledSmmImage,
 };
 pub use layout::{compute_common_base, compute_cpu_layout, CpuSmmLayout, LayoutError, SmramLayout};
 pub use runtime::{
     CorebootModuleArgs, SmmEntryParams, SmmRuntime, SMM_PLATFORM_DATA_ICH_GPE0_STS_OFFSET,
-    SMM_PLATFORM_DATA_ICH_PM_BASE, SMM_PLATFORM_INTEL_ICH, SMM_PLATFORM_NONE,
+    SMM_PLATFORM_DATA_ICH_PM_BASE, SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH,
+    SMM_PLATFORM_NONE,
 };

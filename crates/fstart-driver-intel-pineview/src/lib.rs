@@ -106,9 +106,7 @@ const SMRAM_D_OPEN: u8 = 1 << 6;
 const SMRAM_C_BASE_SEG: u8 = 0b010;
 const ICH7_PMBASE: u16 = 0x0500;
 const APM_CNT: u16 = 0x00b2;
-const SMM_DEFAULT_SMBASE: u64 = 0x30000;
 const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
-const EM64T101_SMBASE_SAVE_STATE_OFFSET: u16 = 0xfef8;
 const PCI_ECAM_SIZE: u64 = 0x1000_0000;
 const PCI_MMIO32_FALLBACK_BASE: u64 = 0x8000_0000;
 const PCI_PIO_BASE: u64 = 0x1000;
@@ -126,18 +124,14 @@ const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
 };
 
 struct CpuLayoutStore(UnsafeCell<[fstart_smm::CpuSmmLayout; fstart_smm::runtime::MAX_SMM_CPUS]>);
-struct SmbaseStore(UnsafeCell<[u64; fstart_smm::runtime::MAX_SMM_CPUS]>);
 
 // SAFETY: firmware invokes SMM installation from the BSP while SMRAM is open;
-// these scratch buffers are not shared with APs or interrupt context.
+// this scratch buffer is not shared with APs or interrupt context.
 unsafe impl Sync for CpuLayoutStore {}
-unsafe impl Sync for SmbaseStore {}
 
 static PINEVIEW_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
     [ZERO_CPU_LAYOUT; fstart_smm::runtime::MAX_SMM_CPUS],
 ));
-static PINEVIEW_SMM_RELOCATION_SMBASES: SmbaseStore =
-    SmbaseStore(UnsafeCell::new([0; fstart_smm::runtime::MAX_SMM_CPUS]));
 
 /// Pineview NB driver.
 pub struct IntelPineview {
@@ -942,17 +936,16 @@ impl SmmOps for IntelPineview {
         match result {
             Ok(installed) => {
                 let targets = &installed.cpus[..num_cpus as usize];
-                let smbases = unsafe { &mut *PINEVIEW_SMM_RELOCATION_SMBASES.0.get() };
-                smbases.fill(targets[0].smbase);
-                for (dst, cpu) in smbases.iter_mut().zip(targets.iter()) {
-                    *dst = cpu.smbase;
-                }
+                fstart_mp::prepare_default_smm_relocation(targets);
                 let default_handler = unsafe {
-                    fstart_smm::install_default_relocation_table_handler(
-                        fstart_smm::DefaultRelocationTableConfig {
-                            default_smbase: SMM_DEFAULT_SMBASE,
-                            target_smbases: smbases,
-                            save_state_smbase_offset: EM64T101_SMBASE_SAVE_STATE_OFFSET,
+                    fstart_smm::install_default_relocation_callback_stub(
+                        image,
+                        fstart_smm::DefaultRelocationCallbackConfig {
+                            default_smbase: fstart_mp::SMM_DEFAULT_SMBASE,
+                            cr3: Self::cr3(),
+                            callback: fstart_mp::default_smm_relocation_handler as *const ()
+                                as usize as u64,
+                            stack_top: fstart_mp::SMM_DEFAULT_ENTRY_STACK_TOP,
                         },
                     )
                 };

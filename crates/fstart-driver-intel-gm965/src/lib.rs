@@ -726,9 +726,7 @@ const SMRAM_D_LCK: u8 = 1 << 4;
 const SMRAM_D_OPEN: u8 = 1 << 6;
 const SMRAM_C_BASE_SEG: u8 = 0b010;
 const ICH8_PMBASE: u16 = 0x0500;
-const SMM_DEFAULT_SMBASE: u64 = 0x30000;
 const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
-const EM64T101_SMBASE_SAVE_STATE_OFFSET: u16 = 0xfef8;
 
 const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
     smbase: 0,
@@ -740,18 +738,14 @@ const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
 };
 
 struct CpuLayoutStore(UnsafeCell<[fstart_smm::CpuSmmLayout; fstart_smm::runtime::MAX_SMM_CPUS]>);
-struct SmbaseStore(UnsafeCell<[u64; fstart_smm::runtime::MAX_SMM_CPUS]>);
 
 // SAFETY: firmware invokes SMM installation from the BSP while SMRAM is open;
-// these scratch buffers are not shared with APs or interrupt context.
+// this scratch buffer is not shared with APs or interrupt context.
 unsafe impl Sync for CpuLayoutStore {}
-unsafe impl Sync for SmbaseStore {}
 
 static GM965_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
     [ZERO_CPU_LAYOUT; fstart_smm::runtime::MAX_SMM_CPUS],
 ));
-static GM965_SMM_RELOCATION_SMBASES: SmbaseStore =
-    SmbaseStore(UnsafeCell::new([0; fstart_smm::runtime::MAX_SMM_CPUS]));
 
 /// GM965 northbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1930,8 +1924,8 @@ impl SmmOps for IntelGm965 {
                     page_table_size: 0,
                     cr3: fstart_arch_x86::x86::controlregs::cr3(),
                     platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
-                    platform_flags: 0,
-                    platform_data: [ICH8_PMBASE as u64, 0x28, 0, 0],
+                    platform_flags: fstart_smm::SMM_PLATFORM_FLAG_ICH_GPE0_64BIT,
+                    platform_data: [ICH8_PMBASE as u64, 0x20, 0, 0],
                 },
                 layouts,
             )
@@ -1940,17 +1934,16 @@ impl SmmOps for IntelGm965 {
         match result {
             Ok(installed) => {
                 let targets = &installed.cpus[..num_cpus as usize];
-                let smbases = unsafe { &mut *GM965_SMM_RELOCATION_SMBASES.0.get() };
-                smbases.fill(targets[0].smbase);
-                for (dst, cpu) in smbases.iter_mut().zip(targets.iter()) {
-                    *dst = cpu.smbase;
-                }
+                fstart_mp::prepare_default_smm_relocation(targets);
                 let default_handler = unsafe {
-                    fstart_smm::install_default_relocation_table_handler(
-                        fstart_smm::DefaultRelocationTableConfig {
-                            default_smbase: SMM_DEFAULT_SMBASE,
-                            target_smbases: smbases,
-                            save_state_smbase_offset: EM64T101_SMBASE_SAVE_STATE_OFFSET,
+                    fstart_smm::install_default_relocation_callback_stub(
+                        image,
+                        fstart_smm::DefaultRelocationCallbackConfig {
+                            default_smbase: fstart_mp::SMM_DEFAULT_SMBASE,
+                            cr3: fstart_arch_x86::x86::controlregs::cr3(),
+                            callback: fstart_mp::default_smm_relocation_handler as *const ()
+                                as usize as u64,
+                            stack_top: fstart_mp::SMM_DEFAULT_ENTRY_STACK_TOP,
                         },
                     )
                 };

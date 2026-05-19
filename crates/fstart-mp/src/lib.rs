@@ -62,7 +62,7 @@
 #![no_std]
 
 use core::marker::PhantomData;
-use core::sync::atomic::{fence, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use fstart_lapic::Lapic;
 
@@ -270,6 +270,18 @@ impl ApMailbox {
 /// Maximum number of CPUs supported.  Determines static mailbox array size.
 const MAX_CPUS: usize = 64;
 
+/// Architectural default SMBASE used before SMM relocation.
+pub const SMM_DEFAULT_SMBASE: u64 = 0x30000;
+/// Architectural SMM entry address for the default SMBASE.
+pub const SMM_DEFAULT_ENTRY: u64 = SMM_DEFAULT_SMBASE + fstart_smm::layout::SMM_ENTRY_OFFSET;
+/// Temporary stack top for the default-SMRAM entry stub.
+pub const SMM_DEFAULT_ENTRY_STACK_TOP: u64 = SMM_DEFAULT_SMBASE + 0x7000;
+
+const SMM_SAVE_STATE_SIZE: u64 = 0x1_0000;
+const SMM_REVISION_OFFSET_FROM_TOP: u64 = 0x104;
+const SMM_EM64T101_REVISION: u32 = 0x0003_0101;
+const SMM_LEGACY_REVISION_OFFSET: u64 = 0xff04;
+
 /// Static mailbox array.  One slot per AP (index 0 = AP #1, etc.).
 /// Placed in BSS (zero-init = idle).
 static MAILBOXES: [ApMailbox; MAX_CPUS] = {
@@ -354,6 +366,8 @@ static CPU_INIT_FN: AtomicUsize = AtomicUsize::new(0);
 /// monomorphized `fn()` flight-plan callbacks.
 static SMM_OPS_DATA: AtomicUsize = AtomicUsize::new(0);
 static SMM_OPS_VTABLE: AtomicUsize = AtomicUsize::new(0);
+static SMM_RELOCATION_LOCK: AtomicBool = AtomicBool::new(false);
+static SMM_RELOCATION_SMBASES: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::new(0) }; MAX_CPUS];
 /// Global smm_relocate trampoline.
 static SMM_RELOCATE_FN: AtomicUsize = AtomicUsize::new(0);
 
@@ -413,15 +427,78 @@ fn load_smm_ops() -> Option<&'static dyn SmmOps> {
 }
 
 fn smm_relocate_trampoline() {
+    while SMM_RELOCATION_LOCK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+
     if let Some(ops) = load_smm_ops() {
         ops.smm_relocate();
     }
+
+    SMM_RELOCATION_LOCK.store(false, Ordering::Release);
 }
 
 fn smm_post_init_trampoline() {
     if let Some(ops) = load_smm_ops() {
         ops.post_smm_init();
     }
+}
+
+/// Prepare the SMBASE lookup table used by [`default_smm_relocation_handler`].
+pub fn prepare_default_smm_relocation(cpus: &[fstart_smm::CpuSmmLayout]) {
+    let fallback = cpus.first().map(|cpu| cpu.smbase as usize).unwrap_or(0);
+    for entry in SMM_RELOCATION_SMBASES.iter() {
+        entry.store(fallback, Ordering::Release);
+    }
+    for (slot, cpu) in SMM_RELOCATION_SMBASES.iter().zip(cpus.iter()) {
+        slot.store(cpu.smbase as usize, Ordering::Release);
+    }
+}
+
+/// Default-SMRAM relocation callback used by the temporary entry stub.
+///
+/// The temporary stub at `0x30000 + 0x8000` enters long mode and calls this
+/// function, mirroring coreboot's gen1 relocation flow where the SMM entry is
+/// only a trampoline back to normal firmware code. The MP flight plan
+/// serializes calls so the shared default save-state area is not corrupted.
+pub extern "C" fn default_smm_relocation_handler(_params: *mut fstart_smm::SmmEntryParams) {
+    let apic_id = core::arch::x86_64::__cpuid(1).ebx >> 24;
+    let apic_id = (apic_id as usize) & (MAX_CPUS - 1);
+    let smbase = SMM_RELOCATION_SMBASES[apic_id].load(Ordering::Acquire) as u32;
+    if smbase == 0 {
+        return;
+    }
+
+    let save_state_smbase = default_save_state_smbase_ptr();
+
+    // SAFETY: this runs in SMM from the default save-state window while SMRAM
+    // is open. `smm_relocate_trampoline()` serializes all CPUs.
+    unsafe { core::ptr::write_unaligned(save_state_smbase, smbase) };
+}
+
+fn default_save_state_smbase_ptr() -> *mut u32 {
+    let save_state_top = SMM_DEFAULT_SMBASE + SMM_SAVE_STATE_SIZE;
+    let revision_addr = (save_state_top - SMM_REVISION_OFFSET_FROM_TOP) as *const u32;
+
+    // SAFETY: during default-SMRAM relocation, the CPU has populated the
+    // architectural save state at the default SMBASE.
+    let revision = unsafe { core::ptr::read_unaligned(revision_addr) };
+    if revision == SMM_EM64T101_REVISION {
+        return revision_addr.wrapping_sub(1).cast_mut();
+    }
+
+    let legacy_revision_addr = (SMM_DEFAULT_SMBASE + SMM_LEGACY_REVISION_OFFSET) as *const u32;
+    // SAFETY: same default save-state area as above. Some emulators expose the
+    // legacy/AMD64 SMBASE field at 0xff00 with revision immediately after it.
+    let legacy_revision = unsafe { core::ptr::read_unaligned(legacy_revision_addr) };
+    if legacy_revision != 0 {
+        return legacy_revision_addr.wrapping_sub(1).cast_mut();
+    }
+
+    revision_addr.wrapping_sub(1).cast_mut()
 }
 
 /// AP mailbox loop — the terminal flight plan step for APs.
@@ -634,6 +711,7 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
     // --- Step 2: Set up global state for APs ---
     AP_COUNT.store(0, Ordering::Release);
     AP_IN_MAILBOX_LOOP.store(0, Ordering::Release);
+    SMM_RELOCATION_LOCK.store(false, Ordering::Release);
 
     // Store ops pointer globally so the monomorphized trampoline can access it.
     CPU_OPS_PTR.store(config.cpu_ops as *const C as usize, Ordering::Release);

@@ -10,6 +10,12 @@ pub const SMM_PLATFORM_NONE: u32 = 0;
 /// Intel ICH-style PMBASE I/O SMI dispatch backend.
 pub const SMM_PLATFORM_INTEL_ICH: u32 = 1;
 
+/// Intel ICH platform flag: clear a second 32-bit GPE0_STS register.
+///
+/// ICH7 has one 32-bit GPE0 block at PMBASE+0x28. ICH8 and newer split
+/// GPE0_STS into low/high dwords at PMBASE+0x20/0x24, with GPE0_EN at 0x28.
+pub const SMM_PLATFORM_FLAG_ICH_GPE0_64BIT: u32 = 1 << 0;
+
 /// Index of the Intel ICH PMBASE value in [`SmmEntryParams::platform_data`].
 pub const SMM_PLATFORM_DATA_ICH_PM_BASE: usize = 0;
 /// Index of the Intel ICH GPE0_STS offset in [`SmmEntryParams::platform_data`].

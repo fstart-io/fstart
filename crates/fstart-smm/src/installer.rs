@@ -77,6 +77,20 @@ pub struct DefaultRelocationTableConfig<'a> {
     pub save_state_smbase_offset: u16,
 }
 
+/// Inputs for installing a default-SMRAM entry stub that calls normal firmware
+/// relocation code.
+pub struct DefaultRelocationCallbackConfig {
+    /// Current/default SMBASE. On x86 this is normally `0x30000`, making the
+    /// architectural SMM entry point `0x38000`.
+    pub default_smbase: u64,
+    /// CR3 used by the copied entry stub before entering long mode.
+    pub cr3: u64,
+    /// Absolute address of the normal firmware callback to run in SMM.
+    pub callback: u64,
+    /// Stack top used by the temporary default-SMRAM entry stub.
+    pub stack_top: u64,
+}
+
 /// Errors from [`install_pic_image`] and related installer helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallError {
@@ -278,6 +292,73 @@ pub unsafe fn install_default_relocation_handler(
         target_smbases: core::slice::from_ref(&config.target_smbase),
         save_state_smbase_offset: config.save_state_smbase_offset,
     })
+}
+
+/// Install a default-SMRAM entry stub that enters long mode and calls a normal
+/// firmware relocation callback.
+///
+/// This mirrors coreboot's gen1 flow more closely than the tiny built-in table
+/// relocator: SMM entry happens at the architectural default entry point, but
+/// the work is performed by regular firmware code while SMRAM is open. The
+/// image's first precompiled entry stub is reused for the temporary default
+/// entry.
+///
+/// # Safety
+///
+/// The caller must have opened the chipset's default SMRAM/ASEG window, and
+/// `default_smbase + 0x8000` must be writable. `config.callback` must be an
+/// `extern "C" fn(*mut SmmEntryParams)`-compatible function that is executable
+/// under `config.cr3` while handling the SMI.
+pub unsafe fn install_default_relocation_callback_stub(
+    image: &[u8],
+    config: DefaultRelocationCallbackConfig,
+) -> Result<(), InstallError> {
+    let header = SmmImageHeader::parse(image)?;
+    if header.entry_count == 0 {
+        return Err(InstallError::NotEnoughEntries);
+    }
+
+    let stub = header.entry(image, 0)?;
+    check_entry_range(&header, image, &stub)?;
+    let params_end = stub
+        .params_offset
+        .checked_add(size_of::<SmmEntryParams>() as u32)
+        .ok_or(InstallError::Overflow)?;
+    if stub.params_offset == 0 || params_end > stub.stub_size {
+        return Err(InstallError::BadParams);
+    }
+
+    let entry_addr = config
+        .default_smbase
+        .checked_add(SMM_ENTRY_OFFSET)
+        .ok_or(InstallError::Overflow)?;
+    ptr::copy_nonoverlapping(
+        image.as_ptr().add(stub.stub_offset as usize),
+        entry_addr as *mut u8,
+        stub.stub_size as usize,
+    );
+
+    let params_addr = entry_addr
+        .checked_add(stub.params_offset as u64)
+        .ok_or(InstallError::Overflow)?;
+    ptr::write_unaligned(
+        params_addr as *mut SmmEntryParams,
+        SmmEntryParams {
+            cpu: 0,
+            stack_size: 0,
+            stack_top: config.stack_top,
+            common_entry: config.callback,
+            runtime: 0,
+            coreboot_module_args: 0,
+            cr3: config.cr3,
+            entry_base: entry_addr,
+            platform_kind: crate::runtime::SMM_PLATFORM_NONE,
+            platform_flags: 0,
+            platform_data: [0; 4],
+        },
+    );
+
+    Ok(())
 }
 
 /// Install an APIC-ID-indexed 16-bit default-SMRAM relocation handler.
