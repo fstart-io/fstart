@@ -6,6 +6,7 @@ license.workspace = true
 
 [lib]
 crate-type = ["staticlib"]
+test = false
 
 [dependencies]
 fstart-driver-intel-ich7 = { workspace = true }
