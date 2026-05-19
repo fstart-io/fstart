@@ -90,6 +90,7 @@ pub mod ich8 {
     pub const CXSTATE_CNF: u16 = 0xa9;
     pub const C4TIMING_CNT: u16 = 0xaa;
     pub const PMIR: u16 = 0xac;
+    pub const PMIR_USB_TRANSIENT_DISCONNECT: u32 = 3 << 8;
     pub const PMIR_CF9GR: u32 = 1 << 20;
     pub const GPIO_ROUT: u16 = 0xb8;
     pub const RCBA: u16 = 0xf0;
@@ -204,9 +205,6 @@ pub mod ich8 {
     pub const SATA_SIDX: u16 = 0xa0;
     pub const SATA_SDAT: u16 = 0xa4;
 
-    pub const EHCI_USBCMD: usize = 0x20;
-    pub const EHCI_USBCMD_RS: u32 = 1 << 0;
-    pub const EHCI_USBCMD_HCRST: u32 = 1 << 1;
     pub const EHCI_INTEL_FCREG: u16 = 0xfc;
 
     pub const D30F0_SMLT: u16 = 0x1b;
@@ -232,7 +230,6 @@ pub mod ich8 {
 const HPET_BASE: usize = 0xfed0_0000;
 const SATA_ABAR_BASE: usize = 0xfea0_0000;
 const HDA_TEMP_BAR: usize = 0xfed1_0000;
-const EHCI_TEMP_BAR: usize = 0xfed1_b000;
 const GPE0_STS_ICH8: u16 = 0x20;
 const GPE0_EN_ICH8: u16 = 0x28;
 const SLP_TYP_S3: u32 = 0x1400;
@@ -863,7 +860,12 @@ impl IntelIch8 {
 
     fn configure_power_options(&self) {
         let lpc = self.lpc();
-        lpc.or32(ich8::PMIR, ich8::PMIR_CF9GR);
+        // Match coreboot/vendor BIOS: enable USB transient-disconnect detect
+        // (D31:F0 0xad bits [1:0]) and global reset on CF9 writes.
+        lpc.or32(
+            ich8::PMIR,
+            ich8::PMIR_USB_TRANSIENT_DISCONNECT | ich8::PMIR_CF9GR,
+        );
 
         let mut gen_pmcon3 = lpc.read8(ich8::GEN_PMCON_3) & !1;
         if self.config.power_on_after_fail == 0 {
@@ -1173,41 +1175,17 @@ impl IntelIch8 {
         fstart_log::info!("intel-ich8: SATA init complete ports={:#x}", ports as u32);
     }
 
-    fn ehci_reset_controller(&self, dev: u8, func: u8, fd_bit: u32) {
+    fn ehci_init_controller(&self, dev: u8, func: u8) {
         let ehci = ecam::PciDevBdf::new(0, dev, func);
         if ehci.read16(0) == 0xffff {
             return;
         }
-        let rcba = self.rcba();
-        let fd = rcba.read32(ich8::RCBA_FD);
-        let original_bar0 = ehci.read32(ich8::PCI_BAR0);
-        let original_cmd = ehci.read16(ich8::PCI_COMMAND);
-        rcba.write32(ich8::RCBA_FD, fd & !fd_bit);
-        ehci.write32(ich8::PCI_BAR0, EHCI_TEMP_BAR as u32);
-        ehci.write16(ich8::PCI_COMMAND, original_cmd | ich8::PCI_CMD_MEMORY);
-        // SAFETY: temporary EHCI BAR0 maps the controller MMIO window.
-        unsafe {
-            let usbcmd = (EHCI_TEMP_BAR + ich8::EHCI_USBCMD) as *mut u32;
-            let val = fstart_mmio::read32(usbcmd as *const u32);
-            fstart_mmio::write32(
-                usbcmd,
-                (val & !ich8::EHCI_USBCMD_RS) | ich8::EHCI_USBCMD_HCRST,
-            );
-        }
-        for _ in 0..1000 {
-            core::hint::spin_loop();
-        }
-        // Program EHCIIR the same way as coreboot's ICH7/ICH9-family EHCI
-        // setup: EHCIIR[3:2] = 10b, plus Intel-specific bits 17 and 29, while
-        // preserving all unrelated bits.
-        ehci.modify32(
-            ich8::EHCI_INTEL_FCREG,
-            !(3 << 2),
-            (2 << 2) | (1 << 29) | (1 << 17),
-        );
-        ehci.write16(ich8::PCI_COMMAND, original_cmd);
-        ehci.write32(ich8::PCI_BAR0, original_bar0);
-        rcba.write32(ich8::RCBA_FD, fd);
+
+        // Match coreboot's current ICH8 EHCI init: do not assign a temporary
+        // BAR or reset the controller here. Resource assignment owns BAR0;
+        // ramstage only enables bus mastering and sets Intel EHCIIR bits.
+        ehci.or16(ich8::PCI_COMMAND, ich8::PCI_CMD_MASTER);
+        ehci.or32(ich8::EHCI_INTEL_FCREG, (1 << 29) | (1 << 17));
     }
 
     fn usb_init(&self) {
@@ -1215,14 +1193,10 @@ impl IntelIch8 {
             return;
         };
         if usb.ehci[0] {
-            self.ehci_reset_controller(ich8::EHCI1_DEV, ich8::EHCI1_FUNC, ich8::FD_EHCI1D);
-            ecam::PciDevBdf::new(0, ich8::EHCI1_DEV, ich8::EHCI1_FUNC)
-                .or16(ich8::PCI_COMMAND, ich8::PCI_CMD_MASTER);
+            self.ehci_init_controller(ich8::EHCI1_DEV, ich8::EHCI1_FUNC);
         }
         if usb.ehci[1] {
-            self.ehci_reset_controller(ich8::EHCI2_DEV, ich8::EHCI2_FUNC, ich8::FD_EHCI2D);
-            ecam::PciDevBdf::new(0, ich8::EHCI2_DEV, ich8::EHCI2_FUNC)
-                .or16(ich8::PCI_COMMAND, ich8::PCI_CMD_MASTER);
+            self.ehci_init_controller(ich8::EHCI2_DEV, ich8::EHCI2_FUNC);
         }
         const UHCI: [(u8, u8); 5] = [(0x1d, 0), (0x1d, 1), (0x1d, 2), (0x1a, 0), (0x1a, 1)];
         for (idx, (dev, func)) in UHCI.iter().copied().enumerate() {
@@ -1273,14 +1247,29 @@ impl IntelIch8 {
         }
     }
 
-    fn pcie_init(&self) {
+    fn pcie_port_cir_init(&self) {
         for func in 0u8..6 {
             let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func);
             if port.read16(0) == 0xffff {
                 continue;
             }
+
+            // Match coreboot i82801hx/pcie.c CIR programming: set CIR 0x300
+            // bit 21 and write 0x40 to CIR 0x324 without touching other hidden
+            // config bits.
             port.or32(ich8::D28FX_CIR_300, 1 << 21);
             port.write8(ich8::D28FX_CIR_324, 0x40);
+        }
+    }
+
+    fn pcie_init(&self) {
+        self.pcie_port_cir_init();
+
+        for func in 0u8..6 {
+            let port = ecam::PciDevBdf::new(0, ich8::PCIE_DEV, func);
+            if port.read16(0) == 0xffff {
+                continue;
+            }
             port.or32(ich8::D28FX_ASPM_MOBILE, 1);
             if (port.read32(ich8::D28FX_LCTL) & 3) == 3 {
                 port.or32(ich8::D28FX_ASPM_MOBILE, 1 << 1);
