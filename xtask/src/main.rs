@@ -15,8 +15,11 @@ use std::process;
 
 pub mod assemble;
 pub mod build_board;
+mod build_plan;
+mod image;
 mod inspect;
 mod qemu;
+mod toolchain;
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "fstart firmware build orchestrator")]

@@ -333,13 +333,13 @@
 
     microcode: Some(Intel((
         files: [
-            "../../../intel-microcode/intel-ucode/06-0f-02",
-            "../../../intel-microcode/intel-ucode/06-0f-06",
-            "../../../intel-microcode/intel-ucode/06-0f-07",
-            "../../../intel-microcode/intel-ucode/06-0f-0a",
-            "../../../intel-microcode/intel-ucode/06-0f-0b",
-            "../../../intel-microcode/intel-ucode/06-0f-0d",
-            "../../../intel-microcode/intel-ucode/06-16-01",
+            "../../intel-microcode/intel-ucode/06-0f-02",
+            "../../intel-microcode/intel-ucode/06-0f-06",
+            "../../intel-microcode/intel-ucode/06-0f-07",
+            "../../intel-microcode/intel-ucode/06-0f-0a",
+            "../../intel-microcode/intel-ucode/06-0f-0b",
+            "../../intel-microcode/intel-ucode/06-0f-0d",
+            "../../intel-microcode/intel-ucode/06-16-01",
         ],
         early: true,
         mp: true,

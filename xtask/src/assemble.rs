@@ -350,7 +350,7 @@ fn assemble_impl(
             );
         }
 
-        crate::build_board::patch_allwinner_egon_ffs(&mut image_bytes, bootblock_size)?;
+        crate::image::egon::patch_ffs(&mut image_bytes, bootblock_size)?;
     }
 
     // Write the FFS image
