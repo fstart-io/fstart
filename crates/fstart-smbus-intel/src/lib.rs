@@ -43,6 +43,7 @@ pio_register_structs! {
         (0x05 => data0: PioRegister<u8>),
         (0x06 => data1: PioRegister<u8>),
         (0x07 => block_data: PioRegister<u8>),
+        (0x09 => receive_slave_addr: PioRegister<u8>),
     }
 }
 
@@ -136,19 +137,25 @@ impl I801SmBus {
     pub fn enable_on_i801(bus: u8, dev: u8, func: u8, smbus_base: u16) -> Self {
         const SMB_BASE: u16 = 0x20;
         const HOSTC: u16 = 0x40;
-        const HST_EN: u32 = 1;
+        const HST_EN: u8 = 1;
         const PCI_COMMAND: u16 = 0x04;
         const PCI_CMD_IO: u16 = 0x0001;
 
         let smbus_pci = ecam::EcamDevice::new(bus, dev, func);
         smbus_pci.write32(SMB_BASE, (smbus_base as u32) | 1);
-        smbus_pci.write32(HOSTC, HST_EN);
+        // HOSTC is an 8-bit PCI config register; do not clobber adjacent bytes.
+        smbus_pci.write8(HOSTC, HST_EN);
         let cmd = smbus_pci.read16(PCI_COMMAND);
         smbus_pci.write16(PCI_COMMAND, cmd | PCI_CMD_IO);
         let s = Self { base: smbus_base };
         s.host_reset();
         fstart_log::info!("i801-smbus: enabled at I/O base {:#x}", smbus_base);
         s
+    }
+
+    /// Program the receive-slave address register used by Intel common SMBus init.
+    pub fn set_receive_slave_addr(&self, addr: u8) {
+        self.regs().receive_slave_addr().set(addr);
     }
 
     /// Reset the SMBus host controller.

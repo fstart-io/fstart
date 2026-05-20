@@ -78,10 +78,14 @@ pub struct FadtConfig {
     pub pm1a_evt_blk: u32,
     /// PM1a Control Block I/O port base.
     pub pm1a_cnt_blk: u32,
+    /// PM2 Control Block I/O port base.
+    pub pm2_cnt_blk: u32,
     /// PM Timer Block I/O port base.
     pub pm_tmr_blk: u32,
     /// GPE0 Block I/O port base.
     pub gpe0_blk: u32,
+    /// GPE0 Block length in bytes.
+    pub gpe0_blk_len: u8,
     /// SCI interrupt number.
     pub sci_int: u16,
     /// IAPC boot arch flags (8042, legacy devices, etc.).
@@ -103,8 +107,10 @@ impl Default for FadtConfig {
             pm_profile: PmProfile::Unspecified,
             pm1a_evt_blk: 0,
             pm1a_cnt_blk: 0,
+            pm2_cnt_blk: 0,
             pm_tmr_blk: 0,
             gpe0_blk: 0,
+            gpe0_blk_len: 8,
             sci_int: 0,
             iapc_boot_arch: 0,
             smi_cmd: 0,
@@ -332,6 +338,17 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
         )
     }
 
+    /// Helper for register blocks where ACPI wants byte access regardless of width.
+    fn gas_io_byte_access(port: u32, bit_width: u8) -> GAS {
+        GAS::new(
+            AddressSpace::SystemIo,
+            bit_width,
+            0,
+            AccessSize::ByteAccess,
+            port as u64,
+        )
+    }
+
     let mut b = FADTBuilder::new(crate::OEM_ID, crate::OEM_TABLE_ID, crate::OEM_REVISION);
 
     // DSDT pointer (64-bit).
@@ -350,14 +367,16 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // Legacy PM block addresses (32-bit I/O port).
     b.pm1a_evt_blk = config.pm1a_evt_blk.into();
     b.pm1a_cnt_blk = config.pm1a_cnt_blk.into();
+    b.pm2_cnt_blk = config.pm2_cnt_blk.into();
     b.pm_tmr_blk = config.pm_tmr_blk.into();
     b.gpe0_blk = config.gpe0_blk.into();
 
     // PM block lengths.
     b.pm1_evt_len = 4;
     b.pm1_cnt_len = 2;
+    b.pm2_cnt_len = 1;
     b.pm_tmr_len = 4;
-    b.gpe0_blk_len = 8;
+    b.gpe0_blk_len = config.gpe0_blk_len;
 
     // C-state latencies.
     b.p_lvl2_lat = 1u16.into();
@@ -374,6 +393,7 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
         .flag(Flags::Wbinvd)
         .flag(Flags::ProcC1)
         .flag(Flags::SlpButton)
+        .flag(Flags::SealedCase)
         .flag(Flags::RtcS4)
         .flag(Flags::TmrValExt)
         .flag(Flags::UsePlatformClock);
@@ -381,8 +401,9 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // Extended PM block addresses (GAS).
     b.x_pm1a_evt_blk = gas_io(config.pm1a_evt_blk, 32);
     b.x_pm1a_cnt_blk = gas_io(config.pm1a_cnt_blk, 16);
+    b.x_pm2_cnt_blk = gas_io(config.pm2_cnt_blk, 8);
     b.x_pm_tmr_blk = gas_io(config.pm_tmr_blk, 32);
-    b.x_gpe0_blk = gas_io(config.gpe0_blk, 64);
+    b.x_gpe0_blk = gas_io_byte_access(config.gpe0_blk, config.gpe0_blk_len.saturating_mul(8));
 
     let fadt = b.finalize();
     let mut bytes = Vec::new();

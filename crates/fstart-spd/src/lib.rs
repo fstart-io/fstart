@@ -9,6 +9,7 @@
 use fstart_services::{ServiceError, SmBus};
 
 pub mod ddr2;
+pub mod ddr3;
 
 // Re-export DDR2 for backward compatibility — existing callers use
 // `fstart_spd::decode_dimm`, `fstart_spd::SPD_NUM_ROWS`, etc.
