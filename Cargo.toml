@@ -59,7 +59,10 @@ members = [
   "crates/fstart-driver-intel-ich7",
   "crates/fstart-driver-intel-gm965",
   "crates/fstart-driver-intel-ich8",
+  "crates/fstart-driver-intel-sandybridge",
+  "crates/fstart-driver-intel-bd82x6x",
   "crates/fstart-mainboard-lenovo-x61",
+  "crates/fstart-mainboard-lenovo-x220",
   "crates/fstart-driver-i2c-ck505",
   "crates/fstart-smbus-intel",
   "crates/fstart-spd",
@@ -173,7 +176,10 @@ fstart-driver-intel-pineview = { path = "crates/fstart-driver-intel-pineview" }
 fstart-driver-intel-ich7 = { path = "crates/fstart-driver-intel-ich7" }
 fstart-driver-intel-gm965 = { path = "crates/fstart-driver-intel-gm965" }
 fstart-driver-intel-ich8 = { path = "crates/fstart-driver-intel-ich8" }
+fstart-driver-intel-sandybridge = { path = "crates/fstart-driver-intel-sandybridge" }
+fstart-driver-intel-bd82x6x = { path = "crates/fstart-driver-intel-bd82x6x" }
 fstart-mainboard-lenovo-x61 = { path = "crates/fstart-mainboard-lenovo-x61" }
+fstart-mainboard-lenovo-x220 = { path = "crates/fstart-mainboard-lenovo-x220" }
 fstart-driver-i2c-ck505 = { path = "crates/fstart-driver-i2c-ck505" }
 fstart-smbus-intel = { path = "crates/fstart-smbus-intel" }
 fstart-spd = { path = "crates/fstart-spd" }

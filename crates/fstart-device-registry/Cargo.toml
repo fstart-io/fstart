@@ -36,7 +36,10 @@ fstart-driver-intel-pineview = { path = "../fstart-driver-intel-pineview", optio
 fstart-driver-intel-ich7 = { path = "../fstart-driver-intel-ich7", optional = true }
 fstart-driver-intel-gm965 = { path = "../fstart-driver-intel-gm965", optional = true }
 fstart-driver-intel-ich8 = { path = "../fstart-driver-intel-ich8", optional = true }
+fstart-driver-intel-sandybridge = { path = "../fstart-driver-intel-sandybridge", optional = true }
+fstart-driver-intel-bd82x6x = { path = "../fstart-driver-intel-bd82x6x", optional = true }
 fstart-mainboard-lenovo-x61 = { path = "../fstart-mainboard-lenovo-x61", optional = true }
+fstart-mainboard-lenovo-x220 = { path = "../fstart-mainboard-lenovo-x220", optional = true }
 fstart-driver-i2c-ck505 = { path = "../fstart-driver-i2c-ck505", optional = true }
 
 [features]
@@ -67,7 +70,10 @@ intel-pineview = ["dep:fstart-driver-intel-pineview"]
 intel-ich7 = ["dep:fstart-driver-intel-ich7"]
 intel-gm965 = ["dep:fstart-driver-intel-gm965"]
 intel-ich8 = ["dep:fstart-driver-intel-ich8"]
+intel-sandybridge = ["dep:fstart-driver-intel-sandybridge"]
+intel-bd82x6x = ["dep:fstart-driver-intel-bd82x6x"]
 lenovo-x61-mainboard = ["dep:fstart-mainboard-lenovo-x61"]
+lenovo-x220-mainboard = ["dep:fstart-mainboard-lenovo-x220"]
 i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
 
 # Meta-feature to enable all drivers (used by codegen on host)
@@ -97,6 +103,9 @@ all-drivers = [
   "intel-ich7",
   "intel-gm965",
   "intel-ich8",
+  "intel-sandybridge",
+  "intel-bd82x6x",
   "lenovo-x61-mainboard",
+  "lenovo-x220-mainboard",
   "i2c-ck505",
 ]

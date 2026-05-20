@@ -1775,7 +1775,24 @@ fn phase_init_body(
                 .services
                 .iter()
                 .any(|s| s.as_str() == "Mainboard");
-            if service_name == "PreConsoleInit" && is_mainboard {
+            if is_mainboard
+                && matches!(
+                    service_name,
+                    "PreConsoleInit" | "PostDramInit" | "FinalizeInit"
+                )
+            {
+                let mainboard_method = match service_name {
+                    "PreConsoleInit" => format_ident!("pre_console_init"),
+                    "PostDramInit" => format_ident!("ramstage_init"),
+                    "FinalizeInit" => format_ident!("finalize"),
+                    _ => unreachable!(),
+                };
+                let mainboard_method_with_sb = match service_name {
+                    "PreConsoleInit" => format_ident!("pre_console_init_with_southbridge"),
+                    "PostDramInit" => format_ident!("ramstage_init_with_southbridge"),
+                    "FinalizeInit" => format_ident!("finalize_with_southbridge"),
+                    _ => unreachable!(),
+                };
                 if let Some(sb_field) = southbridge_field.as_ref() {
                     quote! {
                         #id_lit => {
@@ -1786,7 +1803,7 @@ fn phase_init_body(
                             let sb = self.#sb_field
                                 .as_mut()
                                 .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                            _Mainboard::pre_console_init_with_southbridge(dev, sb)
+                            _Mainboard::#mainboard_method_with_sb(dev, sb)
                                 .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
                         }
                     }
@@ -1797,7 +1814,7 @@ fn phase_init_body(
                             let dev = self.#field
                                 .as_mut()
                                 .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                            _Mainboard::pre_console_init(dev)
+                            _Mainboard::#mainboard_method(dev)
                                 .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
                         }
                     }
