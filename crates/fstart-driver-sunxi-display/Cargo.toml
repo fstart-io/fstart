@@ -1,0 +1,13 @@
+[package]
+name = "fstart-driver-sunxi-display"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+description = "Allwinner sunxi display framebuffer handoff driver"
+
+[dependencies]
+fstart-mmio = { workspace = true }
+fstart-services = { workspace = true }
+serde = { workspace = true }
+tock-registers = { workspace = true }

@@ -7,18 +7,19 @@
 
 use fstart_types::DeviceId;
 
-/// A 256-bit bitset over [`DeviceId`] (the full `u8` range).
+/// A 128-bit bitset over [`DeviceId`].
 ///
-/// `Copy`, stack-only, zero heap — fits the executor's `no_std`
-/// constraints. At four 64-bit words, operations compile to a handful
-/// of instructions on every supported architecture.
+/// Current boards are far below this limit, and keeping the mask to two
+/// machine words matters in SRAM bootblocks: several masks live in the board
+/// adapter and executor stack. Codegen rejects boards with 128+ devices so the
+/// runtime never sees an out-of-range id.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DeviceMask([u64; 4]);
+pub struct DeviceMask([u64; 2]);
 
 impl DeviceMask {
     /// An empty mask (no devices set).
     pub const fn new() -> Self {
-        Self([0; 4])
+        Self([0; 2])
     }
 
     /// Mark `id` as present.
@@ -38,6 +39,10 @@ impl DeviceMask {
     /// Check whether `id` is present.
     #[inline]
     pub fn contains(&self, id: DeviceId) -> bool {
+        #[cfg(debug_assertions)]
+        if id >= 128 {
+            return false;
+        }
         let (word, bit) = Self::slot(id);
         self.0[word] & (1u64 << bit) != 0
     }
@@ -45,7 +50,7 @@ impl DeviceMask {
     /// Union of `self` and `other`.
     #[inline]
     pub fn union_with(&mut self, other: &DeviceMask) {
-        for i in 0..4 {
+        for i in 0..2 {
             self.0[i] |= other.0[i];
         }
     }
@@ -75,7 +80,7 @@ mod tests {
     #[test]
     fn empty_mask_contains_nothing() {
         let m = DeviceMask::new();
-        for id in 0u8..=255 {
+        for id in 0u8..128 {
             assert!(!m.contains(id), "empty mask should not contain {id}");
         }
     }
@@ -87,16 +92,12 @@ mod tests {
         m.set(63);
         m.set(64);
         m.set(127);
-        m.set(255);
         assert!(m.contains(0));
         assert!(m.contains(63));
         assert!(m.contains(64));
         assert!(m.contains(127));
-        assert!(m.contains(255));
         assert!(!m.contains(1));
         assert!(!m.contains(62));
-        assert!(!m.contains(128));
-        assert!(!m.contains(254));
     }
 
     #[test]

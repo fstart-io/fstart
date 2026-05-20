@@ -51,11 +51,9 @@
         (
             name: "uart0",
             driver: Ns16550((
-                base_addr: 0x02500000,
+                regs: Mmio(base: 0x02500000, reg_shift: 2, reg_width: 0),
                 clock_freq: 24000000,
                 baud_rate: 115200,
-                reg_shift: 2,
-                reg_width: 4,
             )),
             services: ["Console"],
         ),
@@ -85,6 +83,23 @@
             )),
             services: ["BlockDevice"],
         ),
+        // Display framebuffer — exported to CrabEFI as GOP.
+        (
+            name: "display0",
+            driver: SunxiDisplay((
+                gen: Sun20iD1,
+                output: Hdmi,
+                ccu_base: 0x02001000,
+                de_base: 0x05000000,
+                tcon_base: 0x05461000,
+                hdmi_base: 0x05500000,
+                fb_base: 0x47D00000,
+                width: 800,
+                height: 480,
+                stride: 0,
+            )),
+            services: ["Framebuffer", "PostDramInit"],
+        ),
     ],
 
     // Three-stage boot: bootblock (SRAM) → main (DRAM M-mode) → uefi (DRAM S-mode).
@@ -107,7 +122,7 @@
                 ),
             ],
             load_addr: 0x00020000,
-            stack_size: 0x1000,
+            stack_size: 0xc00,
             runs_from: Ram,
         ),
         // Stage 1: main — runs from DRAM in M-mode.
@@ -138,13 +153,14 @@
         ),
         // Stage 2: uefi — runs from DRAM in S-mode.
         // Entered by OpenSBI via mret with fresh stack/BSS. Reinitializes
-        // UART + MMC from config, wraps MMC as a CrabEFI BlockDevice, and
-        // calls CrabEFI's init_platform().
+        // UART + MMC from config, initializes display scanout/GOP, wraps MMC
+        // as a CrabEFI BlockDevice, and calls CrabEFI's init_platform().
         (
             name: "uefi",
             capabilities: [
                 ConsoleInit( device: "uart0" ),
                 DriverInit,
+                PostDramInit( devices: ["display0"] ),
                 PayloadLoad,
             ],
             load_addr: 0x41400000,

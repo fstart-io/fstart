@@ -118,6 +118,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     tokens.extend(generate_imports(
         &config.devices,
         &parsed.driver_instances,
+        &parsed.device_tree,
         capabilities,
         embed_anchor,
     ));
@@ -163,6 +164,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     tokens.extend(plan_gen::generate_stage_plan(
         config,
         &parsed.driver_instances,
+        &parsed.device_tree,
         capabilities,
         stage_name,
     ));
@@ -232,6 +234,7 @@ fn generate_platform_externs(platform: Platform) -> TokenStream {
 fn generate_imports(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
+    device_tree: &[fstart_types::DeviceNode],
     capabilities: &[Capability],
     _embed_anchor: bool,
 ) -> TokenStream {
@@ -244,10 +247,16 @@ fn generate_imports(
         use fstart_services::device::Device;
     });
 
-    // Check if any device provides bus services — import those traits too
-    let has_block_device = devices
-        .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "BlockDevice"));
+    let materialized =
+        board_gen::stage_materialized_indices(devices, instances, device_tree, capabilities);
+
+    // Check if any materialized device provides bus services — import those traits too
+    let has_block_device = materialized.iter().any(|idx| {
+        devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "BlockDevice")
+    });
     if has_block_device {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BlockDevice; });
     }
@@ -267,20 +276,31 @@ fn generate_imports(
 
     // BusDevice trait is needed when any device has a parent bus (e.g., PCI
     // child devices use BusDevice::new_on_bus).
-    let has_bus_children = devices.iter().any(|d| d.parent.is_some());
+    let has_bus_children = materialized
+        .iter()
+        .any(|idx| devices[*idx].parent.is_some());
     if has_bus_children {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::device::BusDevice; });
     }
 
-    let has_i2c = devices
-        .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "I2cBus"));
-    let has_spi = devices
-        .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "SpiBus"));
-    let has_gpio = devices
-        .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "GpioController"));
+    let has_i2c = materialized.iter().any(|idx| {
+        devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "I2cBus")
+    });
+    let has_spi = materialized.iter().any(|idx| {
+        devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "SpiBus")
+    });
+    let has_gpio = materialized.iter().any(|idx| {
+        devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "GpioController")
+    });
 
     if has_i2c {
         tokens.extend(quote! {
@@ -298,16 +318,22 @@ fn generate_imports(
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::GpioController; });
     }
 
-    let has_pci = devices
-        .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+    let has_pci = materialized.iter().any(|idx| {
+        devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "PciRootBus")
+    });
     if has_pci {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::PciRootBus; });
     }
 
-    let has_framebuffer = devices
-        .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "Framebuffer"));
+    let has_framebuffer = materialized.iter().any(|idx| {
+        devices[*idx]
+            .services
+            .iter()
+            .any(|s| s.as_str() == "Framebuffer")
+    });
     if has_framebuffer {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::Framebuffer; });
     }
@@ -317,7 +343,8 @@ fn generate_imports(
     // fstart_types/fstart_acpi and fstart_device_registry respectively,
     // and are only used at codegen time, not in the generated stage code.
     let mut seen_modules: Vec<&str> = Vec::new();
-    for inst in instances {
+    for idx in materialized.iter().copied() {
+        let inst = &instances[idx];
         if inst.is_acpi_only() || inst.is_structural() {
             continue;
         }

@@ -35,16 +35,16 @@
         (
             name: "uart0",
             driver: Ns16550((
-                base_addr: 0x10000000,
+                regs: Mmio(base: 0x10000000, reg_shift: 0, reg_width: 0),
                 clock_freq: 3686400,
                 baud_rate: 115200,
             )),
             services: ["Console"],
         ),
         // PCIe host bridge — ECAM at 0x30000000 (from QEMU virt FDT).
-        // Stage 0 enumerates the bus, sizes BARs, allocates MMIO addresses,
-        // and programs hardware.  CrabEFI (stage 1) receives ecam_base via
-        // PlatformConfig for its own config-space reads.
+        // Stage 0 enumerates the bus for firmware use. Stage 1 constructs
+        // the root again so CrabEFI receives ecam_base via PlatformConfig
+        // instead of relying on FDT discovery.
         (
             name: "pci0",
             driver: PciEcam((
@@ -93,6 +93,7 @@
             name: "uefi",
             capabilities: [
                 ConsoleInit( device: "uart0" ),
+                PciInit( device: "pci0" ),
                 PayloadLoad,
             ],
             load_addr: 0x80400000,

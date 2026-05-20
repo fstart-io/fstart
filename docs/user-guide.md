@@ -66,6 +66,7 @@ firmware filesystem. Set them to `None` for boards where flash is not
 CPU-addressable (e.g. eMMC-only boards).
 
 Region `kind` values:
+
 - `Rom` — read-only flash (XIP or memory-mapped)
 - `Ram` — writable memory (DRAM, SRAM)
 - `Reserved` — present but not used by fstart
@@ -276,21 +277,21 @@ into RAM before executing.
 Capabilities are the steps a stage performs, in order. fstart generates code
 for each one.
 
-| Capability | Description |
-|---|---|
-| `ConsoleInit { device: "name" }` | Initialize the named UART and register it as the global logger. Must come before any logging. |
-| `ClockInit { device: "name" }` | Initialize a clock controller (CCU). On sunxi, must come before `ConsoleInit`. |
-| `MemoryInit` | DRAM initialization stub. No-op on QEMU; use `DramInit` for real hardware. |
-| `DramInit { device: "name" }` | Run full DRAM training using the named `MemoryController` device. Logs detected size. Halts on failure. |
-| `DriverInit` | Initialize all devices not already initialized by a targeted capability. |
-| `LateDriverInit` | Post-OS-prep lockdown stub. Run after `FdtPrepare`, before `PayloadLoad`. |
-| `BootMedia(medium)` | Declare the boot medium that FFS operations read from (see below). |
-| `SigVerify` | Verify the Ed25519 manifest signature and per-file digests of the FFS image. |
-| `FdtPrepare` | Copy the platform DTB to `dtb_addr`, patch `/chosen/bootargs`, and update `/memory`. Requires `heap_size`. |
-| `PayloadLoad` | Load the kernel and firmware blobs from FFS and jump to the OS. Final step; does not return. |
-| `StageLoad { next_stage: "name" }` | Load the named next stage from FFS and jump to it. |
-| `LoadNextStage { devices: [...], next_stage: "name" }` | Raw block-device stage load (no FFS). Used for sunxi bootblocks running from SRAM. |
-| `ReturnToFel` | Return to Allwinner FEL USB mode. ARMv7/sunxi only. |
+| Capability                                             | Description                                                                                                                                                                                                                           |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ConsoleInit { device: "name" }`                       | Initialize the named UART and register it as the global logger. Must come before any logging.                                                                                                                                         |
+| `ClockInit { device: "name" }`                         | Initialize a clock controller (CCU). On sunxi, must come before `ConsoleInit`.                                                                                                                                                        |
+| `MemoryInit`                                           | DRAM initialization stub. No-op on QEMU; use `DramInit` for real hardware.                                                                                                                                                            |
+| `DramInit { device: "name" }`                          | Run full DRAM training using the named `MemoryController` device. Logs detected size. Halts on failure.                                                                                                                               |
+| `DriverInit`                                           | Initialize devices materialized for this stage that were not already initialized by targeted capabilities. Devices are materialized from the stage's capability references, parent buses, and service providers needed by that stage. |
+| `LateDriverInit`                                       | Post-OS-prep lockdown stub. Run after `FdtPrepare`, before `PayloadLoad`.                                                                                                                                                             |
+| `BootMedia(medium)`                                    | Declare the boot medium that FFS operations read from (see below).                                                                                                                                                                    |
+| `SigVerify`                                            | Verify the Ed25519 manifest signature and per-file digests of the FFS image.                                                                                                                                                          |
+| `FdtPrepare`                                           | Copy the platform DTB to `dtb_addr`, patch `/chosen/bootargs`, and update `/memory`. Requires `heap_size`.                                                                                                                            |
+| `PayloadLoad`                                          | Load the kernel and firmware blobs from FFS and jump to the OS. Final step; does not return.                                                                                                                                          |
+| `StageLoad { next_stage: "name" }`                     | Load the named next stage from FFS and jump to it.                                                                                                                                                                                    |
+| `LoadNextStage { devices: [...], next_stage: "name" }` | Raw block-device stage load (no FFS). Used for sunxi bootblocks running from SRAM.                                                                                                                                                    |
+| `ReturnToFel`                                          | Return to Allwinner FEL USB mode. ARMv7/sunxi only.                                                                                                                                                                                   |
 
 #### Boot media
 
@@ -373,6 +374,7 @@ payload: Some((
 ```
 
 `fdt` sources:
+
 - `Platform` — use the DTB passed by the platform firmware or QEMU
 - `Override("path/to/file.dtb")` — embed a specific DTB file in the FFS image
 
@@ -436,16 +438,16 @@ the board file.
 
 ## Supported boards
 
-| Board | Platform | Notes |
-|---|---|---|
-| `qemu-riscv64` | RISC-V 64 | QEMU virt, NS16550, boots Linux via OpenSBI |
-| `qemu-aarch64` | AArch64 | QEMU virt, PL011, boots Linux via ATF |
-| `qemu-armv7` | ARMv7 | QEMU virt, PL011, boots Linux directly |
-| `qemu-riscv64-multi` | RISC-V 64 | Two-stage: bootblock (ROM) → main (RAM) |
-| `qemu-aarch64-multi` | AArch64 | Two-stage: bootblock (ROM) → main (RAM) |
-| `qemu-riscv64-flex` | RISC-V 64 | Flexible dispatch mode |
-| `qemu-aarch64-flex` | AArch64 | Flexible dispatch mode |
-| `bananapi-m1` | ARMv7 | Allwinner A20, real hardware, eGON, multi-stage |
+| Board                | Platform  | Notes                                           |
+| -------------------- | --------- | ----------------------------------------------- |
+| `qemu-riscv64`       | RISC-V 64 | QEMU virt, NS16550, boots Linux via OpenSBI     |
+| `qemu-aarch64`       | AArch64   | QEMU virt, PL011, boots Linux via ATF           |
+| `qemu-armv7`         | ARMv7     | QEMU virt, PL011, boots Linux directly          |
+| `qemu-riscv64-multi` | RISC-V 64 | Two-stage: bootblock (ROM) → main (RAM)         |
+| `qemu-aarch64-multi` | AArch64   | Two-stage: bootblock (ROM) → main (RAM)         |
+| `qemu-riscv64-flex`  | RISC-V 64 | Flexible dispatch mode                          |
+| `qemu-aarch64-flex`  | AArch64   | Flexible dispatch mode                          |
+| `bananapi-m1`        | ARMv7     | Allwinner A20, real hardware, eGON, multi-stage |
 
 The `boards/` directory for each of these is a working example. Copying one
 and adjusting the addresses and driver config is the fastest way to add a new

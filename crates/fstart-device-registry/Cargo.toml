@@ -18,6 +18,7 @@ fstart-driver-sunxi-ccu = { path = "../fstart-driver-sunxi-ccu", optional = true
 fstart-driver-sunxi-a20-dramc = { path = "../fstart-driver-sunxi-a20-dramc", optional = true }
 fstart-driver-sunxi-mmc = { path = "../fstart-driver-sunxi-mmc", optional = true }
 fstart-driver-sunxi-spi = { path = "../fstart-driver-sunxi-spi", optional = true }
+fstart-driver-sunxi-display = { path = "../fstart-driver-sunxi-display", optional = true }
 fstart-driver-sunxi-h3-ccu = { path = "../fstart-driver-sunxi-h3-ccu", optional = true }
 fstart-driver-sunxi-h3-dramc = { path = "../fstart-driver-sunxi-h3-dramc", optional = true }
 fstart-driver-sunxi-d1-ccu = { path = "../fstart-driver-sunxi-d1-ccu", optional = true }
@@ -49,6 +50,7 @@ sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
 sunxi-a20-dramc = ["dep:fstart-driver-sunxi-a20-dramc"]
 sunxi-mmc = ["dep:fstart-driver-sunxi-mmc"]
 sunxi-spi = ["dep:fstart-driver-sunxi-spi"]
+sunxi-display = ["dep:fstart-driver-sunxi-display"]
 sunxi-h3-ccu = ["dep:fstart-driver-sunxi-h3-ccu"]
 sunxi-h3-dramc = ["dep:fstart-driver-sunxi-h3-dramc"]
 sunxi-d1-ccu = ["dep:fstart-driver-sunxi-d1-ccu"]
@@ -79,6 +81,7 @@ all-drivers = [
   "sunxi-a20-dramc",
   "sunxi-mmc",
   "sunxi-spi",
+  "sunxi-display",
   "sunxi-h3-ccu",
   "sunxi-h3-dramc",
   "sunxi-d1-ccu",

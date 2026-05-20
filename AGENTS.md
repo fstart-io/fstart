@@ -62,7 +62,7 @@ cargo fmt --all -- --check   # CI-style check
 cargo test --workspace --exclude fstart-stage --exclude fstart-runtime \
     --exclude fstart-alloc \
     --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64 \
-    --exclude fstart-platform-armv7
+    --exclude fstart-platform-armv7 --exclude fstart-platform-x86_64
 
 # Run a single test by name
 cargo test --package fstart-types -- test_name_here
@@ -79,60 +79,62 @@ via `fstart-types` or `fstart-codegen` (which are `std`-capable).
 
 ### Host-side (std) crates
 
-| Crate | Purpose |
-|---|---|
-| `xtask` | Build orchestrator, QEMU launcher, eGON patching |
-| `fstart-codegen` | RON→Rust codegen, linker script gen (used in build.rs) |
-| `fstart-device-registry` | Aggregates all driver `Config` types for codegen |
+| Crate                    | Purpose                                                |
+| ------------------------ | ------------------------------------------------------ |
+| `xtask`                  | Build orchestrator, QEMU launcher, eGON patching       |
+| `fstart-codegen`         | RON→Rust codegen, linker script gen (used in build.rs) |
+| `fstart-device-registry` | Aggregates all driver `Config` types for codegen       |
 
 ### Shared crates (std feature for host, no_std for target)
 
-| Crate | Purpose |
-|---|---|
+| Crate          | Purpose                                                     |
+| -------------- | ----------------------------------------------------------- |
 | `fstart-types` | `BoardConfig`, `MemoryMap`, `StageLayout`, all shared types |
-| `fstart-ffs` | Firmware filesystem reader/builder |
+| `fstart-ffs`   | Firmware filesystem reader/builder                          |
 
 ### Target (no_std) crates — core infrastructure
 
-| Crate | Purpose |
-|---|---|
-| `fstart-stage` | Final binary — `include!`s generated code |
-| `fstart-runtime` | `#[panic_handler]` |
-| `fstart-services` | Trait defs: `Console`, `BlockDevice`, `Timer`, `Device`, `BusDevice` |
-| `fstart-capabilities` | Capability impls (ConsoleInit, DramInit, PayloadLoad, etc.) |
-| `fstart-arch` | Architecture utils: `udelay`, `sdelay`, `mdelay`, `halt` (feature-gated: `armv7`, `aarch64`, `riscv64`) |
-| `fstart-log` | Logging macros (`info!`, `error!`, etc.) backed by ufmt |
-| `fstart-mmio` | MMIO register access helpers |
-| `fstart-crypto` | Signature verify, hashing |
-| `fstart-alloc` | Allocator (skeleton) |
+| Crate                 | Purpose                                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------------- |
+| `fstart-stage`        | Final binary — `include!`s generated code                                                               |
+| `fstart-runtime`      | `#[panic_handler]`                                                                                      |
+| `fstart-services`     | Trait defs: `Console`, `BlockDevice`, `Timer`, `Device`, `BusDevice`                                    |
+| `fstart-capabilities` | Capability impls (ConsoleInit, DramInit, PayloadLoad, etc.)                                             |
+| `fstart-arch`         | Architecture utils: `udelay`, `sdelay`, `mdelay`, `halt` (feature-gated: `armv7`, `aarch64`, `riscv64`) |
+| `fstart-log`          | Logging macros (`info!`, `error!`, etc.) backed by ufmt                                                 |
+| `fstart-mmio`         | MMIO register access helpers                                                                            |
+| `fstart-crypto`       | Signature verify, hashing                                                                               |
+| `fstart-alloc`        | Allocator (skeleton)                                                                                    |
 
 ### Target (no_std) crates — platform / SoC
 
-| Crate | Purpose |
-|---|---|
-| `fstart-platform-riscv64` | `_start` entry for RISC-V 64 |
-| `fstart-platform-aarch64` | `_start` entry for AArch64 |
-| `fstart-platform-armv7` | `_start` entry for ARMv7 (optional `sunxi` feature) |
-| `fstart-soc-sunxi` | Allwinner eGON boot header, FEL support, boot media detection |
+| Crate                     | Purpose                                                       |
+| ------------------------- | ------------------------------------------------------------- |
+| `fstart-platform-riscv64` | `_start` entry for RISC-V 64                                  |
+| `fstart-platform-aarch64` | `_start` entry for AArch64                                    |
+| `fstart-platform-armv7`   | `_start` entry for ARMv7 (optional `sunxi` feature)           |
+| `fstart-soc-sunxi`        | Allwinner eGON boot header, FEL support, boot media detection |
 
 ### Target (no_std) crates — individual drivers
 
-| Crate | Driver | Services |
-|---|---|---|
-| `fstart-driver-ns16550` | NS16550(A) UART | `Console` |
-| `fstart-driver-pl011` | ARM PL011 UART | `Console` |
-| `fstart-driver-designware-i2c` | DesignWare APB I2C | `I2cBus` |
-| `fstart-driver-sunxi-ccu` | Allwinner A20 CCU | `ClockController` |
-| `fstart-driver-sunxi-a20-dramc` | Allwinner A20 DRAM controller | `MemoryController` |
-| `fstart-driver-sunxi-mmc` | Allwinner A20 SD/MMC | `BlockDevice` |
-| `fstart-sunxi-ccu-regs` | Shared CCU register defs (used by sunxi drivers) | — |
+| Crate                           | Driver                                           | Services           |
+| ------------------------------- | ------------------------------------------------ | ------------------ |
+| `fstart-driver-ns16550`         | NS16550(A) UART                                  | `Console`          |
+| `fstart-driver-pl011`           | ARM PL011 UART                                   | `Console`          |
+| `fstart-driver-designware-i2c`  | DesignWare APB I2C                               | `I2cBus`           |
+| `fstart-driver-sunxi-ccu`       | Allwinner A20 CCU                                | `ClockController`  |
+| `fstart-driver-sunxi-a20-dramc` | Allwinner A20 DRAM controller                    | `MemoryController` |
+| `fstart-driver-sunxi-mmc`       | Allwinner A20 SD/MMC                             | `BlockDevice`      |
+| `fstart-sunxi-ccu-regs`         | Shared CCU register defs (used by sunxi drivers) | —                  |
 
 ## Code Style
 
 ### Formatting
+
 Default `rustfmt` (no `rustfmt.toml`). 4-space indent. Edition 2021.
 
 ### Imports — use this order, with blank line between groups
+
 ```rust
 // 1. External crates (core, alloc, third-party)
 use core::ptr;
@@ -149,6 +151,7 @@ use crate::stage::StageLayout;
 ```
 
 ### Naming
+
 - **Crates**: `fstart-<component>` (hyphenated)
 - **Modules**: `snake_case` (`ron_loader`, `stage_gen`)
 - **Types/Traits**: `PascalCase` (`BoardConfig`, `Ns16550`, `Console`)
@@ -157,6 +160,7 @@ use crate::stage::StageLayout;
 - **Heapless strings**: always alias `use heapless::String as HString`
 
 ### Type Conventions
+
 - `#![no_std]` everywhere except `xtask`, `fstart-codegen`, and `fstart-device-registry`
 - Bounded containers only: `heapless::Vec<T, N>`, `HString<N>` — never `alloc::Vec`
   in firmware crates
@@ -168,25 +172,29 @@ use crate::stage::StageLayout;
 - Enums also derive `Copy, PartialEq, Eq` when small/fieldless
 
 ### Error Handling
-| Context | Pattern |
-|---|---|
-| Host tools (xtask) | `Result<T, String>` with `.map_err(\|e\| format!(...))` |
-| `no_std` services | `Result<T, ServiceError>` (enum: `Timeout`, `HardwareError`, …) |
-| Drivers | `Result<Self, DeviceError>` for construction (`MissingResource`, `InitFailed`) |
-| `build.rs` | `unwrap_or_else(\|_\| panic!("..."))` |
-| Codegen errors | Emit `compile_error!("...")` in generated source |
+
+| Context            | Pattern                                                                        |
+| ------------------ | ------------------------------------------------------------------------------ |
+| Host tools (xtask) | `Result<T, String>` with `.map_err(\|e\| format!(...))`                        |
+| `no_std` services  | `Result<T, ServiceError>` (enum: `Timeout`, `HardwareError`, …)                |
+| Drivers            | `Result<Self, DeviceError>` for construction (`MissingResource`, `InitFailed`) |
+| `build.rs`         | `unwrap_or_else(\|_\| panic!("..."))`                                          |
+| Codegen errors     | Emit `compile_error!("...")` in generated source                               |
 
 Never use `.unwrap()` silently in firmware code. In host-side code, prefer
 `.map_err()` over `.unwrap()`.
 
 ### Doc Comments
+
 - `//!` module-level doc on every `lib.rs` and significant modules
 - `///` on every public struct, enum, trait, and function
 - Inline `//` comments for register offsets, bit flags, and non-obvious logic
 - `// SAFETY:` before every `unsafe` block
 
 ### Driver Pattern
+
 Every driver struct:
+
 1. Lives in its own crate `fstart-driver-<name>/src/lib.rs`
 2. Defines registers with `register_structs!` / `register_bitfields!` (tock-registers)
 3. Stores `regs: &'static <Regs>` constructed from base address in `new()`
@@ -199,6 +207,7 @@ Every driver struct:
 See [docs/driver-model.md](docs/driver-model.md) for the full architecture.
 
 ### Board RON Files
+
 - Located at `boards/<board-name>/board.ron`
 - Raw RON tuple syntax `( ... )` — no outer struct wrapper like `Board(...)`
 - Deserializes to `fstart_types::board::BoardConfig`
@@ -226,6 +235,7 @@ boards/qemu-riscv64/board.ron
 ## Feature Flags
 
 Features flow from RON → xtask → `--features` on `fstart-stage`:
+
 - `riscv64` / `aarch64` — selects platform crate (optional dep)
 - `ns16550` / `pl011` / `sifive-uart` — enables driver modules
 - `fit` — FIT image runtime parsing (via `fstart-fit` + `ffs`)

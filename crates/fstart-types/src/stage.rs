@@ -305,7 +305,11 @@ pub enum Capability {
         #[serde(default)]
         smm_provider: Option<HString<32>>,
     },
-    /// Enumerate and initialize all declared devices/drivers.
+    /// Initialize all devices materialized for this stage.
+    ///
+    /// Codegen materializes devices reachable from this stage's capabilities
+    /// (including parent buses and selected service providers). Late-only
+    /// devices that no capability references in this stage are not pulled in.
     DriverInit,
     /// Enumerate a PCI root bus, allocate BAR resources, and enable devices.
     ///
@@ -327,17 +331,16 @@ pub enum Capability {
         /// Name of the next stage to load
         next_stage: HString<32>,
     },
-    /// Load the next stage from FFS and boot it via SBI firmware (OpenSBI).
+    /// Load the next stage from FFS and enter it via platform firmware.
     ///
-    /// Combines loading both the SBI firmware and the next stage, then
-    /// boots the SBI firmware with `next_addr` pointing to the loaded
-    /// stage's entry point. The SBI firmware initializes in M-mode and
-    /// `mret`s to the next stage in S-mode.
+    /// The exact protocol is platform-specific. On RISC-V this currently
+    /// loads OpenSBI's `fw_dynamic` firmware and sets `next_addr` to the
+    /// loaded stage entry, so OpenSBI initializes M-mode services and enters
+    /// the target stage in S-mode. Other platforms may add their own backend
+    /// without changing board-level stage structure.
     ///
-    /// This is used for UEFI payloads where stage 0 does M-mode hardware
-    /// init (UART, PCI BARs) and stage 1 runs CrabEFI in S-mode with a
-    /// completely fresh stack frame — no stack corruption from the mode
-    /// transition.
+    /// This is used for payload stages that must run after firmware-owned
+    /// privilege setup with a fresh stack and entry context.
     FirmwareBoot {
         /// Name of the next stage to load from FFS and boot via firmware.
         next_stage: HString<32>,
