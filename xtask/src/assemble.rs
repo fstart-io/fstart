@@ -1186,6 +1186,7 @@ fn assemble_board_vbt_blobs(
     for instance in instances {
         let vbt_file = match instance {
             DriverInstance::IntelGm965(config) => config.igd.vbt_file.as_ref(),
+            DriverInstance::IntelGm45(config) => config.igd.vbt_file.as_ref(),
             DriverInstance::IntelPineview(config) => {
                 config.igd.as_ref().and_then(|igd| igd.vbt_file.as_ref())
             }

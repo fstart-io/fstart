@@ -487,6 +487,7 @@ version = "0.1.0"
 name = "fstart-arch-x86"
 version = "0.1.0"
 dependencies = [
+ "fstart-pio",
  "x86",
 ]
 
@@ -571,11 +572,15 @@ dependencies = [
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
  "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-gm45",
  "fstart-driver-intel-gm965",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-ich8",
+ "fstart-driver-intel-ich9",
  "fstart-driver-intel-pineview",
  "fstart-driver-ite8721f",
+ "fstart-driver-lenovo-h8",
+ "fstart-driver-lenovo-pmh7",
  "fstart-driver-ns16550",
  "fstart-driver-nsc-pc87382",
  "fstart-driver-nsc-pc87392",
@@ -592,6 +597,7 @@ dependencies = [
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",
  "fstart-driver-sunxi-spi",
+ "fstart-mainboard-lenovo-x200",
  "fstart-mainboard-lenovo-x61",
  "fstart-services",
  "fstart-types",
@@ -652,6 +658,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-intel-gm45"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
+ "fstart-cpu-intel",
+ "fstart-crypto",
+ "fstart-driver-pci-ecam",
+ "fstart-ecam",
+ "fstart-ffs",
+ "fstart-igd-opregion",
+ "fstart-lapic",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-mp",
+ "fstart-pci",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-smm",
+ "fstart-spd",
+ "fstart-types",
+ "heapless",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-driver-intel-gm965"
 version = "0.1.0"
 dependencies = [
@@ -663,6 +700,7 @@ dependencies = [
  "fstart-driver-pci-ecam",
  "fstart-ecam",
  "fstart-ffs",
+ "fstart-igd-opregion",
  "fstart-lapic",
  "fstart-log",
  "fstart-mmio",
@@ -731,6 +769,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-intel-ich9"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
+ "fstart-ecam",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-pci",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-smm-runtime",
+ "fstart-superio",
+ "heapless",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-driver-intel-pineview"
 version = "0.1.0"
 dependencies = [
@@ -762,6 +825,30 @@ name = "fstart-driver-ite8721f"
 version = "0.1.0"
 dependencies = [
  "fstart-superio",
+]
+
+[[package]]
+name = "fstart-driver-lenovo-h8"
+version = "0.1.0"
+dependencies = [
+ "fstart-ec-acpi",
+ "fstart-log",
+ "fstart-services",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-lenovo-pmh7"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
+ "ufmt",
 ]
 
 [[package]]
@@ -960,6 +1047,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-ec-acpi"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch-x86",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
+]
+
+[[package]]
 name = "fstart-ecam"
 version = "0.1.0"
 dependencies = [
@@ -1014,6 +1111,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-igd-opregion"
+version = "0.1.0"
+
+[[package]]
 name = "fstart-lapic"
 version = "0.1.0"
 dependencies = [
@@ -1027,6 +1128,23 @@ name = "fstart-log"
 version = "0.1.0"
 dependencies = [
  "fstart-services",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-mainboard-lenovo-x200"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
+ "fstart-driver-lenovo-h8",
+ "fstart-gpio-ich",
+ "fstart-pio",
+ "fstart-services",
+ "fstart-smm-runtime",
+ "heapless",
+ "serde",
  "ufmt",
 ]
 
@@ -1192,6 +1310,8 @@ version = "0.1.0"
 dependencies = [
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-ich8",
+ "fstart-driver-intel-ich9",
+ "fstart-mainboard-lenovo-x200",
  "fstart-mainboard-lenovo-x61",
  "fstart-smm-runtime",
 ]
@@ -1210,6 +1330,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-log",
  "fstart-services",
+ "serde",
 ]
 
 [[package]]
@@ -1228,11 +1349,15 @@ dependencies = [
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
  "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-gm45",
  "fstart-driver-intel-gm965",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-ich8",
+ "fstart-driver-intel-ich9",
  "fstart-driver-intel-pineview",
  "fstart-driver-ite8721f",
+ "fstart-driver-lenovo-h8",
+ "fstart-driver-lenovo-pmh7",
  "fstart-driver-ns16550",
  "fstart-driver-nsc-pc87382",
  "fstart-driver-nsc-pc87392",
@@ -1253,6 +1378,7 @@ dependencies = [
  "fstart-fit",
  "fstart-gpio-ich",
  "fstart-log",
+ "fstart-mainboard-lenovo-x200",
  "fstart-mainboard-lenovo-x61",
  "fstart-mp",
  "fstart-pio",

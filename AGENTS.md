@@ -162,6 +162,12 @@ use crate::stage::StageLayout;
   in firmware crates
 - MMIO registers: use the `tock-registers` crate (`register_structs!`, `register_bitfields!`)
   for all new drivers — never raw `read_volatile`/`write_volatile`
+- Prefer named `register_structs!` fields and `register_bitfields!` values over raw
+  `read8`/`write32` helpers. For undocumented fixed offsets, add clearly named
+  `undoc_<offset>` fields to the typed register overlay. Keep raw BAR-local helpers
+  only for genuinely dynamic offsets (for example channel/rank/lane formulas), use
+  the common bounded `fstart_mmio::RawMmioBar` trait, and do not copy per-driver
+  read/write boilerplate.
 - `unsafe impl Send + Sync` on MMIO driver structs with a `// SAFETY:` comment
 - Drivers implement the `Device` trait with `type Config`, `fn new(&Config)`, `fn init()`
 - Serde derives on all config types: `#[derive(Debug, Clone, Serialize, Deserialize)]`

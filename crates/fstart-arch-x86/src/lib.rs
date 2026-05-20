@@ -164,6 +164,50 @@ pub fn physical_address_limit() -> u64 {
     physical_address_mask().saturating_add(0x1000)
 }
 
+/// Legacy PC chipset initialization helpers.
+#[cfg(target_arch = "x86_64")]
+pub mod legacy_pc {
+    /// Initialize the legacy ISA DMA controllers to the conventional firmware
+    /// state used before handing devices to option ROMs or an OS.
+    pub fn isa_dma_init() {
+        // SAFETY: firmware runs at CPL0 and these are fixed PC/AT DMA ports.
+        unsafe {
+            fstart_pio::outb(0x0d, 0x00);
+            fstart_pio::outb(0x0b, 0x40);
+            fstart_pio::outb(0x0b, 0x41);
+            fstart_pio::outb(0x0b, 0x42);
+            fstart_pio::outb(0x0b, 0x43);
+            fstart_pio::outb(0xda, 0x00);
+            fstart_pio::outb(0xd6, 0xc0);
+            fstart_pio::outb(0xd6, 0x41);
+            fstart_pio::outb(0xd6, 0x42);
+            fstart_pio::outb(0xd6, 0x43);
+            fstart_pio::outb(0xd4, 0x00);
+            fstart_pio::outb(0x0f, 0x0f);
+            let _ = fstart_pio::inb(0x80);
+        }
+    }
+
+    /// Initialize both 8259 PICs and mask all legacy IRQ lines.
+    pub fn i8259_init() {
+        // SAFETY: firmware runs at CPL0 and these are fixed PC/AT PIC ports.
+        unsafe {
+            fstart_pio::outb(0x20, 0x11);
+            fstart_pio::outb(0xa0, 0x11);
+            fstart_pio::outb(0x21, 0x20);
+            fstart_pio::outb(0xa1, 0x28);
+            fstart_pio::outb(0x21, 0x04);
+            fstart_pio::outb(0xa1, 0x02);
+            fstart_pio::outb(0x21, 0x01);
+            fstart_pio::outb(0xa1, 0x01);
+            fstart_pio::outb(0x21, 0xff);
+            fstart_pio::outb(0xa1, 0xff);
+            let elcr2 = fstart_pio::inb(0x4d1);
+            fstart_pio::outb(0x4d1, elcr2 | (1 << 1));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // x86 MTRR helpers
 // ---------------------------------------------------------------------------

@@ -561,9 +561,6 @@ pub struct IntelIch7Config {
     /// Enable PATA (legacy IDE) function.
     #[serde(default)]
     pub pata: bool,
-    /// ECAM base address (must match the Pineview NB config).
-    #[serde(default = "default_ecam_base")]
-    pub ecam_base: u64,
     /// SMBus I/O base address.
     #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
@@ -583,10 +580,6 @@ pub struct IntelIch7Config {
 
 fn default_c3_latency() -> u16 {
     85 // typical ICH7 value
-}
-
-fn default_ecam_base() -> u64 {
-    0xE000_0000
 }
 
 fn default_smbus_base() -> u16 {

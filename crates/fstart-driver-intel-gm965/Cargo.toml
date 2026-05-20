@@ -24,6 +24,7 @@ fstart-crypto = { workspace = true, optional = true }
 fstart-driver-pci-ecam = { workspace = true }
 fstart-ecam = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
+fstart-igd-opregion = { workspace = true }
 fstart-log = { workspace = true }
 fstart-lapic = { workspace = true }
 fstart-mmio = { workspace = true }

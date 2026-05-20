@@ -80,8 +80,16 @@ pub struct FadtConfig {
     pub pm1a_cnt_blk: u32,
     /// PM Timer Block I/O port base.
     pub pm_tmr_blk: u32,
+    /// PM1 event block length in bytes.
+    pub pm1_evt_len: u8,
+    /// PM1 control block length in bytes.
+    pub pm1_cnt_len: u8,
+    /// PM timer block length in bytes.
+    pub pm_tmr_len: u8,
     /// GPE0 Block I/O port base.
     pub gpe0_blk: u32,
+    /// GPE0 block length in bytes.
+    pub gpe0_blk_len: u8,
     /// SCI interrupt number.
     pub sci_int: u16,
     /// IAPC boot arch flags (8042, legacy devices, etc.).
@@ -104,7 +112,11 @@ impl Default for FadtConfig {
             pm1a_evt_blk: 0,
             pm1a_cnt_blk: 0,
             pm_tmr_blk: 0,
+            pm1_evt_len: 0,
+            pm1_cnt_len: 0,
+            pm_tmr_len: 0,
             gpe0_blk: 0,
+            gpe0_blk_len: 0,
             sci_int: 0,
             iapc_boot_arch: 0,
             smi_cmd: 0,
@@ -354,10 +366,10 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     b.gpe0_blk = config.gpe0_blk.into();
 
     // PM block lengths.
-    b.pm1_evt_len = 4;
-    b.pm1_cnt_len = 2;
-    b.pm_tmr_len = 4;
-    b.gpe0_blk_len = 8;
+    b.pm1_evt_len = config.pm1_evt_len;
+    b.pm1_cnt_len = config.pm1_cnt_len;
+    b.pm_tmr_len = config.pm_tmr_len;
+    b.gpe0_blk_len = config.gpe0_blk_len;
 
     // C-state latencies.
     b.p_lvl2_lat = 1u16.into();
@@ -374,6 +386,7 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
         .flag(Flags::Wbinvd)
         .flag(Flags::ProcC1)
         .flag(Flags::SlpButton)
+        .flag(Flags::DckCap)
         .flag(Flags::RtcS4)
         .flag(Flags::TmrValExt)
         .flag(Flags::UsePlatformClock);
@@ -381,8 +394,8 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // Extended PM block addresses (GAS).
     b.x_pm1a_evt_blk = gas_io(config.pm1a_evt_blk, 32);
     b.x_pm1a_cnt_blk = gas_io(config.pm1a_cnt_blk, 16);
-    b.x_pm_tmr_blk = gas_io(config.pm_tmr_blk, 32);
-    b.x_gpe0_blk = gas_io(config.gpe0_blk, 64);
+    b.x_pm_tmr_blk = gas_io(config.pm_tmr_blk, (config.pm_tmr_len * 8).min(32));
+    b.x_gpe0_blk = gas_io(config.gpe0_blk, config.gpe0_blk_len * 8);
 
     let fadt = b.finalize();
     let mut bytes = Vec::new();

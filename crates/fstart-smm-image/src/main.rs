@@ -66,7 +66,8 @@ fn parse_platform(s: &str) -> Result<SmmPlatform, String> {
         "qemu-q35" => Ok(SmmPlatform::QemuQ35),
         "pineview-ich7" => Ok(SmmPlatform::PineviewIch7),
         "lenovo-x61" => Ok(SmmPlatform::LenovoX61),
-        _ => Err("expected qemu-q35, pineview-ich7, or lenovo-x61".to_string()),
+        "lenovo-x200" => Ok(SmmPlatform::LenovoX200),
+        _ => Err("expected qemu-q35, pineview-ich7, lenovo-x61, or lenovo-x200".to_string()),
     }
 }
 

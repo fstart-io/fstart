@@ -37,6 +37,11 @@ fstart-driver-intel-ich7 = { path = "../fstart-driver-intel-ich7", optional = tr
 fstart-driver-intel-gm965 = { path = "../fstart-driver-intel-gm965", optional = true }
 fstart-driver-intel-ich8 = { path = "../fstart-driver-intel-ich8", optional = true }
 fstart-mainboard-lenovo-x61 = { path = "../fstart-mainboard-lenovo-x61", optional = true }
+fstart-driver-intel-gm45 = { path = "../fstart-driver-intel-gm45", optional = true }
+fstart-driver-intel-ich9 = { path = "../fstart-driver-intel-ich9", optional = true }
+fstart-mainboard-lenovo-x200 = { path = "../fstart-mainboard-lenovo-x200", optional = true }
+fstart-driver-lenovo-h8 = { path = "../fstart-driver-lenovo-h8", optional = true }
+fstart-driver-lenovo-pmh7 = { path = "../fstart-driver-lenovo-pmh7", optional = true }
 fstart-driver-i2c-ck505 = { path = "../fstart-driver-i2c-ck505", optional = true }
 
 [features]
@@ -68,6 +73,11 @@ intel-ich7 = ["dep:fstart-driver-intel-ich7"]
 intel-gm965 = ["dep:fstart-driver-intel-gm965"]
 intel-ich8 = ["dep:fstart-driver-intel-ich8"]
 lenovo-x61-mainboard = ["dep:fstart-mainboard-lenovo-x61"]
+intel-gm45 = ["dep:fstart-driver-intel-gm45"]
+intel-ich9 = ["dep:fstart-driver-intel-ich9"]
+lenovo-x200-mainboard = ["dep:fstart-mainboard-lenovo-x200"]
+lenovo-h8 = ["dep:fstart-driver-lenovo-h8"]
+lenovo-pmh7 = ["dep:fstart-driver-lenovo-pmh7"]
 i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
 
 # Meta-feature to enable all drivers (used by codegen on host)
@@ -98,5 +108,10 @@ all-drivers = [
   "intel-gm965",
   "intel-ich8",
   "lenovo-x61-mainboard",
+  "intel-gm45",
+  "intel-ich9",
+  "lenovo-x200-mainboard",
+  "lenovo-h8",
+  "lenovo-pmh7",
   "i2c-ck505",
 ]

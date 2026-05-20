@@ -1,0 +1,14 @@
+[package]
+name = "fstart-driver-lenovo-h8"
+description = "Lenovo ThinkPad H8 embedded controller driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-ec-acpi = { workspace = true }
+fstart-log = { workspace = true }
+fstart-services = { workspace = true }
+heapless = { workspace = true }
+serde = { workspace = true }
+ufmt = { workspace = true }

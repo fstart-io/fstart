@@ -72,13 +72,79 @@ pub(in crate::stage_gen) fn generate_acpi_prepare(
     }
 
     // Platform assembly.
-    let platform_block = generate_platform_acpi(&acpi_cfg.platform);
+    let platform_block = generate_platform_acpi(&acpi_cfg.platform, devices, instances);
 
     quote! {
         #platform_block
         fstart_capabilities::acpi::prepare(&platform_acpi, |dsdt_aml, extra_tables| {
             #device_blocks
         });
+    }
+}
+
+fn x86_fadt_pm_tokens(pm: &fstart_types::acpi::X86FadtPmRegisters) -> TokenStream {
+    let pm1a_evt_blk = Literal::u32_unsuffixed(pm.pm1a_evt_blk);
+    let pm1a_cnt_blk = Literal::u32_unsuffixed(pm.pm1a_cnt_blk);
+    let pm_tmr_blk = Literal::u32_unsuffixed(pm.pm_tmr_blk);
+    let pm1_evt_len = Literal::u8_unsuffixed(pm.pm1_evt_len);
+    let pm1_cnt_len = Literal::u8_unsuffixed(pm.pm1_cnt_len);
+    let pm_tmr_len = Literal::u8_unsuffixed(pm.pm_tmr_len);
+    let gpe0_blk = Literal::u32_unsuffixed(pm.gpe0_blk);
+    let gpe0_blk_len = Literal::u8_unsuffixed(pm.gpe0_blk_len);
+    quote! {
+        fstart_types::acpi::X86FadtPmRegisters {
+            pm1a_evt_blk: #pm1a_evt_blk,
+            pm1a_cnt_blk: #pm1a_cnt_blk,
+            pm_tmr_blk: #pm_tmr_blk,
+            pm1_evt_len: #pm1_evt_len,
+            pm1_cnt_len: #pm1_cnt_len,
+            pm_tmr_len: #pm_tmr_len,
+            gpe0_blk: #gpe0_blk,
+            gpe0_blk_len: #gpe0_blk_len,
+        }
+    }
+}
+
+fn x86_fadt_pm_from_southbridge(
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+) -> Option<fstart_types::acpi::X86FadtPmRegisters> {
+    devices
+        .iter()
+        .zip(instances.iter())
+        .find(|(dev, _)| dev.services.iter().any(|s| s.as_str() == "Southbridge"))
+        .and_then(|(_, inst)| inst.x86_fadt_pm_registers())
+}
+
+fn pm_profile_tokens(profile: fstart_types::acpi::AcpiPmProfile) -> TokenStream {
+    match profile {
+        fstart_types::acpi::AcpiPmProfile::Unspecified => {
+            quote! { fstart_types::acpi::AcpiPmProfile::Unspecified }
+        }
+        fstart_types::acpi::AcpiPmProfile::Desktop => {
+            quote! { fstart_types::acpi::AcpiPmProfile::Desktop }
+        }
+        fstart_types::acpi::AcpiPmProfile::Mobile => {
+            quote! { fstart_types::acpi::AcpiPmProfile::Mobile }
+        }
+        fstart_types::acpi::AcpiPmProfile::Workstation => {
+            quote! { fstart_types::acpi::AcpiPmProfile::Workstation }
+        }
+        fstart_types::acpi::AcpiPmProfile::EnterpriseServer => {
+            quote! { fstart_types::acpi::AcpiPmProfile::EnterpriseServer }
+        }
+        fstart_types::acpi::AcpiPmProfile::SohoServer => {
+            quote! { fstart_types::acpi::AcpiPmProfile::SohoServer }
+        }
+        fstart_types::acpi::AcpiPmProfile::AppliancePc => {
+            quote! { fstart_types::acpi::AcpiPmProfile::AppliancePc }
+        }
+        fstart_types::acpi::AcpiPmProfile::PerformanceServer => {
+            quote! { fstart_types::acpi::AcpiPmProfile::PerformanceServer }
+        }
+        fstart_types::acpi::AcpiPmProfile::Tablet => {
+            quote! { fstart_types::acpi::AcpiPmProfile::Tablet }
+        }
     }
 }
 
@@ -166,6 +232,8 @@ pub(in crate::stage_gen) fn generate_acpi_only_device(
 /// [`board_gen::acpi_prepare_body`]: crate::stage_gen::board_gen
 pub(in crate::stage_gen) fn generate_platform_acpi(
     platform: &fstart_types::acpi::AcpiPlatform,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
 ) -> TokenStream {
     use fstart_types::acpi::AcpiPlatform;
 
@@ -250,12 +318,23 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
         }
         AcpiPlatform::X86(x86) => {
             // num_cpus = None → 0 sentinel; runtime MADT builder detects via CPUID.
-            // For now we fall back to 1 CPU when unset to keep the MADT valid.
             let num_cpus = Literal::u32_unsuffixed(x86.num_cpus.unwrap_or(0));
             let lapic_base = Literal::u64_unsuffixed(x86.lapic_base);
             let sci_irq = Literal::u8_unsuffixed(x86.sci_irq);
-            let pmbase = Literal::u16_unsuffixed(x86.pmbase);
             let legacy = x86.legacy_devices;
+            let hw_reduced = x86.hw_reduced;
+            let low_power_s0 = x86.low_power_s0;
+            let pm_profile = pm_profile_tokens(x86.pm_profile);
+            let iapc_boot_arch = Literal::u16_unsuffixed(x86.iapc_boot_arch);
+            let fadt_pm = x86
+                .fadt_pm
+                .or_else(|| x86_fadt_pm_from_southbridge(devices, instances))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "x86 ACPI requires FADT PM register layout from a southbridge driver or `fadt_pm` override"
+                    )
+                });
+            let fadt_pm_expr = x86_fadt_pm_tokens(&fadt_pm);
             let acpi_smi_expr = match x86.acpi_smi {
                 Some(smi) => {
                     let smi_cmd = Literal::u32_unsuffixed(smi.smi_cmd);
@@ -303,10 +382,22 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
                 })
                 .collect();
 
-            let hpet_expr = match x86.hpet_base {
-                Some(base) => {
-                    let base_lit = Literal::u64_unsuffixed(base);
-                    quote! { Some(#base_lit) }
+            let hpet_expr = match x86.hpet {
+                Some(hpet) => {
+                    let base = Literal::u64_unsuffixed(hpet.base);
+                    let timer_block_id = Literal::u32_unsuffixed(hpet.timer_block_id);
+                    let number = Literal::u8_unsuffixed(hpet.number);
+                    let min_tick = Literal::u16_unsuffixed(hpet.min_tick);
+                    let page_protection = Literal::u8_unsuffixed(hpet.page_protection);
+                    quote! {
+                        Some(fstart_acpi::platform::HpetConfig {
+                            base: #base,
+                            timer_block_id: #timer_block_id,
+                            number: #number,
+                            min_tick: #min_tick,
+                            page_protection: #page_protection,
+                        })
+                    }
                 }
                 None => quote! { None },
             };
@@ -325,10 +416,14 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
                         lapic_base: #lapic_base,
                         ioapics: &_IOAPICS,
                         isos: &_ISOS,
-                        hpet_base: #hpet_expr,
+                        hpet: #hpet_expr,
                         legacy_devices: #legacy,
+                        hw_reduced: #hw_reduced,
+                        low_power_s0: #low_power_s0,
                         sci_irq: #sci_irq,
-                        pmbase: #pmbase,
+                        pm_profile: #pm_profile,
+                        iapc_boot_arch: #iapc_boot_arch,
+                        fadt_pm: #fadt_pm_expr,
                         acpi_smi: #acpi_smi_expr,
                     }
                 );
