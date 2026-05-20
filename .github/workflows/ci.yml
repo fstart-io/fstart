@@ -69,30 +69,45 @@ jobs:
           cargo xtask build --board qemu-aarch64 --release
 
   # -----------------------------------------------------------------------
-  # Build every board image (cross-compile via -Z build-std=core)
+  # Discover every board directory so future boards are automatically covered.
+  # -----------------------------------------------------------------------
+  discover-boards:
+    runs-on: ubuntu-latest
+    outputs:
+      boards: ${{ steps.boards.outputs.boards }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Discover boards
+        id: boards
+        run: |
+          boards=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          names = sorted(path.parent.name for path in Path("boards").glob("*/board.ron"))
+          if not names:
+              raise SystemExit("no boards/*/board.ron files found")
+          print(json.dumps(names))
+          PY
+          )
+          echo "boards=${boards}" >> "$GITHUB_OUTPUT"
+          echo "Discovered boards: ${boards}"
+
+  # -----------------------------------------------------------------------
+  # Assemble every board image (cross-compile + FFS/full-flash packaging).
   # -----------------------------------------------------------------------
   build-boards:
+    needs: [discover-boards]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        board:
-          - qemu-riscv64
-          - qemu-aarch64
-          - qemu-armv7
-          - bananapi-m1
-          - qemu-riscv64-multi
-          - qemu-aarch64-multi
-          - qemu-aarch64-uefi
-          - qemu-sbsa
-          - orangepi-pc2
-          - sifive-unmatched
-          - sifive-unmatched-hw
-          - licheerv-dock
-          - orangepi-r1
+        board: ${{ fromJson(needs.discover-boards.outputs.boards) }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
+        with:
+          submodules: true
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -109,8 +124,25 @@ jobs:
         with:
           shared-key: release-${{ matrix.board }}
 
-      - name: Build ${{ matrix.board }}
-        run: cargo xtask build --board ${{ matrix.board }} --release
+      - name: Assemble ${{ matrix.board }}
+        env:
+          BOARD: ${{ matrix.board }}
+        run: |
+          mkdir -p target/ci
+          printf 'fstart CI placeholder payload\n' > target/ci/payload.bin
+
+          if grep -q 'kind: FitImage' "boards/$BOARD/board.ron"; then
+            # FIT images are structured payloads; if a board uses FIT, test the
+            # board-declared FIT path rather than replacing it with a raw blob.
+            cargo xtask assemble --board "$BOARD" --release
+          else
+            # LinuxBoot/raw payload boards only require opaque bytes for assembly.
+            # Supplying placeholders keeps this job focused on firmware assembly
+            # and ensures newly added boards are covered without adding CI payloads.
+            cargo xtask assemble --board "$BOARD" --release \
+              --kernel target/ci/payload.bin \
+              --firmware target/ci/payload.bin
+          fi
 
   # -----------------------------------------------------------------------
   # Build external payloads: OpenSBI, TF-A BL31, Linux kernels
@@ -162,7 +194,6 @@ jobs:
             expect: "console ready"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -245,7 +276,6 @@ jobs:
             memory: 1G
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:

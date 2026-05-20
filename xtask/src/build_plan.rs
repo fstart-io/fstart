@@ -1,0 +1,438 @@
+//! Build planning for board firmware images.
+//!
+//! This module turns a parsed board description into stage build plans: target
+//! triple, cargo features, build-std selection, and stage image post-processing
+//! requirements.  It intentionally keeps driver classification in the typed
+//! device registry instead of duplicating string lists in xtask.
+
+use std::collections::BTreeSet;
+
+use fstart_codegen::ron_loader::ParsedBoard;
+use fstart_types::stage::PageSize;
+use fstart_types::{
+    effective_stage_load_addr, BoardConfig, Capability, Platform, SecurityConfig, SocImageFormat,
+    StageLayout,
+};
+
+use crate::toolchain::TargetSpec;
+
+/// Deterministic cargo feature collection.
+#[derive(Debug, Clone, Default)]
+pub struct FeatureSet {
+    features: BTreeSet<String>,
+}
+
+impl FeatureSet {
+    /// Insert a feature name.
+    pub fn insert(&mut self, feature: impl Into<String>) {
+        self.features.insert(feature.into());
+    }
+
+    /// Insert all features from an iterator.
+    pub fn extend<I, S>(&mut self, features: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for feature in features {
+            self.insert(feature);
+        }
+    }
+
+    /// Whether the set contains a feature.
+    #[cfg(test)]
+    pub fn contains(&self, feature: &str) -> bool {
+        self.features.contains(feature)
+    }
+
+    /// Return a comma-separated feature list for Cargo.
+    pub fn to_cargo_arg(&self) -> String {
+        self.features.iter().cloned().collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Complete build plan for a board.
+#[derive(Debug, Clone)]
+pub struct BuildPlan {
+    /// Target/toolchain policy.
+    pub target: TargetSpec,
+    /// Per-stage builds to execute.
+    pub stages: Vec<StageBuildPlan>,
+}
+
+/// Build plan for one `fstart-stage` invocation.
+#[derive(Debug, Clone)]
+pub struct StageBuildPlan {
+    /// Stage name passed to build.rs. `None` means monolithic.
+    pub stage_name: Option<String>,
+    /// Human-readable label for logging/artifact names.
+    pub display_name: String,
+    /// Cargo feature set.
+    pub features: FeatureSet,
+    /// Whether this stage needs a flat `.bin` produced by objcopy.
+    pub needs_flat_binary: bool,
+    /// `-Z build-std=...` value.
+    pub build_std: &'static str,
+    /// SoC image format to post-process for this stage.
+    pub soc_format: SocImageFormat,
+    /// Effective load address for packaging.
+    pub load_addr: u64,
+}
+
+impl StageBuildPlan {
+    /// Comma-separated Cargo feature argument.
+    pub fn features_arg(&self) -> String {
+        self.features.to_cargo_arg()
+    }
+}
+
+/// Produce a complete build plan for a parsed board.
+pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
+    let config = &parsed.config;
+    let target = TargetSpec::for_platform(config.platform);
+    let base_features = base_features(parsed, target);
+    let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
+    let has_pci_driver = config
+        .devices
+        .iter()
+        .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+
+    let stages = match &config.stages {
+        StageLayout::Monolithic(stage) => {
+            vec![stage_plan(
+                config,
+                &stage.capabilities,
+                stage.heap_size,
+                stage.page_size,
+                stage.page_table_addr,
+                None,
+                "stage".to_string(),
+                0,
+                &base_features,
+                target.needs_flat_binary,
+                config.soc_image_format,
+                false,
+                stage.load_addr,
+            )]
+        }
+        StageLayout::MultiStage(stages) => stages
+            .iter()
+            .enumerate()
+            .map(|(idx, stage)| {
+                let soc_format = if idx == 0 {
+                    config.soc_image_format
+                } else {
+                    SocImageFormat::None
+                };
+                stage_plan(
+                    config,
+                    &stage.capabilities,
+                    stage.heap_size,
+                    stage.page_size,
+                    stage.page_table_addr,
+                    Some(stage.name.to_string()),
+                    stage.name.to_string(),
+                    idx,
+                    &base_features,
+                    target.needs_flat_binary,
+                    soc_format,
+                    has_pci_driver,
+                    effective_stage_load_addr(config, idx, stage),
+                )
+            })
+            .collect(),
+    };
+
+    debug_assert_eq!(is_multi_stage, stages.len() > 1);
+    BuildPlan { target, stages }
+}
+
+fn base_features(parsed: &ParsedBoard, target: TargetSpec) -> FeatureSet {
+    let config = &parsed.config;
+    let mut features = FeatureSet::default();
+    features.insert(target.platform_feature);
+
+    for inst in &parsed.driver_instances {
+        if inst.is_structural() || inst.is_acpi_only() {
+            continue;
+        }
+        features.insert(inst.driver_name());
+    }
+
+    if matches!(&config.stages, StageLayout::MultiStage(_)) {
+        features.insert("handoff");
+    }
+
+    let uses_fit_runtime = config.payload.as_ref().is_some_and(|p| {
+        p.kind == fstart_types::PayloadKind::FitImage
+            && p.fit_parse.unwrap_or(fstart_types::FitParseMode::Buildtime)
+                == fstart_types::FitParseMode::Runtime
+    });
+    if uses_fit_runtime {
+        features.insert("fit");
+    }
+
+    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
+        features.insert("sunxi");
+    }
+
+    // TODO: replace this board-name heuristic with an explicit board/emulation
+    // profile.  Kept here temporarily so the policy is isolated from build IO.
+    if config.name.as_str().contains("sbsa") {
+        features.insert("sbsa");
+    }
+
+    features
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_plan(
+    config: &BoardConfig,
+    capabilities: &[Capability],
+    heap_size: Option<u32>,
+    page_size: PageSize,
+    page_table_addr: Option<(u64, u64)>,
+    stage_name: Option<String>,
+    display_name: String,
+    stage_idx: usize,
+    base_features: &FeatureSet,
+    needs_flat_binary: bool,
+    soc_format: SocImageFormat,
+    include_global_pci_alloc: bool,
+    load_addr: u64,
+) -> StageBuildPlan {
+    let mut features = base_features.clone();
+    features.extend(capability_features(capabilities, &config.security, config));
+
+    if page_size == PageSize::Size1GiB {
+        features.insert("x86-1g-pages");
+    }
+    if config.platform == Platform::X86_64 {
+        if page_table_addr.is_some() {
+            features.insert("x86-writable-page-tables");
+        } else if stage_name.is_none() || stage_idx == 0 {
+            features.insert("x86-static-page-tables");
+        }
+    }
+
+    let stage_has_crabefi = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::PayloadLoad))
+        && stage_uses_crabefi(config);
+    let needs_alloc = stage_uses_fdt(capabilities)
+        || stage_uses_acpi(capabilities)
+        || stage_has_crabefi
+        || heap_size.is_some()
+        || include_global_pci_alloc;
+    let build_std = if needs_alloc { "core,alloc" } else { "core" };
+
+    StageBuildPlan {
+        stage_name,
+        display_name,
+        features,
+        needs_flat_binary,
+        build_std,
+        soc_format,
+        load_addr,
+    }
+}
+
+/// Compute the capability-driven feature flags for a single stage.
+fn capability_features(
+    capabilities: &[Capability],
+    security: &SecurityConfig,
+    config: &BoardConfig,
+) -> Vec<&'static str> {
+    let mut features = Vec::new();
+
+    let uses_ffs = capabilities.iter().any(|c| {
+        matches!(
+            c,
+            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+        )
+    });
+
+    if uses_ffs {
+        features.push("ffs");
+        features.push("lz4");
+        match security.signing_algorithm {
+            fstart_types::SignatureAlgorithm::Ed25519 => features.push("ed25519"),
+            fstart_types::SignatureAlgorithm::EcdsaP256 => {}
+        }
+        for digest in &security.required_digests {
+            match digest {
+                fstart_types::DigestAlgorithm::Sha256 => features.push("sha2-digest"),
+                fstart_types::DigestAlgorithm::Sha3_256 => features.push("sha3-digest"),
+            }
+        }
+    }
+
+    if stage_uses_fdt(capabilities) {
+        features.push("fdt");
+    }
+
+    if stage_uses_pci(capabilities) {
+        let pci_driver = config
+            .devices
+            .iter()
+            .find(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+        match pci_driver.map(|d| d.driver.as_str()) {
+            Some("q35-hostbridge") => features.push("q35-hostbridge"),
+            _ => features.push("pci-ecam"),
+        }
+    }
+
+    let has_payload_load = capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::PayloadLoad));
+    if has_payload_load && stage_uses_crabefi(config) {
+        features.push("crabefi");
+    }
+
+    if stage_uses_acpi(capabilities) {
+        features.push("acpi");
+    }
+
+    if stage_uses_smbios(capabilities) {
+        features.push("smbios");
+    }
+
+    for cap in capabilities {
+        if let Capability::MpInit { cpu_model, .. } = cap {
+            features.push("mp");
+            if cpu_model.as_str().contains("pineview") || cpu_model.as_str().contains("106cx") {
+                features.push("pineview-cpu");
+            }
+            if cpu_model.as_str().contains("core2") || cpu_model.as_str().contains("6fx") {
+                features.push("core2-cpu");
+            }
+        }
+    }
+
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiLoad { .. }))
+    {
+        features.push("acpi-load");
+    }
+
+    if capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MemoryDetect { .. }))
+    {
+        features.push("memory-detect");
+    }
+
+    if config.platform == Platform::X86_64 {
+        features.push("ns16550-pio");
+        features.push("x86-boot");
+    }
+
+    features
+}
+
+fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::FdtPrepare))
+}
+
+fn stage_uses_pci(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::PciInit { .. }))
+}
+
+fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::AcpiPrepare | Capability::AcpiLoad { .. }))
+}
+
+fn stage_uses_crabefi(config: &BoardConfig) -> bool {
+    config
+        .payload
+        .as_ref()
+        .is_some_and(|p| p.kind == fstart_types::PayloadKind::UefiPayload)
+}
+
+fn stage_uses_smbios(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::SmBiosPrepare))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use fstart_codegen::ron_loader;
+
+    fn load_plan(board: &'static str) -> super::BuildPlan {
+        // The all-drivers registry has large enum/config values; parse on a
+        // larger stack so x86 boards with nested chipset configs are reliable
+        // under `cargo test`'s default test-thread stack.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                let board_ron = manifest
+                    .join("..")
+                    .join("boards")
+                    .join(board)
+                    .join("board.ron");
+                let parsed = ron_loader::load_parsed_board(&board_ron)
+                    .unwrap_or_else(|e| panic!("failed to load {}: {e}", board_ron.display()));
+                super::plan(&parsed)
+            })
+            .expect("spawn build-plan test loader")
+            .join()
+            .expect("build-plan test loader panicked")
+    }
+
+    #[test]
+    fn acpi_only_devices_do_not_become_cargo_features() {
+        let plan = load_plan("qemu-sbsa");
+        let features = &plan.stages[0].features;
+
+        assert!(!features.contains("ahci"));
+        assert!(!features.contains("xhci"));
+        assert!(!features.contains("pcie-root"));
+        assert!(features.contains("pci-ecam"));
+        assert!(features.contains("acpi"));
+    }
+
+    #[test]
+    fn structural_nodes_do_not_become_cargo_features() {
+        let plan = load_plan("foxconn-d41s");
+        for stage in &plan.stages {
+            assert!(!stage.features.contains("_structural"));
+            assert!(stage.features.contains("intel-pineview"));
+            assert!(stage.features.contains("intel-ich7"));
+        }
+    }
+
+    #[test]
+    fn q35_multi_stage_keeps_x86_boot_policy() {
+        let plan = load_plan("qemu-q35-uefi");
+        assert_eq!(plan.stages.len(), 2);
+
+        let bootblock = &plan.stages[0];
+        assert!(bootblock.features.contains("x86-boot"));
+        assert!(bootblock.features.contains("x86-writable-page-tables"));
+        assert_eq!(bootblock.build_std, "core,alloc");
+
+        let main = &plan.stages[1];
+        assert!(main.features.contains("x86-boot"));
+        assert!(!main.features.contains("x86-static-page-tables"));
+        assert!(main.features.contains("crabefi"));
+    }
+
+    #[test]
+    fn allwinner_boards_enable_sunxi_feature() {
+        let plan = load_plan("bananapi-m1");
+        for stage in &plan.stages {
+            assert!(stage.features.contains("sunxi"));
+        }
+    }
+}
