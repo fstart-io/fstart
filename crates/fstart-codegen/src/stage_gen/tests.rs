@@ -153,6 +153,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
         services: {
             let mut v = heapless::Vec::new();
             let _ = v.push(HString::try_from("I2cBus").unwrap());
+            let _ = v.push(HString::try_from("EarlyInit").unwrap());
             v
         },
         parent: None,
@@ -516,6 +517,13 @@ fn test_i2c_bus_generates_embedded_hal_import() {
     let mut caps = heapless::Vec::new();
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::EarlyInit {
+        devices: {
+            let mut devices = heapless::Vec::new();
+            let _ = devices.push(heapless::String::try_from("i2c0").unwrap());
+            devices
+        },
     });
     let parsed = test_parsed_board_with_i2c_bus(caps);
     let source = generate_stage_source(&parsed, None);
@@ -1083,6 +1091,29 @@ fn plan_ends_with_jump_false_when_last_cap_does_not_hand_off() {
     assert!(
         source.contains("ends_with_jump: false"),
         "MemoryInit last => ends_with_jump=false: {source}"
+    );
+}
+
+#[test]
+fn plan_ends_with_jump_true_for_firmware_boot() {
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
+        base: 0x2000_0000,
+        size: 0x0200_0000,
+        ram_copy_addr: None,
+    }));
+    let _ = caps.push(Capability::FirmwareBoot {
+        next_stage: heapless::String::try_from("uefi").unwrap(),
+    });
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("ends_with_jump: true"),
+        "FirmwareBoot last => ends_with_jump=true: {source}"
     );
 }
 

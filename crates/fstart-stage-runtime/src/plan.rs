@@ -63,7 +63,7 @@ pub enum CapOp {
     },
     /// `PciInit { device }` — enumerate and allocate a PCI root bus.
     PciInit(DeviceId),
-    /// `DriverInit` — init every remaining enabled device.
+    /// `DriverInit` — init remaining devices materialized for this stage.
     DriverInit,
     /// `LateDriverInit` — post-payload lockdown phase.
     LateDriverInit,
@@ -77,6 +77,9 @@ pub enum CapOp {
     /// `StageLoad { next_stage }` — load the named next stage from
     /// FFS into RAM and jump to it.  Does not return.
     StageLoad { next_stage: &'static str },
+    /// `FirmwareBoot { next_stage }` — load firmware and enter the named
+    /// next stage through platform firmware. Does not return.
+    FirmwareBoot { next_stage: &'static str },
     /// `AcpiPrepare` — generate ACPI tables from the board RON.
     AcpiPrepare,
     /// `SmBiosPrepare` — write SMBIOS tables from the board RON.
@@ -151,7 +154,8 @@ pub struct StagePlan {
     /// previous stage.
     pub is_first_stage: bool,
     /// `true` when the stage's last capability hands control off
-    /// (`PayloadLoad`, `StageLoad`, `LoadNextStage`, `ReturnToFel`).
+    /// (`PayloadLoad`, `StageLoad`, `LoadNextStage`, `FirmwareBoot`,
+    /// `ReturnToFel`).
     /// When set, the executor skips the "all capabilities complete"
     /// banner.
     pub ends_with_jump: bool,
@@ -165,8 +169,8 @@ pub struct StagePlan {
     /// `DriverInit`.  When the current boot medium does not match
     /// the device's `boot_media_ids`, the executor skips `init()`.
     pub boot_media_gated: &'static [(DeviceId, &'static [u8])],
-    /// All enabled, non-structural, non-ACPI-only devices in
-    /// root-first order.  `DriverInit` iterates this list.
+    /// Stage-materialized, non-structural, non-ACPI-only devices in
+    /// root-first order. `DriverInit` iterates this stage-local list.
     pub all_devices: &'static [DeviceId],
 }
 

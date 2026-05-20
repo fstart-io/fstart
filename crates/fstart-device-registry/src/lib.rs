@@ -99,6 +99,11 @@ pub mod bochs_display {
     pub use fstart_driver_bochs_display::BochsDisplayConfig;
 }
 
+#[cfg(feature = "sunxi-display")]
+pub mod sunxi_display {
+    pub use fstart_driver_sunxi_display::SunxiDisplayConfig;
+}
+
 #[cfg(feature = "qemu-fw-cfg")]
 pub mod qemu_fw_cfg {
     pub use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
@@ -309,6 +314,10 @@ pub enum DriverInstance {
     /// Bochs VBE display (QEMU bochs-display, PCI MMIO mode).
     #[cfg(feature = "bochs-display")]
     BochsDisplay(bochs_display::BochsDisplayConfig),
+
+    /// Allwinner sunxi display framebuffer.
+    #[cfg(feature = "sunxi-display")]
+    SunxiDisplay(sunxi_display::SunxiDisplayConfig),
 
     /// QEMU fw_cfg device — provides ACPI tables and e820 memory map.
     #[cfg(feature = "qemu-fw-cfg")]
@@ -585,6 +594,21 @@ impl DriverInstance {
                 has_acpi: false,
                 is_bus_device: true,
             },
+            #[cfg(feature = "sunxi-display")]
+            Self::SunxiDisplay(_) => &DriverMeta {
+                name: "sunxi-display",
+                type_name: "SunxiDisplay",
+                module_path: "fstart_driver_sunxi_display",
+                config_type: "SunxiDisplayConfig",
+                services: &["Framebuffer", "PostDramInit"],
+                compatible: &[
+                    "allwinner,sun7i-a20-display",
+                    "allwinner,sun8i-h3-display",
+                    "allwinner,sun20i-d1-display",
+                ],
+                has_acpi: false,
+                is_bus_device: false,
+            },
             #[cfg(feature = "qemu-fw-cfg")]
             Self::QemuFwCfg(_) => &DriverMeta {
                 name: "qemu-fw-cfg",
@@ -820,6 +844,8 @@ impl DriverInstance {
             Self::SunxiMmc(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-spi")]
             Self::SunxiSpi(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "sunxi-display")]
+            Self::SunxiDisplay(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-d1-ccu")]
             Self::SunxiD1Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-d1-dramc")]

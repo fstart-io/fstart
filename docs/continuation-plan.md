@@ -25,7 +25,7 @@ All 14 workspace crates created and cross-compiling for both targets.
 
 > **Note:** The `Devices` struct and `StageContext` described here were
 > replaced by `_BoardDevices` + `impl Board` + `run_stage()` in Phase 13
-> (stage-runtime / codegen split).  The typed `Config` construction and
+> (stage-runtime / codegen split). The typed `Config` construction and
 > codegen validation remain unchanged.
 
 - ~~`Devices` struct generated with concrete typed fields per device.~~ → replaced by `_BoardDevices`
@@ -41,24 +41,24 @@ All 14 workspace crates created and cross-compiling for both targets.
 
 All capability functions implemented in `fstart-capabilities/src/lib.rs`:
 
-| Function | Purpose | Status |
-|----------|---------|--------|
-| `console_ready()` | Log console banner after ConsoleInit | Real impl |
-| `memory_init()` | DRAM init (no-op on QEMU, logs) | Stub with logging |
-| `driver_init_complete()` | Log DriverInit phase completion | Real impl |
-| `sig_verify()` | FFS manifest signature check | Stub with logging |
-| `fdt_prepare()` | Generate FDT for OS handoff | Stub with logging |
-| `payload_load()` | Load and jump to payload | Stub with logging |
-| `stage_load()` | Load next stage from FFS | Stub with logging |
+| Function                 | Purpose                              | Status            |
+| ------------------------ | ------------------------------------ | ----------------- |
+| `console_ready()`        | Log console banner after ConsoleInit | Real impl         |
+| `memory_init()`          | DRAM init (no-op on QEMU, logs)      | Stub with logging |
+| `driver_init_complete()` | Log DriverInit phase completion      | Real impl         |
+| `sig_verify()`           | FFS manifest signature check         | Stub with logging |
+| `fdt_prepare()`          | Generate FDT for OS handoff          | Stub with logging |
+| `payload_load()`         | Load and jump to payload             | Stub with logging |
+| `stage_load()`           | Load next stage from FFS             | Stub with logging |
 
 Codegen generates real function calls for all capabilities (no more `// TODO:`
 stubs). The generated `fstart_main()` now:
 
-1. Constructs all devices via `Device::new()` with typed configs.
+1. Constructs the devices materialized for this stage via `Device::new()` with typed configs.
 2. Executes capabilities in RON-declared order, passing console references.
-3. `DriverInit` tracks which devices were already inited (e.g., by
+3. `DriverInit` tracks which stage-local devices were already inited (e.g., by
    `ConsoleInit`) and skips them to avoid double-init.
-4. Builds `StageContext` with all devices.
+4. Builds `StageContext` with the stage-local device set.
 5. Logs "all capabilities complete" via the context's console accessor.
 6. Halts.
 
@@ -67,6 +67,7 @@ capability that needs logging (all except `ConsoleInit`) appears before
 `ConsoleInit` in the capability list.
 
 **8 unit tests** in `fstart-codegen/src/stage_gen.rs` covering:
+
 - Console init generates device init + banner
 - MemoryInit after ConsoleInit generates correct call
 - MemoryInit without ConsoleInit is a compile error
@@ -82,6 +83,7 @@ Bus-attached device infrastructure with parent-before-child init ordering.
 #### Bus Service Traits
 
 Three new service traits in `fstart-services/src/`:
+
 - `I2cBus` (`i2c.rs`) — `read(addr, reg, buf)`, `write(addr, reg, data)`
 - `SpiBus` (`spi.rs`) — `transfer(cs, tx, rx)`, default `write()` / `read()`
 - `GpioController` (`gpio.rs`) — `get(pin)`, `set(pin, value)`, `set_direction(pin, output)`
@@ -91,6 +93,7 @@ All re-exported from `fstart-services::lib.rs`.
 #### DesignWare I2C Controller Driver
 
 Full driver in `fstart-drivers/src/i2c/designware.rs`:
+
 - Complete register block via `register_structs!` / `register_bitfields!`,
   matching the Synopsys DW_apb_i2c databook (cross-referenced with coreboot
   and U-Boot implementations)
@@ -103,6 +106,7 @@ Full driver in `fstart-drivers/src/i2c/designware.rs`:
 #### Topological Sort in Codegen
 
 `stage_gen.rs` now:
+
 - Sorts devices topologically (Kahn's algorithm) before code generation
 - Validates every `parent` reference names an existing device → `compile_error!`
 - Validates parent provides a bus service (I2cBus, SpiBus, GpioController) →
@@ -124,6 +128,7 @@ Full driver in `fstart-drivers/src/i2c/designware.rs`:
 #### Testing
 
 **18 unit tests** in `fstart-codegen/src/stage_gen.rs` (8 original + 10 new):
+
 - Topological sort with no parents (all roots)
 - Topological sort reorders parent before child
 - Unknown parent reference → compile error
@@ -138,17 +143,17 @@ Full driver in `fstart-drivers/src/i2c/designware.rs`:
 ### Infrastructure Fixes
 
 - **AArch64 objcopy**: `xtask build` now automatically runs `llvm-objcopy
-  -O binary` for AArch64 boards (QEMU `-bios` expects flat binary, not ELF).
+-O binary` for AArch64 boards (QEMU `-bios` expects flat binary, not ELF).
 - **`cargo xtask run --board qemu-aarch64`** now works end-to-end.
 
 ### Phase 5: Flexible Mode (REMOVED — superseded by Phase 13)
 
 > **Note:** Flexible mode was implemented and then **deleted** when the
-> stage-runtime / codegen split landed in Phase 13.  The generic `Board`
+> stage-runtime / codegen split landed in Phase 13. The generic `Board`
 > trait makes enum dispatch redundant — if runtime driver selection is
 > ever needed, it lives inside `_BoardDevices` fields, not a separate
-> codegen mode.  `flexible.rs`, `qemu-riscv64-flex` board, and the
-> `BuildMode::Flexible` variant are all gone.  Only `BuildMode::Rigid`
+> codegen mode. `flexible.rs`, `qemu-riscv64-flex` board, and the
+> `BuildMode::Flexible` variant are all gone. Only `BuildMode::Rigid`
 > remains.
 
 ### Phase 6: Firmware Filesystem + Security (COMPLETE)
@@ -190,6 +195,7 @@ The firmware image uses a layered flash layout:
 ```
 
 Key design decisions:
+
 - **Anchor is embedded in the bootblock binary** — not loaded via SPI driver.
   The bootblock is XIP from memory-mapped flash, so the anchor is just part
   of the code image. No driver needed to read it.
@@ -204,6 +210,7 @@ Key design decisions:
 #### 6.1 fstart-types FFS Redesign
 
 Complete rewrite of `ffs.rs`:
+
 - `AnchorBlock`: MAGIC, version, RO manifest pointer, `ro_region_base`,
   embedded `VerificationKey`s
 - `VerificationKey`: key_id, algorithm, key material (split for serde)
@@ -223,6 +230,7 @@ Complete rewrite of `ffs.rs`:
 #### 6.2 fstart-crypto
 
 `crates/fstart-crypto/` — no_std crypto primitives:
+
 - **`digest` module**: `hash_sha256()`, `hash_sha3_256()`, `hash_digest_set()`,
   `verify_digest_set()` — all behind `sha2-digest` / `sha3-digest` features
 - **`verify` module**: `verify_signature()`, `verify_with_key_lookup()` —
@@ -234,6 +242,7 @@ Complete rewrite of `ffs.rs`:
 #### 6.3 fstart-ffs Reader (no_std)
 
 `crates/fstart-ffs/src/reader.rs` — reads from `&[u8]` flash image:
+
 - `FfsReader::new(image)` — borrows the memory-mapped image
 - `read_anchor(offset)` — deserialize anchor at known offset
 - `scan_for_anchor()` — scan for MAGIC at 8-byte-aligned offsets
@@ -249,6 +258,7 @@ Complete rewrite of `ffs.rs`:
 #### 6.4 fstart-ffs Builder (std)
 
 `crates/fstart-ffs/src/builder.rs` — assembles FFS images:
+
 - `build_image(config, sign_fn)` — generic over signing function
 - `FfsImageConfig`: keys, RO region, RW regions, NVS size
 - `InputFile` / `InputSegment`: file + segment data for assembly
@@ -258,6 +268,7 @@ Complete rewrite of `ffs.rs`:
 #### 6.5 xtask assemble
 
 `xtask/src/assemble.rs` — `cargo xtask assemble --board <name>`:
+
 - Reads board RON config
 - Builds all stages (monolithic or multi-stage)
 - Generates or loads Ed25519 dev key pair from `boards/<name>/keys/`
@@ -267,6 +278,7 @@ Complete rewrite of `ffs.rs`:
 #### Crypto Feature Forwarding
 
 `fstart-ffs` now forwards crypto features for no_std firmware builds:
+
 - `ed25519` → `fstart-crypto/ed25519`
 - `sha2-digest` → `fstart-crypto/sha2-digest`
 - `sha3-digest` → `fstart-crypto/sha3-digest`
@@ -275,6 +287,7 @@ Complete rewrite of `ffs.rs`:
 #### Testing
 
 **9 integration tests** in `crates/fstart-ffs/tests/round_trip.rs`:
+
 - RO-only round trip (build → scan → read → verify → data)
 - Multi-segment file (`.text` + `.rodata` + `.data`)
 - Multiple files in RO region (lookup by name)
@@ -305,6 +318,7 @@ Full multi-stage build support: bootblock (XIP/RAM) + main stage (RAM).
 #### xtask Build Orchestration
 
 `xtask/src/build_board.rs` rewritten:
+
 - `BuildResult` struct with `Vec<StageBinary>` — name, path, load_addr.
 - `build()` returns `BuildResult` (breaking change from `PathBuf`).
 - `build_one_stage()` builds a single `fstart-stage` binary.
@@ -315,6 +329,7 @@ Full multi-stage build support: bootblock (XIP/RAM) + main stage (RAM).
 #### xtask Assemble Multi-Stage
 
 `xtask/src/assemble.rs` updated:
+
 - Builds all stages via `build()` before assembly.
 - For monolithic boards: one `InputFile` in the RO region.
 - For multi-stage boards: one `InputFile` per stage, each with load_addr
@@ -325,6 +340,7 @@ Full multi-stage build support: bootblock (XIP/RAM) + main stage (RAM).
 
 `stage_gen.rs` now detects whether a stage ends with a jump capability
 (`StageLoad` or `PayloadLoad`):
+
 - **Jump stages** (bootblock): no "all capabilities complete" message.
   After the jump capability, emits a halt (reached only if the stub
   returns, which real implementations won't).
@@ -333,6 +349,7 @@ Full multi-stage build support: bootblock (XIP/RAM) + main stage (RAM).
 #### Testing Board
 
 New board `boards/qemu-riscv64-multi/board.ron`:
+
 - Two stages: `bootblock` (ConsoleInit + SigVerify + StageLoad → main)
   and `main` (ConsoleInit + MemoryInit + DriverInit).
 - Both stages at different load addresses (0x80000000 and 0x80100000).
@@ -341,6 +358,7 @@ New board `boards/qemu-riscv64-multi/board.ron`:
 #### Testing
 
 **6 new unit tests** in `fstart-codegen/src/stage_gen.rs` (35 total):
+
 - Multi-stage bootblock generates ConsoleInit + SigVerify + StageLoad
 - Multi-stage bootblock does NOT log completion (ends with StageLoad)
 - Multi-stage main stage generates ConsoleInit + MemoryInit + DriverInit + completion
@@ -358,6 +376,7 @@ file digest checking, and stage loading.
 
 Both platform crates (`fstart-platform-riscv64`, `fstart-platform-aarch64`)
 now provide `jump_to(addr: u64) -> !`:
+
 - RISC-V: `jr` instruction
 - AArch64: `br` instruction
 
@@ -366,6 +385,7 @@ Used by `StageLoad` and `PayloadLoad` to transfer control to loaded code.
 #### `flash_base` / `flash_size` in Board Config
 
 New optional fields in `MemoryMap`:
+
 - `flash_base: Option<u64>` — where the firmware image is mapped in memory
 - `flash_size: Option<u64>` — total firmware image size for FFS reader bounds
 
@@ -390,15 +410,18 @@ QEMU aarch64, this is the flash base (0x00000000).
 #### Feature Flag Plumbing
 
 **`fstart-capabilities`** new features:
+
 - `ffs` — enables `fstart-ffs` and `fstart-types` dependencies
 - `ed25519` — forwards to `fstart-ffs/ed25519`
 - `sha2-digest` / `sha3-digest` — forwards to `fstart-ffs` crypto features
 
 **`fstart-stage`** new features:
+
 - `ffs` — forwards to `fstart-capabilities/ffs`
 - `ed25519`, `sha2-digest`, `sha3-digest` — forward crypto features
 
 **`xtask/src/build_board.rs`** auto-detects:
+
 - Scans all stages for FFS capabilities (SigVerify, StageLoad, PayloadLoad)
 - Automatically enables `ffs` feature + crypto features matching the board's
   `security.signing_algorithm` and `security.required_digests`
@@ -406,6 +429,7 @@ QEMU aarch64, this is the flash base (0x00000000).
 #### Real Capability Implementations (behind `ffs` feature)
 
 **`sig_verify(console, flash_base, flash_size)`:**
+
 1. Creates `FfsReader` over the memory-mapped flash image
 2. Scans for `FFS_MAGIC` at 8-byte-aligned offsets
 3. Reads and validates the `AnchorBlock`
@@ -415,6 +439,7 @@ QEMU aarch64, this is the flash base (0x00000000).
 7. Gracefully handles "no FFS image" (no anchor found → skip)
 
 **`stage_load(console, next_stage, flash_base, flash_size, jump_to)`:**
+
 1. Scans for anchor and reads verified RO manifest
 2. Looks up the named stage file in the manifest
 3. Copies all segments to their load addresses (BSS zeroed)
@@ -422,22 +447,26 @@ QEMU aarch64, this is the flash base (0x00000000).
 5. Gracefully handles missing stage file
 
 **`payload_load(console, flash_base, flash_size, jump_to)`:**
+
 1. Same flow as `stage_load` but looks for `FileType::Payload`
 2. Loads segments and jumps to entry point
 
 **Shared helpers** (behind `ffs` feature):
+
 - `find_anchor_and_manifest()` — scan + read + verify, with error logging
 - `load_file_segments()` — copy all segments, handle BSS, detect compression
 - `reader_error_str()` — map `ReaderError` to `&'static str` for logging
 - `write_hex()` — format `u64` as `0x...` for no_std console output
 
 **Stubs** (when `ffs` feature absent or `flash_base` not configured):
+
 - `sig_verify` with `ffs` disabled logs "ffs feature not enabled"
 - `stage_load_stub` / `payload_load_stub` log "not yet wired to FFS"
 
 #### Testing
 
 **3 new unit tests** in `fstart-codegen/src/stage_gen.rs` (38 total):
+
 - `test_sig_verify_with_flash_base_generates_constants` — verifies FLASH_BASE/SIZE
   constants emitted and sig_verify called with them
 - `test_stage_load_with_flash_base_generates_real_call` — verifies stage_load
@@ -446,6 +475,7 @@ QEMU aarch64, this is the flash base (0x00000000).
   real FFS calls and flash constants
 
 **Updated 3 existing tests** for new function signatures:
+
 - `test_sig_verify_generates_call` — uses `0, 0` fallback args
 - `test_stage_load_generates_call` — uses `stage_load_stub`
 - `test_multi_stage_bootblock_generates_stage_load` — uses stub variants
@@ -458,6 +488,7 @@ log macros across the entire codebase.
 #### fstart-log Crate
 
 Rewrote the empty skeleton (`crates/fstart-log/src/lib.rs`):
+
 - `Level` enum (Error, Warn, Info, Debug, Trace) with runtime filtering
   via `max_level()` / `set_max_level()`
 - Global console backend using `SyncCell<UnsafeCell<T>>` wrapper (Rust
@@ -473,6 +504,7 @@ Rewrote the empty skeleton (`crates/fstart-log/src/lib.rs`):
 #### fstart-capabilities Migration
 
 Full rewrite of `crates/fstart-capabilities/src/lib.rs`:
+
 - Removed `console: &dyn Console` parameter from all 13 public + 2
   internal function signatures
 - Replaced ~100 manual write chains with `info!`/`error!`/`debug!` macros
@@ -482,6 +514,7 @@ Full rewrite of `crates/fstart-capabilities/src/lib.rs`:
 #### Codegen Updates
 
 `crates/fstart-codegen/src/stage_gen.rs`:
+
 - `generate_console_init` emits `unsafe { fstart_log::init(&device) }`
   after device init
 - All `generate_*` functions: removed `console_device` parameter, removed
@@ -494,7 +527,7 @@ Full rewrite of `crates/fstart-capabilities/src/lib.rs`:
 #### Workspace Dependency Changes
 
 - Root `Cargo.toml`: replaced `log = "0.4"` with `ufmt = { version = "0.2",
-  default-features = false }`
+default-features = false }`
 - `fstart-stage/Cargo.toml`: added `fstart-log` + `ufmt`
 - `fstart-capabilities/Cargo.toml`: replaced `fstart-services` with
   `fstart-log` + `ufmt`
@@ -513,21 +546,21 @@ Full rewrite of `crates/fstart-capabilities/src/lib.rs`:
 
 ### Verified Working
 
-| Board | Mode | Output |
-|-------|------|--------|
-| qemu-riscv64 debug | `cargo xtask run --board qemu-riscv64` | `[INFO ] uart0: ns16550 console ready` + `[INFO ] all capabilities complete` |
-| qemu-riscv64 release | `cargo xtask build --board qemu-riscv64 --release` | Builds clean |
-| qemu-aarch64 debug | `cargo xtask run --board qemu-aarch64` | `[INFO ] uart0: pl011 console ready` + `[INFO ] all capabilities complete` |
-| qemu-aarch64 release | `cargo xtask build --board qemu-aarch64 --release` | Builds clean |
-| qemu-riscv64-multi debug | `cargo xtask build --board qemu-riscv64-multi` | Builds bootblock + main |
-| qemu-riscv64-multi bootblock | QEMU boot | Console ready + SigVerify + StageLoad stub |
-| qemu-riscv64-multi main | QEMU boot | Console ready + MemoryInit + DriverInit + completion |
-| qemu-riscv64-multi release | `cargo xtask build --board qemu-riscv64-multi --release` | Builds clean |
-| qemu-riscv64-multi FFS | `cargo xtask assemble --board qemu-riscv64-multi` | FFS with 2 stages |
-| qemu-riscv64 FFS | `cargo xtask assemble --board qemu-riscv64` | FFS with 1 stage |
-| clippy | `cargo clippy --workspace --exclude fstart-stage -- -D warnings` | Clean |
-| fmt | `cargo fmt --all -- --check` | Clean |
-| tests | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-alloc --exclude fstart-platform-*` | 237 pass (68 codegen + 25 runtime + 14 FFS + ...) |
+| Board                        | Mode                                                                                                                        | Output                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| qemu-riscv64 debug           | `cargo xtask run --board qemu-riscv64`                                                                                      | `[INFO ] uart0: ns16550 console ready` + `[INFO ] all capabilities complete` |
+| qemu-riscv64 release         | `cargo xtask build --board qemu-riscv64 --release`                                                                          | Builds clean                                                                 |
+| qemu-aarch64 debug           | `cargo xtask run --board qemu-aarch64`                                                                                      | `[INFO ] uart0: pl011 console ready` + `[INFO ] all capabilities complete`   |
+| qemu-aarch64 release         | `cargo xtask build --board qemu-aarch64 --release`                                                                          | Builds clean                                                                 |
+| qemu-riscv64-multi debug     | `cargo xtask build --board qemu-riscv64-multi`                                                                              | Builds bootblock + main                                                      |
+| qemu-riscv64-multi bootblock | QEMU boot                                                                                                                   | Console ready + SigVerify + StageLoad stub                                   |
+| qemu-riscv64-multi main      | QEMU boot                                                                                                                   | Console ready + MemoryInit + DriverInit + completion                         |
+| qemu-riscv64-multi release   | `cargo xtask build --board qemu-riscv64-multi --release`                                                                    | Builds clean                                                                 |
+| qemu-riscv64-multi FFS       | `cargo xtask assemble --board qemu-riscv64-multi`                                                                           | FFS with 2 stages                                                            |
+| qemu-riscv64 FFS             | `cargo xtask assemble --board qemu-riscv64`                                                                                 | FFS with 1 stage                                                             |
+| clippy                       | `cargo clippy --workspace --exclude fstart-stage -- -D warnings`                                                            | Clean                                                                        |
+| fmt                          | `cargo fmt --all -- --check`                                                                                                | Clean                                                                        |
+| tests                        | `cargo test --workspace --exclude fstart-stage --exclude fstart-runtime --exclude fstart-alloc --exclude fstart-platform-*` | 237 pass (68 codegen + 25 runtime + 14 FFS + ...)                            |
 
 ### Phase 11: Linux Boot Verified (COMPLETE)
 
@@ -544,6 +577,7 @@ cargo xtask run --board qemu-riscv64 --release \
 ```
 
 Firmware sequence:
+
 1. fstart initialises NS16550 console
 2. SigVerify: Ed25519 signature + SHA-256/SHA3-256 digest verification
 3. FdtPrepare: copies QEMU DTB, patches `/chosen/bootargs` → `0x87F00000`
@@ -566,6 +600,7 @@ cargo xtask run --board qemu-aarch64 --release \
 ```
 
 Firmware sequence:
+
 1. fstart initialises PL011 console
 2. SigVerify: Ed25519 signature + SHA-256/SHA3-256 digest verification
 3. FdtPrepare: copies QEMU DTB from `0x40000000`, patches bootargs → `0x40100000`
@@ -594,6 +629,7 @@ a compile-checked, mechanical process.
 #### Platform Enum
 
 `fstart-types/src/board.rs` — new `Platform` enum:
+
 - Variants: `Riscv64`, `Aarch64`, `Armv7`
 - Methods: `target_triple()`, `linker_arch()`, `as_str()`
 - `Display` impl, serde derives, `Copy + PartialEq + Eq`
@@ -604,9 +640,11 @@ a compile-checked, mechanical process.
 #### Codegen Platform Alias
 
 `generate_platform_externs()` in `stage_gen/mod.rs` now emits:
+
 ```rust
 extern crate fstart_platform_riscv64 as fstart_platform;
 ```
+
 Common calls (`halt()`, `jump_to()`) use `fstart_platform::` instead of
 per-platform crate names. Platform-specific boot protocols (SBI, ATF, direct
 Linux) still use the concrete platform crate where needed.
@@ -623,6 +661,7 @@ Linux) still use the concrete platform crate where needed.
 #### Scope of Changes
 
 Eliminated string matching in **17 locations** across 6 files:
+
 - `fstart-codegen/src/stage_gen/mod.rs` — function signatures, platform
   extern generation, import generation
 - `fstart-codegen/src/stage_gen/capabilities.rs` — all 9 platform match
@@ -636,20 +675,20 @@ All 10 board RON files updated: `platform: "riscv64"` → `platform: Riscv64`.
 
 #### Verification
 
-| Check | Result |
-|-------|--------|
-| `cargo test` | 71 pass (47 codegen + 14 FFS + 10 FIT) |
-| `cargo clippy` | Clean (`-D warnings`) |
-| qemu-riscv64 | Builds |
-| qemu-aarch64 | Builds |
-| qemu-armv7 | Builds |
-| qemu-riscv64-multi | Builds |
-| qemu-riscv64-flex | Builds |
-| qemu-aarch64-multi | Builds |
-| qemu-aarch64-flex | Builds |
-| orangepi-pc2 | Builds |
-| bananapi-m1 | Pre-existing linker overflow (bootblock too large for SRAM) |
-| orangepi-r1 | Pre-existing linker overflow (bootblock too large for SRAM) |
+| Check              | Result                                                      |
+| ------------------ | ----------------------------------------------------------- |
+| `cargo test`       | 71 pass (47 codegen + 14 FFS + 10 FIT)                      |
+| `cargo clippy`     | Clean (`-D warnings`)                                       |
+| qemu-riscv64       | Builds                                                      |
+| qemu-aarch64       | Builds                                                      |
+| qemu-armv7         | Builds                                                      |
+| qemu-riscv64-multi | Builds                                                      |
+| qemu-riscv64-flex  | Builds                                                      |
+| qemu-aarch64-multi | Builds                                                      |
+| qemu-aarch64-flex  | Builds                                                      |
+| orangepi-pc2       | Builds                                                      |
+| bananapi-m1        | Pre-existing linker overflow (bootblock too large for SRAM) |
+| orangepi-r1        | Pre-existing linker overflow (bootblock too large for SRAM) |
 
 ---
 
@@ -700,18 +739,19 @@ adapter.
 - **`StagePlan`** — `.rodata` literal with capability sequence as `CapOp`
   variants, `persistent_inited` / `boot_media_gated` / `all_devices` tables.
 - **`CapOp` enum** — one variant per capability, device names resolved to
-  `DeviceId` (`u8`).  No string comparisons at runtime.
+  `DeviceId` (`u8`). No string comparisons at runtime.
 - **`DeviceMask`** — 256-bit bitset over `DeviceId` for init tracking.
 - **`BootMediaState`** — enum tracking the current boot medium (None / Mmio /
   Block) so trampolines can reconstruct the concrete `impl BootMedia`.
 - **`run_stage<B: Board>(board, plan, handoff) -> !`** — one `match` per
-  capability, dispatches through `Board` trait methods.  Monomorphised in
+  capability, dispatches through `Board` trait methods. Monomorphised in
   Rigid mode — zero vtables.
 - **25 host-side unit tests** via `MockBoard` + thread-local event log.
 
 #### Codegen changes: plan_gen.rs + board_gen.rs
 
 **`plan_gen.rs`** emits `static STAGE_PLAN: StagePlan` per stage:
+
 - Resolves device names → `DeviceId` via `DeviceIdMap`.
 - Emits `BootMediaCandidate` tables with `media_ids` for auto-select.
 - `persistent_inited` from prior stages’ `ClockInit` / `DramInit`.
@@ -719,6 +759,7 @@ adapter.
 - `all_devices` for `DriverInit` iteration.
 
 **`board_gen.rs`** (4068 lines) emits the complete board adapter:
+
 - `struct _BoardDevices` — `Option<Driver>` fields + bookkeeping
   (`_inited`, `_boot_media`, `_dtb_dst_addr`, `_bootargs`, `_dram_base`,
   `_dram_size_static`, `_handoff`, `_acpi_rsdp_addr`, `_egon_sram_base`).
@@ -769,10 +810,10 @@ Result: `stage_gen/mod.rs` shrunk from 1371 → 530 lines;
 
 Previously, AArch64 debug builds hung during `Pl011::init()` because
 LLVM routed the 16-byte struct through a stack scratch copy, causing
-`init()` to program stale MMIO registers.  **Fixed** by storing
+`init()` to program stale MMIO registers. **Fixed** by storing
 `base: usize` instead of `&'static Pl011Regs` in the Pl011 driver
 and reconstructing the pointer via `#[inline(always)] fn regs()` on
-every access.  AArch64 debug builds now work correctly.
+every access. AArch64 debug builds now work correctly.
 
 ---
 
@@ -786,26 +827,27 @@ generation. Low priority — current codegen approach works well.
 
 ## File Summary (Phase 12 Changes — Platform Scalability)
 
-| File | Change |
-|------|--------|
-| `crates/fstart-types/src/board.rs` | Added `Platform` enum, changed `BoardConfig.platform` type |
-| `crates/fstart-types/src/lib.rs` | Added `Platform` to re-exports |
-| `crates/fstart-codegen/src/ron_loader.rs` | `RonBoardConfig.platform` → `Platform` |
-| `crates/fstart-codegen/src/linker.rs` | Uses `Platform::linker_arch()` |
-| `crates/fstart-codegen/src/stage_gen/mod.rs` | Platform alias, all signatures changed |
-| `crates/fstart-codegen/src/stage_gen/tokens.rs` | `halt_expr()` uses alias |
-| `crates/fstart-codegen/src/stage_gen/capabilities.rs` | 9 match sites → `Platform` enum |
-| `crates/fstart-codegen/src/stage_gen/tests.rs` | Updated for `Platform::Riscv64`, `fstart_platform::` |
-| `xtask/src/build_board.rs` | `Platform` methods, sunxi feature decoupled |
-| `xtask/src/qemu.rs` | `Platform` parameter, exhaustive match |
-| `xtask/src/main.rs` | Passes `config.platform` to qemu |
-| `crates/fstart-stage/Cargo.toml` | Decoupled `armv7` from `sunxi` |
-| `crates/fstart-soc-sunxi/Cargo.toml` | Removed `fstart-arch` dependency |
-| `boards/*/board.ron` (10 files) | `platform:` field → enum variant |
+| File                                                  | Change                                                     |
+| ----------------------------------------------------- | ---------------------------------------------------------- |
+| `crates/fstart-types/src/board.rs`                    | Added `Platform` enum, changed `BoardConfig.platform` type |
+| `crates/fstart-types/src/lib.rs`                      | Added `Platform` to re-exports                             |
+| `crates/fstart-codegen/src/ron_loader.rs`             | `RonBoardConfig.platform` → `Platform`                     |
+| `crates/fstart-codegen/src/linker.rs`                 | Uses `Platform::linker_arch()`                             |
+| `crates/fstart-codegen/src/stage_gen/mod.rs`          | Platform alias, all signatures changed                     |
+| `crates/fstart-codegen/src/stage_gen/tokens.rs`       | `halt_expr()` uses alias                                   |
+| `crates/fstart-codegen/src/stage_gen/capabilities.rs` | 9 match sites → `Platform` enum                            |
+| `crates/fstart-codegen/src/stage_gen/tests.rs`        | Updated for `Platform::Riscv64`, `fstart_platform::`       |
+| `xtask/src/build_board.rs`                            | `Platform` methods, sunxi feature decoupled                |
+| `xtask/src/qemu.rs`                                   | `Platform` parameter, exhaustive match                     |
+| `xtask/src/main.rs`                                   | Passes `config.platform` to qemu                           |
+| `crates/fstart-stage/Cargo.toml`                      | Decoupled `armv7` from `sunxi`                             |
+| `crates/fstart-soc-sunxi/Cargo.toml`                  | Removed `fstart-arch` dependency                           |
+| `boards/*/board.ron` (10 files)                       | `platform:` field → enum variant                           |
 
 ## Git State
 
 Ten commits on `master`:
+
 1. `1b2b71f` — Initial commit: fstart firmware framework with 14 workspace crates
 2. `9383113` — Introduce typed Device trait driver model with codegen-produced StageContext
 3. `de59c64` — Capability pipeline, BusDevice trait, codegen ordering validation, AArch64 objcopy

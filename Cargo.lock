@@ -588,6 +588,7 @@ dependencies = [
  "fstart-driver-sunxi-ccu",
  "fstart-driver-sunxi-d1-ccu",
  "fstart-driver-sunxi-d1-dramc",
+ "fstart-driver-sunxi-display",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",
@@ -902,6 +903,16 @@ dependencies = [
  "fstart-services",
  "serde",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-sunxi-display"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "fstart-services",
+ "serde",
+ "tock-registers",
 ]
 
 [[package]]
@@ -1245,6 +1256,7 @@ dependencies = [
  "fstart-driver-sunxi-ccu",
  "fstart-driver-sunxi-d1-ccu",
  "fstart-driver-sunxi-d1-dramc",
+ "fstart-driver-sunxi-display",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",

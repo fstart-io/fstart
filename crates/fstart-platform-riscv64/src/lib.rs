@@ -1,13 +1,16 @@
 //! RISC-V 64-bit platform support.
 //!
-//! Provides the reset vector entry point, stack setup, BSS clearing,
-//! and architecture-specific helpers. Captures boot parameters (hart ID,
-//! DTB address) passed by QEMU at reset.
+//! Provides reset/S-mode entry points, stack setup, BSS clearing, and
+//! architecture-specific helpers. Captures boot parameters (hart ID, DTB
+//! address) passed in the RISC-V boot convention.
 //!
-//! Two entry paths are supported:
+//! Three entry paths are supported:
 //!
-//! - **Default** (`entry.rs`): Standard RISC-V entry for platforms that
-//!   start with DTB in `a1` (e.g., QEMU virt).
+//! - **Default** (`entry.rs`): Standard M-mode entry for platforms that
+//!   start with DTB in `a1`.
+//!
+//! - **S-mode** (`entry_smode.rs`, behind `smode-entry`): Entry for stages
+//!   entered by SBI firmware such as OpenSBI.
 //!
 //! - **Sunxi** (`entry_sunxi.rs`, behind `sunxi` feature): Entry for
 //!   Allwinner D1/T113 SoCs that boot from the BROM via eGON. The D1
@@ -16,10 +19,17 @@
 #![no_std]
 #![cfg(target_arch = "riscv64")]
 
-#[cfg(not(feature = "sunxi"))]
+#[cfg(not(any(feature = "sunxi", feature = "smode-entry")))]
 pub mod entry;
 
-#[cfg(feature = "sunxi")]
+#[cfg(feature = "smode-entry")]
+pub mod entry_smode;
+
+// smode-entry takes priority: stages entered in S-mode by OpenSBI
+// use the S-mode _start regardless of SoC family.  The sunxi entry
+// (T-Head C906 CSR init, BROM register save) is only for the first
+// stage that boots from BROM in M-mode.
+#[cfg(all(feature = "sunxi", not(feature = "smode-entry")))]
 pub mod entry_sunxi;
 
 // ---------------------------------------------------------------------------
@@ -250,6 +260,33 @@ pub fn copy_and_boot_sbi(
             options(noreturn),
         );
     }
+}
+
+/// Return the DTB address in S-mode.
+///
+/// The S-mode entry point (`entry_smode.rs`) saves the DTB address (from
+/// OpenSBI's `a1`) into `sscratch`.
+#[cfg(feature = "smode-entry")]
+pub fn boot_dtb_addr_smode() -> u64 {
+    let addr: u64;
+    // SAFETY: reading sscratch retrieves the DTB address saved at S-mode entry.
+    unsafe {
+        core::arch::asm!("csrr {}, sscratch", out(reg) addr);
+    }
+    addr
+}
+
+/// Return the boot hart ID in S-mode.
+///
+/// The S-mode entry point (`entry_smode.rs`) saves the hart ID (from
+/// OpenSBI's `a0`) into a BSS global `_smode_hart_id`.
+#[cfg(feature = "smode-entry")]
+pub fn boot_hart_id_smode() -> u64 {
+    unsafe extern "C" {
+        static _smode_hart_id: u64;
+    }
+    // SAFETY: _smode_hart_id is written by entry_smode.rs before fstart_main.
+    unsafe { core::ptr::read_volatile(&_smode_hart_id) }
 }
 
 // ---------------------------------------------------------------------------

@@ -305,7 +305,11 @@ pub enum Capability {
         #[serde(default)]
         smm_provider: Option<HString<32>>,
     },
-    /// Enumerate and initialize all declared devices/drivers.
+    /// Initialize all devices materialized for this stage.
+    ///
+    /// Codegen materializes devices reachable from this stage's capabilities
+    /// (including parent buses and selected service providers). Late-only
+    /// devices that no capability references in this stage are not pulled in.
     DriverInit,
     /// Enumerate a PCI root bus, allocate BAR resources, and enable devices.
     ///
@@ -325,6 +329,20 @@ pub enum Capability {
     /// Load the next stage from FFS into RAM and jump to it.
     StageLoad {
         /// Name of the next stage to load
+        next_stage: HString<32>,
+    },
+    /// Load the next stage from FFS and enter it via platform firmware.
+    ///
+    /// The exact protocol is platform-specific. On RISC-V this currently
+    /// loads OpenSBI's `fw_dynamic` firmware and sets `next_addr` to the
+    /// loaded stage entry, so OpenSBI initializes M-mode services and enters
+    /// the target stage in S-mode. Other platforms may add their own backend
+    /// without changing board-level stage structure.
+    ///
+    /// This is used for payload stages that must run after firmware-owned
+    /// privilege setup with a fresh stack and entry context.
+    FirmwareBoot {
+        /// Name of the next stage to load from FFS and boot via firmware.
         next_stage: HString<32>,
     },
     /// Device lockdown and security hardening — post-boot.

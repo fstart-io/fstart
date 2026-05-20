@@ -8,13 +8,20 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 use core::fmt;
 
-// Type aliases for generated code convenience.
+// Type aliases and re-exports for generated code convenience.
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type PlatformConfig<'a> = crabefi::PlatformConfig<'a>;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
+
+/// Re-export CrabEFI's [`BlockDevice`](crabefi::BlockDevice) trait for use
+/// in generated code that casts platform block device adapters.
+pub use crabefi::BlockDevice as CrabEfiBlockDevice;
 
 /// Call `crabefi::init_platform()`. This is the entry point that never returns.
 pub fn init_platform(config: crabefi::PlatformConfig) -> ! {
@@ -68,6 +75,85 @@ impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> 
 unsafe impl<C: fstart_services::Console + ?Sized> Send for ConsoleAdapter<'_, C> {}
 
 // ---------------------------------------------------------------------------
+// BlockDevice → CrabEFI BlockDevice adapter
+// ---------------------------------------------------------------------------
+
+/// Wraps an fstart [`BlockDevice`](fstart_services::BlockDevice) as a CrabEFI
+/// [`BlockDevice`](crabefi::BlockDevice).
+///
+/// fstart's `BlockDevice` uses byte-offset addressing with `&self` (MMIO
+/// interior mutability) and returns `Result<usize, ServiceError>`.
+/// CrabEFI's `BlockDevice` uses LBA-based addressing with `&mut self` and
+/// returns `Result<(), BlockError>`.
+///
+/// The adapter translates LBA → byte offset (`lba * block_size`) and
+/// loops reads until the full request is satisfied, mapping errors to
+/// [`crabefi::BlockError::DeviceError`].
+pub struct BlockDeviceAdapter<'a> {
+    inner: &'a dyn fstart_services::BlockDevice,
+    name: &'a str,
+}
+
+impl<'a> BlockDeviceAdapter<'a> {
+    /// Create a new adapter wrapping an fstart block device.
+    ///
+    /// `name` is displayed in CrabEFI's boot menu (e.g. `"SD/MMC"`).
+    pub fn new(inner: &'a dyn fstart_services::BlockDevice, name: &'a str) -> Self {
+        Self { inner, name }
+    }
+}
+
+impl crabefi::BlockDevice for BlockDeviceAdapter<'_> {
+    fn info(&self) -> crabefi::BlockDeviceInfo {
+        let block_size = self.inner.block_size();
+        let num_blocks = if block_size > 0 {
+            self.inner.size() / block_size as u64
+        } else {
+            0
+        };
+        crabefi::BlockDeviceInfo {
+            num_blocks,
+            block_size,
+            media_id: 0,
+            removable: true,
+            read_only: false,
+        }
+    }
+
+    fn read_blocks(
+        &mut self,
+        lba: u64,
+        count: u32,
+        buffer: &mut [u8],
+    ) -> Result<(), crabefi::BlockError> {
+        self.validate_read(lba, count, buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+
+        let block_size = self.inner.block_size() as u64;
+        let byte_offset = lba * block_size;
+        let total = count as u64 * block_size;
+
+        let mut done = 0u64;
+        while done < total {
+            let start = done as usize;
+            let end = total as usize;
+            match self.inner.read(byte_offset + done, &mut buffer[start..end]) {
+                Ok(0) => return Err(crabefi::BlockError::DeviceError),
+                Ok(n) => done += n as u64,
+                Err(_) => return Err(crabefi::BlockError::DeviceError),
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+// ---------------------------------------------------------------------------
 // EFI memory map construction
 // ---------------------------------------------------------------------------
 
@@ -90,6 +176,129 @@ pub unsafe fn fdt_page_aligned_size(fdt_addr: u64) -> u64 {
     // SAFETY: caller guarantees valid FDT at this address.
     let total = unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32)) } as u64;
     (total + 0xFFF) & !0xFFF // page-align up
+}
+
+/// Read the RISC-V timer frequency from an FDT blob.
+///
+/// Returns 10 MHz if the property is not found or the FDT is malformed.
+///
+/// # Safety
+///
+/// `fdt_addr` must point to a valid FDT blob, or be 0.
+pub unsafe fn fdt_read_timebase_frequency(fdt_addr: u64) -> u64 {
+    const DEFAULT_FREQ: u64 = 10_000_000;
+    if fdt_addr == 0 {
+        return DEFAULT_FREQ;
+    }
+
+    let ptr = fdt_addr as *const u8;
+    let magic = unsafe { u32::from_be(core::ptr::read_unaligned(ptr as *const u32)) };
+    if magic != 0xd00dfeed {
+        return DEFAULT_FREQ;
+    }
+
+    let totalsize =
+        unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32)) } as usize;
+    let off_struct =
+        unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(8) as *const u32)) } as usize;
+    let off_strings =
+        unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(12) as *const u32)) } as usize;
+    if off_struct >= totalsize || off_strings >= totalsize {
+        return DEFAULT_FREQ;
+    }
+
+    const FDT_BEGIN_NODE: u32 = 0x00000001;
+    const FDT_END_NODE: u32 = 0x00000002;
+    const FDT_PROP: u32 = 0x00000003;
+    const FDT_NOP: u32 = 0x00000004;
+    const FDT_END: u32 = 0x00000009;
+
+    let struct_base = unsafe { ptr.add(off_struct) };
+    let strings_base = unsafe { ptr.add(off_strings) };
+    let struct_len = totalsize - off_struct;
+    let strings_len = totalsize - off_strings;
+    let mut offset = 0usize;
+    let mut in_cpus = false;
+    let mut depth = 0u32;
+    let mut cpus_depth = 0u32;
+
+    while offset + 4 <= struct_len {
+        let token = unsafe {
+            u32::from_be(core::ptr::read_unaligned(
+                struct_base.add(offset) as *const u32
+            ))
+        };
+        offset += 4;
+        match token {
+            FDT_BEGIN_NODE => {
+                let name_start = offset;
+                while offset < struct_len && unsafe { *struct_base.add(offset) } != 0 {
+                    offset += 1;
+                }
+                if offset >= struct_len {
+                    return DEFAULT_FREQ;
+                }
+                let name_len = offset - name_start;
+                offset = (offset + 1 + 3) & !3;
+                if depth == 1 && name_len == 4 {
+                    let name =
+                        unsafe { core::slice::from_raw_parts(struct_base.add(name_start), 4) };
+                    if name == b"cpus" {
+                        in_cpus = true;
+                        cpus_depth = depth + 1;
+                    }
+                }
+                depth += 1;
+            }
+            FDT_END_NODE => {
+                if in_cpus && depth == cpus_depth {
+                    in_cpus = false;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            FDT_PROP => {
+                if offset + 8 > struct_len {
+                    return DEFAULT_FREQ;
+                }
+                let val_len = unsafe {
+                    u32::from_be(core::ptr::read_unaligned(
+                        struct_base.add(offset) as *const u32
+                    ))
+                } as usize;
+                let name_off = unsafe {
+                    u32::from_be(core::ptr::read_unaligned(
+                        struct_base.add(offset + 4) as *const u32
+                    ))
+                } as usize;
+                offset += 8;
+                if offset + val_len > struct_len || name_off >= strings_len {
+                    return DEFAULT_FREQ;
+                }
+                if in_cpus && depth == cpus_depth {
+                    let target = b"timebase-frequency\0";
+                    if name_off + target.len() <= strings_len {
+                        let prop = unsafe {
+                            core::slice::from_raw_parts(strings_base.add(name_off), target.len())
+                        };
+                        if prop == target && val_len == 4 {
+                            let freq = unsafe {
+                                u32::from_be(core::ptr::read_unaligned(
+                                    struct_base.add(offset) as *const u32
+                                ))
+                            };
+                            return freq as u64;
+                        }
+                    }
+                }
+                offset = (offset + val_len + 3) & !3;
+            }
+            FDT_NOP => {}
+            FDT_END => break,
+            _ => return DEFAULT_FREQ,
+        }
+    }
+
+    DEFAULT_FREQ
 }
 
 /// Build the EFI memory map with firmware regions carved out of RAM.
@@ -127,6 +336,35 @@ pub fn build_efi_memory_map(
     fdt_reservation: Option<(u64, u64)>,
     buf: &mut [MemoryRegion],
 ) -> usize {
+    build_efi_memory_map_with_framebuffer(
+        static_entries,
+        ram_base,
+        ram_size,
+        fw_data_addr,
+        fw_bss_reserve,
+        fw_stack_size,
+        fdt_reservation,
+        None,
+        buf,
+    )
+}
+
+/// Build the EFI memory map and additionally reserve a GOP framebuffer.
+///
+/// The framebuffer is marked `Reserved` so UEFI/OS boot services consumers do
+/// not allocate over scanout memory before the graphics handoff is consumed.
+#[allow(clippy::too_many_arguments)]
+pub fn build_efi_memory_map_with_framebuffer(
+    static_entries: &[MemoryRegion],
+    ram_base: u64,
+    ram_size: u64,
+    fw_data_addr: u64,
+    fw_bss_reserve: u64,
+    fw_stack_size: u64,
+    fdt_reservation: Option<(u64, u64)>,
+    framebuffer_reservation: Option<(u64, u64)>,
+    buf: &mut [MemoryRegion],
+) -> usize {
     let mut idx = 0;
 
     // 1. Copy static entries (ROM, Reserved from board config).
@@ -139,40 +377,15 @@ pub fn build_efi_memory_map(
     let fw_bss_end = fw_data_addr + fw_bss_reserve;
     let fw_stack_bottom = ram_end - fw_stack_size;
 
-    // 2. RAM below firmware BSS, with optional FDT carved out.
-    if fw_data_addr > ram_base {
-        match fdt_reservation {
-            Some((fdt_addr, fdt_size)) if fdt_size > 0 => {
-                // FDT region: Reserved so allocator won't hand it out.
-                buf[idx] = MemoryRegion {
-                    base: fdt_addr,
-                    size: fdt_size,
-                    region_type: MemoryType::Reserved,
-                };
-                idx += 1;
-
-                // Free RAM between FDT end and firmware BSS start.
-                let post_fdt = fdt_addr + fdt_size;
-                if fw_data_addr > post_fdt {
-                    buf[idx] = MemoryRegion {
-                        base: post_fdt,
-                        size: fw_data_addr - post_fdt,
-                        region_type: MemoryType::Ram,
-                    };
-                    idx += 1;
-                }
-            }
-            _ => {
-                // No FDT reservation -- entire pre-BSS RAM is free.
-                buf[idx] = MemoryRegion {
-                    base: ram_base,
-                    size: fw_data_addr - ram_base,
-                    region_type: MemoryType::Ram,
-                };
-                idx += 1;
-            }
-        }
-    }
+    // 2. RAM below firmware BSS, with optional FDT/framebuffer carved out.
+    idx = append_ram_with_reservations(
+        ram_base,
+        fw_data_addr,
+        fdt_reservation,
+        framebuffer_reservation,
+        buf,
+        idx,
+    );
 
     // 3. Firmware BSS/data/heap -- RuntimeServicesData.
     //    CrabEFI's EFI system table, runtime services, and ACPI pointers
@@ -187,15 +400,16 @@ pub fn build_efi_memory_map(
     };
     idx += 1;
 
-    // 4. Free RAM between BSS end and stack bottom.
-    if fw_stack_bottom > fw_bss_end {
-        buf[idx] = MemoryRegion {
-            base: fw_bss_end,
-            size: fw_stack_bottom - fw_bss_end,
-            region_type: MemoryType::Ram,
-        };
-        idx += 1;
-    }
+    // 4. Free RAM between BSS end and stack bottom, with all reservations
+    // carved out. Boards commonly place DTBs and framebuffers high in DRAM.
+    idx = append_ram_with_reservations(
+        fw_bss_end,
+        fw_stack_bottom,
+        fdt_reservation,
+        framebuffer_reservation,
+        buf,
+        idx,
+    );
 
     // 5. Firmware stack -- RuntimeServicesData.
     buf[idx] = MemoryRegion {
@@ -204,6 +418,83 @@ pub fn build_efi_memory_map(
         region_type: MemoryType::RuntimeServicesData,
     };
     idx += 1;
+
+    idx
+}
+
+fn append_ram_with_reservations(
+    start: u64,
+    end: u64,
+    first: Option<(u64, u64)>,
+    second: Option<(u64, u64)>,
+    buf: &mut [MemoryRegion],
+    mut idx: usize,
+) -> usize {
+    if start >= end {
+        return idx;
+    }
+
+    let mut reservations = [(0u64, 0u64); 2];
+    let mut count = 0usize;
+    for (base, size) in [first, second].into_iter().flatten() {
+        if size == 0 {
+            continue;
+        }
+        let res_start = base.max(start);
+        let res_end = base.saturating_add(size).min(end);
+        if res_start < res_end {
+            reservations[count] = (res_start, res_end);
+            count += 1;
+        }
+    }
+
+    if count == 2 && reservations[1].0 < reservations[0].0 {
+        reservations.swap(0, 1);
+    }
+
+    let mut cursor = start;
+    let mut i = 0usize;
+    while i < count {
+        let (res_start, mut res_end) = reservations[i];
+        i += 1;
+        if res_end <= cursor {
+            continue;
+        }
+
+        while i < count && reservations[i].0 <= res_end {
+            res_end = res_end.max(reservations[i].1);
+            i += 1;
+        }
+
+        if cursor < res_start {
+            buf[idx] = MemoryRegion {
+                base: cursor,
+                size: res_start - cursor,
+                region_type: MemoryType::Ram,
+            };
+            idx += 1;
+        }
+
+        let reserved_start = cursor.max(res_start);
+        if reserved_start < res_end {
+            buf[idx] = MemoryRegion {
+                base: reserved_start,
+                size: res_end - reserved_start,
+                region_type: MemoryType::Reserved,
+            };
+            idx += 1;
+            cursor = res_end;
+        }
+    }
+
+    if cursor < end {
+        buf[idx] = MemoryRegion {
+            base: cursor,
+            size: end - cursor,
+            region_type: MemoryType::Ram,
+        };
+        idx += 1;
+    }
 
     idx
 }
@@ -336,6 +627,87 @@ impl crabefi::ResetHandler for PsciReset {
         }
 
         #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = reset_type;
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RISC-V SBI Timer / Reset adapters
+// ---------------------------------------------------------------------------
+
+/// CrabEFI [`Timer`](crabefi::Timer) backed by the RISC-V `rdtime` CSR.
+pub struct RiscvSbiTimer {
+    freq: u64,
+}
+
+impl RiscvSbiTimer {
+    /// Create a timer with the given frequency in Hz.
+    pub fn new(freq: u64) -> Self {
+        Self { freq }
+    }
+
+    /// Create a timer by reading `/cpus/timebase-frequency` from an FDT.
+    ///
+    /// # Safety
+    ///
+    /// `fdt_addr` must point to a valid FDT blob, or be 0.
+    pub unsafe fn from_fdt(fdt_addr: u64) -> Self {
+        let freq = unsafe { fdt_read_timebase_frequency(fdt_addr) };
+        Self { freq }
+    }
+}
+
+impl crabefi::Timer for RiscvSbiTimer {
+    fn current_ticks(&self) -> u64 {
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            let value: u64;
+            core::arch::asm!("rdtime {}", out(reg) value, options(nomem, nostack, preserves_flags));
+            value
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            0
+        }
+    }
+
+    fn ticks_per_second(&self) -> u64 {
+        self.freq
+    }
+}
+
+/// CrabEFI [`ResetHandler`](crabefi::ResetHandler) using SBI SRST calls.
+pub struct SbiReset;
+
+impl crabefi::ResetHandler for SbiReset {
+    fn reset(&self, reset_type: crabefi::ResetType) -> ! {
+        #[cfg(target_arch = "riscv64")]
+        {
+            let srst_type: u64 = match reset_type {
+                crabefi::ResetType::Cold => 1,
+                crabefi::ResetType::Warm => 2,
+                crabefi::ResetType::Shutdown => 0,
+                _ => 1,
+            };
+            unsafe {
+                core::arch::asm!(
+                    "ecall",
+                    in("a0") srst_type,
+                    in("a1") 0u64,
+                    in("a6") 0u64,
+                    in("a7") 0x53525354u64,
+                    options(noreturn)
+                );
+            }
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
         {
             let _ = reset_type;
             loop {
@@ -751,4 +1123,83 @@ pub fn build_efi_memory_map_from_e820(
     }
 
     idx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collect(fdt: Option<(u64, u64)>, framebuffer: Option<(u64, u64)>) -> [MemoryRegion; 16] {
+        let mut buf = [MemoryRegion {
+            base: 0,
+            size: 0,
+            region_type: MemoryType::Reserved,
+        }; 16];
+        let n = build_efi_memory_map_with_framebuffer(
+            &[],
+            0x8000_0000,
+            0x1000_0000,
+            0x8020_0000,
+            0x20_0000,
+            0x80_0000,
+            fdt,
+            framebuffer,
+            &mut buf,
+        );
+        for entry in buf.iter_mut().skip(n) {
+            entry.size = 0;
+        }
+        buf
+    }
+
+    fn assert_entry(entry: MemoryRegion, base: u64, size: u64, region_type: MemoryType) {
+        assert_eq!(entry.base, base);
+        assert_eq!(entry.size, size);
+        assert_eq!(entry.region_type, region_type);
+    }
+
+    #[test]
+    fn framebuffer_only_high_dram_is_reserved() {
+        let map = collect(None, Some((0x87d0_0000, 0x300000)));
+        assert_entry(map[2], 0x8040_0000, 0x7900_000, MemoryType::Ram);
+        assert_entry(map[3], 0x87d0_0000, 0x300000, MemoryType::Reserved);
+    }
+
+    #[test]
+    fn fdt_only_high_dram_is_reserved() {
+        let map = collect(Some((0x87f0_0000, 0x100000)), None);
+        assert_entry(map[2], 0x8040_0000, 0x7b00_000, MemoryType::Ram);
+        assert_entry(map[3], 0x87f0_0000, 0x100000, MemoryType::Reserved);
+    }
+
+    #[test]
+    fn fdt_and_framebuffer_high_dram_are_both_reserved() {
+        let map = collect(Some((0x87f0_0000, 0x100000)), Some((0x87d0_0000, 0x100000)));
+        assert_entry(map[2], 0x8040_0000, 0x7900_000, MemoryType::Ram);
+        assert_entry(map[3], 0x87d0_0000, 0x100000, MemoryType::Reserved);
+        assert_entry(map[4], 0x87e0_0000, 0x100000, MemoryType::Ram);
+        assert_entry(map[5], 0x87f0_0000, 0x100000, MemoryType::Reserved);
+    }
+
+    #[test]
+    fn adjacent_or_overlapping_reservations_are_merged() {
+        let adjacent = collect(Some((0x87e0_0000, 0x100000)), Some((0x87d0_0000, 0x100000)));
+        assert_entry(adjacent[3], 0x87d0_0000, 0x200000, MemoryType::Reserved);
+
+        let overlapping = collect(Some((0x87d8_0000, 0x100000)), Some((0x87d0_0000, 0x100000)));
+        assert_entry(overlapping[3], 0x87d0_0000, 0x180000, MemoryType::Reserved);
+    }
+
+    #[test]
+    fn out_of_range_reservations_are_ignored() {
+        let map = collect(Some((0x7000_0000, 0x100000)), Some((0x9800_0000, 0x100000)));
+        assert_entry(map[2], 0x8040_0000, 0xf400_000, MemoryType::Ram);
+        assert_entry(
+            map[3],
+            0x8f80_0000,
+            0x800000,
+            MemoryType::RuntimeServicesData,
+        );
+        assert_eq!(map[4].size, 0);
+    }
 }

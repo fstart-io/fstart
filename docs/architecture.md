@@ -335,7 +335,7 @@ the eGON magic appears at offset 0 of the binary.
 
 ## Runtime boot flow
 
-### Platform entry (_start)
+### Platform entry (\_start)
 
 Each platform crate (`fstart-platform-riscv64`, etc.) provides a `_start`
 in a `global_asm!` block placed in `.text.entry`. The assembly does four
@@ -535,8 +535,9 @@ one or more service traits.
   Programs registers, enables clocks, runs calibration.
 
 The split between `new` (pure) and `init` (side-effectful) matters because
-codegen constructs all devices first, then initializes them in capability
-order.
+codegen constructs only the devices materialized for the current stage, then
+initializes them in capability order. Materialization is driven by the stage's
+capability references, parent buses, and service providers needed by that stage.
 
 ### Bus devices
 

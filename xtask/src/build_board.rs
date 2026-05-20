@@ -7,7 +7,8 @@
 
 use fstart_codegen::ron_loader;
 use fstart_types::{
-    effective_stage_load_addr, Capability, Platform, SecurityConfig, SocImageFormat, StageLayout,
+    effective_stage_load_addr, BootMedium, Capability, DeviceConfig, Platform, SecurityConfig,
+    SocImageFormat, StageLayout,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -69,25 +70,11 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     // Determine target triple from the Platform enum.
     let target = config.platform.target_triple();
 
-    // Base features: platform + all driver features (every stage constructs
-    // all devices, so driver features are always needed globally).
-    //
-    // Structural (driverless) nodes use the sentinel driver name
-    // `_structural` and must be skipped here — there is no cargo
-    // feature by that name. Similarly, ACPI-only devices (ahci,
-    // xhci, pcie-root) contribute only build-time ACPI table entries
-    // and have no runtime driver crate / no corresponding feature in
-    // fstart-stage's Cargo.toml.
-    const ACPI_ONLY_DRIVERS: &[&str] = &["ahci", "xhci", "pcie-root"];
+    // Base features are platform/board-level only. Runtime driver features are
+    // added per stage from devices reachable by that stage's capabilities so
+    // late-only devices do not bloat tiny SRAM bootblocks.
     let mut base_features = Vec::new();
     base_features.push(config.platform.as_str().to_string());
-    for device in &config.devices {
-        let drv = device.driver.as_str();
-        if drv == "_structural" || ACPI_ONLY_DRIVERS.contains(&drv) {
-            continue;
-        }
-        base_features.push(drv.to_string());
-    }
 
     // Multi-stage boards need the handoff feature for inter-stage data passing.
     let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
@@ -136,6 +123,10 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         StageLayout::Monolithic(mono) => {
             // Single build — compute features from this stage's capabilities.
             let mut features = base_features.clone();
+            features.extend(driver_features_for_stage(
+                &config.devices,
+                &mono.capabilities,
+            ));
             let cap_features = capability_features(&mono.capabilities, &config.security, &config);
             features.extend(cap_features);
             if mono.page_size == fstart_types::stage::PageSize::Size1GiB {
@@ -148,6 +139,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                     features.push("x86-static-page-tables".to_string());
                 }
             }
+            dedup_features(&mut features);
             let features_str = features.join(",");
             let needs_alloc = stage_uses_fdt(&mono.capabilities)
                 || stage_uses_acpi(&mono.capabilities)
@@ -184,11 +176,16 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                 let stage_name = stage.name.to_string();
                 eprintln!("[fstart] building stage: {stage_name}");
 
-                // Compute per-stage features: base (platform + drivers) +
-                // capability-driven features (FFS, crypto, FDT) for THIS
-                // stage only. The bootblock doesn't need FFS/crypto/FDT
-                // even if the main stage does.
+                // Compute per-stage features: board/platform base features,
+                // drivers reachable from this stage, then capability-driven
+                // features (FFS, crypto, FDT) for THIS stage only. The
+                // bootblock doesn't need FFS/crypto/FDT even if the main
+                // stage does.
                 let mut features = base_features.clone();
+                features.extend(driver_features_for_stage(
+                    &config.devices,
+                    &stage.capabilities,
+                ));
                 let cap_features =
                     capability_features(&stage.capabilities, &config.security, &config);
                 features.extend(cap_features);
@@ -202,6 +199,12 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                         features.push("x86-static-page-tables".to_string());
                     }
                 }
+                if config.platform == Platform::Riscv64
+                    && stage_is_firmware_boot_target(stages.as_slice(), stage.name.as_str())
+                {
+                    features.push("smode-entry".to_string());
+                }
+                dedup_features(&mut features);
                 let features_str = features.join(",");
 
                 let stage_has_crabefi = stage
@@ -209,9 +212,10 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
                     .iter()
                     .any(|c| matches!(c, Capability::PayloadLoad))
                     && stage_uses_crabefi(&config);
-                // PCI and Q35 driver features pull in fstart-alloc, which
-                // needs alloc in build-std even for stages that don't
-                // directly use PCI. Driver features are global.
+                // Conservative alloc selection: boards that declare a PCI
+                // root may pull in PCI driver code through stage-local
+                // features. Keep alloc available until build-std selection is
+                // derived from the final deduplicated feature set.
                 let has_pci_driver = config
                     .devices
                     .iter()
@@ -722,11 +726,115 @@ pub(crate) fn patch_allwinner_egon_ffs(
     Ok(())
 }
 
+const ACPI_ONLY_DRIVERS: &[&str] = &["ahci", "xhci", "pcie-root"];
+
+fn push_device_with_parents(name: &str, devices: &[DeviceConfig], names: &mut Vec<String>) {
+    if let Some(dev) = devices.iter().find(|d| d.name.as_str() == name) {
+        if let Some(parent) = dev.parent.as_ref() {
+            push_device_with_parents(parent.as_str(), devices, names);
+        }
+        if !names.iter().any(|n| n == dev.name.as_str()) {
+            names.push(dev.name.to_string());
+        }
+    }
+}
+
+fn dedup_features(features: &mut Vec<String>) {
+    let mut unique = Vec::with_capacity(features.len());
+    for feature in features.drain(..) {
+        if !unique.iter().any(|seen| seen == &feature) {
+            unique.push(feature);
+        }
+    }
+    *features = unique;
+}
+
+fn driver_features_for_stage(devices: &[DeviceConfig], capabilities: &[Capability]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+
+    for cap in capabilities {
+        match cap {
+            Capability::ClockInit { device }
+            | Capability::ConsoleInit { device }
+            | Capability::DramInit { device }
+            | Capability::PciInit { device }
+            | Capability::AcpiLoad { device }
+            | Capability::MemoryDetect { device } => {
+                push_device_with_parents(device.as_str(), devices, &mut names)
+            }
+            Capability::PreConsoleInit {
+                devices: phase_devices,
+            }
+            | Capability::EarlyInit {
+                devices: phase_devices,
+            }
+            | Capability::StageLocalInit {
+                devices: phase_devices,
+            }
+            | Capability::PostDramInit {
+                devices: phase_devices,
+            }
+            | Capability::FinalizeInit {
+                devices: phase_devices,
+            } => {
+                for device in phase_devices {
+                    push_device_with_parents(device.as_str(), devices, &mut names);
+                }
+            }
+            Capability::BootMedia(BootMedium::Device { name, .. }) => {
+                push_device_with_parents(name.as_str(), devices, &mut names)
+            }
+            Capability::BootMedia(BootMedium::AutoDevice {
+                devices: boot_devices,
+            }) => {
+                for dev in boot_devices {
+                    push_device_with_parents(dev.name.as_str(), devices, &mut names);
+                }
+            }
+            Capability::LoadNextStage {
+                devices: boot_devices,
+                ..
+            } => {
+                for dev in boot_devices {
+                    push_device_with_parents(dev.name.as_str(), devices, &mut names);
+                }
+            }
+            Capability::PayloadLoad => {
+                for dev in devices {
+                    if dev.services.iter().any(|s| {
+                        matches!(
+                            s.as_str(),
+                            "Console" | "Framebuffer" | "BlockDevice" | "PciRootBus"
+                        )
+                    }) {
+                        push_device_with_parents(dev.name.as_str(), devices, &mut names);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut features = Vec::new();
+    for name in names {
+        if let Some(dev) = devices.iter().find(|d| d.name.as_str() == name.as_str()) {
+            let drv = dev.driver.as_str();
+            if drv != "_structural"
+                && !ACPI_ONLY_DRIVERS.contains(&drv)
+                && !features.iter().any(|f| f == drv)
+            {
+                features.push(drv.to_string());
+            }
+        }
+    }
+    features
+}
+
 /// Compute the capability-driven feature flags for a single stage.
 ///
 /// Examines the stage's capabilities to determine which FFS, crypto,
-/// and FDT features are needed. Driver features are NOT included here
-/// (they are always global since every stage constructs all devices).
+/// and FDT features are needed. Driver features are added separately from
+/// stage-reachable devices.
 fn capability_features(
     capabilities: &[Capability],
     security: &SecurityConfig,
@@ -737,7 +845,10 @@ fn capability_features(
     let uses_ffs = capabilities.iter().any(|c| {
         matches!(
             c,
-            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+            Capability::SigVerify
+                | Capability::StageLoad { .. }
+                | Capability::FirmwareBoot { .. }
+                | Capability::PayloadLoad
         )
     });
 
@@ -864,11 +975,50 @@ fn stage_uses_crabefi(config: &fstart_types::BoardConfig) -> bool {
         .is_some_and(|p| p.kind == fstart_types::PayloadKind::UefiPayload)
 }
 
+/// Check whether `stage_name` is the explicit target of a FirmwareBoot capability.
+fn stage_is_firmware_boot_target(stages: &[fstart_types::StageConfig], stage_name: &str) -> bool {
+    stages.iter().any(|stage| {
+        stage.capabilities.iter().any(|cap| match cap {
+            Capability::FirmwareBoot { next_stage } => next_stage.as_str() == stage_name,
+            _ => false,
+        })
+    })
+}
+
 /// Check if a stage's capabilities require the SMBIOS feature.
 fn stage_uses_smbios(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::SmBiosPrepare))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn firmware_boot_enables_ffs_features_without_sigverify() {
+        // BoardConfig is large; run this targeted xtask test on a larger stack
+        // so host test harness stack size does not dominate the result.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let board_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../boards/qemu-riscv64-uefi/board.ron");
+                let config = ron_loader::load_board_config(&board_path).expect("load qemu board");
+                let capabilities = [Capability::FirmwareBoot {
+                    next_stage: "uefi".parse().expect("stage name fits"),
+                }];
+                let features = capability_features(&capabilities, &config.security, &config);
+
+                assert!(features.iter().any(|f| f == "ffs"));
+                assert!(features.iter().any(|f| f == "lz4"));
+                assert!(features.iter().any(|f| f == "ed25519"));
+            })
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread completed");
+    }
 }
 
 fn workspace_root() -> Result<PathBuf, String> {

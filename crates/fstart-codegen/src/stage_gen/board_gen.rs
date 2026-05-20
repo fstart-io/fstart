@@ -91,6 +91,8 @@ pub(super) fn generate_board_adapter(
     let ffs_stage = needs_ffs(capabilities);
     let is_first_stage = compute_is_first_stage(&config.stages, stage_name);
     let dram = find_dram_region(config).unwrap_or((0, 0));
+    let (stage_fw_addr, stage_stack_size) =
+        current_stage_firmware_region(&config.stages, stage_name);
     let ctx = BoardCtx {
         config,
         devices: &config.devices,
@@ -102,6 +104,8 @@ pub(super) fn generate_board_adapter(
         is_first_stage,
         dram_base: dram.0,
         dram_size_static: dram.1,
+        stage_fw_addr,
+        stage_stack_size,
     };
 
     let mut tokens = TokenStream::new();
@@ -109,6 +113,34 @@ pub(super) fn generate_board_adapter(
     tokens.extend(emit_adapter_new(&ctx));
     tokens.extend(emit_board_impl(platform, &ctx));
     tokens
+}
+
+fn current_stage_firmware_region(stages: &StageLayout, stage_name: Option<&str>) -> (u64, u64) {
+    match (stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => (
+            mono.data_addr.unwrap_or(mono.load_addr),
+            mono.stack_size as u64,
+        ),
+        (StageLayout::MultiStage(stages), Some(name)) => stages
+            .iter()
+            .find(|stage| stage.name.as_str() == name)
+            .map(|stage| {
+                (
+                    stage.data_addr.unwrap_or(stage.load_addr),
+                    stage.stack_size as u64,
+                )
+            })
+            .unwrap_or((0, 0)),
+        (StageLayout::MultiStage(stages), None) => stages
+            .last()
+            .map(|stage| {
+                (
+                    stage.data_addr.unwrap_or(stage.load_addr),
+                    stage.stack_size as u64,
+                )
+            })
+            .unwrap_or((0, 0)),
+    }
 }
 
 /// Stage-is-first predicate, matching [`generate_fstart_main`]'s rule.
@@ -184,33 +216,64 @@ struct BoardCtx<'a> {
     is_first_stage: bool,
     dram_base: u64,
     dram_size_static: u64,
+    stage_fw_addr: u64,
+    stage_stack_size: u64,
 }
 
 // =======================================================================
-// Excluded devices — match the old `generate_devices_struct` rule
+// Excluded devices — stage-local materialization
 // =======================================================================
 
 /// Which device indices are not materialised in this stage.
 ///
-/// Bus children require their parent bus to be initialised before
-/// construction (`new_on_bus` reads the parent's BARs).  In stages
-/// without a `DriverInit` capability, no parent ever initialises, so
-/// the old generator excludes bus children entirely.  We mirror that
-/// rule so the two adapters stay isomorphic during the transition.
+/// Materialization is capability-driven: direct capability targets, their
+/// parent chains, and services consumed by `PayloadLoad` are present in the
+/// generated stage. `DriverInit` bulk-initializes that stage-local set rather
+/// than pulling every board device into tiny early stages.
 fn compute_excluded_indices(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
     capabilities: &[Capability],
 ) -> Vec<usize> {
-    let has_driver_init = capabilities
+    let materialized = stage_materialized_indices(devices, instances, device_tree, capabilities);
+    devices
         .iter()
-        .any(|c| matches!(c, Capability::DriverInit));
-    if has_driver_init {
-        return Vec::new();
-    }
+        .enumerate()
+        .filter_map(|(idx, _)| (!materialized.contains(&idx)).then_some(idx))
+        .collect()
+}
 
-    let mut referenced: Vec<&str> = Vec::new();
+/// Runtime device indices that this stage can actually reach from its
+/// declared capabilities. `DriverInit` bulk-initialises this stage-local set;
+/// it no longer pulls every board device (for example late-only display/GOP
+/// devices) into tiny SRAM bootblocks.
+pub(super) fn stage_materialized_indices(
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    device_tree: &[DeviceNode],
+    capabilities: &[Capability],
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    let push_idx = |idx: usize, out: &mut Vec<usize>| {
+        if devices[idx].enabled && !instances[idx].is_acpi_only() && !out.contains(&idx) {
+            out.push(idx);
+        }
+    };
+    let push_named = |name: &str, out: &mut Vec<usize>| {
+        if let Some(idx) = devices.iter().position(|d| d.name.as_str() == name) {
+            let mut chain = Vec::new();
+            let mut cursor = Some(idx);
+            while let Some(cur) = cursor {
+                chain.push(cur);
+                cursor = device_tree[cur].parent.map(usize::from);
+            }
+            for cur in chain.into_iter().rev() {
+                push_idx(cur, out);
+            }
+        }
+    };
+
     for cap in capabilities {
         match cap {
             Capability::ClockInit { device }
@@ -218,49 +281,52 @@ fn compute_excluded_indices(
             | Capability::DramInit { device }
             | Capability::PciInit { device }
             | Capability::AcpiLoad { device }
-            | Capability::MemoryDetect { device } => referenced.push(device.as_str()),
+            | Capability::MemoryDetect { device } => push_named(device.as_str(), &mut out),
             Capability::PreConsoleInit { devices }
             | Capability::EarlyInit { devices }
             | Capability::StageLocalInit { devices }
             | Capability::PostDramInit { devices }
             | Capability::FinalizeInit { devices } => {
                 for device in devices {
-                    referenced.push(device.as_str());
+                    push_named(device.as_str(), &mut out);
                 }
             }
             Capability::BootMedia(BootMedium::Device { name, .. }) => {
-                referenced.push(name.as_str())
+                push_named(name.as_str(), &mut out)
             }
             Capability::BootMedia(BootMedium::AutoDevice { devices }) => {
                 for dev in devices {
-                    referenced.push(dev.name.as_str());
+                    push_named(dev.name.as_str(), &mut out);
                 }
             }
             Capability::LoadNextStage { devices, .. } => {
                 for dev in devices {
-                    referenced.push(dev.name.as_str());
+                    push_named(dev.name.as_str(), &mut out);
                 }
             }
+            Capability::PayloadLoad => {
+                for (idx, dev) in devices.iter().enumerate() {
+                    if dev.services.iter().any(|s| {
+                        matches!(
+                            s.as_str(),
+                            "Console" | "Framebuffer" | "BlockDevice" | "PciRootBus"
+                        )
+                    }) {
+                        push_named(dev.name.as_str(), &mut out);
+                    } else if instances[idx].is_structural() {
+                        // Structural parents are pulled by referenced children.
+                    }
+                }
+            }
+            Capability::FirmwareBoot { .. }
+            | Capability::SigVerify
+            | Capability::StageLoad { .. } => {}
             _ => {}
         }
     }
 
-    device_tree
-        .iter()
-        .enumerate()
-        .filter(|(idx, node)| {
-            // Only exclude bus children that are not directly referenced by a
-            // stage capability. Capability targets (e.g. ConsoleInit on an LPC
-            // SuperIO/UART) must still be materialised even in tiny stages that
-            // intentionally omit DriverInit.
-            node.parent.is_some()
-                && !instances[*idx].is_structural()
-                && !referenced
-                    .iter()
-                    .any(|name| *name == devices[*idx].name.as_str())
-        })
-        .map(|(idx, _)| idx)
-        .collect()
+    out.sort_unstable();
+    out
 }
 
 // =======================================================================
@@ -269,12 +335,11 @@ fn compute_excluded_indices(
 
 /// Emit the `_BoardDevices` struct.
 ///
-/// One field per enabled, runtime-present, non-excluded device.  All
-/// fields are `Option<T>` because `init_device(id)` is the sole
-/// construction site (see invariant #4 in the plan doc): no device is
-/// materialised until the executor asks for it, which keeps the
-/// "stages that don't use X skip X entirely" property we already rely
-/// on for deferred bus children.
+/// One field per enabled, stage-materialized runtime device.  All fields
+/// are `Option<T>` because `init_device(id)` is the sole construction site
+/// (see invariant #4 in the plan doc): no device is materialized until the
+/// executor asks for it, which keeps late-only devices out of stages that do
+/// not reference them.
 ///
 /// Plus several bookkeeping fields, all populated by `new()`:
 ///
@@ -327,6 +392,7 @@ fn emit_adapter_struct(ctx: &BoardCtx<'_>) -> TokenStream {
         struct _BoardDevices {
             #(#fields)*
             _inited: fstart_stage_runtime::DeviceMask,
+            _post_dram_ready: fstart_stage_runtime::DeviceMask,
             _boot_media: fstart_stage_runtime::BootMediaState,
             _dtb_dst_addr: u64,
             _bootargs: &'static str,
@@ -406,6 +472,7 @@ fn emit_adapter_new(ctx: &BoardCtx<'_>) -> TokenStream {
                 Self {
                     #(#field_inits)*
                     _inited: fstart_stage_runtime::DeviceMask::new(),
+                    _post_dram_ready: fstart_stage_runtime::DeviceMask::new(),
                     _boot_media: fstart_stage_runtime::BootMediaState::None,
                     _dtb_dst_addr: #dtb_dst_lit,
                     _bootargs: #bootargs_lit,
@@ -463,6 +530,7 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let mp_init_body = mp_init_body(ctx);
     let boot_media_select_body = boot_media_select_body(ctx);
     let load_next_stage_body = load_next_stage_body(ctx);
+    let firmware_boot_body = firmware_boot_body(platform, ctx);
     let payload_load_body = payload_load_body(platform, ctx);
     let init_device_body = init_device_body(ctx);
     let init_all_devices_body = init_all_devices_body(ctx);
@@ -530,6 +598,10 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
 
             fn stage_load(&self, next_stage: &str) -> ! {
                 #stage_load_body
+            }
+
+            fn firmware_boot(&self, next_stage: &str) -> ! {
+                #firmware_boot_body
             }
 
             fn acpi_prepare(&mut self) {
@@ -940,9 +1012,9 @@ fn sig_verify_body(ctx: &BoardCtx<'_>) -> TokenStream {
     if !ctx.ffs_stage {
         return quote! {
             // No FFS-using capability in this stage, so no executor
-            // arm reaches `sig_verify`.  Keep the trait method but
-            // make it a compile-time-only placeholder.
-            todo!("board_gen::sig_verify: no FFS-using capability in this stage")
+            // arm reaches `sig_verify`. Keep the trait method as a
+            // tiny dead-code stub without pulling in panic formatting.
+            fstart_platform::halt()
         };
     }
 
@@ -1157,9 +1229,7 @@ fn fdt_prepare_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
         .iter()
         .any(|c| matches!(c, Capability::FdtPrepare));
     if !has_fdt_prepare {
-        return quote! {
-            todo!("board_gen::fdt_prepare: stage does not declare FdtPrepare")
-        };
+        return quote! { fstart_platform::halt() };
     }
 
     let Some(payload) = ctx.config.payload.as_ref() else {
@@ -1364,7 +1434,7 @@ fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
     if !ctx.ffs_stage {
         return quote! {
             let _ = next_stage;
-            todo!("board_gen::stage_load requires an FFS-using stage")
+            fstart_platform::halt()
         };
     }
 
@@ -1436,6 +1506,95 @@ fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
     }
 }
 
+fn firmware_boot_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+    let declares_firmware_boot = ctx
+        .stage_capabilities
+        .iter()
+        .any(|cap| matches!(cap, Capability::FirmwareBoot { .. }));
+    if !declares_firmware_boot {
+        return quote! {
+            let _ = next_stage;
+            fstart_platform::halt()
+        };
+    }
+
+    if platform != Platform::Riscv64 {
+        return quote! {
+            let _ = next_stage;
+            fstart_platform::halt()
+        };
+    }
+
+    if !ctx.ffs_stage {
+        return quote! {
+            let _ = next_stage;
+            fstart_platform::halt()
+        };
+    }
+
+    let Some(fw) = ctx
+        .config
+        .payload
+        .as_ref()
+        .and_then(|p| p.firmware.as_ref())
+    else {
+        return quote! { compile_error!("FirmwareBoot requires payload.firmware in board RON"); };
+    };
+    let fw_load_addr = hex_addr(fw.load_addr);
+    let dtb_addr_expr = if let Some(addr) = ctx.config.payload.as_ref().and_then(|p| p.dtb_addr) {
+        hex_addr(addr)
+    } else {
+        quote! { fstart_platform::boot_dtb_addr() }
+    };
+    let anchor = anchor_bytes_stmt();
+    let bm_usage = quote! {
+        fstart_log::info!("loading OpenSBI firmware...");
+        if !fstart_capabilities::load_ffs_file_by_type(
+            _anchor_bytes,
+            &_bm,
+            fstart_types::ffs::FileType::Firmware,
+        ) {
+            fstart_log::error!("FATAL: failed to load OpenSBI firmware");
+            fstart_platform::halt();
+        }
+
+        let _next_entry = match fstart_capabilities::load_stage_entry(
+            next_stage,
+            _anchor_bytes,
+            &_bm,
+        ) {
+            Some(addr) => addr,
+            None => {
+                fstart_log::error!("FATAL: failed to load stage '{}'", next_stage);
+                fstart_platform::halt();
+            }
+        };
+
+        let _fw_info = fstart_platform::FwDynamicInfo::new(
+            _next_entry,
+            fstart_platform::boot_hart_id(),
+        );
+        fstart_log::info!("booting OpenSBI -> stage '{}' at S-mode", next_stage);
+        fstart_platform::boot_linux_sbi(
+            #fw_load_addr,
+            fstart_platform::boot_hart_id(),
+            #dtb_addr_expr,
+            &_fw_info,
+        );
+    };
+    let none_body = quote! {
+        fstart_log::error!("firmware_boot: no boot media configured");
+    };
+    let match_body = match_boot_media(ctx, &bm_usage, "firmware_boot", &none_body);
+
+    quote! {
+        fstart_log::info!("capability: FirmwareBoot -> {}", next_stage);
+        #anchor
+        #match_body
+        fstart_platform::halt()
+    }
+}
+
 /// Emit the body of `Board::return_to_fel`.
 ///
 /// Allwinner sunxi-only.  Requires **two** conditions to emit the
@@ -1475,12 +1634,10 @@ fn return_to_fel_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     if platform != Platform::Armv7 || !uses_return_to_fel {
         return quote! {
             // Dead code: this stage does not declare ReturnToFel, or
-            // the board is not armv7.  The executor never dispatches
-            // `CapOp::ReturnToFel` here, so the body is never
-            // entered; emitting a real `fstart_soc_sunxi::...` call
-            // would fail to compile for non-sunxi boards that do not
-            // depend on the crate.
-            todo!("board_gen::return_to_fel: stage does not declare ReturnToFel")
+            // the board is not armv7. The executor never dispatches
+            // `CapOp::ReturnToFel` here; keep the body tiny and avoid
+            // referencing `fstart_soc_sunxi` on non-sunxi stages.
+            fstart_platform::halt()
         };
     }
     quote! {
@@ -1744,8 +1901,8 @@ fn phase_init_body(
         )
     });
     if service_name == "PostDramInit" && !stage_declares_phase {
-        let msg = format!("board_gen::{method_name}: stage does not declare {service_name}");
-        return quote! { todo!(#msg) };
+        let _ = method_name;
+        return quote! { Err(fstart_services::device::DeviceError::InitFailed) };
     }
 
     let trait_ident = format_ident!("{}", trait_name);
@@ -1760,6 +1917,12 @@ fn phase_init_body(
                 .any(|s| s.as_str() == "Southbridge")
         })
         .map(|idx| format_ident!("{}", ctx.devices[idx].name.as_str()));
+
+    let mark_ready = if service_name == "PostDramInit" {
+        quote! { self._post_dram_ready.set(*id); }
+    } else {
+        quote! {}
+    };
 
     let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
         .filter(|idx| {
@@ -1830,6 +1993,7 @@ fn phase_init_body(
                     return Err(fstart_services::device::DeviceError::InitFailed);
                 }
             }
+            #mark_ready
         }
         Ok(())
     }
@@ -2032,18 +2196,11 @@ fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
         .iter()
         .any(|c| matches!(c, Capability::AcpiPrepare));
     if !has_acpi_prepare {
-        return quote! {
-            todo!("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
-        };
+        return quote! { fstart_platform::halt() };
     }
 
     let Some(acpi_cfg) = ctx.config.acpi.as_ref() else {
-        return quote! {
-            // No `acpi` config in RON — validation already rejected
-            // `AcpiPrepare` in the capability list, so this body is
-            // never reached at runtime.  Keep it compilable.
-            todo!("board_gen::acpi_prepare: board has no `acpi` RON config")
-        };
+        return quote! { fstart_platform::halt() };
     };
 
     // Per-device config bindings, emitted as `let <name>_cfg = <literal>;`.
@@ -2133,17 +2290,10 @@ fn smbios_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
         .iter()
         .any(|c| matches!(c, Capability::SmBiosPrepare));
     if !has_smbios_prepare {
-        return quote! {
-            todo!("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
-        };
+        return quote! { fstart_platform::halt() };
     }
     if ctx.config.smbios.is_none() {
-        return quote! {
-            // No `smbios` config in RON — validation already rejected
-            // `SmBiosPrepare` in the capability list, so this body is
-            // never reached at runtime.
-            todo!("board_gen::smbios_prepare: board has no `smbios` RON config")
-        };
+        return quote! { fstart_platform::halt() };
     }
     super::capabilities::generate_smbios_prepare(ctx.config)
 }
@@ -2204,26 +2354,16 @@ fn boot_media_select_body(ctx: &BoardCtx<'_>) -> TokenStream {
         return quote! {
             // Dead code: this stage does not declare a capability
             // that reaches `boot_media_select`, or the board is not
-            // a sunxi eGON board.  Emitting the real body would
-            // reference `fstart_soc_sunxi`, which is only linked
-            // into stages that enable the sunxi feature.
+            // a sunxi eGON board. Avoid referencing `fstart_soc_sunxi`.
             let _ = candidates;
-            todo!("board_gen::boot_media_select: stage does not use LoadNextStage/BootMediaAuto, \
-                   or board is not sunxi-eGON")
+            None
         };
     }
 
     quote! {
-        // SAFETY: reading the BROM-populated eGON header at
-        // `self._egon_sram_base + 0x28`.  The const-initialised
-        // `_egon_sram_base` is the first stage's `load_addr` from RON,
-        // which is where the BROM dropped us and thus where the
-        // header lives.
-        // SAFETY: _egon_sram_base is the BROM entry point where the
-        // eGON header is mapped in SRAM.
-        let _bm = unsafe {
-            fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize)
-        };
+        // `_egon_sram_base` is the BROM entry point where the eGON
+        // header is mapped in SRAM.
+        let _bm = fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize);
         fstart_log::info!("boot media detect: {:#x}", _bm);
         for candidate in candidates {
             if candidate.media_ids.iter().any(|&id| id == _bm) {
@@ -2286,8 +2426,7 @@ fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
     if !uses_load_next_stage || !is_egon {
         return quote! {
             let _ = next_stage;
-            todo!("board_gen::load_next_stage: stage does not use LoadNextStage, \
-                   or board is not sunxi-eGON")
+            fstart_platform::halt()
         };
     }
 
@@ -2404,11 +2543,9 @@ fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
 
         // eGON header read (patched by the FFS assembler at image build).
         let ns_ffs_offset =
-            // SAFETY: _egon_sram_base points to the eGON header in SRAM.
-            unsafe { fstart_soc_sunxi::next_stage_offset_at(self._egon_sram_base as usize) } as u64;
+            fstart_soc_sunxi::next_stage_offset_at(self._egon_sram_base as usize) as u64;
         let ns_size =
-            // SAFETY: same as above.
-            unsafe { fstart_soc_sunxi::next_stage_size_at(self._egon_sram_base as usize) } as usize;
+            fstart_soc_sunxi::next_stage_size_at(self._egon_sram_base as usize) as usize;
         if ns_ffs_offset == 0 || ns_size == 0 {
             fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
             fstart_platform::halt();
@@ -2496,9 +2633,7 @@ fn payload_load_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
         .iter()
         .any(|c| matches!(c, Capability::PayloadLoad));
     if !has_payload_load {
-        return quote! {
-            todo!("board_gen::payload_load: stage does not declare PayloadLoad")
-        };
+        return quote! { fstart_platform::halt() };
     }
 
     if is_uefi_payload(ctx.config) {
@@ -2518,9 +2653,7 @@ fn payload_load_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     // it means `board_gen` produces valid code for any future raw
     // payload stage.
     if !ctx.ffs_stage {
-        return quote! {
-            todo!("board_gen::payload_load: generic payload requires an FFS-using stage")
-        };
+        return quote! { fstart_platform::halt() };
     }
     let anchor = anchor_bytes_stmt();
     let bm_usage = quote! {
@@ -2782,7 +2915,7 @@ fn platform_boot_protocol_stmts(
 /// 5. FDT reservation (non-x86).
 /// 6. Memory map build (x86 from e820, others from static RAM + FDT
 ///    reservation).
-/// 7. Framebuffer config gated on `self._inited.contains(fb_id)`.
+/// 7. Framebuffer config gated on `_inited` or `_post_dram_ready`.
 /// 8. `fstart_crabefi::PlatformConfig { ... }` literal.
 /// 9. `fstart_crabefi::init_platform(_crabefi_config)` (→ !).
 fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
@@ -2811,12 +2944,27 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
         }
     }
 
-    // RAM region from board config.
+    // RAM region containing this stage's writable firmware footprint.
+    // Some SoCs list SRAM before DRAM; CrabEFI must advertise the DRAM
+    // region that contains the UEFI stage, not the first RAM-like region.
+    let fw_data_addr = ctx.stage_fw_addr;
+    let fw_stack_size = ctx.stage_stack_size;
     let ram_region = config
         .memory
         .regions
         .iter()
-        .find(|r| r.kind == RegionKind::Ram);
+        .find(|r| {
+            r.kind == RegionKind::Ram
+                && fw_data_addr >= r.base
+                && fw_data_addr < r.base.saturating_add(r.size)
+        })
+        .or_else(|| {
+            config
+                .memory
+                .regions
+                .iter()
+                .find(|r| r.kind == RegionKind::Ram)
+        });
     let ram_base_lit = ram_region
         .map(|r| hex_addr(r.base))
         .unwrap_or_else(|| quote! { 0u64 });
@@ -2824,20 +2972,6 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
         .map(|r| hex_addr(r.size))
         .unwrap_or_else(|| quote! { 0u64 });
 
-    // Firmware data/stack addresses from stage config.
-    let (fw_data_addr, fw_stack_size) = match &config.stages {
-        StageLayout::Monolithic(mono) => (
-            mono.data_addr.unwrap_or(mono.load_addr),
-            mono.stack_size as u64,
-        ),
-        StageLayout::MultiStage(stages) => {
-            let last = stages.last().expect("multi-stage has at least one stage");
-            (
-                last.data_addr.unwrap_or(last.load_addr),
-                last.stack_size as u64,
-            )
-        }
-    };
     let fw_data_addr_lit = hex_addr(fw_data_addr);
     let fw_stack_size_lit = hex_addr(fw_stack_size);
 
@@ -2878,20 +3012,19 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
         Some(idx) => {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
             quote! {
-                ecam_base: Some(
-                    self.#field
-                        .as_ref()
-                        .unwrap_or_else(|| fstart_platform::halt())
-                        .ecam_base(),
-                ),
+                ecam_base: self.#field.as_ref().map(|dev| {
+                    use fstart_services::PciRootBus as _PciRootBus;
+                    _PciRootBus::ecam_base(dev)
+                }),
             }
         }
         None => quote! { ecam_base: None, },
     };
 
-    // Framebuffer device for GOP — gated on the init mask via
-    // `self._inited.contains(fb_id)` rather than the old fstart_main
-    // `_fb_ok: bool` local.
+    // Framebuffer device for GOP. Devices that perform scanout setup in
+    // `PostDramInit` are gated on `_post_dram_ready`; other framebuffer
+    // providers are gated on the generic init mask. This replaces the old
+    // fstart_main `_fb_ok: bool` local.
     let fb_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
         ctx.devices[*idx]
             .services
@@ -2902,13 +3035,26 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
         Some(idx) => {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
             let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
+            let requires_post_dram = ctx.devices[idx]
+                .services
+                .iter()
+                .any(|s| s.as_str() == "PostDramInit");
+            let ready_check = if requires_post_dram {
+                quote! { self._post_dram_ready.contains(#id_lit) }
+            } else {
+                quote! { self._inited.contains(#id_lit) }
+            };
             let setup = quote! {
-                let _fb_config = if self._inited.contains(#id_lit) {
+                let (_fb_config, _fb_reservation) = if #ready_check {
                     let _fb_ref = self.#field
                         .as_ref()
                         .unwrap_or_else(|| fstart_platform::halt());
                     let _fb_info = _fb_ref.info();
-                    Some(fstart_crabefi::FramebufferConfig {
+                    let _fb_bytes = ((_fb_info.stride as u64)
+                        .saturating_mul(_fb_info.height as u64)
+                        .saturating_mul(_fb_info.bits_per_pixel as u64)
+                        .saturating_add(7) / 8 + 0xfff) & !0xfff;
+                    (Some(fstart_crabefi::FramebufferConfig {
                         physical_address: _fb_info.base_addr,
                         width: _fb_info.width,
                         height: _fb_info.height,
@@ -2920,14 +3066,17 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
                         green_mask_size: _fb_info.green_size,
                         blue_mask_pos: _fb_info.blue_pos,
                         blue_mask_size: _fb_info.blue_size,
-                    })
+                    }), Some((_fb_info.base_addr, _fb_bytes)))
                 } else {
-                    None
+                    (None, None)
                 };
             };
             (setup, quote! { framebuffer: _fb_config, })
         }
-        None => (quote! {}, quote! { framebuffer: None, }),
+        None => (
+            quote! { let _fb_reservation: Option<(u64, u64)> = None; },
+            quote! { framebuffer: None, },
+        ),
     };
 
     // FDT sourcing — mirrors `dtb_src_expr`-ish logic.
@@ -2935,9 +3084,15 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
         hex_addr(addr)
     } else {
         match platform {
-            Platform::Aarch64 | Platform::Riscv64 => {
-                quote! { fstart_platform::boot_dtb_addr() }
-            }
+            Platform::Aarch64 => quote! { fstart_platform::boot_dtb_addr() },
+            Platform::Riscv64 => quote! {
+                {
+                    #[cfg(feature = "smode-entry")]
+                    { fstart_platform::boot_dtb_addr_smode() }
+                    #[cfg(not(feature = "smode-entry"))]
+                    { fstart_platform::boot_dtb_addr() }
+                }
+            },
             Platform::Armv7 | Platform::X86_64 => quote! { 0u64 },
         }
     };
@@ -2955,6 +3110,43 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
         },
     };
     let fdt_field = quote! { fdt: _fdt_blob, };
+
+    let block_device_indices: Vec<usize> =
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+            .filter(|idx| {
+                ctx.devices[*idx]
+                    .services
+                    .iter()
+                    .any(|s| s.as_str() == "BlockDevice")
+            })
+            .collect();
+    let (block_device_setup, block_devices_field) = if block_device_indices.is_empty() {
+        (quote! {}, quote! { block_devices: &mut [], })
+    } else {
+        let mut adapter_decls = TokenStream::new();
+        let mut adapter_refs = Vec::new();
+        for (n, idx) in block_device_indices.iter().copied().enumerate() {
+            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+            let adapter = format_ident!("_crabefi_block_{}", n);
+            let name = ctx.devices[idx].name.as_str();
+            adapter_decls.extend(quote! {
+                let _block_ref = self.#field
+                    .as_ref()
+                    .unwrap_or_else(|| fstart_platform::halt());
+                let mut #adapter = fstart_crabefi::BlockDeviceAdapter::new(_block_ref, #name);
+            });
+            adapter_refs
+                .push(quote! { &mut #adapter as &mut dyn fstart_crabefi::CrabEfiBlockDevice });
+        }
+        let block_count = proc_macro2::Literal::usize_unsuffixed(block_device_indices.len());
+        (
+            quote! {
+                #adapter_decls
+                let mut _crabefi_block_devices: [&mut dyn fstart_crabefi::CrabEfiBlockDevice; #block_count] = [#(#adapter_refs),*];
+            },
+            quote! { block_devices: &mut _crabefi_block_devices, },
+        )
+    };
 
     // BL31 load — aarch64 + ATF only.
     let bl31_boot = if let Some(fw) = payload.firmware.as_ref() {
@@ -3007,6 +3199,14 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
             quote! { reset: &_crabefi_reset, },
             quote! { let _crabefi_rng = fstart_crabefi::X86Rng::new(); },
             quote! { rng: Some(&_crabefi_rng), },
+        ),
+        Platform::Riscv64 => (
+            quote! { let _crabefi_timer = unsafe { fstart_crabefi::RiscvSbiTimer::from_fdt(_fdt_addr) }; },
+            quote! { timer: &_crabefi_timer, },
+            quote! { let _crabefi_reset = fstart_crabefi::SbiReset; },
+            quote! { reset: &_crabefi_reset, },
+            quote! {},
+            quote! { rng: None, },
         ),
         _ => (
             quote! { let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new(); },
@@ -3063,14 +3263,14 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
             let _static_entries: &[fstart_crabefi::MemoryRegion] = &[
                 #static_mem_entries
             ];
-            let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 12] = [
+            let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 16] = [
                 fstart_crabefi::MemoryRegion {
                     base: 0, size: 0,
                     region_type: fstart_crabefi::MemoryType::Reserved,
                 };
-                12
+                16
             ];
-            let _mem_idx = fstart_crabefi::build_efi_memory_map(
+            let _mem_idx = fstart_crabefi::build_efi_memory_map_with_framebuffer(
                 _static_entries,
                 #ram_base_lit,
                 #ram_size_lit,
@@ -3078,6 +3278,7 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
                 #fw_stack_size_lit,
                 #fw_stack_size_lit,
                 _fdt_reservation,
+                _fb_reservation,
                 &mut _crabefi_mem_buf,
             );
             let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] =
@@ -3107,22 +3308,24 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
 
         #bl31_boot
 
+        #fdt_setup
+
         #timer_setup
         #reset_setup
         #rng_setup
         #console_setup
 
-        #fdt_setup
         #fdt_reservation_setup
+        #fb_setup
         #memory_map_setup
 
-        #fb_setup
+        #block_device_setup
 
         let _crabefi_config = fstart_crabefi::PlatformConfig {
             memory_map: _crabefi_memory_map,
             #timer_field
             #reset_field
-            block_devices: &mut [],
+            #block_devices_field
             variable_backend: None,
             #debug_output_field
             console_input: None,
@@ -3380,10 +3583,9 @@ fn walk_to_real_parent<'a>(
 ///
 /// Framebuffer devices: the old codegen tracked init success in a
 /// `_<name>_ok: bool` local so UEFI's GOP config could be
-/// conditional.  In the new model `self._inited.contains(fb_id)`
-/// serves the same role.  A failing framebuffer init leaves
-/// `self._inited` un-set and the UEFI builder emits
-/// `framebuffer: None`.
+/// conditional.  The current model uses `_inited` for framebuffers
+/// ready after `Device::init()` and `_post_dram_ready` for providers
+/// whose hardware setup happens in `PostDramInit`.
 fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
     use super::capabilities::boot_media_values_for_device;
 
@@ -3410,15 +3612,14 @@ fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
         }
         let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
         let is_framebuffer = dev.services.iter().any(|s| s.as_str() == "Framebuffer");
-        // Framebuffer failures are non-fatal (UEFI path still uses
-        // `self._inited.contains(fb_id)` as an availability flag);
-        // other devices halt on failure to match the old codegen.
+        // Framebuffer failures are non-fatal (UEFI path uses `_inited`
+        // or `_post_dram_ready` as the availability flag); other devices
+        // halt on failure to match the old codegen.
         let on_err = if is_framebuffer {
             quote! {
                 fstart_log::warn!("driver init failed (framebuffer, continuing)");
-                // Do NOT set `_inited` — UEFI config reads
-                // `self._inited.contains(#id_lit)` as the availability
-                // flag.
+                // Do NOT set `_inited` — UEFI config uses `_inited` or
+                // `_post_dram_ready` as the availability flag.
             }
         } else {
             quote! {
@@ -3488,10 +3689,7 @@ fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
     // Read sunxi's boot-media byte once up front if any gated arms exist.
     let bm_preamble = if has_any_gated && is_egon {
         quote! {
-            // SAFETY: _egon_sram_base is the BROM entry point.
-            let _bm = unsafe {
-                fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize)
-            };
+            let _bm = fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize);
         }
     } else {
         // Silence unused-var warnings on non-gated stages.
@@ -3517,8 +3715,8 @@ fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// - `inst.is_acpi_only()` — device exists only to contribute ACPI
 ///   tables at build time; has no runtime driver.
 /// - `inst.is_structural()` — tree node for topology; no runtime rep.
-/// - `excluded.contains(idx)` — bus child in a stage without
-///   `DriverInit`.
+/// - `excluded.contains(idx)` — device not materialized from this stage's
+///   capabilities, parent chains, or service-provider needs.
 fn enabled_indices<'a>(
     devices: &'a [DeviceConfig],
     instances: &'a [DriverInstance],
@@ -3760,8 +3958,9 @@ mod tests {
     #[test]
     fn bootblock_without_driver_init_keeps_capability_referenced_child() {
         // Foxconn's bootblock intentionally omits DriverInit, but ConsoleInit
-        // targets a SuperIO child under the LPC bus. Capability targets must be
-        // materialised even when unrelated bus children are excluded.
+        // targets a SuperIO child under the LPC bus. Capability targets and
+        // their parent chains must be materialised even when unrelated devices
+        // are excluded from the stage-local set.
         let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
         assert!(
             src.contains("superio: Option"),
@@ -3779,15 +3978,15 @@ mod tests {
         // does not exist in that stage's generated source.
         let src = adapter_source_for_stage("qemu-riscv64-multi", "main");
         assert!(src.contains("struct _BoardDevices"));
-        // No FFS ⇒ sig_verify body is a todo!() — referencing
+        // No FFS ⇒ sig_verify body is a tiny halt stub — referencing
         // FSTART_ANCHOR here would break compilation.
         assert!(
             !src.contains("&FSTART_ANCHOR"),
             "non-FFS stage must not reference FSTART_ANCHOR; got:\n{src}"
         );
         assert!(
-            src.contains("board_gen::sig_verify: no FFS-using capability"),
-            "expected no-FFS sig_verify stub, got:\n{src}"
+            src.contains("fn sig_verify(&self)") && src.contains("fstart_platform::halt()"),
+            "expected no-FFS sig_verify halt stub, got:\n{src}"
         );
     }
 
@@ -4038,12 +4237,12 @@ mod tests {
     #[test]
     fn boot_media_select_dead_code_stub_on_non_sunxi_boards() {
         // qemu-riscv64 is not a sunxi board, so boot_media_select
-        // stays as the todo!() stub — referencing fstart_soc_sunxi
+        // stays as a tiny dead-code stub — referencing fstart_soc_sunxi
         // there would fail to link (no sunxi feature flag).
         let src = adapter_source_for_board("qemu-riscv64");
         assert!(
-            src.contains("board_gen::boot_media_select: stage does not use"),
-            "qemu-riscv64 must emit the dead-code stub; got:\n{src}"
+            src.contains("let _ = candidates;") && src.contains("None"),
+            "qemu-riscv64 must emit the dead-code boot_media_select stub; got:\n{src}"
         );
         // And must not reference fstart_soc_sunxi in boot_media_select
         // or anywhere else in the adapter.
@@ -4099,11 +4298,11 @@ mod tests {
 
     #[test]
     fn load_next_stage_dead_code_stub_on_non_sunxi_boards() {
-        // qemu-riscv64 never calls LoadNextStage; the body is todo!().
+        // qemu-riscv64 never calls LoadNextStage; the body is a halt stub.
         let src = adapter_source_for_board("qemu-riscv64");
         assert!(
-            src.contains("board_gen::load_next_stage: stage does not use"),
-            "qemu-riscv64 must emit the dead-code load_next_stage stub; got:\n{src}"
+            src.contains("fn load_next_stage") && src.contains("fstart_platform::halt()"),
+            "qemu-riscv64 must emit the dead-code load_next_stage halt stub; got:\n{src}"
         );
         assert!(
             !src.contains("next_stage_offset_at"),
@@ -4162,12 +4361,11 @@ mod tests {
     #[test]
     fn acpi_prepare_stub_on_boards_without_acpi_config() {
         // qemu-riscv64 has no `acpi` RON config and no AcpiPrepare
-        // capability, so the body must be the dead-code todo!().
+        // capability, so the body must be a dead-code halt stub.
         let src = adapter_source_for_board("qemu-riscv64");
         assert!(
-            src.contains("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
-                || src.contains("board_gen::acpi_prepare: board has no `acpi` RON config"),
-            "riscv64 must emit the no-config/no-cap stub; got:\n{src}"
+            src.contains("fn acpi_prepare(&mut self)") && src.contains("fstart_platform::halt()"),
+            "riscv64 must emit the no-config/no-cap halt stub; got:\n{src}"
         );
         // And must not emit spurious platform_acpi tokens.
         assert!(
@@ -4199,12 +4397,11 @@ mod tests {
     #[test]
     fn smbios_prepare_stub_on_boards_without_smbios_config() {
         // qemu-riscv64 has no `smbios` config and no SmBiosPrepare
-        // capability, so the body is the dead-code todo!().
+        // capability, so the body is a dead-code halt stub.
         let src = adapter_source_for_board("qemu-riscv64");
         assert!(
-            src.contains("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
-                || src.contains("board_gen::smbios_prepare: board has no `smbios` RON config"),
-            "riscv64 must emit the smbios no-config/no-cap stub; got:\n{src}"
+            src.contains("fn smbios_prepare(&self)") && src.contains("fstart_platform::halt()"),
+            "riscv64 must emit the smbios no-config/no-cap halt stub; got:\n{src}"
         );
         assert!(
             !src.contains("fstart_capabilities::smbios::prepare"),
@@ -4360,6 +4557,54 @@ mod tests {
     }
 
     #[test]
+    fn uefi_memory_map_uses_stage_dram_not_first_ram_region() {
+        let src = adapter_source_for_stage("licheerv-dock-uefi", "uefi");
+        assert!(
+            src.contains("build_efi_memory_map_with_framebuffer"),
+            "UEFI payload must build a CrabEFI memory map; got:\n{src}"
+        );
+        assert!(
+            src.contains("0x40000000") && src.contains("0x20000000"),
+            "licheerv UEFI must use the DRAM region, not SRAM; got:\n{src}"
+        );
+        assert!(
+            !src.contains("0x20000, 0x8000"),
+            "licheerv UEFI must not use the SRAM region as CrabEFI RAM; got:\n{src}"
+        );
+    }
+
+    #[test]
+    fn uefi_ecam_config_does_not_halt_when_pci_is_uninitialized() {
+        let src = adapter_source_for_stage("qemu-riscv64-uefi", "uefi");
+        assert!(
+            src.contains("ecam_base: self")
+                && src.contains(".pci0")
+                && src.contains(".as_ref()")
+                && src.contains(".map(|dev|"),
+            "ECAM should be Some only when the PCI root was initialized; got:\n{src}"
+        );
+        assert!(
+            !src.contains(
+                "self.pci0.as_ref().unwrap_or_else(|| fstart_platform::halt()).ecam_base"
+            ),
+            "PayloadLoad must not halt on a materialized-but-uninitialized PCI root; got:\n{src}"
+        );
+    }
+
+    #[test]
+    fn firmware_boot_stubbed_when_stage_does_not_declare_capability() {
+        let src = adapter_source_for_stage("qemu-riscv64-uefi", "uefi");
+        assert!(
+            src.contains("fn firmware_boot(&self") && src.contains("fstart_platform::halt()"),
+            "UEFI stage without FirmwareBoot should emit firmware_boot halt stub; got:\n{src}"
+        );
+        assert!(
+            !src.contains("capability: FirmwareBoot ->"),
+            "stage without FirmwareBoot must not emit real firmware boot body; got:\n{src}"
+        );
+    }
+
+    #[test]
     fn early_init_emits_generic_phase_calls_on_foxconn_d41s() {
         let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
         assert!(
@@ -4405,7 +4650,7 @@ mod tests {
         // No fixture board today actively declares `ReturnToFel` in
         // any stage's capabilities (orangepi-r1 has the entry
         // commented out).  Every adapter must therefore emit the
-        // `todo!()` stub that skips referencing `fstart_soc_sunxi`
+        // halt stub that skips referencing `fstart_soc_sunxi`
         // — the crate is only pulled into the dependency graph via
         // the `sunxi` feature on sunxi boards, and non-sunxi armv7
         // boards like `qemu-armv7` would fail to compile if we
@@ -4418,8 +4663,9 @@ mod tests {
                  fstart_soc_sunxi; got:\n{src}"
             );
             assert!(
-                src.contains("board_gen::return_to_fel: stage does not declare ReturnToFel"),
-                "{board} return_to_fel must be the dead-code stub; got:\n{src}"
+                src.contains("fn return_to_fel(&self) -> !")
+                    && src.contains("fstart_platform::halt()"),
+                "{board} return_to_fel must be the dead-code halt stub; got:\n{src}"
             );
         }
     }
@@ -4457,7 +4703,7 @@ mod tests {
         // A stage without FFS capabilities has no FSTART_ANCHOR static
         // and no boot-media import path.  `stage_load` on that stage
         // would be dead code (validation forbids StageLoad without
-        // BootMedia), so we emit a `todo!()`.
+        // BootMedia), so we emit a halt stub.
         //
         // qemu-riscv64-multi's `main` stage is the canonical non-FFS
         // stage in the fixture set.
@@ -4467,12 +4713,12 @@ mod tests {
             !src.contains("&FSTART_ANCHOR"),
             "non-FFS stage must not reference FSTART_ANCHOR; got:\n{src}"
         );
-        // `stage_load` body is a todo!() — the compiler still
+        // `stage_load` body is a halt stub — the compiler still
         // type-checks the trait impl, but no executor arm dispatches
         // this method for this stage.
         assert!(
-            src.contains("board_gen::stage_load requires an FFS-using stage"),
-            "non-FFS stage_load must emit the dead-code todo!(); got:\n{src}"
+            src.contains("fn stage_load(&self") && src.contains("fstart_platform::halt()"),
+            "non-FFS stage_load must emit the dead-code halt stub; got:\n{src}"
         );
     }
 

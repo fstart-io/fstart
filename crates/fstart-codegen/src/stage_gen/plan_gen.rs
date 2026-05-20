@@ -16,8 +16,8 @@ use quote::{format_ident, quote};
 
 use fstart_device_registry::DriverInstance;
 use fstart_types::{
-    AutoBootDevice, BoardConfig, BootMedium, Capability, DeviceConfig, DeviceId, LoadDevice,
-    StageLayout,
+    AutoBootDevice, BoardConfig, BootMedium, Capability, DeviceConfig, DeviceId, DeviceNode,
+    LoadDevice, StageLayout,
 };
 
 use super::capabilities::boot_media_values_for_device;
@@ -38,6 +38,7 @@ use super::tokens::hex_addr;
 pub(super) fn generate_stage_plan(
     config: &BoardConfig,
     instances: &[DriverInstance],
+    device_tree: &[DeviceNode],
     capabilities: &[Capability],
     stage_name: Option<&str>,
 ) -> TokenStream {
@@ -79,8 +80,14 @@ pub(super) fn generate_stage_plan(
     let gated_ident = format_ident!("_FSTART_PLAN_GATED");
     let gated_len = gated.len();
 
-    // ---- all_devices: enabled + non-structural + non-acpi-only ------
-    let all_devs = all_runtime_devices(&config.devices, instances, &device_id);
+    // ---- all_devices: stage-materialized runtime devices ------------
+    let all_devs = all_runtime_devices(
+        &config.devices,
+        instances,
+        device_tree,
+        capabilities,
+        &device_id,
+    );
     let all_devs_lits = all_devs.iter().map(|id| Literal::u8_unsuffixed(*id));
     let all_devs_ident = format_ident!("_FSTART_PLAN_ALL_DEVICES");
     let all_devs_len = all_devs.len();
@@ -152,21 +159,21 @@ struct PlanCtx<'a> {
 /// Map device names to stable `DeviceId`s.
 ///
 /// Indices match the order of `config.devices` — i.e. the same order
-/// everything else in `stage_gen` already uses.  `DeviceId` is `u8`;
-/// more than 256 devices per board causes a `compile_error!` in the
-/// emitted source.
+/// everything else in `stage_gen` already uses.  `DeviceId` is `u8`, but
+/// the stage runtime's compact `DeviceMask` supports ids 0..127; more than
+/// 127 devices per board causes a clear codegen error.
 struct DeviceIdMap<'a> {
     devices: &'a [DeviceConfig],
 }
 
 impl<'a> DeviceIdMap<'a> {
     fn new(devices: &'a [DeviceConfig]) -> Self {
-        if devices.len() > 256 {
+        if devices.len() > 128 {
             // Surface as a compile_error! in generated code rather than
             // panicking the host build.rs process.
             panic!(
-                "codegen: board has {} devices but DeviceId is u8 (max 256). \
-                 Reduce device count or widen DeviceId.",
+                "codegen: board has {} devices but DeviceMask supports at most 128 devices. \
+                 Reduce device count or widen DeviceMask.",
                 devices.len()
             );
         }
@@ -275,6 +282,12 @@ fn cap_to_capop_tokens(cap: &Capability, ctx: &PlanCtx<'_>) -> TokenStream {
             let name = next_stage.as_str();
             quote! {
                 fstart_stage_runtime::CapOp::StageLoad { next_stage: #name }
+            }
+        }
+        C::FirmwareBoot { next_stage } => {
+            let name = next_stage.as_str();
+            quote! {
+                fstart_stage_runtime::CapOp::FirmwareBoot { next_stage: #name }
             }
         }
         C::AcpiPrepare => quote! { fstart_stage_runtime::CapOp::AcpiPrepare },
@@ -470,6 +483,7 @@ fn ends_with_jump(capabilities: &[Capability]) -> bool {
             Capability::StageLoad { .. }
                 | Capability::PayloadLoad
                 | Capability::LoadNextStage { .. }
+                | Capability::FirmwareBoot { .. }
                 | Capability::ReturnToFel
         )
     })
@@ -563,21 +577,25 @@ fn collect_boot_media_gated(
     out
 }
 
-/// Enabled, non-structural, non-ACPI-only devices in `config.devices`
-/// order.  Matches what `generate_driver_init` iterates today.
+/// Stage-materialized, non-structural, non-ACPI-only devices in
+/// `config.devices` order. Matches the stage-local device set that
+/// `DriverInit` can initialize for this stage.
 fn all_runtime_devices(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
+    device_tree: &[DeviceNode],
+    capabilities: &[Capability],
     ids: &DeviceIdMap<'_>,
 ) -> Vec<DeviceId> {
-    devices
-        .iter()
-        .zip(instances.iter())
-        .filter_map(|(dev, inst)| {
-            if !dev.enabled || inst.is_acpi_only() || inst.is_structural() {
-                return None;
+    super::board_gen::stage_materialized_indices(devices, instances, device_tree, capabilities)
+        .into_iter()
+        .filter_map(|idx| {
+            let inst = &instances[idx];
+            if inst.is_acpi_only() || inst.is_structural() {
+                None
+            } else {
+                ids.get(devices[idx].name.as_str())
             }
-            ids.get(dev.name.as_str())
         })
         .collect()
 }
