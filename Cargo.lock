@@ -571,10 +571,12 @@ dependencies = [
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
  "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-bd82x6x",
  "fstart-driver-intel-gm965",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-ich8",
  "fstart-driver-intel-pineview",
+ "fstart-driver-intel-sandybridge",
  "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
  "fstart-driver-nsc-pc87382",
@@ -592,6 +594,7 @@ dependencies = [
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",
  "fstart-driver-sunxi-spi",
+ "fstart-mainboard-lenovo-x220",
  "fstart-mainboard-lenovo-x61",
  "fstart-services",
  "fstart-types",
@@ -648,6 +651,28 @@ dependencies = [
  "fstart-services",
  "heapless",
  "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-bd82x6x"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-ecam",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-pci",
+ "fstart-pio",
+ "fstart-pmio-ich",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "heapless",
+ "serde",
+ "tock-registers",
  "ufmt",
 ]
 
@@ -751,6 +776,32 @@ dependencies = [
  "fstart-smbus-intel",
  "fstart-smm",
  "fstart-spd",
+ "heapless",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-sandybridge"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
+ "fstart-cpu-intel",
+ "fstart-crypto",
+ "fstart-driver-pci-ecam",
+ "fstart-ecam",
+ "fstart-ffs",
+ "fstart-log",
+ "fstart-mmio",
+ "fstart-pci",
+ "fstart-pio",
+ "fstart-services",
+ "fstart-smbus-intel",
+ "fstart-spd",
+ "fstart-types",
  "heapless",
  "serde",
  "tock-registers",
@@ -1031,6 +1082,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-mainboard-lenovo-x220"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-mainboard-lenovo-x61"
 version = "0.1.0"
 dependencies = [
@@ -1228,10 +1293,12 @@ dependencies = [
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
  "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-bd82x6x",
  "fstart-driver-intel-gm965",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-ich8",
  "fstart-driver-intel-pineview",
+ "fstart-driver-intel-sandybridge",
  "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
  "fstart-driver-nsc-pc87382",
@@ -1253,6 +1320,7 @@ dependencies = [
  "fstart-fit",
  "fstart-gpio-ich",
  "fstart-log",
+ "fstart-mainboard-lenovo-x220",
  "fstart-mainboard-lenovo-x61",
  "fstart-mp",
  "fstart-pio",

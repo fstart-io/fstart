@@ -144,9 +144,24 @@ pub mod intel_ich8 {
     pub use fstart_driver_intel_ich8::IntelIch8Config;
 }
 
+#[cfg(feature = "intel-sandybridge")]
+pub mod intel_sandybridge {
+    pub use fstart_driver_intel_sandybridge::IntelSandybridgeConfig;
+}
+
+#[cfg(feature = "intel-bd82x6x")]
+pub mod intel_bd82x6x {
+    pub use fstart_driver_intel_bd82x6x::IntelBd82x6xConfig;
+}
+
 #[cfg(feature = "lenovo-x61-mainboard")]
 pub mod lenovo_x61_mainboard {
     pub use fstart_mainboard_lenovo_x61::LenovoX61MainboardConfig;
+}
+
+#[cfg(feature = "lenovo-x220-mainboard")]
+pub mod lenovo_x220_mainboard {
+    pub use fstart_mainboard_lenovo_x220::LenovoX220MainboardConfig;
 }
 
 #[cfg(feature = "i2c-ck505")]
@@ -347,9 +362,21 @@ pub enum DriverInstance {
     #[cfg(feature = "intel-ich8")]
     IntelIch8(intel_ich8::IntelIch8Config),
 
+    /// Intel Sandy Bridge host bridge / memory controller.
+    #[cfg(feature = "intel-sandybridge")]
+    IntelSandybridge(intel_sandybridge::IntelSandybridgeConfig),
+
+    /// Intel 6 Series / C200 (bd82x6x Cougar Point) PCH.
+    #[cfg(feature = "intel-bd82x6x")]
+    IntelBd82x6x(intel_bd82x6x::IntelBd82x6xConfig),
+
     /// Lenovo ThinkPad X61 mainboard glue.
     #[cfg(feature = "lenovo-x61-mainboard")]
     LenovoX61Mainboard(lenovo_x61_mainboard::LenovoX61MainboardConfig),
+
+    /// Lenovo ThinkPad X220 mainboard glue.
+    #[cfg(feature = "lenovo-x220-mainboard")]
+    LenovoX220Mainboard(lenovo_x220_mainboard::LenovoX220MainboardConfig),
 
     /// IDT CK505 clock generator (SMBus-attached).
     #[cfg(feature = "i2c-ck505")]
@@ -695,6 +722,33 @@ impl DriverInstance {
                 has_acpi: true,
                 is_bus_device: false,
             },
+            #[cfg(feature = "intel-sandybridge")]
+            Self::IntelSandybridge(_) => &DriverMeta {
+                name: "intel-sandybridge",
+                type_name: "IntelSandybridge",
+                module_path: "fstart_driver_intel_sandybridge",
+                config_type: "IntelSandybridgeConfig",
+                services: &[
+                    "MemoryController",
+                    "MemoryDetector",
+                    "PciHost",
+                    "PciRootBus",
+                ],
+                compatible: &["intel,sandybridge", "intel,sandybridge-mch"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "intel-bd82x6x")]
+            Self::IntelBd82x6x(_) => &DriverMeta {
+                name: "intel-bd82x6x",
+                type_name: "IntelBd82x6x",
+                module_path: "fstart_driver_intel_bd82x6x",
+                config_type: "IntelBd82x6xConfig",
+                services: &["Southbridge", "SmBus"],
+                compatible: &["intel,bd82x6x", "intel,cougar-point-pch"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
             #[cfg(feature = "lenovo-x61-mainboard")]
             Self::LenovoX61Mainboard(_) => &DriverMeta {
                 name: "lenovo-x61-mainboard",
@@ -703,6 +757,17 @@ impl DriverInstance {
                 config_type: "LenovoX61MainboardConfig",
                 services: &["Mainboard"],
                 compatible: &["lenovo,thinkpad-x61"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "lenovo-x220-mainboard")]
+            Self::LenovoX220Mainboard(_) => &DriverMeta {
+                name: "lenovo-x220-mainboard",
+                type_name: "LenovoX220Mainboard",
+                module_path: "fstart_mainboard_lenovo_x220",
+                config_type: "LenovoX220MainboardConfig",
+                services: &["Mainboard"],
+                compatible: &["lenovo,thinkpad-x220"],
                 has_acpi: true,
                 is_bus_device: false,
             },
@@ -745,8 +810,14 @@ impl DriverInstance {
             Self::IntelGm965(cfg) => cfg.acpi_name.as_deref(),
             #[cfg(feature = "intel-ich8")]
             Self::IntelIch8(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-sandybridge")]
+            Self::IntelSandybridge(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-bd82x6x")]
+            Self::IntelBd82x6x(cfg) => cfg.acpi_name.as_deref(),
             #[cfg(feature = "lenovo-x61-mainboard")]
             Self::LenovoX61Mainboard(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "lenovo-x220-mainboard")]
+            Self::LenovoX220Mainboard(cfg) => cfg.acpi_name.as_deref(),
             Self::Ahci(cfg) => Some(cfg.name.as_str()),
             Self::Xhci(cfg) => Some(cfg.name.as_str()),
             Self::PcieRoot(cfg) => Some(cfg.name.as_str()),
@@ -855,8 +926,14 @@ impl DriverInstance {
             Self::IntelGm965(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "intel-ich8")]
             Self::IntelIch8(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-sandybridge")]
+            Self::IntelSandybridge(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-bd82x6x")]
+            Self::IntelBd82x6x(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "lenovo-x61-mainboard")]
             Self::LenovoX61Mainboard(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "lenovo-x220-mainboard")]
+            Self::LenovoX220Mainboard(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "i2c-ck505")]
             Self::I2cCk505(cfg) => serde::Serialize::serialize(cfg, ser),
         }
