@@ -685,13 +685,6 @@ const PCI_MMIO32_FALLBACK_BASE: u64 = 0x8000_0000;
 const PCI_PIO_BASE: u64 = 0x1000;
 const PCI_PIO_SIZE: u64 = 0xf000;
 
-const IGD_OPREGION_BASE_SIZE: usize = 8 * 1024;
-const IGD_OPREGION_TOTAL_SIZE: usize = 16 * 1024;
-const IGD_VBT_INLINE_OFFSET: usize = 0x400;
-const IGD_VBT_INLINE_SIZE: usize = 6 * 1024;
-const IGD_VBT_EXT_OFFSET: usize = IGD_OPREGION_BASE_SIZE;
-const VBT_SIGNATURE: u32 = 0x5442_5624;
-
 #[allow(clippy::large_enum_variant)]
 enum VbtBytes<'a> {
     Borrowed(&'a [u8]),
@@ -709,15 +702,8 @@ impl VbtBytes<'_> {
     }
 }
 
-#[repr(align(4096))]
-struct IgdOpRegionStore(UnsafeCell<[u8; IGD_OPREGION_TOTAL_SIZE]>);
-
-// SAFETY: The opregion is initialized once during BSP chipset init, then shared
-// read-mostly with ACPI/OS graphics drivers through ASLS.
-unsafe impl Sync for IgdOpRegionStore {}
-
-static IGD_OPREGION: IgdOpRegionStore =
-    IgdOpRegionStore(UnsafeCell::new([0; IGD_OPREGION_TOTAL_SIZE]));
+static IGD_OPREGION: fstart_igd_opregion::IgdOpRegionStore =
+    fstart_igd_opregion::IgdOpRegionStore::new();
 
 // GM965/ICH8 SMM constants. SMRAM bit definitions match coreboot's
 // `cpu/intel/smm/gen1/smmrelocate.c`; PM I/O offsets live in
@@ -1292,30 +1278,6 @@ impl IntelGm965 {
             && self.igd().read16(0) != 0xffff
     }
 
-    fn opregion_write_u16(buf: &mut [u8], off: usize, val: u16) {
-        buf[off..off + 2].copy_from_slice(&val.to_le_bytes());
-    }
-
-    fn opregion_write_u32(buf: &mut [u8], off: usize, val: u32) {
-        buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
-    }
-
-    fn opregion_write_u64(buf: &mut [u8], off: usize, val: u64) {
-        buf[off..off + 8].copy_from_slice(&val.to_le_bytes());
-    }
-
-    fn vbt_size(vbt: &[u8]) -> Option<usize> {
-        if vbt.len() < 28 || u32::from_le_bytes([vbt[0], vbt[1], vbt[2], vbt[3]]) != VBT_SIGNATURE {
-            return None;
-        }
-        let size = u16::from_le_bytes([vbt[24], vbt[25]]) as usize;
-        if size == 0 || size > vbt.len() {
-            None
-        } else {
-            Some(size)
-        }
-    }
-
     #[cfg(feature = "ffs-vbt")]
     fn ffs_vbt(&self) -> Option<Vec<u8>> {
         let file_name = self.config.igd.vbt_file.as_ref()?;
@@ -1372,7 +1334,7 @@ impl IntelGm965 {
                     }
                 }
                 fstart_crypto::digest::verify_digest_set(out.as_slice(), digests).ok()?;
-                let vbt_size = Self::vbt_size(out.as_slice())?;
+                let vbt_size = fstart_igd_opregion::vbt_size(out.as_slice())?;
                 out.truncate(vbt_size);
                 return Some(out);
             }
@@ -1388,25 +1350,12 @@ impl IntelGm965 {
         }
         // SAFETY: board config promises this physical address contains a raw VBT blob.
         let bytes = unsafe { core::slice::from_raw_parts(addr as *const u8, size) };
-        Self::vbt_size(bytes).map(|vbt_size| &bytes[..vbt_size])
+        fstart_igd_opregion::vbt_size(bytes).map(|vbt_size| &bytes[..vbt_size])
     }
 
     fn legacy_vbt(&self) -> Option<&'static [u8]> {
         let base = self.config.igd.legacy_vbt_probe? as usize;
-        // SAFETY: 0xc0000 legacy option ROM window is readable on PC-compatible x86.
-        let rom = unsafe { core::slice::from_raw_parts(base as *const u8, 128 * 1024) };
-        let mut off = 0usize;
-        while off + 4 < rom.len() {
-            if u32::from_le_bytes([rom[off], rom[off + 1], rom[off + 2], rom[off + 3]])
-                == VBT_SIGNATURE
-            {
-                if let Some(size) = Self::vbt_size(&rom[off..]) {
-                    return Some(&rom[off..off + size]);
-                }
-            }
-            off += 16;
-        }
-        None
+        fstart_igd_opregion::legacy_vbt(base)
     }
 
     fn locate_vbt(&self) -> Option<VbtBytes<'static>> {
@@ -1431,52 +1380,17 @@ impl IntelGm965 {
         let vbt = vbt.as_slice();
 
         // SAFETY: BSP-only initialization before handing ASLS to the OS.
-        let opregion = unsafe { &mut *IGD_OPREGION.0.get() };
-        opregion.fill(0);
-        opregion[0..16].copy_from_slice(b"IntelGraphicsMem");
-        Self::opregion_write_u32(opregion, 16, (IGD_OPREGION_BASE_SIZE / 1024) as u32);
-        opregion[20] = 0;
-        opregion[21] = 0;
-        opregion[22] = 1;
-        opregion[23] = 2;
-        if vbt.len() >= 82 {
-            opregion[56..60].copy_from_slice(&vbt[78..82]);
-        }
-        Self::opregion_write_u32(opregion, 88, (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4));
-
-        Self::opregion_write_u32(opregion, 0x100 + 172, 1);
-        Self::opregion_write_u32(opregion, 0x300 + 16, 0xff);
-        Self::opregion_write_u32(opregion, 0x300 + 20, (1 << 31) | 6);
-        Self::opregion_write_u32(opregion, 0x300 + 24, (1 << 31) | 0x64);
-        for (idx, level) in [
-            0x0000u16, 0x0a19, 0x1433, 0x1e4c, 0x2866, 0x327f, 0x3c99, 0x46b2, 0x50cc, 0x5ae5,
-            0x64ff,
-        ]
-        .iter()
-        .copied()
-        .enumerate()
-        {
-            Self::opregion_write_u16(opregion, 0x300 + 28 + idx * 2, 0x8000 | level);
-        }
-
-        if vbt.len() <= IGD_VBT_INLINE_SIZE {
-            opregion[IGD_VBT_INLINE_OFFSET..IGD_VBT_INLINE_OFFSET + vbt.len()].copy_from_slice(vbt);
-        } else {
-            let ext_size = (vbt.len() + 511) & !511;
-            let ext_size = ext_size.min(IGD_OPREGION_TOTAL_SIZE - IGD_VBT_EXT_OFFSET);
-            opregion[IGD_VBT_EXT_OFFSET..IGD_VBT_EXT_OFFSET + vbt.len().min(ext_size)]
-                .copy_from_slice(&vbt[..vbt.len().min(ext_size)]);
-            Self::opregion_write_u64(opregion, 0x300 + 186, IGD_OPREGION_BASE_SIZE as u64);
-            Self::opregion_write_u32(opregion, 0x300 + 194, ext_size as u32);
-        }
+        let opregion_addr = unsafe {
+            IGD_OPREGION.with_mut(|opregion| fstart_igd_opregion::build_opregion(opregion, vbt))
+        };
 
         let igd = self.igd();
-        igd.write32(hostbridge::IGD_ASLS, opregion.as_ptr() as u32);
+        igd.write32(hostbridge::IGD_ASLS, opregion_addr as u32);
         let swsci = (igd.read16(hostbridge::IGD_SWSCI) & !1) | (1 << 15);
         igd.write16(hostbridge::IGD_SWSCI, swsci);
         fstart_log::info!(
             "intel-gm965: IGD opregion at {:#x}, VBT {} bytes",
-            opregion.as_ptr() as usize,
+            opregion_addr,
             vbt.len() as u32,
         );
     }

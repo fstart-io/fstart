@@ -23,7 +23,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_types::acpi::AcpiSmiConfig;
+use fstart_types::acpi::{AcpiPmProfile, AcpiSmiConfig, X86FadtPmRegisters};
 
 use super::FadtConfig;
 
@@ -40,19 +40,24 @@ pub struct X86Config {
     pub ioapics: &'static [IoApicConfig],
     /// Interrupt Source Override entries (ISA IRQ remapping).
     pub isos: &'static [IsoConfig],
-    /// HPET base address (optional; `None` uses PM Timer instead).
-    pub hpet_base: Option<u64>,
+    /// HPET table configuration. `None` uses PM Timer instead.
+    pub hpet: Option<HpetConfig>,
     /// Whether legacy devices (8259 PIC, ISA bus) are present.
     ///
-    /// Controls the MADT `PCAT_COMPAT` flag and FADT legacy fields.
+    /// Controls the MADT `PCAT_COMPAT` flag.
     pub legacy_devices: bool,
+    /// Set the FADT HW-Reduced ACPI flag.
+    pub hw_reduced: bool,
+    /// Set the FADT Low Power S0 Idle Capable flag.
+    pub low_power_s0: bool,
     /// SCI interrupt number (System Control Interrupt for ACPI events).
     pub sci_irq: u8,
-    /// PMBASE I/O port base (chipset-specific, e.g. 0x500 for ICH7).
-    ///
-    /// Used to derive PM1a_EVT_BLK, PM1a_CNT_BLK, PM_TMR_BLK,
-    /// and GPE0_BLK addresses in the FADT.
-    pub pmbase: u16,
+    /// Preferred power-management profile advertised in the FADT.
+    pub pm_profile: AcpiPmProfile,
+    /// FADT IAPC boot architecture flags.
+    pub iapc_boot_arch: u16,
+    /// Chipset-provided FADT PM register layout.
+    pub fadt_pm: X86FadtPmRegisters,
     /// Optional SMI command port and ACPI enable/disable values.
     ///
     /// Leave as `None` unless the platform has installed an SMI handler
@@ -94,8 +99,12 @@ pub struct HpetConfig {
     pub base: u64,
     /// HPET timer block ID (from HPET registers).
     pub timer_block_id: u32,
+    /// HPET number.
+    pub number: u8,
     /// Minimum clock tick in femtoseconds.
     pub min_tick: u16,
+    /// Page-protection value.
+    pub page_protection: u8,
 }
 
 /// Build x86 platform tables (MADT + optional HPET) and FADT configuration.
@@ -107,23 +116,8 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
     let madt = build_madt(config);
     let mut platform_tables = alloc::vec![madt];
 
-    if let Some(hpet_base) = config.hpet_base {
-        let hpet = build_hpet(&HpetConfig {
-            base: hpet_base,
-            timer_block_id: 0x8086_A201, // default Intel HPET ID
-            min_tick: 0,
-        });
-        platform_tables.push(hpet);
-    }
-
-    // PMBASE from board config. Feeds into FADT PM register blocks.
-    // board-specific but hardcoded in ICH7 early_init.
-    let pmbase: u32 = config.pmbase as u32;
-
-    // IAPC Boot Arch: 8042 keyboard + legacy devices.
-    let mut iapc: u16 = 0;
-    if config.legacy_devices {
-        iapc |= 0x0003; // FADT_8042 | FADT_LEGACY_DEVICES
+    if let Some(hpet_config) = config.hpet.as_ref() {
+        platform_tables.push(build_hpet(hpet_config));
     }
 
     let (smi_cmd, acpi_enable, acpi_disable) = config
@@ -132,22 +126,40 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         .unwrap_or((0, 0, 0));
 
     let fadt_config = FadtConfig {
-        hw_reduced: false,
-        low_power_s0: false,
+        hw_reduced: config.hw_reduced,
+        low_power_s0: config.low_power_s0,
         arm_psci: false,
-        pm_profile: acpi_tables::fadt::PmProfile::Desktop,
-        pm1a_evt_blk: pmbase,
-        pm1a_cnt_blk: pmbase + 0x04,
-        pm_tmr_blk: pmbase + 0x08,
-        gpe0_blk: pmbase + 0x28,
+        pm_profile: pm_profile(config.pm_profile),
+        pm1a_evt_blk: config.fadt_pm.pm1a_evt_blk,
+        pm1a_cnt_blk: config.fadt_pm.pm1a_cnt_blk,
+        pm_tmr_blk: config.fadt_pm.pm_tmr_blk,
+        pm1_evt_len: config.fadt_pm.pm1_evt_len,
+        pm1_cnt_len: config.fadt_pm.pm1_cnt_len,
+        pm_tmr_len: config.fadt_pm.pm_tmr_len,
+        gpe0_blk: config.fadt_pm.gpe0_blk,
+        gpe0_blk_len: config.fadt_pm.gpe0_blk_len,
         sci_int: config.sci_irq as u16,
-        iapc_boot_arch: iapc,
+        iapc_boot_arch: config.iapc_boot_arch,
         smi_cmd,
         acpi_enable,
         acpi_disable,
     };
 
     (platform_tables, fadt_config)
+}
+
+fn pm_profile(profile: AcpiPmProfile) -> acpi_tables::fadt::PmProfile {
+    match profile {
+        AcpiPmProfile::Unspecified => acpi_tables::fadt::PmProfile::Unspecified,
+        AcpiPmProfile::Desktop => acpi_tables::fadt::PmProfile::Desktop,
+        AcpiPmProfile::Mobile => acpi_tables::fadt::PmProfile::Mobile,
+        AcpiPmProfile::Workstation => acpi_tables::fadt::PmProfile::Workstation,
+        AcpiPmProfile::EnterpriseServer => acpi_tables::fadt::PmProfile::EnterpriseServer,
+        AcpiPmProfile::SohoServer => acpi_tables::fadt::PmProfile::SohoServer,
+        AcpiPmProfile::AppliancePc => acpi_tables::fadt::PmProfile::AppliancePc,
+        AcpiPmProfile::PerformanceServer => acpi_tables::fadt::PmProfile::PerformanceServer,
+        AcpiPmProfile::Tablet => acpi_tables::fadt::PmProfile::Tablet,
+    }
 }
 
 /// Build the x86 MADT (Multiple APIC Description Table).
@@ -242,13 +254,13 @@ fn build_hpet(config: &HpetConfig) -> Vec<u8> {
     }
 
     // HPET Number
-    hpet.write_u8(52, 0);
+    hpet.write_u8(52, config.number);
 
     // Minimum Clock Tick
     hpet.write_u16(53, config.min_tick);
 
     // Page Protection
-    hpet.write_u8(55, 0);
+    hpet.write_u8(55, config.page_protection);
 
     hpet.update_checksum();
 
@@ -278,10 +290,29 @@ mod tests {
             lapic_base: 0xFEE0_0000,
             ioapics: &IOAPICS,
             isos: &ISOS,
-            hpet_base: Some(0xFED0_0000),
+            hpet: Some(HpetConfig {
+                base: 0xFED0_0000,
+                timer_block_id: 0x8086_A201,
+                number: 0,
+                min_tick: 0,
+                page_protection: 0,
+            }),
             legacy_devices: true,
+            hw_reduced: false,
+            low_power_s0: false,
             sci_irq: 9,
-            pmbase: 0x0500,
+            pm_profile: AcpiPmProfile::Mobile,
+            iapc_boot_arch: 0x0003,
+            fadt_pm: X86FadtPmRegisters {
+                pm1a_evt_blk: 0x0500,
+                pm1a_cnt_blk: 0x0504,
+                pm_tmr_blk: 0x0508,
+                pm1_evt_len: 4,
+                pm1_cnt_len: 2,
+                pm_tmr_len: 4,
+                gpe0_blk: 0x0520,
+                gpe0_blk_len: 16,
+            },
             acpi_smi: None,
         }
     }
@@ -327,7 +358,9 @@ mod tests {
         let hpet_bytes = build_hpet(&HpetConfig {
             base: 0xFED0_0000,
             timer_block_id: 0x8086_A201,
+            number: 0,
             min_tick: 0,
+            page_protection: 0,
         });
 
         assert_eq!(&hpet_bytes[0..4], b"HPET");

@@ -11,5 +11,7 @@ test = false
 [dependencies]
 fstart-driver-intel-ich7 = { workspace = true }
 fstart-driver-intel-ich8 = { workspace = true }
+fstart-driver-intel-ich9 = { workspace = true }
 fstart-mainboard-lenovo-x61 = { workspace = true }
+fstart-mainboard-lenovo-x200 = { workspace = true }
 fstart-smm-runtime = { workspace = true }

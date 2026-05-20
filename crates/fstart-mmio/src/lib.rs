@@ -191,6 +191,148 @@ pub unsafe fn write64(addr: *mut u64, val: u64) {
 }
 
 // ---------------------------------------------------------------------------
+// Bounded raw BAR helpers
+// ---------------------------------------------------------------------------
+
+/// Common bounded raw-MMIO helpers for BAR-like register windows.
+///
+/// Prefer named `register_structs!` fields for fixed offsets. This trait is
+/// intended for computed register offsets (for example channel/rank/lane tables)
+/// and temporary access to not-yet-documented registers. Implementors provide a
+/// base address and window size; every helper checks that the requested access
+/// fits inside the window before touching MMIO.
+pub trait RawMmioBar {
+    /// Size of the mapped MMIO window in bytes.
+    const SIZE: usize;
+
+    /// Base virtual/physical address of the mapped MMIO window.
+    fn base(&self) -> usize;
+
+    #[inline]
+    fn checked_addr<T>(&self, off: u32) -> *mut T {
+        let off = off as usize;
+        let width = core::mem::size_of::<T>();
+        let end = off
+            .checked_add(width)
+            .expect("MMIO offset arithmetic overflow");
+        assert!(
+            end <= Self::SIZE,
+            "MMIO access out of bounds: offset={:#x} width={} size={:#x}",
+            off,
+            width,
+            Self::SIZE
+        );
+        let addr = self
+            .base()
+            .checked_add(off)
+            .expect("MMIO address arithmetic overflow");
+        assert!(
+            addr.is_multiple_of(core::mem::align_of::<T>()),
+            "unaligned MMIO access: addr={:#x} align={}",
+            addr,
+            core::mem::align_of::<T>()
+        );
+        addr as *mut T
+    }
+
+    /// Read an 8-bit MMIO register at `off`.
+    #[inline]
+    fn read8(&self, off: u32) -> u8 {
+        // SAFETY: `checked_addr` verifies that the access is in bounds.
+        unsafe { read8(self.checked_addr::<u8>(off)) }
+    }
+
+    /// Write an 8-bit MMIO register at `off`.
+    #[inline]
+    fn write8(&self, off: u32, val: u8) {
+        // SAFETY: `checked_addr` verifies that the access is in bounds.
+        unsafe { write8(self.checked_addr::<u8>(off), val) }
+    }
+
+    /// Read a 16-bit MMIO register at `off`.
+    #[inline]
+    fn read16(&self, off: u32) -> u16 {
+        // SAFETY: `checked_addr` verifies that the access is in bounds/aligned.
+        unsafe { read16(self.checked_addr::<u16>(off)) }
+    }
+
+    /// Write a 16-bit MMIO register at `off`.
+    #[inline]
+    fn write16(&self, off: u32, val: u16) {
+        // SAFETY: `checked_addr` verifies that the access is in bounds/aligned.
+        unsafe { write16(self.checked_addr::<u16>(off), val) }
+    }
+
+    /// Read a 32-bit MMIO register at `off`.
+    #[inline]
+    fn read32(&self, off: u32) -> u32 {
+        // SAFETY: `checked_addr` verifies that the access is in bounds/aligned.
+        unsafe { read32(self.checked_addr::<u32>(off)) }
+    }
+
+    /// Write a 32-bit MMIO register at `off`.
+    #[inline]
+    fn write32(&self, off: u32, val: u32) {
+        // SAFETY: `checked_addr` verifies that the access is in bounds/aligned.
+        unsafe { write32(self.checked_addr::<u32>(off), val) }
+    }
+
+    /// Set bits in an 8-bit register.
+    #[inline]
+    fn setbits8(&self, off: u32, bits: u8) {
+        self.write8(off, self.read8(off) | bits);
+    }
+
+    /// Clear bits in an 8-bit register.
+    #[inline]
+    fn clrbits8(&self, off: u32, bits: u8) {
+        self.write8(off, self.read8(off) & !bits);
+    }
+
+    /// Clear and set bits in an 8-bit register.
+    #[inline]
+    fn clrsetbits8(&self, off: u32, clear: u8, set: u8) {
+        self.write8(off, (self.read8(off) & !clear) | set);
+    }
+
+    /// Set bits in a 16-bit register.
+    #[inline]
+    fn setbits16(&self, off: u32, bits: u16) {
+        self.write16(off, self.read16(off) | bits);
+    }
+
+    /// Clear bits in a 16-bit register.
+    #[inline]
+    fn clrbits16(&self, off: u32, bits: u16) {
+        self.write16(off, self.read16(off) & !bits);
+    }
+
+    /// Clear and set bits in a 16-bit register.
+    #[inline]
+    fn clrsetbits16(&self, off: u32, clear: u16, set: u16) {
+        self.write16(off, (self.read16(off) & !clear) | set);
+    }
+
+    /// Set bits in a 32-bit register.
+    #[inline]
+    fn setbits32(&self, off: u32, bits: u32) {
+        self.write32(off, self.read32(off) | bits);
+    }
+
+    /// Clear bits in a 32-bit register.
+    #[inline]
+    fn clrbits32(&self, off: u32, bits: u32) {
+        self.write32(off, self.read32(off) & !bits);
+    }
+
+    /// Clear and set bits in a 32-bit register.
+    #[inline]
+    fn clrsetbits32(&self, off: u32, clear: u32, set: u32) {
+        self.write32(off, (self.read32(off) & !clear) | set);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // tock-registers-compatible MMIO register types
 // ---------------------------------------------------------------------------
 

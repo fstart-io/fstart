@@ -1,0 +1,378 @@
+// Lenovo ThinkPad X200 — Intel GM45 (Cantiga) + ICH9-M.
+//
+// This is the fstart board integration for the coreboot-supported X200.  The
+// hardware programming values below are taken from:
+//   * coreboot mainboard/lenovo/x200/devicetree.cb
+//   * coreboot mainboard/lenovo/x200/romstage.c
+//   * coreboot mainboard/lenovo/x200/variants/x200/gpio.c
+//   * coreboot northbridge/intel/gm45/{bootblock,early_init,romstage}.c
+//   * coreboot southbridge/intel/i82801ix/{early_init,lpc,sata,dmi_setup}.c
+// Display mode-setting/libgfxinit is intentionally not represented yet.
+(
+    name: "lenovo-x200",
+    platform: X86_64,
+
+    memory: (
+        regions: [
+            // X200 has an Intel Flash Descriptor; the BIOS region is the top
+            // 3 MiB of the 8 MiB SPI flash.
+            ( name: "flash", base: 0xFFD00000, size: 0x00300000, kind: Rom ),
+            // Runtime DRAM size is detected from GM45 TOM/TOLUD/TOUUD after
+            // raminit.  This linker work area stays below common payload load
+            // addresses and below the PCI MMIO hole.
+            ( name: "workram", base: 0x00100000, size: 0x3FF00000, kind: Ram ),
+        ],
+        flash_base: Some(0xFFD00000),
+        flash_size: Some(0x00300000),
+        car: Some((
+            method: NonEvictMode,
+            base: 0xFEF00000,
+            size: 0x80000,
+        )),
+    ),
+
+    devices: [
+        (
+            name: "northbridge",
+            driver: IntelGm45((
+                mchbar: 0xFED14000,
+                dmibar: 0xFED18000,
+                epbar:  0xFED19000,
+                ecam_base: 0xE0000000,
+                ecam_buses: 64,
+                // X200 romstage SPD map: channel 0 at 0x50, channel 1 at
+                // 0x51 (`spd_addrmap[0] = 0x50; spd_addrmap[2] = 0x51`).
+                spd_addresses: (0x50, 0x00, 0x51, 0x00),
+                // Keep IGD enabled for GGC/stolen-memory accounting and ACPI
+                // OpRegion/VBT plumbing, but do not perform display init.
+                igd: (
+                    enable_vga: true,
+                    enable_pipe_b: true,
+                    gtt_mmio_base: 0xFEB00000,
+                    vbt_file: Some("data_led.vbt"),
+                    panel_power_up_delay: 250,
+                    panel_power_down_delay: 250,
+                    panel_backlight_on_delay: 2500,
+                    panel_backlight_off_delay: 2500,
+                    panel_power_cycle_delay: 3,
+                ),
+                acpi_name: Some("PCI0"),
+            )),
+            services: [
+                "MemoryController", "MemoryDetector", "PciRootBus", "SmmOps",
+                "PreConsoleInit", "EarlyInit", "StageLocalInit", "PostDramInit",
+            ],
+        ),
+        (
+            name: "southbridge",
+            driver: IntelIch9((
+                rcba: 0xFED1C000,
+                dmibar: 0xFED18000,
+                // coreboot X200 routes PIRQA-D to IRQ11 and disables PIRQE-H.
+                pirq_routing: (Irq11, Irq11, Irq11, Irq11,
+                               Disabled, Disabled, Disabled, Disabled),
+                gpe0_en: 0x01000000,
+                // coreboot devicetree: gpi1_routing=SCI, gpi8_routing=SCI.
+                gpi_routing: (None, Sci, None, None, None, None, None, None,
+                              Sci, None, None, None, None, None, None, None),
+                c4_on_c3: true,
+                c5_enable: true,
+                c6_enable: true,
+                throttle_duty: 2, // THTL_75_0: PMBASE+0x10 duty bits [7:5].
+                lpc_decode: (
+                    fixed_io: (
+                        com_a: Com1,
+                        com_b: Com2,
+                        fdd: Some(Fdd3f0),
+                    ),
+                    generic_io: [
+                        // coreboot devicetree gen1_dec/gen2_dec/gen3_dec.
+                        ( base: 0x1600, size: 0x0080 ),
+                        ( base: 0x15e0, size: 0x0010 ),
+                        ( base: 0x1680, size: 0x0020 ),
+                    ],
+                ),
+                // HDA codec is Conexant CX20561 (Hermosa), vendor 0x14f15051
+                // and subsystem 0x17aa20ff, from coreboot x200/hda_verb.c.
+                // fstart sends coreboot's AZALIA_PIN_CFG verbs as raw extra
+                // verbs so HDA remains enabled even before typed pin decoding
+                // for these BIOS-extracted 32-bit defaults is added.
+                hda: Some((verbs: [(
+                    vendor_id: 0x14f15051,
+                    subsystem_id: 0x17aa20ff,
+                    pins: [
+                        ( nid: 0x16, conn: Jack, loc: External, geo: Right,
+                          device: HpOut, connector: StereoMono18, color: Green,
+                          group: 15, seq: 0 ),
+                        ( nid: 0x17, conn: Nc, loc: SeparateChassis, geo: Rear,
+                          device: MicIn, connector: StereoMono18, color: Pink,
+                          group: 15, seq: 0 ),
+                        ( nid: 0x18, conn: Jack, loc: External, geo: Right,
+                          device: MicIn, connector: StereoMono18, color: Pink,
+                          group: 15, seq: 0 ),
+                        ( nid: 0x19, conn: Nc, loc: SeparateChassis, geo: Rear,
+                          device: HpOut, connector: StereoMono18, color: Green,
+                          group: 15, seq: 0 ),
+                        ( nid: 0x1a, conn: Integrated, loc: Internal, geo: NA,
+                          device: Speaker, connector: OtherAnalog, misc: 1,
+                          group: 15, seq: 0 ),
+                        ( nid: 0x1b, conn: Nc, loc: External, geo: NA,
+                          device: DeviceOther, connector: Unknown, misc: 1,
+                          group: 15, seq: 0 ),
+                        ( nid: 0x1c, conn: Nc, loc: External, geo: NA,
+                          device: DeviceOther, connector: Unknown, misc: 1,
+                          group: 15, seq: 0 ),
+                        ( nid: 0x1d, conn: Integrated, loc: Internal, geo: NA,
+                          device: MicIn, connector: OtherDigital, misc: 1,
+                          group: 15, seq: 0 ),
+                    ],
+                    extra_verbs: [
+                        // coreboot x200/hda_verb.c pc_beep_verbs.
+                        0x00170500, 0x01470500, 0x01470100, 0x01470740,
+                        0x00b37517, 0x00c37100, 0x00c3b015, 0x0143b000,
+                    ],
+                )],)),
+                ide: None,
+                sata: Some(( mode: Ahci, ports: 0x03 )),
+                usb: Some((
+                    ehci: (true, true),
+                    uhci: (true, true, true, true, true, true),
+                )),
+                // X200 enables PCIe ports 1/2/3 and port 4 for ExpressCard.
+                pcie_ports: (true, true, true, true, false, false),
+                smbus_base: 0x0400,
+                // GPIOs from coreboot variants/x200/gpio.c.  GPIO42 starts
+                // high for DIMM SPD access and is driven low by the mainboard
+                // post-DRAM hook to switch the SMBus mux to EEPROM.
+                gpio: (pins: [
+                    ( pin: 1, dir: Input, level: High, invert: true ),
+                    ( pin: 2, dir: Input, level: High ),
+                    ( pin: 3, dir: Input, level: High ),
+                    ( pin: 4, dir: Input, level: High ),
+                    ( pin: 5, dir: Input, level: High ),
+                    ( pin: 6, dir: Input, level: High ),
+                    ( pin: 7, dir: Input, level: High ),
+                    ( pin: 8, dir: Input, level: High, invert: true ),
+                    ( pin: 9, level: High ),
+                    ( pin: 13, dir: Input, level: High ),
+                    ( pin: 17, dir: Input, level: High ),
+                    ( pin: 18, dir: Input, level: High ),
+                    ( pin: 19, level: High ),
+                    ( pin: 20, level: High ),
+                    ( pin: 21, dir: Input, level: High ),
+                    ( pin: 22, level: High ),
+                    ( pin: 24, dir: Input, level: High ),
+                    ( pin: 27 ),
+                    ( pin: 28 ),
+                    ( pin: 33, level: High ),
+                    ( pin: 34 ),
+                    ( pin: 36, dir: Input, level: High ),
+                    ( pin: 37, dir: Input, level: High ),
+                    ( pin: 38, dir: Input, level: High ),
+                    ( pin: 39, dir: Input, level: High ),
+                    ( pin: 41, level: High ),
+                    ( pin: 42, level: High ),
+                    ( pin: 48, dir: Input, level: High ),
+                    ( pin: 49, level: High ),
+                    ( pin: 56, dir: Input, level: High ),
+                    ( pin: 57, dir: Input, level: High ),
+                ]),
+                acpi_name: Some("LPCB"),
+                c3_latency: 85,
+                power_on_after_fail: 0,
+            )),
+            services: ["Southbridge", "PreConsoleInit", "EarlyInit", "PostDramInit", "FinalizeInit"],
+            children: [
+                ( name: "lpc", services: ["LpcBus"],
+                    children: [
+                        ( name: "pmh7", bus: Lpc(0x15e0),
+                            driver: LenovoPmh7((
+                                base: 0x15e0,
+                                backlight_enable: true,
+                                dock_event_enable: true,
+                            )),
+                            services: [],
+                        ),
+                        ( name: "h8", bus: Lpc(0x62),
+                            driver: LenovoH8((
+                                ports: (cmd: 0x66, data: 0x62),
+                                config0: 0xa6,
+                                config1: 0x04,
+                                config2: 0xa0,
+                                config3: 0x01,
+                                beepmask0: 0xfe,
+                                beepmask1: 0x96,
+                                event_enable: (
+                                    0x00, 0x00, 0xff, 0xff,
+                                    0xf4, 0x3c, 0x80, 0x01,
+                                    0x01, 0xff, 0xff, 0xff,
+                                    0xff, 0xff, 0x00, 0x00,
+                                ),
+                                has_thinklight: true,
+                                has_power_management_beeps: true,
+                                has_uwb: true,
+                                // Coreboot Kconfig selections for X200:
+                                // H8_HAS_BDC_GPIO_DETECTION, H8_HAS_BAT_THRESHOLDS_IMPL,
+                                // and H8_HAS_2ND_THERMAL_ZONE.
+                                has_bdc_gpio_detection: true,
+                                has_battery_thresholds: true,
+                                has_second_thermal_zone: true,
+                                bdc_gpio_num: 7,
+                                bdc_gpio_lvl: 0,
+                            )),
+                            services: [],
+                        ),
+                        // Coreboot sets NO_UART_ON_SUPERIO for the X200, so
+                        // this is only a firmware logging sink for machines or
+                        // debug setups that decode COM1 externally.
+                        ( name: "uart0", bus: Lpc(0x3f8),
+                            driver: Ns16550((
+                                regs: Pio(base: 0x3f8),
+                                clock_freq: 1843200,
+                                baud_rate: 115200,
+                            )),
+                            services: ["Console"],
+                        ),
+                    ],
+                ),
+                ( name: "smbus", services: ["SmBus"] ),
+            ],
+        ),
+        (
+            name: "mainboard",
+            driver: LenovoX200Mainboard((
+                dock_early_console: true,
+                acpi_name: Some("X200"),
+            )),
+            services: ["Mainboard", "PreConsoleInit", "PostDramInit", "FinalizeInit"],
+        ),
+    ],
+
+    stages: MultiStage([
+        (
+            name: "bootblock",
+            capabilities: [
+                PreConsoleInit( devices: ["northbridge", "southbridge", "mainboard"] ),
+                ConsoleInit( device: "uart0" ),
+                EarlyInit( devices: ["northbridge", "southbridge"] ),
+                DramInit( device: "northbridge" ),
+                BootMedia(MemoryMapped( base: 0xFF800000, size: 0x00800000 )),
+                StageLoad( next_stage: "ramstage" ),
+            ],
+            stack_size: 0x2000,
+            runs_from: Rom,
+            page_size: Size2MiB,
+        ),
+        (
+            name: "ramstage",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                BootMedia(MemoryMapped(
+                    base: 0xFF800000,
+                    size: 0x00800000,
+                    ram_copy_addr: Some(0x02000000),
+                )),
+                SigVerify,
+                DriverInit,
+                StageLocalInit( devices: ["northbridge"] ),
+                MemoryDetect( device: "northbridge" ),
+                PciInit( device: "northbridge" ),
+                PostDramInit( devices: ["northbridge", "southbridge", "mainboard"] ),
+                FinalizeInit( devices: ["southbridge", "mainboard"] ),
+                MpInit(cpu_model: "core2", num_cpus: 2, smm: true),
+                AcpiPrepare,
+                SmBiosPrepare,
+                PayloadLoad,
+            ],
+            load_addr: 0x04000000,
+            stack_size: 0x400000,
+            heap_size: 0x200000,
+            runs_from: Ram,
+            compression: Lz4,
+        ),
+    ]),
+
+    microcode: Some(Intel((
+        files: [
+            "../../../intel-microcode/intel-ucode/06-17-06",
+            "../../../intel-microcode/intel-ucode/06-17-07",
+            "../../../intel-microcode/intel-ucode/06-17-0a",
+        ],
+        early: true,
+        mp: true,
+    ))),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    mode: Rigid,
+    smm: Some((
+        platform: LenovoX200,
+        entry_points: Some(2),
+        stack_size: 0x400,
+        coreboot: (
+            emit_header: true,
+            module_args: true,
+        ),
+    )),
+    full_flash_image: true,
+
+    acpi: Some((
+        print_hex: true,
+        platform: X86((
+            num_cpus: Some(2),
+            lapic_base: 0xFEE00000,
+            ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
+            isos: [
+                ( bus: 0, source: 0, gsi: 2, flags: 0 ),
+                ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
+            ],
+            hpet: Some(( base: 0xFED00000, timer_block_id: 0x8086A201 )),
+            legacy_devices: true,
+            pm_profile: Mobile,
+            iapc_boot_arch: 0x0003,
+            sci_irq: 9,
+            acpi_smi: Some((
+                smi_cmd: 0xB2,
+                acpi_enable: 0xE1,
+                acpi_disable: 0x1E,
+            )),
+        )),
+    )),
+
+    smbios: (
+        bios_vendor: "fstart",
+        bios_version: "0.1.0",
+        bios_release_date: "05/19/2026",
+        system_manufacturer: "LENOVO",
+        system_product: "ThinkPad X200",
+        system_version: "1.0",
+        baseboard_manufacturer: "LENOVO",
+        baseboard_product: "ThinkPad X200",
+        chassis_type: Other,
+        chassis_manufacturer: "LENOVO",
+        processors: [
+            (
+                socket: "BGA/P Socket P",
+                manufacturer: "Intel",
+                processor_family: X86_64,
+            ),
+        ],
+        memory_devices: [
+            ( locator: "DIMM0" ),
+            ( locator: "DIMM1" ),
+        ],
+    ),
+
+    payload: (
+        kind: UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: None,
+        firmware: None,
+    ),
+)

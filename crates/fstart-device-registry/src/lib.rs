@@ -144,9 +144,34 @@ pub mod intel_ich8 {
     pub use fstart_driver_intel_ich8::IntelIch8Config;
 }
 
+#[cfg(feature = "intel-gm45")]
+pub mod intel_gm45 {
+    pub use fstart_driver_intel_gm45::IntelGm45Config;
+}
+
+#[cfg(feature = "intel-ich9")]
+pub mod intel_ich9 {
+    pub use fstart_driver_intel_ich9::IntelIch9Config;
+}
+
 #[cfg(feature = "lenovo-x61-mainboard")]
 pub mod lenovo_x61_mainboard {
     pub use fstart_mainboard_lenovo_x61::LenovoX61MainboardConfig;
+}
+
+#[cfg(feature = "lenovo-x200-mainboard")]
+pub mod lenovo_x200_mainboard {
+    pub use fstart_mainboard_lenovo_x200::LenovoX200MainboardConfig;
+}
+
+#[cfg(feature = "lenovo-h8")]
+pub mod lenovo_h8 {
+    pub use fstart_driver_lenovo_h8::LenovoH8Config;
+}
+
+#[cfg(feature = "lenovo-pmh7")]
+pub mod lenovo_pmh7 {
+    pub use fstart_driver_lenovo_pmh7::LenovoPmh7Config;
 }
 
 #[cfg(feature = "i2c-ck505")]
@@ -347,9 +372,29 @@ pub enum DriverInstance {
     #[cfg(feature = "intel-ich8")]
     IntelIch8(intel_ich8::IntelIch8Config),
 
+    /// Intel GM45 (Cantiga) northbridge / MCH.
+    #[cfg(feature = "intel-gm45")]
+    IntelGm45(intel_gm45::IntelGm45Config),
+
+    /// Intel ICH9 / ICH9-M southbridge.
+    #[cfg(feature = "intel-ich9")]
+    IntelIch9(intel_ich9::IntelIch9Config),
+
     /// Lenovo ThinkPad X61 mainboard glue.
     #[cfg(feature = "lenovo-x61-mainboard")]
     LenovoX61Mainboard(lenovo_x61_mainboard::LenovoX61MainboardConfig),
+
+    /// Lenovo ThinkPad X200 mainboard glue.
+    #[cfg(feature = "lenovo-x200-mainboard")]
+    LenovoX200Mainboard(lenovo_x200_mainboard::LenovoX200MainboardConfig),
+
+    /// Lenovo ThinkPad H8 embedded controller.
+    #[cfg(feature = "lenovo-h8")]
+    LenovoH8(lenovo_h8::LenovoH8Config),
+
+    /// Lenovo PMH7 power-management hub.
+    #[cfg(feature = "lenovo-pmh7")]
+    LenovoPmh7(lenovo_pmh7::LenovoPmh7Config),
 
     /// IDT CK505 clock generator (SMBus-attached).
     #[cfg(feature = "i2c-ck505")]
@@ -695,6 +740,35 @@ impl DriverInstance {
                 has_acpi: true,
                 is_bus_device: false,
             },
+            #[cfg(feature = "intel-gm45")]
+            Self::IntelGm45(_) => &DriverMeta {
+                name: "intel-gm45",
+                type_name: "IntelGm45",
+                module_path: "fstart_driver_intel_gm45",
+                config_type: "IntelGm45Config",
+                services: &[
+                    "MemoryController",
+                    "MemoryDetector",
+                    "PciHost",
+                    "PciRootBus",
+                    "SmmOps",
+                    "PostDramInit",
+                ],
+                compatible: &["intel,gm45", "intel,cantiga"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "intel-ich9")]
+            Self::IntelIch9(_) => &DriverMeta {
+                name: "intel-ich9",
+                type_name: "IntelIch9",
+                module_path: "fstart_driver_intel_ich9",
+                config_type: "IntelIch9Config",
+                services: &["Southbridge"],
+                compatible: &["intel,ich9", "intel,ich9m", "intel,82801ix"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
             #[cfg(feature = "lenovo-x61-mainboard")]
             Self::LenovoX61Mainboard(_) => &DriverMeta {
                 name: "lenovo-x61-mainboard",
@@ -704,6 +778,39 @@ impl DriverInstance {
                 services: &["Mainboard"],
                 compatible: &["lenovo,thinkpad-x61"],
                 has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "lenovo-x200-mainboard")]
+            Self::LenovoX200Mainboard(_) => &DriverMeta {
+                name: "lenovo-x200-mainboard",
+                type_name: "LenovoX200Mainboard",
+                module_path: "fstart_mainboard_lenovo_x200",
+                config_type: "LenovoX200MainboardConfig",
+                services: &["Mainboard"],
+                compatible: &["lenovo,thinkpad-x200"],
+                has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "lenovo-h8")]
+            Self::LenovoH8(_) => &DriverMeta {
+                name: "lenovo-h8",
+                type_name: "LenovoH8",
+                module_path: "fstart_driver_lenovo_h8",
+                config_type: "LenovoH8Config",
+                services: &[],
+                compatible: &["lenovo,h8-ec"],
+                has_acpi: false,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "lenovo-pmh7")]
+            Self::LenovoPmh7(_) => &DriverMeta {
+                name: "lenovo-pmh7",
+                type_name: "LenovoPmh7",
+                module_path: "fstart_driver_lenovo_pmh7",
+                config_type: "LenovoPmh7Config",
+                services: &[],
+                compatible: &["lenovo,pmh7"],
+                has_acpi: false,
                 is_bus_device: false,
             },
             #[cfg(feature = "i2c-ck505")]
@@ -745,11 +852,57 @@ impl DriverInstance {
             Self::IntelGm965(cfg) => cfg.acpi_name.as_deref(),
             #[cfg(feature = "intel-ich8")]
             Self::IntelIch8(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-gm45")]
+            Self::IntelGm45(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "intel-ich9")]
+            Self::IntelIch9(cfg) => cfg.acpi_name.as_deref(),
             #[cfg(feature = "lenovo-x61-mainboard")]
             Self::LenovoX61Mainboard(cfg) => cfg.acpi_name.as_deref(),
+            #[cfg(feature = "lenovo-x200-mainboard")]
+            Self::LenovoX200Mainboard(cfg) => cfg.acpi_name.as_deref(),
             Self::Ahci(cfg) => Some(cfg.name.as_str()),
             Self::Xhci(cfg) => Some(cfg.name.as_str()),
             Self::PcieRoot(cfg) => Some(cfg.name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Return the x86 FADT PM register layout provided by this chipset, if any.
+    pub fn x86_fadt_pm_registers(&self) -> Option<fstart_types::acpi::X86FadtPmRegisters> {
+        match self {
+            #[cfg(feature = "intel-ich7")]
+            Self::IntelIch7(_) => Some(fstart_types::acpi::X86FadtPmRegisters {
+                pm1a_evt_blk: 0x0500,
+                pm1a_cnt_blk: 0x0504,
+                pm_tmr_blk: 0x0508,
+                pm1_evt_len: 4,
+                pm1_cnt_len: 2,
+                pm_tmr_len: 4,
+                gpe0_blk: 0x0528,
+                gpe0_blk_len: 8,
+            }),
+            #[cfg(feature = "intel-ich8")]
+            Self::IntelIch8(_) => Some(fstart_types::acpi::X86FadtPmRegisters {
+                pm1a_evt_blk: 0x0500,
+                pm1a_cnt_blk: 0x0504,
+                pm_tmr_blk: 0x0508,
+                pm1_evt_len: 4,
+                pm1_cnt_len: 2,
+                pm_tmr_len: 4,
+                gpe0_blk: 0x0520,
+                gpe0_blk_len: 16,
+            }),
+            #[cfg(feature = "intel-ich9")]
+            Self::IntelIch9(_) => Some(fstart_types::acpi::X86FadtPmRegisters {
+                pm1a_evt_blk: 0x0500,
+                pm1a_cnt_blk: 0x0504,
+                pm_tmr_blk: 0x0508,
+                pm1_evt_len: 4,
+                pm1_cnt_len: 2,
+                pm_tmr_len: 4,
+                gpe0_blk: 0x0520,
+                gpe0_blk_len: 16,
+            }),
             _ => None,
         }
     }
@@ -855,8 +1008,18 @@ impl DriverInstance {
             Self::IntelGm965(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "intel-ich8")]
             Self::IntelIch8(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-gm45")]
+            Self::IntelGm45(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-ich9")]
+            Self::IntelIch9(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "lenovo-x61-mainboard")]
             Self::LenovoX61Mainboard(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "lenovo-x200-mainboard")]
+            Self::LenovoX200Mainboard(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "lenovo-h8")]
+            Self::LenovoH8(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "lenovo-pmh7")]
+            Self::LenovoPmh7(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "i2c-ck505")]
             Self::I2cCk505(cfg) => serde::Serialize::serialize(cfg, ser),
         }

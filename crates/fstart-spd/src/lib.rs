@@ -7,8 +7,10 @@
 #![no_std]
 
 use fstart_services::{ServiceError, SmBus};
+use serde::{Deserialize, Serialize};
 
 pub mod ddr2;
+pub mod ddr3;
 
 // Re-export DDR2 for backward compatibility — existing callers use
 // `fstart_spd::decode_dimm`, `fstart_spd::SPD_NUM_ROWS`, etc.
@@ -29,7 +31,7 @@ pub const DDR3: u8 = 0x0B;
 // ===================================================================
 
 /// DDR chip width classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChipWidth {
     X4 = 0,
     X8 = 1,
@@ -38,7 +40,7 @@ pub enum ChipWidth {
 }
 
 /// DDR chip capacity classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChipCapacity {
     Cap256M = 0,
     Cap512M = 1,
