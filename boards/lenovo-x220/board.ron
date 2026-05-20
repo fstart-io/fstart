@@ -1,0 +1,335 @@
+// Lenovo ThinkPad X220 — Intel Sandy Bridge + bd82x6x/Cougar Point PCH.
+//
+// This is an initial fstart port scaffold.  It intentionally mirrors the local
+// GM965/X61 and Pineview/ICH7 board patterns while carrying over X220 constants
+// from coreboot `mainboard/lenovo/x220`.  Display mode setting is skipped for
+// now; coreboot uses libgfxinit for that path.
+(
+    name: "lenovo-x220",
+    platform: X86_64,
+
+    memory: (
+        regions: [
+            // X220 boards use an 8 MiB SPI flash, but stock IFD layouts expose
+            // only the top 3 MiB BIOS region to firmware images:
+            //   SI_ALL@0x0 0x500000 { DESC 0x1000, GBE 0x2000, ME 0x4ed000 }
+            //   SI_BIOS@0x500000 0x300000 => memory-mapped at 0xFFD00000.
+            // Do not produce or flash a full 8 MiB image unless a target
+            // descriptor dump is parsed or a me_clean layout is selected.
+            ( name: "flash", base: 0xFFD00000, size: 0x00300000, kind: Rom ),
+            // Runtime sizing is read from Sandy Bridge TOM/TOLUD/TOUUD/TSEG
+            // after DRAM training. Keep firmware working RAM below payloads.
+            ( name: "workram", base: 0x00100000, size: 0x3FF00000, kind: Ram ),
+        ],
+        flash_base: Some(0xFFD00000),
+        flash_size: Some(0x00300000),
+        car: Some((
+            // Coreboot Sandy Bridge native raminit defaults to NEM CAR at
+            // 0xfefe0000 size 0x20000.
+            method: NonEvictMode,
+            base: 0xFEFE0000,
+            size: 0x20000,
+        )),
+    ),
+
+    devices: [
+        (
+            name: "northbridge",
+            driver: IntelSandybridge((
+                mchbar: 0xFED10000,
+                dmibar: 0xFED18000,
+                epbar:  0xFED19000,
+                // Coreboot Sandy Bridge Kconfig uses 0xf0000000 / 64 buses;
+                // the MRC blob requires this ECAM base if that path is used.
+                ecam_base: 0xF0000000,
+                ecam_buses: 64,
+                // Coreboot X220: spd_addresses = {0x50, 0, 0x51, 0};
+                // max_mem_clock_mhz = 666 (DDR3-1333); ec_present = 1.
+                spd_addresses: (0x50, 0, 0x51, 0),
+                max_mem_clock_mhz: 666,
+                ec_present: true,
+                igd: (
+                    enable_vga: true,
+                    gtt_mmio_base: 0xEFC00000,
+                    vbt_file: None,
+                ),
+                acpi_name: Some("PCI0"),
+            )),
+            services: [
+                "MemoryController", "MemoryDetector", "PciRootBus",
+                "PreConsoleInit", "EarlyInit", "StageLocalInit", "FinalizeInit",
+            ],
+        ),
+        (
+            name: "southbridge",
+            driver: IntelBd82x6x((
+                rcba: 0xFED1C000,
+                ecam_base: 0xF0000000,
+                pirq_routing: (Irq11, Irq11, Irq11, Irq11,
+                               Irq11, Irq11, Irq11, Irq11),
+                // Coreboot X220 routes GPI1 and GPI13 to SCI.  SMM later
+                // switches GPI1 between SCI/SMI when ACPI is enabled/disabled.
+                gpi_routing: (None, Sci, None, None, None, None, None, None,
+                              None, None, None, None, None, Sci, None, None),
+                alt_gp_smi_en: 0,
+                lpc_decode: (
+                    fixed: ComA3f8ComB2f8,
+                    // Coreboot devicetree: gen1_dec=0x7c1601,
+                    // gen2_dec=0x0c15e1, gen4_dec=0x0c06a1.
+                    gen_dec: (0x007c1601, 0x000c15e1, 0, 0x000c06a1),
+                ),
+                // SATA ports 0 (HDD bay), 1 (dock), and 2 (mSATA); max speed
+                // 6.0 Gb/s per coreboot X220 devicetree.
+                sata_ports: (
+                    (enabled: true, max_speed: Gen3_6Gbps),
+                    (enabled: true, max_speed: Gen3_6Gbps),
+                    (enabled: true, max_speed: Gen3_6Gbps),
+                    (enabled: false),
+                    (enabled: false),
+                    (enabled: false),
+                ),
+                gbe_enabled: true,
+                eeprom_lock_addr: Some(0x5c),
+                pcie_ports: (
+                    (enabled: false),
+                    (enabled: true),
+                    (enabled: false),
+                    (enabled: true, hotplug: true),
+                    (enabled: true),
+                    (enabled: false),
+                    (enabled: true),
+                    (enabled: false),
+                ),
+                pcie_port_coalesce: true,
+                spi: (upper: Some(X220Flash), lower: Some(X220Flash)),
+                smbus_base: 0x0400,
+                gpio: (pins: [
+                    // GPIO table from coreboot variants/x220/gpio.c. Set1 all
+                    // blink bits are no-blink; level-first programming is done
+                    // by fstart-gpio-ich to avoid glitches.
+                    ( pin: 0, dir: Input, level: High, invert: true ),
+                    ( pin: 1, dir: Input, level: High, invert: true ),
+                    ( pin: 2, dir: Input, level: Low ),
+                    ( pin: 3, dir: Input, level: High ),
+                    ( pin: 4, dir: Input, level: High ),
+                    ( pin: 5, dir: Input, level: High ),
+                    ( pin: 6, dir: Input, level: High, invert: true ),
+                    ( pin: 7, dir: Input, level: High ),
+                    ( pin: 8, level: High ),
+                    ( pin: 10, level: High ), // DRAM_RESET_GATE_GPIO=10
+                    ( pin: 13, dir: Input, level: High, invert: true ),
+                    ( pin: 15, level: Low ),
+                    ( pin: 16, dir: Input, level: High ),
+                    ( pin: 17, dir: Input, level: High ),
+                    ( pin: 21, dir: Input, level: High ),
+                    ( pin: 22, level: High ),
+                    ( pin: 24, level: Low ),
+                    ( pin: 27, dir: Input, level: Low ),
+                    ( pin: 28, dir: Input, level: Low ),
+                    ( pin: 29, level: High ),
+                    ( pin: 33, level: High ),
+                    ( pin: 34, dir: Input, level: High ),
+                    ( pin: 35, level: Low ),
+                    ( pin: 36, dir: Input, level: Low ),
+                    ( pin: 37, dir: Input, level: Low ),
+                    ( pin: 38, dir: Input, level: Low ),
+                    ( pin: 39, dir: Input, level: High ),
+                    ( pin: 42, level: High ),
+                    ( pin: 48, dir: Input, level: Low ),
+                    ( pin: 49, dir: Input, level: Low ),
+                    ( pin: 50, dir: Input, level: High ),
+                    ( pin: 51, level: High ),
+                    ( pin: 52, level: Low ),
+                    ( pin: 53, level: High ),
+                    ( pin: 54, dir: Input, level: High ), // broken BDC detect wiring
+                    ( pin: 55, level: High ),
+                    ( pin: 57, dir: Input, level: Low ),
+                    ( pin: 68, dir: Input, level: Low ),
+                    ( pin: 69, dir: Input, level: Low ),
+                    ( pin: 70, dir: Input, level: High ), // WWAN detect, active-low
+                    ( pin: 71, dir: Input, level: High ),
+                ]),
+                hda: Some((verbs: [
+                    (
+                        // Conexant CX20590, Lenovo ThinkPad X220 pin defaults
+                        // from coreboot hda_verb.c.
+                        vendor_id: 0x14f1506e,
+                        subsystem_id: 0x17aa21db,
+                        pins: [
+                            ( nid: 0x19, conn: Jack, loc: External, geo: Right, device: HpOut, connector: StereoMono18, color: Black, misc: 0, group: 4, seq: 0 ),
+                            ( nid: 0x1a, conn: Nc, loc: SeparateChassis, geo: Rear, device: MicIn, connector: StereoMono18, color: Pink, misc: 0, group: 5, seq: 0 ),
+                            ( nid: 0x1b, conn: Jack, loc: External, geo: Right, device: MicIn, connector: StereoMono18, color: Black, misc: 0, group: 6, seq: 0 ),
+                            ( nid: 0x1c, conn: Nc, loc: SeparateChassis, geo: Rear, device: HpOut, connector: StereoMono18, color: Green, misc: 0, group: 1, seq: 15 ),
+                            ( nid: 0x1d, conn: Nc, loc: External, geo: NA, device: DeviceOther, connector: Unknown, color: ColorUnknown, misc: 1, group: 15, seq: 0 ),
+                            ( nid: 0x1e, conn: Nc, loc: External, geo: NA, device: DeviceOther, connector: Unknown, color: ColorUnknown, misc: 1, group: 15, seq: 0 ),
+                            ( nid: 0x1f, conn: Integrated, loc: Internal, geo: NA, device: Speaker, connector: OtherAnalog, color: ColorUnknown, misc: 1, group: 1, seq: 0 ),
+                            ( nid: 0x20, conn: Nc, loc: External, geo: NA, device: DeviceOther, connector: Unknown, color: ColorUnknown, misc: 1, group: 15, seq: 0 ),
+                            ( nid: 0x22, conn: Nc, loc: External, geo: NA, device: DeviceOther, connector: Unknown, color: ColorUnknown, misc: 1, group: 15, seq: 0 ),
+                            ( nid: 0x23, conn: Integrated, loc: Internal, geo: NA, device: MicIn, connector: OtherDigital, color: ColorUnknown, misc: 1, group: 7, seq: 0 ),
+                        ],
+                        extra_verbs: [
+                            0x00b707c0, 0x00d70740,
+                            // Slave Port: Port A microphone input for combo
+                            // jack; Master Port: Port B jack-presence detect.
+                            0x0017a200, 0x0017c621, 0x0017a208,
+                            0x00170500, 0x00170500, 0x00170500,
+                            // Digital PCBEEP gain from coreboot pc_beep_verbs.
+                            0x02177a00,
+                        ],
+                    ),
+                    (
+                        // Intel PantherPoint HDMI codec #3 from coreboot.
+                        vendor_id: 0x80862806,
+                        subsystem_id: 0x80860101,
+                        extra_verbs: [
+                            0x30571c10, 0x30571d00, 0x30571e56, 0x30571f18,
+                            0x30671c20, 0x30671d00, 0x30671e56, 0x30671f18,
+                            0x30771c30, 0x30771d00, 0x30771e56, 0x30771f18,
+                        ],
+                    ),
+                ])),
+                acpi_name: Some("LPCB"),
+            )),
+            services: ["Southbridge", "PreConsoleInit", "EarlyInit", "PostDramInit", "FinalizeInit", "SmBus"],
+            children: [
+                ( name: "lpc", services: ["LpcBus"], children: [
+                    // TODO: replace this build-time console placeholder with
+                    // an X220-real debug path (dock UART, EHCI debug, memory
+                    // console, or POST-card logging). Current stage codegen
+                    // requires ConsoleInit before logging-capable init phases.
+                    ( name: "uart0", bus: Lpc(0x3f8),
+                        driver: Ns16550((
+                            regs: Pio(base: 0x3f8),
+                            clock_freq: 1843200,
+                            baud_rate: 115200,
+                        )),
+                        services: ["Console"],
+                    ),
+                ] ),
+                ( name: "smbus", services: ["SmBus"], children: [] ),
+            ],
+        ),
+        (
+            name: "mainboard",
+            driver: LenovoX220Mainboard((
+                eeprom_early_lock: true,
+                backlight_enable: true,
+                dock_event_enable: true,
+                has_thinklight: true,
+                wwan_gpio_num: 70,
+                wwan_gpio_lvl: false,
+                acpi_name: Some("X220"),
+            )),
+            services: ["Mainboard", "PreConsoleInit", "PostDramInit", "FinalizeInit"],
+        ),
+    ],
+
+    stages: MultiStage([
+        (
+            name: "bootblock",
+            capabilities: [
+                PreConsoleInit( devices: ["northbridge", "southbridge", "mainboard"] ),
+                ConsoleInit( device: "uart0" ),
+                EarlyInit( devices: ["northbridge", "southbridge"] ),
+                DramInit( device: "northbridge" ),
+                BootMedia(MemoryMapped( base: 0xFFD00000, size: 0x00300000 )),
+                StageLoad( next_stage: "ramstage" ),
+            ],
+            stack_size: 0x2000,
+            runs_from: Rom,
+            page_size: Size2MiB,
+        ),
+        (
+            name: "ramstage",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                BootMedia(MemoryMapped(
+                    base: 0xFFD00000,
+                    size: 0x00300000,
+                    ram_copy_addr: Some(0x02000000),
+                )),
+                SigVerify,
+                DriverInit,
+                StageLocalInit( devices: ["northbridge"] ),
+                MemoryDetect( device: "northbridge" ),
+                PciInit( device: "northbridge" ),
+                PostDramInit( devices: ["southbridge", "mainboard"] ),
+                FinalizeInit( devices: ["northbridge", "southbridge", "mainboard"] ),
+                // SMM disabled until X220 EC/GPI/APMC/S3 handlers are ported.
+                MpInit(cpu_model: "sandybridge", num_cpus: 4, smm: false),
+                AcpiPrepare,
+                SmBiosPrepare,
+                PayloadLoad,
+            ],
+            load_addr: 0x04000000,
+            stack_size: 0x400000,
+            heap_size: 0x200000,
+            runs_from: Ram,
+            compression: Lz4,
+        ),
+    ]),
+
+    microcode: Some(Intel((
+        files: [
+            "../../../intel-microcode/intel-ucode/06-2a-07",
+        ],
+        early: true,
+        mp: true,
+    ))),
+
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    mode: Rigid,
+    // Keep BIOS-region-only for the normal X220 IFD.  A full 8 MiB image would
+    // overlap descriptor/GbE/ME regions unless explicitly using a matching dump.
+    full_flash_image: false,
+
+    acpi: Some((
+        print_hex: true,
+        platform: X86((
+            num_cpus: Some(4),
+            lapic_base: 0xFEE00000,
+            ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
+            isos: [
+                ( bus: 0, source: 0, gsi: 2, flags: 0 ),
+                ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
+            ],
+            hpet_base: 0xFED00000,
+            legacy_devices: true,
+            sci_irq: 9,
+        )),
+    )),
+
+    smbios: (
+        bios_vendor: "fstart",
+        bios_version: "0.1.0",
+        bios_release_date: "05/19/2026",
+        system_manufacturer: "LENOVO",
+        system_product: "ThinkPad X220",
+        system_version: "1.0",
+        baseboard_manufacturer: "LENOVO",
+        baseboard_product: "ThinkPad X220",
+        chassis_type: Other,
+        chassis_manufacturer: "LENOVO",
+        processors: [
+            ( socket: "CPU", manufacturer: "Intel", processor_family: X86_64 ),
+        ],
+        memory_devices: [
+            ( locator: "ChannelA-DIMM0" ),
+            ( locator: "ChannelB-DIMM0" ),
+        ],
+    ),
+
+    payload: (
+        kind: UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: Platform,
+        dtb_addr: None,
+        bootargs: None,
+        firmware: None,
+    ),
+)

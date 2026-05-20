@@ -367,6 +367,7 @@ static CPU_INIT_FN: AtomicUsize = AtomicUsize::new(0);
 static SMM_OPS_DATA: AtomicUsize = AtomicUsize::new(0);
 static SMM_OPS_VTABLE: AtomicUsize = AtomicUsize::new(0);
 static SMM_RELOCATION_LOCK: AtomicBool = AtomicBool::new(false);
+static MICROCODE_UPDATE_LOCK: AtomicBool = AtomicBool::new(false);
 static SMM_RELOCATION_SMBASES: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::new(0) }; MAX_CPUS];
 /// Global smm_relocate trampoline.
 static SMM_RELOCATE_FN: AtomicUsize = AtomicUsize::new(0);
@@ -382,12 +383,23 @@ fn make_cpu_init_trampoline<C: CpuOps>() -> fn() {
         if ptr != 0 {
             // SAFETY: ptr was set by BSP to a valid &C before APs started.
             let ops: &C = unsafe { &*(ptr as *const C) };
-            if let Some((blob, _parallel)) = ops.microcode() {
+            if let Some((blob, parallel)) = ops.microcode() {
+                if !parallel {
+                    while MICROCODE_UPDATE_LOCK
+                        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                        .is_err()
+                    {
+                        core::hint::spin_loop();
+                    }
+                }
                 log_microcode_revision("before update");
                 // SAFETY: CpuOps implementors only return blobs that are
                 // identity-mapped/reachable by all CPUs during MP init.
                 unsafe { fstart_microcode_intel::update_current_cpu_logged(blob) };
                 log_microcode_revision("after update");
+                if !parallel {
+                    MICROCODE_UPDATE_LOCK.store(false, Ordering::Release);
+                }
             }
             ops.init_cpu();
         }

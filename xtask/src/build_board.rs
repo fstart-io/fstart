@@ -807,6 +807,12 @@ fn capability_features(
             if cpu_model.as_str().contains("core2") || cpu_model.as_str().contains("6fx") {
                 features.push("core2-cpu".to_string());
             }
+            if cpu_model.as_str().contains("sandybridge")
+                || cpu_model.as_str().contains("206ax")
+                || cpu_model.as_str().contains("06-2a")
+            {
+                features.push("sandybridge-cpu".to_string());
+            }
         }
     }
 

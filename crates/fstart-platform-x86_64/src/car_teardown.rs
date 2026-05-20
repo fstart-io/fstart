@@ -3,7 +3,7 @@
 //! Mirrors coreboot's Intel post-CAR flow:
 //! 1. switch to a DRAM stack
 //! 2. disable cache and MTRRs
-//! 3. clear NEM RUN/SETUP only on Atom models that use the no-evict MSR
+//! 3. clear NEM RUN/SETUP only on models that use the no-evict MSR
 //! 4. program post-CAR MTRRs while cache/MTRRs are disabled
 //! 5. re-enable MTRRs, re-enable cache, `invd`
 //! 6. load ramstage from FFS while DRAM and ROM are cacheable
@@ -20,7 +20,8 @@ global_asm!(
     // _car_teardown — Intel CAR teardown.
     //
     // Core2/X61 uses MTRR-backed CAR and must not touch the no-evict MSR.
-    // Atom/NEM systems clear MSR 0x2e0 below after CPUID model gating.
+    // Atom and Sandy/Ivy Bridge NEM systems clear MSR 0x2e0 below after
+    // CPUID model gating.
     // ------------------------------------------------------------------
     "_car_teardown:",
     // Preserve RBX for the x86_64 C ABI. CPUID below clobbers EBX, and this
@@ -35,7 +36,7 @@ global_asm!(
     "rdmsr",
     "andl $0xfffff7ff, %eax",
     "wrmsr",
-    // Disable no-evict mode RUN then SETUP only on Atom/NEM models.
+    // Disable no-evict mode RUN then SETUP only on Atom/SNB/IVB NEM models.
     "movl $1, %eax",
     "cpuid",
     "movl %eax, %edx",
@@ -54,6 +55,10 @@ global_asm!(
     "cmpl $0x35, %edx",
     "je 1f",
     "cmpl $0x36, %edx",
+    "je 1f",
+    "cmpl $0x2a, %edx",
+    "je 1f",
+    "cmpl $0x3a, %edx",
     "jne 2f",
     "1:",
     "movl $0x2e0, %ecx",

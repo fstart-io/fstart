@@ -824,6 +824,25 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
                 fstart_log::error!("mp: Pineview CPU ops feature is not enabled");
                 Err(fstart_stage_runtime::RuntimeError::Failed)
             }
+        } else if cpu_model == "sandybridge" || cpu_model == "206ax" || cpu_model == "ivybridge" || cpu_model == "306ax" {
+            #[cfg(feature = "sandybridge-cpu")]
+            {
+                let cpu_ops = fstart_cpu_intel::sandybridge::SandybridgeCpuOps::with_microcode(microcode_blob);
+                let config = fstart_mp::MpConfig {
+                    cpu_ops: &cpu_ops,
+                    smm: smm_ops,
+                    smm_image,
+                    num_cpus,
+                };
+                fstart_mp::mp_init(&config)
+                    .map(|_| ())
+                    .map_err(|_| fstart_stage_runtime::RuntimeError::Failed)
+            }
+            #[cfg(not(feature = "sandybridge-cpu"))]
+            {
+                fstart_log::error!("mp: Sandy Bridge CPU ops feature is not enabled");
+                Err(fstart_stage_runtime::RuntimeError::Failed)
+            }
         } else {
             fstart_log::error!("mp: unsupported CPU model '{}'; no CpuOps provider", cpu_model);
             Err(fstart_stage_runtime::RuntimeError::Failed)

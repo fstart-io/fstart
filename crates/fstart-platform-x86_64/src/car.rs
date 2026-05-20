@@ -19,7 +19,7 @@
 //!
 //! ## Decision tree (all determined by CPUID at runtime)
 //!
-//! | Feature | P3 (Fam6 <0F) | Core2 (Fam6 0F+) | Atom/NEM | Netburst (FamF) |
+//! | Feature | P3 (Fam6 <0F) | Core2 (Fam6 0F+) | Atom/SNB/NEM | Netburst (FamF) |
 //! |---|---|---|---|---|
 //! | PHYSMASK high | PAE check | leaf 0x80000008 | leaf 0x80000008 | PAE fallback |
 //! | INIT IPI | no | yes | yes | yes + SIPI |
@@ -82,7 +82,9 @@ core::arch::global_asm!(
     "shrl $12, %ecx",
     "andl $0xF0, %ecx", // ext_model << 4
     "orl %ecx, %eax",   // EAX = display model
-    // Atom models (NEM): 0x1C, 0x26, 0x27, 0x35, 0x36
+    // No-evict-mode models: Atom 0x1C/0x26/0x27/0x35/0x36,
+    // Sandy Bridge 0x2A, Ivy Bridge 0x3A.  Coreboot model_206ax uses
+    // cpu/intel/car/non-evict/cache_as_ram.S and exit_car.S.
     "cmpl $0x1C, %eax",
     "je _car_nem",
     "cmpl $0x26, %eax",
@@ -92,6 +94,10 @@ core::arch::global_asm!(
     "cmpl $0x35, %eax",
     "je _car_nem",
     "cmpl $0x36, %eax",
+    "je _car_nem",
+    "cmpl $0x2A, %eax",
+    "je _car_nem",
+    "cmpl $0x3A, %eax",
     "je _car_nem",
     // Core2: model >= 0x0F
     "cmpl $0x0F, %eax",
@@ -285,10 +291,10 @@ core::arch::global_asm!(
     "jc 1b",
     "jmp *%esp",
     // ==================================================================
-    // Path: NEM (Non-Evict Mode) — Atom Pineview/Cedarview
+    // Path: NEM (Non-Evict Mode) — Atom Pineview/Cedarview and SNB/IVB
     // ==================================================================
     "_car_nem:",
-    // POST 0x60: Atom/Pineview NEM CAR path selected.
+    // POST 0x60: Non-evict CAR path selected.
     "movb $0x60, %al",
     "outb %al, $0x80",
     // Coreboot NEM first validates that MTRRs are clean, then sends
