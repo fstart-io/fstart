@@ -4,6 +4,8 @@
 //! before anything that logs) and provides predicate functions used by the
 //! codegen orchestrator to decide which sections to emit.
 
+use fstart_device_registry::Service;
+
 use fstart_types::{
     BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, Platform, StageLayout,
 };
@@ -20,6 +22,7 @@ use fstart_types::{
 pub(super) fn validate_capability_ordering(
     capabilities: &[Capability],
     config: &BoardConfig,
+    device_services: &[heapless::Vec<Service, 8>],
     stage_runs_from_ram: bool,
 ) -> Option<String> {
     let mut console_inited = false;
@@ -112,17 +115,17 @@ pub(super) fn validate_capability_ordering(
                 smm: true,
                 smm_provider: Some(provider),
                 ..
-            } if !config.devices.iter().any(|dev| {
-                dev.name.as_str() == provider.as_str()
-                    && dev
-                        .services
-                        .iter()
-                        .any(|service| service.as_str() == "SmmOps")
-            }) =>
+            } if !config
+                .devices
+                .iter()
+                .zip(device_services.iter())
+                .any(|(dev, services)| {
+                    dev.name.as_str() == provider.as_str() && services.contains(&Service::SmmOps)
+                }) =>
             {
                 return Some(format!(
-                    "MpInit(smm: true, smm_provider: {:?}) requires that device to list \
-                     SmmOps in its services",
+                    "MpInit(smm: true, smm_provider: {:?}) requires that device to provide \
+                     SmmOps",
                     provider.as_str()
                 ));
             }
@@ -130,20 +133,15 @@ pub(super) fn validate_capability_ordering(
                 smm: true,
                 smm_provider: None,
                 ..
-            } if config
-                .devices
+            } if device_services
                 .iter()
-                .filter(|dev| {
-                    dev.services
-                        .iter()
-                        .any(|service| service.as_str() == "SmmOps")
-                })
+                .filter(|services| services.contains(&Service::SmmOps))
                 .count()
                 != 1 =>
             {
                 return Some(
                     "MpInit(smm: true) without smm_provider requires exactly one device \
-                     with SmmOps in its services"
+                     that provides SmmOps"
                         .to_string(),
                 );
             }
@@ -344,4 +342,186 @@ pub(super) fn is_uefi_payload(config: &BoardConfig) -> bool {
         .payload
         .as_ref()
         .is_some_and(|p| p.kind == PayloadKind::UefiPayload)
+}
+
+/// Validate that named capability devices provide the services required by
+/// their roles.
+pub(super) fn validate_capability_services(
+    capabilities: &[Capability],
+    config: &BoardConfig,
+    device_services: &[heapless::Vec<Service, 8>],
+) -> Option<String> {
+    for cap in capabilities {
+        if let Err(err) = validate_capability_service(cap, config, device_services) {
+            return Some(err);
+        }
+    }
+
+    None
+}
+
+fn validate_capability_service(
+    cap: &Capability,
+    config: &BoardConfig,
+    device_services: &[heapless::Vec<Service, 8>],
+) -> Result<(), String> {
+    match cap {
+        Capability::ClockInit { device } => require_device_service(
+            config,
+            device_services,
+            device.as_str(),
+            Service::ClockController,
+            "ClockInit",
+        ),
+        Capability::ConsoleInit { device } => require_device_service(
+            config,
+            device_services,
+            device.as_str(),
+            Service::Console,
+            "ConsoleInit",
+        ),
+        Capability::BootMedia(BootMedium::Device { name, .. }) => require_device_service(
+            config,
+            device_services,
+            name.as_str(),
+            Service::BlockDevice,
+            "BootMedia(Device)",
+        ),
+        Capability::BootMedia(BootMedium::AutoDevice { devices }) => {
+            for device in devices {
+                require_device_service(
+                    config,
+                    device_services,
+                    device.name.as_str(),
+                    Service::BlockDevice,
+                    "BootMedia(AutoDevice)",
+                )?;
+            }
+            Ok(())
+        }
+        Capability::DramInit { device } => require_device_service(
+            config,
+            device_services,
+            device.as_str(),
+            Service::MemoryController,
+            "DramInit",
+        ),
+        Capability::PreConsoleInit { devices } => require_devices_service(
+            config,
+            device_services,
+            devices,
+            Service::PreConsoleInit,
+            "PreConsoleInit",
+        ),
+        Capability::EarlyInit { devices } => require_devices_service(
+            config,
+            device_services,
+            devices,
+            Service::EarlyInit,
+            "EarlyInit",
+        ),
+        Capability::StageLocalInit { devices } => require_devices_service(
+            config,
+            device_services,
+            devices,
+            Service::StageLocalInit,
+            "StageLocalInit",
+        ),
+        Capability::PostDramInit { devices } => require_devices_service(
+            config,
+            device_services,
+            devices,
+            Service::PostDramInit,
+            "PostDramInit",
+        ),
+        Capability::FinalizeInit { devices } => require_devices_service(
+            config,
+            device_services,
+            devices,
+            Service::FinalizeInit,
+            "FinalizeInit",
+        ),
+        Capability::PciInit { device } => require_device_service(
+            config,
+            device_services,
+            device.as_str(),
+            Service::PciRootBus,
+            "PciInit",
+        ),
+        Capability::AcpiLoad { device } => require_device_service(
+            config,
+            device_services,
+            device.as_str(),
+            Service::AcpiTableProvider,
+            "AcpiLoad",
+        ),
+        Capability::MemoryDetect { device } => require_device_service(
+            config,
+            device_services,
+            device.as_str(),
+            Service::MemoryDetector,
+            "MemoryDetect",
+        ),
+        Capability::LoadNextStage { devices, .. } => {
+            for device in devices {
+                require_device_service(
+                    config,
+                    device_services,
+                    device.name.as_str(),
+                    Service::BlockDevice,
+                    "LoadNextStage",
+                )?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn require_devices_service(
+    config: &BoardConfig,
+    device_services: &[heapless::Vec<Service, 8>],
+    devices: &[heapless::String<32>],
+    service: Service,
+    capability: &str,
+) -> Result<(), String> {
+    for device in devices {
+        require_device_service(
+            config,
+            device_services,
+            device.as_str(),
+            service,
+            capability,
+        )?;
+    }
+    Ok(())
+}
+
+fn require_device_service(
+    config: &BoardConfig,
+    device_services: &[heapless::Vec<Service, 8>],
+    device_name: &str,
+    service: Service,
+    capability: &str,
+) -> Result<(), String> {
+    let Some(idx) = config
+        .devices
+        .iter()
+        .position(|dev| dev.name.as_str() == device_name)
+    else {
+        return Err(format!(
+            "{capability} references unknown device '{device_name}'"
+        ));
+    };
+    if device_services
+        .get(idx)
+        .is_some_and(|services| services.contains(&service))
+    {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{capability} references device '{device_name}', but that device does not provide {}",
+        service.as_str()
+    ))
 }

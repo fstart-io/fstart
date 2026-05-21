@@ -1,6 +1,13 @@
 use super::*;
 use crate::ron_loader::ParsedBoard;
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::{DriverInstance, Service};
+
+fn services_for(instances: &[DriverInstance]) -> Vec<heapless::Vec<Service, 8>> {
+    instances
+        .iter()
+        .map(|instance| instance.provided_services().iter().copied().collect())
+        .collect()
+}
 
 /// Helper: create a minimal parsed board for testing.
 fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard {
@@ -10,12 +17,6 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
     let mut devices = heapless::Vec::new();
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("uart0").unwrap(),
-        driver: HString::try_from("ns16550").unwrap(),
-        services: {
-            let mut v = heapless::Vec::new();
-            let _ = v.push(HString::try_from("Console").unwrap());
-            v
-        },
         parent: None,
         bus: None,
         enabled: true,
@@ -89,6 +90,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
 
     ParsedBoard {
         config,
+        device_services: services_for(&driver_instances),
         driver_instances,
         device_tree,
     }
@@ -121,6 +123,41 @@ fn test_memory_init_without_console_is_error() {
         "should emit compile_error for MemoryInit without ConsoleInit"
     );
 }
+
+#[test]
+fn test_console_init_requires_console_service() {
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("i2c0").unwrap(),
+    });
+    let parsed = test_parsed_board_with_i2c_bus(caps);
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("compile_error!") && source.contains("does not provide Console"),
+        "should reject ConsoleInit on non-console device: {source}"
+    );
+}
+
+#[test]
+fn test_boot_media_device_requires_block_device_service() {
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::BootMedia(BootMedium::Device {
+        name: heapless::String::try_from("uart0").unwrap(),
+        offset: 0,
+        size: 4096,
+    }));
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("compile_error!") && source.contains("does not provide BlockDevice"),
+        "should reject BootMedia(Device) on non-block device: {source}"
+    );
+}
 // =======================================================================
 // Bus hierarchy tests
 // =======================================================================
@@ -135,12 +172,6 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
     // Root device: UART
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("uart0").unwrap(),
-        driver: HString::try_from("ns16550").unwrap(),
-        services: {
-            let mut v = heapless::Vec::new();
-            let _ = v.push(HString::try_from("Console").unwrap());
-            v
-        },
         parent: None,
         bus: None,
         enabled: true,
@@ -149,12 +180,6 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
     // Root device: I2C bus controller
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("i2c0").unwrap(),
-        driver: HString::try_from("designware-i2c").unwrap(),
-        services: {
-            let mut v = heapless::Vec::new();
-            let _ = v.push(HString::try_from("I2cBus").unwrap());
-            v
-        },
         parent: None,
         bus: None,
         enabled: true,
@@ -239,6 +264,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
 
     ParsedBoard {
         config,
+        device_services: services_for(&driver_instances),
         driver_instances,
         device_tree,
     }
@@ -289,24 +315,12 @@ fn test_validate_device_tree_all_roots() {
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
             name: HString::try_from("uart0").unwrap(),
-            driver: HString::try_from("ns16550").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Console").unwrap());
-                v
-            },
             parent: None,
             bus: None,
             enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("i2c0").unwrap(),
-            driver: HString::try_from("designware-i2c").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("I2cBus").unwrap());
-                v
-            },
             parent: None,
             bus: None,
             enabled: true,
@@ -327,7 +341,7 @@ fn test_validate_device_tree_all_roots() {
     ];
 
     assert!(
-        validate_device_tree(&devices, &instances, &tree).is_ok(),
+        validate_device_tree(&devices, &instances, &tree, &services_for(&instances)).is_ok(),
         "all root devices should validate fine"
     );
 }
@@ -343,24 +357,12 @@ fn test_validate_device_tree_valid_bus_child() {
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
             name: HString::try_from("pci0").unwrap(),
-            driver: HString::try_from("pci-ecam").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("PciRootBus").unwrap());
-                v
-            },
             parent: None,
             bus: None,
             enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("bochs0").unwrap(),
-            driver: HString::try_from("bochs-display").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Framebuffer").unwrap());
-                v
-            },
             parent: Some(HString::try_from("pci0").unwrap()),
             bus: None,
             enabled: true,
@@ -395,7 +397,7 @@ fn test_validate_device_tree_valid_bus_child() {
     ];
 
     assert!(
-        validate_device_tree(&devices, &instances, &tree).is_ok(),
+        validate_device_tree(&devices, &instances, &tree, &services_for(&instances)).is_ok(),
         "bus-device child on PciRootBus parent should validate"
     );
 }
@@ -410,24 +412,12 @@ fn test_validate_device_tree_non_bus_parent_is_error() {
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
             name: HString::try_from("uart0").unwrap(),
-            driver: HString::try_from("ns16550").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Console").unwrap());
-                v
-            },
             parent: None,
             bus: None,
             enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("bochs0").unwrap(),
-            driver: HString::try_from("bochs-display").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Framebuffer").unwrap());
-                v
-            },
             parent: Some(HString::try_from("uart0").unwrap()),
             bus: None,
             enabled: true,
@@ -447,7 +437,7 @@ fn test_validate_device_tree_non_bus_parent_is_error() {
         },
     ];
 
-    let result = validate_device_tree(&devices, &instances, &tree);
+    let result = validate_device_tree(&devices, &instances, &tree, &services_for(&instances));
     assert!(result.is_err());
     assert!(
         result
@@ -469,24 +459,12 @@ fn test_validate_device_tree_plain_device_child_ok() {
     let devices: Vec<DeviceConfig> = vec![
         DeviceConfig {
             name: HString::try_from("uart0").unwrap(),
-            driver: HString::try_from("ns16550").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Console").unwrap());
-                v
-            },
             parent: None,
             bus: None,
             enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("uart1").unwrap(),
-            driver: HString::try_from("ns16550").unwrap(),
-            services: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(HString::try_from("Console").unwrap());
-                v
-            },
             parent: Some(HString::try_from("uart0").unwrap()),
             bus: None,
             enabled: true,
@@ -507,7 +485,7 @@ fn test_validate_device_tree_plain_device_child_ok() {
     ];
 
     assert!(
-        validate_device_tree(&devices, &instances, &tree).is_ok(),
+        validate_device_tree(&devices, &instances, &tree, &services_for(&instances)).is_ok(),
         "plain-device child should be accepted even when parent provides no bus service"
     );
 }
@@ -546,8 +524,6 @@ fn test_non_bus_parent_is_compile_error() {
     // uart0 is Console — not any of the accepted bus services.
     let _ = parsed.config.devices.push(DeviceConfig {
         name: HString::try_from("ck0").unwrap(),
-        driver: HString::try_from("i2c-ck505").unwrap(),
-        services: heapless::Vec::new(),
         parent: Some(HString::try_from("uart0").unwrap()),
         bus: Some(fstart_types::BusAddress::I2c(0x69)),
         enabled: true,
@@ -587,12 +563,6 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
     let mut devices = heapless::Vec::new();
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("uart0").unwrap(),
-        driver: HString::try_from("ns16550").unwrap(),
-        services: {
-            let mut v = heapless::Vec::new();
-            let _ = v.push(HString::try_from("Console").unwrap());
-            v
-        },
         parent: None,
         bus: None,
         enabled: true,
@@ -707,6 +677,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
 
     ParsedBoard {
         config,
+        device_services: services_for(&driver_instances),
         driver_instances,
         device_tree,
     }

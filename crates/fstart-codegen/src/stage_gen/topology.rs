@@ -15,10 +15,8 @@
 //!
 //! Cycles and missing parents are impossible with nested RON syntax.
 
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::{DriverInstance, Service};
 use fstart_types::{DeviceConfig, DeviceNode};
-
-use super::registry::is_bus_provider;
 
 /// Validate the flattened device tree.
 ///
@@ -29,6 +27,7 @@ pub(super) fn validate_device_tree(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     tree: &[DeviceNode],
+    device_services: &[heapless::Vec<Service, 8>],
 ) -> Result<(), String> {
     for (i, node) in tree.iter().enumerate() {
         let Some(parent_idx) = node.parent else {
@@ -46,7 +45,7 @@ pub(super) fn validate_device_tree(
             continue;
         }
 
-        if !is_bus_provider(parent) {
+        if !is_bus_provider(&device_services[parent_idx]) {
             return Err(format!(
                 "bus-device '{}' has parent '{}' which does not provide a bus service \
                  (expected one of: I2cBus, SpiBus, GpioController, PciRootBus, \
@@ -58,4 +57,19 @@ pub(super) fn validate_device_tree(
     }
 
     Ok(())
+}
+
+fn is_bus_provider(services: &[Service]) -> bool {
+    services.iter().any(|service| {
+        matches!(
+            service,
+            Service::I2cBus
+                | Service::SpiBus
+                | Service::GpioController
+                | Service::PciRootBus
+                | Service::PciHost
+                | Service::Southbridge
+                | Service::SuperIoHost
+        )
+    })
 }

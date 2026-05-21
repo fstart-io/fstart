@@ -197,15 +197,15 @@
             children: [
                 // PCIe root ports — structural PCI bridge nodes.
                 // Port 0 is empty on this board.
-                ( name: "pcie0", bus: Pci(0x1c, 0) ),
+                ( name: "pcie0", kind: Structural(PciBridge), bus: Pci(0x1c, 0) ),
                 // Port 1 hosts the RTL8168 NIC (runtime-enumerated).
-                ( name: "pcie1", bus: Pci(0x1c, 1) ),
-                ( name: "pcie2", bus: Pci(0x1c, 2), enabled: false ),
-                ( name: "pcie3", bus: Pci(0x1c, 3), enabled: false ),
+                ( name: "pcie1", kind: Structural(PciBridge), bus: Pci(0x1c, 1) ),
+                ( name: "pcie2", kind: Structural(PciBridge), bus: Pci(0x1c, 2), enabled: false ),
+                ( name: "pcie3", kind: Structural(PciBridge), bus: Pci(0x1c, 3), enabled: false ),
 
                 // LPC bus — structural internal SB function. The
                 // SuperIO is the only LPC peripheral on this board.
-                ( name: "lpc",
+                ( name: "lpc", kind: Structural(LpcBus),
                     children: [
                         // IT8721F SuperIO: programs LDNs and provides
                         // Console directly via `console_port: "com1"`.
@@ -231,7 +231,7 @@
                 // SMBus — structural internal SB function. Hosts
                 // the CK505 clock generator and (at runtime) the
                 // DIMM SPD EEPROMs at 0x50..0x57.
-                ( name: "smbus",
+                ( name: "smbus", kind: Structural(SmBus),
                     children: [
                         // The CK505 driver is declared here but disabled
                         // for the initial build: its `new_on_bus` needs
