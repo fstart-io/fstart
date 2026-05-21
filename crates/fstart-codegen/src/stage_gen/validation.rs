@@ -22,7 +22,7 @@ use fstart_types::{
 pub(super) fn validate_capability_ordering(
     capabilities: &[Capability],
     config: &BoardConfig,
-    device_services: &[heapless::Vec<Service, 8>],
+    device_services: &[heapless::Vec<Service, 16>],
     stage_runs_from_ram: bool,
 ) -> Option<String> {
     let mut console_inited = false;
@@ -349,7 +349,7 @@ pub(super) fn is_uefi_payload(config: &BoardConfig) -> bool {
 pub(super) fn validate_capability_services(
     capabilities: &[Capability],
     config: &BoardConfig,
-    device_services: &[heapless::Vec<Service, 8>],
+    device_services: &[heapless::Vec<Service, 16>],
 ) -> Option<String> {
     for cap in capabilities {
         if let Err(err) = validate_capability_service(cap, config, device_services) {
@@ -363,7 +363,7 @@ pub(super) fn validate_capability_services(
 fn validate_capability_service(
     cap: &Capability,
     config: &BoardConfig,
-    device_services: &[heapless::Vec<Service, 8>],
+    device_services: &[heapless::Vec<Service, 16>],
 ) -> Result<(), String> {
     match cap {
         Capability::ClockInit { device } => require_device_service(
@@ -480,7 +480,7 @@ fn validate_capability_service(
 
 fn require_devices_service(
     config: &BoardConfig,
-    device_services: &[heapless::Vec<Service, 8>],
+    device_services: &[heapless::Vec<Service, 16>],
     devices: &[heapless::String<32>],
     service: Service,
     capability: &str,
@@ -499,7 +499,7 @@ fn require_devices_service(
 
 fn require_device_service(
     config: &BoardConfig,
-    device_services: &[heapless::Vec<Service, 8>],
+    device_services: &[heapless::Vec<Service, 16>],
     device_name: &str,
     service: Service,
     capability: &str,

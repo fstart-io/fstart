@@ -100,7 +100,7 @@ pub(super) struct BoardEmitInputs<'a> {
     pub(super) config: &'a BoardConfig,
     pub(super) instances: &'a [DriverInstance],
     pub(super) device_tree: &'a [DeviceNode],
-    pub(super) device_services: &'a [heapless::Vec<Service, 8>],
+    pub(super) device_services: &'a [heapless::Vec<Service, 16>],
     pub(super) acpi_only_devices: &'a [AcpiExtraDevice],
     pub(super) excluded: &'a [usize],
     pub(super) capabilities: &'a [Capability],
@@ -131,7 +131,7 @@ pub(super) struct RuntimeDevice<'a> {
     pub(super) config: &'a DeviceConfig,
     pub(super) instance: &'a DriverInstance,
     pub(super) node: &'a DeviceNode,
-    pub(super) services: &'a heapless::Vec<Service, 8>,
+    pub(super) services: &'a heapless::Vec<Service, 16>,
     pub(super) kind: DeviceKind,
 }
 
@@ -159,7 +159,7 @@ impl<'a> RuntimeDeviceTable<'a> {
         devices: &'a [DeviceConfig],
         instances: &'a [DriverInstance],
         device_tree: &'a [DeviceNode],
-        device_services: &'a [heapless::Vec<Service, 8>],
+        device_services: &'a [heapless::Vec<Service, 16>],
         excluded: &'a [usize],
     ) -> Self {
         let entries = devices

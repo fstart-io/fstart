@@ -270,7 +270,7 @@ impl<'a> ImportFacts<'a> {
     fn new(
         devices: &[DeviceConfig],
         instances: &[DriverInstance],
-        device_services: &[heapless::Vec<Service, 8>],
+        device_services: &[heapless::Vec<Service, 16>],
         capabilities: &'a [Capability],
     ) -> Self {
         let mut driver_modules = Vec::new();

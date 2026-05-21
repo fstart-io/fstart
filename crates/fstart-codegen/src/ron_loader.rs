@@ -48,7 +48,7 @@ pub struct ParsedBoard {
     /// Flat index-based device tree, parallel to `config.devices`.
     pub device_tree: Vec<DeviceNode>,
     /// Effective service set per device after applying board policy.
-    pub device_services: Vec<heapless::Vec<Service, 8>>,
+    pub device_services: Vec<heapless::Vec<Service, 16>>,
     /// ACPI-only descriptors collected separately from runtime devices.
     /// They are also kept in `driver_instances` temporarily to preserve the
     /// lock-step flattened arrays during migration.
@@ -126,7 +126,7 @@ struct RonDevice {
     /// Example: `disabled_services: [Console]` leaves the device present
     /// but prevents generated console/logger paths from selecting it.
     #[serde(default)]
-    disabled_services: heapless::Vec<Service, 8>,
+    disabled_services: heapless::Vec<Service, 16>,
     /// Typed device kind for non-runtime topology nodes.
     ///
     /// Runtime devices use `driver`; structural nodes use
@@ -243,7 +243,7 @@ struct FlattenState<'a> {
     devices: &'a mut heapless::Vec<DeviceConfig, 32>,
     driver_instances: &'a mut Vec<DriverInstance>,
     device_tree: &'a mut Vec<DeviceNode>,
-    device_services: &'a mut Vec<heapless::Vec<Service, 8>>,
+    device_services: &'a mut Vec<heapless::Vec<Service, 16>>,
     acpi_only_devices: &'a mut Vec<AcpiExtraDevice>,
 }
 
@@ -261,6 +261,10 @@ fn flatten_device(
 
     // Structural nodes become explicit instances in the typed driver instance
     // table. DeviceConfig stays pure topology metadata.
+    let structural_kind = match rd.kind {
+        Some(RonDeviceKind::Structural(kind)) => Some(kind),
+        _ => None,
+    };
     let instance = match (rd.driver, rd.kind) {
         (Some(instance), None) if instance.construction_kind() == ConstructionKind::AcpiOnly => {
             return Err(format!(
@@ -308,7 +312,7 @@ fn flatten_device(
         state.acpi_only_devices.push(acpi_device);
     }
 
-    let effective_services = effective_services(&instance, &rd.disabled_services)?;
+    let effective_services = effective_services(&instance, structural_kind, &rd.disabled_services)?;
     let _ = state.devices.push(DeviceConfig {
         name: rd.name,
         parent: parent_name,
@@ -341,8 +345,9 @@ fn acpi_extra_device(instance: &DriverInstance) -> Option<AcpiExtraDevice> {
 
 fn effective_services(
     instance: &DriverInstance,
-    disabled: &heapless::Vec<Service, 8>,
-) -> Result<heapless::Vec<Service, 8>, String> {
+    structural_kind: Option<StructuralKind>,
+    disabled: &heapless::Vec<Service, 16>,
+) -> Result<heapless::Vec<Service, 16>, String> {
     for service in disabled {
         if !instance.provides(*service) {
             return Err(format!(
@@ -354,6 +359,9 @@ fn effective_services(
     }
 
     let mut services = heapless::Vec::new();
+    if let Some(service) = structural_service(structural_kind) {
+        let _ = services.push(service);
+    }
     for service in instance.provided_services() {
         if disabled.contains(service) {
             continue;
@@ -361,6 +369,15 @@ fn effective_services(
         let _ = services.push(*service);
     }
     Ok(services)
+}
+
+fn structural_service(kind: Option<StructuralKind>) -> Option<Service> {
+    match kind {
+        Some(StructuralKind::PciBridge) => Some(Service::PciBridge),
+        Some(StructuralKind::LpcBus) => Some(Service::LpcBus),
+        Some(StructuralKind::SmBus) => Some(Service::SmBus),
+        None => None,
+    }
 }
 
 #[cfg(test)]
