@@ -115,6 +115,12 @@ enum StructuralKind {
 #[serde(deny_unknown_fields)]
 struct RonDevice {
     name: HString<32>,
+    /// Board policy: suppress selected services this driver can provide.
+    ///
+    /// Example: `disabled_services: ["Console"]` leaves the device present
+    /// but prevents generated console/logger paths from selecting it.
+    #[serde(default)]
+    disabled_services: heapless::Vec<HString<32>, 8>,
     /// Typed device kind for non-runtime topology nodes.
     ///
     /// Runtime devices use `driver`; structural nodes use
@@ -260,7 +266,7 @@ fn flatten_device(
     };
     let parent_name = parent_idx.map(|idx| devices[idx as usize].name.clone());
 
-    let effective_services = effective_services(&instance);
+    let effective_services = effective_services(&instance, &rd.disabled_services)?;
     let _ = devices.push(DeviceConfig {
         name: rd.name,
         parent: parent_name,
@@ -290,8 +296,32 @@ fn flatten_device(
     Ok(())
 }
 
-fn effective_services(instance: &DriverInstance) -> heapless::Vec<Service, 8> {
-    instance.provided_services().iter().copied().collect()
+fn effective_services(
+    instance: &DriverInstance,
+    disabled: &heapless::Vec<HString<32>, 8>,
+) -> Result<heapless::Vec<Service, 8>, String> {
+    let mut disabled_typed = heapless::Vec::<Service, 8>::new();
+    for name in disabled {
+        let service = Service::from_name(name.as_str())
+            .ok_or_else(|| format!("unknown disabled service '{name}'"))?;
+        if !instance.provides(service) {
+            return Err(format!(
+                "driver '{}' cannot disable service '{}' because it does not provide it",
+                instance.driver_name(),
+                name
+            ));
+        }
+        let _ = disabled_typed.push(service);
+    }
+
+    let mut services = heapless::Vec::new();
+    for service in instance.provided_services() {
+        if disabled_typed.contains(service) {
+            continue;
+        }
+        let _ = services.push(*service);
+    }
+    Ok(services)
 }
 
 #[cfg(test)]
@@ -352,26 +382,6 @@ mod tests {
             err.contains("unknown field `services`")
                 || err.contains("unknown field 'services'")
                 || err.contains("Unexpected field named `services`"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn disabled_services_field_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let with_disabled_services = source.replacen(
-            "driver: Ns16550((",
-            "disabled_services: [\"Console\"],\n            driver: Ns16550((",
-            1,
-        );
-        assert_ne!(source, with_disabled_services, "test fixture changed");
-
-        let err = expect_load_error(load_temp_board("disabled-services", with_disabled_services));
-
-        assert!(
-            err.contains("unknown field `disabled_services`")
-                || err.contains("unknown field 'disabled_services'")
-                || err.contains("Unexpected field named `disabled_services`"),
             "unexpected error: {err}"
         );
     }
