@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 /// given here.
 ///
 /// ```ron
-/// ( name: "nic0", bus: Pci(0, 0), driver: RealtekRtl8168((...)), ... )
-/// ( name: "superio", bus: Lpc(0x2e), driver: Ite8721f((...)), ... )
-/// ( name: "eeprom0", bus: I2c(0x50), driver: At24c02((...)), ... )
+/// ( name: "nic0", bus: Pci(0, 0), ... )
+/// ( name: "superio", bus: Lpc(0x2e), ... )
+/// ( name: "eeprom0", bus: I2c(0x50), ... )
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BusAddress {
@@ -65,12 +65,12 @@ impl DeviceNode {
 
 /// A device declaration in the board configuration.
 ///
-/// Carries the identity and service bindings for a hardware device.
+/// Carries the identity and topology metadata for a hardware device.
 /// The driver-specific configuration (register addresses, clocks, etc.)
-/// lives in the [`fstart_drivers::DriverInstance`] enum — each driver
-/// defines its own typed `Config` struct.  This separation means
-/// `DeviceConfig` is purely metadata; the actual config shape is validated
-/// by serde when the RON is parsed into `DriverInstance`.
+/// This contains only identity/topology metadata. Driver ownership lives in
+/// the codegen-side [`fstart_device_registry::DriverInstance`] table; each
+/// driver defines its own typed `Config` struct. Driver-provided services are
+/// owned by Rust driver metadata, not by this board schema.
 ///
 /// Bus hierarchies are expressed via the `parent` field: a child device
 /// sets `parent` to its bus controller's name.  Codegen ensures parents
@@ -79,15 +79,6 @@ impl DeviceNode {
 pub struct DeviceConfig {
     /// Device instance name (e.g., "uart0", "flash0").
     pub name: HString<32>,
-    /// Driver name — derived from the `DriverInstance` variant
-    /// (e.g., "ns16550", "pl011").  Used by xtask for feature derivation
-    /// and by codegen for registry lookups.
-    ///
-    /// For **structural** nodes (driverless bus bridges like PCIe ports
-    /// or the SB's LPC bus), this is the sentinel `"_structural"`.
-    pub driver: HString<32>,
-    /// Which service traits this device provides (e.g., ["Console"]).
-    pub services: heapless::Vec<HString<32>, 8>,
     /// Parent device name (for bus-attached devices, e.g., "i2c0").
     /// `None` for root-level devices.
     #[serde(default)]

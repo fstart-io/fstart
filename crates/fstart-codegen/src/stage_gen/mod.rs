@@ -34,14 +34,17 @@ mod tests;
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::{DriverInstance, Service};
 use fstart_types::{BootMedium, Capability, DeviceConfig, Platform, StageLayout};
 
 use crate::ron_loader::ParsedBoard;
 
 use tokens::hex_addr;
 use topology::validate_device_tree;
-use validation::{get_boot_medium, needs_embedded_anchor, needs_ffs, validate_capability_ordering};
+use validation::{
+    get_boot_medium, needs_embedded_anchor, needs_ffs, validate_capability_ordering,
+    validate_capability_services,
+};
 
 // =======================================================================
 // Code generation — top-level
@@ -82,7 +85,16 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     };
 
     // Validate capability ordering before generating code.
-    if let Some(err) = validate_capability_ordering(capabilities, config, stage_runs_from_ram) {
+    if let Some(err) = validate_capability_ordering(
+        capabilities,
+        config,
+        &parsed.device_services,
+        stage_runs_from_ram,
+    ) {
+        return format!("compile_error!(\"{err}\");\n");
+    }
+
+    if let Some(err) = validate_capability_services(capabilities, config, &parsed.device_services) {
         return format!("compile_error!(\"{err}\");\n");
     }
 
@@ -102,6 +114,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         &config.devices,
         &parsed.driver_instances,
         &parsed.device_tree,
+        &parsed.device_services,
     ) {
         return format!("compile_error!(\"{err}\");\n");
     }
@@ -118,6 +131,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     tokens.extend(generate_imports(
         &config.devices,
         &parsed.driver_instances,
+        &parsed.device_services,
         capabilities,
         embed_anchor,
     ));
@@ -175,6 +189,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         config,
         &parsed.driver_instances,
         &parsed.device_tree,
+        &parsed.device_services,
         capabilities,
         stage_name,
     ));
@@ -232,6 +247,7 @@ fn generate_platform_externs(platform: Platform) -> TokenStream {
 fn generate_imports(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
+    device_services: &[heapless::Vec<Service, 8>],
     capabilities: &[Capability],
     _embed_anchor: bool,
 ) -> TokenStream {
@@ -245,9 +261,9 @@ fn generate_imports(
     });
 
     // Check if any device provides bus services — import those traits too
-    let has_block_device = devices
+    let has_block_device = device_services
         .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "BlockDevice"));
+        .any(|services| services.contains(&Service::BlockDevice));
     if has_block_device {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BlockDevice; });
     }
@@ -272,15 +288,15 @@ fn generate_imports(
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::device::BusDevice; });
     }
 
-    let has_i2c = devices
+    let has_i2c = device_services
         .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "I2cBus"));
-    let has_spi = devices
+        .any(|services| services.contains(&Service::I2cBus));
+    let has_spi = device_services
         .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "SpiBus"));
-    let has_gpio = devices
+        .any(|services| services.contains(&Service::SpiBus));
+    let has_gpio = device_services
         .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "GpioController"));
+        .any(|services| services.contains(&Service::GpioController));
 
     if has_i2c {
         tokens.extend(quote! {
@@ -298,16 +314,16 @@ fn generate_imports(
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::GpioController; });
     }
 
-    let has_pci = devices
+    let has_pci = device_services
         .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+        .any(|services| services.contains(&Service::PciRootBus));
     if has_pci {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::PciRootBus; });
     }
 
-    let has_framebuffer = devices
+    let has_framebuffer = device_services
         .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "Framebuffer"));
+        .any(|services| services.contains(&Service::Framebuffer));
     if has_framebuffer {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::Framebuffer; });
     }

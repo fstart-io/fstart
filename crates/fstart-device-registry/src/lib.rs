@@ -281,9 +281,9 @@ pub struct DriverMeta {
 /// Empty configuration for structural (driverless) device tree nodes.
 ///
 /// Used by `DriverInstance::Structural`. Carries no data — the node's
-/// identity is fully captured by `DeviceConfig` (name, parent, bus,
-/// services). Needed so the parallel `driver_instances` array stays
-/// aligned with `devices`.
+/// identity is fully captured by `DeviceConfig` (name, parent, bus).
+/// Needed so the parallel `driver_instances` array stays aligned with
+/// `devices`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StructuralConfig {}
 
@@ -444,7 +444,7 @@ impl DriverInstance {
     pub fn meta(&self) -> &'static DriverMeta {
         match self {
             Self::Structural(_) => &DriverMeta {
-                name: "_structural",
+                name: "structural",
                 type_name: "_Structural",
                 module_path: "fstart_device_registry",
                 config_type: "StructuralConfig",
@@ -839,7 +839,19 @@ impl DriverInstance {
         self.provided_services().contains(&service)
     }
 
-    /// The cargo feature / RON driver name for this variant.
+    /// The cargo feature / RON driver name for this runtime driver variant.
+    ///
+    /// Structural and ACPI-only instances do not correspond to target-side
+    /// driver features.
+    pub fn driver_feature(&self) -> Option<&'static str> {
+        if self.is_structural() || self.is_acpi_only() {
+            None
+        } else {
+            Some(self.meta().name)
+        }
+    }
+
+    /// The RON/registry name for this variant.
     pub fn driver_name(&self) -> &'static str {
         self.meta().name
     }

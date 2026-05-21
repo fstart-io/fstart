@@ -212,7 +212,7 @@
                 )),
             )),
             children: [
-                ( name: "lpc",
+                ( name: "lpc", kind: Structural(LpcBus),
                     children: [
                         // Laptop-side NSC PC87382/DLPC functions from coreboot
                         // `superio/nsc/pc87382` nodes. Board-specific DLPC switch
@@ -244,7 +244,7 @@
                         ),
                     ],
                 ),
-                ( name: "smbus",
+                ( name: "smbus", kind: Structural(SmBus),
                     children: [
                         ( name: "ck505", bus: I2c(0x69), enabled: false,
                             driver: I2cCk505((

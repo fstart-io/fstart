@@ -44,7 +44,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::{DriverInstance, Service};
 use fstart_types::memory::{FlashLayout, RegionKind};
 use fstart_types::{
     BoardConfig, BootMedium, Capability, DeviceConfig, DeviceNode, FdtSource, FirmwareConfig,
@@ -55,9 +55,11 @@ use fstart_types::{
 // [`fdt_prepare_body`]'s `match &payload.fdt` arms.  `StageLayout` backs
 // [`compute_is_first_stage`].
 
-use super::capabilities::find_dram_region;
 use super::tokens::hex_addr;
-use super::validation::needs_ffs;
+
+mod model;
+
+use model::{device_provides, BoardCtx};
 
 // =======================================================================
 // Public entry point
@@ -83,26 +85,21 @@ pub(super) fn generate_board_adapter(
     config: &BoardConfig,
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
+    device_services: &[heapless::Vec<Service, 8>],
     capabilities: &[Capability],
     stage_name: Option<&str>,
 ) -> TokenStream {
     let excluded = compute_excluded_indices(&config.devices, instances, device_tree, capabilities);
     let platform = config.platform;
-    let ffs_stage = needs_ffs(capabilities);
-    let is_first_stage = compute_is_first_stage(&config.stages, stage_name);
-    let dram = find_dram_region(config).unwrap_or((0, 0));
-    let ctx = BoardCtx {
+    let ctx = BoardCtx::new(
         config,
-        devices: &config.devices,
         instances,
         device_tree,
-        excluded: &excluded,
-        stage_capabilities: capabilities,
-        ffs_stage,
-        is_first_stage,
-        dram_base: dram.0,
-        dram_size_static: dram.1,
-    };
+        device_services,
+        &excluded,
+        capabilities,
+        stage_name,
+    );
 
     let mut tokens = TokenStream::new();
     tokens.extend(emit_adapter_struct(&ctx));
@@ -111,80 +108,7 @@ pub(super) fn generate_board_adapter(
     tokens
 }
 
-/// Stage-is-first predicate, matching [`generate_fstart_main`]'s rule.
-///
-/// [`generate_fstart_main`]: super::generate_fstart_main
-fn compute_is_first_stage(stages: &StageLayout, stage_name: Option<&str>) -> bool {
-    match (stages, stage_name) {
-        (StageLayout::Monolithic(_), _) => true,
-        (StageLayout::MultiStage(stages), Some(name)) => {
-            stages.first().is_some_and(|s| s.name.as_str() == name)
-        }
-        (StageLayout::MultiStage(_), None) => true,
-    }
-}
-
-/// Bundle of references passed to every `emit_*` helper.
-///
-/// The adapter generator is pure codegen — no mutable state, no
-/// threading.  `BoardCtx` gathers everything the helpers need so their
-/// argument lists stay short.
-///
-/// Per-stage facts encoded here:
-///
-/// - `ffs_stage`: mirrors [`needs_ffs`].  When true, the surrounding
-///   codegen emits `FSTART_ANCHOR`, the boot-media import path, and
-///   the rest of the FFS preamble.  A `false` value means those names
-///   do not exist in this stage's generated source, so the adapter
-///   must not reference them.  Trampolines that would touch FFS
-///   (`sig_verify`, `payload_load`, `stage_load`, `fdt_prepare`'s
-///   `Override` variant) emit `todo!()` in this case.
-///
-/// - `is_first_stage`: true for monolithic boards and for the first
-///   stage of a `MultiStage` layout.  Non-first stages receive a
-///   serialised [`StageHandoff`] in a platform register.  Today only
-///   `fdt_prepare` uses this, but `memory_detect` may need it once that
-///   trampoline consumes previous-stage bookkeeping.
-///
-/// - `dram_base` / `dram_size_static`: the DRAM region picked by
-///   [`find_dram_region`].  Emitted into fields on `_BoardDevices`
-///   (`_dram_base` / `_dram_size_static`) per invariant #3 — the
-///   trampoline never reads constants directly, it always reads from
-///   `&self`.
-///
-/// [`StageHandoff`]: fstart_types::handoff::StageHandoff
-struct BoardCtx<'a> {
-    config: &'a BoardConfig,
-    devices: &'a [DeviceConfig],
-    instances: &'a [DriverInstance],
-    /// Parent-child structure of the board's devices.  Indexed in
-    /// lock-step with `devices` and `instances`.  Used by
-    /// [`init_device_body`] (walks the ancestor chain to emit
-    /// `BusDevice::new_on_bus` with the correct parent reference
-    /// and to init ancestors before children).
-    device_tree: &'a [DeviceNode],
-    excluded: &'a [usize],
-    /// Capabilities for the stage being emitted.  Used to gate
-    /// trampolines on whether the stage actually declares the
-    /// capability — `return_to_fel` specifically needs this because
-    /// `fstart_soc_sunxi` is only in scope for stages that pull
-    /// it in via the `sunxi` feature (which in turn fires only for
-    /// sunxi boards / stages using `ReturnToFel`).
-    stage_capabilities: &'a [Capability],
-    ffs_stage: bool,
-    /// Reserved for future migrations (`memory_detect`, `stage_load`) that
-    /// need to know whether a previous stage's handoff should populate
-    /// bookkeeping before capability dispatch.
-    ///
-    /// `#[allow(dead_code)]` for now — `fdt_prepare` already reads
-    /// from `_handoff` unconditionally (the field is `None` on
-    /// first-stage boards so the chained `unwrap_or` picks the
-    /// static DRAM size) and doesn't need this flag.
-    #[allow(dead_code)]
-    is_first_stage: bool,
-    dram_base: u64,
-    dram_size_static: u64,
-}
+// Board adapter semantic context lives in `model`.
 
 // =======================================================================
 // Excluded devices — match the old `generate_devices_struct` rule
@@ -447,14 +371,34 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let return_to_fel_body = return_to_fel_body(platform, ctx);
     let pci_init_body = pci_init_body(ctx);
     let dram_init_body = dram_init_body(ctx);
-    let pre_console_init_body =
-        phase_init_body(ctx, "PreConsoleInit", "PreConsoleInit", "pre_console_init");
-    let early_init_body = phase_init_body(ctx, "EarlyInit", "EarlyInit", "early_init");
-    let stage_local_init_body =
-        phase_init_body(ctx, "StageLocalInit", "StageLocalInit", "stage_local_init");
-    let post_dram_init_body =
-        phase_init_body(ctx, "PostDramInit", "PostDramInit", "post_dram_init");
-    let finalize_init_body = phase_init_body(ctx, "FinalizeInit", "FinalizeInit", "finalize_init");
+    let pre_console_init_body = phase_init_body(
+        ctx,
+        PhaseSpec::new(
+            Service::PreConsoleInit,
+            "PreConsoleInit",
+            "pre_console_init",
+        ),
+    );
+    let early_init_body = phase_init_body(
+        ctx,
+        PhaseSpec::new(Service::EarlyInit, "EarlyInit", "early_init"),
+    );
+    let stage_local_init_body = phase_init_body(
+        ctx,
+        PhaseSpec::new(
+            Service::StageLocalInit,
+            "StageLocalInit",
+            "stage_local_init",
+        ),
+    );
+    let post_dram_init_body = phase_init_body(
+        ctx,
+        PhaseSpec::new(Service::PostDramInit, "PostDramInit", "post_dram_init"),
+    );
+    let finalize_init_body = phase_init_body(
+        ctx,
+        PhaseSpec::new(Service::FinalizeInit, "FinalizeInit", "finalize_init"),
+    );
 
     let acpi_load_body = acpi_load_body(ctx);
     let memory_detect_body = memory_detect_body(ctx);
@@ -467,7 +411,7 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let init_device_body = init_device_body(ctx);
     let init_all_devices_body = init_all_devices_body(ctx);
     let late_driver_init_body = late_driver_init_body(ctx);
-    let boot_media_context_publish = if ctx.ffs_stage {
+    let boot_media_context_publish = if ctx.stage.uses_ffs {
         let anchor = anchor_bytes_stmt();
         quote! {
             if device.is_none() {
@@ -670,7 +614,8 @@ fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
 
 fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let uses_mp = ctx
-        .stage_capabilities
+        .stage
+        .capabilities
         .iter()
         .any(|cap| matches!(cap, Capability::MpInit { .. }));
     if !uses_mp {
@@ -681,7 +626,8 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
     }
 
     let uses_smm = ctx
-        .stage_capabilities
+        .stage
+        .capabilities
         .iter()
         .any(|cap| matches!(cap, Capability::MpInit { smm: true, .. }));
     let smm_image_expr = if uses_smm {
@@ -690,7 +636,7 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         quote! { None }
     };
 
-    let explicit_smm_provider = ctx.stage_capabilities.iter().find_map(|cap| match cap {
+    let explicit_smm_provider = ctx.stage.capabilities.iter().find_map(|cap| match cap {
         Capability::MpInit {
             smm: true,
             smm_provider: Some(provider),
@@ -702,12 +648,8 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
             .find(|idx| ctx.devices[*idx].name.as_str() == provider)
     } else {
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|service| service.as_str() == "SmmOps")
-        })
+        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+            .find(|idx| device_provides(ctx, *idx, Service::SmmOps))
     };
 
     let mp_microcode_enabled = matches!(
@@ -715,7 +657,7 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         Some(fstart_types::board::MicrocodeConfig::Intel(config)) if config.mp
     );
     let microcode_expr = mp_microcode_enabled
-        .then(|| ctx.stage_capabilities.iter().find_map(|cap| match cap {
+        .then(|| ctx.stage.capabilities.iter().find_map(|cap| match cap {
             Capability::BootMedia(BootMedium::MemoryMapped { base, .. }) => Some(*base),
             _ => None,
         }))
@@ -872,12 +814,7 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// [`CapOp::ConsoleInit`]: fstart_stage_runtime::CapOp::ConsoleInit
 fn install_logger_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "Console")
-        })
+        .filter(|idx| device_provides(ctx, *idx, Service::Console))
         .map(|idx| {
             let dev = &ctx.devices[idx];
             let inst = &ctx.instances[idx];
@@ -923,7 +860,7 @@ fn install_logger_body(ctx: &BoardCtx<'_>) -> TokenStream {
 
 /// Emit the body of `Board::sig_verify`.
 ///
-/// For stages that use FFS (`ctx.ffs_stage == true`), generates:
+/// For stages that use FFS (`ctx.stage.uses_ffs == true`), generates:
 ///
 /// 1. A volatile-read of `FSTART_ANCHOR` as a `&[u8]`.
 /// 2. A match on `self._boot_media` that reconstructs the concrete
@@ -937,7 +874,7 @@ fn install_logger_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// `BlockDeviceMedia` types would break compilation since they are
 /// not imported in non-FFS stages.
 fn sig_verify_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    if !ctx.ffs_stage {
+    if !ctx.stage.uses_ffs {
         return quote! {
             // No FFS-using capability in this stage, so no executor
             // arm reaches `sig_verify`.  Keep the trait method but
@@ -1075,12 +1012,7 @@ fn match_boot_media(
 /// `None` / `Mmio` arms.
 fn block_device_arms(ctx: &BoardCtx<'_>, bm_usage: &TokenStream) -> TokenStream {
     let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "BlockDevice")
-        })
+        .filter(|idx| device_provides(ctx, *idx, Service::BlockDevice))
         .map(|idx| {
             let dev = &ctx.devices[idx];
             let field = format_ident!("{}", dev.name.as_str());
@@ -1134,12 +1066,12 @@ fn block_device_arms(ctx: &BoardCtx<'_>, bm_usage: &TokenStream) -> TokenStream 
 ///    identical for every stage, avoiding a `uses_handoff` flag.
 ///
 /// 3. **`FdtSource::Override(_)`** — board supplies the DTB as an
-///    FFS file.  Requires `ctx.ffs_stage` because the emitted body
+///    FFS file.  Requires `ctx.stage.uses_ffs` because the emitted body
 ///    references `FSTART_ANCHOR` and the boot-media types.  The
 ///    body loads the DTB from FFS into `self._dtb_dst_addr` via
 ///    `fstart_capabilities::load_ffs_file_by_type`, halts on
 ///    failure, then patches bootargs in-place with `src = dst`.
-///    When `!ctx.ffs_stage`, emits a `todo!()` — codegen bug for a
+///    When `!ctx.stage.uses_ffs`, emits a `todo!()` — codegen bug for a
 ///    non-FFS stage to carry an Override DTB.
 ///
 /// 4. `FdtSource::Generated` / `GeneratedWithOverride` — not yet
@@ -1153,7 +1085,8 @@ fn fdt_prepare_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     // boards that have `fdt: Platform` on their payload but no
     // `FdtPrepare` capability).
     let has_fdt_prepare = ctx
-        .stage_capabilities
+        .stage
+        .capabilities
         .iter()
         .any(|c| matches!(c, Capability::FdtPrepare));
     if !has_fdt_prepare {
@@ -1237,14 +1170,14 @@ fn fdt_prepare_platform_body(platform: Platform, payload: &PayloadConfig) -> Tok
 /// Emit the body for the `FdtSource::Override` case — load the DTB
 /// from FFS via `self._boot_media`, then patch bootargs in-place.
 ///
-/// Requires `ctx.ffs_stage`; otherwise the FFS / boot-media types
+/// Requires `ctx.stage.uses_ffs`; otherwise the FFS / boot-media types
 /// aren't in scope and we can't emit the load code.  Returns a
 /// `todo!()` placeholder in that case (unreachable — the executor
 /// only dispatches `FdtPrepare` when the plan carries the capability,
 /// and `FdtPrepare` with `Override` upstream-requires BootMedia,
 /// which in turn implies FFS).
 fn fdt_prepare_override_body(ctx: &BoardCtx<'_>, platform: Platform) -> TokenStream {
-    if !ctx.ffs_stage {
+    if !ctx.stage.uses_ffs {
         return quote! {
             todo!("board_gen::fdt_prepare Override variant requires an FFS-using stage")
         };
@@ -1312,7 +1245,7 @@ fn fdt_prepare_override_body(ctx: &BoardCtx<'_>, platform: Platform) -> TokenStr
 /// manifest (missing stage, decode error) halts instead of silently
 /// falling through to undefined behaviour.
 ///
-/// Requires `ctx.ffs_stage`; otherwise the FFS / boot-media types
+/// Requires `ctx.stage.uses_ffs`; otherwise the FFS / boot-media types
 /// aren't in scope.  `stage_load` upstream-requires `BootMedia`,
 /// which in turn implies FFS, so a non-FFS stage reaching this
 /// trampoline is a plan bug (unreachable — the executor dispatches
@@ -1361,7 +1294,7 @@ fn x86_postcar_config_tokens(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    if !ctx.ffs_stage {
+    if !ctx.stage.uses_ffs {
         return quote! {
             let _ = next_stage;
             todo!("board_gen::stage_load requires an FFS-using stage")
@@ -1468,7 +1401,8 @@ fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// by the time this trampoline is reached.
 fn return_to_fel_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     let uses_return_to_fel = ctx
-        .stage_capabilities
+        .stage
+        .capabilities
         .iter()
         .any(|c| matches!(c, Capability::ReturnToFel));
 
@@ -1502,12 +1436,7 @@ fn return_to_fel_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
 /// deliberately separate from `Board::init_device`.
 fn dram_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "MemoryController")
-        })
+        .filter(|idx| device_provides(ctx, *idx, Service::MemoryController))
         .map(|idx| {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
             let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
@@ -1556,12 +1485,7 @@ fn dram_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// the device-id range.
 fn pci_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "PciRootBus")
-        })
+        .filter(|idx| device_provides(ctx, *idx, Service::PciRootBus))
         .map(|idx| {
             let dev = &ctx.devices[idx];
             let inst = &ctx.instances[idx];
@@ -1609,12 +1533,7 @@ fn pci_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
 fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let southbridge_ramstage: Vec<TokenStream> =
         enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .filter(|idx| {
-                ctx.devices[*idx]
-                    .services
-                    .iter()
-                    .any(|s| s.as_str() == "Southbridge")
-            })
+            .filter(|idx| device_provides(ctx, *idx, Service::Southbridge))
             .map(|idx| {
                 let field = format_ident!("{}", ctx.devices[idx].name.as_str());
                 quote! {
@@ -1629,12 +1548,7 @@ fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
             .collect();
 
     let southbridge_field = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .find(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "Southbridge")
-        })
+        .find(|idx| device_provides(ctx, *idx, Service::Southbridge))
         .map(|idx| format_ident!("{}", ctx.devices[idx].name.as_str()));
 
     let mainboard_ramstage: Vec<TokenStream> = enabled_indices(
@@ -1642,12 +1556,7 @@ fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         ctx.instances,
         ctx.excluded,
     )
-    .filter(|idx| {
-        ctx.devices[*idx]
-            .services
-            .iter()
-            .any(|s| s.as_str() == "Mainboard")
-    })
+    .filter(|idx| device_provides(ctx, *idx, Service::Mainboard))
     .map(|idx| {
         let field = format_ident!("{}", ctx.devices[idx].name.as_str());
         if let Some(sb_field) = southbridge_field.as_ref() {
@@ -1674,12 +1583,7 @@ fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
 
     let southbridge_finalize: Vec<TokenStream> =
         enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .filter(|idx| {
-                ctx.devices[*idx]
-                    .services
-                    .iter()
-                    .any(|s| s.as_str() == "Southbridge")
-            })
+            .filter(|idx| device_provides(ctx, *idx, Service::Southbridge))
             .map(|idx| {
                 let field = format_ident!("{}", ctx.devices[idx].name.as_str());
                 quote! {
@@ -1695,12 +1599,7 @@ fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
 
     let mainboard_finalize: Vec<TokenStream> =
         enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .filter(|idx| {
-                ctx.devices[*idx]
-                    .services
-                    .iter()
-                    .any(|s| s.as_str() == "Mainboard")
-            })
+            .filter(|idx| device_provides(ctx, *idx, Service::Mainboard))
             .map(|idx| {
                 let field = format_ident!("{}", ctx.devices[idx].name.as_str());
                 quote! {
@@ -1723,59 +1622,59 @@ fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 /// Emit the body for a generic phase-init trampoline.
-///
-/// `service_name` is the service string in board RON (for selecting arms),
-/// `trait_name` is the exported `fstart_services` trait, and `method_name` is
-/// the trait method called for each selected device id.
-fn phase_init_body(
-    ctx: &BoardCtx<'_>,
-    service_name: &str,
-    trait_name: &str,
-    method_name: &str,
-) -> TokenStream {
-    let stage_declares_phase = ctx.stage_capabilities.iter().any(|capability| {
+#[derive(Debug, Clone, Copy)]
+struct PhaseSpec {
+    service: Service,
+    trait_name: &'static str,
+    method_name: &'static str,
+}
+
+impl PhaseSpec {
+    const fn new(service: Service, trait_name: &'static str, method_name: &'static str) -> Self {
+        Self {
+            service,
+            trait_name,
+            method_name,
+        }
+    }
+}
+
+fn phase_init_body(ctx: &BoardCtx<'_>, spec: PhaseSpec) -> TokenStream {
+    let stage_declares_phase = ctx.stage.capabilities.iter().any(|capability| {
         matches!(
-            (service_name, capability),
-            ("PreConsoleInit", Capability::PreConsoleInit { .. })
-                | ("EarlyInit", Capability::EarlyInit { .. })
-                | ("StageLocalInit", Capability::StageLocalInit { .. })
-                | ("PostDramInit", Capability::PostDramInit { .. })
-                | ("FinalizeInit", Capability::FinalizeInit { .. })
+            (spec.service, capability),
+            (Service::PreConsoleInit, Capability::PreConsoleInit { .. })
+                | (Service::EarlyInit, Capability::EarlyInit { .. })
+                | (Service::StageLocalInit, Capability::StageLocalInit { .. })
+                | (Service::PostDramInit, Capability::PostDramInit { .. })
+                | (Service::FinalizeInit, Capability::FinalizeInit { .. })
         )
     });
-    if service_name == "PostDramInit" && !stage_declares_phase {
-        let msg = format!("board_gen::{method_name}: stage does not declare {service_name}");
+    if spec.service == Service::PostDramInit && !stage_declares_phase {
+        let msg = format!(
+            "board_gen::{}: stage does not declare {}",
+            spec.method_name,
+            spec.service.as_str()
+        );
         return quote! { todo!(#msg) };
     }
 
-    let trait_ident = format_ident!("{}", trait_name);
-    let trait_alias = format_ident!("_{}", trait_name);
-    let method_ident = format_ident!("{}", method_name);
+    let trait_ident = format_ident!("{}", spec.trait_name);
+    let trait_alias = format_ident!("_{}", spec.trait_name);
+    let method_ident = format_ident!("{}", spec.method_name);
 
     let southbridge_field = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .find(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "Southbridge")
-        })
+        .find(|idx| device_provides(ctx, *idx, Service::Southbridge))
         .map(|idx| format_ident!("{}", ctx.devices[idx].name.as_str()));
 
+    let method_name = spec.method_name;
     let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == service_name)
-        })
+        .filter(|idx| device_provides(ctx, *idx, spec.service))
         .map(|idx| {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
             let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let is_mainboard = ctx.devices[idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "Mainboard");
-            if service_name == "PreConsoleInit" && is_mainboard {
+            let is_mainboard = device_provides(ctx, idx, Service::Mainboard);
+            if spec.service == Service::PreConsoleInit && is_mainboard {
                 if let Some(sb_field) = southbridge_field.as_ref() {
                     quote! {
                         #id_lit => {
@@ -1865,12 +1764,7 @@ fn phase_init_body(
 /// and needs no per-device suffix.
 fn acpi_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "AcpiTableProvider")
-        })
+        .filter(|idx| device_provides(ctx, *idx, Service::AcpiTableProvider))
         .map(|idx| {
             let dev = &ctx.devices[idx];
             let field = format_ident!("{}", dev.name.as_str());
@@ -1939,12 +1833,7 @@ fn acpi_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// device reduce to just the wildcard (dead code).
 fn memory_detect_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "MemoryDetector")
-        })
+        .filter(|idx| device_provides(ctx, *idx, Service::MemoryDetector))
         .map(|idx| {
             let dev = &ctx.devices[idx];
             let field = format_ident!("{}", dev.name.as_str());
@@ -2028,7 +1917,8 @@ fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
     // `fstart_acpi` / `fstart_capabilities::acpi` (those crates may
     // not be linked into this stage’s binary).
     let has_acpi_prepare = ctx
-        .stage_capabilities
+        .stage
+        .capabilities
         .iter()
         .any(|c| matches!(c, Capability::AcpiPrepare));
     if !has_acpi_prepare {
@@ -2129,7 +2019,8 @@ fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// is present.
 fn smbios_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let has_smbios_prepare = ctx
-        .stage_capabilities
+        .stage
+        .capabilities
         .iter()
         .any(|c| matches!(c, Capability::SmBiosPrepare));
     if !has_smbios_prepare {
@@ -2192,7 +2083,7 @@ fn smbios_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// - Returns `Some(candidate.device)` on match, `None` with a
 ///   diagnostic log on miss.
 fn boot_media_select_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let uses_boot_media_select = ctx.stage_capabilities.iter().any(|c| {
+    let uses_boot_media_select = ctx.stage.capabilities.iter().any(|c| {
         matches!(
             c,
             Capability::LoadNextStage { .. } | Capability::BootMedia(_)
@@ -2278,7 +2169,8 @@ fn boot_media_select_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// reaches the stub at runtime.
 fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let uses_load_next_stage = ctx
-        .stage_capabilities
+        .stage
+        .capabilities
         .iter()
         .any(|c| matches!(c, Capability::LoadNextStage { .. }));
     let is_egon = ctx.config.soc_image_format == fstart_types::SocImageFormat::AllwinnerEgon;
@@ -2319,12 +2211,7 @@ fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
     // body calls `read_stage_to_addr` instead of reading the FFS
     // anchor.
     let dev_arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "BlockDevice")
-        })
+        .filter(|idx| device_provides(ctx, *idx, Service::BlockDevice))
         .map(|idx| {
             let dev = &ctx.devices[idx];
             let field = format_ident!("{}", dev.name.as_str());
@@ -2360,7 +2247,7 @@ fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
     // 2. The runtime `detected_size_bytes()` from a DramInit driver
     //    if the stage declares one — the old codegen's approach.
     // 3. `self._dram_size_static` as the static fallback.
-    let dram_device = ctx.stage_capabilities.iter().find_map(|cap| match cap {
+    let dram_device = ctx.stage.capabilities.iter().find_map(|cap| match cap {
         Capability::DramInit { device } => Some(device.as_str()),
         _ => None,
     });
@@ -2492,7 +2379,8 @@ fn payload_load_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     // referencing crates (fstart_crabefi, etc.) that may not be
     // linked into this stage.
     let has_payload_load = ctx
-        .stage_capabilities
+        .stage
+        .capabilities
         .iter()
         .any(|c| matches!(c, Capability::PayloadLoad));
     if !has_payload_load {
@@ -2517,7 +2405,7 @@ fn payload_load_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
     // today none of the fixture boards hit this branch, but keeping
     // it means `board_gen` produces valid code for any future raw
     // payload stage.
-    if !ctx.ffs_stage {
+    if !ctx.stage.uses_ffs {
         return quote! {
             todo!("board_gen::payload_load: generic payload requires an FFS-using stage")
         };
@@ -2550,7 +2438,7 @@ fn payload_load_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
 /// Then, outside the boot-media block, the platform boot protocol
 /// (via [`platform_boot_protocol_stmts`]).
 fn payload_load_linux_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
-    if !ctx.ffs_stage {
+    if !ctx.stage.uses_ffs {
         return quote! {
             todo!("board_gen::payload_load (LinuxBoot): requires an FFS-using stage")
         };
@@ -2603,7 +2491,7 @@ fn payload_load_linux_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStrea
 /// firmware, then runs the platform boot protocol with
 /// `#kernel_addr = _kernel_load`.
 fn payload_load_fit_runtime_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
-    if !ctx.ffs_stage {
+    if !ctx.stage.uses_ffs {
         return quote! {
             todo!("board_gen::payload_load (FIT runtime): requires an FFS-using stage")
         };
@@ -2844,13 +2732,8 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
     // Console device for DebugOutput adapter: find the first enabled
     // Console provider.  `_BoardDevices` always stores it in the
     // `self.<name>` field.
-    let console_device_idx =
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-            ctx.devices[*idx]
-                .services
-                .iter()
-                .any(|s| s.as_str() == "Console")
-        });
+    let console_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .find(|idx| device_provides(ctx, *idx, Service::Console));
     let (console_setup, debug_output_field) = match console_device_idx {
         Some(idx) => {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
@@ -2868,12 +2751,8 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
     };
 
     // PCI device for ECAM base.
-    let pci_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-        ctx.devices[*idx]
-            .services
-            .iter()
-            .any(|s| s.as_str() == "PciRootBus")
-    });
+    let pci_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .find(|idx| device_provides(ctx, *idx, Service::PciRootBus));
     let ecam_base_field = match pci_device_idx {
         Some(idx) => {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
@@ -2892,12 +2771,8 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
     // Framebuffer device for GOP — gated on the init mask via
     // `self._inited.contains(fb_id)` rather than the old fstart_main
     // `_fb_ok: bool` local.
-    let fb_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).find(|idx| {
-        ctx.devices[*idx]
-            .services
-            .iter()
-            .any(|s| s.as_str() == "Framebuffer")
-    });
+    let fb_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
+        .find(|idx| device_provides(ctx, *idx, Service::Framebuffer));
     let (fb_setup, framebuffer_field) = match fb_device_idx {
         Some(idx) => {
             let field = format_ident!("{}", ctx.devices[idx].name.as_str());
@@ -3405,11 +3280,11 @@ fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
             continue;
         }
         let dev = &ctx.devices[idx];
-        if dev.services.iter().any(|s| s.as_str() == "PciRootBus") {
+        if ctx.instances[idx].provides(Service::PciRootBus) {
             continue;
         }
         let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-        let is_framebuffer = dev.services.iter().any(|s| s.as_str() == "Framebuffer");
+        let is_framebuffer = ctx.instances[idx].provides(Service::Framebuffer);
         // Framebuffer failures are non-fatal (UEFI path still uses
         // `self._inited.contains(fb_id)` as an availability flag);
         // other devices halt on failure to match the old codegen.
@@ -3608,6 +3483,7 @@ mod tests {
                     &parsed.config,
                     &parsed.driver_instances,
                     &parsed.device_tree,
+                    &parsed.device_services,
                     caps,
                     stage.as_deref(),
                 );

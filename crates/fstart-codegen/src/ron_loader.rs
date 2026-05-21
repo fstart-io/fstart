@@ -46,6 +46,8 @@ pub struct ParsedBoard {
     pub driver_instances: Vec<DriverInstance>,
     /// Flat index-based device tree, parallel to `config.devices`.
     pub device_tree: Vec<DeviceNode>,
+    /// Effective service set per device after applying board policy.
+    pub device_services: Vec<heapless::Vec<Service, 8>>,
 }
 
 // -----------------------------------------------------------------------
@@ -82,6 +84,18 @@ struct RonBoardConfig {
     boot_hart_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+enum RonDeviceKind {
+    Structural(StructuralKind),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+enum StructuralKind {
+    PciBridge,
+    LpcBus,
+    SmBus,
+}
+
 /// A single device entry in the RON file.
 ///
 /// Hierarchy is expressed structurally: a bus controller lists its
@@ -98,21 +112,22 @@ struct RonBoardConfig {
 /// )
 /// ```
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RonDevice {
     name: HString<32>,
-    #[serde(default)]
-    services: heapless::Vec<HString<32>, 8>,
     /// Board policy: suppress selected services this driver can provide.
     ///
     /// Example: `disabled_services: ["Console"]` leaves the device present
     /// but prevents generated console/logger paths from selecting it.
     #[serde(default)]
     disabled_services: heapless::Vec<HString<32>, 8>,
-    /// Typed enum variant: `Ns16550(( base_addr: …, … ))`, `Pl011(( … ))`, etc.
+    /// Typed device kind for non-runtime topology nodes.
     ///
-    /// Optional: structural (driverless) nodes that only exist to give
-    /// downstream devices a parent in the tree omit this field. The
-    /// flattener substitutes `DriverInstance::Structural` when absent.
+    /// Runtime devices use `driver`; structural nodes use
+    /// `kind: Structural(...)` and must not also set `driver`.
+    #[serde(default)]
+    kind: Option<RonDeviceKind>,
+    /// Typed enum variant: `Ns16550(( base_addr: …, … ))`, `Pl011(( … ))`, etc.
     #[serde(default)]
     driver: Option<DriverInstance>,
     /// Child devices attached to this bus controller.
@@ -173,6 +188,7 @@ fn convert(ron: RonBoardConfig) -> Result<ParsedBoard, String> {
     let mut devices = heapless::Vec::new();
     let mut driver_instances = Vec::new();
     let mut device_tree = Vec::new();
+    let mut device_services = Vec::new();
 
     // Flatten each top-level device (and its children) via DFS.
     for rd in ron.devices {
@@ -183,6 +199,7 @@ fn convert(ron: RonBoardConfig) -> Result<ParsedBoard, String> {
             &mut devices,
             &mut driver_instances,
             &mut device_tree,
+            &mut device_services,
         )?;
     }
 
@@ -208,6 +225,7 @@ fn convert(ron: RonBoardConfig) -> Result<ParsedBoard, String> {
         config,
         driver_instances,
         device_tree,
+        device_services,
     })
 }
 
@@ -222,34 +240,41 @@ fn flatten_device(
     devices: &mut heapless::Vec<DeviceConfig, 32>,
     driver_instances: &mut Vec<DriverInstance>,
     device_tree: &mut Vec<DeviceNode>,
+    device_services: &mut Vec<heapless::Vec<Service, 8>>,
 ) -> Result<(), String> {
-    if !rd.services.is_empty() {
-        return Err(format!(
-            "device '{}' uses legacy services: [...] schema; remove it or use disabled_services for board policy",
-            rd.name
-        ));
-    }
-
     let my_idx = devices.len() as DeviceId;
 
-    // Driverless (structural) nodes: substitute a `Structural` instance
-    // with the sentinel `"_structural"` driver name.
-    let instance = rd
-        .driver
-        .unwrap_or_else(|| DriverInstance::Structural(StructuralConfig::default()));
-    let driver_name = instance.driver_name();
+    // Structural nodes become explicit instances in the typed driver instance
+    // table. DeviceConfig stays pure topology metadata.
+    let instance = match (rd.driver, rd.kind) {
+        (Some(instance), None) => instance,
+        (None, Some(RonDeviceKind::Structural(_kind))) => {
+            DriverInstance::Structural(StructuralConfig::default())
+        }
+        (Some(_instance), Some(_)) => {
+            return Err(format!(
+                "device '{}' specifies both 'driver' and structural 'kind'; choose one",
+                rd.name
+            ));
+        }
+        (None, None) => {
+            return Err(format!(
+                "device '{}' is missing 'driver' or 'kind: Structural(...)'",
+                rd.name
+            ));
+        }
+    };
     let parent_name = parent_idx.map(|idx| devices[idx as usize].name.clone());
 
+    let effective_services = effective_services(&instance, &rd.disabled_services)?;
     let _ = devices.push(DeviceConfig {
         name: rd.name,
-        driver: HString::try_from(driver_name)
-            .unwrap_or_else(|_| panic!("driver name '{driver_name}' exceeds HString<32> capacity")),
-        services: effective_services(&instance, &rd.disabled_services)?,
         parent: parent_name,
         bus: rd.bus,
         enabled: rd.enabled,
     });
     driver_instances.push(instance);
+    device_services.push(effective_services);
     device_tree.push(DeviceNode {
         parent: parent_idx,
         depth,
@@ -264,6 +289,7 @@ fn flatten_device(
             devices,
             driver_instances,
             device_tree,
+            device_services,
         )?;
     }
 
@@ -273,7 +299,7 @@ fn flatten_device(
 fn effective_services(
     instance: &DriverInstance,
     disabled: &heapless::Vec<HString<32>, 8>,
-) -> Result<heapless::Vec<HString<32>, 8>, String> {
+) -> Result<heapless::Vec<Service, 8>, String> {
     let mut disabled_typed = heapless::Vec::<Service, 8>::new();
     for name in disabled {
         let service = Service::from_name(name.as_str())
@@ -293,12 +319,52 @@ fn effective_services(
         if disabled_typed.contains(service) {
             continue;
         }
-        let _ = services.push(HString::try_from(service.as_str()).map_err(|_| {
-            format!(
-                "service name '{}' exceeds HString<32> capacity",
-                service.as_str()
-            )
-        })?);
+        let _ = services.push(*service);
     }
     Ok(services)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_parsed_board;
+    use std::path::PathBuf;
+
+    fn temp_board_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "fstart-ron-loader-{name}-{}-{}.ron",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        path
+    }
+
+    #[test]
+    fn legacy_services_field_is_rejected() {
+        let board_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/qemu-riscv64/board.ron");
+        let source = std::fs::read_to_string(board_path).expect("read qemu-riscv64 board");
+        let with_legacy_services = source.replacen(
+            "driver: Ns16550((",
+            "services: [\"Console\"],\n            driver: Ns16550((",
+            1,
+        );
+        assert_ne!(source, with_legacy_services, "test fixture changed");
+
+        let path = temp_board_path("legacy-services");
+        std::fs::write(&path, with_legacy_services).expect("write temp board");
+        let result = load_parsed_board(&path);
+        let _ = std::fs::remove_file(&path);
+        let err = match result {
+            Ok(_) => panic!("legacy services must fail"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("unknown field `services`")
+                || err.contains("unknown field 'services'")
+                || err.contains("Unexpected field named `services`"),
+            "unexpected error: {err}"
+        );
+    }
 }
