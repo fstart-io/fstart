@@ -72,9 +72,9 @@ Region `kind` values:
 
 ### Devices
 
-`devices` is an ordered list of hardware devices. Each entry names a device,
-specifies its driver with configuration, and declares which services it
-provides.
+`devices` is an ordered list of hardware devices. Each entry names a device
+and specifies its driver with configuration. The Rust driver registry declares
+which services each driver provides.
 
 ```ron
 devices: [
@@ -85,15 +85,14 @@ devices: [
             clock_freq: 3686400,
             baud_rate:  115200,
         )),
-        services: ["Console"],
     ),
 ],
 ```
 
 The `name` is how you refer to this device from capabilities (e.g.
 `ConsoleInit( device: "uart0" )`). The `driver` variant determines which
-driver crate is used. `services` declares the service traits the device
-provides; this affects flexible-mode codegen and documentation.
+driver crate is used; service traits come from Rust driver metadata, not from
+board RON.
 
 #### Available drivers
 
