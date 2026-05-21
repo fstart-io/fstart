@@ -41,7 +41,6 @@
                 pio_base: 0x02000000,
                 uart_index: 0,
             )),
-            services: ["ClockController"],
         ),
         // UART0 — debug console on PB8 (TX) / PB9 (RX).
         // Synopsys DW APB UART (NS16550-compatible), 4-byte register stride,
@@ -53,7 +52,6 @@
                 clock_freq: 24000000,
                 baud_rate: 115200,
             )),
-            services: ["Console"],
         ),
         // Allwinner D1 DRAM controller — DDR3, 792 MHz.
         // Parameters from U-Boot MangoPi MQ-R / Lichee RV defaults.
@@ -71,7 +69,6 @@
                 dram_tpr12: 0x24,
                 dram_tpr13: 0x34050100,
             )),
-            services: ["MemoryController"],
         ),
         // SD card controller (MMC0) — boot medium.
         // Uses the same sunxi MMC IP with D1 register layout.
@@ -83,7 +80,6 @@
                 pio_base: 0x02000000,
                 mmc_index: 0,
             )),
-            services: ["BlockDevice"],
         ),
     ],
 

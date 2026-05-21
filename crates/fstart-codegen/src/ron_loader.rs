@@ -17,7 +17,7 @@ use std::path::Path;
 use heapless::String as HString;
 use serde::Deserialize;
 
-use fstart_device_registry::{DriverInstance, StructuralConfig};
+use fstart_device_registry::{DriverInstance, Service, StructuralConfig};
 use fstart_types::device::BusAddress;
 use fstart_types::{
     BoardConfig, BuildMode, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig, Platform,
@@ -92,9 +92,8 @@ struct RonBoardConfig {
 /// (
 ///     name: "i2c0",
 ///     driver: DesignwareI2c(( base_addr: 0x10030000, ... )),
-///     services: ["I2cBus"],
 ///     children: [
-///         ( name: "tpm0", driver: Slb9670(( addr: 0x50 )), services: ["Tpm"] ),
+///         ( name: "tpm0", driver: Slb9670(( addr: 0x50 )) ),
 ///     ],
 /// )
 /// ```
@@ -103,6 +102,12 @@ struct RonDevice {
     name: HString<32>,
     #[serde(default)]
     services: heapless::Vec<HString<32>, 8>,
+    /// Board policy: suppress selected services this driver can provide.
+    ///
+    /// Example: `disabled_services: ["Console"]` leaves the device present
+    /// but prevents generated console/logger paths from selecting it.
+    #[serde(default)]
+    disabled_services: heapless::Vec<HString<32>, 8>,
     /// Typed enum variant: `Ns16550(( base_addr: …, … ))`, `Pl011(( … ))`, etc.
     ///
     /// Optional: structural (driverless) nodes that only exist to give
@@ -144,7 +149,7 @@ pub fn load_parsed_board(path: &Path) -> Result<ParsedBoard, String> {
     let ron_cfg: RonBoardConfig = options
         .from_str(&contents)
         .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
-    Ok(convert(ron_cfg))
+    convert(ron_cfg)
 }
 
 /// Load only the [`BoardConfig`] metadata (no driver instance data).
@@ -164,7 +169,7 @@ pub fn load_board_config(path: &Path) -> Result<BoardConfig, String> {
 ///
 /// Performs a pre-order DFS of the nested device tree, producing three
 /// parallel arrays where parents always precede children.
-fn convert(ron: RonBoardConfig) -> ParsedBoard {
+fn convert(ron: RonBoardConfig) -> Result<ParsedBoard, String> {
     let mut devices = heapless::Vec::new();
     let mut driver_instances = Vec::new();
     let mut device_tree = Vec::new();
@@ -178,7 +183,7 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
             &mut devices,
             &mut driver_instances,
             &mut device_tree,
-        );
+        )?;
     }
 
     let config = BoardConfig {
@@ -199,11 +204,11 @@ fn convert(ron: RonBoardConfig) -> ParsedBoard {
         boot_hart_id: ron.boot_hart_id,
     };
 
-    ParsedBoard {
+    Ok(ParsedBoard {
         config,
         driver_instances,
         device_tree,
-    }
+    })
 }
 
 /// Recursively flatten a device and its children in pre-order DFS.
@@ -217,7 +222,14 @@ fn flatten_device(
     devices: &mut heapless::Vec<DeviceConfig, 32>,
     driver_instances: &mut Vec<DriverInstance>,
     device_tree: &mut Vec<DeviceNode>,
-) {
+) -> Result<(), String> {
+    if !rd.services.is_empty() {
+        return Err(format!(
+            "device '{}' uses legacy services: [...] schema; remove it or use disabled_services for board policy",
+            rd.name
+        ));
+    }
+
     let my_idx = devices.len() as DeviceId;
 
     // Driverless (structural) nodes: substitute a `Structural` instance
@@ -232,7 +244,7 @@ fn flatten_device(
         name: rd.name,
         driver: HString::try_from(driver_name)
             .unwrap_or_else(|_| panic!("driver name '{driver_name}' exceeds HString<32> capacity")),
-        services: rd.services,
+        services: effective_services(&instance, &rd.disabled_services)?,
         parent: parent_name,
         bus: rd.bus,
         enabled: rd.enabled,
@@ -252,6 +264,41 @@ fn flatten_device(
             devices,
             driver_instances,
             device_tree,
-        );
+        )?;
     }
+
+    Ok(())
+}
+
+fn effective_services(
+    instance: &DriverInstance,
+    disabled: &heapless::Vec<HString<32>, 8>,
+) -> Result<heapless::Vec<HString<32>, 8>, String> {
+    let mut disabled_typed = heapless::Vec::<Service, 8>::new();
+    for name in disabled {
+        let service = Service::from_name(name.as_str())
+            .ok_or_else(|| format!("unknown disabled service '{name}'"))?;
+        if !instance.provides(service) {
+            return Err(format!(
+                "driver '{}' cannot disable service '{}' because it does not provide it",
+                instance.driver_name(),
+                name
+            ));
+        }
+        let _ = disabled_typed.push(service);
+    }
+
+    let mut services = heapless::Vec::new();
+    for service in instance.provided_services() {
+        if disabled_typed.contains(service) {
+            continue;
+        }
+        let _ = services.push(HString::try_from(service.as_str()).map_err(|_| {
+            format!(
+                "service name '{}' exceeds HString<32> capacity",
+                service.as_str()
+            )
+        })?);
+    }
+    Ok(services)
 }

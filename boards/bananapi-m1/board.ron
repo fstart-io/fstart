@@ -43,7 +43,6 @@
                 pio_base: 0x01C20800,
                 uart_index: 0,
             )),
-            services: ["ClockController"],
         ),
         // UART0 — debug console on PB22 (TX) / PB23 (RX).
         // NS16550-compatible (DW APB UART), 4-byte register stride.
@@ -55,7 +54,6 @@
                 clock_freq: 24000000,
                 baud_rate: 115200,
             )),
-            services: ["Console"],
         ),
         // Allwinner A20 DRAM controller — DDR3, 432 MHz, vendor magic timings.
         // Parameters from u-boot Bananapi_defconfig defaults.
@@ -80,7 +78,6 @@
                 dqs_gating_delay: 0x0,
                 active_windowing: false,
             )),
-            services: ["MemoryController"],
         ),
         // SD card controller (MMC0) — boot medium.
         // Handles its own GPIO mux (PF0-PF5) and clock gating in init().
@@ -92,7 +89,6 @@
                 pio_base: 0x01C20800,
                 mmc_index: 0,
             )),
-            services: ["BlockDevice"],
         ),
     ],
 

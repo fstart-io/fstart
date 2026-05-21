@@ -72,10 +72,6 @@
                 ),
                 acpi_name: Some("PCI0"),
             )),
-            services: [
-                "MemoryController", "MemoryDetector", "PciRootBus", "SmmOps",
-                "PreConsoleInit", "EarlyInit", "StageLocalInit", "PostDramInit",
-            ],
         ),
         (
             name: "southbridge",
@@ -215,9 +211,8 @@
                     iotr3: Some((lo: 0x000c0801, hi: 0x000200f0)),
                 )),
             )),
-            services: ["Southbridge", "PreConsoleInit", "EarlyInit", "PostDramInit", "FinalizeInit"],
             children: [
-                ( name: "lpc", services: ["LpcBus"],
+                ( name: "lpc",
                     children: [
                         // Laptop-side NSC PC87382/DLPC functions from coreboot
                         // `superio/nsc/pc87382` nodes. Board-specific DLPC switch
@@ -228,7 +223,6 @@
                                 cir: Some(( io_base: 0x200, irq: 5 )),
                                 gpio: Some(( io_base: 0x1680 )),
                             )),
-                            services: ["SuperIoHost"],
                         ),
                         // Dock-side NSC PC87392 functions. The dock WDT LDN 0x0a
                         // is kept disabled by LenovoX61Mainboard, matching coreboot.
@@ -238,7 +232,6 @@
                                 com1: Some(( io_base: 0x3f8, irq: 4 )),
                                 gpio: Some(( io_base: 0x1620 )),
                             )),
-                            services: ["SuperIoHost"],
                         ),
                         // COM1 is enabled by the LenovoX61Mainboard pre-console hook
                         // when the dock is present. The UART itself is standard 16550 PIO.
@@ -248,18 +241,16 @@
                                 clock_freq: 1843200,
                                 baud_rate: 115200,
                             )),
-                            services: ["Console"],
                         ),
                     ],
                 ),
-                ( name: "smbus", services: ["SmBus"],
+                ( name: "smbus",
                     children: [
                         ( name: "ck505", bus: I2c(0x69), enabled: false,
                             driver: I2cCk505((
                                 mask: [0xff, 0, 0, 0, 0],
                                 regs: [0x11, 0, 0, 0, 0],
                             )),
-                            services: [],
                         ),
                     ],
                 ),
@@ -271,7 +262,6 @@
                 dock_early_console: true,
                 acpi_name: Some("X61"),
             )),
-            services: ["Mainboard", "PreConsoleInit", "PostDramInit", "FinalizeInit"],
         ),
     ],
 

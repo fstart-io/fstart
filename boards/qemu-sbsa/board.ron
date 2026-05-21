@@ -67,7 +67,6 @@
                 acpi_gsiv: Some(33),
                 acpi_dbg2: true,
             )),
-            services: ["Console"],
         ),
         // ACPI-only devices — no runtime driver, but generate DSDT entries.
         (
@@ -78,7 +77,6 @@
                 size: 0x10000,
                 gsiv: 42,
             )),
-            services: [],
         ),
         (
             name: "xhci0",
@@ -88,7 +86,6 @@
                 size: 0x10000,
                 gsiv: 43,
             )),
-            services: [],
         ),
         (
             name: "pci0",
@@ -104,7 +101,6 @@
                 bus_start: 0,
                 bus_end: 255,
             )),
-            services: ["PciRootBus"],
         ),
     ],
 

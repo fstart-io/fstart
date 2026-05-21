@@ -45,7 +45,6 @@
                 clock_freq: 1843200,
                 baud_rate: 115200,
             )),
-            services: ["Console"],
         ),
         (
             name: "pci0",
@@ -63,7 +62,6 @@
                 bus_start: 0,
                 bus_end: 255,
             )),
-            services: ["PciRootBus"],
             // bochs-display is a PCI child device.  The driver gets
             // its BARs from the parent PciRootBus's config space
             // accessors rather than duplicating the ECAM base.
@@ -76,7 +74,6 @@
                         width: 1024,
                         height: 768,
                     )),
-                    services: ["Framebuffer"],
                 ),
             ],
         ),
