@@ -27,7 +27,7 @@ pub(super) fn validate_device_tree(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     tree: &[DeviceNode],
-    device_services: &[heapless::Vec<Service, 8>],
+    device_services: &[heapless::Vec<Service, 16>],
 ) -> Result<(), String> {
     for (i, node) in tree.iter().enumerate() {
         let Some(parent_idx) = node.parent else {
@@ -68,6 +68,9 @@ fn is_bus_provider(services: &[Service]) -> bool {
                 | Service::GpioController
                 | Service::PciRootBus
                 | Service::PciHost
+                | Service::PciBridge
+                | Service::LpcBus
+                | Service::SmBus
                 | Service::Southbridge
                 | Service::SuperIoHost
         )

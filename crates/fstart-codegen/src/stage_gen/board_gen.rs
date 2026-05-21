@@ -82,7 +82,7 @@ pub(super) fn generate_board_adapter(
     config: &BoardConfig,
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
-    device_services: &[heapless::Vec<Service, 8>],
+    device_services: &[heapless::Vec<Service, 16>],
     acpi_only_devices: &[AcpiExtraDevice],
     capabilities: &[Capability],
     stage_name: Option<&str>,

@@ -2,7 +2,7 @@ use super::*;
 use crate::ron_loader::ParsedBoard;
 use fstart_device_registry::{DriverInstance, Service};
 
-fn services_for(instances: &[DriverInstance]) -> Vec<heapless::Vec<Service, 8>> {
+fn services_for(instances: &[DriverInstance]) -> Vec<heapless::Vec<Service, 16>> {
     instances
         .iter()
         .map(|instance| instance.provided_services().iter().copied().collect())
