@@ -158,10 +158,9 @@ fn base_features(parsed: &ParsedBoard, target: TargetSpec) -> FeatureSet {
     features.insert(target.platform_feature);
 
     for inst in &parsed.driver_instances {
-        if inst.is_structural() || inst.is_acpi_only() {
-            continue;
+        if let Some(feature) = inst.driver_feature() {
+            features.insert(feature);
         }
-        features.insert(inst.driver_name());
     }
 
     if matches!(&config.stages, StageLayout::MultiStage(_)) {

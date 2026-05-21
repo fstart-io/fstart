@@ -95,6 +95,18 @@ pub(super) struct BoardEmitModel<'a> {
     pub(super) dram_size_static: u64,
 }
 
+/// Raw inputs needed to construct a [`BoardEmitModel`].
+pub(super) struct BoardEmitInputs<'a> {
+    pub(super) config: &'a BoardConfig,
+    pub(super) instances: &'a [DriverInstance],
+    pub(super) device_tree: &'a [DeviceNode],
+    pub(super) device_services: &'a [heapless::Vec<Service, 8>],
+    pub(super) acpi_only_devices: &'a [AcpiExtraDevice],
+    pub(super) excluded: &'a [usize],
+    pub(super) capabilities: &'a [Capability],
+    pub(super) stage_name: Option<&'a str>,
+}
+
 /// Codegen-side classification for a flattened device-tree entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeviceKind {
@@ -240,31 +252,23 @@ impl<'a> RuntimeDeviceTable<'a> {
 
 impl<'a> BoardEmitModel<'a> {
     /// Construct the board adapter emission context.
-    pub(super) fn new(
-        config: &'a BoardConfig,
-        instances: &'a [DriverInstance],
-        device_tree: &'a [DeviceNode],
-        device_services: &'a [heapless::Vec<Service, 8>],
-        acpi_only_devices: &'a [AcpiExtraDevice],
-        excluded: &'a [usize],
-        capabilities: &'a [Capability],
-        stage_name: Option<&'a str>,
-    ) -> Self {
-        let stage = StageScope::new(config, stage_name, capabilities);
+    pub(super) fn new(inputs: BoardEmitInputs<'a>) -> Self {
+        let config = inputs.config;
+        let stage = StageScope::new(config, inputs.stage_name, inputs.capabilities);
         let dram = find_dram_region(config).unwrap_or((0, 0));
         let runtime_devices = RuntimeDeviceTable::new(
             &config.devices,
-            instances,
-            device_tree,
-            device_services,
-            excluded,
+            inputs.instances,
+            inputs.device_tree,
+            inputs.device_services,
+            inputs.excluded,
         );
         Self {
             config,
             devices: &config.devices,
-            instances,
+            instances: inputs.instances,
             runtime_devices,
-            acpi_only_devices,
+            acpi_only_devices: inputs.acpi_only_devices,
             stage,
             dram_base: dram.0,
             dram_size_static: dram.1,

@@ -199,18 +199,17 @@ fn convert(ron: RonBoardConfig) -> Result<ParsedBoard, String> {
     let mut device_services = Vec::new();
     let mut acpi_only_devices: Vec<AcpiExtraDevice> = Vec::new();
 
+    let mut state = FlattenState {
+        devices: &mut devices,
+        driver_instances: &mut driver_instances,
+        device_tree: &mut device_tree,
+        device_services: &mut device_services,
+        acpi_only_devices: &mut acpi_only_devices,
+    };
+
     // Flatten each top-level device (and its children) via DFS.
     for rd in ron.devices {
-        flatten_device(
-            rd,
-            None,
-            0,
-            &mut devices,
-            &mut driver_instances,
-            &mut device_tree,
-            &mut device_services,
-            &mut acpi_only_devices,
-        )?;
+        flatten_device(rd, None, 0, &mut state)?;
     }
 
     let config = BoardConfig {
@@ -240,6 +239,14 @@ fn convert(ron: RonBoardConfig) -> Result<ParsedBoard, String> {
     })
 }
 
+struct FlattenState<'a> {
+    devices: &'a mut heapless::Vec<DeviceConfig, 32>,
+    driver_instances: &'a mut Vec<DriverInstance>,
+    device_tree: &'a mut Vec<DeviceNode>,
+    device_services: &'a mut Vec<heapless::Vec<Service, 8>>,
+    acpi_only_devices: &'a mut Vec<AcpiExtraDevice>,
+}
+
 /// Recursively flatten a device and its children in pre-order DFS.
 ///
 /// The parent is appended first, then each child is flattened with
@@ -248,13 +255,9 @@ fn flatten_device(
     rd: RonDevice,
     parent_idx: Option<DeviceId>,
     depth: u8,
-    devices: &mut heapless::Vec<DeviceConfig, 32>,
-    driver_instances: &mut Vec<DriverInstance>,
-    device_tree: &mut Vec<DeviceNode>,
-    device_services: &mut Vec<heapless::Vec<Service, 8>>,
-    acpi_only_devices: &mut Vec<AcpiExtraDevice>,
+    state: &mut FlattenState<'_>,
 ) -> Result<(), String> {
-    let my_idx = devices.len() as DeviceId;
+    let my_idx = state.devices.len() as DeviceId;
 
     // Structural nodes become explicit instances in the typed driver instance
     // table. DeviceConfig stays pure topology metadata.
@@ -299,38 +302,29 @@ fn flatten_device(
             ));
         }
     };
-    let parent_name = parent_idx.map(|idx| devices[idx as usize].name.clone());
+    let parent_name = parent_idx.map(|idx| state.devices[idx as usize].name.clone());
 
     if let Some(acpi_device) = acpi_extra_device(&instance) {
-        acpi_only_devices.push(acpi_device);
+        state.acpi_only_devices.push(acpi_device);
     }
 
     let effective_services = effective_services(&instance, &rd.disabled_services)?;
-    let _ = devices.push(DeviceConfig {
+    let _ = state.devices.push(DeviceConfig {
         name: rd.name,
         parent: parent_name,
         bus: rd.bus,
         enabled: rd.enabled,
     });
-    driver_instances.push(instance);
-    device_services.push(effective_services);
-    device_tree.push(DeviceNode {
+    state.driver_instances.push(instance);
+    state.device_services.push(effective_services);
+    state.device_tree.push(DeviceNode {
         parent: parent_idx,
         depth,
     });
 
     // Recurse into children — they get `my_idx` as their parent.
     for child in rd.children {
-        flatten_device(
-            child,
-            Some(my_idx),
-            depth + 1,
-            devices,
-            driver_instances,
-            device_tree,
-            device_services,
-            acpi_only_devices,
-        )?;
+        flatten_device(child, Some(my_idx), depth + 1, state)?;
     }
 
     Ok(())

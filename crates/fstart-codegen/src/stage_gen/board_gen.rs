@@ -55,7 +55,7 @@ mod state;
 mod sunxi;
 
 use board_impl::emit_board_impl;
-use model::BoardEmitModel;
+use model::{BoardEmitInputs, BoardEmitModel};
 use state::{emit_adapter_new, emit_adapter_struct};
 
 // =======================================================================
@@ -89,16 +89,16 @@ pub(super) fn generate_board_adapter(
 ) -> TokenStream {
     let excluded = compute_excluded_indices(&config.devices, instances, device_tree, capabilities);
     let platform = config.platform;
-    let ctx = BoardEmitModel::new(
+    let ctx = BoardEmitModel::new(BoardEmitInputs {
         config,
         instances,
         device_tree,
         device_services,
         acpi_only_devices,
-        &excluded,
+        excluded: &excluded,
         capabilities,
         stage_name,
-    );
+    });
 
     let mut tokens = TokenStream::new();
     tokens.extend(emit_adapter_struct(&ctx));
