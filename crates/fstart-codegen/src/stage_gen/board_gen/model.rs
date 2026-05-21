@@ -1,8 +1,7 @@
 //! Semantic context for board adapter emission.
 //!
-//! This is the first extraction from the legacy monolithic `board_gen.rs`.
-//! Keep this module focused on facts computed before token emission; later
-//! migrations can grow it into the full `BoardEmitModel` described in
+//! Keep this module focused on facts computed before token emission.  It is
+//! the staging point for the fuller `BoardEmitModel` described in
 //! `docs/rust-owned-driver-services-plan.md`.
 
 use fstart_device_registry::{DriverInstance, Service};
