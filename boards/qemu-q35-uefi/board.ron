@@ -54,17 +54,7 @@
                 bus_start: 0,
                 bus_end: 255,
             )),
-            children: [
-                (
-                    name: "bochs0",
-                    driver: BochsDisplay((
-                        device: 2,
-                        function: 0,
-                        width: 1024,
-                        height: 768,
-                    )),
-                ),
-            ],
+            children: [],
         ),
     ],
     stages: MultiStage([
@@ -112,7 +102,6 @@
                 // Copied to RAM at 32 MiB for fast LZ4/SHA operations.
                 BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000, ram_copy_addr: Some(0x2000000) )),
                 SigVerify,
-                DriverInit,
                 PayloadLoad,
             ],
             // data_addr at 16 MiB: Linux needs 0-16 MiB for trampolines,

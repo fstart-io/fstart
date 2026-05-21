@@ -375,7 +375,7 @@ impl Q35HostBridge {
         );
 
         // Step 4: Enumerate and allocate BARs (delegated to PciEcam).
-        self.ecam.init()?;
+        self.ecam.enumerate_and_allocate()?;
 
         // Step 5: Assign PCI IRQ routing to all discovered devices.
         self.assign_irqs();

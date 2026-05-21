@@ -249,6 +249,112 @@ jobs:
           grep -aqi "${{ matrix.expect }}" /tmp/qemu.log
 
   # -----------------------------------------------------------------------
+  # Build x86_64 boot assets used by the fstart -> CrabEFI boot-chain test.
+  # -----------------------------------------------------------------------
+  build-boot-assets-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Restore cached boot assets
+        id: cache-boot-assets
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: boot-assets/x86_64
+          key: boot-assets-x86_64-${{ hashFiles('ci/build-boot-assets.sh') }}
+
+      - name: Set up Go (for u-root)
+        if: steps.cache-boot-assets.outputs.cache-hit != 'true'
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: stable
+
+      - name: Install boot asset build dependencies
+        if: steps.cache-boot-assets.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc flex bison libelf-dev \
+            curl xz-utils git grub-common grub-efi-amd64-bin
+
+      - name: Build boot assets
+        if: steps.cache-boot-assets.outputs.cache-hit != 'true'
+        run: bash ci/build-boot-assets.sh --arch x86_64
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: boot-assets-x86_64
+          path: boot-assets/x86_64/
+          retention-days: 7
+
+  # -----------------------------------------------------------------------
+  # QEMU boot test — fstart hardware init -> CrabEFI -> GRUB -> Linux on Q35.
+  # -----------------------------------------------------------------------
+  qemu-crabefi-x86_64:
+    needs: [build-boot-assets-x86_64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2026-02-26
+          components: rust-src, llvm-tools
+          targets: x86_64-unknown-none
+
+      - name: Add llvm-tools to PATH
+        run: |
+          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          shared-key: qemu-crabefi-x86_64
+
+      - name: Install QEMU and disk tools
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-system-data ipxe-qemu \
+            mtools dosfstools gdisk
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: boot-assets-x86_64
+          path: boot-assets/x86_64
+
+      - name: Create GRUB + Linux disk
+        run: |
+          bash ci/create-grub-linux-disk.sh \
+            target/q35-grub-linux.img \
+            boot-assets/x86_64/grubx64.efi \
+            boot-assets/x86_64/vmlinuz \
+            boot-assets/x86_64/initramfs.cpio \
+            boot-assets/x86_64/grub.cfg
+
+      - name: Build fstart + CrabEFI firmware
+        run: cargo xtask assemble --board qemu-q35-uefi --release
+
+      - name: Run QEMU Q35 boot-chain test
+        env:
+          # fstart's Q35 pflash boot path needs TCG. GitHub-hosted runners
+          # can expose /dev/kvm, but KVM cannot execute directly from the
+          # pflash block device mapping used for this firmware image.
+          FSTART_QEMU_ACCEL: tcg
+        run: |
+          timeout 300 cargo xtask run --release \
+            --board qemu-q35-uefi \
+            --disk target/q35-grub-linux.img \
+            --memory 4G \
+            > /tmp/qemu.log 2>&1 || true
+          tr -d '\000' < /tmp/qemu.log > /tmp/qemu.clean.log
+          echo "::group::QEMU output"
+          cat /tmp/qemu.clean.log
+          echo "::endgroup::"
+          grep -Eaq "UROOT_BOOT_SUCCESS|Linux version" /tmp/qemu.clean.log
+
+  # -----------------------------------------------------------------------
   # QEMU boot tests — full boot chain: fstart -> SBI/ATF -> Linux
   # -----------------------------------------------------------------------
   qemu-boot:
