@@ -59,6 +59,7 @@ use super::tokens::hex_addr;
 
 mod boot_media;
 mod caps_tables;
+mod init_caps;
 mod lifecycle;
 mod logger;
 mod model;
@@ -67,6 +68,7 @@ mod state;
 
 use boot_media::{anchor_bytes_stmt, match_boot_media};
 use caps_tables::{acpi_load_body, acpi_prepare_body, memory_detect_body, smbios_prepare_body};
+use init_caps::{dram_init_body, late_driver_init_body, pci_init_body};
 use lifecycle::{init_all_devices_body, init_device_body};
 use logger::install_logger_body;
 use model::{device_provides, BoardCtx};
@@ -1075,199 +1077,6 @@ fn return_to_fel_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
         // returns, so the `-> !` contract is satisfied without a
         // trailing `halt()`.
         unsafe { fstart_soc_sunxi::return_to_fel_from_stash() }
-    }
-}
-
-/// Emit the body of `Board::dram_init`.
-///
-/// Matches `id` against devices that provide the `MemoryController` service and
-/// dispatches `MemoryController::dram_init()` on the concrete driver. The
-/// device may already be constructed/inited by `PreConsoleInit`, so this is
-/// deliberately separate from `Board::init_device`.
-fn dram_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, Service::MemoryController))
-        .map(|idx| {
-            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            quote! {
-                #id_lit => {
-                    use fstart_services::MemoryController as _MemoryController;
-                    let dev = self.#field
-                        .as_mut()
-                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                    _MemoryController::dram_init(dev)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                    Ok(())
-                }
-            }
-        })
-        .collect();
-
-    quote! {
-        match id {
-            #(#arms)*
-            _ => {
-                fstart_log::error!("dram_init: unknown MemoryController id {}", id);
-                Err(fstart_services::device::DeviceError::InitFailed)
-            }
-        }
-    }
-}
-
-/// Emit the body of `Board::pci_init`.
-///
-/// The executor has already run `init_device(id)` (which calls
-/// `Device::init()` and materialises `self.<field>`) by the time
-/// this trampoline is invoked.  The old generator's `pci_init`
-/// emitted only a banner log; we do the same.  The `match id`
-/// shape is still required so we can produce a stable per-device
-/// "device name + driver name" banner without reaching into the
-/// device at runtime.
-///
-/// Arms: one per enabled device providing the `PciRootBus` service;
-/// each logs `"PCI init complete: {dev} ({drv})"` and returns
-/// `Ok(())`.  Wildcard logs + halts.
-///
-/// Stages without any PciRootBus provider degenerate to just the
-/// wildcard (still a valid match).  The `#[allow(unreachable_patterns)]`
-/// dance isn't needed because the wildcard always matches at least
-/// the device-id range.
-fn pci_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, Service::PciRootBus))
-        .map(|idx| {
-            let dev = &ctx.devices[idx];
-            let inst = &ctx.instances[idx];
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let dev_name = dev.name.as_str();
-            let drv_name = inst.meta().name;
-            let field = format_ident!("{}", dev.name.as_str());
-            quote! {
-                #id_lit => {
-                    let dev = self.#field
-                        .as_mut()
-                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                    use fstart_services::PciRootBus as _PciRootBus;
-                    _PciRootBus::init_bus(dev)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                    fstart_log::info!(
-                        "PCI init complete: {} ({})",
-                        #dev_name,
-                        #drv_name,
-                    );
-                    Ok(())
-                }
-            }
-        });
-
-    quote! {
-        match id {
-            #(#arms)*
-            _ => {
-                // Executor contract violation — `pci_init(id)` should
-                // only be dispatched for `PciRootBus` providers.
-                fstart_log::error!("pci_init: unknown device id {}", id);
-                fstart_platform::halt();
-            }
-        }
-    }
-}
-
-/// Emit the body of `Board::late_driver_init_complete` before the
-/// generic completion banner.
-///
-/// For x86 boards this dispatches ramstage/post-DRAM southbridge work,
-/// board-local mainboard work, and final lockdown through the `Southbridge`
-/// and `Mainboard` traits. Other boards reduce to an empty body.
-fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let southbridge_ramstage: Vec<TokenStream> =
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .filter(|idx| device_provides(ctx, *idx, Service::Southbridge))
-            .map(|idx| {
-                let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-                quote! {
-                    if let Some(dev) = self.#field.as_mut() {
-                        use fstart_services::Southbridge as _Southbridge;
-                        _Southbridge::ramstage_init(dev)
-                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)
-                            .unwrap_or_else(|_| fstart_platform::halt());
-                    }
-                }
-            })
-            .collect();
-
-    let southbridge_field = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .find(|idx| device_provides(ctx, *idx, Service::Southbridge))
-        .map(|idx| format_ident!("{}", ctx.devices[idx].name.as_str()));
-
-    let mainboard_ramstage: Vec<TokenStream> = enabled_indices(
-        ctx.devices,
-        ctx.instances,
-        ctx.excluded,
-    )
-    .filter(|idx| device_provides(ctx, *idx, Service::Mainboard))
-    .map(|idx| {
-        let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-        if let Some(sb_field) = southbridge_field.as_ref() {
-            quote! {
-                if let (Some(dev), Some(sb)) = (self.#field.as_mut(), self.#sb_field.as_mut()) {
-                    use fstart_services::Mainboard as _Mainboard;
-                    _Mainboard::ramstage_init_with_southbridge(dev, sb)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)
-                        .unwrap_or_else(|_| fstart_platform::halt());
-                }
-            }
-        } else {
-            quote! {
-                if let Some(dev) = self.#field.as_mut() {
-                    use fstart_services::Mainboard as _Mainboard;
-                    _Mainboard::ramstage_init(dev)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)
-                        .unwrap_or_else(|_| fstart_platform::halt());
-                }
-            }
-        }
-    })
-    .collect();
-
-    let southbridge_finalize: Vec<TokenStream> =
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .filter(|idx| device_provides(ctx, *idx, Service::Southbridge))
-            .map(|idx| {
-                let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-                quote! {
-                    if let Some(dev) = self.#field.as_mut() {
-                        use fstart_services::Southbridge as _Southbridge;
-                        _Southbridge::finalize(dev)
-                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)
-                            .unwrap_or_else(|_| fstart_platform::halt());
-                    }
-                }
-            })
-            .collect();
-
-    let mainboard_finalize: Vec<TokenStream> =
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .filter(|idx| device_provides(ctx, *idx, Service::Mainboard))
-            .map(|idx| {
-                let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-                quote! {
-                    if let Some(dev) = self.#field.as_mut() {
-                        use fstart_services::Mainboard as _Mainboard;
-                        _Mainboard::finalize(dev)
-                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)
-                            .unwrap_or_else(|_| fstart_platform::halt());
-                    }
-                }
-            })
-            .collect();
-
-    quote! {
-        #(#southbridge_ramstage)*
-        #(#mainboard_ramstage)*
-        #(#southbridge_finalize)*
-        #(#mainboard_finalize)*
     }
 }
 
