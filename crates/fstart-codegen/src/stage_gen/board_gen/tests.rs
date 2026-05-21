@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::ron_loader::load_parsed_board;
 use std::path::PathBuf;
