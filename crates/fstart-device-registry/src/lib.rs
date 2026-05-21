@@ -185,7 +185,35 @@ pub enum Service {
 }
 
 impl Service {
-    /// Stable service name used in diagnostics and generated imports.
+    /// Parses a stable service name used in RON policy.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "Console" => Self::Console,
+            "BlockDevice" => Self::BlockDevice,
+            "ClockController" => Self::ClockController,
+            "MemoryController" => Self::MemoryController,
+            "PciRootBus" => Self::PciRootBus,
+            "PciHost" => Self::PciHost,
+            "SmmOps" => Self::SmmOps,
+            "Framebuffer" => Self::Framebuffer,
+            "AcpiTableProvider" => Self::AcpiTableProvider,
+            "MemoryDetector" => Self::MemoryDetector,
+            "SuperIoHost" => Self::SuperIoHost,
+            "Southbridge" => Self::Southbridge,
+            "Mainboard" => Self::Mainboard,
+            "PreConsoleInit" => Self::PreConsoleInit,
+            "EarlyInit" => Self::EarlyInit,
+            "StageLocalInit" => Self::StageLocalInit,
+            "PostDramInit" => Self::PostDramInit,
+            "FinalizeInit" => Self::FinalizeInit,
+            "I2cBus" => Self::I2cBus,
+            "SpiBus" => Self::SpiBus,
+            "GpioController" => Self::GpioController,
+            _ => return None,
+        })
+    }
+
+    /// Stable service name used in RON policy and generated imports.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Console => "Console",
