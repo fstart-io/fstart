@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 
 use fstart_codegen::ron_loader::ParsedBoard;
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::Service;
 use fstart_types::stage::PageSize;
 use fstart_types::{
     effective_stage_load_addr, BoardConfig, Capability, Platform, SecurityConfig, SocImageFormat,
@@ -93,7 +93,7 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
     let target = TargetSpec::for_platform(config.platform);
     let base_features = base_features(parsed, target);
     let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
-    let pci_root_backend = pci_root_backend(&parsed.driver_instances);
+    let pci_root_backend = pci_root_backend(parsed);
     let has_pci_driver = pci_root_backend.is_some();
 
     let stages = match &config.stages {
@@ -208,11 +208,14 @@ enum PciRootBackend {
     Q35HostBridge,
 }
 
-fn pci_root_backend(driver_instances: &[DriverInstance]) -> Option<PciRootBackend> {
-    let pci_root = driver_instances
+fn pci_root_backend(parsed: &ParsedBoard) -> Option<PciRootBackend> {
+    let (idx, _) = parsed
+        .device_services
         .iter()
-        .find(|inst| inst.provides_pci_root())?;
-    if pci_root.driver_name() == "q35-hostbridge" {
+        .enumerate()
+        .find(|(_, services)| services.contains(&Service::PciRootBus))?;
+
+    if parsed.driver_instances[idx].driver_name() == "q35-hostbridge" {
         Some(PciRootBackend::Q35HostBridge)
     } else {
         Some(PciRootBackend::GenericEcam)
