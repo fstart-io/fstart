@@ -57,11 +57,15 @@ use fstart_types::{
 
 use super::tokens::hex_addr;
 
+mod logger;
 mod model;
 mod phases;
+mod state;
 
+use logger::install_logger_body;
 use model::{device_provides, BoardCtx};
 use phases::{phase_init_body, PhaseSpec};
+use state::{emit_adapter_new, emit_adapter_struct};
 
 // =======================================================================
 // Public entry point
@@ -192,159 +196,6 @@ fn compute_excluded_indices(
 // =======================================================================
 // `struct _BoardDevices`
 // =======================================================================
-
-/// Emit the `_BoardDevices` struct.
-///
-/// One field per enabled, runtime-present, non-excluded device.  All
-/// fields are `Option<T>` because `init_device(id)` is the sole
-/// construction site (see invariant #4 in the plan doc): no device is
-/// materialised until the executor asks for it, which keeps the
-/// "stages that don't use X skip X entirely" property we already rely
-/// on for deferred bus children.
-///
-/// Plus several bookkeeping fields, all populated by `new()`:
-///
-/// - `_inited` — which devices have run `Device::init`, matching the
-///   executor's own `inited` mask so `DriverInit` can skip them.
-/// - `_boot_media` — the current boot-media selection.  Written by
-///   `boot_media_static` / `boot_media_select`; read by every
-///   FFS-using trampoline (`sig_verify`, `payload_load`,
-///   `stage_load`) when it reconstructs a concrete
-///   `MemoryMapped` / `BlockDeviceMedia`.
-/// - `_dtb_dst_addr` / `_bootargs` / `_dram_base` /
-///   `_dram_size_static` — board-level facts used by `fdt_prepare`.
-///   These mirror RON-derived constants that the old codegen baked
-///   into the `fdt_prepare` method body.  Per invariant #3 every
-///   board-level constant lives on `self`, so a future multi-platform
-///   adapter can vary them by platform without changing the trait.
-/// - `_handoff` — the deserialised previous-stage handoff, if any.
-///   Today always `None` (populated at the final fstart_main flip via
-///   a `bind_handoff` helper); `fdt_prepare` already reads from it so
-///   the field's contract is locked in.
-fn emit_adapter_struct(ctx: &BoardCtx<'_>) -> TokenStream {
-    let fields = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).map(|idx| {
-        let dev = &ctx.devices[idx];
-        let inst = &ctx.instances[idx];
-        let field_name = format_ident!("{}", dev.name.as_str());
-        let field_type = format_ident!("{}", inst.meta().type_name);
-        quote! { #field_name: Option<#field_type>, }
-    });
-
-    quote! {
-        /// Board adapter produced by `fstart-codegen::board_gen`.
-        ///
-        /// Carries one `Option<Driver>` per enabled device plus the
-        /// bookkeeping state [`Board`](fstart_stage_runtime::Board)
-        /// trampolines need ([`DeviceMask`] for init tracking,
-        /// [`BootMediaState`] for the current boot medium, static
-        /// FDT data, and the previous-stage handoff).  Implements
-        /// [`fstart_stage_runtime::Board`] so the handwritten
-        /// [`run_stage`](fstart_stage_runtime::run_stage) executor
-        /// can drive it.
-        ///
-        /// Parallel to the existing `Devices` / `StageContext` pair
-        /// during the runtime/codegen split migration; see
-        /// `.opencode/plans/stage-runtime-codegen-split.md` §"Work
-        /// breakdown".
-        ///
-        /// [`DeviceMask`]: fstart_stage_runtime::DeviceMask
-        /// [`BootMediaState`]: fstart_stage_runtime::BootMediaState
-        #[allow(dead_code, non_camel_case_types)]
-        struct _BoardDevices {
-            #(#fields)*
-            _inited: fstart_stage_runtime::DeviceMask,
-            _boot_media: fstart_stage_runtime::BootMediaState,
-            _dtb_dst_addr: u64,
-            _bootargs: &'static str,
-            _dram_base: u64,
-            _dram_size_static: u64,
-            _handoff: Option<fstart_types::handoff::StageHandoff>,
-            /// RSDP physical address, populated by `acpi_load` and
-            /// read by future `acpi_prepare` / `payload_load`
-            /// trampolines.  `0` means "not set yet"; boards
-            /// without `AcpiLoad` leave it at `0` forever.
-            _acpi_rsdp_addr: u64,
-            /// eGON header SRAM base address for Allwinner sunxi
-            /// boards.  Read by `boot_media_select` and
-            /// `load_next_stage` to resolve the hardware boot-media
-            /// byte and next-stage header values.  Non-sunxi boards
-            /// leave it at `0`; the field then reads zero bytes off
-            /// SRAM which is harmless because non-sunxi stages never
-            /// dispatch the relevant trampolines.
-            _egon_sram_base: u64,
-        }
-    }
-}
-
-// =======================================================================
-// `impl _BoardDevices { fn new() -> Self }`
-// =======================================================================
-
-/// Emit `impl _BoardDevices { const fn new() -> Self }`.
-///
-/// Every device field starts as `None` — matching the lazy-init model
-/// where `init_device(id)` both constructs and initialises on first
-/// call.  `_boot_media` starts at
-/// [`BootMediaState::None`](fstart_stage_runtime::BootMediaState::None);
-/// the first `BootMedia*` capability populates it.
-///
-/// The static FDT fields (`_dtb_dst_addr`, `_bootargs`, `_dram_base`,
-/// `_dram_size_static`) are populated from the board RON at const-eval
-/// time — all four values are literals known at codegen.  `_handoff`
-/// starts as `None` and is overwritten by a future `bind_handoff`
-/// helper when the `fstart_main` stub flips to call `run_stage`.
-///
-/// Keeping `new` as `const fn` lets a later `fstart_main` stub
-/// materialise the adapter inside the function body without
-/// introducing a non-const constructor path.  It also makes the
-/// generated source easier to read — there is no runtime work at
-/// all until the executor starts dispatching capabilities.
-fn emit_adapter_new(ctx: &BoardCtx<'_>) -> TokenStream {
-    let field_inits = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).map(|idx| {
-        let dev = &ctx.devices[idx];
-        let field_name = format_ident!("{}", dev.name.as_str());
-        quote! { #field_name: None, }
-    });
-
-    let dtb_dst_lit = hex_addr(
-        ctx.config
-            .payload
-            .as_ref()
-            .and_then(|p| p.dtb_addr)
-            .unwrap_or(0),
-    );
-    let bootargs_lit = ctx
-        .config
-        .payload
-        .as_ref()
-        .and_then(|p| p.bootargs.as_ref())
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    let dram_base_lit = hex_addr(ctx.dram_base);
-    let dram_size_lit = hex_addr(ctx.dram_size_static);
-    let egon_sram_base_lit = hex_addr(super::capabilities::egon_sram_base(ctx.config));
-
-    quote! {
-        #[allow(dead_code)]
-        impl _BoardDevices {
-            /// Zero-initialised adapter.  See [`emit_adapter_new`] doc.
-            const fn new() -> Self {
-                Self {
-                    #(#field_inits)*
-                    _inited: fstart_stage_runtime::DeviceMask::new(),
-                    _boot_media: fstart_stage_runtime::BootMediaState::None,
-                    _dtb_dst_addr: #dtb_dst_lit,
-                    _bootargs: #bootargs_lit,
-                    _dram_base: #dram_base_lit,
-                    _dram_size_static: #dram_size_lit,
-                    _handoff: None,
-                    _acpi_rsdp_addr: 0,
-                    _egon_sram_base: #egon_sram_base_lit,
-                }
-            }
-        }
-    }
-}
 
 // =======================================================================
 // `impl Board for _BoardDevices`
@@ -771,91 +622,6 @@ fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         } else {
             fstart_log::error!("mp: unsupported CPU model '{}'; no CpuOps provider", cpu_model);
             Err(fstart_stage_runtime::RuntimeError::Failed)
-        }
-    }
-}
-
-/// Emit the body of `Board::install_logger`.
-///
-/// Emits a `match id { ... }` where every arm corresponds to an
-/// enabled device providing the `Console` service.  Each arm:
-///
-/// 1. Calls `fstart_log::init(&self.<field>...)` so the global
-///    logger routes to the device.
-/// 2. Calls `fstart_capabilities::console_ready(device_name, driver_name)`
-///    which emits the familiar "X: Y console ready" banner.
-///
-/// The executor guarantees (invariant of [`CapOp::ConsoleInit`]) that
-/// `init_device(id)` already ran before this method is called, so
-/// `self.<field>` is `Some`.  We still `.unwrap_or_else(halt)` defensively
-/// — costs a never-taken branch that the optimiser elides and keeps
-/// the generated code obviously safe under code review.
-///
-/// A wildcard arm halts the board: the executor only calls
-/// `install_logger(id)` with ids declared as `ConsoleInit` in the
-/// plan, and `plan_gen` only emits such ids for Console providers.
-/// Reaching the wildcard means a codegen/executor contract violation.
-///
-/// Stages with no Console-providing device (hypothetical; today every
-/// stage has at least one logger) reduce the match to just the
-/// wildcard — still a valid body.
-///
-/// The enclosing method is `unsafe fn`; we wrap the `fstart_log::init`
-/// call in an explicit `unsafe {}` block anyway so future edition
-/// upgrades that require this are a no-op.
-///
-/// # Safety
-///
-/// `fstart_log::init` takes a reference that is promoted to `'static`
-/// internally.  The board adapter owns `self.<field>` for the stage's
-/// lifetime (the adapter is itself a `fstart_main`-local whose scope
-/// is "the whole stage" and that never drops), so extending the
-/// borrow is sound.  The invocation annotation on the trait method
-/// says the same thing in prose.
-///
-/// [`CapOp::ConsoleInit`]: fstart_stage_runtime::CapOp::ConsoleInit
-fn install_logger_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, Service::Console))
-        .map(|idx| {
-            let dev = &ctx.devices[idx];
-            let inst = &ctx.instances[idx];
-            let field = format_ident!("{}", dev.name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let dev_name = dev.name.as_str();
-            let drv_name = inst.meta().name;
-            quote! {
-                #id_lit => {
-                    // SAFETY: the executor's `CapOp::ConsoleInit`
-                    // arm calls `init_device(id)` before
-                    // `install_logger(id)`, so `self.#field` is
-                    // `Some`.  `fstart_log::init` promotes the
-                    // borrow to `'static`; we own the device for
-                    // the stage's lifetime, so that is sound.
-                    unsafe {
-                        fstart_log::init(
-                            self.#field
-                                .as_ref()
-                                .unwrap_or_else(|| fstart_platform::halt()),
-                        );
-                    }
-                    fstart_capabilities::console_ready(#dev_name, #drv_name);
-                }
-            }
-        });
-
-    quote! {
-        match id {
-            #(#arms)*
-            _ => {
-                // Executor contract violation — `install_logger` is
-                // only dispatched for ids declared `ConsoleInit` in
-                // `StagePlan`, which `plan_gen` only emits for
-                // Console providers.  Reaching this arm means an
-                // id we didn't emit a field for, so no recovery is
-                // possible.
-                fstart_platform::halt();
-            }
         }
     }
 }
