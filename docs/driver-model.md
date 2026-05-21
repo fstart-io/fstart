@@ -295,7 +295,6 @@ RON uses the variant name directly — **no `compatible` string matching**, no
 (
     name: "uart0",
     driver: Ns16550(( base_addr: 0x10000000, clock_freq: 3686400, baud_rate: 115200 )),
-    services: ["Console"],
 )
 ```
 
@@ -313,17 +312,14 @@ devices: [
     (
         name: "uart0",
         driver: Ns16550(( base_addr: 0x10000000, clock_freq: 3686400, baud_rate: 115200 )),
-        services: ["Console"],
     ),
     (
         name: "i2c0",
         driver: DesignwareI2c(( base_addr: 0x10040000, clock_freq: 100000000 )),
-        services: ["I2cBus"],
         children: [
             (
                 name: "tpm0",
                 driver: Slb9670(( addr: 0x50 )),
-                services: ["Tpm"],
             ),
         ],
     ),
@@ -380,17 +376,20 @@ approach B (flat index table) for runtime power sequencing, diagnostics, etc.
 
 ### DeviceConfig (host-side metadata)
 
-The `DeviceConfig` struct carries identity and service bindings.  It is used
-only at build time (codegen, xtask) — the target binary never sees it:
+The `DeviceConfig` struct carries identity and topology metadata.  Driver-owned
+service metadata lives in `fstart-device-registry`; board RON does not declare
+services:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
     pub name: HString<32>,
-    pub driver: HString<32>,
-    pub services: heapless::Vec<HString<32>, 8>,
     #[serde(default)]
     pub parent: Option<HString<32>>,  // Filled by flatten_device()
+    #[serde(default)]
+    pub bus: Option<BusAddress>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
 }
 ```
 
@@ -731,9 +730,8 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
    (
        name: "i2c0",
        driver: DesignwareI2c(( base_addr: 0x10040000, ... )),
-       services: ["I2cBus"],
        children: [
-           ( name: "tpm0", driver: Slb9670(( addr: 0x50 )), services: ["Tpm"] ),
+           ( name: "tpm0", driver: Slb9670(( addr: 0x50 )) ),
        ],
    )
    ```
