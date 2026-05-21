@@ -771,6 +771,11 @@ impl DriverInstance {
         matches!(self, Self::Structural(_))
     }
 
+    /// Returns `true` if this driver provides the runtime PCI root-bus service.
+    pub fn provides_pci_root(&self) -> bool {
+        self.meta().services.contains(&"PciRootBus")
+    }
+
     /// Return the SoC boot-source register values that select this device.
     ///
     /// Used by `plan_gen` and `board_gen` to emit match arms for runtime
