@@ -58,8 +58,10 @@ use fstart_types::{
 use super::tokens::hex_addr;
 
 mod model;
+mod phases;
 
 use model::{device_provides, BoardCtx};
+use phases::{phase_init_body, PhaseSpec};
 
 // =======================================================================
 // Public entry point
@@ -1618,119 +1620,6 @@ fn late_driver_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         #(#mainboard_ramstage)*
         #(#southbridge_finalize)*
         #(#mainboard_finalize)*
-    }
-}
-
-/// Emit the body for a generic phase-init trampoline.
-#[derive(Debug, Clone, Copy)]
-struct PhaseSpec {
-    service: Service,
-    trait_name: &'static str,
-    method_name: &'static str,
-}
-
-impl PhaseSpec {
-    const fn new(service: Service, trait_name: &'static str, method_name: &'static str) -> Self {
-        Self {
-            service,
-            trait_name,
-            method_name,
-        }
-    }
-}
-
-fn phase_init_body(ctx: &BoardCtx<'_>, spec: PhaseSpec) -> TokenStream {
-    let stage_declares_phase = ctx.stage.capabilities.iter().any(|capability| {
-        matches!(
-            (spec.service, capability),
-            (Service::PreConsoleInit, Capability::PreConsoleInit { .. })
-                | (Service::EarlyInit, Capability::EarlyInit { .. })
-                | (Service::StageLocalInit, Capability::StageLocalInit { .. })
-                | (Service::PostDramInit, Capability::PostDramInit { .. })
-                | (Service::FinalizeInit, Capability::FinalizeInit { .. })
-        )
-    });
-    if spec.service == Service::PostDramInit && !stage_declares_phase {
-        let msg = format!(
-            "board_gen::{}: stage does not declare {}",
-            spec.method_name,
-            spec.service.as_str()
-        );
-        return quote! { todo!(#msg) };
-    }
-
-    let trait_ident = format_ident!("{}", spec.trait_name);
-    let trait_alias = format_ident!("_{}", spec.trait_name);
-    let method_ident = format_ident!("{}", spec.method_name);
-
-    let southbridge_field = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .find(|idx| device_provides(ctx, *idx, Service::Southbridge))
-        .map(|idx| format_ident!("{}", ctx.devices[idx].name.as_str()));
-
-    let method_name = spec.method_name;
-    let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, spec.service))
-        .map(|idx| {
-            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let is_mainboard = device_provides(ctx, idx, Service::Mainboard);
-            if spec.service == Service::PreConsoleInit && is_mainboard {
-                if let Some(sb_field) = southbridge_field.as_ref() {
-                    quote! {
-                        #id_lit => {
-                            use fstart_services::Mainboard as _Mainboard;
-                            let dev = self.#field
-                                .as_mut()
-                                .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                            let sb = self.#sb_field
-                                .as_mut()
-                                .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                            _Mainboard::pre_console_init_with_southbridge(dev, sb)
-                                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                        }
-                    }
-                } else {
-                    quote! {
-                        #id_lit => {
-                            use fstart_services::Mainboard as _Mainboard;
-                            let dev = self.#field
-                                .as_mut()
-                                .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                            _Mainboard::pre_console_init(dev)
-                                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                        }
-                    }
-                }
-            } else {
-                quote! {
-                    #id_lit => {
-                        use fstart_services::#trait_ident as #trait_alias;
-                        let dev = self.#field
-                            .as_mut()
-                            .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                        #trait_alias::#method_ident(dev)
-                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                    }
-                }
-            }
-        })
-        .collect();
-
-    quote! {
-        for id in ids {
-            match *id {
-                #(#arms)*
-                _ => {
-                    fstart_log::error!(
-                        "{}: unknown or unsupported device id {}",
-                        #method_name,
-                        *id,
-                    );
-                    return Err(fstart_services::device::DeviceError::InitFailed);
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -3394,7 +3283,7 @@ fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
 /// - `inst.is_structural()` — tree node for topology; no runtime rep.
 /// - `excluded.contains(idx)` — bus child in a stage without
 ///   `DriverInit`.
-fn enabled_indices<'a>(
+pub(super) fn enabled_indices<'a>(
     devices: &'a [DeviceConfig],
     instances: &'a [DriverInstance],
     excluded: &'a [usize],

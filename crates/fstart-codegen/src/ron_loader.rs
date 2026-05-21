@@ -339,11 +339,36 @@ mod tests {
         path
     }
 
-    #[test]
-    fn legacy_services_field_is_rejected() {
+    fn qemu_riscv64_board_source() -> String {
         let board_path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/qemu-riscv64/board.ron");
-        let source = std::fs::read_to_string(board_path).expect("read qemu-riscv64 board");
+        std::fs::read_to_string(board_path).expect("read qemu-riscv64 board")
+    }
+
+    fn load_temp_board(name: &str, source: String) -> Result<(), String> {
+        let path = temp_board_path(name);
+        std::fs::write(&path, source).expect("write temp board");
+        let load_path = path.clone();
+        let result = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || load_parsed_board(&load_path).map(|_| ()))
+            .expect("spawn board loader")
+            .join()
+            .expect("join board loader");
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    fn expect_load_error(result: Result<(), String>) -> String {
+        match result {
+            Ok(()) => panic!("board load must fail"),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn legacy_services_field_is_rejected() {
+        let source = qemu_riscv64_board_source();
         let with_legacy_services = source.replacen(
             "driver: Ns16550((",
             "services: [\"Console\"],\n            driver: Ns16550((",
@@ -351,19 +376,55 @@ mod tests {
         );
         assert_ne!(source, with_legacy_services, "test fixture changed");
 
-        let path = temp_board_path("legacy-services");
-        std::fs::write(&path, with_legacy_services).expect("write temp board");
-        let result = load_parsed_board(&path);
-        let _ = std::fs::remove_file(&path);
-        let err = match result {
-            Ok(_) => panic!("legacy services must fail"),
-            Err(err) => err,
-        };
+        let err = expect_load_error(load_temp_board("legacy-services", with_legacy_services));
 
         assert!(
             err.contains("unknown field `services`")
                 || err.contains("unknown field 'services'")
                 || err.contains("Unexpected field named `services`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_device_without_driver_is_rejected() {
+        let source = qemu_riscv64_board_source();
+        let missing_driver = source.replacen(
+            r#"        (
+            name: "uart0",
+            driver: Ns16550((
+                regs: Mmio(base: 0x10000000, reg_shift: 0, reg_width: 0),
+                clock_freq: 3686400,
+                baud_rate: 115200,
+            )),
+        ),"#,
+            r#"        (
+            name: "uart0",
+        ),"#,
+            1,
+        );
+        assert_ne!(source, missing_driver, "test fixture changed");
+
+        let err = expect_load_error(load_temp_board("missing-driver", missing_driver));
+        assert!(
+            err.contains("missing 'driver' or 'kind: Structural(...)'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn device_with_driver_and_structural_kind_is_rejected() {
+        let source = qemu_riscv64_board_source();
+        let conflicting = source.replacen(
+            "driver: Ns16550((",
+            "kind: Structural(PciBridge),\n            driver: Ns16550((",
+            1,
+        );
+        assert_ne!(source, conflicting, "test fixture changed");
+
+        let err = expect_load_error(load_temp_board("driver-and-kind", conflicting));
+        assert!(
+            err.contains("specifies both 'driver' and structural 'kind'"),
             "unexpected error: {err}"
         );
     }
