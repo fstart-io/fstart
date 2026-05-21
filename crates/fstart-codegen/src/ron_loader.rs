@@ -383,6 +383,29 @@ mod tests {
     }
 
     #[test]
+    fn string_disabled_services_field_is_rejected() {
+        let source = qemu_riscv64_board_source();
+        let with_string_disabled_console = source.replacen(
+            "driver: Ns16550((",
+            "disabled_services: [\"Console\"],\n            driver: Ns16550((",
+            1,
+        );
+        assert_ne!(source, with_string_disabled_console, "test fixture changed");
+
+        let err = expect_load_error(load_temp_board(
+            "string-disabled-services",
+            with_string_disabled_console,
+        ));
+
+        assert!(
+            err.contains("Expected identifier")
+                || err.contains("Expected enum")
+                || err.contains("invalid type"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn disabled_services_removes_single_service() {
         let source = qemu_riscv64_board_source();
         let with_disabled_console = source.replacen(
