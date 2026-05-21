@@ -235,7 +235,12 @@ pub fn run(
                 // fetching instructions — the ljmpl from the boot block to
                 // stage code at 0xFF800000 hangs. TCG software-emulates
                 // everything so pflash works fine there.
-                let use_kvm = std::fs::File::open("/dev/kvm").is_ok();
+                let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
+                let use_kvm = match accel.as_deref() {
+                    Some("kvm") => true,
+                    Some("tcg") => false,
+                    _ => std::fs::File::open("/dev/kvm").is_ok(),
+                };
                 let default_mem = if is_uefi { "4G" } else { "1G" };
                 let mut args = vec![
                     "-machine".to_string(),
@@ -578,6 +583,75 @@ fn create_pflash_image(binary: &Path, flash_size: usize) -> Result<PathBuf, Stri
     create_pflash_image_aligned(binary, flash_size, false)
 }
 
+fn x86_elf_symbol_flash_offset(
+    elf_path: &Path,
+    symbol_name: &str,
+    flash_base: u64,
+    flash_size: usize,
+) -> Result<Option<usize>, String> {
+    let elf_data = std::fs::read(elf_path)
+        .map_err(|e| format!("failed to read stage ELF {}: {e}", elf_path.display()))?;
+    let elf = goblin::elf::Elf::parse(&elf_data)
+        .map_err(|e| format!("failed to parse stage ELF {}: {e}", elf_path.display()))?;
+    let flash_end = flash_base + flash_size as u64;
+
+    for sym in &elf.syms {
+        let Some(name) = elf.strtab.get_at(sym.st_name) else {
+            continue;
+        };
+        if name == symbol_name && sym.st_value >= flash_base && sym.st_value < flash_end {
+            return Ok(Some((sym.st_value - flash_base) as usize));
+        }
+    }
+    Ok(None)
+}
+
+fn overlay_x86_elf_segments(
+    elf_path: &Path,
+    pflash: &mut [u8],
+    flash_base: u64,
+) -> Result<(), String> {
+    let elf_data = std::fs::read(elf_path)
+        .map_err(|e| format!("failed to read stage ELF {}: {e}", elf_path.display()))?;
+    let elf = goblin::elf::Elf::parse(&elf_data)
+        .map_err(|e| format!("failed to parse stage ELF {}: {e}", elf_path.display()))?;
+    let flash_end = flash_base + pflash.len() as u64;
+
+    for ph in &elf.program_headers {
+        if ph.p_type != goblin::elf::program_header::PT_LOAD || ph.p_filesz == 0 {
+            continue;
+        }
+        let start = ph.p_paddr;
+        let end = start
+            .checked_add(ph.p_filesz)
+            .ok_or_else(|| "stage ELF segment address overflow".to_string())?;
+        if start < flash_base || end > flash_end {
+            continue;
+        }
+
+        let src_start = ph.p_offset as usize;
+        let src_end = src_start
+            .checked_add(ph.p_filesz as usize)
+            .ok_or_else(|| "stage ELF segment file offset overflow".to_string())?;
+        if src_end > elf_data.len() {
+            return Err(format!(
+                "stage ELF segment exceeds file size: offset {:#x}, size {:#x}",
+                ph.p_offset, ph.p_filesz,
+            ));
+        }
+
+        let dst_start = (start - flash_base) as usize;
+        let dst_end = dst_start + ph.p_filesz as usize;
+        pflash[dst_start..dst_end].copy_from_slice(&elf_data[src_start..src_end]);
+    }
+
+    eprintln!(
+        "[fstart] x86 pflash: overlaid flash PT_LOAD segments from {}",
+        elf_path.display(),
+    );
+    Ok(())
+}
+
 /// Create an x86 pflash image by overlaying the FFS image onto the raw
 /// stage binary.
 ///
@@ -594,12 +668,30 @@ fn create_x86_pflash(
     stage_bin: &Path,
     flash_size: usize,
 ) -> Result<PathBuf, String> {
-    let mut pflash =
-        std::fs::read(stage_bin).map_err(|e| format!("failed to read stage binary: {e}"))?;
+    let mut pflash = vec![0xFFu8; flash_size];
+    let flash_base = 0x1_0000_0000u64
+        .checked_sub(flash_size as u64)
+        .ok_or_else(|| "invalid x86 flash size".to_string())?;
 
-    if pflash.len() != flash_size {
-        // Pad or truncate to flash size
-        pflash.resize(flash_size, 0xFF);
+    // Prefer the ELF next to the flat .bin so we can honor sparse section
+    // placement. `llvm-objcopy -O binary` drops address gaps before the first
+    // loadable section, so a compact .bin cannot be blindly copied at pflash
+    // offset 0: for small bootblocks the reset vector would land near the start
+    // of flash instead of at 0xfffffff0.
+    let stage_elf = stage_bin.with_extension("");
+    if stage_elf.exists() {
+        overlay_x86_elf_segments(&stage_elf, &mut pflash, flash_base)?;
+    } else {
+        let stage_data =
+            std::fs::read(stage_bin).map_err(|e| format!("failed to read stage binary: {e}"))?;
+        if stage_data.len() > flash_size {
+            return Err(format!(
+                "stage binary ({} bytes) exceeds flash size ({} bytes)",
+                stage_data.len(),
+                flash_size,
+            ));
+        }
+        pflash[..stage_data.len()].copy_from_slice(&stage_data);
     }
 
     let ffs_data =
@@ -650,25 +742,50 @@ fn create_x86_pflash(
     // This mechanism is reusable: any x86 platform with the boot block
     // architecture needs this anchor patching step.
     //
-    // Find the anchor in the FFS by scanning for the FSTART01 magic.
+    // Find the patched FFS anchor, not just any embedded stage placeholder.
+    // Stage entries can contain their own placeholder anchors with the same
+    // magic; the real FFS anchor has total_image_size equal to the assembled
+    // image length and anchor_offset equal to its byte offset.
     let anchor_magic = b"FSTART01";
-    if let Some(ffs_anchor_off) = ffs_data
-        .windows(anchor_magic.len())
-        .position(|w| w == anchor_magic)
-    {
-        // Find the anchor in the stage binary (pflash offset 0..FFS_FLASH_OFFSET)
-        if let Some(stage_anchor_off) = pflash[..FFS_FLASH_OFFSET]
+    let ffs_anchor_off =
+        ffs_data
             .windows(anchor_magic.len())
-            .position(|w| w == anchor_magic)
-        {
+            .enumerate()
+            .find_map(|(offset, w)| {
+                if w != anchor_magic || offset + 28 > ffs_data.len() {
+                    return None;
+                }
+                let total_image_size = u32::from_le_bytes([
+                    ffs_data[offset + 20],
+                    ffs_data[offset + 21],
+                    ffs_data[offset + 22],
+                    ffs_data[offset + 23],
+                ]) as usize;
+                let anchor_offset = u32::from_le_bytes([
+                    ffs_data[offset + 24],
+                    ffs_data[offset + 25],
+                    ffs_data[offset + 26],
+                    ffs_data[offset + 27],
+                ]) as usize;
+                (total_image_size == ffs_data.len() && anchor_offset == offset).then_some(offset)
+            });
+    if let Some(ffs_anchor_off) = ffs_anchor_off {
+        // Prefer the linker symbol for the ROM-resident anchor. Scanning for
+        // the magic is ambiguous because optimized code may embed the magic as
+        // an immediate constant, and stage payloads can contain placeholder
+        // anchors of their own.
+        let stage_anchor_off = if stage_elf.exists() {
+            x86_elf_symbol_flash_offset(&stage_elf, "_fstart_anchor_early", flash_base, flash_size)?
+        } else {
+            None
+        };
+        if let Some(stage_anchor_off) = stage_anchor_off {
             // The anchor block is 300 bytes (AnchorBlock size).
             // Copy from FFS anchor to stage anchor.
             let anchor_size = 300;
             let ffs_src = ffs_anchor_off;
             let stage_dst = stage_anchor_off;
-            if ffs_src + anchor_size <= ffs_data.len()
-                && stage_dst + anchor_size <= FFS_FLASH_OFFSET
-            {
+            if ffs_src + anchor_size <= ffs_data.len() && stage_dst + anchor_size <= pflash.len() {
                 pflash[stage_dst..stage_dst + anchor_size]
                     .copy_from_slice(&ffs_data[ffs_src..ffs_src + anchor_size]);
                 eprintln!(

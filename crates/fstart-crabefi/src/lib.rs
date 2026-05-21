@@ -370,16 +370,11 @@ impl Default for TscTimer {
 
 #[cfg(target_arch = "x86_64")]
 impl TscTimer {
-    /// PIT oscillator frequency: 1.193182 MHz.
-    const PIT_FREQ: u64 = 1_193_182;
-
-    /// PIT command register.
-    const PIT_CMD: u16 = 0x43;
-
-    /// Create a new timer by calibrating TSC against the PIT.
+    /// Create a new timer from the platform TSC frequency hint.
     pub fn new() -> Self {
-        let tsc_freq = Self::calibrate_tsc();
-        Self { tsc_freq }
+        Self {
+            tsc_freq: fstart_arch_x86::tsc_frequency_hz(),
+        }
     }
 
     /// Read the Time Stamp Counter.
@@ -396,76 +391,6 @@ impl TscTimer {
             );
         }
         ((hi as u64) << 32) | (lo as u64)
-    }
-
-    /// Calibrate TSC using PIT channel 0 count-down.
-    ///
-    /// Programs PIT channel 0 with a known count, reads the counter
-    /// back via latch commands to measure elapsed PIT ticks, and
-    /// computes the TSC frequency from the ratio.
-    ///
-    /// This approach avoids the speaker gate (port 0x61 bit 5) which
-    /// is unreliable on QEMU Q35 in KVM mode.
-    fn calibrate_tsc() -> u64 {
-        unsafe {
-            // Program channel 0: mode 2 (rate generator), binary,
-            // lobyte/hibyte access. Mode 2 counts down repeatedly.
-            fstart_pio::outb(Self::PIT_CMD, 0x34); // ch0, lobyte/hibyte, mode 2, binary
-
-            // Load a large count — 0xFFFF gives ~54.9 ms period.
-            fstart_pio::outb(0x40, 0xFF); // ch0 low byte
-            fstart_pio::outb(0x40, 0xFF); // ch0 high byte
-
-            // Small delay for count to load
-            for _ in 0..100 {
-                core::hint::spin_loop();
-            }
-
-            // Latch channel 0 and read starting count
-            fstart_pio::outb(Self::PIT_CMD, 0x00); // latch ch0
-            let lo = fstart_pio::inb(0x40) as u16;
-            let hi = fstart_pio::inb(0x40) as u16;
-            let count_start = (hi << 8) | lo;
-
-            let tsc_start = Self::rdtsc();
-
-            // Busy-wait for ~25000 PIT ticks (~20.9 ms)
-            let target_pit_ticks: u16 = 25000;
-            loop {
-                fstart_pio::outb(Self::PIT_CMD, 0x00); // latch ch0
-                let lo = fstart_pio::inb(0x40) as u16;
-                let hi = fstart_pio::inb(0x40) as u16;
-                let count_now = (hi << 8) | lo;
-
-                // Mode 2 counts down from loaded value. Elapsed =
-                // start - now (wraps handled by u16 subtraction).
-                let elapsed = count_start.wrapping_sub(count_now);
-                if elapsed >= target_pit_ticks {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-
-            let tsc_end = Self::rdtsc();
-
-            // Latch final count for precise measurement
-            fstart_pio::outb(Self::PIT_CMD, 0x00);
-            let lo = fstart_pio::inb(0x40) as u16;
-            let hi = fstart_pio::inb(0x40) as u16;
-            let count_end = (hi << 8) | lo;
-
-            let pit_elapsed = count_start.wrapping_sub(count_end) as u64;
-            let tsc_delta = tsc_end - tsc_start;
-
-            if pit_elapsed == 0 {
-                // Fallback: assume 1 GHz TSC
-                return 1_000_000_000;
-            }
-
-            // freq = tsc_delta / (pit_elapsed / PIT_FREQ)
-            //      = tsc_delta * PIT_FREQ / pit_elapsed
-            tsc_delta * Self::PIT_FREQ / pit_elapsed
-        }
     }
 }
 
