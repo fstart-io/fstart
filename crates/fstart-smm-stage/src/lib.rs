@@ -10,6 +10,10 @@ use fstart_driver_intel_ich7::smm::Ich7SmmHandler;
 use fstart_driver_intel_ich8::smm::Ich8SmmHandler;
 #[cfg(smm_platform = "lenovo-x61")]
 use fstart_driver_intel_ich8::smm::Ich8SmmHandler;
+#[cfg(smm_platform = "lenovo-x200")]
+use fstart_driver_intel_ich9::smm::Ich9SmmHandler;
+#[cfg(smm_platform = "lenovo-x200")]
+use fstart_mainboard_lenovo_x200::smm::LenovoX200SmmHandler;
 #[cfg(smm_platform = "lenovo-x61")]
 use fstart_mainboard_lenovo_x61::smm::LenovoX61SmmHandler;
 use fstart_smm_runtime::{
@@ -70,6 +74,11 @@ unsafe fn dispatch_intel_ich(ctx: &mut SmmContext<'_>) {
 #[cfg(smm_platform = "lenovo-x61")]
 unsafe fn dispatch_intel_ich(ctx: &mut SmmContext<'_>) {
     Ich8SmmHandler::<LenovoX61SmmHandler>::handle(ctx);
+}
+
+#[cfg(smm_platform = "lenovo-x200")]
+unsafe fn dispatch_intel_ich(ctx: &mut SmmContext<'_>) {
+    Ich9SmmHandler::<LenovoX200SmmHandler>::handle(ctx);
 }
 
 #[cfg(target_os = "none")]

@@ -496,7 +496,7 @@ pub struct HdaVerbTable {
     /// Additional raw 32-bit verbs (amp gains, power states, EAPD, etc.)
     /// sent after pin configs.
     #[serde(default)]
-    pub extra_verbs: HVec<u32, 32>,
+    pub extra_verbs: HVec<u32, 64>,
 }
 
 /// HD Audio configuration block for a board.

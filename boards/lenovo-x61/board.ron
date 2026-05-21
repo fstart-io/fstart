@@ -154,7 +154,6 @@
                     uhci: (true, true, true, true, true, true),
                 )),
                 pcie_ports: (true, true, false, false, false, false),
-                ecam_base: 0xE0000000,
                 smbus_base: 0x0400,
                 // GPIOs from coreboot mainboard/lenovo/x61/gpio.c.  GPIO42 is
                 // driven high before raminit so the SMBus mux points at DIMM SPD.
@@ -364,8 +363,10 @@
                 ( bus: 0, source: 0, gsi: 2, flags: 0 ),
                 ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
             ],
-            hpet_base: 0xFED00000,
+            hpet: Some(( base: 0xFED00000, timer_block_id: 0x8086A201 )),
             legacy_devices: true,
+            pm_profile: Mobile,
+            iapc_boot_arch: 0x0003,
             sci_irq: 9,
         )),
     )),

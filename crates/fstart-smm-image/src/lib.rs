@@ -318,6 +318,7 @@ fn platform_env(platform: SmmPlatform) -> &'static str {
         SmmPlatform::QemuQ35 => "qemu-q35",
         SmmPlatform::PineviewIch7 => "pineview-ich7",
         SmmPlatform::LenovoX61 => "lenovo-x61",
+        SmmPlatform::LenovoX200 => "lenovo-x200",
     }
 }
 

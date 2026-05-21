@@ -1775,7 +1775,8 @@ fn phase_init_body(
                 .services
                 .iter()
                 .any(|s| s.as_str() == "Mainboard");
-            if service_name == "PreConsoleInit" && is_mainboard {
+            if (service_name == "PreConsoleInit" || service_name == "PostDramInit") && is_mainboard
+            {
                 if let Some(sb_field) = southbridge_field.as_ref() {
                     quote! {
                         #id_lit => {
@@ -1786,8 +1787,13 @@ fn phase_init_body(
                             let sb = self.#sb_field
                                 .as_mut()
                                 .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                            _Mainboard::pre_console_init_with_southbridge(dev, sb)
-                                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                            if #service_name == "PreConsoleInit" {
+                                _Mainboard::pre_console_init_with_southbridge(dev, sb)
+                                    .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                            } else {
+                                _Mainboard::ramstage_init_with_southbridge(dev, sb)
+                                    .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                            }
                         }
                     }
                 } else {
@@ -1797,8 +1803,13 @@ fn phase_init_body(
                             let dev = self.#field
                                 .as_mut()
                                 .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                            _Mainboard::pre_console_init(dev)
-                                .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                            if #service_name == "PreConsoleInit" {
+                                _Mainboard::pre_console_init(dev)
+                                    .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                            } else {
+                                _Mainboard::ramstage_init(dev)
+                                    .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                            }
                         }
                     }
                 }
@@ -2101,7 +2112,8 @@ fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
         extra_idx += 1;
     }
 
-    let platform_block = cap_acpi::generate_platform_acpi(&acpi_cfg.platform);
+    let platform_block =
+        cap_acpi::generate_platform_acpi(&acpi_cfg.platform, ctx.devices, ctx.instances);
     let print_hex = acpi_cfg.print_hex;
 
     quote! {

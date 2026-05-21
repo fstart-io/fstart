@@ -267,31 +267,108 @@ pub struct X86PlatformAcpi {
     /// The most common override maps ISA IRQ 0 (PIT timer) to GSI 2.
     #[serde(default)]
     pub isos: heapless::Vec<IsoEntry, 16>,
-    /// HPET base address (optional).
-    ///
-    /// If `None`, the platform uses the PM Timer from FADT instead.
+    /// HPET table parameters. If `None`, the platform uses the PM Timer from FADT.
     #[serde(default)]
-    pub hpet_base: Option<u64>,
+    pub hpet: Option<X86HpetAcpi>,
     /// Whether legacy devices (8259 PIC, ISA bus) are present.
     ///
-    /// Controls the MADT `PCAT_COMPAT` flag and FADT legacy fields.
+    /// Controls the MADT `PCAT_COMPAT` flag.
     #[serde(default)]
     pub legacy_devices: bool,
+    /// Set the FADT HW-Reduced ACPI flag.
+    #[serde(default)]
+    pub hw_reduced: bool,
+    /// Set the FADT Low Power S0 Idle Capable flag.
+    #[serde(default)]
+    pub low_power_s0: bool,
     /// SCI interrupt number (System Control Interrupt for ACPI events).
     #[serde(default = "default_sci_irq")]
     pub sci_irq: u8,
-    /// PMBASE I/O port base (chipset-specific, e.g. 0x500 for ICH7).
+    /// Preferred power-management profile advertised in the FADT.
+    #[serde(default)]
+    pub pm_profile: AcpiPmProfile,
+    /// IAPC boot architecture flags advertised in the FADT.
     ///
-    /// Used by FADT to derive PM1a_EVT_BLK, PM1a_CNT_BLK, PM_TMR_BLK,
-    /// and GPE0_BLK register addresses.
-    #[serde(default = "default_pmbase")]
-    pub pmbase: u16,
+    /// This is board/platform policy, not a generic x86 constant. For PC/AT
+    /// compatible systems with legacy devices and an 8042 keyboard controller,
+    /// use `0x0003`.
+    #[serde(default)]
+    pub iapc_boot_arch: u16,
+    /// Optional explicit FADT PM register layout override.
+    ///
+    /// Normally this is derived from the southbridge driver. Set only for
+    /// platforms whose PM register layout is not provided by a chipset driver.
+    #[serde(default)]
+    pub fadt_pm: Option<X86FadtPmRegisters>,
     /// Optional SMI-based ACPI mode switch advertised in the FADT.
     ///
     /// Only set this when the board/stage installs an SMI handler that
     /// implements these commands.
     #[serde(default)]
     pub acpi_smi: Option<AcpiSmiConfig>,
+}
+
+/// Preferred ACPI power-management profile.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub enum AcpiPmProfile {
+    /// Unspecified platform profile.
+    #[default]
+    Unspecified,
+    /// Desktop system.
+    Desktop,
+    /// Mobile/laptop system.
+    Mobile,
+    /// Workstation system.
+    Workstation,
+    /// Enterprise server.
+    EnterpriseServer,
+    /// SOHO server.
+    SohoServer,
+    /// Appliance PC.
+    AppliancePc,
+    /// Performance server.
+    PerformanceServer,
+    /// Tablet system.
+    Tablet,
+}
+
+/// HPET table parameters for x86 ACPI.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct X86HpetAcpi {
+    /// HPET base address.
+    pub base: u64,
+    /// HPET event timer block ID.
+    pub timer_block_id: u32,
+    /// HPET number.
+    #[serde(default)]
+    pub number: u8,
+    /// Minimum clock tick in femtoseconds.
+    #[serde(default)]
+    pub min_tick: u16,
+    /// Page-protection value.
+    #[serde(default)]
+    pub page_protection: u8,
+}
+
+/// FADT PM register layout for x86 chipsets.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct X86FadtPmRegisters {
+    /// PM1a Event Block I/O port base.
+    pub pm1a_evt_blk: u32,
+    /// PM1a Control Block I/O port base.
+    pub pm1a_cnt_blk: u32,
+    /// PM Timer Block I/O port base.
+    pub pm_tmr_blk: u32,
+    /// PM1 event block length in bytes.
+    pub pm1_evt_len: u8,
+    /// PM1 control block length in bytes.
+    pub pm1_cnt_len: u8,
+    /// PM timer block length in bytes.
+    pub pm_tmr_len: u8,
+    /// GPE0 Block I/O port base. Zero means no GPE0 block.
+    pub gpe0_blk: u32,
+    /// GPE0 block length in bytes. Zero means no GPE0 block.
+    pub gpe0_blk_len: u8,
 }
 
 /// SMI command values for ACPI mode switching.
@@ -340,9 +417,4 @@ fn default_lapic_base() -> u64 {
 
 fn default_sci_irq() -> u8 {
     9
-}
-
-/// Default PMBASE for ICH7-era southbridges.
-fn default_pmbase() -> u16 {
-    0x0500
 }

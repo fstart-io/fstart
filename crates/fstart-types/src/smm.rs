@@ -15,6 +15,8 @@ pub enum SmmPlatform {
     PineviewIch7,
     /// Lenovo ThinkPad X61: GM965 northbridge with ICH8-M southbridge and dock SMM policy.
     LenovoX61,
+    /// Lenovo ThinkPad X200: GM45 northbridge with ICH9-M southbridge and dock SMM policy.
+    LenovoX200,
 }
 
 /// Optional coreboot compatibility outputs for the standalone SMM image.

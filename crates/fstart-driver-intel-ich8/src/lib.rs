@@ -774,9 +774,6 @@ pub struct IntelIch8Config {
     /// PCIe slot power limits for ports 1..6.
     #[serde(default)]
     pub pcie_power_limits: [PciePowerLimit; 6],
-    /// ECAM base address.
-    #[serde(default = "default_ecam_base")]
-    pub ecam_base: u64,
     /// SMBus I/O base.
     #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
@@ -815,10 +812,6 @@ fn default_pcie_ports() -> [bool; 6] {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_ecam_base() -> u64 {
-    0xe000_0000
 }
 
 fn default_smbus_base() -> u16 {
