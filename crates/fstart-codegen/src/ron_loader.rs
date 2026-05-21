@@ -405,9 +405,7 @@ mod tests {
             .join()
             .expect("ron loader worker panicked");
 
-        assert!(
-            parsed.driver_instances[0].provides(fstart_device_registry::Service::Console)
-        );
+        assert!(parsed.driver_instances[0].provides(fstart_device_registry::Service::Console));
         assert!(!parsed.device_services[0].contains(&fstart_device_registry::Service::Console));
     }
 
