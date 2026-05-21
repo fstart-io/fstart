@@ -595,6 +595,7 @@ dependencies = [
  "fstart-mainboard-lenovo-x61",
  "fstart-services",
  "fstart-types",
+ "heapless",
  "serde",
 ]
 

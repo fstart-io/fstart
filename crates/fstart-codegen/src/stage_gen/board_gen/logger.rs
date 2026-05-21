@@ -5,8 +5,7 @@ use quote::{format_ident, quote};
 
 use fstart_device_registry::Service;
 
-use super::enabled_indices;
-use super::model::{device_provides, BoardCtx};
+use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::install_logger`.
 ///
@@ -14,16 +13,15 @@ use super::model::{device_provides, BoardCtx};
 /// providing the `Console` service. The executor calls `init_device(id)` before
 /// this trampoline, so matching arms can install the already-constructed
 /// console as the global logger.
-pub(super) fn install_logger_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, Service::Console))
-        .map(|idx| {
-            let dev = &ctx.devices[idx];
-            let inst = &ctx.instances[idx];
-            let field = format_ident!("{}", dev.name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let dev_name = dev.name.as_str();
-            let drv_name = inst.meta().name;
+pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let arms = ctx
+        .runtime_devices
+        .providers(Service::Console)
+        .map(|device| {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
+            let dev_name = device.name;
+            let drv_name = device.instance.meta().name;
             quote! {
                 #id_lit => {
                     // SAFETY: the executor's `CapOp::ConsoleInit`

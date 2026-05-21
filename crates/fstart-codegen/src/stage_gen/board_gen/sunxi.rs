@@ -8,11 +8,10 @@ use fstart_types::{Capability, StageLayout};
 
 use crate::stage_gen::tokens::hex_addr;
 
-use super::enabled_indices;
-use super::model::{device_provides, BoardCtx};
+use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::boot_media_select`.
-pub(super) fn boot_media_select_body(ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn boot_media_select_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let uses_boot_media_select = ctx.stage.capabilities.iter().any(|c| {
         matches!(
             c,
@@ -55,7 +54,7 @@ pub(super) fn boot_media_select_body(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 /// Emit the body of `Board::load_next_stage`.
-pub(super) fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn load_next_stage_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let uses_load_next_stage = ctx
         .stage
         .capabilities
@@ -89,13 +88,13 @@ pub(super) fn load_next_stage_body(ctx: &BoardCtx<'_>) -> TokenStream {
         _ => quote! {},
     };
 
-    let dev_arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, Service::BlockDevice))
-        .map(|idx| {
-            let dev = &ctx.devices[idx];
-            let field = format_ident!("{}", dev.name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let dev_name = dev.name.as_str();
+    let dev_arms = ctx
+        .runtime_devices
+        .providers(Service::BlockDevice)
+        .map(|device| {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
+            let dev_name = device.name;
             quote! {
                 #id_lit => {
                     fstart_capabilities::next_stage::read_stage_to_addr(

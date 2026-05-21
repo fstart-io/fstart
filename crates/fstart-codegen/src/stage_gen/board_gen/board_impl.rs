@@ -14,14 +14,14 @@ use super::fdt::{fdt_prepare_body, return_to_fel_body, stage_load_body};
 use super::init_caps::{dram_init_body, late_driver_init_body, pci_init_body};
 use super::lifecycle::{init_all_devices_body, init_device_body};
 use super::logger::install_logger_body;
-use super::model::BoardCtx;
+use super::model::BoardEmitModel;
 use super::mp::mp_init_body;
 use super::payload::payload_load_body;
 use super::phases::{phase_init_body, PhaseSpec};
 use super::sunxi::{boot_media_select_body, load_next_stage_body};
 
 /// Emit the `impl fstart_stage_runtime::Board for _BoardDevices` block.
-pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     let jump_with_handoff_body = match platform {
         Platform::X86_64 => quote! {
             let _ = (entry, handoff_addr);

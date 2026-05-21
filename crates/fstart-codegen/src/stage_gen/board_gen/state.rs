@@ -5,16 +5,13 @@ use quote::{format_ident, quote};
 
 use crate::stage_gen::tokens::hex_addr;
 
-use super::enabled_indices;
-use super::model::BoardCtx;
+use super::model::BoardEmitModel;
 
 /// Emit the `_BoardDevices` struct.
-pub(super) fn emit_adapter_struct(ctx: &BoardCtx<'_>) -> TokenStream {
-    let fields = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).map(|idx| {
-        let dev = &ctx.devices[idx];
-        let inst = &ctx.instances[idx];
-        let field_name = format_ident!("{}", dev.name.as_str());
-        let field_type = format_ident!("{}", inst.meta().type_name);
+pub(super) fn emit_adapter_struct(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let fields = ctx.runtime_devices.runtime().map(|device| {
+        let field_name = format_ident!("{}", device.name);
+        let field_type = format_ident!("{}", device.instance.meta().type_name);
         quote! { #field_name: Option<#field_type>, }
     });
 
@@ -57,10 +54,9 @@ pub(super) fn emit_adapter_struct(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 /// Emit `impl _BoardDevices { const fn new() -> Self }`.
-pub(super) fn emit_adapter_new(ctx: &BoardCtx<'_>) -> TokenStream {
-    let field_inits = enabled_indices(ctx.devices, ctx.instances, ctx.excluded).map(|idx| {
-        let dev = &ctx.devices[idx];
-        let field_name = format_ident!("{}", dev.name.as_str());
+pub(super) fn emit_adapter_new(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let field_inits = ctx.runtime_devices.runtime().map(|device| {
+        let field_name = format_ident!("{}", device.name);
         quote! { #field_name: None, }
     });
 

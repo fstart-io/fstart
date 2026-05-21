@@ -34,7 +34,9 @@
 //!    trait method.
 
 use fstart_device_registry::{DriverInstance, Service};
-use fstart_types::{BoardConfig, BootMedium, Capability, DeviceConfig, DeviceNode};
+use fstart_types::{
+    acpi::AcpiExtraDevice, BoardConfig, BootMedium, Capability, DeviceConfig, DeviceNode,
+};
 use proc_macro2::TokenStream;
 
 mod board_impl;
@@ -53,7 +55,7 @@ mod state;
 mod sunxi;
 
 use board_impl::emit_board_impl;
-use model::BoardCtx;
+use model::BoardEmitModel;
 use state::{emit_adapter_new, emit_adapter_struct};
 
 // =======================================================================
@@ -81,16 +83,18 @@ pub(super) fn generate_board_adapter(
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
     device_services: &[heapless::Vec<Service, 8>],
+    acpi_only_devices: &[AcpiExtraDevice],
     capabilities: &[Capability],
     stage_name: Option<&str>,
 ) -> TokenStream {
     let excluded = compute_excluded_indices(&config.devices, instances, device_tree, capabilities);
     let platform = config.platform;
-    let ctx = BoardCtx::new(
+    let ctx = BoardEmitModel::new(
         config,
         instances,
         device_tree,
         device_services,
+        acpi_only_devices,
         &excluded,
         capabilities,
         stage_name,
@@ -173,7 +177,7 @@ fn compute_excluded_indices(
             // SuperIO/UART) must still be materialised even in tiny stages that
             // intentionally omit DriverInit.
             node.parent.is_some()
-                && !instances[*idx].is_structural()
+                && instances[*idx].has_runtime_driver()
                 && !referenced
                     .iter()
                     .any(|name| *name == devices[*idx].name.as_str())
@@ -189,43 +193,6 @@ fn compute_excluded_indices(
 // =======================================================================
 // `impl Board for _BoardDevices`
 // =======================================================================
-
-// =======================================================================
-// Helpers
-// =======================================================================
-
-/// Indices into `devices`/`instances` that are worth materialising in
-/// this stage.
-///
-/// Filters out:
-///
-/// - `!dev.enabled` — board author disabled the device.
-/// - `inst.is_acpi_only()` — device exists only to contribute ACPI
-///   tables at build time; has no runtime driver.
-/// - `inst.is_structural()` — tree node for topology; no runtime rep.
-/// - `excluded.contains(idx)` — bus child in a stage without
-///   `DriverInit`.
-pub(super) fn enabled_indices<'a>(
-    devices: &'a [DeviceConfig],
-    instances: &'a [DriverInstance],
-    excluded: &'a [usize],
-) -> impl Iterator<Item = usize> + 'a {
-    devices
-        .iter()
-        .zip(instances.iter())
-        .enumerate()
-        .filter_map(move |(idx, (dev, inst))| {
-            if !dev.enabled
-                || inst.is_acpi_only()
-                || inst.is_structural()
-                || excluded.contains(&idx)
-            {
-                None
-            } else {
-                Some(idx)
-            }
-        })
-}
 
 // =======================================================================
 // Tests

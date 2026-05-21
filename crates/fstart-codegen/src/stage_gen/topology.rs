@@ -39,9 +39,9 @@ pub(super) fn validate_device_tree(
         let inst = &instances[i];
 
         // Plain-Device children attach to their parent for init-ordering
-        // only — no bus-service requirement. Structural nodes carry no
-        // runtime state either.
-        if !inst.meta().is_bus_device || inst.is_structural() {
+        // only — no bus-service requirement. Structural nodes have
+        // `is_bus_device == false` in registry metadata.
+        if !inst.meta().is_bus_device {
             continue;
         }
 

@@ -58,6 +58,7 @@ fn adapter_source_inner(board: &str, stage: Option<String>) -> String {
                 &parsed.driver_instances,
                 &parsed.device_tree,
                 &parsed.device_services,
+                &parsed.acpi_only_devices,
                 caps,
                 stage.as_deref(),
             );

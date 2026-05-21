@@ -574,7 +574,7 @@ fn all_runtime_devices(
         .iter()
         .zip(instances.iter())
         .filter_map(|(dev, inst)| {
-            if !dev.enabled || inst.is_acpi_only() || inst.is_structural() {
+            if !dev.enabled || !inst.has_runtime_driver() {
                 return None;
             }
             ids.get(dev.name.as_str())

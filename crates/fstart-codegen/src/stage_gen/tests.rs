@@ -91,6 +91,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
     ParsedBoard {
         config,
         device_services: services_for(&driver_instances),
+        acpi_only_devices: Vec::new(),
         driver_instances,
         device_tree,
     }
@@ -265,6 +266,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
     ParsedBoard {
         config,
         device_services: services_for(&driver_instances),
+        acpi_only_devices: Vec::new(),
         driver_instances,
         device_tree,
     }
@@ -678,6 +680,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
     ParsedBoard {
         config,
         device_services: services_for(&driver_instances),
+        acpi_only_devices: Vec::new(),
         driver_instances,
         device_tree,
     }

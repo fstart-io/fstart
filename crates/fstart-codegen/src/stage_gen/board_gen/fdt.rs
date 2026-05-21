@@ -9,10 +9,10 @@ use fstart_types::{Capability, FdtSource, PayloadConfig, Platform};
 use crate::stage_gen::tokens::hex_addr;
 
 use super::boot_media::{anchor_bytes_stmt, match_boot_media};
-use super::model::BoardCtx;
+use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::fdt_prepare`.
-pub(super) fn fdt_prepare_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn fdt_prepare_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     let has_fdt_prepare = ctx
         .stage
         .capabilities
@@ -69,7 +69,7 @@ fn fdt_prepare_platform_body(platform: Platform, payload: &PayloadConfig) -> Tok
     }
 }
 
-fn fdt_prepare_override_body(ctx: &BoardCtx<'_>) -> TokenStream {
+fn fdt_prepare_override_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
             todo!("board_gen::fdt_prepare Override variant requires an FFS-using stage")
@@ -108,7 +108,7 @@ fn fdt_prepare_override_body(ctx: &BoardCtx<'_>) -> TokenStream {
     }
 }
 
-fn x86_postcar_config_tokens(ctx: &BoardCtx<'_>) -> TokenStream {
+fn x86_postcar_config_tokens(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let ram_ranges: Vec<TokenStream> = ctx
         .config
         .memory
@@ -151,7 +151,7 @@ fn x86_postcar_config_tokens(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 /// Emit the body of `Board::stage_load`.
-pub(super) fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn stage_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
             let _ = next_stage;
@@ -221,7 +221,7 @@ pub(super) fn stage_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 /// Emit the body of `Board::return_to_fel`.
-pub(super) fn return_to_fel_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn return_to_fel_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     let uses_return_to_fel = ctx
         .stage
         .capabilities
