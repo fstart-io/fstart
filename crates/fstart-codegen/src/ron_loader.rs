@@ -117,10 +117,10 @@ struct RonDevice {
     name: HString<32>,
     /// Board policy: suppress selected services this driver can provide.
     ///
-    /// Example: `disabled_services: ["Console"]` leaves the device present
+    /// Example: `disabled_services: [Console]` leaves the device present
     /// but prevents generated console/logger paths from selecting it.
     #[serde(default)]
-    disabled_services: heapless::Vec<HString<32>, 8>,
+    disabled_services: heapless::Vec<Service, 8>,
     /// Typed device kind for non-runtime topology nodes.
     ///
     /// Runtime devices use `driver`; structural nodes use
@@ -298,25 +298,21 @@ fn flatten_device(
 
 fn effective_services(
     instance: &DriverInstance,
-    disabled: &heapless::Vec<HString<32>, 8>,
+    disabled: &heapless::Vec<Service, 8>,
 ) -> Result<heapless::Vec<Service, 8>, String> {
-    let mut disabled_typed = heapless::Vec::<Service, 8>::new();
-    for name in disabled {
-        let service = Service::from_name(name.as_str())
-            .ok_or_else(|| format!("unknown disabled service '{name}'"))?;
-        if !instance.provides(service) {
+    for service in disabled {
+        if !instance.provides(*service) {
             return Err(format!(
                 "driver '{}' cannot disable service '{}' because it does not provide it",
                 instance.driver_name(),
-                name
+                service.as_str()
             ));
         }
-        let _ = disabled_typed.push(service);
     }
 
     let mut services = heapless::Vec::new();
     for service in instance.provided_services() {
-        if disabled_typed.contains(service) {
+        if disabled.contains(service) {
             continue;
         }
         let _ = services.push(*service);
@@ -384,6 +380,35 @@ mod tests {
                 || err.contains("Unexpected field named `services`"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn disabled_services_removes_single_service() {
+        let source = qemu_riscv64_board_source();
+        let with_disabled_console = source.replacen(
+            "driver: Ns16550((",
+            "disabled_services: [Console],\n            driver: Ns16550((",
+            1,
+        );
+        assert_ne!(source, with_disabled_console, "test fixture changed");
+
+        let parsed = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let path = temp_board_path("disabled-console");
+                std::fs::write(&path, with_disabled_console).unwrap();
+                let parsed = load_parsed_board(&path).unwrap();
+                let _ = std::fs::remove_file(&path);
+                parsed
+            })
+            .expect("spawn ron loader worker")
+            .join()
+            .expect("ron loader worker panicked");
+
+        assert!(
+            parsed.driver_instances[0].provides(fstart_device_registry::Service::Console)
+        );
+        assert!(!parsed.device_services[0].contains(&fstart_device_registry::Service::Console));
     }
 
     #[test]
