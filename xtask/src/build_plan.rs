@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 
 use fstart_codegen::ron_loader::ParsedBoard;
+use fstart_device_registry::DriverInstance;
 use fstart_types::stage::PageSize;
 use fstart_types::{
     effective_stage_load_addr, BoardConfig, Capability, Platform, SecurityConfig, SocImageFormat,
@@ -92,27 +93,28 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
     let target = TargetSpec::for_platform(config.platform);
     let base_features = base_features(parsed, target);
     let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
-    let has_pci_driver = config
-        .devices
-        .iter()
-        .any(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
+    let pci_root_backend = pci_root_backend(&parsed.driver_instances);
+    let has_pci_driver = pci_root_backend.is_some();
 
     let stages = match &config.stages {
         StageLayout::Monolithic(stage) => {
             vec![stage_plan(
                 config,
-                &stage.capabilities,
-                stage.heap_size,
-                stage.page_size,
-                stage.page_table_addr,
-                None,
-                "stage".to_string(),
-                0,
+                &StageContext {
+                    capabilities: &stage.capabilities,
+                    heap_size: stage.heap_size,
+                    page_size: stage.page_size,
+                    page_table_addr: stage.page_table_addr,
+                    stage_name: None,
+                    display_name: "stage".to_string(),
+                    stage_idx: 0,
+                    load_addr: stage.load_addr,
+                },
                 &base_features,
                 target.needs_flat_binary,
                 config.soc_image_format,
                 false,
-                stage.load_addr,
+                pci_root_backend,
             )]
         }
         StageLayout::MultiStage(stages) => stages
@@ -126,18 +128,21 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
                 };
                 stage_plan(
                     config,
-                    &stage.capabilities,
-                    stage.heap_size,
-                    stage.page_size,
-                    stage.page_table_addr,
-                    Some(stage.name.to_string()),
-                    stage.name.to_string(),
-                    idx,
+                    &StageContext {
+                        capabilities: &stage.capabilities,
+                        heap_size: stage.heap_size,
+                        page_size: stage.page_size,
+                        page_table_addr: stage.page_table_addr,
+                        stage_name: Some(stage.name.to_string()),
+                        display_name: stage.name.to_string(),
+                        stage_idx: idx,
+                        load_addr: effective_stage_load_addr(config, idx, stage),
+                    },
                     &base_features,
                     target.needs_flat_binary,
                     soc_format,
                     has_pci_driver,
-                    effective_stage_load_addr(config, idx, stage),
+                    pci_root_backend,
                 )
             })
             .collect(),
@@ -185,55 +190,83 @@ fn base_features(parsed: &ParsedBoard, target: TargetSpec) -> FeatureSet {
     features
 }
 
-#[allow(clippy::too_many_arguments)]
-fn stage_plan(
-    config: &BoardConfig,
-    capabilities: &[Capability],
+#[derive(Debug)]
+struct StageContext<'a> {
+    capabilities: &'a [Capability],
     heap_size: Option<u32>,
     page_size: PageSize,
     page_table_addr: Option<(u64, u64)>,
     stage_name: Option<String>,
     display_name: String,
     stage_idx: usize,
+    load_addr: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PciRootBackend {
+    GenericEcam,
+    Q35HostBridge,
+}
+
+fn pci_root_backend(driver_instances: &[DriverInstance]) -> Option<PciRootBackend> {
+    let pci_root = driver_instances
+        .iter()
+        .find(|inst| inst.provides_pci_root())?;
+    if pci_root.driver_name() == "q35-hostbridge" {
+        Some(PciRootBackend::Q35HostBridge)
+    } else {
+        Some(PciRootBackend::GenericEcam)
+    }
+}
+
+fn stage_plan(
+    config: &BoardConfig,
+    stage: &StageContext<'_>,
     base_features: &FeatureSet,
     needs_flat_binary: bool,
     soc_format: SocImageFormat,
     include_global_pci_alloc: bool,
-    load_addr: u64,
+    pci_root_backend: Option<PciRootBackend>,
 ) -> StageBuildPlan {
     let mut features = base_features.clone();
-    features.extend(capability_features(capabilities, &config.security, config));
+    features.extend(capability_features(
+        stage.capabilities,
+        &config.security,
+        config,
+        pci_root_backend,
+    ));
 
-    if page_size == PageSize::Size1GiB {
+    if stage.page_size == PageSize::Size1GiB {
         features.insert("x86-1g-pages");
     }
     if config.platform == Platform::X86_64 {
-        if page_table_addr.is_some() {
+        if stage.page_table_addr.is_some() {
             features.insert("x86-writable-page-tables");
-        } else if stage_name.is_none() || stage_idx == 0 {
+        } else if stage.stage_name.is_none() || stage.stage_idx == 0 {
             features.insert("x86-static-page-tables");
         }
     }
 
-    let stage_has_crabefi = capabilities
+    let stage_has_crabefi = stage
+        .capabilities
         .iter()
         .any(|c| matches!(c, Capability::PayloadLoad))
         && stage_uses_crabefi(config);
-    let needs_alloc = stage_uses_fdt(capabilities)
-        || stage_uses_acpi(capabilities)
+    let needs_alloc = stage_uses_fdt(stage.capabilities)
+        || stage_uses_acpi(stage.capabilities)
         || stage_has_crabefi
-        || heap_size.is_some()
+        || stage.heap_size.is_some()
         || include_global_pci_alloc;
     let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
     StageBuildPlan {
-        stage_name,
-        display_name,
+        stage_name: stage.stage_name.clone(),
+        display_name: stage.display_name.clone(),
         features,
         needs_flat_binary,
         build_std,
         soc_format,
-        load_addr,
+        load_addr: stage.load_addr,
     }
 }
 
@@ -242,6 +275,7 @@ fn capability_features(
     capabilities: &[Capability],
     security: &SecurityConfig,
     config: &BoardConfig,
+    pci_root_backend: Option<PciRootBackend>,
 ) -> Vec<&'static str> {
     let mut features = Vec::new();
 
@@ -272,13 +306,9 @@ fn capability_features(
     }
 
     if stage_uses_pci(capabilities) {
-        let pci_driver = config
-            .devices
-            .iter()
-            .find(|d| d.services.iter().any(|s| s.as_str() == "PciRootBus"));
-        match pci_driver.map(|d| d.driver.as_str()) {
-            Some("q35-hostbridge") => features.push("q35-hostbridge"),
-            _ => features.push("pci-ecam"),
+        match pci_root_backend {
+            Some(PciRootBackend::Q35HostBridge) => features.push("q35-hostbridge"),
+            Some(PciRootBackend::GenericEcam) | None => features.push("pci-ecam"),
         }
     }
 
