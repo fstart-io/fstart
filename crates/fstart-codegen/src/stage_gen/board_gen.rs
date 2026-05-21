@@ -11,19 +11,11 @@
 //!   `impl fstart_stage_runtime::Board for _BoardDevices` with one
 //!   method per capability.
 //!
-//! # Transitional state
+//! # Current state
 //!
-//! During the migration (steps 3–6 of the plan's "Work breakdown") the
-//! new `_BoardDevices` lives **alongside** the existing `Devices`
-//! struct and `fstart_main` body.  Nothing calls the new adapter yet
-//! — it exists so the compiler type-checks every board against the
-//! `Board` trait surface, one capability at a time as each method is
-//! migrated out of `todo!()`.
-//!
-//! At the final "flip" commit the old `Devices` / `StageContext` /
-//! `fstart_main` emission is deleted and `_BoardDevices` is renamed to
-//! `Devices`; the generated `fstart_main` becomes a one-liner that
-//! calls `run_stage`.
+//! Generated `fstart_main` calls `fstart_stage_runtime::run_stage` with this
+//! adapter.  The adapter owns concrete driver fields and provides the typed
+//! service/capability trampolines that the handwritten executor invokes.
 //!
 //! # Design rules enforced here
 //!
