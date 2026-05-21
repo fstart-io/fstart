@@ -59,7 +59,6 @@
                 base_addr: 0x10000000,
                 gpio_base: 0x10060000,
             )),
-            services: ["ClockController"],
         ),
 
         // SiFive UART0 — debug console.
@@ -71,7 +70,6 @@
                 clock_freq: 130000000,
                 baud_rate: 115200,
             )),
-            services: ["Console"],
         ),
 
         // FU740 DDR4 memory controller — Denali DDR4 controller + PHY.
@@ -83,7 +81,6 @@
                 filter_base:  0x100B8000,
                 dram_size:    0x400000000,
             )),
-            services: ["MemoryController"],
         ),
     ],
 

@@ -62,7 +62,6 @@
                 clock_freq: 500000000,
                 baud_rate: 115200,
             )),
-            services: ["Console"],
         ),
     ],
 

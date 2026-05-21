@@ -158,6 +158,89 @@ pub mod i2c_ck505 {
 // DriverMeta — static metadata about a driver
 // ---------------------------------------------------------------------------
 
+/// Service traits a driver instance can provide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Service {
+    Console,
+    BlockDevice,
+    ClockController,
+    MemoryController,
+    PciRootBus,
+    PciHost,
+    SmmOps,
+    Framebuffer,
+    AcpiTableProvider,
+    MemoryDetector,
+    SuperIoHost,
+    Southbridge,
+    Mainboard,
+    PreConsoleInit,
+    EarlyInit,
+    StageLocalInit,
+    PostDramInit,
+    FinalizeInit,
+    I2cBus,
+    SpiBus,
+    GpioController,
+}
+
+impl Service {
+    /// Parses a stable service name used in RON policy.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "Console" => Self::Console,
+            "BlockDevice" => Self::BlockDevice,
+            "ClockController" => Self::ClockController,
+            "MemoryController" => Self::MemoryController,
+            "PciRootBus" => Self::PciRootBus,
+            "PciHost" => Self::PciHost,
+            "SmmOps" => Self::SmmOps,
+            "Framebuffer" => Self::Framebuffer,
+            "AcpiTableProvider" => Self::AcpiTableProvider,
+            "MemoryDetector" => Self::MemoryDetector,
+            "SuperIoHost" => Self::SuperIoHost,
+            "Southbridge" => Self::Southbridge,
+            "Mainboard" => Self::Mainboard,
+            "PreConsoleInit" => Self::PreConsoleInit,
+            "EarlyInit" => Self::EarlyInit,
+            "StageLocalInit" => Self::StageLocalInit,
+            "PostDramInit" => Self::PostDramInit,
+            "FinalizeInit" => Self::FinalizeInit,
+            "I2cBus" => Self::I2cBus,
+            "SpiBus" => Self::SpiBus,
+            "GpioController" => Self::GpioController,
+            _ => return None,
+        })
+    }
+
+    /// Stable service name used in RON policy and generated imports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Console => "Console",
+            Self::BlockDevice => "BlockDevice",
+            Self::ClockController => "ClockController",
+            Self::MemoryController => "MemoryController",
+            Self::PciRootBus => "PciRootBus",
+            Self::PciHost => "PciHost",
+            Self::SmmOps => "SmmOps",
+            Self::Framebuffer => "Framebuffer",
+            Self::AcpiTableProvider => "AcpiTableProvider",
+            Self::MemoryDetector => "MemoryDetector",
+            Self::SuperIoHost => "SuperIoHost",
+            Self::Southbridge => "Southbridge",
+            Self::Mainboard => "Mainboard",
+            Self::PreConsoleInit => "PreConsoleInit",
+            Self::EarlyInit => "EarlyInit",
+            Self::StageLocalInit => "StageLocalInit",
+            Self::PostDramInit => "PostDramInit",
+            Self::FinalizeInit => "FinalizeInit",
+            Self::I2cBus => "I2cBus",
+            Self::SpiBus => "SpiBus",
+            Self::GpioController => "GpioController",
+        }
+    }
+}
+
 /// Static metadata about a driver.
 ///
 /// Returned by [`DriverInstance::meta()`] to give codegen everything it
@@ -173,8 +256,8 @@ pub struct DriverMeta {
     pub module_path: &'static str,
     /// Rust type name of the config struct (e.g., `"Ns16550Config"`).
     pub config_type: &'static str,
-    /// Service traits this driver implements.
-    pub services: &'static [&'static str],
+    /// Unconditional service traits this driver implements.
+    pub static_services: &'static [Service],
     /// Compatible strings for FDT generation.
     pub compatible: &'static [&'static str],
     /// Whether this driver implements `AcpiDevice` (behind `acpi` feature).
@@ -365,7 +448,7 @@ impl DriverInstance {
                 type_name: "_Structural",
                 module_path: "fstart_device_registry",
                 config_type: "StructuralConfig",
-                services: &[],
+                static_services: &[],
                 compatible: &[],
                 has_acpi: false,
                 is_bus_device: false,
@@ -376,7 +459,7 @@ impl DriverInstance {
                 type_name: "Ns16550",
                 module_path: "fstart_driver_ns16550",
                 config_type: "Ns16550Config",
-                services: &["Console"],
+                static_services: &[Service::Console],
                 compatible: &[
                     "ns16550a",
                     "ns16550",
@@ -392,7 +475,7 @@ impl DriverInstance {
                 type_name: "Pl011",
                 module_path: "fstart_driver_pl011",
                 config_type: "Pl011Config",
-                services: &["Console"],
+                static_services: &[Service::Console],
                 compatible: &["arm,pl011", "pl011"],
                 has_acpi: true,
                 is_bus_device: false,
@@ -403,7 +486,7 @@ impl DriverInstance {
                 type_name: "DesignwareI2c",
                 module_path: "fstart_driver_designware_i2c",
                 config_type: "DesignwareI2cConfig",
-                services: &["I2cBus"],
+                static_services: &[Service::I2cBus],
                 compatible: &["snps,designware-i2c", "dw-apb-i2c"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -414,7 +497,7 @@ impl DriverInstance {
                 type_name: "SunxiA20Ccu",
                 module_path: "fstart_driver_sunxi_ccu",
                 config_type: "SunxiA20CcuConfig",
-                services: &["ClockController"],
+                static_services: &[Service::ClockController],
                 compatible: &["allwinner,sun7i-a20-ccu"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -425,7 +508,7 @@ impl DriverInstance {
                 type_name: "SunxiH3Ccu",
                 module_path: "fstart_driver_sunxi_h3_ccu",
                 config_type: "SunxiH3CcuConfig",
-                services: &["ClockController"],
+                static_services: &[Service::ClockController],
                 compatible: &["allwinner,sun8i-h3-ccu"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -436,7 +519,7 @@ impl DriverInstance {
                 type_name: "SunxiA20Dramc",
                 module_path: "fstart_driver_sunxi_a20_dramc",
                 config_type: "SunxiA20DramcConfig",
-                services: &["MemoryController"],
+                static_services: &[Service::MemoryController],
                 compatible: &["allwinner,sun7i-a20-dramc"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -447,7 +530,7 @@ impl DriverInstance {
                 type_name: "SunxiH3Dramc",
                 module_path: "fstart_driver_sunxi_h3_dramc",
                 config_type: "SunxiH3DramcConfig",
-                services: &["MemoryController"],
+                static_services: &[Service::MemoryController],
                 compatible: &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -458,7 +541,7 @@ impl DriverInstance {
                 type_name: "SunxiMmc",
                 module_path: "fstart_driver_sunxi_mmc",
                 config_type: "SunxiMmcConfig",
-                services: &["BlockDevice"],
+                static_services: &[Service::BlockDevice],
                 compatible: &[
                     "allwinner,sun7i-a20-mmc",
                     "allwinner,sun8i-h3-mmc",
@@ -473,7 +556,7 @@ impl DriverInstance {
                 type_name: "SunxiSpi",
                 module_path: "fstart_driver_sunxi_spi",
                 config_type: "SunxiSpiConfig",
-                services: &["BlockDevice"],
+                static_services: &[Service::BlockDevice],
                 compatible: &["allwinner,sun4i-a10-spi", "allwinner,sun8i-h3-spi"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -484,7 +567,7 @@ impl DriverInstance {
                 type_name: "SunxiD1Ccu",
                 module_path: "fstart_driver_sunxi_d1_ccu",
                 config_type: "SunxiD1CcuConfig",
-                services: &["ClockController"],
+                static_services: &[Service::ClockController],
                 compatible: &["allwinner,sun20i-d1-ccu"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -495,7 +578,7 @@ impl DriverInstance {
                 type_name: "SunxiD1Dramc",
                 module_path: "fstart_driver_sunxi_d1_dramc",
                 config_type: "SunxiD1DramcConfig",
-                services: &["MemoryController"],
+                static_services: &[Service::MemoryController],
                 compatible: &["allwinner,sun20i-d1-mbus"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -505,7 +588,7 @@ impl DriverInstance {
                 type_name: "AcpiAhciDevice",
                 module_path: "fstart_types::acpi",
                 config_type: "AcpiAhciDevice",
-                services: &[],
+                static_services: &[],
                 compatible: &[],
                 has_acpi: true,
                 is_bus_device: false,
@@ -515,7 +598,7 @@ impl DriverInstance {
                 type_name: "AcpiXhciDevice",
                 module_path: "fstart_types::acpi",
                 config_type: "AcpiXhciDevice",
-                services: &[],
+                static_services: &[],
                 compatible: &[],
                 has_acpi: true,
                 is_bus_device: false,
@@ -525,7 +608,7 @@ impl DriverInstance {
                 type_name: "AcpiPcieRootDevice",
                 module_path: "fstart_types::acpi",
                 config_type: "AcpiPcieRootDevice",
-                services: &[],
+                static_services: &[],
                 compatible: &[],
                 has_acpi: true,
                 is_bus_device: false,
@@ -536,7 +619,7 @@ impl DriverInstance {
                 type_name: "SifiveUart",
                 module_path: "fstart_driver_sifive_uart",
                 config_type: "SifiveUartConfig",
-                services: &["Console"],
+                static_services: &[Service::Console],
                 compatible: &["sifive,fu740-c000-uart", "sifive,uart0"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -547,7 +630,7 @@ impl DriverInstance {
                 type_name: "Fu740Prci",
                 module_path: "fstart_driver_fu740_prci",
                 config_type: "Fu740PrciConfig",
-                services: &["ClockController"],
+                static_services: &[Service::ClockController],
                 compatible: &["sifive,fu740-c000-prci"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -558,7 +641,7 @@ impl DriverInstance {
                 type_name: "Fu740Ddr",
                 module_path: "fstart_driver_fu740_ddr",
                 config_type: "Fu740DdrConfig",
-                services: &["MemoryController"],
+                static_services: &[Service::MemoryController],
                 compatible: &["sifive,fu740-c000-ddr"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -569,7 +652,7 @@ impl DriverInstance {
                 type_name: "PciEcam",
                 module_path: "fstart_driver_pci_ecam",
                 config_type: "PciEcamConfig",
-                services: &["PciRootBus"],
+                static_services: &[Service::PciRootBus],
                 compatible: &["pci-host-ecam-generic"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -580,7 +663,7 @@ impl DriverInstance {
                 type_name: "BochsDisplay",
                 module_path: "fstart_driver_bochs_display",
                 config_type: "BochsDisplayConfig",
-                services: &["Framebuffer"],
+                static_services: &[Service::Framebuffer],
                 compatible: &["bochs-display", "qemu-stdvga"],
                 has_acpi: false,
                 is_bus_device: true,
@@ -591,7 +674,7 @@ impl DriverInstance {
                 type_name: "QemuFwCfg",
                 module_path: "fstart_driver_qemu_fw_cfg",
                 config_type: "QemuFwCfgConfig",
-                services: &["AcpiTableProvider", "MemoryDetector"],
+                static_services: &[Service::AcpiTableProvider, Service::MemoryDetector],
                 compatible: &["qemu,fw-cfg"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -602,7 +685,7 @@ impl DriverInstance {
                 type_name: "Q35HostBridge",
                 module_path: "fstart_driver_q35_hostbridge",
                 config_type: "Q35HostBridgeConfig",
-                services: &["PciRootBus", "SmmOps"],
+                static_services: &[Service::PciRootBus, Service::SmmOps],
                 compatible: &["q35-hostbridge"],
                 has_acpi: false,
                 is_bus_device: false,
@@ -617,7 +700,7 @@ impl DriverInstance {
                 // directly when `console_port` is set — no separate
                 // NS16550 child needed.  Also expose `SuperIoHost` for
                 // init-ordering of any remaining children.
-                services: &["SuperIoHost", "Console"],
+                static_services: &[Service::SuperIoHost, Service::Console],
                 compatible: &["ite,it8721f", "ite,8721f"],
                 has_acpi: true,
                 is_bus_device: true,
@@ -628,7 +711,7 @@ impl DriverInstance {
                 type_name: "Pc87382",
                 module_path: "fstart_driver_nsc_pc87382",
                 config_type: "Pc87382Config",
-                services: &["SuperIoHost", "Console"],
+                static_services: &[Service::SuperIoHost, Service::Console],
                 compatible: &["nsc,pc87382"],
                 has_acpi: true,
                 is_bus_device: true,
@@ -639,7 +722,7 @@ impl DriverInstance {
                 type_name: "Pc87392",
                 module_path: "fstart_driver_nsc_pc87392",
                 config_type: "Pc87392Config",
-                services: &["SuperIoHost", "Console"],
+                static_services: &[Service::SuperIoHost, Service::Console],
                 compatible: &["nsc,pc87392"],
                 has_acpi: true,
                 is_bus_device: true,
@@ -650,7 +733,12 @@ impl DriverInstance {
                 type_name: "IntelPineview",
                 module_path: "fstart_driver_intel_pineview",
                 config_type: "IntelPineviewConfig",
-                services: &["MemoryController", "PciHost", "PciRootBus", "SmmOps"],
+                static_services: &[
+                    Service::MemoryController,
+                    Service::PciHost,
+                    Service::PciRootBus,
+                    Service::SmmOps,
+                ],
                 compatible: &["intel,pineview-mch", "intel,atom-d4xx-mch"],
                 has_acpi: true,
                 is_bus_device: false,
@@ -661,7 +749,13 @@ impl DriverInstance {
                 type_name: "IntelIch7",
                 module_path: "fstart_driver_intel_ich7",
                 config_type: "IntelIch7Config",
-                services: &["Southbridge"],
+                static_services: &[
+                    Service::Southbridge,
+                    Service::PreConsoleInit,
+                    Service::EarlyInit,
+                    Service::PostDramInit,
+                    Service::FinalizeInit,
+                ],
                 compatible: &["intel,ich7", "intel,nm10"],
                 has_acpi: true,
                 is_bus_device: false,
@@ -672,13 +766,13 @@ impl DriverInstance {
                 type_name: "IntelGm965",
                 module_path: "fstart_driver_intel_gm965",
                 config_type: "IntelGm965Config",
-                services: &[
-                    "MemoryController",
-                    "MemoryDetector",
-                    "PciHost",
-                    "PciRootBus",
-                    "SmmOps",
-                    "PostDramInit",
+                static_services: &[
+                    Service::MemoryController,
+                    Service::MemoryDetector,
+                    Service::PciHost,
+                    Service::PciRootBus,
+                    Service::SmmOps,
+                    Service::PostDramInit,
                 ],
                 compatible: &["intel,gm965", "intel,crestline"],
                 has_acpi: true,
@@ -690,7 +784,13 @@ impl DriverInstance {
                 type_name: "IntelIch8",
                 module_path: "fstart_driver_intel_ich8",
                 config_type: "IntelIch8Config",
-                services: &["Southbridge"],
+                static_services: &[
+                    Service::Southbridge,
+                    Service::PreConsoleInit,
+                    Service::EarlyInit,
+                    Service::PostDramInit,
+                    Service::FinalizeInit,
+                ],
                 compatible: &["intel,ich8", "intel,ich8m", "intel,82801hx"],
                 has_acpi: true,
                 is_bus_device: false,
@@ -701,7 +801,12 @@ impl DriverInstance {
                 type_name: "LenovoX61Mainboard",
                 module_path: "fstart_mainboard_lenovo_x61",
                 config_type: "LenovoX61MainboardConfig",
-                services: &["Mainboard"],
+                static_services: &[
+                    Service::Mainboard,
+                    Service::PreConsoleInit,
+                    Service::PostDramInit,
+                    Service::FinalizeInit,
+                ],
                 compatible: &["lenovo,thinkpad-x61"],
                 has_acpi: true,
                 is_bus_device: false,
@@ -712,12 +817,26 @@ impl DriverInstance {
                 type_name: "I2cCk505",
                 module_path: "fstart_driver_i2c_ck505",
                 config_type: "I2cCk505Config",
-                services: &[],
+                static_services: &[],
                 compatible: &["idt,ck505"],
                 has_acpi: false,
                 is_bus_device: true,
             },
         }
+    }
+
+    /// Services provided by this concrete driver instance.
+    ///
+    /// This method is the source of truth for service availability. It may
+    /// inspect typed config for config-dependent services; currently all
+    /// registered services are unconditional.
+    pub fn provided_services(&self) -> &'static [Service] {
+        self.meta().static_services
+    }
+
+    /// Returns `true` when this concrete instance provides `service`.
+    pub fn provides(&self, service: Service) -> bool {
+        self.provided_services().contains(&service)
     }
 
     /// The cargo feature / RON driver name for this variant.

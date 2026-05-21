@@ -88,10 +88,6 @@
                 ck505_pre_raminit: true,
                 acpi_name: "MCHC",
             )),
-            services: [
-                "MemoryController", "MemoryDetector", "PciHost", "PciRootBus", "SmmOps",
-                "PreConsoleInit", "EarlyInit", "StageLocalInit",
-            ],
         ),
         (
             name: "southbridge",
@@ -198,19 +194,18 @@
                 c3_latency: 85,
                 power_on_after_fail: 0,
             )),
-            services: ["Southbridge", "PreConsoleInit", "EarlyInit", "PostDramInit", "FinalizeInit"],
             children: [
                 // PCIe root ports — structural PCI bridge nodes.
                 // Port 0 is empty on this board.
-                ( name: "pcie0", bus: Pci(0x1c, 0), services: ["PciBridge"] ),
+                ( name: "pcie0", bus: Pci(0x1c, 0) ),
                 // Port 1 hosts the RTL8168 NIC (runtime-enumerated).
-                ( name: "pcie1", bus: Pci(0x1c, 1), services: ["PciBridge"] ),
-                ( name: "pcie2", bus: Pci(0x1c, 2), enabled: false, services: ["PciBridge"] ),
-                ( name: "pcie3", bus: Pci(0x1c, 3), enabled: false, services: ["PciBridge"] ),
+                ( name: "pcie1", bus: Pci(0x1c, 1) ),
+                ( name: "pcie2", bus: Pci(0x1c, 2), enabled: false ),
+                ( name: "pcie3", bus: Pci(0x1c, 3), enabled: false ),
 
                 // LPC bus — structural internal SB function. The
                 // SuperIO is the only LPC peripheral on this board.
-                ( name: "lpc", services: ["LpcBus"],
+                ( name: "lpc",
                     children: [
                         // IT8721F SuperIO: programs LDNs and provides
                         // Console directly via `console_port: "com1"`.
@@ -229,7 +224,6 @@
                                 acpi_name: "SIO0",
                                 console_port: "com1",
                             )),
-                            services: ["SuperIoHost", "Console"],
                         ),
                     ],
                 ),
@@ -237,7 +231,7 @@
                 // SMBus — structural internal SB function. Hosts
                 // the CK505 clock generator and (at runtime) the
                 // DIMM SPD EEPROMs at 0x50..0x57.
-                ( name: "smbus", services: ["SmBus"],
+                ( name: "smbus",
                     children: [
                         // The CK505 driver is declared here but disabled
                         // for the initial build: its `new_on_bus` needs
@@ -249,7 +243,6 @@
                                 mask: [0x00, 0x80, 0xff, 0xff, 0xff],
                                 regs: [0x00, 0x80, 0xfe, 0xff, 0xfc],
                             )),
-                            services: [],
                         ),
                     ],
                 ),

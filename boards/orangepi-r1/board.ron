@@ -46,7 +46,6 @@
                 pio_base: 0x01C20800,
                 uart_index: 0,
             )),
-            services: ["ClockController"],
         ),
         // UART0 — debug console on PA4 (TX) / PA5 (RX).
         // NS16550-compatible, 4-byte register stride, 24 MHz input clock.
@@ -57,7 +56,6 @@
                 clock_freq: 24000000,
                 baud_rate: 115200,
             )),
-            services: ["Console"],
         ),
         // Allwinner H3/H2+ DesignWare DRAM controller — DDR3, 624 MHz.
         // Parameters from u-boot orangepi_r1_defconfig.
@@ -70,7 +68,6 @@
                 zq: 3881979,
                 odt_en: true,
             )),
-            services: ["MemoryController"],
         ),
         // SD card controller (MMC0) — boot medium.
         // Uses sun6i clock gating with separate bus-reset register.
@@ -82,7 +79,6 @@
                 pio_base: 0x01C20800,
                 mmc_index: 0,
             )),
-            services: ["BlockDevice"],
         ),
         // SPI NOR flash (SPI0) — 16 MiB on-board flash, alternative boot medium.
         // Sun6i-generation SPI controller at 0x01C68000.
@@ -97,7 +93,6 @@
                 flash_size: 0x01000000,
                 spi_freq: 50000000,
             )),
-            services: ["BlockDevice"],
         ),
     ],
 

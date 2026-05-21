@@ -38,7 +38,6 @@
                 clock_freq: 1843200,
                 baud_rate: 115200,
             )),
-            services: ["Console"],
         ),
         (
             name: "fw_cfg0",
@@ -46,7 +45,6 @@
                 ctl_port: 0x510,
                 data_port: 0x511,
             )),
-            services: ["AcpiTableProvider", "MemoryDetector"],
         ),
         (
             name: "pci0",
@@ -56,7 +54,6 @@
                 bus_start: 0,
                 bus_end: 255,
             )),
-            services: ["PciRootBus"],
             children: [
                 (
                     name: "bochs0",
@@ -66,7 +63,6 @@
                         width: 1024,
                         height: 768,
                     )),
-                    services: ["Framebuffer"],
                 ),
             ],
         ),
