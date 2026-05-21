@@ -128,13 +128,13 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     let mut tokens = TokenStream::new();
 
     tokens.extend(generate_platform_externs(platform));
-    tokens.extend(generate_imports(
+    let import_facts = ImportFacts::new(
         &config.devices,
         &parsed.driver_instances,
         &parsed.device_services,
         capabilities,
-        embed_anchor,
-    ));
+    );
+    tokens.extend(generate_imports(&import_facts));
 
     // Allwinner eGON: emit the eGON.BT0 header struct and branch
     // instruction in dedicated linker sections.  The platform _start is
@@ -190,6 +190,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         &parsed.driver_instances,
         &parsed.device_tree,
         &parsed.device_services,
+        &parsed.acpi_only_devices,
         capabilities,
         stage_name,
     ));
@@ -243,14 +244,90 @@ fn generate_platform_externs(platform: Platform) -> TokenStream {
     }
 }
 
+/// Stage/import facts computed once before emitting `use` statements.
+///
+/// This is intentionally small and local to import generation. It mirrors the
+/// StageScope/model direction without coupling top-level source generation to
+/// the board-adapter internals.
+struct ImportFacts<'a> {
+    has_bus_children: bool,
+    has_block_device: bool,
+    has_i2c: bool,
+    has_spi: bool,
+    has_gpio: bool,
+    has_pci: bool,
+    has_framebuffer: bool,
+    uses_dram_init: bool,
+    uses_load_next_stage: bool,
+    uses_ffs: bool,
+    uses_acpi_load: bool,
+    uses_acpi_prepare: bool,
+    boot_medium: Option<&'a BootMedium>,
+    driver_modules: Vec<&'static str>,
+}
+
+impl<'a> ImportFacts<'a> {
+    fn new(
+        devices: &[DeviceConfig],
+        instances: &[DriverInstance],
+        device_services: &[heapless::Vec<Service, 8>],
+        capabilities: &'a [Capability],
+    ) -> Self {
+        let mut driver_modules = Vec::new();
+        for (dev, inst) in devices.iter().zip(instances.iter()) {
+            if !dev.enabled {
+                continue;
+            }
+            let module_path = inst.meta().module_path;
+            if !inst.has_runtime_driver() {
+                continue;
+            }
+            if !driver_modules.contains(&module_path) {
+                driver_modules.push(module_path);
+            }
+        }
+
+        Self {
+            has_bus_children: devices.iter().any(|device| device.parent.is_some()),
+            has_block_device: device_services
+                .iter()
+                .any(|services| services.contains(&Service::BlockDevice)),
+            has_i2c: device_services
+                .iter()
+                .any(|services| services.contains(&Service::I2cBus)),
+            has_spi: device_services
+                .iter()
+                .any(|services| services.contains(&Service::SpiBus)),
+            has_gpio: device_services
+                .iter()
+                .any(|services| services.contains(&Service::GpioController)),
+            has_pci: device_services
+                .iter()
+                .any(|services| services.contains(&Service::PciRootBus)),
+            has_framebuffer: device_services
+                .iter()
+                .any(|services| services.contains(&Service::Framebuffer)),
+            uses_dram_init: capabilities
+                .iter()
+                .any(|cap| matches!(cap, Capability::DramInit { .. })),
+            uses_load_next_stage: capabilities
+                .iter()
+                .any(|cap| matches!(cap, Capability::LoadNextStage { .. })),
+            uses_ffs: needs_ffs(capabilities),
+            uses_acpi_load: capabilities
+                .iter()
+                .any(|cap| matches!(cap, Capability::AcpiLoad { .. })),
+            uses_acpi_prepare: capabilities
+                .iter()
+                .any(|cap| matches!(cap, Capability::AcpiPrepare)),
+            boot_medium: get_boot_medium(capabilities),
+            driver_modules,
+        }
+    }
+}
+
 /// Emit `use` statements for all driver types needed by this board's devices.
-fn generate_imports(
-    devices: &[DeviceConfig],
-    instances: &[DriverInstance],
-    device_services: &[heapless::Vec<Service, 8>],
-    capabilities: &[Capability],
-    _embed_anchor: bool,
-) -> TokenStream {
+fn generate_imports(facts: &ImportFacts<'_>) -> TokenStream {
     let mut tokens = TokenStream::new();
 
     tokens.extend(quote! {
@@ -260,71 +337,45 @@ fn generate_imports(
         use fstart_services::device::Device;
     });
 
-    // Check if any device provides bus services — import those traits too
-    let has_block_device = device_services
-        .iter()
-        .any(|services| services.contains(&Service::BlockDevice));
-    if has_block_device {
+    // Check if any device provides bus services — import those traits too.
+    if facts.has_block_device {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BlockDevice; });
     }
 
     // Import MemoryController trait when DramInit + LoadNextStage are both
     // present — LoadNextStage calls detected_size_bytes() on the DRAM
     // controller to pass the runtime-detected size to the next stage.
-    let uses_dram_init = capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::DramInit { .. }));
-    let uses_load_next_stage = capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::LoadNextStage { .. }));
-    if uses_dram_init && uses_load_next_stage {
+    if facts.uses_dram_init && facts.uses_load_next_stage {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::MemoryController; });
     }
 
     // BusDevice trait is needed when any device has a parent bus (e.g., PCI
     // child devices use BusDevice::new_on_bus).
-    let has_bus_children = devices.iter().any(|d| d.parent.is_some());
-    if has_bus_children {
+    if facts.has_bus_children {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::device::BusDevice; });
     }
 
-    let has_i2c = device_services
-        .iter()
-        .any(|services| services.contains(&Service::I2cBus));
-    let has_spi = device_services
-        .iter()
-        .any(|services| services.contains(&Service::SpiBus));
-    let has_gpio = device_services
-        .iter()
-        .any(|services| services.contains(&Service::GpioController));
-
-    if has_i2c {
+    if facts.has_i2c {
         tokens.extend(quote! {
             #[allow(unused_imports)]
             use fstart_services::i2c::{I2c, ErrorType as I2cErrorType, ErrorKind as I2cErrorKind, Operation as I2cOperation};
         });
     }
-    if has_spi {
+    if facts.has_spi {
         tokens.extend(quote! {
             #[allow(unused_imports)]
             use fstart_services::spi::{SpiBus, ErrorType as SpiErrorType, ErrorKind as SpiErrorKind};
         });
     }
-    if has_gpio {
+    if facts.has_gpio {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::GpioController; });
     }
 
-    let has_pci = device_services
-        .iter()
-        .any(|services| services.contains(&Service::PciRootBus));
-    if has_pci {
+    if facts.has_pci {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::PciRootBus; });
     }
 
-    let has_framebuffer = device_services
-        .iter()
-        .any(|services| services.contains(&Service::Framebuffer));
-    if has_framebuffer {
+    if facts.has_framebuffer {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::Framebuffer; });
     }
 
@@ -332,34 +383,26 @@ fn generate_imports(
     // ACPI-only and structural devices are skipped — their types live in
     // fstart_types/fstart_acpi and fstart_device_registry respectively,
     // and are only used at codegen time, not in the generated stage code.
-    let mut seen_modules: Vec<&str> = Vec::new();
-    for inst in instances {
-        if inst.is_acpi_only() || inst.is_structural() {
-            continue;
-        }
-        let meta = inst.meta();
-        if !seen_modules.contains(&meta.module_path) {
-            let module_path: TokenStream = meta.module_path.parse().unwrap();
-            tokens.extend(quote! {
-                #[allow(unused_imports)]
-                use #module_path::*;
-            });
-            seen_modules.push(meta.module_path);
-        }
+    for module_path in &facts.driver_modules {
+        let module_path: TokenStream = module_path.parse().unwrap();
+        tokens.extend(quote! {
+            #[allow(unused_imports)]
+            use #module_path::*;
+        });
     }
 
     // Import boot media concrete type based on the BootMedia capability variant.
     // The BootMedia *trait* is not imported — generated code passes the
     // concrete type to fstart_capabilities functions which are generic over
     // `impl BootMedia`, so the trait doesn't need to be in scope here.
-    match get_boot_medium(capabilities) {
+    match facts.boot_medium {
         Some(BootMedium::MemoryMapped { .. }) => {
             tokens.extend(
                 quote! { #[allow(unused_imports)] use fstart_services::boot_media::MemoryMapped; },
             );
             // Import the BootMedia trait so as_slice() / read_at() are
             // callable in FFS loading code (PayloadLoad, SigVerify, etc.).
-            if needs_ffs(capabilities) {
+            if facts.uses_ffs {
                 tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
             }
         }
@@ -367,7 +410,7 @@ fn generate_imports(
             tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::boot_media::BlockDeviceMedia; });
             // Import the BootMedia trait so read_at() is callable in the
             // anchor scan and FFS loading code.
-            if needs_ffs(capabilities) {
+            if facts.uses_ffs {
                 tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
             }
         }
@@ -376,18 +419,15 @@ fn generate_imports(
             // AutoDevice generates a BlockDevice dispatch enum and
             // wraps it in BlockDeviceMedia. BootMedia trait needed for
             // anchor scan and FFS loading.
-            if needs_ffs(capabilities) {
+            if facts.uses_ffs {
                 tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
             }
         }
         None => {}
     }
 
-    // AcpiLoad needs the AcpiTableProvider trait
-    let uses_acpi_load = capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::AcpiLoad { .. }));
-    if uses_acpi_load {
+    // AcpiLoad needs the AcpiTableProvider trait.
+    if facts.uses_acpi_load {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::acpi_provider::AcpiTableProvider; });
     }
 
@@ -395,10 +435,7 @@ fn generate_imports(
     // references `fstart_acpi::device::AcpiDevice` and
     // `fstart_capabilities::acpi::prepare`.  Pull in the crate and
     // the AcpiDevice trait so the generated code compiles.
-    let uses_acpi_prepare = capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::AcpiPrepare));
-    if uses_acpi_prepare {
+    if facts.uses_acpi_prepare {
         tokens.extend(quote! {
             #[allow(unused_imports)]
             use fstart_acpi::device::AcpiDevice;

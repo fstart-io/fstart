@@ -12,8 +12,7 @@ use fstart_types::{
 use crate::stage_gen::tokens::hex_addr;
 
 use super::boot_media::{anchor_bytes_stmt, match_boot_media};
-use super::enabled_indices;
-use super::model::{device_provides, BoardCtx};
+use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::payload_load`.
 ///
@@ -37,7 +36,7 @@ use super::model::{device_provides, BoardCtx};
 /// path references `self._acpi_rsdp_addr` and `self._inited` for
 /// runtime state instead of the old fstart_main-scoped
 /// `_acpi_rsdp_addr` / `_<name>_ok` locals.
-pub(super) fn payload_load_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn payload_load_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     use crate::stage_gen::validation::{
         is_fit_image, is_fit_runtime, is_linux_boot, is_uefi_payload,
     };
@@ -105,7 +104,7 @@ pub(super) fn payload_load_body(platform: Platform, ctx: &BoardCtx<'_>) -> Token
 ///
 /// Then, outside the boot-media block, the platform boot protocol
 /// (via [`platform_boot_protocol_stmts`]).
-fn payload_load_linux_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+fn payload_load_linux_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
             todo!("board_gen::payload_load (LinuxBoot): requires an FFS-using stage")
@@ -158,7 +157,7 @@ fn payload_load_linux_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStrea
 /// current boot medium, captures `_kernel_load`, optionally loads
 /// firmware, then runs the platform boot protocol with
 /// `#kernel_addr = _kernel_load`.
-fn payload_load_fit_runtime_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+fn payload_load_fit_runtime_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
             todo!("board_gen::payload_load (FIT runtime): requires an FFS-using stage")
@@ -341,7 +340,7 @@ fn platform_boot_protocol_stmts(
 /// 7. Framebuffer config gated on `self._inited.contains(fb_id)`.
 /// 8. `fstart_crabefi::PlatformConfig { ... }` literal.
 /// 9. `fstart_crabefi::init_platform(_crabefi_config)` (→ !).
-fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream {
+fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     let config = ctx.config;
     let payload = config.payload.as_ref().expect("UEFI implies payload");
 
@@ -400,11 +399,10 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
     // Console device for DebugOutput adapter: find the first enabled
     // Console provider.  `_BoardDevices` always stores it in the
     // `self.<name>` field.
-    let console_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .find(|idx| device_provides(ctx, *idx, Service::Console));
-    let (console_setup, debug_output_field) = match console_device_idx {
-        Some(idx) => {
-            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+    let console_device = ctx.runtime_devices.providers(Service::Console).next();
+    let (console_setup, debug_output_field) = match console_device {
+        Some(device) => {
+            let field = format_ident!("{}", device.name);
             (
                 quote! {
                     let _console_ref = self.#field
@@ -419,11 +417,10 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
     };
 
     // PCI device for ECAM base.
-    let pci_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .find(|idx| device_provides(ctx, *idx, Service::PciRootBus));
-    let ecam_base_field = match pci_device_idx {
-        Some(idx) => {
-            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
+    let pci_device = ctx.runtime_devices.providers(Service::PciRootBus).next();
+    let ecam_base_field = match pci_device {
+        Some(device) => {
+            let field = format_ident!("{}", device.name);
             quote! {
                 ecam_base: Some(
                     self.#field
@@ -439,12 +436,11 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardCtx<'_>) -> TokenStream
     // Framebuffer device for GOP — gated on the init mask via
     // `self._inited.contains(fb_id)` rather than the old fstart_main
     // `_fb_ok: bool` local.
-    let fb_device_idx = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .find(|idx| device_provides(ctx, *idx, Service::Framebuffer));
-    let (fb_setup, framebuffer_field) = match fb_device_idx {
-        Some(idx) => {
-            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
+    let fb_device = ctx.runtime_devices.providers(Service::Framebuffer).next();
+    let (fb_setup, framebuffer_field) = match fb_device {
+        Some(device) => {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
             let setup = quote! {
                 let _fb_config = if self._inited.contains(#id_lit) {
                     let _fb_ref = self.#field

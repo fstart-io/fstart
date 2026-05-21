@@ -3,21 +3,18 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use super::model::BoardEmitModel;
 use fstart_device_registry::Service;
-use fstart_types::Capability;
-
-use super::enabled_indices;
-use super::model::{device_provides, BoardCtx};
 
 /// Emit the body of `Board::acpi_load`.
-pub(super) fn acpi_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, Service::AcpiTableProvider))
-        .map(|idx| {
-            let dev = &ctx.devices[idx];
-            let field = format_ident!("{}", dev.name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let dev_name = dev.name.as_str();
+pub(super) fn acpi_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let arms = ctx
+        .runtime_devices
+        .providers(Service::AcpiTableProvider)
+        .map(|device| {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
+            let dev_name = device.name;
             quote! {
                 #id_lit => {
                     #[repr(align(16))]
@@ -52,14 +49,14 @@ pub(super) fn acpi_load_body(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 /// Emit the body of `Board::memory_detect`.
-pub(super) fn memory_detect_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let arms = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, Service::MemoryDetector))
-        .map(|idx| {
-            let dev = &ctx.devices[idx];
-            let field = format_ident!("{}", dev.name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let dev_name = dev.name.as_str();
+pub(super) fn memory_detect_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let arms = ctx
+        .runtime_devices
+        .providers(Service::MemoryDetector)
+        .map(|device| {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
+            let dev_name = device.name;
             quote! {
                 #id_lit => {
                     let mut _e820_entries =
@@ -88,16 +85,11 @@ pub(super) fn memory_detect_body(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 /// Emit the body of `Board::acpi_prepare`.
-pub(super) fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn acpi_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     use crate::stage_gen::capabilities::acpi as cap_acpi;
     use crate::stage_gen::config_ser;
 
-    let has_acpi_prepare = ctx
-        .stage
-        .capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::AcpiPrepare));
-    if !has_acpi_prepare {
+    if !ctx.stage.uses_acpi_prepare {
         return quote! {
             todo!("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
         };
@@ -113,43 +105,34 @@ pub(super) fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
     let mut device_blocks = TokenStream::new();
     let mut acpi_only_blocks = TokenStream::new();
 
-    for (idx, dev) in ctx.devices.iter().enumerate() {
-        let inst = &ctx.instances[idx];
-        let meta = inst.meta();
-        if meta.has_acpi && inst.acpi_name().is_some() && !inst.is_acpi_only() {
-            let field = format_ident!("{}", dev.name.as_str());
-            let cfg_name = format_ident!("{}_cfg", dev.name.as_str());
-            let cfg_literal = config_ser::config_tokens(inst);
-            let drv_ty = config_ser::driver_type_tokens(inst);
-            let cfg_ty = if dev.parent.is_some() {
-                quote! { <#drv_ty as fstart_services::device::BusDevice>::Config }
-            } else {
-                quote! { <#drv_ty as fstart_services::device::Device>::Config }
-            };
-            config_lets.extend(quote! {
-                let #cfg_name: #cfg_ty = #cfg_literal;
-            });
-            device_blocks.extend(quote! {
-                dsdt_aml.extend(fstart_acpi::device::AcpiDevice::dsdt_aml(
-                    self.#field.as_ref().unwrap_or_else(|| fstart_platform::halt()),
-                    &#cfg_name,
-                ));
-                extra_tables.extend(fstart_acpi::device::AcpiDevice::extra_tables(
-                    self.#field.as_ref().unwrap_or_else(|| fstart_platform::halt()),
-                    &#cfg_name,
-                ));
-            });
-        }
+    for device in ctx.runtime_devices.acpi_runtime_devices() {
+        let inst = device.instance;
+        let field = format_ident!("{}", device.name);
+        let cfg_name = format_ident!("{}_cfg", device.name);
+        let cfg_literal = config_ser::config_tokens(inst);
+        let drv_ty = config_ser::driver_type_tokens(inst);
+        let cfg_ty = if device.config.parent.is_some() {
+            quote! { <#drv_ty as fstart_services::device::BusDevice>::Config }
+        } else {
+            quote! { <#drv_ty as fstart_services::device::Device>::Config }
+        };
+        config_lets.extend(quote! {
+            let #cfg_name: #cfg_ty = #cfg_literal;
+        });
+        device_blocks.extend(quote! {
+            dsdt_aml.extend(fstart_acpi::device::AcpiDevice::dsdt_aml(
+                self.#field.as_ref().unwrap_or_else(|| fstart_platform::halt()),
+                &#cfg_name,
+            ));
+            extra_tables.extend(fstart_acpi::device::AcpiDevice::extra_tables(
+                self.#field.as_ref().unwrap_or_else(|| fstart_platform::halt()),
+                &#cfg_name,
+            ));
+        });
     }
 
-    let mut extra_idx = 0usize;
-    for (idx, _dev) in ctx.devices.iter().enumerate() {
-        let inst = &ctx.instances[idx];
-        if !inst.is_acpi_only() {
-            continue;
-        }
-        acpi_only_blocks.extend(cap_acpi::generate_acpi_only_device(inst, extra_idx));
-        extra_idx += 1;
+    for (extra_idx, instance) in ctx.acpi_only_devices.iter().enumerate() {
+        acpi_only_blocks.extend(cap_acpi::generate_acpi_only_device(instance, extra_idx));
     }
 
     let platform_block = cap_acpi::generate_platform_acpi(&acpi_cfg.platform);
@@ -166,13 +149,8 @@ pub(super) fn acpi_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
 }
 
 /// Emit the body of `Board::smbios_prepare`.
-pub(super) fn smbios_prepare_body(ctx: &BoardCtx<'_>) -> TokenStream {
-    let has_smbios_prepare = ctx
-        .stage
-        .capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::SmBiosPrepare));
-    if !has_smbios_prepare {
+pub(super) fn smbios_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    if !ctx.stage.uses_smbios {
         return quote! {
             todo!("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
         };

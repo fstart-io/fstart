@@ -9,78 +9,7 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use fstart_device_registry::DriverInstance;
-use fstart_types::{BoardConfig, DeviceConfig};
-
-/// Generate code for the AcpiPrepare capability.
-///
-/// Orchestrates per-device ACPI generation:
-/// 1. Collects DSDT AML from each device that has an `AcpiDevice` impl
-/// 2. Collects extra tables (SPCR, MCFG) from those devices
-/// 3. Collects DSDT AML from ACPI-only extra devices (AHCI, xHCI, PCIe)
-/// 4. Calls the platform assembler to build all tables and write to DRAM
-#[allow(dead_code)]
-pub(in crate::stage_gen) fn generate_acpi_prepare(
-    config: &BoardConfig,
-    devices: &[DeviceConfig],
-    instances: &[DriverInstance],
-) -> TokenStream {
-    let acpi_cfg = config.acpi.as_ref().unwrap_or_else(|| {
-        panic!("AcpiPrepare capability requires `acpi` config in board RON");
-    });
-
-    let mut device_blocks = TokenStream::new();
-
-    // Per-driver device contributions: iterate devices whose driver
-    // has `has_acpi` and whose config contains an `acpi_name` field.
-    // ACPI-only devices (Ahci, Xhci, PcieRoot) are handled separately
-    // below — they have no runtime driver instance, so the device
-    // construction phase skips them and their variables don't exist.
-    for (idx, dev) in devices.iter().enumerate() {
-        let inst = &instances[idx];
-        if inst.is_acpi_only() {
-            continue;
-        }
-        let meta = inst.meta();
-        if !meta.has_acpi {
-            continue;
-        }
-        // Check at codegen time whether this device instance has an ACPI
-        // name set.  If not, skip it -- the driver has AcpiDevice support
-        // but this particular board instance doesn't want ACPI for it.
-        if inst.acpi_name().is_none() {
-            continue;
-        }
-        let dev_name = format_ident!("{}", dev.name.as_str());
-        let cfg_name = format_ident!("{}_cfg", dev.name.as_str());
-        device_blocks.extend(quote! {
-            dsdt_aml.extend(fstart_acpi::device::AcpiDevice::dsdt_aml(&#dev_name, &#cfg_name));
-            extra_tables.extend(fstart_acpi::device::AcpiDevice::extra_tables(&#dev_name, &#cfg_name));
-        });
-    }
-
-    // ACPI-only device contributions (devices with no runtime driver).
-    let mut extra_idx = 0;
-    for (idx, _dev) in devices.iter().enumerate() {
-        let inst = &instances[idx];
-        if !inst.is_acpi_only() {
-            continue;
-        }
-        let block = generate_acpi_only_device(inst, extra_idx);
-        device_blocks.extend(block);
-        extra_idx += 1;
-    }
-
-    // Platform assembly.
-    let platform_block = generate_platform_acpi(&acpi_cfg.platform);
-
-    quote! {
-        #platform_block
-        fstart_capabilities::acpi::prepare(&platform_acpi, |dsdt_aml, extra_tables| {
-            #device_blocks
-        });
-    }
-}
+use fstart_types::acpi::AcpiExtraDevice;
 
 /// Generate code for an ACPI-only device (from the devices[] list).
 ///
@@ -90,12 +19,12 @@ pub(in crate::stage_gen) fn generate_acpi_prepare(
 ///
 /// [`board_gen::acpi_prepare_body`]: crate::stage_gen::board_gen
 pub(in crate::stage_gen) fn generate_acpi_only_device(
-    instance: &fstart_device_registry::DriverInstance,
+    instance: &AcpiExtraDevice,
     idx: usize,
 ) -> TokenStream {
     let var_name = format_ident!("_acpi_dev_{}", idx);
     match instance {
-        fstart_device_registry::DriverInstance::Ahci(dev) => {
+        AcpiExtraDevice::Ahci(dev) => {
             let name = dev.name.as_str();
             let base = Literal::u64_unsuffixed(dev.base);
             let size = Literal::u32_unsuffixed(dev.size);
@@ -107,7 +36,7 @@ pub(in crate::stage_gen) fn generate_acpi_only_device(
                 dsdt_aml.extend(#var_name.dsdt_aml());
             }
         }
-        fstart_device_registry::DriverInstance::Xhci(dev) => {
+        AcpiExtraDevice::Xhci(dev) => {
             let name = dev.name.as_str();
             let base = Literal::u64_unsuffixed(dev.base);
             let size = Literal::u32_unsuffixed(dev.size);
@@ -119,7 +48,7 @@ pub(in crate::stage_gen) fn generate_acpi_only_device(
                 dsdt_aml.extend(#var_name.dsdt_aml());
             }
         }
-        fstart_device_registry::DriverInstance::PcieRoot(dev) => {
+        AcpiExtraDevice::PcieRoot(dev) => {
             let name = dev.name.as_str();
             let ecam = Literal::u64_unsuffixed(dev.ecam_base);
             let m32_start = Literal::u32_unsuffixed(dev.mmio32.0);

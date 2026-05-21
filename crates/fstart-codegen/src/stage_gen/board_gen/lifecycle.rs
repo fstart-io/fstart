@@ -3,27 +3,22 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use fstart_device_registry::{DriverInstance, Service};
-use fstart_types::{DeviceConfig, DeviceNode};
+use fstart_device_registry::Service;
 
-use super::enabled_indices;
-use super::model::BoardCtx;
+use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::init_device`.
-pub(super) fn init_device_body(ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn init_device_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     use crate::stage_gen::config_ser::{config_tokens, driver_type_tokens};
 
-    let entries: Vec<(TokenStream, TokenStream)> =
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .filter(|idx| {
-                let inst = &ctx.instances[*idx];
-                !inst.is_structural() && !inst.is_acpi_only()
-            })
-            .map(|idx| {
-                let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-                let helper = format_ident!("__fstart_init_device_{}", idx);
-                let chain = chain_from_root(idx, ctx.device_tree, ctx.devices, ctx.instances);
-                let steps = chain.iter().map(|&step_idx| {
+    let entries: Vec<(TokenStream, TokenStream)> = ctx
+        .runtime_devices
+        .runtime_indices()
+        .map(|idx| {
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
+            let helper = format_ident!("__fstart_init_device_{}", idx);
+            let chain = ctx.runtime_devices.runtime_chain_from_root(idx);
+            let steps = chain.iter().map(|&step_idx| {
                     let step_dev = &ctx.devices[step_idx];
                     let step_inst = &ctx.instances[step_idx];
                     let step_field = format_ident!("{}", step_dev.name.as_str());
@@ -32,12 +27,7 @@ pub(super) fn init_device_body(ctx: &BoardCtx<'_>) -> TokenStream {
                     let cfg = config_tokens(step_inst);
                     let cfg_static = format_ident!("__FSTART_CFG_{}", step_idx);
                     let construct = if step_inst.meta().is_bus_device {
-                        let parent_name = walk_to_real_parent(
-                            step_idx,
-                            ctx.device_tree,
-                            ctx.devices,
-                            ctx.instances,
-                        );
+                        let parent_name = ctx.runtime_devices.real_parent_name(step_idx);
                         match parent_name {
                             Some(pname) => {
                                 let parent = format_ident!("{}", pname);
@@ -97,7 +87,7 @@ pub(super) fn init_device_body(ctx: &BoardCtx<'_>) -> TokenStream {
                         }
                     }
                 });
-                let helper_def = quote! {
+            let helper_def = quote! {
                     #[inline(never)]
                     fn #helper(
                         this: &mut _BoardDevices,
@@ -108,11 +98,11 @@ pub(super) fn init_device_body(ctx: &BoardCtx<'_>) -> TokenStream {
                         #(#steps)*
                         Ok(())
                     }
-                };
-                let arm = quote! { #id_lit => #helper(self), };
-                (helper_def, arm)
-            })
-            .collect();
+            };
+            let arm = quote! { #id_lit => #helper(self), };
+            (helper_def, arm)
+        })
+        .collect();
 
     let helper_defs = entries.iter().map(|(helper, _)| helper);
     let arms = entries.iter().map(|(_, arm)| arm);
@@ -129,64 +119,22 @@ pub(super) fn init_device_body(ctx: &BoardCtx<'_>) -> TokenStream {
     }
 }
 
-/// Walk a device's ancestor chain root-first, excluding structural / ACPI-only /
-/// disabled ancestors.
-fn chain_from_root(
-    target_idx: usize,
-    device_tree: &[DeviceNode],
-    devices: &[DeviceConfig],
-    instances: &[DriverInstance],
-) -> Vec<usize> {
-    let mut chain = Vec::new();
-    let mut cursor = Some(target_idx);
-    while let Some(idx) = cursor {
-        let inst = &instances[idx];
-        let dev = &devices[idx];
-        if dev.enabled && !inst.is_structural() && !inst.is_acpi_only() {
-            chain.push(idx);
-        }
-        cursor = device_tree[idx].parent.map(|p| p as usize);
-    }
-    chain.reverse();
-    chain
-}
-
-/// Walk an ancestor chain until the first non-structural parent.
-fn walk_to_real_parent<'a>(
-    child_idx: usize,
-    device_tree: &[DeviceNode],
-    devices: &'a [DeviceConfig],
-    instances: &[DriverInstance],
-) -> Option<&'a str> {
-    let mut current = device_tree[child_idx].parent?;
-    loop {
-        let idx = usize::from(current);
-        if !instances[idx].is_structural() {
-            return Some(devices[idx].name.as_str());
-        }
-        current = device_tree[idx].parent?;
-    }
-}
-
 /// Emit the body of `Board::init_all_devices`.
-pub(super) fn init_all_devices_body(ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn init_all_devices_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     use crate::stage_gen::capabilities::boot_media_values_for_device;
 
     let is_egon = ctx.config.soc_image_format == fstart_types::SocImageFormat::AllwinnerEgon;
     let mut dev_statements = TokenStream::new();
     let mut has_any_gated = false;
 
-    for idx in enabled_indices(ctx.devices, ctx.instances, ctx.excluded) {
-        let inst = &ctx.instances[idx];
-        if inst.is_structural() || inst.is_acpi_only() {
-            continue;
-        }
-        let dev = &ctx.devices[idx];
-        if ctx.instances[idx].provides(Service::PciRootBus) {
+    for device in ctx.runtime_devices.runtime() {
+        let idx = device.index;
+        let dev = device.config;
+        if device.provides(Service::PciRootBus) {
             continue;
         }
         let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-        let is_framebuffer = ctx.instances[idx].provides(Service::Framebuffer);
+        let is_framebuffer = device.provides(Service::Framebuffer);
         let on_err = if is_framebuffer {
             quote! {
                 fstart_log::warn!("driver init failed (framebuffer, continuing)");

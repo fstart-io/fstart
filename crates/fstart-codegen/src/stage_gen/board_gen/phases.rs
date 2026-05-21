@@ -6,8 +6,7 @@ use quote::{format_ident, quote};
 use fstart_device_registry::Service;
 use fstart_types::Capability;
 
-use super::enabled_indices;
-use super::model::{device_provides, BoardCtx};
+use super::model::BoardEmitModel;
 
 /// Description of one phase-init capability and service trait.
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +31,7 @@ impl PhaseSpec {
 }
 
 /// Emit the body for a generic phase-init trampoline.
-pub(super) fn phase_init_body(ctx: &BoardCtx<'_>, spec: PhaseSpec) -> TokenStream {
+pub(super) fn phase_init_body(ctx: &BoardEmitModel<'_>, spec: PhaseSpec) -> TokenStream {
     let stage_declares_phase = ctx.stage.capabilities.iter().any(|capability| {
         matches!(
             (spec.service, capability),
@@ -56,17 +55,20 @@ pub(super) fn phase_init_body(ctx: &BoardCtx<'_>, spec: PhaseSpec) -> TokenStrea
     let trait_alias = format_ident!("_{}", spec.trait_name);
     let method_ident = format_ident!("{}", spec.method_name);
 
-    let southbridge_field = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .find(|idx| device_provides(ctx, *idx, Service::Southbridge))
-        .map(|idx| format_ident!("{}", ctx.devices[idx].name.as_str()));
+    let southbridge_field = ctx
+        .runtime_devices
+        .providers(Service::Southbridge)
+        .next()
+        .map(|device| format_ident!("{}", device.name));
 
     let method_name = spec.method_name;
-    let arms: Vec<TokenStream> = enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-        .filter(|idx| device_provides(ctx, *idx, spec.service))
-        .map(|idx| {
-            let field = format_ident!("{}", ctx.devices[idx].name.as_str());
-            let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-            let is_mainboard = device_provides(ctx, idx, Service::Mainboard);
+    let arms: Vec<TokenStream> = ctx
+        .runtime_devices
+        .providers(spec.service)
+        .map(|device| {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
+            let is_mainboard = device.provides(Service::Mainboard);
             if spec.service == Service::PreConsoleInit && is_mainboard {
                 if let Some(sb_field) = southbridge_field.as_ref() {
                     quote! {

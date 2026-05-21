@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "ns16550")]
 pub mod ns16550 {
-    pub use fstart_driver_ns16550::Ns16550Config;
+    pub use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 }
 
 #[cfg(feature = "pl011")]
@@ -244,6 +244,17 @@ pub struct DriverMeta {
     /// benefit from the parent link for init ordering (see
     /// `ensure_device_ready`) but don't take the parent as an argument.
     pub is_bus_device: bool,
+}
+
+/// Codegen construction/lifecycle category for a driver registry entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstructionKind {
+    /// Runtime device with a generated driver field.
+    Device,
+    /// Topology-only structural node.
+    Structural,
+    /// ACPI descriptor with no runtime driver field.
+    AcpiOnly,
 }
 
 // ---------------------------------------------------------------------------
@@ -816,7 +827,7 @@ impl DriverInstance {
     /// Structural and ACPI-only instances do not correspond to target-side
     /// driver features.
     pub fn driver_feature(&self) -> Option<&'static str> {
-        if self.is_structural() || self.is_acpi_only() {
+        if !self.has_runtime_driver() {
             None
         } else {
             Some(self.meta().name)
@@ -857,21 +868,20 @@ impl DriverInstance {
         }
     }
 
-    /// Returns `true` if this is an ACPI-only device (no runtime driver).
-    ///
-    /// ACPI-only devices are skipped by `DriverInit` and device construction
-    /// in the generated stage code. They only contribute ACPI table entries.
-    pub fn is_acpi_only(&self) -> bool {
-        matches!(self, Self::Ahci(_) | Self::Xhci(_) | Self::PcieRoot(_))
+    /// Codegen construction/lifecycle category for this registry entry.
+    pub fn construction_kind(&self) -> ConstructionKind {
+        #[allow(unreachable_patterns)]
+        match self {
+            Self::Ahci(_) | Self::Xhci(_) | Self::PcieRoot(_) => ConstructionKind::AcpiOnly,
+            Self::Structural(_) => ConstructionKind::Structural,
+            _ => ConstructionKind::Device,
+        }
     }
 
-    /// Returns `true` if this is a structural (driverless) bus node.
-    ///
-    /// Structural nodes exist in the device tree to give downstream
-    /// devices a parent, but have no driver code. They are skipped by
-    /// device construction and `DriverInit`.
-    pub fn is_structural(&self) -> bool {
-        matches!(self, Self::Structural(_))
+    /// Returns `true` if this instance has a runtime driver field in generated
+    /// stage code.
+    pub fn has_runtime_driver(&self) -> bool {
+        self.construction_kind() == ConstructionKind::Device
     }
 
     /// Returns `true` if this driver provides the runtime PCI root-bus service.
@@ -968,5 +978,48 @@ impl DriverInstance {
             #[cfg(feature = "i2c-ck505")]
             Self::I2cCk505(cfg) => serde::Serialize::serialize(cfg, ser),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structural_reports_structural_construction_kind() {
+        let inst = DriverInstance::Structural(StructuralConfig::default());
+        assert_eq!(inst.construction_kind(), ConstructionKind::Structural);
+        assert!(!inst.has_runtime_driver());
+        assert!(inst.provided_services().is_empty());
+    }
+
+    #[test]
+    fn acpi_only_reports_acpi_only_construction_kind() {
+        let inst = DriverInstance::Ahci(fstart_types::acpi::AcpiAhciDevice {
+            name: heapless::String::try_from("AHC0").unwrap(),
+            base: 0x1000,
+            size: 0x100,
+            gsiv: 42,
+        });
+        assert_eq!(inst.construction_kind(), ConstructionKind::AcpiOnly);
+        assert!(!inst.has_runtime_driver());
+        assert!(inst.provided_services().is_empty());
+    }
+
+    #[cfg(feature = "ns16550")]
+    #[test]
+    fn runtime_driver_reports_device_construction_kind() {
+        let inst = DriverInstance::Ns16550(ns16550::Ns16550Config {
+            regs: ns16550::AccessMode::Mmio {
+                base: 0x1000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        });
+        assert_eq!(inst.construction_kind(), ConstructionKind::Device);
+        assert!(inst.has_runtime_driver());
+        assert!(inst.provides(Service::Console));
     }
 }

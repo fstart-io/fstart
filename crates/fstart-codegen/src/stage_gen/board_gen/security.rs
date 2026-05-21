@@ -4,10 +4,10 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::boot_media::{anchor_bytes_stmt, match_boot_media};
-use super::model::BoardCtx;
+use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::sig_verify`.
-pub(super) fn sig_verify_body(ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn sig_verify_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
             todo!("board_gen::sig_verify: no FFS-using capability in this stage")

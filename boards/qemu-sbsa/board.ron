@@ -71,6 +71,7 @@
         // ACPI-only devices — no runtime driver, but generate DSDT entries.
         (
             name: "ahci0",
+            kind: AcpiOnly,
             driver: Ahci((
                 name: "AHC0",
                 base: 0x60100000,
@@ -80,6 +81,7 @@
         ),
         (
             name: "xhci0",
+            kind: AcpiOnly,
             driver: Xhci((
                 name: "USB0",
                 base: 0x60110000,

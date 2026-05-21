@@ -9,11 +9,10 @@ use fstart_types::{BootMedium, Capability};
 use crate::stage_gen::tokens::hex_addr;
 
 use super::boot_media::anchor_bytes_stmt;
-use super::enabled_indices;
-use super::model::{device_provides, BoardCtx};
+use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::mp_init`.
-pub(super) fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
+pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let uses_mp = ctx
         .stage
         .capabilities
@@ -46,11 +45,15 @@ pub(super) fn mp_init_body(ctx: &BoardCtx<'_>) -> TokenStream {
         _ => None,
     });
     let smm_provider = if let Some(provider) = explicit_smm_provider {
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .find(|idx| ctx.devices[*idx].name.as_str() == provider)
+        ctx.runtime_devices
+            .runtime()
+            .find(|device| device.name == provider)
+            .map(|device| device.index)
     } else {
-        enabled_indices(ctx.devices, ctx.instances, ctx.excluded)
-            .find(|idx| device_provides(ctx, *idx, Service::SmmOps))
+        ctx.runtime_devices
+            .providers(Service::SmmOps)
+            .next()
+            .map(|device| device.index)
     };
 
     let mp_microcode_enabled = matches!(
