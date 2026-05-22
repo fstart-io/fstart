@@ -132,6 +132,10 @@ build_initramfs_spec() {
   local out_dir="$INITRAMFS_DIR/$arch"
   mkdir -p "$out_dir"
   "$cross"gcc -static -Os -s "$INITRAMFS_DIR/init.c" -o "$out_dir/init"
+  if [ ! -x "$out_dir/init" ]; then
+    echo "ERROR: failed to build CI init for $arch" >&2
+    exit 1
+  fi
   cat > "$out_dir/initramfs.list" <<EOF
 # fstart CI initramfs: enough to prove the kernel reached userspace.
 dir /dev 0755 0 0
