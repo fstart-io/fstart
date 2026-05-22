@@ -46,7 +46,7 @@ boards/my-board/board.ron
        v
   ELF binary
        |
-       |  10. llvm-objcopy -O binary (flat binary for all platforms)
+       |  10. object-crate ELF PT_LOAD extraction (flat binary for all platforms)
        |  11. (armv7/sunxi) patch eGON header: length + checksum
        |
        v
@@ -102,11 +102,12 @@ include!(concat!(env!("OUT_DIR"), "/generated_stage.rs"));
 Everything else comes from codegen. The platform crate provides `_start`
 (the entry point), and `fstart-runtime` provides the `#[panic_handler]`.
 
-**Steps 10-11: post-processing.** All platforms produce flat binaries via
-`llvm-objcopy -O binary`. The `.bss` section is stripped to avoid a
-multi-gigabyte file spanning the ROM-to-RAM address gap. For Allwinner SoCs,
-the binary is further patched with an eGON boot header (magic bytes, length,
-checksum) that the SoC's BROM expects.
+**Steps 10-11: post-processing.** All platforms produce flat binaries by
+reading ELF `PT_LOAD` segments with the Rust `object` crate and laying out
+file-backed segment contents by physical address. Pure BSS segments are not
+written, avoiding a multi-gigabyte file spanning the ROM-to-RAM address gap.
+For Allwinner SoCs, the binary is further patched with an eGON boot header
+(magic bytes, length, checksum) that the SoC's BROM expects.
 
 **Steps 12-13: assembly and launch.** For multi-stage boards or boards with
 payload blobs (kernel, OpenSBI, ATF), xtask runs the assembly step: it
@@ -125,7 +126,7 @@ fstart has 26 crates in three groups: host-only, shared, and target-only.
 xtask
   reads board RON, invokes cargo, assembles FFS, launches QEMU
   depends on: fstart-types, fstart-ffs, fstart-fit, fstart-crypto,
-              fstart-device-registry, goblin (ELF parsing),
+              fstart-device-registry, object (ELF parsing/extraction),
               ed25519-dalek (signing)
 
 fstart-codegen
@@ -335,7 +336,7 @@ the eGON magic appears at offset 0 of the binary.
 
 ## Runtime boot flow
 
-### Platform entry (_start)
+### Platform entry (\_start)
 
 Each platform crate (`fstart-platform-riscv64`, etc.) provides a `_start`
 in a `global_asm!` block placed in `.text.entry`. The assembly does four

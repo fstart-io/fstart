@@ -7,7 +7,10 @@
 
 use fstart_codegen::ron_loader;
 use fstart_types::{Capability, SocImageFormat, StageLayout};
-use std::path::PathBuf;
+use object::elf;
+use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Result of building a board — one or more stage binaries.
@@ -21,7 +24,7 @@ pub struct BuildResult {
 pub struct StageBinary {
     /// Stage name (e.g., "bootblock", "main", or "stage" for monolithic).
     pub name: String,
-    /// Path to the ELF binary on disk (used by assembler for objcopy).
+    /// Path to the ELF binary on disk (used by assembler diagnostics/packaging).
     pub path: PathBuf,
     /// Path to run in QEMU (flat binary for AArch64, same as `path` otherwise).
     pub run_path: PathBuf,
@@ -291,27 +294,17 @@ fn build_one_stage(
     // section's LMA is in ROM (via `AT > ROM` in the linker script) so it
     // is contiguous with .text/.rodata and must NOT be removed — the _start
     // assembly copies those initializers to RAM. Only .bss is removed: it
-    // is NOLOAD and its VMA is in RAM, which would cause objcopy to span
+    // is NOLOAD and its VMA is in RAM, which would cause naive flat extraction to span
     // the ROM→RAM gap (producing a multi-GiB file of mostly zeros). The
     // entry code clears BSS at runtime.
     let run_path = if needs_flat_binary {
         let bin_path = final_elf.with_extension("bin");
         eprintln!(
-            "[fstart] objcopy: {} -> {}",
+            "[fstart] elf-to-bin: {} -> {}",
             final_elf.display(),
             bin_path.display()
         );
-        let objcopy_status = Command::new("llvm-objcopy")
-            .arg("-O")
-            .arg("binary")
-            .arg("--remove-section=.bss")
-            .arg(&final_elf)
-            .arg(&bin_path)
-            .status()
-            .map_err(|e| format!("failed to run llvm-objcopy: {e}"))?;
-        if !objcopy_status.success() {
-            return Err("llvm-objcopy failed".to_string());
-        }
+        write_flat_binary(&final_elf, &bin_path)?;
 
         // Allwinner eGON: compute the actual binary size, pad to
         // 512-byte alignment, and patch both length and checksum.
@@ -331,6 +324,101 @@ fn build_one_stage(
 /// Public wrapper for workspace root (used by other xtask modules).
 pub fn workspace_root_pub() -> Result<PathBuf, String> {
     workspace_root()
+}
+
+fn write_flat_binary(elf_path: &Path, bin_path: &Path) -> Result<(), String> {
+    let elf_data = fs::read(elf_path)
+        .map_err(|e| format!("failed to read ELF {}: {e}", elf_path.display()))?;
+    let load_segments = elf_load_segments(&elf_data, elf_path)?;
+
+    let min_paddr = load_segments
+        .iter()
+        .filter(|segment| segment.filesz != 0)
+        .map(|segment| segment.paddr)
+        .min()
+        .ok_or_else(|| format!("no loadable file-backed segments in {}", elf_path.display()))?;
+    let max_paddr = load_segments
+        .iter()
+        .filter(|segment| segment.filesz != 0)
+        .map(|segment| segment.paddr.saturating_add(segment.filesz))
+        .max()
+        .unwrap_or(min_paddr);
+    let len = max_paddr
+        .checked_sub(min_paddr)
+        .and_then(|len| usize::try_from(len).ok())
+        .ok_or_else(|| {
+            format!(
+                "flat binary address range is too large in {}",
+                elf_path.display()
+            )
+        })?;
+
+    let mut flat = vec![0u8; len];
+    for segment in load_segments.iter().filter(|segment| segment.filesz != 0) {
+        let start = usize::try_from(segment.paddr - min_paddr)
+            .map_err(|_| format!("segment offset is too large in {}", elf_path.display()))?;
+        let size = usize::try_from(segment.filesz)
+            .map_err(|_| format!("segment size is too large in {}", elf_path.display()))?;
+        let file_start = usize::try_from(segment.offset)
+            .map_err(|_| format!("segment file offset is too large in {}", elf_path.display()))?;
+        let file_end = file_start
+            .checked_add(size)
+            .ok_or_else(|| format!("segment file range overflows in {}", elf_path.display()))?;
+        if file_end > elf_data.len() {
+            return Err(format!(
+                "PT_LOAD at {:#x} extends past EOF in {}",
+                segment.paddr,
+                elf_path.display()
+            ));
+        }
+        flat[start..start + size].copy_from_slice(&elf_data[file_start..file_end]);
+    }
+
+    fs::write(bin_path, flat)
+        .map_err(|e| format!("failed to write flat binary {}: {e}", bin_path.display()))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ElfLoadSegment {
+    offset: u64,
+    paddr: u64,
+    filesz: u64,
+}
+
+fn elf_load_segments(elf_data: &[u8], elf_path: &Path) -> Result<Vec<ElfLoadSegment>, String> {
+    if elf_data.len() < 16 {
+        return Err(format!("ELF {} is too short", elf_path.display()));
+    }
+
+    match elf_data[4] {
+        elf::ELFCLASS32 => elf_load_segments_for::<elf::FileHeader32<object::Endianness>>(elf_data),
+        elf::ELFCLASS64 => elf_load_segments_for::<elf::FileHeader64<object::Endianness>>(elf_data),
+        class => {
+            return Err(format!(
+                "unsupported ELF class {class} in {}",
+                elf_path.display()
+            ));
+        }
+    }
+    .map_err(|e| format!("failed to parse ELF {}: {e}", elf_path.display()))
+}
+
+fn elf_load_segments_for<Elf>(elf_data: &[u8]) -> Result<Vec<ElfLoadSegment>, object::Error>
+where
+    Elf: FileHeader,
+{
+    let elf = ElfFile::<Elf>::parse(elf_data)?;
+    let endian = elf.elf_header().endian()?;
+    Ok(elf
+        .elf_program_headers()
+        .iter()
+        .filter(|phdr| phdr.p_type(endian) == elf::PT_LOAD)
+        .map(|phdr| ElfLoadSegment {
+            offset: phdr.p_offset(endian).into(),
+            paddr: phdr.p_paddr(endian).into(),
+            filesz: phdr.p_filesz(endian).into(),
+        })
+        .collect())
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
