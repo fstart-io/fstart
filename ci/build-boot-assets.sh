@@ -79,9 +79,9 @@ if [[ ! -f "$OUTPUT_DIR/initramfs.cpio" ]]; then
 	}
 	trap uroot_cleanup EXIT
 	git clone --depth 1 -q https://github.com/u-root/u-root.git "$UROOT_DIR/src"
-	(cd "$UROOT_DIR/src" && \
-		actual_ref="$(git rev-parse HEAD)" && \
-		[[ "$actual_ref" == "$UROOT_REF" ]] && \
+	(cd "$UROOT_DIR/src" &&
+		actual_ref="$(git rev-parse HEAD)" &&
+		[[ "$actual_ref" == "$UROOT_REF" ]] &&
 		go build -o "$UROOT_DIR/bin/u-root" .)
 	(cd "$UROOT_DIR/src" &&
 		GOARCH=amd64 "$UROOT_DIR/bin/u-root" \
