@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::resume::ResumeHandoff;
+
 /// Magic number for StageHandoff validation.
 ///
 /// ASCII "FSTH" (fstart handoff). If the incoming stage reads a buffer
@@ -24,7 +26,7 @@ pub const HANDOFF_MAGIC: u32 = 0x4653_5448;
 ///
 /// Increment when fields are added or the layout changes. The incoming
 /// stage should reject versions it doesn't understand.
-pub const HANDOFF_VERSION: u16 = 1;
+pub const HANDOFF_VERSION: u16 = 2;
 
 /// Maximum serialized size of a StageHandoff.
 ///
@@ -50,6 +52,9 @@ pub struct StageHandoff {
     /// 0 means DRAM size was not determined (e.g., QEMU, or DRAM init
     /// was not performed by the previous stage).
     pub dram_size: u64,
+    /// Resume-state handoff from early chipset initialization.
+    #[cfg_attr(not(target_arch = "x86_64"), serde(skip))]
+    pub resume: ResumeHandoff,
 }
 
 impl StageHandoff {
@@ -59,6 +64,7 @@ impl StageHandoff {
             magic: HANDOFF_MAGIC,
             version: HANDOFF_VERSION,
             dram_size,
+            resume: ResumeHandoff::default(),
         }
     }
 

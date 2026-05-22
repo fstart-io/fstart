@@ -504,6 +504,7 @@ dependencies = [
  "fstart-types",
  "postcard",
  "ufmt",
+ "zerocopy",
 ]
 
 [[package]]
@@ -575,6 +576,7 @@ dependencies = [
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-ich8",
  "fstart-driver-intel-pineview",
+ "fstart-driver-intel-spi",
  "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
  "fstart-driver-nsc-pc87382",
@@ -700,6 +702,7 @@ dependencies = [
  "fstart-smbus-intel",
  "fstart-smm-runtime",
  "fstart-superio",
+ "fstart-types",
  "heapless",
  "serde",
  "tock-registers",
@@ -725,6 +728,7 @@ dependencies = [
  "fstart-smbus-intel",
  "fstart-smm-runtime",
  "fstart-superio",
+ "fstart-types",
  "heapless",
  "serde",
  "tock-registers",
@@ -758,6 +762,17 @@ dependencies = [
  "heapless",
  "serde",
  "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-intel-spi"
+version = "0.1.0"
+dependencies = [
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
  "ufmt",
 ]
 
@@ -1129,6 +1144,7 @@ dependencies = [
  "fstart-pio",
  "fstart-services",
  "fstart-types",
+ "postcard",
  "ufmt",
 ]
 
@@ -1152,6 +1168,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-pci",
+ "fstart-types",
 ]
 
 [[package]]
@@ -1238,6 +1255,7 @@ dependencies = [
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-ich8",
  "fstart-driver-intel-pineview",
+ "fstart-driver-intel-spi",
  "fstart-driver-ite8721f",
  "fstart-driver-ns16550",
  "fstart-driver-nsc-pc87382",
@@ -1283,6 +1301,7 @@ dependencies = [
  "fstart-log",
  "fstart-services",
  "fstart-types",
+ "postcard",
  "ufmt",
 ]
 

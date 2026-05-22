@@ -57,6 +57,12 @@ pub fn read_stage_to_addr(
 #[cfg(feature = "handoff")]
 pub fn serialize_handoff(dram_size: u64, handoff_addr: u64) -> Result<usize, &'static str> {
     let handoff_data = fstart_types::handoff::StageHandoff::new(dram_size);
+    #[cfg(target_arch = "x86_64")]
+    let handoff_data = {
+        let mut handoff_data = handoff_data;
+        handoff_data.resume.boot_path = fstart_services::resume::boot_path();
+        handoff_data
+    };
     // SAFETY: handoff_addr points to writable RAM, 4K below next stage load_addr.
     let handoff_buf = unsafe {
         core::slice::from_raw_parts_mut(

@@ -103,6 +103,28 @@ pub enum InputRegion {
         /// Fill byte (0xFF for erased flash).
         fill: u8,
     },
+    /// Raw reserved space that is physically present in this image and aligned.
+    RawAligned {
+        /// Region name (e.g., "mrc-cache").
+        name: String,
+        /// Size in bytes.
+        size: u32,
+        /// Fill byte (0xFF for erased flash).
+        fill: u8,
+        /// Required power-of-two alignment.
+        align: u32,
+    },
+    /// Raw reserved space physically present at an explicit image offset.
+    RawAt {
+        /// Region name (e.g., "mrc-cache").
+        name: String,
+        /// Offset from image base.
+        offset: u32,
+        /// Size in bytes.
+        size: u32,
+        /// Fill byte (0xFF for erased flash).
+        fill: u8,
+    },
     /// Raw flash region described in the manifest but not stored in this image.
     ///
     /// This is used for descriptor-based x86 platforms where a BIOS-region
@@ -285,6 +307,65 @@ where
                     .push(Region {
                         name: region_name,
                         offset,
+                        size: *size,
+                        content: RegionContent::Raw { fill: *fill },
+                    })
+                    .map_err(|_| "too many regions (max 6)".to_string())?;
+            }
+            InputRegion::RawAligned {
+                name,
+                size,
+                fill,
+                align,
+            } => {
+                if *align == 0 || !align.is_power_of_two() {
+                    return Err(format!(
+                        "raw region {name} has invalid alignment {align:#x}"
+                    ));
+                }
+                let align = *align as usize;
+                let pad = (align - (image.len() % align)) % align;
+                image.resize(image.len() + pad, *fill);
+                let offset = image.len() as u32;
+                image.resize(image.len() + *size as usize, *fill);
+
+                let region_name: HString<64> = HString::try_from(name.as_str())
+                    .map_err(|_| format!("region name too long: {name}"))?;
+
+                manifest_regions
+                    .push(Region {
+                        name: region_name,
+                        offset,
+                        size: *size,
+                        content: RegionContent::Raw { fill: *fill },
+                    })
+                    .map_err(|_| "too many regions (max 6)".to_string())?;
+            }
+            InputRegion::RawAt {
+                name,
+                offset,
+                size,
+                fill,
+            } => {
+                let start = *offset as usize;
+                let end = start
+                    .checked_add(*size as usize)
+                    .ok_or_else(|| format!("raw region {name} overflows image offsets"))?;
+                if start < image.len() {
+                    return Err(format!(
+                        "raw region {name} at {offset:#x} overlaps prior image data ending at {:#x}",
+                        image.len()
+                    ));
+                }
+                image.resize(end, *fill);
+
+                let region_name: HString<64> = HString::try_from(name.as_str())
+                    .map_err(|_| format!("region name too long: {name}"))?;
+
+                manifest_regions
+                    .push(Region {
+                        name: region_name,
+                        offset: *offset,
                         size: *size,
                         content: RegionContent::Raw { fill: *fill },
                     })

@@ -248,6 +248,13 @@
             ],
         ),
         (
+            name: "spi_flash",
+            driver: IntelSpi((
+                chipset: Ich8,
+                mode: Auto,
+            )),
+        ),
+        (
             name: "mainboard",
             driver: LenovoX61Mainboard((
                 dock_early_console: true,
@@ -266,6 +273,7 @@
                 PreConsoleInit( devices: ["northbridge", "southbridge", "mainboard"] ),
                 ConsoleInit( device: "uart0" ),
                 EarlyInit( devices: ["northbridge", "southbridge"] ),
+                ResumeDetect( device: "southbridge" ),
                 DramInit( device: "northbridge" ),
                 BootMedia(MemoryMapped( base: 0xFFE80000, size: 0x00180000 )),
                 StageLoad( next_stage: "ramstage" ),
@@ -284,7 +292,6 @@
                 BootMedia(MemoryMapped(
                     base: 0xFFE80000,
                     size: 0x00180000,
-                    ram_copy_addr: Some(0x02000000),
                 )),
                 SigVerify,
                 DriverInit,
@@ -374,6 +381,15 @@
             ( locator: "DIMM1" ),
         ],
     ),
+
+    stage_cache: Some((
+        backend: Tseg,
+        size: 0x00080000,
+    )),
+
+    mrc_cache: Some((
+        size: 0x00010000,
+    )),
 
     // CrabEFI UEFI payload — linked as a library.
     // No kernel file — CrabEFI boots via its EFI boot manager.

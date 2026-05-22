@@ -149,6 +149,18 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &DirectCtx<'_>) -> Token
                 _inited.set(#id);
             }
         }
+        C::ResumeDetect { device } => {
+            let id = ctx.ids.lit(device.as_str(), "ResumeDetect");
+            quote! {
+                if fstart_stage_runtime::Board::init_device(&mut board, #id).is_err() {
+                    fstart_stage_runtime::Board::halt(&board);
+                }
+                if fstart_stage_runtime::Board::resume_detect(&mut board, #id).is_err() {
+                    fstart_stage_runtime::Board::halt(&board);
+                }
+                _inited.set(#id);
+            }
+        }
         C::PreConsoleInit { devices } => phase_tokens(
             "PreConsoleInit",
             devices,
@@ -206,6 +218,10 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &DirectCtx<'_>) -> Token
             fstart_stage_runtime::Board::fdt_prepare(&board);
         },
         C::PayloadLoad => quote! {
+            #[cfg(target_arch = "x86_64")]
+            if fstart_services::resume::is_s3_resume() {
+                fstart_stage_runtime::Board::acpi_s3_resume(&board);
+            }
             fstart_stage_runtime::Board::payload_load(&board);
         },
         C::StageLoad { next_stage } => {
@@ -214,10 +230,37 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &DirectCtx<'_>) -> Token
                 fstart_stage_runtime::Board::stage_load(&board, #next_stage);
             }
         }
+        C::StageCacheSave { stage } => {
+            let stage = stage.as_str();
+            quote! {
+                #[cfg(target_arch = "x86_64")]
+                if fstart_services::resume::is_s3_resume() {
+                    // On S3 the cache should already contain the previous normal-boot stage.
+                } else {
+                    fstart_stage_runtime::Board::stage_cache_save(&board, #stage);
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                fstart_stage_runtime::Board::stage_cache_save(&board, #stage);
+            }
+        }
         C::AcpiPrepare => quote! {
+            #[cfg(target_arch = "x86_64")]
+            if fstart_services::resume::is_s3_resume() {
+                // Preserve OS-owned ACPI tables on S3 resume.
+            } else {
+                fstart_stage_runtime::Board::acpi_prepare(&mut board);
+            }
+            #[cfg(not(target_arch = "x86_64"))]
             fstart_stage_runtime::Board::acpi_prepare(&mut board);
         },
         C::SmBiosPrepare => quote! {
+            #[cfg(target_arch = "x86_64")]
+            if fstart_services::resume::is_s3_resume() {
+                // Preserve OS-owned SMBIOS tables on S3 resume.
+            } else {
+                fstart_stage_runtime::Board::smbios_prepare(&board);
+            }
+            #[cfg(not(target_arch = "x86_64"))]
             fstart_stage_runtime::Board::smbios_prepare(&board);
         },
         C::AcpiLoad { device } => single_device_call(device.as_str(), "AcpiLoad", ctx, |id| {

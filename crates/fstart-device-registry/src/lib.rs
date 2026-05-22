@@ -144,6 +144,11 @@ pub mod intel_ich8 {
     pub use fstart_driver_intel_ich8::IntelIch8Config;
 }
 
+#[cfg(feature = "intel-spi")]
+pub mod intel_spi {
+    pub use fstart_driver_intel_spi::IntelSpiConfig;
+}
+
 #[cfg(feature = "lenovo-x61-mainboard")]
 pub mod lenovo_x61_mainboard {
     pub use fstart_mainboard_lenovo_x61::LenovoX61MainboardConfig;
@@ -174,6 +179,8 @@ pub enum Service {
     Framebuffer,
     AcpiTableProvider,
     MemoryDetector,
+    ResumeDetector,
+    StageCacheProvider,
     SuperIoHost,
     Southbridge,
     Mainboard,
@@ -204,6 +211,8 @@ impl Service {
             Self::Framebuffer => "Framebuffer",
             Self::AcpiTableProvider => "AcpiTableProvider",
             Self::MemoryDetector => "MemoryDetector",
+            Self::ResumeDetector => "ResumeDetector",
+            Self::StageCacheProvider => "StageCacheProvider",
             Self::SuperIoHost => "SuperIoHost",
             Self::Southbridge => "Southbridge",
             Self::Mainboard => "Mainboard",
@@ -419,6 +428,10 @@ pub enum DriverInstance {
     /// Intel ICH8 / ICH8-M southbridge.
     #[cfg(feature = "intel-ich8")]
     IntelIch8(intel_ich8::IntelIch8Config),
+
+    /// Intel ICH/PCH SPI flash controller.
+    #[cfg(feature = "intel-spi")]
+    IntelSpi(intel_spi::IntelSpiConfig),
 
     /// Lenovo ThinkPad X61 mainboard glue.
     #[cfg(feature = "lenovo-x61-mainboard")]
@@ -749,6 +762,7 @@ impl DriverInstance {
                     Service::EarlyInit,
                     Service::PostDramInit,
                     Service::FinalizeInit,
+                    Service::ResumeDetector,
                 ],
                 compatible: &["intel,ich7", "intel,nm10"],
                 has_acpi: true,
@@ -766,6 +780,7 @@ impl DriverInstance {
                     Service::PciHost,
                     Service::PciRootBus,
                     Service::SmmOps,
+                    Service::StageCacheProvider,
                     Service::PreConsoleInit,
                     Service::EarlyInit,
                     Service::StageLocalInit,
@@ -787,9 +802,21 @@ impl DriverInstance {
                     Service::EarlyInit,
                     Service::PostDramInit,
                     Service::FinalizeInit,
+                    Service::ResumeDetector,
                 ],
                 compatible: &["intel,ich8", "intel,ich8m", "intel,82801hx"],
                 has_acpi: true,
+                is_bus_device: false,
+            },
+            #[cfg(feature = "intel-spi")]
+            Self::IntelSpi(_) => &DriverMeta {
+                name: "intel-spi",
+                type_name: "IntelSpi",
+                module_path: "fstart_driver_intel_spi",
+                config_type: "IntelSpiConfig",
+                static_services: &[Service::BlockDevice],
+                compatible: &["intel,ich-spi", "intel-spi"],
+                has_acpi: false,
                 is_bus_device: false,
             },
             #[cfg(feature = "lenovo-x61-mainboard")]
@@ -987,6 +1014,8 @@ impl DriverInstance {
             Self::IntelGm965(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "intel-ich8")]
             Self::IntelIch8(cfg) => serde::Serialize::serialize(cfg, ser),
+            #[cfg(feature = "intel-spi")]
+            Self::IntelSpi(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "lenovo-x61-mainboard")]
             Self::LenovoX61Mainboard(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "i2c-ck505")]

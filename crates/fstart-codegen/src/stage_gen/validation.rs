@@ -79,6 +79,14 @@ pub(super) fn validate_capability_ordering(
             Capability::DramInit { .. } => {
                 memory_ready = true;
             }
+            Capability::ResumeDetect { .. } if !console_inited => {
+                return Some(
+                    "ResumeDetect capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::ResumeDetect { .. } => {}
             Capability::PreConsoleInit { .. } => {
                 // Pre-console phases must be log-free and may run before the
                 // logger exists.
@@ -202,6 +210,19 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::StageCacheSave { .. } if !console_inited => {
+                return Some(
+                    "StageCacheSave capability requires ConsoleInit to appear earlier \
+                     in the capability list (needed for logging)"
+                        .to_string(),
+                );
+            }
+            Capability::StageCacheSave { .. } if !boot_media_declared => {
+                return Some(
+                    "StageCacheSave capability requires BootMedia to appear earlier".to_string(),
+                );
+            }
+            Capability::StageCacheSave { .. } => {}
             Capability::PayloadLoad if !console_inited => {
                 return Some(
                     "PayloadLoad capability requires ConsoleInit to appear earlier \
@@ -279,7 +300,10 @@ pub(super) fn needs_ffs(capabilities: &[Capability]) -> bool {
     capabilities.iter().any(|c| {
         matches!(
             c,
-            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+            Capability::SigVerify
+                | Capability::StageLoad { .. }
+                | Capability::StageCacheSave { .. }
+                | Capability::PayloadLoad
         )
     })
 }
@@ -405,6 +429,13 @@ fn validate_capability_service(
             device.as_str(),
             Service::MemoryController,
             "DramInit",
+        ),
+        Capability::ResumeDetect { device } => require_device_service(
+            config,
+            device_services,
+            device.as_str(),
+            Service::ResumeDetector,
+            "ResumeDetect",
         ),
         Capability::PreConsoleInit { devices } => require_devices_service(
             config,

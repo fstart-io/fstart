@@ -31,10 +31,12 @@ pub mod network;
 #[cfg(feature = "pci")]
 pub mod pci;
 pub mod pci_host;
+pub mod resume;
 pub mod smbus;
 pub mod soc_boot;
 pub mod southbridge;
 pub mod spi;
+pub mod stage_cache;
 pub mod timer;
 
 pub use block::BlockDevice;
@@ -54,10 +56,12 @@ pub use network::Network;
 #[cfg(feature = "pci")]
 pub use pci::{PciBdf, PciRootBus, PciWindow, PciWindowKind};
 pub use pci_host::PciHost;
+pub use resume::ResumeDetector;
 pub use smbus::SmBus;
 pub use soc_boot::SocBootHeader;
 pub use southbridge::Southbridge;
 pub use spi::SpiBus;
+pub use stage_cache::StageCacheProvider;
 pub use timer::Timer;
 
 /// Common error type for service operations.

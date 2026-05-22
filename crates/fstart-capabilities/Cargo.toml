@@ -35,3 +35,4 @@ fstart-fit = { workspace = true, optional = true }
 fstart-smbios = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, optional = true }
 postcard = { workspace = true, optional = true }
+zerocopy = { workspace = true }

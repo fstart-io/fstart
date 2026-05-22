@@ -87,6 +87,10 @@ struct RonBoardConfig {
     #[serde(default)]
     smm: Option<fstart_types::smm::SmmConfig>,
     #[serde(default)]
+    stage_cache: Option<fstart_types::resume::StageCacheConfig>,
+    #[serde(default)]
+    mrc_cache: Option<fstart_types::board::MrcCacheConfig>,
+    #[serde(default)]
     boot_hart_id: u32,
 }
 
@@ -228,6 +232,8 @@ fn convert(ron: RonBoardConfig) -> Result<ParsedBoard, String> {
         acpi: ron.acpi,
         smbios: ron.smbios,
         smm: ron.smm,
+        stage_cache: ron.stage_cache,
+        mrc_cache: ron.mrc_cache,
         boot_hart_id: ron.boot_hart_id,
     };
 

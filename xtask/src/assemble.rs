@@ -440,7 +440,10 @@ fn compressed_anchor_slots(regions: &[InputRegion]) -> Result<Vec<CompressedAnch
         let files = match region {
             InputRegion::Container { files, .. }
             | InputRegion::ContainerWithExternal { files, .. } => files,
-            InputRegion::Raw { .. } | InputRegion::ExternalRaw { .. } => continue,
+            InputRegion::Raw { .. }
+            | InputRegion::RawAligned { .. }
+            | InputRegion::RawAt { .. }
+            | InputRegion::ExternalRaw { .. } => continue,
         };
 
         for (file_idx, file) in files.iter().enumerate() {
@@ -501,7 +504,10 @@ fn patch_compressed_anchor_slots(
         let files = match region {
             InputRegion::Container { files, .. }
             | InputRegion::ContainerWithExternal { files, .. } => files,
-            InputRegion::Raw { .. } | InputRegion::ExternalRaw { .. } => {
+            InputRegion::Raw { .. }
+            | InputRegion::RawAligned { .. }
+            | InputRegion::RawAt { .. }
+            | InputRegion::ExternalRaw { .. } => {
                 return Err("compressed anchor slot points at a raw region".to_string());
             }
         };
@@ -524,6 +530,8 @@ fn patch_compressed_anchor_slots(
     Ok(())
 }
 
+const MRC_CACHE_FLASH_ALIGN: u32 = 0x1000;
+
 fn ffs_input_regions(
     config: &BoardConfig,
     ro_files: Vec<InputFile>,
@@ -536,25 +544,31 @@ fn ffs_input_regions(
                 .ok_or_else(|| "full_flash_image requires memory.flash_size".to_string())?;
             let flash_size_u32 = u32::try_from(flash_size)
                 .map_err(|_| format!("flash size {flash_size:#x} exceeds FFS u32 limits"))?;
-            let (files, external_files) =
-                externalize_xip_bootblock(config, ro_files, flash_size_u32)?;
+            let ro_size = mrc_cache_offset_before(config, flash_size_u32)?;
+            let (files, external_files) = externalize_xip_bootblock(config, ro_files, ro_size)?;
+            let mut regions = Vec::new();
             if !external_files.is_empty() {
-                return Ok(vec![InputRegion::ContainerWithExternal {
+                regions.push(InputRegion::ContainerWithExternal {
                     name: "ro".to_string(),
                     files,
                     external_files,
-                    size: Some(flash_size_u32),
-                }]);
+                    size: Some(ro_size),
+                });
+            } else {
+                regions.push(InputRegion::Container {
+                    name: "ro".to_string(),
+                    files,
+                });
             }
-            return Ok(vec![InputRegion::Container {
-                name: "ro".to_string(),
-                files,
-            }]);
+            push_mrc_cache_region(config, &mut regions, Some(ro_size))?;
+            return Ok(regions);
         }
-        return Ok(vec![InputRegion::Container {
+        let mut regions = vec![InputRegion::Container {
             name: "ro".to_string(),
             files: ro_files,
-        }]);
+        }];
+        push_mrc_cache_region(config, &mut regions, None)?;
+        return Ok(regions);
     };
 
     let bios = layout
@@ -576,16 +590,61 @@ fn ffs_input_regions(
             fill: 0xff,
         });
     }
-    let (files, external_files) = externalize_xip_bootblock(config, ro_files, bios.size)?;
+    let ro_size = mrc_cache_offset_before(config, bios.size)?;
+    let (files, external_files) = externalize_xip_bootblock(config, ro_files, ro_size)?;
 
     regions.push(InputRegion::ContainerWithExternal {
         name: "ro".to_string(),
         files,
         external_files,
-        size: Some(bios.size),
+        size: Some(ro_size),
     });
+    push_mrc_cache_region(config, &mut regions, Some(ro_size))?;
 
     Ok(regions)
+}
+
+fn push_mrc_cache_region(
+    config: &BoardConfig,
+    regions: &mut Vec<InputRegion>,
+    offset: Option<u32>,
+) -> Result<(), String> {
+    let Some(cache) = &config.mrc_cache else {
+        return Ok(());
+    };
+    if cache.size == 0 {
+        return Err("mrc_cache.size must be non-zero".to_string());
+    }
+    let name = cache.name.as_str().to_string();
+    if let Some(offset) = offset {
+        regions.push(InputRegion::ExternalRaw {
+            name,
+            offset,
+            size: cache.size,
+            fill: 0xff,
+        });
+    } else {
+        regions.push(InputRegion::RawAligned {
+            name,
+            size: cache.size,
+            fill: 0xff,
+            align: MRC_CACHE_FLASH_ALIGN,
+        });
+    }
+    Ok(())
+}
+
+fn mrc_cache_offset_before(config: &BoardConfig, container_size: u32) -> Result<u32, String> {
+    let Some(cache) = &config.mrc_cache else {
+        return Ok(container_size);
+    };
+    let unaligned = container_size.checked_sub(cache.size).ok_or_else(|| {
+        format!(
+            "mrc_cache size {:#x} exceeds container size {container_size:#x}",
+            cache.size
+        )
+    })?;
+    Ok(unaligned & !(MRC_CACHE_FLASH_ALIGN - 1))
 }
 
 fn externalize_xip_bootblock(

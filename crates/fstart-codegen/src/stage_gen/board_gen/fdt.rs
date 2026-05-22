@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use fstart_types::memory::{FlashLayout, RegionKind};
-use fstart_types::{Capability, FdtSource, PayloadConfig, Platform};
+use fstart_types::{Capability, FdtSource, PayloadConfig, Platform, StageCacheBackend};
 
 use crate::stage_gen::tokens::hex_addr;
 
@@ -163,10 +163,53 @@ pub(super) fn stage_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
 
     if ctx.config.platform == Platform::X86_64 {
         let postcar_config = x86_postcar_config_tokens(ctx);
+        let cache_setup = match ctx.config.stage_cache {
+            Some(cache) if cache.backend == StageCacheBackend::Tseg => {
+                let providers: Vec<_> = ctx
+                    .runtime_devices
+                    .providers(fstart_device_registry::Service::StageCacheProvider)
+                    .collect();
+                let cache_size = hex_addr(cache.size);
+                if providers.len() == 1 {
+                    let field = quote::format_ident!("{}", providers[0].name);
+                    quote! {
+                        let mut _stage_cache_base = 0u64;
+                        let mut _stage_cache_size = 0u64;
+                        if let Some(provider) = self.#field.as_ref() {
+                            match fstart_capabilities::stage_cache::open_stage_cache_provider(
+                                provider,
+                                #cache_size,
+                            ) {
+                                Ok((base, size)) => {
+                                    // Keep SMRAM open across this non-returning StageLoad so
+                                    // the post-CAR loader can populate/read the TSEG cache.
+                                    // The next stage closes it during MP/SMM init, matching
+                                    // coreboot's open-copy-close ownership model.
+                                    _stage_cache_base = base;
+                                    _stage_cache_size = size;
+                                }
+                                Err(_) => {
+                                    fstart_log::error!("stage_load: failed to open TSEG stage cache");
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    quote! { let (_stage_cache_base, _stage_cache_size) = (0u64, 0u64); }
+                }
+            }
+            Some(cache) if cache.backend == StageCacheBackend::Memory => {
+                let cache_base = hex_addr(cache.base);
+                let cache_size = hex_addr(cache.size);
+                quote! { let (_stage_cache_base, _stage_cache_size) = (#cache_base, #cache_size); }
+            }
+            _ => quote! { let (_stage_cache_base, _stage_cache_size) = (0u64, 0u64); },
+        };
         return quote! {
             fstart_log::info!("stage_load: generated trampoline enter");
             #anchor
             #postcar_config
+            #cache_setup
             fstart_log::info!("stage_load: anchor slice ready");
             match self._boot_media {
                 fstart_stage_runtime::BootMediaState::Mmio { base, size } => {
@@ -181,6 +224,8 @@ pub(super) fn stage_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
                             _anchor_bytes,
                             base,
                             size,
+                            _stage_cache_base,
+                            _stage_cache_size,
                         );
                     }
                 }
@@ -217,6 +262,78 @@ pub(super) fn stage_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             "stage_load: capability returned without jumping — halting",
         );
         fstart_platform::halt()
+    }
+}
+
+/// Emit the body of `Board::stage_cache_save`.
+pub(super) fn stage_cache_save_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    if !ctx.stage.uses_ffs {
+        return quote! {
+            let _ = stage;
+            fstart_log::error!("stage_cache_save: stage does not use FFS");
+        };
+    }
+    let Some(cache) = ctx.config.stage_cache else {
+        return quote! {
+            let _ = stage;
+            fstart_log::error!("stage_cache_save: board.stage_cache is not configured");
+        };
+    };
+
+    let anchor = anchor_bytes_stmt();
+    let cache_size = hex_addr(cache.size);
+    let usage = match cache.backend {
+        StageCacheBackend::Memory => {
+            let cache_base = hex_addr(cache.base);
+            quote! {
+                if let Err(_) = fstart_capabilities::stage_cache::save_stage_cache_memory(
+                    _anchor_bytes,
+                    &_bm,
+                    stage,
+                    #cache_base,
+                    #cache_size,
+                ) {
+                    fstart_log::error!("stage_cache_save: failed to cache '{}'", stage);
+                }
+            }
+        }
+        StageCacheBackend::Tseg => {
+            let providers: Vec<_> = ctx
+                .runtime_devices
+                .providers(fstart_device_registry::Service::StageCacheProvider)
+                .collect();
+            if providers.len() != 1 {
+                quote! {
+                    fstart_log::error!("stage_cache_save: TSEG backend requires exactly one StageCacheProvider");
+                }
+            } else {
+                let field = quote::format_ident!("{}", providers[0].name);
+                quote! {
+                    let Some(provider) = self.#field.as_ref() else {
+                        fstart_log::error!("stage_cache_save: StageCacheProvider not initialized");
+                        return;
+                    };
+                    if fstart_capabilities::stage_cache::save_stage_cache_tseg(
+                        _anchor_bytes,
+                        &_bm,
+                        stage,
+                        #cache_size,
+                        provider,
+                    ).is_err() {
+                        fstart_log::error!("stage_cache_save: failed to cache '{}'", stage);
+                    }
+                }
+            }
+        }
+    };
+    let none_body = quote! {
+        fstart_log::error!("stage_cache_save: no boot media configured");
+    };
+    let match_body = match_boot_media(ctx, &usage, "stage_cache_save", &none_body);
+
+    quote! {
+        #anchor
+        #match_body
     }
 }
 

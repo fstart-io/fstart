@@ -41,7 +41,10 @@ pub mod fit;
 #[cfg(feature = "handoff")]
 pub mod handoff;
 
+pub mod mrc_cache;
 pub mod next_stage;
+#[cfg(feature = "ffs")]
+pub mod stage_cache;
 
 #[cfg(feature = "smbios")]
 pub mod smbios;

@@ -21,8 +21,11 @@ pub(super) fn dram_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
                     let dev = self.#field
                         .as_mut()
                         .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                    _MemoryController::dram_init(dev)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                    _MemoryController::dram_init_with_boot_path(
+                        dev,
+                        fstart_services::resume::boot_path(),
+                    )
+                    .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
                     Ok(())
                 }
             }
@@ -34,6 +37,44 @@ pub(super) fn dram_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             #(#arms)*
             _ => {
                 fstart_log::error!("dram_init: unknown MemoryController id {}", id);
+                Err(fstart_services::device::DeviceError::InitFailed)
+            }
+        }
+    }
+}
+
+/// Emit the body of `Board::resume_detect`.
+pub(super) fn resume_detect_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let arms: Vec<TokenStream> = ctx
+        .runtime_devices
+        .providers(Service::ResumeDetector)
+        .map(|device| {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
+            quote! {
+                #id_lit => {
+                    use fstart_services::ResumeDetector as _ResumeDetector;
+                    let dev = self.#field
+                        .as_mut()
+                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                    let path = _ResumeDetector::detect_boot_path(dev)
+                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                    fstart_services::resume::set_boot_path(path);
+                    match path {
+                        fstart_types::BootPath::Normal => fstart_log::info!("resume_detect: normal boot"),
+                        fstart_types::BootPath::S3Resume => fstart_log::info!("resume_detect: ACPI S3 resume"),
+                    }
+                    Ok(())
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        match id {
+            #(#arms)*
+            _ => {
+                fstart_log::error!("resume_detect: unknown ResumeDetector id {}", id);
                 Err(fstart_services::device::DeviceError::InitFailed)
             }
         }

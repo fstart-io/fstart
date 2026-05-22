@@ -60,6 +60,9 @@ pub fn disable_boot_media_rom_cache_for_handoff() {
 // - 0x08: 32-bit flat code (used for 16→32 bit transition)
 // - 0x10: flat data (used in both 32-bit mode and long mode)
 // - 0x18: 64-bit code (Long mode, Execute/Read)
+// - 0x20: reserved/TSS slot (keeps coreboot-compatible selector numbering)
+// - 0x28: 16-bit code (used by ACPI S3 wake trampoline)
+// - 0x30: 16-bit data (used by ACPI S3 wake trampoline)
 //
 // Page tables: identity-mapped 2 MiB pages covering 4 GiB.
 // PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
@@ -169,6 +172,14 @@ core::arch::global_asm!(
     // Entry 0x18: 64-bit code (L=1, D=0, base=0, limit=4G)
     ".word 0xffff, 0x0000",
     ".byte 0x00, 0x9b, 0xaf, 0x00",
+    // Entry 0x20: reserved/TSS slot (zeroed, selector not used here)
+    ".quad 0x0000000000000000",
+    // Entry 0x28: 16-bit flat code (base=0, limit=64K, D=0)
+    ".word 0xffff, 0x0000",
+    ".byte 0x00, 0x9b, 0x00, 0x00",
+    // Entry 0x30: 16-bit flat data (base=0, limit=64K, B=0)
+    ".word 0xffff, 0x0000",
+    ".byte 0x00, 0x93, 0x00, 0x00",
     "_gdt_end:",
     "_gdt_desc:",
     ".word _gdt_end - _gdt - 1", // limit
@@ -963,6 +974,15 @@ pub fn jump_to(addr: u64) -> ! {
     }
 }
 
+/// Jump to a fstart stage entry while passing a serialized handoff pointer.
+pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
+    // SAFETY: caller guarantees `addr` is a fstart stage entry with the stable
+    // `extern "Rust" fn(usize) -> !` ABI and `handoff_addr` points to a valid
+    // serialized handoff buffer or zero.
+    let entry: extern "Rust" fn(usize) -> ! = unsafe { core::mem::transmute(addr as usize) };
+    entry(handoff_addr)
+}
+
 #[inline]
 fn read_cr0() -> u64 {
     // SAFETY: reading CR0 is side-effect free in firmware context.
@@ -1348,3 +1368,222 @@ fn log_x86_irq_handoff_state() {}
 
 #[cfg(not(target_arch = "x86_64"))]
 fn log_x86_irq_handoff_state() {}
+
+/// Resume the OS from ACPI S3 using the preserved FACS wake vector.
+///
+/// This path intentionally discovers the wake vector from the OS-owned ACPI
+/// tables left in memory; it must be called before regenerating ACPI/SMBIOS.
+pub fn acpi_s3_resume() -> ! {
+    fstart_log::info!("x86 S3: locating preserved ACPI wake vector");
+    let vector = unsafe { find_s3_wakeup_vector_legacy() };
+    let Some(vector) = vector else {
+        fstart_log::error!("x86 S3: no valid FACS firmware waking vector found");
+        halt();
+    };
+    if vector > 0x000f_ffff {
+        fstart_log::error!(
+            "x86 S3: real-mode wake vector {:#x} is above 1MiB; protected-mode wake is not implemented",
+            vector,
+        );
+        halt();
+    }
+    fstart_log::info!("x86 S3: jumping to wake vector {:#x}", vector);
+    unsafe { s3_copy_wakeup_trampoline() };
+    unsafe {
+        let wake: extern "C" fn(u64) -> ! = core::mem::transmute(S3_WAKEUP_BASE);
+        wake(vector);
+    }
+}
+
+// Keep this scanner local to the platform S3 wake path even though
+// `fstart-acpi::resume` has a shared equivalent: this code runs after DRAM
+// resume, before table regeneration, and deliberately depends only on simple
+// physical-memory reads plus the platform halt/log path. Keep fixes mirrored
+// with `fstart-acpi::resume`.
+const S3_RSDP_SCAN_START: usize = 0x000e_0000;
+const S3_RSDP_SCAN_END: usize = 0x0010_0000;
+
+unsafe fn find_s3_wakeup_vector_legacy() -> Option<u64> {
+    let mut addr = S3_RSDP_SCAN_START;
+    while addr < S3_RSDP_SCAN_END {
+        if let Some(vector) = unsafe { find_s3_wakeup_vector_from_rsdp(addr) } {
+            return Some(vector);
+        }
+        addr += 16;
+    }
+    None
+}
+
+unsafe fn find_s3_wakeup_vector_from_rsdp(rsdp_addr: usize) -> Option<u64> {
+    let rsdp = unsafe { core::slice::from_raw_parts(rsdp_addr as *const u8, 36) };
+    if &rsdp[0..8] != b"RSD PTR " || s3_checksum(&rsdp[..20]) != 0 {
+        return None;
+    }
+    let revision = rsdp[15];
+    if revision >= 2 && s3_checksum(rsdp) == 0 {
+        let xsdt = u64::from_le_bytes(rsdp[24..32].try_into().ok()?) as usize;
+        if xsdt != 0 {
+            if let Some(fadt) = unsafe { s3_find_table(xsdt, true, b"FACP") } {
+                return unsafe { s3_wake_vector_from_fadt(fadt) };
+            }
+        }
+    }
+    let rsdt = u32::from_le_bytes(rsdp[16..20].try_into().ok()?) as usize;
+    if rsdt != 0 {
+        if let Some(fadt) = unsafe { s3_find_table(rsdt, false, b"FACP") } {
+            return unsafe { s3_wake_vector_from_fadt(fadt) };
+        }
+    }
+    None
+}
+
+unsafe fn s3_find_table(root: usize, xsdt: bool, sig: &[u8; 4]) -> Option<usize> {
+    let header = unsafe { core::slice::from_raw_parts(root as *const u8, 36) };
+    let len = u32::from_le_bytes(header[4..8].try_into().ok()?) as usize;
+    if len < 36 {
+        return None;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(root as *const u8, len) };
+    if s3_checksum(bytes) != 0 {
+        return None;
+    }
+    let ent = if xsdt { 8 } else { 4 };
+    for off in (36..len).step_by(ent) {
+        if off + ent > len {
+            break;
+        }
+        let addr = if xsdt {
+            u64::from_le_bytes(bytes[off..off + 8].try_into().ok()?) as usize
+        } else {
+            u32::from_le_bytes(bytes[off..off + 4].try_into().ok()?) as usize
+        };
+        if addr == 0 {
+            continue;
+        }
+        let tsig = unsafe { core::slice::from_raw_parts(addr as *const u8, 4) };
+        if tsig == sig {
+            return Some(addr);
+        }
+    }
+    None
+}
+
+unsafe fn s3_wake_vector_from_fadt(fadt: usize) -> Option<u64> {
+    let bytes = unsafe { core::slice::from_raw_parts(fadt as *const u8, 148) };
+    let len = u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize;
+    if len < 116 {
+        return None;
+    }
+    let facs32 = u32::from_le_bytes(bytes[36..40].try_into().ok()?) as u64;
+    let facs64 = if len >= 140 {
+        u64::from_le_bytes(bytes[132..140].try_into().ok()?)
+    } else {
+        0
+    };
+    let facs = if facs64 != 0 { facs64 } else { facs32 };
+    if facs == 0 {
+        return None;
+    }
+    let facs_bytes = unsafe { core::slice::from_raw_parts(facs as usize as *const u8, 32) };
+    if &facs_bytes[0..4] != b"FACS" {
+        return None;
+    }
+    let v32 = u32::from_le_bytes(facs_bytes[12..16].try_into().ok()?) as u64;
+    let v64 = u64::from_le_bytes(facs_bytes[24..32].try_into().ok()?);
+    if v64 != 0 {
+        Some(v64)
+    } else if v32 != 0 {
+        Some(v32)
+    } else {
+        None
+    }
+}
+
+fn s3_checksum(bytes: &[u8]) -> u8 {
+    bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte))
+}
+
+const S3_WAKEUP_BASE: usize = 0x600;
+
+unsafe fn s3_copy_wakeup_trampoline() {
+    unsafe extern "C" {
+        static __fstart_s3_wakeup: u8;
+        static __fstart_s3_wakeup_end: u8;
+    }
+    let src = unsafe { &__fstart_s3_wakeup as *const u8 };
+    let end = unsafe { &__fstart_s3_wakeup_end as *const u8 };
+    let size = (end as usize).saturating_sub(src as usize);
+    if size == 0 || size > 0x200 {
+        fstart_log::error!("x86 S3: invalid wake trampoline size {}", size);
+        halt();
+    }
+    unsafe { core::ptr::copy_nonoverlapping(src, S3_WAKEUP_BASE as *mut u8, size) };
+}
+
+core::arch::global_asm!(
+    ".section .text.s3_wakeup, \"ax\"",
+    ".code64",
+    ".global __fstart_s3_wakeup",
+    "__fstart_s3_wakeup:",
+    // Preserve the low 32 bits of the real-mode wake vector in EBX across
+    // the long-mode to protected-mode transition. The vector is constrained
+    // below 1MiB before entering this trampoline.
+    "movl %edi, %ebx",
+    "xor %rax, %rax",
+    "mov %ss, %ax",
+    "push %rax",
+    "mov %rsp, %rax",
+    "add $8, %rax",
+    "push %rax",
+    "pushfq",
+    "push $0x08",
+    "lea 3(%rip), %rax",
+    "push %rax",
+    "iretq",
+    ".code32",
+    // Disable paging, then long mode.
+    "mov %cr0, %eax",
+    "btc $31, %eax",
+    "mov %eax, %cr0",
+    "mov $0xC0000080, %ecx",
+    "rdmsr",
+    "btc $8, %eax",
+    "wrmsr",
+    // Convert the linear wake vector in EBX to real-mode segment:offset.
+    "mov %ebx, %eax",
+    "andw $0x0f, %ax",
+    "movw %ax, (s3_wakeup_offset - __fstart_s3_wakeup + 0x600)",
+    "mov %ebx, %eax",
+    "shr $4, %eax",
+    "movw %ax, (s3_wakeup_segment - __fstart_s3_wakeup + 0x600)",
+    // Enter a 16-bit protected-mode segment, then clear PE.
+    "ljmp $0x28, $(1f - __fstart_s3_wakeup + 0x600)",
+    "1:",
+    ".code16",
+    "mov $0x30, %ax",
+    "mov %ax, %ds",
+    "mov %ax, %es",
+    "mov %ax, %fs",
+    "mov %ax, %gs",
+    "mov %ax, %ss",
+    "movl %cr0, %eax",
+    "andl $0xfffffffe, %eax",
+    "movl %eax, %cr0",
+    "ljmp $0, $(1f - __fstart_s3_wakeup + 0x600)",
+    "1:",
+    "movw $0, %ax",
+    "movw %ax, %ds",
+    "movw %ax, %es",
+    "movw %ax, %ss",
+    "movw %ax, %fs",
+    "movw %ax, %gs",
+    ".byte 0xea",
+    "s3_wakeup_offset:",
+    ".word 0x0000",
+    "s3_wakeup_segment:",
+    ".word 0x0000",
+    ".code64",
+    ".global __fstart_s3_wakeup_end",
+    "__fstart_s3_wakeup_end:",
+    options(att_syntax),
+);

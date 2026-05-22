@@ -59,6 +59,7 @@ members = [
   "crates/fstart-driver-intel-ich7",
   "crates/fstart-driver-intel-gm965",
   "crates/fstart-driver-intel-ich8",
+  "crates/fstart-driver-intel-spi",
   "crates/fstart-mainboard-lenovo-x61",
   "crates/fstart-driver-i2c-ck505",
   "crates/fstart-smbus-intel",
@@ -99,6 +100,7 @@ ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
 tock-registers = "0.10"
 x86 = { version = "0.52", default-features = false }
+zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
@@ -172,6 +174,7 @@ fstart-driver-intel-pineview = { path = "crates/fstart-driver-intel-pineview" }
 fstart-driver-intel-ich7 = { path = "crates/fstart-driver-intel-ich7" }
 fstart-driver-intel-gm965 = { path = "crates/fstart-driver-intel-gm965" }
 fstart-driver-intel-ich8 = { path = "crates/fstart-driver-intel-ich8" }
+fstart-driver-intel-spi = { path = "crates/fstart-driver-intel-spi" }
 fstart-mainboard-lenovo-x61 = { path = "crates/fstart-mainboard-lenovo-x61" }
 fstart-driver-i2c-ck505 = { path = "crates/fstart-driver-i2c-ck505" }
 fstart-smbus-intel = { path = "crates/fstart-smbus-intel" }

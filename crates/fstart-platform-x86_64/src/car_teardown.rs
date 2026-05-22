@@ -204,20 +204,37 @@ pub unsafe fn stage_load_mmio(
     anchor: &'static [u8],
     base: u64,
     size: u64,
+    cache_base: u64,
+    cache_size: u64,
 ) -> ! {
     let Some(stack_top) = config.stack_top() else {
         crate::halt();
+    };
+    let boot_path = match fstart_services::resume::boot_path() {
+        fstart_types::BootPath::Normal => 0u64,
+        fstart_types::BootPath::S3Resume => 1u64,
     };
 
     unsafe {
         asm!(
             "mov rsp, {stack}",
             "and rsp, -16",
-            "sub rsp, 8",
+            // Reserve a dummy return address plus four stack-passed
+            // arguments. With an aligned stack top, `sub rsp, 40` leaves
+            // `rsp % 16 == 8`, matching SysV function-entry alignment for
+            // the jmp into `stage_load_mmio_trampoline`.
+            "sub rsp, 40",
+            "mov qword ptr [rsp], 0",
             "mov qword ptr [rsp + 8], {image_size}",
+            "mov qword ptr [rsp + 16], {cache_base}",
+            "mov qword ptr [rsp + 24], {cache_size}",
+            "mov qword ptr [rsp + 32], {boot_path}",
             "jmp {tramp}",
             stack = in(reg) stack_top,
             image_size = in(reg) size,
+            cache_base = in(reg) cache_base,
+            cache_size = in(reg) cache_size,
+            boot_path = in(reg) boot_path,
             tramp = sym stage_load_mmio_trampoline,
             in("rdi") config as *const PostcarConfig,
             in("rsi") next_stage.as_ptr(),
@@ -239,6 +256,9 @@ extern "C" fn stage_load_mmio_trampoline(
     anchor_len: usize,
     base: u64,
     size: u64,
+    cache_base: u64,
+    cache_size: u64,
+    boot_path: u64,
 ) -> ! {
     // SAFETY: generated code passes pointers derived from ROM-resident strings
     // and anchor bytes with their original lengths.
@@ -248,6 +268,10 @@ extern "C" fn stage_load_mmio_trampoline(
     let anchor = unsafe { core::slice::from_raw_parts(anchor_ptr, anchor_len) };
     // SAFETY: `config` points at the ROM-resident generated config block.
     let config = unsafe { &*config };
+    let boot_path = match boot_path {
+        1 => fstart_types::BootPath::S3Resume,
+        _ => fstart_types::BootPath::Normal,
+    };
 
     // SAFETY: we are now on a DRAM stack and will never return to CAR-backed
     // state. MTRRs are installed before the large FFS/ramstage copy.
@@ -256,12 +280,42 @@ extern "C" fn stage_load_mmio_trampoline(
         postcar_mtrr_setup(config);
     }
 
-    let entry = quiet_stage_load(next_stage, anchor, base, size);
-    crate::jump_to(entry)
+    let entry = quiet_stage_load(
+        next_stage, anchor, base, size, cache_base, cache_size, boot_path,
+    );
+    let handoff_addr = entry.saturating_sub(0x1000) as usize;
+    write_stage_handoff(handoff_addr, boot_path);
+    crate::jump_to_with_handoff(entry, handoff_addr)
 }
 
 #[cfg(feature = "postcar-stage-load")]
-fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) -> u64 {
+fn write_stage_handoff(handoff_addr: usize, boot_path: fstart_types::BootPath) {
+    let mut handoff = fstart_types::handoff::StageHandoff::new(0);
+    handoff.resume.boot_path = boot_path;
+    // SAFETY: generated stage layout reserves a handoff buffer immediately below
+    // the next stage load address. This mirrors non-x86 multi-stage handoff.
+    let buf = unsafe {
+        core::slice::from_raw_parts_mut(
+            handoff_addr as *mut u8,
+            fstart_types::handoff::HANDOFF_MAX_SIZE,
+        )
+    };
+    if postcard::to_slice(&handoff, buf).is_err() {
+        fstart_log::error!("post-CAR stage handoff serialization failed");
+        crate::halt();
+    }
+}
+
+#[cfg(feature = "postcar-stage-load")]
+fn quiet_stage_load(
+    next_stage: &str,
+    anchor_data: &[u8],
+    base: u64,
+    size: u64,
+    cache_base: u64,
+    cache_size: u64,
+    boot_path: fstart_types::BootPath,
+) -> u64 {
     use fstart_types::ffs::{Compression, EntryContent, SegmentKind};
 
     // SAFETY: generated code passes the memory-mapped FFS base/size from the
@@ -286,6 +340,17 @@ fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) 
             continue;
         };
 
+        let cached_entry = if boot_path.is_s3_resume() {
+            cached_entry_bytes(
+                cache_base,
+                cache_size,
+                entry.size,
+                region.offset + entry.offset,
+            )
+        } else {
+            None
+        };
+
         let mut entry_addr = 0;
         for seg in segments {
             if entry_addr == 0 && seg.kind == SegmentKind::Code {
@@ -302,18 +367,23 @@ fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) 
             }
 
             let src_off = (region.offset + entry.offset + seg.offset) as usize;
+            let entry_seg_off = seg.offset as usize;
             let stored = seg.stored_size as usize;
-            if src_off.saturating_add(stored) > image_size {
-                loop {}
-            }
+            let src = if let Some(cached) = cached_entry {
+                if entry_seg_off.saturating_add(stored) > cached.len() {
+                    loop {}
+                }
+                &cached[entry_seg_off..entry_seg_off + stored]
+            } else {
+                if src_off.saturating_add(stored) > image_size {
+                    loop {}
+                }
+                &image[src_off..src_off + stored]
+            };
 
             match seg.compression {
                 Compression::None => unsafe {
-                    core::ptr::copy(
-                        image.as_ptr().add(src_off),
-                        seg.load_addr as *mut u8,
-                        stored,
-                    );
+                    core::ptr::copy(src.as_ptr(), seg.load_addr as *mut u8, stored);
                 },
                 Compression::Lz4 => {
                     let buf_size = seg.in_place_size as usize;
@@ -326,11 +396,7 @@ fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) 
                     let comp_offset = buf_size - stored;
                     unsafe {
                         let buf = core::slice::from_raw_parts_mut(dest, buf_size);
-                        core::ptr::copy(
-                            image.as_ptr().add(src_off),
-                            buf.as_mut_ptr().add(comp_offset),
-                            stored,
-                        );
+                        core::ptr::copy(src.as_ptr(), buf.as_mut_ptr().add(comp_offset), stored);
                         let src =
                             core::slice::from_raw_parts(buf.as_ptr().add(comp_offset), stored);
                         let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), loaded);
@@ -343,9 +409,92 @@ fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) 
             }
         }
         if entry_addr != 0 {
+            save_compressed_entry_to_cache(
+                image,
+                image_size,
+                region.offset + entry.offset,
+                entry.size,
+                cache_base,
+                cache_size,
+            );
             return entry_addr;
         }
     }
 
     loop {}
+}
+
+#[cfg(feature = "postcar-stage-load")]
+fn cached_entry_bytes(
+    cache_base: u64,
+    cache_size: u64,
+    expected_size: u32,
+    expected_source_offset: u32,
+) -> Option<&'static [u8]> {
+    if cache_base == 0 || cache_size < 20 {
+        return None;
+    }
+    let header = unsafe { core::slice::from_raw_parts(cache_base as *const u8, 20) };
+    if &header[0..4] != b"FSC1" {
+        return None;
+    }
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    let header_len = u16::from_le_bytes([header[6], header[7]]) as usize;
+    let size = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+    let hash = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+    let source_offset = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
+    if version != 1
+        || header_len != 20
+        || size != expected_size as usize
+        || source_offset != expected_source_offset
+    {
+        return None;
+    }
+    if header_len.saturating_add(size) > cache_size as usize {
+        return None;
+    }
+    let data = unsafe {
+        core::slice::from_raw_parts((cache_base as usize + header_len) as *const u8, size)
+    };
+    let actual = data.iter().fold(0x811c_9dc5u32, |mut h, b| {
+        h ^= u32::from(*b);
+        h.wrapping_mul(0x0100_0193)
+    });
+    if actual != hash {
+        return None;
+    }
+    Some(data)
+}
+
+#[cfg(feature = "postcar-stage-load")]
+fn save_compressed_entry_to_cache(
+    image: &[u8],
+    image_size: usize,
+    entry_offset: u32,
+    entry_size: u32,
+    cache_base: u64,
+    cache_size: u64,
+) {
+    if cache_base == 0 || cache_size == 0 {
+        return;
+    }
+    let entry_offset = entry_offset as usize;
+    let entry_size = entry_size as usize;
+    let total = 20usize.saturating_add(entry_size);
+    if total > cache_size as usize || entry_offset.saturating_add(entry_size) > image_size {
+        return;
+    }
+    let src = &image[entry_offset..entry_offset + entry_size];
+    let dst = unsafe { core::slice::from_raw_parts_mut(cache_base as *mut u8, total) };
+    let hash = src.iter().fold(0x811c_9dc5u32, |mut h, b| {
+        h ^= u32::from(*b);
+        h.wrapping_mul(0x0100_0193)
+    });
+    dst[0..4].copy_from_slice(b"FSC1");
+    dst[4..6].copy_from_slice(&1u16.to_le_bytes());
+    dst[6..8].copy_from_slice(&20u16.to_le_bytes());
+    dst[8..12].copy_from_slice(&(entry_size as u32).to_le_bytes());
+    dst[12..16].copy_from_slice(&hash.to_le_bytes());
+    dst[16..20].copy_from_slice(&(entry_offset as u32).to_le_bytes());
+    dst[20..total].copy_from_slice(src);
 }
