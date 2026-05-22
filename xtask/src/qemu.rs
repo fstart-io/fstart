@@ -307,6 +307,10 @@ pub fn run(
         }
     };
 
+    if !args.iter().any(|arg| arg == "-no-reboot") {
+        args.push("-no-reboot".to_string());
+    }
+
     // Add RAM if specified
     if let Some(mem) = memory {
         args.extend(["-m".to_string(), mem.to_string()]);
