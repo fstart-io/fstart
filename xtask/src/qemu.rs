@@ -616,16 +616,17 @@ fn x86_elf_symbol_flash_offset(
 ) -> Result<Option<usize>, String> {
     let elf_data = std::fs::read(elf_path)
         .map_err(|e| format!("failed to read stage ELF {}: {e}", elf_path.display()))?;
-    let elf = goblin::elf::Elf::parse(&elf_data)
+    let elf = object::File::parse(&*elf_data)
         .map_err(|e| format!("failed to parse stage ELF {}: {e}", elf_path.display()))?;
     let flash_end = flash_base + flash_size as u64;
 
-    for sym in &elf.syms {
-        let Some(name) = elf.strtab.get_at(sym.st_name) else {
+    for sym in object::Object::symbols(&elf) {
+        let Ok(name) = object::ObjectSymbol::name(&sym) else {
             continue;
         };
-        if name == symbol_name && sym.st_value >= flash_base && sym.st_value < flash_end {
-            return Ok(Some((sym.st_value - flash_base) as usize));
+        let addr = object::ObjectSymbol::address(&sym);
+        if name == symbol_name && addr >= flash_base && addr < flash_end {
+            return Ok(Some((addr - flash_base) as usize));
         }
     }
     Ok(None)
@@ -638,35 +639,36 @@ fn overlay_x86_elf_segments(
 ) -> Result<(), String> {
     let elf_data = std::fs::read(elf_path)
         .map_err(|e| format!("failed to read stage ELF {}: {e}", elf_path.display()))?;
-    let elf = goblin::elf::Elf::parse(&elf_data)
+    let elf = object::File::parse(&*elf_data)
         .map_err(|e| format!("failed to parse stage ELF {}: {e}", elf_path.display()))?;
     let flash_end = flash_base + pflash.len() as u64;
 
-    for ph in &elf.program_headers {
-        if ph.p_type != goblin::elf::program_header::PT_LOAD || ph.p_filesz == 0 {
+    for segment in object::Object::segments(&elf) {
+        let (file_offset, file_size) = object::ObjectSegment::file_range(&segment);
+        if file_size == 0 {
             continue;
         }
-        let start = ph.p_paddr;
+        let start = object::ObjectSegment::address(&segment);
         let end = start
-            .checked_add(ph.p_filesz)
+            .checked_add(file_size)
             .ok_or_else(|| "stage ELF segment address overflow".to_string())?;
         if start < flash_base || end > flash_end {
             continue;
         }
 
-        let src_start = ph.p_offset as usize;
+        let src_start = file_offset as usize;
         let src_end = src_start
-            .checked_add(ph.p_filesz as usize)
+            .checked_add(file_size as usize)
             .ok_or_else(|| "stage ELF segment file offset overflow".to_string())?;
         if src_end > elf_data.len() {
             return Err(format!(
                 "stage ELF segment exceeds file size: offset {:#x}, size {:#x}",
-                ph.p_offset, ph.p_filesz,
+                file_offset, file_size,
             ));
         }
 
         let dst_start = (start - flash_base) as usize;
-        let dst_end = dst_start + ph.p_filesz as usize;
+        let dst_end = dst_start + file_size as usize;
         pflash[dst_start..dst_end].copy_from_slice(&elf_data[src_start..src_end]);
     }
 
