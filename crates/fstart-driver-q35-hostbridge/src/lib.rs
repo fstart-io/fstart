@@ -338,6 +338,18 @@ impl Q35HostBridge {
         // Step 2: Open legacy region (0xC0000-0xFFFFF) for DRAM access.
         self.program_pam();
 
+        // Step 2a: Program ICH9 ACPI PM I/O at the same base advertised in
+        // the QEMU FADT patch (PM_TMR_BLK = PMBASE + 8 = 0x608).  GRUB uses
+        // this PM timer before falling back to PIT-based TSC calibration.
+        self.setup_ich9_pm_io();
+
+        // Step 2b: Initialize legacy PC timers/interrupt controller.  Coreboot
+        // does this before handing off to x86 option ROMs (`setup_i8259()` and
+        // `setup_i8254()`).  UEFI payloads such as GRUB also assume the 8254
+        // PIT and port 0x61 timer-2 gate/output path are usable for TSC
+        // calibration.
+        self.setup_legacy_pc_timers();
+
         // Step 3: Compute MMIO windows from memory layout.
         let (tolud, touud) = Self::ram_tops_from_e820(entries);
         let ecam_end = self.config.ecam_base + self.config.ecam_size;
@@ -460,6 +472,48 @@ impl Q35HostBridge {
     fn setup_ich9_pm_io(&self) {
         Self::pci_write_lpc32(ICH9_PMBASE_REG, Q35_PMBASE as u32 | 1);
         Self::pci_write_lpc8(ICH9_ACPI_CNTL, 0x80);
+        let pmt = unsafe { fstart_pio::inl(Q35_PMBASE + 8) };
+        fstart_log::info!("Q35: ICH9 PMBASE programmed");
+        fstart_log::info!("Q35: ACPI PM timer initial value={:#x}", pmt);
+    }
+
+    fn setup_legacy_pc_timers(&self) {
+        // 8259 PIC setup from coreboot `drivers/pc80/pc/i8259.c`.
+        // Mask all slave IRQs and all master IRQs except IRQ2 (cascade).
+        unsafe {
+            fstart_pio::outb(0x20, 0x11); // master ICW1: init + ICW4
+            fstart_pio::outb(0xa0, 0x11); // slave ICW1: init + ICW4
+            fstart_pio::outb(0x21, 0x20); // master ICW2: vectors 0x20..0x27
+            fstart_pio::outb(0xa1, 0x28); // slave ICW2: vectors 0x28..0x2f
+            fstart_pio::outb(0x21, 0x04); // master ICW3: slave on IRQ2
+            fstart_pio::outb(0xa1, 0x02); // slave ICW3: cascade ID 2
+            fstart_pio::outb(0x21, 0x01); // master ICW4: x86 mode
+            fstart_pio::outb(0xa1, 0x01); // slave ICW4: x86 mode
+            fstart_pio::outb(0xa1, 0xff); // mask all slave IRQs
+            fstart_pio::outb(0x21, 0xfb); // mask all master IRQs except IRQ2
+
+            // 8254 PIT setup from coreboot `drivers/pc80/pc/i8254.c`.
+            // Channel 0: mode 3, lobyte/hibyte, divisor 0 (65536).
+            fstart_pio::outb(0x43, 0x36);
+            fstart_pio::outb(0x40, 0x00);
+            fstart_pio::outb(0x40, 0x00);
+
+            // Channel 1: mode 3, lobyte-only, small refresh-style divisor.
+            fstart_pio::outb(0x43, 0x56);
+            fstart_pio::outb(0x41, 0x12);
+
+            // Match coreboot's ICH9 LPC setup for port 0x61: the upper nibble
+            // must be zero, IOCHK# NMI enabled, PCI SERR# NMI disabled for now.
+            // Timer-2 gate/speaker bits are left clear; payloads set them when
+            // calibrating with channel 2.
+            let port61 = (fstart_pio::inb(0x61) & 0x0f) & !0x08 | 0x04;
+            fstart_pio::outb(0x61, port61);
+
+            // Mask NMI via CMOS index port, like coreboot when nmi=off.
+            let nmi = fstart_pio::inb(0x74) | 0x80;
+            fstart_pio::outb(0x70, nmi);
+        }
+        fstart_log::info!("Q35: legacy 8259 PIC and 8254 PIT initialized");
     }
 
     fn smm_open(&self) {

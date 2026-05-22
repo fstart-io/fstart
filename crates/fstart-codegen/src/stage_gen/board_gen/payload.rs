@@ -409,8 +409,12 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> Token
                         .as_ref()
                         .unwrap_or_else(|| fstart_platform::halt());
                     let mut _crabefi_console = fstart_crabefi::ConsoleAdapter(_console_ref);
+                    let mut _crabefi_console_input = fstart_crabefi::ConsoleAdapter(_console_ref);
                 },
-                quote! { debug_output: Some(&mut _crabefi_console), },
+                quote! {
+                    debug_output: Some(&mut _crabefi_console),
+                    console_input: Some(&mut _crabefi_console_input),
+                },
             )
         }
         None => (quote! {}, quote! { debug_output: None, }),
@@ -664,7 +668,6 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> Token
             block_devices: &mut [],
             variable_backend: None,
             #debug_output_field
-            console_input: None,
             #framebuffer_field
             #acpi_rsdp_field
             smbios: None,

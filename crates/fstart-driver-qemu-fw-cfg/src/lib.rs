@@ -167,6 +167,48 @@ impl QemuFwCfg {
         self.select(selector);
         self.read_bytes(buf);
     }
+
+    fn log_loaded_acpi_tables(&self, buffer: &[u8], allocs: &[Option<AllocEntry>; 32]) {
+        for entry in allocs.iter().flatten() {
+            let name_len = entry.name.iter().position(|&b| b == 0).unwrap_or(56);
+            let name = core::str::from_utf8(&entry.name[..name_len]).unwrap_or("?");
+            let off = entry.offset;
+            if off + 8 > buffer.len() {
+                continue;
+            }
+            if &buffer[off..off + 8] == b"RSD PTR " {
+                let rev = buffer.get(off + 15).copied().unwrap_or(0);
+                let rsdt = u32::from_le_bytes(buffer[off + 16..off + 20].try_into().unwrap());
+                let xsdt = if rev >= 2 && off + 32 <= buffer.len() {
+                    u64::from_le_bytes(buffer[off + 24..off + 32].try_into().unwrap())
+                } else {
+                    0
+                };
+                fstart_log::info!(
+                    "fw_cfg: ACPI {} RSDP rev={} rsdt={:#x} xsdt={:#x}",
+                    name,
+                    rev,
+                    rsdt,
+                    xsdt
+                );
+                continue;
+            }
+            let sig = core::str::from_utf8(&buffer[off..off + 4]).unwrap_or("????");
+            let len = u32::from_le_bytes(buffer[off + 4..off + 8].try_into().unwrap()) as usize;
+            if sig == "FACP" && len >= 80 && off + 80 <= buffer.len() {
+                let pm_timer = u32::from_le_bytes(buffer[off + 76..off + 80].try_into().unwrap());
+                fstart_log::info!(
+                    "fw_cfg: ACPI {} sig={} len={} pm_timer={:#x}",
+                    name,
+                    sig,
+                    len as u32,
+                    pm_timer
+                );
+            } else {
+                fstart_log::info!("fw_cfg: ACPI {} sig={} len={}", name, sig, len as u32);
+            }
+        }
+    }
 }
 
 impl Device for QemuFwCfg {
@@ -388,6 +430,9 @@ impl AcpiTableProvider for QemuFwCfg {
             }
         }
 
+        patch_q35_fadt_pm_timer(buffer, allocs);
+        self.log_loaded_acpi_tables(buffer, allocs);
+
         // Find the RSDP. It's typically in "etc/acpi/rsdp".
         let rsdp_off = find_alloc_by_name(allocs, b"etc/acpi/rsdp").ok_or(ServiceError::IoError)?;
         let rsdp_phys = buffer.as_ptr() as u64 + rsdp_off as u64;
@@ -463,6 +508,57 @@ impl MemoryDetector for QemuFwCfg {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn patch_q35_fadt_pm_timer(buffer: &mut [u8], allocs: &[Option<AllocEntry>; 32]) {
+    let Some(tables_off) = find_alloc_by_name(allocs, b"etc/acpi/tables") else {
+        return;
+    };
+
+    let mut cursor = tables_off;
+    while cursor + 36 <= buffer.len() {
+        if &buffer[cursor..cursor + 4] != b"FACP" {
+            cursor += 1;
+            continue;
+        }
+
+        let len = u32::from_le_bytes(buffer[cursor + 4..cursor + 8].try_into().unwrap()) as usize;
+        if len < 220 || cursor + len > buffer.len() {
+            cursor += 1;
+            continue;
+        }
+
+        // QEMU builds fw_cfg ACPI tables before guest firmware programs ICH9
+        // PMBASE, so FADT PM timer fields can be zero.  fstart programs the
+        // conventional Q35 PMBASE (0x600); make FADT advertise the matching
+        // ACPI PM timer at PMBASE+8 so GRUB can calibrate TSC from PMTMR.
+        // TODO: Remove this Q35-specific table patch once fstart has a proper
+        // ICH9 southbridge/ACPI implementation that owns PMBASE setup and FADT
+        // generation instead of consuming QEMU's prebuilt fw_cfg FADT.
+        const PM_TMR_BLK: usize = 76;
+        const PM_TMR_LEN: usize = 91;
+        const X_PM_TMR_BLK: usize = 208;
+        buffer[cursor + PM_TMR_BLK..cursor + PM_TMR_BLK + 4]
+            .copy_from_slice(&0x608u32.to_le_bytes());
+        buffer[cursor + PM_TMR_LEN] = 4;
+
+        // Generic Address Structure for X_PM_TMR_BLK.
+        buffer[cursor + X_PM_TMR_BLK] = 1; // System I/O
+        buffer[cursor + X_PM_TMR_BLK + 1] = 32; // bit width
+        buffer[cursor + X_PM_TMR_BLK + 2] = 0; // bit offset
+        buffer[cursor + X_PM_TMR_BLK + 3] = 0; // access size (undefined)
+        buffer[cursor + X_PM_TMR_BLK + 4..cursor + X_PM_TMR_BLK + 12]
+            .copy_from_slice(&0x608u64.to_le_bytes());
+
+        // Recompute FADT checksum.
+        buffer[cursor + 9] = 0;
+        let sum = buffer[cursor..cursor + len]
+            .iter()
+            .fold(0u8, |acc, &b| acc.wrapping_add(b));
+        buffer[cursor + 9] = 0u8.wrapping_sub(sum);
+        fstart_log::info!("fw_cfg: patched Q35 FADT PM timer to 0x608");
+        return;
+    }
+}
 
 /// Find the buffer offset of an allocated file by its raw 56-byte name.
 ///
