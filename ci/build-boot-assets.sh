@@ -35,7 +35,7 @@ KERNEL_MAJOR="${KERNEL_VERSION%%.*}"
 KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
 KERNEL_SHA256="3a39b62038b7ac2f43d26a1f84b4283e197804e1e817ad637e9a3d874c47801d"
 # Pinned for reproducible CI boot assets.
-UROOT_REF="v7.0.0"
+UROOT_REF="c0ddf1088ef06310a88349fecda959d04291110b"
 
 if [[ ! -f "$OUTPUT_DIR/vmlinuz" ]]; then
 	echo "==> Building Linux ${KERNEL_VERSION} (x86_64, minimal EFI-stub config)"
@@ -78,8 +78,11 @@ if [[ ! -f "$OUTPUT_DIR/initramfs.cpio" ]]; then
 		rm -rf "$UROOT_DIR"
 	}
 	trap uroot_cleanup EXIT
-	git clone --depth 1 --branch "$UROOT_REF" -q https://github.com/u-root/u-root.git "$UROOT_DIR/src"
-	(cd "$UROOT_DIR/src" && go build -o "$UROOT_DIR/bin/u-root" .)
+	git clone --depth 1 -q https://github.com/u-root/u-root.git "$UROOT_DIR/src"
+	(cd "$UROOT_DIR/src" && \
+		actual_ref="$(git rev-parse HEAD)" && \
+		[[ "$actual_ref" == "$UROOT_REF" ]] && \
+		go build -o "$UROOT_DIR/bin/u-root" .)
 	(cd "$UROOT_DIR/src" &&
 		GOARCH=amd64 "$UROOT_DIR/bin/u-root" \
 			-o "$OUTPUT_DIR/initramfs.cpio" \
