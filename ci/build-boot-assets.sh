@@ -90,23 +90,23 @@ linux /vmlinuz console=ttyS0,115200 earlycon=uart8250,io,0x3f8,115200n8 nokaslr 
 initrd /initramfs.cpio
 boot
 GRUBCFG
-	if command -v grub-mkstandalone >/dev/null 2>&1; then
-		grub-mkstandalone \
-			--format=x86_64-efi \
-			--output="$OUTPUT_DIR/grubx64.efi" \
-			--locales='' \
-			--fonts='' \
-			"boot/grub/grub.cfg=$GRUB_CFG" \
-			"vmlinuz=$OUTPUT_DIR/vmlinuz" \
-			"initramfs.cpio=$OUTPUT_DIR/initramfs.cpio"
-	else
-		grub-mkimage \
-			--format=x86_64-efi \
-			--output="$OUTPUT_DIR/grubx64.efi" \
-			--prefix='' \
-			--config="$GRUB_CFG" \
-			linux fat part_gpt memdisk tar terminal echo boot serial
-	fi
+	GRUB_MEMDISK="$(mktemp -d)"
+	mkdir -p "$GRUB_MEMDISK/boot/grub"
+	cp "$GRUB_CFG" "$GRUB_MEMDISK/boot/grub/grub.cfg"
+	cp "$OUTPUT_DIR/vmlinuz" "$GRUB_MEMDISK/vmlinuz"
+	cp "$OUTPUT_DIR/initramfs.cpio" "$GRUB_MEMDISK/initramfs.cpio"
+	(
+		cd "$GRUB_MEMDISK"
+		tar cf memdisk.tar boot/grub/grub.cfg vmlinuz initramfs.cpio
+	)
+	grub-mkimage \
+		--format=x86_64-efi \
+		--output="$OUTPUT_DIR/grubx64.efi" \
+		--prefix='(memdisk)/boot/grub' \
+		--memdisk="$GRUB_MEMDISK/memdisk.tar" \
+		--config="$GRUB_CFG" \
+		linux memdisk tar terminal echo boot serial cpuid
+	rm -rf "$GRUB_MEMDISK"
 	rm -f "$GRUB_CFG"
 fi
 

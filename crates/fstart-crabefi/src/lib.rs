@@ -18,8 +18,36 @@ pub type FramebufferConfig = crabefi::FramebufferConfig;
 
 /// Call `crabefi::init_platform()`. This is the entry point that never returns.
 pub fn init_platform(config: crabefi::PlatformConfig) -> ! {
+    enable_payload_cpu_features();
     crabefi::init_platform(config)
 }
+
+/// Enable architectural CPU features expected by common UEFI applications.
+#[cfg(target_arch = "x86_64")]
+fn enable_payload_cpu_features() {
+    // GRUB's x86_64 EFI binary may use SSE instructions. Coreboot's CrabEFI
+    // entry path enables SSE before entering Rust; fstart enters CrabEFI as a
+    // library, so do the equivalent setup here before launching EFI payloads.
+    unsafe {
+        core::arch::asm!(
+            "cld",
+            "mov rax, cr0",
+            "and rax, 0xfffffffffffffff3", // clear EM (bit 2) and TS (bit 3)
+            "or  rax, 0x2",                // set MP (bit 1)
+            "mov cr0, rax",
+            "mov rax, cr4",
+            "or  rax, 0x200",              // OSFXSR (bit 9)
+            "or  rax, 0x400",              // OSXMMEXCPT (bit 10)
+            "mov cr4, rax",
+            out("rax") _,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+/// Non-x86 platforms currently need no additional CPU-feature setup here.
+#[cfg(not(target_arch = "x86_64"))]
+fn enable_payload_cpu_features() {}
 
 // ---------------------------------------------------------------------------
 // Console → DebugOutput adapter
@@ -43,8 +71,21 @@ impl<C: fstart_services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapt
     }
 
     fn has_input(&self) -> bool {
-        // fstart's Console trait has no `has_input()` method.
-        // A future extension could add one; for now, return false.
+        // fstart's Console trait exposes non-blocking reads but no separate
+        // readiness query.  Report false so callers poll via try_read_byte().
+        false
+    }
+}
+
+impl<C: fstart_services::Console + ?Sized> crabefi::ConsoleInput for ConsoleAdapter<'_, C> {
+    fn read_key(&mut self) -> Option<crabefi::Key> {
+        self.0.read_byte().ok().flatten().map(|byte| crabefi::Key {
+            scancode: 0,
+            unicode_char: byte as u16,
+        })
+    }
+
+    fn has_key(&self) -> bool {
         false
     }
 }

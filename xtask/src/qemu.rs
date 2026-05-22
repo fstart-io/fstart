@@ -253,7 +253,15 @@ pub fn run(
                     default_mem.to_string(),
                     "-smp".to_string(),
                     if board_name == "qemu-q35" { "4" } else { "1" }.to_string(),
-                    "-nographic".to_string(),
+                    "-no-reboot".to_string(),
+                    "-display".to_string(),
+                    "none".to_string(),
+                    "-chardev".to_string(),
+                    "stdio,id=char0,mux=on,signal=off".to_string(),
+                    "-serial".to_string(),
+                    "chardev:char0".to_string(),
+                    "-mon".to_string(),
+                    "chardev=char0,mode=readline".to_string(),
                     if use_kvm { "-bios" } else { "-drive" }.to_string(),
                     if use_kvm {
                         pflash_path.display().to_string()
@@ -315,17 +323,34 @@ pub fn run(
         };
         if platform == Platform::X86_64 {
             let is_iso = disk_path.ends_with(".iso");
-            let device_type = if is_iso { "ide-cd" } else { "ide-hd" };
-            args.extend([
-                "-drive".to_string(),
-                format!(
-                    "file={disk_path},id=hd0,if=none,format={fmt},readonly={}",
-                    if is_iso { "on" } else { "off" }
-                ),
-                "-device".to_string(),
-                format!("{device_type},drive=hd0"),
-            ]);
-            eprintln!("[fstart] disk: {disk_path} (AHCI/{device_type}, format={fmt})");
+            if board_name.contains("uefi") && !is_iso {
+                // Match CrabEFI's upstream GRUB/Linux CI path: expose the test
+                // disk as USB mass storage. GRUB probes EFI BlockIO handles
+                // aggressively; under QEMU TCG its AHCI path stalls before
+                // reaching Linux, while the USB path is what CrabEFI exercises
+                // for its x86_64 GRUB boot-chain CI.
+                args.extend([
+                    "-device".to_string(),
+                    "qemu-xhci,id=xhci".to_string(),
+                    "-drive".to_string(),
+                    format!("file={disk_path},id=hd0,if=none,format={fmt},readonly=off"),
+                    "-device".to_string(),
+                    "usb-storage,drive=hd0,bus=xhci.0".to_string(),
+                ]);
+                eprintln!("[fstart] disk: {disk_path} (USB mass storage, format={fmt})");
+            } else {
+                let device_type = if is_iso { "ide-cd" } else { "ide-hd" };
+                args.extend([
+                    "-drive".to_string(),
+                    format!(
+                        "file={disk_path},id=hd0,if=none,format={fmt},readonly={}",
+                        if is_iso { "on" } else { "off" }
+                    ),
+                    "-device".to_string(),
+                    format!("{device_type},drive=hd0"),
+                ]);
+                eprintln!("[fstart] disk: {disk_path} (AHCI/{device_type}, format={fmt})");
+            }
         } else {
             args.extend([
                 "-drive".to_string(),
