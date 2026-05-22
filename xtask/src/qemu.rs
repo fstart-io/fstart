@@ -709,14 +709,17 @@ fn create_x86_pflash(
     } else {
         let stage_data =
             std::fs::read(stage_bin).map_err(|e| format!("failed to read stage binary: {e}"))?;
-        if stage_data.len() > flash_size {
+        if stage_data.len() != flash_size {
             return Err(format!(
-                "stage binary ({} bytes) exceeds flash size ({} bytes)",
+                "x86 stage binary {} is {} bytes, but flash size is {} bytes; \
+                 compact .bin images are not safe for x86 pflash placement without ELF {}",
+                stage_bin.display(),
                 stage_data.len(),
                 flash_size,
+                stage_elf.display(),
             ));
         }
-        pflash[..stage_data.len()].copy_from_slice(&stage_data);
+        pflash.copy_from_slice(&stage_data);
     }
 
     let ffs_data =
@@ -794,32 +797,48 @@ fn create_x86_pflash(
                 ]) as usize;
                 (total_image_size == ffs_data.len() && anchor_offset == offset).then_some(offset)
             });
-    if let Some(ffs_anchor_off) = ffs_anchor_off {
-        // Prefer the linker symbol for the ROM-resident anchor. Scanning for
-        // the magic is ambiguous because optimized code may embed the magic as
-        // an immediate constant, and stage payloads can contain placeholder
-        // anchors of their own.
-        let stage_anchor_off = if stage_elf.exists() {
-            x86_elf_symbol_flash_offset(&stage_elf, "_fstart_anchor_early", flash_base, flash_size)?
-        } else {
-            None
-        };
-        if let Some(stage_anchor_off) = stage_anchor_off {
-            // The anchor block is 300 bytes (AnchorBlock size).
-            // Copy from FFS anchor to stage anchor.
-            let anchor_size = 300;
-            let ffs_src = ffs_anchor_off;
-            let stage_dst = stage_anchor_off;
-            if ffs_src + anchor_size <= ffs_data.len() && stage_dst + anchor_size <= pflash.len() {
-                pflash[stage_dst..stage_dst + anchor_size]
-                    .copy_from_slice(&ffs_data[ffs_src..ffs_src + anchor_size]);
-                eprintln!(
-                    "[fstart] x86 pflash: patched anchor at flash offset {:#x} (from FFS offset {:#x})",
-                    stage_dst, ffs_src,
-                );
-            }
-        }
+    let ffs_anchor_off = ffs_anchor_off.ok_or_else(|| {
+        format!(
+            "failed to locate patched FSTART anchor in FFS image {} (ffs_data len {})",
+            ffs_image.display(),
+            ffs_data.len()
+        )
+    })?;
+    // Prefer the linker symbol for the ROM-resident anchor. Scanning for
+    // the magic is ambiguous because optimized code may embed the magic as
+    // an immediate constant, and stage payloads can contain placeholder
+    // anchors of their own.
+    let stage_anchor_off =
+        x86_elf_symbol_flash_offset(&stage_elf, "_fstart_anchor_early", flash_base, flash_size)?
+            .ok_or_else(|| {
+                format!(
+                    "missing _fstart_anchor_early in {} while building x86 pflash",
+                    stage_elf.display()
+                )
+            })?;
+
+    // The anchor block is 300 bytes (AnchorBlock size).
+    // Copy from FFS anchor to stage anchor.
+    let anchor_size = 300;
+    let ffs_src = ffs_anchor_off;
+    let stage_dst = stage_anchor_off;
+    if ffs_src + anchor_size > ffs_data.len() || stage_dst + anchor_size > pflash.len() {
+        return Err(format!(
+            "x86 anchor patch out of bounds: ffs_src={:#x}, stage_dst={:#x}, \
+             anchor_size={}, ffs_data len={}, pflash len={}",
+            ffs_src,
+            stage_dst,
+            anchor_size,
+            ffs_data.len(),
+            pflash.len()
+        ));
     }
+    pflash[stage_dst..stage_dst + anchor_size]
+        .copy_from_slice(&ffs_data[ffs_src..ffs_src + anchor_size]);
+    eprintln!(
+        "[fstart] x86 pflash: patched anchor at flash offset {:#x} (from FFS offset {:#x})",
+        stage_dst, ffs_src,
+    );
 
     let pflash_path = ffs_image.with_extension("pflash");
     std::fs::write(&pflash_path, &pflash)
