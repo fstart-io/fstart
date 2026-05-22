@@ -246,6 +246,8 @@ struct AllocEntry {
     name: [u8; 56],
     /// Offset within the output buffer where this file was placed.
     offset: usize,
+    /// Size in bytes of this allocation.
+    size: usize,
 }
 
 impl AcpiTableProvider for QemuFwCfg {
@@ -345,12 +347,14 @@ impl AcpiTableProvider for QemuFwCfg {
                         );
                         return Err(ServiceError::InvalidParam);
                     }
+                    let file_size = file_size as usize;
                     allocs[alloc_count] = Some(AllocEntry {
                         name,
                         offset: cursor,
+                        size: file_size,
                     });
                     alloc_count += 1;
-                    cursor += file_size as usize;
+                    cursor += file_size;
                 }
 
                 COMMAND_ADD_POINTER => {
@@ -510,19 +514,24 @@ impl MemoryDetector for QemuFwCfg {
 // ---------------------------------------------------------------------------
 
 fn patch_q35_fadt_pm_timer(buffer: &mut [u8], allocs: &[Option<AllocEntry>; 32]) {
-    let Some(tables_off) = find_alloc_by_name(allocs, b"etc/acpi/tables") else {
+    let Some(tables) = find_alloc_entry_by_name(allocs, b"etc/acpi/tables") else {
         return;
     };
+    let tables_off = tables.offset;
+    let Some(tables_end) = tables_off.checked_add(tables.size) else {
+        return;
+    };
+    let tables_end = tables_end.min(buffer.len());
 
     let mut cursor = tables_off;
-    while cursor + 36 <= buffer.len() {
+    while cursor + 36 <= tables_end {
         if &buffer[cursor..cursor + 4] != b"FACP" {
             cursor += 1;
             continue;
         }
 
         let len = u32::from_le_bytes(buffer[cursor + 4..cursor + 8].try_into().unwrap()) as usize;
-        if len < 220 || cursor + len > buffer.len() {
+        if len < 220 || cursor + len > tables_end {
             cursor += 1;
             continue;
         }
@@ -577,13 +586,18 @@ fn find_alloc(allocs: &[Option<AllocEntry>; 32], name: &[u8]) -> Option<usize> {
     None
 }
 
+/// Find an allocated file by a NUL-terminated name string.
+fn find_alloc_entry_by_name<'a>(
+    allocs: &'a [Option<AllocEntry>; 32],
+    name: &[u8],
+) -> Option<&'a AllocEntry> {
+    allocs.iter().flatten().find(|entry| {
+        let entry_len = entry.name.iter().position(|&b| b == 0).unwrap_or(56);
+        entry_len == name.len() && &entry.name[..entry_len] == name
+    })
+}
+
 /// Find the buffer offset of an allocated file by a NUL-terminated name string.
 fn find_alloc_by_name(allocs: &[Option<AllocEntry>; 32], name: &[u8]) -> Option<usize> {
-    for entry in allocs.iter().flatten() {
-        let entry_len = entry.name.iter().position(|&b| b == 0).unwrap_or(56);
-        if entry_len == name.len() && &entry.name[..entry_len] == name {
-            return Some(entry.offset);
-        }
-    }
-    None
+    find_alloc_entry_by_name(allocs, name).map(|entry| entry.offset)
 }

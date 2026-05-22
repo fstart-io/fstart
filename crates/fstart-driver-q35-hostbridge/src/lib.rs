@@ -510,7 +510,7 @@ impl Q35HostBridge {
             fstart_pio::outb(0x61, port61);
 
             // Mask NMI via CMOS index port, like coreboot when nmi=off.
-            let nmi = fstart_pio::inb(0x74) | 0x80;
+            let nmi = fstart_pio::inb(0x70) | 0x80;
             fstart_pio::outb(0x70, nmi);
         }
         fstart_log::info!("Q35: legacy 8259 PIC and 8254 PIT initialized");

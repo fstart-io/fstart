@@ -33,6 +33,9 @@ OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 KERNEL_VERSION="6.13.7"
 KERNEL_MAJOR="${KERNEL_VERSION%%.*}"
 KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
+KERNEL_SHA256="3a39b62038b7ac2f43d26a1f84b4283e197804e1e817ad637e9a3d874c47801d"
+# Pinned for reproducible CI boot assets.
+UROOT_REF="v7.0.0"
 
 if [[ ! -f "$OUTPUT_DIR/vmlinuz" ]]; then
 	echo "==> Building Linux ${KERNEL_VERSION} (x86_64, minimal EFI-stub config)"
@@ -43,7 +46,10 @@ if [[ ! -f "$OUTPUT_DIR/vmlinuz" ]]; then
 	}
 	trap cleanup EXIT
 
-	curl -sL "$KERNEL_URL" | tar xJ -C "$WORK"
+	KERNEL_TARBALL="$WORK/linux-${KERNEL_VERSION}.tar.xz"
+	curl --fail --show-error --location --silent "$KERNEL_URL" --output "$KERNEL_TARBALL"
+	echo "${KERNEL_SHA256}  ${KERNEL_TARBALL}" | sha256sum -c -
+	tar xJ -C "$WORK" -f "$KERNEL_TARBALL"
 	KSRC="$WORK/linux-${KERNEL_VERSION}"
 	make -C "$KSRC" -s ARCH=x86 tinyconfig
 	KCFG="$KSRC/scripts/config"
@@ -60,12 +66,19 @@ if [[ ! -f "$OUTPUT_DIR/vmlinuz" ]]; then
 	make -C "$KSRC" -s ARCH=x86 olddefconfig
 	make -C "$KSRC" -s ARCH=x86 -j"$(nproc)" bzImage
 	cp "$KSRC/arch/x86/boot/bzImage" "$OUTPUT_DIR/vmlinuz"
+	cleanup
+	trap - EXIT
 fi
 
 if [[ ! -f "$OUTPUT_DIR/initramfs.cpio" ]]; then
 	echo "==> Building u-root initramfs (amd64)"
 	UROOT_DIR="$(mktemp -d)"
-	git clone --depth 1 -q https://github.com/u-root/u-root.git "$UROOT_DIR/src"
+	uroot_cleanup() {
+		chmod -R u+w "$UROOT_DIR" 2>/dev/null || true
+		rm -rf "$UROOT_DIR"
+	}
+	trap uroot_cleanup EXIT
+	git clone --depth 1 --branch "$UROOT_REF" -q https://github.com/u-root/u-root.git "$UROOT_DIR/src"
 	(cd "$UROOT_DIR/src" && go build -o "$UROOT_DIR/bin/u-root" .)
 	(cd "$UROOT_DIR/src" &&
 		GOARCH=amd64 "$UROOT_DIR/bin/u-root" \
@@ -74,8 +87,8 @@ if [[ ! -f "$OUTPUT_DIR/initramfs.cpio" ]]; then
 			-defaultsh "" \
 			-initcmd "" \
 			./cmds/core/echo ./cmds/core/cat ./cmds/core/ls)
-	chmod -R u+w "$UROOT_DIR" 2>/dev/null || true
-	rm -rf "$UROOT_DIR"
+	uroot_cleanup
+	trap - EXIT
 fi
 
 if [[ ! -f "$OUTPUT_DIR/grubx64.efi" ]]; then

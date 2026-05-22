@@ -8,7 +8,7 @@
 
 #![no_std]
 
-use core::fmt;
+use core::{cell::Cell, fmt};
 
 // Type aliases for generated code convenience.
 pub type MemoryRegion = crabefi::MemoryRegion;
@@ -59,34 +59,63 @@ fn enable_payload_cpu_features() {}
 /// fstart's `Console` uses `&self` (MMIO is inherently interior-mutable)
 /// and returns `Result`. CrabEFI's `DebugOutput` uses `&mut self` and
 /// ignores errors. The adapter bridges both differences.
-pub struct ConsoleAdapter<'a, C: fstart_services::Console + ?Sized>(pub &'a C);
+pub struct ConsoleAdapter<'a, C: fstart_services::Console + ?Sized> {
+    console: &'a C,
+    pending: Cell<Option<u8>>,
+}
+
+impl<'a, C: fstart_services::Console + ?Sized> ConsoleAdapter<'a, C> {
+    /// Create a new adapter around an fstart console.
+    pub const fn new(console: &'a C) -> Self {
+        Self {
+            console,
+            pending: Cell::new(None),
+        }
+    }
+
+    fn read_pending_or_console(&self) -> Option<u8> {
+        self.pending
+            .take()
+            .or_else(|| self.console.read_byte().ok().flatten())
+    }
+
+    fn has_pending_or_console_input(&self) -> bool {
+        if self.pending.get().is_some() {
+            return true;
+        }
+        if let Some(byte) = self.console.read_byte().ok().flatten() {
+            self.pending.set(Some(byte));
+            true
+        } else {
+            false
+        }
+    }
+}
 
 impl<C: fstart_services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapter<'_, C> {
     fn write_byte(&mut self, byte: u8) {
-        let _ = self.0.write_byte(byte);
+        let _ = self.console.write_byte(byte);
     }
 
     fn try_read_byte(&self) -> Option<u8> {
-        self.0.read_byte().ok().flatten()
+        self.read_pending_or_console()
     }
 
     fn has_input(&self) -> bool {
-        // fstart's Console trait exposes non-blocking reads but no separate
-        // readiness query.  Report false so callers poll via try_read_byte().
-        false
+        self.has_pending_or_console_input()
     }
 }
 
 impl<C: fstart_services::Console + ?Sized> crabefi::ConsoleInput for ConsoleAdapter<'_, C> {
     fn read_key(&mut self) -> Option<crabefi::Key> {
-        self.0.read_byte().ok().flatten().map(|byte| crabefi::Key {
+        self.read_pending_or_console().map(|byte| crabefi::Key {
             scancode: 0,
             unicode_char: byte as u16,
         })
     }
 
     fn has_key(&self) -> bool {
-        false
+        self.has_pending_or_console_input()
     }
 }
 
@@ -96,9 +125,9 @@ impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> 
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
             if byte == b'\n' {
-                let _ = self.0.write_byte(b'\r');
+                let _ = self.console.write_byte(b'\r');
             }
-            let _ = self.0.write_byte(byte);
+            let _ = self.console.write_byte(byte);
         }
         Ok(())
     }
@@ -392,11 +421,8 @@ impl crabefi::ResetHandler for PsciReset {
 
 /// CrabEFI [`Timer`](crabefi::Timer) backed by the x86 TSC.
 ///
-/// Calibrates the TSC frequency using the 8254 PIT (Programmable Interval
-/// Timer) channel 2. Works on QEMU and all modern x86 hardware.
-///
-/// The PIT runs at a fixed 1.193182 MHz. We program channel 2 for a
-/// known interval, measure the TSC delta, and compute tsc_freq.
+/// Obtains the TSC frequency from [`fstart_arch_x86::tsc_frequency_hz()`]
+/// and uses that value for TSC-to-time conversion.
 #[cfg(target_arch = "x86_64")]
 pub struct TscTimer {
     tsc_freq: u64,

@@ -408,8 +408,8 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> Token
                     let _console_ref = self.#field
                         .as_ref()
                         .unwrap_or_else(|| fstart_platform::halt());
-                    let mut _crabefi_console = fstart_crabefi::ConsoleAdapter(_console_ref);
-                    let mut _crabefi_console_input = fstart_crabefi::ConsoleAdapter(_console_ref);
+                    let mut _crabefi_console = fstart_crabefi::ConsoleAdapter::new(_console_ref);
+                    let mut _crabefi_console_input = fstart_crabefi::ConsoleAdapter::new(_console_ref);
                 },
                 quote! {
                     debug_output: Some(&mut _crabefi_console),
@@ -417,7 +417,13 @@ fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> Token
                 },
             )
         }
-        None => (quote! {}, quote! { debug_output: None, }),
+        None => (
+            quote! {},
+            quote! {
+                debug_output: None,
+                console_input: None,
+            },
+        ),
     };
 
     // PCI device for ECAM base.
