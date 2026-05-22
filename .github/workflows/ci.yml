@@ -347,16 +347,27 @@ jobs:
           # pflash block device mapping used for this firmware image.
           FSTART_QEMU_ACCEL: tcg
         run: |
+          set +e
           timeout 300 cargo xtask run --release \
             --board qemu-q35-uefi \
             --disk target/q35-grub-linux.img \
             --memory 4G \
-            > /tmp/qemu.log 2>&1 || true
+            > /tmp/qemu.log 2>&1
+          rc=$?
+          set -e
           tr -d '\000' < /tmp/qemu.log > /tmp/qemu.clean.log
           echo "::group::QEMU output"
           cat /tmp/qemu.clean.log
           echo "::endgroup::"
-          grep -Eaq "UROOT_BOOT_SUCCESS|Linux version" /tmp/qemu.clean.log
+          if [ "$rc" -eq 124 ]; then
+            echo "QEMU timed out" >&2
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "QEMU exited with status $rc" >&2
+            exit "$rc"
+          fi
+          ! grep -Eaq "Kernel panic|BUG:|Oops|Unable to mount root fs" /tmp/qemu.clean.log
+          grep -aq "UROOT_BOOT_SUCCESS" /tmp/qemu.clean.log
 
   # -----------------------------------------------------------------------
   # QEMU boot tests — full boot chain: fstart -> SBI/ATF -> Linux
@@ -448,9 +459,21 @@ jobs:
             ARGS+=(--firmware "${{ matrix.firmware }}")
           fi
           ARGS+=(--kernel "${{ matrix.kernel }}")
+          set +e
           timeout 300 cargo xtask run --release "${ARGS[@]}" \
-            > /tmp/qemu.log 2>&1 || true
+            > /tmp/qemu.log 2>&1
+          rc=$?
+          set -e
           echo "::group::QEMU output"
           cat /tmp/qemu.log
           echo "::endgroup::"
+          if [ "$rc" -eq 124 ]; then
+            echo "QEMU timed out" >&2
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "QEMU exited with status $rc" >&2
+            exit "$rc"
+          fi
+          ! grep -Eaq "Kernel panic|BUG:|Oops|Unable to mount root fs" /tmp/qemu.log
           grep -aq "Linux version" /tmp/qemu.log
+          grep -aq "FSTART_CI_BOOT_SUCCESS" /tmp/qemu.log

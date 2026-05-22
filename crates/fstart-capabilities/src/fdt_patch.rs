@@ -842,19 +842,15 @@ unsafe fn set_reg_in_existing_memory_node(
     let mut current_size_struct = size_struct;
 
     if let Some((prop_off, old_len)) = existing_reg {
-        if reg_value_len <= old_len {
-            // Fits — overwrite in place.
+        if reg_value_len == old_len {
+            // Same structure size — overwrite in place.
             unsafe {
                 write_be32(dtb, prop_off + 4, reg_value_len as u32);
                 let val_start = prop_off + 12;
                 let mut p = val_start;
                 p += write_cells(dtb, p, base, addr_cells);
                 p += write_cells(dtb, p, size, size_cells);
-                // Zero leftover
-                while p < val_start + old_len {
-                    *dtb.add(p) = 0;
-                    p += 1;
-                }
+                debug_assert_eq!(p, val_start + old_len);
             }
             // Still need to add device_type if missing (handle below).
             if has_device_type {
@@ -862,7 +858,9 @@ unsafe fn set_reg_in_existing_memory_node(
             }
             // Fall through to add device_type if needed.
         } else {
-            // NOP out old reg, fall through to insert.
+            // Different value size: NOP out the old property and insert a new
+            // one.  Shortening the property length in place would make the
+            // structure parser treat leftover value bytes as FDT tokens.
             let old_total = align4(12 + old_len);
             let nop_words = old_total / 4;
             for i in 0..nop_words {
@@ -875,7 +873,7 @@ unsafe fn set_reg_in_existing_memory_node(
 
     // Build what we need to insert: optionally device_type, optionally reg.
     let need_reg =
-        existing_reg.is_none() || existing_reg.is_some_and(|(_, old)| reg_value_len > old);
+        existing_reg.is_none() || existing_reg.is_some_and(|(_, old)| reg_value_len != old);
     let need_dt = !has_device_type;
 
     let mut prop_buf = [0u8; 64]; // enough for device_type + reg properties
