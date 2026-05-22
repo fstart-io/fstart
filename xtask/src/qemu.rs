@@ -581,7 +581,7 @@ fn create_pflash_image(binary: &Path, flash_size: usize) -> Result<PathBuf, Stri
 /// Create an x86 pflash image by overlaying the FFS image onto the raw
 /// stage binary.
 ///
-/// The raw stage `.bin` (from objcopy) is a full flash-sized image with
+/// The raw stage `.bin` (extracted from ELF PT_LOAD data) is a full flash-sized image with
 /// boot code at the correct offsets (reset vector at end, 16/32/64-bit
 /// entry code near end, main code at start). The FFS image contains the
 /// stage segments + kernel payload at offset 0 (mapped to flash base).

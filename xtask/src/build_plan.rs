@@ -70,7 +70,7 @@ pub struct StageBuildPlan {
     pub display_name: String,
     /// Cargo feature set.
     pub features: FeatureSet,
-    /// Whether this stage needs a flat `.bin` produced by objcopy.
+    /// Whether this stage needs a flat `.bin` extracted from ELF PT_LOAD data.
     pub needs_flat_binary: bool,
     /// `-Z build-std=...` value.
     pub build_std: &'static str,

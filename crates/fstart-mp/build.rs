@@ -1,3 +1,4 @@
+use object::{Object, ObjectSection};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,13 +30,7 @@ fn main() {
         .arg("-o")
         .arg(&elf)
         .arg(&object));
-    run(Command::new("objcopy")
-        .arg("-O")
-        .arg("binary")
-        .arg("-j")
-        .arg(".text")
-        .arg(&elf)
-        .arg(&bin));
+    write_text_section(&elf, &bin);
 
     fs::write(
         out_dir.join("sipi_trampoline.rs"),
@@ -55,6 +50,19 @@ fn main() {
         ),
     )
     .unwrap();
+}
+
+fn write_text_section(elf: &Path, bin: &Path) {
+    let data = fs::read(elf).unwrap_or_else(|e| panic!("failed to read {}: {e}", elf.display()));
+    let file = object::File::parse(data.as_slice())
+        .unwrap_or_else(|e| panic!("failed to parse ELF {}: {e}", elf.display()));
+    let section = file
+        .section_by_name(".text")
+        .unwrap_or_else(|| panic!(".text section not found in {}", elf.display()));
+    let text = section
+        .data()
+        .unwrap_or_else(|e| panic!("failed to read .text from {}: {e}", elf.display()));
+    fs::write(bin, text).unwrap_or_else(|e| panic!("failed to write {}: {e}", bin.display()));
 }
 
 fn find_symbol_offset(elf: &Path, symbol: &str) -> usize {

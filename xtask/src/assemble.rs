@@ -3,7 +3,7 @@
 //! Reads a board config, collects built binaries, and assembles them into
 //! a signed FFS firmware image using the fstart-ffs builder.
 //!
-//! Stage flat binaries (`.bin` files produced by `llvm-objcopy`) are
+//! Stage flat binaries (`.bin` files produced from ELF PT_LOAD data) are
 //! embedded as single FFS segments. This preserves alignment gaps between
 //! sections (e.g., `.text` → `.fstart.anchor` → `.rodata`) which is
 //! critical for XIP boards that read the anchor at its link-time VMA.
@@ -23,7 +23,8 @@ use fstart_types::ffs::{
 };
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_types::{BoardConfig, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout};
-use goblin::elf::{program_header, Elf};
+use object::elf;
+use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -97,7 +98,7 @@ fn assemble_impl(
 
     // Build the list of input files from the built stages.
     //
-    // Each stage is packaged as a flat binary (.bin from objcopy) to
+    // Each stage is packaged as a flat binary (.bin extracted from ELF PT_LOAD data) to
     // preserve alignment gaps between sections.  ELF parsing is
     // retained only for diagnostic logging.
     let mut ro_files = Vec::new();
@@ -175,7 +176,7 @@ fn assemble_impl(
                     });
                 } else {
                     // Subsequent stages are stored as flat binaries (the
-                    // objcopy .bin). The StageLoad path loads the FFS segment
+                    // ELF-derived .bin). The StageLoad path loads the FFS segment
                     // to load_addr and supports LZ4 in-place decompression, so
                     // ramstages loaded via StageLoad can be stored compressed.
                     // LoadNextStage users (e.g. tiny SoC bootblocks) copy raw
@@ -705,24 +706,19 @@ fn create_full_flash_image(
             bootblock_elf.display()
         )
     })?;
-    let elf = Elf::parse(&elf_data).map_err(|e| {
-        format!(
-            "failed to parse bootblock ELF {}: {e}",
-            bootblock_elf.display()
-        )
-    })?;
+    let load_segments = elf_load_segments(&elf_data, bootblock_elf)?;
 
     let mut first_flash_load: Option<usize> = None;
-    for phdr in &elf.program_headers {
-        if phdr.p_type != program_header::PT_LOAD || phdr.p_filesz == 0 {
+    for segment in load_segments {
+        if segment.filesz == 0 {
             continue;
         }
-        let paddr = phdr.p_paddr;
+        let paddr = segment.paddr;
         if paddr < flash_base {
             continue;
         }
         let off = (paddr - flash_base) as usize;
-        let size = phdr.p_filesz as usize;
+        let size = segment.filesz as usize;
         if off + size > flash_size {
             return Err(format!(
                 "bootblock segment paddr={paddr:#x} size={size:#x} outside flash image"
@@ -903,24 +899,19 @@ fn create_intel_ifd_flash_image(
             bootblock_elf.display()
         )
     })?;
-    let elf = Elf::parse(&elf_data).map_err(|e| {
-        format!(
-            "failed to parse bootblock ELF {}: {e}",
-            bootblock_elf.display()
-        )
-    })?;
+    let load_segments = elf_load_segments(&elf_data, bootblock_elf)?;
 
     let mut first_flash_load: Option<usize> = None;
-    for phdr in &elf.program_headers {
-        if phdr.p_type != program_header::PT_LOAD || phdr.p_filesz == 0 {
+    for segment in load_segments {
+        if segment.filesz == 0 {
             continue;
         }
-        let paddr = phdr.p_paddr;
+        let paddr = segment.paddr;
         if paddr < layout.base || paddr >= layout.end() {
             continue;
         }
         let off = (paddr - layout.base) as usize;
-        let size = phdr.p_filesz as usize;
+        let size = segment.filesz as usize;
         if off + size > image.len() {
             return Err(format!(
                 "bootblock segment paddr={paddr:#x} size={size:#x} outside Intel IFD flash image"
@@ -1601,8 +1592,55 @@ fn add_firmware_blob(
 }
 
 // ============================================================================
-// ELF parsing — replaces llvm-objcopy
+// ELF parsing via the object crate
 // ============================================================================
+
+#[derive(Debug, Clone, Copy)]
+struct ElfLoadSegment {
+    offset: u64,
+    paddr: u64,
+    filesz: u64,
+    memsz: u64,
+    flags: u32,
+}
+
+fn elf_load_segments(elf_data: &[u8], elf_path: &Path) -> Result<Vec<ElfLoadSegment>, String> {
+    if elf_data.len() < 16 {
+        return Err(format!("ELF {} is too short", elf_path.display()));
+    }
+
+    match elf_data[4] {
+        elf::ELFCLASS32 => elf_load_segments_for::<elf::FileHeader32<object::Endianness>>(elf_data),
+        elf::ELFCLASS64 => elf_load_segments_for::<elf::FileHeader64<object::Endianness>>(elf_data),
+        class => {
+            return Err(format!(
+                "unsupported ELF class {class} in {}",
+                elf_path.display()
+            ));
+        }
+    }
+    .map_err(|e| format!("failed to parse ELF {}: {e}", elf_path.display()))
+}
+
+fn elf_load_segments_for<Elf>(elf_data: &[u8]) -> Result<Vec<ElfLoadSegment>, object::Error>
+where
+    Elf: FileHeader,
+{
+    let elf = ElfFile::<Elf>::parse(elf_data)?;
+    let endian = elf.elf_header().endian()?;
+    Ok(elf
+        .elf_program_headers()
+        .iter()
+        .filter(|phdr| phdr.p_type(endian) == elf::PT_LOAD)
+        .map(|phdr| ElfLoadSegment {
+            offset: phdr.p_offset(endian).into(),
+            paddr: phdr.p_paddr(endian).into(),
+            filesz: phdr.p_filesz(endian).into(),
+            memsz: phdr.p_memsz(endian).into(),
+            flags: phdr.p_flags(endian),
+        })
+        .collect())
+}
 
 /// Parse an ELF file into FFS input segments, one per PT_LOAD.
 ///
@@ -1622,27 +1660,21 @@ fn parse_elf_segments(
     let elf_data =
         fs::read(elf_path).map_err(|e| format!("failed to read {}: {e}", elf_path.display()))?;
 
-    let elf = Elf::parse(&elf_data)
-        .map_err(|e| format!("failed to parse ELF {}: {e}", elf_path.display()))?;
-
     let mut segments = Vec::new();
 
-    for phdr in &elf.program_headers {
+    for phdr in elf_load_segments(&elf_data, elf_path)? {
         // Only process PT_LOAD segments with nonzero memory footprint
-        if phdr.p_type != program_header::PT_LOAD {
-            continue;
-        }
-        if phdr.p_memsz == 0 {
+        if phdr.memsz == 0 {
             continue;
         }
 
-        let p_flags = phdr.p_flags;
-        let is_exec = p_flags & program_header::PF_X != 0;
-        let is_write = p_flags & program_header::PF_W != 0;
+        let p_flags = phdr.flags;
+        let is_exec = p_flags & elf::PF_X != 0;
+        let is_write = p_flags & elf::PF_W != 0;
 
         // Determine segment kind and name from ELF flags, matching
         // the coreboot PAYLOAD_SEGMENT_CODE / DATA / BSS classification.
-        let (kind, name, flags) = if phdr.p_filesz == 0 {
+        let (kind, name, flags) = if phdr.filesz == 0 {
             // Pure BSS — no file content, just zero-fill
             (SegmentKind::Bss, ".bss", SegmentFlags::DATA)
         } else if is_exec {
@@ -1654,13 +1686,13 @@ fn parse_elf_segments(
         };
 
         // Extract file data (p_filesz bytes at p_offset)
-        let data = if phdr.p_filesz > 0 {
-            let start = phdr.p_offset as usize;
-            let end = start + phdr.p_filesz as usize;
+        let data = if phdr.filesz > 0 {
+            let start = phdr.offset as usize;
+            let end = start + phdr.filesz as usize;
             if end > elf_data.len() {
                 return Err(format!(
                     "PT_LOAD at {:#x} extends past EOF in {}",
-                    phdr.p_paddr,
+                    phdr.paddr,
                     elf_path.display(),
                 ));
             }
@@ -1671,15 +1703,15 @@ fn parse_elf_segments(
 
         // mem_size tracks the BSS tail: when p_memsz > p_filesz the
         // loader must zero-fill the remaining bytes after the file data.
-        let mem_size = if phdr.p_memsz != phdr.p_filesz {
-            Some(phdr.p_memsz)
+        let mem_size = if phdr.memsz != phdr.filesz {
+            Some(phdr.memsz)
         } else {
             None
         };
 
         // BSS segments have no stored content — never compress them.
         // Other segments use the caller's requested compression.
-        let seg_compression = if phdr.p_filesz == 0 {
+        let seg_compression = if phdr.filesz == 0 {
             Compression::None
         } else {
             compression
@@ -1690,7 +1722,7 @@ fn parse_elf_segments(
             kind,
             data,
             mem_size,
-            load_addr: phdr.p_paddr,
+            load_addr: phdr.paddr,
             compression: seg_compression,
             flags,
         });

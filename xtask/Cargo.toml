@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 clap = { workspace = true }
-goblin = { workspace = true }
+object = { workspace = true }
 fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }

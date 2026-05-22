@@ -7,6 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use object::{Object, ObjectSection};
+
 use fstart_smm::header::{
     render_coreboot_header, CorebootOffsets, EntryDescriptor, SmmImageHeader, FLAG_COREBOOT_HEADER,
     FLAG_COREBOOT_MODULE_ARGS,
@@ -297,20 +299,26 @@ fn build_smm_stage(platform: SmmPlatform) -> Result<BuiltHandler, BuildError> {
             .arg(&archive)
             .arg("--no-whole-archive"),
     )?;
-    run_tool(
-        Command::new("objcopy")
-            .arg("-O")
-            .arg("binary")
-            .arg("-j")
-            .arg(".text")
-            .arg(&elf)
-            .arg(&bin),
-    )?;
+    write_text_section(&elf, &bin)?;
 
     Ok(BuiltHandler {
         code: std::fs::read(&bin)?,
         entry_offset: find_symbol_offset(&elf, "fstart_smm_handler")?,
     })
+}
+
+fn write_text_section(elf: &Path, bin: &Path) -> Result<(), BuildError> {
+    let data = std::fs::read(elf)?;
+    let file = object::File::parse(data.as_slice())
+        .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
+    let section = file
+        .section_by_name(".text")
+        .ok_or_else(|| BuildError::Tool(format!(".text section not found in {}", elf.display())))?;
+    let text = section.data().map_err(|e| {
+        BuildError::Tool(format!("failed to read .text from {}: {e}", elf.display()))
+    })?;
+    std::fs::write(bin, text)?;
+    Ok(())
 }
 
 fn platform_env(platform: SmmPlatform) -> &'static str {
