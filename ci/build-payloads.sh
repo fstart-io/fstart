@@ -133,7 +133,7 @@ int main(void) {
   marker_to("/dev/console");
   marker_to("/dev/kmsg");
   sync();
-  reboot(LINUX_REBOOT_CMD_POWER_OFF);
+  reboot(LINUX_REBOOT_CMD_RESTART);
   return 0;
 }
 EOF
