@@ -70,11 +70,14 @@ const Q35_IRQS: [u8; 8] = [10, 10, 11, 11, 10, 10, 11, 11];
 const Q35_MCH_VID: u16 = 0x8086;
 const Q35_MCH_DID: u16 = 0x29C0;
 
-/// Full x86 I/O port range: 0x0000..0xFFFF (64 KiB).
-/// The PCI root bridge decodes the entire I/O space; legacy ISA
-/// devices below 0x1000 are handled by subtractive decode.
-const PIO_BASE: u64 = 0x0000;
-const PIO_SIZE: u64 = 0x10000;
+/// PCI I/O allocation window.
+///
+/// Keep 0x0000..0x0fff free for legacy ISA/LPC devices (PIT, PIC, CMOS,
+/// keyboard controller, serial ports, ACPI PMBASE, etc.).  Q35 subtractive
+/// decode still makes that range reachable; PCI BAR allocation must not place
+/// endpoint I/O BARs there or they shadow legacy ports in QEMU.
+const PIO_BASE: u64 = 0x1000;
+const PIO_SIZE: u64 = 0xf000;
 
 // Q35 / ICH9 SMM registers.  Matches coreboot's
 // `mainboard/emulation/qemu-q35/q35.h` and `i82801ix.h`.
