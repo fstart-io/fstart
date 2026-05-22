@@ -255,7 +255,7 @@ fn build_smm_stage(platform: SmmPlatform) -> Result<BuiltHandler, BuildError> {
     let out_dir = workspace_root
         .join("target")
         .join("smm-stage")
-        .join(platform_env(platform));
+        .join(format!("{}-{}", platform_env(platform), std::process::id()));
     let target_dir = out_dir.join("target");
     let elf = out_dir.join("smm_handler.elf");
     let bin = out_dir.join("smm_handler.bin");
