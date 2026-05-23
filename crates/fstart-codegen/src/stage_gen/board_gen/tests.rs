@@ -829,6 +829,23 @@ fn early_init_emits_generic_phase_calls_on_foxconn_d41s() {
 }
 
 #[test]
+fn early_init_verifies_declared_flash_layout_on_lenovo_x61() {
+    let src = adapter_source_for_stage("lenovo-x61", "bootblock");
+    assert!(
+        src.contains("fstart_services::FlashLayoutVerifier::verify_flash_layout"),
+        "early_init must verify hardware flash layout through the generic service; got:\n{src}"
+    );
+    assert!(
+        src.contains("FlashLayout::IntelIfd(IntelIfdFlashLayout"),
+        "expected flash layout must come from board memory.flash_layout; got:\n{src}"
+    );
+    assert!(
+        src.contains("_EarlyInit::early_init(dev)"),
+        "early_init must still call the normal phase service after verification; got:\n{src}"
+    );
+}
+
+#[test]
 fn pre_console_init_emits_generic_phase_calls_on_foxconn_d41s() {
     let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
     assert!(

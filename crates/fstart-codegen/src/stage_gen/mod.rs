@@ -243,6 +243,7 @@ struct ImportFacts<'a> {
     has_gpio: bool,
     has_pci: bool,
     has_framebuffer: bool,
+    has_flash_layout_verifier: bool,
     uses_dram_init: bool,
     uses_load_next_stage: bool,
     uses_ffs: bool,
@@ -293,6 +294,9 @@ impl<'a> ImportFacts<'a> {
             has_framebuffer: device_services
                 .iter()
                 .any(|services| services.contains(&Service::Framebuffer)),
+            has_flash_layout_verifier: device_services
+                .iter()
+                .any(|services| services.contains(&Service::FlashLayoutVerifier)),
             uses_dram_init: capabilities
                 .iter()
                 .any(|cap| matches!(cap, Capability::DramInit { .. })),
@@ -363,6 +367,13 @@ fn generate_imports(facts: &ImportFacts<'_>) -> TokenStream {
 
     if facts.has_framebuffer {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::Framebuffer; });
+    }
+
+    if facts.has_flash_layout_verifier {
+        tokens.extend(quote! {
+            #[allow(unused_imports)]
+            use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig};
+        });
     }
 
     // Collect unique driver modules and import all public types via glob.

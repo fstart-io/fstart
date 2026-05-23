@@ -20,7 +20,6 @@ use serde::Deserialize;
 use fstart_device_registry::{ConstructionKind, DriverInstance, Service, StructuralConfig};
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::device::BusAddress;
-use fstart_types::memory::{FlashLayout, MemoryRegion, RegionKind};
 use fstart_types::{
     BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceId, DeviceNode, MemoryMap,
     PayloadConfig, Platform, SecurityConfig, SocImageFormat, StageLayout,
@@ -200,75 +199,10 @@ pub fn load_board_config(path: &Path) -> Result<BoardConfig, String> {
 /// `BootMedia(MemoryMappedFlash(...))` is a stage-local shorthand for the
 /// board's firmware-image window.
 fn normalize_ron_config(ron: &mut RonBoardConfig) -> Result<(), String> {
-    normalize_memory_flash(&mut ron.memory)?;
+    ron.memory
+        .normalize_derived_flash()
+        .map_err(|err| err.to_string())?;
     resolve_stage_boot_media(&mut ron.stages, &ron.memory)
-}
-
-fn normalize_memory_flash(memory: &mut MemoryMap) -> Result<(), String> {
-    let Some(FlashLayout::IntelIfd(layout)) = &memory.flash_layout else {
-        return Ok(());
-    };
-    let bios = layout
-        .bios_region()
-        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
-    let expected_base = layout.base + u64::from(bios.offset);
-    let expected_size = u64::from(bios.size);
-
-    match (memory.flash_base, memory.flash_size) {
-        (Some(base), Some(size)) if base == expected_base && size == expected_size => {}
-        (None, None) => {
-            memory.flash_base = Some(expected_base);
-            memory.flash_size = Some(expected_size);
-        }
-        (base, size) => {
-            return Err(format!(
-                "memory.flash_base/flash_size must describe the Intel IFD BIOS region: \
-                 expected base={expected_base:#x} size={expected_size:#x}, got base={base:?} size={size:?}"
-            ));
-        }
-    }
-
-    ensure_ifd_bios_rom_region(memory, expected_base, expected_size)
-}
-
-fn ensure_ifd_bios_rom_region(
-    memory: &mut MemoryMap,
-    expected_base: u64,
-    expected_size: u64,
-) -> Result<(), String> {
-    let expected_end = expected_base.saturating_add(expected_size);
-    let mut has_exact = false;
-    for region in &memory.regions {
-        if region.kind != RegionKind::Rom {
-            continue;
-        }
-        if region.base == expected_base && region.size == expected_size {
-            has_exact = true;
-            break;
-        }
-        let region_end = region.base.saturating_add(region.size);
-        if region.base < expected_end && expected_base < region_end {
-            return Err(format!(
-                "ROM memory region '{}' overlaps the Intel IFD BIOS region but does not match it: \
-                 expected base={expected_base:#x} size={expected_size:#x}, got base={:#x} size={:#x}",
-                region.name, region.base, region.size
-            ));
-        }
-    }
-
-    if has_exact {
-        return Ok(());
-    }
-
-    memory
-        .regions
-        .push(MemoryRegion {
-            name: HString::try_from("flash").map_err(|_| "failed to build flash region name")?,
-            base: expected_base,
-            size: expected_size,
-            kind: RegionKind::Rom,
-        })
-        .map_err(|_| "memory.regions is full; cannot add Intel IFD BIOS ROM region".to_string())
 }
 
 fn resolve_stage_boot_media(stages: &mut StageLayout, memory: &MemoryMap) -> Result<(), String> {

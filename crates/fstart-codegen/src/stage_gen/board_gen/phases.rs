@@ -7,6 +7,7 @@ use fstart_device_registry::Service;
 use fstart_types::Capability;
 
 use super::model::BoardEmitModel;
+use crate::stage_gen::config_ser;
 
 /// Description of one phase-init capability and service trait.
 #[derive(Debug, Clone, Copy)]
@@ -97,12 +98,30 @@ pub(super) fn phase_init_body(ctx: &BoardEmitModel<'_>, spec: PhaseSpec) -> Toke
                     }
                 }
             } else {
+                let verify_flash_layout = if spec.service == Service::EarlyInit
+                    && device.provides(Service::FlashLayoutVerifier)
+                {
+                    ctx.config.memory.flash_layout.as_ref().map(|layout| {
+                        let layout_tokens = config_ser::serialize_to_tokens(layout);
+                        quote! {
+                            let expected_flash_layout = #layout_tokens;
+                            fstart_services::FlashLayoutVerifier::verify_flash_layout(
+                                dev,
+                                &expected_flash_layout,
+                            )
+                            .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
+                        }
+                    })
+                } else {
+                    None
+                };
                 quote! {
                     #id_lit => {
                         use fstart_services::#trait_ident as #trait_alias;
                         let dev = self.#field
                             .as_mut()
                             .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                        #verify_flash_layout
                         #trait_alias::#method_ident(dev)
                             .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
                     }

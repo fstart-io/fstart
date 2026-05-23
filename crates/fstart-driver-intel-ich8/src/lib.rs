@@ -17,9 +17,11 @@ use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_B
 use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
-    EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
+    EarlyInit, FinalizeInit, FlashLayoutVerifier, PostDramInit, PreConsoleInit, ServiceError,
+    SmBus, Southbridge,
 };
 use fstart_smbus_intel::I801SmBus;
+use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout};
 use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -484,6 +486,16 @@ register_structs! {
 
 const HPET_BASE: usize = 0xfed0_0000;
 const SATA_ABAR_BASE: usize = 0xfea0_0000;
+const ICH8_SPIBAR_OFFSET: usize = 0x3020;
+const SPIBAR_HSFS: usize = 0x04;
+const SPIBAR_FREG0: usize = 0x54;
+const SPIBAR_FDOC: usize = 0xb0;
+const SPIBAR_FDOD: usize = 0xb4;
+const HSFS_FDV: u32 = 1 << 14;
+const SPI_FREG_BASE_MASK: u32 = 0x1fff;
+const SPI_FREG_LIMIT_MASK: u32 = 0x1fff;
+const SPI_FREG_LIMIT_SHIFT: u32 = 16;
+const SPI_FREG_SHIFT: u32 = 12;
 const GPE0_STS_ICH8: u16 = 0x20;
 const GPE0_EN_ICH8: u16 = 0x28;
 const SLP_TYP_S3: u32 = 0x1400;
@@ -940,6 +952,20 @@ impl Rcba {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
         unsafe { &*(self.base as *const RcbaRegs) }
     }
+
+    #[inline]
+    fn read32(&self, offset: usize) -> u32 {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config;
+        // callers pass documented, 32-bit-aligned RCBA/SPIBAR offsets.
+        unsafe { fstart_mmio::read32((self.base + offset) as *const u32) }
+    }
+
+    #[inline]
+    fn write32(&self, offset: usize, value: u32) {
+        // SAFETY: RCBA has been programmed and enabled in LPC PCI config;
+        // callers pass documented, 32-bit-aligned RCBA/SPIBAR offsets.
+        unsafe { fstart_mmio::write32((self.base + offset) as *mut u32, value) }
+    }
 }
 
 /// Intel ICH8 southbridge driver.
@@ -989,6 +1015,93 @@ impl IntelIch8 {
 
     fn rcba(&self) -> Rcba {
         Rcba::new((self.config.rcba & 0xffff_c000) as usize)
+    }
+
+    fn spi_read32(&self, offset: usize) -> u32 {
+        self.rcba().read32(ICH8_SPIBAR_OFFSET + offset)
+    }
+
+    fn spi_write32(&self, offset: usize, value: u32) {
+        self.rcba().write32(ICH8_SPIBAR_OFFSET + offset, value);
+    }
+
+    fn spi_descriptor_word(&self, fdoc: u32) -> u32 {
+        self.spi_write32(SPIBAR_FDOC, fdoc);
+        self.spi_read32(SPIBAR_FDOD)
+    }
+
+    fn spi_flash_component_size(&self) -> u32 {
+        // Match coreboot southbridge/intel/common/spi.c: observe descriptor
+        // component section 0 (FDOC=0x1000) and decode density fields.
+        let flmap0 = self.spi_descriptor_word(4);
+        let flcomp = self.spi_descriptor_word(0x1000);
+        let mut size = 1u32 << (19 + (flcomp & 0x7));
+        if (flmap0 >> 8) & 0x3 != 0 {
+            size = size.saturating_add(1u32 << (19 + ((flcomp >> 3) & 0x7)));
+        }
+        size
+    }
+
+    fn spi_ifd_region(&self, index: usize) -> (u32, u32) {
+        let reg = self.spi_read32(SPIBAR_FREG0 + index * core::mem::size_of::<u32>());
+        let base = (reg & SPI_FREG_BASE_MASK) << SPI_FREG_SHIFT;
+        let limit = ((reg >> SPI_FREG_LIMIT_SHIFT) & SPI_FREG_LIMIT_MASK) << SPI_FREG_SHIFT;
+        if limit < base {
+            return (0, 0);
+        }
+        (base, limit + (1 << SPI_FREG_SHIFT) - base)
+    }
+
+    fn verify_ifd_flash_layout(&self, expected: &IntelIfdFlashLayout) -> Result<(), ServiceError> {
+        let hsfs = self.spi_read32(SPIBAR_HSFS) & 0xffff;
+        if hsfs & HSFS_FDV == 0 {
+            fstart_log::error!("intel-ich8: SPI descriptor valid bit is clear");
+            return Err(ServiceError::HardwareError);
+        }
+
+        let runtime_size = self.spi_flash_component_size();
+        if runtime_size != expected.size {
+            fstart_log::error!(
+                "intel-ich8: SPI flash size mismatch: RON={:#x} runtime={:#x}",
+                expected.size,
+                runtime_size
+            );
+            return Err(ServiceError::HardwareError);
+        }
+
+        for region in &expected.regions {
+            let Some(index) = region.kind.flreg_index() else {
+                continue;
+            };
+            let (runtime_offset, runtime_size) = self.spi_ifd_region(index);
+            if runtime_offset != region.offset || runtime_size != region.size {
+                fstart_log::error!(
+                    "intel-ich8: SPI {} region mismatch: RON off={:#x} size={:#x} runtime off={:#x} size={:#x}",
+                    region.kind.as_str(),
+                    region.offset,
+                    region.size,
+                    runtime_offset,
+                    runtime_size
+                );
+                return Err(ServiceError::HardwareError);
+            }
+        }
+
+        if let Some(bios) = expected.bios_region() {
+            let expected_host_base = expected.base + u64::from(bios.offset);
+            let runtime_host_base = 0x1_0000_0000u64 - u64::from(bios.size);
+            if expected_host_base != runtime_host_base {
+                fstart_log::error!(
+                    "intel-ich8: BIOS host window mismatch: RON={:#x} runtime={:#x}",
+                    expected_host_base,
+                    runtime_host_base
+                );
+                return Err(ServiceError::HardwareError);
+            }
+        }
+
+        fstart_log::info!("intel-ich8: SPI descriptor matches board flash_layout");
+        Ok(())
     }
 
     fn pm(&self) -> PmIo {
@@ -2007,6 +2120,14 @@ impl PreConsoleInit for IntelIch8 {
         self.program_lpc_decode();
         self.setup_gpios();
         Ok(())
+    }
+}
+
+impl FlashLayoutVerifier for IntelIch8 {
+    fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
+        match expected {
+            FlashLayout::IntelIfd(layout) => self.verify_ifd_flash_layout(layout),
+        }
     }
 }
 

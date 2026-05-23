@@ -1,5 +1,7 @@
 //! Memory map types.
 
+use core::fmt;
+
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +54,139 @@ pub struct MemoryMap {
     /// DRAM is live at reset; QEMU virt; etc.).
     #[serde(default)]
     pub car: Option<CarConfig>,
+}
+
+impl MemoryMap {
+    /// Derive redundant firmware-image facts from the flash layout.
+    ///
+    /// Intel IFD boards describe the full flash aperture and its BIOS region in
+    /// `flash_layout`.  This helper derives `flash_base` / `flash_size` and a
+    /// ROM memory region for the host-visible BIOS window when they are omitted,
+    /// while rejecting conflicting explicit values.
+    pub fn normalize_derived_flash(&mut self) -> Result<(), MemoryMapError> {
+        let Some(FlashLayout::IntelIfd(layout)) = &self.flash_layout else {
+            return Ok(());
+        };
+        let bios = layout
+            .bios_region()
+            .ok_or(MemoryMapError::MissingBiosRegion)?;
+        let expected_base = layout.base + u64::from(bios.offset);
+        let expected_size = u64::from(bios.size);
+
+        match (self.flash_base, self.flash_size) {
+            (Some(base), Some(size)) if base == expected_base && size == expected_size => {}
+            (None, None) => {
+                self.flash_base = Some(expected_base);
+                self.flash_size = Some(expected_size);
+            }
+            (base, size) => {
+                return Err(MemoryMapError::FirmwareWindowMismatch {
+                    expected_base,
+                    expected_size,
+                    actual_base: base,
+                    actual_size: size,
+                });
+            }
+        }
+
+        self.ensure_rom_region(expected_base, expected_size)
+    }
+
+    fn ensure_rom_region(
+        &mut self,
+        expected_base: u64,
+        expected_size: u64,
+    ) -> Result<(), MemoryMapError> {
+        let expected_end = expected_base.saturating_add(expected_size);
+        for region in &self.regions {
+            if region.kind != RegionKind::Rom {
+                continue;
+            }
+            if region.base == expected_base && region.size == expected_size {
+                return Ok(());
+            }
+            let region_end = region.base.saturating_add(region.size);
+            if region.base < expected_end && expected_base < region_end {
+                return Err(MemoryMapError::RomRegionOverlap {
+                    expected_base,
+                    expected_size,
+                    actual_base: region.base,
+                    actual_size: region.size,
+                });
+            }
+        }
+
+        self.regions
+            .push(MemoryRegion {
+                name: HString::try_from("flash").map_err(|_| MemoryMapError::RegionsFull)?,
+                base: expected_base,
+                size: expected_size,
+                kind: RegionKind::Rom,
+            })
+            .map_err(|_| MemoryMapError::RegionsFull)
+    }
+}
+
+/// Error while deriving redundant memory-map facts from a flash layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMapError {
+    /// Intel IFD layout lacks a BIOS region entry.
+    MissingBiosRegion,
+    /// Explicit `flash_base` / `flash_size` conflicts with the derived window.
+    FirmwareWindowMismatch {
+        /// Expected host-visible firmware base.
+        expected_base: u64,
+        /// Expected firmware size.
+        expected_size: u64,
+        /// Actual configured base.
+        actual_base: Option<u64>,
+        /// Actual configured size.
+        actual_size: Option<u64>,
+    },
+    /// A ROM memory region overlaps the derived firmware window without matching it.
+    RomRegionOverlap {
+        /// Expected ROM base.
+        expected_base: u64,
+        /// Expected ROM size.
+        expected_size: u64,
+        /// Actual configured ROM base.
+        actual_base: u64,
+        /// Actual configured ROM size.
+        actual_size: u64,
+    },
+    /// `memory.regions` has no room for the derived ROM region.
+    RegionsFull,
+}
+
+impl fmt::Display for MemoryMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::MissingBiosRegion => f.write_str("Intel IFD flash_layout requires a BIOS region"),
+            Self::FirmwareWindowMismatch {
+                expected_base,
+                expected_size,
+                actual_base,
+                actual_size,
+            } => write!(
+                f,
+                "memory.flash_base/flash_size must describe the firmware image region: \
+                 expected base={expected_base:#x} size={expected_size:#x}, got base={actual_base:?} size={actual_size:?}"
+            ),
+            Self::RomRegionOverlap {
+                expected_base,
+                expected_size,
+                actual_base,
+                actual_size,
+            } => write!(
+                f,
+                "ROM memory region overlaps the firmware image region but does not match it: \
+                 expected base={expected_base:#x} size={expected_size:#x}, got base={actual_base:#x} size={actual_size:#x}"
+            ),
+            Self::RegionsFull => f.write_str(
+                "memory.regions is full; cannot add derived firmware ROM region",
+            ),
+        }
+    }
 }
 
 /// Cache-as-RAM (CAR) configuration for pre-DRAM x86 stages.

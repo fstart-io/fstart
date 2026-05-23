@@ -34,7 +34,7 @@ pub use ffs::{
 };
 pub use memory::{
     CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,
-    MemoryRegion, RegionKind,
+    MemoryMapError, MemoryRegion, RegionKind,
 };
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
