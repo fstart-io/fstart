@@ -725,6 +725,7 @@ dependencies = [
  "fstart-smbus-intel",
  "fstart-smm-runtime",
  "fstart-superio",
+ "fstart-types",
  "heapless",
  "serde",
  "tock-registers",
@@ -1152,6 +1153,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-pci",
+ "fstart-types",
 ]
 
 [[package]]

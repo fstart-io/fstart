@@ -11,3 +11,4 @@ pci = ["dep:fstart-pci"]
 [dependencies]
 embedded-hal = { workspace = true }
 fstart-pci = { workspace = true, optional = true }
+fstart-types = { workspace = true }

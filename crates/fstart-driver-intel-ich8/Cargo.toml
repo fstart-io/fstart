@@ -24,6 +24,7 @@ fstart-pmio-ich = { workspace = true }
 fstart-services = { workspace = true, features = ["pci"] }
 fstart-smm-runtime = { workspace = true }
 fstart-smbus-intel = { workspace = true }
+fstart-types = { workspace = true }
 fstart-superio = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }

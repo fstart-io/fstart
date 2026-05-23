@@ -19,6 +19,7 @@ pub mod clock;
 pub mod console;
 pub mod device;
 pub mod ffs_context;
+pub mod flash_layout;
 pub mod framebuffer;
 pub mod gpio;
 pub mod i2c;
@@ -43,6 +44,7 @@ pub use boot_media::{BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMap
 pub use clock::ClockController;
 pub use console::Console;
 pub use device::{BusDevice, Device, DeviceError};
+pub use flash_layout::FlashLayoutVerifier;
 pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use gpio::GpioController;
 pub use i2c::I2c;

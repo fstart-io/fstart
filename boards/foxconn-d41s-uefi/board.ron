@@ -273,7 +273,7 @@
                 // DDR2 training needs SMBus (enabled by EarlyInit).
                 DramInit( device: "northbridge" ),
                 // Load the ramstage from FFS in flash and jump to it.
-                BootMedia(MemoryMapped( base: 0xFF000000, size: 0x01000000 )),
+                BootMedia(MemoryMappedFlash()),
                 StageLoad( next_stage: "ramstage" ),
             ],
             // Code runs XIP from ROM (reset vector 0xFFFFFFF0). Writable
@@ -298,10 +298,7 @@
             name: "ramstage",
             capabilities: [
                 ConsoleInit( device: "superio" ),
-                BootMedia(MemoryMapped(
-                    base: 0xFF000000, size: 0x01000000,
-                    ram_copy_addr: 0x2000000,
-                )),
+                BootMedia(MemoryMappedFlash( ram_copy_addr: Some(0x02000000) )),
                 SigVerify,
                 DriverInit,
                 // Re-initialize ramstage-local chipset access first: each stage

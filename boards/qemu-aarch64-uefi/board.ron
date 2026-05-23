@@ -83,7 +83,7 @@
         capabilities: [
             ConsoleInit( device: "uart0" ),
             // BootMedia provides FFS access for loading BL31 firmware.
-            BootMedia( MemoryMapped( base: 0x00000000, size: 0x08000000 ) ),
+            BootMedia(MemoryMappedFlash()),
             MemoryInit,
             PciInit( device: "pci0" ),
             DriverInit,
