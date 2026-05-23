@@ -382,7 +382,7 @@ fn generate_imports(facts: &ImportFacts<'_>) -> TokenStream {
     // concrete type to fstart_capabilities functions which are generic over
     // `impl BootMedia`, so the trait doesn't need to be in scope here.
     match facts.boot_medium {
-        Some(BootMedium::MemoryMapped { .. }) => {
+        Some(BootMedium::MemoryMapped { .. } | BootMedium::MemoryMappedFlash { .. }) => {
             tokens.extend(
                 quote! { #[allow(unused_imports)] use fstart_services::boot_media::MemoryMapped; },
             );

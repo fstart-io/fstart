@@ -315,6 +315,9 @@ fn boot_media_tokens(idx: usize, medium: &BootMedium, ctx: &DirectCtx<'_>) -> To
                 fstart_stage_runtime::Board::boot_media_static(&mut board, None, #base, #size);
             }
         }
+        BootMedium::MemoryMappedFlash { .. } => quote! {
+            compile_error!("BootMedia(MemoryMappedFlash(...)) was not resolved by ron_loader");
+        },
         BootMedium::Device { name, offset, size } => {
             let id = ctx.ids.lit(name.as_str(), "BootMedia::Device");
             let offset = hex_addr(*offset);

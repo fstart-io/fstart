@@ -13,11 +13,6 @@
 
     memory: (
         regions: [
-            // The host CPU can execute and read only the IFD BIOS region.
-            // The full 4 MiB SPI aperture is 0xFFC00000..0xFFFFFFFF; the
-            // descriptor/GbE/ME regions below BIOS are tracked in
-            // flash_layout for image assembly and validation.
-            ( name: "flash", base: 0xFFE80000, size: 0x00180000, kind: Rom ),
             // X61 commonly ships with 1-4 GiB DDR2. The linker keeps firmware
             // working state below the Linux payload load address; runtime sizing
             // is read from GM965 TOLUD/TOUUD after DRAM training.
@@ -39,10 +34,8 @@
                 ( kind: Bios,       offset: 0x280000, size: 0x180000 ),
             ],
         ))),
-        // Runtime memory-mapped BIOS window used by BootMedia; the complete
-        // SPI flash layout above still starts at 0xFFC00000.
-        flash_base: Some(0xFFE80000),
-        flash_size: Some(0x00180000),
+        // Runtime memory-mapped BIOS window and linker ROM region are derived
+        // from the Intel IFD BIOS region above.
         car: Some((
             base: 0xFEF00000,
             size: 0x80000,
@@ -267,7 +260,7 @@
                 ConsoleInit( device: "uart0" ),
                 EarlyInit( devices: ["northbridge", "southbridge"] ),
                 DramInit( device: "northbridge" ),
-                BootMedia(MemoryMapped( base: 0xFFE80000, size: 0x00180000 )),
+                BootMedia(MemoryMappedFlash()),
                 StageLoad( next_stage: "ramstage" ),
             ],
             stack_size: 0x2000,
@@ -281,11 +274,7 @@
             name: "ramstage",
             capabilities: [
                 ConsoleInit( device: "uart0" ),
-                BootMedia(MemoryMapped(
-                    base: 0xFFE80000,
-                    size: 0x00180000,
-                    ram_copy_addr: Some(0x02000000),
-                )),
+                BootMedia(MemoryMappedFlash( ram_copy_addr: Some(0x02000000) )),
                 SigVerify,
                 DriverInit,
                 // Rebind ramstage-local ECAM/chipset BAR access before reading

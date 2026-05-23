@@ -20,9 +20,10 @@ use serde::Deserialize;
 use fstart_device_registry::{ConstructionKind, DriverInstance, Service, StructuralConfig};
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::device::BusAddress;
+use fstart_types::memory::{FlashLayout, MemoryRegion, RegionKind};
 use fstart_types::{
-    BoardConfig, BuildMode, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig, Platform,
-    SecurityConfig, SocImageFormat, StageLayout,
+    BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceId, DeviceNode, MemoryMap,
+    PayloadConfig, Platform, SecurityConfig, SocImageFormat, StageLayout,
 };
 
 fn default_enabled() -> bool {
@@ -170,9 +171,10 @@ pub fn load_parsed_board(path: &Path) -> Result<ParsedBoard, String> {
     // no longer breaks existing board files that use the bare value.
     let options =
         ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
-    let ron_cfg: RonBoardConfig = options
+    let mut ron_cfg: RonBoardConfig = options
         .from_str(&contents)
         .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+    normalize_ron_config(&mut ron_cfg)?;
     convert(ron_cfg)
 }
 
@@ -183,6 +185,133 @@ pub fn load_parsed_board(path: &Path) -> Result<ParsedBoard, String> {
 pub fn load_board_config(path: &Path) -> Result<BoardConfig, String> {
     let parsed = load_parsed_board(path)?;
     Ok(parsed.config)
+}
+
+// -----------------------------------------------------------------------
+// Normalization — derive redundant board facts and expand shorthands
+// -----------------------------------------------------------------------
+
+/// Normalize deserialized RON before flattening.
+///
+/// Board files should not have to repeat the firmware image window in every
+/// place that consumes it.  Intel IFD boards already describe the BIOS region
+/// in `flash_layout`, so derive `memory.flash_base/flash_size` and the linker
+/// ROM region from that single source when they are omitted.  Likewise,
+/// `BootMedia(MemoryMappedFlash(...))` is a stage-local shorthand for the
+/// board's firmware-image window.
+fn normalize_ron_config(ron: &mut RonBoardConfig) -> Result<(), String> {
+    normalize_memory_flash(&mut ron.memory)?;
+    resolve_stage_boot_media(&mut ron.stages, &ron.memory)
+}
+
+fn normalize_memory_flash(memory: &mut MemoryMap) -> Result<(), String> {
+    let Some(FlashLayout::IntelIfd(layout)) = &memory.flash_layout else {
+        return Ok(());
+    };
+    let bios = layout
+        .bios_region()
+        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+    let expected_base = layout.base + u64::from(bios.offset);
+    let expected_size = u64::from(bios.size);
+
+    match (memory.flash_base, memory.flash_size) {
+        (Some(base), Some(size)) if base == expected_base && size == expected_size => {}
+        (None, None) => {
+            memory.flash_base = Some(expected_base);
+            memory.flash_size = Some(expected_size);
+        }
+        (base, size) => {
+            return Err(format!(
+                "memory.flash_base/flash_size must describe the Intel IFD BIOS region: \
+                 expected base={expected_base:#x} size={expected_size:#x}, got base={base:?} size={size:?}"
+            ));
+        }
+    }
+
+    ensure_ifd_bios_rom_region(memory, expected_base, expected_size)
+}
+
+fn ensure_ifd_bios_rom_region(
+    memory: &mut MemoryMap,
+    expected_base: u64,
+    expected_size: u64,
+) -> Result<(), String> {
+    let expected_end = expected_base.saturating_add(expected_size);
+    let mut has_exact = false;
+    for region in &memory.regions {
+        if region.kind != RegionKind::Rom {
+            continue;
+        }
+        if region.base == expected_base && region.size == expected_size {
+            has_exact = true;
+            break;
+        }
+        let region_end = region.base.saturating_add(region.size);
+        if region.base < expected_end && expected_base < region_end {
+            return Err(format!(
+                "ROM memory region '{}' overlaps the Intel IFD BIOS region but does not match it: \
+                 expected base={expected_base:#x} size={expected_size:#x}, got base={:#x} size={:#x}",
+                region.name, region.base, region.size
+            ));
+        }
+    }
+
+    if has_exact {
+        return Ok(());
+    }
+
+    memory
+        .regions
+        .push(MemoryRegion {
+            name: HString::try_from("flash").map_err(|_| "failed to build flash region name")?,
+            base: expected_base,
+            size: expected_size,
+            kind: RegionKind::Rom,
+        })
+        .map_err(|_| "memory.regions is full; cannot add Intel IFD BIOS ROM region".to_string())
+}
+
+fn resolve_stage_boot_media(stages: &mut StageLayout, memory: &MemoryMap) -> Result<(), String> {
+    match stages {
+        StageLayout::Monolithic(mono) => {
+            resolve_capability_boot_media(&mut mono.capabilities, memory)
+        }
+        StageLayout::MultiStage(stages) => {
+            for stage in stages {
+                resolve_capability_boot_media(&mut stage.capabilities, memory)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn resolve_capability_boot_media(
+    capabilities: &mut heapless::Vec<Capability, 16>,
+    memory: &MemoryMap,
+) -> Result<(), String> {
+    for capability in capabilities {
+        let Capability::BootMedia(medium) = capability else {
+            continue;
+        };
+        if let BootMedium::MemoryMappedFlash { ram_copy_addr } = medium {
+            let (base, size) = match (memory.flash_base, memory.flash_size) {
+                (Some(base), Some(size)) => (base, size),
+                _ => {
+                    return Err(
+                        "BootMedia(MemoryMappedFlash(...)) requires memory.flash_base/flash_size \
+                         or an Intel IFD BIOS flash_layout"
+                            .to_string(),
+                    );
+                }
+            };
+            *medium = BootMedium::MemoryMapped {
+                base,
+                size,
+                ram_copy_addr: *ram_copy_addr,
+            };
+        }
+    }
+    Ok(())
 }
 
 // -----------------------------------------------------------------------
@@ -408,6 +537,12 @@ mod tests {
         std::fs::read_to_string(board_path).expect("read qemu-sbsa board")
     }
 
+    fn lenovo_x61_board_source() -> String {
+        let board_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/lenovo-x61/board.ron");
+        std::fs::read_to_string(board_path).expect("read lenovo-x61 board")
+    }
+
     fn load_temp_board(name: &str, source: String) -> Result<(), String> {
         let path = temp_board_path(name);
         std::fs::write(&path, source).expect("write temp board");
@@ -427,6 +562,69 @@ mod tests {
             Ok(()) => panic!("board load must fail"),
             Err(err) => err,
         }
+    }
+
+    #[test]
+    fn unknown_car_field_is_rejected() {
+        let source = lenovo_x61_board_source();
+        let with_unknown_car_method = source.replacen(
+            "car: Some((\n            base:",
+            "car: Some((\n            method: NonEvictMode,\n            base:",
+            1,
+        );
+        assert_ne!(source, with_unknown_car_method, "test fixture changed");
+
+        let err = expect_load_error(load_temp_board(
+            "unknown-car-field",
+            with_unknown_car_method,
+        ));
+        assert!(
+            err.contains("unknown field `method`")
+                || err.contains("unknown field 'method'")
+                || err.contains("Unexpected field named `method`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ifd_bios_region_derives_flash_window_and_boot_media() {
+        let source = lenovo_x61_board_source();
+        let parsed = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let path = temp_board_path("ifd-derived-flash");
+                std::fs::write(&path, source).expect("write temp board");
+                let parsed = load_parsed_board(&path).unwrap();
+                let _ = std::fs::remove_file(&path);
+                parsed
+            })
+            .expect("spawn ron loader worker")
+            .join()
+            .expect("ron loader worker panicked");
+
+        assert_eq!(parsed.config.memory.flash_base, Some(0xFFE8_0000));
+        assert_eq!(parsed.config.memory.flash_size, Some(0x0018_0000));
+        assert!(parsed.config.memory.regions.iter().any(|region| {
+            region.kind == fstart_types::RegionKind::Rom
+                && region.base == 0xFFE8_0000
+                && region.size == 0x0018_0000
+        }));
+
+        let fstart_types::StageLayout::MultiStage(stages) = &parsed.config.stages else {
+            panic!("lenovo-x61 should be multi-stage");
+        };
+        assert!(stages
+            .iter()
+            .all(|stage| stage.capabilities.iter().any(|cap| {
+                matches!(
+                    cap,
+                    fstart_types::Capability::BootMedia(fstart_types::BootMedium::MemoryMapped {
+                        base: 0xFFE8_0000,
+                        size: 0x0018_0000,
+                        ..
+                    })
+                )
+            })));
     }
 
     #[test]

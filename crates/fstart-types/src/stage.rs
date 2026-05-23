@@ -205,6 +205,7 @@ pub enum PageSize {
 /// The RON file specifies which capabilities run in which stage(s).
 /// At build time, the stage binary is generated to call these in order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Capability {
     /// Initialize the clock tree / PLL configuration.
     ///
@@ -459,6 +460,7 @@ pub struct AutoBootDevice {
 /// Determines which `BootMedia` trait implementation is constructed
 /// in the generated stage code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum BootMedium {
     /// Memory-mapped flash.
     ///
@@ -485,6 +487,18 @@ pub enum BootMedium {
         ///
         /// On platforms with true XIP (ARM, RISC-V), this should be
         /// `None` — the flash is accessed directly.
+        #[serde(default)]
+        ram_copy_addr: Option<u64>,
+    },
+    /// The board's configured firmware image window.
+    ///
+    /// The RON loader resolves this shorthand to `MemoryMapped { base, size, ... }`
+    /// using `memory.flash_base/flash_size` (or the BIOS region of
+    /// `memory.flash_layout`). Use this when a stage wants to read the same
+    /// signed FFS image described by the board memory map without repeating the
+    /// address and size in every `BootMedia` capability.
+    MemoryMappedFlash {
+        /// Optional RAM address to copy FFS data before accessing it.
         #[serde(default)]
         ram_copy_addr: Option<u64>,
     },
