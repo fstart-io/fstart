@@ -1957,10 +1957,28 @@ impl IntelIch7 {
 mod acpi_impl {
     extern crate alloc;
     use alloc::vec::Vec;
+    use fstart_acpi::aml::{Path, Scope};
     use fstart_acpi::device::AcpiDevice;
+    use fstart_acpi::{Aml, AmlSink};
     use fstart_acpi_macros::acpi_dsl;
 
     use super::*;
+
+    struct RawAml<'a>(&'a [u8]);
+
+    impl Aml for RawAml<'_> {
+        fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+            sink.vec(self.0);
+        }
+    }
+
+    fn pci0_scope_aml(children: &[u8]) -> Vec<u8> {
+        let raw = RawAml(children);
+        let scope = Scope::new(Path::new("\\_SB_.PCI0"), alloc::vec![&raw as &dyn Aml]);
+        let mut bytes = Vec::new();
+        scope.to_aml_bytes(&mut bytes);
+        bytes
+    }
 
     /// ICH7 PCI device IDs (LPC bridge variants).
     #[allow(dead_code)]
@@ -2085,7 +2103,8 @@ mod acpi_impl {
                 }
             });
 
-            aml.extend_from_slice(&acpi_dsl! {
+            let mut pci0_aml = Vec::new();
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device(#{name}) {
                     Name("_ADR", #{_adr});
                     Name("_HID", EisaId("PNP0A05"));
@@ -2312,8 +2331,10 @@ mod acpi_impl {
             // enumerate the ICH7 functions but cannot derive GSIs for devices
             // such as SATA (0:1f.2 INTB), so drivers fall back to "no GSI".
             // APIC-mode direct GSIs use the chipset PIRQ range 16..23.
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Name("_PRT", Package(
+                    Package(0x0002FFFFu32, 0u32, 0u32, 16u32),
+                    Package(0x0002FFFFu32, 1u32, 0u32, 17u32),
                     Package(0x001BFFFFu32, 0u32, 0u32, 16u32),
                     Package(0x001DFFFFu32, 0u32, 0u32, 16u32),
                     Package(0x001DFFFFu32, 1u32, 0u32, 17u32),
@@ -2336,7 +2357,7 @@ mod acpi_impl {
 
             // HDEF — HD Audio controller  0:1B.0
             // _PRW: GPE bit 5, can wake from S4.
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("HDEF") {
                     Name("_ADR", 0x001B0000u32);
                     Name("_PRW", Package(5u32, 4u32));
@@ -2348,7 +2369,7 @@ mod acpi_impl {
             // _S3D/_S4D: highest D-state in S3/S4 (D2 — USB stays
             //   partially powered for wake-on-USB).
             // Coreboot: usb.asl USB1–USB4
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("USB1") {
                     Name("_ADR", 0x001D0000u32);
                     Name("_PRW", Package(3u32, 4u32));
@@ -2356,7 +2377,7 @@ mod acpi_impl {
                     Method("_S4D", 0, NotSerialized) { Return(2u32); }
                 }
             });
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("USB2") {
                     Name("_ADR", 0x001D0001u32);
                     Name("_PRW", Package(3u32, 4u32));
@@ -2364,7 +2385,7 @@ mod acpi_impl {
                     Method("_S4D", 0, NotSerialized) { Return(2u32); }
                 }
             });
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("USB3") {
                     Name("_ADR", 0x001D0002u32);
                     Name("_PRW", Package(3u32, 4u32));
@@ -2372,7 +2393,7 @@ mod acpi_impl {
                     Method("_S4D", 0, NotSerialized) { Return(2u32); }
                 }
             });
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("USB4") {
                     Name("_ADR", 0x001D0003u32);
                     Name("_PRW", Package(3u32, 4u32));
@@ -2385,7 +2406,7 @@ mod acpi_impl {
             // Includes root hub (HUB7) with 6 port child devices.
             // _PRW: GPE bit 13, can wake from S4.
             // Coreboot: usb.asl EHC1 + HUB7
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("EHC1") {
                     Name("_ADR", 0x001D0007u32);
                     Name("_PRW", Package(13u32, 4u32));
@@ -2462,19 +2483,19 @@ mod acpi_impl {
                 }
             };
 
-            aml.extend_from_slice(&emit_rp("RP01", 0x001C0000, 1));
-            aml.extend_from_slice(&emit_rp("RP02", 0x001C0001, 2));
-            aml.extend_from_slice(&emit_rp("RP03", 0x001C0002, 3));
-            aml.extend_from_slice(&emit_rp("RP04", 0x001C0003, 4));
-            aml.extend_from_slice(&emit_rp("RP05", 0x001C0004, 5));
-            aml.extend_from_slice(&emit_rp("RP06", 0x001C0005, 6));
-            aml.extend_from_slice(&emit_rp("RP07", 0x001C0006, 7));
-            aml.extend_from_slice(&emit_rp("RP08", 0x001C0007, 8));
+            pci0_aml.extend_from_slice(&emit_rp("RP01", 0x001C0000, 1));
+            pci0_aml.extend_from_slice(&emit_rp("RP02", 0x001C0001, 2));
+            pci0_aml.extend_from_slice(&emit_rp("RP03", 0x001C0002, 3));
+            pci0_aml.extend_from_slice(&emit_rp("RP04", 0x001C0003, 4));
+            pci0_aml.extend_from_slice(&emit_rp("RP05", 0x001C0004, 5));
+            pci0_aml.extend_from_slice(&emit_rp("RP06", 0x001C0005, 6));
+            pci0_aml.extend_from_slice(&emit_rp("RP07", 0x001C0006, 7));
+            pci0_aml.extend_from_slice(&emit_rp("RP08", 0x001C0007, 8));
 
             // PCIB — PCI-to-PCI bridge  0:1E.0
             // _PRT for devices behind the bridge (APIC mode).
             // Coreboot: pci.asl + mainboard ich7_pci_irqs.asl
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("PCIB") {
                     Name("_ADR", 0x001E0000u32);
 
@@ -2493,12 +2514,12 @@ mod acpi_impl {
             // Most boards use HDA instead, but ICH7 variants still
             // have these functions.  Modem can wake from S4.
             // Coreboot: ac97.asl
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("AUD0") {
                     Name("_ADR", 0x001E0002u32);
                 }
             });
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("MODM") {
                     Name("_ADR", 0x001E0003u32);
                     Name("_PRW", Package(5u32, 4u32));
@@ -2508,7 +2529,7 @@ mod acpi_impl {
             // PEGP — PCI Express Graphics port  0:1.0
             // PCIe x16 slot for discrete GPU (Pineview).
             // Coreboot: peg.asl
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("PEGP") {
                     Name("_ADR", 0x00010000u32);
                     Name("_PRT", Package(
@@ -2523,7 +2544,7 @@ mod acpi_impl {
             // GFX0 — Integrated Graphics Device  0:2.0
             // Stub power management methods for the Intel GMA.
             // Coreboot: drivers/intel/gma/acpi/gfx.asl
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("GFX0") {
                     Name("_ADR", 0x00020000u32);
                     // Power state stubs.
@@ -2541,7 +2562,7 @@ mod acpi_impl {
             // _GTM/_STM timing methods omitted (need CreateDwordField;
             // Linux libata doesn’t use them in AHCI mode).
             // Coreboot: sata.asl
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("SATA") {
                     Name("_ADR", 0x001F0002u32);
                     Device("PRID") {
@@ -2554,7 +2575,7 @@ mod acpi_impl {
 
             // PATA — IDE / PATA controller  0:1F.1
             // Coreboot: pata.asl
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("PATA") {
                     Name("_ADR", 0x001F0001u32);
                     Device("PRID") {
@@ -2566,11 +2587,13 @@ mod acpi_impl {
             });
 
             // SBUS — SMBus controller  0:1F.3
-            aml.extend_from_slice(&acpi_dsl! {
+            pci0_aml.extend_from_slice(&acpi_dsl! {
                 Device("SBUS") {
                     Name("_ADR", 0x001F0003u32);
                 }
             });
+
+            aml.extend_from_slice(&pci0_scope_aml(&pci0_aml));
 
             // ---------------------------------------------------------------
             // 3. Root-scope objects.
