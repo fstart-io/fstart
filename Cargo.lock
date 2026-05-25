@@ -224,7 +224,7 @@ dependencies = [
 [[package]]
 name = "crabefi"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git#659c488d4f6e34c2afa6d910c379f93ce9d77cbd"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git#658ea1ef7e8f4195f5414ad1bb56b82fd22ff057"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.10.0",
