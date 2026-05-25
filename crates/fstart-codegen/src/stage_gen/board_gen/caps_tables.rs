@@ -5,6 +5,7 @@ use quote::{format_ident, quote};
 
 use super::model::BoardEmitModel;
 use fstart_device_registry::Service;
+use fstart_types::Capability;
 
 /// Emit the body of `Board::acpi_load`.
 pub(super) fn acpi_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
@@ -50,6 +51,18 @@ pub(super) fn acpi_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
 
 /// Emit the body of `Board::memory_detect`.
 pub(super) fn memory_detect_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    if !ctx
+        .stage
+        .capabilities
+        .iter()
+        .any(|cap| matches!(cap, Capability::MemoryDetect { .. }))
+    {
+        return quote! {
+            fstart_log::error!("memory_detect: stage does not declare MemoryDetect");
+            fstart_platform::halt();
+        };
+    }
+
     let arms = ctx
         .runtime_devices
         .providers(Service::MemoryDetector)
