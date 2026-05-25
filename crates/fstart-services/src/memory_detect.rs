@@ -71,14 +71,21 @@ pub fn build_pc_compatible_e820(
     touud: u64,
     tolud: u32,
 ) -> Result<usize, ServiceError> {
-    if entries.len() < 6 {
+    if entries.len() < 8 {
         return Err(ServiceError::HardwareError);
     }
 
     let mut count = 0usize;
-    entries[count] = E820Entry::new(0x0000_0000, 0x0009_f000, E820Kind::Ram);
+    // Keep page zero and legacy PC holes out of the EFI/OS allocator. This
+    // mirrors coreboot's handoff: page zero, EBDA, VGA/option-ROM space, and
+    // BIOS ROM are all reserved.
+    entries[count] = E820Entry::new(0x0000_0000, 0x0000_1000, E820Kind::Reserved);
+    count += 1;
+    entries[count] = E820Entry::new(0x0000_1000, 0x0009_e000, E820Kind::Ram);
     count += 1;
     entries[count] = E820Entry::new(0x0009_f000, 0x0000_1000, E820Kind::Reserved);
+    count += 1;
+    entries[count] = E820Entry::new(0x000a_0000, 0x0005_0000, E820Kind::Reserved);
     count += 1;
     entries[count] = E820Entry::new(0x000f_0000, 0x0001_0000, E820Kind::Reserved);
     count += 1;
@@ -170,6 +177,11 @@ impl E820State {
     /// ranges are ignored. Intended for firmware-owned allocations (stage
     /// image, heap tables) before OS handoff.
     pub fn reserve_range(&mut self, base: u64, size: u64) {
+        self.reserve_range_as(base, size, E820Kind::Reserved);
+    }
+
+    /// Carve a range with a specific e820 kind out of RAM entries in-place.
+    pub fn reserve_range_as(&mut self, base: u64, size: u64, kind: E820Kind) {
         if size == 0 {
             return;
         }
@@ -197,7 +209,7 @@ impl E820State {
             let res_base = entry.addr.max(base);
             let res_end = entry_end.min(end);
             if res_end > res_base && out_count < MAX_E820_ENTRIES {
-                out[out_count] = E820Entry::new(res_base, res_end - res_base, E820Kind::Reserved);
+                out[out_count] = E820Entry::new(res_base, res_end - res_base, kind);
                 out_count += 1;
             }
 

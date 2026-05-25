@@ -2077,7 +2077,7 @@ impl MemoryController for IntelGm965 {
             tom
         };
 
-        let mut entries = [E820Entry::zeroed(); 6];
+        let mut entries = [E820Entry::zeroed(); 8];
         let count = build_pc_compatible_e820(&mut entries, usable_top, touud, tolud)?;
         fstart_arch_x86::mtrr::set_ram_wb_ranges_from(
             entries[..count]

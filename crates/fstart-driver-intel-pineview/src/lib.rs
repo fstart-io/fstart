@@ -627,7 +627,7 @@ impl MemoryController for IntelPineview {
     fn memory_test(&self) -> Result<(), ServiceError> {
         let tolud = self.tolud();
         let usable_top = self.usable_low_memory_top();
-        let mut entries = [E820Entry::zeroed(); 6];
+        let mut entries = [E820Entry::zeroed(); 8];
         if let Ok(count) = self.build_e820_entries(&mut entries, usable_top, self.touud(), tolud) {
             publish_mtrr_wb_ranges(&entries[..count]);
         }
@@ -690,14 +690,18 @@ impl IntelPineview {
         touud: u64,
         tolud: u32,
     ) -> Result<usize, ServiceError> {
-        if entries.len() < 6 {
+        if entries.len() < 8 {
             return Err(ServiceError::HardwareError);
         }
 
         let mut count = 0usize;
-        entries[count] = E820Entry::new(0x0000_0000, 0x0009_f000, E820Kind::Ram);
+        entries[count] = E820Entry::new(0x0000_0000, 0x0000_1000, E820Kind::Reserved);
+        count += 1;
+        entries[count] = E820Entry::new(0x0000_1000, 0x0009_e000, E820Kind::Ram);
         count += 1;
         entries[count] = E820Entry::new(0x0009_f000, 0x0000_1000, E820Kind::Reserved);
+        count += 1;
+        entries[count] = E820Entry::new(0x000a_0000, 0x0005_0000, E820Kind::Reserved);
         count += 1;
         entries[count] = E820Entry::new(0x000f_0000, 0x0001_0000, E820Kind::Reserved);
         count += 1;
