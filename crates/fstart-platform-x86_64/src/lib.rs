@@ -39,6 +39,14 @@ pub fn enable_boot_media_rom_cache() {
     unsafe { mtrr::set_boot_rom_wp(true) };
 }
 
+/// Clear the BSP-local temporary ROM cacheability MTRR before payload/OS handoff.
+pub fn disable_boot_media_rom_cache_for_handoff() {
+    fstart_log::info!("mtrr: clearing temporary BSP ROM WP before payload handoff");
+    // SAFETY: generated stage code calls this on the BSP immediately before
+    // handing control to a payload/OS that expects coherent MTRR state.
+    unsafe { mtrr::set_boot_rom_wp(false) };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point — 16-bit real mode → 32-bit protected mode → 64-bit long mode
 // ---------------------------------------------------------------------------
@@ -1277,11 +1285,9 @@ pub fn boot_linux_direct(
         log_bsp_x86_cache_state("before ROM WP clear");
     }
 
-    fstart_log::info!("mtrr: clearing temporary BSP ROM WP before payload handoff");
     // The temporary BSP-only ROM WP MTRR must not leak to Linux: APs do not
     // carry it, and OSes require coherent MTRR state across CPUs.
-    // SAFETY: this is the BSP immediately before payload handoff.
-    unsafe { mtrr::set_boot_rom_wp(false) };
+    disable_boot_media_rom_cache_for_handoff();
 
     if print_x86_mtrrs {
         log_bsp_x86_cache_state("before Linux jump");

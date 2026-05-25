@@ -13,6 +13,10 @@ extern crate alloc;
 
 use alloc::alloc::{alloc_zeroed, Layout};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(target_arch = "x86_64")]
+use fstart_services::memory_detect::E820Kind;
 
 /// Prepare ACPI tables and write them to a heap-allocated DRAM buffer.
 ///
@@ -41,6 +45,52 @@ const EBDA_BASE: usize = 0x0009_f000;
 const EBDA_SIZE: usize = 0x1000;
 #[cfg(target_arch = "x86_64")]
 const EBDA_RSDP_OFFSET: usize = 0;
+
+static ACPI_REGION_BASE: AtomicU64 = AtomicU64::new(0);
+static ACPI_REGION_SIZE: AtomicU64 = AtomicU64::new(0);
+
+/// Return the page-aligned ACPI table allocation prepared by [`prepare`].
+pub fn prepared_region() -> Option<(u64, u64)> {
+    let base = ACPI_REGION_BASE.load(Ordering::Relaxed);
+    let size = ACPI_REGION_SIZE.load(Ordering::Relaxed);
+    if base == 0 || size == 0 {
+        None
+    } else {
+        Some((base, size))
+    }
+}
+
+fn page_region(addr: u64, len: usize) -> (u64, u64) {
+    let base = addr & !0xfff;
+    let end = (addr + len as u64 + 0xfff) & !0xfff;
+    (base, end.saturating_sub(base))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn allocate_x86_handoff_region(size: usize, align: u64, kind: E820Kind) -> Option<u64> {
+    let size = ((size as u64) + 0xfff) & !0xfff;
+    let align_mask = align.saturating_sub(1);
+    let e820 = unsafe { fstart_services::memory_detect::e820_state_mut() };
+    let mut selected = 0u64;
+
+    for entry in e820.entries() {
+        if entry.kind != E820Kind::Ram as u32 || entry.size < size {
+            continue;
+        }
+        let top = entry.addr.saturating_add(entry.size);
+        let base = top.saturating_sub(size) & !align_mask;
+        if base >= entry.addr && base > selected {
+            selected = base;
+        }
+    }
+
+    if selected == 0 {
+        return None;
+    }
+
+    e820.reserve_range_as(selected, size, kind);
+    Some(selected)
+}
 
 fn acpi_table_len(table: &[u8]) -> Option<usize> {
     if table.len() < 36 {
@@ -208,23 +258,45 @@ pub fn prepare_with_options(
 
     collect_devices(&mut dsdt_aml, &mut extra_tables);
 
-    // Allocate a heap buffer for the ACPI tables. The bump allocator
-    // gives a stable DRAM address that persists until reset.
+    // Allocate a buffer for the ACPI tables.
+    //
+    // On x86, prefer a dedicated top-of-RAM handoff allocation and carve it
+    // into the e820 map as ACPI reclaim memory.  This avoids placing ACPI
+    // tables inside fstart/CrabEFI's linker runtime-data range, which would
+    // fragment EFI RuntimeServicesData descriptors.
     //
     // 128 KiB provides headroom for boards with large ACPI namespaces
     // (dozens of devices, IORT with many ID mappings). Increase if a
     // board exceeds this limit.
     const BUF_SIZE: usize = 128 * 1024;
-    let layout = Layout::from_size_align(BUF_SIZE, 16)
-        .unwrap_or_else(|_| panic!("invalid ACPI buffer layout"));
-    // SAFETY: `layout` has non-zero size and a valid 16-byte alignment.
-    // The allocation is intentionally leaked below so ACPI tables remain
-    // available to the OS after firmware hands off control.
-    let acpi_ptr = unsafe { alloc_zeroed(layout) };
-    if acpi_ptr.is_null() {
-        panic!("failed to allocate ACPI table buffer");
-    }
-    let acpi_addr = acpi_ptr as u64;
+    #[cfg(target_arch = "x86_64")]
+    let acpi_addr = allocate_x86_handoff_region(BUF_SIZE, 0x1000, E820Kind::Acpi)
+        .inspect(|addr| unsafe {
+            core::ptr::write_bytes(*addr as *mut u8, 0, BUF_SIZE);
+        })
+        .unwrap_or_else(|| {
+            let layout = Layout::from_size_align(BUF_SIZE, 16)
+                .unwrap_or_else(|_| panic!("invalid ACPI buffer layout"));
+            // SAFETY: `layout` has non-zero size and a valid 16-byte alignment.
+            let acpi_ptr = unsafe { alloc_zeroed(layout) };
+            if acpi_ptr.is_null() {
+                panic!("failed to allocate ACPI table buffer");
+            }
+            acpi_ptr as u64
+        });
+    #[cfg(not(target_arch = "x86_64"))]
+    let acpi_addr = {
+        let layout = Layout::from_size_align(BUF_SIZE, 16)
+            .unwrap_or_else(|_| panic!("invalid ACPI buffer layout"));
+        // SAFETY: `layout` has non-zero size and a valid 16-byte alignment.
+        // The allocation is intentionally leaked below so ACPI tables remain
+        // available to the OS after firmware hands off control.
+        let acpi_ptr = unsafe { alloc_zeroed(layout) };
+        if acpi_ptr.is_null() {
+            panic!("failed to allocate ACPI table buffer");
+        }
+        acpi_ptr as u64
+    };
 
     let acpi_len =
         fstart_acpi::platform::assemble_and_write(acpi_addr, platform, &dsdt_aml, &extra_tables);
@@ -237,6 +309,10 @@ pub fn prepare_with_options(
     );
 
     // Intentionally leak the allocation — tables must persist for the OS.
+
+    let (region_base, region_size) = page_region(acpi_addr, acpi_len);
+    ACPI_REGION_BASE.store(region_base, Ordering::Relaxed);
+    ACPI_REGION_SIZE.store(region_size, Ordering::Relaxed);
 
     fstart_log::info!(
         "AcpiPrepare: {} bytes written to {}",

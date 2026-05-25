@@ -1052,6 +1052,29 @@ impl MpHandle {
     }
 }
 
+/// Park any APs brought up by [`mp_init`] before handing control to a payload or OS.
+///
+/// `mp_init` leaves APs in the mailbox loop so firmware can run scoped work on
+/// them.  An OS does not know about that mailbox and expects APs to be quiescent
+/// until it sends its own INIT/SIPI sequence.  Call this immediately before a
+/// final payload jump.
+pub fn park_aps_for_payload() {
+    let num_aps = AP_COUNT.load(Ordering::Acquire).min(MAX_CPUS);
+    if num_aps == 0 {
+        return;
+    }
+
+    for i in 0..num_aps {
+        let mb = &MAILBOXES[i];
+        mb.data.store(0, Ordering::Relaxed);
+        mb.func
+            .store(park_cpu as *const () as usize, Ordering::Release);
+    }
+
+    delay_us(1000);
+    fstart_log::info!("mp: {} APs parked for payload handoff", num_aps as u32);
+}
+
 /// HLT loop for parking an AP.
 fn park_cpu(_data: *const (), _cpu: u32) {
     loop {
