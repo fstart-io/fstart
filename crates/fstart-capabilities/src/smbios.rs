@@ -13,6 +13,10 @@
 extern crate alloc;
 
 use alloc::vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(target_arch = "x86_64")]
+use fstart_services::memory_detect::E820Kind;
 
 /// Static descriptor for SMBIOS table generation.
 ///
@@ -89,6 +93,59 @@ pub struct CacheDesc<'a> {
     pub cache_type: u8,
 }
 
+static SMBIOS_ENTRY_POINT: AtomicU64 = AtomicU64::new(0);
+static SMBIOS_REGION_BASE: AtomicU64 = AtomicU64::new(0);
+static SMBIOS_REGION_SIZE: AtomicU64 = AtomicU64::new(0);
+
+/// Return the SMBIOS entry point address prepared by [`prepare`].
+pub fn entry_point() -> Option<u64> {
+    let addr = SMBIOS_ENTRY_POINT.load(Ordering::Relaxed);
+    (addr != 0).then_some(addr)
+}
+
+/// Return the page-aligned SMBIOS allocation prepared by [`prepare`].
+pub fn prepared_region() -> Option<(u64, u64)> {
+    let base = SMBIOS_REGION_BASE.load(Ordering::Relaxed);
+    let size = SMBIOS_REGION_SIZE.load(Ordering::Relaxed);
+    if base == 0 || size == 0 {
+        None
+    } else {
+        Some((base, size))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn allocate_x86_handoff_region(size: usize, align: u64, kind: E820Kind) -> Option<u64> {
+    let size = ((size as u64) + 0xfff) & !0xfff;
+    let align_mask = align.saturating_sub(1);
+    let e820 = unsafe { fstart_services::memory_detect::e820_state_mut() };
+    let mut selected = 0u64;
+
+    for entry in e820.entries() {
+        if entry.kind != E820Kind::Ram as u32 || entry.size < size {
+            continue;
+        }
+        let top = entry.addr.saturating_add(entry.size);
+        let base = top.saturating_sub(size) & !align_mask;
+        if base >= entry.addr && base > selected {
+            selected = base;
+        }
+    }
+
+    if selected == 0 {
+        return None;
+    }
+
+    e820.reserve_range_as(selected, size, kind);
+    Some(selected)
+}
+
+fn page_region(addr: u64, len: usize) -> (u64, u64) {
+    let base = addr & !0xfff;
+    let end = (addr + len as u64 + 0xfff) & !0xfff;
+    (base, end.saturating_sub(base))
+}
+
 /// Memory device descriptor for SMBIOS Type 17 generation.
 pub struct MemoryDeviceDesc<'a> {
     /// Device locator string (e.g., "DIMM0", "Onboard").
@@ -119,10 +176,26 @@ pub fn prepare(desc: &SmbiosDesc) {
     // `assemble_and_write` writes ENTRY_POINT_SIZE bytes at `table_addr`
     // then up to MAX_TABLE_AREA bytes starting at `table_addr + 24`.
     const BUF_SIZE: usize = 64 * 1024 + 32;
-    let smbios_buf = vec![0u8; BUF_SIZE];
-    let smbios_addr = smbios_buf.as_ptr() as u64;
-    // Keep the buffer alive -- tables must persist for the OS.
-    core::mem::forget(smbios_buf);
+    #[cfg(target_arch = "x86_64")]
+    let smbios_addr = allocate_x86_handoff_region(BUF_SIZE, 0x1000, E820Kind::Reserved)
+        .inspect(|addr| unsafe {
+            core::ptr::write_bytes(*addr as *mut u8, 0, BUF_SIZE);
+        })
+        .unwrap_or_else(|| {
+            let smbios_buf = vec![0u8; BUF_SIZE];
+            let smbios_addr = smbios_buf.as_ptr() as u64;
+            // Keep the buffer alive -- tables must persist for the OS.
+            core::mem::forget(smbios_buf);
+            smbios_addr
+        });
+    #[cfg(not(target_arch = "x86_64"))]
+    let smbios_addr = {
+        let smbios_buf = vec![0u8; BUF_SIZE];
+        let smbios_addr = smbios_buf.as_ptr() as u64;
+        // Keep the buffer alive -- tables must persist for the OS.
+        core::mem::forget(smbios_buf);
+        smbios_addr
+    };
 
     let smbios_len = fstart_smbios::assemble_and_write(smbios_addr, |w| {
         // Type 0: BIOS Information
@@ -213,6 +286,11 @@ pub fn prepare(desc: &SmbiosDesc) {
         w.add_system_boot_info();
         w.add_end_of_table();
     });
+
+    let (region_base, region_size) = page_region(smbios_addr, smbios_len);
+    SMBIOS_ENTRY_POINT.store(smbios_addr, Ordering::Relaxed);
+    SMBIOS_REGION_BASE.store(region_base, Ordering::Relaxed);
+    SMBIOS_REGION_SIZE.store(region_size, Ordering::Relaxed);
 
     fstart_log::info!(
         "SmBiosPrepare: {} bytes written to {}",

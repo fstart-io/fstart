@@ -623,8 +623,20 @@ pub fn build_efi_memory_map_from_e820(
 ) -> usize {
     let mut idx = 0;
 
-    // 1. Static ROM entries.
+    // 1. Static entries outside RAM (flash, MMIO apertures, etc.).  Static
+    // entries that overlap RAM are emitted while splitting the RAM e820 range
+    // below; copying them here would create overlapping EFI descriptors.
     for entry in rom_entries {
+        let entry_end = entry.base.saturating_add(entry.size);
+        let overlaps_ram = e820.iter().any(|e| {
+            e.kind == 1 && entry.base < e.addr.saturating_add(e.size) && entry_end > e.addr
+        });
+        let overlaps_non_ram = e820.iter().any(|e| {
+            e.kind != 1 && entry.base < e.addr.saturating_add(e.size) && entry_end > e.addr
+        });
+        if overlaps_ram || overlaps_non_ram {
+            continue;
+        }
         if idx >= buf.len() {
             break;
         }
@@ -637,7 +649,8 @@ pub fn build_efi_memory_map_from_e820(
     let fw_stack_bottom = fw_stack_addr;
     let fw_stack_top = fw_stack_addr + fw_stack_size;
 
-    // 3. Convert e820 entries, splitting RAM that overlaps firmware.
+    // 3. Convert e820 entries, splitting RAM that overlaps firmware or
+    // platform table allocations (ACPI/SMBIOS) supplied as static entries.
     for e in e820 {
         if idx >= buf.len() {
             break;
@@ -661,84 +674,80 @@ pub fn build_efi_memory_map_from_e820(
             continue;
         }
 
-        // RAM region — need to carve out firmware areas.
         let r_start = e.addr;
         let r_end = e.addr + e.size;
 
-        // Collect firmware holes that overlap this RAM region.
-        // Sort by start address for correct splitting.
-        let mut holes: [(u64, u64); 2] = [(0, 0); 2];
+        let mut holes: [(u64, u64, MemoryType); 8] = [(0, 0, MemoryType::Reserved); 8];
         let mut n_holes = 0;
 
-        // Firmware data/BSS/heap hole
-        if fw_data_addr < r_end && fw_data_end > r_start {
+        if fw_data_addr < r_end && fw_data_end > r_start && n_holes < holes.len() {
             let h_start = fw_data_addr.max(r_start);
             let h_end = fw_data_end.min(r_end);
             if h_start < h_end {
-                holes[n_holes] = (h_start, h_end);
+                holes[n_holes] = (h_start, h_end, MemoryType::RuntimeServicesData);
                 n_holes += 1;
             }
         }
 
-        // Firmware stack hole
-        if fw_stack_bottom < r_end && fw_stack_top > r_start {
+        if fw_stack_bottom < r_end && fw_stack_top > r_start && n_holes < holes.len() {
             let h_start = fw_stack_bottom.max(r_start);
             let h_end = fw_stack_top.min(r_end);
             if h_start < h_end {
-                holes[n_holes] = (h_start, h_end);
+                holes[n_holes] = (h_start, h_end, MemoryType::RuntimeServicesData);
                 n_holes += 1;
             }
         }
 
-        // Sort holes by start address
-        if n_holes == 2 && holes[0].0 > holes[1].0 {
-            holes.swap(0, 1);
+        for entry in rom_entries {
+            if n_holes >= holes.len() {
+                break;
+            }
+            let h_start = entry.base.max(r_start);
+            let h_end = entry.base.saturating_add(entry.size).min(r_end);
+            if h_start < h_end {
+                holes[n_holes] = (h_start, h_end, entry.region_type);
+                n_holes += 1;
+            }
         }
 
-        if n_holes == 0 {
-            // No firmware overlap — entire region is free RAM.
-            buf[idx] = MemoryRegion {
-                base: r_start,
-                size: r_end - r_start,
-                region_type: MemoryType::Ram,
-            };
-            idx += 1;
-        } else {
-            // Split around firmware holes.
-            let mut cursor = r_start;
-            for &(h_start, h_end) in holes.iter().take(n_holes) {
-                // Free RAM before this hole
-                if cursor < h_start && idx < buf.len() {
-                    buf[idx] = MemoryRegion {
-                        base: cursor,
-                        size: h_start - cursor,
-                        region_type: MemoryType::Ram,
-                    };
-                    idx += 1;
-                }
-
-                // The hole itself (firmware runtime data)
-                if idx < buf.len() {
-                    buf[idx] = MemoryRegion {
-                        base: h_start,
-                        size: h_end - h_start,
-                        region_type: MemoryType::RuntimeServicesData,
-                    };
-                    idx += 1;
-                }
-
-                cursor = h_end;
+        for i in 1..n_holes {
+            let mut j = i;
+            while j > 0 && holes[j - 1].0 > holes[j].0 {
+                holes.swap(j - 1, j);
+                j -= 1;
             }
+        }
 
-            // Free RAM after last hole
-            if cursor < r_end && idx < buf.len() {
+        let mut cursor = r_start;
+        for &(h_start, h_end, h_type) in holes.iter().take(n_holes) {
+            if cursor < h_start && idx < buf.len() {
                 buf[idx] = MemoryRegion {
                     base: cursor,
-                    size: r_end - cursor,
+                    size: h_start - cursor,
                     region_type: MemoryType::Ram,
                 };
                 idx += 1;
             }
+
+            if h_end > cursor && idx < buf.len() {
+                let start = h_start.max(cursor);
+                buf[idx] = MemoryRegion {
+                    base: start,
+                    size: h_end - start,
+                    region_type: h_type,
+                };
+                idx += 1;
+                cursor = h_end;
+            }
+        }
+
+        if cursor < r_end && idx < buf.len() {
+            buf[idx] = MemoryRegion {
+                base: cursor,
+                size: r_end - cursor,
+                region_type: MemoryType::Ram,
+            };
+            idx += 1;
         }
     }
 
