@@ -16,9 +16,14 @@
 #![allow(clippy::empty_line_after_doc_comments)]
 #![no_std]
 
+#[cfg(feature = "ffs-vbt")]
+extern crate alloc;
+
 pub mod raminit;
 mod regs;
 
+#[cfg(feature = "ffs-vbt")]
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ptr;
 
@@ -48,6 +53,53 @@ fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
     }
     mtrr::set_ram_wb_ranges(&ranges[..count]);
 }
+
+#[cfg(feature = "ffs-vbt")]
+const IGD_ASLS: u16 = 0xFC;
+#[cfg(feature = "ffs-vbt")]
+const IGD_SWSMISCI: u16 = 0xE0;
+#[cfg(feature = "ffs-vbt")]
+const IGD_OPREGION_BASE_SIZE: usize = 8 * 1024;
+#[cfg(feature = "ffs-vbt")]
+const IGD_OPREGION_TOTAL_SIZE: usize = 16 * 1024;
+#[cfg(feature = "ffs-vbt")]
+const IGD_VBT_INLINE_OFFSET: usize = 0x400;
+#[cfg(feature = "ffs-vbt")]
+const IGD_VBT_INLINE_SIZE: usize = 6 * 1024;
+#[cfg(feature = "ffs-vbt")]
+const IGD_VBT_EXT_OFFSET: usize = IGD_OPREGION_BASE_SIZE;
+#[cfg(feature = "ffs-vbt")]
+const VBT_SIGNATURE: u32 = 0x5442_5624;
+
+#[cfg(feature = "ffs-vbt")]
+#[allow(clippy::large_enum_variant)]
+enum VbtBytes<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Vec<u8>),
+}
+
+#[cfg(feature = "ffs-vbt")]
+impl VbtBytes<'_> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes.as_slice(),
+        }
+    }
+}
+
+#[cfg(feature = "ffs-vbt")]
+#[repr(align(4096))]
+struct IgdOpRegionStore(UnsafeCell<[u8; IGD_OPREGION_TOTAL_SIZE]>);
+
+// SAFETY: The opregion is initialized once during ramstage before OS handoff,
+// then shared read-only with ACPI/OS graphics drivers through IGD ASLS.
+#[cfg(feature = "ffs-vbt")]
+unsafe impl Sync for IgdOpRegionStore {}
+
+#[cfg(feature = "ffs-vbt")]
+static IGD_OPREGION: IgdOpRegionStore =
+    IgdOpRegionStore(UnsafeCell::new([0; IGD_OPREGION_TOTAL_SIZE]));
 
 /// Intel integrated graphics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -478,6 +530,7 @@ impl EarlyInit for IntelPineview {
 impl StageLocalInit for IntelPineview {
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
+        self.init_igd_opregion();
         Ok(())
     }
 }
@@ -745,7 +798,197 @@ impl IntelPineview {
         (raw as u64) << 26
     }
 
-    /// Decode IGD memory size from GGC register (kilobytes).
+    #[cfg(feature = "ffs-vbt")]
+    fn igd(&self) -> ecam::EcamDevice {
+        ecam::EcamDevice::new(0, 2, 0)
+    }
+
+    #[cfg(feature = "ffs-vbt")]
+    fn opregion_write_u16(buf: &mut [u8], off: usize, val: u16) {
+        buf[off..off + 2].copy_from_slice(&val.to_le_bytes());
+    }
+
+    #[cfg(feature = "ffs-vbt")]
+    fn opregion_write_u32(buf: &mut [u8], off: usize, val: u32) {
+        buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
+    }
+
+    #[cfg(feature = "ffs-vbt")]
+    fn opregion_write_u64(buf: &mut [u8], off: usize, val: u64) {
+        buf[off..off + 8].copy_from_slice(&val.to_le_bytes());
+    }
+
+    #[cfg(feature = "ffs-vbt")]
+    fn vbt_size(vbt: &[u8]) -> Option<usize> {
+        if vbt.len() < 28 || u32::from_le_bytes([vbt[0], vbt[1], vbt[2], vbt[3]]) != VBT_SIGNATURE {
+            return None;
+        }
+        let size = u16::from_le_bytes([vbt[24], vbt[25]]) as usize;
+        if size == 0 || size > vbt.len() {
+            return None;
+        }
+        Some(size)
+    }
+
+    #[cfg(feature = "ffs-vbt")]
+    #[cfg(feature = "ffs-vbt")]
+    fn ffs_vbt(&self) -> Option<Vec<u8>> {
+        let file_name = self.config.igd.as_ref()?.vbt_file.as_ref()?;
+        let ctx = fstart_services::ffs_context::memory_mapped()?;
+        // SAFETY: BootMedia publishes a static anchor and a valid memory-mapped
+        // boot-media window before ramstage StageLocalInit calls this path.
+        let anchor_bytes = unsafe { ctx.anchor_bytes() };
+        let image = unsafe { ctx.image_bytes() };
+        let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes).ok()? };
+        let image_size = if anchor.total_image_size > 0 {
+            (anchor.total_image_size as usize).min(image.len())
+        } else {
+            image.len()
+        };
+        let image = &image[..image_size];
+        let manifest = fstart_ffs::FfsReader::new(image)
+            .read_manifest(&anchor)
+            .ok()?;
+
+        for region in &manifest.regions {
+            let fstart_types::ffs::RegionContent::Container { children } = &region.content else {
+                continue;
+            };
+            for entry in children {
+                if entry.name.as_str() != file_name.as_str() {
+                    continue;
+                }
+                let fstart_types::ffs::EntryContent::File {
+                    file_type,
+                    segments,
+                    digests,
+                } = &entry.content
+                else {
+                    return None;
+                };
+                if *file_type != fstart_types::ffs::FileType::Data || segments.len() != 1 {
+                    return None;
+                }
+                let seg = segments.first()?;
+                let offset = (region.offset + entry.offset + seg.offset) as usize;
+                let stored_size = seg.stored_size as usize;
+                let end = offset.checked_add(stored_size)?;
+                let stored = image.get(offset..end)?;
+                let mut out = Vec::new();
+                match seg.compression {
+                    fstart_types::ffs::Compression::None => {
+                        out.extend_from_slice(stored);
+                    }
+                    fstart_types::ffs::Compression::Lz4 => {
+                        out.resize(seg.loaded_size as usize, 0);
+                        let len =
+                            fstart_ffs::lz4::decompress_block(stored, out.as_mut_slice()).ok()?;
+                        out.truncate(len);
+                    }
+                }
+                fstart_crypto::digest::verify_digest_set(out.as_slice(), digests).ok()?;
+                let vbt_size = Self::vbt_size(out.as_slice())?;
+                out.truncate(vbt_size);
+                return Some(out);
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "ffs-vbt")]
+    fn legacy_vbt(&self) -> Option<&'static [u8]> {
+        // SAFETY: 0xc0000 legacy option ROM window is readable on PC-compatible x86.
+        let rom = unsafe { core::slice::from_raw_parts(0xC0000 as *const u8, 128 * 1024) };
+        let mut off = 0usize;
+        while off + 4 < rom.len() {
+            if u32::from_le_bytes([rom[off], rom[off + 1], rom[off + 2], rom[off + 3]])
+                == VBT_SIGNATURE
+            {
+                if let Some(size) = Self::vbt_size(&rom[off..]) {
+                    return Some(&rom[off..off + size]);
+                }
+            }
+            off += 16;
+        }
+        None
+    }
+
+    #[cfg(feature = "ffs-vbt")]
+    fn locate_vbt(&self) -> Option<VbtBytes<'static>> {
+        #[cfg(feature = "ffs-vbt")]
+        if let Some(vbt) = self.ffs_vbt() {
+            return Some(VbtBytes::Owned(vbt));
+        }
+        self.legacy_vbt().map(VbtBytes::Borrowed)
+    }
+
+    #[cfg(feature = "ffs-vbt")]
+    fn init_igd_opregion(&self) {
+        if self.config.igd.is_none() || self.igd().read16(0) == 0xffff {
+            return;
+        }
+
+        let Some(vbt) = self.locate_vbt() else {
+            fstart_log::error!("pineview: no valid VBT found for IGD opregion");
+            return;
+        };
+        let vbt = vbt.as_slice();
+
+        // SAFETY: BSP-only initialization before handing ASLS to the OS.
+        let opregion = unsafe { &mut *IGD_OPREGION.0.get() };
+        opregion.fill(0);
+        opregion[0..16].copy_from_slice(b"IntelGraphicsMem");
+        Self::opregion_write_u32(opregion, 16, (IGD_OPREGION_BASE_SIZE / 1024) as u32);
+        opregion[20] = 0;
+        opregion[21] = 0;
+        opregion[22] = 1;
+        opregion[23] = 2;
+        if vbt.len() >= 82 {
+            opregion[56..60].copy_from_slice(&vbt[78..82]);
+        }
+        Self::opregion_write_u32(opregion, 88, (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4));
+
+        Self::opregion_write_u32(opregion, 0x100 + 172, 1);
+        Self::opregion_write_u32(opregion, 0x300 + 16, 0xff);
+        Self::opregion_write_u32(opregion, 0x300 + 20, (1 << 31) | 6);
+        Self::opregion_write_u32(opregion, 0x300 + 24, (1 << 31) | 0x64);
+        for (idx, level) in [
+            0x0000u16, 0x0a19, 0x1433, 0x1e4c, 0x2866, 0x327f, 0x3c99, 0x46b2, 0x50cc, 0x5ae5,
+            0x64ff,
+        ]
+        .iter()
+        .copied()
+        .enumerate()
+        {
+            Self::opregion_write_u16(opregion, 0x300 + 28 + idx * 2, 0x8000 | level);
+        }
+
+        if vbt.len() <= IGD_VBT_INLINE_SIZE {
+            opregion[IGD_VBT_INLINE_OFFSET..IGD_VBT_INLINE_OFFSET + vbt.len()].copy_from_slice(vbt);
+        } else {
+            let ext_size = (vbt.len() + 511) & !511;
+            let ext_size = ext_size.min(IGD_OPREGION_TOTAL_SIZE - IGD_VBT_EXT_OFFSET);
+            opregion[IGD_VBT_EXT_OFFSET..IGD_VBT_EXT_OFFSET + vbt.len().min(ext_size)]
+                .copy_from_slice(&vbt[..vbt.len().min(ext_size)]);
+            Self::opregion_write_u64(opregion, 0x300 + 186, IGD_OPREGION_BASE_SIZE as u64);
+            Self::opregion_write_u32(opregion, 0x300 + 194, ext_size as u32);
+        }
+
+        let igd = self.igd();
+        igd.write32(IGD_ASLS, opregion.as_ptr() as u32);
+        // Atom platforms use the combined SWSMISCI register.
+        let swsmisci = (igd.read16(IGD_SWSMISCI) & !1) | (1 << 15);
+        igd.write16(IGD_SWSMISCI, swsmisci);
+        fstart_log::info!(
+            "pineview: IGD opregion at {:#x}, VBT {} bytes",
+            opregion.as_ptr() as usize,
+            vbt.len() as u32,
+        );
+    }
+
+    #[cfg(not(feature = "ffs-vbt"))]
+    fn init_igd_opregion(&self) {}
+
     fn igd_memory_size_kb(&self) -> u32 {
         let ggc = self.hostbridge_regs().ggc.get();
         let gms = ((ggc >> 4) & 0xF) as usize;

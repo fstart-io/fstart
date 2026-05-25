@@ -114,6 +114,7 @@ acpi = [
   "fstart-acpi?/x86",
   "fstart-driver-pl011?/acpi",
   "fstart-driver-intel-pineview?/acpi",
+  "fstart-driver-intel-pineview?/ffs-vbt",
   "fstart-driver-intel-ich7?/acpi",
   "fstart-driver-intel-gm965?/acpi",
   "fstart-driver-intel-gm965?/ffs-vbt",
