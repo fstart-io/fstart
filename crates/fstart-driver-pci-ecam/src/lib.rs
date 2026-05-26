@@ -414,31 +414,52 @@ impl PciEcam {
                 }
 
                 if let Some(mut pci_dev) = self.probe_device(faddr) {
-                    if pci_dev.header_type == PCI_HEADER_TYPE_BRIDGE {
-                        let secondary = self.next_bus;
-                        self.next_bus = self.next_bus.saturating_add(1);
-                        pci_dev.secondary_bus = secondary;
+                    match pci_dev.header_type {
+                        PCI_HEADER_TYPE_BRIDGE => {
+                            let secondary = self.next_bus;
+                            self.next_bus = self.next_bus.saturating_add(1);
+                            pci_dev.secondary_bus = secondary;
 
-                        // Temporarily set subordinate to max so scanning works.
-                        self.write32(
-                            faddr,
-                            PCI_PRIMARY_BUS,
-                            (bus as u32)
-                                | ((secondary as u32) << 8)
-                                | ((self.bus_end as u32) << 16),
-                        );
+                            // Temporarily set subordinate to max so scanning works.
+                            self.write32(
+                                faddr,
+                                PCI_PRIMARY_BUS,
+                                (bus as u32)
+                                    | ((secondary as u32) << 8)
+                                    | ((self.bus_end as u32) << 16),
+                            );
 
-                        self.enumerate_bus(secondary);
+                            self.enumerate_bus(secondary);
 
-                        // Finalise subordinate = highest bus found.
-                        pci_dev.subordinate_bus = self.next_bus.saturating_sub(1);
-                        self.write32(
-                            faddr,
-                            PCI_PRIMARY_BUS,
-                            (bus as u32)
-                                | ((secondary as u32) << 8)
-                                | ((pci_dev.subordinate_bus as u32) << 16),
-                        );
+                            // Finalise subordinate = highest bus found.
+                            pci_dev.subordinate_bus = self.next_bus.saturating_sub(1);
+                            self.write32(
+                                faddr,
+                                PCI_PRIMARY_BUS,
+                                (bus as u32)
+                                    | ((secondary as u32) << 8)
+                                    | ((pci_dev.subordinate_bus as u32) << 16),
+                            );
+                        }
+                        PCI_HEADER_TYPE_CARDBUS => {
+                            let secondary = self.next_bus;
+                            // CardBus bridges need a bus-number range for
+                            // cards inserted later. Reserve the conventional
+                            // four-bus window used by Linux/coreboot rather
+                            // than leaving the bridge at [bus 00-00].
+                            let subordinate = secondary.saturating_add(3).min(self.bus_end);
+                            self.next_bus = subordinate.saturating_add(1);
+                            pci_dev.secondary_bus = secondary;
+                            pci_dev.subordinate_bus = subordinate;
+                            self.write32(
+                                faddr,
+                                PCI_PRIMARY_BUS,
+                                (bus as u32)
+                                    | ((secondary as u32) << 8)
+                                    | ((subordinate as u32) << 16),
+                            );
+                        }
+                        _ => {}
                     }
 
                     if self.devices.push(pci_dev).is_err() {
