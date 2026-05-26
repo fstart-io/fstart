@@ -125,6 +125,7 @@ pub mod mchbar {
     pub const PM_SCHED_B90: u32 = 0x0b90;
     pub const IGD_HSYNC_VSYNC: u32 = 0x0bd0;
     pub const PM_BD8: u32 = 0x0bd8;
+    pub const HPLLVCO: u32 = 0x0c0f;
     pub const CLKCFG: u32 = 0x0c00;
     pub const CLKCFG_C14: u32 = 0x0c14;
     pub const CLKCFG_C16: u32 = 0x0c16;
@@ -142,6 +143,8 @@ pub mod mchbar {
     pub const GIPMC1: u32 = 0x0fb0;
     pub const FSBPMC1: u32 = 0x0fb8;
     pub const UPMC3: u32 = 0x0fc0;
+    pub const IOSCHED_190: u32 = 0x1190;
+    pub const IOSCHED_19E: u32 = 0x119e;
     pub const IO_INIT_CFG: u32 = 0x1400;
     pub const IO_INIT_CLK_DEP: u32 = 0x140c;
     pub const IO_INIT_CFG2: u32 = 0x1414;
@@ -589,6 +592,9 @@ pub struct Gm965IgdConfig {
     /// Fixed GTTMMADR BAR0 address used for non-display GMA setup.
     #[serde(default = "default_gtt_mmio_base")]
     pub gtt_mmio_base: u64,
+    /// IGD stolen memory size in MiB. GM965 supports 1, 4, 8, 16, 32, 48, or 64 MiB.
+    #[serde(default = "default_igd_stolen_memory_mb")]
+    pub stolen_memory_mb: u16,
     /// Board-relative VBT file path stored as a compressed FFS data file.
     #[serde(default)]
     pub vbt_file: Option<heapless::String<128>>,
@@ -630,6 +636,7 @@ impl Default for Gm965IgdConfig {
             enable_vga: true,
             enable_pipe_b: true,
             gtt_mmio_base: default_gtt_mmio_base(),
+            stolen_memory_mb: default_igd_stolen_memory_mb(),
             vbt_file: None,
             vbt_addr: None,
             vbt_size: 0,
@@ -651,6 +658,10 @@ fn default_true() -> bool {
 
 fn default_gtt_mmio_base() -> u64 {
     0xfeb0_0000
+}
+
+fn default_igd_stolen_memory_mb() -> u16 {
+    32
 }
 
 fn default_legacy_vbt_probe() -> Option<u64> {
@@ -687,6 +698,8 @@ const PCI_PIO_SIZE: u64 = 0xf000;
 
 const IGD_OPREGION_BASE_SIZE: usize = 8 * 1024;
 const IGD_OPREGION_TOTAL_SIZE: usize = 16 * 1024;
+const IGD_GTTMMADR_GTT_OFFSET: usize = 512 * 1024;
+const IGD_GTTMMADR_GTT_SIZE: usize = 512 * 1024;
 const IGD_VBT_INLINE_OFFSET: usize = 0x400;
 const IGD_VBT_INLINE_SIZE: usize = 6 * 1024;
 const IGD_VBT_EXT_OFFSET: usize = IGD_OPREGION_BASE_SIZE;
@@ -763,6 +776,9 @@ pub struct IntelGm965Config {
     /// Number of buses decoded by PCIEXBAR (256, 128, or 64).
     #[serde(default = "default_ecam_buses")]
     pub ecam_buses: u16,
+    /// Enable the PEG root port (D1:F0). X61 has no discrete GPU, so this is off by default.
+    #[serde(default)]
+    pub enable_peg: bool,
     /// Optional integrated graphics function enables.
     #[serde(default)]
     pub igd: Gm965IgdConfig,
@@ -900,7 +916,10 @@ impl IntelGm965 {
             pam.set(0x33);
         }
 
-        let mut deven = hostbridge::DEVEN_D0F0 | hostbridge::DEVEN_D1F0;
+        let mut deven = hostbridge::DEVEN_D0F0;
+        if self.config.enable_peg {
+            deven |= hostbridge::DEVEN_D1F0;
+        }
         if self.config.igd.enable_vga {
             deven |= hostbridge::DEVEN_D2F0;
         }
@@ -908,6 +927,38 @@ impl IntelGm965 {
             deven |= hostbridge::DEVEN_D2F1;
         }
         hb.deven.set(deven);
+    }
+
+    fn igd_ggc(&self) -> u16 {
+        if !self.config.igd.enable_vga {
+            fstart_log::info!("gm965 IGD: disabled, GGC=0x0002");
+            return 0x0002;
+        }
+
+        let (stolen_mb, gms) = match self.config.igd.stolen_memory_mb {
+            1 => (1, 1),
+            4 => (4, 2),
+            8 => (8, 3),
+            16 => (16, 4),
+            32 => (32, 5),
+            48 => (48, 6),
+            64 => (64, 7),
+            size => {
+                fstart_log::error!(
+                    "gm965 IGD: unsupported stolen_memory_mb={}, using 32 MiB",
+                    size as u32
+                );
+                (32, 5)
+            }
+        };
+        let ggc = (gms as u16) << 4;
+        fstart_log::info!(
+            "gm965 IGD: stolen={} MiB GMS={} GGC={:#06x}",
+            stolen_mb as u32,
+            gms as u32,
+            ggc as u32
+        );
+        ggc
     }
 
     fn early_mch_dmi_tweaks(&self) {
@@ -1568,47 +1619,64 @@ impl IntelGm965 {
         }
     }
 
-    fn gtt_setup(&self) {
-        const GFX_FLSH_CNTL: usize = 0x02170;
-        const PGETBL_CTL: usize = 0x02020;
-        let hb = ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
-        let tolud = ((hb.read16(hostbridge::TOLUD) as u32) & 0xfff0) << 16;
-        if tolud < 512 * 1024 {
-            return;
+    fn clear_gtt_table(&self) {
+        // Match coreboot's non-libgfxinit GM965 path. GTTMMADR BAR0 is
+        // 1 MiB total on Crestline: the lower 512 KiB is display MMIO and the
+        // upper 512 KiB is the CPU-visible GTT page table. Clear the table so
+        // stale firmware entries do not leak into the OS handoff. Do not
+        // program PGETBL_CTL here; coreboot only does that before libgfxinit,
+        // while the non-libgfxinit/VBIOS path leaves GTT ownership to the OS.
+        let gtt = (self.config.igd.gtt_mmio_base as usize + IGD_GTTMMADR_GTT_OFFSET) as *mut u32;
+        for idx in 0..(IGD_GTTMMADR_GTT_SIZE / core::mem::size_of::<u32>()) {
+            // SAFETY: BAR0 has been programmed and enabled above; this range is
+            // the upper 512 KiB GTT table aperture of GM965 GTTMMADR.
+            unsafe { ptr::write_volatile(gtt.add(idx), 0) };
         }
-        let gtt_base = tolud - 512 * 1024;
-        self.gtt_mmio_write32(GFX_FLSH_CNTL, 0);
-        self.gtt_mmio_write32(PGETBL_CTL, gtt_base | 1);
-        self.gtt_mmio_write32(GFX_FLSH_CNTL, 0);
     }
 
-    fn gm965_igd_init_no_display(&self) {
+    fn gm965_igd_init(&self) {
+        if !self.igd_enabled() {
+            return;
+        }
+
+        // Match coreboot gm965/igd.c, which mirrors the Phoenix BIOS IGD init
+        // after GM965 PM/PEG setup. X61 normally takes the IGD-only path; keep
+        // the PEG+IGD path for completeness.
         let hb = ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
         let deven = hb.read32(hostbridge::DEVEN);
         let peg = ecam::EcamDevice::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
         let peg_enabled = (deven & hostbridge::DEVEN_D1F0) != 0 && peg.read16(0) != 0xffff;
+        fstart_log::info!(
+            "gm965 IGD init: DEVEN={:#010x} PEG {}",
+            deven,
+            if peg_enabled { "present" } else { "absent" }
+        );
         let mch = self.mchbar();
         if peg_enabled {
-            mch.setbits8(mchbar::PM_F10, 1);
-            if (mch.read8(0x0c0f) & 0x80) == 0 {
-                mch.setbits32(0x1190, 1 << 14);
-                mch.setbits16(0x119e, (1 << 15) | (1 << 12));
+            mch.setbits8(mchbar::PM_F10, 1 << 0);
+            if (mch.read8(mchbar::HPLLVCO) & 0x80) == 0 {
+                mch.setbits32(mchbar::IOSCHED_190, 1 << 14);
+                mch.setbits16(mchbar::IOSCHED_19E, (1 << 15) | (1 << 12));
             }
         } else {
             mch.write32(mchbar::IGD_HSYNC_VSYNC, 0xfd00_0000);
             mch.write8(mchbar::IGD_HSYNC_VSYNC + 4, 0xfd);
-            let gcfgc = self.igd().read16(hostbridge::GCFGC);
+
+            let igd = self.igd();
+            let gcfgc = igd.read16(hostbridge::GCFGC);
+            let hpllvco = mch.read8(mchbar::HPLLVCO);
             let vco_field = ((gcfgc >> 8) & 0x1f) as usize;
-            let fsb_bits = (mch.read8(0x0c0f) & 0x07) as usize;
+            let fsb_bits = (hpllvco & 0x07) as usize;
             const DISPLAY_CLOCK_TABLE: [[u16; 4]; 3] =
                 [[200, 200, 222, 0], [320, 333, 333, 0], [400, 400, 381, 0]];
             if (1..=3).contains(&vco_field) && fsb_bits <= 3 {
                 let clock = DISPLAY_CLOCK_TABLE[vco_field - 1][fsb_bits];
                 if clock != 0 {
-                    let cc = (self.igd().read16(hostbridge::IGD_DISPLAY_CLOCK) & 0xfc00) | clock;
-                    self.igd().write16(hostbridge::IGD_DISPLAY_CLOCK, cc);
+                    let cc = (igd.read16(hostbridge::IGD_DISPLAY_CLOCK) & 0xfc00) | clock;
+                    igd.write16(hostbridge::IGD_DISPLAY_CLOCK, cc);
                 }
             }
+
             mch.setbits32(mchbar::PM_CTRL0, 1 << 31);
         }
     }
@@ -1636,12 +1704,7 @@ impl IntelGm965 {
             timeout -= 1;
             core::hint::spin_loop();
         }
-        let gtt = (self.config.igd.gtt_mmio_base as usize + 512 * 1024) as *mut u32;
-        for idx in 0..(512 * 1024 / core::mem::size_of::<u32>()) {
-            // SAFETY: BAR0 is 1 MiB; the upper 512 KiB is the GTT aperture.
-            unsafe { core::ptr::write_volatile(gtt.add(idx), 0) };
-        }
-        self.gtt_setup();
+        self.clear_gtt_table();
         if self.config.igd.enable_pipe_b {
             let igd_alt = ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_ALT_FUNC);
             if igd_alt.read16(0) != 0xffff {
@@ -1649,13 +1712,13 @@ impl IntelGm965 {
             }
         }
         self.gma_pm_init_post_vbios();
-        self.gm965_igd_init_no_display();
         fstart_log::info!("intel-gm965: IGD non-display init complete");
     }
 
     fn post_dram_chipset_init(&self) -> Result<(), ServiceError> {
         self.gm965_dmi_init()?;
         self.gm965_pm_init();
+        self.gm965_igd_init();
         self.gma_non_display_init();
         self.write_coreboot_scratchpad_marker();
         Ok(())
@@ -2055,7 +2118,7 @@ impl MemoryController for IntelGm965 {
         smbus.host_reset();
         let mut info = raminit::probe_dimms(&mut smbus, &self.config.spd_addresses)?;
         self.detected_size = info.total_bytes();
-        raminit::cold_boot_train(&mut info, &self.mchbar())?;
+        raminit::cold_boot_train(&mut info, &self.mchbar(), self.igd_ggc())?;
         self.memory_test()?;
         self.thermal_sensor_init(&info, &mut smbus);
         Ok(())
@@ -2129,7 +2192,13 @@ mod acpi_impl {
             let ecam_size =
                 (u64::from(config.ecam_buses) * 1024 * 1024).min(u64::from(u32::MAX)) as u32;
             let pci_mmio_base = self.tolud().max(0x8000_0000);
-            let pci_mmio_limit = ecam_base.saturating_sub(1);
+            // Match coreboot GM45/GM965 hostbridge.asl: the PCI MMIO
+            // producer window runs from TOLUD through 0xfebf_ffff.  ECAM,
+            // MCHBAR/DMIBAR/EPBAR/RCBA, HPET, and TPM are also described as
+            // motherboard resources so Linux will not allocate over them, but
+            // fixed chipset BARs such as IGD GTTMMADR at 0xfeb0_0000 and AHCI
+            // ABAR at 0xfea0_0000 still need a compatible host bridge window.
+            let pci_mmio_limit = 0xfebf_ffffu32;
             let gttmmio = config.igd.gtt_mmio_base as u32;
             let rcba: u32 = 0xfed1_c000;
             let p = |s: &str| fstart_acpi::aml::Path::new(s);

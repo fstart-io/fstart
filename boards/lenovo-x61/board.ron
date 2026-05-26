@@ -59,6 +59,9 @@
                 epbar:  0xFED19000,
                 ecam_base: 0xE0000000,
                 ecam_buses: 64,
+                // X61 has no PEG/discrete GPU; match coreboot's GM965 DEVEN
+                // setup so the northbridge takes the IGD-only path.
+                enable_peg: false,
                 // IGD setup deliberately stops short of mode-setting.  It still
                 // enables GTTMMADR, creates the ACPI OpRegion, and loads the
                 // board VBT from signed FFS, falling back to vbt_addr / the
@@ -67,6 +70,7 @@
                     enable_vga: true,
                     enable_pipe_b: true,
                     gtt_mmio_base: 0xFEB00000,
+                    stolen_memory_mb: 32,
                     vbt_file: Some("data.vbt"),
                     legacy_vbt_probe: Some(0x000C0000),
                 ),
