@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+
 use super::*;
-use crate::ron_loader::ParsedBoard;
+use crate::ron_loader::{load_parsed_board, ParsedBoard};
 use fstart_device_registry::{DriverInstance, Service};
 
 fn services_for(instances: &[DriverInstance]) -> Vec<heapless::Vec<Service, 16>> {
@@ -7,6 +9,29 @@ fn services_for(instances: &[DriverInstance]) -> Vec<heapless::Vec<Service, 16>>
         .iter()
         .map(|instance| instance.provided_services().iter().copied().collect())
         .collect()
+}
+
+fn load_lenovo_x61_board() -> ParsedBoard {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    load_parsed_board(&manifest_dir.join("../../boards/lenovo-x61/board.ron"))
+        .expect("lenovo-x61 board should parse")
+}
+
+fn fstart_main_source(source: &str) -> &str {
+    let start = source
+        .find("pub extern \"Rust\" fn fstart_main")
+        .expect("generated source should contain fstart_main");
+    &source[start..]
+}
+
+fn assert_ordered(source: &str, needles: &[&str], context: &str) {
+    let mut start = 0;
+    for needle in needles {
+        let relative = source[start..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle:?} while checking {context}"));
+        start += relative + needle.len();
+    }
 }
 
 /// Helper: create a minimal parsed board for testing.
@@ -1061,7 +1086,7 @@ fn plan_ends_with_jump_false_when_last_cap_does_not_hand_off() {
 }
 
 #[test]
-fn plan_capop_count_matches_capability_count() {
+fn direct_flow_replaces_runtime_interpreter_entry() {
     let mut caps = heapless::Vec::new();
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
@@ -1073,8 +1098,170 @@ fn plan_capop_count_matches_capability_count() {
 
     assert!(
         source.contains("_FSTART_PLAN_CAPS: [fstart_stage_runtime::CapOp; 3usize]"),
-        "CAPS array should be length 3: {source}"
+        "CAPS array should remain useful metadata: {source}"
     );
+    assert!(
+        source.contains("let mut board = _BoardDevices::new();"),
+        "direct fstart_main should construct the board adapter: {source}"
+    );
+    assert!(
+        !source.contains("fstart_stage_runtime::run_stage("),
+        "fstart_main should not pull in the generic CapOp interpreter: {source}"
+    );
+    assert!(
+        source.contains("fstart_stage_runtime::Board::memory_init(&board);"),
+        "MemoryInit should lower to a direct Board call: {source}"
+    );
+}
+
+#[test]
+fn direct_flow_driver_init_uses_board_batch_init_without_runtime_interpreter() {
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::DriverInit);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("let _no_skip = fstart_stage_runtime::DeviceMask::new();"),
+        "DriverInit should preserve current empty-skip semantics: {source}"
+    );
+    assert!(
+        source.contains("fstart_stage_runtime::Board::init_all_devices"),
+        "DriverInit should lower to Board::init_all_devices: {source}"
+    );
+    assert!(
+        source.contains("_inited.set(0);"),
+        "DriverInit should mark runtime devices inited: {source}"
+    );
+    assert!(
+        !source.contains("fstart_stage_runtime::run_stage("),
+        "direct flow should not call the generic runtime interpreter: {source}"
+    );
+}
+
+#[test]
+fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
+    // X61's generated source is large enough that prettyplease can exhaust the
+    // default test-thread stack.  Generate it on a larger stack, then keep the
+    // assertions to stable substrings.
+    let (bootblock, ramstage) = std::thread::Builder::new()
+        .name("x61-codegen-direct-flow".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let parsed = load_lenovo_x61_board();
+            (
+                generate_stage_source(&parsed, Some("bootblock")),
+                generate_stage_source(&parsed, Some("ramstage")),
+            )
+        })
+        .expect("spawn x61 codegen thread")
+        .join()
+        .expect("x61 codegen should not panic");
+
+    assert!(
+        !bootblock.contains("fstart_stage_runtime::run_stage(")
+            && !ramstage.contains("fstart_stage_runtime::run_stage("),
+        "X61 stages should use direct fstart_main codeflow"
+    );
+
+    let bootblock_main = fstart_main_source(&bootblock);
+    let ramstage_main = fstart_main_source(&ramstage);
+
+    assert_ordered(
+        bootblock_main,
+        &[
+            "fstart_stage_runtime::Board::boot_media_static",
+            "fstart_stage_runtime::Board::stage_load",
+        ],
+        "X61 bootblock boot media before stage load",
+    );
+    assert_ordered(
+        ramstage_main,
+        &[
+            "fstart_stage_runtime::Board::boot_media_static",
+            "fstart_stage_runtime::Board::sig_verify",
+            "fstart_stage_runtime::Board::init_all_devices",
+        ],
+        "X61 ramstage boot media before signature before DriverInit",
+    );
+
+    for (source, needle, context) in [
+        (
+            bootblock.as_str(),
+            "fstart_stage_runtime::Board::pre_console_init(&mut board, &[0, 1, 8])",
+            "bootblock PreConsoleInit",
+        ),
+        (
+            bootblock.as_str(),
+            "fstart_stage_runtime::Board::early_init(&mut board, &[0, 1])",
+            "bootblock EarlyInit",
+        ),
+        (
+            bootblock.as_str(),
+            "fstart_stage_runtime::Board::dram_init(&mut board, 0)",
+            "bootblock DramInit",
+        ),
+        (
+            bootblock.as_str(),
+            "fstart_stage_runtime::Board::stage_load(&board, \"ramstage\")",
+            "bootblock StageLoad",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::DeviceMask::from_slice(&[0])",
+            "ramstage persistent DeviceMask",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::stage_local_init(&mut board, &[0])",
+            "ramstage StageLocalInit",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::memory_detect(&mut board, 0)",
+            "ramstage MemoryDetect",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::pci_init(&mut board, 0)",
+            "ramstage PciInit",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::post_dram_init(&mut board, &[0, 1, 8])",
+            "ramstage PostDramInit",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::finalize_init(&mut board, &[1, 8])",
+            "ramstage FinalizeInit",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::mp_init(&mut board, \"core2\", 2u16, false)",
+            "ramstage MpInit",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::acpi_prepare(&mut board);",
+            "ramstage AcpiPrepare",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::smbios_prepare(&board);",
+            "ramstage SmBiosPrepare",
+        ),
+        (
+            ramstage.as_str(),
+            "fstart_stage_runtime::Board::payload_load(&board);",
+            "ramstage PayloadLoad",
+        ),
+    ] {
+        assert!(source.contains(needle), "missing direct call for {context}");
+    }
 }
 
 #[test]

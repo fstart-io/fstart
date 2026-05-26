@@ -6,8 +6,9 @@ Design document with implementation notes.  Phases 1–4 are substantially
 complete; Phase 5 (Flexible mode) was superseded by the stage-runtime /
 codegen split.  The driver model is functional: boards build, run in
 QEMU, and codegen produces a typed board adapter (`impl Board for
-_BoardDevices`) consumed by a handwritten generic executor
-(`fstart_stage_runtime::run_stage`).
+_BoardDevices`) plus a direct per-stage `fstart_main` sequence.  The
+handwritten `run_stage` executor remains as reference/test/runtime
+infrastructure, but production stages use direct codeflow for code size.
 
 ## Goals
 
@@ -70,8 +71,8 @@ compile-time device-tree validation.
 |                    Generated Stage Code                         |
 |  * _BoardDevices struct (Option<Driver> per device)            |
 |  * impl Board for _BoardDevices (capability trampolines)      |
-|  * static STAGE_PLAN: StagePlan (CapOp sequence)              |
-|  * fstart_main() stub → run_stage(board, plan, handoff)       |
+|  * static STAGE_PLAN: StagePlan metadata (CapOp sequence)     |
+|  * fstart_main() direct stage codeflow                        |
 +----------+-----------------+-------------------+---------------+
            |                 |                   |
            v                 v                   v
@@ -80,7 +81,7 @@ compile-time device-tree validation.
   | services      |  | drivers       |  | runtime            |
   |               |  |               |  |                    |
   | trait Console |  | Ns16550       |  | trait Board        |
-  | trait Timer   |  | Pl011         |  | run_stage<B>()     |
+  | trait Timer   |  | Pl011         |  | Board trait        |
   | trait Block   |  | DesignwareI2c |  | StagePlan, CapOp   |
   | trait I2cBus  |  |               |  | DeviceMask         |
   | trait Device  |  | impl Device   |  |                    |
@@ -421,8 +422,8 @@ struct _BoardDevices {
 ```
 
 All device fields are `Option<T>` because `init_device(id)` is the sole
-construction site — devices are lazily materialised when the executor asks
-for them.
+construction site — devices are lazily materialised when direct stage
+codeflow asks for them.
 
 ### impl Board for _BoardDevices
 
@@ -491,44 +492,31 @@ static STAGE_PLAN: fstart_stage_runtime::StagePlan = StagePlan {
 };
 ```
 
-### Init Sequence (run_stage executor)
+### Init Sequence (direct generated codeflow)
 
-The handwritten executor in `fstart-stage-runtime` iterates the plan's
-capability sequence and dispatches through the `Board` trait:
-
-```rust
-// fstart-stage-runtime/src/lib.rs (simplified)
-pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, handoff: usize) -> ! {
-    let mut inited = DeviceMask::from_slice(plan.persistent_inited);
-    for op in plan.caps {
-        match *op {
-            CapOp::ConsoleInit(id) => {
-                if board.init_device(id).is_err() { board.halt(); }
-                unsafe { board.install_logger(id); }
-                inited.set(id);
-            }
-            CapOp::SigVerify => board.sig_verify(),
-            CapOp::PayloadLoad => board.payload_load(),
-            // ... one arm per CapOp variant
-            _ => {}
-        }
-    }
-    board.halt();
-}
-```
-
-`fstart_main` is a thin stub:
+Production `fstart_main` is generated as a direct sequence from the selected
+stage's ordered capabilities.  This keeps the board RON as the source of truth
+without linking every arm of a generic `CapOp` interpreter into size-sensitive
+firmware stages:
 
 ```rust
 #[no_mangle]
 pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
-    fstart_stage_runtime::run_stage(
-        _BoardDevices::new(),
-        &STAGE_PLAN,
-        handoff_ptr,
-    )
+    let _ = handoff_ptr;
+    let mut board = _BoardDevices::new();
+    let mut inited = DeviceMask::from_slice(&[/* prior persistent ids */]);
+
+    if Board::init_device(&mut board, 0).is_err() { Board::halt(&board); }
+    unsafe { Board::install_logger(&board, 0); }
+    inited.set(0);
+    Board::sig_verify(&board);
+    Board::payload_load(&board);
 }
 ```
+
+The handwritten `run_stage<B: Board>(board, plan, handoff) -> !` executor still
+exists in `fstart-stage-runtime` and is tested against the same `StagePlan` /
+`CapOp` model, but current generated stages do not call it.
 
 ### Bus Ordering (Approach A — compile-away)
 
@@ -809,7 +797,8 @@ redundant — if runtime driver selection is needed, it lives inside
 - [x] `board_gen.rs`: emit `struct _BoardDevices` + `impl Board for _BoardDevices`
       with all 20 methods (init_device, init_all_devices, install_logger,
       15 capability trampolines, halt, jump_to, jump_to_with_handoff).
-- [x] Flip `fstart_main` to a 3-line stub calling `run_stage()`.
+- [x] Generate direct `fstart_main` codeflow from the ordered stage
+      capabilities; `run_stage()` remains reference/test/runtime infrastructure.
 - [x] Delete old codegen: `Devices`, `StageContext`, `flexible.rs`,
       `ensure_device_ready`, `walk_to_real_parent`, `make_prelude`,
       `generate_driver_init`, `generate_boot_media_auto_device`.

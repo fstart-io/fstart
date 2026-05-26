@@ -1,10 +1,10 @@
 //! Compile a [`ParsedBoard`] + stage selection into a
 //! `fstart_stage_runtime::StagePlan` literal.
 //!
-//! Phase 1 of the stage-runtime/codegen split: the plan is emitted
-//! alongside the existing `fstart_main()` body but not yet consumed.
-//! The existing generator keeps doing its job; this module just makes
-//! the resolved stage semantics available as data.
+//! The plan is emitted as compact resolved stage metadata.  `fstart_main()`
+//! is currently generated as a direct stage-specific sequence for code size,
+//! but this data representation remains useful for tests and future shared
+//! tooling.
 //!
 //! The emitted shape mirrors the types in
 //! `crates/fstart-stage-runtime/src/plan.rs`.  When that crate's types
@@ -29,12 +29,10 @@ use super::tokens::hex_addr;
 
 /// Emit the `static PLAN: StagePlan = ...;` literal for a stage.
 ///
-/// Called by `generate_stage_source` after validation.  The emitted
-/// static is exposed with `#[no_mangle]` so later phases can wire it
-/// up to `fstart_stage_runtime::run_stage` without codegen changes.
-///
-/// Phase 1 keeps the plan `#[allow(dead_code)]` — the existing
-/// `fstart_main()` is still the code path that actually runs.
+/// Called by `generate_stage_source` after validation.  The plan is kept
+/// `#[allow(dead_code)]` because the generated `fstart_main()` lowers the
+/// same ordered capabilities into direct codeflow rather than interpreting
+/// this table at runtime.
 pub(super) fn generate_stage_plan(
     config: &BoardConfig,
     instances: &[DriverInstance],
@@ -112,14 +110,14 @@ pub(super) fn generate_stage_plan(
             #(#all_devs_lits,)*
         ];
 
-        /// Compiled stage plan.  Consumed by `fstart_stage_runtime::run_stage`
-        /// via the codegen-emitted `fstart_main` shim (still pending — see
-        /// `.opencode/plans/stage-runtime-codegen-split.md` §"Work breakdown").
+        /// Compiled stage metadata.  The generated `fstart_main` uses direct
+        /// codeflow today, but this table records the same resolved operation
+        /// sequence for tests and future shared tooling.
         ///
         /// Module-local (no `#[no_mangle]`, no `pub`) so that a future
         /// multi-platform codegen can emit several named plans in the
         /// same stage binary (`STAGE_PLAN_ICH7`, `STAGE_PLAN_Q35`, ...)
-        /// without symbol collisions.  See plan doc §Invariant 1.
+        /// without symbol collisions.
         #[allow(dead_code)]
         static STAGE_PLAN: fstart_stage_runtime::StagePlan = fstart_stage_runtime::StagePlan {
             stage_name: #stage_name_str,
@@ -428,23 +426,9 @@ fn auto_device_candidates_static(candidates: &[AutoBootDevice], ctx: &PlanCtx<'_
 /// `boot_media_select` adapter method on those platforms picks by a
 /// different rule.
 fn media_ids_tokens(device_name: &str, ctx: &PlanCtx<'_>) -> TokenStream {
-    // Today `boot_media_values_for_device` panics if the driver has
-    // no known mapping.  We only call it for devices that already
-    // passed `collect_boot_media_gated` or appear in an AutoDevice /
-    // LoadNextStage candidate list, and those paths require the
-    // sunxi boot-media mapping in the old codegen.  For the new
-    // codegen we broaden the reach: catch the panic case and emit
-    // an empty slice.
-    //
-    // This is pragmatic, not principled.  The fully-correct answer
-    // is to add a generic `boot_source_values_for_device` that
-    // returns `Option<Vec<u8>>` so non-sunxi platforms emit `None`
-    // and the adapter reads its own boot-source register directly.
-    // Deferred until an x86 board actually needs BootMediaAuto.
-    let values = std::panic::catch_unwind(|| {
-        boot_media_values_for_device(device_name, ctx.devices, ctx.instances)
-    })
-    .unwrap_or_default();
+    // Unmapped drivers return an empty list, which is also the right metadata
+    // for platforms where this boot-source table does not apply.
+    let values = boot_media_values_for_device(device_name, ctx.devices, ctx.instances);
     let lits = values.iter().map(|b| Literal::u8_unsuffixed(*b));
     quote! { &[#(#lits),*] }
 }

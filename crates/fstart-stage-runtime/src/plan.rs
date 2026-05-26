@@ -1,18 +1,12 @@
-//! The compiled stage plan consumed by [`run_stage`](super::run_stage).
+//! Compact stage-plan data used by the reference/alternate [`run_stage`]
+//! executor and by codegen tests.
 //!
-//! Everything in this module is `Copy` and lives in `.rodata` on the
-//! firmware. Codegen emits a single
+//! Everything in this module is `Copy` and suitable for `.rodata`. Production
+//! generated `fstart_main()` currently lowers the same capability order into
+//! direct codeflow for firmware size, while this table remains useful as a
+//! shared metadata format. No construction, no heap.
 //!
-//! ```ignore
-//! #[no_mangle]
-//! pub static PLAN: StagePlan = StagePlan { /* ... */ };
-//! ```
-//!
-//! and the handwritten executor reads it at stage entry.  No
-//! construction, no heap.
-//!
-//! See `.opencode/plans/stage-runtime-codegen-split.md` for the design
-//! rationale.
+//! [`run_stage`]: super::run_stage
 
 use fstart_types::DeviceId;
 
@@ -88,10 +82,10 @@ pub enum CapOp {
     /// source.
     MemoryDetect(DeviceId),
     /// `BootMedia` with a single static candidate (memory-mapped flash
-    /// or a single block device).  The executor just records the
-    /// selection; reads go through [`Board::boot_media_read`].
+    /// or a single block device).  The executor records the selection
+    /// through [`Board::boot_media_static`].
     ///
-    /// [`Board::boot_media_read`]: super::Board::boot_media_read
+    /// [`Board::boot_media_static`]: super::Board::boot_media_static
     BootMediaStatic {
         /// `None` means the memory-mapped flash path; `Some(id)` picks
         /// that block device.
@@ -138,10 +132,12 @@ pub struct BootMediaCandidate {
 // StagePlan — the root object codegen emits per stage
 // ---------------------------------------------------------------------------
 
-/// Everything [`run_stage`](super::run_stage) needs to execute one stage.
+/// Resolved stage metadata for an ordered capability sequence.
 ///
-/// All fields are `&'static` slices or `Copy` scalars; the whole object
-/// lives in `.rodata`.
+/// The reference [`run_stage`](super::run_stage) executor can interpret this
+/// table. Production generated `fstart_main()` currently emits direct codeflow
+/// from the same inputs and does not need to read it at stage entry.
+/// All fields are `&'static` slices or `Copy` scalars.
 #[derive(Debug, Clone, Copy)]
 pub struct StagePlan {
     /// Stage name for diagnostics (e.g. `"bootblock"`).

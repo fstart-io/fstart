@@ -1,27 +1,13 @@
-//! Handwritten stage executor for the fstart firmware framework.
+//! Shared stage-runtime types for the fstart firmware framework.
 //!
-//! This crate implements the **runtime half** of the stage/codegen
-//! split described in `.opencode/plans/stage-runtime-codegen-split.md`.
-//! It pairs with `fstart-codegen` (the build-time half):
+//! This crate contains the `Board` trait implemented by generated board
+//! adapters, compact `StagePlan`/`CapOp` metadata, and [`run_stage`], a
+//! reference/alternate executor for that metadata.
 //!
-//! - `fstart-codegen` emits, for each board, an `impl Board for Devices`
-//!   and a `static STAGE_PLAN: StagePlan` in `.rodata`.
-//! - `fstart-stage-runtime` provides the generic [`run_stage`] executor
-//!   that consumes those two artifacts.
-//!
-//! In Rigid mode the executor monomorphises on `B: Board`, so every
-//! call inlines — the compiled firmware is the same shape as what
-//! today's full-codegen approach produces, just authored very
-//! differently on the host side.
-//!
-//! # Current status
-//!
-//! The trait and executor carry the full final shape (all capabilities
-//! dispatched through trampolines that read board state from `&self`).
-//! The codegen that emits `impl Board for Devices` lands in a later
-//! step; until then the executor is exercised only by host tests using
-//! the [`tests::MockBoard`] helper, and the existing `generate_fstart_main`
-//! in `fstart-codegen` stays in charge of real boards.
+//! Production generated `fstart_main()` currently emits direct per-stage
+//! codeflow for firmware size and calls the generated `Board` adapter methods
+//! directly. The generic [`run_stage`] executor remains tested infrastructure
+//! for the plan representation and for future/shared execution paths.
 //!
 //! # Multi-platform constraints
 //!
@@ -163,14 +149,14 @@ pub enum RuntimeError {
 // Board trait
 // ---------------------------------------------------------------------------
 
-/// The complete surface [`run_stage`] uses to drive a board-specific
-/// `Devices` struct.
+/// The complete surface generated codeflow and [`run_stage`] use to drive a
+/// board-specific `Devices` struct.
 ///
 /// Implemented **once per board, by codegen.** Every device-bearing
 /// method takes a [`DeviceId`] and the impl dispatches to a concrete
 /// field via an inline match.  Because the trait is `Sized` and the
-/// executor is generic over `B: Board`, Rigid-mode builds produce
-/// specialised code with no vtables and no dynamic dispatch.
+/// direct codeflow uses fully qualified trait calls, builds produce specialised
+/// code with no vtables and no dynamic dispatch.
 ///
 /// # Trait design rules (see plan doc §Invariants)
 ///
@@ -180,14 +166,12 @@ pub enum RuntimeError {
 ///   per-platform data in fields, and the trait signature does not
 ///   change when the adapter grows variant-per-platform fields.
 ///
-/// - **Executor-derived context only.**  Arguments come from
-///   [`CapOp`] variants (`DeviceId`, `next_stage`) or from
-///   [`StagePlan`] (`is_first_stage` → `uses_handoff`).  The executor
-///   never passes addresses, sizes, bootargs, or descriptor strings.
+/// - **Codeflow-derived context only.**  Arguments come from resolved stage
+///   metadata (`DeviceId`, `next_stage`) rather than board-level addresses,
+///   sizes, bootargs, or descriptor strings.
 ///
 /// - **Diverging trampolines return `!`.**  `payload_load`,
-///   `stage_load`, `load_next_stage`, `return_to_fel` never come
-///   back; the executor arm is just `board.foo()`.
+///   `stage_load`, `load_next_stage`, `return_to_fel` never come back.
 pub trait Board: Sized {
     // ----- Device lifecycle ------------------------------------------------
 
@@ -413,10 +397,11 @@ pub trait Board: Sized {
 // Board call boundaries
 // ---------------------------------------------------------------------------
 //
-// Keep these calls out-of-line.  Early x86 bootblocks run on a tiny CAR stack,
-// and a fully inlined monomorphised `run_stage()` otherwise inherits the maximum
-// stack frame of every possible capability arm (FFS/stage loading, ACPI, SMBIOS,
-// etc.), even when the current stage has not reached those arms yet.
+// Keep these calls out-of-line for users of the alternate `run_stage` executor.
+// Early x86 bootblocks run on a tiny CAR stack, and a fully inlined
+// monomorphised interpreter otherwise inherits the maximum stack frame of every
+// possible capability arm (FFS/stage loading, ACPI, SMBIOS, etc.), even when the
+// current stage has not reached those arms yet.
 
 #[inline(never)]
 fn call_init_device<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
@@ -553,24 +538,14 @@ fn call_load_next_stage<B: Board>(board: &mut B, next_stage: &str) -> ! {
 
 /// Execute a stage plan against a board adapter.
 ///
-/// The full replacement for the generated `fstart_main()` body.  It
-/// consumes exactly two per-board artifacts emitted by codegen:
+/// This is a reference/alternate executor for the `StagePlan` metadata. Current
+/// production codegen emits a direct `fstart_main()` sequence for code size, but
+/// this interpreter remains useful for tests and for shared execution paths.
 ///
-/// 1. The board adapter `board: B: Board` (with its `Devices` field
-///    holding the concrete driver instances).
-/// 2. The `plan: &'static StagePlan` describing the capability
-///    sequence.
-///
-/// Plus one platform-supplied value:
-///
-/// 3. `handoff_ptr` — the register the platform's `_start` stashes
-///    the previous-stage handoff address in.  The board adapter
-///    interprets it; the executor forwards it unchanged.
-///
-/// Every capability maps to one match arm.  Device IDs are `u8`
-/// constants from `.rodata`, so LLVM folds the inner `match id` inside
-/// each adapter method to a single arm and inlines it.  Net codegen
-/// shape is identical to direct inlined calls.
+/// The executor consumes a board adapter `B: Board`, a `StagePlan` describing
+/// the capability sequence, and the platform-supplied `handoff_ptr` register
+/// value. Every capability maps to one match arm; device names have already
+/// been resolved to compact `DeviceId` values by codegen.
 pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr: usize) -> ! {
     let mut inited = DeviceMask::from_slice(plan.persistent_inited);
 

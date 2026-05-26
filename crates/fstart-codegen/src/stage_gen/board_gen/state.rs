@@ -23,9 +23,8 @@ pub(super) fn emit_adapter_struct(ctx: &BoardEmitModel<'_>) -> TokenStream {
         /// trampolines need ([`DeviceMask`] for init tracking,
         /// [`BootMediaState`] for the current boot medium, static
         /// FDT data, and the previous-stage handoff).  Implements
-        /// [`fstart_stage_runtime::Board`] so the handwritten
-        /// [`run_stage`](fstart_stage_runtime::run_stage) executor
-        /// can drive it.
+        /// [`fstart_stage_runtime::Board`] so generated direct
+        /// codeflow can drive typed lifecycle/capability trampolines.
         ///
         /// [`DeviceMask`]: fstart_stage_runtime::DeviceMask
         /// [`BootMediaState`]: fstart_stage_runtime::BootMediaState
