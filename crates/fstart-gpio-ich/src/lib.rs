@@ -159,6 +159,7 @@ impl Default for GpioReset {
 /// ( pin: 5, mode: Native )            // explicitly native (rare)
 /// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GpioPin {
     /// Pin number (0–75).
     pub pin: u8,
@@ -202,6 +203,7 @@ pub struct GpioPin {
 /// ])
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GpioConfig {
     /// Per-pin configurations. Only list pins that differ from defaults.
     #[serde(default)]

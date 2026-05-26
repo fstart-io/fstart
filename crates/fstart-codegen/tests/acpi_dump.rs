@@ -46,7 +46,6 @@ fn dump_foxconn_d41s_dsdt() {
         sata: Some(( mode: Ahci, ports: 0x3 )),
         usb: Some(( ehci: true, uhci: (true, true, true, true) )),
         pata: false,
-        ecam_base: 0xE0000000,
         smbus_base: 0x0400,
         gpio: (pins: [
             ( pin: 0 ),

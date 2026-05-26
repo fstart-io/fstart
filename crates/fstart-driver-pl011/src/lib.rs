@@ -77,6 +77,7 @@ register_structs! {
 /// ACPI fields are always present (`Option<T>` with `#[serde(default)]`)
 /// but only used when the `acpi` feature is active.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Pl011Config {
     /// MMIO base address of the register block.
     pub base_addr: u64,

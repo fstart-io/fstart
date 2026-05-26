@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level ACPI configuration, from the board RON `acpi` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpiConfig {
     /// Platform-specific ACPI parameters (MADT, GTDT, FADT).
     pub platform: AcpiPlatform,
@@ -50,6 +51,7 @@ pub enum AcpiPlatform {
 /// Describes the GICv3 interrupt controller, ARM generic timer, and
 /// optional SBSA watchdog for MADT, GTDT, and FADT generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArmPlatformAcpi {
     /// Number of CPUs.
     pub num_cpus: u32,
@@ -86,6 +88,7 @@ pub struct ArmPlatformAcpi {
 
 /// SBSA Generic Watchdog parameters for GTDT.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpiWatchdog {
     /// Refresh frame base address.
     pub refresh_base: u64,
@@ -100,6 +103,7 @@ pub struct AcpiWatchdog {
 /// Describes the mapping between PCI Request IDs and GIC ITS device IDs.
 /// Without IORT, PCIe MSI/MSI-X cannot be routed through the GIC ITS.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpiIort {
     /// GIC ITS identifiers (must match MADT GIC ITS entries).
     ///
@@ -174,6 +178,7 @@ pub enum AcpiResource {
 
 /// A generic device for ACPI — multiple MMIO/PIO regions + optional interrupt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpiGenericDevice {
     /// ACPI namespace name (e.g., "DEV0").
     pub name: HString<8>,
@@ -188,6 +193,7 @@ pub struct AcpiGenericDevice {
 
 /// AHCI SATA controller for ACPI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpiAhciDevice {
     /// ACPI namespace name (e.g., "AHC0").
     pub name: HString<8>,
@@ -201,6 +207,7 @@ pub struct AcpiAhciDevice {
 
 /// xHCI USB controller for ACPI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpiXhciDevice {
     /// ACPI namespace name (e.g., "USB0").
     pub name: HString<8>,
@@ -214,6 +221,7 @@ pub struct AcpiXhciDevice {
 
 /// PCIe Root Complex for ACPI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpiPcieRootDevice {
     /// ACPI namespace name (e.g., "PCI0").
     pub name: HString<8>,
@@ -249,6 +257,7 @@ fn default_bus_range() -> (u8, u8) {
 /// Describes the APIC interrupt controller, optional HPET, and
 /// boot configuration for MADT, HPET, and FADT generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct X86PlatformAcpi {
     /// Number of CPUs.
     ///
@@ -296,6 +305,7 @@ pub struct X86PlatformAcpi {
 
 /// SMI command values for ACPI mode switching.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpiSmiConfig {
     /// SMI command port, normally APM_CNT 0xb2 on PC chipsets.
     pub smi_cmd: u32,
@@ -307,6 +317,7 @@ pub struct AcpiSmiConfig {
 
 /// I/O APIC configuration for x86 MADT.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IoApicEntry {
     /// I/O APIC ID.
     pub id: u8,
@@ -321,6 +332,7 @@ pub struct IoApicEntry {
 /// Maps an ISA interrupt to a different GSI with specified
 /// trigger/polarity settings.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IsoEntry {
     /// Bus source (0 = ISA).
     #[serde(default)]

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Complete memory map for a board.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryMap {
     /// Named memory regions (ROM, RAM only — not per-device MMIO)
     pub regions: heapless::Vec<MemoryRegion, 16>,
@@ -60,6 +61,7 @@ pub struct MemoryMap {
 /// bootblock enters this mode via MTRR programming + a CPU-specific
 /// which  is detected at runtime using cpuid
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CarConfig {
     /// Base physical address of the CAR region.
     ///
@@ -75,6 +77,7 @@ pub struct CarConfig {
 
 /// A single memory region.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryRegion {
     /// Region name (e.g., "rom", "ram", "mmio")
     pub name: HString<32>,
@@ -108,6 +111,7 @@ pub enum FlashLayout {
 
 /// Intel Firmware Descriptor flash layout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntelIfdFlashLayout {
     /// Physical address where the entire SPI flash aperture is memory-mapped.
     pub base: u64,
@@ -139,6 +143,7 @@ impl IntelIfdFlashLayout {
 
 /// One Intel IFD flash region declared in board RON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntelIfdRegionConfig {
     /// Descriptor region kind.
     pub kind: IntelIfdRegion,

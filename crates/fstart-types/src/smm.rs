@@ -19,6 +19,7 @@ pub enum SmmPlatform {
 
 /// Optional coreboot compatibility outputs for the standalone SMM image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CorebootSmmCompat {
     /// Generate a C header containing image-relative offsets that coreboot can
     /// include from its build.  The header is an output artifact, not runtime
@@ -33,6 +34,7 @@ pub struct CorebootSmmCompat {
 
 /// Top-level SMM settings from `board.ron`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmmConfig {
     /// Platform-specific SMRAM/SMI backend.
     pub platform: SmmPlatform,

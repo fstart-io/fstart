@@ -39,6 +39,7 @@ pub const HANDOFF_MAX_SIZE: usize = 256;
 /// (which can see all stages' capabilities in the board RON), so it
 /// is NOT included here — only truly dynamic data belongs in the handoff.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StageHandoff {
     /// Magic number — must be [`HANDOFF_MAGIC`].
     pub magic: u32,

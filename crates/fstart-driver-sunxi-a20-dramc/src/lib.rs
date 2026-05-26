@@ -265,6 +265,7 @@ const POLL_TIMEOUT: u32 = 1_000_000;
 /// ))
 /// ```
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SunxiA20DramcConfig {
     /// DRAMC register base address (`0x01C0_1000`).
     pub dramc_base: u64,

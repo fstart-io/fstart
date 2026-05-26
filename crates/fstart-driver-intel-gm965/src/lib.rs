@@ -582,6 +582,7 @@ impl EpBar {
 
 /// Integrated graphics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Gm965IgdConfig {
     /// Enable the integrated VGA function (D2:F0).
     #[serde(default = "default_true")]
@@ -763,6 +764,7 @@ static GM965_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
 
 /// GM965 northbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntelGm965Config {
     /// MCHBAR base address. X61 uses `0xfed14000`.
     pub mchbar: u64,

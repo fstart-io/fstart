@@ -65,6 +65,7 @@ const MMIO_DISPI_OFFSET: usize = 0x500;
 /// [`PciRootBus`] and only needs the device:function address on the bus.
 /// BARs are read via the parent's config-space accessors.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BochsDisplayConfig {
     /// PCI device number on the bus (bus number comes from the parent).
     pub device: u8,

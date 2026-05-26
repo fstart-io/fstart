@@ -106,6 +106,7 @@ register_bitfields! [u32,
 /// after PRCI initialization. On QEMU sifive_u, it is the `clock-frequency`
 /// property from the device tree.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SifiveUartConfig {
     /// MMIO base address of the register block.
     pub base_addr: u64,

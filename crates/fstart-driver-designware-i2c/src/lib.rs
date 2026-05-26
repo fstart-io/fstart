@@ -192,6 +192,7 @@ pub enum I2cSpeed {
 /// Serializable with both RON (build-time validation) and postcard
 /// (runtime config from FFS).
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DesignwareI2cConfig {
     /// MMIO base address of the register block.
     pub base_addr: u64,

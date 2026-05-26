@@ -205,6 +205,7 @@ const CLTXPLL: PllSettings = PllSettings {
 
 /// Typed configuration for the FU740 PRCI driver.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Fu740PrciConfig {
     /// PRCI register base address (0x1000_0000).
     pub base_addr: u64,

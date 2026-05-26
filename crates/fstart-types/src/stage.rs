@@ -19,6 +19,7 @@ pub enum StageLayout {
 
 /// Configuration for a monolithic (single-stage) build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MonolithicConfig {
     /// Ordered list of capabilities to execute
     pub capabilities: heapless::Vec<Capability, 16>,
@@ -62,6 +63,7 @@ pub struct MonolithicConfig {
 
 /// Configuration for one stage in a multi-stage build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StageConfig {
     /// Stage name (e.g., "bootblock", "main")
     pub name: HString<32>,
@@ -425,6 +427,7 @@ pub enum Capability {
 /// on the medium. The codegen derives the eGON `boot_media` match
 /// value from the device's driver type at build time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoadDevice {
     /// Device name from the devices list (e.g., "mmc0", "spi0").
     pub name: HString<32>,
@@ -440,6 +443,7 @@ pub struct LoadDevice {
 /// Similar to [`LoadDevice`] but also carries the FFS region size
 /// needed by the `BootMedia` capability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AutoBootDevice {
     /// Device name from the devices list (e.g., "mmc0", "spi0").
     pub name: HString<32>,

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 /// the anchor block at build time; the private key is used by `xtask
 /// assemble` to sign manifests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Signature algorithm for manifest signing.
     pub signing_algorithm: SignatureAlgorithm,

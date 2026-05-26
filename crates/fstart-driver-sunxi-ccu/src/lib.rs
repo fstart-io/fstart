@@ -92,6 +92,7 @@ const UART0_RX_FUNC: u8 = 2;
 
 /// Typed configuration for the A20 CCU driver.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SunxiA20CcuConfig {
     /// CCU register base address (typically `0x01C2_0000`).
     pub ccu_base: u64,

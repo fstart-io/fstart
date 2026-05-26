@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 /// All addresses come from the board RON and describe the fixed platform
 /// windows that QEMU / the SoC provides for PCI.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PciEcamConfig {
     /// ECAM base address (memory-mapped PCI config space).
     pub ecam_base: u64,

@@ -274,6 +274,7 @@ pub enum ConstructionKind {
 /// Needed so the parallel `driver_instances` array stays aligned with
 /// `devices`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralConfig {}
 
 /// A driver instance with its typed configuration.

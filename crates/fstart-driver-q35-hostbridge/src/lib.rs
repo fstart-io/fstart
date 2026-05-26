@@ -127,6 +127,7 @@ static Q35_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
 /// Only the ECAM base/size and bus range are needed.  MMIO windows are
 /// computed at runtime from the e820 memory map.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Q35HostBridgeConfig {
     /// ECAM base address (PCIEXBAR).  Typically 0xB000_0000 on Q35.
     pub ecam_base: u64,

@@ -158,7 +158,6 @@
                 sata: ( mode: Ahci, ports: 0x3 ),
                 usb: ( ehci: true, uhci: (true, true, true, true) ),
                 pata: false,
-                ecam_base: 0xE0000000,
                 smbus_base: 0x0400,
                 // GPIO from coreboot foxconn/d41s/gpio.c.
                 // Unlisted pins remain in their native hardware function.

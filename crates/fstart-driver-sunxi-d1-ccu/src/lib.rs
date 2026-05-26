@@ -44,6 +44,7 @@ const UART0_RX_FUNC: u8 = 6;
 
 /// Typed configuration for the D1/T113 CCU driver.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SunxiD1CcuConfig {
     /// CCU register base address (typically `0x0200_1000`).
     pub ccu_base: u64,
