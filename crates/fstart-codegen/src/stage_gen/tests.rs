@@ -981,8 +981,12 @@ fn direct_flow_replaces_runtime_interpreter_entry() {
         "generated stage should not emit legacy plan/interpreter metadata: {source}"
     );
     assert!(
-        source.contains("let mut board = _BoardDevices::new();"),
-        "direct fstart_main should construct the board adapter: {source}"
+        source.contains("fstart_capabilities::handoff::try_deserialize(handoff_ptr)"),
+        "direct fstart_main should consume the incoming handoff pointer when handoff is enabled: {source}"
+    );
+    assert!(
+        source.contains("let mut board = _BoardDevices::new(handoff);"),
+        "direct fstart_main should construct the board adapter with handoff state: {source}"
     );
     assert!(
         !source.contains("fstart_stage_runtime::run_stage("),

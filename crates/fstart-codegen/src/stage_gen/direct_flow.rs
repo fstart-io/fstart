@@ -46,8 +46,14 @@ pub(super) fn generate_fstart_main(
         #[no_mangle]
         #[allow(unreachable_code, unused_variables, unused_mut)]
         pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
-            let _ = handoff_ptr;
-            let mut board = _BoardDevices::new();
+            #[cfg(feature = "handoff")]
+            let handoff = fstart_capabilities::handoff::try_deserialize(handoff_ptr);
+            #[cfg(not(feature = "handoff"))]
+            let handoff = {
+                let _ = handoff_ptr;
+                None
+            };
+            let mut board = _BoardDevices::new(handoff);
             let mut _inited = fstart_stage_runtime::DeviceMask::from_slice(&[
                 #(#persistent_lits,)*
             ]);
