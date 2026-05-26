@@ -637,7 +637,7 @@ fn set_clkcross_frequencies(info: &RaminitInfo, mch: &MchBar) {
     }
 }
 
-fn program_map(info: &mut RaminitInfo, mch: &MchBar, pre_jedec: bool) {
+fn program_map(info: &mut RaminitInfo, mch: &MchBar, pre_jedec: bool, ggc: u16) {
     let mut global_boundary = 0u8;
     let mut total_mb = 0u32;
     for ch in 0..2 {
@@ -706,7 +706,6 @@ fn program_map(info: &mut RaminitInfo, mch: &MchBar, pre_jedec: bool) {
     hb.write16(hostbridge::TOM, ((total_mb >> 7) & 0x1ff) as u16);
     hb.write16(hostbridge::TOLUD, (info.tolud_mb << 4) as u16);
     hb.write16(hostbridge::TOUUD, touud_mb as u16);
-    let ggc = hb.read16(hostbridge::GGC);
     hb.write16(hostbridge::GGC, ggc);
     set_pci8(&hb, hostbridge::ESMRAMC, 0x07, (1 << 1) | 1);
 }
@@ -1013,14 +1012,14 @@ fn jedec_init_ddr2(info: &RaminitInfo, mch: &MchBar) {
     }
 }
 
-fn post_jedec_and_final(info: &mut RaminitInfo, mch: &MchBar) {
+fn post_jedec_and_final(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) {
     mch.clrbits16(mchbar::DRAM_TYPE_SELECT, 0x0200);
     mch.clrbits32(mchbar::DCC, DCC_INTERLEAVED);
     if info.timings.channel_mode != ChannelMode::Single {
         mch.setbits32(mchbar::DCC, DCC_INTERLEAVED);
     }
     mch.setbits32(mchbar::DCC, 0x400);
-    program_map(info, mch, false);
+    program_map(info, mch, false, ggc);
     if info.timings.channel_mode == ChannelMode::DualInterleaved {
         mch.clrbits32(mchbar::DCC, 0x600);
     }
@@ -1314,7 +1313,7 @@ pub fn probe_dimms(
 /// CLKCFG PLL latch, temporary pre-JEDEC address map, RCOMP, timing/control
 /// programming, DDR2 JEDEC commands, final memory map, receive-enable
 /// calibration, guarded EPD channel population, and DRAM power-management setup.
-pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), ServiceError> {
+pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result<(), ServiceError> {
     reset_on_stale_rcomp(mch);
     init_pmcon();
 
@@ -1336,7 +1335,7 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), Servi
     mch.setbits32(mchbar::POST_JEDEC_TIM0, 0x0300_0000);
     mch.setbits32(mchbar::POST_JEDEC_TIM1, 0x0300_0000);
 
-    program_map(info, mch, true);
+    program_map(info, mch, true, ggc);
     rcomp_init(info, mch);
     odt_and_io_setup(info, mch);
     program_timings(info, mch);
@@ -1346,7 +1345,7 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), Servi
     mch.clrbits32(mchbar::RCOMP_CTRL, (3 << 16) | (3 << 4));
 
     jedec_init_ddr2(info, mch);
-    post_jedec_and_final(info, mch);
+    post_jedec_and_final(info, mch, ggc);
     receive_enable_training(info, mch)?;
 
     if stepping() != 0 {
