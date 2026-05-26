@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// Lenovo ThinkPad X61 mainboard configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LenovoX61MainboardConfig {
     /// Initialize dock LPC and the dock-side PC87392 COM1 before console init.
     #[serde(default = "default_true")]

@@ -171,6 +171,7 @@ impl Default for AccessMode {
 /// Serde defaults ensure backward compatibility: existing board RON
 /// files without explicit `regs` get `Mmio { base: 0, reg_shift: 0, reg_width: 0 }`.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Ns16550Config {
     /// Register access mechanism (MMIO or PIO) with base address.
     pub regs: AccessMode,

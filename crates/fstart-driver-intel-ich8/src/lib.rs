@@ -558,6 +558,7 @@ mod rcba_pirq {
 
 /// SATA configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SataConfig {
     pub mode: SataMode,
     pub ports: u8,
@@ -585,6 +586,7 @@ pub enum IoTrapAccess {
 
 /// Semantic ICH8 I/O trap configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IoTrapConfig {
     /// I/O trap register index, 0..3.
     pub index: u8,
@@ -625,6 +627,7 @@ impl IoTrapConfig {
 
 /// ICH8-M PATA/IDE controller configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdeConfig {
     /// Enable the primary PATA channel.
     #[serde(default)]
@@ -636,6 +639,7 @@ pub struct IdeConfig {
 
 /// PCIe slot power-limit fields.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PciePowerLimit {
     /// Power-limit value encoded in PCIe Slot Capabilities.
     #[serde(default)]
@@ -654,6 +658,7 @@ pub enum SataMode {
 
 /// USB controller configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UsbConfig {
     #[serde(default)]
     pub ehci: [bool; 2],
@@ -746,6 +751,7 @@ const fn default_com_b() -> LpcSerialDecode {
 
 /// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LpcFixedIoDecode {
     /// COMA selector. COMA is enabled through `LPC_EN_ALL`.
     #[serde(default = "default_com_a")]
@@ -787,6 +793,7 @@ impl LpcFixedIoDecode {
 
 /// One LPC generic I/O decode window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LpcGenericIoDecode {
     /// I/O base address. Must be 4-byte aligned.
     pub base: u16,
@@ -808,6 +815,7 @@ impl LpcGenericIoDecode {
 
 /// Board-level LPC decode policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct LpcDecodeConfig {
     /// Fixed COM/LPT/FDC decode selector register.
     #[serde(default)]
@@ -819,6 +827,7 @@ pub struct LpcDecodeConfig {
 
 /// ICH8 southbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntelIch8Config {
     /// Root Complex Base Address register value.
     pub rcba: u64,
@@ -870,9 +879,6 @@ pub struct IntelIch8Config {
     /// I/O trap registers to program.
     #[serde(default)]
     pub io_traps: HVec<IoTrapConfig, 4>,
-    /// ECAM base address.
-    #[serde(default = "default_ecam_base")]
-    pub ecam_base: u64,
     /// SMBus I/O base.
     #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
@@ -908,10 +914,6 @@ fn default_pcie_ports() -> [bool; 6] {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_ecam_base() -> u64 {
-    0xe000_0000
 }
 
 fn default_smbus_base() -> u16 {

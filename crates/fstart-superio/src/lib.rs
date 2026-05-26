@@ -123,6 +123,7 @@ pub trait SuperIoChip: Send + Sync + 'static {
 /// field to `Some(...)`. The base port (e.g., `0x2e`) comes from the
 /// device's `bus: Lpc(0x2e)` attachment, not from this config.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SuperIoConfig {
     /// Primary UART (COM1).
     #[serde(default)]
@@ -168,6 +169,7 @@ pub struct SuperIoConfig {
 
 /// 16550-compatible UART settings exposed by the SuperIO.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComPortConfig {
     /// I/O base port (e.g., `0x3F8`).
     pub io_base: u16,
@@ -184,6 +186,7 @@ fn default_baud() -> u32 {
 
 /// PS/2 keyboard controller settings.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KbcConfig {
     /// Primary I/O base (typically `0x60`).
     pub io_base: u16,
@@ -195,6 +198,7 @@ pub struct KbcConfig {
 
 /// PS/2 mouse settings.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MouseConfig {
     /// IRQ number (typically 12).
     pub irq: u8,
@@ -202,6 +206,7 @@ pub struct MouseConfig {
 
 /// Embedded controller / environment controller settings.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EcConfig {
     /// Primary EC I/O base.
     pub io_base: u16,
@@ -211,6 +216,7 @@ pub struct EcConfig {
 
 /// Parallel port settings.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParallelConfig {
     /// I/O base port (typically `0x378`).
     pub io_base: u16,
@@ -220,6 +226,7 @@ pub struct ParallelConfig {
 
 /// Consumer IR receiver settings.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CirConfig {
     /// I/O base port.
     pub io_base: u16,
@@ -229,6 +236,7 @@ pub struct CirConfig {
 
 /// GPIO block settings.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GpioConfig {
     /// Base I/O port for the GPIO registers.
     pub io_base: u16,

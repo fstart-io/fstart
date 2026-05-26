@@ -333,6 +333,7 @@ pub const MISC_NO_PRESENCE_DETECT: u8 = 1;
 ///   loc: Rear, connector: StereoMono18, group: 1, seq: 0 )
 /// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PinConfig {
     /// Widget node ID (NID) — the pin number on the codec (e.g. 0x14).
     pub nid: u8,
@@ -484,6 +485,7 @@ pub const fn hda_get_param(codec: u32, nid: u32, param: u32) -> u32 {
 /// ])
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HdaVerbTable {
     /// Codec vendor/device ID (e.g. `0x10ec0662` for Realtek ALC662).
     pub vendor_id: u32,
@@ -504,6 +506,7 @@ pub struct HdaVerbTable {
 /// Contains verb tables for all codecs present on the board.
 /// Placed in the southbridge/chipset driver config in the board RON.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HdaConfig {
     /// Codec verb tables.  Up to 4 codecs on one HDA link.
     #[serde(default)]

@@ -64,6 +64,7 @@ pub struct ParsedBoard {
 /// Identical to [`BoardConfig`] except `devices` carries the full
 /// [`DriverInstance`] and supports nested `children`.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RonBoardConfig {
     name: HString<64>,
     platform: Platform,

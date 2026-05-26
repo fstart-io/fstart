@@ -103,6 +103,7 @@ static IGD_OPREGION: IgdOpRegionStore =
 
 /// Intel integrated graphics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IgdConfig {
     /// Enable the VGA CRT output.
     #[serde(default)]
@@ -120,6 +121,7 @@ pub struct IgdConfig {
 
 /// Pineview northbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntelPineviewConfig {
     /// MCHBAR base address.
     pub mchbar: u64,

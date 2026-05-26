@@ -333,6 +333,7 @@ pub enum KeyBytes {
 /// The `manifest_bytes` field contains the raw postcard-encoded `ImageManifest`.
 /// The signature covers exactly those bytes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignedManifest {
     /// Raw postcard-encoded `ImageManifest` bytes.
     pub manifest_bytes: heapless::Vec<u8, 8192>,
@@ -349,6 +350,7 @@ pub struct SignedManifest {
 /// This replaces the old `Manifest` type. Instead of separate fields for
 /// RO entries, RW slot pointers, and NVS pointers, everything is a `Region`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageManifest {
     /// All top-level regions in the image.
     ///
@@ -370,6 +372,7 @@ pub struct ImageManifest {
 /// Every meaningful byte range is a Region. The `content` enum discriminates
 /// what the region contains.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Region {
     /// Region name (e.g., `"ro"`, `"rw-a"`, `"rw-b"`, `"nvs"`).
     pub name: HString<64>,
@@ -416,6 +419,7 @@ pub enum RegionContent {
 /// Each entry is a named, typed byte range within its parent region.
 /// Offsets are relative to the parent `Region`'s offset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegionEntry {
     /// Entry name (e.g., `"bootblock"`, `"main"`, `"board.cfg"`).
     pub name: HString<64>,
@@ -515,6 +519,7 @@ pub enum FileType {
 /// size required (always `>= loaded_size`). For uncompressed segments
 /// `in_place_size == 0` (unused).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Segment {
     /// Segment name (e.g., `".text"`, `".data"`, `".rodata"`, `".bss"`).
     pub name: HString<32>,
@@ -564,6 +569,7 @@ pub enum SegmentKind {
 /// These are used by stages that set up page tables or MPU regions.
 /// Firmware running without memory protection can ignore them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SegmentFlags {
     /// Segment contains executable code.
     pub execute: bool,
@@ -620,6 +626,7 @@ pub enum Compression {
 /// Both digests may be present simultaneously for dual-digest verification.
 /// At least one must be present for any file in a verified manifest.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestSet {
     /// SHA-256 digest (32 bytes).
     pub sha256: Option<[u8; 32]>,
@@ -642,6 +649,7 @@ pub enum SignatureKind {
 
 /// Cryptographic signature over a manifest (algorithm-agile).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Signature {
     /// Which key was used to produce this signature (matches anchor key_id).
     pub key_id: u8,

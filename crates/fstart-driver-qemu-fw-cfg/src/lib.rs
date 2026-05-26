@@ -62,6 +62,7 @@ const ALLOC_ZONE_FSEG: u8 = 2;
 
 /// Configuration for the QEMU fw_cfg driver.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QemuFwCfgConfig {
     /// I/O port for the control/selector register.
     #[serde(default = "default_ctl_port")]

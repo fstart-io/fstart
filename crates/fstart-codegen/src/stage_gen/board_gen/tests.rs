@@ -725,18 +725,18 @@ fn memory_detect_emits_real_body_on_q35() {
 
 #[test]
 fn acpi_and_memory_detect_halt_on_non_x86_boards() {
-    // qemu-riscv64 has no AcpiTableProvider or MemoryDetector
-    // device — the bodies are real but degenerate to wildcard
-    // log + halt.  Must still compile and must not reference
-    // ACPI / E820 symbols beyond the match block's closing brace.
+    // qemu-riscv64 has no AcpiTableProvider and does not declare
+    // MemoryDetect.  The bodies are real but degenerate to halt paths. Must
+    // still compile and must not reference ACPI / E820 symbols beyond the match
+    // block's closing brace.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("acpi_load: unknown device id"),
         "non-ACPI board's acpi_load must emit the wildcard log; got:\n{src}"
     );
     assert!(
-        src.contains("memory_detect: unknown device id"),
-        "non-memory-detect board's memory_detect must emit the wildcard log; got:\n{src}"
+        src.contains("memory_detect: stage does not declare MemoryDetect"),
+        "non-memory-detect board's memory_detect must emit the undeclared-stage log; got:\n{src}"
     );
     // ACPI buffer must NOT appear in boards with no provider.
     assert!(

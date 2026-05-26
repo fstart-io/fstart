@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level SMBIOS configuration, from the board RON `smbios` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmbiosConfig {
     // -- Type 0: BIOS Information --
     /// BIOS vendor string (e.g., "fstart").
@@ -135,6 +136,7 @@ impl ProcessorFamily {
 /// hierarchy) are `Option<T>` so x86 boards can leave them `None` and
 /// let the `SmBiosPrepare` capability fill them in from CPUID at boot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmbiosProcessor {
     /// Socket designation string (e.g., "CPU0").
     pub socket: HString<32>,
@@ -174,6 +176,7 @@ pub struct SmbiosProcessor {
 
 /// Cache description for SMBIOS Type 7.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmbiosCache {
     /// Cache socket designation string (e.g., "L1 Data Cache").
     pub designation: HString<32>,
@@ -254,6 +257,7 @@ impl CacheType {
 /// three are `None` in RON, `SmBiosPrepare` reads the corresponding SPD
 /// bytes from the DIMM's 256-byte EEPROM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmbiosMemoryDevice {
     /// Device locator string (e.g., "DIMM0", "Bank 0").
     pub locator: HString<32>,

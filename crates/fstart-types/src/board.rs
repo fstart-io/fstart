@@ -69,6 +69,7 @@ impl core::fmt::Display for Platform {
 /// This is the single source of truth for a board's hardware description,
 /// driver bindings, stage composition, and security settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BoardConfig {
     /// Human-readable board name (e.g., "qemu-riscv64")
     pub name: HString<64>,
@@ -168,6 +169,7 @@ pub enum MicrocodeConfig {
 
 /// Intel microcode files to concatenate into `cpu_microcode_blob.bin`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntelMicrocodeConfig {
     /// Source files, resolved relative to the board directory unless absolute.
     pub files: heapless::Vec<HString<128>, 16>,
@@ -235,6 +237,7 @@ pub enum BuildMode {
 
 /// Payload configuration: what to boot after firmware init.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PayloadConfig {
     /// Kind of payload
     pub kind: PayloadKind,
@@ -345,6 +348,7 @@ pub enum FdtSource {
 /// Configuration for the SBI firmware (RISC-V) or ATF BL31 (AArch64)
 /// binary that is loaded before jumping to the OS.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FirmwareConfig {
     /// Kind of firmware
     pub kind: FirmwareKind,

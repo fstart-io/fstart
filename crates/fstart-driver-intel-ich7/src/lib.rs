@@ -388,6 +388,7 @@ const SLP_TYP_S3: u32 = 0x1400;
 
 /// SATA configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SataConfig {
     pub mode: SataMode,
     pub ports: u8,
@@ -402,6 +403,7 @@ pub enum SataMode {
 
 /// USB controller configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UsbConfig {
     #[serde(default)]
     pub ehci: bool,
@@ -497,6 +499,7 @@ const fn default_com_b() -> LpcSerialDecode {
 
 /// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LpcFixedIoDecode {
     /// COMA selector. COMA is enabled through `LPC_EN_ALL`.
     #[serde(default = "default_com_a")]
@@ -538,6 +541,7 @@ impl LpcFixedIoDecode {
 
 /// One LPC generic I/O decode window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LpcGenericIoDecode {
     /// I/O base address. Must be 4-byte aligned.
     pub base: u16,
@@ -559,6 +563,7 @@ impl LpcGenericIoDecode {
 
 /// Board-level LPC decode policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct LpcDecodeConfig {
     /// Fixed COM/LPT/FDC decode selector register.
     #[serde(default)]
@@ -573,6 +578,7 @@ pub use fstart_gpio_ich::{GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, Gpi
 
 /// ICH7 southbridge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntelIch7Config {
     /// Root Complex Base Address register value.
     pub rcba: u64,
@@ -595,9 +601,6 @@ pub struct IntelIch7Config {
     /// Enable PATA (legacy IDE) function.
     #[serde(default)]
     pub pata: bool,
-    /// ECAM base address (must match the Pineview NB config).
-    #[serde(default = "default_ecam_base")]
-    pub ecam_base: u64,
     /// SMBus I/O base address.
     #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
@@ -617,10 +620,6 @@ pub struct IntelIch7Config {
 
 fn default_c3_latency() -> u16 {
     85 // typical ICH7 value
-}
-
-fn default_ecam_base() -> u64 {
-    0xE000_0000
 }
 
 fn default_smbus_base() -> u16 {

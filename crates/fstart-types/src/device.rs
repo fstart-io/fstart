@@ -76,6 +76,7 @@ impl DeviceNode {
 /// sets `parent` to its bus controller's name.  Codegen ensures parents
 /// are initialised before children.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
     /// Device instance name (e.g., "uart0", "flash0").
     pub name: HString<32>,

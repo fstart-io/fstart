@@ -648,6 +648,7 @@ pub enum SunxiDramcVariant {
 /// ))
 /// ```
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SunxiH3DramcConfig {
     /// DRAMC COM register base address (`0x01C6_2000`).
     pub dramc_base: u64,

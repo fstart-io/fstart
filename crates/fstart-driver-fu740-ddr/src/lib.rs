@@ -109,6 +109,7 @@ const FU740_DRAM_BASE: u64 = 0x8000_0000;
 
 /// Typed configuration for the FU740 DDR4 memory controller.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Fu740DdrConfig {
     /// DDR controller base address (0x100B_0000).
     pub ctl_base: u64,

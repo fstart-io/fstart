@@ -3,6 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use fstart_codegen::ron_loader::load_parsed_board;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -26,6 +28,74 @@ fn files_under(root: &Path, rel: &str, pred: fn(&Path) -> bool) -> Vec<PathBuf> 
     let mut out = Vec::new();
     walk(&root.join(rel), pred, &mut out);
     out
+}
+
+#[test]
+fn serde_deserialize_structs_deny_unknown_fields() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+
+    for path in files_under(&root, "crates", |p| {
+        p.extension().is_some_and(|e| e == "rs")
+    }) {
+        let text = fs::read_to_string(&path).expect("read source");
+        let lines: Vec<_> = text.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("#[derive") || !trimmed.contains("Deserialize") {
+                continue;
+            }
+
+            let mut lookahead = idx + 1;
+            let mut has_deny_unknown_fields = false;
+            while let Some(next) = lines.get(lookahead).map(|line| line.trim()) {
+                if next.contains("deny_unknown_fields") {
+                    has_deny_unknown_fields = true;
+                }
+                if next.is_empty()
+                    || next.starts_with("#[")
+                    || next.starts_with("///")
+                    || next.starts_with("//")
+                {
+                    lookahead += 1;
+                    continue;
+                }
+                break;
+            }
+
+            let Some(item) = lines.get(lookahead).map(|line| line.trim()) else {
+                continue;
+            };
+            if item.contains("struct ") && !has_deny_unknown_fields {
+                offenders.push(format!("{}:{}", path.display(), idx + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "Deserialize structs must use #[serde(deny_unknown_fields)]: {offenders:?}"
+    );
+}
+
+#[test]
+fn all_board_ron_files_parse() {
+    let root = repo_root();
+    let boards: Vec<_> = files_under(&root, "boards", |p| {
+        p.file_name().is_some_and(|n| n == "board.ron")
+    });
+
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            for board in boards {
+                load_parsed_board(&board)
+                    .unwrap_or_else(|e| panic!("failed to parse {}: {e}", board.display()));
+            }
+        })
+        .expect("spawn board parser thread")
+        .join()
+        .expect("board parser thread panicked");
 }
 
 #[test]
