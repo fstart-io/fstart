@@ -3,14 +3,12 @@
 //! Given a [`ParsedBoard`] (or a specific stage within it), this module
 //! emits Rust source code that:
 //!
-//! 1. Defines a `Devices` struct with one concrete typed field per device
-//! 2. Defines a `StageContext` with service accessor methods
-//! 3. Generates `fstart_main()` that constructs devices, runs capabilities
-//!    in declared order, and halts
+//! 1. Defines a `_BoardDevices` struct with one concrete typed field per device.
+//! 2. Implements `fstart_stage_runtime::Board` for lifecycle/capability trampolines.
+//! 3. Emits `STAGE_PLAN` metadata for tests/reference tooling.
+//! 4. Generates a direct `fstart_main()` sequence from the stage capabilities.
 //!
 //! In **Rigid** mode, all types are concrete — zero overhead.
-//! In **Flexible** mode, service enum wrappers are generated for runtime
-//! driver selection via match dispatch (no trait objects, no alloc).
 //!
 //! Driver-specific configuration comes from [`DriverInstance`] — each driver
 //! defines its own typed `Config` struct.  The `config_ser` module converts
@@ -22,6 +20,7 @@
 mod board_gen;
 mod capabilities;
 mod config_ser;
+mod direct_flow;
 mod plan_gen;
 pub(crate) mod registry;
 mod tokens;
@@ -169,11 +168,10 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         tokens.extend(generate_heap_storage(hs));
     }
 
-    // Emit the `StagePlan` literal consumed by `fstart_stage_runtime`'s
-    // generic `run_stage` executor.  Carries the capability sequence
-    // plus every per-stage fact the executor needs.
-    //
-    // See `.opencode/plans/stage-runtime-codegen-split.md`.
+    // Emit the `StagePlan` literal as compact stage metadata.  The direct
+    // stage entry point below no longer interprets it at runtime, but keeping
+    // it emitted preserves tests and gives us a data representation to compare
+    // against while simplifying the codeflow.
     tokens.extend(plan_gen::generate_stage_plan(
         config,
         &parsed.driver_instances,
@@ -182,9 +180,8 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     ));
 
     // Emit the `_BoardDevices` struct + `impl Board for _BoardDevices`
-    // board adapter.  The other half of the stage-runtime input:
-    // holds the concrete `Option<Driver>` fields and supplies
-    // per-capability trampolines that `run_stage` dispatches through.
+    // board adapter.  It holds the concrete `Option<Driver>` fields and
+    // supplies typed per-capability trampolines used by the direct flow.
     tokens.extend(board_gen::generate_board_adapter(
         config,
         &parsed.driver_instances,
@@ -195,12 +192,15 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         stage_name,
     ));
 
-    // Emit `fstart_main()` — a thin stub that forwards to
-    // `fstart_stage_runtime::run_stage(_BoardDevices::new(),
-    // &STAGE_PLAN, handoff_ptr)`.  All device construction,
-    // per-capability dispatch, and halt logic lives in the
-    // handwritten executor + the board adapter emitted above.
-    tokens.extend(generate_fstart_main());
+    // Emit `fstart_main()` as a direct, stage-specific sequence.  This keeps
+    // board RON ordering explicit without pulling every `CapOp` interpreter
+    // arm into size-sensitive firmware stages.
+    tokens.extend(direct_flow::generate_fstart_main(
+        config,
+        &parsed.driver_instances,
+        capabilities,
+        stage_name,
+    ));
 
     // Parse the token stream into a syn AST and format with prettyplease
     let file = syn::parse2::<syn::File>(tokens)
@@ -608,57 +608,5 @@ fn generate_heap_storage(heap_size: u32) -> TokenStream {
 
         #[no_mangle]
         static _FSTART_HEAP_SIZE: usize = #size_lit;
-    }
-}
-
-// =======================================================================
-// Code generation — fstart_main()
-// =======================================================================
-
-/// Emit the `fstart_main()` function.
-///
-/// In the new runtime/codegen split, `fstart_main` is a thin stub that
-/// forwards to [`fstart_stage_runtime::run_stage`], passing:
-///
-/// 1. A fresh `_BoardDevices::new()` (the board adapter emitted by
-///    [`board_gen`](super::board_gen)) — holds `Option<Driver>` fields
-///    for every enabled device, the boot-media state, FDT / DRAM /
-///    handoff bookkeeping, and the RSDP / eGON scalars.
-/// 2. A reference to the module-local `STAGE_PLAN` static (emitted by
-///    [`plan_gen`](super::plan_gen)) — the capability sequence plus
-///    every per-stage fact the executor needs.
-/// 3. The handoff pointer the platform's `_start` stashed, forwarded
-///    unchanged.  Non-first stages use it to deserialise the previous
-///    stage's [`StageHandoff`]; first stages ignore it.
-///
-/// The platform-level fact set (`no_mangle`, `extern "Rust"`, `-> !`)
-/// matches the old generator's signature exactly — the ELF entry
-/// point is unchanged, only the body shrinks to a single call.
-///
-/// Signature kept stable across boards: per invariant #2 in the plan
-/// doc, only this stub may call `_BoardDevices::new()`, which lets a
-/// future multi-platform codegen emit `new_for(platform)` without
-/// touching the trait or the executor.
-///
-/// [`StageHandoff`]: fstart_types::handoff::StageHandoff
-fn generate_fstart_main() -> TokenStream {
-    quote! {
-        /// Stage entry point.  Called by the platform's `_start`
-        /// after register setup + BSS zero + stack pointer load.
-        ///
-        /// `handoff_ptr` is the raw register value the platform
-        /// decided to use for passing data from the previous stage
-        /// (e.g. `r0` on ARMv7, `a0` on RISC-V).  `run_stage`
-        /// forwards it to the board adapter, which interprets it
-        /// per-platform (typically as a deserialisation target).
-        #[no_mangle]
-        #[allow(unreachable_code, unused_variables, unused_mut)]
-        pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
-            fstart_stage_runtime::run_stage(
-                _BoardDevices::new(),
-                &STAGE_PLAN,
-                handoff_ptr,
-            )
-        }
     }
 }

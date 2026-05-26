@@ -24,9 +24,10 @@ All 14 workspace crates created and cross-compiling for both targets.
 ### Phase 2: Codegen Upgrade (COMPLETE — superseded by Phase 13)
 
 > **Note:** The `Devices` struct and `StageContext` described here were
-> replaced by `_BoardDevices` + `impl Board` + `run_stage()` in Phase 13
-> (stage-runtime / codegen split).  The typed `Config` construction and
-> codegen validation remain unchanged.
+> replaced by `_BoardDevices` + `impl Board` in Phase 13 (stage-runtime /
+> codegen split).  Production stages now use direct generated codeflow;
+> `run_stage()` remains reference/test/runtime infrastructure.  The typed
+> `Config` construction and codegen validation remain unchanged.
 
 - ~~`Devices` struct generated with concrete typed fields per device.~~ → replaced by `_BoardDevices`
 - ~~`StageContext` generated with service accessor methods (`console()`,
@@ -682,13 +683,14 @@ These were identified during Phase 12 but deferred pending actual need:
 ### Phase 13: Stage Runtime / Codegen Split (COMPLETE)
 
 Replaced the old codegen architecture (generated `Devices` struct,
-`StageContext`, inline `fstart_main()` body, `flexible.rs` enum dispatch)
-with a clean split between handwritten runtime and codegen-emitted board
-adapter.
+`StageContext`, legacy inline `fstart_main()` body, `flexible.rs` enum dispatch)
+with a split between shared stage-runtime infrastructure and a codegen-emitted
+board adapter.  Production `fstart_main` is now emitted as direct per-stage
+codeflow for code size.
 
 #### New crate: fstart-stage-runtime
 
-`crates/fstart-stage-runtime/` — `#![no_std]` handwritten executor:
+`crates/fstart-stage-runtime/` — `#![no_std]` stage-runtime support:
 
 - **`Board` trait** (20 methods): `init_device`, `init_all_devices`,
   `install_logger`, 12 capability trampolines (`memory_init`, `sig_verify`,
@@ -704,14 +706,15 @@ adapter.
 - **`DeviceMask`** — 256-bit bitset over `DeviceId` for init tracking.
 - **`BootMediaState`** — enum tracking the current boot medium (None / Mmio /
   Block) so trampolines can reconstruct the concrete `impl BootMedia`.
-- **`run_stage<B: Board>(board, plan, handoff) -> !`** — one `match` per
-  capability, dispatches through `Board` trait methods.  Monomorphised in
-  Rigid mode — zero vtables.
+- **`run_stage<B: Board>(board, plan, handoff) -> !`** — reference/test/runtime
+  executor with one `match` per capability, dispatching through `Board` trait
+  methods.  Current production stage code uses direct generated codeflow
+  instead, avoiding interpreter arms in size-sensitive firmware.
 - **25 host-side unit tests** via `MockBoard` + thread-local event log.
 
 #### Codegen changes: plan_gen.rs + board_gen.rs
 
-**`plan_gen.rs`** emits `static STAGE_PLAN: StagePlan` per stage:
+**`plan_gen.rs`** emits `static STAGE_PLAN: StagePlan` metadata per stage:
 - Resolves device names → `DeviceId` via `DeviceIdMap`.
 - Emits `BootMediaCandidate` tables with `media_ids` for auto-select.
 - `persistent_inited` from prior stages’ `ClockInit` / `DramInit`.
@@ -736,7 +739,7 @@ adapter.
 
 - `flexible.rs` (468 lines) — Flexible mode enum dispatch.
 - `generate_devices_struct` / `generate_stage_context` — old struct emission.
-- `generate_fstart_main` — old inline `fstart_main()` body.
+- The previous `generate_fstart_main` helper that emitted only a `run_stage()` stub.
 - `ensure_device_ready` / `walk_to_real_parent` / `make_prelude` — device
   construction chain building.
 - `generate_driver_init` dispatch matrix.

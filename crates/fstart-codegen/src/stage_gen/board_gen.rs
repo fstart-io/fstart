@@ -1,21 +1,14 @@
-//! Emit the `impl Board for _BoardDevices` adapter consumed by
-//! [`fstart_stage_runtime::run_stage`].
+//! Emit the `impl Board for _BoardDevices` adapter used by generated stage
+//! codeflow.
 //!
-//! This is the second half of the stage-runtime / codegen split (see
-//! `.opencode/plans/stage-runtime-codegen-split.md`).  Paired with
-//! [`plan_gen`](super::plan_gen), it produces the complete input for
-//! `run_stage`:
+//! This is the board-specific half of the stage-runtime / codegen split.  The
+//! generated `fstart_main` now emits direct per-stage codeflow for code size,
+//! while [`plan_gen`](super::plan_gen) still emits `STAGE_PLAN` metadata for
+//! tests/reference tooling.
 //!
-//! - `plan_gen` emits `static STAGE_PLAN: StagePlan = ...;` (plain data).
-//! - `board_gen` emits `struct _BoardDevices { ... }` plus an
-//!   `impl fstart_stage_runtime::Board for _BoardDevices` with one
-//!   method per capability.
-//!
-//! # Current state
-//!
-//! Generated `fstart_main` calls `fstart_stage_runtime::run_stage` with this
-//! adapter.  The adapter owns concrete driver fields and provides the typed
-//! service/capability trampolines that the handwritten executor invokes.
+//! The adapter owns concrete driver fields and provides the typed lifecycle and
+//! service/capability trampolines that direct codeflow calls through the
+//! `fstart_stage_runtime::Board` trait.
 //!
 //! # Design rules enforced here
 //!
