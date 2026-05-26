@@ -79,7 +79,9 @@ fn adapter_compiles_for_qemu_riscv64() {
     assert!(src.contains("struct _BoardDevices"));
     assert!(src.contains("impl _BoardDevices"));
     assert!(src.contains("impl fstart_stage_runtime::Board for _BoardDevices"));
-    assert!(src.contains("const fn new() -> Self"));
+    assert!(
+        src.contains("const fn new(_handoff: Option<fstart_types::handoff::StageHandoff>) -> Self")
+    );
     // At least the NS16550 console device should become a field.
     assert!(src.contains("uart0: Option<Ns16550>"));
     // Adapter carries its boot-media state and FDT / DRAM / handoff

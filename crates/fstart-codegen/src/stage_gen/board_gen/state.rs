@@ -52,7 +52,7 @@ pub(super) fn emit_adapter_struct(ctx: &BoardEmitModel<'_>) -> TokenStream {
     }
 }
 
-/// Emit `impl _BoardDevices { const fn new() -> Self }`.
+/// Emit `impl _BoardDevices { const fn new(handoff) -> Self }`.
 pub(super) fn emit_adapter_new(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let field_inits = ctx.runtime_devices.runtime().map(|device| {
         let field_name = format_ident!("{}", device.name);
@@ -80,8 +80,8 @@ pub(super) fn emit_adapter_new(ctx: &BoardEmitModel<'_>) -> TokenStream {
     quote! {
         #[allow(dead_code)]
         impl _BoardDevices {
-            /// Zero-initialised adapter.  See [`emit_adapter_new`] doc.
-            const fn new() -> Self {
+            /// Zero-initialised adapter plus optional previous-stage handoff.
+            const fn new(_handoff: Option<fstart_types::handoff::StageHandoff>) -> Self {
                 Self {
                     #(#field_inits)*
                     _inited: fstart_stage_runtime::DeviceMask::new(),
@@ -90,7 +90,7 @@ pub(super) fn emit_adapter_new(ctx: &BoardEmitModel<'_>) -> TokenStream {
                     _bootargs: #bootargs_lit,
                     _dram_base: #dram_base_lit,
                     _dram_size_static: #dram_size_lit,
-                    _handoff: None,
+                    _handoff,
                     _acpi_rsdp_addr: 0,
                     _egon_sram_base: #egon_sram_base_lit,
                 }

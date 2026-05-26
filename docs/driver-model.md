@@ -476,8 +476,8 @@ and avoids maintaining a second stage-creation path.
 ```rust
 #[no_mangle]
 pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
-    let _ = handoff_ptr;
-    let mut board = _BoardDevices::new();
+    let handoff = fstart_capabilities::handoff::try_deserialize(handoff_ptr);
+    let mut board = _BoardDevices::new(handoff);
     let mut inited = DeviceMask::from_slice(&[/* prior persistent ids */]);
 
     if Board::init_device(&mut board, 0).is_err() { Board::halt(&board); }

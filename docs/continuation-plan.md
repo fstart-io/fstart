@@ -717,7 +717,7 @@ There is no legacy metadata/interpreter path.
 - `struct _BoardDevices` — `Option<Driver>` fields + bookkeeping
   (`_inited`, `_boot_media`, `_dtb_dst_addr`, `_bootargs`, `_dram_base`,
   `_dram_size_static`, `_handoff`, `_acpi_rsdp_addr`, `_egon_sram_base`).
-- `impl _BoardDevices { const fn new() -> Self }` — all fields `None` / zero.
+- `impl _BoardDevices { const fn new(handoff) -> Self }` — driver fields `None`, scalar bookkeeping zeroed, previous-stage handoff stored.
 - `impl Board for _BoardDevices` — methods with real bodies:
   - `init_device`: per-device `match id` with ancestor-chain walking
     (root-first, bus-device `new_on_bus`).
