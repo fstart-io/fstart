@@ -6,9 +6,8 @@ Design document with implementation notes.  Phases 1–4 are substantially
 complete; Phase 5 (Flexible mode) was superseded by the stage-runtime /
 codegen split.  The driver model is functional: boards build, run in
 QEMU, and codegen produces a typed board adapter (`impl Board for
-_BoardDevices`) plus a direct per-stage `fstart_main` sequence.  The
-handwritten `run_stage` executor remains as reference/test/runtime
-infrastructure, but production stages use direct codeflow for code size.
+_BoardDevices`) plus a direct per-stage `fstart_main` sequence. There is no
+separate stage-plan interpreter path.
 
 ## Goals
 
@@ -71,7 +70,6 @@ compile-time device-tree validation.
 |                    Generated Stage Code                         |
 |  * _BoardDevices struct (Option<Driver> per device)            |
 |  * impl Board for _BoardDevices (capability trampolines)      |
-|  * static STAGE_PLAN: StagePlan metadata (CapOp sequence)     |
 |  * fstart_main() direct stage codeflow                        |
 +----------+-----------------+-------------------+---------------+
            |                 |                   |
@@ -82,8 +80,8 @@ compile-time device-tree validation.
   |               |  |               |  |                    |
   | trait Console |  | Ns16550       |  | trait Board        |
   | trait Timer   |  | Pl011         |  | Board trait        |
-  | trait Block   |  | DesignwareI2c |  | StagePlan, CapOp   |
-  | trait I2cBus  |  |               |  | DeviceMask         |
+  | trait Block   |  | DesignwareI2c |  | DeviceMask         |
+  | trait I2cBus  |  |               |  | BootMediaState     |
   | trait Device  |  | impl Device   |  |                    |
   +---------------+  +---------------+  +--------------------+
 ```
@@ -469,35 +467,11 @@ impl fstart_stage_runtime::Board for _BoardDevices {
 Capability trampolines read board-level data from `&self` fields — no
 constants as method arguments (multi-platform invariant).
 
-### StagePlan
-
-Codegen emits a `static STAGE_PLAN` in `.rodata` — the capability sequence
-resolved to `DeviceId` constants:
-
-```rust
-static STAGE_PLAN: fstart_stage_runtime::StagePlan = StagePlan {
-    stage_name: "bootblock",
-    is_first_stage: true,
-    ends_with_jump: true,
-    caps: &[
-        CapOp::ConsoleInit(0),
-        CapOp::BootMediaStatic { device: None, offset: 0x2000_0000, size: 0x200_0000 },
-        CapOp::SigVerify,
-        CapOp::FdtPrepare,
-        CapOp::PayloadLoad,
-    ],
-    persistent_inited: &[],
-    boot_media_gated: &[],
-    all_devices: &[0],
-};
-```
-
 ### Init Sequence (direct generated codeflow)
 
 Production `fstart_main` is generated as a direct sequence from the selected
-stage's ordered capabilities.  This keeps the board RON as the source of truth
-without linking every arm of a generic `CapOp` interpreter into size-sensitive
-firmware stages:
+stage's ordered capabilities. This keeps the board RON as the source of truth
+and avoids maintaining a second stage-creation path.
 
 ```rust
 #[no_mangle]
@@ -513,10 +487,6 @@ pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
     Board::payload_load(&board);
 }
 ```
-
-The handwritten `run_stage<B: Board>(board, plan, handoff) -> !` executor still
-exists in `fstart-stage-runtime` and is tested against the same `StagePlan` /
-`CapOp` model, but current generated stages do not call it.
 
 ### Bus Ordering (Approach A — compile-away)
 
@@ -789,18 +759,15 @@ redundant — if runtime driver selection is needed, it lives inside
 - [x] ~~Generate `ConsoleDevice` / `I2cBusDevice` / etc. enums.~~ → deleted
 - [x] ~~Implement the service traits on the generated enums.~~ → deleted
 
-### Phase 6: Stage Runtime / Codegen Split ✓
+### Phase 6: Direct Stage Codeflow + Board Adapter ✓
 
-- [x] Create `fstart-stage-runtime` crate with `Board` trait, `StagePlan`,
-      `CapOp`, `DeviceMask`, `BootMediaState`, and `run_stage<B: Board>()` executor.
-- [x] `plan_gen.rs`: emit `static STAGE_PLAN: StagePlan` per stage.
+- [x] Create `fstart-stage-runtime` crate with `Board` trait, `DeviceMask`,
+      `BootMediaState`, and `BootMediaCandidate`.
 - [x] `board_gen.rs`: emit `struct _BoardDevices` + `impl Board for _BoardDevices`
-      with all 20 methods (init_device, init_all_devices, install_logger,
-      15 capability trampolines, halt, jump_to, jump_to_with_handoff).
+      with lifecycle methods, capability trampolines, and platform primitives.
 - [x] Generate direct `fstart_main` codeflow from the ordered stage
-      capabilities; `run_stage()` remains reference/test/runtime infrastructure.
+      capabilities. This is the only stage-creation path.
 - [x] Delete old codegen: `Devices`, `StageContext`, `flexible.rs`,
       `ensure_device_ready`, `walk_to_real_parent`, `make_prelude`,
       `generate_driver_init`, `generate_boot_media_auto_device`.
-- [x] 25 host-side executor tests via `MockBoard`.
-- [x] All 16 boards build; all 93 tests pass.
+- [x] All supported boards build; codegen and runtime-support tests pass.

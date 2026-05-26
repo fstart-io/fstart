@@ -1,13 +1,12 @@
-//! Small helpers shared between `plan_gen` and `board_gen` for per-capability
-//! codegen.
+//! Small helpers shared by stage codegen.
 //!
 //! The old file hosted one `generate_*` function per capability, emitting
-//! fragments that `stage_gen::generate_fstart_main` stitched together.
-//! That emission layer is gone — `board_gen` now emits all capability
-//! trampolines as methods on `impl Board for _BoardDevices`, and
-//! `plan_gen` emits the `StagePlan` literal.  What remains here is the
-//! shared data lookups and the `acpi` / `smbios` submodules whose
-//! per-variant struct emission is still reused by `board_gen`.
+//! fragments that `stage_gen::generate_fstart_main` stitched together.  That
+//! emission layer is gone — `direct_flow` emits the stage sequence, while
+//! `board_gen` emits all capability trampolines as methods on
+//! `impl Board for _BoardDevices`. What remains here is shared data lookups and
+//! the `acpi` / `smbios` submodules whose per-variant struct emission is still
+//! reused by `board_gen`.
 
 pub(super) mod acpi;
 mod smbios;

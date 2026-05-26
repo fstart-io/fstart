@@ -962,128 +962,8 @@ fn test_config_ser_nested_option_in_struct() {
 }
 
 // =======================================================================
-// Phase 1: StagePlan emission tests.
-//
-// The codegen emits a `static STAGE_PLAN: StagePlan = ...;` literal
-// alongside the existing `fstart_main`.  These tests check the
-// structural content of that literal — device-name → DeviceId
-// resolution, CapOp ordering, is_first_stage / ends_with_jump flags,
-// boot-media descriptors.
-//
-// See `.opencode/plans/stage-runtime-codegen-split.md`.
+// Direct stage-flow tests.
 // =======================================================================
-
-#[test]
-fn plan_emits_static_with_correct_flags_for_monolithic_stage() {
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
-    let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
-        base: 0x2000_0000,
-        size: 0x0200_0000,
-        ram_copy_addr: None,
-    }));
-    let _ = caps.push(Capability::PayloadLoad);
-    let parsed = test_parsed_board(caps);
-    let source = generate_stage_source(&parsed, None);
-
-    assert!(
-        source.contains("static STAGE_PLAN: fstart_stage_runtime::StagePlan"),
-        "should emit STAGE_PLAN static: {source}"
-    );
-    assert!(
-        source.contains("is_first_stage: true"),
-        "monolithic => is_first_stage=true: {source}"
-    );
-    assert!(
-        source.contains("ends_with_jump: true"),
-        "PayloadLoad last => ends_with_jump=true: {source}"
-    );
-}
-
-#[test]
-fn plan_resolves_device_names_to_device_ids() {
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
-    let parsed = test_parsed_board(caps);
-    let source = generate_stage_source(&parsed, None);
-
-    // uart0 is the only device, index 0.
-    assert!(
-        source.contains("fstart_stage_runtime::CapOp::ConsoleInit(0)"),
-        "ConsoleInit should carry DeviceId 0: {source}"
-    );
-}
-
-#[test]
-fn plan_lists_all_runtime_devices() {
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
-    let _ = caps.push(Capability::DriverInit);
-    let parsed = test_parsed_board(caps);
-    let source = generate_stage_source(&parsed, None);
-
-    // One non-structural device => all_devices == [0]
-    assert!(
-        source.contains("_FSTART_PLAN_ALL_DEVICES: [fstart_types::DeviceId; 1usize] = [0]"),
-        "all_devices should list uart0 as id 0: {source}"
-    );
-    assert!(
-        source.contains("fstart_stage_runtime::CapOp::DriverInit"),
-        "DriverInit CapOp should be present: {source}"
-    );
-}
-
-#[test]
-fn plan_memory_mapped_boot_media_emits_bootmediastatic_with_none_device() {
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
-    let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
-        base: 0x2000_0000,
-        size: 0x0200_0000,
-        ram_copy_addr: None,
-    }));
-    let parsed = test_parsed_board(caps);
-    let source = generate_stage_source(&parsed, None);
-
-    assert!(
-        source.contains("CapOp::BootMediaStatic"),
-        "MemoryMapped => BootMediaStatic: {source}"
-    );
-    // device: None is the memory-mapped marker.  prettyplease may split
-    // fields over lines; just look for "device: None" anywhere.
-    assert!(
-        source.contains("device: None"),
-        "MemoryMapped device should be None: {source}"
-    );
-    assert!(
-        source.contains("offset: 0x20000000") || source.contains("offset : 0x20000000"),
-        "offset should be 0x20000000: {source}"
-    );
-}
-
-#[test]
-fn plan_ends_with_jump_false_when_last_cap_does_not_hand_off() {
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
-    let _ = caps.push(Capability::MemoryInit);
-    let parsed = test_parsed_board(caps);
-    let source = generate_stage_source(&parsed, None);
-
-    assert!(
-        source.contains("ends_with_jump: false"),
-        "MemoryInit last => ends_with_jump=false: {source}"
-    );
-}
 
 #[test]
 fn direct_flow_replaces_runtime_interpreter_entry() {
@@ -1097,8 +977,8 @@ fn direct_flow_replaces_runtime_interpreter_entry() {
     let source = generate_stage_source(&parsed, None);
 
     assert!(
-        source.contains("_FSTART_PLAN_CAPS: [fstart_stage_runtime::CapOp; 3usize]"),
-        "CAPS array should remain useful metadata: {source}"
+        !source.contains("STAGE_PLAN") && !source.contains("fstart_stage_runtime::CapOp"),
+        "generated stage should not emit legacy plan/interpreter metadata: {source}"
     );
     assert!(
         source.contains("let mut board = _BoardDevices::new();"),
@@ -1265,8 +1145,8 @@ fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
 }
 
 #[test]
-fn plan_media_ids_empty_for_device_without_boot_media_mapping() {
-    // ns16550 has no boot_media_values_for_device mapping; the plan's
+fn direct_flow_media_ids_empty_for_device_without_boot_media_mapping() {
+    // ns16550 has no boot_media_values_for_device mapping; the direct
     // LoadNextStage candidate should fall back to an empty slice.
     let mut caps = heapless::Vec::new();
     let _ = caps.push(Capability::ConsoleInit {
@@ -1285,10 +1165,8 @@ fn plan_media_ids_empty_for_device_without_boot_media_mapping() {
     let source = generate_stage_source(&parsed, None);
 
     // We don't care if the overall stage rejects this (it might — ns16550
-    // isn't a block device).  We care that plan_gen didn't panic when
+    // isn't a block device).  We care that direct codeflow didn't panic when
     // asked to compute media_ids for a device without a mapping.
-    // If the stage rejected the semantics, the output is a compile_error
-    // and plan_gen still produced a usable candidate entry.
     assert!(
         source.contains("media_ids: &[]") || source.contains("compile_error!"),
         "non-sunxi device should have empty media_ids (or compile_error): {source}"

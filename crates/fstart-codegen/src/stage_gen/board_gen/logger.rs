@@ -10,9 +10,9 @@ use super::model::BoardEmitModel;
 /// Emit the body of `Board::install_logger`.
 ///
 /// Emits a `match id { ... }` where every arm corresponds to an enabled device
-/// providing the `Console` service. The executor calls `init_device(id)` before
-/// this trampoline, so matching arms can install the already-constructed
-/// console as the global logger.
+/// providing the `Console` service. Direct stage codeflow calls
+/// `init_device(id)` before this trampoline, so matching arms can install the
+/// already-constructed console as the global logger.
 pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx
         .runtime_devices
@@ -24,12 +24,11 @@ pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             let drv_name = device.instance.meta().name;
             quote! {
                 #id_lit => {
-                    // SAFETY: the executor's `CapOp::ConsoleInit`
-                    // arm calls `init_device(id)` before
-                    // `install_logger(id)`, so `self.#field` is
-                    // `Some`.  `fstart_log::init` promotes the
-                    // borrow to `'static`; we own the device for
-                    // the stage's lifetime, so that is sound.
+                    // SAFETY: direct `ConsoleInit` codeflow calls
+                    // `init_device(id)` before `install_logger(id)`, so
+                    // `self.#field` is `Some`. `fstart_log::init` promotes
+                    // the borrow to `'static`; we own the device for the
+                    // stage's lifetime, so that is sound.
                     unsafe {
                         fstart_log::init(
                             self.#field
@@ -46,11 +45,10 @@ pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         match id {
             #(#arms)*
             _ => {
-                // Executor contract violation — `install_logger` is
-                // only dispatched for ids declared `ConsoleInit` in
-                // `StagePlan`, which `plan_gen` only emits for
-                // Console providers.  Reaching this arm means an
-                // id we didn't emit a field for, so no recovery is
+                // Codegen contract violation — `install_logger` is only
+                // dispatched for ids declared `ConsoleInit`, and validation
+                // requires those ids to provide `Console`. Reaching this arm
+                // means an id we didn't emit a field for, so no recovery is
                 // possible.
                 fstart_platform::halt();
             }

@@ -905,8 +905,8 @@ impl DriverInstance {
 
     /// Return the SoC boot-source register values that select this device.
     ///
-    /// Used by `plan_gen` and `board_gen` to emit match arms for runtime
-    /// boot-device auto-detection (e.g. sunxi eGON `boot_media` byte).
+    /// Used by stage codegen to emit match arms for runtime boot-device
+    /// auto-detection (e.g. sunxi eGON `boot_media` byte).
     /// Returns an empty `Vec` for drivers that have no boot-source
     /// mapping (non-sunxi platforms, or devices that aren't boot media).
     ///
