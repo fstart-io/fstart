@@ -275,17 +275,15 @@ mod rcba_pirq {
     pub const INT_C: u32 = 3;
     pub const INT_D: u32 = 4;
 
-    const fn dip_route(
-        f0: u32,
-        f1: u32,
-        f2: u32,
-        f3: u32,
-        f4: u32,
-        f5: u32,
-        f6: u32,
-        f7: u32,
-    ) -> u32 {
-        f0 | (f1 << 4) | (f2 << 8) | (f3 << 12) | (f4 << 16) | (f5 << 20) | (f6 << 24) | (f7 << 28)
+    const fn dip_route(functions: [u32; 8]) -> u32 {
+        functions[0]
+            | (functions[1] << 4)
+            | (functions[2] << 8)
+            | (functions[3] << 12)
+            | (functions[4] << 16)
+            | (functions[5] << 20)
+            | (functions[6] << 24)
+            | (functions[7] << 28)
     }
 
     /// Default ICH7/NM10 RCBA interrupt routing.
@@ -308,10 +306,10 @@ mod rcba_pirq {
     }
 
     pub const DEFAULT_ROUTE: RouteSet = RouteSet {
-        d31ip: dip_route(NO_INT, INT_A, INT_B, INT_B, NO_INT, INT_D, NO_INT, NO_INT),
+        d31ip: dip_route([NO_INT, INT_A, INT_B, INT_B, NO_INT, INT_D, NO_INT, NO_INT]),
         d30ip: 0,
-        d29ip: dip_route(INT_A, INT_B, INT_C, INT_D, NO_INT, NO_INT, NO_INT, INT_A),
-        d28ip: dip_route(INT_A, INT_B, INT_C, INT_D, INT_A, INT_B, NO_INT, NO_INT),
+        d29ip: dip_route([INT_A, INT_B, INT_C, INT_D, NO_INT, NO_INT, NO_INT, INT_A]),
+        d28ip: dip_route([INT_A, INT_B, INT_C, INT_D, INT_A, INT_B, NO_INT, NO_INT]),
         d27ip: INT_A,
         d31ir: 0x0132,
         d30ir: 0x0146,
