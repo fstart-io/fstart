@@ -194,22 +194,11 @@
                 acpi_name: Some("LPCB"),
                 c3_latency: 85,
                 power_on_after_fail: 0,
-                // Board-specific late RCBA interrupt routing and I/O trap #3
-                // values from coreboot mainboard/lenovo/x61/early_init.c and
-                // acpi/ich8_pci_irqs.asl. These remain raw chipset values so
-                // the board definition can be compared directly with coreboot.
-                late_rcba: Some((
-                    d31ip: 0x00001230,
-                    d29ip: 0x40004321,
-                    d28ip: 0x00004321,
-                    d27ip: 0x00000002,
-                    d31ir: 0x1007,
-                    d30ir: 0x0076,
-                    d29ir: 0x3210,
-                    d28ir: 0x7654,
-                    d27ir: 0x0010,
-                    iotr3: Some((lo: 0x000c0801, hi: 0x000200f0)),
-                )),
+                // I/O Trap #3 for ACPI SMI command ports 0x800-0x80f,
+                // matching coreboot mainboard/lenovo/x61/early_init.c.
+                io_traps: [
+                    ( index: 3, base: 0x0800, size: 0x10, access: Any ),
+                ],
             )),
             children: [
                 ( name: "lpc", kind: Structural(LpcBus),
