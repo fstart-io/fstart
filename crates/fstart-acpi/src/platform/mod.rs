@@ -23,6 +23,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use acpi_tables::aml::{Path, Scope};
+use acpi_tables::facs::FACS;
 use acpi_tables::fadt::{FADTBuilder, Flags, PmProfile, FADT};
 use acpi_tables::rsdp::Rsdp;
 use acpi_tables::sdt::Sdt;
@@ -168,7 +169,7 @@ pub fn assemble_and_write(
 /// combines them with per-device DSDT AML and extra tables, and
 /// produces a contiguous buffer starting with RSDP.
 ///
-/// Table order: RSDP, XSDT, DSDT, FADT, [platform tables...],
+/// Table order: RSDP, XSDT, DSDT, FADT, FACS (x86), [platform tables...],
 /// [extra tables...]
 ///
 /// Returns a `Vec<u8>` ready to be copied to `base_addr` in DRAM.
@@ -188,6 +189,11 @@ pub fn assemble(
     let rsdp_size = Rsdp::len();
     let xsdt_estimate = ACPI_SDT_HEADER_SIZE + XSDT_ENTRY_SIZE * num_xsdt_entries;
     let fadt_size = FADT::len();
+    let facs_size = if fadt_config.pm1a_evt_blk != 0 {
+        FACS::len()
+    } else {
+        0
+    };
 
     let mut offset: usize = 0;
 
@@ -202,6 +208,9 @@ pub fn assemble(
 
     let fadt_off = offset;
     offset += crate::align_up(fadt_size, 16);
+
+    let facs_off = offset;
+    offset += crate::align_up(facs_size, 16);
 
     // Platform tables (MADT, GTDT, etc.)
     let mut platform_offsets = Vec::new();
@@ -222,10 +231,20 @@ pub fn assemble(
     // Phase 2: Build cross-referencing tables.
     let dsdt_addr = base_addr + dsdt_off as u64;
     let fadt_addr = base_addr + fadt_off as u64;
+    let facs_addr = if facs_size != 0 {
+        base_addr + facs_off as u64
+    } else {
+        0
+    };
     let xsdt_addr = base_addr + xsdt_off as u64;
 
-    // Build FADT with DSDT reference.
-    let fadt_bytes = build_fadt(dsdt_addr, fadt_config);
+    // Build FADT with DSDT and optional FACS references.
+    let fadt_bytes = build_fadt(dsdt_addr, facs_addr, fadt_config);
+    let facs_bytes = if facs_size != 0 {
+        Some(serialize(&FACS::new()))
+    } else {
+        None
+    };
 
     // Build XSDT referencing FADT + platform tables + extra tables.
     let mut xsdt = XSDT::new(crate::OEM_ID, crate::OEM_TABLE_ID, crate::OEM_REVISION);
@@ -255,6 +274,9 @@ pub fn assemble(
     copy_at(&mut buffer, xsdt_off, &xsdt_bytes);
     copy_at(&mut buffer, dsdt_off, &dsdt_bytes);
     copy_at(&mut buffer, fadt_off, &fadt_bytes);
+    if let Some(facs) = facs_bytes.as_ref() {
+        copy_at(&mut buffer, facs_off, facs);
+    }
     for (i, pt) in platform_tables.iter().enumerate() {
         copy_at(&mut buffer, platform_offsets[i], pt);
     }
@@ -266,7 +288,7 @@ pub fn assemble(
 }
 
 /// Build the FADT from architecture-neutral configuration.
-fn build_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
+fn build_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // ARM platform has its own build_fadt that handles arm_boot_arch.
     #[cfg(feature = "arm")]
     if config.arm_psci {
@@ -280,7 +302,7 @@ fn build_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // pm_tmr_blk, gpe0_blk). Otherwise fall back to the builder for
     // HW-reduced platforms.
     if config.pm1a_evt_blk != 0 {
-        return build_x86_fadt(dsdt_addr, config);
+        return build_x86_fadt(dsdt_addr, facs_addr, config);
     }
 
     // HW-reduced path (no PM registers).
@@ -308,7 +330,7 @@ fn build_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
 /// instead of raw byte-offset writes. Matches coreboot's `acpi_fill_fadt`
 /// for ICH7: PM1a event/control blocks, PM timer, GPE0, SCI interrupt,
 /// IAPC boot arch flags, and the standard ACPI flags.
-fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
+fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8> {
     use acpi_tables::fadt::{FADTBuilder, Flags};
     use acpi_tables::gas::{AccessSize, AddressSpace, GAS};
     use acpi_tables::Aml;
@@ -334,8 +356,8 @@ fn build_x86_fadt(dsdt_addr: u64, config: &FadtConfig) -> Vec<u8> {
 
     let mut b = FADTBuilder::new(crate::OEM_ID, crate::OEM_TABLE_ID, crate::OEM_REVISION);
 
-    // DSDT pointer (64-bit).
-    b = b.dsdt_64(dsdt_addr);
+    // DSDT and FACS pointers (64-bit).
+    b = b.dsdt_64(dsdt_addr).firmware_ctrl_64(facs_addr);
 
     // PM profile.
     b = b.preferred_pm_profile(config.pm_profile);
