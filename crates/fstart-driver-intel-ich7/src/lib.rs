@@ -268,23 +268,57 @@ const LPC_EN_ALL: u16 = (1 << 13)
     | (1 << 1)
     | (1 << 0);
 
-const NOINT: u32 = 0;
-const INTA: u32 = 1;
-const INTB: u32 = 2;
-const INTC: u32 = 3;
-const INTD: u32 = 4;
+mod rcba_pirq {
+    pub const NO_INT: u32 = 0;
+    pub const INT_A: u32 = 1;
+    pub const INT_B: u32 = 2;
+    pub const INT_C: u32 = 3;
+    pub const INT_D: u32 = 4;
 
-const PIRQA: u32 = 0;
-const PIRQB: u32 = 1;
-const PIRQC: u32 = 2;
-const PIRQD: u32 = 3;
-const PIRQE: u32 = 4;
-const PIRQF: u32 = 5;
-const PIRQG: u32 = 6;
-const PIRQH: u32 = 7;
+    const fn dip_route(
+        f0: u32,
+        f1: u32,
+        f2: u32,
+        f3: u32,
+        f4: u32,
+        f5: u32,
+        f6: u32,
+        f7: u32,
+    ) -> u32 {
+        f0 | (f1 << 4) | (f2 << 8) | (f3 << 12) | (f4 << 16) | (f5 << 20) | (f6 << 24) | (f7 << 28)
+    }
 
-const fn dir_route(a: u32, b: u32, c: u32, d: u32) -> u16 {
-    (a | (b << 4) | (c << 8) | (d << 12)) as u16
+    /// Default ICH7/NM10 RCBA interrupt routing.
+    ///
+    /// Coreboot writes some DxxIR values with overlapping RCBA32 stores at
+    /// 0x3142 and 0x3146. These constants are the resulting 16-bit register
+    /// values used by the ICH7/NM10 boards we currently support.
+    #[derive(Clone, Copy)]
+    pub struct RouteSet {
+        pub d31ip: u32,
+        pub d30ip: u32,
+        pub d29ip: u32,
+        pub d28ip: u32,
+        pub d27ip: u32,
+        pub d31ir: u16,
+        pub d30ir: u16,
+        pub d29ir: u16,
+        pub d28ir: u16,
+        pub d27ir: u16,
+    }
+
+    pub const DEFAULT_ROUTE: RouteSet = RouteSet {
+        d31ip: dip_route(NO_INT, INT_A, INT_B, INT_B, NO_INT, INT_D, NO_INT, NO_INT),
+        d30ip: 0,
+        d29ip: dip_route(INT_A, INT_B, INT_C, INT_D, NO_INT, NO_INT, NO_INT, INT_A),
+        d28ip: dip_route(INT_A, INT_B, INT_C, INT_D, INT_A, INT_B, NO_INT, NO_INT),
+        d27ip: INT_A,
+        d31ir: 0x0132,
+        d30ir: 0x0146,
+        d29ir: 0x0237,
+        d28ir: 0x3201,
+        d27ir: 0x0146,
+    };
 }
 
 /// ICH7 I/O APIC MMIO base.
@@ -740,43 +774,30 @@ impl IntelIch7 {
         // Program the ICH7 RCBA device interrupt pin and route registers.
         // These are the hardware side of the ACPI _PRT tables: each internal
         // device first selects an INTx pin (DxxIP), then maps INT[A-D] to a
-        // PIRQ line (DxxIR).  Linux then maps PIRQ A-H to IOAPIC GSIs 16-23.
-        // Without these, ACPI can name a GSI but the chipset may still steer
-        // the interrupt to an unrelated/legacy line.
-        rcba.regs().d31ip.set(
-            (NOINT << 24) | // thermal throttle
-            (NOINT << 20) | // second SATA pin, unused on ICH7 desktop AHCI
-            (INTB << 12) |  // SMBus 0:1f.3
-            (INTB << 8), // SATA 0:1f.2 reports/uses INTB on this board
-        );
-        rcba.regs().d31ir.set(dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
+        // PIRQ line (DxxIR). Linux maps PIRQ A-H to IOAPIC GSIs 16-23.
+        //
+        // Match the default ICH7/NM10 routing. In particular, D29IP must
+        // describe all UHCI/EHCI functions on device 0x1d; programming only
+        // function 0 leaves Linux with "Found HC with no IRQ" for 0:1d.1/2/3/7.
+        let routes = rcba_pirq::DEFAULT_ROUTE;
+        rcba.regs().d31ip.set(routes.d31ip);
+        rcba.regs().d30ip.set(routes.d30ip);
+        rcba.regs().d29ip.set(routes.d29ip);
+        rcba.regs().d28ip.set(routes.d28ip);
+        rcba.regs().d27ip.set(routes.d27ip);
 
-        rcba.regs().d30ip.set(INTA); // PCI bridge 0:1e.0
-        rcba.regs().d30ir.set(dir_route(PIRQE, PIRQF, PIRQG, PIRQH));
-
-        rcba.regs().d29ip.set(INTA); // EHCI/UHCI group 0:1d.*
-        rcba.regs().d29ir.set(dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
-
-        rcba.regs().d28ip.set(
-            (NOINT << 28) |
-            (NOINT << 24) |
-            (NOINT << 20) |
-            (NOINT << 16) |
-            (INTD << 12) | // RP04
-            (INTC << 8) |  // RP03
-            (INTB << 4) |  // RP02 (RTL8168 on D41S)
-            INTA, // RP01
-        );
-        rcba.regs().d28ir.set(dir_route(PIRQA, PIRQB, PIRQC, PIRQD));
-
-        rcba.regs().d27ip.set(INTA); // HD Audio 0:1b.0
-        rcba.regs().d27ir.set(dir_route(PIRQA, PIRQA, PIRQA, PIRQA));
+        rcba.regs().d31ir.set(routes.d31ir);
+        rcba.regs().d30ir.set(routes.d30ir);
+        rcba.regs().d29ir.set(routes.d29ir);
+        rcba.regs().d28ir.set(routes.d28ir);
+        rcba.regs().d27ir.set(routes.d27ir);
 
         fstart_log::info!(
-            "intel-ich7: RCBA IRQ routing D31IP={:#x} D31IR={:#x} D28IP={:#x}",
+            "intel-ich7: RCBA IRQ routing D31IP={:#x} D31IR={:#x} D29IP={:#x} D29IR={:#x}",
             rcba.regs().d31ip.get(),
             rcba.regs().d31ir.get(),
-            rcba.regs().d28ip.get(),
+            rcba.regs().d29ip.get(),
+            rcba.regs().d29ir.get(),
         );
     }
 
