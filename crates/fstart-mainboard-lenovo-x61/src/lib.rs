@@ -78,8 +78,56 @@ impl PostDramInit for LenovoX61Mainboard {
 
 impl FinalizeInit for LenovoX61Mainboard {
     fn finalize_init(&mut self) -> Result<(), ServiceError> {
+        quiesce_i8042_for_os();
         Ok(())
     }
+}
+
+fn quiesce_i8042_for_os() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        const DATA: u16 = 0x60;
+        const STATUS: u16 = 0x64;
+        const CMD: u16 = 0x64;
+
+        if !i8042_flush(DATA, STATUS) || !i8042_wait_input_empty(STATUS) {
+            return;
+        }
+
+        // Leave the controller quiet for the OS handoff: keyboard interface
+        // enabled, AUX disabled, translation enabled, and both IRQ-enable bits
+        // clear. Linux's i8042 driver will run its own probe and re-enable IRQs
+        // after the handlers are installed.
+        fstart_pio::outb(CMD, 0x60);
+        if !i8042_wait_input_empty(STATUS) {
+            return;
+        }
+        fstart_pio::outb(DATA, 0x64);
+        let _ = i8042_flush(DATA, STATUS);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
+    for _ in 0..100_000 {
+        if fstart_pio::inb(status_port) & 0x02 == 0 {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
+    for _ in 0..256 {
+        let status = fstart_pio::inb(status_port);
+        if status & 0x01 == 0 {
+            return true;
+        }
+        let _ = fstart_pio::inb(data_port);
+    }
+    false
 }
 
 impl Mainboard for LenovoX61Mainboard {
@@ -450,7 +498,13 @@ mod acpi_impl {
                         Device("EC__") {
                             Name("_HID", EisaId("PNP0C09"));
                             Name("_UID", 0u32);
-                            Name("_GPE", 0x18u32);
+                            // Coreboot X61 uses THINKPAD_EC_GPE = 0x12 for
+                            // the EC query GPE.  The board-level _L18 method
+                            // below handles the level-triggered GPIO8 wake
+                            // event; using 0x18 here makes ACPICA install an
+                            // EC edge handler on the same GPE and produces a
+                            // level/edge type mismatch.
+                            Name("_GPE", 0x12u32);
                             Name("_CRS", ResourceTemplate {
                                 IO(0x0062u16, 0x0062u16, 0x01u8, 0x01u8);
                                 IO(0x0066u16, 0x0066u16, 0x01u8, 0x01u8);
@@ -648,6 +702,9 @@ mod acpi_impl {
                                 TDIN = 2u32;
                             }
                             Return(TDOT);
+                        }
+                        Method("_PSR", 0, NotSerialized) {
+                            Return(DSTA);
                         }
                         Method("_STA", 0, NotSerialized) {
                             Return(DSTA);
