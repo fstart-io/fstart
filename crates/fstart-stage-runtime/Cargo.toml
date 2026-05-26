@@ -4,10 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Handwritten stage executor. Codegen emits a per-board `impl Board for
-# Devices` and a `static PLAN: StagePlan`; this crate's `run_stage`
-# consumes them. See docs/driver-model.md and
-# .opencode/plans/stage-runtime-codegen-split.md.
+# Shared no_std stage support. Codegen emits a per-board `_BoardDevices` type
+# plus direct `fstart_main` codeflow that calls the `Board` trait methods.
 
 [features]
 default = []

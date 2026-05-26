@@ -1,10 +1,9 @@
 //! Emit a direct per-stage `fstart_main` from the ordered capability list.
 //!
 //! This is deliberately stage-specific codeflow rather than a generic
-//! `CapOp` interpreter.  The generated body is small and mechanical, while
+//! interpreter. The generated body is small and mechanical, while
 //! capability/device details still live in the generated board adapter and
-//! handwritten helper crates.  Most importantly for firmware size, unused
-//! capability arms are not referenced from a monomorphised runtime loop.
+//! handwritten helper crates. There is no second runtime stage-creation path.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};

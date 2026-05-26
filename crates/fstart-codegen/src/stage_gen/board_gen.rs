@@ -1,10 +1,9 @@
 //! Emit the `impl Board for _BoardDevices` adapter used by generated stage
 //! codeflow.
 //!
-//! This is the board-specific half of the stage-runtime / codegen split.  The
-//! generated `fstart_main` now emits direct per-stage codeflow for code size,
-//! while [`plan_gen`](super::plan_gen) still emits `STAGE_PLAN` metadata for
-//! tests/reference tooling.
+//! This is the board-specific half of stage generation.  The generated
+//! `fstart_main` emits direct per-stage codeflow for code size and calls this
+//! adapter through the `fstart_stage_runtime::Board` trait.
 //!
 //! The adapter owns concrete driver fields and provides the typed lifecycle and
 //! service/capability trampolines that direct codeflow calls through the
@@ -58,17 +57,14 @@ use state::{emit_adapter_new, emit_adapter_struct};
 /// Emit the complete board adapter: `_BoardDevices` struct, `new()`,
 /// and `impl Board for _BoardDevices`.
 ///
-/// Callers wire this into `generate_stage_source` right after
-/// [`plan_gen::generate_stage_plan`](super::plan_gen::generate_stage_plan)
-/// and before [`generate_fstart_main`](super::generate_fstart_main).
-/// The old `fstart_main` keeps running until the final flip.
+/// Callers wire this into `generate_stage_source` before emitting the direct
+/// `fstart_main` codeflow.
 ///
-/// `stage_name` is required to derive `is_first_stage` — the same rule
-/// used by `generate_fstart_main` (monolithic or named first stage in a
-/// `MultiStage` layout).  Non-first stages are the ones that receive a
-/// serialised [`StageHandoff`] from the previous stage; currently only
-/// the `fdt_prepare` trampoline uses this fact (to prefer a runtime
-/// DRAM size over the static board-config value).
+/// `stage_name` is used to derive stage-local facts (monolithic or named first
+/// stage in a `MultiStage` layout). Non-first stages are the ones that receive
+/// a serialised [`StageHandoff`] from the previous stage; currently only the
+/// `fdt_prepare` trampoline uses this fact (to prefer a runtime DRAM size over
+/// the static board-config value).
 ///
 /// [`StageHandoff`]: fstart_types::handoff::StageHandoff
 pub(super) fn generate_board_adapter(

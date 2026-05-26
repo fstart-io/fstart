@@ -5,8 +5,7 @@
 //!
 //! 1. Defines a `_BoardDevices` struct with one concrete typed field per device.
 //! 2. Implements `fstart_stage_runtime::Board` for lifecycle/capability trampolines.
-//! 3. Emits `STAGE_PLAN` metadata for tests/reference tooling.
-//! 4. Generates a direct `fstart_main()` sequence from the stage capabilities.
+//! 3. Generates a direct `fstart_main()` sequence from the stage capabilities.
 //!
 //! In **Rigid** mode, all types are concrete — zero overhead.
 //!
@@ -21,7 +20,6 @@ mod board_gen;
 mod capabilities;
 mod config_ser;
 mod direct_flow;
-mod plan_gen;
 pub(crate) mod registry;
 mod tokens;
 mod topology;
@@ -168,17 +166,6 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         tokens.extend(generate_heap_storage(hs));
     }
 
-    // Emit the `StagePlan` literal as compact stage metadata.  The direct
-    // stage entry point below no longer interprets it at runtime, but keeping
-    // it emitted preserves tests and gives us a data representation to compare
-    // against while simplifying the codeflow.
-    tokens.extend(plan_gen::generate_stage_plan(
-        config,
-        &parsed.driver_instances,
-        capabilities,
-        stage_name,
-    ));
-
     // Emit the `_BoardDevices` struct + `impl Board for _BoardDevices`
     // board adapter.  It holds the concrete `Option<Driver>` fields and
     // supplies typed per-capability trampolines used by the direct flow.
@@ -193,8 +180,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     ));
 
     // Emit `fstart_main()` as a direct, stage-specific sequence.  This keeps
-    // board RON ordering explicit without pulling every `CapOp` interpreter
-    // arm into size-sensitive firmware stages.
+    // board RON ordering explicit without a second stage-creation path.
     tokens.extend(direct_flow::generate_fstart_main(
         config,
         &parsed.driver_instances,

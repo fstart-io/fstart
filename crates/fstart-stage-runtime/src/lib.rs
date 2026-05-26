@@ -1,13 +1,12 @@
 //! Shared stage-runtime types for the fstart firmware framework.
 //!
 //! This crate contains the `Board` trait implemented by generated board
-//! adapters, compact `StagePlan`/`CapOp` metadata, and [`run_stage`], a
-//! reference/alternate executor for that metadata.
+//! adapters plus small scalar helper types shared by generated stage code.
 //!
-//! Production generated `fstart_main()` currently emits direct per-stage
-//! codeflow for firmware size and calls the generated `Board` adapter methods
-//! directly. The generic [`run_stage`] executor remains tested infrastructure
-//! for the plan representation and for future/shared execution paths.
+//! There is exactly one production stage creation path: `fstart-codegen` emits
+//! a direct per-stage `fstart_main()` sequence from the board RON capability
+//! list.  The generated sequence calls the `Board` adapter methods directly;
+//! there is no alternate plan interpreter in this crate.
 //!
 //! # Multi-platform constraints
 //!
@@ -16,17 +15,13 @@
 //! arguments.  Trampolines read everything they need from `&self`.
 //! This means a future multi-platform codegen can produce `Devices`
 //! structs that carry variant-per-platform fields without changing the
-//! trait or the executor.  See
-//! `.opencode/plans/stage-runtime-codegen-split.md` §"Invariants that
-//! preserve multi-platform extensibility".
+//! trait.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod mask;
-pub mod plan;
 
 pub use mask::DeviceMask;
-pub use plan::{BootMediaCandidate, CapOp, StagePlan};
 
 use fstart_services::device::DeviceError;
 use fstart_types::DeviceId;
@@ -128,6 +123,26 @@ impl BootMediaState {
     }
 }
 
+/// One candidate in a runtime-selected boot-media table.
+///
+/// Generated direct codeflow emits static slices of this type for
+/// `BootMedia(AutoDevice)` and `LoadNextStage` operations, then passes them to
+/// [`Board::boot_media_select`].
+#[derive(Debug, Clone, Copy)]
+pub struct BootMediaCandidate {
+    /// Device to use as the boot medium.
+    pub device: DeviceId,
+    /// Offset into the device where the firmware image starts.
+    pub offset: u64,
+    /// Size of the firmware image on the device.
+    ///
+    /// `LoadNextStage` candidates use `0`; the stage loader reads the exact
+    /// next-stage size from the platform-specific image header.
+    pub size: u64,
+    /// Hardware boot-source register values that select this candidate.
+    pub media_ids: &'static [u8],
+}
+
 /// Error type for runtime-data provider methods on [`Board`].
 ///
 /// A deliberate placeholder rather than `Result<_, ()>` so variants
@@ -149,13 +164,13 @@ pub enum RuntimeError {
 // Board trait
 // ---------------------------------------------------------------------------
 
-/// The complete surface generated codeflow and [`run_stage`] use to drive a
+/// The complete surface generated direct codeflow uses to drive a
 /// board-specific `Devices` struct.
 ///
 /// Implemented **once per board, by codegen.** Every device-bearing
 /// method takes a [`DeviceId`] and the impl dispatches to a concrete
-/// field via an inline match.  Because the trait is `Sized` and the
-/// direct codeflow uses fully qualified trait calls, builds produce specialised
+/// field via an inline match.  Because the trait is `Sized` and direct codeflow uses fully qualified trait
+/// calls, builds produce specialised
 /// code with no vtables and no dynamic dispatch.
 ///
 /// # Trait design rules (see plan doc §Invariants)
@@ -211,7 +226,7 @@ pub trait Board: Sized {
 
     // ----- Capability trampolines -----------------------------------------
     //
-    // Each method below corresponds to one executor arm.  The generated
+    // Each method below corresponds to one generated stage operation.  The generated
     // board adapter implements every method as a single line delegating
     // to `fstart_capabilities::*`, plus any state the capability needs
     // (addresses, descriptors) read from `&self` fields.
@@ -221,25 +236,24 @@ pub trait Board: Sized {
     // dep cycle with `fstart-log` and keeps the runtime free of the
     // FFS / crypto / FDT / SMBIOS tree.
 
-    /// Executor arm for [`CapOp::MemoryInit`].
+    /// Stage operation for `MemoryInit`.
     ///
     /// Generated adapter delegates to `fstart_capabilities::memory_init`.
     fn memory_init(&self);
 
-    /// Executor arm for [`CapOp::LateDriverInit`].  `count` comes
-    /// from the executor's bookkeeping and is currently always `0`.
+    /// Stage operation for `LateDriverInit`.  `count` is currently always `0`.
     ///
     /// Generated adapter delegates to
     /// `fstart_capabilities::late_driver_init_complete`.
     fn late_driver_init_complete(&mut self, count: usize);
 
-    /// Executor arm for [`CapOp::SigVerify`].
+    /// Stage operation for `SigVerify`.
     ///
     /// Generated adapter reads its anchor pointer and current boot
     /// media from `&self` and calls `fstart_capabilities::sig_verify`.
     fn sig_verify(&self);
 
-    /// Executor arm for [`CapOp::FdtPrepare`].
+    /// Stage operation for `FdtPrepare`.
     ///
     /// Generated adapter reads DTB source/destination addresses,
     /// bootargs, DRAM base, and DRAM size (from a previously handed-off
@@ -247,33 +261,33 @@ pub trait Board: Sized {
     /// `&self`, and calls `fstart_capabilities::fdt_prepare_platform`.
     fn fdt_prepare(&self);
 
-    /// Executor arm for [`CapOp::PayloadLoad`].  Diverges.
+    /// Stage operation for `PayloadLoad`.  Diverges.
     ///
     /// Generated adapter reads its anchor + boot media from `&self`
     /// and calls `fstart_capabilities::payload_load`.  Halts on
     /// failure.
     fn payload_load(&self) -> !;
 
-    /// Executor arm for [`CapOp::StageLoad`].  Diverges.  `next_stage`
-    /// comes from the CapOp variant.
+    /// Stage operation for `StageLoad`.  Diverges.  `next_stage` comes from
+    /// the board RON capability.
     ///
     /// Generated adapter reads its anchor + boot media from `&self`
     /// and calls `fstart_capabilities::stage_load`.  Halts on failure.
     fn stage_load(&self, next_stage: &str) -> !;
 
-    /// Executor arm for [`CapOp::AcpiPrepare`].
+    /// Stage operation for `AcpiPrepare`.
     ///
     /// Generated adapter calls `fstart_capabilities::acpi_prepare`
     /// with its AcpiConfig descriptor (held in `&self`).
     fn acpi_prepare(&mut self);
 
-    /// Executor arm for [`CapOp::SmBiosPrepare`].
+    /// Stage operation for `SmBiosPrepare`.
     ///
     /// Generated adapter calls `fstart_capabilities::smbios_prepare`
     /// with its SmbiosConfig descriptor (held in `&self`).
     fn smbios_prepare(&self);
 
-    /// Executor arm for [`CapOp::MpInit`].
+    /// Stage operation for `MpInit`.
     ///
     /// Board adapters that enable MP/SMM construct the concrete CPU and
     /// platform SMM operations here and delegate to `fstart_mp::mp_init`.
@@ -284,37 +298,37 @@ pub trait Board: Sized {
         Ok(())
     }
 
-    /// Executor arm for [`CapOp::PreConsoleInit`].
+    /// Stage operation for `PreConsoleInit`.
     fn pre_console_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
         let _ = ids;
         Ok(())
     }
 
-    /// Executor arm for [`CapOp::EarlyInit`].
+    /// Stage operation for `EarlyInit`.
     fn early_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
         let _ = ids;
         Ok(())
     }
 
-    /// Executor arm for [`CapOp::StageLocalInit`].
+    /// Stage operation for `StageLocalInit`.
     fn stage_local_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
         let _ = ids;
         Ok(())
     }
 
-    /// Executor arm for [`CapOp::PostDramInit`].
+    /// Stage operation for `PostDramInit`.
     fn post_dram_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
         let _ = ids;
         Ok(())
     }
 
-    /// Executor arm for [`CapOp::FinalizeInit`].
+    /// Stage operation for `FinalizeInit`.
     fn finalize_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
         let _ = ids;
         Ok(())
     }
 
-    /// Executor arm for [`CapOp::DramInit`]. `id` comes from the CapOp variant.
+    /// Stage operation for `DramInit`. `id` is the resolved device ID.
     ///
     /// Generated adapter dispatches to `MemoryController::dram_init()` on the
     /// already-constructed controller. This deliberately does not go through
@@ -323,36 +337,32 @@ pub trait Board: Sized {
     /// chipset/SMBus setup.
     fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
-    /// Executor arm for [`CapOp::PciInit`].  `id` comes from the
-    /// CapOp variant.
+    /// Stage operation for `PciInit`.  `id` is the resolved device ID.
     ///
     /// Generated adapter calls the appropriate `PciHost::enumerate`
     /// plus `allocate_windows`.
     fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
-    /// Executor arm for [`CapOp::AcpiLoad`].  `id` comes from the
-    /// CapOp variant.
+    /// Stage operation for `AcpiLoad`.  `id` is the resolved device ID.
     ///
     /// Generated adapter reads the ACPI target buffer from `&self`
     /// and calls `fstart_capabilities::acpi_load`.
     fn acpi_load(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
-    /// Executor arm for [`CapOp::MemoryDetect`].  `id` comes from the
-    /// CapOp variant.
+    /// Stage operation for `MemoryDetect`.  `id` is the resolved device ID.
     ///
     /// Generated adapter reads the target memory-map buffer from
     /// `&self` and calls `fstart_capabilities::memory_detect`.
     fn memory_detect(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
-    /// Executor arm for [`CapOp::ReturnToFel`].  Diverges.  Armv7
+    /// Stage operation for `ReturnToFel`.  Diverges.  Armv7
     /// sunxi-only; on other platforms the generated adapter emits
     /// `unreachable!()`.
     fn return_to_fel(&self) -> !;
 
     // ----- Boot media selection -------------------------------------------
 
-    /// Executor arm for [`CapOp::BootMediaAuto`] / [`CapOp::LoadNextStage`]
-    /// selection step.  Inspects the hardware boot-source register and
+    /// Selection step for `BootMedia(AutoDevice)` / `LoadNextStage`.  Inspects the hardware boot-source register and
     /// picks one of `candidates`, recording the selection inside the
     /// board so later `sig_verify` / `payload_load` / etc. read from
     /// the right place.
@@ -361,7 +371,7 @@ pub trait Board: Sized {
     /// nothing matched.
     fn boot_media_select(&mut self, candidates: &[BootMediaCandidate]) -> Option<DeviceId>;
 
-    /// Executor arm for [`CapOp::BootMediaStatic`].  Records the
+    /// Stage operation for static boot media. Records the
     /// static boot-media descriptor inside the board so later
     /// capabilities (`sig_verify`, etc.) read from it.
     ///
@@ -370,7 +380,7 @@ pub trait Board: Sized {
     ///   `size` bytes long.
     fn boot_media_static(&mut self, device: Option<DeviceId>, offset: u64, size: u64);
 
-    /// Executor arm for [`CapOp::LoadNextStage`].  Diverges.  Uses
+    /// Stage operation for `LoadNextStage`.  Diverges.  Uses
     /// whichever boot medium `boot_media_select` just picked to read
     /// the named next stage and jump to it.
     fn load_next_stage(&mut self, next_stage: &str) -> !;
@@ -391,1184 +401,4 @@ pub trait Board: Sized {
     /// next stage.  Generated adapter delegates to
     /// `fstart_platform::jump_to_with_handoff`.
     fn jump_to_with_handoff(&self, entry: u64, handoff_addr: usize) -> !;
-}
-
-// ---------------------------------------------------------------------------
-// Board call boundaries
-// ---------------------------------------------------------------------------
-//
-// Keep these calls out-of-line for users of the alternate `run_stage` executor.
-// Early x86 bootblocks run on a tiny CAR stack, and a fully inlined
-// monomorphised interpreter otherwise inherits the maximum stack frame of every
-// possible capability arm (FFS/stage loading, ACPI, SMBIOS, etc.), even when the
-// current stage has not reached those arms yet.
-
-#[inline(never)]
-fn call_init_device<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
-    board.init_device(id)
-}
-
-#[inline(never)]
-fn call_memory_init<B: Board>(board: &mut B) {
-    board.memory_init();
-}
-
-#[inline(never)]
-fn call_late_driver_init_complete<B: Board>(board: &mut B, count: usize) {
-    board.late_driver_init_complete(count);
-}
-
-#[inline(never)]
-fn call_sig_verify<B: Board>(board: &B) {
-    board.sig_verify();
-}
-
-#[inline(never)]
-fn call_fdt_prepare<B: Board>(board: &mut B) {
-    board.fdt_prepare();
-}
-
-#[inline(never)]
-fn call_payload_load<B: Board>(board: &B) -> ! {
-    board.payload_load()
-}
-
-#[inline(never)]
-fn call_stage_load<B: Board>(board: &B, next_stage: &str) -> ! {
-    fstart_log::info!("stage-runtime: call_stage_load helper enter");
-    board.stage_load(next_stage)
-}
-
-#[inline(never)]
-fn call_acpi_prepare<B: Board>(board: &mut B) {
-    board.acpi_prepare();
-}
-
-#[inline(never)]
-fn call_smbios_prepare<B: Board>(board: &B) {
-    board.smbios_prepare();
-}
-
-#[inline(never)]
-fn call_pre_console_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
-    board.pre_console_init(ids)
-}
-
-#[inline(never)]
-fn call_early_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
-    board.early_init(ids)
-}
-
-#[inline(never)]
-fn call_stage_local_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
-    board.stage_local_init(ids)
-}
-
-#[inline(never)]
-fn call_post_dram_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
-    board.post_dram_init(ids)
-}
-
-#[inline(never)]
-fn call_finalize_init<B: Board>(board: &mut B, ids: &[DeviceId]) -> Result<(), DeviceError> {
-    board.finalize_init(ids)
-}
-
-#[inline(never)]
-fn call_dram_init<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
-    board.dram_init(id)
-}
-
-#[inline(never)]
-fn call_pci_init<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
-    board.pci_init(id)
-}
-
-#[inline(never)]
-fn call_acpi_load<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
-    board.acpi_load(id)
-}
-
-#[inline(never)]
-fn call_memory_detect<B: Board>(board: &mut B, id: DeviceId) -> Result<(), DeviceError> {
-    board.memory_detect(id)
-}
-
-#[inline(never)]
-fn call_mp_init<B: Board>(
-    board: &mut B,
-    cpu_model: &str,
-    num_cpus: u16,
-    smm: bool,
-) -> Result<(), RuntimeError> {
-    board.mp_init(cpu_model, num_cpus, smm)
-}
-
-#[inline(never)]
-fn call_init_all_devices<B: Board>(board: &mut B, skip: &DeviceMask, gated: &DeviceMask) {
-    board.init_all_devices(skip, gated);
-}
-
-#[inline(never)]
-fn call_boot_media_select<B: Board>(
-    board: &mut B,
-    candidates: &[BootMediaCandidate],
-) -> Option<DeviceId> {
-    board.boot_media_select(candidates)
-}
-
-#[inline(never)]
-fn call_boot_media_static<B: Board>(
-    board: &mut B,
-    device: Option<DeviceId>,
-    offset: u64,
-    size: u64,
-) {
-    board.boot_media_static(device, offset, size);
-}
-
-#[inline(never)]
-fn call_load_next_stage<B: Board>(board: &mut B, next_stage: &str) -> ! {
-    board.load_next_stage(next_stage)
-}
-
-// ---------------------------------------------------------------------------
-// run_stage — the handwritten executor
-// ---------------------------------------------------------------------------
-
-/// Execute a stage plan against a board adapter.
-///
-/// This is a reference/alternate executor for the `StagePlan` metadata. Current
-/// production codegen emits a direct `fstart_main()` sequence for code size, but
-/// this interpreter remains useful for tests and for shared execution paths.
-///
-/// The executor consumes a board adapter `B: Board`, a `StagePlan` describing
-/// the capability sequence, and the platform-supplied `handoff_ptr` register
-/// value. Every capability maps to one match arm; device names have already
-/// been resolved to compact `DeviceId` values by codegen.
-pub fn run_stage<B: Board>(mut board: B, plan: &'static StagePlan, _handoff_ptr: usize) -> ! {
-    let mut inited = DeviceMask::from_slice(plan.persistent_inited);
-
-    fstart_log::info!("stage-runtime: entering stage '{}'", plan.stage_name);
-    for op in plan.caps {
-        fstart_log::info!("stage-runtime: op begin");
-        match *op {
-            // ----- No-device capabilities ------------------------------------
-            CapOp::MemoryInit => call_memory_init(&mut board),
-            CapOp::LateDriverInit => call_late_driver_init_complete(&mut board, 0),
-            CapOp::SigVerify => call_sig_verify(&board),
-            CapOp::FdtPrepare => call_fdt_prepare(&mut board),
-            CapOp::PayloadLoad => call_payload_load(&board),
-            CapOp::StageLoad { next_stage } => {
-                fstart_log::info!("stage-runtime: StageLoad('{}')", next_stage);
-                call_stage_load(&board, next_stage)
-            }
-            CapOp::AcpiPrepare => call_acpi_prepare(&mut board),
-            CapOp::SmBiosPrepare => call_smbios_prepare(&board),
-            CapOp::ReturnToFel => board.return_to_fel(),
-
-            // ----- Single-device lifecycle capabilities ----------------------
-            CapOp::ClockInit(id) => {
-                // Persistent hardware-level init — skip if a previous
-                // stage already did it.  The executor's `inited`
-                // bitset handles that uniformly.
-                if inited.contains(id) {
-                    continue;
-                }
-                if call_init_device(&mut board, id).is_err() {
-                    board.halt();
-                }
-                inited.set(id);
-            }
-
-            CapOp::DramInit(id) => {
-                fstart_log::info!("stage-runtime: DramInit({}) init_device", id);
-                if call_init_device(&mut board, id).is_err() {
-                    fstart_log::error!("stage-runtime: DramInit init_device failed");
-                    board.halt();
-                }
-                fstart_log::info!("stage-runtime: DramInit({}) call", id);
-                if call_dram_init(&mut board, id).is_err() {
-                    fstart_log::error!("stage-runtime: DramInit failed");
-                    board.halt();
-                }
-                fstart_log::info!("stage-runtime: DramInit({}) done", id);
-                inited.set(id);
-            }
-
-            CapOp::ConsoleInit(id) => {
-                if call_init_device(&mut board, id).is_err() {
-                    board.halt();
-                }
-                // SAFETY: `StagePlan` guarantees `id` provides Console;
-                // we just constructed it via `init_device`; the board
-                // adapter holds it for the stage's lifetime.
-                unsafe {
-                    board.install_logger(id);
-                }
-                inited.set(id);
-            }
-
-            // ----- Multi-device capabilities ---------------------------------
-            CapOp::PreConsoleInit(ids) => {
-                for id in ids {
-                    if call_init_device(&mut board, *id).is_err() {
-                        board.halt();
-                    }
-                }
-                if call_pre_console_init(&mut board, ids).is_err() {
-                    board.halt();
-                }
-                for id in ids {
-                    inited.set(*id);
-                }
-            }
-
-            CapOp::EarlyInit(ids) => {
-                for id in ids {
-                    if call_init_device(&mut board, *id).is_err() {
-                        board.halt();
-                    }
-                }
-                if call_early_init(&mut board, ids).is_err() {
-                    board.halt();
-                }
-                for id in ids {
-                    inited.set(*id);
-                }
-            }
-
-            CapOp::StageLocalInit(ids) => {
-                for id in ids {
-                    if call_init_device(&mut board, *id).is_err() {
-                        board.halt();
-                    }
-                }
-                if call_stage_local_init(&mut board, ids).is_err() {
-                    board.halt();
-                }
-                for id in ids {
-                    inited.set(*id);
-                }
-            }
-
-            CapOp::PostDramInit(ids) => {
-                for id in ids {
-                    if call_init_device(&mut board, *id).is_err() {
-                        board.halt();
-                    }
-                }
-                if call_post_dram_init(&mut board, ids).is_err() {
-                    board.halt();
-                }
-                for id in ids {
-                    inited.set(*id);
-                }
-            }
-
-            CapOp::FinalizeInit(ids) => {
-                for id in ids {
-                    if call_init_device(&mut board, *id).is_err() {
-                        board.halt();
-                    }
-                }
-                if call_finalize_init(&mut board, ids).is_err() {
-                    board.halt();
-                }
-                for id in ids {
-                    inited.set(*id);
-                }
-            }
-
-            CapOp::MpInit {
-                cpu_model,
-                num_cpus,
-                smm,
-            } => {
-                fstart_log::info!(
-                    "stage-runtime: MpInit cpu='{}' num_cpus={} smm={}",
-                    cpu_model,
-                    num_cpus,
-                    smm
-                );
-                if call_mp_init(&mut board, cpu_model, num_cpus, smm).is_err() {
-                    fstart_log::error!("stage-runtime: MpInit failed");
-                    board.halt();
-                }
-                fstart_log::info!("stage-runtime: MpInit done");
-            }
-
-            CapOp::PciInit(id) => {
-                if call_init_device(&mut board, id).is_err() {
-                    board.halt();
-                }
-                if call_pci_init(&mut board, id).is_err() {
-                    board.halt();
-                }
-                inited.set(id);
-            }
-
-            CapOp::AcpiLoad(id) => {
-                if call_init_device(&mut board, id).is_err() {
-                    board.halt();
-                }
-                if call_acpi_load(&mut board, id).is_err() {
-                    board.halt();
-                }
-                inited.set(id);
-            }
-
-            CapOp::MemoryDetect(id) => {
-                if call_init_device(&mut board, id).is_err() {
-                    board.halt();
-                }
-                if call_memory_detect(&mut board, id).is_err() {
-                    board.halt();
-                }
-                inited.set(id);
-            }
-
-            // ----- Batch driver init ----------------------------------------
-            CapOp::DriverInit => {
-                let mut gated = DeviceMask::new();
-                for (id, _) in plan.boot_media_gated {
-                    gated.set(*id);
-                }
-                // Persistent ids mean the hardware was initialized by an earlier
-                // stage, but the new stage's board adapter still needs concrete
-                // driver objects in its fields. Construct all devices here; the
-                // per-driver init paths must be safe to re-enter in ramstage.
-                let no_skip = DeviceMask::new();
-                call_init_all_devices(&mut board, &no_skip, &gated);
-                for id in plan.all_devices {
-                    inited.set(*id);
-                }
-            }
-
-            // ----- Boot media -----------------------------------------------
-            CapOp::BootMediaStatic {
-                device,
-                offset,
-                size,
-            } => {
-                fstart_log::info!(
-                    "stage-runtime: BootMediaStatic offset={:#x} size={:#x}",
-                    offset,
-                    size
-                );
-                if let Some(id) = device {
-                    if call_init_device(&mut board, id).is_err() {
-                        fstart_log::error!("stage-runtime: boot media init_device failed");
-                        board.halt();
-                    }
-                    inited.set(id);
-                }
-                call_boot_media_static(&mut board, device, offset, size);
-                fstart_log::info!("stage-runtime: BootMediaStatic done");
-            }
-
-            CapOp::BootMediaAuto { candidates } => {
-                let Some(id) = call_boot_media_select(&mut board, candidates) else {
-                    board.halt();
-                };
-                if call_init_device(&mut board, id).is_err() {
-                    board.halt();
-                }
-                inited.set(id);
-            }
-
-            CapOp::LoadNextStage {
-                candidates,
-                next_stage,
-            } => {
-                let Some(id) = call_boot_media_select(&mut board, candidates) else {
-                    board.halt();
-                };
-                if call_init_device(&mut board, id).is_err() {
-                    board.halt();
-                }
-                call_load_next_stage(&mut board, next_stage);
-            }
-        }
-    }
-
-    // Reached when the plan's last cap doesn't diverge (e.g. a
-    // debug-only stage that just initialises a console).  Normal
-    // firmware plans have `ends_with_jump: true` and never land here.
-    board.halt();
-}
-
-// ---------------------------------------------------------------------------
-// Tests — exercise the executor with a MockBoard.
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    //! Host-side executor tests.
-    //!
-    //! `run_stage` consumes `board` by value and diverges; we can't
-    //! inspect the board's state after the call.  Instead the mock
-    //! writes into a thread-local event log so the test can check
-    //! what happened regardless of when/how `run_stage` unwound.
-
-    extern crate std;
-    use std::cell::RefCell;
-    use std::vec::Vec;
-
-    use super::*;
-
-    /// Events recorded by [`MockBoard`] so tests can assert on the
-    /// sequence of executor actions.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum Event {
-        // Lifecycle
-        InitDevice(DeviceId),
-        InitDeviceFailed(DeviceId),
-        InitAllDevices {
-            skip_had: Vec<DeviceId>,
-            gated_had: Vec<DeviceId>,
-        },
-        InstallLogger(DeviceId),
-        // Trampolines
-        MemoryInit,
-        LateDriverInitComplete(usize),
-        SigVerify,
-        FdtPrepare,
-        PayloadLoad,
-        StageLoad(String),
-        AcpiPrepare,
-        SmBiosPrepare,
-        PreConsoleInit(Vec<DeviceId>),
-        EarlyInit(Vec<DeviceId>),
-        StageLocalInit(Vec<DeviceId>),
-        PostDramInit(Vec<DeviceId>),
-        FinalizeInit(Vec<DeviceId>),
-        DramInit(DeviceId),
-        PciInit(DeviceId),
-        AcpiLoad(DeviceId),
-        MemoryDetect(DeviceId),
-        ReturnToFel,
-        // Boot media
-        BootMediaSelect(Vec<DeviceId>),
-        BootMediaStatic {
-            device: Option<DeviceId>,
-            offset: u64,
-            size: u64,
-        },
-        LoadNextStage(String),
-        // Terminal
-        Halt,
-        JumpTo(u64),
-    }
-
-    use std::string::String;
-
-    std::thread_local! {
-        static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
-        static FAIL_ON: RefCell<Option<DeviceId>> = const { RefCell::new(None) };
-        static BOOT_MEDIA_PICK: RefCell<Option<DeviceId>> = const { RefCell::new(None) };
-    }
-
-    fn push(e: Event) {
-        EVENTS.with(|v| v.borrow_mut().push(e));
-    }
-    fn take_events() -> Vec<Event> {
-        EVENTS.with(|v| core::mem::take(&mut *v.borrow_mut()))
-    }
-    fn set_fail_on(id: Option<DeviceId>) {
-        FAIL_ON.with(|v| *v.borrow_mut() = id);
-    }
-    fn should_fail(id: DeviceId) -> bool {
-        FAIL_ON.with(|v| *v.borrow() == Some(id))
-    }
-    fn set_boot_media_pick(id: Option<DeviceId>) {
-        BOOT_MEDIA_PICK.with(|v| *v.borrow_mut() = id);
-    }
-    fn boot_media_pick() -> Option<DeviceId> {
-        BOOT_MEDIA_PICK.with(|v| *v.borrow())
-    }
-
-    /// Panic payload that `halt()` raises so the test thread can
-    /// unwind cleanly out of `run_stage`.
-    struct HaltSentinel;
-
-    /// Board adapter for tests.  Records every method call into a
-    /// thread-local event log so the test can assert on the executor's
-    /// observable behaviour.
-    struct MockBoard;
-
-    /// Convert a `DeviceMask` to a sorted list of DeviceIds for
-    /// assertion output.
-    fn mask_to_vec(m: &DeviceMask) -> Vec<DeviceId> {
-        (0u8..=255).filter(|id| m.contains(*id)).collect()
-    }
-
-    impl Board for MockBoard {
-        // --- Lifecycle ---
-        fn init_device(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-            if should_fail(id) {
-                push(Event::InitDeviceFailed(id));
-                Err(DeviceError::InitFailed)
-            } else {
-                push(Event::InitDevice(id));
-                Ok(())
-            }
-        }
-        fn init_all_devices(&mut self, skip: &DeviceMask, gated: &DeviceMask) {
-            push(Event::InitAllDevices {
-                skip_had: mask_to_vec(skip),
-                gated_had: mask_to_vec(gated),
-            });
-        }
-        unsafe fn install_logger(&self, id: DeviceId) {
-            push(Event::InstallLogger(id));
-        }
-
-        // --- Trampolines ---
-        fn memory_init(&self) {
-            push(Event::MemoryInit);
-        }
-        fn late_driver_init_complete(&mut self, count: usize) {
-            push(Event::LateDriverInitComplete(count));
-        }
-        fn sig_verify(&self) {
-            push(Event::SigVerify);
-        }
-        fn fdt_prepare(&self) {
-            push(Event::FdtPrepare);
-        }
-        fn payload_load(&self) -> ! {
-            push(Event::PayloadLoad);
-            push(Event::Halt);
-            std::panic::panic_any(HaltSentinel);
-        }
-        fn stage_load(&self, next_stage: &str) -> ! {
-            push(Event::StageLoad(next_stage.into()));
-            push(Event::Halt);
-            std::panic::panic_any(HaltSentinel);
-        }
-        fn acpi_prepare(&mut self) {
-            push(Event::AcpiPrepare);
-        }
-        fn smbios_prepare(&self) {
-            push(Event::SmBiosPrepare);
-        }
-        fn pre_console_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-            push(Event::PreConsoleInit(ids.into()));
-            Ok(())
-        }
-        fn early_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-            push(Event::EarlyInit(ids.into()));
-            Ok(())
-        }
-        fn stage_local_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-            push(Event::StageLocalInit(ids.into()));
-            Ok(())
-        }
-        fn post_dram_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-            push(Event::PostDramInit(ids.into()));
-            Ok(())
-        }
-        fn finalize_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-            push(Event::FinalizeInit(ids.into()));
-            Ok(())
-        }
-        fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-            push(Event::DramInit(id));
-            Ok(())
-        }
-        fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-            push(Event::PciInit(id));
-            Ok(())
-        }
-        fn acpi_load(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-            push(Event::AcpiLoad(id));
-            Ok(())
-        }
-        fn memory_detect(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-            push(Event::MemoryDetect(id));
-            Ok(())
-        }
-        fn return_to_fel(&self) -> ! {
-            push(Event::ReturnToFel);
-            push(Event::Halt);
-            std::panic::panic_any(HaltSentinel);
-        }
-
-        // --- Boot media ---
-        fn boot_media_select(&mut self, candidates: &[BootMediaCandidate]) -> Option<DeviceId> {
-            push(Event::BootMediaSelect(
-                candidates.iter().map(|c| c.device).collect(),
-            ));
-            boot_media_pick().or_else(|| candidates.first().map(|c| c.device))
-        }
-        fn boot_media_static(&mut self, device: Option<DeviceId>, offset: u64, size: u64) {
-            push(Event::BootMediaStatic {
-                device,
-                offset,
-                size,
-            });
-        }
-        fn load_next_stage(&mut self, next_stage: &str) -> ! {
-            push(Event::LoadNextStage(next_stage.into()));
-            push(Event::Halt);
-            std::panic::panic_any(HaltSentinel);
-        }
-
-        // --- Platform primitives ---
-        fn halt(&self) -> ! {
-            push(Event::Halt);
-            std::panic::panic_any(HaltSentinel);
-        }
-        fn jump_to(&self, entry: u64) -> ! {
-            push(Event::JumpTo(entry));
-            std::panic::panic_any(HaltSentinel);
-        }
-        fn jump_to_with_handoff(&self, entry: u64, _handoff: usize) -> ! {
-            push(Event::JumpTo(entry));
-            std::panic::panic_any(HaltSentinel);
-        }
-    }
-
-    /// Run `plan` against a fresh `MockBoard` and return the events
-    /// captured on the test thread.  Asserts that `run_stage` did
-    /// not return.
-    fn run(plan: &'static StagePlan) -> Vec<Event> {
-        take_events();
-        set_fail_on(None);
-        set_boot_media_pick(None);
-        let result = std::panic::catch_unwind(|| run_stage(MockBoard, plan, 0));
-        assert!(result.is_err(), "run_stage must diverge via halt()");
-        take_events()
-    }
-
-    // ===== lifecycle =========================================================
-
-    #[test]
-    fn memory_init_runs_and_halts() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::MemoryInit, CapOp::LateDriverInit],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [
-                Event::MemoryInit,
-                Event::LateDriverInitComplete(0),
-                Event::Halt,
-            ]
-        );
-    }
-
-    #[test]
-    fn console_init_constructs_and_installs_logger() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::ConsoleInit(7)],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [Event::InitDevice(7), Event::InstallLogger(7), Event::Halt,]
-        );
-    }
-
-    #[test]
-    fn clock_init_skipped_if_previous_stage_inited() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: false,
-            ends_with_jump: false,
-            caps: &[CapOp::ClockInit(3)],
-            persistent_inited: &[3],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(run(&PLAN), [Event::Halt]);
-    }
-
-    #[test]
-    fn clock_init_runs_if_not_previously_inited() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::ClockInit(3)],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(run(&PLAN), [Event::InitDevice(3), Event::Halt]);
-    }
-
-    #[test]
-    fn dram_init_runs_even_after_device_was_constructed() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::PreConsoleInit(&[1, 2]), CapOp::DramInit(1)],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [
-                Event::InitDevice(1),
-                Event::InitDevice(2),
-                Event::PreConsoleInit(Vec::from([1, 2])),
-                Event::InitDevice(1),
-                Event::DramInit(1),
-                Event::Halt,
-            ]
-        );
-    }
-
-    #[test]
-    fn init_device_failure_halts_before_console_install() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::ConsoleInit(9)],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        take_events();
-        set_fail_on(Some(9));
-        set_boot_media_pick(None);
-        let result = std::panic::catch_unwind(|| run_stage(MockBoard, &PLAN, 0));
-        assert!(result.is_err(), "run_stage must halt on failure");
-        assert_eq!(take_events(), [Event::InitDeviceFailed(9), Event::Halt]);
-    }
-
-    // ===== driver init =======================================================
-
-    #[test]
-    fn driver_init_passes_inited_and_gated_masks() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::ConsoleInit(0), CapOp::DriverInit],
-            persistent_inited: &[],
-            boot_media_gated: &[(2, &[])],
-            all_devices: &[0, 1, 2],
-        };
-        let events = run(&PLAN);
-        let driver = events
-            .iter()
-            .find(|e| matches!(e, Event::InitAllDevices { .. }))
-            .expect("expected InitAllDevices");
-        match driver {
-            Event::InitAllDevices {
-                skip_had,
-                gated_had,
-            } => {
-                // DriverInit constructs stage-local objects even when a prior
-                // capability initialized the hardware.
-                assert_eq!(skip_had, &[] as &[u8], "skip mask should be empty");
-                assert_eq!(gated_had, &[2u8], "gated mask should include id 2");
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    // ===== trampolines =======================================================
-
-    #[test]
-    fn sig_verify_fdt_prepare_trampolines_called() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::SigVerify, CapOp::FdtPrepare],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [Event::SigVerify, Event::FdtPrepare, Event::Halt]
-        );
-    }
-
-    #[test]
-    fn payload_load_diverges() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: true,
-            caps: &[CapOp::PayloadLoad, CapOp::MemoryInit],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        // MemoryInit after PayloadLoad must not be reached — PayloadLoad diverges.
-        let events = run(&PLAN);
-        assert!(events.contains(&Event::PayloadLoad));
-        assert!(!events.contains(&Event::MemoryInit));
-    }
-
-    #[test]
-    fn stage_load_passes_name() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: true,
-            caps: &[CapOp::StageLoad { next_stage: "main" }],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        let events = run(&PLAN);
-        assert!(events.contains(&Event::StageLoad("main".into())));
-    }
-
-    #[test]
-    fn early_init_inits_devices_and_runs_trampoline() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::EarlyInit(&[5, 6])],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [
-                Event::InitDevice(5),
-                Event::InitDevice(6),
-                Event::EarlyInit(Vec::from([5, 6])),
-                Event::Halt,
-            ]
-        );
-    }
-
-    #[test]
-    fn pre_console_init_inits_devices_and_runs_trampoline() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::PreConsoleInit(&[3, 4])],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [
-                Event::InitDevice(3),
-                Event::InitDevice(4),
-                Event::PreConsoleInit(Vec::from([3, 4])),
-                Event::Halt,
-            ]
-        );
-    }
-
-    #[test]
-    fn pci_init_inits_then_enumerates() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::PciInit(4)],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [Event::InitDevice(4), Event::PciInit(4), Event::Halt,]
-        );
-    }
-
-    // ===== boot media ========================================================
-
-    #[test]
-    fn boot_media_state_from_static_none_is_mmio() {
-        assert_eq!(
-            BootMediaState::from_static(None, 0x2000_0000, 0x0200_0000),
-            BootMediaState::Mmio {
-                base: 0x2000_0000,
-                size: 0x0200_0000,
-            }
-        );
-    }
-
-    #[test]
-    fn boot_media_state_from_static_some_is_block() {
-        assert_eq!(
-            BootMediaState::from_static(Some(7), 0x8000, 0x40_0000),
-            BootMediaState::Block {
-                device_id: 7,
-                offset: 0x8000,
-                size: 0x40_0000,
-            }
-        );
-    }
-
-    #[test]
-    fn boot_media_static_none_is_memory_mapped() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::BootMediaStatic {
-                device: None,
-                offset: 0x2000_0000,
-                size: 0x0200_0000,
-            }],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [
-                Event::BootMediaStatic {
-                    device: None,
-                    offset: 0x2000_0000,
-                    size: 0x0200_0000,
-                },
-                Event::Halt,
-            ]
-        );
-    }
-
-    #[test]
-    fn boot_media_static_some_inits_device_first() {
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::BootMediaStatic {
-                device: Some(4),
-                offset: 0x2000,
-                size: 0x40_0000,
-            }],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        assert_eq!(
-            run(&PLAN),
-            [
-                Event::InitDevice(4),
-                Event::BootMediaStatic {
-                    device: Some(4),
-                    offset: 0x2000,
-                    size: 0x40_0000,
-                },
-                Event::Halt,
-            ]
-        );
-    }
-
-    #[test]
-    fn boot_media_auto_picks_candidate_and_inits_it() {
-        static CANDIDATES: &[BootMediaCandidate] = &[
-            BootMediaCandidate {
-                device: 3,
-                offset: 0,
-                size: 0,
-                media_ids: &[],
-            },
-            BootMediaCandidate {
-                device: 4,
-                offset: 0,
-                size: 0,
-                media_ids: &[],
-            },
-        ];
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::BootMediaAuto {
-                candidates: CANDIDATES,
-            }],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        // Force selection of the second candidate.
-        take_events();
-        set_fail_on(None);
-        set_boot_media_pick(Some(4));
-        let result = std::panic::catch_unwind(|| run_stage(MockBoard, &PLAN, 0));
-        assert!(result.is_err());
-        let events = take_events();
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, Event::BootMediaSelect(ids) if ids == &[3u8, 4])));
-        assert!(events.contains(&Event::InitDevice(4)));
-        assert!(events.contains(&Event::Halt));
-    }
-
-    #[test]
-    fn boot_media_auto_halts_if_no_candidate_matches() {
-        static CANDIDATES: &[BootMediaCandidate] = &[BootMediaCandidate {
-            device: 3,
-            offset: 0,
-            size: 0,
-            media_ids: &[],
-        }];
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: false,
-            caps: &[CapOp::BootMediaAuto {
-                candidates: CANDIDATES,
-            }],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        // Force select() to return None by also returning None from
-        // the first-candidate fallback: MockBoard returns None only if
-        // both the explicit pick is None AND the candidate list is empty.
-        // Use an explicit impl tweak below via the shared mock but a
-        // synthetic mock, simpler: set pick to some impossible id and
-        // explicitly run through a variant mock.  For this minimal
-        // path, use a mock that always returns None.
-        struct NoMatchBoard;
-        impl Board for NoMatchBoard {
-            fn init_device(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-                MockBoard.init_device(id)
-            }
-            fn init_all_devices(&mut self, s: &DeviceMask, g: &DeviceMask) {
-                MockBoard.init_all_devices(s, g)
-            }
-            unsafe fn install_logger(&self, id: DeviceId) {
-                MockBoard.install_logger(id)
-            }
-            fn memory_init(&self) {
-                MockBoard.memory_init()
-            }
-            fn late_driver_init_complete(&mut self, c: usize) {
-                MockBoard.late_driver_init_complete(c)
-            }
-            fn sig_verify(&self) {
-                MockBoard.sig_verify()
-            }
-            fn fdt_prepare(&self) {
-                MockBoard.fdt_prepare()
-            }
-            fn payload_load(&self) -> ! {
-                MockBoard.payload_load()
-            }
-            fn stage_load(&self, n: &str) -> ! {
-                MockBoard.stage_load(n)
-            }
-            fn acpi_prepare(&mut self) {
-                MockBoard.acpi_prepare()
-            }
-            fn smbios_prepare(&self) {
-                MockBoard.smbios_prepare()
-            }
-            fn pre_console_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-                MockBoard.pre_console_init(ids)
-            }
-            fn early_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-                MockBoard.early_init(ids)
-            }
-            fn stage_local_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-                MockBoard.stage_local_init(ids)
-            }
-            fn post_dram_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-                MockBoard.post_dram_init(ids)
-            }
-            fn finalize_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-                MockBoard.finalize_init(ids)
-            }
-            fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-                MockBoard.dram_init(id)
-            }
-            fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-                MockBoard.pci_init(id)
-            }
-            fn acpi_load(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-                MockBoard.acpi_load(id)
-            }
-            fn memory_detect(&mut self, id: DeviceId) -> Result<(), DeviceError> {
-                MockBoard.memory_detect(id)
-            }
-            fn return_to_fel(&self) -> ! {
-                MockBoard.return_to_fel()
-            }
-            fn boot_media_select(&mut self, candidates: &[BootMediaCandidate]) -> Option<DeviceId> {
-                push(Event::BootMediaSelect(
-                    candidates.iter().map(|c| c.device).collect(),
-                ));
-                None
-            }
-            fn boot_media_static(&mut self, d: Option<DeviceId>, o: u64, s: u64) {
-                MockBoard.boot_media_static(d, o, s)
-            }
-            fn load_next_stage(&mut self, n: &str) -> ! {
-                MockBoard.load_next_stage(n)
-            }
-            fn halt(&self) -> ! {
-                MockBoard.halt()
-            }
-            fn jump_to(&self, e: u64) -> ! {
-                MockBoard.jump_to(e)
-            }
-            fn jump_to_with_handoff(&self, e: u64, h: usize) -> ! {
-                MockBoard.jump_to_with_handoff(e, h)
-            }
-        }
-
-        take_events();
-        let result = std::panic::catch_unwind(|| run_stage(NoMatchBoard, &PLAN, 0));
-        assert!(result.is_err());
-        let events = take_events();
-        assert_eq!(events, [Event::BootMediaSelect(std::vec![3]), Event::Halt,]);
-    }
-
-    #[test]
-    fn load_next_stage_selects_then_jumps() {
-        static CANDIDATES: &[BootMediaCandidate] = &[BootMediaCandidate {
-            device: 1,
-            offset: 0,
-            size: 0,
-            media_ids: &[],
-        }];
-        static PLAN: StagePlan = StagePlan {
-            stage_name: "t",
-            is_first_stage: true,
-            ends_with_jump: true,
-            caps: &[CapOp::LoadNextStage {
-                candidates: CANDIDATES,
-                next_stage: "main",
-            }],
-            persistent_inited: &[],
-            boot_media_gated: &[],
-            all_devices: &[],
-        };
-        let events = run(&PLAN);
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::BootMediaSelect(_))),
-            "expected select: {events:?}"
-        );
-        assert!(events.contains(&Event::InitDevice(1)));
-        assert!(events.contains(&Event::LoadNextStage("main".into())));
-    }
 }
