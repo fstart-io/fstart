@@ -13,7 +13,7 @@ acpi = [
   "dep:fstart-cpu-intel",
   "fstart-cpu-intel/acpi",
 ]
-ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-types"]
+ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs"]
 
 [dependencies]
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
@@ -36,7 +36,7 @@ fstart-services = { workspace = true, features = ["pci"] }
 fstart-smm = { workspace = true }
 fstart-spd = { workspace = true }
 fstart-smbus-intel = { workspace = true }
-fstart-types = { workspace = true, optional = true }
+fstart-types = { workspace = true }
 serde = { workspace = true }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }

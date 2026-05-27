@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use fstart_device_registry::Service;
-use fstart_types::{BootMedium, Capability};
+use fstart_types::{BootMedium, Capability, StageCacheBackend};
 
 use crate::stage_gen::tokens::hex_addr;
 
@@ -93,6 +93,35 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         })
         .unwrap_or_else(|| quote! { None });
 
+    let stage_cache_close = match ctx.config.stage_cache {
+        Some(cache) if cache.backend == StageCacheBackend::Tseg => {
+            let providers: Vec<_> = ctx
+                .runtime_devices
+                .providers(Service::StageCacheProvider)
+                .collect();
+            if providers.len() == 1 {
+                let field = format_ident!("{}", providers[0].name);
+                quote! {
+                    if let Some(provider) = self.#field.as_ref() {
+                        // X86 StageLoad may intentionally leave SMRAM open so the
+                        // post-CAR loader can populate/read the TSEG stage cache.
+                        // Close it at MP/SMM setup time, like coreboot, before
+                        // normal payload execution continues. If SMM is enabled,
+                        // SmmOps may reopen it for handler installation and close
+                        // it again from post_smm_init().
+                        if fstart_capabilities::stage_cache::close_stage_cache_provider(provider).is_err() {
+                            fstart_log::error!("mp: failed to close TSEG stage cache");
+                            return Err(fstart_stage_runtime::RuntimeError::Failed);
+                        }
+                    }
+                }
+            } else {
+                quote! {}
+            }
+        }
+        _ => quote! {},
+    };
+
     let smm_ops_expr = if let Some(idx) = smm_provider {
         let field = format_ident!("{}", ctx.devices[idx].name.as_str());
         quote! {
@@ -119,6 +148,7 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     };
 
     quote! {
+        #stage_cache_close
         let smm_ops: Option<&dyn fstart_mp::SmmOps> = #smm_ops_expr;
         let smm_image: Option<&[u8]> = #smm_image_expr;
         let microcode_blob: Option<&'static [u8]> = #microcode_expr;

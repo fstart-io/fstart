@@ -17,9 +17,11 @@ use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_B
 use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
-    EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
+    EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, ResumeDetector, ServiceError, SmBus,
+    Southbridge,
 };
 use fstart_smbus_intel::I801SmBus;
+use fstart_types::BootPath;
 use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -947,6 +949,7 @@ pub struct IntelIch8 {
     config: &'static IntelIch8Config,
     smbus: Option<I801SmBus>,
     pm: PmIo,
+    s3_resume_detected: bool,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -1989,6 +1992,7 @@ impl Device for IntelIch8 {
             config,
             smbus: None,
             pm: PmIo::new(ich8::DEFAULT_PMBASE),
+            s3_resume_detected: false,
         })
     }
 
@@ -2029,8 +2033,12 @@ impl EarlyInit for IntelIch8 {
         self.pm().write32(GPE0_EN_ICH8, self.config.gpe0_en);
         self.enable_hpet();
         self.setup_dmi();
-        let _ = self.detect_s3_resume();
-        fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd);
+        self.s3_resume_detected = self.detect_s3_resume();
+        fstart_log::info!(
+            "intel-ich8: early init complete (fd_mask={:#x}, s3={})",
+            fd,
+            self.s3_resume_detected,
+        );
         Ok(())
     }
 }
@@ -2102,6 +2110,18 @@ impl fstart_superio::LpcBaseProvider for IntelIch8 {
         // directly by the X61 mainboard hook while disconnected from generic
         // driver init.
         0x164e
+    }
+}
+
+impl ResumeDetector for IntelIch8 {
+    fn detect_boot_path(&self) -> Result<BootPath, ServiceError> {
+        let path = if self.s3_resume_detected || self.detect_s3_resume() {
+            BootPath::S3Resume
+        } else {
+            BootPath::Normal
+        };
+        fstart_services::resume::set_boot_path(path);
+        Ok(path)
     }
 }
 

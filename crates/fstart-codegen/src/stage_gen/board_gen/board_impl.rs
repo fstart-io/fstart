@@ -11,7 +11,7 @@ use super::caps_tables::{
     acpi_load_body, acpi_prepare_body, memory_detect_body, smbios_prepare_body,
 };
 use super::fdt::{fdt_prepare_body, return_to_fel_body, stage_load_body};
-use super::init_caps::{dram_init_body, late_driver_init_body, pci_init_body};
+use super::init_caps::{dram_init_body, late_driver_init_body, pci_init_body, resume_detect_body};
 use super::lifecycle::{init_all_devices_body, init_device_body};
 use super::logger::install_logger_body;
 use super::model::BoardEmitModel;
@@ -22,21 +22,18 @@ use super::sunxi::{boot_media_select_body, load_next_stage_body};
 
 /// Emit the `impl fstart_stage_runtime::Board for _BoardDevices` block.
 pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
-    let jump_with_handoff_body = match platform {
-        Platform::X86_64 => quote! {
-            let _ = (entry, handoff_addr);
-            fstart_platform::halt()
-        },
-        _ => quote! { fstart_platform::jump_to_with_handoff(entry, handoff_addr) },
-    };
+    let jump_with_handoff_body =
+        quote! { fstart_platform::jump_to_with_handoff(entry, handoff_addr) };
 
     let sig_verify_body = super::security::sig_verify_body(ctx);
     let fdt_prepare_body = fdt_prepare_body(platform, ctx);
     let install_logger_body = install_logger_body(ctx);
     let stage_load_body = stage_load_body(ctx);
+    let stage_cache_save_body = super::fdt::stage_cache_save_body(ctx);
     let return_to_fel_body = return_to_fel_body(platform, ctx);
     let pci_init_body = pci_init_body(ctx);
     let dram_init_body = dram_init_body(ctx);
+    let resume_detect_body = resume_detect_body(ctx);
     let pre_console_init_body = phase_init_body(
         ctx,
         PhaseSpec::new(
@@ -77,6 +74,16 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let init_device_body = init_device_body(ctx);
     let init_all_devices_body = init_all_devices_body(ctx);
     let late_driver_init_body = late_driver_init_body(ctx);
+    let acpi_s3_resume_body = if platform == Platform::X86_64 {
+        quote! {
+            match fstart_services::resume::boot_path() {
+                fstart_types::BootPath::S3Resume => fstart_platform::acpi_s3_resume(),
+                fstart_types::BootPath::Normal => fstart_platform::halt(),
+            }
+        }
+    } else {
+        quote! { fstart_platform::halt() }
+    };
     let boot_media_context_publish = if ctx.stage.uses_ffs {
         let anchor = anchor_bytes_stmt();
         quote! {
@@ -107,6 +114,10 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #init_all_devices_body
             }
 
+            fn set_handoff(&mut self, handoff: Option<fstart_types::handoff::StageHandoff>) {
+                self._handoff = handoff;
+            }
+
             unsafe fn install_logger(&self, id: fstart_types::DeviceId) {
                 #install_logger_body
             }
@@ -124,8 +135,12 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             fn fdt_prepare(&self) { #fdt_prepare_body }
             fn payload_load(&self) -> ! { #payload_load_body }
             fn stage_load(&self, next_stage: &str) -> ! { #stage_load_body }
+            fn stage_cache_save(&self, stage: &str) {
+                #stage_cache_save_body
+            }
             fn acpi_prepare(&mut self) { #acpi_prepare_body }
             fn smbios_prepare(&self) { #smbios_prepare_body }
+            fn acpi_s3_resume(&self) -> ! { #acpi_s3_resume_body }
 
             fn mp_init(
                 &mut self,
@@ -176,6 +191,13 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 id: fstart_types::DeviceId,
             ) -> Result<(), fstart_services::device::DeviceError> {
                 #dram_init_body
+            }
+
+            fn resume_detect(
+                &mut self,
+                id: fstart_types::DeviceId,
+            ) -> Result<(), fstart_services::device::DeviceError> {
+                #resume_detect_body
             }
 
             fn pci_init(

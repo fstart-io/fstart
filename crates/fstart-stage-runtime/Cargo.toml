@@ -17,4 +17,5 @@ std = ["fstart-types/std"]
 fstart-types = { workspace = true }
 fstart-services = { workspace = true }
 fstart-log = { workspace = true }
+postcard = { workspace = true }
 ufmt = { workspace = true }

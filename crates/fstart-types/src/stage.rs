@@ -248,6 +248,14 @@ pub enum Capability {
         /// Device name from the devices list (e.g., "dramc0")
         device: HString<32>,
     },
+    /// Detect ACPI S3 resume state via a chipset/southbridge device.
+    ///
+    /// Must run after the device has enough early PM I/O setup to read PM1_CNT
+    /// and before `DramInit` so memory controllers can select resume-safe init.
+    ResumeDetect {
+        /// Device name from the devices list (e.g., "southbridge")
+        device: HString<32>,
+    },
     /// Minimal platform/device setup before the console can be initialized.
     ///
     /// The referenced devices implement `PreConsoleInit`.  This is a portable
@@ -322,6 +330,11 @@ pub enum Capability {
     },
     /// Prepare a Flattened Device Tree for OS handoff.
     FdtPrepare,
+    /// Save a compressed stage FFS entry to a firmware-owned cache region.
+    StageCacheSave {
+        /// FFS stage entry name to cache (e.g., "ramstage").
+        stage: HString<32>,
+    },
     /// Load and jump to the payload (OS kernel, shell, etc.).
     PayloadLoad,
     /// Load the next stage from FFS into RAM and jump to it.
@@ -475,18 +488,6 @@ pub enum BootMedium {
         base: u64,
         /// Size of the mapped flash region in bytes.
         size: u64,
-        /// Optional RAM address to copy FFS data before accessing it.
-        ///
-        /// On x86_64 with code-model=large, FFS operations (postcard
-        /// deserialization, LZ4 decompression) are significantly faster
-        /// when operating on RAM rather than flash-mapped MMIO. When
-        /// set, generated code copies `size` bytes from `base` to this
-        /// address before constructing the `MemoryMapped` accessor.
-        ///
-        /// On platforms with true XIP (ARM, RISC-V), this should be
-        /// `None` — the flash is accessed directly.
-        #[serde(default)]
-        ram_copy_addr: Option<u64>,
     },
     /// A named device that implements `BlockDevice`.
     ///

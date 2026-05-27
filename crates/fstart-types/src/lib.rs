@@ -13,6 +13,7 @@ pub mod device;
 pub mod ffs;
 pub mod handoff;
 pub mod memory;
+pub mod resume;
 pub mod security;
 pub mod smbios;
 pub mod smm;
@@ -36,6 +37,7 @@ pub use memory::{
     CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,
     MemoryRegion, RegionKind,
 };
+pub use resume::{BootPath, ResumeHandoff, StageCacheBackend, StageCacheConfig, StageCacheInfo};
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
 pub use smm::{CorebootSmmCompat, SmmConfig, SmmPlatform};

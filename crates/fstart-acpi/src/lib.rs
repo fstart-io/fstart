@@ -45,6 +45,7 @@ pub mod ext;
 pub mod gtdt;
 pub mod iort;
 pub mod platform;
+pub mod resume;
 pub mod sbsa;
 pub mod sink;
 pub mod spcr;

@@ -29,11 +29,7 @@ pub(super) fn boot_media_select_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     }
 
     quote! {
-        // SAFETY: _egon_sram_base is the BROM entry point where the
-        // eGON header is mapped in SRAM.
-        let _bm = unsafe {
-            fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize)
-        };
+        let _bm = fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize);
         fstart_log::info!("boot media detect: {:#x}", _bm);
         for candidate in candidates {
             if candidate.media_ids.iter().any(|&id| id == _bm) {
@@ -160,9 +156,9 @@ pub(super) fn load_next_stage_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         };
 
         let ns_ffs_offset =
-            unsafe { fstart_soc_sunxi::next_stage_offset_at(self._egon_sram_base as usize) } as u64;
+            fstart_soc_sunxi::next_stage_offset_at(self._egon_sram_base as usize) as u64;
         let ns_size =
-            unsafe { fstart_soc_sunxi::next_stage_size_at(self._egon_sram_base as usize) } as usize;
+            fstart_soc_sunxi::next_stage_size_at(self._egon_sram_base as usize) as usize;
         if ns_ffs_offset == 0 || ns_size == 0 {
             fstart_log::error!("FATAL: eGON header has zero next_stage_offset/size");
             fstart_platform::halt();

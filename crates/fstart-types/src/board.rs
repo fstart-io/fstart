@@ -145,6 +145,14 @@ pub struct BoardConfig {
     #[serde(default)]
     pub smm: Option<crate::smm::SmmConfig>,
 
+    /// Optional compressed-stage cache configuration for S3 resume.
+    #[serde(default)]
+    pub stage_cache: Option<crate::resume::StageCacheConfig>,
+
+    /// Optional FFS raw region reserved for persistent MRC/training data.
+    #[serde(default)]
+    pub mrc_cache: Option<MrcCacheConfig>,
+
     /// Boot hart ID for multi-hart platforms.
     ///
     /// On multi-hart SoCs (e.g., SiFive FU740 with 5 harts), the boot ROM
@@ -158,6 +166,21 @@ pub struct BoardConfig {
     /// without S-mode; hart 1 is the first U74 application core).
     #[serde(default)]
     pub boot_hart_id: u32,
+}
+
+/// Persistent MRC/training-data cache region configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MrcCacheConfig {
+    /// FFS raw-region name.
+    #[serde(default = "default_mrc_cache_region_name")]
+    pub name: HString<64>,
+    /// Cache region size in bytes. xtask places this automatically.
+    pub size: u32,
+}
+
+fn default_mrc_cache_region_name() -> HString<64> {
+    HString::try_from("mrc-cache").unwrap_or_default()
 }
 
 /// CPU microcode packaging configuration.

@@ -5,6 +5,8 @@
 //! training, size detection).  This trait exposes detected parameters
 //! for use by later firmware stages.
 
+use fstart_types::BootPath;
+
 use crate::ServiceError;
 
 /// Memory controller — DRAM initialization and detection.
@@ -26,6 +28,14 @@ pub trait MemoryController: Send + Sync {
     /// chipset init are available. Real DRAM training is dispatched later by
     /// the `DramInit` capability, after SMBus/GPIO/BAR setup has completed.
     fn dram_init(&mut self) -> Result<(), ServiceError> {
+        self.dram_init_with_boot_path(BootPath::Normal)
+    }
+
+    /// Run DRAM initialization/training for a known boot path.
+    ///
+    /// Implementations that support ACPI S3 should use [`BootPath::S3Resume`]
+    /// to select their non-destructive resume path and cached training data.
+    fn dram_init_with_boot_path(&mut self, _boot_path: BootPath) -> Result<(), ServiceError> {
         Ok(())
     }
 

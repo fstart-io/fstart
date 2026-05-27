@@ -247,6 +247,13 @@
                 ),
             ],
         ),
+        (
+            name: "spi_flash",
+            driver: IntelSpi((
+                chipset: Ich7,
+                mode: Auto,
+            )),
+        ),
     ],
 
     stages: MultiStage([
@@ -270,6 +277,8 @@
                 // Opens NB BARs (MCHBAR, DMIBAR), PAM, graphics clocks; SB SMBus
                 // (needed by DramInit), BARs, PIRQ, GPIO, CIR, IOAPIC, HPET.
                 EarlyInit( devices: ["northbridge", "southbridge"] ),
+                // Detect S3 after PMBASE/PM1_CNT setup and before DRAM init.
+                ResumeDetect( device: "southbridge" ),
                 // DDR2 training needs SMBus (enabled by EarlyInit).
                 DramInit( device: "northbridge" ),
                 // Load the ramstage from FFS in flash and jump to it.
@@ -298,7 +307,6 @@
                 ConsoleInit( device: "superio" ),
                 BootMedia(MemoryMapped(
                     base: 0xFF000000, size: 0x01000000,
-                    ram_copy_addr: 0x2000000,
                 )),
                 SigVerify,
                 DriverInit,
@@ -316,6 +324,10 @@
                 // then SPI/SMI/TCO/BIOS-interface lockdown.
                 PostDramInit( devices: ["southbridge"] ),
                 FinalizeInit( devices: ["southbridge"] ),
+                // Cache the compressed ramstage FFS entry in firmware-owned RAM.
+                // TODO: move this address into board.smm/TSEG config once SMRAM
+                // cache reservation is schema-driven.
+                StageCacheSave(stage: "ramstage"),
                 // Temporarily skip SMM while debugging legacy IRQ/SERIRQ state.
                 // We clean ICH7 PM/GPE/SMI status in normal firmware code before
                 // Linux handoff instead of relying on the SMI handler.
@@ -422,6 +434,20 @@
             module_args: true,
         ),
     ),
+
+    // Compressed ramstage cache for S3 resume. This is regular RAM for now;
+    // StageCacheSave reserves it from e820 after copying the compressed FFS
+    // entry. Keep it below 0x03fff000: the ramstage handoff buffer lives at
+    // ramstage_entry(0x04000000) - 0x1000.
+    stage_cache: Some((
+        backend: Memory,
+        base: 0x03E00000,
+        size: 0x00100000,
+    )),
+
+    mrc_cache: Some((
+        size: 0x00010000,
+    )),
 
     payload: (
         kind: LinuxBoot,

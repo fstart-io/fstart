@@ -11,6 +11,7 @@ fstart-log = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
 fstart-types = { workspace = true, optional = true }
+postcard = { workspace = true }
 ufmt = { workspace = true }
 
 [features]

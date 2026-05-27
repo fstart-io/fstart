@@ -1314,6 +1314,26 @@ pub fn probe_dimms(
 /// programming, DDR2 JEDEC commands, final memory map, receive-enable
 /// calibration, guarded EPD channel population, and DRAM power-management setup.
 pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result<(), ServiceError> {
+    train(info, mch, ggc, false)
+}
+
+/// Run GM965 DDR2 initialization for an S3 resume path.
+///
+/// Mirrors the coreboot GM965 S3 flow by avoiding the destructive pre-JEDEC
+/// temporary map and JEDEC/MRS command sequence while still restoring the
+/// controller registers needed to regain access to preserved memory. Once the
+/// GM965 MRC cache payload is wired, this path should also restore cached
+/// receive-enable training values instead of recalibrating them.
+pub fn s3_resume_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result<(), ServiceError> {
+    train(info, mch, ggc, true)
+}
+
+fn train(
+    info: &mut RaminitInfo,
+    mch: &MchBar,
+    ggc: u16,
+    s3_resume: bool,
+) -> Result<(), ServiceError> {
     reset_on_stale_rcomp(mch);
     init_pmcon();
 
@@ -1335,7 +1355,9 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result
     mch.setbits32(mchbar::POST_JEDEC_TIM0, 0x0300_0000);
     mch.setbits32(mchbar::POST_JEDEC_TIM1, 0x0300_0000);
 
-    program_map(info, mch, true, ggc);
+    if !s3_resume {
+        program_map(info, mch, true, ggc);
+    }
     rcomp_init(info, mch);
     odt_and_io_setup(info, mch);
     program_timings(info, mch);
@@ -1344,7 +1366,9 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result
     mch.clrbits32(mchbar::RCOMP_CFG3, 1 << 17);
     mch.clrbits32(mchbar::RCOMP_CTRL, (3 << 16) | (3 << 4));
 
-    jedec_init_ddr2(info, mch);
+    if !s3_resume {
+        jedec_init_ddr2(info, mch);
+    }
     post_jedec_and_final(info, mch, ggc);
     receive_enable_training(info, mch)?;
 
@@ -1366,7 +1390,8 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result
     mch.write32(mchbar::SSKPD, 0xcafe);
 
     fstart_log::info!(
-        "gm965 raminit: complete total={} MiB tolud={} MiB rec=({},{}),({},{})",
+        "gm965 raminit: complete s3={} total={} MiB tolud={} MiB rec=({},{}),({},{})",
+        s3_resume,
         info.tom_mb,
         info.tolud_mb,
         info.rec_coarse[0] as u32,

@@ -39,6 +39,7 @@ use fstart_services::memory_controller::MemoryController;
 use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::pci::{PciBdf, PciRootBus, PciWindow};
 use fstart_services::{EarlyInit, PciHost, PreConsoleInit, ServiceError, SmBus, StageLocalInit};
+use fstart_types::BootPath;
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{Readable, Writeable};
 
@@ -656,12 +657,18 @@ impl MemoryDetector for IntelPineview {
 }
 
 impl MemoryController for IntelPineview {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
+    fn dram_init_with_boot_path(&mut self, boot_path: BootPath) -> Result<(), ServiceError> {
         let mut smbus = fstart_smbus_intel::I801SmBus::new(0x0400);
         if self.config.ck505_pre_raminit {
             pineview_ck505_pre_raminit(&mut smbus);
         }
-        let boot_path = if self.detect_warm_reset() { 1 } else { 0 };
+        let boot_path = if boot_path.is_s3_resume() {
+            2
+        } else if self.detect_warm_reset() {
+            1
+        } else {
+            0
+        };
         let platform_type = self.platform_type();
         let size = raminit::sdram_initialize(
             &self.mchbar(),

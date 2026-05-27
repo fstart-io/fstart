@@ -33,8 +33,9 @@ use fstart_services::memory_detect::{
 };
 use fstart_services::{
     EarlyInit, MemoryController, PciBdf, PciHost, PciRootBus, PciWindow, PostDramInit,
-    PreConsoleInit, ServiceError, StageLocalInit,
+    PreConsoleInit, ServiceError, StageCacheProvider, StageLocalInit,
 };
+use fstart_types::BootPath;
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -1994,6 +1995,29 @@ impl MemoryDetector for IntelGm965 {
     }
 }
 
+impl StageCacheProvider for IntelGm965 {
+    fn stage_cache_region(&self, requested_size: u64) -> Option<(u64, u64)> {
+        let tseg_base = u64::from(self.tseg_base());
+        let tseg_size = u64::from(self.tseg_size());
+        if tseg_base == 0 || requested_size == 0 || requested_size > tseg_size {
+            return None;
+        }
+        // Match coreboot's external stage cache placement: carve from the high
+        // end of TSEG. A later layout pass can subtract IED/OPAL subregions.
+        Some((tseg_base + tseg_size - requested_size, requested_size))
+    }
+
+    fn stage_cache_open(&self) -> Result<(), ServiceError> {
+        self.smm_open();
+        Ok(())
+    }
+
+    fn stage_cache_close(&self) -> Result<(), ServiceError> {
+        self.smm_close();
+        Ok(())
+    }
+}
+
 impl SmmOps for IntelGm965 {
     fn smm_info(&self) -> Option<SmmInfo> {
         let (base, size) = self.smm_region();
@@ -2115,13 +2139,20 @@ impl SmmOps for IntelGm965 {
 }
 
 impl MemoryController for IntelGm965 {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
+    fn dram_init_with_boot_path(&mut self, boot_path: BootPath) -> Result<(), ServiceError> {
         let mut smbus = fstart_smbus_intel::I801SmBus::new(self.config.smbus_base);
         smbus.host_reset();
         let mut info = raminit::probe_dimms(&mut smbus, &self.config.spd_addresses)?;
         self.detected_size = info.total_bytes();
-        raminit::cold_boot_train(&mut info, &self.mchbar(), self.igd_ggc())?;
-        self.memory_test()?;
+        if boot_path.is_s3_resume() {
+            fstart_log::info!(
+                "gm965: S3 resume requested; using non-JEDEC native resume path (MRC cache restore pending)"
+            );
+            raminit::s3_resume_train(&mut info, &self.mchbar(), self.igd_ggc())?;
+        } else {
+            raminit::cold_boot_train(&mut info, &self.mchbar(), self.igd_ggc())?;
+            self.memory_test()?;
+        }
         self.thermal_sensor_init(&info, &mut smbus);
         Ok(())
     }

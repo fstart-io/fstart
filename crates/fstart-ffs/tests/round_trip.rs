@@ -1178,3 +1178,102 @@ fn test_lz4_incompressible_data() {
     assert_eq!(n, data.len());
     assert_eq!(&buf[..n], &data);
 }
+
+#[test]
+fn test_raw_at_region_manifest_offset() {
+    let (signing_key, vk) = dev_keypair();
+    let stage_data = stage_data_with_anchor(&[0xAA; 16]);
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![
+            InputRegion::Container {
+                name: "ro".to_string(),
+                files: vec![InputFile {
+                    name: "bootblock".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data,
+                        mem_size: None,
+                        load_addr: 0x8000_0000,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                }],
+            },
+            InputRegion::RawAt {
+                name: "mrc-cache".to_string(),
+                offset: 0x1000,
+                size: 0x100,
+                fill: 0xff,
+            },
+        ],
+    };
+
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    assert!(ffs.image[0x1000..0x1100].iter().all(|byte| *byte == 0xff));
+
+    let reader = FfsReader::new(&ffs.image);
+    let anchor_offset = reader.scan_for_anchor().expect("should find anchor");
+    let anchor = reader
+        .read_anchor(anchor_offset)
+        .expect("anchor should parse");
+    let manifest = reader
+        .read_manifest(&anchor)
+        .expect("manifest should verify");
+    let region = FfsReader::find_region(&manifest, "mrc-cache").expect("mrc region");
+    assert_eq!(region.offset, 0x1000);
+    assert_eq!(region.size, 0x100);
+    assert!(matches!(region.content, RegionContent::Raw { fill: 0xff }));
+}
+
+#[test]
+fn test_raw_aligned_region_manifest_offset() {
+    let (signing_key, vk) = dev_keypair();
+    let stage_data = stage_data_with_anchor(&[0xBB; 17]);
+    let config = FfsImageConfig {
+        keys: vec![vk],
+        regions: vec![
+            InputRegion::Container {
+                name: "ro".to_string(),
+                files: vec![InputFile {
+                    name: "bootblock".to_string(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".text".to_string(),
+                        kind: SegmentKind::Code,
+                        data: stage_data,
+                        mem_size: None,
+                        load_addr: 0x8000_0000,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                }],
+            },
+            InputRegion::RawAligned {
+                name: "mrc-cache".to_string(),
+                size: 0x100,
+                fill: 0xff,
+                align: 0x1000,
+            },
+        ],
+    };
+
+    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
+    let reader = FfsReader::new(&ffs.image);
+    let anchor_offset = reader.scan_for_anchor().expect("should find anchor");
+    let anchor = reader
+        .read_anchor(anchor_offset)
+        .expect("anchor should parse");
+    let manifest = reader
+        .read_manifest(&anchor)
+        .expect("manifest should verify");
+    let region = FfsReader::find_region(&manifest, "mrc-cache").expect("mrc region");
+    assert_eq!(region.offset % 0x1000, 0);
+    assert_eq!(region.size, 0x100);
+    assert!(matches!(region.content, RegionContent::Raw { fill: 0xff }));
+    let start = region.offset as usize;
+    let end = start + region.size as usize;
+    assert!(ffs.image[start..end].iter().all(|byte| *byte == 0xff));
+}

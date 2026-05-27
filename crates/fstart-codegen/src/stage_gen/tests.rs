@@ -105,6 +105,8 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
         acpi: None,
         smbios: None,
         smm: None,
+        stage_cache: None,
+        mrc_cache: None,
         boot_hart_id: 0,
     };
 
@@ -274,6 +276,8 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
         acpi: None,
         smbios: None,
         smm: None,
+        stage_cache: None,
+        mrc_cache: None,
         boot_hart_id: 0,
     };
 
@@ -618,7 +622,6 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
             let _ = v.push(Capability::BootMedia(BootMedium::MemoryMapped {
                 base: 0x2000_0000,
                 size: 0x200_0000,
-                ram_copy_addr: None,
             }));
             let _ = v.push(Capability::SigVerify);
             let _ = v.push(Capability::StageLoad {
@@ -694,6 +697,8 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         acpi: None,
         smbios: None,
         smm: None,
+        stage_cache: None,
+        mrc_cache: None,
         boot_hart_id: 0,
     };
 
@@ -752,7 +757,6 @@ fn test_stage_ending_with_payload_load_no_completion() {
     let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
         base: 0x2000_0000,
         size: 0x200_0000,
-        ram_copy_addr: None,
     }));
     let _ = caps.push(Capability::PayloadLoad);
     let parsed = test_parsed_board(caps);
@@ -1075,7 +1079,7 @@ fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
     for (source, needle, context) in [
         (
             bootblock.as_str(),
-            "fstart_stage_runtime::Board::pre_console_init(&mut board, &[0, 1, 8])",
+            "fstart_stage_runtime::Board::pre_console_init(&mut board, &[0, 1, 9])",
             "bootblock PreConsoleInit",
         ),
         (
@@ -1115,12 +1119,12 @@ fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
         ),
         (
             ramstage.as_str(),
-            "fstart_stage_runtime::Board::post_dram_init(&mut board, &[0, 1, 8])",
+            "fstart_stage_runtime::Board::post_dram_init(&mut board, &[0, 1, 9])",
             "ramstage PostDramInit",
         ),
         (
             ramstage.as_str(),
-            "fstart_stage_runtime::Board::finalize_init(&mut board, &[1, 8])",
+            "fstart_stage_runtime::Board::finalize_init(&mut board, &[1, 9])",
             "ramstage FinalizeInit",
         ),
         (

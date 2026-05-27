@@ -228,10 +228,12 @@ pub mod ich7 {
 }
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
-    EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
+    EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, ResumeDetector, ServiceError, SmBus,
+    Southbridge,
 };
 use fstart_smbus_intel::I801SmBus;
 use fstart_superio::LpcBaseProvider;
+use fstart_types::BootPath;
 use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 
@@ -1079,6 +1081,18 @@ impl IntelIch7 {
         // triggers a CF9 reset when needed, so not returning
         // BOOT_PATH_RESET here is safe for initial bring-up.
         0 // BOOT_PATH_NORMAL
+    }
+}
+
+impl ResumeDetector for IntelIch7 {
+    fn detect_boot_path(&self) -> Result<BootPath, ServiceError> {
+        let path = if self.detect_s3_resume() {
+            BootPath::S3Resume
+        } else {
+            BootPath::Normal
+        };
+        fstart_services::resume::set_boot_path(path);
+        Ok(path)
     }
 }
 

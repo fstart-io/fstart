@@ -247,6 +247,11 @@ pub trait Board: Sized {
     /// `fstart_capabilities::late_driver_init_complete`.
     fn late_driver_init_complete(&mut self, count: usize);
 
+    /// Receive a deserialized previous-stage handoff, if any.
+    fn set_handoff(&mut self, handoff: Option<fstart_types::handoff::StageHandoff>) {
+        let _ = handoff;
+    }
+
     /// Stage operation for `SigVerify`.
     ///
     /// Generated adapter reads its anchor pointer and current boot
@@ -275,6 +280,9 @@ pub trait Board: Sized {
     /// and calls `fstart_capabilities::stage_load`.  Halts on failure.
     fn stage_load(&self, next_stage: &str) -> !;
 
+    /// Stage operation for `StageCacheSave`.
+    fn stage_cache_save(&self, stage: &str);
+
     /// Stage operation for `AcpiPrepare`.
     ///
     /// Generated adapter calls `fstart_capabilities::acpi_prepare`
@@ -286,6 +294,9 @@ pub trait Board: Sized {
     /// Generated adapter calls `fstart_capabilities::smbios_prepare`
     /// with its SmbiosConfig descriptor (held in `&self`).
     fn smbios_prepare(&self);
+
+    /// Stage operation for the ACPI S3 OS wake path. Diverges.
+    fn acpi_s3_resume(&self) -> !;
 
     /// Stage operation for `MpInit`.
     ///
@@ -336,6 +347,9 @@ pub trait Board: Sized {
     /// a `PreConsoleInit` phase, while DRAM training must happen later after
     /// chipset/SMBus setup.
     fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;
+
+    /// Stage operation for `ResumeDetect`. `id` is the resolved device ID.
+    fn resume_detect(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
     /// Stage operation for `PciInit`.  `id` is the resolved device ID.
     ///
