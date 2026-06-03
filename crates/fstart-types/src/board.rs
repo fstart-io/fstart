@@ -106,7 +106,7 @@ pub struct BoardConfig {
     #[serde(default)]
     pub soc_image_format: SocImageFormat,
 
-    /// Also emit a complete flash image padded/laid out to `memory.flash_size`.
+    /// Also emit a complete flash image padded/laid out to the firmware window size.
     ///
     /// The normal `.ffs` output is a firmware filesystem blob. Hardware flash
     /// programmers usually need the entire NOR image, with XIP stages overlaid

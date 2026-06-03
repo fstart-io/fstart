@@ -66,11 +66,27 @@ pub fn load_fit_components(
     media: &impl BootMedia,
     fit_config: Option<&str>,
 ) -> Result<FitBootInfo, FitBootError> {
-    // Step 1: Load FIT blob from FFS (zero-copy for memory-mapped flash).
+    load_fit_components_with_scratch(anchor_data, media, fit_config, None)
+}
+
+/// Load FIT components, using temporary RAM if the boot medium is not
+/// memory-mapped and the FIT blob must be copied before parsing.
+pub fn load_fit_components_with_scratch(
+    anchor_data: &[u8],
+    media: &impl BootMedia,
+    fit_config: Option<&str>,
+    scratch: Option<&mut fstart_services::TempRamArena>,
+) -> Result<FitBootInfo, FitBootError> {
+    // Step 1: Load FIT blob from FFS (zero-copy for memory-mapped flash,
+    // scratch copy for block media when a temp arena is available).
     fstart_log::info!("loading FIT image from FFS...");
-    let fit_slice =
-        crate::find_ffs_file_data(anchor_data, media, fstart_types::ffs::FileType::FitImage)
-            .ok_or(FitBootError::NotFound)?;
+    let fit_slice = crate::find_ffs_file_data_with_scratch(
+        anchor_data,
+        media,
+        fstart_types::ffs::FileType::FitImage,
+        scratch,
+    )
+    .ok_or(FitBootError::NotFound)?;
 
     // Step 2: Parse FIT image.
     fstart_log::info!("parsing FIT image ({} bytes)...", fit_slice.len());

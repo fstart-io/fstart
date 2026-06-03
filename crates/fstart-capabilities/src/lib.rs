@@ -611,7 +611,7 @@ pub fn payload_load_stub() {
     fstart_log::info!("payload load skipped (ffs feature not enabled)");
 }
 
-/// Stub PayloadLoad without FFS — called when flash_base is not configured.
+/// Stub PayloadLoad without FFS — called when no boot medium is configured.
 pub fn payload_load_stub_no_flash() {
     fstart_log::info!("capability: PayloadLoad");
     fstart_log::info!("payload load skipped (not yet implemented)");
@@ -725,7 +725,7 @@ pub fn stage_load(
     jump_to(entry_addr);
 }
 
-/// Stub StageLoad — called when flash_base is not configured.
+/// Stub StageLoad — called when no boot medium is configured.
 pub fn stage_load_stub(next_stage: &str) {
     fstart_log::info!("capability: StageLoad -> {}", next_stage);
     fstart_log::info!("stage load skipped (not yet wired to FFS)");
@@ -942,6 +942,77 @@ pub fn find_ffs_file_data<'a>(
                                 return Some(&image[offset..offset + size]);
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    fstart_log::error!("find file data: file type not found in FFS");
+    None
+}
+
+/// Find a file in FFS and copy it to temporary RAM when zero-copy is unavailable.
+#[cfg(feature = "ffs")]
+pub fn find_ffs_file_data_with_scratch<'a>(
+    anchor_data: &[u8],
+    media: &'a impl BootMedia,
+    file_type: fstart_types::ffs::FileType,
+    scratch: Option<&'a mut fstart_services::TempRamArena>,
+) -> Option<&'a [u8]> {
+    if media.as_slice().is_some() {
+        return find_ffs_file_data(anchor_data, media, file_type);
+    }
+
+    let scratch = scratch?;
+    if anchor_data.is_empty() {
+        fstart_log::error!("find file data: no anchor");
+        return None;
+    }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(e) => {
+            fstart_log::error!("find file data: anchor error: {}", reader_error_str(e));
+            return None;
+        }
+    };
+
+    let manifest = match read_manifest_from_media(media, &anchor) {
+        Ok(m) => m,
+        Err(e) => {
+            fstart_log::error!("find file data: manifest error: {}", reader_error_str(e));
+            return None;
+        }
+    };
+
+    let image_size = effective_image_size(media.size(), &anchor) as u64;
+    for region in &manifest.regions {
+        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
+            for entry in children {
+                if let fstart_types::ffs::EntryContent::File {
+                    file_type: ft,
+                    segments,
+                    ..
+                } = &entry.content
+                {
+                    if *ft == file_type {
+                        let seg = segments.first()?;
+                        let offset = u64::from(region.offset)
+                            + u64::from(entry.offset)
+                            + u64::from(seg.offset);
+                        let size = seg.stored_size as usize;
+                        if offset.checked_add(size as u64)? > image_size {
+                            return None;
+                        }
+                        return fstart_services::boot_media::read_to_temp(
+                            media,
+                            usize::try_from(offset).ok()?,
+                            size,
+                            scratch,
+                        )
+                        .ok();
                     }
                 }
             }
