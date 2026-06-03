@@ -228,7 +228,8 @@ pub mod ich7 {
 }
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
-    EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
+    EarlyInit, FinalizeInit, FirmwareImage, FirmwareImageProvider, PostDramInit, PreConsoleInit,
+    ServiceError, SmBus, Southbridge,
 };
 use fstart_smbus_intel::I801SmBus;
 use fstart_superio::LpcBaseProvider;
@@ -901,6 +902,12 @@ impl Device for IntelIch7 {
         // the logger is installed; pre-console BAR/LPC setup is done in the
         // `Southbridge::pre_console_init()` hook below.
         Ok(())
+    }
+}
+
+impl FirmwareImageProvider for IntelIch7 {
+    fn firmware_image(&self) -> Result<FirmwareImage, ServiceError> {
+        Ok(FirmwareImage::x86_top_of_4g(16 * 1024 * 1024))
     }
 }
 

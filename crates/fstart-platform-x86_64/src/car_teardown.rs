@@ -264,8 +264,8 @@ extern "C" fn stage_load_mmio_trampoline(
 fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) -> u64 {
     use fstart_types::ffs::{Compression, EntryContent, SegmentKind};
 
-    // SAFETY: generated code passes the memory-mapped FFS base/size from the
-    // board's BootMedia capability.
+    // SAFETY: generated code passes the effective memory-mapped FFS base/size
+    // from the Rust firmware-image provider or platform mapping.
     let image = unsafe { core::slice::from_raw_parts(base as *const u8, size as usize) };
     let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
         Ok(a) => a,

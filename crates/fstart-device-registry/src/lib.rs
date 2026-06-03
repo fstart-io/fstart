@@ -183,6 +183,7 @@ pub enum Service {
     PostDramInit,
     FinalizeInit,
     FlashLayoutVerifier,
+    FirmwareImageProvider,
     I2cBus,
     SpiBus,
     GpioController,
@@ -214,6 +215,7 @@ impl Service {
             Self::PostDramInit => "PostDramInit",
             Self::FinalizeInit => "FinalizeInit",
             Self::FlashLayoutVerifier => "FlashLayoutVerifier",
+            Self::FirmwareImageProvider => "FirmwareImageProvider",
             Self::I2cBus => "I2cBus",
             Self::SpiBus => "SpiBus",
             Self::GpioController => "GpioController",
@@ -278,6 +280,189 @@ pub enum ConstructionKind {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StructuralConfig {}
+
+/// Build-time inputs for hardware firmware-image providers.
+///
+/// Runtime providers read chipset registers.  Host tooling cannot, so it
+/// supplies the corresponding build artifacts here (for example an Intel Flash
+/// Descriptor blob) plus any transitional RON layout still present.
+pub struct BuildFirmwareImageContext<'a> {
+    /// Optional board-declared flash layout, kept as a migration fallback.
+    pub flash_layout: Option<&'a fstart_types::memory::FlashLayout>,
+    /// Optional Intel Flash Descriptor bytes for descriptor-based SPI flash.
+    pub intel_ifd: Option<&'a [u8]>,
+}
+
+/// Host-side counterpart to `fstart_services::FirmwareImageProvider`.
+///
+/// Implemented by the registry enum so codegen/xtask can ask the same hardware
+/// driver selection that runtime code uses, while sourcing facts from build
+/// artifacts instead of MMIO registers.
+pub trait BuildFirmwareImageProvider {
+    /// Return this driver's build-time firmware-image mapping, if it provides
+    /// one for the current board.
+    fn build_firmware_image(
+        &self,
+        ctx: &BuildFirmwareImageContext<'_>,
+    ) -> Result<Option<fstart_services::FirmwareImage>, String>;
+}
+
+/// One Rust-owned block-device candidate for firmware-image boot media.
+///
+/// Used for platforms where hardware boot-source registers select among block
+/// devices (for example sunxi eGON). Board RON names only
+/// `BootMedia(FirmwareImage(...))`; device candidates and offsets live here as
+/// platform/provider metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformBootMediaCandidate {
+    /// Board device name that provides `BlockDevice`.
+    pub device: &'static str,
+    /// Byte offset on the device where the FFS image starts.
+    pub offset: u64,
+    /// Size of the FFS image region in bytes.
+    pub size: u64,
+}
+
+/// Firmware-image mapping supplied by Rust platform knowledge.
+///
+/// These are fixed firmware-image windows defined by platform specifications or
+/// emulator machine models. They intentionally live in Rust rather than in the
+/// `BootMedia` RON capability so board files do not carry raw boot-media MMIO
+/// base/size tuples.
+pub fn platform_firmware_image(
+    board_name: &str,
+    platform: fstart_types::Platform,
+) -> Option<fstart_services::FirmwareImage> {
+    use fstart_types::Platform;
+
+    let image = match (board_name, platform) {
+        ("qemu-riscv64" | "qemu-riscv64-multi", Platform::Riscv64) => {
+            fstart_services::FirmwareImage::single_window(0x2000_0000, 0x0200_0000)
+        }
+        ("qemu-aarch64" | "qemu-aarch64-multi" | "qemu-aarch64-uefi", Platform::Aarch64)
+        | ("qemu-armv7", Platform::Armv7) => {
+            fstart_services::FirmwareImage::single_window(0x0000_0000, 0x0800_0000)
+        }
+        ("qemu-q35" | "qemu-q35-uefi", Platform::X86_64) => {
+            fstart_services::FirmwareImage::single_window(0xff90_0000, 0x006f_f000)
+        }
+        ("sifive-unmatched", Platform::Riscv64) => {
+            fstart_services::FirmwareImage::single_window(0x8000_0000, 0x1000_0000)
+        }
+        ("sifive-unmatched-hw", Platform::Riscv64) => {
+            fstart_services::FirmwareImage::single_window(0x2000_0000, 0x0200_0000)
+        }
+        _ => return None,
+    };
+    Some(image)
+}
+
+/// Rust-owned boot-source-selected block firmware-image candidates.
+pub fn platform_boot_media_candidates(
+    board_name: &str,
+    platform: fstart_types::Platform,
+) -> &'static [PlatformBootMediaCandidate] {
+    use fstart_types::Platform;
+
+    match (board_name, platform) {
+        ("bananapi-m1", Platform::Armv7) => &[PlatformBootMediaCandidate {
+            device: "mmc0",
+            offset: 0x2000,
+            size: 0x0080_0000,
+        }],
+        ("orangepi-pc2", Platform::Aarch64) | ("licheerv-dock", Platform::Riscv64) => {
+            &[PlatformBootMediaCandidate {
+                device: "mmc0",
+                offset: 0x2000,
+                size: 0x0100_0000,
+            }]
+        }
+        ("orangepi-r1", Platform::Armv7) => &[
+            PlatformBootMediaCandidate {
+                device: "mmc0",
+                offset: 0x2000,
+                size: 0x0080_0000,
+            },
+            PlatformBootMediaCandidate {
+                device: "spi0",
+                offset: 0,
+                size: 0x0100_0000,
+            },
+        ],
+        _ => &[],
+    }
+}
+
+/// Parsed subset of an Intel Flash Descriptor needed by build tooling.
+#[derive(Debug, Clone, Copy)]
+pub struct ParsedIntelIfd {
+    /// Total SPI flash component size in bytes.
+    pub flash_size: u32,
+    /// Region table entries indexed like FLREGn.
+    pub regions: [Option<(u32, u32)>; 16],
+}
+
+/// Parse Intel Flash Descriptor bytes.
+pub fn parse_intel_ifd(data: &[u8]) -> Result<ParsedIntelIfd, String> {
+    let sig_offset = data
+        .windows(4)
+        .enumerate()
+        .step_by(4)
+        .find_map(|(offset, bytes)| {
+            let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            (value == 0x0ff0_a55a).then_some(offset)
+        })
+        .ok_or_else(|| "Intel flash descriptor signature 0x0ff0a55a not found".to_string())?;
+
+    if sig_offset + 8 > data.len() {
+        return Err("Intel flash descriptor too small for FLMAP0".to_string());
+    }
+    let flmap0 = u32::from_le_bytes([
+        data[sig_offset + 4],
+        data[sig_offset + 5],
+        data[sig_offset + 6],
+        data[sig_offset + 7],
+    ]);
+
+    let fcba = ((flmap0 & 0xff) << 4) as usize;
+    let component_count = ((flmap0 >> 8) & 0x3) + 1;
+    if fcba + 4 > data.len() {
+        return Err(format!(
+            "Intel flash descriptor FCBA {fcba:#x} outside descriptor file"
+        ));
+    }
+    let flcomp = u32::from_le_bytes([data[fcba], data[fcba + 1], data[fcba + 2], data[fcba + 3]]);
+    let mut flash_size = 1u32 << (19 + (flcomp & 0x7));
+    if component_count > 1 {
+        flash_size = flash_size.saturating_add(1u32 << (19 + ((flcomp >> 3) & 0x7)));
+    }
+
+    let frba = (((flmap0 >> 16) & 0xff) << 4) as usize;
+    if frba + 4 > data.len() {
+        return Err(format!(
+            "Intel flash descriptor FRBA {frba:#x} outside descriptor file"
+        ));
+    }
+
+    let mut regions = [None; 16];
+    for (idx, slot) in regions.iter_mut().enumerate() {
+        let off = frba + idx * 4;
+        if off + 4 > data.len() {
+            break;
+        }
+        let flreg = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+        let base = (flreg & 0x7fff) << 12;
+        let limit = ((flreg >> 16) & 0x7fff) << 12 | 0xfff;
+        if limit >= base {
+            *slot = Some((base, limit - base + 1));
+        }
+    }
+
+    Ok(ParsedIntelIfd {
+        flash_size,
+        regions,
+    })
+}
 
 /// A driver instance with its typed configuration.
 ///
@@ -429,6 +614,56 @@ pub enum DriverInstance {
     /// IDT CK505 clock generator (SMBus-attached).
     #[cfg(feature = "i2c-ck505")]
     I2cCk505(i2c_ck505::I2cCk505Config),
+}
+
+impl BuildFirmwareImageProvider for DriverInstance {
+    #[allow(unused_variables)]
+    fn build_firmware_image(
+        &self,
+        ctx: &BuildFirmwareImageContext<'_>,
+    ) -> Result<Option<fstart_services::FirmwareImage>, String> {
+        match self {
+            #[cfg(feature = "intel-ich7")]
+            Self::IntelIch7(_) => Ok(Some(fstart_services::FirmwareImage::x86_top_of_4g(
+                16 * 1024 * 1024,
+            ))),
+            #[cfg(feature = "intel-ich8")]
+            Self::IntelIch8(_) => build_intel_ifd_firmware_image(ctx),
+            _ => Ok(None),
+        }
+    }
+}
+
+fn build_intel_ifd_firmware_image(
+    ctx: &BuildFirmwareImageContext<'_>,
+) -> Result<Option<fstart_services::FirmwareImage>, String> {
+    if let Some(data) = ctx.intel_ifd {
+        let parsed = parse_intel_ifd(data)?;
+        let bios_idx = fstart_types::memory::IntelIfdRegion::Bios
+            .flreg_index()
+            .ok_or_else(|| "Intel IFD BIOS region has no FLREG index".to_string())?;
+        let Some((_offset, size)) = parsed.regions.get(bios_idx).copied().flatten() else {
+            return Err("Intel flash descriptor has no BIOS region".to_string());
+        };
+        if size == 0 {
+            return Err("Intel flash descriptor BIOS region is empty".to_string());
+        }
+        return Ok(Some(fstart_services::FirmwareImage::single_window(
+            0x1_0000_0000u64 - u64::from(size),
+            u64::from(size),
+        )));
+    }
+
+    let Some(fstart_types::memory::FlashLayout::IntelIfd(layout)) = ctx.flash_layout else {
+        return Ok(None);
+    };
+    let bios = layout
+        .bios_region()
+        .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+    Ok(Some(fstart_services::FirmwareImage::single_window(
+        layout.base + u64::from(bios.offset),
+        u64::from(bios.size),
+    )))
 }
 
 impl DriverInstance {
@@ -751,6 +986,7 @@ impl DriverInstance {
                     Service::EarlyInit,
                     Service::PostDramInit,
                     Service::FinalizeInit,
+                    Service::FirmwareImageProvider,
                 ],
                 compatible: &["intel,ich7", "intel,nm10"],
                 has_acpi: true,
@@ -790,6 +1026,7 @@ impl DriverInstance {
                     Service::PostDramInit,
                     Service::FinalizeInit,
                     Service::FlashLayoutVerifier,
+                    Service::FirmwareImageProvider,
                 ],
                 compatible: &["intel,ich8", "intel,ich8m", "intel,82801hx"],
                 has_acpi: true,
@@ -928,6 +1165,14 @@ impl DriverInstance {
             Self::SunxiSpi(_) => vec![0x03], // SPI
             _ => Vec::new(),
         }
+    }
+
+    /// Return the build-time firmware-image mapping for this driver.
+    pub fn build_firmware_image(
+        &self,
+        ctx: &BuildFirmwareImageContext<'_>,
+    ) -> Result<Option<fstart_services::FirmwareImage>, String> {
+        <Self as BuildFirmwareImageProvider>::build_firmware_image(self, ctx)
     }
 
     /// Serialize just the inner config struct via the given serializer.

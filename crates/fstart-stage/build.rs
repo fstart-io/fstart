@@ -50,7 +50,7 @@ fn main() {
     fs::write(&stage_path, &stage_source).expect("failed to write generated stage");
 
     // Generate linker script.
-    let linker_script = linker::generate_linker_script(&parsed.config, stage_name.as_deref());
+    let linker_script = linker::generate_linker_script(&parsed, stage_name.as_deref());
     let ld_path = out_dir.join("link.ld");
     fs::write(&ld_path, &linker_script).expect("failed to write linker script");
 

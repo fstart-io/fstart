@@ -41,27 +41,33 @@ pub(super) fn match_boot_media(
             fstart_stage_runtime::BootMediaState::None => {
                 #none_body
             }
-            fstart_stage_runtime::BootMediaState::Mmio { base, size } => {
-                fstart_log::info!("boot-media match: MMIO base={:#x} size={:#x}", base, size);
+            fstart_stage_runtime::BootMediaState::FirmwareImage { image, temp_ram_buffer } => {
+                let mut _scratch = temp_ram_buffer.and_then(|buffer| {
+                    // SAFETY: board/platform configuration declares this range
+                    // as temporary writable RAM for this stage.
+                    unsafe { fstart_services::TempRamArena::new(buffer).ok() }
+                });
+                fstart_log::info!("boot-media match: firmware image size={:#x} windows={}", image.size, image.window_count);
                 #[cfg(feature = "x86_64")]
                 fstart_platform::enable_boot_media_rom_cache();
-                // SAFETY: `base..base + size` is the board's
-                // memory-mapped flash window; the board author's
-                // RON declared this range is readable.
-                let _bm = unsafe {
-                    fstart_services::boot_media::MemoryMapped::from_raw_addr(
-                        base,
-                        size as usize,
-                    )
-                };
-                fstart_log::info!("boot-media match: media constructed");
+                let _map = fstart_services::boot_media::FirmwareImageMap::new(image);
+                let _bm = fstart_services::boot_media::MemoryMapped::new(
+                    _map,
+                    image.size as usize,
+                );
                 #bm_usage
             }
-            fstart_stage_runtime::BootMediaState::Block {
+            fstart_stage_runtime::BootMediaState::FirmwareImageBlock {
                 device_id,
                 offset,
                 size,
+                temp_ram_buffer,
             } => {
+                let mut _scratch = temp_ram_buffer.and_then(|buffer| {
+                    // SAFETY: board/platform configuration declares this range
+                    // as temporary writable RAM for this stage.
+                    unsafe { fstart_services::TempRamArena::new(buffer).ok() }
+                });
                 match device_id {
                     #block_arms
                     _ => {

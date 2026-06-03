@@ -2066,6 +2066,7 @@ dependencies = [
  "fstart-services",
  "fstart-smm-image",
  "fstart-types",
+ "heapless",
  "object",
  "rand_core",
 ]

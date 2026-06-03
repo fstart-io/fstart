@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-services = { workspace = true }
 heapless = { workspace = true }
 ron = { workspace = true }
 serde = { workspace = true, features = ["std"] }
@@ -24,4 +25,3 @@ fstart-driver-intel-pineview = { workspace = true, features = ["acpi"] }
 fstart-driver-ns16550 = { workspace = true }
 fstart-driver-pl011 = { workspace = true }
 fstart-driver-designware-i2c = { workspace = true }
-fstart-services = { workspace = true }

@@ -1,7 +1,7 @@
 //! `impl Board for _BoardDevices` orchestration.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 
 use fstart_device_registry::Service;
 use fstart_types::Platform;
@@ -19,6 +19,62 @@ use super::mp::mp_init_body;
 use super::payload::payload_load_body;
 use super::phases::{phase_init_body, PhaseSpec};
 use super::sunxi::{boot_media_select_body, load_next_stage_body};
+
+fn boot_media_firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let arms = ctx
+        .runtime_devices
+        .providers(Service::FirmwareImageProvider)
+        .map(|device| {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
+            quote! {
+                #id_lit => {
+                    let image = fstart_services::FirmwareImageProvider::firmware_image(
+                        self.#field
+                            .as_ref()
+                            .ok_or(fstart_stage_runtime::RuntimeError::UnknownDevice)?,
+                    ).map_err(|_| fstart_stage_runtime::RuntimeError::Failed)?;
+                    self.boot_media_platform_firmware_image(image, temp_ram_buffer)
+                }
+            }
+        });
+    quote! {
+        match provider {
+            #(#arms)*
+            _ => Err(fstart_stage_runtime::RuntimeError::UnknownDevice),
+        }
+    }
+}
+
+fn boot_media_platform_firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let publish_context = if ctx.stage.uses_ffs {
+        let anchor = anchor_bytes_stmt();
+        quote! {
+            if let Some(window) = effective_image.contiguous_window() {
+                if window.cpu_base != 0 {
+                    #anchor
+                    fstart_services::ffs_context::set_memory_mapped(
+                        _anchor_bytes,
+                        window.cpu_base,
+                        window.size,
+                    );
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+    quote! {
+        let effective_image = image;
+        effective_image
+            .validate()
+            .map_err(|_| fstart_stage_runtime::RuntimeError::Failed)?;
+        self._boot_media =
+            fstart_stage_runtime::BootMediaState::from_firmware_image(effective_image, temp_ram_buffer);
+        #publish_context
+        Ok(())
+    }
+}
 
 /// Emit the `impl fstart_stage_runtime::Board for _BoardDevices` block.
 pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
@@ -77,17 +133,8 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let init_device_body = init_device_body(ctx);
     let init_all_devices_body = init_all_devices_body(ctx);
     let late_driver_init_body = late_driver_init_body(ctx);
-    let boot_media_context_publish = if ctx.stage.uses_ffs {
-        let anchor = anchor_bytes_stmt();
-        quote! {
-            if device.is_none() {
-                #anchor
-                fstart_services::ffs_context::set_memory_mapped(_anchor_bytes, offset, size);
-            }
-        }
-    } else {
-        quote! {}
-    };
+    let boot_media_firmware_image_body = boot_media_firmware_image_body(ctx);
+    let boot_media_platform_firmware_image_body = boot_media_platform_firmware_image_body(ctx);
 
     quote! {
         #[allow(dead_code, unused_variables)]
@@ -208,15 +255,31 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #boot_media_select_body
             }
 
-            fn boot_media_static(
+            fn boot_media_block_firmware_image(
                 &mut self,
-                device: Option<fstart_types::DeviceId>,
+                device: fstart_types::DeviceId,
                 offset: u64,
                 size: u64,
+                temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
             ) {
                 self._boot_media =
-                    fstart_stage_runtime::BootMediaState::from_static(device, offset, size);
-                #boot_media_context_publish
+                    fstart_stage_runtime::BootMediaState::from_block_firmware_image(device, offset, size, temp_ram_buffer);
+            }
+
+            fn boot_media_firmware_image(
+                &mut self,
+                provider: fstart_types::DeviceId,
+                temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
+            ) -> Result<(), fstart_stage_runtime::RuntimeError> {
+                #boot_media_firmware_image_body
+            }
+
+            fn boot_media_platform_firmware_image(
+                &mut self,
+                image: fstart_services::FirmwareImage,
+                temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
+            ) -> Result<(), fstart_stage_runtime::RuntimeError> {
+                #boot_media_platform_firmware_image_body
             }
 
             fn load_next_stage(&mut self, next_stage: &str) -> ! {
