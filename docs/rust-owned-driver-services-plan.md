@@ -532,8 +532,7 @@ required service:
 | `PciInit { device }`                | `Service::PciRootBus` or final chosen PCI service name        |
 | `AcpiLoad { device }`               | `Service::AcpiTableProvider`                                  |
 | `MemoryDetect { device }`           | `Service::MemoryDetector`                                     |
-| `BootMedia(Device { name, .. })`    | `Service::BlockDevice`                                        |
-| `BootMedia(AutoDevice { devices })` | each candidate has boot-media mapping and block/media service |
+| `BootMedia(FirmwareImage { provider })` | explicit/effective `Service::FirmwareImageProvider`, Rust platform mapping, or Rust platform boot-source candidates |
 | `LoadNextStage { devices, .. }`     | each candidate has block/media service and boot-media mapping |
 | phase init capabilities             | each named device provides the phase service                  |
 | `MpInit { smm_provider }`           | provider supplies `Service::SmmOps`                           |

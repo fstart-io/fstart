@@ -43,8 +43,8 @@
 
     // Memory regions: non-secure flash (storage) and DRAM (execution).
     //
-    // flash_base/flash_size describe pflash1 where the binary is stored.
-    // Code is linked for DRAM addresses and copied there at boot.
+    // The Rust platform firmware-image mapping describes the pflash1 ROM
+    // window. Code is linked for DRAM addresses and copied there at boot.
     //
     // DRAM starts at the 1 TiB mark. We declare 1 GiB (QEMU default).
     memory: (
@@ -52,8 +52,6 @@
             ( name: "flash", base: 0x10000000, size: 0x10000000, kind: Rom ),
             ( name: "ram",   base: 0x10000000000, size: 0x40000000, kind: Ram ),
         ],
-        flash_base: Some(0x10000000),
-        flash_size: Some(0x10000000),
     ),
 
     devices: [

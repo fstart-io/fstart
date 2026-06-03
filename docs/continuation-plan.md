@@ -363,27 +363,23 @@ now provide `jump_to(addr: u64) -> !`:
 
 Used by `StageLoad` and `PayloadLoad` to transfer control to loaded code.
 
-#### `flash_base` / `flash_size` in Board Config
+#### Firmware image providers
 
-New optional fields in `MemoryMap`:
-- `flash_base: Option<u64>` — where the firmware image is mapped in memory
-- `flash_size: Option<u64>` — total firmware image size for FFS reader bounds
+Board RON no longer carries `flash_base` / `flash_size` or raw
+`BootMedia(MemoryMapped(...))` windows. FFS boot-media mappings come from Rust
+hardware/platform firmware-image providers:
 
-All 4 board RON files updated with appropriate values. For QEMU riscv64,
-this is the RAM address where `-bios` loads the image (0x80000000). For
-QEMU aarch64, this is the flash base (0x00000000).
+- chipset/SoC drivers implement `FirmwareImageProvider` at runtime;
+- build tooling uses the matching `BuildFirmwareImageProvider` metadata; and
+- fixed emulator/platform windows are provided by Rust platform mapping code.
 
 #### Codegen Changes
 
-- `generate_flash_constants()` emits `FLASH_BASE` and `FLASH_SIZE` constants
-  when any FFS capability is present and `flash_base`/`flash_size` are configured.
-- `generate_sig_verify()` now passes `FLASH_BASE, FLASH_SIZE` (or `0, 0` fallback).
-- `generate_stage_load()` passes `FLASH_BASE, FLASH_SIZE, platform::jump_to`
-  when FFS is configured; falls back to `stage_load_stub()` otherwise.
-- `generate_payload_load()` same pattern with `payload_load_stub()` fallback.
-- `needs_ffs()` helper detects FFS capabilities in the capability list.
-- `generate_imports()` accepts capabilities param (no longer imports FfsReader
-  directly — FFS operations are handled inside `fstart_capabilities`).
+- `BootMedia(FirmwareImage(...))` selects an explicit provider, the sole
+  enabled effective `FirmwareImageProvider`, or a Rust platform mapping.
+- Provider selection respects `disabled_services`.
+- FFS operations use the selected `BootMediaState::FirmwareImage` or block
+  device state; raw RON memory-mapped boot-media is not generated.
 - Linker script updated with `.fstart.anchor` section (8-byte aligned, after
   `.text`) in both XIP and RAM layouts.
 
@@ -405,8 +401,8 @@ QEMU aarch64, this is the flash base (0x00000000).
 
 #### Real Capability Implementations (behind `ffs` feature)
 
-**`sig_verify(console, flash_base, flash_size)`:**
-1. Creates `FfsReader` over the memory-mapped flash image
+**`sig_verify` over selected boot media:**
+1. Creates `FfsReader` over the provider-backed firmware image or block device
 2. Scans for `FFS_MAGIC` at 8-byte-aligned offsets
 3. Reads and validates the `AnchorBlock`
 4. Reads and cryptographically verifies the RO manifest signature
@@ -414,14 +410,14 @@ QEMU aarch64, this is the flash base (0x00000000).
 6. Logs results: files verified, files skipped (multi-segment)
 7. Gracefully handles "no FFS image" (no anchor found → skip)
 
-**`stage_load(console, next_stage, flash_base, flash_size, jump_to)`:**
+**`stage_load(next_stage, boot_media, jump_to)`:**
 1. Scans for anchor and reads verified RO manifest
 2. Looks up the named stage file in the manifest
 3. Copies all segments to their load addresses (BSS zeroed)
 4. Jumps to the first Code segment's load address via `jump_to()`
 5. Gracefully handles missing stage file
 
-**`payload_load(console, flash_base, flash_size, jump_to)`:**
+**`payload_load(boot_media, jump_to)`:**
 1. Same flow as `stage_load` but looks for `FileType::Payload`
 2. Loads segments and jumps to entry point
 
@@ -431,24 +427,14 @@ QEMU aarch64, this is the flash base (0x00000000).
 - `reader_error_str()` — map `ReaderError` to `&'static str` for logging
 - `write_hex()` — format `u64` as `0x...` for no_std console output
 
-**Stubs** (when `ffs` feature absent or `flash_base` not configured):
+**Stubs** (when `ffs` feature absent):
 - `sig_verify` with `ffs` disabled logs "ffs feature not enabled"
 - `stage_load_stub` / `payload_load_stub` log "not yet wired to FFS"
 
 #### Testing
 
-**3 new unit tests** in `fstart-codegen/src/stage_gen.rs` (38 total):
-- `test_sig_verify_with_flash_base_generates_constants` — verifies FLASH_BASE/SIZE
-  constants emitted and sig_verify called with them
-- `test_stage_load_with_flash_base_generates_real_call` — verifies stage_load
-  called with FLASH_BASE/SIZE and jump_to
-- `test_multi_stage_bootblock_with_flash_base` — full bootblock codegen with
-  real FFS calls and flash constants
-
-**Updated 3 existing tests** for new function signatures:
-- `test_sig_verify_generates_call` — uses `0, 0` fallback args
-- `test_stage_load_generates_call` — uses `stage_load_stub`
-- `test_multi_stage_bootblock_generates_stage_load` — uses stub variants
+Unit tests cover provider-backed boot media, stage loading, payload loading,
+and generated board-adapter paths.
 
 ### Phase 10: ufmt Logging Infrastructure (COMPLETE)
 
@@ -698,10 +684,11 @@ There is no legacy metadata/interpreter path.
 - **`Board` trait**: `init_device`, `init_all_devices`, `install_logger`,
   capability trampolines, boot-media selection, and platform primitives.
 - **`DeviceMask`** — 256-bit bitset over `DeviceId` for init tracking.
-- **`BootMediaState`** — enum tracking the current boot medium (None / Mmio /
-  Block) so trampolines can reconstruct the concrete `impl BootMedia`.
-- **`BootMediaCandidate`** — static candidate rows for `BootMedia(AutoDevice)`
-  and `LoadNextStage` direct codeflow.
+- **`BootMediaState`** — enum tracking the current boot medium (None /
+  FirmwareImage / Block) so trampolines can reconstruct the concrete
+  `impl BootMedia`.
+- **`BootMediaCandidate`** — static candidate rows for Rust platform
+  boot-source metadata and `LoadNextStage` direct codeflow.
 
 #### Codegen changes: direct_flow.rs + board_gen.rs
 

@@ -96,7 +96,7 @@
             DramInit( device: "ddr0" ),
 
             // 4. Boot media: FFS on SPI NOR, accessible via QSPI0 XIP window.
-            BootMedia(MemoryMapped( base: 0x20000000, size: 0x2000000 )),
+            BootMedia(FirmwareImage()),
 
             // 5. Signature verification.
             SigVerify,

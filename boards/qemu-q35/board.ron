@@ -71,8 +71,8 @@
             // FFS at flash offset 0x100000 (1 MiB) — after stage code, before boot block.
             // Stage code (.text + .rodata + .ltext) occupies ~640 KiB at the
             // start of flash; 1 MiB gives headroom for growth.
-            // On x86, codegen copies FFS to RAM before use (fast LZ4/SHA).
-            BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000, ram_copy_addr: Some(0x2000000) )),
+            // Scratch RAM for temporary FFS/FIT staging during LZ4/SHA work.
+            BootMedia(FirmwareImage( temp_ram_buffer: Some((base: 0x02000000, size: 0x01000000)) )),
             SigVerify,
             DriverInit,
             PayloadLoad,

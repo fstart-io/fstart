@@ -260,7 +260,7 @@
                 ConsoleInit( device: "uart0" ),
                 EarlyInit( devices: ["northbridge", "southbridge"] ),
                 DramInit( device: "northbridge" ),
-                BootMedia(MemoryMappedFlash()),
+                BootMedia(FirmwareImage()),
                 StageLoad( next_stage: "ramstage" ),
             ],
             stack_size: 0x2000,
@@ -274,7 +274,7 @@
             name: "ramstage",
             capabilities: [
                 ConsoleInit( device: "uart0" ),
-                BootMedia(MemoryMappedFlash( ram_copy_addr: Some(0x02000000) )),
+                BootMedia(FirmwareImage( temp_ram_buffer: Some((base: 0x02000000, size: 0x01000000)) )),
                 SigVerify,
                 DriverInit,
                 // Rebind ramstage-local ECAM/chipset BAR access before reading

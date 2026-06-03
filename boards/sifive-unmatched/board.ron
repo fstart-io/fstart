@@ -35,19 +35,16 @@
     // from DRAM (QEMU -bios loads it there; real hardware boot ROM
     // copies from SPI flash to L2 LIM/DRAM before execution).
     //
-    // flash_base/flash_size: the FFS image is loaded by QEMU -bios at
-    // 0x80000000 and occupies ~30 MiB.  BSS and stack must be placed
-    // ABOVE this area — otherwise _start's BSS zeroing destroys the FFS
-    // blob data (firmware, kernel) before fstart_main can
-    // read it.  Setting flash_base == load_addr with a conservative
-    // flash_size pushes BSS to 0x90000000, safely above all blob load
-    // addresses (highest: DTB at 0x8F000000).
+    // QEMU -bios loads the FFS image at 0x80000000 and occupies ~30 MiB.
+    // BSS and stack must be placed ABOVE this area — otherwise _start's BSS
+    // zeroing destroys the FFS blob data (firmware, kernel) before
+    // fstart_main can read it. The Rust platform firmware-image mapping
+    // conservatively pushes BSS to 0x90000000, safely above all blob load addresses
+    // (highest: DTB at 0x8F000000).
     memory: (
         regions: [
             ( name: "ram", base: 0x80000000, size: 0x20000000, kind: Ram ),
         ],
-        flash_base: Some(0x80000000),
-        flash_size: Some(0x10000000),
     ),
 
     devices: [
@@ -69,7 +66,7 @@
         capabilities: [
             ConsoleInit( device: "uart0" ),
             MemoryInit,
-            BootMedia(MemoryMapped( base: 0x80000000, size: 0x20000000 )),
+            BootMedia(FirmwareImage()),
             SigVerify,
             FdtPrepare,
             PayloadLoad,
