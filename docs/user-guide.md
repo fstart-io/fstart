@@ -26,12 +26,12 @@ tuple with these top-level fields:
 
 ```
 name             string          board identifier
-platform         string          "riscv64" | "aarch64" | "armv7"
+platform         string          "riscv64" | "aarch64" | "armv7" | "x86_64"
 memory           MemoryMap       ROM and RAM regions
 devices          [DeviceConfig]  hardware devices and their drivers
 stages           StageLayout     boot stage(s) and their capability sequences
 security         SecurityConfig  signing key and digest algorithms
-mode             BuildMode       Rigid | Flexible
+mode             BuildMode       Rigid
 payload          PayloadConfig?  what to boot (Linux, FIT image, etc.)
 soc_image_format SocImageFormat  (optional) AllwinnerEgon for Allwinner SoCs
 ```
@@ -44,6 +44,7 @@ implementation is used:
 - `"riscv64"` — RISC-V 64-bit; boots Linux via SBI (OpenSBI or RustSBI)
 - `"aarch64"` — AArch64; boots Linux via ARM Trusted Firmware (BL31)
 - `"armv7"` — ARMv7 32-bit; boots Linux directly (zImage + ATAGs/DTB)
+- `"x86_64"` — x86-64; supports QEMU Q35 and supported Intel chipset boards
 
 ### Memory map
 
@@ -56,14 +57,11 @@ memory: (
         ( name: "flash", base: 0x20000000, size: 0x02000000, kind: Rom ),
         ( name: "ram",   base: 0x80000000, size: 0x08000000, kind: Ram ),
     ],
-    flash_base: Some(0x20000000),  // where the FFS firmware image starts
-    flash_size: Some(0x02000000),  // total size of the flash image
 ),
 ```
 
-`flash_base` and `flash_size` define the window that fstart will read as a
-firmware filesystem. Set them to `None` for boards where flash is not
-CPU-addressable (e.g. eMMC-only boards).
+Boot-media firmware-image mappings are supplied by Rust hardware/platform
+providers, not by raw `base`/`size` fields in board RON.
 
 Region `kind` values:
 - `Rom` — read-only flash (XIP or memory-mapped)
@@ -244,7 +242,7 @@ stages: MultiStage([
         name: "bootblock",
         capabilities: [
             ConsoleInit( device: "uart0" ),
-            BootMedia(MemoryMapped( base: 0x20000000, size: 0x02000000 )),
+            BootMedia(FirmwareImage()),
             SigVerify,
             StageLoad( next_stage: "main" ),
         ],
@@ -297,19 +295,18 @@ for each one.
 `SigVerify`, `StageLoad`, and `PayloadLoad`.
 
 ```ron
-// Flash mapped directly into the CPU address space (XIP)
-BootMedia(MemoryMapped( base: 0x20000000, size: 0x02000000 ))
+// Firmware image mapping supplied by a Rust platform/chipset provider.
+// If multiple providers are enabled, set `provider: Some("device_name")`.
+// Optional `temp_ram_buffer` is a scratch arena, not a raw flash mapping.
+BootMedia(FirmwareImage())
 
-// A block device from the devices list
-BootMedia(Device( name: "mmc0", offset: 0x2000, size: 0x800000 ))
-
-// Allwinner auto-detect: picks whichever block device the BROM booted from
-BootMedia(AutoDevice(
-    devices: [
-        ( name: "mmc0", offset: 0x2000, size: 0x800000 ),
-        ( name: "spi0", offset: 0,      size: 0x400000 ),
-    ],
+// With scratch RAM:
+BootMedia(FirmwareImage(
+    temp_ram_buffer: Some((base: 0x02000000, size: 0x01000000)),
 ))
+
+// On platforms such as Allwinner/sunxi, Rust platform metadata supplies the
+// boot-source-selected block candidates; no device/offset table appears here.
 ```
 
 ### Security
@@ -331,18 +328,12 @@ fstart's scope; any standard Ed25519 or P-256 key pair works.
 ### Mode
 
 ```ron
-mode: Rigid,    // Concrete types, maximum dead-code elimination (recommended)
-mode: Flexible, // Enum wrappers around service traits, runtime dispatch
+mode: Rigid,    // Concrete types, maximum dead-code elimination
 ```
 
 `Rigid` mode generates code where every driver type is known at compile time.
-The compiler can inline, optimize, and eliminate dead code aggressively. Use
-this for production builds.
-
-`Flexible` mode generates an enum wrapper for each service type. This allows
-writing board-agnostic code that dispatches at runtime, at the cost of a small
-match overhead. Useful when a single binary must support multiple hardware
-variants.
+The compiler can inline, optimize, and eliminate dead code aggressively. This is
+the only supported build mode.
 
 ### Payload
 
@@ -442,8 +433,6 @@ the board file.
 | `qemu-armv7` | ARMv7 | QEMU virt, PL011, boots Linux directly |
 | `qemu-riscv64-multi` | RISC-V 64 | Two-stage: bootblock (ROM) → main (RAM) |
 | `qemu-aarch64-multi` | AArch64 | Two-stage: bootblock (ROM) → main (RAM) |
-| `qemu-riscv64-flex` | RISC-V 64 | Flexible dispatch mode |
-| `qemu-aarch64-flex` | AArch64 | Flexible dispatch mode |
 | `bananapi-m1` | ARMv7 | Allwinner A20, real hardware, eGON, multi-stage |
 
 The `boards/` directory for each of these is a working example. Copying one

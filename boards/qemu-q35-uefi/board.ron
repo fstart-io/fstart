@@ -68,9 +68,9 @@
             capabilities: [
                 ConsoleInit( device: "uart0" ),
                 // FFS at flash offset 0x100000 (1 MiB) — after stage code.
-                // base = flash_base + 0x100000 = 0xFF900000.
-                // size = 8 MiB - 1 MiB (stage) - 4 KiB (boot block) ≈ 7 MiB.
-                BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000 )),
+                // The Q35 Rust platform firmware-image mapping supplies the
+                // CPU-visible FFS window.
+                BootMedia(FirmwareImage()),
                 StageLoad( next_stage: "main" ),
             ],
             load_addr: 0xFF800000,
@@ -99,8 +99,8 @@
                 AcpiLoad( device: "fw_cfg0" ),
                 PciInit( device: "pci0" ),
                 // FFS at flash offset 0x100000 — same as bootblock.
-                // Copied to RAM at 32 MiB for fast LZ4/SHA operations.
-                BootMedia(MemoryMapped( base: 0xFF900000, size: 0x006FF000, ram_copy_addr: Some(0x2000000) )),
+                // Scratch RAM at 32 MiB for temporary FFS/FIT staging.
+                BootMedia(FirmwareImage( temp_ram_buffer: Some((base: 0x02000000, size: 0x01000000)) )),
                 SigVerify,
                 PayloadLoad,
             ],

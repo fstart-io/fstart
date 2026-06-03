@@ -44,8 +44,6 @@
             // used by the linker for the `ramstage` layout.
             ( name: "ram",   base: 0x00100000, size: 0x3FF00000, kind: Ram ),
         ],
-        flash_base: 0xFF000000,
-        flash_size: 0x01000000,
         // Cache-as-RAM window. Match coreboot's foxconn/d41s Pineview
         // configuration exactly: CONFIG_DCACHE_RAM_BASE=0xFEFC0000,
         // CONFIG_DCACHE_RAM_SIZE=0x8000.  NEM is sensitive to the pinned
@@ -273,7 +271,7 @@
                 // DDR2 training needs SMBus (enabled by EarlyInit).
                 DramInit( device: "northbridge" ),
                 // Load the ramstage from FFS in flash and jump to it.
-                BootMedia(MemoryMappedFlash()),
+                BootMedia(FirmwareImage()),
                 StageLoad( next_stage: "ramstage" ),
             ],
             // Code runs XIP from top-aligned ROM (reset vector 0xFFFFFFF0).
@@ -296,7 +294,7 @@
             name: "ramstage",
             capabilities: [
                 ConsoleInit( device: "superio" ),
-                BootMedia(MemoryMappedFlash( ram_copy_addr: Some(0x02000000) )),
+                BootMedia(FirmwareImage( temp_ram_buffer: Some((base: 0x02000000, size: 0x01000000)) )),
                 SigVerify,
                 DriverInit,
                 // Re-initialize ramstage-local chipset access first: each stage

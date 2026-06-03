@@ -26,8 +26,6 @@
             ( name: "flash", base: 0x00000000, size: 0x08000000, kind: Rom ),
             ( name: "ram",   base: 0x40000000, size: 0x08000000, kind: Ram ),
         ],
-        flash_base: Some(0x00000000),
-        flash_size: Some(0x08000000),
     ),
 
     devices: [
@@ -46,7 +44,7 @@
             name: "bootblock",
             capabilities: [
                 ConsoleInit( device: "uart0" ),
-                BootMedia(MemoryMappedFlash()),
+                BootMedia(FirmwareImage()),
                 SigVerify,
                 StageLoad( next_stage: "main" ),
             ],
