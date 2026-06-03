@@ -28,6 +28,11 @@ static IMAGE_SIZE: AtomicU64 = AtomicU64::new(0);
 /// Publish a memory-mapped FFS context for later driver initialization.
 #[inline]
 pub fn set_memory_mapped(anchor: &[u8], image_base: u64, image_size: u64) {
+    if image_base == 0 || image_size == 0 {
+        IMAGE_SIZE.store(0, Ordering::Release);
+        return;
+    }
+
     ANCHOR_ADDR.store(anchor.as_ptr() as usize, Ordering::Relaxed);
     ANCHOR_LEN.store(anchor.len(), Ordering::Relaxed);
     IMAGE_BASE.store(image_base, Ordering::Relaxed);
@@ -42,7 +47,7 @@ pub fn memory_mapped() -> Option<MemoryMappedFfsContext> {
     let anchor_addr = ANCHOR_ADDR.load(Ordering::Relaxed);
     let anchor_len = ANCHOR_LEN.load(Ordering::Relaxed);
 
-    if image_size == 0 || anchor_addr == 0 || anchor_len == 0 {
+    if image_size == 0 || image_base == 0 || anchor_addr == 0 || anchor_len == 0 {
         return None;
     }
 
@@ -70,7 +75,7 @@ impl MemoryMappedFfsContext {
     ///
     /// # Safety
     ///
-    /// Board configuration must describe a valid memory-mapped boot-media
+    /// The active boot-media provider must describe a valid memory-mapped
     /// window covering the FFS image.
     #[inline]
     pub unsafe fn image_bytes(&self) -> &'static [u8] {

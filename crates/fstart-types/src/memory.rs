@@ -19,24 +19,6 @@ pub struct MemoryMap {
     /// optionally populate the non-BIOS regions.
     #[serde(default)]
     pub flash_layout: Option<FlashLayout>,
-    /// Base address where the firmware flash image is mapped in memory.
-    ///
-    /// For XIP flash, this is the flash memory-mapped region start.
-    /// For QEMU `-bios`, this is the address where QEMU loads the image
-    /// (typically the RAM base, e.g., `0x80000000` for riscv64 virt).
-    ///
-    /// Used by `SigVerify`, `StageLoad`, and `PayloadLoad` to locate
-    /// the FFS anchor and file data in the firmware image. If `None`,
-    /// these capabilities fall back to scanning or use the bootblock's
-    /// own load address.
-    #[serde(default)]
-    pub flash_base: Option<u64>,
-    /// Total size of the firmware flash image in bytes.
-    ///
-    /// Used to bound the `FfsReader`'s view of the flash image.
-    /// If `None`, the total image size from the FFS anchor is used instead.
-    #[serde(default)]
-    pub flash_size: Option<u64>,
     /// Cache-as-RAM (CAR) region for pre-DRAM x86 stages.
     ///
     /// On x86 platforms, bootblock (and optionally romstage) runs
@@ -57,39 +39,71 @@ pub struct MemoryMap {
 }
 
 impl MemoryMap {
-    /// Derive redundant firmware-image facts from the flash layout.
+    /// Return the contiguous ROM/IFD firmware aperture, when the memory map
+    /// declares one.
     ///
-    /// Intel IFD boards describe the full flash aperture and its BIOS region in
-    /// `flash_layout`.  This helper derives `flash_base` / `flash_size` and a
-    /// ROM memory region for the host-visible BIOS window when they are omitted,
-    /// while rejecting conflicting explicit values.
+    /// Boot media does not consume this directly; firmware-image mappings come
+    /// from Rust providers. Linker/setup code still uses the ROM aperture for
+    /// placement and x86 cache/MTRR setup.
+    pub fn firmware_window(&self) -> Option<(u64, u64)> {
+        if let Some(FlashLayout::IntelIfd(layout)) = &self.flash_layout {
+            let bios = layout.bios_region()?;
+            return Some((layout.base + u64::from(bios.offset), u64::from(bios.size)));
+        }
+
+        self.contiguous_rom_window()
+    }
+
+    /// Derive redundant firmware-image facts.
+    ///
+    /// Intel IFD boards describe the host-visible BIOS window in
+    /// `flash_layout`; this helper ensures the linker-visible ROM region exists
+    /// for that window. Non-descriptor boards describe the flash aperture as one
+    /// or more contiguous ROM regions and need no mutation.
     pub fn normalize_derived_flash(&mut self) -> Result<(), MemoryMapError> {
+        if let Some((base, size)) = self.ifd_bios_window()? {
+            return self.ensure_rom_region(base, size);
+        }
+
+        Ok(())
+    }
+
+    fn ifd_bios_window(&self) -> Result<Option<(u64, u64)>, MemoryMapError> {
         let Some(FlashLayout::IntelIfd(layout)) = &self.flash_layout else {
-            return Ok(());
+            return Ok(None);
         };
         let bios = layout
             .bios_region()
             .ok_or(MemoryMapError::MissingBiosRegion)?;
-        let expected_base = layout.base + u64::from(bios.offset);
-        let expected_size = u64::from(bios.size);
+        Ok(Some((
+            layout.base + u64::from(bios.offset),
+            u64::from(bios.size),
+        )))
+    }
 
-        match (self.flash_base, self.flash_size) {
-            (Some(base), Some(size)) if base == expected_base && size == expected_size => {}
-            (None, None) => {
-                self.flash_base = Some(expected_base);
-                self.flash_size = Some(expected_size);
-            }
-            (base, size) => {
-                return Err(MemoryMapError::FirmwareWindowMismatch {
-                    expected_base,
-                    expected_size,
-                    actual_base: base,
-                    actual_size: size,
-                });
-            }
+    fn contiguous_rom_window(&self) -> Option<(u64, u64)> {
+        let mut count = 0usize;
+        let mut base = u64::MAX;
+        let mut end = 0u64;
+        let mut total_size = 0u64;
+
+        for region in self
+            .regions
+            .iter()
+            .filter(|region| region.kind == RegionKind::Rom)
+        {
+            let region_end = region.base.checked_add(region.size)?;
+            count += 1;
+            base = base.min(region.base);
+            end = end.max(region_end);
+            total_size = total_size.checked_add(region.size)?;
         }
 
-        self.ensure_rom_region(expected_base, expected_size)
+        if count == 0 || end.checked_sub(base)? != total_size {
+            return None;
+        }
+
+        Some((base, total_size))
     }
 
     fn ensure_rom_region(
@@ -132,17 +146,6 @@ impl MemoryMap {
 pub enum MemoryMapError {
     /// Intel IFD layout lacks a BIOS region entry.
     MissingBiosRegion,
-    /// Explicit `flash_base` / `flash_size` conflicts with the derived window.
-    FirmwareWindowMismatch {
-        /// Expected host-visible firmware base.
-        expected_base: u64,
-        /// Expected firmware size.
-        expected_size: u64,
-        /// Actual configured base.
-        actual_base: Option<u64>,
-        /// Actual configured size.
-        actual_size: Option<u64>,
-    },
     /// A ROM memory region overlaps the derived firmware window without matching it.
     RomRegionOverlap {
         /// Expected ROM base.
@@ -162,16 +165,6 @@ impl fmt::Display for MemoryMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::MissingBiosRegion => f.write_str("Intel IFD flash_layout requires a BIOS region"),
-            Self::FirmwareWindowMismatch {
-                expected_base,
-                expected_size,
-                actual_base,
-                actual_size,
-            } => write!(
-                f,
-                "memory.flash_base/flash_size must describe the firmware image region: \
-                 expected base={expected_base:#x} size={expected_size:#x}, got base={actual_base:?} size={actual_size:?}"
-            ),
             Self::RomRegionOverlap {
                 expected_base,
                 expected_size,

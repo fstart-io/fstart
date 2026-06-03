@@ -47,7 +47,99 @@
 //! fstart_capabilities::stage_load("main", anchor, &media, jump_to);
 //! ```
 
-use crate::{BlockDevice, ServiceError};
+use fstart_types::TempRamBuffer;
+
+use crate::{BlockDevice, FirmwareImage, ServiceError};
+
+/// Simple bump allocator over a caller-provided temporary RAM buffer.
+///
+/// The allocator is intentionally tiny and `no_std` friendly. It owns no memory;
+/// it only tracks offsets inside a RAM arena declared by board/platform policy.
+/// Callers may reset it between independent FFS operations.
+pub struct TempRamArena {
+    base: *mut u8,
+    size: usize,
+    used: usize,
+}
+
+impl TempRamArena {
+    /// Create a scratch arena from a typed RAM buffer descriptor.
+    ///
+    /// # Safety
+    ///
+    /// `buffer.base..buffer.base + buffer.size` must be valid writable RAM for
+    /// the lifetime of this arena.
+    pub unsafe fn new(buffer: TempRamBuffer) -> Result<Self, ServiceError> {
+        let base = usize::try_from(buffer.base).map_err(|_| ServiceError::InvalidParam)?;
+        let size = usize::try_from(buffer.size).map_err(|_| ServiceError::InvalidParam)?;
+        if size != 0 && base == 0 {
+            return Err(ServiceError::InvalidParam);
+        }
+        base.checked_add(size).ok_or(ServiceError::InvalidParam)?;
+        Ok(Self {
+            base: base as *mut u8,
+            size,
+            used: 0,
+        })
+    }
+
+    /// Reset the arena, allowing previous temporary allocations to be reused.
+    pub fn reset(&mut self) {
+        self.used = 0;
+    }
+
+    /// Allocate `len` bytes with `align` alignment.
+    pub fn alloc(&mut self, len: usize, align: usize) -> Option<&mut [u8]> {
+        let align = align.max(1);
+        if !align.is_power_of_two() {
+            return None;
+        }
+        let base = self.base as usize;
+        let raw_start = base.checked_add(self.used)?;
+        let aligned_start = raw_start.checked_add(align - 1)? & !(align - 1);
+        let start = aligned_start.checked_sub(base)?;
+        let end = start.checked_add(len)?;
+        if end > self.size {
+            return None;
+        }
+        self.used = end;
+        // SAFETY: new() establishes the writable RAM arena, and bounds checks
+        // above ensure this allocation lies inside it. The bump cursor prevents
+        // overlapping live allocations until reset().
+        Some(unsafe { core::slice::from_raw_parts_mut(aligned_start as *mut u8, len) })
+    }
+
+    /// Return arena capacity in bytes.
+    pub const fn capacity(&self) -> usize {
+        self.size
+    }
+
+    /// Return currently used bytes.
+    pub const fn used(&self) -> usize {
+        self.used
+    }
+}
+
+// SAFETY: TempRamArena is just a scalar descriptor for a caller-owned scratch
+// RAM range. Firmware execution is single-threaded in current use; sharing the
+// descriptor does not add aliasing beyond unsafe construction/alloc contracts.
+unsafe impl Send for TempRamArena {}
+unsafe impl Sync for TempRamArena {}
+
+/// Read a boot-media range into temporary RAM and return the copied slice.
+pub fn read_to_temp<'a>(
+    media: &impl BootMedia,
+    offset: usize,
+    len: usize,
+    arena: &'a mut TempRamArena,
+) -> Result<&'a [u8], ServiceError> {
+    let buf = arena.alloc(len, 8).ok_or(ServiceError::InvalidParam)?;
+    let read = media.read_at(offset, buf)?;
+    if read != len {
+        return Err(ServiceError::InvalidParam);
+    }
+    Ok(buf)
+}
 
 /// Abstraction over firmware boot media.
 ///
@@ -129,6 +221,16 @@ pub trait FlashMap: Send + Sync {
     /// guarantees `flash_offset` is within the boot media bounds.
     fn translate(&self, flash_offset: usize) -> *const u8;
 
+    /// Return how many bytes can be copied contiguously from `flash_offset`.
+    ///
+    /// Simple linear maps return `max_len`.  Multi-window maps override this
+    /// so [`MemoryMapped::read_at`] never copies across a window boundary with
+    /// one pointer.
+    fn contiguous_len(&self, flash_offset: usize, max_len: usize) -> usize {
+        let _ = flash_offset;
+        max_len
+    }
+
     /// Return a contiguous slice covering the entire mapped region.
     ///
     /// Returns `Some` only if the mapping is contiguous in CPU address
@@ -157,6 +259,66 @@ pub trait FlashMap: Send + Sync {
 /// directly in the platform crate instead.
 pub struct LinearMap {
     base: *const u8,
+}
+
+/// Memory-map implementation backed by a [`FirmwareImage`] window table.
+///
+/// This supports chipsets that expose the logical firmware image through more
+/// than one CPU-visible window.  A zero-copy contiguous slice is only reported
+/// when the whole image is covered by one window.
+pub struct FirmwareImageMap {
+    image: FirmwareImage,
+}
+
+impl FirmwareImageMap {
+    /// Create a map from a firmware-image descriptor.
+    pub const fn new(image: FirmwareImage) -> Self {
+        Self { image }
+    }
+}
+
+// SAFETY: FirmwareImageMap is a read-only address translation table.  It does
+// not own or mutate the mapped hardware region.
+unsafe impl Send for FirmwareImageMap {}
+unsafe impl Sync for FirmwareImageMap {}
+
+impl FlashMap for FirmwareImageMap {
+    #[inline(always)]
+    fn translate(&self, flash_offset: usize) -> *const u8 {
+        self.image.translate(flash_offset as u64).unwrap_or(0) as *const u8
+    }
+
+    #[inline(always)]
+    fn contiguous_len(&self, flash_offset: usize, max_len: usize) -> usize {
+        let offset = flash_offset as u64;
+        for window in self.image.active_windows() {
+            if window.contains(offset) {
+                let Some(flash_end) = window.flash_end() else {
+                    return 0;
+                };
+                let remaining = (flash_end - offset) as usize;
+                return remaining.min(max_len);
+            }
+        }
+        0
+    }
+
+    #[inline(always)]
+    fn as_contiguous_slice(&self, size: usize) -> Option<&[u8]> {
+        let window = self.image.contiguous_window()?;
+        if window.size as usize != size {
+            return None;
+        }
+        if size == 0 {
+            return Some(&[]);
+        }
+        if window.cpu_base == 0 {
+            return None;
+        }
+        // SAFETY: FirmwareImageProvider implementations guarantee that active
+        // windows are valid readable mappings for their declared extents.
+        Some(unsafe { core::slice::from_raw_parts(window.cpu_base as *const u8, size) })
+    }
 }
 
 impl LinearMap {
@@ -212,8 +374,11 @@ impl FlashMap for LinearMap {
         if size == 0 {
             return Some(&[]);
         }
+        if self.base.is_null() {
+            return None;
+        }
         // SAFETY: base..base+size is guaranteed valid by the caller of
-        // LinearMap::new() / from_raw_addr(). Non-zero size guarantees non-null.
+        // LinearMap::new() / from_raw_addr().
         Some(unsafe { core::slice::from_raw_parts(self.base, size) })
     }
 }
@@ -310,15 +475,23 @@ impl<F: FlashMap> BootMedia for MemoryMapped<F> {
         // for robustness: when the FFS image is loaded into RAM (not XIP
         // flash), source and destination regions may overlap — e.g., loading
         // a large kernel from FFS at 0x80000000 to a nearby load address.
-        let src = self.map.translate(offset);
-        unsafe {
-            core::ptr::copy(src, buf.as_mut_ptr(), buf.len());
-            // Ensure the copy is not reordered or optimized away.
-            // Needed when source and destination are both in RAM (non-XIP
-            // boards) and subsequent reads from the same address space
-            // must see the updated data.
-            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        let mut copied = 0usize;
+        while copied < buf.len() {
+            let flash_offset = offset + copied;
+            let chunk_len = self.map.contiguous_len(flash_offset, buf.len() - copied);
+            if chunk_len == 0 {
+                return Err(ServiceError::InvalidParam);
+            }
+            let src = self.map.translate(flash_offset);
+            unsafe {
+                core::ptr::copy(src, buf.as_mut_ptr().add(copied), chunk_len);
+            }
+            copied += chunk_len;
         }
+        // Ensure the copy is not reordered or optimized away. Needed when
+        // source and destination are both in RAM (non-XIP boards) and
+        // subsequent reads from the same address space must see the update.
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         Ok(buf.len())
     }
 

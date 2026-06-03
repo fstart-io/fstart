@@ -24,7 +24,8 @@ pub mod mask;
 pub use mask::DeviceMask;
 
 use fstart_services::device::DeviceError;
-use fstart_types::DeviceId;
+use fstart_services::FirmwareImage;
+use fstart_types::{DeviceId, TempRamBuffer};
 
 // ---------------------------------------------------------------------------
 // BootMediaState — runtime record of which boot medium is currently active
@@ -33,7 +34,7 @@ use fstart_types::DeviceId;
 /// Board-adapter bookkeeping for the current boot medium.
 ///
 /// The executor tells the adapter *which* boot medium should be active
-/// (via [`Board::boot_media_static`] or [`Board::boot_media_select`])
+/// (via provider-backed firmware-image setup or [`Board::boot_media_select`])
 /// but does not care *how* the adapter represents it.  This enum is
 /// the common storage shape the generated adapter uses on `self`:
 ///
@@ -41,22 +42,18 @@ use fstart_types::DeviceId;
 ///   initial state of a fresh adapter, and also the state of a stage
 ///   whose capability list never touches FFS.
 ///
-/// - [`Mmio`](Self::Mmio): a memory-mapped flash window.  The generated
-///   [`Board::sig_verify`] / [`Board::payload_load`] / etc. trampolines
-///   reconstruct a [`fstart_services::boot_media::MemoryMapped`]
-///   from `base` + `size` on each call.  Cheap — `MemoryMapped` is a
-///   `Copy`-ish descriptor with no owned state.
+/// - [`FirmwareImage`](Self::FirmwareImage): a firmware image supplied by a
+///   Rust provider/platform memory mapping.
 ///
-/// - [`Block`](Self::Block): a block device (SPI NOR, SD/MMC, …)
-///   identified by its `DeviceId`.  The generated trampolines match
-///   on the id to pick the right `self.<name>.as_ref().unwrap()` and
-///   wrap it in a
-///   [`fstart_services::boot_media::BlockDeviceMedia`].
+/// - [`FirmwareImageBlock`](Self::FirmwareImageBlock): a firmware image whose
+///   backing storage is reached through a Rust platform-selected block device
+///   (for example sunxi eGON boot-source selection). The generated trampolines
+///   match on the device id to pick the right `self.<name>.as_ref().unwrap()`
+///   and wrap it in [`fstart_services::boot_media::BlockDeviceMedia`].
 ///
 /// Using a single state type (rather than trait objects or an
-/// adapter-local enum per board) keeps codegen simple and lets
-/// [`Board::boot_media_static`] stay `fn(Option<DeviceId>, u64, u64)`
-/// without any board-specific argument plumbing.
+/// adapter-local enum per board) keeps codegen simple without any
+/// board-specific argument plumbing.
 ///
 /// # Why this lives in the runtime crate
 ///
@@ -65,8 +62,8 @@ use fstart_types::DeviceId;
 /// the enum here means:
 ///
 /// - The three variants cannot drift between boards.
-/// - Future changes (e.g. adding a `Cached` variant for the
-///   RAM-copy-then-read path) land in exactly one place, visible to
+/// - Future changes (e.g. adding a cached/scratch-backed variant) land in
+///   exactly one place, visible to
 ///   both `fstart-codegen` and tests.
 /// - The invariant that boot-media state is just scalar data (no
 ///   references, no lifetimes) is encoded in the type itself.
@@ -74,24 +71,20 @@ use fstart_types::DeviceId;
 pub enum BootMediaState {
     /// No boot medium selected yet, or the stage never selects one.
     None,
-    /// Memory-mapped flash at `base..base + size`.  Covers the
-    /// [`BootMedium::MemoryMapped`](fstart_types::BootMedium::MemoryMapped)
-    /// RON variant.
-    Mmio {
-        /// CPU-visible base address of the flash window.
-        base: u64,
-        /// Window size in bytes.
-        size: u64,
+    /// Firmware image mapping supplied by a hardware provider.
+    FirmwareImage {
+        /// Logical firmware image and its CPU-visible windows.
+        image: FirmwareImage,
+        /// Optional scratch arena for temporary FFS/payload buffers.
+        temp_ram_buffer: Option<TempRamBuffer>,
     },
-    /// Block device identified by [`DeviceId`] — SPI, SD/MMC, etc.
+    /// Firmware image backed by a platform-selected block device.
     ///
     /// `offset` is where the FFS image begins on the device, `size`
-    /// is the image extent.  Covers [`BootMedium::Device`] and the
-    /// runtime-selected [`BootMedium::AutoDevice`].
-    ///
-    /// [`BootMedium::Device`]: fstart_types::BootMedium::Device
-    /// [`BootMedium::AutoDevice`]: fstart_types::BootMedium::AutoDevice
-    Block {
+    /// is the image extent. This covers runtime-selected Rust platform
+    /// boot-source candidates while keeping the public boot-media model as
+    /// `FirmwareImage`.
+    FirmwareImageBlock {
         /// Which device in the adapter's field set provides the
         /// backing `BlockDevice` impl.
         device_id: DeviceId,
@@ -99,26 +92,37 @@ pub enum BootMediaState {
         offset: u64,
         /// FFS image size in bytes.
         size: u64,
+        /// Optional scratch arena for temporary FFS/payload buffers.
+        temp_ram_buffer: Option<TempRamBuffer>,
     },
 }
 
 impl BootMediaState {
-    /// Compact constructor matching the [`Board::boot_media_static`]
-    /// argument shape: `None` selects memory-mapped at `(offset, size)`,
-    /// `Some(id)` selects the named block device.
-    ///
-    /// Kept as a separate function rather than a trait method so host
-    /// tests can build expected states without needing a full `Board`
-    /// impl.
+    /// Construct a block-device-backed firmware-image state.
     #[inline]
-    pub const fn from_static(device: Option<DeviceId>, offset: u64, size: u64) -> Self {
-        match device {
-            None => Self::Mmio { base: offset, size },
-            Some(id) => Self::Block {
-                device_id: id,
-                offset,
-                size,
-            },
+    pub const fn from_block_firmware_image(
+        device_id: DeviceId,
+        offset: u64,
+        size: u64,
+        temp_ram_buffer: Option<TempRamBuffer>,
+    ) -> Self {
+        Self::FirmwareImageBlock {
+            device_id,
+            offset,
+            size,
+            temp_ram_buffer,
+        }
+    }
+
+    /// Construct a firmware-image-backed boot media state.
+    #[inline]
+    pub const fn from_firmware_image(
+        image: FirmwareImage,
+        temp_ram_buffer: Option<TempRamBuffer>,
+    ) -> Self {
+        Self::FirmwareImage {
+            image,
+            temp_ram_buffer,
         }
     }
 }
@@ -126,8 +130,8 @@ impl BootMediaState {
 /// One candidate in a runtime-selected boot-media table.
 ///
 /// Generated direct codeflow emits static slices of this type for
-/// `BootMedia(AutoDevice)` and `LoadNextStage` operations, then passes them to
-/// [`Board::boot_media_select`].
+/// provider/platform boot media and `LoadNextStage` operations, then passes
+/// them to [`Board::boot_media_select`].
 #[derive(Debug, Clone, Copy)]
 pub struct BootMediaCandidate {
     /// Device to use as the boot medium.
@@ -362,7 +366,7 @@ pub trait Board: Sized {
 
     // ----- Boot media selection -------------------------------------------
 
-    /// Selection step for `BootMedia(AutoDevice)` / `LoadNextStage`.  Inspects the hardware boot-source register and
+    /// Selection step for provider-backed boot media / `LoadNextStage`.  Inspects the hardware boot-source register and
     /// picks one of `candidates`, recording the selection inside the
     /// board so later `sig_verify` / `payload_load` / etc. read from
     /// the right place.
@@ -371,14 +375,38 @@ pub trait Board: Sized {
     /// nothing matched.
     fn boot_media_select(&mut self, candidates: &[BootMediaCandidate]) -> Option<DeviceId>;
 
-    /// Stage operation for static boot media. Records the
-    /// static boot-media descriptor inside the board so later
-    /// capabilities (`sig_verify`, etc.) read from it.
+    /// Record a firmware image backed by a Rust platform-selected block device
+    /// so later capabilities (`sig_verify`, etc.) read from it.
+    fn boot_media_block_firmware_image(
+        &mut self,
+        device: DeviceId,
+        offset: u64,
+        size: u64,
+        temp_ram_buffer: Option<TempRamBuffer>,
+    );
+
+    /// Stage operation for provider-backed firmware-image boot media.
     ///
-    /// - `device = None`: memory-mapped flash at `(offset, size)`.
-    /// - `device = Some(id)`: block device `id` starting at `offset`,
-    ///   `size` bytes long.
-    fn boot_media_static(&mut self, device: Option<DeviceId>, offset: u64, size: u64);
+    /// `provider` names a device implementing `FirmwareImageProvider`; the
+    /// generated board adapter calls that device at runtime and records the
+    /// resulting memory-window table. If `temp_ram_buffer` is `Some`, the
+    /// scratch arena is recorded for FFS operations that need temporary
+    /// contiguous buffers.
+    fn boot_media_firmware_image(
+        &mut self,
+        provider: DeviceId,
+        temp_ram_buffer: Option<TempRamBuffer>,
+    ) -> Result<(), RuntimeError>;
+
+    /// Stage operation for Rust platform-backed firmware-image boot media.
+    ///
+    /// This covers fixed emulator/SoC ROM windows whose mapping is known from
+    /// platform code rather than a runtime device register.
+    fn boot_media_platform_firmware_image(
+        &mut self,
+        image: FirmwareImage,
+        temp_ram_buffer: Option<TempRamBuffer>,
+    ) -> Result<(), RuntimeError>;
 
     /// Stage operation for `LoadNextStage`.  Diverges.  Uses
     /// whichever boot medium `boot_media_select` just picked to read

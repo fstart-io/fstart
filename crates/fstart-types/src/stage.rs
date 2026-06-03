@@ -439,105 +439,42 @@ pub struct LoadDevice {
     pub base_offset: u64,
 }
 
-/// A boot device candidate for `BootMedium::AutoDevice`.
+/// Temporary RAM scratch buffer for firmware-image/FFS operations.
 ///
-/// Similar to [`LoadDevice`] but also carries the FFS region size
-/// needed by the `BootMedia` capability.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// This is a bounded arena, not a firmware-image mapping. Runtime code may use
+/// it for short-lived copies needed by non-memory-mapped providers or parsers
+/// that need contiguous input. The buffer must be valid writable RAM and must
+/// not overlap any source image bytes being copied into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AutoBootDevice {
-    /// Device name from the devices list (e.g., "mmc0", "spi0").
-    pub name: HString<32>,
-    /// Byte offset on the device where the FFS image starts.
-    pub offset: u64,
-    /// Size of the FFS image region in bytes.
+pub struct TempRamBuffer {
+    /// Base address of the scratch arena in RAM.
+    pub base: u64,
+    /// Size of the scratch arena in bytes.
     pub size: u64,
 }
 
 /// Boot medium — how the firmware image is accessed at runtime.
 ///
 /// Specified via the `BootMedia(...)` capability in the board RON.
-/// Determines which `BootMedia` trait implementation is constructed
-/// in the generated stage code.
+/// Firmware image mapping and boot-source candidate tables are supplied by
+/// Rust platform/chipset/provider code, not by raw board-local RON mappings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum BootMedium {
-    /// Memory-mapped flash.
+    /// Firmware image exposed by a hardware provider.
     ///
-    /// The SoC maps the flash chip into the CPU address space starting
-    /// at `base`. This is the SoC-specific raw-flash-to-CPU address
-    /// translation. Generated code constructs a `MemoryMapped` from
-    /// these values — zero-cost, no vtable.
-    ///
-    /// ```ron
-    /// BootMedia(MemoryMapped(base: 0x20000000, size: 0x02000000))
-    /// ```
-    MemoryMapped {
-        /// CPU-visible base address where the flash is mapped.
-        base: u64,
-        /// Size of the mapped flash region in bytes.
-        size: u64,
-        /// Optional RAM address to copy FFS data before accessing it.
-        ///
-        /// On x86_64 with code-model=large, FFS operations (postcard
-        /// deserialization, LZ4 decompression) are significantly faster
-        /// when operating on RAM rather than flash-mapped MMIO. When
-        /// set, generated code copies `size` bytes from `base` to this
-        /// address before constructing the `MemoryMapped` accessor.
-        ///
-        /// On platforms with true XIP (ARM, RISC-V), this should be
-        /// `None` — the flash is accessed directly.
+    /// The named provider device implements `FirmwareImageProvider`; if omitted,
+    /// codegen selects the sole enabled provider, or a Rust platform mapping for
+    /// fixed emulator/SoC ROM windows. The provider owns the hardware-specific
+    /// flash/MMIO decode information, including chipsets with multiple
+    /// memory-mapped windows.
+    FirmwareImage {
+        /// Optional device name implementing `FirmwareImageProvider`.
         #[serde(default)]
-        ram_copy_addr: Option<u64>,
-    },
-    /// The board's configured firmware image window.
-    ///
-    /// The RON loader resolves this shorthand to `MemoryMapped { base, size, ... }`
-    /// using `memory.flash_base/flash_size` (or the BIOS region of
-    /// `memory.flash_layout`). Use this when a stage wants to read the same
-    /// signed FFS image described by the board memory map without repeating the
-    /// address and size in every `BootMedia` capability.
-    MemoryMappedFlash {
-        /// Optional RAM address to copy FFS data before accessing it.
+        provider: Option<HString<32>>,
+        /// Optional scratch RAM arena available to FFS/payload code.
         #[serde(default)]
-        ram_copy_addr: Option<u64>,
-    },
-    /// A named device that implements `BlockDevice`.
-    ///
-    /// The device must be listed in `devices` and initialized (via
-    /// `ConsoleInit`, `DriverInit`, or similar) before the `BootMedia`
-    /// capability appears. Generated code wraps the device in a
-    /// `BlockDeviceMedia` adapter with the given base offset and size.
-    ///
-    /// ```ron
-    /// BootMedia(Device(name: "mmc0", offset: 0x2000, size: 0x400000))
-    /// ```
-    Device {
-        /// Device name from the devices list (e.g., "mmc0")
-        name: HString<32>,
-        /// Byte offset on the device where the FFS image starts.
-        ///
-        /// For Allwinner SD card boot, this is 8192 (sector 16) where
-        /// the BROM loads from.
-        offset: u64,
-        /// Size of the FFS image region in bytes.
-        size: u64,
-    },
-    /// Runtime boot device auto-detection.
-    ///
-    /// On sunxi, the BROM writes the boot source into the eGON header.
-    /// The generated code reads `boot_device()` and selects the matching
-    /// candidate device. A small `BlockDevice` dispatch enum is generated
-    /// to unify the different device types behind a single variable.
-    ///
-    /// ```ron
-    /// BootMedia(AutoDevice(devices: [
-    ///     (name: "mmc0", offset: 0x2000, size: 0x800000),
-    ///     (name: "spi0", offset: 0,      size: 0x400000),
-    /// ]))
-    /// ```
-    AutoDevice {
-        /// Boot device candidates — auto-selected at runtime.
-        devices: heapless::Vec<AutoBootDevice, 4>,
+        temp_ram_buffer: Option<TempRamBuffer>,
     },
 }
