@@ -4,7 +4,7 @@
 //! before anything that logs) and provides predicate functions used by the
 //! codegen orchestrator to decide which sections to emit.
 
-use fstart_device_registry::Service;
+use fstart_device_registry::{DriverInstance, Service};
 
 use fstart_types::{
     BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, Platform, StageLayout,
@@ -349,10 +349,11 @@ pub(super) fn is_uefi_payload(config: &BoardConfig) -> bool {
 pub(super) fn validate_capability_services(
     capabilities: &[Capability],
     config: &BoardConfig,
+    instances: &[DriverInstance],
     device_services: &[heapless::Vec<Service, 16>],
 ) -> Option<String> {
     for cap in capabilities {
-        if let Err(err) = validate_capability_service(cap, config, device_services) {
+        if let Err(err) = validate_capability_service(cap, config, instances, device_services) {
             return Some(err);
         }
     }
@@ -363,6 +364,7 @@ pub(super) fn validate_capability_services(
 fn validate_capability_service(
     cap: &Capability,
     config: &BoardConfig,
+    instances: &[DriverInstance],
     device_services: &[heapless::Vec<Service, 16>],
 ) -> Result<(), String> {
     match cap {
@@ -380,24 +382,13 @@ fn validate_capability_service(
             Service::Console,
             "ConsoleInit",
         ),
-        Capability::BootMedia(BootMedium::Device { name, .. }) => require_device_service(
-            config,
-            device_services,
-            name.as_str(),
-            Service::BlockDevice,
-            "BootMedia(Device)",
-        ),
-        Capability::BootMedia(BootMedium::AutoDevice { devices }) => {
-            for device in devices {
-                require_device_service(
-                    config,
-                    device_services,
-                    device.name.as_str(),
-                    Service::BlockDevice,
-                    "BootMedia(AutoDevice)",
-                )?;
-            }
-            Ok(())
+        Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
+            validate_firmware_image_provider(
+                provider.as_ref().map(|p| p.as_str()),
+                config,
+                instances,
+                device_services,
+            )
         }
         Capability::DramInit { device } => require_device_service(
             config,
@@ -493,6 +484,77 @@ fn require_devices_service(
             service,
             capability,
         )?;
+    }
+    Ok(())
+}
+
+fn validate_firmware_image_provider(
+    provider: Option<&str>,
+    config: &BoardConfig,
+    instances: &[DriverInstance],
+    device_services: &[heapless::Vec<Service, 16>],
+) -> Result<(), String> {
+    if let Some(provider) = provider {
+        return require_device_service(
+            config,
+            device_services,
+            provider,
+            Service::FirmwareImageProvider,
+            "BootMedia(FirmwareImage)",
+        );
+    }
+
+    let mut providers = config
+        .devices
+        .iter()
+        .zip(device_services.iter())
+        .filter(|(device, services)| {
+            device.enabled && services.contains(&Service::FirmwareImageProvider)
+        })
+        .map(|(device, _)| device.name.as_str());
+    let Some(first) = providers.next() else {
+        if fstart_device_registry::platform_firmware_image(config.name.as_str(), config.platform)
+            .is_some()
+        {
+            return Ok(());
+        }
+        let candidates = fstart_device_registry::platform_boot_media_candidates(
+            config.name.as_str(),
+            config.platform,
+        );
+        if !candidates.is_empty() {
+            for candidate in candidates {
+                require_device_service(
+                    config,
+                    device_services,
+                    candidate.device,
+                    Service::BlockDevice,
+                    "BootMedia(FirmwareImage)",
+                )?;
+                if crate::stage_gen::capabilities::boot_media_values_for_device(
+                    candidate.device,
+                    &config.devices,
+                    instances,
+                )
+                .is_empty()
+                {
+                    return Err(format!(
+                        "BootMedia(FirmwareImage) platform candidate '{}' has no boot-source mapping",
+                        candidate.device
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        return Err(
+            "BootMedia(FirmwareImage) requires a device that provides FirmwareImageProvider, Rust platform firmware-image support, or Rust platform boot-source candidates"
+                .to_string(),
+        );
+    };
+    if let Some(second) = providers.next() {
+        return Err(format!(
+            "BootMedia(FirmwareImage) has multiple providers ('{first}', '{second}', ...); set provider"
+        ));
     }
     Ok(())
 }

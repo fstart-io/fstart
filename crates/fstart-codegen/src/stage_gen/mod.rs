@@ -36,7 +36,6 @@ use fstart_types::{BootMedium, Capability, DeviceConfig, Platform, StageLayout};
 
 use crate::ron_loader::ParsedBoard;
 
-use tokens::hex_addr;
 use topology::validate_device_tree;
 use validation::{
     get_boot_medium, needs_embedded_anchor, needs_ffs, validate_capability_ordering,
@@ -91,7 +90,12 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         return format!("compile_error!(\"{err}\");\n");
     }
 
-    if let Some(err) = validate_capability_services(capabilities, config, &parsed.device_services) {
+    if let Some(err) = validate_capability_services(
+        capabilities,
+        config,
+        &parsed.driver_instances,
+        &parsed.device_services,
+    ) {
         return format!("compile_error!(\"{err}\");\n");
     }
 
@@ -144,10 +148,6 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         }
     }
 
-    if let Some(BootMedium::MemoryMapped { base, size, .. }) = get_boot_medium(capabilities) {
-        tokens.extend(generate_flash_constants(*base, *size));
-    }
-
     if embed_anchor {
         let early_microcode = matches!(
             config.microcode.as_ref(),
@@ -184,6 +184,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     tokens.extend(direct_flow::generate_fstart_main(
         config,
         &parsed.driver_instances,
+        &parsed.device_services,
         capabilities,
         stage_name,
     ));
@@ -388,39 +389,18 @@ fn generate_imports(facts: &ImportFacts<'_>) -> TokenStream {
         });
     }
 
-    // Import boot media concrete type based on the BootMedia capability variant.
-    // The BootMedia *trait* is not imported — generated code passes the
-    // concrete type to fstart_capabilities functions which are generic over
-    // `impl BootMedia`, so the trait doesn't need to be in scope here.
-    match facts.boot_medium {
-        Some(BootMedium::MemoryMapped { .. } | BootMedium::MemoryMappedFlash { .. }) => {
-            tokens.extend(
-                quote! { #[allow(unused_imports)] use fstart_services::boot_media::MemoryMapped; },
-            );
-            // Import the BootMedia trait so as_slice() / read_at() are
-            // callable in FFS loading code (PayloadLoad, SigVerify, etc.).
-            if facts.uses_ffs {
-                tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
-            }
+    // Import boot media concrete types used by the generated adapter. The
+    // BootMedia *trait* is imported only when FFS helpers call read_at()/as_slice().
+    if facts.boot_medium.is_some() {
+        tokens.extend(
+            quote! { #[allow(unused_imports)] use fstart_services::boot_media::MemoryMapped; },
+        );
+        tokens.extend(
+            quote! { #[allow(unused_imports)] use fstart_services::boot_media::BlockDeviceMedia; },
+        );
+        if facts.uses_ffs {
+            tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
         }
-        Some(BootMedium::Device { .. }) => {
-            tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::boot_media::BlockDeviceMedia; });
-            // Import the BootMedia trait so read_at() is callable in the
-            // anchor scan and FFS loading code.
-            if facts.uses_ffs {
-                tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
-            }
-        }
-        Some(BootMedium::AutoDevice { .. }) => {
-            tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::boot_media::BlockDeviceMedia; });
-            // AutoDevice generates a BlockDevice dispatch enum and
-            // wraps it in BlockDeviceMedia. BootMedia trait needed for
-            // anchor scan and FFS loading.
-            if facts.uses_ffs {
-                tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::BootMedia; });
-            }
-        }
-        None => {}
     }
 
     // AcpiLoad needs the AcpiTableProvider trait.
@@ -447,20 +427,6 @@ fn generate_imports(facts: &ImportFacts<'_>) -> TokenStream {
     // operates directly on the blob without heap allocation.
 
     tokens
-}
-
-/// Generate flash base address and size constants for FFS operations.
-fn generate_flash_constants(base: u64, size: u64) -> TokenStream {
-    let base_hex = hex_addr(base);
-    let size_hex = hex_addr(size);
-    quote! {
-        /// CPU-visible base address of the firmware flash image.
-        #[allow(dead_code)]
-        const FLASH_BASE: u64 = #base_hex;
-        /// Size of the firmware flash image in bytes.
-        #[allow(dead_code)]
-        const FLASH_SIZE: u64 = #size_hex;
-    }
 }
 
 /// Emit the Allwinner eGON.BT0 header for the binary image.

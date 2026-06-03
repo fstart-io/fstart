@@ -95,12 +95,12 @@ fn adapter_compiles_for_qemu_riscv64() {
     // Trivial trampolines wired to the real capability helpers.
     assert!(src.contains("fstart_capabilities::memory_init()"));
     assert!(src.contains("fstart_capabilities::late_driver_init_complete"));
-    // `boot_media_static` is real — writes state.
-    assert!(src.contains("BootMediaState::from_static"));
+    // Platform firmware-image setup is real — writes state.
+    assert!(src.contains("boot_media_platform_firmware_image"));
     // qemu-riscv64 uses FFS (SigVerify/PayloadLoad), so `sig_verify`
     // is the real body — not a todo!().
     assert!(src.contains("fstart_capabilities::sig_verify"));
-    assert!(src.contains("MemoryMapped::from_raw_addr"));
+    assert!(src.contains("FirmwareImageMap::new"));
     assert!(
         !src.contains("board_gen::sig_verify: migration pending"),
         "qemu-riscv64 uses FFS; sig_verify must have a real body, got:\n{src}"
@@ -247,9 +247,9 @@ fn sig_verify_stub_for_non_ffs_stages() {
 fn sunxi_board_sig_verify_has_block_device_arm() {
     // `orangepi-pc2` boots from SD/MMC (`sunxi-mmc`, providing
     // `BlockDevice`) via `LoadNextStage` on the bootblock.  Its
-    // `main` stage uses `SigVerify` against the block-backed
-    // boot medium.  The emitted `sig_verify` match must have a
-    // `Block` arm that references the `mmc0` field.
+    // `main` stage uses `SigVerify` against a firmware image backed by
+    // a Rust-selected block device. The emitted `sig_verify` match must
+    // have a FirmwareImageBlock arm that references the `mmc0` field.
     let src = adapter_source_for_stage("orangepi-pc2", "main");
     assert!(src.contains("fstart_capabilities::sig_verify"));
     assert!(
@@ -301,7 +301,7 @@ fn fdt_prepare_override_loads_from_ffs_on_sunxi_main() {
     // LoadNextStage).  The adapter must emit:
     //
     // - anchor-bytes preamble (&FSTART_ANCHOR)
-    // - boot-media match with a Block arm mentioning .mmc0
+    // - boot-media match with a FirmwareImageBlock arm mentioning .mmc0
     // - load_ffs_file_by_type call for FileType::Fdt
     // - fdt_prepare_platform(dst, dst, ...) patch call
     let src = adapter_source_for_stage("orangepi-pc2", "main");
@@ -476,10 +476,10 @@ fn boot_media_select_real_body_on_sunxi_bootblock() {
         src.contains("_egon_sram_base"),
         "boot_media_select must read _egon_sram_base field; got:\n{src}"
     );
-    // Writes BootMediaState::Block on match.
+    // Writes BootMediaState::FirmwareImageBlock on match.
     assert!(
-        src.contains("BootMediaState::Block"),
-        "boot_media_select must write Block variant; got:\n{src}"
+        src.contains("BootMediaState::FirmwareImageBlock"),
+        "boot_media_select must write FirmwareImageBlock variant; got:\n{src}"
     );
     assert!(
         !src.contains("board_gen::boot_media_select: stage does not use"),
@@ -825,6 +825,27 @@ fn early_init_emits_generic_phase_calls_on_foxconn_d41s() {
     assert!(
         !src.contains("fstart_services::PciHost as _PciHost"),
         "generic phase init must not depend on PciHost topology; got:\n{src}"
+    );
+}
+
+#[test]
+fn firmware_image_scratch_and_mp_microcode_use_boot_media_state() {
+    let src = adapter_source_for_stage("foxconn-d41s", "ramstage");
+    assert!(
+        src.contains("TempRamArena::new") && !src.contains("copy_firmware_image_to_ram"),
+        "provider-backed BootMedia temp_ram_buffer must initialize scratch RAM, not copy the whole image; got:\n{src}"
+    );
+    assert!(
+        src.contains("BootMediaState::from_firmware_image") && src.contains("effective_image"),
+        "boot media state must record the provider firmware image; got:\n{src}"
+    );
+    assert!(
+        src.contains("image.translate(offset)"),
+        "MP microcode lookup must derive its blob address from the active FirmwareImage mapping; got:\n{src}"
+    );
+    assert!(
+        src.contains("fstart_services::ffs_context::set_memory_mapped"),
+        "FFS context must publish the effective copied/mapped firmware image; got:\n{src}"
     );
 }
 

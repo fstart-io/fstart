@@ -748,7 +748,7 @@ fn create_x86_pflash(
     //   [0x100000..0x7FEFFF] FFS image (kernel payload, manifest, etc.)
     //   [0x7FF000..0x7FFFFF] boot block (.x86boot + .reset)
     //
-    // Must match the board RON BootMedia base:
+    // Must match the Rust platform firmware-image mapping for q35:
     //   flash_base + FFS_FLASH_OFFSET = 0xFF800000 + 0x100000 = 0xFF900000
     const FFS_FLASH_OFFSET: usize = 0x100000;
     let ffs_end = FFS_FLASH_OFFSET + ffs_data.len();

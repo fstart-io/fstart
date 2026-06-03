@@ -10,7 +10,7 @@
 //! ELF parsing is retained only for diagnostic logging.
 
 use fstart_acpi::device::AcpiDevice;
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::{DriverInstance, Service};
 use fstart_driver_ite8721f::LpcBaseProvider;
 use fstart_ffs::builder::{
     build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
@@ -22,7 +22,9 @@ use fstart_types::ffs::{
     FFS_MAGIC, FFS_VERSION,
 };
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
-use fstart_types::{BoardConfig, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout};
+use fstart_types::{
+    BoardConfig, BootMedium, Capability, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout,
+};
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use std::fs;
@@ -291,7 +293,13 @@ fn assemble_impl(
 
     let mut image_config = FfsImageConfig {
         keys: vec![verification_key],
-        regions: ffs_input_regions(&config, ro_files)?,
+        regions: ffs_input_regions(
+            &config,
+            &parsed.driver_instances,
+            &parsed.device_services,
+            &board_dir,
+            ro_files,
+        )?,
     };
 
     // Build the image with signing. Compressed stages that use FFS contain a
@@ -387,15 +395,18 @@ fn assemble_impl(
         None => false,
     };
     if config.full_flash_image || flash_layout_files {
-        create_full_flash_image(
-            &config,
-            &board_dir,
-            &build_result.stages[0].path,
-            &build_result.stages[0].run_path,
-            &image_bytes,
-            ffs_image.anchor_offset,
-            &image_path,
-        )?;
+        let full_flash = FullFlashInput {
+            config: &config,
+            instances: &parsed.driver_instances,
+            device_services: &parsed.device_services,
+            board_dir: &board_dir,
+            bootblock_elf: &build_result.stages[0].path,
+            bootblock_bin: &build_result.stages[0].run_path,
+            ffs_data: &image_bytes,
+            ffs_anchor_offset: ffs_image.anchor_offset,
+            ffs_path: &image_path,
+        };
+        create_full_flash_image(full_flash)?;
     }
 
     Ok(image_path)
@@ -526,18 +537,29 @@ fn patch_compressed_anchor_slots(
 
 fn ffs_input_regions(
     config: &BoardConfig,
+    instances: &[DriverInstance],
+    device_services: &[heapless::Vec<Service, 16>],
+    board_dir: &Path,
     ro_files: Vec<InputFile>,
 ) -> Result<Vec<InputRegion>, String> {
     let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
         if config.full_flash_image {
-            let flash_size = config
-                .memory
-                .flash_size
-                .ok_or_else(|| "full_flash_image requires memory.flash_size".to_string())?;
+            let flash_image =
+                firmware_image_from_provider(config, instances, device_services, board_dir)?
+                    .ok_or_else(|| {
+                        "full_flash_image requires a FirmwareImageProvider".to_string()
+                    })?;
+            let flash_size = flash_image.size;
             let flash_size_u32 = u32::try_from(flash_size)
                 .map_err(|_| format!("flash size {flash_size:#x} exceeds FFS u32 limits"))?;
-            let (files, external_files) =
-                externalize_xip_bootblock(config, ro_files, flash_size_u32)?;
+            let (files, external_files) = externalize_xip_bootblock(
+                config,
+                instances,
+                device_services,
+                board_dir,
+                ro_files,
+                flash_size_u32,
+            )?;
             if !external_files.is_empty() {
                 return Ok(vec![InputRegion::ContainerWithExternal {
                     name: "ro".to_string(),
@@ -576,7 +598,14 @@ fn ffs_input_regions(
             fill: 0xff,
         });
     }
-    let (files, external_files) = externalize_xip_bootblock(config, ro_files, bios.size)?;
+    let (files, external_files) = externalize_xip_bootblock(
+        config,
+        instances,
+        device_services,
+        board_dir,
+        ro_files,
+        bios.size,
+    )?;
 
     regions.push(InputRegion::ContainerWithExternal {
         name: "ro".to_string(),
@@ -590,6 +619,9 @@ fn ffs_input_regions(
 
 fn externalize_xip_bootblock(
     config: &BoardConfig,
+    instances: &[DriverInstance],
+    device_services: &[heapless::Vec<Service, 16>],
+    board_dir: &Path,
     mut files: Vec<InputFile>,
     container_size: u32,
 ) -> Result<(Vec<InputFile>, Vec<ExternalInputFile>), String> {
@@ -606,10 +638,19 @@ fn externalize_xip_bootblock(
         return Ok((files, Vec::new()));
     }
 
-    let image_base = config
-        .memory
-        .flash_base
-        .ok_or_else(|| "x86 XIP bootblock requires memory.flash_base".to_string())?;
+    let image_base = if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
+        let bios = layout
+            .bios_region()
+            .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
+        layout.base + u64::from(bios.offset)
+    } else {
+        firmware_image_from_provider(config, instances, device_services, board_dir)?
+            .and_then(|image| image.contiguous_window())
+            .map(|window| window.cpu_base)
+            .ok_or_else(|| {
+                "x86 XIP bootblock requires a contiguous FirmwareImageProvider window".to_string()
+            })?
+    };
     let mut bootblock = files.remove(0);
     let bootblock_size = input_file_stored_size(&bootblock)?;
     if bootblock_size > container_size {
@@ -641,6 +682,120 @@ fn externalize_xip_bootblock(
     ))
 }
 
+fn firmware_image_from_provider(
+    config: &BoardConfig,
+    instances: &[DriverInstance],
+    device_services: &[heapless::Vec<Service, 16>],
+    board_dir: &Path,
+) -> Result<Option<fstart_services::FirmwareImage>, String> {
+    let descriptor = read_intel_ifd_descriptor(config, board_dir)?;
+    let ctx = fstart_device_registry::BuildFirmwareImageContext {
+        flash_layout: config.memory.flash_layout.as_ref(),
+        intel_ifd: descriptor.as_deref(),
+    };
+    if let Some(provider) = selected_firmware_provider(config)? {
+        let idx = config
+            .devices
+            .iter()
+            .position(|device| device.name.as_str() == provider)
+            .ok_or_else(|| {
+                format!("BootMedia(FirmwareImage) names unknown provider '{provider}'")
+            })?;
+        if !config.devices[idx].enabled
+            || !device_services
+                .get(idx)
+                .is_some_and(|services| services.contains(&Service::FirmwareImageProvider))
+        {
+            return Err(format!(
+                "BootMedia(FirmwareImage) provider '{provider}' is disabled or does not provide FirmwareImageProvider"
+            ));
+        }
+        return instances[idx].build_firmware_image(&ctx);
+    }
+
+    let mut images = Vec::new();
+    for ((device, instance), services) in config
+        .devices
+        .iter()
+        .zip(instances.iter())
+        .zip(device_services.iter())
+    {
+        if device.enabled && services.contains(&Service::FirmwareImageProvider) {
+            if let Some(image) = instance.build_firmware_image(&ctx)? {
+                images.push(image);
+            }
+        }
+    }
+    match images.as_slice() {
+        [] => Ok(fstart_device_registry::platform_firmware_image(
+            config.name.as_str(),
+            config.platform,
+        )),
+        [image] => Ok(Some(*image)),
+        _ => Err(
+            "multiple FirmwareImageProvider build mappings; specify provider support".to_string(),
+        ),
+    }
+}
+
+fn selected_firmware_provider(config: &BoardConfig) -> Result<Option<String>, String> {
+    let mut selected: Option<String> = None;
+
+    let mut visit_caps = |capabilities: &[Capability]| -> Result<(), String> {
+        for capability in capabilities {
+            let Capability::BootMedia(BootMedium::FirmwareImage {
+                provider: Some(provider),
+                ..
+            }) = capability
+            else {
+                continue;
+            };
+            let provider = provider.as_str();
+            if let Some(existing) = selected.as_deref() {
+                if existing != provider {
+                    return Err(format!(
+                        "multiple explicit FirmwareImage providers ('{existing}', '{provider}') are used by stages; xtask needs one firmware image mapping"
+                    ));
+                }
+            } else {
+                selected = Some(provider.to_string());
+            }
+        }
+        Ok(())
+    };
+
+    match &config.stages {
+        StageLayout::Monolithic(stage) => visit_caps(&stage.capabilities)?,
+        StageLayout::MultiStage(stages) => {
+            for stage in stages {
+                visit_caps(&stage.capabilities)?;
+            }
+        }
+    }
+    Ok(selected)
+}
+
+fn read_intel_ifd_descriptor(
+    config: &BoardConfig,
+    board_dir: &Path,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
+        return Ok(None);
+    };
+    let Some(file) = layout
+        .regions
+        .iter()
+        .find(|region| region.kind == IntelIfdRegion::Descriptor)
+        .and_then(|region| region.file.as_ref())
+    else {
+        return Ok(None);
+    };
+    let path = resolve_board_path(board_dir, file.as_str());
+    fs::read(&path)
+        .map(Some)
+        .map_err(|e| format!("failed to read Intel descriptor {}: {e}", path.display()))
+}
+
 fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
     file.segments.iter().try_fold(0u32, |acc, segment| {
         let len = u32::try_from(segment.data.len()).map_err(|_| {
@@ -654,15 +809,31 @@ fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
     })
 }
 
-fn create_full_flash_image(
-    config: &BoardConfig,
-    board_dir: &Path,
-    bootblock_elf: &Path,
-    bootblock_bin: &Path,
-    ffs_data: &[u8],
+struct FullFlashInput<'a> {
+    config: &'a BoardConfig,
+    instances: &'a [DriverInstance],
+    device_services: &'a [heapless::Vec<Service, 16>],
+    board_dir: &'a Path,
+    bootblock_elf: &'a Path,
+    bootblock_bin: &'a Path,
+    ffs_data: &'a [u8],
     ffs_anchor_offset: usize,
-    ffs_path: &Path,
-) -> Result<PathBuf, String> {
+    ffs_path: &'a Path,
+}
+
+fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String> {
+    let FullFlashInput {
+        config,
+        instances,
+        device_services,
+        board_dir,
+        bootblock_elf,
+        bootblock_bin,
+        ffs_data,
+        ffs_anchor_offset,
+        ffs_path,
+    } = input;
+
     if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
         return create_intel_ifd_flash_image(
             config,
@@ -676,15 +847,13 @@ fn create_full_flash_image(
         );
     }
 
-    let flash_base = config
-        .memory
-        .flash_base
-        .ok_or_else(|| "full_flash_image requires memory.flash_base".to_string())?;
-    let flash_size = config
-        .memory
-        .flash_size
-        .ok_or_else(|| "full_flash_image requires memory.flash_size".to_string())?
-        as usize;
+    let flash_image = firmware_image_from_provider(config, instances, device_services, board_dir)?
+        .ok_or_else(|| "full_flash_image requires a FirmwareImageProvider".to_string())?;
+    let flash_window = flash_image.contiguous_window().ok_or_else(|| {
+        "full_flash_image requires a contiguous firmware image window".to_string()
+    })?;
+    let flash_base = flash_window.cpu_base;
+    let flash_size = flash_image.size as usize;
 
     if ffs_data.len() > flash_size {
         return Err(format!(
@@ -697,7 +866,7 @@ fn create_full_flash_image(
     let mut image = vec![0xffu8; flash_size];
 
     // Keep the FFS blob at flash offset 0. Anchor offsets are defined from the
-    // firmware image base, and board BootMedia scans memory.flash_base..+size.
+    // firmware image base, and board BootMedia scans the firmware ROM window.
     image[..ffs_data.len()].copy_from_slice(ffs_data);
 
     let elf_data = fs::read(bootblock_elf).map_err(|e| {
@@ -793,7 +962,7 @@ fn create_full_flash_image(
     // The FFS copy of the anchor lives near offset 0, but real hardware jumps
     // into the top-aligned XIP bootblock copy. Pre-Rust x86 code has only the
     // linked anchor address, so the XIP anchor must describe its full-flash
-    // offset to reconstruct `memory.flash_base` correctly.
+    // offset to reconstruct the firmware image base correctly.
     xip_anchor_block.anchor_offset = xip_anchor as u32;
     let mut anchor = vec![0u8; anchor_size];
     xip_anchor_block.write_to(&mut anchor);
@@ -1025,19 +1194,9 @@ fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), S
         return Ok(());
     };
 
-    let bios = layout
+    let _bios = layout
         .bios_region()
         .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
-    let expected_bios_base = layout.base + u64::from(bios.offset);
-    if config.memory.flash_base != Some(expected_bios_base)
-        || config.memory.flash_size != Some(u64::from(bios.size))
-    {
-        return Err(format!(
-            "memory.flash_base/flash_size must describe the Intel IFD BIOS region: \
-             expected base={expected_bios_base:#x} size={:#x}, got base={:?} size={:?}",
-            bios.size, config.memory.flash_base, config.memory.flash_size
-        ));
-    }
 
     let aperture_end = layout
         .base
@@ -1076,12 +1235,20 @@ fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), S
         let path = resolve_board_path(board_dir, file.as_str());
         let data = fs::read(&path)
             .map_err(|e| format!("failed to read Intel descriptor {}: {e}", path.display()))?;
-        let parsed = parse_ifd_regions(&data)?;
+        let parsed = fstart_device_registry::parse_intel_ifd(&data)?;
+        if parsed.flash_size != layout.size {
+            return Err(format!(
+                "Intel descriptor {} flash size is {:#x}, but board RON declares {:#x}",
+                path.display(),
+                parsed.flash_size,
+                layout.size
+            ));
+        }
         for region in &layout.regions {
             let Some(idx) = region.kind.flreg_index() else {
                 continue;
             };
-            let Some((offset, size)) = parsed.get(idx).copied().flatten() else {
+            let Some((offset, size)) = parsed.regions.get(idx).copied().flatten() else {
                 if region.size == 0 {
                     continue;
                 }
@@ -1111,49 +1278,6 @@ fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), S
     }
 
     Ok(())
-}
-
-fn parse_ifd_regions(data: &[u8]) -> Result<[Option<(u32, u32)>; 16], String> {
-    let sig_offset = data
-        .windows(4)
-        .enumerate()
-        .step_by(4)
-        .find_map(|(offset, bytes)| {
-            let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            (value == 0x0ff0_a55a).then_some(offset)
-        })
-        .ok_or_else(|| "Intel flash descriptor signature 0x0ff0a55a not found".to_string())?;
-
-    if sig_offset + 8 > data.len() {
-        return Err("Intel flash descriptor too small for FLMAP0".to_string());
-    }
-    let flmap0 = u32::from_le_bytes([
-        data[sig_offset + 4],
-        data[sig_offset + 5],
-        data[sig_offset + 6],
-        data[sig_offset + 7],
-    ]);
-    let frba = (((flmap0 >> 16) & 0xff) << 4) as usize;
-    if frba + 4 > data.len() {
-        return Err(format!(
-            "Intel flash descriptor FRBA {frba:#x} outside descriptor file"
-        ));
-    }
-
-    let mut regions = [None; 16];
-    for (idx, slot) in regions.iter_mut().enumerate() {
-        let off = frba + idx * 4;
-        if off + 4 > data.len() {
-            break;
-        }
-        let flreg = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
-        let base = (flreg & 0x7fff) << 12;
-        let limit = ((flreg >> 16) & 0x7fff) << 12 | 0xfff;
-        if limit >= base {
-            *slot = Some((base, limit - base + 1));
-        }
-    }
-    Ok(regions)
 }
 
 fn resolve_board_path(board_dir: &Path, file: &str) -> PathBuf {

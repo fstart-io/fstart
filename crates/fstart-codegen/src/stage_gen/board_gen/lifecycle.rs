@@ -200,10 +200,7 @@ pub(super) fn init_all_devices_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
 
     let bm_preamble = if has_any_gated && is_egon {
         quote! {
-            // SAFETY: _egon_sram_base is the BROM entry point.
-            let _bm = unsafe {
-                fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize)
-            };
+            let _bm = fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize);
         }
     } else {
         quote! { let _ = gated; }

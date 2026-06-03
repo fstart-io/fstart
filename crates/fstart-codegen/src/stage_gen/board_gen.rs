@@ -76,7 +76,14 @@ pub(super) fn generate_board_adapter(
     capabilities: &[Capability],
     stage_name: Option<&str>,
 ) -> TokenStream {
-    let excluded = compute_excluded_indices(&config.devices, instances, device_tree, capabilities);
+    let excluded = compute_excluded_indices(
+        config,
+        &config.devices,
+        instances,
+        device_tree,
+        device_services,
+        capabilities,
+    );
     let platform = config.platform;
     let ctx = BoardEmitModel::new(BoardEmitInputs {
         config,
@@ -110,9 +117,11 @@ pub(super) fn generate_board_adapter(
 /// the old generator excludes bus children entirely.  We mirror that
 /// rule so the two adapters stay isomorphic during the transition.
 fn compute_excluded_indices(
+    config: &BoardConfig,
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
+    device_services: &[heapless::Vec<Service, 16>],
     capabilities: &[Capability],
 ) -> Vec<usize> {
     let has_driver_init = capabilities
@@ -140,12 +149,20 @@ fn compute_excluded_indices(
                     referenced.push(device.as_str());
                 }
             }
-            Capability::BootMedia(BootMedium::Device { name, .. }) => {
-                referenced.push(name.as_str())
-            }
-            Capability::BootMedia(BootMedium::AutoDevice { devices }) => {
-                for dev in devices {
-                    referenced.push(dev.name.as_str());
+            Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
+                if let Some(provider) = provider {
+                    referenced.push(provider.as_str());
+                } else if let Some(provider) =
+                    sole_enabled_firmware_provider(devices, device_services)
+                {
+                    referenced.push(provider);
+                } else {
+                    for candidate in fstart_device_registry::platform_boot_media_candidates(
+                        config.name.as_str(),
+                        config.platform,
+                    ) {
+                        referenced.push(candidate.device);
+                    }
                 }
             }
             Capability::LoadNextStage { devices, .. } => {
@@ -173,6 +190,25 @@ fn compute_excluded_indices(
         })
         .map(|(idx, _)| idx)
         .collect()
+}
+
+fn sole_enabled_firmware_provider<'a>(
+    devices: &'a [DeviceConfig],
+    device_services: &[heapless::Vec<Service, 16>],
+) -> Option<&'a str> {
+    let mut providers = devices
+        .iter()
+        .zip(device_services.iter())
+        .filter(|(device, services)| {
+            device.enabled && services.contains(&Service::FirmwareImageProvider)
+        })
+        .map(|(device, _)| device.name.as_str());
+    let first = providers.next()?;
+    if providers.next().is_none() {
+        Some(first)
+    } else {
+        None
+    }
 }
 
 // =======================================================================

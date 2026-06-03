@@ -2,13 +2,18 @@
 
 use std::fmt::Write;
 
+use fstart_device_registry::Service;
 use fstart_types::memory::FlashLayout;
 use fstart_types::{
-    effective_stage_load_addr, BoardConfig, Platform, RegionKind, SocImageFormat, StageLayout,
+    effective_stage_load_addr, BootMedium, Capability, Platform, RegionKind, SocImageFormat,
+    StageLayout,
 };
 
+use crate::ron_loader::ParsedBoard;
+
 /// Generate a linker script for the given board and (optional) stage.
-pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
+pub fn generate_linker_script(parsed: &ParsedBoard, stage_name: Option<&str>) -> String {
+    let config = &parsed.config;
     let mut out = String::new();
 
     let arch = config.platform.linker_arch();
@@ -163,10 +168,18 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         let (x86_rom_mtrr_base, x86_rom_mtrr_size) = if config.platform == Platform::X86_64 {
             match &config.memory.flash_layout {
                 Some(FlashLayout::IntelIfd(layout)) => (layout.base, u64::from(layout.size)),
-                None => match (config.memory.flash_base, config.memory.flash_size) {
-                    (Some(base), Some(size)) => (base, size),
-                    _ => (rom.base, rom.size),
-                },
+                None => config
+                    .memory
+                    .firmware_window()
+                    .or_else(|| {
+                        firmware_image_from_provider(
+                            parsed,
+                            stage_firmware_provider(parsed, stage_name),
+                        )
+                        .and_then(|image| image.contiguous_window())
+                        .map(|window| (window.cpu_base, window.size))
+                    })
+                    .unwrap_or((rom.base, rom.size)),
             }
         } else {
             (rom.base, rom.size)
@@ -196,24 +209,26 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         let effective_origin = load_addr;
         let effective_length = region_end - effective_origin;
 
-        // For multi-stage bootblocks that share their load address with the
-        // FFS image (flash_base == load_addr), BSS and stack must be placed
-        // beyond the image area. Otherwise the entry-point BSS clearing and
-        // stack writes would corrupt the manifest and other stages.
-        let bss_origin = match (config.memory.flash_base, config.memory.flash_size) {
-            (Some(fb), Some(fs)) if fb == load_addr && fs > 0 => {
-                let bss_addr = fb + fs;
+        // For RAM-loaded firmware images whose boot medium starts at the load
+        // address, BSS and stack must be placed beyond the image area.
+        // Otherwise the entry-point BSS clearing and stack writes would corrupt
+        // the manifest and other embedded files before fstart_main can read
+        // them.
+        let bss_origin =
+            stage_memory_mapped_boot_media(parsed, stage_name).and_then(|(base, size)| {
+                if base != load_addr || size == 0 {
+                    return None;
+                }
+                let bss_addr = base.checked_add(size)?;
                 if bss_addr < effective_origin || bss_addr >= effective_origin + effective_length {
                     panic!(
-                        "flash_base ({fb:#x}) + flash_size ({fs:#x}) = {bss_addr:#x} \
-                         falls outside RAM region [{effective_origin:#x}..{:#x}]",
+                        "BootMedia(FirmwareImage) window ({base:#x}, {size:#x}) ends at {bss_addr:#x}, \
+                         outside RAM region [{effective_origin:#x}..{:#x}]",
                         effective_origin + effective_length
                     );
                 }
                 Some(bss_addr)
-            }
-            _ => None,
-        };
+            });
         generate_ram_layout(
             &mut out,
             effective_origin,
@@ -227,6 +242,103 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     }
 
     out
+}
+
+fn firmware_image_from_provider(
+    parsed: &ParsedBoard,
+    provider: Option<&str>,
+) -> Option<fstart_services::FirmwareImage> {
+    let ctx = fstart_device_registry::BuildFirmwareImageContext {
+        flash_layout: parsed.config.memory.flash_layout.as_ref(),
+        intel_ifd: None,
+    };
+    let image_for_idx = |idx: usize| {
+        parsed.driver_instances[idx]
+            .build_firmware_image(&ctx)
+            .unwrap_or_else(|err| panic!("build firmware image provider failed: {err}"))
+    };
+
+    if let Some(provider) = provider {
+        let idx = parsed
+            .config
+            .devices
+            .iter()
+            .position(|device| device.name.as_str() == provider)?;
+        if !parsed.config.devices[idx].enabled
+            || !parsed.device_services[idx].contains(&Service::FirmwareImageProvider)
+        {
+            return None;
+        }
+        return image_for_idx(idx);
+    }
+
+    let mut images = parsed
+        .config
+        .devices
+        .iter()
+        .zip(parsed.device_services.iter())
+        .enumerate()
+        .filter(|(_, (device, services))| {
+            device.enabled && services.contains(&Service::FirmwareImageProvider)
+        })
+        .filter_map(|(idx, _)| image_for_idx(idx));
+    let first = images.next();
+    if images.next().is_none() {
+        first.or_else(|| {
+            fstart_device_registry::platform_firmware_image(
+                parsed.config.name.as_str(),
+                parsed.config.platform,
+            )
+        })
+    } else {
+        None
+    }
+}
+
+fn stage_firmware_provider<'a>(
+    parsed: &'a ParsedBoard,
+    stage_name: Option<&str>,
+) -> Option<&'a str> {
+    stage_capabilities(parsed, stage_name)?
+        .iter()
+        .find_map(|capability| match capability {
+            Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
+                provider.as_ref().map(|provider| provider.as_str())
+            }
+            _ => None,
+        })
+}
+
+fn stage_memory_mapped_boot_media(
+    parsed: &ParsedBoard,
+    stage_name: Option<&str>,
+) -> Option<(u64, u64)> {
+    let capabilities = stage_capabilities(parsed, stage_name)?;
+
+    capabilities.iter().find_map(|capability| match capability {
+        Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
+            firmware_image_from_provider(parsed, provider.as_ref().map(|p| p.as_str()))
+                .and_then(|image| image.contiguous_window())
+                .map(|window| (window.cpu_base, window.size))
+        }
+        _ => None,
+    })
+}
+
+fn stage_capabilities<'a>(
+    parsed: &'a ParsedBoard,
+    stage_name: Option<&str>,
+) -> Option<&'a [Capability]> {
+    match (&parsed.config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => Some(&mono.capabilities),
+        (StageLayout::MultiStage(stages), Some(name)) => stages
+            .iter()
+            .find(|stage| stage.name.as_str() == name)
+            .map(|stage| stage.capabilities.as_slice()),
+        (StageLayout::MultiStage(stages), None) => {
+            stages.first().map(|stage| stage.capabilities.as_slice())
+        }
+    }
 }
 
 fn write_x86_car_symbols(out: &mut String, platform: Platform, has_x86_car: bool) {

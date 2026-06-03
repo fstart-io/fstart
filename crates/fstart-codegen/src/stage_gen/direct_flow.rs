@@ -8,10 +8,10 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::{DriverInstance, PlatformBootMediaCandidate, Service};
 use fstart_types::{
-    AutoBootDevice, BoardConfig, BootMedium, Capability, DeviceConfig, DeviceId, LoadDevice,
-    StageLayout,
+    BoardConfig, BootMedium, Capability, DeviceConfig, DeviceId, LoadDevice, StageLayout,
+    TempRamBuffer,
 };
 
 use super::capabilities::boot_media_values_for_device;
@@ -22,14 +22,17 @@ use super::tokens::hex_addr;
 pub(super) fn generate_fstart_main(
     config: &BoardConfig,
     instances: &[DriverInstance],
+    device_services: &[heapless::Vec<Service, 16>],
     capabilities: &[Capability],
     stage_name: Option<&str>,
 ) -> TokenStream {
     let ids = DeviceIdMap::new(&config.devices);
     let ctx = DirectCtx {
+        config,
         ids: &ids,
         devices: &config.devices,
         instances,
+        device_services,
         capabilities,
     };
 
@@ -66,9 +69,11 @@ pub(super) fn generate_fstart_main(
 }
 
 struct DirectCtx<'a> {
+    config: &'a BoardConfig,
     ids: &'a DeviceIdMap<'a>,
     devices: &'a [DeviceConfig],
     instances: &'a [DriverInstance],
+    device_services: &'a [heapless::Vec<Service, 16>],
     capabilities: &'a [Capability],
 }
 
@@ -288,7 +293,13 @@ fn single_device_call(
 }
 
 fn driver_init_tokens(_cap: &Capability, ctx: &DirectCtx<'_>) -> TokenStream {
-    let gated = collect_boot_media_gated(ctx.capabilities, ctx.devices, ctx.instances, ctx.ids);
+    let gated = collect_boot_media_gated(
+        ctx.config,
+        ctx.capabilities,
+        ctx.devices,
+        ctx.instances,
+        ctx.ids,
+    );
     let gated_lits = gated.iter().map(|id| Literal::u8_unsuffixed(*id));
     let all_devs = all_runtime_devices(ctx.devices, ctx.instances, ctx.ids);
     let all_devs_lits = all_devs.iter().map(|id| Literal::u8_unsuffixed(*id));
@@ -308,32 +319,86 @@ fn driver_init_tokens(_cap: &Capability, ctx: &DirectCtx<'_>) -> TokenStream {
 
 fn boot_media_tokens(idx: usize, medium: &BootMedium, ctx: &DirectCtx<'_>) -> TokenStream {
     match medium {
-        BootMedium::MemoryMapped { base, size, .. } => {
-            let base = hex_addr(*base);
-            let size = hex_addr(*size);
-            quote! {
-                fstart_stage_runtime::Board::boot_media_static(&mut board, None, #base, #size);
-            }
+        BootMedium::FirmwareImage {
+            provider,
+            temp_ram_buffer,
+        } => firmware_image_boot_media_tokens(
+            idx,
+            provider.as_ref().map(|p| p.as_str()),
+            *temp_ram_buffer,
+            ctx,
+        ),
+    }
+}
+
+fn temp_ram_buffer_tokens(value: Option<TempRamBuffer>) -> TokenStream {
+    match value {
+        Some(value) => {
+            let base = hex_addr(value.base);
+            let size = hex_addr(value.size);
+            quote! { Some(fstart_types::TempRamBuffer { base: #base, size: #size }) }
         }
-        BootMedium::MemoryMappedFlash { .. } => quote! {
-            compile_error!("BootMedia(MemoryMappedFlash(...)) was not resolved by ron_loader");
-        },
-        BootMedium::Device { name, offset, size } => {
-            let id = ctx.ids.lit(name.as_str(), "BootMedia::Device");
-            let offset = hex_addr(*offset);
-            let size = hex_addr(*size);
+        None => quote! { None },
+    }
+}
+
+fn firmware_image_boot_media_tokens(
+    idx: usize,
+    provider: Option<&str>,
+    temp_ram_buffer: Option<TempRamBuffer>,
+    ctx: &DirectCtx<'_>,
+) -> TokenStream {
+    let Some(resolved) = resolve_firmware_provider(provider, ctx) else {
+        return quote! {
+            compile_error!("BootMedia(FirmwareImage(...)) requires exactly one enabled FirmwareImageProvider, an explicit provider, Rust platform firmware-image support, or Rust platform boot-source candidates");
+        };
+    };
+    let temp_ram_buffer = temp_ram_buffer_tokens(temp_ram_buffer);
+    match resolved {
+        ResolvedFirmwareProvider::Device(provider_name) => {
+            let id = ctx.ids.lit(provider_name, "BootMedia::FirmwareImage");
             quote! {
                 if fstart_stage_runtime::Board::init_device(&mut board, #id).is_err() {
                     fstart_stage_runtime::Board::halt(&board);
                 }
                 _inited.set(#id);
-                fstart_stage_runtime::Board::boot_media_static(&mut board, Some(#id), #offset, #size);
+                if fstart_stage_runtime::Board::boot_media_firmware_image(
+                    &mut board,
+                    #id,
+                    #temp_ram_buffer,
+                ).is_err() {
+                    fstart_stage_runtime::Board::halt(&board);
+                }
             }
         }
-        BootMedium::AutoDevice { devices } => {
-            let candidates_ident = format_ident!("_FSTART_AUTO_CANDIDATES_{idx}");
-            let candidates = auto_candidates(devices.as_slice(), ctx);
-            let n = devices.len();
+        ResolvedFirmwareProvider::Platform(image) => {
+            let size = hex_addr(image.size);
+            let windows = image.windows.iter().map(|window| {
+                let flash_offset = hex_addr(window.flash_offset);
+                let cpu_base = hex_addr(window.cpu_base);
+                let size = hex_addr(window.size);
+                quote! { fstart_services::FirmwareWindow::new(#flash_offset, #cpu_base, #size) }
+            });
+            let window_count = image.window_count as usize;
+            quote! {
+                let _platform_image = fstart_services::FirmwareImage {
+                    size: #size,
+                    windows: [#(#windows,)*],
+                    window_count: #window_count as u8,
+                };
+                if fstart_stage_runtime::Board::boot_media_platform_firmware_image(
+                    &mut board,
+                    _platform_image,
+                    #temp_ram_buffer,
+                ).is_err() {
+                    fstart_stage_runtime::Board::halt(&board);
+                }
+            }
+        }
+        ResolvedFirmwareProvider::PlatformBootSource(candidates) => {
+            let candidates_ident = format_ident!("_FSTART_PLATFORM_BOOT_CANDIDATES_{idx}");
+            let candidates = boot_source_candidates(candidates, ctx);
+            let n = candidates.len();
             quote! {
                 static #candidates_ident: [fstart_stage_runtime::BootMediaCandidate; #n] = [
                     #(#candidates,)*
@@ -348,9 +413,69 @@ fn boot_media_tokens(idx: usize, medium: &BootMedium, ctx: &DirectCtx<'_>) -> To
                     fstart_stage_runtime::Board::halt(&board);
                 }
                 _inited.set(_boot_media_id);
+                let Some(_boot_media_candidate) = #candidates_ident
+                    .iter()
+                    .find(|candidate| candidate.device == _boot_media_id)
+                else {
+                    fstart_stage_runtime::Board::halt(&board);
+                };
+                fstart_stage_runtime::Board::boot_media_block_firmware_image(
+                    &mut board,
+                    _boot_media_candidate.device,
+                    _boot_media_candidate.offset,
+                    _boot_media_candidate.size,
+                    #temp_ram_buffer,
+                );
             }
         }
     }
+}
+
+enum ResolvedFirmwareProvider<'a> {
+    Device(&'a str),
+    Platform(fstart_services::FirmwareImage),
+    PlatformBootSource(&'static [PlatformBootMediaCandidate]),
+}
+
+fn resolve_firmware_provider<'a>(
+    provider: Option<&'a str>,
+    ctx: &DirectCtx<'a>,
+) -> Option<ResolvedFirmwareProvider<'a>> {
+    if let Some(provider) = provider {
+        return Some(ResolvedFirmwareProvider::Device(provider));
+    }
+
+    let mut matches = ctx
+        .devices
+        .iter()
+        .zip(ctx.device_services.iter())
+        .filter(|(device, services)| {
+            device.enabled && services.contains(&Service::FirmwareImageProvider)
+        })
+        .map(|(device, _)| device.name.as_str());
+    if let Some(first) = matches.next() {
+        if matches.next().is_none() {
+            return Some(ResolvedFirmwareProvider::Device(first));
+        }
+        return None;
+    }
+
+    if let Some(image) = fstart_device_registry::platform_firmware_image(
+        ctx.config.name.as_str(),
+        ctx.config.platform,
+    ) {
+        return Some(ResolvedFirmwareProvider::Platform(image));
+    }
+
+    let candidates = fstart_device_registry::platform_boot_media_candidates(
+        ctx.config.name.as_str(),
+        ctx.config.platform,
+    );
+    if !candidates.is_empty() {
+        return Some(ResolvedFirmwareProvider::PlatformBootSource(candidates));
+    }
+
+    None
 }
 
 fn load_next_stage_tokens(
@@ -379,16 +504,17 @@ fn load_next_stage_tokens(
     }
 }
 
-fn auto_candidates(candidates: &[AutoBootDevice], ctx: &DirectCtx<'_>) -> Vec<TokenStream> {
+fn boot_source_candidates(
+    candidates: &[PlatformBootMediaCandidate],
+    ctx: &DirectCtx<'_>,
+) -> Vec<TokenStream> {
     candidates
         .iter()
         .map(|candidate| {
-            let id = ctx
-                .ids
-                .lit(candidate.name.as_str(), "BootMedia::AutoDevice");
+            let id = ctx.ids.lit(candidate.device, "BootMedia::FirmwareImage");
             let offset = hex_addr(candidate.offset);
             let size = hex_addr(candidate.size);
-            let media_ids = media_ids_tokens(candidate.name.as_str(), ctx);
+            let media_ids = media_ids_tokens(candidate.device, ctx);
             quote! {
                 fstart_stage_runtime::BootMediaCandidate {
                     device: #id,
@@ -465,6 +591,7 @@ fn persistent_inited_ids(
 }
 
 fn collect_boot_media_gated(
+    config: &BoardConfig,
     capabilities: &[Capability],
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
@@ -492,21 +619,22 @@ fn collect_boot_media_gated(
                     }
                 }
             }
-            Capability::BootMedia(BootMedium::AutoDevice {
-                devices: candidates,
-            }) if candidates.len() > 1 => {
-                for candidate in candidates {
-                    if let Some(id) = ids.get(candidate.name.as_str()) {
-                        if out.contains(&id) {
-                            continue;
-                        }
-                        let values = boot_media_values_for_device(
-                            candidate.name.as_str(),
-                            devices,
-                            instances,
-                        );
-                        if !values.is_empty() {
-                            out.push(id);
+            Capability::BootMedia(BootMedium::FirmwareImage { provider: None, .. }) => {
+                let candidates = fstart_device_registry::platform_boot_media_candidates(
+                    config.name.as_str(),
+                    config.platform,
+                );
+                if candidates.len() > 1 {
+                    for candidate in candidates {
+                        if let Some(id) = ids.get(candidate.device) {
+                            if out.contains(&id) {
+                                continue;
+                            }
+                            let values =
+                                boot_media_values_for_device(candidate.device, devices, instances);
+                            if !values.is_empty() {
+                                out.push(id);
+                            }
                         }
                     }
                 }

@@ -21,8 +21,8 @@ use fstart_device_registry::{ConstructionKind, DriverInstance, Service, Structur
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::device::BusAddress;
 use fstart_types::{
-    BoardConfig, BootMedium, BuildMode, Capability, DeviceConfig, DeviceId, DeviceNode, MemoryMap,
-    PayloadConfig, Platform, SecurityConfig, SocImageFormat, StageLayout,
+    BoardConfig, BuildMode, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig, Platform,
+    SecurityConfig, SocImageFormat, StageLayout,
 };
 
 fn default_enabled() -> bool {
@@ -192,60 +192,14 @@ pub fn load_board_config(path: &Path) -> Result<BoardConfig, String> {
 
 /// Normalize deserialized RON before flattening.
 ///
-/// Board files should not have to repeat the firmware image window in every
-/// place that consumes it.  Intel IFD boards already describe the BIOS region
-/// in `flash_layout`, so derive `memory.flash_base/flash_size` and the linker
-/// ROM region from that single source when they are omitted.  Likewise,
-/// `BootMedia(MemoryMappedFlash(...))` is a stage-local shorthand for the
-/// board's firmware-image window.
+/// Intel IFD boards describe a flash partition layout; this helper only derives
+/// linker-visible ROM regions needed for those layouts.  Firmware-image boot
+/// media is no longer resolved from the RON memory map — generated stages use
+/// hardware `FirmwareImageProvider` services instead.
 fn normalize_ron_config(ron: &mut RonBoardConfig) -> Result<(), String> {
     ron.memory
         .normalize_derived_flash()
-        .map_err(|err| err.to_string())?;
-    resolve_stage_boot_media(&mut ron.stages, &ron.memory)
-}
-
-fn resolve_stage_boot_media(stages: &mut StageLayout, memory: &MemoryMap) -> Result<(), String> {
-    match stages {
-        StageLayout::Monolithic(mono) => {
-            resolve_capability_boot_media(&mut mono.capabilities, memory)
-        }
-        StageLayout::MultiStage(stages) => {
-            for stage in stages {
-                resolve_capability_boot_media(&mut stage.capabilities, memory)?;
-            }
-            Ok(())
-        }
-    }
-}
-
-fn resolve_capability_boot_media(
-    capabilities: &mut heapless::Vec<Capability, 16>,
-    memory: &MemoryMap,
-) -> Result<(), String> {
-    for capability in capabilities {
-        let Capability::BootMedia(medium) = capability else {
-            continue;
-        };
-        if let BootMedium::MemoryMappedFlash { ram_copy_addr } = medium {
-            let (base, size) = match (memory.flash_base, memory.flash_size) {
-                (Some(base), Some(size)) => (base, size),
-                _ => {
-                    return Err(
-                        "BootMedia(MemoryMappedFlash(...)) requires memory.flash_base/flash_size \
-                         or an Intel IFD BIOS flash_layout"
-                            .to_string(),
-                    );
-                }
-            };
-            *medium = BootMedium::MemoryMapped {
-                base,
-                size,
-                ram_copy_addr: *ram_copy_addr,
-            };
-        }
-    }
-    Ok(())
+        .map_err(|err| err.to_string())
 }
 
 // -----------------------------------------------------------------------
@@ -477,6 +431,12 @@ mod tests {
         std::fs::read_to_string(board_path).expect("read lenovo-x61 board")
     }
 
+    fn foxconn_d41s_board_source() -> String {
+        let board_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/foxconn-d41s/board.ron");
+        std::fs::read_to_string(board_path).expect("read foxconn-d41s board")
+    }
+
     fn load_temp_board(name: &str, source: String) -> Result<(), String> {
         let path = temp_board_path(name);
         std::fs::write(&path, source).expect("write temp board");
@@ -536,8 +496,10 @@ mod tests {
             .join()
             .expect("ron loader worker panicked");
 
-        assert_eq!(parsed.config.memory.flash_base, Some(0xFFE8_0000));
-        assert_eq!(parsed.config.memory.flash_size, Some(0x0018_0000));
+        assert_eq!(
+            parsed.config.memory.firmware_window(),
+            Some((0xFFE8_0000, 0x0018_0000))
+        );
         assert!(parsed.config.memory.regions.iter().any(|region| {
             region.kind == fstart_types::RegionKind::Rom
                 && region.base == 0xFFE8_0000
@@ -552,13 +514,90 @@ mod tests {
             .all(|stage| stage.capabilities.iter().any(|cap| {
                 matches!(
                     cap,
-                    fstart_types::Capability::BootMedia(fstart_types::BootMedium::MemoryMapped {
-                        base: 0xFFE8_0000,
-                        size: 0x0018_0000,
-                        ..
-                    })
+                    fstart_types::Capability::BootMedia(
+                        fstart_types::BootMedium::FirmwareImage { .. }
+                    )
                 )
             })));
+    }
+
+    #[test]
+    fn contiguous_rom_regions_derive_flash_window_and_boot_media() {
+        let source = foxconn_d41s_board_source();
+        let parsed = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let path = temp_board_path("rom-derived-flash");
+                std::fs::write(&path, source).expect("write temp board");
+                let parsed = match load_parsed_board(&path) {
+                    Ok(parsed) => parsed,
+                    Err(err) => panic!("load foxconn-d41s board: {err}"),
+                };
+                let _ = std::fs::remove_file(&path);
+                parsed
+            })
+            .expect("spawn ron loader worker")
+            .join()
+            .expect("ron loader worker panicked");
+
+        assert_eq!(
+            parsed.config.memory.firmware_window(),
+            Some((0xFF00_0000, 0x0100_0000))
+        );
+
+        let fstart_types::StageLayout::MultiStage(stages) = &parsed.config.stages else {
+            panic!("foxconn-d41s should be multi-stage");
+        };
+        assert!(stages.iter().all(|stage| {
+            stage.capabilities.iter().any(|cap| {
+                matches!(
+                    cap,
+                    fstart_types::Capability::BootMedia(
+                        fstart_types::BootMedium::FirmwareImage { .. }
+                    )
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn raw_auto_device_boot_media_is_rejected() {
+        let source = qemu_riscv64_board_source();
+        let with_auto_device = source.replacen(
+            "BootMedia(FirmwareImage())",
+            "BootMedia(AutoDevice(devices: [(name: \"mmc0\", offset: 0x2000, size: 0x800000)]))",
+            1,
+        );
+        assert_ne!(source, with_auto_device, "test fixture changed");
+
+        let err = expect_load_error(load_temp_board("raw-auto-device", with_auto_device));
+        assert!(
+            err.contains("unknown variant `AutoDevice`")
+                || err.contains("unknown variant 'AutoDevice'")
+                || err.contains("Unexpected variant named `AutoDevice`")
+                || err.contains("Expected identifier"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn raw_memory_mapped_boot_media_is_rejected() {
+        let source = qemu_riscv64_board_source();
+        let with_raw_mapping = source.replacen(
+            "BootMedia(FirmwareImage())",
+            "BootMedia(MemoryMapped( base: 0x20000000, size: 0x02000000 ))",
+            1,
+        );
+        assert_ne!(source, with_raw_mapping, "test fixture changed");
+
+        let err = expect_load_error(load_temp_board("raw-memory-mapped", with_raw_mapping));
+        assert!(
+            err.contains("unknown variant `MemoryMapped`")
+                || err.contains("unknown variant 'MemoryMapped'")
+                || err.contains("Unexpected variant named `MemoryMapped`")
+                || err.contains("Expected identifier"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

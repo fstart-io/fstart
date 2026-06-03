@@ -60,7 +60,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
     )];
 
     let config = BoardConfig {
-        name: HString::try_from("test-board").unwrap(),
+        name: HString::try_from("qemu-riscv64").unwrap(),
         platform: Platform::Riscv64,
         memory: MemoryMap {
             regions: {
@@ -74,8 +74,6 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
                 v
             },
             flash_layout: None,
-            flash_base: None,
-            flash_size: None,
             car: None,
         },
         devices,
@@ -165,25 +163,6 @@ fn test_console_init_requires_console_service() {
     );
 }
 
-#[test]
-fn test_boot_media_device_requires_block_device_service() {
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
-    let _ = caps.push(Capability::BootMedia(BootMedium::Device {
-        name: heapless::String::try_from("uart0").unwrap(),
-        offset: 0,
-        size: 4096,
-    }));
-    let parsed = test_parsed_board(caps);
-    let source = generate_stage_source(&parsed, None);
-
-    assert!(
-        source.contains("compile_error!") && source.contains("does not provide BlockDevice"),
-        "should reject BootMedia(Device) on non-block device: {source}"
-    );
-}
 // =======================================================================
 // Bus hierarchy tests
 // =======================================================================
@@ -243,8 +222,6 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
                 v
             },
             flash_layout: None,
-            flash_base: None,
-            flash_size: None,
             car: None,
         },
         devices,
@@ -615,10 +592,9 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
             let _ = v.push(Capability::ConsoleInit {
                 device: HString::try_from("uart0").unwrap(),
             });
-            let _ = v.push(Capability::BootMedia(BootMedium::MemoryMapped {
-                base: 0x2000_0000,
-                size: 0x200_0000,
-                ram_copy_addr: None,
+            let _ = v.push(Capability::BootMedia(BootMedium::FirmwareImage {
+                provider: None,
+                temp_ram_buffer: None,
             }));
             let _ = v.push(Capability::SigVerify);
             let _ = v.push(Capability::StageLoad {
@@ -657,7 +633,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
     });
 
     let config = BoardConfig {
-        name: HString::try_from("test-multi").unwrap(),
+        name: HString::try_from("qemu-riscv64").unwrap(),
         platform: Platform::Riscv64,
         memory: MemoryMap {
             regions: {
@@ -671,8 +647,6 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
                 v
             },
             flash_layout: None,
-            flash_base: None,
-            flash_size: None,
             car: None,
         },
         devices,
@@ -749,10 +723,9 @@ fn test_stage_ending_with_payload_load_no_completion() {
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
     });
-    let _ = caps.push(Capability::BootMedia(BootMedium::MemoryMapped {
-        base: 0x2000_0000,
-        size: 0x200_0000,
-        ram_copy_addr: None,
+    let _ = caps.push(Capability::BootMedia(BootMedium::FirmwareImage {
+        provider: None,
+        temp_ram_buffer: None,
     }));
     let _ = caps.push(Capability::PayloadLoad);
     let parsed = test_parsed_board(caps);
@@ -1057,7 +1030,7 @@ fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
     assert_ordered(
         bootblock_main,
         &[
-            "fstart_stage_runtime::Board::boot_media_static",
+            "fstart_stage_runtime::Board::boot_media_firmware_image",
             "fstart_stage_runtime::Board::stage_load",
         ],
         "X61 bootblock boot media before stage load",
@@ -1065,11 +1038,21 @@ fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
     assert_ordered(
         ramstage_main,
         &[
-            "fstart_stage_runtime::Board::boot_media_static",
+            "fstart_stage_runtime::Board::boot_media_firmware_image",
             "fstart_stage_runtime::Board::sig_verify",
             "fstart_stage_runtime::Board::init_all_devices",
         ],
         "X61 ramstage boot media before signature before DriverInit",
+    );
+    assert!(
+        ramstage_main.contains("TempRamBuffer")
+            && ramstage_main.contains("base: 0x2000000")
+            && ramstage_main.contains("size: 0x1000000"),
+        "X61 ramstage FirmwareImage BootMedia must pass temp_ram_buffer arena through direct flow"
+    );
+    assert!(
+        ramstage.contains("TempRamArena::new") && !ramstage.contains("copy_firmware_image_to_ram"),
+        "X61 ramstage adapter must treat temp_ram_buffer as scratch RAM, not a whole-image copy"
     );
 
     for (source, needle, context) in [

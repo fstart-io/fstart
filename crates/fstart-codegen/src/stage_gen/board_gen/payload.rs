@@ -187,10 +187,11 @@ fn payload_load_fit_runtime_body(platform: Platform, ctx: &BoardEmitModel<'_>) -
     // address) from the closure.  Rather than fighting the
     // closure pattern we emit the whole sequence inline.
     let bm_usage = quote! {
-        let _fit_boot = fstart_capabilities::fit::load_fit_components(
+        let _fit_boot = fstart_capabilities::fit::load_fit_components_with_scratch(
             _anchor_bytes,
             &_bm,
             #config_expr,
+            _scratch.as_mut(),
         )
         .unwrap_or_else(|e| {
             fstart_log::error!(

@@ -17,11 +17,11 @@ use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_B
 use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
-    EarlyInit, FinalizeInit, FlashLayoutVerifier, PostDramInit, PreConsoleInit, ServiceError,
-    SmBus, Southbridge,
+    EarlyInit, FinalizeInit, FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier,
+    PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
 };
 use fstart_smbus_intel::I801SmBus;
-use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout};
+use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -2120,6 +2120,39 @@ impl PreConsoleInit for IntelIch8 {
         self.program_lpc_decode();
         self.setup_gpios();
         Ok(())
+    }
+}
+
+impl FirmwareImageProvider for IntelIch8 {
+    fn firmware_image(&self) -> Result<FirmwareImage, ServiceError> {
+        let hsfs = self.spi_read32(SPIBAR_HSFS) & 0xffff;
+        if hsfs & HSFS_FDV == 0 {
+            fstart_log::error!("intel-ich8: SPI descriptor valid bit is clear");
+            return Err(ServiceError::HardwareError);
+        }
+
+        let (_bios_offset, bios_size) = self.spi_ifd_region(
+            IntelIfdRegion::Bios
+                .flreg_index()
+                .ok_or(ServiceError::HardwareError)?,
+        );
+        if bios_size == 0 {
+            fstart_log::error!("intel-ich8: SPI descriptor has no BIOS region");
+            return Err(ServiceError::HardwareError);
+        }
+
+        // ICH8 exposes the BIOS region top-aligned below 4 GiB regardless of
+        // where it sits in the physical SPI descriptor.  The boot firmware
+        // image is the BIOS region, so expose it as logical offset 0.
+        let mut image = FirmwareImage::EMPTY;
+        image.size = u64::from(bios_size);
+        image.windows[0] = fstart_services::FirmwareWindow::new(
+            0,
+            0x1_0000_0000u64 - u64::from(bios_size),
+            u64::from(bios_size),
+        );
+        image.window_count = 1;
+        Ok(image)
     }
 }
 

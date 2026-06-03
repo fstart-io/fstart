@@ -3,8 +3,9 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use fstart_device_registry::Service;
 use fstart_types::memory::{FlashLayout, RegionKind};
-use fstart_types::{Capability, FdtSource, PayloadConfig, Platform};
+use fstart_types::{BootMedium, Capability, FdtSource, PayloadConfig, Platform};
 
 use crate::stage_gen::tokens::hex_addr;
 
@@ -130,12 +131,68 @@ fn x86_postcar_config_tokens(ctx: &BoardEmitModel<'_>) -> TokenStream {
                 Some(fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size })
             }
         }
-        None => match (ctx.config.memory.flash_base, ctx.config.memory.flash_size) {
-            (Some(base), Some(size)) => quote! {
-                Some(fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size })
-            },
-            _ => quote! { None },
-        },
+        None => {
+            if let Some((base, size)) = ctx.config.memory.firmware_window() {
+                quote! {
+                    Some(fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size })
+                }
+            } else {
+                let build_ctx = fstart_device_registry::BuildFirmwareImageContext {
+                    flash_layout: ctx.config.memory.flash_layout.as_ref(),
+                    intel_ifd: None,
+                };
+                let selected_provider =
+                    ctx.stage
+                        .capabilities
+                        .iter()
+                        .find_map(|capability| match capability {
+                            Capability::BootMedia(BootMedium::FirmwareImage {
+                                provider, ..
+                            }) => provider.as_ref().map(|provider| provider.as_str()),
+                            _ => None,
+                        });
+                let image = if let Some(provider) = selected_provider {
+                    ctx.devices
+                        .iter()
+                        .position(|device| device.name.as_str() == provider)
+                        .and_then(|idx| {
+                            ctx.instances[idx]
+                                .build_firmware_image(&build_ctx)
+                                .unwrap_or_else(|err| {
+                                    panic!("build firmware image provider failed: {err}")
+                                })
+                        })
+                } else {
+                    let mut images = ctx
+                        .runtime_devices
+                        .providers(Service::FirmwareImageProvider)
+                        .filter_map(|device| {
+                            ctx.instances[device.index]
+                                .build_firmware_image(&build_ctx)
+                                .unwrap_or_else(|err| {
+                                    panic!("build firmware image provider failed: {err}")
+                                })
+                        });
+                    let first = images.next();
+                    if images.next().is_none() { first } else { None }.or_else(|| {
+                        fstart_device_registry::platform_firmware_image(
+                            ctx.config.name.as_str(),
+                            ctx.config.platform,
+                        )
+                    })
+                };
+                match image.and_then(|image| image.contiguous_window()) {
+                    Some(window) => {
+                        let base = window.cpu_base;
+                        let size = window.size;
+                        quote! {
+                            Some(fstart_platform::car_teardown::PhysicalRange { base: #base, size: #size })
+                        }
+                    }
+                    None => quote! { None },
+                }
+            }
+        }
     };
 
     quote! {
@@ -169,26 +226,29 @@ pub(super) fn stage_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             #postcar_config
             fstart_log::info!("stage_load: anchor slice ready");
             match self._boot_media {
-                fstart_stage_runtime::BootMediaState::Mmio { base, size } => {
-                    fstart_log::info!("stage_load: switching to post-CAR DRAM stack for MMIO load");
-                    // SAFETY: DRAM has just been trained before StageLoad,
-                    // `_FSTART_POSTCAR_CONFIG` describes a DRAM stack and
-                    // temporary MTRRs, and this call never returns to CAR.
-                    unsafe {
-                        fstart_platform::car_teardown::stage_load_mmio(
-                            &_FSTART_POSTCAR_CONFIG,
-                            next_stage,
-                            _anchor_bytes,
-                            base,
-                            size,
-                        );
+                fstart_stage_runtime::BootMediaState::FirmwareImage { image, temp_ram_buffer: _ } => {
+                    if let Some(window) = image.contiguous_window() {
+                        fstart_log::info!("stage_load: switching to post-CAR DRAM stack for firmware image");
+                        // SAFETY: same contract as the MMIO path; the provider
+                        // reported a single contiguous readable firmware window.
+                        unsafe {
+                            fstart_platform::car_teardown::stage_load_mmio(
+                                &_FSTART_POSTCAR_CONFIG,
+                                next_stage,
+                                _anchor_bytes,
+                                window.cpu_base,
+                                window.size,
+                            );
+                        }
+                    } else {
+                        fstart_log::error!("stage_load: x86 post-CAR StageLoad needs a contiguous firmware image window");
                     }
                 }
                 fstart_stage_runtime::BootMediaState::None => {
                     fstart_log::error!("stage_load: no boot media configured");
                 }
-                fstart_stage_runtime::BootMediaState::Block { device_id, .. } => {
-                    fstart_log::error!("stage_load: x86 post-CAR StageLoad supports MMIO only, device {}", device_id);
+                fstart_stage_runtime::BootMediaState::FirmwareImageBlock { device_id, .. } => {
+                    fstart_log::error!("stage_load: x86 post-CAR StageLoad supports firmware-image windows only, device {}", device_id);
                 }
             }
             fstart_platform::halt()

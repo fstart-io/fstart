@@ -4,9 +4,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use fstart_device_registry::Service;
-use fstart_types::{BootMedium, Capability};
-
-use crate::stage_gen::tokens::hex_addr;
+use fstart_types::Capability;
 
 use super::boot_media::anchor_bytes_stmt;
 use super::model::BoardEmitModel;
@@ -60,38 +58,46 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         ctx.config.microcode.as_ref(),
         Some(fstart_types::board::MicrocodeConfig::Intel(config)) if config.mp
     );
-    let microcode_expr = mp_microcode_enabled
-        .then(|| {
-            ctx.stage.capabilities.iter().find_map(|cap| match cap {
-                Capability::BootMedia(BootMedium::MemoryMapped { base, .. }) => Some(*base),
-                _ => None,
-            })
-        })
-        .flatten()
-        .map(|base| {
-            let base_lit = hex_addr(base);
-            let anchor_stmt = anchor_bytes_stmt();
-            quote! {
-                {
-                    #anchor_stmt
-                    let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(_anchor_bytes) }
-                        .ok();
-                    anchor.and_then(|anchor| {
-                        if anchor.microcode_offset == 0 || anchor.microcode_size == 0 {
-                            None
-                        } else {
-                            let addr = (#base_lit as usize).saturating_add(anchor.microcode_offset as usize);
-                            // SAFETY: xtask patched the anchor with a range inside the
-                            // memory-mapped FFS image declared by this stage's BootMedia.
-                            Some(unsafe {
-                                core::slice::from_raw_parts(addr as *const u8, anchor.microcode_size as usize)
-                            })
+    let microcode_expr = if mp_microcode_enabled {
+        let anchor_stmt = anchor_bytes_stmt();
+        quote! {
+            {
+                #anchor_stmt
+                let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(_anchor_bytes) }
+                    .ok();
+                anchor.and_then(|anchor| {
+                    if anchor.microcode_offset == 0 || anchor.microcode_size == 0 {
+                        return None;
+                    }
+                    let offset = anchor.microcode_offset as u64;
+                    let size = anchor.microcode_size as u64;
+                    let addr = match self._boot_media {
+                        fstart_stage_runtime::BootMediaState::FirmwareImage { image, temp_ram_buffer: _ } => {
+                            let end = offset.checked_add(size)?;
+                            let first = image.translate(offset)?;
+                            if size != 0 {
+                                let last = image.translate(end.checked_sub(1)?)?;
+                                if last.checked_sub(first)? != size - 1 {
+                                    return None;
+                                }
+                            }
+                            first
                         }
+                        fstart_stage_runtime::BootMediaState::None
+                        | fstart_stage_runtime::BootMediaState::FirmwareImageBlock { .. } => return None,
+                    };
+                    // SAFETY: xtask patched the anchor with a range inside the active
+                    // boot-media image. The checks above verify the selected memory
+                    // mapping contains that byte range contiguously.
+                    Some(unsafe {
+                        core::slice::from_raw_parts(addr as *const u8, anchor.microcode_size as usize)
                     })
-                }
+                })
             }
-        })
-        .unwrap_or_else(|| quote! { None });
+        }
+    } else {
+        quote! { None }
+    };
 
     let smm_ops_expr = if let Some(idx) = smm_provider {
         let field = format_ident!("{}", ctx.devices[idx].name.as_str());
