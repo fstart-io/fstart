@@ -301,9 +301,11 @@ pub enum ConstructionKind {
     Device,
     BusDevice,
     Structural,
-    AcpiOnly,
 }
 ```
+
+ACPI-only descriptors are deliberately outside `DriverInstance`, so they do not
+have a `ConstructionKind`.
 
 `static_services` is for unconditional services. Codegen should prefer
 `DriverInstance::provided_services()` when deciding what an instance provides.
@@ -391,7 +393,7 @@ Validation rules:
 
 - `kind = Device` requires `driver = Some(...)`.
 - `kind = Structural(_)` requires `driver = None`.
-- `kind = AcpiOnly` requires an ACPI-only descriptor/driver variant.
+- `kind = AcpiOnly` requires an `acpi: ...` descriptor and no runtime `driver`.
 - A runtime driver may not be used with `kind = Structural`.
 - A structural node may have children but is never materialized as a runtime
   field.
@@ -571,7 +573,7 @@ No import decision should depend on a RON `services` field.
 - Config-dependent service cases are covered:
   - SuperIO with `console_port` provides `Console`.
   - SuperIO without `console_port` does not provide `Console`.
-- ACPI-only descriptors report `ConstructionKind::AcpiOnly`.
+- ACPI-only descriptors stay outside `DriverInstance` entirely.
 - Structural nodes report `ConstructionKind::Structural` and no services.
 
 ### Codegen tests
