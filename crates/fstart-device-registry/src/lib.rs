@@ -969,11 +969,10 @@ impl DriverInstance {
                 type_name: "Ite8721f",
                 module_path: "fstart_driver_ite8721f",
                 config_type: "Ite8721fConfig",
-                // SuperIOs program LDNs and optionally provide Console
-                // directly when `console_port` is set — no separate
-                // NS16550 child needed.  Also expose `SuperIoHost` for
-                // init-ordering of any remaining children.
-                static_services: &[Service::SuperIoHost, Service::Console],
+                // SuperIOs always expose `SuperIoHost` for init-ordering of
+                // children. `Console` is config-dependent: provided_services()
+                // adds it only when `console_port` is set.
+                static_services: &[Service::SuperIoHost],
                 compatible: &["ite,it8721f", "ite,8721f"],
                 has_acpi: true,
                 is_bus_device: true,
@@ -984,7 +983,7 @@ impl DriverInstance {
                 type_name: "Pc87382",
                 module_path: "fstart_driver_nsc_pc87382",
                 config_type: "Pc87382Config",
-                static_services: &[Service::SuperIoHost, Service::Console],
+                static_services: &[Service::SuperIoHost],
                 compatible: &["nsc,pc87382"],
                 has_acpi: true,
                 is_bus_device: true,
@@ -995,7 +994,7 @@ impl DriverInstance {
                 type_name: "Pc87392",
                 module_path: "fstart_driver_nsc_pc87392",
                 config_type: "Pc87392Config",
-                static_services: &[Service::SuperIoHost, Service::Console],
+                static_services: &[Service::SuperIoHost],
                 compatible: &["nsc,pc87392"],
                 has_acpi: true,
                 is_bus_device: true,
@@ -1114,7 +1113,21 @@ impl DriverInstance {
     /// inspect typed config for config-dependent services; currently all
     /// registered services are unconditional.
     pub fn provided_services(&self) -> ServiceSet {
-        ServiceSet::from_static(self.meta().static_services)
+        let mut services = ServiceSet::from_static(self.meta().static_services);
+        match self {
+            #[cfg(feature = "ite8721f")]
+            Self::Ite8721f(cfg) if cfg.console_port.is_some() => services.insert(Service::Console),
+            #[cfg(feature = "nsc-pc87382")]
+            Self::NscPc87382(cfg) if cfg.console_port.is_some() => {
+                services.insert(Service::Console);
+            }
+            #[cfg(feature = "nsc-pc87392")]
+            Self::NscPc87392(cfg) if cfg.console_port.is_some() => {
+                services.insert(Service::Console);
+            }
+            _ => {}
+        }
+        services
     }
 
     /// Returns `true` when this concrete instance provides `service`.
@@ -1329,5 +1342,44 @@ mod tests {
         assert_eq!(inst.construction_kind(), ConstructionKind::Device);
         assert!(inst.has_runtime_driver());
         assert!(inst.provides(Service::Console));
+    }
+
+    #[cfg(feature = "ite8721f")]
+    #[test]
+    fn superio_console_service_depends_on_console_port() {
+        let without_console = DriverInstance::Ite8721f(ite8721f::Ite8721fConfig::default());
+        assert!(without_console.provides(Service::SuperIoHost));
+        assert!(!without_console.provides(Service::Console));
+
+        let mut cfg = ite8721f::Ite8721fConfig::default();
+        cfg.console_port = Some(heapless::String::try_from("com1").unwrap());
+        let with_console = DriverInstance::Ite8721f(cfg);
+        assert!(with_console.provides(Service::Console));
+    }
+
+    #[cfg(feature = "nsc-pc87382")]
+    #[test]
+    fn pc87382_console_service_depends_on_console_port() {
+        let without_console = DriverInstance::NscPc87382(nsc_pc87382::Pc87382Config::default());
+        assert!(without_console.provides(Service::SuperIoHost));
+        assert!(!without_console.provides(Service::Console));
+
+        let mut cfg = nsc_pc87382::Pc87382Config::default();
+        cfg.console_port = Some(heapless::String::try_from("com2").unwrap());
+        let with_console = DriverInstance::NscPc87382(cfg);
+        assert!(with_console.provides(Service::Console));
+    }
+
+    #[cfg(feature = "nsc-pc87392")]
+    #[test]
+    fn pc87392_console_service_depends_on_console_port() {
+        let without_console = DriverInstance::NscPc87392(nsc_pc87392::Pc87392Config::default());
+        assert!(without_console.provides(Service::SuperIoHost));
+        assert!(!without_console.provides(Service::Console));
+
+        let mut cfg = nsc_pc87392::Pc87392Config::default();
+        cfg.console_port = Some(heapless::String::try_from("com1").unwrap());
+        let with_console = DriverInstance::NscPc87392(cfg);
+        assert!(with_console.provides(Service::Console));
     }
 }
