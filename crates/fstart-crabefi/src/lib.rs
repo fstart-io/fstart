@@ -53,8 +53,25 @@ pub struct PlatformConfig<'a> {
     pub heap_pre_initialized: bool,
 }
 
-/// Call `crabefi::init_platform()`. This is the entry point that never returns.
-pub fn init_platform(config: PlatformConfig<'_>) -> ! {
+/// Common fstart-owned UEFI launch inputs.
+pub struct UefiLaunchConfig<'a> {
+    /// Console selected by board policy for UEFI debug/input adapters.
+    pub console: Option<&'a dyn fstart_services::Console>,
+    /// Framebuffer configuration for GOP.
+    pub framebuffer: Option<FramebufferConfig>,
+    /// ACPI RSDP physical address.
+    pub acpi_rsdp: Option<u64>,
+    /// SMBIOS entry point physical address.
+    pub smbios: Option<u64>,
+    /// Flattened Device Tree blob.
+    pub fdt: Option<&'a [u8]>,
+    /// PCI ECAM base address.
+    pub ecam_base: Option<u64>,
+    /// Runtime-services code/data region.
+    pub runtime_region: Option<RuntimeRegion>,
+}
+
+fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
     enable_payload_cpu_features();
     crabefi::init_platform(crabefi::PlatformConfig {
         memory_map: config.memory_map,
@@ -74,6 +91,113 @@ pub fn init_platform(config: PlatformConfig<'_>) -> ! {
         runtime_region: config.runtime_region,
         heap_pre_initialized: config.heap_pre_initialized,
     })
+}
+
+/// Call `crabefi::init_platform()`. This is the entry point that never returns.
+pub fn init_platform(config: PlatformConfig<'_>) -> ! {
+    init_platform_raw(config)
+}
+
+/// Launch CrabEFI on x86 using fstart runtime state.
+#[cfg(target_arch = "x86_64")]
+pub fn launch_x86_uefi(
+    launch: UefiLaunchConfig<'_>,
+    e820: &[E820Entry],
+    platform_entries: &[MemoryRegion],
+) -> ! {
+    let timer = TscTimer::new();
+    let reset = X86Reset;
+    let rng = X86Rng::new();
+    let mut memory_map_buf: [MemoryRegion; 64] = [MemoryRegion {
+        base: 0,
+        size: 0,
+        region_type: MemoryType::Reserved,
+    }; 64];
+    let memory_map_len =
+        build_efi_memory_map_from_e820(e820, 0, 0, 0, 0, platform_entries, &mut memory_map_buf);
+    let memory_map = &memory_map_buf[..memory_map_len];
+    launch_with_adapters(launch, memory_map, &timer, &reset, Some(&rng))
+}
+
+/// Launch CrabEFI from a board-provided flat RAM/static memory description.
+pub fn launch_flat_uefi(
+    launch: UefiLaunchConfig<'_>,
+    static_entries: &[MemoryRegion],
+    ram_base: u64,
+    ram_size: u64,
+    fw_data_addr: u64,
+    fw_stack_size: u64,
+    fdt_reservation: Option<(u64, u64)>,
+) -> ! {
+    let timer = ArmGenericTimer::new();
+    let reset = PsciReset;
+    let mut memory_map_buf: [MemoryRegion; 12] = [MemoryRegion {
+        base: 0,
+        size: 0,
+        region_type: MemoryType::Reserved,
+    }; 12];
+    let memory_map_len = build_efi_memory_map(
+        static_entries,
+        ram_base,
+        ram_size,
+        fw_data_addr,
+        fw_stack_size,
+        fw_stack_size,
+        fdt_reservation,
+        &mut memory_map_buf,
+    );
+    let memory_map = &memory_map_buf[..memory_map_len];
+    launch_with_adapters(launch, memory_map, &timer, &reset, None)
+}
+
+fn launch_with_adapters(
+    launch: UefiLaunchConfig<'_>,
+    memory_map: &[MemoryRegion],
+    timer: &dyn crabefi::Timer,
+    reset: &dyn crabefi::ResetHandler,
+    rng: Option<&dyn crabefi::Rng>,
+) -> ! {
+    let mut block_devices: [&mut dyn crabefi::BlockDevice; 0] = [];
+    match launch.console {
+        Some(console) => {
+            let mut debug_output = ConsoleAdapter::new(console);
+            let mut console_input = ConsoleAdapter::new(console);
+            init_platform_raw(PlatformConfig {
+                memory_map,
+                timer,
+                reset,
+                block_devices: &mut block_devices,
+                variable_backend: None,
+                debug_output: Some(&mut debug_output),
+                console_input: Some(&mut console_input),
+                framebuffer: launch.framebuffer,
+                acpi_rsdp: launch.acpi_rsdp,
+                smbios: launch.smbios,
+                fdt: launch.fdt,
+                rng,
+                ecam_base: launch.ecam_base,
+                runtime_region: launch.runtime_region,
+                heap_pre_initialized: false,
+            })
+        }
+        None => init_platform_raw(PlatformConfig {
+            memory_map,
+            timer,
+            reset,
+            block_devices: &mut block_devices,
+            variable_backend: None,
+            debug_output: None,
+            console_input: None,
+            framebuffer: launch.framebuffer,
+            acpi_rsdp: launch.acpi_rsdp,
+            smbios: launch.smbios,
+            fdt: launch.fdt,
+            rng,
+            ecam_base: launch.ecam_base,
+            runtime_region: launch.runtime_region,
+            heap_pre_initialized: false,
+        }),
+    }
 }
 
 /// Enable architectural CPU features expected by common UEFI applications.

@@ -104,49 +104,37 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
                 .find(|device| device.name == name)
         })
         .or_else(|| ctx.runtime_devices.providers(Service::Console).next());
-    let (console_setup, debug_output_field) = match console_device {
+    let console_setup = match console_device {
         Some(device) => {
             let field = format_ident!("{}", device.name);
-            (
-                quote! {
-                    let _console_ref = self.#field
-                        .as_ref()
-                        .unwrap_or_else(|| fstart_platform::halt());
-                    let mut _crabefi_console = fstart_crabefi::ConsoleAdapter::new(_console_ref);
-                    let mut _crabefi_console_input = fstart_crabefi::ConsoleAdapter::new(_console_ref);
-                },
-                quote! {
-                    debug_output: Some(&mut _crabefi_console),
-                    console_input: Some(&mut _crabefi_console_input),
-                },
-            )
-        }
-        None => (
-            quote! {},
             quote! {
-                debug_output: None,
-                console_input: None,
-            },
-        ),
+                let _uefi_console: Option<&dyn fstart_services::Console> = Some(
+                    self.#field.as_ref().unwrap_or_else(|| fstart_platform::halt())
+                );
+            }
+        }
+        None => quote! {
+            let _uefi_console: Option<&dyn fstart_services::Console> = None;
+        },
     };
 
     // PCI device for ECAM base.  Also reserve the ECAM/MMCONFIG aperture
     // in the EFI memory map; Linux requires MCFG ranges to be reserved and
     // coreboot exposes the same window as Reserved memory.
     let pci_device = ctx.runtime_devices.providers(Service::PciRootBus).next();
-    let ecam_base_field = match pci_device {
+    let ecam_base_setup = match pci_device {
         Some(device) => {
             let field = format_ident!("{}", device.name);
             quote! {
-                ecam_base: Some(
+                let _uefi_ecam_base = Some(
                     self.#field
                         .as_ref()
                         .unwrap_or_else(|| fstart_platform::halt())
                         .ecam_base(),
-                ),
+                );
             }
         }
-        None => quote! { ecam_base: None, },
+        None => quote! { let _uefi_ecam_base = None; },
     };
     let ecam_reserved_push = match pci_device {
         Some(device) => {
@@ -173,7 +161,7 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
     // `self._inited.contains(fb_id)` rather than the old fstart_main
     // `_fb_ok: bool` local.
     let fb_device = ctx.runtime_devices.providers(Service::Framebuffer).next();
-    let (fb_setup, framebuffer_field) = match fb_device {
+    let fb_setup = match fb_device {
         Some(device) => {
             let field = format_ident!("{}", device.name);
             let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
@@ -200,9 +188,9 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
                     None
                 };
             };
-            (setup, quote! { framebuffer: _fb_config, })
+            setup
         }
-        None => (quote! {}, quote! { framebuffer: None, }),
+        None => quote! { let _fb_config = None; },
     };
 
     // FDT sourcing — mirrors `dtb_src_expr`-ish logic.
@@ -229,8 +217,6 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
             let _fdt_blob: Option<&[u8]> = None;
         },
     };
-    let fdt_field = quote! { fdt: _fdt_blob, };
-
     // BL31 load — aarch64 + ATF only.
     let bl31_boot = if let Some(fw) = payload.firmware.as_ref() {
         if platform == Platform::Aarch64 && fw.kind == FirmwareKind::ArmTrustedFirmware {
@@ -269,43 +255,19 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
         quote! {}
     };
 
-    // Platform-specific timer, reset, RNG.
-    let (timer_setup, timer_field, reset_setup, reset_field, rng_setup, rng_field) = match platform
-    {
-        Platform::X86_64 => (
-            quote! {
-                let _crabefi_timer = fstart_crabefi::TscTimer::new();
-                fstart_log::info!("TSC timer initialized");
-            },
-            quote! { timer: &_crabefi_timer, },
-            quote! { let _crabefi_reset = fstart_crabefi::X86Reset; },
-            quote! { reset: &_crabefi_reset, },
-            quote! { let _crabefi_rng = fstart_crabefi::X86Rng::new(); },
-            quote! { rng: Some(&_crabefi_rng), },
-        ),
-        _ => (
-            quote! { let _crabefi_timer = fstart_crabefi::ArmGenericTimer::new(); },
-            quote! { timer: &_crabefi_timer, },
-            quote! { let _crabefi_reset = fstart_crabefi::PsciReset; },
-            quote! { reset: &_crabefi_reset, },
-            quote! {},
-            quote! { rng: None, },
-        ),
-    };
-
     // ACPI RSDP: x86 reads from self._acpi_rsdp_addr (populated by
     // AcpiLoad).  On non-x86 the RSDP field stays None.
-    let acpi_rsdp_field = if platform == Platform::X86_64 {
-        quote! { acpi_rsdp: Some(self._acpi_rsdp_addr), }
+    let acpi_rsdp_setup = if platform == Platform::X86_64 {
+        quote! { let _uefi_acpi_rsdp = Some(self._acpi_rsdp_addr); }
     } else {
-        quote! { acpi_rsdp: None, }
+        quote! { let _uefi_acpi_rsdp = None; }
     };
 
     // SMBIOS entry point: populated by the SmBiosPrepare capability.
-    let smbios_field = if ctx.stage.uses_smbios {
-        quote! { smbios: fstart_capabilities::smbios::entry_point(), }
+    let smbios_setup = if ctx.stage.uses_smbios {
+        quote! { let _uefi_smbios = fstart_capabilities::smbios::entry_point(); }
     } else {
-        quote! { smbios: None, }
+        quote! { let _uefi_smbios = None; }
     };
 
     let acpi_reserved_push = if platform == Platform::X86_64 && ctx.stage.uses_acpi_prepare {
@@ -338,17 +300,7 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
         quote! {}
     };
 
-    // Runtime region: x86 only.  Let CrabEFI carve these out of Conventional
-    // RAM so it assigns the right RTCode/RTData attributes (notably XP on
-    // RuntimeServicesData).  Do not pre-type these ranges in the platform map.
-    let runtime_region_field = if platform == Platform::X86_64 {
-        quote! { Some(_runtime_region), }
-    } else {
-        quote! { None, }
-    };
-
-    // Memory map — x86 from e820, others from static RAM + FDT.
-    let memory_map_setup = if platform == Platform::X86_64 {
+    let launch_uefi = if platform == Platform::X86_64 {
         quote! {
             let _e820_state = unsafe { fstart_services::memory_detect::e820_state() };
             let mut _platform_entries_buf: [fstart_crabefi::MemoryRegion; 8] = [
@@ -369,50 +321,43 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
             #ecam_reserved_push
             #acpi_reserved_push
             #smbios_reserved_push
-            let _rom_entries = &_platform_entries_buf[.._platform_entries_idx];
-            let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 64] = [
-                fstart_crabefi::MemoryRegion {
-                    base: 0, size: 0,
-                    region_type: fstart_crabefi::MemoryType::Reserved,
-                };
-                64
-            ];
-            let _mem_idx = fstart_crabefi::build_efi_memory_map_from_e820(
+            let _platform_entries = &_platform_entries_buf[.._platform_entries_idx];
+            fstart_crabefi::launch_x86_uefi(
+                fstart_crabefi::UefiLaunchConfig {
+                    console: _uefi_console,
+                    framebuffer: _fb_config,
+                    acpi_rsdp: _uefi_acpi_rsdp,
+                    smbios: _uefi_smbios,
+                    fdt: _fdt_blob,
+                    ecam_base: _uefi_ecam_base,
+                    runtime_region: Some(_runtime_region),
+                },
                 _e820_state.entries(),
-                0, 0,
-                0, 0,
-                _rom_entries,
-                &mut _crabefi_mem_buf,
-            );
-            let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] =
-                &_crabefi_mem_buf[.._mem_idx];
-            fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
+                _platform_entries,
+            )
         }
     } else {
         quote! {
             let _static_entries: &[fstart_crabefi::MemoryRegion] = &[
                 #static_mem_entries
             ];
-            let mut _crabefi_mem_buf: [fstart_crabefi::MemoryRegion; 12] = [
-                fstart_crabefi::MemoryRegion {
-                    base: 0, size: 0,
-                    region_type: fstart_crabefi::MemoryType::Reserved,
-                };
-                12
-            ];
-            let _mem_idx = fstart_crabefi::build_efi_memory_map(
+            fstart_crabefi::launch_flat_uefi(
+                fstart_crabefi::UefiLaunchConfig {
+                    console: _uefi_console,
+                    framebuffer: _fb_config,
+                    acpi_rsdp: _uefi_acpi_rsdp,
+                    smbios: _uefi_smbios,
+                    fdt: _fdt_blob,
+                    ecam_base: _uefi_ecam_base,
+                    runtime_region: None,
+                },
                 _static_entries,
                 #ram_base_lit,
                 #ram_size_lit,
                 #fw_data_addr_lit,
                 #fw_stack_size_lit,
-                #fw_stack_size_lit,
                 _fdt_reservation,
-                &mut _crabefi_mem_buf,
-            );
-            let _crabefi_memory_map: &[fstart_crabefi::MemoryRegion] =
-                &_crabefi_mem_buf[.._mem_idx];
-            fstart_log::info!("EFI memory map: {} entries", _mem_idx as u32);
+            )
         }
     };
 
@@ -437,15 +382,13 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
 
         #bl31_boot
 
-        #timer_setup
-        #reset_setup
-        #rng_setup
         #console_setup
+        #ecam_base_setup
+        #acpi_rsdp_setup
+        #smbios_setup
 
         #fdt_setup
         #fdt_reservation_setup
-        #memory_map_setup
-
         #fb_setup
 
         #[cfg(all(target_arch = "x86_64", feature = "mp"))]
@@ -454,29 +397,7 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
         #[cfg(target_arch = "x86_64")]
         fstart_platform::disable_boot_media_rom_cache_for_handoff();
 
-        let _crabefi_config = fstart_crabefi::PlatformConfig {
-            memory_map: _crabefi_memory_map,
-            #timer_field
-            #reset_field
-            block_devices: &mut [],
-            variable_backend: None,
-            #debug_output_field
-            #framebuffer_field
-            #acpi_rsdp_field
-            #smbios_field
-            #fdt_field
-            #rng_field
-            #ecam_base_field
-            runtime_region: #runtime_region_field
-            heap_pre_initialized: false,
-        };
-
-        fstart_log::info!(
-            "EFI memory map: {} entries, calling init_platform...",
-            _mem_idx as u32,
-        );
-
-        // init_platform() is `-> !` (never returns).
-        fstart_crabefi::init_platform(_crabefi_config)
+        // launch_*_uefi() is `-> !` (never returns).
+        #launch_uefi
     }
 }
