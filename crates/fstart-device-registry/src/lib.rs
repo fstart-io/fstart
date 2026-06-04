@@ -190,6 +190,36 @@ pub enum Service {
 }
 
 impl Service {
+    /// All known service variants in stable display order.
+    pub const ALL: &'static [Self] = &[
+        Self::Console,
+        Self::BlockDevice,
+        Self::ClockController,
+        Self::MemoryController,
+        Self::PciRootBus,
+        Self::PciHost,
+        Self::PciBridge,
+        Self::LpcBus,
+        Self::SmBus,
+        Self::SmmOps,
+        Self::Framebuffer,
+        Self::AcpiTableProvider,
+        Self::MemoryDetector,
+        Self::SuperIoHost,
+        Self::Southbridge,
+        Self::Mainboard,
+        Self::PreConsoleInit,
+        Self::EarlyInit,
+        Self::StageLocalInit,
+        Self::PostDramInit,
+        Self::FinalizeInit,
+        Self::FlashLayoutVerifier,
+        Self::FirmwareImageProvider,
+        Self::I2cBus,
+        Self::SpiBus,
+        Self::GpioController,
+    ];
+
     /// Stable service name used in diagnostics and generated imports.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -261,6 +291,14 @@ impl ServiceSet {
     /// Return true if the set contains `service`.
     pub const fn contains(self, service: Service) -> bool {
         self.0 & service.bit() != 0
+    }
+
+    /// Iterate over services present in this set.
+    pub fn iter(self) -> impl Iterator<Item = Service> {
+        Service::ALL
+            .iter()
+            .copied()
+            .filter(move |service| self.contains(*service))
     }
 
     /// Return true if the set contains no services.
@@ -1110,8 +1148,7 @@ impl DriverInstance {
     /// Services provided by this concrete driver instance.
     ///
     /// This method is the source of truth for service availability. It may
-    /// inspect typed config for config-dependent services; currently all
-    /// registered services are unconditional.
+    /// inspect typed config for config-dependent services.
     pub fn provided_services(&self) -> ServiceSet {
         let mut services = ServiceSet::from_static(self.meta().static_services);
         match self {
@@ -1305,6 +1342,26 @@ impl DriverInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_set_iterates_inserted_services() {
+        let mut services = ServiceSet::empty();
+        services.insert(Service::Console);
+        services.insert(Service::BlockDevice);
+
+        let collected: Vec<_> = services.iter().collect();
+        assert_eq!(collected, vec![Service::Console, Service::BlockDevice]);
+    }
+
+    #[test]
+    fn service_all_covers_every_bit_position() {
+        for service in Service::ALL {
+            let mut services = ServiceSet::empty();
+            services.insert(*service);
+            assert_eq!(services.iter().count(), 1);
+            assert_eq!(services.iter().next(), Some(*service));
+        }
+    }
 
     #[test]
     fn structural_reports_structural_construction_kind() {
