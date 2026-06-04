@@ -31,7 +31,7 @@ fn adapter_compiles_for_qemu_riscv64() {
     assert!(src.contains("fstart_capabilities::sig_verify"));
     assert!(src.contains("FirmwareImageMap::new"));
     assert!(
-        !src.contains("board_gen::sig_verify: migration pending"),
+        !src.contains("board_gen::sig_verify: placeholder"),
         "qemu-riscv64 uses FFS; sig_verify must have a real body, got:\n{src}"
     );
     // qemu-riscv64 has a LinuxBoot payload with FdtSource::Platform,
@@ -50,7 +50,7 @@ fn adapter_compiles_for_qemu_riscv64() {
     assert!(src.contains("._handoff"));
     assert!(src.contains("_dram_size_static"));
     assert!(
-        !src.contains("board_gen::fdt_prepare: migration pending"),
+        !src.contains("board_gen::fdt_prepare: placeholder"),
         "qemu-riscv64 has FdtSource::Platform; fdt_prepare must have a real body, got:\n{src}"
     );
     // install_logger is a real body: the ConsoleInit id arm
@@ -64,7 +64,7 @@ fn adapter_compiles_for_qemu_riscv64() {
         "install_logger must emit console_ready banner, got:\n{src}"
     );
     assert!(
-        !src.contains("board_gen::install_logger: migration pending"),
+        !src.contains("board_gen::install_logger: placeholder"),
         "install_logger must have a real body, got:\n{src}"
     );
     // payload_load is real: qemu-riscv64 has LinuxBoot → firmware
@@ -78,14 +78,14 @@ fn adapter_compiles_for_qemu_riscv64() {
         "riscv64 payload_load must use boot_linux; got:\n{src}"
     );
     assert!(
-        !src.contains("board_gen::payload_load: migration pending"),
+        !src.contains("board_gen::payload_load: placeholder"),
         "payload_load must have a real body; got:\n{src}"
     );
     // init_device + init_all_devices are now migrated too — all
-    // 20 Board methods have real bodies.  No `migration pending`
+    // 20 Board methods have real bodies.  No `placeholder`
     // marker should remain anywhere in the generated source.
     assert!(
-        !src.contains("migration pending"),
+        !src.contains("placeholder"),
         "all Board methods must have real bodies now; got:\n{src}"
     );
 }
@@ -196,7 +196,7 @@ fn sunxi_board_sig_verify_has_block_device_arm() {
     );
 }
 
-// ===== fdt_prepare migration tests =================================
+// ===== fdt_prepare adapter tests =================================
 
 #[test]
 fn fdt_prepare_platform_uses_handoff_aware_dram_size() {
@@ -255,4 +255,4 @@ fn fdt_prepare_override_loads_from_ffs_on_sunxi_main() {
     );
 }
 
-// ===== payload_load migration tests =================================
+// ===== payload_load adapter tests =================================

@@ -42,7 +42,7 @@ fn payload_load_armv7_cleanup_before_linux() {
     );
 }
 
-// ===== init_device + init_all_devices migration tests ===============
+// ===== init_device + init_all_devices adapter tests ===============
 
 #[test]
 fn init_device_emits_match_arm_per_enabled_device() {
@@ -132,7 +132,7 @@ fn init_all_devices_respects_boot_media_gating_on_sunxi() {
     );
 }
 
-// ===== boot_media_select + load_next_stage migration tests ==========
+// ===== boot_media_select + load_next_stage adapter tests ==========
 
 #[test]
 fn boot_media_select_real_body_on_sunxi_bootblock() {
@@ -254,4 +254,4 @@ fn board_struct_carries_egon_sram_base_field() {
     }
 }
 
-// ===== acpi_prepare + smbios_prepare migration tests ================
+// ===== acpi_prepare + smbios_prepare adapter tests ================

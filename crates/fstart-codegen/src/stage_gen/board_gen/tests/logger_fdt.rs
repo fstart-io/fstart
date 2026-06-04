@@ -1,6 +1,6 @@
 use super::adapter_source_for_board;
 
-// ===== install_logger migration tests ===============================
+// ===== install_logger adapter tests ===============================
 
 #[test]
 fn install_logger_emits_arm_per_console_device() {
