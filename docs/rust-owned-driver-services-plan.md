@@ -171,12 +171,14 @@ have no services:
 ```ron
 (
     name: "xhci0",
-    kind: AcpiOnly(Xhci(( ... ))),
+    kind: AcpiOnly,
+    acpi: Xhci(( ... )),
 )
 ```
 
-If this is too large for the first implementation step, `DriverInstance::Xhci`
-may remain internally, but the external RON should not contain `services: []`.
+ACPI-only descriptors are parsed into a side table outside the runtime device
+arrays. They are not `DriverInstance` variants and must not use the runtime
+`driver:` field.
 
 ## New typed model
 
@@ -670,12 +672,12 @@ Exit criteria:
 
 ### Phase 5 — ACPI-only cleanup
 
-1. Decide final representation for ACPI-only descriptors:
-   - preferred: explicit `kind: AcpiOnly(...)` RON entries, or
-   - acceptable: typed ACPI descriptor list outside `devices`.
-2. Remove `DriverInstance::is_acpi_only()` as a service/lifecycle special case if
-   ACPI-only entries leave `devices` entirely.
-3. Make runtime device iteration only include actual runtime drivers.
+1. Use explicit `kind: AcpiOnly, acpi: ...` RON entries for ACPI-only
+   descriptors.
+2. Keep ACPI-only descriptors outside `DriverInstance` and the runtime device
+   arrays entirely.
+3. Make runtime device iteration only include actual runtime drivers and
+   structural topology nodes.
 
 Exit criteria:
 
