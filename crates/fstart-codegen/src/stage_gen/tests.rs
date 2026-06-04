@@ -163,6 +163,74 @@ fn test_console_init_requires_console_service() {
     );
 }
 
+#[test]
+fn acpi_prepare_requires_board_acpi_config() {
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::AcpiPrepare);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("compile_error!")
+            && source.contains("AcpiPrepare capability requires top-level board.acpi config"),
+        "should reject AcpiPrepare without board.acpi config: {source}"
+    );
+}
+
+#[test]
+fn smbios_prepare_requires_board_smbios_config() {
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::SmBiosPrepare);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("compile_error!")
+            && source.contains("SmBiosPrepare capability requires top-level board.smbios config"),
+        "should reject SmBiosPrepare without board.smbios config: {source}"
+    );
+}
+
+#[test]
+fn fdt_override_requires_ffs_using_stage() {
+    use fstart_types::{FdtSource, PayloadConfig, PayloadKind};
+
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::FdtPrepare);
+    let mut parsed = test_parsed_board(caps);
+    parsed.config.payload = Some(PayloadConfig {
+        kind: PayloadKind::LinuxBoot,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: FdtSource::Override(heapless::String::try_from("board.dtb").unwrap()),
+        dtb_addr: Some(0x87f0_0000),
+        src_dtb_addr: None,
+        bootargs: None,
+        print_x86_mtrrs: false,
+        compression: fstart_types::ffs::Compression::Lz4,
+        firmware: None,
+        fit_file: None,
+        fit_config: None,
+        fit_parse: None,
+    });
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("compile_error!")
+            && source.contains("FdtPrepare with an override DTB requires an FFS-using stage"),
+        "should reject FDT override stages without FFS users: {source}"
+    );
+}
+
 // =======================================================================
 // Bus hierarchy tests
 // =======================================================================

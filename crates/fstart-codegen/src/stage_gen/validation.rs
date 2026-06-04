@@ -7,7 +7,8 @@
 use fstart_device_registry::{DriverInstance, Service, ServiceSet};
 
 use fstart_types::{
-    BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, Platform, StageLayout,
+    BoardConfig, BootMedium, Capability, FdtSource, FitParseMode, PayloadKind, Platform,
+    StageLayout,
 };
 
 /// Validate that capabilities are in a legal order.
@@ -355,6 +356,39 @@ pub(super) fn validate_capability_services(
     for cap in capabilities {
         if let Err(err) = validate_capability_service(cap, config, instances, device_services) {
             return Some(err);
+        }
+    }
+
+    None
+}
+
+/// Validate stage-wide configuration requirements that are not tied to a
+/// specific service provider device.
+pub(super) fn validate_stage_scope_requirements(
+    capabilities: &[Capability],
+    config: &BoardConfig,
+) -> Option<String> {
+    let has = |needle: fn(&Capability) -> bool| capabilities.iter().any(needle);
+
+    if has(|cap| matches!(cap, Capability::AcpiPrepare)) && config.acpi.is_none() {
+        return Some("AcpiPrepare capability requires top-level board.acpi config".to_string());
+    }
+
+    if has(|cap| matches!(cap, Capability::SmBiosPrepare)) && config.smbios.is_none() {
+        return Some("SmBiosPrepare capability requires top-level board.smbios config".to_string());
+    }
+
+    if has(|cap| matches!(cap, Capability::FdtPrepare)) {
+        if let Some(payload) = config.payload.as_ref() {
+            if matches!(
+                payload.fdt,
+                FdtSource::Override(_) | FdtSource::GeneratedWithOverride(_)
+            ) && !needs_ffs(capabilities)
+            {
+                return Some(
+                    "FdtPrepare with an override DTB requires an FFS-using stage".to_string(),
+                );
+            }
         }
     }
 

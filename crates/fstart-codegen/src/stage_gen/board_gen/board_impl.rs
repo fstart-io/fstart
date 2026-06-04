@@ -95,32 +95,17 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let dram_init_body = dram_init_body(ctx);
     let pre_console_init_body = phase_init_body(
         ctx,
-        PhaseSpec::new(
-            Service::PreConsoleInit,
-            "PreConsoleInit",
-            "pre_console_init",
-        ),
+        PhaseSpec::new(Service::PreConsoleInit, "pre_console_init"),
     );
-    let early_init_body = phase_init_body(
-        ctx,
-        PhaseSpec::new(Service::EarlyInit, "EarlyInit", "early_init"),
-    );
+    let early_init_body = phase_init_body(ctx, PhaseSpec::new(Service::EarlyInit, "early_init"));
     let stage_local_init_body = phase_init_body(
         ctx,
-        PhaseSpec::new(
-            Service::StageLocalInit,
-            "StageLocalInit",
-            "stage_local_init",
-        ),
+        PhaseSpec::new(Service::StageLocalInit, "stage_local_init"),
     );
-    let post_dram_init_body = phase_init_body(
-        ctx,
-        PhaseSpec::new(Service::PostDramInit, "PostDramInit", "post_dram_init"),
-    );
-    let finalize_init_body = phase_init_body(
-        ctx,
-        PhaseSpec::new(Service::FinalizeInit, "FinalizeInit", "finalize_init"),
-    );
+    let post_dram_init_body =
+        phase_init_body(ctx, PhaseSpec::new(Service::PostDramInit, "post_dram_init"));
+    let finalize_init_body =
+        phase_init_body(ctx, PhaseSpec::new(Service::FinalizeInit, "finalize_init"));
 
     let acpi_load_body = acpi_load_body(ctx);
     let memory_detect_body = memory_detect_body(ctx);

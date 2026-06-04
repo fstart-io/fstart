@@ -264,6 +264,25 @@ fn driver_instance_has_no_acpi_only_pseudo_devices() {
 }
 
 #[test]
+fn service_enum_has_no_structural_topology_variants() {
+    let root = repo_root();
+    let registry_rs = root.join("crates/fstart-device-registry/src/lib.rs");
+    let text = fs::read_to_string(registry_rs).expect("read registry");
+    let service_enum = text
+        .split("pub enum Service {")
+        .nth(1)
+        .and_then(|tail| tail.split("impl Service").next())
+        .expect("registry should define Service enum before impl Service");
+
+    for variant in ["PciBridge", "LpcBus", "SmBus"] {
+        assert!(
+            !service_enum.contains(variant),
+            "structural topology must not re-enter Service enum: {variant}"
+        );
+    }
+}
+
+#[test]
 fn codegen_does_not_compare_service_string_literals() {
     let root = repo_root();
     let service_names = [

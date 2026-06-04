@@ -39,7 +39,7 @@ use crate::ron_loader::ParsedBoard;
 use topology::validate_device_tree;
 use validation::{
     get_boot_medium, needs_embedded_anchor, needs_ffs, validate_capability_ordering,
-    validate_capability_services,
+    validate_capability_services, validate_stage_scope_requirements,
 };
 
 // =======================================================================
@@ -96,6 +96,10 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         &parsed.driver_instances,
         &parsed.device_services,
     ) {
+        return format!("compile_error!(\"{err}\");\n");
+    }
+
+    if let Some(err) = validate_stage_scope_requirements(capabilities, config) {
         return format!("compile_error!(\"{err}\");\n");
     }
 

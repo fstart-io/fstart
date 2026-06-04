@@ -13,19 +13,13 @@ use crate::stage_gen::config_ser;
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PhaseSpec {
     service: Service,
-    trait_name: &'static str,
     method_name: &'static str,
 }
 
 impl PhaseSpec {
-    pub(super) const fn new(
-        service: Service,
-        trait_name: &'static str,
-        method_name: &'static str,
-    ) -> Self {
+    pub(super) const fn new(service: Service, method_name: &'static str) -> Self {
         Self {
             service,
-            trait_name,
             method_name,
         }
     }
@@ -52,8 +46,9 @@ pub(super) fn phase_init_body(ctx: &BoardEmitModel<'_>, spec: PhaseSpec) -> Toke
         return quote! { todo!(#msg) };
     }
 
-    let trait_ident = format_ident!("{}", spec.trait_name);
-    let trait_alias = format_ident!("_{}", spec.trait_name);
+    let trait_name = spec.service.as_str();
+    let trait_ident = format_ident!("{}", trait_name);
+    let trait_alias = format_ident!("_{}", trait_name);
     let method_ident = format_ident!("{}", spec.method_name);
 
     let southbridge_field = ctx
