@@ -63,6 +63,7 @@ pub fn disable_boot_media_rom_cache_for_handoff() {
 //
 // Page tables: identity-mapped 2 MiB pages covering 4 GiB.
 // PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
+#[cfg(not(test))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is
     // the natural syntax for 16-bit / mixed-mode x86 assembly.
@@ -846,6 +847,7 @@ core::arch::global_asm!(
 
 // Make sure the linker pulls in the entry code. This symbol is called from
 // `global_asm!`, which Rust's dead-code analysis cannot see.
+#[cfg(not(test))]
 #[allow(dead_code)]
 extern "Rust" {
     fn fstart_main(handoff_ptr: usize) -> !;
