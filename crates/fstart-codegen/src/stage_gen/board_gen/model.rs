@@ -119,8 +119,6 @@ pub(super) enum DeviceKind {
     Excluded,
     /// Topology-only node.
     Structural,
-    /// ACPI descriptor with no runtime driver field.
-    AcpiOnly,
 }
 
 /// Semantic record for one flattened board device.
@@ -171,8 +169,6 @@ impl<'a> RuntimeDeviceTable<'a> {
             .map(|(idx, (((config, instance), node), services))| {
                 let kind = if !config.enabled {
                     DeviceKind::Disabled
-                } else if instance.construction_kind() == ConstructionKind::AcpiOnly {
-                    DeviceKind::AcpiOnly
                 } else if instance.construction_kind() == ConstructionKind::Structural {
                     DeviceKind::Structural
                 } else if excluded.contains(&idx) {

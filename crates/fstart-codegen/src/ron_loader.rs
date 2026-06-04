@@ -52,8 +52,6 @@ pub struct ParsedBoard {
     /// Effective service set per device after applying board policy.
     pub device_services: Vec<ServiceSet>,
     /// ACPI-only descriptors collected separately from runtime devices.
-    /// They are also kept in `driver_instances` temporarily to preserve the
-    /// lock-step flattened arrays during migration.
     pub acpi_only_devices: Vec<AcpiExtraDevice>,
 }
 
@@ -128,7 +126,7 @@ struct RonDevice {
     /// Runtime devices use `driver`; structural nodes use
     /// `kind: Structural(...)` and must not also set `driver`.
     /// ACPI-only descriptors use `kind: AcpiOnly` with an ACPI-only
-    /// driver descriptor while the internal representation is migrated.
+    /// driver descriptor and are collected outside the runtime device table.
     #[serde(default)]
     kind: Option<RonDeviceKind>,
     /// Typed enum variant: `Ns16550(( base_addr: …, … ))`, `Pl011(( … ))`, etc.
@@ -270,6 +268,10 @@ fn flatten_device(
     depth: u8,
     state: &mut FlattenState<'_>,
 ) -> Result<(), String> {
+    if matches!(rd.kind, Some(RonDeviceKind::AcpiOnly)) {
+        return flatten_acpi_only_device(rd, state);
+    }
+
     let my_idx = state.devices.len() as DeviceId;
 
     // Structural nodes become explicit instances in the typed driver instance
@@ -285,23 +287,6 @@ fn flatten_device(
         (None, Some(RonDeviceKind::Structural(kind))) => {
             DriverInstance::Structural(StructuralConfig { kind })
         }
-        (Some(instance), Some(RonDeviceKind::AcpiOnly))
-            if instance.construction_kind() == ConstructionKind::AcpiOnly =>
-        {
-            instance
-        }
-        (Some(_), Some(RonDeviceKind::AcpiOnly)) => {
-            return Err(format!(
-                "device '{}' uses 'kind: AcpiOnly' with a runtime driver",
-                rd.name
-            ));
-        }
-        (None, Some(RonDeviceKind::AcpiOnly)) => {
-            return Err(format!(
-                "ACPI-only descriptor '{}' is missing an ACPI driver descriptor",
-                rd.name
-            ));
-        }
         (Some(_instance), Some(RonDeviceKind::Structural(_))) => {
             return Err(format!(
                 "device '{}' specifies both 'driver' and structural 'kind'; choose one",
@@ -314,6 +299,7 @@ fn flatten_device(
                 rd.name
             ));
         }
+        (_, Some(RonDeviceKind::AcpiOnly)) => unreachable!("ACPI-only handled above"),
     };
     let parent_name = parent_idx.map(|idx| state.devices[idx as usize].name.clone());
 
@@ -340,6 +326,40 @@ fn flatten_device(
         flatten_device(child, Some(my_idx), depth + 1, state)?;
     }
 
+    Ok(())
+}
+
+fn flatten_acpi_only_device(
+    rd: RonDevice,
+    state: &mut FlattenState<'_>,
+) -> Result<(), String> {
+    if !rd.children.is_empty() {
+        return Err(format!(
+            "ACPI-only descriptor '{}' cannot have child devices",
+            rd.name
+        ));
+    }
+
+    let Some(instance) = rd.driver else {
+        return Err(format!(
+            "ACPI-only descriptor '{}' is missing an ACPI driver descriptor",
+            rd.name
+        ));
+    };
+    if instance.construction_kind() != ConstructionKind::AcpiOnly {
+        return Err(format!(
+            "device '{}' uses 'kind: AcpiOnly' with a runtime driver",
+            rd.name
+        ));
+    }
+
+    let Some(acpi_device) = acpi_extra_device(&instance) else {
+        return Err(format!(
+            "ACPI-only descriptor '{}' has no ACPI side-table representation",
+            rd.name
+        ));
+    };
+    state.acpi_only_devices.push(acpi_device);
     Ok(())
 }
 
@@ -694,19 +714,8 @@ mod tests {
 
     #[test]
     fn acpi_only_descriptors_are_collected_in_side_table() {
-        let source = qemu_sbsa_board_source();
-        let parsed = std::thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || {
-                let path = temp_board_path("acpi-side-table");
-                std::fs::write(&path, source).unwrap();
-                let parsed = load_parsed_board(&path).unwrap();
-                let _ = std::fs::remove_file(&path);
-                parsed
-            })
-            .expect("spawn ron loader worker")
-            .join()
-            .expect("ron loader worker panicked");
+        let parsed = load_temp_parsed("acpi-side-table", qemu_sbsa_board_source())
+            .expect("qemu-sbsa board should parse");
 
         assert_eq!(parsed.acpi_only_devices.len(), 2);
         assert!(matches!(
@@ -717,6 +726,16 @@ mod tests {
             parsed.acpi_only_devices[1],
             fstart_types::acpi::AcpiExtraDevice::Xhci(_)
         ));
+        assert!(
+            parsed
+                .config
+                .devices
+                .iter()
+                .all(|dev| dev.name.as_str() != "ahci0" && dev.name.as_str() != "xhci0")
+        );
+        assert_eq!(parsed.config.devices.len(), parsed.driver_instances.len());
+        assert_eq!(parsed.config.devices.len(), parsed.device_services.len());
+        assert_eq!(parsed.config.devices.len(), parsed.device_tree.len());
     }
 
     #[test]
