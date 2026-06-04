@@ -41,6 +41,7 @@ mod logger;
 mod model;
 mod mp;
 mod payload;
+mod payload_uefi;
 mod phases;
 mod security;
 mod state;
