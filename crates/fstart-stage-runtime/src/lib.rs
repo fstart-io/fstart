@@ -245,12 +245,6 @@ pub trait Board: Sized {
     /// Generated adapter delegates to `fstart_capabilities::memory_init`.
     fn memory_init(&self);
 
-    /// Stage operation for `LateDriverInit`.  `count` is currently always `0`.
-    ///
-    /// Generated adapter delegates to
-    /// `fstart_capabilities::late_driver_init_complete`.
-    fn late_driver_init_complete(&mut self, count: usize);
-
     /// Stage operation for `SigVerify`.
     ///
     /// Generated adapter reads its anchor pointer and current boot

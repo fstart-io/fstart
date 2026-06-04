@@ -23,7 +23,6 @@ fn adapter_compiles_for_qemu_riscv64() {
     assert!(src.contains("_handoff: Option<fstart_types::handoff::StageHandoff>"));
     // Trivial trampolines wired to the real capability helpers.
     assert!(src.contains("fstart_capabilities::memory_init()"));
-    assert!(src.contains("fstart_capabilities::late_driver_init_complete"));
     // Platform firmware-image setup is real — writes state.
     assert!(src.contains("boot_media_platform_firmware_image"));
     // qemu-riscv64 uses FFS (SigVerify/PayloadLoad), so `sig_verify`
@@ -82,7 +81,7 @@ fn adapter_compiles_for_qemu_riscv64() {
         "payload_load must have a real body; got:\n{src}"
     );
     // init_device + init_all_devices are now migrated too — all
-    // 20 Board methods have real bodies.  No `placeholder`
+    // Board methods have real bodies.  No `placeholder`
     // marker should remain anywhere in the generated source.
     assert!(
         !src.contains("placeholder"),

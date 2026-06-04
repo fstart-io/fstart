@@ -280,7 +280,6 @@ for each one.
 | `MemoryInit` | DRAM initialization stub. No-op on QEMU; use `DramInit` for real hardware. |
 | `DramInit { device: "name" }` | Run full DRAM training using the named `MemoryController` device. Logs detected size. Halts on failure. |
 | `DriverInit` | Initialize all devices not already initialized by a targeted capability. |
-| `LateDriverInit` | Post-OS-prep lockdown stub. Run after `FdtPrepare`, before `PayloadLoad`. |
 | `BootMedia(medium)` | Declare the boot medium that FFS operations read from (see below). |
 | `SigVerify` | Verify the Ed25519 manifest signature and per-file digests of the FFS image. |
 | `FdtPrepare` | Copy the platform DTB to `dtb_addr`, patch `/chosen/bootargs`, and update `/memory`. Requires `heap_size`. |

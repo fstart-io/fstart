@@ -201,9 +201,6 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &DirectCtx<'_>) -> Token
             quote! { fstart_stage_runtime::Board::pci_init(&mut board, #id) }
         }),
         C::DriverInit => driver_init_tokens(cap, ctx),
-        C::LateDriverInit => quote! {
-            fstart_stage_runtime::Board::late_driver_init_complete(&mut board, 0);
-        },
         C::SigVerify => quote! {
             fstart_stage_runtime::Board::sig_verify(&board);
         },

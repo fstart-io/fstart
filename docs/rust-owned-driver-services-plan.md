@@ -612,10 +612,10 @@ cargo xtask build --board foxconn-d41s --release
 ## Implementation phases
 
 Status: phases 1–7 are implemented. The plan remains as design history and as
-an invariant checklist for future driver/service work. Dead-code `todo!()`
-stubs may still exist for `Board` trait methods that are not reachable from a
-stage's declared capabilities; configuration errors that affect reachable stage
-plans should now fail before token emission with `compile_error!` diagnostics.
+an invariant checklist for future driver/service work. Configuration errors that
+affect reachable stage plans should fail before token emission with
+`compile_error!` diagnostics. Remaining generated dead-code `Board` trait stubs
+are tracked explicitly in the deferred cleanup section below.
 
 ### Phase 1 — typed services in registry
 
@@ -772,12 +772,22 @@ map, and first-stage load address rather than from a board name.
 
 ### Capability placeholders
 
-#### Make `LateDriverInit` a real typed service phase or remove it
+The unused `LateDriverInit` placeholder capability was removed; boards should
+use typed phase capabilities such as `FinalizeInit` for real
+lockdown/finalization work.
 
-- **Current state:** `LateDriverInit` is documented as a lockdown/security
-  placeholder for future device methods.
-- **Cleanup:** either add a typed service trait for late lockdown/finalization and
-  validate named providers, or remove the capability if no board uses it.
+#### Replace generated dead-code `Board` trait stubs
+
+- **Current state:** the generated board adapter must implement every method in
+  the `Board` trait, including capability trampolines that a given stage never
+  calls. Some unreachable method bodies still emit `todo!()` to avoid pulling in
+  feature-specific dependencies for stages that do not declare the corresponding
+  capability. Reachable misconfiguration is validated before token emission and
+  should produce `compile_error!` diagnostics instead.
+- **Cleanup:** replace the generated `todo!()` bodies with explicit unreachable
+  helpers or split optional capability trampolines out of the always-implemented
+  `Board` trait, then update tests so they no longer assert on dead-code
+  `todo!()` stubs.
 
 ## Non-goals
 

@@ -330,18 +330,6 @@ pub enum Capability {
         /// Name of the next stage to load
         next_stage: HString<32>,
     },
-    /// Device lockdown and security hardening — post-boot.
-    ///
-    /// Called after all payload/OS handoff preparation is complete but
-    /// before the final jump. Used to:
-    /// - Write-protect flash regions
-    /// - Lock fuses / OTP
-    /// - Disable debug ports (JTAG, UART if desired)
-    /// - Revoke temporary credentials
-    ///
-    /// Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks either turning
-    /// this into a real typed service phase or removing the capability.
-    LateDriverInit,
     /// Generate ACPI tables and write them to the configured address.
     ///
     /// Iterates devices with `AcpiDevice` impls and ACPI-only extra

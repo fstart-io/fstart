@@ -1013,7 +1013,6 @@ fn direct_flow_replaces_runtime_interpreter_entry() {
         device: heapless::String::try_from("uart0").unwrap(),
     });
     let _ = caps.push(Capability::MemoryInit);
-    let _ = caps.push(Capability::LateDriverInit);
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
 

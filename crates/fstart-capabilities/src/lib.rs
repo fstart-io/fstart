@@ -138,20 +138,6 @@ pub fn driver_init_complete(device_count: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// LateDriverInit
-// ---------------------------------------------------------------------------
-
-/// Device lockdown and security hardening — post-boot phase.
-///
-/// Called after OS handoff preparation but before the final jump.
-/// Currently a stub that logs its execution. Future: iterate over
-/// devices and call a `lockdown()` trait method for flash write-protect,
-/// fuse locking, debug port disable, etc.
-pub fn late_driver_init_complete(device_count: usize) {
-    fstart_log::info!("capability: LateDriverInit ({} devices)", device_count);
-}
-
-// ---------------------------------------------------------------------------
 // AcpiLoad
 // ---------------------------------------------------------------------------
 

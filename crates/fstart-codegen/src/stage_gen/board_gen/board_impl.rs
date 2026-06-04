@@ -11,7 +11,7 @@ use super::caps_tables::{
     acpi_load_body, acpi_prepare_body, memory_detect_body, smbios_prepare_body,
 };
 use super::fdt::{fdt_prepare_body, return_to_fel_body, stage_load_body};
-use super::init_caps::{dram_init_body, late_driver_init_body, pci_init_body};
+use super::init_caps::{dram_init_body, pci_init_body};
 use super::lifecycle::{init_all_devices_body, init_device_body};
 use super::logger::install_logger_body;
 use super::model::BoardEmitModel;
@@ -117,7 +117,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let payload_load_body = payload_load_body(platform, ctx);
     let init_device_body = init_device_body(ctx);
     let init_all_devices_body = init_all_devices_body(ctx);
-    let late_driver_init_body = late_driver_init_body(ctx);
     let boot_media_firmware_image_body = boot_media_firmware_image_body(ctx);
     let boot_media_platform_firmware_image_body = boot_media_platform_firmware_image_body(ctx);
 
@@ -147,10 +146,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 fstart_capabilities::memory_init();
             }
 
-            fn late_driver_init_complete(&mut self, count: usize) {
-                #late_driver_init_body
-                fstart_capabilities::late_driver_init_complete(count);
-            }
 
             fn sig_verify(&self) { #sig_verify_body }
             fn fdt_prepare(&self) { #fdt_prepare_body }
