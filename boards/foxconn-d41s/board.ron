@@ -230,11 +230,8 @@
                 // DIMM SPD EEPROMs at 0x50..0x57.
                 ( name: "smbus", kind: Structural(SmBus),
                     children: [
-                        // The CK505 driver is declared here but disabled
-                        // for the initial build: its `new_on_bus` needs
-                        // an SmBus bus provider which is not yet wired
-                        // into the ICH7 driver. Re-enable after Phase 6
-                        // plumbs the SMBus transaction API.
+                        // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks
+                        // wiring the ICH7 SMBus provider and enabling CK505.
                         ( name: "ck505", bus: I2c(0x69), enabled: false,
                             driver: I2cCk505((
                                 mask: [0x00, 0x80, 0xff, 0xff, 0xff],
@@ -311,9 +308,9 @@
                 // then SPI/SMI/TCO/BIOS-interface lockdown.
                 PostDramInit( devices: ["southbridge"] ),
                 FinalizeInit( devices: ["southbridge"] ),
-                // Temporarily skip SMM while debugging legacy IRQ/SERIRQ state.
-                // We clean ICH7 PM/GPE/SMI status in normal firmware code before
-                // Linux handoff instead of relying on the SMI handler.
+                // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks enabling
+                // SMM after IRQ/SERIRQ state handling is validated. Until then,
+                // ICH7 PM/GPE/SMI status is cleaned before Linux handoff.
                 MpInit(cpu_model: "pineview", num_cpus: 4, smm: false),
                 AcpiPrepare,
                 SmBiosPrepare,
@@ -351,8 +348,8 @@
     mode: Rigid,
     full_flash_image: true,
 
-    // ACPI: chipset-fixed topology only. CPU count + LAPIC IDs detected
-    // at runtime via CPUID leaf 0x0B (future Phase 6 work).
+    // ACPI: chipset-fixed topology only. docs/rust-owned-driver-services-plan.md tracks
+    // feeding CPUID-derived CPU count + LAPIC IDs into MADT generation.
     acpi: (
         print_hex: false,
         platform: X86((
@@ -375,10 +372,8 @@
         )),
     ),
 
-    // SMBIOS: board identity strings only. Runtime-detected fields
-    // (CPU frequency, cores/threads, cache geometry, DIMM sizes/speeds)
-    // are omitted here — a future SmBiosPrepare extension reads them
-    // from CPUID / SPD at boot.
+    // SMBIOS: board identity strings only. docs/rust-owned-driver-services-plan.md tracks
+    // filling runtime CPU/cache/DIMM fields from CPUID and SPD.
     smbios: (
         bios_vendor: "fstart",
         bios_version: "0.1.0",

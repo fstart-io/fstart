@@ -180,8 +180,8 @@ fn base_features(parsed: &ParsedBoard, target: TargetSpec) -> FeatureSet {
         features.insert("sunxi");
     }
 
-    // TODO: replace this board-name heuristic with an explicit board/emulation
-    // profile.  Kept here temporarily so the policy is isolated from build IO.
+    // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks replacing this
+    // board-name heuristic with an explicit board/emulation profile.
     if config.name.as_str().contains("sbsa") {
         features.insert("sbsa");
     }

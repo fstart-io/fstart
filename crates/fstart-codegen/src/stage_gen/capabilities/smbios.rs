@@ -56,8 +56,8 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
     //
     // Runtime-detectable fields (max_speed_mhz, core_count, thread_count)
     // may be `None` in RON for x86 boards that rely on CPUID probing.
-    // For the codegen output we fall back to 0; a future `SmBiosPrepare`
-    // extension will probe CPUID at runtime when the RON value is `None`.
+    // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks replacing these
+    // generated 0 sentinels with runtime CPUID data.
     let processor_items: Vec<TokenStream> = smbios_cfg
         .processors
         .iter()
@@ -108,12 +108,8 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
     //
     // Runtime-detectable fields (size_mb, speed_mhz, memory_type) may be
     // `None` in RON for x86 boards that rely on SPD probing over SMBus.
-    // We emit 0 / Unknown sentinels here.  These are deliberate
-    // runtime-detect placeholders — the `SmBiosPrepare` capability
-    // will overwrite them via CPUID (Type 4) and SPD (Type 17)
-    // at boot once the runtime probe path is wired.  Until then,
-    // boards that leave these fields `None` in RON will report
-    // `0 MHz` / `Unknown` to the OS.
+    // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks replacing these
+    // generated 0 / Unknown sentinels with runtime SPD data.
     let memory_items: Vec<TokenStream> = smbios_cfg
         .memory_devices
         .iter()

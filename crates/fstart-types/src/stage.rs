@@ -339,9 +339,8 @@ pub enum Capability {
     /// - Disable debug ports (JTAG, UART if desired)
     /// - Revoke temporary credentials
     ///
-    /// Devices that need lockdown should implement a `lockdown()` method
-    /// (future trait extension). For now, this is a capability placeholder
-    /// that logs its execution.
+    /// Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks either turning
+    /// this into a real typed service phase or removing the capability.
     LateDriverInit,
     /// Generate ACPI tables and write them to the configured address.
     ///

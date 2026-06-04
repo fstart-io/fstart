@@ -724,6 +724,66 @@ Exit criteria:
 - All boards use the new schema.
 - Codegen service dispatch is typed end-to-end.
 
+## Deferred cleanup tracked after implementation
+
+fstart should not keep transitional or compatibility behavior without an explicit
+owner and removal path. The following cases are intentionally left in-tree for
+now because they need hardware validation, schema work, or a larger follow-up
+change.
+
+### Board and platform policy
+
+#### Replace SBSA board-name feature heuristic
+
+- **Current state:** `xtask::build_plan` enables the `sbsa` feature by checking
+  whether the board name contains `sbsa`.
+- **Why it remains:** this is isolated to build planning, but it is still a
+  string heuristic.
+- **Cleanup:** add an explicit board/emulation profile field to board RON (or a
+  typed platform profile) and derive the feature from that typed field.
+
+### Foxconn D41S bring-up debt
+
+#### Wire ICH7 SMBus provider and enable CK505
+
+- **Current state:** the CK505 node is present but disabled because `I2cCk505`
+  needs an SMBus/I2C bus provider that is not wired through the ICH7 driver yet.
+- **Cleanup:** expose ICH7 SMBus as a typed bus service, construct CK505 via that
+  bus, enable the node, and add a board build/test that covers the path.
+
+#### Enable SMM once IRQ/SERIRQ state is validated
+
+- **Current state:** `MpInit(..., smm: false)` is used while IRQ/SERIRQ cleanup is
+  performed in normal firmware code before Linux handoff.
+- **Cleanup:** finish ICH7 SMI/PM/GPE status handling, validate that enabling SMM
+  does not regress Linux boot, switch D41S ramstage to `smm: true`, and keep a
+  release build validation for the EM100/foxconn flow.
+
+#### Runtime ACPI CPU/LAPIC data
+
+- **Current state:** D41S ACPI uses fixed chipset topology and static LAPIC/IOAPIC
+  config while CPU count and LAPIC IDs are noted as runtime-detectable.
+- **Cleanup:** extend `AcpiPrepare`/MP state so CPUID-derived CPU topology feeds
+  MADT generation, then remove any static placeholder assumptions.
+
+#### Runtime SMBIOS CPU/cache/DIMM data
+
+- **Current state:** D41S SMBIOS declares board identity strings only; runtime CPU,
+  cache, and DIMM data are omitted. Codegen emits `0` / `Unknown` sentinels for
+  optional runtime-detectable fields when the RON value is `None`.
+- **Cleanup:** extend `SmBiosPrepare` to consume CPUID and SPD data, populate the
+  omitted fields, remove generated sentinels for runtime-detectable values, and
+  document which fields remain board-policy strings.
+
+### Capability placeholders
+
+#### Make `LateDriverInit` a real typed service phase or remove it
+
+- **Current state:** `LateDriverInit` is documented as a lockdown/security
+  placeholder for future device methods.
+- **Cleanup:** either add a typed service trait for late lockdown/finalization and
+  validate named providers, or remove the capability if no board uses it.
+
 ## Non-goals
 
 - This plan does not introduce runtime dynamic dispatch.
