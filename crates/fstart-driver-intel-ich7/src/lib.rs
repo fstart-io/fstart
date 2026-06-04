@@ -1069,6 +1069,11 @@ impl Southbridge for IntelIch7 {
 }
 
 impl IntelIch7 {
+    fn smbus_mut(&mut self) -> &mut I801SmBus {
+        self.smbus
+            .get_or_insert_with(|| I801SmBus::new(self.config.smbus_base))
+    }
+
     /// Detect boot path: Normal, Reset (warm), or S3 Resume.
     ///
     /// Call this after `early_init()` but before raminit to determine
@@ -1091,16 +1096,11 @@ impl IntelIch7 {
 
 impl SmBus for IntelIch7 {
     fn read_byte(&mut self, addr: u8, cmd: u8) -> Result<u8, ServiceError> {
-        match self.smbus.as_mut() {
-            Some(bus) => bus.read_byte(addr, cmd),
-            None => Err(ServiceError::HardwareError),
-        }
+        self.smbus_mut().read_byte(addr, cmd)
     }
+
     fn write_byte(&mut self, addr: u8, cmd: u8, value: u8) -> Result<(), ServiceError> {
-        match self.smbus.as_mut() {
-            Some(bus) => bus.write_byte(addr, cmd, value),
-            None => Err(ServiceError::HardwareError),
-        }
+        self.smbus_mut().write_byte(addr, cmd, value)
     }
 }
 

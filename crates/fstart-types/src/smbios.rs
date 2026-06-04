@@ -131,10 +131,9 @@ impl ProcessorFamily {
 
 /// Processor description for SMBIOS Type 4.
 ///
-/// RON carries board-fixed identity (socket, manufacturer, family).
-/// Runtime-discoverable fields (frequency, core/thread counts, cache
-/// hierarchy) are `Option<T>` so x86 boards can leave them `None` and
-/// let the `SmBiosPrepare` capability fill them in from CPUID at boot.
+/// RON carries board-fixed identity (socket, manufacturer, family) and any
+/// board-authored CPU details. Optional fields omitted in RON are emitted as
+/// SMBIOS unknown/zero values rather than guessed by codegen.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmbiosProcessor {
@@ -149,27 +148,25 @@ pub struct SmbiosProcessor {
     pub processor_family: ProcessorFamily,
     /// Maximum speed in MHz.
     ///
-    /// On x86 with `None`, the `SmBiosPrepare` capability probes MSR
-    /// `PLATFORM_INFO` (0xCE) or CPUID leaf 0x16 at runtime. On ARM,
-    /// this is fixed by the board.
+    /// `None` emits SMBIOS value 0 (unknown).
     #[serde(default)]
     pub max_speed_mhz: Option<u16>,
     /// Number of physical cores.
     ///
-    /// On x86 with `None`, detected via CPUID leaf 0x0B / 0x04.
+    /// `None` emits SMBIOS value 0 (unknown).
     #[serde(default)]
     pub core_count: Option<u16>,
     /// Number of threads (logical processors).
     ///
-    /// On x86 with `None`, detected via CPUID leaf 0x0B.
+    /// `None` emits SMBIOS value 0 (unknown).
     #[serde(default)]
     pub thread_count: Option<u16>,
     /// Cache hierarchy for this processor (Type 7 entries).
     ///
     /// Each entry produces an SMBIOS Type 7 (Cache Information) structure.
     /// The first three entries are linked as L1/L2/L3 cache handles
-    /// in the Type 4 processor entry. Empty on x86 triggers CPUID
-    /// leaf 0x04 enumeration at runtime.
+    /// in the Type 4 processor entry. Empty means no Type 7 cache entries are
+    /// emitted for this processor.
     #[serde(default)]
     pub caches: heapless::Vec<SmbiosCache, 6>,
 }
@@ -252,10 +249,8 @@ impl CacheType {
 
 /// Memory device description for SMBIOS Type 17.
 ///
-/// Size, speed, and type are `Option<T>` so x86 boards can rely on SPD
-/// (Serial Presence Detect) data read over SMBus at runtime. When all
-/// three are `None` in RON, `SmBiosPrepare` reads the corresponding SPD
-/// bytes from the DIMM's 256-byte EEPROM.
+/// Size, speed, and type are `Option<T>` so boards can omit unknown DIMM
+/// details. Omitted values are emitted as SMBIOS unknown/zero values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmbiosMemoryDevice {
@@ -263,17 +258,17 @@ pub struct SmbiosMemoryDevice {
     pub locator: HString<32>,
     /// Memory size in megabytes.
     ///
-    /// `None` on x86 triggers SPD read at runtime.
+    /// `None` emits SMBIOS value 0 (unknown).
     #[serde(default)]
     pub size_mb: Option<u32>,
     /// Memory speed in MHz (e.g., 2400, 3200).
     ///
-    /// `None` on x86 triggers SPD read at runtime.
+    /// `None` emits SMBIOS value 0 (unknown).
     #[serde(default)]
     pub speed_mhz: Option<u16>,
     /// Memory type.
     ///
-    /// `None` on x86 triggers SPD byte 2 (key byte) read at runtime.
+    /// `None` emits SMBIOS value `Unknown`.
     #[serde(default)]
     pub memory_type: Option<MemoryDeviceType>,
 }
@@ -284,6 +279,8 @@ pub enum MemoryDeviceType {
     /// Unknown memory type.
     #[default]
     Unknown,
+    /// DDR2 SDRAM.
+    Ddr2,
     /// DDR3 SDRAM.
     Ddr3,
     /// DDR4 SDRAM.
@@ -301,6 +298,7 @@ impl MemoryDeviceType {
     pub fn to_smbios_byte(self) -> u8 {
         match self {
             Self::Unknown => 0x02,
+            Self::Ddr2 => 0x13,
             Self::Ddr3 => 0x18,
             Self::Ddr4 => 0x1A,
             Self::Ddr5 => 0x22,

@@ -750,53 +750,17 @@ Exit criteria:
 - CK505 unit tests cover topology-address validation and masked SMBus writes.
 - Foxconn D41S and Foxconn D41S UEFI release builds pass with CK505 enabled.
 
-## Deferred cleanup tracked after implementation
+## Post-implementation cleanup status
 
-fstart should not keep transitional or compatibility behavior without an explicit
-owner and removal path. The following cases are intentionally left in-tree for
-now because they need hardware validation, schema work, or a larger follow-up
-change.
-
-### Board and platform policy
-
-No deferred cleanup items currently remain. AArch64 EL2/TF-A relocate-entry
-policy is derived from the existing typed platform, SoC image format, memory
-map, and first-stage load address rather than from a board name.
-
-### Foxconn D41S bring-up debt
-
-#### Enable SMM once IRQ/SERIRQ state is validated
-
-- **Current state:** `MpInit(..., smm: false)` is used while IRQ/SERIRQ cleanup is
-  performed in normal firmware code before Linux handoff.
-- **Cleanup:** finish ICH7 SMI/PM/GPE status handling, validate that enabling SMM
-  does not regress Linux boot, switch D41S ramstage to `smm: true`, and keep a
-  release build validation for the EM100/foxconn flow.
-
-#### Runtime ACPI CPU/LAPIC data
-
-- **Current state:** D41S ACPI uses fixed chipset topology and static LAPIC/IOAPIC
-  config while CPU count and LAPIC IDs are noted as runtime-detectable.
-- **Cleanup:** extend `AcpiPrepare`/MP state so CPUID-derived CPU topology feeds
-  MADT generation, then remove any static placeholder assumptions.
-
-#### Runtime SMBIOS CPU/cache/DIMM data
-
-- **Current state:** D41S SMBIOS declares board identity strings only; runtime CPU,
-  cache, and DIMM data are omitted. Codegen emits `0` / `Unknown` sentinels for
-  optional runtime-detectable fields when the RON value is `None`.
-- **Cleanup:** extend `SmBiosPrepare` to consume CPUID and SPD data, populate the
-  omitted fields, remove generated sentinels for runtime-detectable values, and
-  document which fields remain board-policy strings.
-
-### Capability placeholders
-
-No deferred cleanup items currently remain. The unused `LateDriverInit`
-placeholder capability was removed; boards should use typed phase capabilities
-such as `FinalizeInit` for real lockdown/finalization work. Generated dead-code
-`Board` trait methods now use explicit `unreachable!()` bodies for capability
-trampolines that a stage never dispatches, while reachable misconfiguration is
-validated before token emission and should produce `compile_error!` diagnostics.
+No deferred cleanup items currently remain for this plan. AArch64 EL2/TF-A
+relocate-entry policy is derived from the existing typed platform, SoC image
+format, memory map, and first-stage load address rather than from a board name.
+Foxconn D41S CK505 is enabled through the typed SMBus child lifecycle, SMM is
+enabled in ramstage, ACPI CPU count is explicit in board policy, and SMBIOS
+CPU/cache/DIMM fields are populated in board RON instead of relying on generated
+sentinels. The unused `LateDriverInit` placeholder capability was removed;
+boards should use typed phase capabilities such as `FinalizeInit` for real
+lockdown/finalization work.
 
 ## Non-goals
 

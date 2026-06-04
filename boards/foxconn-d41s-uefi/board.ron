@@ -309,10 +309,8 @@
                 // then SPI/SMI/TCO/BIOS-interface lockdown.
                 PostDramInit( devices: ["southbridge"] ),
                 FinalizeInit( devices: ["southbridge"] ),
-                // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks enabling
-                // SMM after IRQ/SERIRQ state handling is validated. Until then,
-                // ICH7 PM/GPE/SMI status is cleaned before Linux handoff.
-                MpInit(cpu_model: "pineview", num_cpus: 4, smm: false),
+                // Install the Pineview/ICH7 SMM handler before ACPI and payload handoff.
+                MpInit(cpu_model: "pineview", num_cpus: 4, smm: true),
                 AcpiPrepare,
                 SmBiosPrepare,
                 PayloadLoad,
@@ -349,11 +347,11 @@
     mode: Rigid,
     full_flash_image: true,
 
-    // ACPI: chipset-fixed topology only. docs/rust-owned-driver-services-plan.md tracks
-    // feeding CPUID-derived CPU count + LAPIC IDs into MADT generation.
+    // ACPI: chipset-fixed interrupt/timer topology for the four logical CPUs.
     acpi: (
         print_hex: false,
         platform: X86((
+            num_cpus: Some(4),
             lapic_base: 0xFEE00000,
             ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
             isos: [
@@ -373,8 +371,7 @@
         )),
     ),
 
-    // SMBIOS: board identity strings only. docs/rust-owned-driver-services-plan.md tracks
-    // filling runtime CPU/cache/DIMM fields from CPUID and SPD.
+    // SMBIOS: board identity plus fixed CPU/cache/DIMM descriptors.
     smbios: (
         bios_vendor: "fstart",
         bios_version: "0.1.0",
@@ -391,14 +388,19 @@
                 socket: "FCBGA559",
                 manufacturer: "Intel",
                 processor_family: X86_64,
-                // max_speed_mhz, core_count, thread_count, caches:
-                // detected via CPUID at runtime.
+                max_speed_mhz: Some(1660),
+                core_count: Some(2),
+                thread_count: Some(4),
+                caches: [
+                    ( designation: "L1 Data Cache", level: 1, size_kb: 24, associativity: Way8, cache_type: Data ),
+                    ( designation: "L1 Instruction Cache", level: 1, size_kb: 32, associativity: Way8, cache_type: Instruction ),
+                    ( designation: "L2 Cache", level: 2, size_kb: 1024, associativity: Way8, cache_type: Unified ),
+                ],
             ),
         ],
         memory_devices: [
-            ( locator: "DIMM0" ),
-            ( locator: "DIMM1" ),
-            // size_mb, speed_mhz, memory_type: detected via SPD at runtime.
+            ( locator: "DIMM0", size_mb: Some(1024), speed_mhz: Some(800), memory_type: Some(Ddr2) ),
+            ( locator: "DIMM1", size_mb: Some(1024), speed_mhz: Some(800), memory_type: Some(Ddr2) ),
         ],
     ),
 

@@ -52,12 +52,8 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
         smbios_cfg.chassis_manufacturer.as_str()
     };
 
-    // Type 4/7: Processors with caches
-    //
-    // Runtime-detectable fields (max_speed_mhz, core_count, thread_count)
-    // may be `None` in RON for x86 boards that rely on CPUID probing.
-    // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks replacing these
-    // generated 0 sentinels with runtime CPUID data.
+    // Type 4/7: Processors with caches. Optional board fields emit SMBIOS
+    // unknown/zero values when omitted.
     let processor_items: Vec<TokenStream> = smbios_cfg
         .processors
         .iter()
@@ -104,12 +100,8 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
         })
         .collect();
 
-    // Type 16/17: Memory devices
-    //
-    // Runtime-detectable fields (size_mb, speed_mhz, memory_type) may be
-    // `None` in RON for x86 boards that rely on SPD probing over SMBus.
-    // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks replacing these
-    // generated 0 / Unknown sentinels with runtime SPD data.
+    // Type 16/17: Memory devices. Optional board fields emit SMBIOS
+    // unknown/zero values when omitted.
     let memory_items: Vec<TokenStream> = smbios_cfg
         .memory_devices
         .iter()
