@@ -178,8 +178,8 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
             }
         }
         AcpiPlatform::X86(x86) => {
-            // num_cpus = None → 0 sentinel; runtime MADT builder detects via CPUID.
-            // For now we fall back to 1 CPU when unset to keep the MADT valid.
+            // `num_cpus = None` is encoded as 0 and resolved by generated
+            // firmware from the MP state populated by `MpInit`.
             let num_cpus = Literal::u32_unsuffixed(x86.num_cpus.unwrap_or(0));
             let lapic_base = Literal::u64_unsuffixed(x86.lapic_base);
             let sci_irq = Literal::u8_unsuffixed(x86.sci_irq);
