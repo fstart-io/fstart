@@ -416,8 +416,6 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
         }
     };
 
-    let crabefi_scratch_buffer_field = format_ident!("{}_buffer", concat!("defer", "red"));
-
     // FDT reservation — non-x86 only.
     let fdt_reservation_setup = if platform != Platform::X86_64 {
         quote! {
@@ -469,7 +467,6 @@ pub(super) fn payload_load_uefi_body(platform: Platform, ctx: &BoardEmitModel<'_
             #fdt_field
             #rng_field
             #ecam_base_field
-            #crabefi_scratch_buffer_field: None,
             runtime_region: #runtime_region_field
             heap_pre_initialized: false,
         };

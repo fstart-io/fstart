@@ -13,13 +13,67 @@ use core::{cell::Cell, fmt};
 // Type aliases for generated code convenience.
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
-pub type PlatformConfig<'a> = crabefi::PlatformConfig<'a>;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
+pub type RuntimeRegion = crabefi::RuntimeRegion;
+
+/// fstart-owned UEFI payload configuration.
+///
+/// This keeps generated fstart code independent of CrabEFI internals and only
+/// exposes the fields fstart boards currently support.
+pub struct PlatformConfig<'a> {
+    /// Physical memory map describing RAM, MMIO, and reserved regions.
+    pub memory_map: &'a [MemoryRegion],
+    /// Monotonic timer for `Stall()` and EFI timer events.
+    pub timer: &'a dyn crabefi::Timer,
+    /// System reset handler for EFI reset services.
+    pub reset: &'a dyn crabefi::ResetHandler,
+    /// Block devices to expose to EFI.
+    pub block_devices: &'a mut [&'a mut dyn crabefi::BlockDevice],
+    /// Variable persistence backend.
+    pub variable_backend: Option<&'a mut dyn crabefi::VariableBackend>,
+    /// Debug/log output.
+    pub debug_output: Option<&'a mut dyn crabefi::DebugOutput>,
+    /// Console input.
+    pub console_input: Option<&'a mut dyn crabefi::ConsoleInput>,
+    /// Framebuffer configuration for GOP.
+    pub framebuffer: Option<FramebufferConfig>,
+    /// ACPI RSDP physical address.
+    pub acpi_rsdp: Option<u64>,
+    /// SMBIOS entry point physical address.
+    pub smbios: Option<u64>,
+    /// Flattened Device Tree blob.
+    pub fdt: Option<&'a [u8]>,
+    /// Hardware random number generator.
+    pub rng: Option<&'a dyn crabefi::Rng>,
+    /// PCI ECAM base address.
+    pub ecam_base: Option<u64>,
+    /// Runtime-services code/data region.
+    pub runtime_region: Option<RuntimeRegion>,
+    /// Whether CrabEFI heap/environment initialization already ran.
+    pub heap_pre_initialized: bool,
+}
 
 /// Call `crabefi::init_platform()`. This is the entry point that never returns.
-pub fn init_platform(config: crabefi::PlatformConfig) -> ! {
+pub fn init_platform(config: PlatformConfig<'_>) -> ! {
     enable_payload_cpu_features();
-    crabefi::init_platform(config)
+    crabefi::init_platform(crabefi::PlatformConfig {
+        memory_map: config.memory_map,
+        timer: config.timer,
+        reset: config.reset,
+        block_devices: config.block_devices,
+        variable_backend: config.variable_backend,
+        debug_output: config.debug_output,
+        console_input: config.console_input,
+        framebuffer: config.framebuffer,
+        acpi_rsdp: config.acpi_rsdp,
+        smbios: config.smbios,
+        fdt: config.fdt,
+        rng: config.rng,
+        ecam_base: config.ecam_base,
+        deferred_buffer: None,
+        runtime_region: config.runtime_region,
+        heap_pre_initialized: config.heap_pre_initialized,
+    })
 }
 
 /// Enable architectural CPU features expected by common UEFI applications.
@@ -279,7 +333,6 @@ pub fn build_efi_memory_map(
 }
 
 // Re-export types for codegen convenience.
-pub use crabefi::RuntimeRegion;
 pub use fstart_services::memory_detect::E820Entry;
 
 /// Compute the runtime memory region from linker-provided symbols.
