@@ -167,9 +167,6 @@ pub enum Service {
     MemoryController,
     PciRootBus,
     PciHost,
-    PciBridge,
-    LpcBus,
-    SmBus,
     SmmOps,
     Framebuffer,
     AcpiTableProvider,
@@ -198,9 +195,6 @@ impl Service {
         Self::MemoryController,
         Self::PciRootBus,
         Self::PciHost,
-        Self::PciBridge,
-        Self::LpcBus,
-        Self::SmBus,
         Self::SmmOps,
         Self::Framebuffer,
         Self::AcpiTableProvider,
@@ -229,9 +223,6 @@ impl Service {
             Self::MemoryController => "MemoryController",
             Self::PciRootBus => "PciRootBus",
             Self::PciHost => "PciHost",
-            Self::PciBridge => "PciBridge",
-            Self::LpcBus => "LpcBus",
-            Self::SmBus => "SmBus",
             Self::SmmOps => "SmmOps",
             Self::Framebuffer => "Framebuffer",
             Self::AcpiTableProvider => "AcpiTableProvider",
@@ -355,15 +346,38 @@ pub enum ConstructionKind {
 // DriverInstance — typed enum of all known driver configs
 // ---------------------------------------------------------------------------
 
-/// Empty configuration for structural (driverless) device tree nodes.
+/// Typed topology role for structural (driverless) device tree nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StructuralKind {
+    /// PCI bridge/port grouping children below a PCI root or host.
+    PciBridge,
+    /// LPC bus branch below a southbridge.
+    LpcBus,
+    /// SMBus branch below a southbridge.
+    SmBus,
+    /// Generic topology-only bus branch.
+    GenericBus,
+}
+
+/// Configuration for structural (driverless) device tree nodes.
 ///
-/// Used by `DriverInstance::Structural`. Carries no data — the node's
-/// identity is fully captured by `DeviceConfig` (name, parent, bus).
-/// Needed so the parallel `driver_instances` array stays aligned with
-/// `devices`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Used by `DriverInstance::Structural`. The node remains topology only and
+/// provides no Rust service traits; `kind` records the board-owned topology
+/// role so bus hierarchy validation does not need pseudo-services.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StructuralConfig {}
+pub struct StructuralConfig {
+    /// Board-owned topology role for this structural node.
+    pub kind: StructuralKind,
+}
+
+impl Default for StructuralConfig {
+    fn default() -> Self {
+        Self {
+            kind: StructuralKind::GenericBus,
+        }
+    }
+}
 
 /// Build-time inputs for hardware firmware-image providers.
 ///

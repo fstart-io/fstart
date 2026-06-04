@@ -18,7 +18,7 @@ use heapless::String as HString;
 use serde::Deserialize;
 
 use fstart_device_registry::{
-    ConstructionKind, DriverInstance, Service, ServiceSet, StructuralConfig,
+    ConstructionKind, DriverInstance, Service, ServiceSet, StructuralConfig, StructuralKind,
 };
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::device::BusAddress;
@@ -96,13 +96,6 @@ struct RonBoardConfig {
 enum RonDeviceKind {
     Structural(StructuralKind),
     AcpiOnly,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-enum StructuralKind {
-    PciBridge,
-    LpcBus,
-    SmBus,
 }
 
 /// A single device entry in the RON file.
@@ -281,10 +274,6 @@ fn flatten_device(
 
     // Structural nodes become explicit instances in the typed driver instance
     // table. DeviceConfig stays pure topology metadata.
-    let structural_kind = match rd.kind {
-        Some(RonDeviceKind::Structural(kind)) => Some(kind),
-        _ => None,
-    };
     let instance = match (rd.driver, rd.kind) {
         (Some(instance), None) if instance.construction_kind() == ConstructionKind::AcpiOnly => {
             return Err(format!(
@@ -293,8 +282,8 @@ fn flatten_device(
             ));
         }
         (Some(instance), None) => instance,
-        (None, Some(RonDeviceKind::Structural(_kind))) => {
-            DriverInstance::Structural(StructuralConfig::default())
+        (None, Some(RonDeviceKind::Structural(kind))) => {
+            DriverInstance::Structural(StructuralConfig { kind })
         }
         (Some(instance), Some(RonDeviceKind::AcpiOnly))
             if instance.construction_kind() == ConstructionKind::AcpiOnly =>
@@ -332,7 +321,7 @@ fn flatten_device(
         state.acpi_only_devices.push(acpi_device);
     }
 
-    let effective_services = effective_services(&instance, structural_kind, &rd.disabled_services)?;
+    let effective_services = effective_services(&instance, &rd.disabled_services)?;
     let _ = state.devices.push(DeviceConfig {
         name: rd.name,
         parent: parent_name,
@@ -365,7 +354,6 @@ fn acpi_extra_device(instance: &DriverInstance) -> Option<AcpiExtraDevice> {
 
 fn effective_services(
     instance: &DriverInstance,
-    structural_kind: Option<StructuralKind>,
     disabled: &heapless::Vec<Service, 16>,
 ) -> Result<ServiceSet, String> {
     for service in disabled {
@@ -379,22 +367,10 @@ fn effective_services(
     }
 
     let mut services = instance.provided_services();
-    if let Some(service) = structural_service(structural_kind) {
-        services.insert(service);
-    }
     for service in disabled {
         services.remove(*service);
     }
     Ok(services)
-}
-
-fn structural_service(kind: Option<StructuralKind>) -> Option<Service> {
-    match kind {
-        Some(StructuralKind::PciBridge) => Some(Service::PciBridge),
-        Some(StructuralKind::LpcBus) => Some(Service::LpcBus),
-        Some(StructuralKind::SmBus) => Some(Service::SmBus),
-        None => None,
-    }
 }
 
 #[cfg(test)]
@@ -436,18 +412,22 @@ mod tests {
         std::fs::read_to_string(board_path).expect("read foxconn-d41s board")
     }
 
-    fn load_temp_board(name: &str, source: String) -> Result<(), String> {
+    fn load_temp_parsed(name: &str, source: String) -> Result<super::ParsedBoard, String> {
         let path = temp_board_path(name);
         std::fs::write(&path, source).expect("write temp board");
         let load_path = path.clone();
         let result = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
-            .spawn(move || load_parsed_board(&load_path).map(|_| ()))
+            .spawn(move || load_parsed_board(&load_path))
             .expect("spawn board loader")
             .join()
             .expect("join board loader");
         let _ = std::fs::remove_file(&path);
         result
+    }
+
+    fn load_temp_board(name: &str, source: String) -> Result<(), String> {
+        load_temp_parsed(name, source).map(|_| ())
     }
 
     fn expect_load_error(result: Result<(), String>) -> String {
@@ -754,6 +734,26 @@ mod tests {
             err.contains("uses 'kind: AcpiOnly' with a runtime driver"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn structural_nodes_do_not_gain_pseudo_services() {
+        let parsed = load_temp_parsed("structural-services", foxconn_d41s_board_source())
+            .expect("foxconn board should parse");
+        let idx = parsed
+            .config
+            .devices
+            .iter()
+            .position(|dev| dev.name.as_str() == "lpc")
+            .expect("fixture should contain lpc structural node");
+
+        assert!(parsed.device_services[idx].is_empty());
+        match &parsed.driver_instances[idx] {
+            fstart_device_registry::DriverInstance::Structural(cfg) => {
+                assert_eq!(cfg.kind, fstart_device_registry::StructuralKind::LpcBus);
+            }
+            other => panic!("lpc should be structural, got {other:?}"),
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //!
 //! - A **bus-device child** (driver impls `BusDevice`, constructed via
 //!   `new_on_bus`) must have a parent providing a matching bus service
-//!   (`I2cBus`, `SpiBus`, `PciRootBus`, `LpcBus`, `SmBus`, `PciBridge`,
+//!   (`I2cBus`, `SpiBus`, `PciRootBus`, structural bus nodes,
 //!   `PciHost`, `Southbridge`, `GpioController`).
 //!
 //! - A **plain-Device child** (e.g., an NS16550 UART nested under a
@@ -45,11 +45,11 @@ pub(super) fn validate_device_tree(
             continue;
         }
 
-        if !is_bus_provider(&device_services[parent_idx]) {
+        if !is_bus_provider(&instances[parent_idx], &device_services[parent_idx]) {
             return Err(format!(
                 "bus-device '{}' has parent '{}' which does not provide a bus service \
                  (expected one of: I2cBus, SpiBus, GpioController, PciRootBus, \
-                 PciHost, Southbridge, PciBridge, LpcBus, SmBus)",
+                 PciHost, Southbridge, or a structural bus node)",
                 dev.name.as_str(),
                 parent.name.as_str(),
             ));
@@ -59,15 +59,16 @@ pub(super) fn validate_device_tree(
     Ok(())
 }
 
-fn is_bus_provider(services: &ServiceSet) -> bool {
+fn is_bus_provider(instance: &DriverInstance, services: &ServiceSet) -> bool {
+    if matches!(instance, DriverInstance::Structural(_)) {
+        return true;
+    }
+
     services.contains(Service::I2cBus)
         || services.contains(Service::SpiBus)
         || services.contains(Service::GpioController)
         || services.contains(Service::PciRootBus)
         || services.contains(Service::PciHost)
-        || services.contains(Service::PciBridge)
-        || services.contains(Service::LpcBus)
-        || services.contains(Service::SmBus)
         || services.contains(Service::Southbridge)
         || services.contains(Service::SuperIoHost)
 }
