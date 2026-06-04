@@ -4,7 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fstart_codegen::ron_loader::load_parsed_board;
-use fstart_device_registry::ConstructionKind;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -119,7 +118,7 @@ fn parsed_runtime_device_tables_exclude_acpi_only_descriptors() {
                     parsed
                         .driver_instances
                         .iter()
-                        .all(|inst| inst.construction_kind() != ConstructionKind::AcpiOnly),
+                        .all(|inst| inst.has_runtime_driver() || inst.meta().name == "structural"),
                     "ACPI-only descriptors must stay outside runtime device tables: {}",
                     board.display()
                 );
@@ -184,6 +183,28 @@ fn device_config_has_no_services_field() {
     assert!(
         !text.contains("pub services"),
         "DeviceConfig must not grow a board-owned services field"
+    );
+}
+
+#[test]
+fn driver_instance_has_no_acpi_only_pseudo_devices() {
+    let root = repo_root();
+    let registry_rs = root.join("crates/fstart-device-registry/src/lib.rs");
+    let text = fs::read_to_string(registry_rs).expect("read registry");
+
+    for variant in [
+        "Ahci(fstart_types::acpi::AcpiAhciDevice)",
+        "Xhci(fstart_types::acpi::AcpiXhciDevice)",
+        "PcieRoot(fstart_types::acpi::AcpiPcieRootDevice)",
+    ] {
+        assert!(
+            !text.contains(variant),
+            "ACPI-only descriptors must not be DriverInstance pseudo-devices: {variant}"
+        );
+    }
+    assert!(
+        !text.contains("ConstructionKind::AcpiOnly"),
+        "ACPI-only descriptors must stay outside DriverInstance construction kinds"
     );
 }
 

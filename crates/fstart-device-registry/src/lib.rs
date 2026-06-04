@@ -274,6 +274,11 @@ impl ServiceSet {
         self.0 |= service.bit();
     }
 
+    /// Return a copy of this set with `service` inserted.
+    pub const fn with(self, service: Service) -> Self {
+        Self(self.0 | service.bit())
+    }
+
     /// Remove a service from the set.
     pub fn remove(&mut self, service: Service) {
         self.0 &= !service.bit();
@@ -338,8 +343,6 @@ pub enum ConstructionKind {
     Device,
     /// Topology-only structural node.
     Structural,
-    /// ACPI descriptor with no runtime driver field.
-    AcpiOnly,
 }
 
 // ---------------------------------------------------------------------------
@@ -636,18 +639,6 @@ pub enum DriverInstance {
     #[cfg(feature = "sunxi-d1-dramc")]
     SunxiD1Dramc(sunxi_d1_dramc::SunxiD1DramcConfig),
 
-    // -----------------------------------------------------------------
-    // ACPI-only devices — no runtime driver, only contribute ACPI tables
-    // -----------------------------------------------------------------
-    /// AHCI SATA controller (ACPI-only, no runtime driver).
-    Ahci(fstart_types::acpi::AcpiAhciDevice),
-
-    /// xHCI USB controller (ACPI-only, no runtime driver).
-    Xhci(fstart_types::acpi::AcpiXhciDevice),
-
-    /// PCIe Root Complex (ACPI-only, no runtime driver).
-    PcieRoot(fstart_types::acpi::AcpiPcieRootDevice),
-
     /// SiFive UART (FU540/FU740).
     #[cfg(feature = "sifive-uart")]
     SifiveUart(sifive_uart::SifiveUartConfig),
@@ -908,36 +899,7 @@ impl DriverInstance {
                 has_acpi: false,
                 is_bus_device: false,
             },
-            Self::Ahci(_) => &DriverMeta {
-                name: "ahci",
-                type_name: "AcpiAhciDevice",
-                module_path: "fstart_types::acpi",
-                config_type: "AcpiAhciDevice",
-                static_services: &[],
-                compatible: &[],
-                has_acpi: true,
-                is_bus_device: false,
-            },
-            Self::Xhci(_) => &DriverMeta {
-                name: "xhci",
-                type_name: "AcpiXhciDevice",
-                module_path: "fstart_types::acpi",
-                config_type: "AcpiXhciDevice",
-                static_services: &[],
-                compatible: &[],
-                has_acpi: true,
-                is_bus_device: false,
-            },
-            Self::PcieRoot(_) => &DriverMeta {
-                name: "pcie-root",
-                type_name: "AcpiPcieRootDevice",
-                module_path: "fstart_types::acpi",
-                config_type: "AcpiPcieRootDevice",
-                static_services: &[],
-                compatible: &[],
-                has_acpi: true,
-                is_bus_device: false,
-            },
+
             #[cfg(feature = "sifive-uart")]
             Self::SifiveUart(_) => &DriverMeta {
                 name: "sifive-uart",
@@ -1164,21 +1126,16 @@ impl DriverInstance {
     /// This method is the source of truth for service availability. It may
     /// inspect typed config for config-dependent services.
     pub fn provided_services(&self) -> ServiceSet {
-        let mut services = ServiceSet::from_static(self.meta().static_services);
+        let services = ServiceSet::from_static(self.meta().static_services);
         match self {
             #[cfg(feature = "ite8721f")]
-            Self::Ite8721f(cfg) if cfg.console_port.is_some() => services.insert(Service::Console),
+            Self::Ite8721f(cfg) if cfg.console_port.is_some() => services.with(Service::Console),
             #[cfg(feature = "nsc-pc87382")]
-            Self::NscPc87382(cfg) if cfg.console_port.is_some() => {
-                services.insert(Service::Console);
-            }
+            Self::NscPc87382(cfg) if cfg.console_port.is_some() => services.with(Service::Console),
             #[cfg(feature = "nsc-pc87392")]
-            Self::NscPc87392(cfg) if cfg.console_port.is_some() => {
-                services.insert(Service::Console);
-            }
-            _ => {}
+            Self::NscPc87392(cfg) if cfg.console_port.is_some() => services.with(Service::Console),
+            _ => services,
         }
-        services
     }
 
     /// Returns `true` when this concrete instance provides `service`.
@@ -1188,8 +1145,7 @@ impl DriverInstance {
 
     /// The cargo feature / RON driver name for this runtime driver variant.
     ///
-    /// Structural and ACPI-only instances do not correspond to target-side
-    /// driver features.
+    /// Structural instances do not correspond to target-side driver features.
     pub fn driver_feature(&self) -> Option<&'static str> {
         if !self.has_runtime_driver() {
             None
@@ -1225,9 +1181,6 @@ impl DriverInstance {
             Self::IntelIch8(cfg) => cfg.acpi_name.as_deref(),
             #[cfg(feature = "lenovo-x61-mainboard")]
             Self::LenovoX61Mainboard(cfg) => cfg.acpi_name.as_deref(),
-            Self::Ahci(cfg) => Some(cfg.name.as_str()),
-            Self::Xhci(cfg) => Some(cfg.name.as_str()),
-            Self::PcieRoot(cfg) => Some(cfg.name.as_str()),
             _ => None,
         }
     }
@@ -1236,7 +1189,6 @@ impl DriverInstance {
     pub fn construction_kind(&self) -> ConstructionKind {
         #[allow(unreachable_patterns)]
         match self {
-            Self::Ahci(_) | Self::Xhci(_) | Self::PcieRoot(_) => ConstructionKind::AcpiOnly,
             Self::Structural(_) => ConstructionKind::Structural,
             _ => ConstructionKind::Device,
         }
@@ -1314,9 +1266,6 @@ impl DriverInstance {
             Self::SunxiD1Ccu(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sunxi-d1-dramc")]
             Self::SunxiD1Dramc(cfg) => serde::Serialize::serialize(cfg, ser),
-            Self::Ahci(cfg) => serde::Serialize::serialize(cfg, ser),
-            Self::Xhci(cfg) => serde::Serialize::serialize(cfg, ser),
-            Self::PcieRoot(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "sifive-uart")]
             Self::SifiveUart(cfg) => serde::Serialize::serialize(cfg, ser),
             #[cfg(feature = "fu740-prci")]
@@ -1381,19 +1330,6 @@ mod tests {
     fn structural_reports_structural_construction_kind() {
         let inst = DriverInstance::Structural(StructuralConfig::default());
         assert_eq!(inst.construction_kind(), ConstructionKind::Structural);
-        assert!(!inst.has_runtime_driver());
-        assert!(inst.provided_services().is_empty());
-    }
-
-    #[test]
-    fn acpi_only_reports_acpi_only_construction_kind() {
-        let inst = DriverInstance::Ahci(fstart_types::acpi::AcpiAhciDevice {
-            name: heapless::String::try_from("AHC0").unwrap(),
-            base: 0x1000,
-            size: 0x100,
-            gsiv: 42,
-        });
-        assert_eq!(inst.construction_kind(), ConstructionKind::AcpiOnly);
         assert!(!inst.has_runtime_driver());
         assert!(inst.provided_services().is_empty());
     }

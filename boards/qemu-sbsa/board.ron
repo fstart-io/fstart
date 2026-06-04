@@ -70,7 +70,7 @@
         (
             name: "ahci0",
             kind: AcpiOnly,
-            driver: Ahci((
+            acpi: Ahci((
                 name: "AHC0",
                 base: 0x60100000,
                 size: 0x10000,
@@ -80,7 +80,7 @@
         (
             name: "xhci0",
             kind: AcpiOnly,
-            driver: Xhci((
+            acpi: Xhci((
                 name: "USB0",
                 base: 0x60110000,
                 size: 0x10000,

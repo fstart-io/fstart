@@ -18,7 +18,7 @@ use heapless::String as HString;
 use serde::Deserialize;
 
 use fstart_device_registry::{
-    ConstructionKind, DriverInstance, Service, ServiceSet, StructuralConfig, StructuralKind,
+    DriverInstance, Service, ServiceSet, StructuralConfig, StructuralKind,
 };
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::device::BusAddress;
@@ -129,9 +129,12 @@ struct RonDevice {
     /// driver descriptor and are collected outside the runtime device table.
     #[serde(default)]
     kind: Option<RonDeviceKind>,
-    /// Typed enum variant: `Ns16550(( base_addr: …, … ))`, `Pl011(( … ))`, etc.
+    /// Runtime driver enum variant: `Ns16550(( base_addr: …, … ))`, `Pl011(( … ))`, etc.
     #[serde(default)]
     driver: Option<DriverInstance>,
+    /// ACPI-only descriptor enum variant: `Ahci((...))`, `Xhci((...))`, etc.
+    #[serde(default)]
+    acpi: Option<AcpiExtraDevice>,
     /// Child devices attached to this bus controller.
     /// Empty for leaf devices (default when omitted in RON).
     #[serde(default)]
@@ -276,36 +279,33 @@ fn flatten_device(
 
     // Structural nodes become explicit instances in the typed driver instance
     // table. DeviceConfig stays pure topology metadata.
-    let instance = match (rd.driver, rd.kind) {
-        (Some(instance), None) if instance.construction_kind() == ConstructionKind::AcpiOnly => {
+    let instance = match (rd.driver, rd.kind, rd.acpi) {
+        (_, None, Some(_)) => {
             return Err(format!(
                 "ACPI-only descriptor '{}' must use 'kind: AcpiOnly'",
                 rd.name
             ));
         }
-        (Some(instance), None) => instance,
-        (None, Some(RonDeviceKind::Structural(kind))) => {
+        (Some(instance), None, None) => instance,
+        (None, Some(RonDeviceKind::Structural(kind)), None) => {
             DriverInstance::Structural(StructuralConfig { kind })
         }
-        (Some(_instance), Some(RonDeviceKind::Structural(_))) => {
+        (Some(_), Some(RonDeviceKind::Structural(_)), _)
+        | (_, Some(RonDeviceKind::Structural(_)), Some(_)) => {
             return Err(format!(
-                "device '{}' specifies both 'driver' and structural 'kind'; choose one",
+                "device '{}' specifies both runtime/ACPI descriptor and structural 'kind'; choose one",
                 rd.name
             ));
         }
-        (None, None) => {
+        (None, None, None) => {
             return Err(format!(
                 "device '{}' is missing 'driver', 'kind: Structural(...)', or 'kind: AcpiOnly'",
                 rd.name
             ));
         }
-        (_, Some(RonDeviceKind::AcpiOnly)) => unreachable!("ACPI-only handled above"),
+        (_, Some(RonDeviceKind::AcpiOnly), _) => unreachable!("ACPI-only handled above"),
     };
     let parent_name = parent_idx.map(|idx| state.devices[idx as usize].name.clone());
-
-    if let Some(acpi_device) = acpi_extra_device(&instance) {
-        state.acpi_only_devices.push(acpi_device);
-    }
 
     let effective_services = effective_services(&instance, &rd.disabled_services)?;
     state
@@ -332,10 +332,7 @@ fn flatten_device(
     Ok(())
 }
 
-fn flatten_acpi_only_device(
-    rd: RonDevice,
-    state: &mut FlattenState<'_>,
-) -> Result<(), String> {
+fn flatten_acpi_only_device(rd: RonDevice, state: &mut FlattenState<'_>) -> Result<(), String> {
     if !rd.children.is_empty() {
         return Err(format!(
             "ACPI-only descriptor '{}' cannot have child devices",
@@ -343,36 +340,21 @@ fn flatten_acpi_only_device(
         ));
     }
 
-    let Some(instance) = rd.driver else {
-        return Err(format!(
-            "ACPI-only descriptor '{}' is missing an ACPI driver descriptor",
-            rd.name
-        ));
-    };
-    if instance.construction_kind() != ConstructionKind::AcpiOnly {
+    if rd.driver.is_some() {
         return Err(format!(
             "device '{}' uses 'kind: AcpiOnly' with a runtime driver",
             rd.name
         ));
     }
-
-    let Some(acpi_device) = acpi_extra_device(&instance) else {
+    let Some(acpi_device) = rd.acpi else {
         return Err(format!(
-            "ACPI-only descriptor '{}' has no ACPI side-table representation",
+            "ACPI-only descriptor '{}' is missing an ACPI descriptor",
             rd.name
         ));
     };
+
     state.acpi_only_devices.push(acpi_device);
     Ok(())
-}
-
-fn acpi_extra_device(instance: &DriverInstance) -> Option<AcpiExtraDevice> {
-    match instance {
-        DriverInstance::Ahci(dev) => Some(AcpiExtraDevice::Ahci(dev.clone())),
-        DriverInstance::Xhci(dev) => Some(AcpiExtraDevice::Xhci(dev.clone())),
-        DriverInstance::PcieRoot(dev) => Some(AcpiExtraDevice::PcieRoot(dev.clone())),
-        _ => None,
-    }
 }
 
 fn effective_services(
@@ -702,8 +684,8 @@ mod tests {
     fn acpi_only_descriptor_requires_explicit_kind() {
         let source = qemu_sbsa_board_source();
         let legacy_acpi_only = source.replacen(
-            "kind: AcpiOnly,\n            driver: Ahci((",
-            "driver: Ahci((",
+            "kind: AcpiOnly,\n            acpi: Ahci((",
+            "acpi: Ahci((",
             1,
         );
         assert_ne!(source, legacy_acpi_only, "test fixture changed");
@@ -729,13 +711,11 @@ mod tests {
             parsed.acpi_only_devices[1],
             fstart_types::acpi::AcpiExtraDevice::Xhci(_)
         ));
-        assert!(
-            parsed
-                .config
-                .devices
-                .iter()
-                .all(|dev| dev.name.as_str() != "ahci0" && dev.name.as_str() != "xhci0")
-        );
+        assert!(parsed
+            .config
+            .devices
+            .iter()
+            .all(|dev| dev.name.as_str() != "ahci0" && dev.name.as_str() != "xhci0"));
         assert_eq!(parsed.config.devices.len(), parsed.driver_instances.len());
         assert_eq!(parsed.config.devices.len(), parsed.device_services.len());
         assert_eq!(parsed.config.devices.len(), parsed.device_tree.len());
@@ -790,7 +770,7 @@ mod tests {
 
         let err = expect_load_error(load_temp_board("driver-and-kind", conflicting));
         assert!(
-            err.contains("specifies both 'driver' and structural 'kind'"),
+            err.contains("specifies both runtime/ACPI descriptor and structural 'kind'"),
             "unexpected error: {err}"
         );
     }
