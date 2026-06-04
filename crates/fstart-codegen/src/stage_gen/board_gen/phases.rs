@@ -43,7 +43,7 @@ pub(super) fn phase_init_body(ctx: &BoardEmitModel<'_>, spec: PhaseSpec) -> Toke
             spec.method_name,
             spec.service.as_str()
         );
-        return quote! { todo!(#msg) };
+        return quote! { unreachable!(#msg) };
     }
 
     let trait_name = spec.service.as_str();

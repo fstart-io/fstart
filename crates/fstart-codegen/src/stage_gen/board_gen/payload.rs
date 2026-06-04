@@ -40,8 +40,8 @@ pub(super) fn payload_load_body(platform: Platform, ctx: &BoardEmitModel<'_>) ->
     };
 
     // If the stage doesn’t declare PayloadLoad, the executor never
-    // dispatches this method.  Emit a dead-code stub rather than
-    // referencing crates (fstart_crabefi, etc.) that may not be
+    // dispatches this method. Emit a dead-code unreachable body rather
+    // than referencing crates (fstart_crabefi, etc.) that may not be
     // linked into this stage.
     let has_payload_load = ctx
         .stage
@@ -50,7 +50,7 @@ pub(super) fn payload_load_body(platform: Platform, ctx: &BoardEmitModel<'_>) ->
         .any(|c| matches!(c, Capability::PayloadLoad));
     if !has_payload_load {
         return quote! {
-            todo!("board_gen::payload_load: stage does not declare PayloadLoad")
+            unreachable!("board_gen::payload_load: stage does not declare PayloadLoad")
         };
     }
 
@@ -72,7 +72,7 @@ pub(super) fn payload_load_body(platform: Platform, ctx: &BoardEmitModel<'_>) ->
     // payload stage.
     if !ctx.stage.uses_ffs {
         return quote! {
-            todo!("board_gen::payload_load: generic payload requires an FFS-using stage")
+            unreachable!("board_gen::payload_load: generic payload requires an FFS-using stage")
         };
     }
     let anchor = anchor_bytes_stmt();
@@ -105,7 +105,7 @@ pub(super) fn payload_load_body(platform: Platform, ctx: &BoardEmitModel<'_>) ->
 fn payload_load_linux_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
-            todo!("board_gen::payload_load (LinuxBoot): requires an FFS-using stage")
+            unreachable!("board_gen::payload_load (LinuxBoot): requires an FFS-using stage")
         };
     }
     let payload = ctx
@@ -158,7 +158,7 @@ fn payload_load_linux_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> Toke
 fn payload_load_fit_runtime_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
-            todo!("board_gen::payload_load (FIT runtime): requires an FFS-using stage")
+            unreachable!("board_gen::payload_load (FIT runtime): requires an FFS-using stage")
         };
     }
     let payload = ctx

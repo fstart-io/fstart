@@ -25,8 +25,8 @@ pub(in crate::stage_gen::board_gen) fn boot_media_select_body(
     if !uses_boot_media_select || !is_egon {
         return quote! {
             let _ = candidates;
-            todo!("board_gen::boot_media_select: stage does not use LoadNextStage/BootMedia, \
-                   or board is not sunxi-eGON")
+            unreachable!("board_gen::boot_media_select: stage does not use LoadNextStage/BootMedia, \
+                         or board is not sunxi-eGON")
         };
     }
 
@@ -66,8 +66,8 @@ pub(in crate::stage_gen::board_gen) fn load_next_stage_body(
     if !uses_load_next_stage || !is_egon {
         return quote! {
             let _ = next_stage;
-            todo!("board_gen::load_next_stage: stage does not use LoadNextStage, \
-                   or board is not sunxi-eGON")
+            unreachable!("board_gen::load_next_stage: stage does not use LoadNextStage, \
+                         or board is not sunxi-eGON")
         };
     }
 

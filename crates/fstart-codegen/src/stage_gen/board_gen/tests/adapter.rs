@@ -26,7 +26,7 @@ fn adapter_compiles_for_qemu_riscv64() {
     // Platform firmware-image setup is real — writes state.
     assert!(src.contains("boot_media_platform_firmware_image"));
     // qemu-riscv64 uses FFS (SigVerify/PayloadLoad), so `sig_verify`
-    // is the real body — not a todo!().
+    // is the real body.
     assert!(src.contains("fstart_capabilities::sig_verify"));
     assert!(src.contains("FirmwareImageMap::new"));
     assert!(
@@ -154,12 +154,12 @@ fn bootblock_without_driver_init_keeps_capability_referenced_child() {
 fn sig_verify_stub_for_non_ffs_stages() {
     // Pick a multi-stage board's non-FFS stage.  The `main` stage
     // of `qemu-riscv64-multi` is ConsoleInit + MemoryInit +
-    // DriverInit — no SigVerify/StageLoad/PayloadLoad.  So
-    // `sig_verify` stays a todo!() placeholder because FSTART_ANCHOR
-    // does not exist in that stage's generated source.
+    // DriverInit — no SigVerify/StageLoad/PayloadLoad. So
+    // `sig_verify` stays a dead-code unreachable body because
+    // FSTART_ANCHOR does not exist in that stage's generated source.
     let src = adapter_source_for_stage("qemu-riscv64-multi", "main");
     assert!(src.contains("struct _BoardDevices"));
-    // No FFS ⇒ sig_verify body is a todo!() — referencing
+    // No FFS ⇒ sig_verify body is unreachable — referencing
     // FSTART_ANCHOR here would break compilation.
     assert!(
         !src.contains("&FSTART_ANCHOR"),

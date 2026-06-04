@@ -10,7 +10,7 @@ use super::model::BoardEmitModel;
 pub(super) fn sig_verify_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
-            todo!("board_gen::sig_verify: no FFS-using capability in this stage")
+            unreachable!("board_gen::sig_verify: no FFS-using capability in this stage")
         };
     }
 

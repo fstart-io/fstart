@@ -772,22 +772,12 @@ map, and first-stage load address rather than from a board name.
 
 ### Capability placeholders
 
-The unused `LateDriverInit` placeholder capability was removed; boards should
-use typed phase capabilities such as `FinalizeInit` for real
-lockdown/finalization work.
-
-#### Replace generated dead-code `Board` trait stubs
-
-- **Current state:** the generated board adapter must implement every method in
-  the `Board` trait, including capability trampolines that a given stage never
-  calls. Some unreachable method bodies still emit `todo!()` to avoid pulling in
-  feature-specific dependencies for stages that do not declare the corresponding
-  capability. Reachable misconfiguration is validated before token emission and
-  should produce `compile_error!` diagnostics instead.
-- **Cleanup:** replace the generated `todo!()` bodies with explicit unreachable
-  helpers or split optional capability trampolines out of the always-implemented
-  `Board` trait, then update tests so they no longer assert on dead-code
-  `todo!()` stubs.
+No deferred cleanup items currently remain. The unused `LateDriverInit`
+placeholder capability was removed; boards should use typed phase capabilities
+such as `FinalizeInit` for real lockdown/finalization work. Generated dead-code
+`Board` trait methods now use explicit `unreachable!()` bodies for capability
+trampolines that a stage never dispatches, while reachable misconfiguration is
+validated before token emission and should produce `compile_error!` diagnostics.
 
 ## Non-goals
 

@@ -104,13 +104,13 @@ pub(super) fn acpi_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
 
     if !ctx.stage.uses_acpi_prepare {
         return quote! {
-            todo!("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
+            unreachable!("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
         };
     }
 
     let Some(acpi_cfg) = ctx.config.acpi.as_ref() else {
         return quote! {
-            todo!("board_gen::acpi_prepare: board has no `acpi` RON config")
+            unreachable!("board_gen::acpi_prepare: board has no `acpi` RON config")
         };
     };
 
@@ -165,12 +165,12 @@ pub(super) fn acpi_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
 pub(super) fn smbios_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_smbios {
         return quote! {
-            todo!("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
+            unreachable!("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
         };
     }
     if ctx.config.smbios.is_none() {
         return quote! {
-            todo!("board_gen::smbios_prepare: board has no `smbios` RON config")
+            unreachable!("board_gen::smbios_prepare: board has no `smbios` RON config")
         };
     }
     crate::stage_gen::capabilities::generate_smbios_prepare(ctx.config)

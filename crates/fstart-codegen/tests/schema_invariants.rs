@@ -53,6 +53,33 @@ fn board_gen_modules_stay_small() {
 }
 
 #[test]
+fn board_gen_production_code_has_no_todo_stubs() {
+    let root = repo_root();
+    let board_gen = root.join("crates/fstart-codegen/src/stage_gen/board_gen");
+    let mut offenders = Vec::new();
+
+    for path in files_under(&board_gen, "", |p| {
+        p.extension().is_some_and(|ext| ext == "rs")
+    }) {
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("read board_gen module");
+        if text.contains("todo!(") {
+            offenders.push(path);
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "generated board adapter code must use explicit validation or unreachable bodies, not todo! stubs: {offenders:?}"
+    );
+}
+
+#[test]
 fn serde_deserialize_structs_deny_unknown_fields() {
     let root = repo_root();
     let mut offenders = Vec::new();

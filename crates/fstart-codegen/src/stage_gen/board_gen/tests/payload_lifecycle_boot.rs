@@ -162,8 +162,8 @@ fn boot_media_select_real_body_on_sunxi_bootblock() {
 #[test]
 fn boot_media_select_dead_code_stub_on_non_sunxi_boards() {
     // qemu-riscv64 is not a sunxi board, so boot_media_select
-    // stays as the todo!() stub — referencing fstart_soc_sunxi
-    // there would fail to link (no sunxi feature flag).
+    // stays as a dead-code unreachable body — referencing
+    // fstart_soc_sunxi there would fail to link (no sunxi feature flag).
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("board_gen::boot_media_select: stage does not use"),
@@ -223,7 +223,7 @@ fn load_next_stage_emits_real_body_on_sunxi_bootblock() {
 
 #[test]
 fn load_next_stage_dead_code_stub_on_non_sunxi_boards() {
-    // qemu-riscv64 never calls LoadNextStage; the body is todo!().
+    // qemu-riscv64 never calls LoadNextStage; the body is unreachable.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("board_gen::load_next_stage: stage does not use"),

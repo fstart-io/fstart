@@ -21,7 +21,7 @@ pub(super) fn fdt_prepare_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> 
         .any(|c| matches!(c, Capability::FdtPrepare));
     if !has_fdt_prepare {
         return quote! {
-            todo!("board_gen::fdt_prepare: stage does not declare FdtPrepare")
+            unreachable!("board_gen::fdt_prepare: stage does not declare FdtPrepare")
         };
     }
 
@@ -73,7 +73,7 @@ fn fdt_prepare_platform_body(platform: Platform, payload: &PayloadConfig) -> Tok
 fn fdt_prepare_override_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
-            todo!("board_gen::fdt_prepare Override variant requires an FFS-using stage")
+            unreachable!("board_gen::fdt_prepare Override variant requires an FFS-using stage")
         };
     }
 
@@ -212,7 +212,7 @@ pub(super) fn stage_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_ffs {
         return quote! {
             let _ = next_stage;
-            todo!("board_gen::stage_load requires an FFS-using stage")
+            unreachable!("board_gen::stage_load requires an FFS-using stage")
         };
     }
 
@@ -290,7 +290,7 @@ pub(super) fn return_to_fel_body(platform: Platform, ctx: &BoardEmitModel<'_>) -
 
     if platform != Platform::Armv7 || !uses_return_to_fel {
         return quote! {
-            todo!("board_gen::return_to_fel: stage does not declare ReturnToFel")
+            unreachable!("board_gen::return_to_fel: stage does not declare ReturnToFel")
         };
     }
     quote! {

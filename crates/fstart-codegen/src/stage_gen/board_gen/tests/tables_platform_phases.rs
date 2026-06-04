@@ -30,7 +30,7 @@ fn acpi_prepare_emits_real_body_on_sbsa() {
 #[test]
 fn acpi_prepare_stub_on_boards_without_acpi_config() {
     // qemu-riscv64 has no `acpi` RON config and no AcpiPrepare
-    // capability, so the body must be the dead-code todo!().
+    // capability, so the body must be dead-code unreachable.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
@@ -67,7 +67,7 @@ fn smbios_prepare_emits_real_body_on_sbsa() {
 #[test]
 fn smbios_prepare_stub_on_boards_without_smbios_config() {
     // qemu-riscv64 has no `smbios` config and no SmBiosPrepare
-    // capability, so the body is the dead-code todo!().
+    // capability, so the body is dead-code unreachable.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
@@ -311,7 +311,7 @@ fn return_to_fel_stays_stubbed_for_boards_without_capability() {
     // No fixture board today actively declares `ReturnToFel` in
     // any stage's capabilities (orangepi-r1 has the entry
     // commented out).  Every adapter must therefore emit the
-    // `todo!()` stub that skips referencing `fstart_soc_sunxi`
+    // unreachable body that skips referencing `fstart_soc_sunxi`
     // — the crate is only pulled into the dependency graph via
     // the `sunxi` feature on sunxi boards, and non-sunxi armv7
     // boards like `qemu-armv7` would fail to compile if we
@@ -363,7 +363,7 @@ fn stage_load_stub_for_non_ffs_stages() {
     // A stage without FFS capabilities has no FSTART_ANCHOR static
     // and no boot-media import path.  `stage_load` on that stage
     // would be dead code (validation forbids StageLoad without
-    // BootMedia), so we emit a `todo!()`.
+    // BootMedia), so we emit an explicit unreachable body.
     //
     // qemu-riscv64-multi's `main` stage is the canonical non-FFS
     // stage in the fixture set.
@@ -373,11 +373,11 @@ fn stage_load_stub_for_non_ffs_stages() {
         !src.contains("&FSTART_ANCHOR"),
         "non-FFS stage must not reference FSTART_ANCHOR; got:\n{src}"
     );
-    // `stage_load` body is a todo!() — the compiler still
+    // `stage_load` body is unreachable — the compiler still
     // type-checks the trait impl, but no executor arm dispatches
     // this method for this stage.
     assert!(
         src.contains("board_gen::stage_load requires an FFS-using stage"),
-        "non-FFS stage_load must emit the dead-code todo!(); got:\n{src}"
+        "non-FFS stage_load must emit the dead-code unreachable body; got:\n{src}"
     );
 }
