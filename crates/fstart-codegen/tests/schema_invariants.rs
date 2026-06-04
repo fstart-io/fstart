@@ -242,6 +242,32 @@ fn device_config_has_no_services_field() {
 }
 
 #[test]
+fn ron_loader_production_schema_has_no_legacy_services_field() {
+    let root = repo_root();
+    let ron_loader = root.join("crates/fstart-codegen/src/ron_loader.rs");
+    let text = fs::read_to_string(ron_loader).expect("read RON loader");
+    let production = text
+        .split("#[cfg(test)]")
+        .next()
+        .expect("RON loader should have production section before tests");
+
+    let offenders: Vec<_> = production
+        .lines()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            let trimmed = line.trim_start();
+            (trimmed.starts_with("services:") || trimmed.starts_with("pub services"))
+                .then_some(idx + 1)
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "production RON schema must not restore legacy board-owned services field: {offenders:?}"
+    );
+}
+
+#[test]
 fn driver_instance_has_no_acpi_only_pseudo_devices() {
     let root = repo_root();
     let registry_rs = root.join("crates/fstart-device-registry/src/lib.rs");
