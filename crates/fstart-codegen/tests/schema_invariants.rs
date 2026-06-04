@@ -31,6 +31,28 @@ fn files_under(root: &Path, rel: &str, pred: fn(&Path) -> bool) -> Vec<PathBuf> 
 }
 
 #[test]
+fn board_gen_modules_stay_small() {
+    let root = repo_root();
+    let board_gen = root.join("crates/fstart-codegen/src/stage_gen/board_gen");
+    let mut oversized = Vec::new();
+
+    for path in files_under(&board_gen, "", |p| {
+        p.extension().is_some_and(|ext| ext == "rs")
+    }) {
+        let text = fs::read_to_string(&path).expect("read board_gen module");
+        let lines = text.lines().count();
+        if lines > 700 {
+            oversized.push(format!("{} ({lines} lines)", path.display()));
+        }
+    }
+
+    assert!(
+        oversized.is_empty(),
+        "board_gen modules should stay below the Phase 6 size budget: {oversized:?}"
+    );
+}
+
+#[test]
 fn serde_deserialize_structs_deny_unknown_fields() {
     let root = repo_root();
     let mut offenders = Vec::new();
