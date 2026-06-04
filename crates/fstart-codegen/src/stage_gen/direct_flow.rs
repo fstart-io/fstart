@@ -155,31 +155,31 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &DirectCtx<'_>) -> Token
             }
         }
         C::PreConsoleInit { devices } => phase_tokens(
-            "PreConsoleInit",
+            Service::PreConsoleInit,
             devices,
             ctx,
             |ids| quote! { fstart_stage_runtime::Board::pre_console_init(&mut board, &[#(#ids),*]) },
         ),
         C::EarlyInit { devices } => phase_tokens(
-            "EarlyInit",
+            Service::EarlyInit,
             devices,
             ctx,
             |ids| quote! { fstart_stage_runtime::Board::early_init(&mut board, &[#(#ids),*]) },
         ),
         C::StageLocalInit { devices } => phase_tokens(
-            "StageLocalInit",
+            Service::StageLocalInit,
             devices,
             ctx,
             |ids| quote! { fstart_stage_runtime::Board::stage_local_init(&mut board, &[#(#ids),*]) },
         ),
         C::PostDramInit { devices } => phase_tokens(
-            "PostDramInit",
+            Service::PostDramInit,
             devices,
             ctx,
             |ids| quote! { fstart_stage_runtime::Board::post_dram_init(&mut board, &[#(#ids),*]) },
         ),
         C::FinalizeInit { devices } => phase_tokens(
-            "FinalizeInit",
+            Service::FinalizeInit,
             devices,
             ctx,
             |ids| quote! { fstart_stage_runtime::Board::finalize_init(&mut board, &[#(#ids),*]) },
@@ -245,11 +245,12 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &DirectCtx<'_>) -> Token
 }
 
 fn phase_tokens(
-    context: &str,
+    service: Service,
     devices: &[heapless::String<32>],
     ctx: &DirectCtx<'_>,
     call: impl FnOnce(Vec<Literal>) -> TokenStream,
 ) -> TokenStream {
+    let context = service.as_str();
     let ids: Vec<Literal> = devices
         .iter()
         .map(|device| ctx.ids.lit(device.as_str(), context))
