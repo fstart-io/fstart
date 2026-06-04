@@ -547,8 +547,8 @@ fn load_candidates(candidates: &[LoadDevice], ctx: &DirectCtx<'_>) -> Vec<TokenS
 }
 
 fn media_ids_tokens(device_name: &str, ctx: &DirectCtx<'_>) -> TokenStream {
-    // Unmapped drivers return an empty list, matching the plan metadata and
-    // keeping candidate tables usable on platforms where this mapping is N/A.
+    // Capability validation rejects runtime-selected boot-media candidates
+    // without a Rust-owned boot-source mapping before these tokens are used.
     let values = boot_media_values_for_device(device_name, ctx.devices, ctx.instances);
     let lits = values.iter().map(|b| Literal::u8_unsuffixed(*b));
     quote! { &[#(#lits),*] }

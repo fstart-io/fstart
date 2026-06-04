@@ -1132,9 +1132,9 @@ fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
 }
 
 #[test]
-fn direct_flow_media_ids_empty_for_device_without_boot_media_mapping() {
-    // ns16550 has no boot_media_values_for_device mapping; the direct
-    // LoadNextStage candidate should fall back to an empty slice.
+fn load_next_stage_rejects_non_block_device() {
+    // ns16550 has no boot_media_values_for_device mapping; LoadNextStage
+    // should reject it before generating an unusable candidate table.
     let mut caps = heapless::Vec::new();
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
@@ -1151,11 +1151,129 @@ fn direct_flow_media_ids_empty_for_device_without_boot_media_mapping() {
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
 
-    // We don't care if the overall stage rejects this (it might — ns16550
-    // isn't a block device).  We care that direct codeflow didn't panic when
-    // asked to compute media_ids for a device without a mapping.
     assert!(
-        source.contains("media_ids: &[]") || source.contains("compile_error!"),
-        "non-sunxi device should have empty media_ids (or compile_error): {source}"
+        source.contains("compile_error!") && source.contains("does not provide BlockDevice"),
+        "LoadNextStage should reject non-block devices before candidate emission: {source}"
+    );
+}
+
+#[test]
+fn load_next_stage_rejects_block_device_without_boot_media_mapping() {
+    use fstart_device_registry::sunxi_mmc::SunxiMmcConfig;
+    use fstart_types::*;
+    use heapless::String as HString;
+
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: HString::try_from("uart0").unwrap(),
+    });
+    let mut load_devs = heapless::Vec::new();
+    let _ = load_devs.push(LoadDevice {
+        name: HString::try_from("mmc1").unwrap(),
+        base_offset: 0,
+    });
+    let _ = caps.push(Capability::LoadNextStage {
+        devices: load_devs,
+        next_stage: HString::try_from("main").unwrap(),
+    });
+
+    let mut devices = heapless::Vec::new();
+    let _ = devices.push(DeviceConfig {
+        name: HString::try_from("uart0").unwrap(),
+        parent: None,
+        bus: None,
+        enabled: true,
+    });
+    let _ = devices.push(DeviceConfig {
+        name: HString::try_from("mmc1").unwrap(),
+        parent: None,
+        bus: None,
+        enabled: true,
+    });
+
+    let driver_instances = vec![
+        DriverInstance::Ns16550(fstart_driver_ns16550::Ns16550Config {
+            regs: fstart_driver_ns16550::AccessMode::Mmio {
+                base: 0x1000_0000,
+                reg_shift: 0,
+                reg_width: 0,
+            },
+            clock_freq: 3_686_400,
+            baud_rate: 115_200,
+        }),
+        DriverInstance::SunxiMmc(SunxiMmcConfig::Sun7iA20 {
+            base_addr: 0x01c1_0000,
+            ccu_base: 0x01c2_0000,
+            pio_base: 0x01c2_0800,
+            mmc_index: 1,
+        }),
+    ];
+    let config = BoardConfig {
+        name: HString::try_from("test-sunxi-mmc1").unwrap(),
+        platform: Platform::Armv7,
+        memory: MemoryMap {
+            regions: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(MemoryRegion {
+                    name: HString::try_from("ram").unwrap(),
+                    base: 0x4000_0000,
+                    size: 0x0800_0000,
+                    kind: RegionKind::Ram,
+                });
+                v
+            },
+            flash_layout: None,
+            car: None,
+        },
+        devices,
+        stages: StageLayout::Monolithic(MonolithicConfig {
+            capabilities: caps,
+            load_addr: 0x4000_0000,
+            stack_size: 0x10000,
+            heap_size: None,
+            data_addr: None,
+            page_table_addr: None,
+            page_size: fstart_types::stage::PageSize::default(),
+        }),
+        security: SecurityConfig {
+            signing_algorithm: SignatureAlgorithm::Ed25519,
+            pubkey_file: HString::try_from("keys/dev.pub").unwrap(),
+            required_digests: {
+                let mut v = heapless::Vec::new();
+                let _ = v.push(DigestAlgorithm::Sha256);
+                v
+            },
+        },
+        mode: BuildMode::Rigid,
+        payload: None,
+        full_flash_image: false,
+        microcode: None,
+        soc_image_format: SocImageFormat::AllwinnerEgon,
+        acpi: None,
+        smbios: None,
+        smm: None,
+        boot_hart_id: 0,
+    };
+    let parsed = ParsedBoard {
+        config,
+        device_services: services_for(&driver_instances),
+        acpi_only_devices: Vec::new(),
+        driver_instances,
+        device_tree: vec![
+            DeviceNode {
+                parent: None,
+                depth: 0,
+            },
+            DeviceNode {
+                parent: None,
+                depth: 0,
+            },
+        ],
+    };
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("compile_error!") && source.contains("has no boot-source mapping"),
+        "LoadNextStage should reject block devices without boot-source mapping: {source}"
     );
 }

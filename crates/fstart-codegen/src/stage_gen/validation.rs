@@ -462,6 +462,18 @@ fn validate_capability_service(
                     Service::BlockDevice,
                     "LoadNextStage",
                 )?;
+                if crate::stage_gen::capabilities::boot_media_values_for_device(
+                    device.name.as_str(),
+                    &config.devices,
+                    instances,
+                )
+                .is_empty()
+                {
+                    return Err(format!(
+                        "LoadNextStage device '{}' has no boot-source mapping",
+                        device.name.as_str()
+                    ));
+                }
             }
             Ok(())
         }
