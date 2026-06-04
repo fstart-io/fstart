@@ -65,12 +65,11 @@ impl DeviceNode {
 
 /// A device declaration in the board configuration.
 ///
-/// Carries the identity and topology metadata for a hardware device.
-/// The driver-specific configuration (register addresses, clocks, etc.)
-/// This contains only identity/topology metadata. Driver ownership lives in
-/// the codegen-side [`fstart_device_registry::DriverInstance`] table; each
-/// driver defines its own typed `Config` struct. Driver-provided services are
-/// owned by Rust driver metadata, not by this board schema.
+/// Carries only the identity and topology metadata for a hardware device.
+/// Driver-specific configuration (register addresses, clocks, etc.) lives in
+/// the codegen-side `DriverInstance` table; each driver defines its own typed
+/// `Config` struct. Driver-provided services are owned by Rust driver metadata,
+/// not by this board schema.
 ///
 /// Bus hierarchies are expressed via the `parent` field: a child device
 /// sets `parent` to its bus controller's name.  Codegen ensures parents

@@ -209,9 +209,13 @@ pub enum Service {
     StageLocalInit,
     PostDramInit,
     FinalizeInit,
+    FlashLayoutVerifier,
+    FirmwareImageProvider,
     I2cBus,
     SpiBus,
     GpioController,
+    /// Runtime SMBus trait provider; distinct from StructuralKind::SmBus.
+    SystemManagementBus,
 }
 ```
 
@@ -225,12 +229,6 @@ Use a small no-allocation representation for codegen convenience:
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceSet(u128);
-```
-
-or, if simplicity matters more than bit packing in the host-only registry:
-
-```rust
-pub type ServiceSet = &'static [Service];
 ```
 
 The important part is that callers use:
@@ -567,12 +565,15 @@ No import decision should depend on a RON `services` field.
 - Runtime device without `driver` fails.
 - Structural node with `driver` fails.
 
-### Registry tests
+### Registry and driver tests
 
 - Each real driver reports expected services through `provided_services()`.
 - Config-dependent service cases are covered:
   - SuperIO with `console_port` provides `Console`.
   - SuperIO without `console_port` does not provide `Console`.
+- Runtime SMBus providers report `Service::SystemManagementBus`.
+- CK505 validates that the RON bus address is `BusAddress::I2c` and that masked
+  SMBus register writes preserve bits outside each mask.
 - ACPI-only descriptors stay outside `DriverInstance` entirely.
 - Structural nodes report `ConstructionKind::Structural` and no services.
 
@@ -607,22 +608,24 @@ cargo xtask build --board qemu-armv7
 cargo xtask build --board qemu-q35
 cargo xtask build --board qemu-sbsa
 cargo xtask build --board foxconn-d41s --release
+cargo xtask build --board foxconn-d41s-uefi --release
 ```
 
 ## Implementation phases
 
-Status: phases 1–7 are implemented. The plan remains as design history and as
+Status: phases 1–8 are implemented. The plan remains as design history and as
 an invariant checklist for future driver/service work. Configuration errors that
 affect reachable stage plans should fail before token emission with
-`compile_error!` diagnostics. Remaining generated dead-code `Board` trait stubs
-are tracked explicitly in the deferred cleanup section below.
+`compile_error!` diagnostics. Generated dead-code `Board` trait methods use
+explicit `unreachable!()` bodies instead of `todo!()` stubs.
 
 ### Phase 1 — typed services in registry
 
 1. Add `Service` and `ServiceSet` to `fstart-device-registry`.
 2. Change `DriverMeta.services` to `DriverMeta.static_services: &'static [Service]`.
 3. Add `DriverInstance::provided_services()` and `DriverInstance::provides()`.
-4. Keep `DeviceConfig.services` temporarily unused only inside this phase.
+4. During this phase only, keep `DeviceConfig.services` unused until the
+   schema-removal phase deletes it.
 5. Add registry unit tests.
 
 Exit criteria:
@@ -656,8 +659,8 @@ Exit criteria:
 2. Reject capabilities that name a device lacking the required service.
 3. Reject stage plans that require FFS/ACPI/SMBIOS/FDT without the proper stage
    scope.
-4. Replace dead-code `todo!()` bodies where possible with earlier validation or
-   small unreachable stubs that do not hide configuration errors.
+4. Replace dead-code `todo!()` bodies with earlier validation or small
+   `unreachable!()` bodies that do not hide configuration errors.
 
 Exit criteria:
 
@@ -724,6 +727,29 @@ Exit criteria:
 - All boards use the new schema.
 - Codegen service dispatch is typed end-to-end.
 
+### Phase 8 — bus-child lifecycle plumbing
+
+1. Extend `BusDevice` with `new_on_bus_at(config, bus, Option<BusAddress>)` for
+   devices whose address is board topology rather than driver config.
+2. Extend `BusDevice` with `init_on_bus(&mut self, &mut Bus)` for children that
+   need mutable parent-bus transactions during initialization.
+3. Generate bus-child construction with the parsed RON `bus:` address and call
+   `init_on_bus()` with a mutable parent reference after construction.
+4. Keep runtime bus services typed: `Service::SystemManagementBus` maps to the
+   target `SmBus` trait and remains separate from structural
+   `StructuralKind::SmBus` topology.
+5. Remove CK505's parent-address bridge and use `dyn SmBus` directly, with
+   masked SMBus byte read/modify/write programming in `init_on_bus()`.
+
+Exit criteria:
+
+- `I2cCk505` no longer carries custom parent address-provider plumbing.
+- Generated bus-child code passes `BusAddress` into `new_on_bus_at()`.
+- Generated bus-child code can initialize children through mutable parent-bus
+  transactions without aliasing an already-borrowed immutable parent reference.
+- CK505 unit tests cover topology-address validation and masked SMBus writes.
+- Foxconn D41S and Foxconn D41S UEFI release builds pass with CK505 enabled.
+
 ## Deferred cleanup tracked after implementation
 
 fstart should not keep transitional or compatibility behavior without an explicit
@@ -738,13 +764,6 @@ policy is derived from the existing typed platform, SoC image format, memory
 map, and first-stage load address rather than from a board name.
 
 ### Foxconn D41S bring-up debt
-
-#### Wire ICH7 SMBus provider and enable CK505
-
-- **Current state:** the CK505 node is present but disabled because `I2cCk505`
-  needs an SMBus/I2C bus provider that is not wired through the ICH7 driver yet.
-- **Cleanup:** expose ICH7 SMBus as a typed bus service, construct CK505 via that
-  bus, enable the node, and add a board build/test that covers the path.
 
 #### Enable SMM once IRQ/SERIRQ state is validated
 

@@ -232,7 +232,7 @@ pub enum Capability {
     BootMedia(BootMedium),
     /// Verify the firmware filesystem manifest signature.
     SigVerify,
-    /// Initialize DRAM (memory training) — stub, no device reference.
+    /// Mark DRAM as available without naming a memory-controller device.
     ///
     /// Used on platforms where DRAM is already available or QEMU-style
     /// virtual boards. For real hardware, use `DramInit` instead.

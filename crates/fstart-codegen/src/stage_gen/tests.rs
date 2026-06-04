@@ -17,6 +17,12 @@ fn load_lenovo_x61_board() -> ParsedBoard {
         .expect("lenovo-x61 board should parse")
 }
 
+fn load_foxconn_d41s_board() -> ParsedBoard {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    load_parsed_board(&manifest_dir.join("../../boards/foxconn-d41s/board.ron"))
+        .expect("foxconn-d41s board should parse")
+}
+
 fn fstart_main_source(source: &str) -> &str {
     let start = source
         .find("pub extern \"Rust\" fn fstart_main")
@@ -1035,6 +1041,25 @@ fn direct_flow_replaces_runtime_interpreter_entry() {
     assert!(
         source.contains("fstart_stage_runtime::Board::memory_init(&board);"),
         "MemoryInit should lower to a direct Board call: {source}"
+    );
+}
+
+#[test]
+fn generated_imports_include_smbus_for_typed_smbus_provider() {
+    let source = std::thread::Builder::new()
+        .name("foxconn-smbus-import-codegen".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let parsed = load_foxconn_d41s_board();
+            generate_stage_source(&parsed, Some("bootblock"))
+        })
+        .expect("spawn foxconn codegen thread")
+        .join()
+        .expect("foxconn codegen should not panic");
+
+    assert!(
+        source.contains("use fstart_services::SmBus"),
+        "ICH7's typed SystemManagementBus service must import the SmBus trait: {source}"
     );
 }
 

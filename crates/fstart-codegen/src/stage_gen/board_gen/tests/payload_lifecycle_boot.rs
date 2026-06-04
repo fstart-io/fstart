@@ -155,19 +155,19 @@ fn boot_media_select_real_body_on_sunxi_bootblock() {
     );
     assert!(
         !src.contains("board_gen::boot_media_select: stage does not use"),
-        "sunxi bootblock must not emit the dead-code stub; got:\n{src}"
+        "sunxi bootblock must not emit the dead-code unreachable body; got:\n{src}"
     );
 }
 
 #[test]
-fn boot_media_select_dead_code_stub_on_non_sunxi_boards() {
+fn boot_media_select_dead_code_unreachable_on_non_sunxi_boards() {
     // qemu-riscv64 is not a sunxi board, so boot_media_select
     // stays as a dead-code unreachable body — referencing
     // fstart_soc_sunxi there would fail to link (no sunxi feature flag).
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("board_gen::boot_media_select: stage does not use"),
-        "qemu-riscv64 must emit the dead-code stub; got:\n{src}"
+        "qemu-riscv64 must emit the dead-code unreachable body; got:\n{src}"
     );
     // And must not reference fstart_soc_sunxi in boot_media_select
     // or anywhere else in the adapter.
@@ -217,17 +217,17 @@ fn load_next_stage_emits_real_body_on_sunxi_bootblock() {
     );
     assert!(
         !src.contains("board_gen::load_next_stage: stage does not use"),
-        "sunxi bootblock must not emit the dead-code stub; got:\n{src}"
+        "sunxi bootblock must not emit the dead-code unreachable body; got:\n{src}"
     );
 }
 
 #[test]
-fn load_next_stage_dead_code_stub_on_non_sunxi_boards() {
+fn load_next_stage_dead_code_unreachable_on_non_sunxi_boards() {
     // qemu-riscv64 never calls LoadNextStage; the body is unreachable.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("board_gen::load_next_stage: stage does not use"),
-        "qemu-riscv64 must emit the dead-code load_next_stage stub; got:\n{src}"
+        "qemu-riscv64 must emit the dead-code load_next_stage unreachable body; got:\n{src}"
     );
     assert!(
         !src.contains("next_stage_offset_at"),

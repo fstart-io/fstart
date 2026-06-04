@@ -4,11 +4,13 @@
 //! captures exactly the resources it needs.  Codegen maps the RON driver
 //! config to the driver-specific struct at build time.
 //!
-//! Bus-attached devices implement [`BusDevice`] instead, which adds
-//! `new_on_bus` — codegen passes the parent bus controller reference
-//! directly (compile-away approach: no runtime lookup).
+//! Bus-attached devices implement [`BusDevice`] instead. Codegen passes the
+//! parent bus controller reference and parsed bus address directly
+//! (compile-away approach: no runtime lookup).
 //!
 //! See [docs/driver-model.md](../../../docs/driver-model.md) for the full design.
+
+use fstart_types::BusAddress;
 
 /// Error type for device construction and initialisation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,14 +65,31 @@ pub trait Device: Send + Sync + Sized {
 ///     type Config = Slb9670Config;
 ///
 ///     fn new_on_bus(config: &'static Slb9670Config, bus: &B) -> Result<Self, DeviceError> {
-///         Ok(Self { bus, addr: config.addr })
+///         Self::new_on_bus_at(config, bus, None)
+///     }
+///
+///     fn new_on_bus_at(
+///         config: &'static Slb9670Config,
+///         bus: &B,
+///         address: Option<BusAddress>,
+///     ) -> Result<Self, DeviceError> {
+///         let Some(BusAddress::I2c(addr)) = address else {
+///             return Err(DeviceError::MissingResource("slb9670: missing I2C address"));
+///         };
+///         Ok(Self { bus, addr, config })
 ///     }
 /// }
 /// ```
 ///
-/// Codegen generates:
+/// Codegen generates construction with the parsed RON bus address and then
+/// initializes the child with mutable parent-bus access:
 /// ```ignore
-/// let tpm0 = Slb9670::new_on_bus(&tpm0_config, &i2c0);
+/// let mut tpm0 = Slb9670::new_on_bus_at(
+///     &tpm0_config,
+///     &i2c0,
+///     Some(BusAddress::I2c(0x50)),
+/// );
+/// tpm0.init_on_bus(&mut i2c0);
 /// ```
 pub trait BusDevice: Send + Sync + Sized {
     /// Human-readable driver name.
@@ -88,9 +107,33 @@ pub trait BusDevice: Send + Sync + Sized {
     /// (e.g., `B` where `B: I2c`).
     type Bus: ?Sized;
 
-    /// Construct from config + parent bus reference.  Does NOT touch hardware.
+    /// Construct from config + parent bus reference. Does NOT touch hardware.
     fn new_on_bus(config: &'static Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
 
-    /// Initialise hardware.  Called after `new_on_bus()`, in capability order.
+    /// Construct from config + parent bus reference + bus address.
+    ///
+    /// Most bus devices keep their address inside driver config, so the default
+    /// implementation ignores `address`. Devices whose address is modeled by
+    /// board topology can override this method.
+    fn new_on_bus_at(
+        config: &'static Self::Config,
+        bus: &Self::Bus,
+        address: Option<BusAddress>,
+    ) -> Result<Self, DeviceError> {
+        let _ = address;
+        Self::new_on_bus(config, bus)
+    }
+
+    /// Initialise hardware. Called after construction, in capability order.
     fn init(&mut self) -> Result<(), DeviceError>;
+
+    /// Initialise hardware with access to the parent bus.
+    ///
+    /// The default implementation preserves existing devices whose `init()`
+    /// does not need bus transactions. Devices such as SMBus clock generators
+    /// can override this to program registers through the parent controller.
+    fn init_on_bus(&mut self, bus: &mut Self::Bus) -> Result<(), DeviceError> {
+        let _ = bus;
+        self.init()
+    }
 }

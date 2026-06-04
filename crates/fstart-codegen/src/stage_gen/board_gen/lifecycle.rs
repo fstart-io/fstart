@@ -4,8 +4,21 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use fstart_device_registry::Service;
+use fstart_types::BusAddress;
 
 use super::model::BoardEmitModel;
+
+fn bus_address_tokens(address: Option<BusAddress>) -> TokenStream {
+    match address {
+        Some(BusAddress::Pci(device, function)) => {
+            quote! { Some(fstart_types::BusAddress::Pci(#device, #function)) }
+        }
+        Some(BusAddress::Lpc(port)) => quote! { Some(fstart_types::BusAddress::Lpc(#port)) },
+        Some(BusAddress::I2c(addr)) => quote! { Some(fstart_types::BusAddress::I2c(#addr)) },
+        Some(BusAddress::Spi(cs)) => quote! { Some(fstart_types::BusAddress::Spi(#cs)) },
+        None => quote! { None },
+    }
+}
 
 /// Emit the body of `Board::init_device`.
 pub(super) fn init_device_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
@@ -31,6 +44,7 @@ pub(super) fn init_device_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
                         match parent_name {
                             Some(pname) => {
                                 let parent = format_ident!("{}", pname);
+                                let bus_address = bus_address_tokens(step_dev.bus);
                                 quote! {
                                     static mut #cfg_static: core::mem::MaybeUninit<<#ty as fstart_services::BusDevice>::Config> = core::mem::MaybeUninit::uninit();
                                     // SAFETY: generated stage init is single-threaded and writes this
@@ -44,8 +58,11 @@ pub(super) fn init_device_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
                                     let _parent_ref = this.#parent
                                         .as_ref()
                                         .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                                    let mut _dev = <#ty>::new_on_bus(_cfg_ref, _parent_ref)?;
-                                    _dev.init()?;
+                                    let mut _dev = <#ty>::new_on_bus_at(_cfg_ref, _parent_ref, #bus_address)?;
+                                    let _parent_mut = this.#parent
+                                        .as_mut()
+                                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
+                                    _dev.init_on_bus(_parent_mut)?;
                                     this.#step_field = Some(_dev);
                                 }
                             }

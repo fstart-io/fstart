@@ -29,10 +29,6 @@ fn adapter_compiles_for_qemu_riscv64() {
     // is the real body.
     assert!(src.contains("fstart_capabilities::sig_verify"));
     assert!(src.contains("FirmwareImageMap::new"));
-    assert!(
-        !src.contains("board_gen::sig_verify: placeholder"),
-        "qemu-riscv64 uses FFS; sig_verify must have a real body, got:\n{src}"
-    );
     // qemu-riscv64 has a LinuxBoot payload with FdtSource::Platform,
     // so the body is `fdt_prepare_platform` with a runtime
     // `boot_dtb_addr()` call (RISC-V / AArch64 default) and the
@@ -48,10 +44,6 @@ fn adapter_compiles_for_qemu_riscv64() {
     // `._handoff` token alone is a reliable indicator.
     assert!(src.contains("._handoff"));
     assert!(src.contains("_dram_size_static"));
-    assert!(
-        !src.contains("board_gen::fdt_prepare: placeholder"),
-        "qemu-riscv64 has FdtSource::Platform; fdt_prepare must have a real body, got:\n{src}"
-    );
     // install_logger is a real body: the ConsoleInit id arm
     // calls `fstart_log::init` + `console_ready`.
     assert!(
@@ -61,10 +53,6 @@ fn adapter_compiles_for_qemu_riscv64() {
     assert!(
         src.contains("fstart_capabilities::console_ready"),
         "install_logger must emit console_ready banner, got:\n{src}"
-    );
-    assert!(
-        !src.contains("board_gen::install_logger: placeholder"),
-        "install_logger must have a real body, got:\n{src}"
     );
     // payload_load is real: qemu-riscv64 has LinuxBoot → firmware
     // load + kernel load + platform boot protocol.
@@ -76,13 +64,8 @@ fn adapter_compiles_for_qemu_riscv64() {
         src.contains("fstart_platform::boot_linux"),
         "riscv64 payload_load must use boot_linux; got:\n{src}"
     );
-    assert!(
-        !src.contains("board_gen::payload_load: placeholder"),
-        "payload_load must have a real body; got:\n{src}"
-    );
-    // init_device + init_all_devices are now migrated too — all
-    // Board methods have real bodies.  No `placeholder`
-    // marker should remain anywhere in the generated source.
+    // All Board methods have real bodies. No old placeholder marker
+    // should remain anywhere in the generated source.
     assert!(
         !src.contains("placeholder"),
         "all Board methods must have real bodies now; got:\n{src}"
@@ -151,7 +134,7 @@ fn bootblock_without_driver_init_keeps_capability_referenced_child() {
 }
 
 #[test]
-fn sig_verify_stub_for_non_ffs_stages() {
+fn sig_verify_unreachable_for_non_ffs_stages() {
     // Pick a multi-stage board's non-FFS stage.  The `main` stage
     // of `qemu-riscv64-multi` is ConsoleInit + MemoryInit +
     // DriverInit — no SigVerify/StageLoad/PayloadLoad. So
@@ -167,7 +150,7 @@ fn sig_verify_stub_for_non_ffs_stages() {
     );
     assert!(
         src.contains("board_gen::sig_verify: no FFS-using capability"),
-        "expected no-FFS sig_verify stub, got:\n{src}"
+        "expected no-FFS sig_verify unreachable body, got:\n{src}"
     );
 }
 

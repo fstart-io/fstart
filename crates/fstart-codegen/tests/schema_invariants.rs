@@ -347,6 +347,8 @@ fn codegen_does_not_compare_service_string_literals() {
         "AcpiTableProvider",
         "MemoryDetector",
         "SmmOps",
+        "SystemManagementBus",
+        "SmBus",
     ];
     let mut offenders = Vec::new();
     for path in files_under(&root, "crates/fstart-codegen/src", |p| {

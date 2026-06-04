@@ -21,21 +21,17 @@ fn acpi_prepare_emits_real_body_on_sbsa() {
         src.contains("PlatformConfig::Arm"),
         "sbsa acpi_prepare must use the Arm platform variant; got:\n{src}"
     );
-    assert!(
-        !src.contains("board_gen::acpi_prepare: placeholder"),
-        "acpi_prepare must have a real body; got:\n{src}"
-    );
 }
 
 #[test]
-fn acpi_prepare_stub_on_boards_without_acpi_config() {
+fn acpi_prepare_unreachable_on_boards_without_acpi_config() {
     // qemu-riscv64 has no `acpi` RON config and no AcpiPrepare
     // capability, so the body must be dead-code unreachable.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
             || src.contains("board_gen::acpi_prepare: board has no `acpi` RON config"),
-        "riscv64 must emit the no-config/no-cap stub; got:\n{src}"
+        "riscv64 must emit the no-config/no-cap unreachable body; got:\n{src}"
     );
     // And must not emit spurious platform_acpi tokens.
     assert!(
@@ -58,21 +54,17 @@ fn smbios_prepare_emits_real_body_on_sbsa() {
         src.contains("SmbiosDesc"),
         "smbios_prepare must emit the SmbiosDesc literal; got:\n{src}"
     );
-    assert!(
-        !src.contains("board_gen::smbios_prepare: placeholder"),
-        "smbios_prepare must have a real body; got:\n{src}"
-    );
 }
 
 #[test]
-fn smbios_prepare_stub_on_boards_without_smbios_config() {
+fn smbios_prepare_unreachable_on_boards_without_smbios_config() {
     // qemu-riscv64 has no `smbios` config and no SmBiosPrepare
     // capability, so the body is dead-code unreachable.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
             || src.contains("board_gen::smbios_prepare: board has no `smbios` RON config"),
-        "riscv64 must emit the smbios no-config/no-cap stub; got:\n{src}"
+        "riscv64 must emit the smbios no-config/no-cap unreachable body; got:\n{src}"
     );
     assert!(
         !src.contains("fstart_capabilities::smbios::prepare"),
@@ -111,10 +103,6 @@ fn acpi_load_emits_real_body_on_q35() {
         src.contains("\"fw_cfg0\""),
         "acpi_load arm must pass the RON device name; got:\n{src}"
     );
-    assert!(
-        !src.contains("board_gen::acpi_load: placeholder"),
-        "acpi_load must have a real body; got:\n{src}"
-    );
 }
 
 #[test]
@@ -134,10 +122,6 @@ fn memory_detect_emits_real_body_on_q35() {
     assert!(
         src.contains("; 128]"),
         "memory_detect buffer must have 128 entries; got:\n{src}"
-    );
-    assert!(
-        !src.contains("board_gen::memory_detect: placeholder"),
-        "memory_detect must have a real body; got:\n{src}"
     );
 }
 
@@ -201,10 +185,6 @@ fn pci_init_emits_real_body_on_aarch64_sbsa() {
         src.contains("\"pci0\""),
         "pci_init arm must bake the RON device name; got:\n{src}"
     );
-    assert!(
-        !src.contains("board_gen::pci_init: placeholder"),
-        "pci_init must have a real body; got:\n{src}"
-    );
 }
 
 #[test]
@@ -220,10 +200,6 @@ fn pci_init_boards_without_pci_root_have_wildcard_only() {
     assert!(
         !src.contains("PCI init complete"),
         "non-pci board must not emit PCI banner; got:\n{src}"
-    );
-    assert!(
-        !src.contains("board_gen::pci_init: placeholder"),
-        "pci_init must have a real body on any board; got:\n{src}"
     );
 }
 
@@ -307,7 +283,7 @@ fn phase_init_boards_without_provider_have_wildcard_only() {
 // ===== return_to_fel adapter tests ================================
 
 #[test]
-fn return_to_fel_stays_stubbed_for_boards_without_capability() {
+fn return_to_fel_stays_unreachable_for_boards_without_capability() {
     // No fixture board today actively declares `ReturnToFel` in
     // any stage's capabilities (orangepi-r1 has the entry
     // commented out).  Every adapter must therefore emit the
@@ -325,7 +301,7 @@ fn return_to_fel_stays_stubbed_for_boards_without_capability() {
         );
         assert!(
             src.contains("board_gen::return_to_fel: stage does not declare ReturnToFel"),
-            "{board} return_to_fel must be the dead-code stub; got:\n{src}"
+            "{board} return_to_fel must be the dead-code unreachable body; got:\n{src}"
         );
     }
 }
@@ -351,15 +327,10 @@ fn stage_load_bootblock_emits_real_body() {
         src.contains("stage_load: capability returned without jumping"),
         "stage_load body must log + halt on non-diverging return; got:\n{src}"
     );
-    // Old placeholder stub must be gone.
-    assert!(
-        !src.contains("board_gen::stage_load: placeholder"),
-        "stage_load must have a real body; got:\n{src}"
-    );
 }
 
 #[test]
-fn stage_load_stub_for_non_ffs_stages() {
+fn stage_load_unreachable_for_non_ffs_stages() {
     // A stage without FFS capabilities has no FSTART_ANCHOR static
     // and no boot-media import path.  `stage_load` on that stage
     // would be dead code (validation forbids StageLoad without

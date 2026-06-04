@@ -27,13 +27,12 @@ use super::platform::linux::platform_boot_protocol_stmts;
 ///   `fstart_capabilities::fit::load_fit_components`, load optional
 ///   firmware, then the platform boot protocol.
 /// - **No payload** → `fstart_capabilities::payload_load(..)` generic
-///   stub, used by bare stages that have no specific boot target.
+///   helper, used by bare stages that have no specific boot target.
 ///
 /// All FFS-touching variants go through [`match_boot_media`] so the
 /// boot medium reconstruction stays a single code path.  The UEFI
 /// path references `self._acpi_rsdp_addr` and `self._inited` for
-/// runtime state instead of the old fstart_main-scoped
-/// `_acpi_rsdp_addr` / `_<name>_ok` locals.
+/// runtime state rather than fstart_main-scoped locals.
 pub(super) fn payload_load_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     use crate::stage_gen::validation::{
         is_fit_image, is_fit_runtime, is_linux_boot, is_uefi_payload,

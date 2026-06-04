@@ -15,8 +15,8 @@
 //! This module encodes:
 //!
 //! 1. `_BoardDevices::new()` is the **only** construction site; callers
-//!    outside the generated `fstart_main` never invoke it.  Its
-//!    signature is a stub-private detail free to grow later.
+//!    outside the generated `fstart_main` never invoke it. Its
+//!    signature is a codegen-private detail free to grow later.
 //! 2. `impl Board` method bodies read state from `&self` — no
 //!    board-level addresses/sizes/strings as method arguments.
 //! 3. Per-device lifecycle logic lives in codegen-private

@@ -139,7 +139,18 @@ pub trait GpioController: Send + Sync {
     fn set(&self, pin: u32, value: bool) -> Result<(), ServiceError>;
     fn set_direction(&self, pin: u32, output: bool) -> Result<(), ServiceError>;
 }
+
+/// A controller that can perform SMBus transactions to child addresses.
+pub trait SmBus: Send + Sync {
+    fn read_byte(&mut self, addr: u8, cmd: u8) -> Result<u8, ServiceError>;
+    fn write_byte(&mut self, addr: u8, cmd: u8, value: u8) -> Result<(), ServiceError>;
+    // ... optional word/block methods
+}
 ```
+
+The host registry names the runtime SMBus capability
+`Service::SystemManagementBus` so it cannot be confused with the structural
+`StructuralKind::SmBus` topology node used in board RON.
 
 ### Why traits instead of ops structs?
 
@@ -168,24 +179,24 @@ pub trait Device: Send + Sync + Sized {
     /// struct with a per-driver typed config (like U-Boot's plat).
     type Config;
 
-    /// Construct from typed config.  Equivalent to U-Boot's bind + of_to_plat.
+    /// Construct from typed config. Equivalent to U-Boot's bind + of_to_plat.
     /// Does NOT touch hardware -- only stores configuration.
-    fn new(config: &Self::Config) -> Result<Self, DeviceError>;
+    fn new(config: &'static Self::Config) -> Result<Self, DeviceError>;
 
-    /// Initialise hardware.  Equivalent to U-Boot's probe().
+    /// Initialise hardware. Equivalent to U-Boot's probe().
     /// Separated from new() so codegen can control init ordering.
-    fn init(&self) -> Result<(), DeviceError>;
+    fn init(&mut self) -> Result<(), DeviceError>;
 }
 ```
 
 ### Associated `type Config`
 
-The current flat `Resources` struct is a grab-bag of optional fields; every driver
-ignores most of them.  With an associated type, each driver declares exactly what it
+The former flat `Resources` struct was a grab-bag of optional fields; every driver
+ignored most of them. With an associated type, each driver declares exactly what it
 needs:
 
 ```rust
-// In fstart-drivers:
+// In an individual driver crate:
 pub struct Ns16550Config {
     pub base_addr: u64,
     pub clock_freq: u32,
@@ -197,18 +208,18 @@ impl Device for Ns16550 {
     const COMPATIBLE: &'static [&'static str] = &["ns16550a", "ns16550"];
     type Config = Ns16550Config;
 
-    fn new(config: &Ns16550Config) -> Result<Self, DeviceError> {
+    fn new(config: &'static Ns16550Config) -> Result<Self, DeviceError> {
         Ok(Self { regs: unsafe { &*(config.base_addr as *const Ns16550Regs) } })
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn init(&mut self) -> Result<(), DeviceError> {
         // FIFO enable, 8N1, divisor latch...
         Ok(())
     }
 }
 ```
 
-Codegen maps the RON `Resources` fields to the concrete config type at build time:
+Codegen maps the typed RON driver config to the concrete config type at build time:
 
 ```rust
 // Generated:
@@ -227,7 +238,8 @@ A missing required field in the RON is caught at build time by codegen (which em
 Devices that live on a parent bus implement `BusDevice` **instead of** `Device`.
 `BusDevice` is a standalone trait (not a subtrait of `Device`) with its own
 `new_on_bus` constructor that receives a reference to the parent bus controller.
-Codegen resolves parent variable names at build time — no runtime device lookup.
+Codegen resolves parent variable names and bus addresses at build time — no
+runtime device lookup.
 
 ```rust
 /// Trait for devices that live on a parent bus.
@@ -241,36 +253,64 @@ pub trait BusDevice: Send + Sync + Sized {
     /// The parent bus interface type (e.g., `B` where `B: I2c`).
     type Bus: ?Sized;
 
-    /// Construct from config + parent bus reference.  Does NOT touch hardware.
-    fn new_on_bus(config: &Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
+    /// Construct from config + parent bus reference. Does NOT touch hardware.
+    fn new_on_bus(config: &'static Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
 
-    /// Initialise hardware.  Called after `new_on_bus()`, in capability order.
-    fn init(&self) -> Result<(), DeviceError>;
+    /// Construct with the RON `bus:` address when the address is topology-owned.
+    fn new_on_bus_at(
+        config: &'static Self::Config,
+        bus: &Self::Bus,
+        address: Option<BusAddress>,
+    ) -> Result<Self, DeviceError>;
+
+    /// Initialise hardware. Called after construction, in capability order.
+    fn init(&mut self) -> Result<(), DeviceError>;
+
+    /// Initialise hardware with mutable access to the parent bus.
+    fn init_on_bus(&mut self, bus: &mut Self::Bus) -> Result<(), DeviceError>;
 }
 ```
 
-Example: an I2C-attached TPM:
+Example: an I2C-attached TPM whose address comes from the RON `bus:` field:
 
 ```rust
 impl<B: I2c> BusDevice for Slb9670<B> {
     type Bus = B;
     type Config = Slb9670Config;
 
-    fn new_on_bus(config: &Slb9670Config, bus: &B) -> Result<Self, DeviceError> {
-        Ok(Self { bus, addr: config.addr })
+    fn new_on_bus(config: &'static Slb9670Config, bus: &B) -> Result<Self, DeviceError> {
+        Self::new_on_bus_at(config, bus, None)
     }
 
-    fn init(&self) -> Result<(), DeviceError> {
+    fn new_on_bus_at(
+        config: &'static Slb9670Config,
+        bus: &B,
+        address: Option<BusAddress>,
+    ) -> Result<Self, DeviceError> {
+        let Some(BusAddress::I2c(addr)) = address else {
+            return Err(DeviceError::MissingResource("slb9670: missing I2C address"));
+        };
+        Ok(Self { bus, addr, locality: config.locality })
+    }
+
+    fn init(&mut self) -> Result<(), DeviceError> {
         // Probe TPM identity register...
         Ok(())
     }
 }
 ```
 
-Codegen generates:
+Codegen generates construction with the topology address and then gives the
+child mutable parent-bus access for initialization:
+
 ```rust
-let tpm0 = Slb9670::new_on_bus(&tpm0_config, &i2c0)
-    .unwrap_or_else(|_| halt());
+let mut tpm0 = Slb9670::new_on_bus_at(
+    &tpm0_config,
+    &i2c0,
+    Some(fstart_types::BusAddress::I2c(0x50)),
+)
+.unwrap_or_else(|_| halt());
+tpm0.init_on_bus(&mut i2c0).unwrap_or_else(|_| halt());
 ```
 
 ## Layer 3 -- Device Tree in RON (fstart-types + fstart-codegen)
@@ -278,11 +318,11 @@ let tpm0 = Slb9670::new_on_bus(&tpm0_config, &i2c0)
 ### Typed Driver Configuration (DriverInstance enum)
 
 Instead of a flat `Resources` bag-of-options with `compatible` string matching,
-each driver defines its own typed config struct in `fstart-drivers`, and the RON
-uses a `DriverInstance` enum for type-safe dispatch:
+each driver defines its own typed config struct in its driver crate, and the RON
+uses a registry `DriverInstance` enum for type-safe dispatch:
 
 ```rust
-// In fstart-drivers (the enum):
+// In fstart-device-registry:
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DriverInstance {
     Ns16550(Ns16550Config),
@@ -323,15 +363,16 @@ devices: [
         children: [
             (
                 name: "tpm0",
-                driver: Slb9670(( addr: 0x50 )),
+                bus: I2c(0x50),
+                driver: Slb9670(( locality: 0 )),
             ),
         ],
     ),
 ]
 ```
 
-The `children` field defaults to `[]` via `#[serde(default)]`, so existing board
-RON files with no bus hierarchies need no changes.
+The `children` field defaults to `[]` via `#[serde(default)]`, so root-only board
+RON files do not need boilerplate child lists.
 
 ### RON → Flat Device Table
 
@@ -507,12 +548,13 @@ let i2c0 = DesignwareI2c::new(&DesignwareI2cConfig {
 }).unwrap_or_else(|_| halt());
 i2c0.init().unwrap_or_else(|_| halt());
 
-// Then child (bus device, uses BusDevice::new_on_bus):
-let tpm0 = Slb9670::new_on_bus(
-    &Slb9670Config { addr: 0x50 },
+// Then child (bus device, uses BusDevice::new_on_bus_at):
+let mut tpm0 = Slb9670::new_on_bus_at(
+    &Slb9670Config { locality: 0 },
     &i2c0,  // ← direct borrow, resolved by codegen
+    Some(fstart_types::BusAddress::I2c(0x50)),
 ).unwrap_or_else(|_| halt());
-tpm0.init().unwrap_or_else(|_| halt());
+tpm0.init_on_bus(&mut i2c0).unwrap_or_else(|_| halt());
 ```
 
 This is approach A: the bus hierarchy compiles away entirely.  No runtime device
@@ -546,8 +588,7 @@ The codegen phase performs these checks at `build.rs` time, emitting
 | Capability uses device that doesn't provide required service | `"ConsoleInit requires Console service but device 'gpio0' does not provide it"` |
 | Child device's parent doesn't provide a bus service | `"Device 'tpm0' has parent 'gpio0' which does not provide a bus service (I2cBus, SpiBus, ...)"` |
 
-Note: with nested `children` in RON, some errors from the old flat `parent`
-model are structurally impossible — there is no way to reference a nonexistent
+Note: with nested `children` in RON, there is no way to reference a nonexistent
 parent, and the DFS flattening guarantees topological order.
 
 ## Layer 5 -- Dispatch Mode
@@ -571,7 +612,7 @@ compatibility.
 |-------|----------|--------|--------|
 | **Describe** | `devicetree.cb` (custom DSL, sconfig compiler) | FDT blob (dtc compiler) | `board.ron` (serde, `ron` crate) |
 | **Bind** | `chip_ops->enable_dev()` assigns vtable | `device_bind_common()` allocates `udevice` | Codegen emits `Device::new()` call |
-| **Configure** | `read_resources()` + allocator | `of_to_plat()` reads DT properties | Codegen maps RON `Resources` -> typed `Config` |
+| **Configure** | `read_resources()` + allocator | `of_to_plat()` reads DT properties | Codegen maps typed RON driver config -> typed `Config` |
 | **Probe/Init** | `ops->init()` in fixed tree order | `drv->probe()` lazily on first access | `Device::init()` in capability order |
 | **Use** | Call `ops` function pointers | Cast `dev->driver->ops` to typed struct | Call trait methods (compiler-verified) |
 | **Finalize** | `ops->final()` | `drv->remove()` | Platform `halt()` (firmware does not return) |
@@ -606,8 +647,8 @@ pub enum DeviceError {
 
 To add a new root-level driver (e.g., a SiFive UART):
 
-1. **Create the module**: `fstart-drivers/src/uart/sifive.rs`, feature-gated under
-   `sifive-uart`.
+1. **Create the driver crate**: for example `crates/fstart-driver-sifive-uart`,
+   feature-gated under `sifive-uart`.
 
 2. **Define registers** with `register_structs!` / `register_bitfields!`:
    ```rust
@@ -633,8 +674,8 @@ To add a new root-level driver (e.g., a SiFive UART):
        const NAME: &'static str = "sifive-uart";
        const COMPATIBLE: &'static [&'static str] = &["sifive,uart0"];
        type Config = SifiveUartConfig;
-       fn new(config: &Self::Config) -> Result<Self, DeviceError> { ... }
-       fn init(&self) -> Result<(), DeviceError> { ... }
+       fn new(config: &'static Self::Config) -> Result<Self, DeviceError> { ... }
+       fn init(&mut self) -> Result<(), DeviceError> { ... }
    }
    ```
 
@@ -643,7 +684,7 @@ To add a new root-level driver (e.g., a SiFive UART):
    impl Console for SifiveUart { ... }
    ```
 
-6. **Add variant to `DriverInstance`** in `fstart-drivers/src/lib.rs`:
+6. **Add variant to `DriverInstance`** in `crates/fstart-device-registry/src/lib.rs`:
    ```rust
    pub enum DriverInstance {
        // ...existing variants...
@@ -651,11 +692,12 @@ To add a new root-level driver (e.g., a SiFive UART):
    }
    ```
 
-7. **Register in codegen**: add the driver to `KNOWN_DRIVER_META` in
-   `fstart-codegen/src/stage_gen/registry.rs` with its type path, config type,
-   and service list.
+7. **Register in the device registry**: add the driver metadata in
+   `crates/fstart-device-registry/src/lib.rs` with its type path, config type,
+   construction kind, and typed service set.
 
-8. **Add feature flag**: in `fstart-drivers/Cargo.toml` and `fstart-stage/Cargo.toml`.
+8. **Add feature flag**: in the driver crate, `fstart-device-registry`, and
+   `fstart-stage/Cargo.toml` as needed.
 
 9. **Test**: write a board RON using the driver and verify with
    `cargo xtask build --board <name>`.
@@ -664,14 +706,16 @@ To add a new root-level driver (e.g., a SiFive UART):
 
 For a device that lives on a parent bus (e.g., an I2C-attached TPM):
 
-1. **Create the module** in the appropriate category (e.g.,
-   `fstart-drivers/src/tpm/slb9670.rs`), feature-gated.
+1. **Create the driver crate** in the appropriate category (e.g.,
+   `crates/fstart-driver-slb9670`), feature-gated.
 
-2. **Define the config type** — only bus-specific fields (no `base_addr`):
+2. **Define the config type** — only driver policy fields. If the address is
+   board topology, put it in the RON `bus:` field instead of duplicating it in
+   config.
    ```rust
    #[derive(Debug, Clone, Serialize, Deserialize)]
    pub struct Slb9670Config {
-       pub addr: u8,  // I2C address
+       pub locality: u8,
    }
    ```
 
@@ -680,12 +724,19 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
    impl<B: I2c> BusDevice for Slb9670<B> {
        type Bus = B;
        type Config = Slb9670Config;
-       fn new_on_bus(config: &Slb9670Config, bus: &B) -> Result<Self, DeviceError> { ... }
-       fn init(&self) -> Result<(), DeviceError> { ... }
+       fn new_on_bus(config: &'static Slb9670Config, bus: &B) -> Result<Self, DeviceError> { ... }
+       fn new_on_bus_at(
+           config: &'static Slb9670Config,
+           bus: &B,
+           address: Option<BusAddress>,
+       ) -> Result<Self, DeviceError> { ... }
+       fn init(&mut self) -> Result<(), DeviceError> { ... }
+       // Override init_on_bus() when mutable parent-bus transactions are needed.
    }
    ```
 
-4. **Add variant to `DriverInstance`** and register in codegen (same as above).
+4. **Add variant to `DriverInstance`** and register typed metadata in
+   `fstart-device-registry` (same as above).
 
 5. **Use nested `children` in board RON** — the device appears under its
    parent controller:
@@ -694,7 +745,7 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
        name: "i2c0",
        driver: DesignwareI2c(( base_addr: 0x10040000, ... )),
        children: [
-           ( name: "tpm0", driver: Slb9670(( addr: 0x50 )) ),
+           ( name: "tpm0", bus: I2c(0x50), driver: Slb9670(( locality: 0 )) ),
        ],
    )
    ```
@@ -706,10 +757,11 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
 - [x] Add `Device` trait (with associated `type Config`) and `DeviceError` to
       `fstart-services`.
 - [x] Add `Ns16550Config`, `Pl011Config`, `DesignwareI2cConfig` structs to
-      `fstart-drivers`.
+      their individual driver crates.
 - [x] Implement `Device` for `Ns16550`, `Pl011`, `DesignwareI2c`.
 - [x] Add `BusDevice` trait to `fstart-services` (standalone trait with
-      `new_on_bus(config, bus)`, not a subtrait of `Device`).
+      `new_on_bus(config, bus)`, `new_on_bus_at(config, bus, address)`, and
+      `init_on_bus(&mut bus)`, not a subtrait of `Device`).
 - [x] Add `DeviceId`, `DeviceNode` to `fstart-types` for flat index-based
       device tree.
 - [x] Replace `Resources` bag-of-options with typed `DriverInstance` enum.
@@ -726,8 +778,8 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
 - [x] Wire `fstart_capabilities::console_init()` into generated code.
 - [x] Add codegen validation: unknown drivers, service mismatches, bus
       service checks → `compile_error!`.
-- [x] Split `stage_gen.rs` into focused submodules: `registry.rs`,
-      `topology.rs`, `capabilities.rs`, `flexible.rs`, `config_ser.rs`.
+- [x] Split `stage_gen.rs` into focused submodules such as `topology.rs`,
+      `capabilities.rs`, `config_ser.rs`, and the board adapter modules.
 
 ### Phase 3: Capability Pipeline ✓
 
@@ -739,19 +791,21 @@ For a device that lives on a parent bus (e.g., an I2C-attached TPM):
 
 ### Phase 4: Bus Support ✓ (infrastructure)
 
-- [x] Add bus service traits (`I2cBus`, `SpiBus`, `GpioController`) to
+- [x] Add bus service traits (`I2cBus`, `SpiBus`, `GpioController`, `SmBus`) to
       `fstart-services` (I2C uses `embedded-hal v1.0` traits).
 - [x] Implement codegen support for nested `children` in RON — DFS pre-order
       flattening guarantees parent-before-child ordering.
-- [x] Generate `BusDevice::new_on_bus(&config, &parent)` for bus children
-      (approach A: compile-away).
+- [x] Generate `BusDevice::new_on_bus_at(&config, &parent, bus_address)` and
+      `init_on_bus(&mut parent)` for bus children (approach A: compile-away).
 - [x] Generate `static DEVICE_TREE: [DeviceNode; N]` table for runtime
       introspection (approach B: flat index table).
 - [x] Implement `validate_device_tree()` — checks bus service requirements
       (no topo sort needed, ordering is structural from DFS).
 - [x] Implement DesignWare I2C bus controller driver.
-- [ ] Implement first bus-attached child driver (e.g., SLB9670 TPM).
-- [ ] Exercise `children` syntax in a real board RON file.
+- [x] Implement a bus-attached child driver (`I2cCk505`) using typed SMBus
+      parent access.
+- [x] Exercise `children` syntax in real board RON files (Foxconn D41S CK505 is
+      enabled as an SMBus child of the ICH7 southbridge).
 
 ### Phase 5: Flexible Mode — REMOVED
 

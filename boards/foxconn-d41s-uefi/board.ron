@@ -230,9 +230,8 @@
                 // DIMM SPD EEPROMs at 0x50..0x57.
                 ( name: "smbus", kind: Structural(SmBus),
                     children: [
-                        // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks
-                        // wiring the ICH7 SMBus provider and enabling CK505.
-                        ( name: "ck505", bus: I2c(0x69), enabled: false,
+                        // IDT CK505 clock generator at 7-bit SMBus address 0x69.
+                        ( name: "ck505", bus: I2c(0x69),
                             driver: I2cCk505((
                                 mask: [0x00, 0x80, 0xff, 0xff, 0xff],
                                 regs: [0x00, 0x80, 0xfe, 0xff, 0xfc],

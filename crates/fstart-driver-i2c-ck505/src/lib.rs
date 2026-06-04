@@ -11,7 +11,8 @@
 #![no_std]
 
 use fstart_services::device::{BusDevice, DeviceError};
-use fstart_services::ServiceError;
+use fstart_services::SmBus;
+use fstart_types::BusAddress;
 use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
@@ -44,56 +45,128 @@ impl BusDevice for I2cCk505 {
     const NAME: &'static str = "i2c-ck505";
     const COMPATIBLE: &'static [&'static str] = &["idt,ck505", "idt,clock-generator"];
     type Config = I2cCk505Config;
-    type Bus = dyn SmBusAddrProvider;
+    type Bus = dyn SmBus;
 
-    fn new_on_bus(config: &'static Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
+    fn new_on_bus(config: &'static Self::Config, _bus: &Self::Bus) -> Result<Self, DeviceError> {
+        Self::new_on_bus_at(config, _bus, None)
+    }
+
+    fn new_on_bus_at(
+        config: &'static Self::Config,
+        _bus: &Self::Bus,
+        address: Option<BusAddress>,
+    ) -> Result<Self, DeviceError> {
         if config.mask.len() != config.regs.len() {
             return Err(DeviceError::MissingResource(
                 "ck505: mask/regs length mismatch",
             ));
         }
-        Ok(Self {
-            addr: bus.smbus_address(),
-            config,
-        })
+        let Some(BusAddress::I2c(addr)) = address else {
+            return Err(DeviceError::MissingResource(
+                "ck505: missing SMBus/I2C address",
+            ));
+        };
+        Ok(Self { addr, config })
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
-        // Actual programming requires an SmBus provider at the parent.
-        // Until the SB driver exposes SmBus write_byte(), we cannot
-        // perform the register writes.  Fail loudly so boards that
-        // depend on clock reconfiguration don't silently boot with
-        // wrong frequencies.
-        fstart_log::warn!(
-            "i2c-ck505: addr={:#x} — {} registers to program, \
-             but SmBus write path not yet wired",
-            self.addr,
-            self.config.regs.len(),
-        );
+        fstart_log::warn!("i2c-ck505: init requires parent SMBus access; use init_on_bus");
         Err(DeviceError::InitFailed)
+    }
+
+    fn init_on_bus(&mut self, bus: &mut Self::Bus) -> Result<(), DeviceError> {
+        fstart_log::info!(
+            "i2c-ck505: programming {} registers at addr={:#x}",
+            self.config.regs.len(),
+            self.addr,
+        );
+        for (idx, (&mask, &value)) in self
+            .config
+            .mask
+            .iter()
+            .zip(self.config.regs.iter())
+            .enumerate()
+        {
+            let cmd = idx as u8;
+            let old = bus
+                .read_byte(self.addr, cmd)
+                .map_err(|_| DeviceError::BusError)?;
+            let new = (value & mask) | (old & !mask);
+            if new != old {
+                bus.write_byte(self.addr, cmd, new)
+                    .map_err(|_| DeviceError::BusError)?;
+            }
+        }
+        Ok(())
     }
 }
 
-/// Trait implemented by a parent SMBus controller that knows a given
-/// child's 7-bit slave address.
-///
-/// The ICH7 SMBus driver fills this in by reading the child's
-/// `bus: I2c(0x69)` field during construction (codegen threads it
-/// through). Declared here (rather than in `fstart-services`) because
-/// it is a temporary bridge until the full `SmBus` service plumbing
-/// is in place.
-pub trait SmBusAddrProvider {
-    /// Return the 7-bit SMBus slave address of the child device.
-    fn smbus_address(&self) -> u8;
-}
+#[cfg(test)]
+extern crate std;
 
-/// Reuse of the [`SmBus`] service trait for completeness — re-exported
-/// here so downstream code (board crates) has a single place to import
-/// from when wiring up CK505 children.
-pub use fstart_services::SmBus as ParentSmBus;
-// Silence an otherwise-unused re-export warning.
-#[doc(hidden)]
-#[allow(dead_code)]
-fn _touch_parent_smbus<T: ParentSmBus>(_: &T) -> Result<(), ServiceError> {
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use std::boxed::Box;
+
+    use super::*;
+
+    struct FakeBus {
+        regs: [u8; 8],
+        writes: heapless::Vec<(u8, u8, u8), 8>,
+    }
+
+    impl SmBus for FakeBus {
+        fn read_byte(&mut self, addr: u8, cmd: u8) -> Result<u8, fstart_services::ServiceError> {
+            let _ = addr;
+            Ok(self.regs[cmd as usize])
+        }
+
+        fn write_byte(
+            &mut self,
+            addr: u8,
+            cmd: u8,
+            value: u8,
+        ) -> Result<(), fstart_services::ServiceError> {
+            self.regs[cmd as usize] = value;
+            self.writes.push((addr, cmd, value)).unwrap();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn init_on_bus_applies_masked_writes() {
+        let cfg = I2cCk505Config {
+            mask: heapless::Vec::from_slice(&[0x0f, 0xf0]).unwrap(),
+            regs: heapless::Vec::from_slice(&[0x05, 0xa0]).unwrap(),
+        };
+        let cfg: &'static I2cCk505Config = Box::leak(Box::new(cfg));
+        let mut bus = FakeBus {
+            regs: [0xf0, 0x0f, 0, 0, 0, 0, 0, 0],
+            writes: heapless::Vec::new(),
+        };
+        let mut ck505 = I2cCk505::new_on_bus_at(cfg, &bus, Some(BusAddress::I2c(0x69)))
+            .expect("CK505 should accept I2C/SMBus address");
+
+        ck505.init_on_bus(&mut bus).unwrap();
+
+        assert_eq!(bus.regs[0], 0xf5);
+        assert_eq!(bus.regs[1], 0xaf);
+        assert_eq!(bus.writes.as_slice(), &[(0x69, 0, 0xf5), (0x69, 1, 0xaf)]);
+    }
+
+    #[test]
+    fn construction_requires_topology_i2c_address() {
+        let cfg = I2cCk505Config {
+            mask: heapless::Vec::from_slice(&[0xff]).unwrap(),
+            regs: heapless::Vec::from_slice(&[0x00]).unwrap(),
+        };
+        let cfg: &'static I2cCk505Config = Box::leak(Box::new(cfg));
+        let bus = FakeBus {
+            regs: [0; 8],
+            writes: heapless::Vec::new(),
+        };
+
+        assert!(I2cCk505::new_on_bus_at(cfg, &bus, None).is_err());
+        assert!(I2cCk505::new_on_bus_at(cfg, &bus, Some(BusAddress::Lpc(0x2e))).is_err());
+    }
 }

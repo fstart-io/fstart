@@ -20,7 +20,6 @@ mod board_gen;
 mod capabilities;
 mod config_ser;
 mod direct_flow;
-pub(crate) mod registry;
 mod tokens;
 mod topology;
 mod validation;
@@ -246,6 +245,7 @@ struct ImportFacts<'a> {
     has_i2c: bool,
     has_spi: bool,
     has_gpio: bool,
+    has_smbus: bool,
     has_pci: bool,
     has_framebuffer: bool,
     has_flash_layout_verifier: bool,
@@ -293,6 +293,9 @@ impl<'a> ImportFacts<'a> {
             has_gpio: device_services
                 .iter()
                 .any(|services| services.contains(Service::GpioController)),
+            has_smbus: device_services
+                .iter()
+                .any(|services| services.contains(Service::SystemManagementBus)),
             has_pci: device_services
                 .iter()
                 .any(|services| services.contains(Service::PciRootBus)),
@@ -364,6 +367,9 @@ fn generate_imports(facts: &ImportFacts<'_>) -> TokenStream {
     }
     if facts.has_gpio {
         tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::GpioController; });
+    }
+    if facts.has_smbus {
+        tokens.extend(quote! { #[allow(unused_imports)] use fstart_services::SmBus; });
     }
 
     if facts.has_pci {
