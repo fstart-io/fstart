@@ -14,12 +14,11 @@ use super::model::BoardEmitModel;
 
 /// Emit the UEFI (CrabEFI) payload load body.
 ///
-/// Mirrors `capabilities::payload::generate_payload_load_uefi` but
-/// routes device references through `self.<field>` and reads the
+/// Routes device references through `self.<field>` and reads the
 /// RSDP + framebuffer-init flag from `self._acpi_rsdp_addr` /
 /// `self._inited` respectively.
 ///
-/// Sections (same order as the old generator):
+/// Sections:
 ///
 /// 1. Optional BL31 load (aarch64 + ATF firmware) via `match_boot_media`.
 /// 2. Timer / reset / RNG setup (per-platform).

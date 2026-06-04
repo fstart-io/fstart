@@ -386,9 +386,9 @@ impl Default for StructuralConfig {
 ///
 /// Runtime providers read chipset registers.  Host tooling cannot, so it
 /// supplies the corresponding build artifacts here (for example an Intel Flash
-/// Descriptor blob) plus any transitional RON layout still present.
+/// Descriptor blob) plus board-declared flash layout policy.
 pub struct BuildFirmwareImageContext<'a> {
-    /// Optional board-declared flash layout, kept as a migration fallback.
+    /// Optional board-declared flash layout policy.
     pub flash_layout: Option<&'a fstart_types::memory::FlashLayout>,
     /// Optional Intel Flash Descriptor bytes for descriptor-based SPI flash.
     pub intel_ifd: Option<&'a [u8]>,

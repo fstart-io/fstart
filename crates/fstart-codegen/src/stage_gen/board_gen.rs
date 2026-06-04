@@ -107,7 +107,7 @@ pub(super) fn generate_board_adapter(
 // Board adapter semantic context lives in `model`.
 
 // =======================================================================
-// Excluded devices — match the old `generate_devices_struct` rule
+// Excluded devices for stages without DriverInit
 // =======================================================================
 
 /// Which device indices are not materialised in this stage.
@@ -115,8 +115,7 @@ pub(super) fn generate_board_adapter(
 /// Bus children require their parent bus to be initialised before
 /// construction (`new_on_bus` reads the parent's BARs).  In stages
 /// without a `DriverInit` capability, no parent ever initialises, so
-/// the old generator excludes bus children entirely.  We mirror that
-/// rule so the two adapters stay isomorphic during the transition.
+/// bus children that are not capability targets are omitted.
 fn compute_excluded_indices(
     config: &BoardConfig,
     devices: &[DeviceConfig],
