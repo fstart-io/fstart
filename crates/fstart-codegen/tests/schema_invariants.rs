@@ -130,6 +130,39 @@ fn parsed_runtime_device_tables_exclude_acpi_only_descriptors() {
 }
 
 #[test]
+fn board_ron_acpi_only_descriptors_use_acpi_field() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+
+    for path in files_under(&root, "boards", |p| {
+        p.file_name().is_some_and(|n| n == "board.ron")
+    }) {
+        let text = fs::read_to_string(&path).expect("read board");
+        let lines: Vec<_> = text.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if !line.contains("kind: AcpiOnly") {
+                continue;
+            }
+            let window = lines
+                .iter()
+                .skip(idx + 1)
+                .take(4)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
+            if window.contains("driver:") || !window.contains("acpi:") {
+                offenders.push(format!("{}:{}", path.display(), idx + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "ACPI-only RON entries must use `acpi:`, not runtime `driver:`: {offenders:?}"
+    );
+}
+
+#[test]
 fn board_ron_does_not_declare_legacy_services() {
     let root = repo_root();
     let offenders: Vec<_> = files_under(&root, "boards", |p| {
