@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fstart_codegen::ron_loader::load_parsed_board;
+use fstart_device_registry::ConstructionKind;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -91,6 +92,37 @@ fn all_board_ron_files_parse() {
             for board in boards {
                 load_parsed_board(&board)
                     .unwrap_or_else(|e| panic!("failed to parse {}: {e}", board.display()));
+            }
+        })
+        .expect("spawn board parser thread")
+        .join()
+        .expect("board parser thread panicked");
+}
+
+#[test]
+fn parsed_runtime_device_tables_exclude_acpi_only_descriptors() {
+    let root = repo_root();
+    let boards: Vec<_> = files_under(&root, "boards", |p| {
+        p.file_name().is_some_and(|n| n == "board.ron")
+    });
+
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            for board in boards {
+                let parsed = load_parsed_board(&board)
+                    .unwrap_or_else(|e| panic!("failed to parse {}: {e}", board.display()));
+                assert_eq!(parsed.config.devices.len(), parsed.driver_instances.len());
+                assert_eq!(parsed.config.devices.len(), parsed.device_services.len());
+                assert_eq!(parsed.config.devices.len(), parsed.device_tree.len());
+                assert!(
+                    parsed
+                        .driver_instances
+                        .iter()
+                        .all(|inst| inst.construction_kind() != ConstructionKind::AcpiOnly),
+                    "ACPI-only descriptors must stay outside runtime device tables: {}",
+                    board.display()
+                );
             }
         })
         .expect("spawn board parser thread")
