@@ -43,9 +43,9 @@ mod mp;
 mod payload;
 mod payload_uefi;
 mod phases;
+mod platform;
 mod security;
 mod state;
-mod sunxi;
 
 use board_impl::emit_board_impl;
 use model::{BoardEmitInputs, BoardEmitModel};

@@ -18,7 +18,7 @@ use super::model::BoardEmitModel;
 use super::mp::mp_init_body;
 use super::payload::payload_load_body;
 use super::phases::{phase_init_body, PhaseSpec};
-use super::sunxi::{boot_media_select_body, load_next_stage_body};
+use super::platform::sunxi::{boot_media_select_body, load_next_stage_body};
 
 fn boot_media_firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx

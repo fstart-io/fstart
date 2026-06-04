@@ -8,10 +8,12 @@ use fstart_types::{Capability, StageLayout};
 
 use crate::stage_gen::tokens::hex_addr;
 
-use super::model::BoardEmitModel;
+use super::super::model::BoardEmitModel;
 
 /// Emit the body of `Board::boot_media_select`.
-pub(super) fn boot_media_select_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+pub(in crate::stage_gen::board_gen) fn boot_media_select_body(
+    ctx: &BoardEmitModel<'_>,
+) -> TokenStream {
     let uses_boot_media_select = ctx.stage.capabilities.iter().any(|c| {
         matches!(
             c,
@@ -51,7 +53,9 @@ pub(super) fn boot_media_select_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
 }
 
 /// Emit the body of `Board::load_next_stage`.
-pub(super) fn load_next_stage_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+pub(in crate::stage_gen::board_gen) fn load_next_stage_body(
+    ctx: &BoardEmitModel<'_>,
+) -> TokenStream {
     let uses_load_next_stage = ctx
         .stage
         .capabilities
