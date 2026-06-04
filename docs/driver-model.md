@@ -13,8 +13,10 @@ separate stage-plan interpreter path.
 
 1. **Fully type-safe at compile time** -- no `void *`, no runtime downcasts, no
    linker-section magic.
-2. **RON-driven** -- the board `.ron` file remains the single source of truth; codegen
-   produces all glue code.
+2. **RON-driven board policy** -- the board `.ron` file is the source of truth
+   for board wiring, stage sequencing, and policy; Rust driver crates and the
+   host registry are the source of truth for driver-provided services. Codegen
+   combines those typed facts to produce all glue code.
 3. **Zero-cost abstractions** -- the `Board` trait is `Sized` and the executor is
    generic over `B: Board`, so every call is monomorphized; no trait objects,
    no vtables.
@@ -62,7 +64,7 @@ compile-time device-tree validation.
 ```
 +----------------------------------------------------------------+
 |                        Board RON File                           |
-|  (devices, buses, resources, capabilities, topology)           |
+|  (devices, buses, resources, capabilities, topology policy)    |
 +----------------------------+-----------------------------------+
                              | codegen (build.rs)
                              v
@@ -90,6 +92,9 @@ compile-time device-tree validation.
 
 Service traits define **what a category of hardware can do**.  They are the Rust
 equivalent of U-Boot's uclass ops structs, but with full compile-time enforcement.
+Boards do not declare these services in RON; the Rust driver implementation and
+host registry metadata are the authoritative source for which services each
+driver instance provides.
 
 Existing traits are kept as-is:
 

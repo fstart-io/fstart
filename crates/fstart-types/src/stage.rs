@@ -303,8 +303,8 @@ pub enum Capability {
         smm: bool,
         /// Device name of the chipset driver that provides `SmmOps`.
         ///
-        /// If omitted, codegen selects the sole enabled device whose RON
-        /// `services` list contains `SmmOps`.
+        /// If omitted, codegen selects the sole enabled device whose Rust-owned
+        /// registry metadata provides `SmmOps`.
         #[serde(default)]
         smm_provider: Option<HString<32>>,
     },

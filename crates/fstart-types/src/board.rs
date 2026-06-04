@@ -66,8 +66,9 @@ impl core::fmt::Display for Platform {
 
 /// Top-level board configuration, deserialized from a board.ron file.
 ///
-/// This is the single source of truth for a board's hardware description,
-/// driver bindings, stage composition, and security settings.
+/// This is the single source of truth for board wiring, stage policy, and
+/// security settings. Rust driver crates and the host registry are the source
+/// of truth for services each driver provides.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardConfig {
@@ -77,7 +78,7 @@ pub struct BoardConfig {
     pub platform: Platform,
     /// Memory map: ROM, RAM, MMIO regions
     pub memory: MemoryMap,
-    /// Device declarations with driver and service bindings
+    /// Device declarations with driver bindings and board wiring.
     pub devices: heapless::Vec<DeviceConfig, 32>,
     /// Stage composition: monolithic or multi-stage
     pub stages: StageLayout,
