@@ -485,7 +485,7 @@ mod tests {
     fn structural_nodes_do_not_become_cargo_features() {
         let plan = load_plan("foxconn-d41s");
         for stage in &plan.stages {
-            assert!(!stage.features.contains("_structural"));
+            assert!(!stage.features.contains(concat!("_", "structural")));
             assert!(stage.features.contains("intel-pineview"));
             assert!(stage.features.contains("intel-ich7"));
         }

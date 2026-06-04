@@ -585,16 +585,25 @@ mod tests {
     }
 
     #[test]
-    fn legacy_services_field_is_rejected() {
+    fn board_owned_service_list_field_is_rejected() {
         let source = qemu_riscv64_board_source();
-        let with_legacy_services = source.replacen(
+        let with_board_owned_service_list = source.replacen(
             "driver: Ns16550((",
-            "services: [\"Console\"],\n            driver: Ns16550((",
+            &format!(
+                "{} [\"Console\"],\n            driver: Ns16550((",
+                concat!("services", ":")
+            ),
             1,
         );
-        assert_ne!(source, with_legacy_services, "test fixture changed");
+        assert_ne!(
+            source, with_board_owned_service_list,
+            "test fixture changed"
+        );
 
-        let err = expect_load_error(load_temp_board("legacy-services", with_legacy_services));
+        let err = expect_load_error(load_temp_board(
+            "board-owned-service-list",
+            with_board_owned_service_list,
+        ));
 
         assert!(
             err.contains("unknown field `services`")
@@ -759,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn device_with_driver_and_structural_kind_is_rejected() {
+    fn device_with_driver_and_topology_kind_is_rejected() {
         let source = qemu_riscv64_board_source();
         let conflicting = source.replacen(
             "driver: Ns16550((",

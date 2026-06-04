@@ -98,7 +98,7 @@ fn init_device_ancestors_walked_root_first() {
 }
 
 #[test]
-fn init_all_devices_iterates_non_structural() {
+fn init_all_devices_iterates_runtime_nodes() {
     // qemu-riscv64: iterates enabled non-structural devices
     // (just uart0).  Each loop body calls self.init_device(id).
     let src = adapter_source_for_board("qemu-riscv64");

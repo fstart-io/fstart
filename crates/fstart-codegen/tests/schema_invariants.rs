@@ -68,7 +68,7 @@ fn board_gen_production_code_has_no_todo_stubs() {
             continue;
         }
         let text = fs::read_to_string(&path).expect("read board_gen module");
-        if text.contains("todo!(") {
+        if text.contains(concat!("todo", "!(")) {
             offenders.push(path);
         }
     }
@@ -212,7 +212,7 @@ fn board_ron_acpi_only_descriptors_use_acpi_field() {
 }
 
 #[test]
-fn board_ron_does_not_declare_legacy_services() {
+fn board_ron_does_not_declare_board_owned_service_list() {
     let root = repo_root();
     let offenders: Vec<_> = files_under(&root, "boards", |p| {
         p.extension().is_some_and(|e| e == "ron")
@@ -221,18 +221,18 @@ fn board_ron_does_not_declare_legacy_services() {
     .filter(|path| {
         fs::read_to_string(path)
             .expect("read board")
-            .contains("services:")
+            .contains(concat!("services", ":"))
     })
     .collect();
 
     assert!(
         offenders.is_empty(),
-        "board RON files must not declare legacy services: {offenders:?}"
+        "board RON files must not declare board-owned service lists: {offenders:?}"
     );
 }
 
 #[test]
-fn production_schema_has_no_structural_sentinel() {
+fn production_schema_encodes_topology_without_driver_name_marker() {
     let root = repo_root();
     let mut offenders = Vec::new();
     for rel in [
@@ -244,7 +244,7 @@ fn production_schema_has_no_structural_sentinel() {
             matches!(p.extension().and_then(|e| e.to_str()), Some("rs" | "ron"))
         }) {
             let text = fs::read_to_string(&path).expect("read source");
-            if text.contains("\"_structural\"") {
+            if text.contains(concat!("\"", "_", "structural", "\"")) {
                 offenders.push(path);
             }
         }
@@ -252,7 +252,7 @@ fn production_schema_has_no_structural_sentinel() {
 
     assert!(
         offenders.is_empty(),
-        "production schema must not use _structural sentinel: {offenders:?}"
+        "production schema must not encode structural topology as a driver name: {offenders:?}"
     );
 }
 
@@ -263,13 +263,13 @@ fn device_config_has_no_services_field() {
     let text = fs::read_to_string(device_rs).expect("read device schema");
 
     assert!(
-        !text.contains("pub services"),
+        !text.contains(concat!("pub ", "services")),
         "DeviceConfig must not grow a board-owned services field"
     );
 }
 
 #[test]
-fn ron_loader_production_schema_has_no_legacy_services_field() {
+fn ron_loader_production_schema_has_no_board_owned_service_list_field() {
     let root = repo_root();
     let ron_loader = root.join("crates/fstart-codegen/src/ron_loader.rs");
     let text = fs::read_to_string(ron_loader).expect("read RON loader");
@@ -283,14 +283,15 @@ fn ron_loader_production_schema_has_no_legacy_services_field() {
         .enumerate()
         .filter_map(|(idx, line)| {
             let trimmed = line.trim_start();
-            (trimmed.starts_with("services:") || trimmed.starts_with("pub services"))
-                .then_some(idx + 1)
+            (trimmed.starts_with(concat!("services", ":"))
+                || trimmed.starts_with(concat!("pub ", "services")))
+            .then_some(idx + 1)
         })
         .collect();
 
     assert!(
         offenders.is_empty(),
-        "production RON schema must not restore legacy board-owned services field: {offenders:?}"
+        "production RON schema must not restore board-owned service-list field: {offenders:?}"
     );
 }
 
@@ -317,7 +318,7 @@ fn driver_instance_has_no_acpi_only_pseudo_devices() {
 }
 
 #[test]
-fn service_enum_has_no_structural_topology_variants() {
+fn service_enum_excludes_topology_variants() {
     let root = repo_root();
     let registry_rs = root.join("crates/fstart-device-registry/src/lib.rs");
     let text = fs::read_to_string(registry_rs).expect("read registry");

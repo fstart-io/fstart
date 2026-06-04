@@ -423,7 +423,7 @@ approach B (flat index table) for runtime power sequencing, diagnostics, etc.
 
 The `DeviceConfig` struct carries identity and topology metadata.  Driver-owned
 service metadata lives in `fstart-device-registry`; board RON does not declare
-services:
+board-owned service lists:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
