@@ -25,7 +25,7 @@
 //!    field to an enum-of-variants without touching the executor-facing
 //!    trait method.
 
-use fstart_device_registry::{DriverInstance, Service};
+use fstart_device_registry::{DriverInstance, Service, ServiceSet};
 use fstart_types::{
     acpi::AcpiExtraDevice, BoardConfig, BootMedium, Capability, DeviceConfig, DeviceNode,
 };
@@ -71,7 +71,7 @@ pub(super) fn generate_board_adapter(
     config: &BoardConfig,
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     acpi_only_devices: &[AcpiExtraDevice],
     capabilities: &[Capability],
     stage_name: Option<&str>,
@@ -121,7 +121,7 @@ fn compute_excluded_indices(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     device_tree: &[DeviceNode],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     capabilities: &[Capability],
 ) -> Vec<usize> {
     let has_driver_init = capabilities
@@ -194,13 +194,13 @@ fn compute_excluded_indices(
 
 fn sole_enabled_firmware_provider<'a>(
     devices: &'a [DeviceConfig],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
 ) -> Option<&'a str> {
     let mut providers = devices
         .iter()
         .zip(device_services.iter())
         .filter(|(device, services)| {
-            device.enabled && services.contains(&Service::FirmwareImageProvider)
+            device.enabled && services.contains(Service::FirmwareImageProvider)
         })
         .map(|(device, _)| device.name.as_str());
     let first = providers.next()?;

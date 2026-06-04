@@ -265,7 +265,7 @@ fn firmware_image_from_provider(
             .iter()
             .position(|device| device.name.as_str() == provider)?;
         if !parsed.config.devices[idx].enabled
-            || !parsed.device_services[idx].contains(&Service::FirmwareImageProvider)
+            || !parsed.device_services[idx].contains(Service::FirmwareImageProvider)
         {
             return None;
         }
@@ -279,7 +279,7 @@ fn firmware_image_from_provider(
         .zip(parsed.device_services.iter())
         .enumerate()
         .filter(|(_, (device, services))| {
-            device.enabled && services.contains(&Service::FirmwareImageProvider)
+            device.enabled && services.contains(Service::FirmwareImageProvider)
         })
         .filter_map(|(idx, _)| image_for_idx(idx));
     let first = images.next();

@@ -15,7 +15,7 @@
 //!
 //! Cycles and missing parents are impossible with nested RON syntax.
 
-use fstart_device_registry::{DriverInstance, Service};
+use fstart_device_registry::{DriverInstance, Service, ServiceSet};
 use fstart_types::{DeviceConfig, DeviceNode};
 
 /// Validate the flattened device tree.
@@ -27,7 +27,7 @@ pub(super) fn validate_device_tree(
     devices: &[DeviceConfig],
     instances: &[DriverInstance],
     tree: &[DeviceNode],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
 ) -> Result<(), String> {
     for (i, node) in tree.iter().enumerate() {
         let Some(parent_idx) = node.parent else {
@@ -59,20 +59,15 @@ pub(super) fn validate_device_tree(
     Ok(())
 }
 
-fn is_bus_provider(services: &[Service]) -> bool {
-    services.iter().any(|service| {
-        matches!(
-            service,
-            Service::I2cBus
-                | Service::SpiBus
-                | Service::GpioController
-                | Service::PciRootBus
-                | Service::PciHost
-                | Service::PciBridge
-                | Service::LpcBus
-                | Service::SmBus
-                | Service::Southbridge
-                | Service::SuperIoHost
-        )
-    })
+fn is_bus_provider(services: &ServiceSet) -> bool {
+    services.contains(Service::I2cBus)
+        || services.contains(Service::SpiBus)
+        || services.contains(Service::GpioController)
+        || services.contains(Service::PciRootBus)
+        || services.contains(Service::PciHost)
+        || services.contains(Service::PciBridge)
+        || services.contains(Service::LpcBus)
+        || services.contains(Service::SmBus)
+        || services.contains(Service::Southbridge)
+        || services.contains(Service::SuperIoHost)
 }

@@ -2,12 +2,12 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::ron_loader::{load_parsed_board, ParsedBoard};
-use fstart_device_registry::{DriverInstance, Service};
+use fstart_device_registry::{DriverInstance, ServiceSet};
 
-fn services_for(instances: &[DriverInstance]) -> Vec<heapless::Vec<Service, 16>> {
+fn services_for(instances: &[DriverInstance]) -> Vec<ServiceSet> {
     instances
         .iter()
-        .map(|instance| instance.provided_services().iter().copied().collect())
+        .map(DriverInstance::provided_services)
         .collect()
 }
 

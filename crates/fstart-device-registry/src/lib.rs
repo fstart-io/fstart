@@ -221,6 +221,52 @@ impl Service {
             Self::GpioController => "GpioController",
         }
     }
+
+    const fn bit(self) -> u128 {
+        1u128 << (self as u8)
+    }
+}
+
+/// Compact set of driver-provided services used by codegen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServiceSet(u128);
+
+impl ServiceSet {
+    /// Construct an empty service set.
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Construct a service set from static driver metadata.
+    pub const fn from_static(services: &'static [Service]) -> Self {
+        let mut idx = 0;
+        let mut bits = 0;
+        while idx < services.len() {
+            bits |= services[idx].bit();
+            idx += 1;
+        }
+        Self(bits)
+    }
+
+    /// Insert a service into the set.
+    pub fn insert(&mut self, service: Service) {
+        self.0 |= service.bit();
+    }
+
+    /// Remove a service from the set.
+    pub fn remove(&mut self, service: Service) {
+        self.0 &= !service.bit();
+    }
+
+    /// Return true if the set contains `service`.
+    pub const fn contains(self, service: Service) -> bool {
+        self.0 & service.bit() != 0
+    }
+
+    /// Return true if the set contains no services.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 /// Static metadata about a driver.
@@ -1067,13 +1113,13 @@ impl DriverInstance {
     /// This method is the source of truth for service availability. It may
     /// inspect typed config for config-dependent services; currently all
     /// registered services are unconditional.
-    pub fn provided_services(&self) -> &'static [Service] {
-        self.meta().static_services
+    pub fn provided_services(&self) -> ServiceSet {
+        ServiceSet::from_static(self.meta().static_services)
     }
 
     /// Returns `true` when this concrete instance provides `service`.
     pub fn provides(&self, service: Service) -> bool {
-        self.provided_services().contains(&service)
+        self.provided_services().contains(service)
     }
 
     /// The cargo feature / RON driver name for this runtime driver variant.

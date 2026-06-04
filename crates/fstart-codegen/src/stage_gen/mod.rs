@@ -31,7 +31,7 @@ mod tests;
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
-use fstart_device_registry::{DriverInstance, Service};
+use fstart_device_registry::{DriverInstance, Service, ServiceSet};
 use fstart_types::{BootMedium, Capability, DeviceConfig, Platform, StageLayout};
 
 use crate::ron_loader::ParsedBoard;
@@ -258,7 +258,7 @@ impl<'a> ImportFacts<'a> {
     fn new(
         devices: &[DeviceConfig],
         instances: &[DriverInstance],
-        device_services: &[heapless::Vec<Service, 16>],
+        device_services: &[ServiceSet],
         capabilities: &'a [Capability],
     ) -> Self {
         let mut driver_modules = Vec::new();
@@ -279,25 +279,25 @@ impl<'a> ImportFacts<'a> {
             has_bus_children: devices.iter().any(|device| device.parent.is_some()),
             has_block_device: device_services
                 .iter()
-                .any(|services| services.contains(&Service::BlockDevice)),
+                .any(|services| services.contains(Service::BlockDevice)),
             has_i2c: device_services
                 .iter()
-                .any(|services| services.contains(&Service::I2cBus)),
+                .any(|services| services.contains(Service::I2cBus)),
             has_spi: device_services
                 .iter()
-                .any(|services| services.contains(&Service::SpiBus)),
+                .any(|services| services.contains(Service::SpiBus)),
             has_gpio: device_services
                 .iter()
-                .any(|services| services.contains(&Service::GpioController)),
+                .any(|services| services.contains(Service::GpioController)),
             has_pci: device_services
                 .iter()
-                .any(|services| services.contains(&Service::PciRootBus)),
+                .any(|services| services.contains(Service::PciRootBus)),
             has_framebuffer: device_services
                 .iter()
-                .any(|services| services.contains(&Service::Framebuffer)),
+                .any(|services| services.contains(Service::Framebuffer)),
             has_flash_layout_verifier: device_services
                 .iter()
-                .any(|services| services.contains(&Service::FlashLayoutVerifier)),
+                .any(|services| services.contains(Service::FlashLayoutVerifier)),
             uses_dram_init: capabilities
                 .iter()
                 .any(|cap| matches!(cap, Capability::DramInit { .. })),

@@ -3,7 +3,7 @@
 //! Keep this module focused on facts computed before token emission: stage
 //! scope, runtime-device classification, and typed service queries.
 
-use fstart_device_registry::{ConstructionKind, DriverInstance, Service};
+use fstart_device_registry::{ConstructionKind, DriverInstance, Service, ServiceSet};
 use fstart_types::{
     acpi::AcpiExtraDevice, BoardConfig, Capability, DeviceConfig, DeviceNode, SocImageFormat,
     StageLayout,
@@ -100,7 +100,7 @@ pub(super) struct BoardEmitInputs<'a> {
     pub(super) config: &'a BoardConfig,
     pub(super) instances: &'a [DriverInstance],
     pub(super) device_tree: &'a [DeviceNode],
-    pub(super) device_services: &'a [heapless::Vec<Service, 16>],
+    pub(super) device_services: &'a [ServiceSet],
     pub(super) acpi_only_devices: &'a [AcpiExtraDevice],
     pub(super) excluded: &'a [usize],
     pub(super) capabilities: &'a [Capability],
@@ -131,7 +131,7 @@ pub(super) struct RuntimeDevice<'a> {
     pub(super) config: &'a DeviceConfig,
     pub(super) instance: &'a DriverInstance,
     pub(super) node: &'a DeviceNode,
-    pub(super) services: &'a heapless::Vec<Service, 16>,
+    pub(super) services: ServiceSet,
     pub(super) kind: DeviceKind,
 }
 
@@ -143,7 +143,7 @@ impl RuntimeDevice<'_> {
 
     /// Returns true if this device provides `service` after board policy.
     pub(super) fn provides(&self, service: Service) -> bool {
-        self.services.contains(&service)
+        self.services.contains(service)
     }
 }
 
@@ -159,7 +159,7 @@ impl<'a> RuntimeDeviceTable<'a> {
         devices: &'a [DeviceConfig],
         instances: &'a [DriverInstance],
         device_tree: &'a [DeviceNode],
-        device_services: &'a [heapless::Vec<Service, 16>],
+        device_services: &'a [ServiceSet],
         excluded: &'a [usize],
     ) -> Self {
         let entries = devices
@@ -186,7 +186,7 @@ impl<'a> RuntimeDeviceTable<'a> {
                     config,
                     instance,
                     node,
-                    services,
+                    services: *services,
                     kind,
                 }
             })

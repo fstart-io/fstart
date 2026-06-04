@@ -8,7 +8,7 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use fstart_device_registry::{DriverInstance, PlatformBootMediaCandidate, Service};
+use fstart_device_registry::{DriverInstance, PlatformBootMediaCandidate, Service, ServiceSet};
 use fstart_types::{
     BoardConfig, BootMedium, Capability, DeviceConfig, DeviceId, LoadDevice, StageLayout,
     TempRamBuffer,
@@ -22,7 +22,7 @@ use super::tokens::hex_addr;
 pub(super) fn generate_fstart_main(
     config: &BoardConfig,
     instances: &[DriverInstance],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     capabilities: &[Capability],
     stage_name: Option<&str>,
 ) -> TokenStream {
@@ -73,7 +73,7 @@ struct DirectCtx<'a> {
     ids: &'a DeviceIdMap<'a>,
     devices: &'a [DeviceConfig],
     instances: &'a [DriverInstance],
-    device_services: &'a [heapless::Vec<Service, 16>],
+    device_services: &'a [ServiceSet],
     capabilities: &'a [Capability],
 }
 
@@ -450,7 +450,7 @@ fn resolve_firmware_provider<'a>(
         .iter()
         .zip(ctx.device_services.iter())
         .filter(|(device, services)| {
-            device.enabled && services.contains(&Service::FirmwareImageProvider)
+            device.enabled && services.contains(Service::FirmwareImageProvider)
         })
         .map(|(device, _)| device.name.as_str());
     if let Some(first) = matches.next() {

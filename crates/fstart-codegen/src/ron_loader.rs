@@ -17,7 +17,9 @@ use std::path::Path;
 use heapless::String as HString;
 use serde::Deserialize;
 
-use fstart_device_registry::{ConstructionKind, DriverInstance, Service, StructuralConfig};
+use fstart_device_registry::{
+    ConstructionKind, DriverInstance, Service, ServiceSet, StructuralConfig,
+};
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::device::BusAddress;
 use fstart_types::{
@@ -48,7 +50,7 @@ pub struct ParsedBoard {
     /// Flat index-based device tree, parallel to `config.devices`.
     pub device_tree: Vec<DeviceNode>,
     /// Effective service set per device after applying board policy.
-    pub device_services: Vec<heapless::Vec<Service, 16>>,
+    pub device_services: Vec<ServiceSet>,
     /// ACPI-only descriptors collected separately from runtime devices.
     /// They are also kept in `driver_instances` temporarily to preserve the
     /// lock-step flattened arrays during migration.
@@ -261,7 +263,7 @@ struct FlattenState<'a> {
     devices: &'a mut heapless::Vec<DeviceConfig, 32>,
     driver_instances: &'a mut Vec<DriverInstance>,
     device_tree: &'a mut Vec<DeviceNode>,
-    device_services: &'a mut Vec<heapless::Vec<Service, 16>>,
+    device_services: &'a mut Vec<ServiceSet>,
     acpi_only_devices: &'a mut Vec<AcpiExtraDevice>,
 }
 
@@ -365,7 +367,7 @@ fn effective_services(
     instance: &DriverInstance,
     structural_kind: Option<StructuralKind>,
     disabled: &heapless::Vec<Service, 16>,
-) -> Result<heapless::Vec<Service, 16>, String> {
+) -> Result<ServiceSet, String> {
     for service in disabled {
         if !instance.provides(*service) {
             return Err(format!(
@@ -376,15 +378,12 @@ fn effective_services(
         }
     }
 
-    let mut services = heapless::Vec::new();
+    let mut services = instance.provided_services();
     if let Some(service) = structural_service(structural_kind) {
-        let _ = services.push(service);
+        services.insert(service);
     }
-    for service in instance.provided_services() {
-        if disabled.contains(service) {
-            continue;
-        }
-        let _ = services.push(*service);
+    for service in disabled {
+        services.remove(*service);
     }
     Ok(services)
 }
@@ -667,7 +666,7 @@ mod tests {
             .expect("ron loader worker panicked");
 
         assert!(parsed.driver_instances[0].provides(fstart_device_registry::Service::Console));
-        assert!(!parsed.device_services[0].contains(&fstart_device_registry::Service::Console));
+        assert!(!parsed.device_services[0].contains(fstart_device_registry::Service::Console));
     }
 
     #[test]

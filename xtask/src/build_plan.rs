@@ -212,7 +212,7 @@ fn pci_root_backend(parsed: &ParsedBoard) -> Option<PciRootBackend> {
         .device_services
         .iter()
         .enumerate()
-        .find(|(_, services)| services.contains(&Service::PciRootBus))?;
+        .find(|(_, services)| services.contains(Service::PciRootBus))?;
 
     if parsed.driver_instances[idx].driver_name() == "q35-hostbridge" {
         Some(PciRootBackend::Q35HostBridge)

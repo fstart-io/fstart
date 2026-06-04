@@ -10,7 +10,7 @@
 //! ELF parsing is retained only for diagnostic logging.
 
 use fstart_acpi::device::AcpiDevice;
-use fstart_device_registry::{DriverInstance, Service};
+use fstart_device_registry::{DriverInstance, Service, ServiceSet};
 use fstart_driver_ite8721f::LpcBaseProvider;
 use fstart_ffs::builder::{
     build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
@@ -538,7 +538,7 @@ fn patch_compressed_anchor_slots(
 fn ffs_input_regions(
     config: &BoardConfig,
     instances: &[DriverInstance],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     board_dir: &Path,
     ro_files: Vec<InputFile>,
 ) -> Result<Vec<InputRegion>, String> {
@@ -620,7 +620,7 @@ fn ffs_input_regions(
 fn externalize_xip_bootblock(
     config: &BoardConfig,
     instances: &[DriverInstance],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     board_dir: &Path,
     mut files: Vec<InputFile>,
     container_size: u32,
@@ -685,7 +685,7 @@ fn externalize_xip_bootblock(
 fn firmware_image_from_provider(
     config: &BoardConfig,
     instances: &[DriverInstance],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     board_dir: &Path,
 ) -> Result<Option<fstart_services::FirmwareImage>, String> {
     let descriptor = read_intel_ifd_descriptor(config, board_dir)?;
@@ -704,7 +704,7 @@ fn firmware_image_from_provider(
         if !config.devices[idx].enabled
             || !device_services
                 .get(idx)
-                .is_some_and(|services| services.contains(&Service::FirmwareImageProvider))
+                .is_some_and(|services| services.contains(Service::FirmwareImageProvider))
         {
             return Err(format!(
                 "BootMedia(FirmwareImage) provider '{provider}' is disabled or does not provide FirmwareImageProvider"
@@ -720,7 +720,7 @@ fn firmware_image_from_provider(
         .zip(instances.iter())
         .zip(device_services.iter())
     {
-        if device.enabled && services.contains(&Service::FirmwareImageProvider) {
+        if device.enabled && services.contains(Service::FirmwareImageProvider) {
             if let Some(image) = instance.build_firmware_image(&ctx)? {
                 images.push(image);
             }
@@ -812,7 +812,7 @@ fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
 struct FullFlashInput<'a> {
     config: &'a BoardConfig,
     instances: &'a [DriverInstance],
-    device_services: &'a [heapless::Vec<Service, 16>],
+    device_services: &'a [ServiceSet],
     board_dir: &'a Path,
     bootblock_elf: &'a Path,
     bootblock_bin: &'a Path,

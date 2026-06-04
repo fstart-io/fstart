@@ -4,7 +4,7 @@
 //! before anything that logs) and provides predicate functions used by the
 //! codegen orchestrator to decide which sections to emit.
 
-use fstart_device_registry::{DriverInstance, Service};
+use fstart_device_registry::{DriverInstance, Service, ServiceSet};
 
 use fstart_types::{
     BoardConfig, BootMedium, Capability, FitParseMode, PayloadKind, Platform, StageLayout,
@@ -22,7 +22,7 @@ use fstart_types::{
 pub(super) fn validate_capability_ordering(
     capabilities: &[Capability],
     config: &BoardConfig,
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     stage_runs_from_ram: bool,
 ) -> Option<String> {
     let mut console_inited = false;
@@ -120,7 +120,7 @@ pub(super) fn validate_capability_ordering(
                 .iter()
                 .zip(device_services.iter())
                 .any(|(dev, services)| {
-                    dev.name.as_str() == provider.as_str() && services.contains(&Service::SmmOps)
+                    dev.name.as_str() == provider.as_str() && services.contains(Service::SmmOps)
                 }) =>
             {
                 return Some(format!(
@@ -135,7 +135,7 @@ pub(super) fn validate_capability_ordering(
                 ..
             } if device_services
                 .iter()
-                .filter(|services| services.contains(&Service::SmmOps))
+                .filter(|services| services.contains(Service::SmmOps))
                 .count()
                 != 1 =>
             {
@@ -350,7 +350,7 @@ pub(super) fn validate_capability_services(
     capabilities: &[Capability],
     config: &BoardConfig,
     instances: &[DriverInstance],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
 ) -> Option<String> {
     for cap in capabilities {
         if let Err(err) = validate_capability_service(cap, config, instances, device_services) {
@@ -365,7 +365,7 @@ fn validate_capability_service(
     cap: &Capability,
     config: &BoardConfig,
     instances: &[DriverInstance],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
 ) -> Result<(), String> {
     match cap {
         Capability::ClockInit { device } => require_device_service(
@@ -471,7 +471,7 @@ fn validate_capability_service(
 
 fn require_devices_service(
     config: &BoardConfig,
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     devices: &[heapless::String<32>],
     service: Service,
     capability: &str,
@@ -492,7 +492,7 @@ fn validate_firmware_image_provider(
     provider: Option<&str>,
     config: &BoardConfig,
     instances: &[DriverInstance],
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
 ) -> Result<(), String> {
     if let Some(provider) = provider {
         return require_device_service(
@@ -509,7 +509,7 @@ fn validate_firmware_image_provider(
         .iter()
         .zip(device_services.iter())
         .filter(|(device, services)| {
-            device.enabled && services.contains(&Service::FirmwareImageProvider)
+            device.enabled && services.contains(Service::FirmwareImageProvider)
         })
         .map(|(device, _)| device.name.as_str());
     let Some(first) = providers.next() else {
@@ -561,7 +561,7 @@ fn validate_firmware_image_provider(
 
 fn require_device_service(
     config: &BoardConfig,
-    device_services: &[heapless::Vec<Service, 16>],
+    device_services: &[ServiceSet],
     device_name: &str,
     service: Service,
     capability: &str,
@@ -577,7 +577,7 @@ fn require_device_service(
     };
     if device_services
         .get(idx)
-        .is_some_and(|services| services.contains(&service))
+        .is_some_and(|services| services.contains(service))
     {
         return Ok(());
     }
