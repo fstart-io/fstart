@@ -733,14 +733,9 @@ change.
 
 ### Board and platform policy
 
-#### Replace SBSA board-name feature heuristic
-
-- **Current state:** `xtask::build_plan` enables the `sbsa` feature by checking
-  whether the board name contains `sbsa`.
-- **Why it remains:** this is isolated to build planning, but it is still a
-  string heuristic.
-- **Cleanup:** add an explicit board/emulation profile field to board RON (or a
-  typed platform profile) and derive the feature from that typed field.
+No deferred cleanup items currently remain. AArch64 EL2/TF-A relocate-entry
+policy is derived from the existing typed platform, SoC image format, memory
+map, and first-stage load address rather than from a board name.
 
 ### Foxconn D41S bring-up debt
 

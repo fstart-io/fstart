@@ -51,7 +51,7 @@ pub fn run(
     disk: Option<&str>,
     memory: Option<&str>,
 ) -> Result<(), String> {
-    let (qemu_bin, mut args) = if board_name.contains("sbsa") {
+    let (qemu_bin, mut args) = if board_name == "qemu-sbsa" {
         // SBSA-ref: TF-A runs first from pflash0 (secure flash at 0x0),
         // then launches fstart as BL33 from pflash1 (non-secure flash
         // at 0x10000000). Both pflash images must be exactly 256 MiB.
@@ -62,7 +62,7 @@ pub fn run(
         let pflash_size = 256 * 1024 * 1024; // 256 MiB
 
         // pflash0 = TF-A (secure flash)
-        let tfa_path = find_tfa_flash(binary, pflash_size)?;
+        let tfa_path = find_tfa_flash(binary, board_name, pflash_size)?;
 
         // pflash1 = fstart firmware (non-secure flash)
         let fstart_pflash = create_pflash_image(binary, pflash_size)?;
@@ -389,10 +389,12 @@ pub fn run(
 ///
 /// Falls back to checking for a pre-assembled `tfa.bin` in the board
 /// directory if individual BL files are missing.
-fn find_tfa_flash(fstart_binary: &Path, flash_size: usize) -> Result<PathBuf, String> {
-    // The board directory is two levels up from the binary (target/.../*.bin)
-    // but we can also find it via the workspace.
-    let board_dir = find_board_dir(fstart_binary)?;
+fn find_tfa_flash(
+    fstart_binary: &Path,
+    board_name: &str,
+    flash_size: usize,
+) -> Result<PathBuf, String> {
+    let board_dir = find_board_dir_by_name(fstart_binary, board_name)?;
 
     // Check for pre-assembled tfa.bin first
     let tfa_bin = board_dir.join("tfa.bin");
@@ -467,66 +469,6 @@ fn find_tfa_flash(fstart_binary: &Path, flash_size: usize) -> Result<PathBuf, St
     );
 
     Ok(out_path)
-}
-
-/// Find the board directory from a binary path.
-///
-/// Walks up from the binary looking for the workspace root, then resolves
-/// the board name from the binary path or the binary's parent directories.
-fn find_board_dir(binary: &Path) -> Result<PathBuf, String> {
-    // Walk up looking for workspace Cargo.toml
-    let mut dir = binary
-        .parent()
-        .ok_or_else(|| "no parent directory for binary".to_string())?
-        .to_path_buf();
-
-    let workspace_root = loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let contents =
-                std::fs::read_to_string(&cargo_toml).map_err(|e| format!("read error: {e}"))?;
-            if contents.contains("[workspace]") {
-                break dir;
-            }
-        }
-        if !dir.pop() {
-            return Err("could not find workspace root from binary path".to_string());
-        }
-    };
-
-    // Find the board name from the FSTART_BOARD_RON env or scan boards/
-    // For SBSA, the board directory is boards/qemu-sbsa/
-    let boards_dir = workspace_root.join("boards");
-    for entry in
-        std::fs::read_dir(&boards_dir).map_err(|e| format!("failed to read boards/: {e}"))?
-    {
-        let entry = entry.map_err(|e| format!("readdir error: {e}"))?;
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            // Match SBSA board by checking if binary path contains the board name
-            if name_str.contains("sbsa")
-                && binary.to_string_lossy().contains(&format!("{name_str}"))
-            {
-                return Ok(entry.path());
-            }
-        }
-    }
-
-    // Fallback: use the first sbsa board directory
-    for entry in
-        std::fs::read_dir(&boards_dir).map_err(|e| format!("failed to read boards/: {e}"))?
-    {
-        let entry = entry.map_err(|e| format!("readdir error: {e}"))?;
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            let name = entry.file_name();
-            if name.to_string_lossy().contains("sbsa") {
-                return Ok(entry.path());
-            }
-        }
-    }
-
-    Err("could not find SBSA board directory".to_string())
 }
 
 /// Find a board directory by board name, starting from a binary's location.

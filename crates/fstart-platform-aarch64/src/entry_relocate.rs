@@ -1,8 +1,9 @@
-//! SBSA entry point — flash-to-DRAM copy and early init.
+//! AArch64 EL2/TF-A ROM-to-RAM entry point.
 //!
-//! On SBSA-ref, TF-A BL31 jumps to the start of pflash1 (0x10000000) at EL2.
-//! DRAM starts at 0x10000000000 (1 TiB), far beyond AArch64's +/- 4 GiB
-//! ADRP relocation range. The firmware is linked for DRAM addresses, so we
+//! Some TF-A-launched AArch64 boards enter firmware from ROM/flash at EL2 but
+//! link the Rust image to execute from DRAM. On QEMU SBSA-ref, for example,
+//! TF-A BL31 jumps to pflash1 (0x10000000) while DRAM starts at 0x10000000000
+//! (1 TiB), far beyond AArch64's +/- 4 GiB ADRP relocation range. Such boards
 //! need a position-independent stub in flash that:
 //!
 //! 1. Saves x0 (FDT pointer from TF-A)
@@ -14,7 +15,8 @@
 //! `fstart_main` as usual.
 //!
 //! This is the same approach as coreboot's `bootblock_custom.S` for
-//! qemu-sbsa.
+//! qemu-sbsa. It is intentionally scoped to EL2/TF-A-style entry: `x0` carries
+//! the FDT pointer and the relocation code uses EL2 system registers.
 
 use core::arch::global_asm;
 

@@ -27,8 +27,8 @@ sunxi = [
   "fstart-platform-armv7?/sunxi",
   "fstart-platform-riscv64?/sunxi",
 ]
-# SBSA entry point — copies firmware from flash to DRAM before executing.
-sbsa = ["fstart-platform-aarch64?/sbsa"]
+# AArch64 EL2/TF-A ROM-to-RAM entry point. Derived from memory layout.
+aarch64-el2-relocate-entry = ["fstart-platform-aarch64?/aarch64-el2-relocate-entry"]
 # Driver selection (enabled based on board.ron devices)
 ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]

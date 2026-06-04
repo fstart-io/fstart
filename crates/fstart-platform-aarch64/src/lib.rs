@@ -3,7 +3,7 @@
 //! Provides the reset vector entry point, stack setup, BSS clearing,
 //! and architecture-specific helpers.
 //!
-//! Two entry paths are supported:
+//! Three entry paths are supported:
 //!
 //! - **Default** (`entry.rs`): Standard AArch64 entry for platforms that
 //!   start directly in AArch64 mode (e.g., QEMU virt). Captures the DTB
@@ -13,20 +13,25 @@
 //!   Allwinner sun50i SoCs (H5, A64) that boot in AArch32 from the BROM.
 //!   Implements the ARMv8 RMR warm-reset sequence to switch into AArch64,
 //!   with FEL state saving for USB debug mode return.
+//!
+//! - **EL2 relocate** (`entry_relocate.rs`, behind `aarch64-el2-relocate-entry`):
+//!   Entry for TF-A/EL2-style boards entered from ROM/flash but linked to
+//!   execute from DRAM. This path expects an FDT pointer in `x0` and uses EL2
+//!   system registers during early relocation.
 
 #![no_std]
 #![cfg(target_arch = "aarch64")]
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(not(any(feature = "sunxi", feature = "sbsa")))]
+#[cfg(not(any(feature = "sunxi", feature = "aarch64-el2-relocate-entry")))]
 pub mod entry;
 
 #[cfg(feature = "sunxi")]
 pub mod entry_sunxi;
 
-#[cfg(feature = "sbsa")]
-pub mod entry_sbsa;
+#[cfg(feature = "aarch64-el2-relocate-entry")]
+pub mod entry_relocate;
 
 // ---------------------------------------------------------------------------
 // Boot parameters — written by _start assembly, read by Rust code

@@ -11,8 +11,8 @@ use fstart_codegen::ron_loader::ParsedBoard;
 use fstart_device_registry::Service;
 use fstart_types::stage::PageSize;
 use fstart_types::{
-    effective_stage_load_addr, BoardConfig, Capability, Platform, SecurityConfig, SocImageFormat,
-    StageLayout,
+    effective_stage_load_addr, BoardConfig, Capability, Platform, RegionKind, SecurityConfig,
+    SocImageFormat, StageLayout,
 };
 
 use crate::toolchain::TargetSpec;
@@ -180,13 +180,43 @@ fn base_features(parsed: &ParsedBoard, target: TargetSpec) -> FeatureSet {
         features.insert("sunxi");
     }
 
-    // Deferred cleanup: docs/rust-owned-driver-services-plan.md tracks replacing this
-    // board-name heuristic with an explicit board/emulation profile.
-    if config.name.as_str().contains("sbsa") {
-        features.insert("sbsa");
+    if needs_aarch64_el2_relocate_entry(config) {
+        features.insert("aarch64-el2-relocate-entry");
     }
 
     features
+}
+
+fn needs_aarch64_el2_relocate_entry(config: &BoardConfig) -> bool {
+    // Current AArch64 ROM-to-RAM boards use the EL2/TF-A entry protocol.
+    // If a future board needs ROM-to-RAM relocation without that protocol,
+    // add explicit boot-protocol schema instead of widening this predicate.
+    if config.platform != Platform::Aarch64
+        || config.soc_image_format == SocImageFormat::AllwinnerEgon
+    {
+        return false;
+    }
+
+    let first_stage_load_addr = match &config.stages {
+        StageLayout::Monolithic(stage) => stage.load_addr,
+        StageLayout::MultiStage(stages) => stages
+            .first()
+            .map(|stage| effective_stage_load_addr(config, 0, stage))
+            .unwrap_or(0),
+    };
+
+    let has_rom_region = config
+        .memory
+        .regions
+        .iter()
+        .any(|region| region.kind == RegionKind::Rom);
+    let loads_into_ram = config.memory.regions.iter().any(|region| {
+        region.kind == RegionKind::Ram
+            && first_stage_load_addr >= region.base
+            && first_stage_load_addr < region.base.saturating_add(region.size)
+    });
+
+    has_rom_region && loads_into_ram
 }
 
 #[derive(Debug)]
@@ -432,6 +462,23 @@ mod tests {
         assert!(!features.contains("pcie-root"));
         assert!(features.contains("pci-ecam"));
         assert!(features.contains("acpi"));
+        assert!(features.contains("aarch64-el2-relocate-entry"));
+    }
+
+    #[test]
+    fn aarch64_el2_relocate_entry_is_derived_from_memory_layout() {
+        let source = include_str!("build_plan.rs");
+        assert!(!source.contains(concat!("name.as_str()", ".contains")));
+
+        let qemu_aarch64 = load_plan("qemu-aarch64");
+        assert!(!qemu_aarch64.stages[0]
+            .features
+            .contains("aarch64-el2-relocate-entry"));
+
+        let orangepi_pc2 = load_plan("orangepi-pc2");
+        for stage in &orangepi_pc2.stages {
+            assert!(!stage.features.contains("aarch64-el2-relocate-entry"));
+        }
     }
 
     #[test]

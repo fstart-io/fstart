@@ -10,7 +10,7 @@
 // Boot flow:
 //   TF-A BL1 (secure flash @ 0x0) -> BL2 -> BL31 (EL3)
 //   -> fstart (non-secure flash @ 0x10000000, enters at EL2)
-//   -> SBSA entry stub copies itself from flash to DRAM
+//   -> AArch64 EL2/TF-A relocate entry copies the firmware binary to DRAM
 //   -> runs from DRAM, generates ACPI/SMBIOS tables
 //
 // Memory map (from QEMU hw/arm/sbsa-ref.c and TF-A plat/qemu/qemu_sbsa):
@@ -34,8 +34,8 @@
 //
 // NOTE: The firmware is stored in pflash1 (0x10000000) but DRAM starts at
 // 0x10000000000 — a 1 TiB gap that exceeds AArch64 ADRP range (+/- 4 GiB).
-// A position-independent entry stub in flash copies the binary to DRAM
-// before jumping there (same approach as coreboot's bootblock_custom.S).
+// The AArch64 EL2/TF-A relocate entry copies the binary to DRAM before
+// jumping there (same approach as coreboot's bootblock_custom.S).
 
 (
     name: "qemu-sbsa",
@@ -104,11 +104,12 @@
         ),
     ],
 
-    // Monolithic stage running from DRAM (copied from flash by entry stub).
-    // TF-A passes the platform FDT pointer in x0 when entering BL33.
+    // Monolithic stage running from DRAM (copied from flash by the AArch64
+    // EL2/TF-A relocate entry). TF-A passes the platform FDT pointer in x0
+    // when entering BL33.
     //
-    // load_addr is in DRAM. The entry stub copies from flash (0x10000000)
-    // to this DRAM address, then jumps to _start in DRAM.
+    // load_addr is in DRAM. The relocate entry copies from flash
+    // (0x10000000) to this DRAM address, then jumps to _start in DRAM.
     stages: Monolithic((
         capabilities: [
             ConsoleInit( device: "uart0" ),
