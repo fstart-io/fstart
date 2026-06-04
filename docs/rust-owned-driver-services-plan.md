@@ -611,6 +611,12 @@ cargo xtask build --board foxconn-d41s --release
 
 ## Implementation phases
 
+Status: phases 1–7 are implemented. The plan remains as design history and as
+an invariant checklist for future driver/service work. Dead-code `todo!()`
+stubs may still exist for `Board` trait methods that are not reachable from a
+stage's declared capabilities; configuration errors that affect reachable stage
+plans should now fail before token emission with `compile_error!` diagnostics.
+
 ### Phase 1 — typed services in registry
 
 1. Add `Service` and `ServiceSet` to `fstart-device-registry`.
