@@ -308,12 +308,15 @@ fn flatten_device(
     }
 
     let effective_services = effective_services(&instance, &rd.disabled_services)?;
-    let _ = state.devices.push(DeviceConfig {
-        name: rd.name,
-        parent: parent_name,
-        bus: rd.bus,
-        enabled: rd.enabled,
-    });
+    state
+        .devices
+        .push(DeviceConfig {
+            name: rd.name,
+            parent: parent_name,
+            bus: rd.bus,
+            enabled: rd.enabled,
+        })
+        .map_err(|_| "board declares more than 32 runtime/structural devices".to_string())?;
     state.driver_instances.push(instance);
     state.device_services.push(effective_services);
     state.device_tree.push(DeviceNode {
