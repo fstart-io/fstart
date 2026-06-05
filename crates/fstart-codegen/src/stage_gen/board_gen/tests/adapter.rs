@@ -26,10 +26,11 @@ fn adapter_compiles_for_qemu_riscv64() {
     // Boot-media state publication and FFS anchor access are primitive Board methods.
     assert!(src.contains("fn set_boot_media_state"));
     assert!(src.contains("fn ffs_anchor"));
-    // qemu-riscv64 uses FFS (SigVerify/PayloadLoad), so `sig_verify`
-    // is the real body.
-    assert!(src.contains("fstart_capabilities::sig_verify"));
+    // qemu-riscv64 uses FFS, so the adapter exposes primitive boot-media
+    // dispatch while sig_verify orchestration lives in the runtime executor.
+    assert!(src.contains("fn with_boot_media"));
     assert!(src.contains("FirmwareImageMap::new"));
+    assert!(!src.contains("fstart_capabilities::sig_verify"));
     // qemu-riscv64 has a LinuxBoot payload with FdtSource::Platform,
     // so the body is `fdt_prepare_platform` with a runtime
     // `boot_dtb_addr()` call (RISC-V / AArch64 default) and the
@@ -78,8 +79,9 @@ fn adapter_compiles_for_qemu_aarch64() {
     let src = adapter_source_for_board("qemu-aarch64");
     assert!(src.contains("struct _BoardDevices"));
     assert!(src.contains("uart0: Option<Pl011>"));
-    // aarch64 qemu board also uses FFS.
-    assert!(src.contains("fstart_capabilities::sig_verify"));
+    // aarch64 qemu board also uses FFS through primitive boot-media dispatch.
+    assert!(src.contains("fn with_boot_media"));
+    assert!(!src.contains("fstart_capabilities::sig_verify"));
 }
 
 #[test]
@@ -116,9 +118,10 @@ fn bootblock_without_driver_init_excludes_bus_children() {
     // The exact set of fields depends on the board; this test is
     // a smoke test that the filter did not panic or emit an
     // unparseable struct.
-    // Bootblock uses SigVerify, so it uses FFS and sig_verify is
-    // real.
-    assert!(src.contains("fstart_capabilities::sig_verify"));
+    // Bootblock uses SigVerify, so it uses FFS through primitive
+    // boot-media dispatch.
+    assert!(src.contains("fn with_boot_media"));
+    assert!(!src.contains("fstart_capabilities::sig_verify"));
 }
 
 #[test]
@@ -138,9 +141,9 @@ fn bootblock_without_driver_init_keeps_capability_referenced_child() {
 fn sig_verify_unreachable_for_non_ffs_stages() {
     // Pick a multi-stage board's non-FFS stage.  The `main` stage
     // of `qemu-riscv64-multi` is ConsoleInit + MemoryInit +
-    // DriverInit — no SigVerify/StageLoad/PayloadLoad. So
-    // `sig_verify` stays a dead-code unreachable body because
-    // FSTART_ANCHOR does not exist in that stage's generated source.
+    // DriverInit — no SigVerify/StageLoad/PayloadLoad. The adapter
+    // must not reference FSTART_ANCHOR; the runtime executor owns
+    // the SigVerify flow.
     let src = adapter_source_for_stage("qemu-riscv64-multi", "main");
     assert!(src.contains("struct _BoardDevices"));
     // No FFS ⇒ sig_verify body is unreachable — referencing
@@ -149,10 +152,7 @@ fn sig_verify_unreachable_for_non_ffs_stages() {
         !src.contains("&FSTART_ANCHOR"),
         "non-FFS stage must not reference FSTART_ANCHOR; got:\n{src}"
     );
-    assert!(
-        src.contains("board_gen::sig_verify: no FFS-using capability"),
-        "expected no-FFS sig_verify unreachable body, got:\n{src}"
-    );
+    assert!(!src.contains("fstart_capabilities::sig_verify"));
 }
 
 #[test]
@@ -163,7 +163,8 @@ fn sunxi_board_sig_verify_has_block_device_arm() {
     // a Rust-selected block device. The emitted `sig_verify` match must
     // have a FirmwareImageBlock arm that references the `mmc0` field.
     let src = adapter_source_for_stage("orangepi-pc2", "main");
-    assert!(src.contains("fstart_capabilities::sig_verify"));
+    assert!(!src.contains("fstart_capabilities::sig_verify"));
+    assert!(src.contains("fn with_boot_media"));
     assert!(
         src.contains("BlockDeviceMedia::new"),
         "sunxi stage using BlockDevice must construct BlockDeviceMedia, got:\n{src}"

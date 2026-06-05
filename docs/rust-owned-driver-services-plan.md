@@ -126,7 +126,7 @@ operations:
 High-level capability methods are not part of the final `Board` trait. Methods
 to remove include:
 
-- `memory_init`, `sig_verify`, `fdt_prepare`, `payload_load`, `stage_load`;
+- `memory_init`, `fdt_prepare`, `payload_load`, `stage_load`;
 - `acpi_prepare`, `smbios_prepare`, `acpi_load` orchestration;
 - `mp_init`;
 - phase trampolines such as `pre_console_init`, `early_init`, etc.;
@@ -137,7 +137,10 @@ to remove include:
 boot-media state publication. Provider-backed `boot_media_firmware_image` has
 been reduced to the primitive `firmware_image(provider)`. Platform/provider
 firmware-image setup now uses primitive `set_boot_media_state(...)` plus
-`ffs_anchor()` for memory-mapped FFS context publication.
+`ffs_anchor()` for memory-mapped FFS context publication. `SigVerify` is now
+handwritten runtime flow: the board adapter exposes primitive
+`with_boot_media(...)` dispatch instead of calling
+`fstart_capabilities::sig_verify` itself.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

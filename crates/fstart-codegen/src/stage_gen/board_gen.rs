@@ -39,7 +39,6 @@ mod payload;
 mod payload_uefi;
 mod phases;
 mod platform;
-mod security;
 mod state;
 
 use board_impl::emit_board_impl;

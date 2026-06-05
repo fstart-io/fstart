@@ -6,6 +6,7 @@ use quote::{format_ident, quote};
 use fstart_device_registry::Service;
 use fstart_types::Platform;
 
+use super::boot_media::with_boot_media_body;
 use super::caps_tables::{
     acpi_load_body, acpi_prepare_body, memory_detect_body, smbios_prepare_body,
 };
@@ -71,7 +72,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
         _ => quote! { fstart_platform::jump_to_with_handoff(entry, handoff_addr) },
     };
 
-    let sig_verify_body = super::security::sig_verify_body(ctx);
     let fdt_prepare_body = fdt_prepare_body(platform, ctx);
     let install_logger_body = install_logger_body(ctx);
     let stage_load_body = stage_load_body(ctx);
@@ -103,6 +103,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let init_device_body = init_device_body(ctx);
     let firmware_image_body = firmware_image_body(ctx);
     let ffs_anchor_body = ffs_anchor_body(ctx);
+    let with_boot_media_body = with_boot_media_body(ctx);
 
     quote! {
         #[allow(dead_code, unused_variables)]
@@ -123,7 +124,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             }
 
 
-            fn sig_verify(&self) { #sig_verify_body }
             fn fdt_prepare(&self) { #fdt_prepare_body }
             fn payload_load(&self) -> ! { #payload_load_body }
             fn stage_load(&self, next_stage: &str) -> ! { #stage_load_body }
@@ -221,6 +221,18 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
 
             fn ffs_anchor(&self) -> Option<&'static [u8]> {
                 #ffs_anchor_body
+            }
+
+            fn with_boot_media<R>(
+                &self,
+                caller_tag: &str,
+                none: R,
+                run: impl FnOnce(
+                    &dyn fstart_services::BootMedia,
+                    Option<&mut fstart_services::TempRamArena>,
+                ) -> R,
+            ) -> R {
+                #with_boot_media_body
             }
 
             fn load_next_stage(&mut self, next_stage: &str) -> ! {

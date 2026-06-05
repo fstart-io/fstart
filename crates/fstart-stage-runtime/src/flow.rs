@@ -122,7 +122,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             } => boot_media_platform_boot_source(board, &mut inited, candidates, temp_ram_buffer),
 
             #[cfg(feature = "flow-ffs")]
-            StageOp::SigVerify => board.sig_verify(),
+            StageOp::SigVerify => sig_verify(board),
             #[cfg(feature = "flow-ffs")]
             StageOp::PayloadLoad => board.payload_load(),
             #[cfg(feature = "flow-ffs")]
@@ -277,6 +277,16 @@ fn driver_init_is_gated(plan: &StagePlan, id: DeviceId) -> bool {
 #[cfg(feature = "flow-driver-init")]
 fn driver_init_is_optional(plan: &StagePlan, id: DeviceId) -> bool {
     plan.optional_devices.iter().any(|optional| *optional == id)
+}
+
+#[cfg(feature = "flow-ffs")]
+fn sig_verify<B: Board>(board: &B) {
+    let Some(anchor) = board.ffs_anchor() else {
+        return;
+    };
+    board.with_boot_media("sig_verify", (), |media, _scratch| {
+        fstart_capabilities::sig_verify(anchor, media);
+    });
 }
 
 #[cfg(feature = "flow-boot-media")]

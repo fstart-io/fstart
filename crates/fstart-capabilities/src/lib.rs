@@ -218,7 +218,7 @@ pub fn memory_detect(
 /// - `anchor_data`: Reference to the `FSTART_ANCHOR` static (raw bytes).
 /// - `media`: The boot medium holding the firmware image.
 #[cfg(feature = "ffs")]
-pub fn sig_verify(anchor_data: &[u8], media: &impl BootMedia) {
+pub fn sig_verify(anchor_data: &[u8], media: &(impl BootMedia + ?Sized)) {
     fstart_log::info!("capability: SigVerify");
 
     if media.size() == 0 || anchor_data.is_empty() {
@@ -279,7 +279,7 @@ pub fn sig_verify(anchor_data: &[u8], media: &impl BootMedia) {
 
 /// Stub SigVerify when FFS feature is not enabled.
 #[cfg(not(feature = "ffs"))]
-pub fn sig_verify(_anchor_data: &[u8], _media: &impl fstart_services::BootMedia) {
+pub fn sig_verify(_anchor_data: &[u8], _media: &(impl fstart_services::BootMedia + ?Sized)) {
     fstart_log::info!("capability: SigVerify");
     fstart_log::info!("sig verify skipped (ffs feature not enabled)");
 }
@@ -762,7 +762,7 @@ static MANIFEST_BUF: SyncBuf = SyncBuf(core::cell::UnsafeCell::new([0u8; MAX_MAN
 /// the 8 KiB signed envelope keeps firmware stack usage predictable.
 #[cfg(feature = "ffs")]
 fn read_manifest_from_media(
-    media: &impl BootMedia,
+    media: &(impl BootMedia + ?Sized),
     anchor: &fstart_types::ffs::AnchorBlock,
 ) -> Result<fstart_types::ffs::ImageManifest, fstart_ffs::ReaderError> {
     // Read signed manifest into the static buffer. Uses a static rather than a

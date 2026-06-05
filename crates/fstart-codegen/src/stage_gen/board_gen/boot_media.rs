@@ -26,6 +26,47 @@ pub(super) fn anchor_bytes_stmt() -> TokenStream {
     }
 }
 
+/// Emit the body of the primitive `Board::with_boot_media` dispatcher.
+pub(super) fn with_boot_media_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let block_arms = block_device_with_boot_media_arms(ctx);
+    quote! {
+        match self._boot_media {
+            fstart_stage_runtime::BootMediaState::None => none,
+            fstart_stage_runtime::BootMediaState::FirmwareImage { image, temp_ram_buffer } => {
+                let mut scratch = temp_ram_buffer.and_then(|buffer| {
+                    // SAFETY: board/platform configuration declares this range
+                    // as temporary writable RAM for this stage.
+                    unsafe { fstart_services::TempRamArena::new(buffer).ok() }
+                });
+                fstart_log::info!("boot-media match: firmware image size={:#x} windows={}", image.size, image.window_count);
+                #[cfg(feature = "x86_64")]
+                fstart_platform::enable_boot_media_rom_cache();
+                let map = fstart_services::boot_media::FirmwareImageMap::new(image);
+                let media = fstart_services::boot_media::MemoryMapped::new(
+                    map,
+                    image.size as usize,
+                );
+                run(&media, scratch.as_mut())
+            }
+            fstart_stage_runtime::BootMediaState::FirmwareImageBlock {
+                device_id,
+                offset,
+                size,
+                temp_ram_buffer,
+            } => {
+                let _ = temp_ram_buffer;
+                match device_id {
+                    #block_arms
+                    _ => {
+                        fstart_log::error!("{}: unknown block device id {}", caller_tag, device_id);
+                        fstart_platform::halt();
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Emit a `match self._boot_media { ... }` that binds a local `_bm` for use by
 /// `bm_usage`.
 pub(super) fn match_boot_media(
@@ -78,6 +119,35 @@ pub(super) fn match_boot_media(
             }
         }
     }
+}
+
+/// Emit one `with_boot_media` match arm per enabled block device in the board.
+fn block_device_with_boot_media_arms(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let arms = ctx
+        .runtime_devices
+        .providers(Service::BlockDevice)
+        .map(|device| {
+            let field = format_ident!("{}", device.name);
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
+            quote! {
+                #id_lit => {
+                    let mut scratch = temp_ram_buffer.and_then(|buffer| {
+                        // SAFETY: board/platform configuration declares this range
+                        // as temporary writable RAM for this stage.
+                        unsafe { fstart_services::TempRamArena::new(buffer).ok() }
+                    });
+                    let media = fstart_services::boot_media::BlockDeviceMedia::new(
+                        self.#field
+                            .as_ref()
+                            .unwrap_or_else(|| fstart_platform::halt()),
+                        offset,
+                        size as usize,
+                    );
+                    run(&media, scratch.as_mut())
+                }
+            }
+        });
+    quote! { #(#arms)* }
 }
 
 /// Emit one match arm per enabled block device in the board.

@@ -1283,6 +1283,7 @@ dependencies = [
 name = "fstart-stage-runtime"
 version = "0.1.0"
 dependencies = [
+ "fstart-capabilities",
  "fstart-log",
  "fstart-services",
  "fstart-types",

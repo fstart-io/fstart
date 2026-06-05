@@ -29,7 +29,7 @@ pub use mask::DeviceMask;
 pub use plan::{StageOp, StagePlan};
 
 use fstart_services::device::DeviceError;
-use fstart_services::FirmwareImage;
+use fstart_services::{BootMedia, FirmwareImage, TempRamArena};
 use fstart_types::{DeviceId, TempRamBuffer};
 
 // ---------------------------------------------------------------------------
@@ -239,12 +239,6 @@ pub trait Board: Sized {
     /// Generated adapter delegates to `fstart_capabilities::memory_init`.
     fn memory_init(&self);
 
-    /// Stage operation for `SigVerify`.
-    ///
-    /// Generated adapter reads its anchor pointer and current boot
-    /// media from `&self` and calls `fstart_capabilities::sig_verify`.
-    fn sig_verify(&self);
-
     /// Stage operation for `FdtPrepare`.
     ///
     /// Generated adapter reads DTB source/destination addresses,
@@ -371,6 +365,18 @@ pub trait Board: Sized {
 
     /// FFS anchor bytes for stages that use the firmware filesystem.
     fn ffs_anchor(&self) -> Option<&'static [u8]>;
+
+    /// Run a closure with the active boot medium and optional scratch arena.
+    ///
+    /// The executor owns the FFS/payload operation; the board adapter only
+    /// resolves the current scalar [`BootMediaState`] into a concrete
+    /// [`BootMedia`] implementation and block-device field borrow.
+    fn with_boot_media<R>(
+        &self,
+        caller_tag: &str,
+        none: R,
+        run: impl FnOnce(&dyn BootMedia, Option<&mut TempRamArena>) -> R,
+    ) -> R;
 
     /// Stage operation for `LoadNextStage`. Diverges. Uses whichever boot
     /// medium the executor published to read the named next stage and jump to
