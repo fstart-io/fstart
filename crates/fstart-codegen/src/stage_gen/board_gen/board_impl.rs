@@ -8,7 +8,8 @@ use fstart_types::Platform;
 
 use super::boot_media::with_boot_media_body;
 use super::caps_tables::{
-    acpi_prepare_body, smbios_desc_body, with_acpi_table_provider_body, with_memory_detector_body,
+    acpi_platform_config_body, collect_acpi_tables_body, smbios_desc_body,
+    with_acpi_table_provider_body, with_memory_detector_body,
 };
 use super::fdt::{fdt_prepare_body, return_to_fel_body, stage_load_body};
 use super::init_caps::{dram_init_body, pci_init_body};
@@ -82,7 +83,8 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
 
     let with_acpi_table_provider_body = with_acpi_table_provider_body(ctx);
     let with_memory_detector_body = with_memory_detector_body(ctx);
-    let acpi_prepare_body = acpi_prepare_body(ctx);
+    let acpi_platform_config_body = acpi_platform_config_body(ctx);
+    let collect_acpi_tables_body = collect_acpi_tables_body(ctx);
     let smbios_desc_body = smbios_desc_body(ctx);
     let mp_init_body = mp_init_body(ctx);
     let soc_boot_media_body = soc_boot_media_body(ctx);
@@ -110,7 +112,21 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             fn fdt_prepare(&self) { #fdt_prepare_body }
             fn payload_load(&self) -> ! { #payload_load_body }
             fn stage_load(&self, next_stage: &str) -> ! { #stage_load_body }
-            fn acpi_prepare(&mut self) { #acpi_prepare_body }
+            #[cfg(feature = "stage-flow-acpi")]
+            fn acpi_platform_config(
+                &self,
+            ) -> Option<(fstart_acpi::platform::PlatformConfig, bool)> {
+                #acpi_platform_config_body
+            }
+
+            #[cfg(feature = "stage-flow-acpi")]
+            fn collect_acpi_tables(
+                &self,
+                dsdt_aml: &mut fstart_stage_runtime::AcpiDsdtAml,
+                extra_tables: &mut fstart_stage_runtime::AcpiExtraTables,
+            ) -> Result<(), fstart_stage_runtime::RuntimeError> {
+                #collect_acpi_tables_body
+            }
             #[cfg(feature = "stage-flow-smbios")]
             fn smbios_desc(
                 &self,

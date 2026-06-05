@@ -146,7 +146,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             }
 
             #[cfg(feature = "flow-acpi")]
-            StageOp::AcpiPrepare => board.acpi_prepare(),
+            StageOp::AcpiPrepare => acpi_prepare(board),
             #[cfg(feature = "flow-acpi")]
             StageOp::AcpiLoad(id) => acpi_load(board, &mut inited, id),
 
@@ -396,6 +396,23 @@ fn smbios_prepare<B: Board>(board: &B) {
         board.halt();
     };
     fstart_capabilities::smbios::prepare(&desc);
+}
+
+#[cfg(feature = "flow-acpi")]
+fn acpi_prepare<B: Board>(board: &mut B) {
+    let Some((platform, print_hex)) = board.acpi_platform_config() else {
+        board.halt();
+    };
+    let rsdp = fstart_capabilities::acpi::prepare_with_options(
+        &platform,
+        print_hex,
+        |dsdt_aml, extra_tables| {
+            if board.collect_acpi_tables(dsdt_aml, extra_tables).is_err() {
+                board.halt();
+            }
+        },
+    );
+    board.set_acpi_rsdp_addr(rsdp);
 }
 
 #[cfg(feature = "flow-acpi")]

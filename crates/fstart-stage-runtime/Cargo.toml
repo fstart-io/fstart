@@ -31,7 +31,12 @@ flow-ffs = [
 ]
 flow-fdt = ["stage-executor"]
 flow-mp = ["stage-executor"]
-flow-acpi = ["stage-executor", "dep:fstart-capabilities"]
+flow-acpi = [
+  "stage-executor",
+  "dep:fstart-acpi",
+  "dep:fstart-capabilities",
+  "fstart-capabilities/acpi",
+]
 flow-smbios = [
   "stage-executor",
   "dep:fstart-capabilities",
@@ -43,5 +48,6 @@ flow-fel = ["stage-executor"]
 fstart-types = { workspace = true }
 fstart-services = { workspace = true }
 fstart-log = { workspace = true }
+fstart-acpi = { workspace = true, optional = true }
 fstart-capabilities = { workspace = true, optional = true }
 ufmt = { workspace = true }

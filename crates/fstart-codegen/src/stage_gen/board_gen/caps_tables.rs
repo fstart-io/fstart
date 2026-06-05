@@ -62,20 +62,36 @@ pub(super) fn with_memory_detector_body(ctx: &BoardEmitModel<'_>) -> TokenStream
     }
 }
 
-/// Emit the body of `Board::acpi_prepare`.
-pub(super) fn acpi_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+/// Emit the body of primitive `Board::acpi_platform_config`.
+pub(super) fn acpi_platform_config_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     use crate::stage_gen::capabilities::acpi as cap_acpi;
-    use crate::stage_gen::config_ser;
 
     if !ctx.stage.uses_acpi_prepare {
-        return quote! {
-            unreachable!("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
-        };
+        return quote! { None };
     }
 
     let Some(acpi_cfg) = ctx.config.acpi.as_ref() else {
+        return quote! { None };
+    };
+
+    let platform_block = cap_acpi::generate_platform_acpi(&acpi_cfg.platform);
+    let print_hex = acpi_cfg.print_hex;
+
+    quote! {
+        #platform_block
+        Some((platform_acpi, #print_hex))
+    }
+}
+
+/// Emit the body of primitive `Board::collect_acpi_tables`.
+pub(super) fn collect_acpi_tables_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    use crate::stage_gen::capabilities::acpi as cap_acpi;
+    use crate::stage_gen::config_ser;
+
+    if !ctx.stage.uses_acpi_prepare || ctx.config.acpi.is_none() {
         return quote! {
-            unreachable!("board_gen::acpi_prepare: board has no `acpi` RON config")
+            let _ = (dsdt_aml, extra_tables);
+            Err(fstart_stage_runtime::RuntimeError::UnknownDevice)
         };
     };
 
@@ -99,11 +115,15 @@ pub(super) fn acpi_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         });
         device_blocks.extend(quote! {
             dsdt_aml.extend(fstart_acpi::device::AcpiDevice::dsdt_aml(
-                self.#field.as_ref().unwrap_or_else(|| fstart_platform::halt()),
+                self.#field
+                    .as_ref()
+                    .ok_or(fstart_stage_runtime::RuntimeError::UnknownDevice)?,
                 &#cfg_name,
             ));
             extra_tables.extend(fstart_acpi::device::AcpiDevice::extra_tables(
-                self.#field.as_ref().unwrap_or_else(|| fstart_platform::halt()),
+                self.#field
+                    .as_ref()
+                    .ok_or(fstart_stage_runtime::RuntimeError::UnknownDevice)?,
                 &#cfg_name,
             ));
         });
@@ -113,16 +133,11 @@ pub(super) fn acpi_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         acpi_only_blocks.extend(cap_acpi::generate_acpi_only_device(instance, extra_idx));
     }
 
-    let platform_block = cap_acpi::generate_platform_acpi(&acpi_cfg.platform);
-    let print_hex = acpi_cfg.print_hex;
-
     quote! {
-        #platform_block
         #config_lets
-        self._acpi_rsdp_addr = fstart_capabilities::acpi::prepare_with_options(&platform_acpi, #print_hex, |dsdt_aml, extra_tables| {
-            #device_blocks
-            #acpi_only_blocks
-        });
+        #device_blocks
+        #acpi_only_blocks
+        Ok(())
     }
 }
 

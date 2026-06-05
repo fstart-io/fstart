@@ -127,7 +127,6 @@ High-level capability methods are not part of the final `Board` trait. Methods
 to remove include:
 
 - `fdt_prepare`, `payload_load`, `stage_load`;
-- `acpi_prepare` orchestration;
 - `mp_init`;
 - `load_next_stage`.
 
@@ -147,7 +146,9 @@ instead of per-phase list trampolines such as `pre_console_init(ids)`.
 now follows the same boundary: the adapter exposes primitive provider borrowing
 and RSDP state publication while runtime owns the static buffer and capability
 call. `MemoryDetect` now uses primitive memory-detector borrowing while runtime
-owns the E820 scratch buffer and capability call.
+owns the E820 scratch buffer and capability call. `AcpiPrepare` now exposes
+only platform descriptors plus device table collection; runtime owns ACPI table
+allocation and the `prepare_with_options` call.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

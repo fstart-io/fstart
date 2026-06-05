@@ -2,20 +2,21 @@ use super::{adapter_source_for_board, adapter_source_for_stage};
 
 #[test]
 fn acpi_prepare_emits_real_body_on_sbsa() {
-    // qemu-sbsa has `AcpiPrepare` + a populated `acpi` RON
-    // config (ARM SBSA platform).  The body must emit the
-    // platform_acpi binding plus the acpi::prepare call with
-    // closure.  per-device `_cfg` bindings may or may not be
-    // present depending on whether any driver has `has_acpi` +
-    // an `acpi_name` set.
+    // qemu-sbsa has `AcpiPrepare` + a populated `acpi` RON config (ARM
+    // SBSA platform). The adapter must emit primitive descriptor/table
+    // collection only; runtime owns the acpi::prepare call.
     let src = adapter_source_for_board("qemu-sbsa");
     assert!(
         src.contains("let platform_acpi"),
         "acpi_prepare must emit platform_acpi binding; got:\n{src}"
     );
     assert!(
-        src.contains("fstart_capabilities::acpi::prepare"),
-        "acpi_prepare must call the capability fn; got:\n{src}"
+        !src.contains("fstart_capabilities::acpi::prepare"),
+        "adapter must not call the ACPI prepare capability fn; got:\n{src}"
+    );
+    assert!(
+        src.contains("fn acpi_platform_config") && src.contains("fn collect_acpi_tables"),
+        "adapter must expose primitive ACPI descriptor/table collection; got:\n{src}"
     );
     assert!(
         src.contains("PlatformConfig::Arm"),
@@ -26,12 +27,11 @@ fn acpi_prepare_emits_real_body_on_sbsa() {
 #[test]
 fn acpi_prepare_unreachable_on_boards_without_acpi_config() {
     // qemu-riscv64 has no `acpi` RON config and no AcpiPrepare
-    // capability, so the body must be dead-code unreachable.
+    // capability, so the primitive descriptor must be absent.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
-        src.contains("board_gen::acpi_prepare: stage does not declare AcpiPrepare")
-            || src.contains("board_gen::acpi_prepare: board has no `acpi` RON config"),
-        "riscv64 must emit the no-config/no-cap unreachable body; got:\n{src}"
+        src.contains("fn acpi_platform_config") && src.contains("None"),
+        "riscv64 must emit no ACPI platform descriptor; got:\n{src}"
     );
     // And must not emit spurious platform_acpi tokens.
     assert!(

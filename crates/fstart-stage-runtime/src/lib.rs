@@ -18,6 +18,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "flow-acpi")]
+extern crate alloc;
+
 #[cfg(feature = "stage-executor")]
 pub mod flow;
 pub mod mask;
@@ -31,6 +34,15 @@ pub use plan::{StageOp, StagePlan};
 use fstart_services::device::DeviceError;
 use fstart_services::{BootMedia, FirmwareImage, TempRamArena};
 use fstart_types::{DeviceId, TempRamBuffer};
+
+/// Mutable DSDT AML buffer passed from the ACPI executor to board-local
+/// device table collection.
+#[cfg(feature = "flow-acpi")]
+pub type AcpiDsdtAml = alloc::vec::Vec<u8>;
+
+/// Mutable list of standalone ACPI tables collected from board devices.
+#[cfg(feature = "flow-acpi")]
+pub type AcpiExtraTables = alloc::vec::Vec<alloc::vec::Vec<u8>>;
 
 // ---------------------------------------------------------------------------
 // BootMediaState — runtime record of which boot medium is currently active
@@ -237,17 +249,13 @@ pub trait Board: Sized {
     /// justifies extending the borrow to `'static` inside.
     unsafe fn install_logger(&self, id: DeviceId);
 
-    // ----- Capability trampolines -----------------------------------------
+    // ----- Remaining high-level operations and primitive accessors --------
     //
-    // Each method below corresponds to one generated stage operation.  The generated
-    // board adapter implements every method as a single line delegating
-    // to `fstart_capabilities::*`, plus any state the capability needs
-    // (addresses, descriptors) read from `&self` fields.
-    //
-    // Keeping trampolines on the trait — rather than making
-    // `fstart-stage-runtime` depend on `fstart-capabilities` — avoids a
-    // dep cycle with `fstart-log` and keeps the runtime free of the
-    // FFS / crypto / FDT / SMBIOS tree.
+    // This trait is being narrowed toward primitive board access.  Handwritten
+    // runtime flow owns operation sequencing and capability calls; generated
+    // adapters should expose only concrete device dispatch, static descriptors,
+    // and small scalar state.  A few older high-level methods remain below and
+    // are intentionally visible as the next refactor targets.
 
     /// Stage operation for `FdtPrepare`.
     ///
@@ -271,11 +279,21 @@ pub trait Board: Sized {
     /// and calls `fstart_capabilities::stage_load`.  Halts on failure.
     fn stage_load(&self, next_stage: &str) -> !;
 
-    /// Stage operation for `AcpiPrepare`.
+    /// Static platform ACPI descriptor for `AcpiPrepare`, if this stage has one.
+    #[cfg(feature = "flow-acpi")]
+    fn acpi_platform_config(&self) -> Option<(fstart_acpi::platform::PlatformConfig, bool)>;
+
+    /// Collect board/device AML and standalone ACPI tables.
     ///
-    /// Generated adapter calls `fstart_capabilities::acpi_prepare`
-    /// with its AcpiConfig descriptor (held in `&self`).
-    fn acpi_prepare(&mut self);
+    /// The executor owns ACPI table allocation and capability invocation; the
+    /// board adapter only dispatches to concrete `AcpiDevice` implementations
+    /// and appends their data to the caller-owned buffers.
+    #[cfg(feature = "flow-acpi")]
+    fn collect_acpi_tables(
+        &self,
+        dsdt_aml: &mut AcpiDsdtAml,
+        extra_tables: &mut AcpiExtraTables,
+    ) -> Result<(), RuntimeError>;
 
     /// Static SMBIOS descriptor for `SmBiosPrepare`, if this stage has one.
     #[cfg(feature = "flow-smbios")]
