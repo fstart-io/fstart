@@ -4,7 +4,6 @@
 //! arms it uses.
 
 #[cfg(any(
-    feature = "flow-phases",
     feature = "flow-pci",
     feature = "flow-memory-detect",
     feature = "flow-acpi"
@@ -91,15 +90,23 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             #[cfg(feature = "flow-driver-init")]
             StageOp::DriverInit => driver_init(board, plan, &mut inited),
             #[cfg(feature = "flow-phases")]
-            StageOp::PreConsoleInit(ids) => phase(board, &mut inited, ids, Board::pre_console_init),
+            StageOp::PreConsoleInit(ids) => {
+                phase(board, &mut inited, crate::StagePhase::PreConsoleInit, ids)
+            }
             #[cfg(feature = "flow-phases")]
-            StageOp::EarlyInit(ids) => phase(board, &mut inited, ids, Board::early_init),
+            StageOp::EarlyInit(ids) => phase(board, &mut inited, crate::StagePhase::EarlyInit, ids),
             #[cfg(feature = "flow-phases")]
-            StageOp::StageLocalInit(ids) => phase(board, &mut inited, ids, Board::stage_local_init),
+            StageOp::StageLocalInit(ids) => {
+                phase(board, &mut inited, crate::StagePhase::StageLocalInit, ids)
+            }
             #[cfg(feature = "flow-phases")]
-            StageOp::PostDramInit(ids) => phase(board, &mut inited, ids, Board::post_dram_init),
+            StageOp::PostDramInit(ids) => {
+                phase(board, &mut inited, crate::StagePhase::PostDramInit, ids)
+            }
             #[cfg(feature = "flow-phases")]
-            StageOp::FinalizeInit(ids) => phase(board, &mut inited, ids, Board::finalize_init),
+            StageOp::FinalizeInit(ids) => {
+                phase(board, &mut inited, crate::StagePhase::FinalizeInit, ids)
+            }
             #[cfg(feature = "flow-pci")]
             StageOp::PciInit(id) => device_op(board, &mut inited, id, Board::pci_init),
             #[cfg(feature = "flow-memory-detect")]
@@ -202,16 +209,18 @@ fn dram_init<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
 fn phase<B: Board>(
     board: &mut B,
     inited: &mut DeviceMask,
+    phase: crate::StagePhase,
     ids: &'static [DeviceId],
-    run: fn(&mut B, &[DeviceId]) -> Result<(), DeviceError>,
 ) {
     for id in ids {
         if board.init_device(*id).is_err() {
             board.halt();
         }
     }
-    if run(board, ids).is_err() {
-        board.halt();
+    for id in ids {
+        if board.phase_init(phase, *id).is_err() {
+            board.halt();
+        }
     }
     for id in ids {
         inited.set(*id);

@@ -169,6 +169,21 @@ pub enum RuntimeError {
     BufferTooSmall,
 }
 
+/// Generic device lifecycle phase selected by the handwritten executor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StagePhase {
+    /// `PreConsoleInit` provider hook.
+    PreConsoleInit,
+    /// `EarlyInit` provider hook.
+    EarlyInit,
+    /// `StageLocalInit` provider hook.
+    StageLocalInit,
+    /// `PostDramInit` provider hook.
+    PostDramInit,
+    /// `FinalizeInit` provider hook.
+    FinalizeInit,
+}
+
 // ---------------------------------------------------------------------------
 // Board trait
 // ---------------------------------------------------------------------------
@@ -279,35 +294,12 @@ pub trait Board: Sized {
         Ok(())
     }
 
-    /// Stage operation for `PreConsoleInit`.
-    fn pre_console_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-        let _ = ids;
-        Ok(())
-    }
-
-    /// Stage operation for `EarlyInit`.
-    fn early_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-        let _ = ids;
-        Ok(())
-    }
-
-    /// Stage operation for `StageLocalInit`.
-    fn stage_local_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-        let _ = ids;
-        Ok(())
-    }
-
-    /// Stage operation for `PostDramInit`.
-    fn post_dram_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-        let _ = ids;
-        Ok(())
-    }
-
-    /// Stage operation for `FinalizeInit`.
-    fn finalize_init(&mut self, ids: &[DeviceId]) -> Result<(), DeviceError> {
-        let _ = ids;
-        Ok(())
-    }
+    /// Run one device-local lifecycle phase hook.
+    ///
+    /// The executor owns phase iteration and init-before-callback policy; the
+    /// board adapter only dispatches a `(phase, id)` pair to the concrete
+    /// service implementation.
+    fn phase_init(&mut self, phase: StagePhase, id: DeviceId) -> Result<(), DeviceError>;
 
     /// Stage operation for `DramInit`. `id` is the resolved device ID.
     ///

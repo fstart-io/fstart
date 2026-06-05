@@ -24,7 +24,11 @@ flow-phases = ["stage-executor"]
 flow-pci = ["stage-executor"]
 flow-memory-detect = ["stage-executor"]
 flow-boot-media = ["stage-executor"]
-flow-ffs = ["stage-executor", "dep:fstart-capabilities", "fstart-capabilities/ffs"]
+flow-ffs = [
+  "stage-executor",
+  "dep:fstart-capabilities",
+  "fstart-capabilities/ffs",
+]
 flow-fdt = ["stage-executor"]
 flow-mp = ["stage-executor"]
 flow-acpi = ["stage-executor"]

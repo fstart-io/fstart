@@ -129,7 +129,6 @@ to remove include:
 - `fdt_prepare`, `payload_load`, `stage_load`;
 - `acpi_prepare`, `smbios_prepare`, `acpi_load` orchestration;
 - `mp_init`;
-- phase trampolines such as `pre_console_init`, `early_init`, etc.;
 - `load_next_stage`.
 
 `boot_media_select` has already been reduced to the primitive
@@ -140,7 +139,9 @@ firmware-image setup now uses primitive `set_boot_media_state(...)` plus
 `ffs_anchor()` for memory-mapped FFS context publication. `MemoryInit` and
 `SigVerify` are now handwritten runtime flow: the board adapter exposes
 primitive `with_boot_media(...)` dispatch instead of calling
-`fstart_capabilities::sig_verify` itself.
+`fstart_capabilities::sig_verify` itself. Phase sequencing is also runtime-owned:
+the adapter exposes a single primitive `(StagePhase, DeviceId)` dispatcher
+instead of per-phase list trampolines such as `pre_console_init(ids)`.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

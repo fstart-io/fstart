@@ -17,7 +17,7 @@ use super::logger::install_logger_body;
 use super::model::BoardEmitModel;
 use super::mp::mp_init_body;
 use super::payload::payload_load_body;
-use super::phases::{phase_init_body, PhaseSpec};
+use super::phases::phase_init_body;
 use super::platform::sunxi::{load_next_stage_body, soc_boot_media_body};
 
 fn firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
@@ -78,19 +78,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let return_to_fel_body = return_to_fel_body(platform, ctx);
     let pci_init_body = pci_init_body(ctx);
     let dram_init_body = dram_init_body(ctx);
-    let pre_console_init_body = phase_init_body(
-        ctx,
-        PhaseSpec::new(Service::PreConsoleInit, "pre_console_init"),
-    );
-    let early_init_body = phase_init_body(ctx, PhaseSpec::new(Service::EarlyInit, "early_init"));
-    let stage_local_init_body = phase_init_body(
-        ctx,
-        PhaseSpec::new(Service::StageLocalInit, "stage_local_init"),
-    );
-    let post_dram_init_body =
-        phase_init_body(ctx, PhaseSpec::new(Service::PostDramInit, "post_dram_init"));
-    let finalize_init_body =
-        phase_init_body(ctx, PhaseSpec::new(Service::FinalizeInit, "finalize_init"));
+    let phase_init_body = phase_init_body(ctx);
 
     let acpi_load_body = acpi_load_body(ctx);
     let memory_detect_body = memory_detect_body(ctx);
@@ -134,39 +122,12 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #mp_init_body
             }
 
-            fn pre_console_init(
+            fn phase_init(
                 &mut self,
-                ids: &[fstart_types::DeviceId],
+                phase: fstart_stage_runtime::StagePhase,
+                id: fstart_types::DeviceId,
             ) -> Result<(), fstart_services::device::DeviceError> {
-                #pre_console_init_body
-            }
-
-            fn early_init(
-                &mut self,
-                ids: &[fstart_types::DeviceId],
-            ) -> Result<(), fstart_services::device::DeviceError> {
-                #early_init_body
-            }
-
-            fn stage_local_init(
-                &mut self,
-                ids: &[fstart_types::DeviceId],
-            ) -> Result<(), fstart_services::device::DeviceError> {
-                #stage_local_init_body
-            }
-
-            fn post_dram_init(
-                &mut self,
-                ids: &[fstart_types::DeviceId],
-            ) -> Result<(), fstart_services::device::DeviceError> {
-                #post_dram_init_body
-            }
-
-            fn finalize_init(
-                &mut self,
-                ids: &[fstart_types::DeviceId],
-            ) -> Result<(), fstart_services::device::DeviceError> {
-                #finalize_init_body
+                #phase_init_body
             }
 
             fn dram_init(
