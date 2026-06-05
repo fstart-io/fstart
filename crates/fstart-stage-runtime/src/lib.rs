@@ -44,6 +44,33 @@ pub type AcpiDsdtAml = alloc::vec::Vec<u8>;
 #[cfg(feature = "flow-acpi")]
 pub type AcpiExtraTables = alloc::vec::Vec<alloc::vec::Vec<u8>>;
 
+/// Source policy for `FdtPrepare` expressed as data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FdtPrepareSource {
+    /// No real FDT source; run the stub capability.
+    Stub,
+    /// Patch a platform-provided FDT at the given source address.
+    Platform { src_dtb_addr: u64 },
+    /// Load an override DTB from FFS, then patch it in place at the
+    /// descriptor's destination address.
+    Override,
+}
+
+/// Primitive FDT preparation descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FdtPrepareDesc {
+    /// Source mode for this stage.
+    pub source: FdtPrepareSource,
+    /// Destination DTB address.
+    pub dst_dtb_addr: u64,
+    /// Kernel command line to write to `/chosen/bootargs`.
+    pub bootargs: &'static str,
+    /// DRAM base address for `/memory` patching.
+    pub dram_base: u64,
+    /// DRAM size for `/memory` patching.
+    pub dram_size: u64,
+}
+
 // ---------------------------------------------------------------------------
 // BootMediaState — runtime record of which boot medium is currently active
 // ---------------------------------------------------------------------------
@@ -257,13 +284,12 @@ pub trait Board: Sized {
     // and small scalar state.  A few older high-level methods remain below and
     // are intentionally visible as the next refactor targets.
 
-    /// Stage operation for `FdtPrepare`.
+    /// Static/handoff-derived FDT preparation descriptor, if this stage has one.
     ///
-    /// Generated adapter reads DTB source/destination addresses,
-    /// bootargs, DRAM base, and DRAM size (from a previously handed-off
-    /// memory map if present, else a compile-time constant) from
-    /// `&self`, and calls `fstart_capabilities::fdt_prepare_platform`.
-    fn fdt_prepare(&self);
+    /// The executor owns FFS override loading and the FDT capability call; the
+    /// board adapter only exposes source addresses and patch metadata.
+    #[cfg(feature = "flow-fdt")]
+    fn fdt_prepare_desc(&self) -> Option<FdtPrepareDesc>;
 
     /// Stage operation for `PayloadLoad`.  Diverges.
     ///

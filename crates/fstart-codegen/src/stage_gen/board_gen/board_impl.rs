@@ -11,7 +11,7 @@ use super::caps_tables::{
     acpi_platform_config_body, collect_acpi_tables_body, smbios_desc_body,
     with_acpi_table_provider_body, with_memory_detector_body,
 };
-use super::fdt::{fdt_prepare_body, return_to_fel_body, stage_load_body};
+use super::fdt::{fdt_prepare_desc_body, return_to_fel_body, stage_load_body};
 use super::init_caps::{dram_init_body, pci_init_body};
 use super::lifecycle::init_device_body;
 use super::logger::install_logger_body;
@@ -73,7 +73,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
         _ => quote! { fstart_platform::jump_to_with_handoff(entry, handoff_addr) },
     };
 
-    let fdt_prepare_body = fdt_prepare_body(platform, ctx);
+    let fdt_prepare_desc_body = fdt_prepare_desc_body(platform, ctx);
     let install_logger_body = install_logger_body(ctx);
     let stage_load_body = stage_load_body(ctx);
     let return_to_fel_body = return_to_fel_body(platform, ctx);
@@ -109,7 +109,10 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #install_logger_body
             }
 
-            fn fdt_prepare(&self) { #fdt_prepare_body }
+            #[cfg(feature = "stage-flow-fdt")]
+            fn fdt_prepare_desc(&self) -> Option<fstart_stage_runtime::FdtPrepareDesc> {
+                #fdt_prepare_desc_body
+            }
             fn payload_load(&self) -> ! { #payload_load_body }
             fn stage_load(&self, next_stage: &str) -> ! { #stage_load_body }
             #[cfg(feature = "stage-flow-acpi")]

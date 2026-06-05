@@ -32,10 +32,12 @@ fn adapter_compiles_for_qemu_riscv64() {
     assert!(src.contains("FirmwareImageMap::new"));
     assert!(!src.contains("fstart_capabilities::sig_verify"));
     // qemu-riscv64 has a LinuxBoot payload with FdtSource::Platform,
-    // so the body is `fdt_prepare_platform` with a runtime
-    // `boot_dtb_addr()` call (RISC-V / AArch64 default) and the
-    // shared DRAM-size-with-handoff expression.
-    assert!(src.contains("fstart_capabilities::fdt_prepare_platform"));
+    // so the adapter exposes a primitive FDT descriptor with a runtime
+    // `boot_dtb_addr()` call (RISC-V / AArch64 default) and the shared
+    // DRAM-size-with-handoff expression. The runtime owns the capability call.
+    assert!(!src.contains("fstart_capabilities::fdt_prepare_platform"));
+    assert!(src.contains("fn fdt_prepare_desc"));
+    assert!(src.contains("FdtPrepareSource::Platform"));
     assert!(src.contains("fstart_platform::boot_dtb_addr()"));
     assert!(src.contains("self._dtb_dst_addr"));
     assert!(src.contains("self._bootargs"));
@@ -189,8 +191,12 @@ fn fdt_prepare_platform_uses_handoff_aware_dram_size() {
     // use the runtime `boot_dtb_addr()` call (RISC-V default).
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
-        src.contains("fstart_capabilities::fdt_prepare_platform"),
-        "Platform variant must call fdt_prepare_platform; got:\n{src}"
+        !src.contains("fstart_capabilities::fdt_prepare_platform"),
+        "adapter must not call fdt_prepare_platform; got:\n{src}"
+    );
+    assert!(
+        src.contains("fn fdt_prepare_desc") && src.contains("FdtPrepareSource::Platform"),
+        "Platform variant must expose an FDT descriptor; got:\n{src}"
     );
     assert!(
         src.contains("fstart_platform::boot_dtb_addr()"),
@@ -213,24 +219,21 @@ fn fdt_prepare_override_loads_from_ffs_on_sunxi_main() {
     // a block-device boot medium (SD/MMC from the bootblock's
     // LoadNextStage).  The adapter must emit:
     //
-    // - anchor-bytes preamble (&FSTART_ANCHOR)
-    // - boot-media match with a FirmwareImageBlock arm mentioning .mmc0
-    // - load_ffs_file_by_type call for FileType::Fdt
-    // - fdt_prepare_platform(dst, dst, ...) patch call
+    // - primitive Override descriptor
+    // - boot-media primitive support with a FirmwareImageBlock arm mentioning .mmc0
+    // - no generated FFS-load or fdt_prepare_platform orchestration
     let src = adapter_source_for_stage("orangepi-pc2", "main");
     assert!(
-        src.contains("load_ffs_file_by_type"),
-        "Override FDT variant must load via load_ffs_file_by_type; got:\n{src}"
+        src.contains("FdtPrepareSource::Override"),
+        "Override FDT variant must expose primitive Override descriptor; got:\n{src}"
     );
     assert!(
-        src.contains("fstart_types :: ffs :: FileType :: Fdt")
-            || src.contains("ffs::FileType::Fdt"),
-        "Override FDT variant must reference FileType::Fdt; got:\n{src}"
+        !src.contains("FileType::Fdt"),
+        "adapter must not load override FDT from FFS; got:\n{src}"
     );
     assert!(
-        src.contains("fstart_capabilities::fdt_prepare_platform"),
-        "Override FDT variant must still call fdt_prepare_platform for bootargs \
-             patching; got:\n{src}"
+        !src.contains("fstart_capabilities::fdt_prepare_platform"),
+        "adapter must not patch FDT directly; got:\n{src}"
     );
     assert!(
         src.contains("&FSTART_ANCHOR"),

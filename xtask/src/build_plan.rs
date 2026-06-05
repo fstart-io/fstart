@@ -355,6 +355,13 @@ fn capability_features(
     if stage_uses_fdt(capabilities) {
         features.push("stage-flow-fdt");
         features.push("fdt");
+        if config
+            .payload
+            .as_ref()
+            .is_some_and(|payload| matches!(payload.fdt, fstart_types::FdtSource::Override(_)))
+        {
+            features.push("stage-flow-fdt-ffs");
+        }
     }
 
     if stage_uses_pci(capabilities) {

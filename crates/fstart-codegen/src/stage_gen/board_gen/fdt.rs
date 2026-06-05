@@ -12,27 +12,49 @@ use crate::stage_gen::tokens::hex_addr;
 use super::boot_media::{anchor_bytes_stmt, match_boot_media};
 use super::model::BoardEmitModel;
 
-/// Emit the body of `Board::fdt_prepare`.
-pub(super) fn fdt_prepare_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
+/// Emit the body of primitive `Board::fdt_prepare_desc`.
+pub(super) fn fdt_prepare_desc_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
     let has_fdt_prepare = ctx
         .stage
         .capabilities
         .iter()
         .any(|c| matches!(c, Capability::FdtPrepare));
     if !has_fdt_prepare {
-        return quote! {
-            unreachable!("board_gen::fdt_prepare: stage does not declare FdtPrepare")
-        };
+        return quote! { None };
     }
 
+    let dram_size = dram_size_expr();
     let Some(payload) = ctx.config.payload.as_ref() else {
-        return quote! { fstart_capabilities::fdt_prepare_stub(); };
+        return quote! {
+            Some(fstart_stage_runtime::FdtPrepareDesc {
+                source: fstart_stage_runtime::FdtPrepareSource::Stub,
+                dst_dtb_addr: self._dtb_dst_addr,
+                bootargs: self._bootargs,
+                dram_base: self._dram_base,
+                dram_size: #dram_size,
+            })
+        };
     };
 
-    match &payload.fdt {
-        FdtSource::Platform => fdt_prepare_platform_body(platform, payload),
-        FdtSource::Override(_dtb_file) => fdt_prepare_override_body(ctx),
-        _ => quote! { fstart_capabilities::fdt_prepare_stub(); },
+    let source = match &payload.fdt {
+        FdtSource::Platform => {
+            let dtb_src = dtb_src_expr(platform, payload);
+            quote! { fstart_stage_runtime::FdtPrepareSource::Platform { src_dtb_addr: #dtb_src } }
+        }
+        FdtSource::Override(_dtb_file) => {
+            quote! { fstart_stage_runtime::FdtPrepareSource::Override }
+        }
+        _ => quote! { fstart_stage_runtime::FdtPrepareSource::Stub },
+    };
+
+    quote! {
+        Some(fstart_stage_runtime::FdtPrepareDesc {
+            source: #source,
+            dst_dtb_addr: self._dtb_dst_addr,
+            bootargs: self._bootargs,
+            dram_base: self._dram_base,
+            dram_size: #dram_size,
+        })
     }
 }
 
@@ -53,59 +75,6 @@ fn dram_size_expr() -> TokenStream {
             .filter(|h| h.dram_size > 0)
             .map(|h| h.dram_size)
             .unwrap_or(self._dram_size_static)
-    }
-}
-
-fn fdt_prepare_platform_body(platform: Platform, payload: &PayloadConfig) -> TokenStream {
-    let dtb_src = dtb_src_expr(platform, payload);
-    let dram_size = dram_size_expr();
-    quote! {
-        fstart_capabilities::fdt_prepare_platform(
-            #dtb_src,
-            self._dtb_dst_addr,
-            self._bootargs,
-            self._dram_base,
-            #dram_size,
-        );
-    }
-}
-
-fn fdt_prepare_override_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
-    if !ctx.stage.uses_ffs {
-        return quote! {
-            unreachable!("board_gen::fdt_prepare Override variant requires an FFS-using stage")
-        };
-    }
-
-    let anchor = anchor_bytes_stmt();
-    let dram_size = dram_size_expr();
-    let bm_usage = quote! {
-        if !fstart_capabilities::load_ffs_file_by_type(
-            _anchor_bytes,
-            &_bm,
-            fstart_types::ffs::FileType::Fdt,
-        ) {
-            fstart_log::error!("FATAL: failed to load DTB from FFS");
-            fstart_platform::halt();
-        }
-    };
-    let none_body = quote! {
-        fstart_log::warn!("fdt_prepare Override: no boot media configured, skipping FFS load");
-    };
-    let match_body = match_boot_media(ctx, &bm_usage, "fdt_prepare", &none_body);
-
-    quote! {
-        fstart_log::info!("loading DTB from FFS...");
-        #anchor
-        #match_body
-        fstart_log::info!("DTB loaded to {:#x}", self._dtb_dst_addr);
-        fstart_capabilities::fdt_prepare_platform(
-            self._dtb_dst_addr,
-            self._dtb_dst_addr,
-            self._bootargs,
-            self._dram_base,
-            #dram_size,
-        );
     }
 }
 

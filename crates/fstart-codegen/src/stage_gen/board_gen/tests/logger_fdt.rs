@@ -92,8 +92,8 @@ fn fdt_prepare_stub_when_board_has_no_payload() {
     // simple, widely-tested board and strip the payload in-memory
     // via a derived `BoardConfig`.  Writing fresh RON in a test
     // fixture directory would be cleaner but overkill for one
-    // assertion — the important thing is the fdt_prepare_body
-    // match arm is reachable and emits `fdt_prepare_stub`.
+    // assertion — the important thing is the fdt_prepare_desc
+    // match arm is reachable and emits the Stub source variant.
     //
     // Current board set: every live board ships a payload, so
     // the smoke test here instead verifies that the `stub()`
@@ -101,16 +101,16 @@ fn fdt_prepare_stub_when_board_has_no_payload() {
     // A functional test of this path lands once a board with
     // no payload exists (or we add a unit test fixture).
     let src = adapter_source_for_board("qemu-riscv64");
-    // Sanity — `fdt_prepare_stub` identifier must still be
-    // reachable from generated code when we need it later.
+    // Sanity — the Stub descriptor must still be reachable from generated
+    // code when we need it later; runtime owns the actual stub call.
     assert!(
         std::fs::read_to_string(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("src/stage_gen/board_gen/fdt.rs"),
         )
         .unwrap()
-        .contains("fstart_capabilities::fdt_prepare_stub"),
-        "board_gen must still emit fdt_prepare_stub for no-payload boards; \
+        .contains("FdtPrepareSource::Stub"),
+        "board_gen must still emit a Stub FDT descriptor for no-payload boards; \
              got adapter src:\n{src}"
     );
 }

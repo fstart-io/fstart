@@ -132,7 +132,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             StageOp::StageLoad { next_stage } => board.stage_load(next_stage),
 
             #[cfg(feature = "flow-fdt")]
-            StageOp::FdtPrepare => board.fdt_prepare(),
+            StageOp::FdtPrepare => fdt_prepare(board),
 
             #[cfg(feature = "flow-mp")]
             StageOp::MpInit {
@@ -305,6 +305,54 @@ fn sig_verify<B: Board>(board: &B) {
     board.with_boot_media("sig_verify", (), |media, _scratch| {
         fstart_capabilities::sig_verify(anchor, media);
     });
+}
+
+#[cfg(feature = "flow-fdt")]
+fn fdt_prepare<B: Board>(board: &B) {
+    let Some(desc) = board.fdt_prepare_desc() else {
+        board.halt();
+    };
+    match desc.source {
+        crate::FdtPrepareSource::Stub => fstart_capabilities::fdt_prepare_stub(),
+        crate::FdtPrepareSource::Platform { src_dtb_addr } => {
+            fstart_capabilities::fdt_prepare_platform(
+                src_dtb_addr,
+                desc.dst_dtb_addr,
+                desc.bootargs,
+                desc.dram_base,
+                desc.dram_size,
+            );
+        }
+        crate::FdtPrepareSource::Override => fdt_prepare_override(board, desc),
+    }
+}
+
+#[cfg(all(feature = "flow-fdt", feature = "flow-fdt-ffs"))]
+fn fdt_prepare_override<B: Board>(board: &B, desc: crate::FdtPrepareDesc) {
+    let Some(anchor) = board.ffs_anchor() else {
+        board.halt();
+    };
+    board.with_boot_media("fdt_prepare", (), |media, _scratch| {
+        if !fstart_capabilities::load_ffs_file_by_type(
+            anchor,
+            media,
+            fstart_types::ffs::FileType::Fdt,
+        ) {
+            board.halt();
+        }
+    });
+    fstart_capabilities::fdt_prepare_platform(
+        desc.dst_dtb_addr,
+        desc.dst_dtb_addr,
+        desc.bootargs,
+        desc.dram_base,
+        desc.dram_size,
+    );
+}
+
+#[cfg(all(feature = "flow-fdt", not(feature = "flow-fdt-ffs")))]
+fn fdt_prepare_override<B: Board>(board: &B, _desc: crate::FdtPrepareDesc) {
+    board.halt();
 }
 
 #[cfg(feature = "flow-boot-media")]

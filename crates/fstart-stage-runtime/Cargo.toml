@@ -29,7 +29,8 @@ flow-ffs = [
   "dep:fstart-capabilities",
   "fstart-capabilities/ffs",
 ]
-flow-fdt = ["stage-executor"]
+flow-fdt = ["stage-executor", "dep:fstart-capabilities", "fstart-capabilities/fdt"]
+flow-fdt-ffs = ["flow-fdt", "fstart-capabilities/ffs"]
 flow-mp = ["stage-executor"]
 flow-acpi = [
   "stage-executor",

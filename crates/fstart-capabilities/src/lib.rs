@@ -794,7 +794,7 @@ fn read_manifest_from_media(
 #[cfg(feature = "ffs")]
 pub fn load_ffs_file_by_type(
     anchor_data: &[u8],
-    media: &impl BootMedia,
+    media: &(impl BootMedia + ?Sized),
     file_type: fstart_types::ffs::FileType,
 ) -> bool {
     if media.size() == 0 || anchor_data.is_empty() {
@@ -1072,7 +1072,7 @@ fn verify_loaded_entry_digests(entry: &fstart_types::ffs::RegionEntry) -> bool {
 /// load_addr of the first segment if no Code segments).
 #[cfg(feature = "ffs")]
 fn load_entry_segments_from_media(
-    media: &impl BootMedia,
+    media: &(impl BootMedia + ?Sized),
     entry: &fstart_types::ffs::RegionEntry,
     region: &fstart_types::ffs::Region,
     image_size: usize,
