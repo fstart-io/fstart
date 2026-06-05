@@ -4,14 +4,32 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Shared no_std stage support. Codegen emits a per-board `_BoardDevices` type
-# plus direct `fstart_main` codeflow that calls the `Board` trait methods.
+# Shared no_std stage support. Codegen emits a data-only `StagePlan` and a
+# small `fstart_main` shim into the handwritten stage executor.
 
 [features]
 default = []
 # Pulls in the std-requiring `DeviceMask` tests. Host-only; firmware
 # builds leave this off.
 std = ["fstart-types/std"]
+# Handwritten executor over codegen-emitted `StagePlan` data. Flow arms are
+# separately gated so size-sensitive stages do not compile unused paths.
+stage-executor = []
+flow-clock-init = ["stage-executor"]
+flow-console-init = ["stage-executor"]
+flow-memory-init = ["stage-executor"]
+flow-dram-init = ["stage-executor"]
+flow-driver-init = ["stage-executor"]
+flow-phases = ["stage-executor"]
+flow-pci = ["stage-executor"]
+flow-memory-detect = ["stage-executor"]
+flow-boot-media = ["stage-executor"]
+flow-ffs = ["stage-executor"]
+flow-fdt = ["stage-executor"]
+flow-mp = ["stage-executor"]
+flow-acpi = ["stage-executor"]
+flow-smbios = ["stage-executor"]
+flow-fel = ["stage-executor"]
 
 [dependencies]
 fstart-types = { workspace = true }

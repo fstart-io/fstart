@@ -311,6 +311,24 @@ fn capability_features(
 ) -> Vec<&'static str> {
     let mut features = Vec::new();
 
+    for cap in capabilities {
+        match cap {
+            Capability::ClockInit { .. } => features.push("stage-flow-clock-init"),
+            Capability::ConsoleInit { .. } => features.push("stage-flow-console-init"),
+            Capability::MemoryInit => features.push("stage-flow-memory-init"),
+            Capability::DramInit { .. } => features.push("stage-flow-dram-init"),
+            Capability::DriverInit => features.push("stage-flow-driver-init"),
+            Capability::PreConsoleInit { .. }
+            | Capability::EarlyInit { .. }
+            | Capability::StageLocalInit { .. }
+            | Capability::PostDramInit { .. }
+            | Capability::FinalizeInit { .. } => features.push("stage-flow-phases"),
+            Capability::PciInit { .. } => features.push("stage-flow-pci"),
+            Capability::MemoryDetect { .. } => features.push("stage-flow-memory-detect"),
+            _ => {}
+        }
+    }
+
     let uses_ffs = capabilities.iter().any(|c| {
         matches!(
             c,
@@ -319,6 +337,7 @@ fn capability_features(
     });
 
     if uses_ffs {
+        features.push("stage-flow-ffs");
         features.push("ffs");
         features.push("lz4");
         match security.signing_algorithm {
@@ -334,6 +353,7 @@ fn capability_features(
     }
 
     if stage_uses_fdt(capabilities) {
+        features.push("stage-flow-fdt");
         features.push("fdt");
     }
 
@@ -352,15 +372,18 @@ fn capability_features(
     }
 
     if stage_uses_acpi(capabilities) {
+        features.push("stage-flow-acpi");
         features.push("acpi");
     }
 
     if stage_uses_smbios(capabilities) {
+        features.push("stage-flow-smbios");
         features.push("smbios");
     }
 
     for cap in capabilities {
         if let Capability::MpInit { cpu_model, .. } = cap {
+            features.push("stage-flow-mp");
             features.push("mp");
             if cpu_model.as_str().contains("pineview") || cpu_model.as_str().contains("106cx") {
                 features.push("pineview-cpu");
@@ -376,6 +399,22 @@ fn capability_features(
         .any(|c| matches!(c, Capability::AcpiLoad { .. }))
     {
         features.push("acpi-load");
+    }
+
+    if capabilities
+        .iter()
+        .any(|cap| matches!(cap, Capability::BootMedia(_)))
+    {
+        features.push("stage-flow-boot-media");
+    }
+
+    if capabilities.iter().any(|cap| {
+        matches!(
+            cap,
+            Capability::LoadNextStage { .. } | Capability::ReturnToFel
+        )
+    }) {
+        features.push("stage-flow-fel");
     }
 
     if capabilities
@@ -513,5 +552,18 @@ mod tests {
         for stage in &plan.stages {
             assert!(stage.features.contains("sunxi"));
         }
+    }
+
+    #[test]
+    fn stage_plan_flow_features_follow_capabilities() {
+        let plan = load_plan("bananapi-m1");
+        let bootblock = &plan.stages[0];
+        assert!(bootblock.features.contains("stage-flow-clock-init"));
+        assert!(bootblock.features.contains("stage-flow-console-init"));
+        assert!(bootblock.features.contains("stage-flow-dram-init"));
+        assert!(bootblock.features.contains("stage-flow-driver-init"));
+        assert!(bootblock.features.contains("stage-flow-fel"));
+        assert!(!bootblock.features.contains("stage-flow-ffs"));
+        assert!(!bootblock.features.contains("stage-flow-fdt"));
     }
 }

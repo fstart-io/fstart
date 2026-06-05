@@ -1009,11 +1009,11 @@ fn test_config_ser_nested_option_in_struct() {
 }
 
 // =======================================================================
-// Direct stage-flow tests.
+// Stage-plan executor tests.
 // =======================================================================
 
 #[test]
-fn direct_flow_replaces_runtime_interpreter_entry() {
+fn stage_plan_entry_emits_data_and_run_stage() {
     let mut caps = heapless::Vec::new();
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
@@ -1021,26 +1021,58 @@ fn direct_flow_replaces_runtime_interpreter_entry() {
     let _ = caps.push(Capability::MemoryInit);
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
+    let fstart_main = fstart_main_source(&source);
 
     assert!(
-        !source.contains("STAGE_PLAN") && !source.contains("fstart_stage_runtime::CapOp"),
-        "generated stage should not emit legacy plan/interpreter metadata: {source}"
+        source.contains("static STAGE_PLAN: fstart_stage_runtime::StagePlan"),
+        "generated source should emit data-only STAGE_PLAN: {source}"
     );
     assert!(
-        source.contains("fstart_capabilities::handoff::try_deserialize(handoff_ptr)"),
-        "direct fstart_main should consume the incoming handoff pointer when handoff is enabled: {source}"
+        source.contains("fstart_stage_runtime::StageOp::ConsoleInit(0)"),
+        "ConsoleInit should lower to StageOp data: {source}"
     );
     assert!(
-        source.contains("let mut board = _BoardDevices::new(handoff);"),
-        "direct fstart_main should construct the board adapter with handoff state: {source}"
+        fstart_main.contains("fstart_stage_runtime::run_stage(&mut board, &STAGE_PLAN)"),
+        "fstart_main should delegate to handwritten executor: {fstart_main}"
     );
     assert!(
-        !source.contains("fstart_stage_runtime::run_stage("),
-        "fstart_main should not pull in the generic CapOp interpreter: {source}"
+        !fstart_main.contains("fstart_stage_runtime::Board::memory_init(&board)"),
+        "fstart_main must not contain capability flow: {fstart_main}"
+    );
+}
+
+#[test]
+fn stage_plan_emits_flow_feature_guards() {
+    let source = std::thread::Builder::new()
+        .name("stage-plan-qemu-riscv64-codegen".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let parsed = load_parsed_board(
+                &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../boards/qemu-riscv64/board.ron"),
+            )
+            .expect("qemu-riscv64 board should parse");
+            generate_stage_source(&parsed, None)
+        })
+        .expect("spawn qemu-riscv64 codegen thread")
+        .join()
+        .expect("qemu-riscv64 codegen should not panic");
+
+    assert!(
+        source.contains("stage-flow-console-init"),
+        "ConsoleInit should require the console-init flow feature: {source}"
     );
     assert!(
-        source.contains("fstart_stage_runtime::Board::memory_init(&board);"),
-        "MemoryInit should lower to a direct Board call: {source}"
+        source.contains("stage-flow-memory-init"),
+        "MemoryInit should require the memory-init flow feature: {source}"
+    );
+    assert!(
+        source.contains("stage-flow-boot-media"),
+        "BootMedia should require the boot-media flow feature: {source}"
+    );
+    assert!(
+        source.contains("stage-flow-ffs"),
+        "SigVerify/PayloadLoad should require the FFS flow feature: {source}"
     );
 }
 
@@ -1064,7 +1096,7 @@ fn generated_imports_include_smbus_for_typed_smbus_provider() {
 }
 
 #[test]
-fn direct_flow_driver_init_uses_board_batch_init_without_runtime_interpreter() {
+fn stage_plan_driver_init_emits_device_tables() {
     let mut caps = heapless::Vec::new();
     let _ = caps.push(Capability::ConsoleInit {
         device: heapless::String::try_from("uart0").unwrap(),
@@ -1074,25 +1106,60 @@ fn direct_flow_driver_init_uses_board_batch_init_without_runtime_interpreter() {
     let source = generate_stage_source(&parsed, None);
 
     assert!(
-        source.contains("let _no_skip = fstart_stage_runtime::DeviceMask::new();"),
-        "DriverInit should preserve current empty-skip semantics: {source}"
+        source.contains("fstart_stage_runtime::StageOp::DriverInit"),
+        "DriverInit should lower to StageOp data: {source}"
     );
     assert!(
-        source.contains("fstart_stage_runtime::Board::init_all_devices"),
-        "DriverInit should lower to Board::init_all_devices: {source}"
+        source.contains("static _FSTART_STAGE_PLAN_ALL_DEVICES"),
+        "DriverInit should emit all-runtime-device data: {source}"
     );
     assert!(
-        source.contains("_inited.set(0);"),
-        "DriverInit should mark runtime devices inited: {source}"
+        source.contains("static _FSTART_STAGE_PLAN_OPTIONAL_DEVICES"),
+        "DriverInit should emit optional-device data: {source}"
     );
     assert!(
-        !source.contains("fstart_stage_runtime::run_stage("),
-        "direct flow should not call the generic runtime interpreter: {source}"
+        source.contains("static _FSTART_STAGE_PLAN_BOOT_MEDIA_GATED"),
+        "DriverInit should emit boot-media gated candidate data: {source}"
+    );
+    assert!(
+        source.contains("0u8") || source.contains("[0]"),
+        "DriverInit should preserve the runtime uart device ID: {source}"
     );
 }
 
 #[test]
-fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
+fn stage_plan_driver_init_gated_devices_are_candidates() {
+    let source = std::thread::Builder::new()
+        .name("orangepi-r1-stage-plan-codegen".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let parsed = load_parsed_board(
+                &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../boards/orangepi-r1/board.ron"),
+            )
+            .expect("orangepi-r1 board should parse");
+            generate_stage_source(&parsed, Some("main"))
+        })
+        .expect("spawn orangepi-r1 codegen thread")
+        .join()
+        .expect("orangepi-r1 codegen should not panic");
+
+    assert!(
+        source.contains(
+            "static _FSTART_STAGE_PLAN_BOOT_MEDIA_GATED: [fstart_stage_runtime::BootMediaCandidate; 2usize]"
+        ),
+        "DriverInit boot-media gating should be candidate data: {source}"
+    );
+    assert!(
+        source.contains("media_ids")
+            && source.contains("device: 3")
+            && source.contains("device: 4"),
+        "gated candidate data should include both boot media devices and media ids: {source}"
+    );
+}
+
+#[test]
+fn stage_plan_lenovo_x61_bootblock_and_ramstage_data_are_explicit() {
     // X61's generated source is large enough that prettyplease can exhaust the
     // default test-thread stack.  Generate it on a larger stack, then keep the
     // assertions to stable substrings.
@@ -1111,116 +1178,51 @@ fn direct_flow_lenovo_x61_bootblock_and_ramstage_calls_are_explicit() {
         .expect("x61 codegen should not panic");
 
     assert!(
-        !bootblock.contains("fstart_stage_runtime::run_stage(")
-            && !ramstage.contains("fstart_stage_runtime::run_stage("),
-        "X61 stages should use direct fstart_main codeflow"
-    );
-
-    let bootblock_main = fstart_main_source(&bootblock);
-    let ramstage_main = fstart_main_source(&ramstage);
-
-    assert_ordered(
-        bootblock_main,
-        &[
-            "fstart_stage_runtime::Board::boot_media_firmware_image",
-            "fstart_stage_runtime::Board::stage_load",
-        ],
-        "X61 bootblock boot media before stage load",
-    );
-    assert_ordered(
-        ramstage_main,
-        &[
-            "fstart_stage_runtime::Board::boot_media_firmware_image",
-            "fstart_stage_runtime::Board::sig_verify",
-            "fstart_stage_runtime::Board::init_all_devices",
-        ],
-        "X61 ramstage boot media before signature before DriverInit",
+        fstart_main_source(&bootblock)
+            .contains("fstart_stage_runtime::run_stage(&mut board, &STAGE_PLAN)"),
+        "X61 bootblock should enter through the stage executor"
     );
     assert!(
-        ramstage_main.contains("TempRamBuffer")
-            && ramstage_main.contains("base: 0x2000000")
-            && ramstage_main.contains("size: 0x1000000"),
-        "X61 ramstage FirmwareImage BootMedia must pass temp_ram_buffer arena through direct flow"
+        fstart_main_source(&ramstage)
+            .contains("fstart_stage_runtime::run_stage(&mut board, &STAGE_PLAN)"),
+        "X61 ramstage should enter through the stage executor"
+    );
+
+    assert_ordered(
+        &bootblock,
+        &[
+            "StageOp::PreConsoleInit",
+            "StageOp::EarlyInit",
+            "StageOp::DramInit(0)",
+            "StageOp::StageLoad",
+        ],
+        "X61 bootblock stage plan data",
+    );
+    assert_ordered(
+        &ramstage,
+        &[
+            "StageOp::StageLocalInit",
+            "StageOp::MemoryDetect(0)",
+            "StageOp::PciInit(0)",
+            "StageOp::PostDramInit",
+            "StageOp::FinalizeInit",
+            "StageOp::MpInit",
+            "StageOp::AcpiPrepare",
+            "StageOp::SmBiosPrepare",
+            "StageOp::PayloadLoad",
+        ],
+        "X61 ramstage stage plan data",
+    );
+    assert!(
+        ramstage.contains("TempRamBuffer")
+            && ramstage.contains("base: 0x2000000")
+            && ramstage.contains("size: 0x1000000"),
+        "X61 ramstage FirmwareImage BootMedia must keep temp_ram_buffer data"
     );
     assert!(
         ramstage.contains("TempRamArena::new") && !ramstage.contains("copy_firmware_image_to_ram"),
         "X61 ramstage adapter must treat temp_ram_buffer as scratch RAM, not a whole-image copy"
     );
-
-    for (source, needle, context) in [
-        (
-            bootblock.as_str(),
-            "fstart_stage_runtime::Board::pre_console_init(&mut board, &[0, 1, 8])",
-            "bootblock PreConsoleInit",
-        ),
-        (
-            bootblock.as_str(),
-            "fstart_stage_runtime::Board::early_init(&mut board, &[0, 1])",
-            "bootblock EarlyInit",
-        ),
-        (
-            bootblock.as_str(),
-            "fstart_stage_runtime::Board::dram_init(&mut board, 0)",
-            "bootblock DramInit",
-        ),
-        (
-            bootblock.as_str(),
-            "fstart_stage_runtime::Board::stage_load(&board, \"ramstage\")",
-            "bootblock StageLoad",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::DeviceMask::from_slice(&[0])",
-            "ramstage persistent DeviceMask",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::stage_local_init(&mut board, &[0])",
-            "ramstage StageLocalInit",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::memory_detect(&mut board, 0)",
-            "ramstage MemoryDetect",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::pci_init(&mut board, 0)",
-            "ramstage PciInit",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::post_dram_init(&mut board, &[0, 1, 8])",
-            "ramstage PostDramInit",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::finalize_init(&mut board, &[1, 8])",
-            "ramstage FinalizeInit",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::mp_init(&mut board, \"core2\", 2u16, false)",
-            "ramstage MpInit",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::acpi_prepare(&mut board);",
-            "ramstage AcpiPrepare",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::smbios_prepare(&board);",
-            "ramstage SmBiosPrepare",
-        ),
-        (
-            ramstage.as_str(),
-            "fstart_stage_runtime::Board::payload_load(&board);",
-            "ramstage PayloadLoad",
-        ),
-    ] {
-        assert!(source.contains(needle), "missing direct call for {context}");
-    }
 }
 
 #[test]

@@ -24,9 +24,9 @@ All 14 workspace crates created and cross-compiling for both targets.
 ### Phase 2: Codegen Upgrade (COMPLETE — superseded by Phase 13)
 
 > **Note:** The `Devices` struct and `StageContext` described here were
-> replaced by `_BoardDevices` + `impl Board` + direct generated `fstart_main`
-> codeflow in Phase 13. The typed `Config` construction and codegen validation
-> remain unchanged.
+> replaced by `_BoardDevices`, `STAGE_PLAN`, `impl Board`, and the handwritten
+> stage executor. The typed `Config` construction and codegen validation remain
+> unchanged.
 
 - ~~`Devices` struct generated with concrete typed fields per device.~~ → replaced by `_BoardDevices`
 - ~~`StageContext` generated with service accessor methods (`console()`,
@@ -665,40 +665,43 @@ These were identified during Phase 12 but deferred pending actual need:
    `base: usize` instead of `&'static Pl011Regs`, reconstructing the
    pointer via `#[inline(always)] fn regs()` on every access.
 
-### Phase 13: Direct Stage Codeflow + Board Adapter (COMPLETE)
+### Phase 13: StagePlan Executor + Board Adapter (COMPLETE)
 
-Replaced the old codegen architecture (generated `Devices` struct,
-`StageContext`, legacy inline `fstart_main()` body, `flexible.rs` enum dispatch)
-with one stage creation path:
+Replaced the previous generated-stage architecture (`Devices`, `StageContext`,
+inline `fstart_main()` body, `flexible.rs` enum dispatch) with one stage
+creation path:
 
-1. `board_gen.rs` emits `_BoardDevices` plus `impl Board for _BoardDevices`.
-2. `direct_flow.rs` emits the selected stage's `fstart_main()` as direct
-   codeflow from the board RON capability list.
-
-There is no legacy metadata/interpreter path.
+1. `plan_gen.rs` emits data-only `STAGE_PLAN` facts from the board RON
+   capability list.
+2. `board_gen.rs` emits `_BoardDevices` plus `impl Board for _BoardDevices`.
+3. generated `fstart_main()` constructs `_BoardDevices` and calls the
+   handwritten `fstart_stage_runtime::run_stage(&mut board, &STAGE_PLAN)`.
 
 #### New crate: fstart-stage-runtime
 
 `crates/fstart-stage-runtime/` — `#![no_std]` shared support types:
 
-- **`Board` trait**: `init_device`, `init_all_devices`, `install_logger`,
-  capability trampolines, boot-media selection, and platform primitives.
+- **`Board` trait**: primitive `init_device`, `install_logger`, boot-media
+  selection, remaining capability trampolines, and platform primitives.
 - **`DeviceMask`** — 256-bit bitset over `DeviceId` for init tracking.
 - **`BootMediaState`** — enum tracking the current boot medium (None /
   FirmwareImage / Block) so trampolines can reconstruct the concrete
   `impl BootMedia`.
 - **`BootMediaCandidate`** — static candidate rows for Rust platform
-  boot-source metadata and `LoadNextStage` direct codeflow.
+  boot-source metadata and `LoadNextStage`.
+- **`StagePlan` / `StageOp`** — data-only operation facts consumed by the
+  handwritten executor.
+- **`run_stage`** — handwritten stage executor with feature-gated flow arms.
 
-#### Codegen changes: direct_flow.rs + board_gen.rs
+#### Codegen changes: plan_gen.rs + board_gen.rs
 
-**`direct_flow.rs`** emits the complete stage entry sequence:
+**`plan_gen.rs`** emits the complete stage plan:
 - Resolves device names → `DeviceId`.
 - Seeds persistent init state from prior stages' `ClockInit` / `DramInit`.
-- Emits one direct code block per capability in board RON order.
+- Emits one `StageOp` fact per capability in board RON order.
 - Emits boot-media candidate tables with `media_ids` for auto-select.
-- Lowers `DriverInit` to `Board::init_all_devices` plus explicit init-mask
-  bookkeeping.
+- Emits DriverInit device tables, optional-device tables, and boot-media gated
+  candidate tables.
 
 **`board_gen.rs`** emits the complete board adapter:
 - `struct _BoardDevices` — `Option<Driver>` fields + bookkeeping
@@ -708,28 +711,27 @@ There is no legacy metadata/interpreter path.
 - `impl Board for _BoardDevices` — methods with real bodies:
   - `init_device`: per-device `match id` with ancestor-chain walking
     (root-first, bus-device `new_on_bus`).
-  - `init_all_devices`: iterates enabled devices, respects skip/gated masks.
   - `install_logger`: per-Console-device match with `fstart_log::init`.
   - Capability trampolines: read board state from `&self` fields and
     delegate to `fstart_capabilities::*`.
-  - Dead-code stubs (`todo!()`) for methods the stage doesn’t use.
+  - Unreachable bodies for methods the stage cannot call.
 
 #### What was deleted
 
 - `flexible.rs` (468 lines) — Flexible mode enum dispatch.
 - `generate_devices_struct` / `generate_stage_context` — old struct emission.
-- The previous `generate_fstart_main` helper that emitted only a stub.
-- Legacy metadata emission and interpreter path.
+- generated inline `fstart_main()` capability bodies.
 - `ensure_device_ready` / `walk_to_real_parent` / `make_prelude` — device
   construction chain building.
-- `generate_driver_init` dispatch matrix.
+- `generate_driver_init` dispatch matrix and generated `init_all_devices`
+  policy flow.
 - `generate_boot_media_auto_device` / `generate_load_next_stage` enum
   synthesis.
 - `BuildMode::Flexible` variant (only `Rigid` remains).
 - `qemu-riscv64-flex` board.
 
-Result: stage generation has a single source of executable codeflow: the direct
-`fstart_main()` emitted from the stage capabilities.
+Result: stage generation has one source of executable flow: handwritten Rust in
+`fstart-stage-runtime`.
 
 #### Key design invariants
 

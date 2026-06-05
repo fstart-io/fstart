@@ -4,9 +4,8 @@
 //! adapters plus small scalar helper types shared by generated stage code.
 //!
 //! There is exactly one production stage creation path: `fstart-codegen` emits
-//! a direct per-stage `fstart_main()` sequence from the board RON capability
-//! list.  The generated sequence calls the `Board` adapter methods directly;
-//! there is no alternate plan interpreter in this crate.
+//! data-only `StagePlan` tables plus a small `fstart_main()` shim into
+//! [`run_stage`]. The executor runs handwritten Rust flow over those facts.
 //!
 //! # Multi-platform constraints
 //!
@@ -19,9 +18,15 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "stage-executor")]
+pub mod flow;
 pub mod mask;
+pub mod plan;
 
+#[cfg(feature = "stage-executor")]
+pub use flow::run_stage;
 pub use mask::DeviceMask;
+pub use plan::{StageOp, StagePlan};
 
 use fstart_services::device::DeviceError;
 use fstart_services::FirmwareImage;
@@ -34,7 +39,7 @@ use fstart_types::{DeviceId, TempRamBuffer};
 /// Board-adapter bookkeeping for the current boot medium.
 ///
 /// The executor tells the adapter *which* boot medium should be active
-/// (via provider-backed firmware-image setup or [`Board::boot_media_select`])
+/// (via provider-backed firmware-image setup or explicit state publication)
 /// but does not care *how* the adapter represents it.  This enum is
 /// the common storage shape the generated adapter uses on `self`:
 ///
@@ -129,9 +134,9 @@ impl BootMediaState {
 
 /// One candidate in a runtime-selected boot-media table.
 ///
-/// Generated direct codeflow emits static slices of this type for
-/// provider/platform boot media and `LoadNextStage` operations, then passes
-/// them to [`Board::boot_media_select`].
+/// Generated `StagePlan` data uses static slices of this type for
+/// provider/platform boot media and `LoadNextStage` operations, then the
+/// executor matches them against [`Board::soc_boot_media`].
 #[derive(Debug, Clone, Copy)]
 pub struct BootMediaCandidate {
     /// Device to use as the boot medium.
@@ -168,14 +173,14 @@ pub enum RuntimeError {
 // Board trait
 // ---------------------------------------------------------------------------
 
-/// The complete surface generated direct codeflow uses to drive a
-/// board-specific `Devices` struct.
+/// The complete surface the stage executor uses to drive a board-specific
+/// `Devices` struct.
 ///
 /// Implemented **once per board, by codegen.** Every device-bearing
 /// method takes a [`DeviceId`] and the impl dispatches to a concrete
-/// field via an inline match.  Because the trait is `Sized` and direct codeflow uses fully qualified trait
-/// calls, builds produce specialised
-/// code with no vtables and no dynamic dispatch.
+/// field via an inline match. Because the trait is `Sized` and the executor is
+/// generic over `B: Board`, builds produce specialised code with no vtables and
+/// no dynamic dispatch.
 ///
 /// # Trait design rules (see plan doc §Invariants)
 ///
@@ -202,17 +207,6 @@ pub trait Board: Sized {
     /// Subsumes `ensure_device_ready`, `walk_to_real_parent`, and
     /// `generate_device_construction` from `fstart-codegen`.
     fn init_device(&mut self, id: DeviceId) -> Result<(), DeviceError>;
-
-    /// For every enabled non-structural device in the board, call
-    /// `init_device` unless either:
-    ///
-    /// - the device is already present in `skip`, or
-    /// - the device is present in `gated` **and** the currently
-    ///   selected boot medium doesn't match the device's
-    ///   `boot_media_ids`.
-    ///
-    /// Subsumes `generate_driver_init` from `fstart-codegen`.
-    fn init_all_devices(&mut self, skip: &DeviceMask, gated: &DeviceMask);
 
     // ----- Logging --------------------------------------------------------
 
@@ -360,14 +354,11 @@ pub trait Board: Sized {
 
     // ----- Boot media selection -------------------------------------------
 
-    /// Selection step for provider-backed boot media / `LoadNextStage`.  Inspects the hardware boot-source register and
-    /// picks one of `candidates`, recording the selection inside the
-    /// board so later `sig_verify` / `payload_load` / etc. read from
-    /// the right place.
+    /// Read the platform boot-media selector, if this board has one.
     ///
-    /// Returns the chosen candidate's `DeviceId`, or `None` if
-    /// nothing matched.
-    fn boot_media_select(&mut self, candidates: &[BootMediaCandidate]) -> Option<DeviceId>;
+    /// The stage executor owns candidate matching and state transitions; the
+    /// board adapter only exposes the primitive boot-source byte.
+    fn soc_boot_media(&self) -> Option<u8>;
 
     /// Record a firmware image backed by a Rust platform-selected block device
     /// so later capabilities (`sig_verify`, etc.) read from it.
@@ -379,18 +370,11 @@ pub trait Board: Sized {
         temp_ram_buffer: Option<TempRamBuffer>,
     );
 
-    /// Stage operation for provider-backed firmware-image boot media.
+    /// Read a firmware-image descriptor from a provider device.
     ///
-    /// `provider` names a device implementing `FirmwareImageProvider`; the
-    /// generated board adapter calls that device at runtime and records the
-    /// resulting memory-window table. If `temp_ram_buffer` is `Some`, the
-    /// scratch arena is recorded for FFS operations that need temporary
-    /// contiguous buffers.
-    fn boot_media_firmware_image(
-        &mut self,
-        provider: DeviceId,
-        temp_ram_buffer: Option<TempRamBuffer>,
-    ) -> Result<(), RuntimeError>;
+    /// `provider` names a device implementing `FirmwareImageProvider`. The
+    /// stage executor owns how that descriptor becomes active boot-media state.
+    fn firmware_image(&self, provider: DeviceId) -> Result<FirmwareImage, RuntimeError>;
 
     /// Stage operation for Rust platform-backed firmware-image boot media.
     ///
@@ -402,9 +386,9 @@ pub trait Board: Sized {
         temp_ram_buffer: Option<TempRamBuffer>,
     ) -> Result<(), RuntimeError>;
 
-    /// Stage operation for `LoadNextStage`.  Diverges.  Uses
-    /// whichever boot medium `boot_media_select` just picked to read
-    /// the named next stage and jump to it.
+    /// Stage operation for `LoadNextStage`. Diverges. Uses whichever boot
+    /// medium the executor published to read the named next stage and jump to
+    /// it.
     fn load_next_stage(&mut self, next_stage: &str) -> !;
 
     // ----- Platform primitives --------------------------------------------

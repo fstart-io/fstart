@@ -10,11 +10,11 @@ use crate::stage_gen::tokens::hex_addr;
 
 use super::super::model::BoardEmitModel;
 
-/// Emit the body of `Board::boot_media_select`.
-pub(in crate::stage_gen::board_gen) fn boot_media_select_body(
+/// Emit the body of `Board::soc_boot_media`.
+pub(in crate::stage_gen::board_gen) fn soc_boot_media_body(
     ctx: &BoardEmitModel<'_>,
 ) -> TokenStream {
-    let uses_boot_media_select = ctx.stage.capabilities.iter().any(|c| {
+    let uses_soc_boot_media = ctx.stage.capabilities.iter().any(|c| {
         matches!(
             c,
             Capability::LoadNextStage { .. } | Capability::BootMedia(_)
@@ -22,33 +22,12 @@ pub(in crate::stage_gen::board_gen) fn boot_media_select_body(
     });
     let is_egon = ctx.config.soc_image_format == fstart_types::SocImageFormat::AllwinnerEgon;
 
-    if !uses_boot_media_select || !is_egon {
-        return quote! {
-            let _ = candidates;
-            unreachable!("board_gen::boot_media_select: stage does not use LoadNextStage/BootMedia, \
-                         or board is not sunxi-eGON")
-        };
+    if !uses_soc_boot_media || !is_egon {
+        return quote! { None };
     }
 
     quote! {
-        let _bm = fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize);
-        fstart_log::info!("boot media detect: {:#x}", _bm);
-        for candidate in candidates {
-            if candidate.media_ids.iter().any(|&id| id == _bm) {
-                self._boot_media = fstart_stage_runtime::BootMediaState::FirmwareImageBlock {
-                    device_id: candidate.device,
-                    offset: candidate.offset,
-                    size: candidate.size,
-                    temp_ram_buffer: None,
-                };
-                return Some(candidate.device);
-            }
-        }
-        fstart_log::error!(
-            "boot_media_select: no candidate matched boot media {:#x}",
-            _bm,
-        );
-        None
+        Some(fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize))
     }
 }
 

@@ -18,8 +18,8 @@
 /// Boot-source detection and next-stage metadata from the SoC BROM.
 ///
 /// Implemented by SoC crates (e.g., `fstart-soc-sunxi`).  The board
-/// adapter calls these methods from its `boot_media_select` and
-/// `load_next_stage` trampolines.
+/// adapter calls these methods from its `soc_boot_media` and
+/// `load_next_stage` primitives/trampolines.
 /// # Safety
 ///
 /// All methods require that `header_base` points to a valid, mapped

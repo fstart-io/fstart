@@ -3,7 +3,6 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use fstart_device_registry::Service;
 use fstart_types::BusAddress;
 
 use super::model::BoardEmitModel;
@@ -133,98 +132,5 @@ pub(super) fn init_device_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
                 Err(fstart_services::device::DeviceError::InitFailed)
             }
         }
-    }
-}
-
-/// Emit the body of `Board::init_all_devices`.
-pub(super) fn init_all_devices_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
-    use crate::stage_gen::capabilities::boot_media_values_for_device;
-
-    let is_egon = ctx.config.soc_image_format == fstart_types::SocImageFormat::AllwinnerEgon;
-    let mut dev_statements = TokenStream::new();
-    let mut has_any_gated = false;
-
-    for device in ctx.runtime_devices.runtime() {
-        let idx = device.index;
-        let dev = device.config;
-        if device.provides(Service::PciRootBus) {
-            continue;
-        }
-        let id_lit = proc_macro2::Literal::u8_unsuffixed(idx as u8);
-        let is_framebuffer = device.provides(Service::Framebuffer);
-        let on_err = if is_framebuffer {
-            quote! {
-                fstart_log::warn!("driver init failed (framebuffer, continuing)");
-            }
-        } else {
-            quote! {
-                fstart_log::error!("FATAL: driver init failed for id {}", #id_lit);
-                fstart_platform::halt();
-            }
-        };
-
-        let bm_values = if is_egon {
-            let dev_name = dev.name.as_str();
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                boot_media_values_for_device(dev_name, ctx.devices, ctx.instances)
-            }))
-            .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let init_call = quote! {
-            match self.init_device(#id_lit) {
-                Ok(()) => {}
-                Err(_) => {
-                    #on_err
-                }
-            }
-        };
-
-        let gated_check = if !bm_values.is_empty() && is_egon {
-            has_any_gated = true;
-            let val_lits = bm_values
-                .iter()
-                .map(|v| proc_macro2::Literal::u8_unsuffixed(*v))
-                .collect::<Vec<_>>();
-            quote! {
-                if gated.contains(#id_lit) {
-                    if matches!(_bm, #(#val_lits)|*) {
-                        #init_call
-                    } else {
-                        fstart_log::info!(
-                            "skipping driver init (boot-media gated, not active): id {}",
-                            #id_lit,
-                        );
-                    }
-                } else {
-                    #init_call
-                }
-            }
-        } else {
-            quote! {
-                #init_call
-            }
-        };
-
-        dev_statements.extend(quote! {
-            if !skip.contains(#id_lit) {
-                #gated_check
-            }
-        });
-    }
-
-    let bm_preamble = if has_any_gated && is_egon {
-        quote! {
-            let _bm = fstart_soc_sunxi::boot_media_at(self._egon_sram_base as usize);
-        }
-    } else {
-        quote! { let _ = gated; }
-    };
-
-    quote! {
-        #bm_preamble
-        #dev_statements
     }
 }

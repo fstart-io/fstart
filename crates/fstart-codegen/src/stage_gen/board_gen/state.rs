@@ -44,9 +44,9 @@ pub(super) fn emit_adapter_struct(ctx: &BoardEmitModel<'_>) -> TokenStream {
             /// without `AcpiLoad` leave it at `0` forever.
             _acpi_rsdp_addr: u64,
             /// eGON header SRAM base address for Allwinner sunxi
-            /// boards.  Read by `boot_media_select` and
-            /// `load_next_stage` to resolve the hardware boot-media
-            /// byte and next-stage header values.
+            /// boards. Read by `soc_boot_media` and `load_next_stage`
+            /// to resolve the hardware boot-media byte and next-stage
+            /// header values.
             _egon_sram_base: u64,
         }
     }

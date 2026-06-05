@@ -1,12 +1,7 @@
-//! Emit the `impl Board for _BoardDevices` adapter used by generated stage
-//! codeflow.
+//! Emit the `_BoardDevices` adapter used by the handwritten stage executor.
 //!
-//! This is the board-specific half of stage generation.  The generated
-//! `fstart_main` emits direct per-stage codeflow for code size and calls this
-//! adapter through the `fstart_stage_runtime::Board` trait.
-//!
-//! The adapter owns concrete driver fields and provides the typed lifecycle and
-//! service/capability trampolines that direct codeflow calls through the
+//! This is the board-specific half of stage generation. The adapter owns
+//! concrete driver fields and provides typed lifecycle/service glue through the
 //! `fstart_stage_runtime::Board` trait.
 //!
 //! # Design rules enforced here
@@ -58,8 +53,8 @@ use state::{emit_adapter_new, emit_adapter_struct};
 /// Emit the complete board adapter: `_BoardDevices` struct, `new()`,
 /// and `impl Board for _BoardDevices`.
 ///
-/// Callers wire this into `generate_stage_source` before emitting the direct
-/// `fstart_main` codeflow.
+/// Callers wire this into `generate_stage_source` before emitting `STAGE_PLAN`
+/// and the `fstart_main` executor shim.
 ///
 /// `stage_name` is used to derive stage-local facts (monolithic or named first
 /// stage in a `MultiStage` layout). Non-first stages are the ones that receive

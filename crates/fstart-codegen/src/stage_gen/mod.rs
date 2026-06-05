@@ -4,8 +4,9 @@
 //! emits Rust source code that:
 //!
 //! 1. Defines a `_BoardDevices` struct with one concrete typed field per device.
-//! 2. Implements `fstart_stage_runtime::Board` for lifecycle/capability trampolines.
-//! 3. Generates a direct `fstart_main()` sequence from the stage capabilities.
+//! 2. Emits data-only `StagePlan` static facts.
+//! 3. Implements `fstart_stage_runtime::Board` for typed board access.
+//! 4. Generates a small `fstart_main()` shim into the handwritten executor.
 //!
 //! In **Rigid** mode, all types are concrete — zero overhead.
 //!
@@ -19,7 +20,7 @@
 mod board_gen;
 mod capabilities;
 mod config_ser;
-mod direct_flow;
+mod plan_gen;
 mod tokens;
 mod topology;
 mod validation;
@@ -169,9 +170,17 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         tokens.extend(generate_heap_storage(hs));
     }
 
+    tokens.extend(plan_gen::generate_stage_plan(
+        config,
+        &parsed.driver_instances,
+        &parsed.device_services,
+        capabilities,
+        stage_name,
+    ));
+
     // Emit the `_BoardDevices` struct + `impl Board for _BoardDevices`
     // board adapter.  It holds the concrete `Option<Driver>` fields and
-    // supplies typed per-capability trampolines used by the direct flow.
+    // supplies typed board operations used by the stage executor.
     tokens.extend(board_gen::generate_board_adapter(
         config,
         &parsed.driver_instances,
@@ -182,15 +191,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
         stage_name,
     ));
 
-    // Emit `fstart_main()` as a direct, stage-specific sequence.  This keeps
-    // board RON ordering explicit without a second stage-creation path.
-    tokens.extend(direct_flow::generate_fstart_main(
-        config,
-        &parsed.driver_instances,
-        &parsed.device_services,
-        capabilities,
-        stage_name,
-    ));
+    tokens.extend(generate_fstart_main());
 
     // Parse the token stream into a syn AST and format with prettyplease
     let file = syn::parse2::<syn::File>(tokens)
@@ -581,5 +582,26 @@ fn generate_heap_storage(heap_size: u32) -> TokenStream {
 
         #[no_mangle]
         static _FSTART_HEAP_SIZE: usize = #size_lit;
+    }
+}
+
+/// Emit the `fstart_main` shim into the handwritten stage executor.
+fn generate_fstart_main() -> TokenStream {
+    quote! {
+        /// Stage entry point. Called by the platform's `_start` after register
+        /// setup + BSS zero + stack pointer load.
+        #[no_mangle]
+        #[allow(unreachable_code, unused_variables, unused_mut)]
+        pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
+            #[cfg(feature = "handoff")]
+            let handoff = fstart_capabilities::handoff::try_deserialize(handoff_ptr);
+            #[cfg(not(feature = "handoff"))]
+            let handoff = {
+                let _ = handoff_ptr;
+                None
+            };
+            let mut board = _BoardDevices::new(handoff);
+            fstart_stage_runtime::run_stage(&mut board, &STAGE_PLAN)
+        }
     }
 }

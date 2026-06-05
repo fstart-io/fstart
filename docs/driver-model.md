@@ -5,9 +5,9 @@
 Design document with implementation notes.  Phases 1–4 are substantially
 complete; Phase 5 (Flexible mode) was superseded by the stage-runtime /
 codegen split.  The driver model is functional: boards build, run in
-QEMU, and codegen produces a typed board adapter (`impl Board for
-_BoardDevices`) plus a direct per-stage `fstart_main` sequence. There is no
-separate stage-plan interpreter path.
+QEMU, and codegen produces data-only `StagePlan` tables, a typed board
+adapter (`impl Board for _BoardDevices`), and a small `fstart_main` shim into
+the handwritten stage executor.
 
 ## Goals
 
@@ -71,8 +71,9 @@ compile-time device-tree validation.
 +----------------------------------------------------------------+
 |                    Generated Stage Code                         |
 |  * _BoardDevices struct (Option<Driver> per device)            |
-|  * impl Board for _BoardDevices (capability trampolines)      |
-|  * fstart_main() direct stage codeflow                        |
+|  * static STAGE_PLAN data                                      |
+|  * impl Board for _BoardDevices (typed access/glue)            |
+|  * fstart_main() shim -> fstart_stage_runtime::run_stage       |
 +----------+-----------------+-------------------+---------------+
            |                 |                   |
            v                 v                   v
@@ -82,8 +83,8 @@ compile-time device-tree validation.
   |               |  |               |  |                    |
   | trait Console |  | Ns16550       |  | trait Board        |
   | trait Timer   |  | Pl011         |  | Board trait        |
-  | trait Block   |  | DesignwareI2c |  | DeviceMask         |
-  | trait I2cBus  |  |               |  | BootMediaState     |
+  | trait Block   |  | DesignwareI2c |  | StagePlan/StageOp  |
+  | trait I2cBus  |  |               |  | DeviceMask         |
   | trait Device  |  | impl Device   |  |                    |
   +---------------+  +---------------+  +--------------------+
 ```
@@ -466,8 +467,8 @@ struct _BoardDevices {
 ```
 
 All device fields are `Option<T>` because `init_device(id)` is the sole
-construction site — devices are lazily materialised when direct stage
-codeflow asks for them.
+construction site — devices are lazily materialised when the stage executor
+asks for them.
 
 ### impl Board for _BoardDevices
 
@@ -513,24 +514,20 @@ impl fstart_stage_runtime::Board for _BoardDevices {
 Capability trampolines read board-level data from `&self` fields — no
 constants as method arguments (multi-platform invariant).
 
-### Init Sequence (direct generated codeflow)
+### Init Sequence (StagePlan executor)
 
-Production `fstart_main` is generated as a direct sequence from the selected
-stage's ordered capabilities. This keeps the board RON as the source of truth
-and avoids maintaining a second stage-creation path.
+Production `fstart_main` is a small shim. Codegen emits the selected stage's
+ordered capabilities as `STAGE_PLAN` data, then handwritten Rust executes that
+plan.
 
 ```rust
+static STAGE_PLAN: fstart_stage_runtime::StagePlan = /* data only */;
+
 #[no_mangle]
 pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
     let handoff = fstart_capabilities::handoff::try_deserialize(handoff_ptr);
     let mut board = _BoardDevices::new(handoff);
-    let mut inited = DeviceMask::from_slice(&[/* prior persistent ids */]);
-
-    if Board::init_device(&mut board, 0).is_err() { Board::halt(&board); }
-    unsafe { Board::install_logger(&board, 0); }
-    inited.set(0);
-    Board::sig_verify(&board);
-    Board::payload_load(&board);
+    fstart_stage_runtime::run_stage(&mut board, &STAGE_PLAN)
 }
 ```
 

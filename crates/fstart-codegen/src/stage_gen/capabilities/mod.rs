@@ -1,12 +1,8 @@
 //! Small helpers shared by stage codegen.
 //!
-//! The old file hosted one `generate_*` function per capability, emitting
-//! fragments that `stage_gen::generate_fstart_main` stitched together.  That
-//! emission layer is gone — `direct_flow` emits the stage sequence, while
-//! `board_gen` emits all capability trampolines as methods on
-//! `impl Board for _BoardDevices`. What remains here is shared data lookups and
-//! the `acpi` / `smbios` submodules whose per-variant struct emission is still
-//! reused by `board_gen`.
+//! This module contains shared data lookups and the `acpi` / `smbios`
+//! submodules whose per-variant struct emission is reused by `board_gen` and
+//! stage-plan emission.
 
 pub(super) mod acpi;
 mod smbios;
@@ -55,9 +51,9 @@ pub(super) fn find_dram_region(config: &BoardConfig) -> Option<(u64, u64)> {
 ///
 /// Returns 0 for monolithic / empty stage layouts.
 ///
-/// Exposed at `pub(in crate::stage_gen)` so `board_gen`'s
-/// `boot_media_select` / `load_next_stage` trampolines can populate the
-/// `_egon_sram_base` field on `_BoardDevices`.
+/// Exposed at `pub(in crate::stage_gen)` so `board_gen`'s `soc_boot_media` /
+/// `load_next_stage` trampolines can populate the `_egon_sram_base` field on
+/// `_BoardDevices`.
 pub(in crate::stage_gen) fn egon_sram_base(config: &BoardConfig) -> u64 {
     match &config.stages {
         fstart_types::StageLayout::MultiStage(stages) => stages

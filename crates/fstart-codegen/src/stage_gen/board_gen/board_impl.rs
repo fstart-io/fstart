@@ -12,15 +12,15 @@ use super::caps_tables::{
 };
 use super::fdt::{fdt_prepare_body, return_to_fel_body, stage_load_body};
 use super::init_caps::{dram_init_body, pci_init_body};
-use super::lifecycle::{init_all_devices_body, init_device_body};
+use super::lifecycle::init_device_body;
 use super::logger::install_logger_body;
 use super::model::BoardEmitModel;
 use super::mp::mp_init_body;
 use super::payload::payload_load_body;
 use super::phases::{phase_init_body, PhaseSpec};
-use super::platform::sunxi::{boot_media_select_body, load_next_stage_body};
+use super::platform::sunxi::{load_next_stage_body, soc_boot_media_body};
 
-fn boot_media_firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+fn firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx
         .runtime_devices
         .providers(Service::FirmwareImageProvider)
@@ -29,12 +29,11 @@ fn boot_media_firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             let id_lit = proc_macro2::Literal::u8_unsuffixed(device.index as u8);
             quote! {
                 #id_lit => {
-                    let image = fstart_services::FirmwareImageProvider::firmware_image(
+                    fstart_services::FirmwareImageProvider::firmware_image(
                         self.#field
                             .as_ref()
                             .ok_or(fstart_stage_runtime::RuntimeError::UnknownDevice)?,
-                    ).map_err(|_| fstart_stage_runtime::RuntimeError::Failed)?;
-                    self.boot_media_platform_firmware_image(image, temp_ram_buffer)
+                    ).map_err(|_| fstart_stage_runtime::RuntimeError::Failed)
                 }
             }
         });
@@ -112,12 +111,11 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let acpi_prepare_body = acpi_prepare_body(ctx);
     let smbios_prepare_body = smbios_prepare_body(ctx);
     let mp_init_body = mp_init_body(ctx);
-    let boot_media_select_body = boot_media_select_body(ctx);
+    let soc_boot_media_body = soc_boot_media_body(ctx);
     let load_next_stage_body = load_next_stage_body(ctx);
     let payload_load_body = payload_load_body(platform, ctx);
     let init_device_body = init_device_body(ctx);
-    let init_all_devices_body = init_all_devices_body(ctx);
-    let boot_media_firmware_image_body = boot_media_firmware_image_body(ctx);
+    let firmware_image_body = firmware_image_body(ctx);
     let boot_media_platform_firmware_image_body = boot_media_platform_firmware_image_body(ctx);
 
     quote! {
@@ -128,14 +126,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 id: fstart_types::DeviceId,
             ) -> Result<(), fstart_services::device::DeviceError> {
                 #init_device_body
-            }
-
-            fn init_all_devices(
-                &mut self,
-                skip: &fstart_stage_runtime::DeviceMask,
-                gated: &fstart_stage_runtime::DeviceMask,
-            ) {
-                #init_all_devices_body
             }
 
             unsafe fn install_logger(&self, id: fstart_types::DeviceId) {
@@ -228,11 +218,8 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
 
             fn return_to_fel(&self) -> ! { #return_to_fel_body }
 
-            fn boot_media_select(
-                &mut self,
-                candidates: &[fstart_stage_runtime::BootMediaCandidate],
-            ) -> Option<fstart_types::DeviceId> {
-                #boot_media_select_body
+            fn soc_boot_media(&self) -> Option<u8> {
+                #soc_boot_media_body
             }
 
             fn boot_media_block_firmware_image(
@@ -246,12 +233,11 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                     fstart_stage_runtime::BootMediaState::from_block_firmware_image(device, offset, size, temp_ram_buffer);
             }
 
-            fn boot_media_firmware_image(
-                &mut self,
+            fn firmware_image(
+                &self,
                 provider: fstart_types::DeviceId,
-                temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
-            ) -> Result<(), fstart_stage_runtime::RuntimeError> {
-                #boot_media_firmware_image_body
+            ) -> Result<fstart_services::FirmwareImage, fstart_stage_runtime::RuntimeError> {
+                #firmware_image_body
             }
 
             fn boot_media_platform_firmware_image(

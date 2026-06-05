@@ -28,7 +28,9 @@ sunxi = [
   "fstart-platform-riscv64?/sunxi",
 ]
 # AArch64 EL2/TF-A ROM-to-RAM entry point. Derived from memory layout.
-aarch64-el2-relocate-entry = ["fstart-platform-aarch64?/aarch64-el2-relocate-entry"]
+aarch64-el2-relocate-entry = [
+  "fstart-platform-aarch64?/aarch64-el2-relocate-entry",
+]
 # Driver selection (enabled based on board.ron devices)
 ns16550 = ["dep:fstart-driver-ns16550"]
 pl011 = ["dep:fstart-driver-pl011"]
@@ -132,6 +134,25 @@ smbios = ["fstart-capabilities/smbios"]
 # Requires alloc (fstart-alloc provides #[global_allocator]).
 crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
 
+# Stage flow families. `fstart_main` is a data-only StagePlan shim into the
+# handwritten stage runtime; each optional family is explicitly feature-gated so
+# stages compile only the flow arms they use.
+stage-flow-clock-init = ["fstart-stage-runtime/flow-clock-init"]
+stage-flow-console-init = ["fstart-stage-runtime/flow-console-init"]
+stage-flow-memory-init = ["fstart-stage-runtime/flow-memory-init"]
+stage-flow-dram-init = ["fstart-stage-runtime/flow-dram-init"]
+stage-flow-driver-init = ["fstart-stage-runtime/flow-driver-init"]
+stage-flow-phases = ["fstart-stage-runtime/flow-phases"]
+stage-flow-pci = ["fstart-stage-runtime/flow-pci"]
+stage-flow-memory-detect = ["fstart-stage-runtime/flow-memory-detect"]
+stage-flow-boot-media = ["fstart-stage-runtime/flow-boot-media"]
+stage-flow-ffs = ["fstart-stage-runtime/flow-ffs"]
+stage-flow-fdt = ["fstart-stage-runtime/flow-fdt"]
+stage-flow-mp = ["fstart-stage-runtime/flow-mp"]
+stage-flow-acpi = ["fstart-stage-runtime/flow-acpi"]
+stage-flow-smbios = ["fstart-stage-runtime/flow-smbios"]
+stage-flow-fel = ["fstart-stage-runtime/flow-fel"]
+
 [dependencies]
 # Core firmware infrastructure
 fstart-arch = { workspace = true }
@@ -140,7 +161,7 @@ fstart-capabilities = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
-fstart-stage-runtime = { workspace = true }
+fstart-stage-runtime = { workspace = true, features = ["stage-executor"] }
 fstart-types = { workspace = true }
 fstart-pio = { workspace = true, optional = true }
 heapless = { workspace = true }

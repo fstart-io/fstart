@@ -42,7 +42,7 @@ fn payload_load_armv7_cleanup_before_linux() {
     );
 }
 
-// ===== init_device + init_all_devices adapter tests ===============
+// ===== init_device adapter tests ===============
 
 #[test]
 fn init_device_emits_match_arm_per_enabled_device() {
@@ -98,79 +98,57 @@ fn init_device_ancestors_walked_root_first() {
 }
 
 #[test]
-fn init_all_devices_iterates_runtime_nodes() {
-    // qemu-riscv64: iterates enabled non-structural devices
-    // (just uart0).  Each loop body calls self.init_device(id).
-    let src = adapter_source_for_board("qemu-riscv64");
-    assert!(
-        src.contains("self.init_device"),
-        "init_all_devices must call self.init_device; got:\n{src}"
-    );
-    assert!(
-        src.contains("if !skip.contains"),
-        "init_all_devices must gate on skip mask; got:\n{src}"
-    );
-}
-
-#[test]
-fn init_all_devices_respects_boot_media_gating_on_sunxi() {
-    // orangepi-pc2 bootblock has mmc0 (sunxi-mmc, BlockDevice)
-    // gated by boot_media.  The body must have a `if gated.contains(id)`
-    // check + a `matches!(_bm, ...)` guard.
+fn board_adapter_does_not_emit_driver_init_flow() {
     let src = adapter_source_for_stage("orangepi-pc2", "bootblock");
     assert!(
-        src.contains("fstart_soc_sunxi::boot_media_at"),
-        "sunxi init_all_devices must read boot_media; got:\n{src}"
+        !src.contains("fn init_all_devices"),
+        "DriverInit flow belongs to fstart-stage-runtime, not the board adapter: {src}"
     );
     assert!(
-        src.contains("if gated.contains"),
-        "sunxi init_all_devices must gate on the gated mask; got:\n{src}"
+        !src.contains("if !skip.contains"),
+        "DriverInit skip policy must not be generated into the board adapter: {src}"
     );
     assert!(
-        src.contains("matches!(_bm"),
-        "sunxi init_all_devices must match boot-media byte; got:\n{src}"
+        !src.contains("if gated.contains"),
+        "DriverInit boot-media gating policy must not be generated into the board adapter: {src}"
     );
 }
 
-// ===== boot_media_select + load_next_stage adapter tests ==========
+// ===== soc_boot_media + load_next_stage adapter tests ==========
 
 #[test]
-fn boot_media_select_real_body_on_sunxi_bootblock() {
+fn soc_boot_media_reads_sunxi_boot_source() {
     // orangepi-pc2's bootblock uses LoadNextStage(devices=[mmc0])
-    // over sunxi-eGON — the body must be the real sunxi dispatch.
+    // over sunxi-eGON — the board adapter exposes only the primitive
+    // BROM-written boot source byte. Matching lives in the executor.
     let src = adapter_source_for_stage("orangepi-pc2", "bootblock");
     assert!(
-        src.contains("fstart_soc_sunxi::boot_media_at"),
-        "sunxi boot_media_select must read via boot_media_at; got:\n{src}"
+        src.contains("fn soc_boot_media"),
+        "Board impl must expose soc_boot_media; got:\n{src}"
     );
-    // prettyplease may wrap `self._egon_sram_base` across lines.
+    assert!(
+        src.contains("fstart_soc_sunxi::boot_media_at"),
+        "sunxi soc_boot_media must read via boot_media_at; got:\n{src}"
+    );
     assert!(
         src.contains("_egon_sram_base"),
-        "boot_media_select must read _egon_sram_base field; got:\n{src}"
-    );
-    // Writes BootMediaState::FirmwareImageBlock on match.
-    assert!(
-        src.contains("BootMediaState::FirmwareImageBlock"),
-        "boot_media_select must write FirmwareImageBlock variant; got:\n{src}"
+        "soc_boot_media must read _egon_sram_base field; got:\n{src}"
     );
     assert!(
-        !src.contains("board_gen::boot_media_select: stage does not use"),
-        "sunxi bootblock must not emit the dead-code unreachable body; got:\n{src}"
+        !src.contains(
+            "self._boot_media = fstart_stage_runtime::BootMediaState::FirmwareImageBlock"
+        ),
+        "soc_boot_media must not mutate boot-media state; got:\n{src}"
     );
 }
 
 #[test]
-fn boot_media_select_dead_code_unreachable_on_non_sunxi_boards() {
-    // qemu-riscv64 is not a sunxi board, so boot_media_select
-    // stays as a dead-code unreachable body — referencing
-    // fstart_soc_sunxi there would fail to link (no sunxi feature flag).
+fn soc_boot_media_is_none_on_non_sunxi_boards() {
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
-        src.contains("board_gen::boot_media_select: stage does not use"),
-        "qemu-riscv64 must emit the dead-code unreachable body; got:\n{src}"
+        src.contains("fn soc_boot_media") && src.contains("None"),
+        "qemu-riscv64 must emit a None soc_boot_media primitive; got:\n{src}"
     );
-    // And must not reference fstart_soc_sunxi in boot_media_select
-    // or anywhere else in the adapter.
     assert!(
         !src.contains("fstart_soc_sunxi"),
         "qemu-riscv64 adapter must not reference fstart_soc_sunxi; got:\n{src}"
