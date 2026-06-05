@@ -130,13 +130,14 @@ to remove include:
 - `acpi_prepare`, `smbios_prepare`, `acpi_load` orchestration;
 - `mp_init`;
 - phase trampolines such as `pre_console_init`, `early_init`, etc.;
-- `boot_media_platform_firmware_image` and `load_next_stage`.
+- `load_next_stage`.
 
 `boot_media_select` has already been reduced to the primitive
 `soc_boot_media()`: the executor now owns boot-source candidate matching and
 boot-media state publication. Provider-backed `boot_media_firmware_image` has
-been reduced to the primitive `firmware_image(provider)` plus executor-owned
-state publication.
+been reduced to the primitive `firmware_image(provider)`. Platform/provider
+firmware-image setup now uses primitive `set_boot_media_state(...)` plus
+`ffs_anchor()` for memory-mapped FFS context publication.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

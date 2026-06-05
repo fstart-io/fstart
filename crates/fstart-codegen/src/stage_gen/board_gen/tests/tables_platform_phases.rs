@@ -228,16 +228,16 @@ fn firmware_image_scratch_and_mp_microcode_use_boot_media_state() {
         "provider-backed BootMedia temp_ram_buffer must initialize scratch RAM, not copy the whole image; got:\n{src}"
     );
     assert!(
-        src.contains("BootMediaState::from_firmware_image") && src.contains("effective_image"),
-        "boot media state must record the provider firmware image; got:\n{src}"
+        src.contains("fn firmware_image") && src.contains("fn set_boot_media_state"),
+        "provider firmware-image lookup and boot-media state publication must be primitive Board methods; got:\n{src}"
     );
     assert!(
         src.contains("image.translate(offset)"),
         "MP microcode lookup must derive its blob address from the active FirmwareImage mapping; got:\n{src}"
     );
     assert!(
-        src.contains("fstart_services::ffs_context::set_memory_mapped"),
-        "FFS context must publish the effective copied/mapped firmware image; got:\n{src}"
+        src.contains("fn ffs_anchor") && src.contains("FSTART_ANCHOR"),
+        "adapter must expose primitive FFS anchor bytes for runtime context publication; got:\n{src}"
     );
 }
 

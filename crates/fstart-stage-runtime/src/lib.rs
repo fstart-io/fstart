@@ -360,15 +360,8 @@ pub trait Board: Sized {
     /// board adapter only exposes the primitive boot-source byte.
     fn soc_boot_media(&self) -> Option<u8>;
 
-    /// Record a firmware image backed by a Rust platform-selected block device
-    /// so later capabilities (`sig_verify`, etc.) read from it.
-    fn boot_media_block_firmware_image(
-        &mut self,
-        device: DeviceId,
-        offset: u64,
-        size: u64,
-        temp_ram_buffer: Option<TempRamBuffer>,
-    );
+    /// Publish the active boot-media state selected by the executor.
+    fn set_boot_media_state(&mut self, state: BootMediaState);
 
     /// Read a firmware-image descriptor from a provider device.
     ///
@@ -376,15 +369,8 @@ pub trait Board: Sized {
     /// stage executor owns how that descriptor becomes active boot-media state.
     fn firmware_image(&self, provider: DeviceId) -> Result<FirmwareImage, RuntimeError>;
 
-    /// Stage operation for Rust platform-backed firmware-image boot media.
-    ///
-    /// This covers fixed emulator/SoC ROM windows whose mapping is known from
-    /// platform code rather than a runtime device register.
-    fn boot_media_platform_firmware_image(
-        &mut self,
-        image: FirmwareImage,
-        temp_ram_buffer: Option<TempRamBuffer>,
-    ) -> Result<(), RuntimeError>;
+    /// FFS anchor bytes for stages that use the firmware filesystem.
+    fn ffs_anchor(&self) -> Option<&'static [u8]>;
 
     /// Stage operation for `LoadNextStage`. Diverges. Uses whichever boot
     /// medium the executor published to read the named next stage and jump to

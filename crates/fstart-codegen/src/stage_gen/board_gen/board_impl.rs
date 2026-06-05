@@ -6,7 +6,6 @@ use quote::{format_ident, quote};
 use fstart_device_registry::Service;
 use fstart_types::Platform;
 
-use super::boot_media::anchor_bytes_stmt;
 use super::caps_tables::{
     acpi_load_body, acpi_prepare_body, memory_detect_body, smbios_prepare_body,
 };
@@ -45,33 +44,20 @@ fn firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     }
 }
 
-fn boot_media_platform_firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
-    let publish_context = if ctx.stage.uses_ffs {
-        let anchor = anchor_bytes_stmt();
-        quote! {
-            if let Some(window) = effective_image.contiguous_window() {
-                if window.cpu_base != 0 {
-                    #anchor
-                    fstart_services::ffs_context::set_memory_mapped(
-                        _anchor_bytes,
-                        window.cpu_base,
-                        window.size,
-                    );
-                }
-            }
-        }
-    } else {
-        quote! {}
-    };
+fn ffs_anchor_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    if !ctx.stage.uses_ffs {
+        return quote! { None };
+    }
     quote! {
-        let effective_image = image;
-        effective_image
-            .validate()
-            .map_err(|_| fstart_stage_runtime::RuntimeError::Failed)?;
-        self._boot_media =
-            fstart_stage_runtime::BootMediaState::from_firmware_image(effective_image, temp_ram_buffer);
-        #publish_context
-        Ok(())
+        // SAFETY: FSTART_ANCHOR is emitted by `generate_anchor_static` in this
+        // same stage with proper alignment (`#[link_section = ".fstart.anchor"]`
+        // + `#[used]`) and is the size of `AnchorBlock`.
+        Some(unsafe {
+            core::slice::from_raw_parts(
+                &FSTART_ANCHOR as *const fstart_types::ffs::AnchorBlock as *const u8,
+                core::mem::size_of::<fstart_types::ffs::AnchorBlock>(),
+            )
+        })
     }
 }
 
@@ -116,7 +102,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let payload_load_body = payload_load_body(platform, ctx);
     let init_device_body = init_device_body(ctx);
     let firmware_image_body = firmware_image_body(ctx);
-    let boot_media_platform_firmware_image_body = boot_media_platform_firmware_image_body(ctx);
+    let ffs_anchor_body = ffs_anchor_body(ctx);
 
     quote! {
         #[allow(dead_code, unused_variables)]
@@ -222,15 +208,8 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #soc_boot_media_body
             }
 
-            fn boot_media_block_firmware_image(
-                &mut self,
-                device: fstart_types::DeviceId,
-                offset: u64,
-                size: u64,
-                temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
-            ) {
-                self._boot_media =
-                    fstart_stage_runtime::BootMediaState::from_block_firmware_image(device, offset, size, temp_ram_buffer);
+            fn set_boot_media_state(&mut self, state: fstart_stage_runtime::BootMediaState) {
+                self._boot_media = state;
             }
 
             fn firmware_image(
@@ -240,12 +219,8 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #firmware_image_body
             }
 
-            fn boot_media_platform_firmware_image(
-                &mut self,
-                image: fstart_services::FirmwareImage,
-                temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
-            ) -> Result<(), fstart_stage_runtime::RuntimeError> {
-                #boot_media_platform_firmware_image_body
+            fn ffs_anchor(&self) -> Option<&'static [u8]> {
+                #ffs_anchor_body
             }
 
             fn load_next_stage(&mut self, next_stage: &str) -> ! {

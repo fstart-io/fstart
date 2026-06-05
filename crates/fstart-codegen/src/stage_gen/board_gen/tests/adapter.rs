@@ -23,8 +23,9 @@ fn adapter_compiles_for_qemu_riscv64() {
     assert!(src.contains("_handoff: Option<fstart_types::handoff::StageHandoff>"));
     // Trivial trampolines wired to the real capability helpers.
     assert!(src.contains("fstart_capabilities::memory_init()"));
-    // Platform firmware-image setup is real — writes state.
-    assert!(src.contains("boot_media_platform_firmware_image"));
+    // Boot-media state publication and FFS anchor access are primitive Board methods.
+    assert!(src.contains("fn set_boot_media_state"));
+    assert!(src.contains("fn ffs_anchor"));
     // qemu-riscv64 uses FFS (SigVerify/PayloadLoad), so `sig_verify`
     // is the real body.
     assert!(src.contains("fstart_capabilities::sig_verify"));

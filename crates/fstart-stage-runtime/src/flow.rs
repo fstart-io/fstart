@@ -114,14 +114,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             StageOp::BootMediaPlatformFirmwareImage {
                 image,
                 temp_ram_buffer,
-            } => {
-                if board
-                    .boot_media_platform_firmware_image(*image, temp_ram_buffer)
-                    .is_err()
-                {
-                    board.halt();
-                }
-            }
+            } => publish_firmware_image_boot_media(board, *image, temp_ram_buffer),
             #[cfg(feature = "flow-boot-media")]
             StageOp::BootMediaPlatformBootSource {
                 candidates,
@@ -300,12 +293,33 @@ fn boot_media_firmware_provider<B: Board>(
     let Ok(image) = board.firmware_image(provider) else {
         board.halt();
     };
-    if board
-        .boot_media_platform_firmware_image(image, temp_ram_buffer)
-        .is_err()
-    {
+    publish_firmware_image_boot_media(board, image, temp_ram_buffer);
+}
+
+#[cfg(feature = "flow-boot-media")]
+fn publish_firmware_image_boot_media<B: Board>(
+    board: &mut B,
+    image: fstart_services::FirmwareImage,
+    temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
+) {
+    if image.validate().is_err() {
         board.halt();
     }
+    if let Some(window) = image.contiguous_window() {
+        if window.cpu_base != 0 {
+            if let Some(anchor) = board.ffs_anchor() {
+                fstart_services::ffs_context::set_memory_mapped(
+                    anchor,
+                    window.cpu_base,
+                    window.size,
+                );
+            }
+        }
+    }
+    board.set_boot_media_state(crate::BootMediaState::from_firmware_image(
+        image,
+        temp_ram_buffer,
+    ));
 }
 
 #[cfg(feature = "flow-boot-media")]
@@ -323,12 +337,29 @@ fn boot_media_platform_boot_source<B: Board>(
         board.halt();
     }
     inited.set(id);
-    board.boot_media_block_firmware_image(
+    publish_block_boot_media(
+        board,
         candidate.device,
         candidate.offset,
         candidate.size,
         temp_ram_buffer,
     );
+}
+
+#[cfg(any(feature = "flow-boot-media", feature = "flow-fel"))]
+fn publish_block_boot_media<B: Board>(
+    board: &mut B,
+    device: DeviceId,
+    offset: u64,
+    size: u64,
+    temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
+) {
+    board.set_boot_media_state(crate::BootMediaState::from_block_firmware_image(
+        device,
+        offset,
+        size,
+        temp_ram_buffer,
+    ));
 }
 
 #[cfg(feature = "flow-fel")]
@@ -346,7 +377,13 @@ fn load_next_stage<B: Board>(
         board.halt();
     }
     inited.set(id);
-    board.boot_media_block_firmware_image(candidate.device, candidate.offset, candidate.size, None);
+    publish_block_boot_media(
+        board,
+        candidate.device,
+        candidate.offset,
+        candidate.size,
+        None,
+    );
     board.load_next_stage(next_stage);
 }
 
