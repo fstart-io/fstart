@@ -22,7 +22,7 @@ flow-dram-init = ["stage-executor"]
 flow-driver-init = ["stage-executor"]
 flow-phases = ["stage-executor"]
 flow-pci = ["stage-executor"]
-flow-memory-detect = ["stage-executor"]
+flow-memory-detect = ["stage-executor", "dep:fstart-capabilities"]
 flow-boot-media = ["stage-executor"]
 flow-ffs = [
   "stage-executor",

@@ -146,7 +146,8 @@ instead of per-phase list trampolines such as `pre_console_init(ids)`.
 `SmbiosDesc` primitive while the executor calls `smbios::prepare`. `AcpiLoad`
 now follows the same boundary: the adapter exposes primitive provider borrowing
 and RSDP state publication while runtime owns the static buffer and capability
-call.
+call. `MemoryDetect` now uses primitive memory-detector borrowing while runtime
+owns the E820 scratch buffer and capability call.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

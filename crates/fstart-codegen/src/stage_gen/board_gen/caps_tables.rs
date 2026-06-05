@@ -5,7 +5,6 @@ use quote::{format_ident, quote};
 
 use super::model::BoardEmitModel;
 use fstart_device_registry::Service;
-use fstart_types::Capability;
 
 /// Emit the body of primitive `Board::with_acpi_table_provider`.
 pub(super) fn with_acpi_table_provider_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
@@ -35,20 +34,8 @@ pub(super) fn with_acpi_table_provider_body(ctx: &BoardEmitModel<'_>) -> TokenSt
     }
 }
 
-/// Emit the body of `Board::memory_detect`.
-pub(super) fn memory_detect_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
-    if !ctx
-        .stage
-        .capabilities
-        .iter()
-        .any(|cap| matches!(cap, Capability::MemoryDetect { .. }))
-    {
-        return quote! {
-            fstart_log::error!("memory_detect: stage does not declare MemoryDetect");
-            fstart_platform::halt();
-        };
-    }
-
+/// Emit the body of primitive `Board::with_memory_detector`.
+pub(super) fn with_memory_detector_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx
         .runtime_devices
         .providers(Service::MemoryDetector)
@@ -58,27 +45,19 @@ pub(super) fn memory_detect_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             let dev_name = device.name;
             quote! {
                 #id_lit => {
-                    let mut _e820_entries =
-                        [fstart_services::memory_detect::E820Entry::zeroed(); 128];
-                    fstart_capabilities::memory_detect(
+                    Ok(run(
                         self.#field
                             .as_ref()
-                            .unwrap_or_else(|| fstart_platform::halt()),
-                        &mut _e820_entries,
+                            .ok_or(fstart_stage_runtime::RuntimeError::UnknownDevice)?,
                         #dev_name,
-                    )
-                    .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                    Ok(())
+                    ))
                 }
             }
         });
     quote! {
         match id {
             #(#arms)*
-            _ => {
-                fstart_log::error!("memory_detect: unknown device id {}", id);
-                fstart_platform::halt();
-            }
+            _ => Err(fstart_stage_runtime::RuntimeError::UnknownDevice),
         }
     }
 }

@@ -328,11 +328,16 @@ pub trait Board: Sized {
     /// Publish the prepared ACPI RSDP address.
     fn set_acpi_rsdp_addr(&mut self, addr: u64);
 
-    /// Stage operation for `MemoryDetect`.  `id` is the resolved device ID.
+    /// Borrow a memory detector by device id for one operation.
     ///
-    /// Generated adapter reads the target memory-map buffer from
-    /// `&self` and calls `fstart_capabilities::memory_detect`.
-    fn memory_detect(&mut self, id: DeviceId) -> Result<(), DeviceError>;
+    /// The executor owns buffer allocation and capability invocation; the
+    /// board adapter only dispatches to the concrete provider field and
+    /// supplies the static device name for logging.
+    fn with_memory_detector<R>(
+        &self,
+        id: DeviceId,
+        run: impl FnOnce(&dyn fstart_services::memory_detect::MemoryDetector, &'static str) -> R,
+    ) -> Result<R, RuntimeError>;
 
     /// Stage operation for `ReturnToFel`.  Diverges.  Armv7
     /// sunxi-only; on other platforms the generated adapter emits

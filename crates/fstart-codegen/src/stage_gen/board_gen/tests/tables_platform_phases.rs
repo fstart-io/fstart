@@ -105,21 +105,21 @@ fn acpi_load_emits_real_body_on_q35() {
 
 #[test]
 fn memory_detect_emits_real_body_on_q35() {
-    // qemu-q35 declares `MemoryDetect(device: "fw_cfg0")`.  The
-    // body must allocate a 128-entry E820 buffer and call
-    // memory_detect.
+    // qemu-q35 declares `MemoryDetect(device: "fw_cfg0")`. The adapter
+    // exposes primitive detector borrowing; runtime owns the E820 buffer and
+    // memory_detect call.
     let src = adapter_source_for_board("qemu-q35");
     assert!(
-        src.contains("fstart_capabilities::memory_detect"),
-        "memory_detect must call the capability fn; got:\n{src}"
+        !src.contains("fstart_capabilities::memory_detect"),
+        "adapter must not call the memory_detect capability fn; got:\n{src}"
     );
     assert!(
-        src.contains("E820Entry::zeroed()"),
-        "memory_detect must initialise the buffer with E820Entry::zeroed(); got:\n{src}"
+        !src.contains("E820Entry::zeroed()"),
+        "adapter must not own the E820 buffer; got:\n{src}"
     );
     assert!(
-        src.contains("; 128]"),
-        "memory_detect buffer must have 128 entries; got:\n{src}"
+        src.contains("fn with_memory_detector"),
+        "adapter must expose primitive memory detector borrowing; got:\n{src}"
     );
 }
 
@@ -135,8 +135,8 @@ fn acpi_and_memory_detect_halt_on_non_x86_boards() {
         "non-ACPI board's provider primitive must reject unknown ids; got:\n{src}"
     );
     assert!(
-        src.contains("memory_detect: stage does not declare MemoryDetect"),
-        "non-memory-detect board's memory_detect must emit the undeclared-stage log; got:\n{src}"
+        src.contains("fn with_memory_detector") && src.contains("RuntimeError::UnknownDevice"),
+        "non-detect board's detector primitive must reject unknown ids; got:\n{src}"
     );
     // ACPI buffer must NOT appear in boards with no provider.
     assert!(

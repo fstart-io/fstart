@@ -3,11 +3,7 @@
 //! Flow families are feature-gated so each stage compiles only the operation
 //! arms it uses.
 
-#[cfg(any(
-    feature = "flow-pci",
-    feature = "flow-memory-detect",
-    feature = "flow-acpi"
-))]
+#[cfg(feature = "flow-pci")]
 use fstart_services::device::DeviceError;
 #[cfg(any(
     feature = "flow-clock-init",
@@ -110,7 +106,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             #[cfg(feature = "flow-pci")]
             StageOp::PciInit(id) => device_op(board, &mut inited, id, Board::pci_init),
             #[cfg(feature = "flow-memory-detect")]
-            StageOp::MemoryDetect(id) => device_op(board, &mut inited, id, Board::memory_detect),
+            StageOp::MemoryDetect(id) => memory_detect(board, &mut inited, id),
 
             #[cfg(feature = "flow-boot-media")]
             StageOp::BootMediaFirmwareProvider {
@@ -227,11 +223,7 @@ fn phase<B: Board>(
     }
 }
 
-#[cfg(any(
-    feature = "flow-pci",
-    feature = "flow-memory-detect",
-    feature = "flow-acpi"
-))]
+#[cfg(feature = "flow-pci")]
 fn device_op<B: Board>(
     board: &mut B,
     inited: &mut DeviceMask,
@@ -286,6 +278,23 @@ fn driver_init_is_gated(plan: &StagePlan, id: DeviceId) -> bool {
 #[cfg(feature = "flow-driver-init")]
 fn driver_init_is_optional(plan: &StagePlan, id: DeviceId) -> bool {
     plan.optional_devices.iter().any(|optional| *optional == id)
+}
+
+#[cfg(feature = "flow-memory-detect")]
+fn memory_detect<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
+    if board.init_device(id).is_err() {
+        board.halt();
+    }
+
+    let mut entries = [fstart_services::memory_detect::E820Entry::zeroed(); 128];
+    match board.with_memory_detector(id, |detector, name| {
+        fstart_capabilities::memory_detect(detector, &mut entries, name)
+    }) {
+        Ok(Ok(_)) => {
+            inited.set(id);
+        }
+        Ok(Err(_)) | Err(_) => board.halt(),
+    }
 }
 
 #[cfg(feature = "flow-ffs")]

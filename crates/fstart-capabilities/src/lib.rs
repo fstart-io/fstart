@@ -175,7 +175,7 @@ pub fn acpi_load(
 /// This function lives in firmware library code — codegen just calls it
 /// with the appropriate device reference and entry buffer.
 pub fn memory_detect(
-    detector: &impl fstart_services::memory_detect::MemoryDetector,
+    detector: &(impl fstart_services::memory_detect::MemoryDetector + ?Sized),
     entries: &mut [fstart_services::memory_detect::E820Entry],
     device_name: &str,
 ) -> Result<(usize, u64), fstart_services::ServiceError> {
