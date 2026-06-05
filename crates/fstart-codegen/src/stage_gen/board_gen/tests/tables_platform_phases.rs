@@ -43,12 +43,16 @@ fn acpi_prepare_unreachable_on_boards_without_acpi_config() {
 #[test]
 fn smbios_prepare_emits_real_body_on_sbsa() {
     // qemu-sbsa has `SmBiosPrepare` + a populated `smbios` RON
-    // config.  The body must call smbios::prepare with the full
-    // SmbiosDesc literal.
+    // config.  The adapter must expose only the SmbiosDesc literal;
+    // runtime owns the call to smbios::prepare.
     let src = adapter_source_for_board("qemu-sbsa");
     assert!(
-        src.contains("fstart_capabilities::smbios::prepare"),
-        "smbios_prepare must call the capability fn; got:\n{src}"
+        !src.contains("fstart_capabilities::smbios::prepare"),
+        "adapter must not call the smbios capability fn; got:\n{src}"
+    );
+    assert!(
+        src.contains("fn smbios_desc"),
+        "adapter must expose primitive smbios_desc; got:\n{src}"
     );
     assert!(
         src.contains("SmbiosDesc"),
@@ -59,12 +63,11 @@ fn smbios_prepare_emits_real_body_on_sbsa() {
 #[test]
 fn smbios_prepare_unreachable_on_boards_without_smbios_config() {
     // qemu-riscv64 has no `smbios` config and no SmBiosPrepare
-    // capability, so the body is dead-code unreachable.
+    // capability, so the primitive returns no descriptor.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
-        src.contains("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
-            || src.contains("board_gen::smbios_prepare: board has no `smbios` RON config"),
-        "riscv64 must emit the smbios no-config/no-cap unreachable body; got:\n{src}"
+        src.contains("fn smbios_desc") && src.contains("None"),
+        "riscv64 must emit a no-descriptor smbios primitive; got:\n{src}"
     );
     assert!(
         !src.contains("fstart_capabilities::smbios::prepare"),

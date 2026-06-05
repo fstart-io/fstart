@@ -14,12 +14,12 @@ use fstart_types::BoardConfig;
 
 use super::super::tokens::hex_addr;
 
-/// Generate code for the SmBiosPrepare capability.
+/// Generate the static descriptor expression for the SmBiosPrepare capability.
 ///
 /// Constructs a `fstart_capabilities::smbios::SmbiosDesc` struct literal
-/// from the board RON's `smbios` config, then calls the library's
-/// `prepare()` function which handles all SMBIOS writer sequencing.
-pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> TokenStream {
+/// from the board RON's `smbios` config. The handwritten runtime executor
+/// owns the call to `fstart_capabilities::smbios::prepare()`.
+pub(in crate::stage_gen) fn generate_smbios_desc(config: &BoardConfig) -> TokenStream {
     let smbios_cfg = config.smbios.as_ref().unwrap_or_else(|| {
         panic!("SmBiosPrepare capability requires `smbios` config in board RON");
     });
@@ -135,24 +135,22 @@ pub(in crate::stage_gen) fn generate_smbios_prepare(config: &BoardConfig) -> Tok
         .unwrap_or_else(|| (quote! { 0u64 }, quote! { 0u64 }));
 
     quote! {
-        fstart_capabilities::smbios::prepare(
-            &fstart_capabilities::smbios::SmbiosDesc {
-                bios_vendor: #bios_vendor,
-                bios_version: #bios_version,
-                bios_release_date: #bios_release_date,
-                sys_manufacturer: #sys_manufacturer,
-                sys_product: #sys_product,
-                sys_version: #sys_version,
-                sys_serial: #sys_serial_expr,
-                bb_manufacturer: #bb_manufacturer,
-                bb_product: #bb_product,
-                chassis_type: #chassis_byte,
-                chassis_manufacturer: #chassis_manufacturer,
-                processors: &[#(#processor_items),*],
-                memory_devices: &[#(#memory_items),*],
-                ram_base: #ram_base_lit,
-                ram_end: #ram_end_lit,
-            },
-        );
+        fstart_capabilities::smbios::SmbiosDesc {
+            bios_vendor: #bios_vendor,
+            bios_version: #bios_version,
+            bios_release_date: #bios_release_date,
+            sys_manufacturer: #sys_manufacturer,
+            sys_product: #sys_product,
+            sys_version: #sys_version,
+            sys_serial: #sys_serial_expr,
+            bb_manufacturer: #bb_manufacturer,
+            bb_product: #bb_product,
+            chassis_type: #chassis_byte,
+            chassis_manufacturer: #chassis_manufacturer,
+            processors: &[#(#processor_items),*],
+            memory_devices: &[#(#memory_items),*],
+            ram_base: #ram_base_lit,
+            ram_end: #ram_end_lit,
+        }
     }
 }

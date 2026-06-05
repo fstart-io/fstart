@@ -11,7 +11,7 @@ use fstart_device_registry::DriverInstance;
 use fstart_types::memory::RegionKind;
 use fstart_types::{BoardConfig, DeviceConfig};
 
-pub(super) use smbios::generate_smbios_prepare;
+pub(super) use smbios::generate_smbios_desc;
 
 // ---------------------------------------------------------------------------
 // DRAM region / eGON SRAM lookups

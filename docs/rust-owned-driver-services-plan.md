@@ -127,7 +127,7 @@ High-level capability methods are not part of the final `Board` trait. Methods
 to remove include:
 
 - `fdt_prepare`, `payload_load`, `stage_load`;
-- `acpi_prepare`, `smbios_prepare`, `acpi_load` orchestration;
+- `acpi_prepare`, `acpi_load` orchestration;
 - `mp_init`;
 - `load_next_stage`.
 
@@ -142,6 +142,8 @@ primitive `with_boot_media(...)` dispatch instead of calling
 `fstart_capabilities::sig_verify` itself. Phase sequencing is also runtime-owned:
 the adapter exposes a single primitive `(StagePhase, DeviceId)` dispatcher
 instead of per-phase list trampolines such as `pre_console_init(ids)`.
+`SmBiosPrepare` is runtime-owned too: generated code now emits only an
+`SmbiosDesc` primitive while the executor calls `smbios::prepare`.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

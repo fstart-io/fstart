@@ -277,11 +277,9 @@ pub trait Board: Sized {
     /// with its AcpiConfig descriptor (held in `&self`).
     fn acpi_prepare(&mut self);
 
-    /// Stage operation for `SmBiosPrepare`.
-    ///
-    /// Generated adapter calls `fstart_capabilities::smbios_prepare`
-    /// with its SmbiosConfig descriptor (held in `&self`).
-    fn smbios_prepare(&self);
+    /// Static SMBIOS descriptor for `SmBiosPrepare`, if this stage has one.
+    #[cfg(feature = "flow-smbios")]
+    fn smbios_desc(&self) -> Option<fstart_capabilities::smbios::SmbiosDesc<'static>>;
 
     /// Stage operation for `MpInit`.
     ///

@@ -155,7 +155,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             StageOp::AcpiLoad(id) => device_op(board, &mut inited, id, Board::acpi_load),
 
             #[cfg(feature = "flow-smbios")]
-            StageOp::SmBiosPrepare => board.smbios_prepare(),
+            StageOp::SmBiosPrepare => smbios_prepare(board),
 
             #[cfg(feature = "flow-fel")]
             StageOp::ReturnToFel => board.return_to_fel(),
@@ -379,6 +379,14 @@ fn publish_block_boot_media<B: Board>(
         size,
         temp_ram_buffer,
     ));
+}
+
+#[cfg(feature = "flow-smbios")]
+fn smbios_prepare<B: Board>(board: &B) {
+    let Some(desc) = board.smbios_desc() else {
+        board.halt();
+    };
+    fstart_capabilities::smbios::prepare(&desc);
 }
 
 #[cfg(feature = "flow-fel")]

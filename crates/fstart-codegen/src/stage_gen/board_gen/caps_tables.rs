@@ -161,17 +161,14 @@ pub(super) fn acpi_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     }
 }
 
-/// Emit the body of `Board::smbios_prepare`.
-pub(super) fn smbios_prepare_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+/// Emit the body of primitive `Board::smbios_desc`.
+pub(super) fn smbios_desc_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     if !ctx.stage.uses_smbios {
-        return quote! {
-            unreachable!("board_gen::smbios_prepare: stage does not declare SmBiosPrepare")
-        };
+        return quote! { None };
     }
     if ctx.config.smbios.is_none() {
-        return quote! {
-            unreachable!("board_gen::smbios_prepare: board has no `smbios` RON config")
-        };
+        return quote! { None };
     }
-    crate::stage_gen::capabilities::generate_smbios_prepare(ctx.config)
+    let desc = crate::stage_gen::capabilities::generate_smbios_desc(ctx.config);
+    quote! { Some(#desc) }
 }

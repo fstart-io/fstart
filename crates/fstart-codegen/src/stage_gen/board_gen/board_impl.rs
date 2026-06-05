@@ -7,9 +7,7 @@ use fstart_device_registry::Service;
 use fstart_types::Platform;
 
 use super::boot_media::with_boot_media_body;
-use super::caps_tables::{
-    acpi_load_body, acpi_prepare_body, memory_detect_body, smbios_prepare_body,
-};
+use super::caps_tables::{acpi_load_body, acpi_prepare_body, memory_detect_body, smbios_desc_body};
 use super::fdt::{fdt_prepare_body, return_to_fel_body, stage_load_body};
 use super::init_caps::{dram_init_body, pci_init_body};
 use super::lifecycle::init_device_body;
@@ -83,7 +81,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let acpi_load_body = acpi_load_body(ctx);
     let memory_detect_body = memory_detect_body(ctx);
     let acpi_prepare_body = acpi_prepare_body(ctx);
-    let smbios_prepare_body = smbios_prepare_body(ctx);
+    let smbios_desc_body = smbios_desc_body(ctx);
     let mp_init_body = mp_init_body(ctx);
     let soc_boot_media_body = soc_boot_media_body(ctx);
     let load_next_stage_body = load_next_stage_body(ctx);
@@ -111,7 +109,12 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             fn payload_load(&self) -> ! { #payload_load_body }
             fn stage_load(&self, next_stage: &str) -> ! { #stage_load_body }
             fn acpi_prepare(&mut self) { #acpi_prepare_body }
-            fn smbios_prepare(&self) { #smbios_prepare_body }
+            #[cfg(feature = "stage-flow-smbios")]
+            fn smbios_desc(
+                &self,
+            ) -> Option<fstart_capabilities::smbios::SmbiosDesc<'static>> {
+                #smbios_desc_body
+            }
 
             fn mp_init(
                 &mut self,
