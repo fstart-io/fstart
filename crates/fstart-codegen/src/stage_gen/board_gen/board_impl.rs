@@ -119,11 +119,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #install_logger_body
             }
 
-            fn memory_init(&self) {
-                fstart_capabilities::memory_init();
-            }
-
-
             fn fdt_prepare(&self) { #fdt_prepare_body }
             fn payload_load(&self) -> ! { #payload_load_body }
             fn stage_load(&self, next_stage: &str) -> ! { #stage_load_body }

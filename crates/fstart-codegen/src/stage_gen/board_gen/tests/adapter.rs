@@ -21,8 +21,8 @@ fn adapter_compiles_for_qemu_riscv64() {
     assert!(src.contains("_dram_base: u64"));
     assert!(src.contains("_dram_size_static: u64"));
     assert!(src.contains("_handoff: Option<fstart_types::handoff::StageHandoff>"));
-    // Trivial trampolines wired to the real capability helpers.
-    assert!(src.contains("fstart_capabilities::memory_init()"));
+    // Trivial capability flow lives in the runtime executor, not the adapter.
+    assert!(!src.contains("fstart_capabilities::memory_init()"));
     // Boot-media state publication and FFS anchor access are primitive Board methods.
     assert!(src.contains("fn set_boot_media_state"));
     assert!(src.contains("fn ffs_anchor"));

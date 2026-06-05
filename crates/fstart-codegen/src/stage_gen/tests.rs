@@ -136,8 +136,12 @@ fn test_memory_init_after_console() {
     let source = generate_stage_source(&parsed, None);
 
     assert!(
-        source.contains("fstart_capabilities::memory_init()"),
-        "should call memory_init"
+        source.contains("StageOp::MemoryInit"),
+        "should emit MemoryInit plan data"
+    );
+    assert!(
+        !source.contains("fstart_capabilities::memory_init()"),
+        "generated source must not own MemoryInit runtime flow"
     );
 }
 

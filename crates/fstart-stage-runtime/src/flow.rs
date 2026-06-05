@@ -85,7 +85,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             #[cfg(feature = "flow-console-init")]
             StageOp::ConsoleInit(id) => console_init(board, &mut inited, id),
             #[cfg(feature = "flow-memory-init")]
-            StageOp::MemoryInit => board.memory_init(),
+            StageOp::MemoryInit => fstart_capabilities::memory_init(),
             #[cfg(feature = "flow-dram-init")]
             StageOp::DramInit(id) => dram_init(board, &mut inited, id),
             #[cfg(feature = "flow-driver-init")]

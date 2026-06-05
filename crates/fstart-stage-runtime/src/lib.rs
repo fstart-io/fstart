@@ -234,11 +234,6 @@ pub trait Board: Sized {
     // dep cycle with `fstart-log` and keeps the runtime free of the
     // FFS / crypto / FDT / SMBIOS tree.
 
-    /// Stage operation for `MemoryInit`.
-    ///
-    /// Generated adapter delegates to `fstart_capabilities::memory_init`.
-    fn memory_init(&self);
-
     /// Stage operation for `FdtPrepare`.
     ///
     /// Generated adapter reads DTB source/destination addresses,
