@@ -149,7 +149,7 @@ pub fn driver_init_complete(device_count: usize) {
 /// This function lives in firmware library code — codegen just calls it
 /// with the appropriate device reference and buffer.
 pub fn acpi_load(
-    provider: &impl fstart_services::acpi_provider::AcpiTableProvider,
+    provider: &(impl fstart_services::acpi_provider::AcpiTableProvider + ?Sized),
     buffer: &mut [u8],
     device_name: &str,
 ) -> Result<u64, fstart_services::ServiceError> {

@@ -31,8 +31,12 @@ flow-ffs = [
 ]
 flow-fdt = ["stage-executor"]
 flow-mp = ["stage-executor"]
-flow-acpi = ["stage-executor"]
-flow-smbios = ["stage-executor", "dep:fstart-capabilities", "fstart-capabilities/smbios"]
+flow-acpi = ["stage-executor", "dep:fstart-capabilities"]
+flow-smbios = [
+  "stage-executor",
+  "dep:fstart-capabilities",
+  "fstart-capabilities/smbios",
+]
 flow-fel = ["stage-executor"]
 
 [dependencies]

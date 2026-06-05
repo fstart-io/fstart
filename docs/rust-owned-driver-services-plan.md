@@ -127,7 +127,7 @@ High-level capability methods are not part of the final `Board` trait. Methods
 to remove include:
 
 - `fdt_prepare`, `payload_load`, `stage_load`;
-- `acpi_prepare`, `acpi_load` orchestration;
+- `acpi_prepare` orchestration;
 - `mp_init`;
 - `load_next_stage`.
 
@@ -143,7 +143,10 @@ primitive `with_boot_media(...)` dispatch instead of calling
 the adapter exposes a single primitive `(StagePhase, DeviceId)` dispatcher
 instead of per-phase list trampolines such as `pre_console_init(ids)`.
 `SmBiosPrepare` is runtime-owned too: generated code now emits only an
-`SmbiosDesc` primitive while the executor calls `smbios::prepare`.
+`SmbiosDesc` primitive while the executor calls `smbios::prepare`. `AcpiLoad`
+now follows the same boundary: the adapter exposes primitive provider borrowing
+and RSDP state publication while runtime owns the static buffer and capability
+call.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

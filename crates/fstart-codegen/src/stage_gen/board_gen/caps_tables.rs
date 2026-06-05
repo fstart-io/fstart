@@ -7,8 +7,8 @@ use super::model::BoardEmitModel;
 use fstart_device_registry::Service;
 use fstart_types::Capability;
 
-/// Emit the body of `Board::acpi_load`.
-pub(super) fn acpi_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+/// Emit the body of primitive `Board::with_acpi_table_provider`.
+pub(super) fn with_acpi_table_provider_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx
         .runtime_devices
         .providers(Service::AcpiTableProvider)
@@ -18,33 +18,19 @@ pub(super) fn acpi_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             let dev_name = device.name;
             quote! {
                 #id_lit => {
-                    #[repr(align(16))]
-                    struct _AcpiLoadBufStore(core::cell::UnsafeCell<[u8; 256 * 1024]>);
-                    // SAFETY: single-threaded firmware init, buffer used exactly once.
-                    unsafe impl Sync for _AcpiLoadBufStore {}
-                    static _ACPI_LOAD_BUF: _AcpiLoadBufStore =
-                        _AcpiLoadBufStore(core::cell::UnsafeCell::new([0u8; 256 * 1024]));
-                    let _acpi_buf = unsafe { &mut *_ACPI_LOAD_BUF.0.get() };
-                    let rsdp = fstart_capabilities::acpi_load(
+                    Ok(run(
                         self.#field
                             .as_ref()
-                            .unwrap_or_else(|| fstart_platform::halt()),
-                        _acpi_buf,
+                            .ok_or(fstart_stage_runtime::RuntimeError::UnknownDevice)?,
                         #dev_name,
-                    )
-                    .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                    self._acpi_rsdp_addr = rsdp;
-                    Ok(())
+                    ))
                 }
             }
         });
     quote! {
         match id {
             #(#arms)*
-            _ => {
-                fstart_log::error!("acpi_load: unknown device id {}", id);
-                fstart_platform::halt();
-            }
+            _ => Err(fstart_stage_runtime::RuntimeError::UnknownDevice),
         }
     }
 }

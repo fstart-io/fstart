@@ -80,26 +80,21 @@ fn smbios_prepare_unreachable_on_boards_without_smbios_config() {
 #[test]
 fn acpi_load_emits_real_body_on_q35() {
     // qemu-q35 declares `AcpiLoad(device: "fw_cfg0")` and the
-    // `fw_cfg0` device provides `AcpiTableProvider`.  The body
-    // must allocate the 256 KiB buffer, call acpi_load, and
-    // write the RSDP into `self._acpi_rsdp_addr`.
+    // `fw_cfg0` device provides `AcpiTableProvider`. The adapter
+    // must expose primitive provider dispatch and RSDP state publication;
+    // runtime owns the buffer and acpi_load call.
     let src = adapter_source_for_board("qemu-q35");
     assert!(
-        src.contains("fstart_capabilities::acpi_load"),
-        "acpi_load must call the capability fn; got:\n{src}"
+        !src.contains("fstart_capabilities::acpi_load"),
+        "adapter must not call the ACPI load capability fn; got:\n{src}"
     );
     assert!(
-        src.contains("256 * 1024"),
-        "acpi_load must declare the 256 KiB buffer; got:\n{src}"
+        !src.contains("_ACPI_LOAD_BUF"),
+        "adapter must not own the ACPI load buffer; got:\n{src}"
     );
     assert!(
-        src.contains("_ACPI_LOAD_BUF"),
-        "acpi_load must use the static buffer symbol; got:\n{src}"
-    );
-    // RSDP is stored on `self`.
-    assert!(
-        src.contains("_acpi_rsdp_addr"),
-        "acpi_load must write RSDP into self._acpi_rsdp_addr; got:\n{src}"
+        src.contains("fn with_acpi_table_provider") && src.contains("fn set_acpi_rsdp_addr"),
+        "adapter must expose primitive ACPI provider/state methods; got:\n{src}"
     );
     // Device name is baked in.
     assert!(
@@ -136,8 +131,8 @@ fn acpi_and_memory_detect_halt_on_non_x86_boards() {
     // block's closing brace.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
-        src.contains("acpi_load: unknown device id"),
-        "non-ACPI board's acpi_load must emit the wildcard log; got:\n{src}"
+        src.contains("fn with_acpi_table_provider") && src.contains("RuntimeError::UnknownDevice"),
+        "non-ACPI board's provider primitive must reject unknown ids; got:\n{src}"
     );
     assert!(
         src.contains("memory_detect: stage does not declare MemoryDetect"),

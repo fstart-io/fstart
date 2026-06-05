@@ -152,7 +152,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             #[cfg(feature = "flow-acpi")]
             StageOp::AcpiPrepare => board.acpi_prepare(),
             #[cfg(feature = "flow-acpi")]
-            StageOp::AcpiLoad(id) => device_op(board, &mut inited, id, Board::acpi_load),
+            StageOp::AcpiLoad(id) => acpi_load(board, &mut inited, id),
 
             #[cfg(feature = "flow-smbios")]
             StageOp::SmBiosPrepare => smbios_prepare(board),
@@ -387,6 +387,35 @@ fn smbios_prepare<B: Board>(board: &B) {
         board.halt();
     };
     fstart_capabilities::smbios::prepare(&desc);
+}
+
+#[cfg(feature = "flow-acpi")]
+fn acpi_load<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
+    if board.init_device(id).is_err() {
+        board.halt();
+    }
+
+    #[repr(align(16))]
+    struct AcpiLoadBufStore(core::cell::UnsafeCell<[u8; 256 * 1024]>);
+
+    // SAFETY: firmware init is single-threaded and AcpiLoad runs once per
+    // stage plan. The buffer is intentionally static so loaded tables remain
+    // valid for later boot handoff.
+    unsafe impl Sync for AcpiLoadBufStore {}
+
+    static ACPI_LOAD_BUF: AcpiLoadBufStore =
+        AcpiLoadBufStore(core::cell::UnsafeCell::new([0u8; 256 * 1024]));
+
+    // SAFETY: see ACPI_LOAD_BUF Sync safety comment above.
+    let buffer = unsafe { &mut *ACPI_LOAD_BUF.0.get() };
+    let rsdp = match board.with_acpi_table_provider(id, |provider, name| {
+        fstart_capabilities::acpi_load(provider, buffer, name)
+    }) {
+        Ok(Ok(rsdp)) => rsdp,
+        Ok(Err(_)) | Err(_) => board.halt(),
+    };
+    board.set_acpi_rsdp_addr(rsdp);
+    inited.set(id);
 }
 
 #[cfg(feature = "flow-fel")]

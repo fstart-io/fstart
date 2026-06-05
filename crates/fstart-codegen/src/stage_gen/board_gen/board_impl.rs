@@ -7,7 +7,9 @@ use fstart_device_registry::Service;
 use fstart_types::Platform;
 
 use super::boot_media::with_boot_media_body;
-use super::caps_tables::{acpi_load_body, acpi_prepare_body, memory_detect_body, smbios_desc_body};
+use super::caps_tables::{
+    acpi_prepare_body, memory_detect_body, smbios_desc_body, with_acpi_table_provider_body,
+};
 use super::fdt::{fdt_prepare_body, return_to_fel_body, stage_load_body};
 use super::init_caps::{dram_init_body, pci_init_body};
 use super::lifecycle::init_device_body;
@@ -78,7 +80,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let dram_init_body = dram_init_body(ctx);
     let phase_init_body = phase_init_body(ctx);
 
-    let acpi_load_body = acpi_load_body(ctx);
+    let with_acpi_table_provider_body = with_acpi_table_provider_body(ctx);
     let memory_detect_body = memory_detect_body(ctx);
     let acpi_prepare_body = acpi_prepare_body(ctx);
     let smbios_desc_body = smbios_desc_body(ctx);
@@ -147,11 +149,19 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #pci_init_body
             }
 
-            fn acpi_load(
-                &mut self,
+            fn with_acpi_table_provider<R>(
+                &self,
                 id: fstart_types::DeviceId,
-            ) -> Result<(), fstart_services::device::DeviceError> {
-                #acpi_load_body
+                run: impl FnOnce(
+                    &dyn fstart_services::acpi_provider::AcpiTableProvider,
+                    &'static str,
+                ) -> R,
+            ) -> Result<R, fstart_stage_runtime::RuntimeError> {
+                #with_acpi_table_provider_body
+            }
+
+            fn set_acpi_rsdp_addr(&mut self, addr: u64) {
+                self._acpi_rsdp_addr = addr;
             }
 
             fn memory_detect(

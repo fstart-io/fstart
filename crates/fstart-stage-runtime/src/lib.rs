@@ -314,11 +314,19 @@ pub trait Board: Sized {
     /// plus `allocate_windows`.
     fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
-    /// Stage operation for `AcpiLoad`.  `id` is the resolved device ID.
+    /// Borrow an ACPI table provider by device id for one operation.
     ///
-    /// Generated adapter reads the ACPI target buffer from `&self`
-    /// and calls `fstart_capabilities::acpi_load`.
-    fn acpi_load(&mut self, id: DeviceId) -> Result<(), DeviceError>;
+    /// The executor owns buffer allocation, capability invocation, and RSDP
+    /// state publication; the board adapter only dispatches to the concrete
+    /// provider field and supplies the static device name for logging.
+    fn with_acpi_table_provider<R>(
+        &self,
+        id: DeviceId,
+        run: impl FnOnce(&dyn fstart_services::acpi_provider::AcpiTableProvider, &'static str) -> R,
+    ) -> Result<R, RuntimeError>;
+
+    /// Publish the prepared ACPI RSDP address.
+    fn set_acpi_rsdp_addr(&mut self, addr: u64);
 
     /// Stage operation for `MemoryDetect`.  `id` is the resolved device ID.
     ///
