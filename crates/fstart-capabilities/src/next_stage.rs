@@ -1,9 +1,10 @@
 //! LoadNextStage runtime helpers.
 //!
-//! Extracts the handoff serialization, block device read, and jump
-//! logic from codegen into testable library functions. Codegen still
-//! handles SoC-specific header parsing (eGON offsets) and multi-device
-//! match dispatch, but calls these functions for the actual work.
+//! Shared helpers used by the runtime executor for next-stage handoff.
+//!
+//! Runtime owns eGON offset/size validation, block-device selection,
+//! stage reads, handoff serialization, and jump sequencing. Codegen emits
+//! only primitive descriptors and service dispatch for the executor.
 
 use fstart_services::{BlockDevice, ServiceError};
 
@@ -18,7 +19,7 @@ use fstart_services::{BlockDevice, ServiceError};
 /// `size` bytes available. This is guaranteed by the board config and
 /// linker script.
 pub fn read_stage_to_addr(
-    dev: &impl BlockDevice,
+    dev: &(impl BlockDevice + ?Sized),
     dev_name: &str,
     next_stage: &str,
     offset: u64,

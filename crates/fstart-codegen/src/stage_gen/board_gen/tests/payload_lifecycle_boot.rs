@@ -157,55 +157,54 @@ fn soc_boot_media_is_none_on_non_sunxi_boards() {
 
 #[test]
 fn load_next_stage_emits_real_body_on_sunxi_bootblock() {
-    // orangepi-pc2 bootblock: LoadNextStage(devices=[mmc0],
-    // next_stage: "main").  The body must emit the stage-name
-    // match, eGON header read, per-device dispatch, and
-    // jump_to_with_handoff call.
+    // orangepi-pc2 bootblock: LoadNextStage(devices=[mmc0], next_stage:
+    // "main"). The adapter must expose primitive stage address/eGON/block
+    // dispatch data; runtime owns read/serialize/jump sequencing.
     let src = adapter_source_for_stage("orangepi-pc2", "bootblock");
     assert!(
-        src.contains("fstart_capabilities::next_stage::read_stage_to_addr"),
-        "load_next_stage must call read_stage_to_addr; got:\n{src}"
+        !src.contains("fstart_capabilities::next_stage::read_stage_to_addr"),
+        "adapter must not read next stage directly; got:\n{src}"
     );
     assert!(
-        src.contains("fstart_capabilities::next_stage::serialize_handoff"),
-        "load_next_stage must call serialize_handoff; got:\n{src}"
+        !src.contains("fstart_capabilities::next_stage::serialize_handoff"),
+        "adapter must not serialize handoff directly; got:\n{src}"
     );
     assert!(
-        src.contains("fstart_platform::jump_to_with_handoff"),
-        "load_next_stage must jump with handoff; got:\n{src}"
+        src.contains("fn jump_to_with_handoff"),
+        "adapter must expose final jump-with-handoff primitive; got:\n{src}"
     );
     assert!(
         src.contains("next_stage_offset_at"),
-        "load_next_stage must read next_stage_offset_at; got:\n{src}"
+        "adapter must expose eGON next_stage_offset_at scalar; got:\n{src}"
     );
     assert!(
         src.contains("next_stage_size_at"),
-        "load_next_stage must read next_stage_size_at; got:\n{src}"
+        "adapter must expose eGON next_stage_size_at scalar; got:\n{src}"
     );
     // Stage-name dispatch: RON declares "bootblock" + "main"
     // stages; the arm for "main" must exist.
     assert!(
         src.contains("\"main\""),
-        "load_next_stage must have a match arm for \"main\"; got:\n{src}"
+        "next_stage_addr must have a match arm for \"main\"; got:\n{src}"
     );
     // Per-device dispatch references .mmc0.
     assert!(
         src.contains(".mmc0"),
-        "load_next_stage must dispatch to self.mmc0; got:\n{src}"
+        "block-device primitive must dispatch to self.mmc0; got:\n{src}"
     );
     assert!(
-        !src.contains("board_gen::load_next_stage: stage does not use"),
-        "sunxi bootblock must not emit the dead-code unreachable body; got:\n{src}"
+        src.contains("fn next_stage_addr") && src.contains("fn egon_next_stage"),
+        "sunxi bootblock must expose next-stage primitives; got:\n{src}"
     );
 }
 
 #[test]
 fn load_next_stage_dead_code_unreachable_on_non_sunxi_boards() {
-    // qemu-riscv64 never calls LoadNextStage; the body is unreachable.
+    // qemu-riscv64 never calls LoadNextStage; primitive descriptors are absent.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
-        src.contains("board_gen::load_next_stage: stage does not use"),
-        "qemu-riscv64 must emit the dead-code load_next_stage unreachable body; got:\n{src}"
+        src.contains("fn next_stage_addr") && src.contains("None"),
+        "qemu-riscv64 must emit no next-stage address descriptor; got:\n{src}"
     );
     assert!(
         !src.contains("next_stage_offset_at"),

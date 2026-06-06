@@ -21,7 +21,7 @@ flow-memory-init = ["stage-executor", "dep:fstart-capabilities"]
 flow-dram-init = ["stage-executor"]
 flow-driver-init = ["stage-executor"]
 flow-phases = ["stage-executor"]
-flow-pci = ["stage-executor"]
+flow-pci = ["stage-executor", "fstart-services/pci"]
 flow-memory-detect = ["stage-executor", "dep:fstart-capabilities"]
 flow-boot-media = ["stage-executor"]
 flow-ffs = [
@@ -30,7 +30,11 @@ flow-ffs = [
   "fstart-capabilities/ffs",
 ]
 flow-payload-fit = ["flow-ffs", "fstart-capabilities/fit"]
-flow-fdt = ["stage-executor", "dep:fstart-capabilities", "fstart-capabilities/fdt"]
+flow-fdt = [
+  "stage-executor",
+  "dep:fstart-capabilities",
+  "fstart-capabilities/fdt",
+]
 flow-fdt-ffs = ["flow-fdt", "fstart-capabilities/ffs"]
 flow-mp = ["stage-executor"]
 flow-acpi = [
@@ -44,7 +48,11 @@ flow-smbios = [
   "dep:fstart-capabilities",
   "fstart-capabilities/smbios",
 ]
-flow-fel = ["stage-executor"]
+flow-fel = [
+  "stage-executor",
+  "dep:fstart-capabilities",
+  "fstart-capabilities/handoff",
+]
 
 [dependencies]
 fstart-types = { workspace = true }

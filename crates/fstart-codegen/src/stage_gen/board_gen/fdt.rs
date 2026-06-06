@@ -9,7 +9,6 @@ use fstart_types::{BootMedium, Capability, FdtSource, PayloadConfig, Platform};
 
 use crate::stage_gen::tokens::hex_addr;
 
-use super::boot_media::{anchor_bytes_stmt, match_boot_media};
 use super::model::BoardEmitModel;
 
 /// Emit the body of primitive `Board::fdt_prepare_desc`.
@@ -176,76 +175,51 @@ fn x86_postcar_config_tokens(ctx: &BoardEmitModel<'_>) -> TokenStream {
     }
 }
 
-/// Emit the body of `Board::stage_load`.
-pub(super) fn stage_load_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
-    if !ctx.stage.uses_ffs {
-        return quote! {
-            let _ = next_stage;
-            unreachable!("board_gen::stage_load requires an FFS-using stage")
-        };
+/// Emit the body of primitive `Board::stage_load_desc`.
+pub(super) fn stage_load_desc_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let uses_stage_load = ctx
+        .stage
+        .capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::StageLoad { .. }));
+    if !uses_stage_load {
+        return quote! { None };
     }
+    let x86_postcar = ctx.config.platform == Platform::X86_64;
+    quote! {
+        Some(fstart_stage_runtime::StageLoadDesc {
+            x86_postcar: #x86_postcar,
+        })
+    }
+}
 
-    let anchor = anchor_bytes_stmt();
-
-    if ctx.config.platform == Platform::X86_64 {
-        let postcar_config = x86_postcar_config_tokens(ctx);
+/// Emit the body of the minimal x86 post-CAR stage-load primitive.
+pub(super) fn stage_load_postcar_mmio_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+    let uses_stage_load = ctx
+        .stage
+        .capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::StageLoad { .. }));
+    if ctx.config.platform != Platform::X86_64 || !uses_stage_load {
         return quote! {
-            fstart_log::info!("stage_load: generated trampoline enter");
-            #anchor
-            #postcar_config
-            fstart_log::info!("stage_load: anchor slice ready");
-            match self._boot_media {
-                fstart_stage_runtime::BootMediaState::FirmwareImage { image, temp_ram_buffer: _ } => {
-                    if let Some(window) = image.contiguous_window() {
-                        fstart_log::info!("stage_load: switching to post-CAR DRAM stack for firmware image");
-                        // SAFETY: same contract as the MMIO path; the provider
-                        // reported a single contiguous readable firmware window.
-                        unsafe {
-                            fstart_platform::car_teardown::stage_load_mmio(
-                                &_FSTART_POSTCAR_CONFIG,
-                                next_stage,
-                                _anchor_bytes,
-                                window.cpu_base,
-                                window.size,
-                            );
-                        }
-                    } else {
-                        fstart_log::error!("stage_load: x86 post-CAR StageLoad needs a contiguous firmware image window");
-                    }
-                }
-                fstart_stage_runtime::BootMediaState::None => {
-                    fstart_log::error!("stage_load: no boot media configured");
-                }
-                fstart_stage_runtime::BootMediaState::FirmwareImageBlock { device_id, .. } => {
-                    fstart_log::error!("stage_load: x86 post-CAR StageLoad supports firmware-image windows only, device {}", device_id);
-                }
-            }
+            let _ = (next_stage, anchor, image_base, image_size);
             fstart_platform::halt()
         };
     }
-
-    let bm_usage = quote! {
-        fstart_capabilities::stage_load(
-            next_stage,
-            _anchor_bytes,
-            &_bm,
-            fstart_platform::jump_to,
-        );
-    };
-    let none_body = quote! {
-        fstart_log::error!("stage_load: no boot media configured");
-    };
-    let match_body = match_boot_media(ctx, &bm_usage, "stage_load", &none_body);
-
+    let postcar_config = x86_postcar_config_tokens(ctx);
     quote! {
-        fstart_log::info!("stage_load: generated trampoline enter");
-        #anchor
-        fstart_log::info!("stage_load: anchor slice ready");
-        #match_body
-        fstart_log::error!(
-            "stage_load: capability returned without jumping — halting",
-        );
-        fstart_platform::halt()
+        #postcar_config
+        // SAFETY: the runtime executor only calls this primitive with a
+        // contiguous firmware-image window selected from the active boot media.
+        unsafe {
+            fstart_platform::car_teardown::stage_load_mmio(
+                &_FSTART_POSTCAR_CONFIG,
+                next_stage,
+                anchor,
+                image_base,
+                image_size,
+            );
+        }
     }
 }
 

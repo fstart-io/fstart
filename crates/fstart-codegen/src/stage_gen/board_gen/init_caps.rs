@@ -40,8 +40,8 @@ pub(super) fn dram_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     }
 }
 
-/// Emit the body of `Board::pci_init`.
-pub(super) fn pci_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
+/// Emit the body of primitive `Board::with_pci_root`.
+pub(super) fn with_pci_root_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx
         .runtime_devices
         .providers(Service::PciRootBus)
@@ -51,30 +51,20 @@ pub(super) fn pci_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             let drv_name = device.instance.meta().name;
             let field = format_ident!("{}", device.name);
             quote! {
-                #id_lit => {
-                    let dev = self.#field
+                #id_lit => Ok(run(
+                    self.#field
                         .as_mut()
-                        .ok_or(fstart_services::device::DeviceError::InitFailed)?;
-                    use fstart_services::PciRootBus as _PciRootBus;
-                    _PciRootBus::init_bus(dev)
-                        .map_err(|_| fstart_services::device::DeviceError::InitFailed)?;
-                    fstart_log::info!(
-                        "PCI init complete: {} ({})",
-                        #dev_name,
-                        #drv_name,
-                    );
-                    Ok(())
-                }
+                        .ok_or(fstart_stage_runtime::RuntimeError::UnknownDevice)?,
+                    #dev_name,
+                    #drv_name,
+                )),
             }
         });
 
     quote! {
         match id {
             #(#arms)*
-            _ => {
-                fstart_log::error!("pci_init: unknown device id {}", id);
-                fstart_platform::halt();
-            }
+            _ => Err(fstart_stage_runtime::RuntimeError::UnknownDevice),
         }
     }
 }

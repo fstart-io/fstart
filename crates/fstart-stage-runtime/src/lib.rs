@@ -109,6 +109,31 @@ pub struct PayloadLoadDesc {
     pub print_x86_mtrrs: bool,
 }
 
+/// Primitive descriptor for `StageLoad`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageLoadDesc {
+    /// Whether this stage must use the x86 post-CAR MMIO handoff path.
+    pub x86_postcar: bool,
+}
+
+/// Load and handoff addresses for a named next stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NextStageAddr {
+    /// Entry/load address for the next stage.
+    pub load_addr: u64,
+    /// Address of the serialized handoff buffer.
+    pub handoff_addr: u64,
+}
+
+/// eGON-published next-stage extent inside the selected firmware image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EgonNextStage {
+    /// Offset of the next-stage image relative to the firmware-image base.
+    pub offset: u64,
+    /// Size of the next-stage image in bytes.
+    pub size: usize,
+}
+
 // ---------------------------------------------------------------------------
 // BootMediaState — runtime record of which boot medium is currently active
 // ---------------------------------------------------------------------------
@@ -286,8 +311,10 @@ pub enum StagePhase {
 ///   metadata (`DeviceId`, `next_stage`) rather than board-level addresses,
 ///   sizes, bootargs, or descriptor strings.
 ///
-/// - **Diverging trampolines return `!`.**  `payload_load`,
-///   `stage_load`, `load_next_stage`, `return_to_fel` never come back.
+/// - **Diverging platform endpoints return `!`.**  Handwritten runtime flow
+///   owns payload/stage loading and next-stage sequencing; final platform
+///   endpoints such as `uefi_payload_load`, `return_to_fel`, `boot_linux`,
+///   `jump_to`, and `jump_to_with_handoff` never come back.
 pub trait Board: Sized {
     // ----- Device lifecycle ------------------------------------------------
 
@@ -341,12 +368,23 @@ pub trait Board: Sized {
     #[cfg(feature = "flow-ffs")]
     fn uefi_payload_load(&self) -> !;
 
-    /// Stage operation for `StageLoad`.  Diverges.  `next_stage` comes from
-    /// the board RON capability.
+    /// Static `StageLoad` descriptor, if this stage has one.
+    #[cfg(feature = "flow-ffs")]
+    fn stage_load_desc(&self) -> Option<StageLoadDesc>;
+
+    /// Minimal x86 post-CAR stage-load platform primitive.
     ///
-    /// Generated adapter reads its anchor + boot media from `&self`
-    /// and calls `fstart_capabilities::stage_load`.  Halts on failure.
-    fn stage_load(&self, next_stage: &str) -> !;
+    /// The executor owns selecting the active firmware-image window and error
+    /// policy; the board adapter supplies only the platform post-CAR data and
+    /// invokes the platform's stack-switching handoff primitive.
+    #[cfg(feature = "flow-ffs")]
+    fn stage_load_postcar_mmio(
+        &self,
+        next_stage: &str,
+        anchor: &'static [u8],
+        image_base: u64,
+        image_size: u64,
+    ) -> !;
 
     /// Static platform ACPI descriptor for `AcpiPrepare`, if this stage has one.
     #[cfg(feature = "flow-acpi")]
@@ -395,11 +433,17 @@ pub trait Board: Sized {
     /// chipset/SMBus setup.
     fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
-    /// Stage operation for `PciInit`.  `id` is the resolved device ID.
+    /// Borrow a PCI root bus by device id for one operation.
     ///
-    /// Generated adapter calls the appropriate `PciHost::enumerate`
-    /// plus `allocate_windows`.
-    fn pci_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;
+    /// The executor owns init policy and service invocation; the board adapter
+    /// only dispatches to the concrete provider field and supplies names for
+    /// logging.
+    #[cfg(feature = "flow-pci")]
+    fn with_pci_root<R>(
+        &mut self,
+        id: DeviceId,
+        run: impl FnOnce(&mut dyn fstart_services::PciRootBus, &'static str, &'static str) -> R,
+    ) -> Result<R, RuntimeError>;
 
     /// Borrow an ACPI table provider by device id for one operation.
     ///
@@ -451,6 +495,10 @@ pub trait Board: Sized {
     /// FFS anchor bytes for stages that use the firmware filesystem.
     fn ffs_anchor(&self) -> Option<&'static [u8]>;
 
+    /// Active contiguous memory-mapped firmware window, if selected.
+    #[cfg(feature = "flow-ffs")]
+    fn active_firmware_window(&self) -> Option<(u64, u64)>;
+
     /// Run a closure with the active boot medium and optional scratch arena.
     ///
     /// The executor owns the FFS/payload operation; the board adapter only
@@ -463,10 +511,24 @@ pub trait Board: Sized {
         run: impl FnOnce(&dyn BootMedia, Option<&mut TempRamArena>) -> R,
     ) -> R;
 
-    /// Stage operation for `LoadNextStage`. Diverges. Uses whichever boot
-    /// medium the executor published to read the named next stage and jump to
-    /// it.
-    fn load_next_stage(&mut self, next_stage: &str) -> !;
+    /// Borrow a block device by device id for one operation.
+    fn with_block_device<R>(
+        &self,
+        id: DeviceId,
+        run: impl FnOnce(&dyn fstart_services::BlockDevice, &'static str) -> R,
+    ) -> Result<R, RuntimeError>;
+
+    /// Resolve a named next-stage load/handoff address pair.
+    #[cfg(feature = "flow-fel")]
+    fn next_stage_addr(&self, next_stage: &str) -> Option<NextStageAddr>;
+
+    /// Read eGON-published next-stage offset and size scalars.
+    #[cfg(feature = "flow-fel")]
+    fn egon_next_stage(&self) -> Option<EgonNextStage>;
+
+    /// DRAM size to serialize into the next-stage handoff.
+    #[cfg(feature = "flow-fel")]
+    fn dram_size_for_handoff(&self) -> u64;
 
     // ----- Platform primitives --------------------------------------------
 

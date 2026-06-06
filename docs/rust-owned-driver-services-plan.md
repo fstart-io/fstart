@@ -126,9 +126,8 @@ operations:
 High-level capability methods are not part of the final `Board` trait. Methods
 to remove include:
 
-- `stage_load`;
 - `mp_init`;
-- `load_next_stage`.
+- UEFI/CrabEFI payload launch subpath.
 
 `boot_media_select` has already been reduced to the primitive
 `soc_boot_media()`: the executor now owns boot-source candidate matching and
@@ -153,7 +152,9 @@ primitive descriptor while runtime owns platform FDT patching and override-DTB
 FFS loading. `PayloadLoad` now exposes a primitive payload descriptor while
 runtime owns FFS/FIT loading and Linux handoff; the UEFI/CrabEFI branch remains
 as a narrower temporary board method until its platform-service primitives are
-split out.
+split out. `StageLoad`, `LoadNextStage`, and `PciInit` now use primitive
+descriptors/service borrowing while runtime owns FFS stage loading, eGON
+next-stage read/handoff sequencing, and PCI root init policy.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

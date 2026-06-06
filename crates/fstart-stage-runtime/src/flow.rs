@@ -3,8 +3,6 @@
 //! Flow families are feature-gated so each stage compiles only the operation
 //! arms it uses.
 
-#[cfg(feature = "flow-pci")]
-use fstart_services::device::DeviceError;
 #[cfg(any(
     feature = "flow-clock-init",
     feature = "flow-console-init",
@@ -104,7 +102,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
                 phase(board, &mut inited, crate::StagePhase::FinalizeInit, ids)
             }
             #[cfg(feature = "flow-pci")]
-            StageOp::PciInit(id) => device_op(board, &mut inited, id, Board::pci_init),
+            StageOp::PciInit(id) => pci_init(board, &mut inited, id),
             #[cfg(feature = "flow-memory-detect")]
             StageOp::MemoryDetect(id) => memory_detect(board, &mut inited, id),
 
@@ -129,7 +127,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             #[cfg(feature = "flow-ffs")]
             StageOp::PayloadLoad => payload_load(board),
             #[cfg(feature = "flow-ffs")]
-            StageOp::StageLoad { next_stage } => board.stage_load(next_stage),
+            StageOp::StageLoad { next_stage } => stage_load(board, next_stage),
 
             #[cfg(feature = "flow-fdt")]
             StageOp::FdtPrepare => fdt_prepare(board),
@@ -224,19 +222,19 @@ fn phase<B: Board>(
 }
 
 #[cfg(feature = "flow-pci")]
-fn device_op<B: Board>(
-    board: &mut B,
-    inited: &mut DeviceMask,
-    id: DeviceId,
-    run: fn(&mut B, DeviceId) -> Result<(), DeviceError>,
-) {
+fn pci_init<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
     if board.init_device(id).is_err() {
         board.halt();
     }
-    if run(board, id).is_err() {
-        board.halt();
+    match board.with_pci_root(id, |root, dev_name, drv_name| {
+        root.init_bus().map(|_| (dev_name, drv_name))
+    }) {
+        Ok(Ok((dev_name, drv_name))) => {
+            fstart_log::info!("PCI init complete: {} ({})", dev_name, drv_name);
+            inited.set(id);
+        }
+        Ok(Err(_)) | Err(_) => board.halt(),
     }
-    inited.set(id);
 }
 
 #[cfg(feature = "flow-driver-init")]
@@ -435,6 +433,26 @@ fn boot_linux<B: Board>(board: &B, desc: crate::PayloadLoadDesc, kernel_addr: u6
         print_x86_mtrrs: desc.print_x86_mtrrs,
     };
     board.boot_linux(&params)
+}
+
+#[cfg(feature = "flow-ffs")]
+fn stage_load<B: Board>(board: &B, next_stage: &'static str) -> ! {
+    let Some(anchor) = board.ffs_anchor() else {
+        board.halt();
+    };
+    let Some(desc) = board.stage_load_desc() else {
+        board.halt();
+    };
+    if desc.x86_postcar {
+        match board.active_firmware_window() {
+            Some((base, size)) => board.stage_load_postcar_mmio(next_stage, anchor, base, size),
+            None => board.halt(),
+        }
+    }
+    board.with_boot_media("stage_load", (), |media, _scratch| {
+        fstart_capabilities::stage_load(next_stage, anchor, media, |entry| board.jump_to(entry));
+    });
+    board.halt();
 }
 
 #[cfg(feature = "flow-fdt")]
@@ -644,7 +662,39 @@ fn load_next_stage<B: Board>(
         candidate.size,
         None,
     );
-    board.load_next_stage(next_stage);
+
+    let Some(addr) = board.next_stage_addr(next_stage) else {
+        board.halt();
+    };
+    let Some(egon) = board.egon_next_stage() else {
+        board.halt();
+    };
+    if egon.offset == 0 || egon.size == 0 {
+        board.halt();
+    }
+    let dev_offset = candidate.offset.saturating_add(egon.offset);
+    match board.with_block_device(id, |dev, name| {
+        fstart_capabilities::next_stage::read_stage_to_addr(
+            dev,
+            name,
+            next_stage,
+            dev_offset,
+            addr.load_addr,
+            egon.size,
+        )
+    }) {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) | Err(_) => board.halt(),
+    }
+    if fstart_capabilities::next_stage::serialize_handoff(
+        board.dram_size_for_handoff(),
+        addr.handoff_addr,
+    )
+    .is_err()
+    {
+        board.halt();
+    }
+    board.jump_to_with_handoff(addr.load_addr, addr.handoff_addr as usize)
 }
 
 #[cfg(any(

@@ -172,12 +172,16 @@ fn board_struct_carries_acpi_rsdp_field() {
 
 #[test]
 fn pci_init_emits_real_body_on_aarch64_sbsa() {
-    // qemu-sbsa uses `PciInit(device: "pci0")`.  The adapter must
-    // carry an arm that logs the banner and returns Ok(()).
+    // qemu-sbsa uses `PciInit(device: "pci0")`. The adapter must expose
+    // primitive PCI-root borrowing; runtime owns the init call and banner.
     let src = adapter_source_for_board("qemu-sbsa");
     assert!(
-        src.contains("PCI init complete"),
-        "pci_init body must log the banner; got:\n{src}"
+        !src.contains("PCI init complete"),
+        "adapter must not own PCI init banner/policy; got:\n{src}"
+    );
+    assert!(
+        src.contains("fn with_pci_root"),
+        "adapter must expose primitive PCI root borrowing; got:\n{src}"
     );
     assert!(
         src.contains("\"pci0\""),
@@ -187,10 +191,8 @@ fn pci_init_emits_real_body_on_aarch64_sbsa() {
 
 #[test]
 fn pci_init_boards_without_pci_root_have_wildcard_only() {
-    // qemu-riscv64 has no PciRootBus provider.  The body is just
-    // the wildcard arm that halts.  It's dead code (executor never
-    // dispatches PciInit on this board), but the trait still
-    // requires a body.
+    // qemu-riscv64 has no PciRootBus provider. The primitive dispatcher has
+    // no concrete arms and must not emit PCI policy.
     let src = adapter_source_for_board("qemu-riscv64");
     // The match still exists (empty arm set).  What matters is
     // we do not reference any PCI identifier or "PCI init
@@ -309,30 +311,31 @@ fn return_to_fel_stays_unreachable_for_boards_without_capability() {
 #[test]
 fn stage_load_bootblock_emits_real_body() {
     // qemu-riscv64-multi's bootblock: ConsoleInit + BootMedia +
-    // SigVerify + StageLoad("main").  The `stage_load` trampoline
-    // must reconstruct the boot medium and call
-    // `fstart_capabilities::stage_load`.
+    // SigVerify + StageLoad("main"). The adapter must expose primitive
+    // StageLoad descriptor/anchor data; runtime owns FFS loading.
     let src = adapter_source_for_stage("qemu-riscv64-multi", "bootblock");
     assert!(
-        src.contains("fstart_capabilities::stage_load"),
-        "bootblock stage_load must call the capability fn; got:\n{src}"
+        !src.contains("fstart_capabilities::stage_load"),
+        "adapter must not call the StageLoad capability fn; got:\n{src}"
     );
-    // Anchor preamble is present (shared with sig_verify, but the
-    // stage_load arm emits its own dispatch body that uses it).
-    assert!(src.contains("&FSTART_ANCHOR"));
-    // The trailing `halt()` satisfies the `-> !` return type.
     assert!(
-        src.contains("stage_load: capability returned without jumping"),
-        "stage_load body must log + halt on non-diverging return; got:\n{src}"
+        src.contains("fn stage_load_desc"),
+        "adapter must expose primitive StageLoad descriptor; got:\n{src}"
+    );
+    // Anchor preamble is present for this FFS stage; runtime StageLoad uses
+    // the primitive anchor accessor rather than generated dispatch flow.
+    assert!(src.contains("&FSTART_ANCHOR"));
+    assert!(
+        !src.contains("stage_load: capability returned without jumping"),
+        "adapter must not own StageLoad return policy; got:\n{src}"
     );
 }
 
 #[test]
 fn stage_load_unreachable_for_non_ffs_stages() {
-    // A stage without FFS capabilities has no FSTART_ANCHOR static
-    // and no boot-media import path.  `stage_load` on that stage
-    // would be dead code (validation forbids StageLoad without
-    // BootMedia), so we emit an explicit unreachable body.
+    // A stage without FFS capabilities has no FSTART_ANCHOR static and no
+    // boot-media import path. Runtime will never dispatch StageLoad for this
+    // stage, so the adapter exposes no StageLoad descriptor.
     //
     // qemu-riscv64-multi's `main` stage is the canonical non-FFS
     // stage in the fixture set.
@@ -342,11 +345,9 @@ fn stage_load_unreachable_for_non_ffs_stages() {
         !src.contains("&FSTART_ANCHOR"),
         "non-FFS stage must not reference FSTART_ANCHOR; got:\n{src}"
     );
-    // `stage_load` body is unreachable — the compiler still
-    // type-checks the trait impl, but no executor arm dispatches
-    // this method for this stage.
+    // No generated StageLoad body remains; the descriptor primitive is absent.
     assert!(
-        src.contains("board_gen::stage_load requires an FFS-using stage"),
-        "non-FFS stage_load must emit the dead-code unreachable body; got:\n{src}"
+        src.contains("fn stage_load_desc") && src.contains("None"),
+        "non-FFS stage must expose no StageLoad descriptor; got:\n{src}"
     );
 }

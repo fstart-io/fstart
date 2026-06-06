@@ -620,8 +620,8 @@ pub fn payload_load_stub_no_flash() {
 pub fn stage_load(
     next_stage: &str,
     anchor_data: &[u8],
-    media: &impl BootMedia,
-    jump_to: fn(u64) -> !,
+    media: &(impl BootMedia + ?Sized),
+    jump_to: impl Fn(u64),
 ) {
     fstart_log::info!("capability: StageLoad -> {}", next_stage);
     fstart_log::info!(

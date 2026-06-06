@@ -6,20 +6,26 @@ use quote::{format_ident, quote};
 use fstart_device_registry::Service;
 use fstart_types::Platform;
 
-use super::boot_media::with_boot_media_body;
+use super::boot_media::{
+    active_firmware_window_body, with_block_device_body, with_boot_media_body,
+};
 use super::caps_tables::{
     acpi_platform_config_body, collect_acpi_tables_body, smbios_desc_body,
     with_acpi_table_provider_body, with_memory_detector_body,
 };
-use super::fdt::{fdt_prepare_desc_body, return_to_fel_body, stage_load_body};
-use super::init_caps::{dram_init_body, pci_init_body};
+use super::fdt::{
+    fdt_prepare_desc_body, return_to_fel_body, stage_load_desc_body, stage_load_postcar_mmio_body,
+};
+use super::init_caps::{dram_init_body, with_pci_root_body};
 use super::lifecycle::init_device_body;
 use super::logger::install_logger_body;
 use super::model::BoardEmitModel;
 use super::mp::mp_init_body;
 use super::payload::{payload_load_desc_body, uefi_payload_load_body};
 use super::phases::phase_init_body;
-use super::platform::sunxi::{load_next_stage_body, soc_boot_media_body};
+use super::platform::sunxi::{
+    dram_size_for_handoff_body, egon_next_stage_body, next_stage_addr_body, soc_boot_media_body,
+};
 
 fn firmware_image_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx
@@ -75,9 +81,10 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
 
     let fdt_prepare_desc_body = fdt_prepare_desc_body(platform, ctx);
     let install_logger_body = install_logger_body(ctx);
-    let stage_load_body = stage_load_body(ctx);
+    let stage_load_desc_body = stage_load_desc_body(ctx);
+    let stage_load_postcar_mmio_body = stage_load_postcar_mmio_body(ctx);
     let return_to_fel_body = return_to_fel_body(platform, ctx);
-    let pci_init_body = pci_init_body(ctx);
+    let with_pci_root_body = with_pci_root_body(ctx);
     let dram_init_body = dram_init_body(ctx);
     let phase_init_body = phase_init_body(ctx);
 
@@ -88,13 +95,17 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let smbios_desc_body = smbios_desc_body(ctx);
     let mp_init_body = mp_init_body(ctx);
     let soc_boot_media_body = soc_boot_media_body(ctx);
-    let load_next_stage_body = load_next_stage_body(ctx);
+    let next_stage_addr_body = next_stage_addr_body(ctx);
+    let egon_next_stage_body = egon_next_stage_body(ctx);
+    let dram_size_for_handoff_body = dram_size_for_handoff_body(ctx);
     let payload_load_desc_body = payload_load_desc_body(platform, ctx);
     let uefi_payload_load_body = uefi_payload_load_body(platform, ctx);
     let init_device_body = init_device_body(ctx);
     let firmware_image_body = firmware_image_body(ctx);
     let ffs_anchor_body = ffs_anchor_body(ctx);
     let with_boot_media_body = with_boot_media_body(ctx);
+    let with_block_device_body = with_block_device_body(ctx);
+    let active_firmware_window_body = active_firmware_window_body();
 
     quote! {
         #[allow(dead_code, unused_variables)]
@@ -121,7 +132,22 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
 
             #[cfg(feature = "stage-flow-ffs")]
             fn uefi_payload_load(&self) -> ! { #uefi_payload_load_body }
-            fn stage_load(&self, next_stage: &str) -> ! { #stage_load_body }
+
+            #[cfg(feature = "stage-flow-ffs")]
+            fn stage_load_desc(&self) -> Option<fstart_stage_runtime::StageLoadDesc> {
+                #stage_load_desc_body
+            }
+
+            #[cfg(feature = "stage-flow-ffs")]
+            fn stage_load_postcar_mmio(
+                &self,
+                next_stage: &str,
+                anchor: &'static [u8],
+                image_base: u64,
+                image_size: u64,
+            ) -> ! {
+                #stage_load_postcar_mmio_body
+            }
             #[cfg(feature = "stage-flow-acpi")]
             fn acpi_platform_config(
                 &self,
@@ -168,11 +194,17 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #dram_init_body
             }
 
-            fn pci_init(
+            #[cfg(feature = "stage-flow-pci")]
+            fn with_pci_root<R>(
                 &mut self,
                 id: fstart_types::DeviceId,
-            ) -> Result<(), fstart_services::device::DeviceError> {
-                #pci_init_body
+                run: impl FnOnce(
+                    &mut dyn fstart_services::PciRootBus,
+                    &'static str,
+                    &'static str,
+                ) -> R,
+            ) -> Result<R, fstart_stage_runtime::RuntimeError> {
+                #with_pci_root_body
             }
 
             fn with_acpi_table_provider<R>(
@@ -222,6 +254,11 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #ffs_anchor_body
             }
 
+            #[cfg(feature = "stage-flow-ffs")]
+            fn active_firmware_window(&self) -> Option<(u64, u64)> {
+                #active_firmware_window_body
+            }
+
             fn with_boot_media<R>(
                 &self,
                 caller_tag: &str,
@@ -234,8 +271,30 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #with_boot_media_body
             }
 
-            fn load_next_stage(&mut self, next_stage: &str) -> ! {
-                #load_next_stage_body
+            fn with_block_device<R>(
+                &self,
+                id: fstart_types::DeviceId,
+                run: impl FnOnce(&dyn fstart_services::BlockDevice, &'static str) -> R,
+            ) -> Result<R, fstart_stage_runtime::RuntimeError> {
+                #with_block_device_body
+            }
+
+            #[cfg(feature = "stage-flow-fel")]
+            fn next_stage_addr(
+                &self,
+                next_stage: &str,
+            ) -> Option<fstart_stage_runtime::NextStageAddr> {
+                #next_stage_addr_body
+            }
+
+            #[cfg(feature = "stage-flow-fel")]
+            fn egon_next_stage(&self) -> Option<fstart_stage_runtime::EgonNextStage> {
+                #egon_next_stage_body
+            }
+
+            #[cfg(feature = "stage-flow-fel")]
+            fn dram_size_for_handoff(&self) -> u64 {
+                #dram_size_for_handoff_body
             }
 
             fn halt(&self) -> ! { fstart_platform::halt() }
