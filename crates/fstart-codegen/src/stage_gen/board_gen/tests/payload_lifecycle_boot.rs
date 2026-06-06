@@ -2,24 +2,24 @@ use super::{adapter_source_for_board, adapter_source_for_stage};
 
 #[test]
 fn payload_load_linux_boot_on_riscv64() {
-    // qemu-riscv64: LinuxBoot + OpenSBI firmware.  Body must
-    // load firmware + kernel from FFS, then call boot_linux_sbi.
+    // qemu-riscv64: LinuxBoot + OpenSBI firmware. The adapter must expose
+    // only primitive payload data; runtime owns firmware/kernel FFS loading.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
-        src.contains("capability: PayloadLoad (LinuxBoot)"),
-        "payload_load must emit the LinuxBoot banner; got:\n{src}"
+        src.contains("PayloadLoadKind::LinuxBoot"),
+        "payload descriptor must identify LinuxBoot; got:\n{src}"
     );
     assert!(
-        src.contains("SBI firmware"),
-        "riscv64 payload_load must load SBI firmware; got:\n{src}"
+        src.contains("load_firmware: true"),
+        "payload descriptor must request firmware loading; got:\n{src}"
     );
     assert!(
         src.contains("fstart_platform::boot_linux"),
         "riscv64 payload_load must call boot_linux; got:\n{src}"
     );
     assert!(
-        src.contains("loading kernel..."),
-        "payload_load must log kernel load; got:\n{src}"
+        !src.contains("loading kernel..."),
+        "adapter must not own kernel load flow; got:\n{src}"
     );
 }
 

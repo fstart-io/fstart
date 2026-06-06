@@ -519,7 +519,7 @@ pub fn fdt_prepare_platform(
 /// Generic over [`BootMedia`] — works with both memory-mapped flash and
 /// block devices with zero overhead for the memory-mapped case.
 #[cfg(feature = "ffs")]
-pub fn payload_load(anchor_data: &[u8], media: &impl BootMedia, jump_to: fn(u64) -> !) {
+pub fn payload_load(anchor_data: &[u8], media: &(impl BootMedia + ?Sized), jump_to: impl Fn(u64)) {
     fstart_log::info!("capability: PayloadLoad");
 
     if media.size() == 0 || anchor_data.is_empty() {
@@ -879,7 +879,7 @@ pub fn load_ffs_file_by_type(
 #[cfg(feature = "ffs")]
 pub fn find_ffs_file_data<'a>(
     anchor_data: &[u8],
-    media: &'a impl BootMedia,
+    media: &'a (impl BootMedia + ?Sized),
     file_type: fstart_types::ffs::FileType,
 ) -> Option<&'a [u8]> {
     let image = media.as_slice()?;
@@ -942,7 +942,7 @@ pub fn find_ffs_file_data<'a>(
 #[cfg(feature = "ffs")]
 pub fn find_ffs_file_data_with_scratch<'a>(
     anchor_data: &[u8],
-    media: &'a impl BootMedia,
+    media: &'a (impl BootMedia + ?Sized),
     file_type: fstart_types::ffs::FileType,
     scratch: Option<&'a mut fstart_services::TempRamArena>,
 ) -> Option<&'a [u8]> {

@@ -71,6 +71,44 @@ pub struct FdtPrepareDesc {
     pub dram_size: u64,
 }
 
+/// Payload handoff policy expressed as data for the runtime executor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadLoadKind {
+    /// Generic FFS payload: load the `Payload` file and jump to its entry.
+    GenericFfs,
+    /// LinuxBoot or FIT-buildtime: load optional firmware plus the kernel from
+    /// FFS, then enter the platform Linux boot protocol.
+    LinuxBoot,
+    /// FIT-runtime: load the FIT blob from FFS, parse it at runtime, then enter
+    /// the platform Linux boot protocol at the FIT-provided kernel address.
+    FitRuntime {
+        /// Optional FIT configuration name.
+        config: Option<&'static str>,
+    },
+    /// UEFI/CrabEFI payload.  This path still needs platform-service
+    /// primitives and is delegated to a narrower board method for now.
+    Uefi,
+}
+
+/// Primitive payload-load descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadLoadDesc {
+    /// Payload loading strategy.
+    pub kind: PayloadLoadKind,
+    /// Statically configured kernel load address for non-FIT-runtime Linux.
+    pub kernel_addr: u64,
+    /// DTB address for the platform Linux boot protocol.
+    pub dtb_addr: u64,
+    /// Optional firmware entry/load address for the platform Linux boot protocol.
+    pub fw_addr: u64,
+    /// Kernel command line.
+    pub bootargs: &'static str,
+    /// Whether a firmware blob should be loaded from FFS before handoff.
+    pub load_firmware: bool,
+    /// x86-only diagnostic flag forwarded to the platform Linux boot protocol.
+    pub print_x86_mtrrs: bool,
+}
+
 // ---------------------------------------------------------------------------
 // BootMediaState — runtime record of which boot medium is currently active
 // ---------------------------------------------------------------------------
@@ -291,12 +329,17 @@ pub trait Board: Sized {
     #[cfg(feature = "flow-fdt")]
     fn fdt_prepare_desc(&self) -> Option<FdtPrepareDesc>;
 
-    /// Stage operation for `PayloadLoad`.  Diverges.
+    /// Static payload-load descriptor, if this stage has one.
     ///
-    /// Generated adapter reads its anchor + boot media from `&self`
-    /// and calls `fstart_capabilities::payload_load`.  Halts on
-    /// failure.
-    fn payload_load(&self) -> !;
+    /// The executor owns FFS/FIT loading and Linux handoff sequencing. UEFI is
+    /// still delegated through [`Board::uefi_payload_load`] until its platform
+    /// service access is reduced further.
+    #[cfg(feature = "flow-ffs")]
+    fn payload_load_desc(&self) -> Option<PayloadLoadDesc>;
+
+    /// Remaining UEFI/CrabEFI payload path. Diverges.
+    #[cfg(feature = "flow-ffs")]
+    fn uefi_payload_load(&self) -> !;
 
     /// Stage operation for `StageLoad`.  Diverges.  `next_stage` comes from
     /// the board RON capability.
@@ -436,6 +479,15 @@ pub trait Board: Sized {
     /// registers (hart id, DTB pointer, handoff) are set up inside
     /// the platform crate's entry assembly.
     fn jump_to(&self, entry: u64) -> !;
+
+    /// Return the platform boot hart id, or 0 on non-RISC-V platforms.
+    fn boot_hart_id(&self) -> u64;
+
+    /// Return the currently prepared ACPI RSDP address, or 0 if absent.
+    fn acpi_rsdp_addr(&self) -> u64;
+
+    /// Enter the platform Linux boot protocol. Diverges.
+    fn boot_linux(&self, params: &fstart_services::boot::BootLinuxParams<'_>) -> !;
 
     /// Jump to `entry` passing a serialised handoff descriptor to the
     /// next stage.  Generated adapter delegates to

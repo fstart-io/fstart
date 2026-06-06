@@ -63,7 +63,7 @@ pub fn error_str(err: &FitBootError) -> &'static str {
 /// This is guaranteed by the board config and linker script.
 pub fn load_fit_components(
     anchor_data: &[u8],
-    media: &impl BootMedia,
+    media: &(impl BootMedia + ?Sized),
     fit_config: Option<&str>,
 ) -> Result<FitBootInfo, FitBootError> {
     load_fit_components_with_scratch(anchor_data, media, fit_config, None)
@@ -73,7 +73,7 @@ pub fn load_fit_components(
 /// memory-mapped and the FIT blob must be copied before parsing.
 pub fn load_fit_components_with_scratch(
     anchor_data: &[u8],
-    media: &impl BootMedia,
+    media: &(impl BootMedia + ?Sized),
     fit_config: Option<&str>,
     scratch: Option<&mut fstart_services::TempRamArena>,
 ) -> Result<FitBootInfo, FitBootError> {

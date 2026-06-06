@@ -17,7 +17,7 @@ use super::lifecycle::init_device_body;
 use super::logger::install_logger_body;
 use super::model::BoardEmitModel;
 use super::mp::mp_init_body;
-use super::payload::payload_load_body;
+use super::payload::{payload_load_desc_body, uefi_payload_load_body};
 use super::phases::phase_init_body;
 use super::platform::sunxi::{load_next_stage_body, soc_boot_media_body};
 
@@ -89,7 +89,8 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let mp_init_body = mp_init_body(ctx);
     let soc_boot_media_body = soc_boot_media_body(ctx);
     let load_next_stage_body = load_next_stage_body(ctx);
-    let payload_load_body = payload_load_body(platform, ctx);
+    let payload_load_desc_body = payload_load_desc_body(platform, ctx);
+    let uefi_payload_load_body = uefi_payload_load_body(platform, ctx);
     let init_device_body = init_device_body(ctx);
     let firmware_image_body = firmware_image_body(ctx);
     let ffs_anchor_body = ffs_anchor_body(ctx);
@@ -113,7 +114,13 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             fn fdt_prepare_desc(&self) -> Option<fstart_stage_runtime::FdtPrepareDesc> {
                 #fdt_prepare_desc_body
             }
-            fn payload_load(&self) -> ! { #payload_load_body }
+            #[cfg(feature = "stage-flow-ffs")]
+            fn payload_load_desc(&self) -> Option<fstart_stage_runtime::PayloadLoadDesc> {
+                #payload_load_desc_body
+            }
+
+            #[cfg(feature = "stage-flow-ffs")]
+            fn uefi_payload_load(&self) -> ! { #uefi_payload_load_body }
             fn stage_load(&self, next_stage: &str) -> ! { #stage_load_body }
             #[cfg(feature = "stage-flow-acpi")]
             fn acpi_platform_config(
@@ -233,6 +240,16 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
 
             fn halt(&self) -> ! { fstart_platform::halt() }
             fn jump_to(&self, entry: u64) -> ! { fstart_platform::jump_to(entry) }
+            fn boot_hart_id(&self) -> u64 {
+                #[cfg(feature = "riscv64")]
+                { fstart_platform::boot_hart_id() }
+                #[cfg(not(feature = "riscv64"))]
+                { 0 }
+            }
+            fn acpi_rsdp_addr(&self) -> u64 { self._acpi_rsdp_addr }
+            fn boot_linux(&self, params: &fstart_services::boot::BootLinuxParams<'_>) -> ! {
+                fstart_platform::boot_linux(params)
+            }
             fn jump_to_with_handoff(&self, entry: u64, handoff_addr: usize) -> ! {
                 #jump_with_handoff_body
             }

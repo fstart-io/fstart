@@ -58,15 +58,18 @@ fn adapter_compiles_for_qemu_riscv64() {
         src.contains("fstart_capabilities::console_ready"),
         "install_logger must emit console_ready banner, got:\n{src}"
     );
-    // payload_load is real: qemu-riscv64 has LinuxBoot → firmware
-    // load + kernel load + platform boot protocol.
+    // payload_load orchestration lives in runtime: qemu-riscv64 has LinuxBoot,
+    // so the adapter exposes only a primitive descriptor and final platform
+    // boot primitive.
     assert!(
-        src.contains("fstart_capabilities::load_ffs_file_by_type"),
-        "payload_load must call load_ffs_file_by_type for kernel/firmware; got:\n{src}"
+        !src.contains("fstart_capabilities::load_ffs_file_by_type"),
+        "adapter must not load payload files directly; got:\n{src}"
     );
+    assert!(src.contains("fn payload_load_desc"));
+    assert!(src.contains("PayloadLoadKind::LinuxBoot"));
     assert!(
         src.contains("fstart_platform::boot_linux"),
-        "riscv64 payload_load must use boot_linux; got:\n{src}"
+        "adapter must expose the final Linux boot primitive; got:\n{src}"
     );
     // All Board methods have real bodies. No old placeholder marker
     // should remain anywhere in the generated source.

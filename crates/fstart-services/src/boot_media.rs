@@ -128,7 +128,7 @@ unsafe impl Sync for TempRamArena {}
 
 /// Read a boot-media range into temporary RAM and return the copied slice.
 pub fn read_to_temp<'a>(
-    media: &impl BootMedia,
+    media: &(impl BootMedia + ?Sized),
     offset: usize,
     len: usize,
     arena: &'a mut TempRamArena,

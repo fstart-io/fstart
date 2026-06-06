@@ -126,7 +126,7 @@ operations:
 High-level capability methods are not part of the final `Board` trait. Methods
 to remove include:
 
-- `payload_load`, `stage_load`;
+- `stage_load`;
 - `mp_init`;
 - `load_next_stage`.
 
@@ -150,7 +150,10 @@ owns the E820 scratch buffer and capability call. `AcpiPrepare` now exposes
 only platform descriptors plus device table collection; runtime owns ACPI table
 allocation and the `prepare_with_options` call. `FdtPrepare` now exposes a
 primitive descriptor while runtime owns platform FDT patching and override-DTB
-FFS loading.
+FFS loading. `PayloadLoad` now exposes a primitive payload descriptor while
+runtime owns FFS/FIT loading and Linux handoff; the UEFI/CrabEFI branch remains
+as a narrower temporary board method until its platform-service primitives are
+split out.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:

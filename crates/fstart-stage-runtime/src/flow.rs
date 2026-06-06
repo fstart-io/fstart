@@ -127,7 +127,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             #[cfg(feature = "flow-ffs")]
             StageOp::SigVerify => sig_verify(board),
             #[cfg(feature = "flow-ffs")]
-            StageOp::PayloadLoad => board.payload_load(),
+            StageOp::PayloadLoad => payload_load(board),
             #[cfg(feature = "flow-ffs")]
             StageOp::StageLoad { next_stage } => board.stage_load(next_stage),
 
@@ -305,6 +305,136 @@ fn sig_verify<B: Board>(board: &B) {
     board.with_boot_media("sig_verify", (), |media, _scratch| {
         fstart_capabilities::sig_verify(anchor, media);
     });
+}
+
+#[cfg(feature = "flow-ffs")]
+fn payload_load<B: Board>(board: &B) -> ! {
+    let Some(desc) = board.payload_load_desc() else {
+        board.halt();
+    };
+    match desc.kind {
+        crate::PayloadLoadKind::GenericFfs => payload_load_generic(board),
+        crate::PayloadLoadKind::LinuxBoot => {
+            payload_load_linux_files(board, desc);
+            boot_linux(board, desc, desc.kernel_addr);
+        }
+        crate::PayloadLoadKind::FitRuntime { config } => {
+            let kernel_addr = payload_load_fit_runtime(board, desc, config);
+            boot_linux(board, desc, kernel_addr);
+        }
+        crate::PayloadLoadKind::Uefi => board.uefi_payload_load(),
+    }
+}
+
+#[cfg(feature = "flow-ffs")]
+fn payload_load_generic<B: Board>(board: &B) -> ! {
+    let Some(anchor) = board.ffs_anchor() else {
+        board.halt();
+    };
+    board.with_boot_media("payload_load", (), |media, _scratch| {
+        fstart_capabilities::payload_load(anchor, media, |entry| board.jump_to(entry));
+    });
+    board.halt();
+}
+
+#[cfg(feature = "flow-ffs")]
+fn payload_load_linux_files<B: Board>(board: &B, desc: crate::PayloadLoadDesc) {
+    let Some(anchor) = board.ffs_anchor() else {
+        board.halt();
+    };
+    let ok = board.with_boot_media("payload_load", false, |media, _scratch| {
+        if desc.load_firmware
+            && !fstart_capabilities::load_ffs_file_by_type(
+                anchor,
+                media,
+                fstart_types::ffs::FileType::Firmware,
+            )
+        {
+            return false;
+        }
+        fstart_capabilities::load_ffs_file_by_type(
+            anchor,
+            media,
+            fstart_types::ffs::FileType::Payload,
+        )
+    });
+    if !ok {
+        board.halt();
+    }
+}
+
+#[cfg(all(feature = "flow-ffs", feature = "flow-payload-fit"))]
+fn payload_load_fit_runtime<B: Board>(
+    board: &B,
+    desc: crate::PayloadLoadDesc,
+    config: Option<&'static str>,
+) -> u64 {
+    let Some(anchor) = board.ffs_anchor() else {
+        board.halt();
+    };
+    let kernel_addr = board.with_boot_media("payload_load", None, |media, scratch| {
+        let fit_boot = fstart_capabilities::fit::load_fit_components_with_scratch(
+            anchor, media, config, scratch,
+        )
+        .ok()?;
+        if desc.load_firmware
+            && !fstart_capabilities::load_ffs_file_by_type(
+                anchor,
+                media,
+                fstart_types::ffs::FileType::Firmware,
+            )
+        {
+            return None;
+        }
+        Some(fit_boot.kernel_addr)
+    });
+    kernel_addr.unwrap_or_else(|| board.halt())
+}
+
+#[cfg(all(feature = "flow-ffs", not(feature = "flow-payload-fit")))]
+fn payload_load_fit_runtime<B: Board>(
+    board: &B,
+    _desc: crate::PayloadLoadDesc,
+    _config: Option<&'static str>,
+) -> u64 {
+    board.halt();
+}
+
+#[cfg(feature = "flow-ffs")]
+fn boot_linux<B: Board>(board: &B, desc: crate::PayloadLoadDesc, kernel_addr: u64) -> ! {
+    fstart_log::info!("booting Linux...");
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        unsafe extern "C" {
+            static _text_start: u8;
+            static _writable_end: u8;
+        }
+        let stage_start = &_text_start as *const u8 as u64;
+        let stage_end = &_writable_end as *const u8 as u64;
+        fstart_services::memory_detect::e820_state_mut()
+            .reserve_range(stage_start, stage_end.saturating_sub(stage_start));
+    }
+    #[cfg(target_arch = "x86_64")]
+    let e820_entries = unsafe { fstart_services::memory_detect::e820_state().entries() };
+    #[cfg(not(target_arch = "x86_64"))]
+    let e820_entries = &[];
+
+    let params = fstart_services::boot::BootLinuxParams {
+        kernel_addr,
+        dtb_addr: desc.dtb_addr,
+        fw_addr: desc.fw_addr,
+        rsdp_addr: board.acpi_rsdp_addr(),
+        bootargs: desc.bootargs,
+        e820_entries,
+        zero_page_addr: if cfg!(target_arch = "x86_64") {
+            0x90000
+        } else {
+            0
+        },
+        hart_id: board.boot_hart_id(),
+        print_x86_mtrrs: desc.print_x86_mtrrs,
+    };
+    board.boot_linux(&params)
 }
 
 #[cfg(feature = "flow-fdt")]

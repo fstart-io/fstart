@@ -29,6 +29,7 @@ flow-ffs = [
   "dep:fstart-capabilities",
   "fstart-capabilities/ffs",
 ]
+flow-payload-fit = ["flow-ffs", "fstart-capabilities/fit"]
 flow-fdt = ["stage-executor", "dep:fstart-capabilities", "fstart-capabilities/fdt"]
 flow-fdt-ffs = ["flow-fdt", "fstart-capabilities/ffs"]
 flow-mp = ["stage-executor"]

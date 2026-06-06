@@ -339,6 +339,19 @@ fn capability_features(
     if uses_ffs {
         features.push("stage-flow-ffs");
         features.push("ffs");
+        if capabilities
+            .iter()
+            .any(|cap| matches!(cap, Capability::PayloadLoad))
+            && config.payload.as_ref().is_some_and(|payload| {
+                payload.kind == fstart_types::PayloadKind::FitImage
+                    && payload
+                        .fit_parse
+                        .unwrap_or(fstart_types::FitParseMode::Buildtime)
+                        == fstart_types::FitParseMode::Runtime
+            })
+        {
+            features.push("stage-flow-payload-fit");
+        }
         features.push("lz4");
         match security.signing_algorithm {
             fstart_types::SignatureAlgorithm::Ed25519 => features.push("ed25519"),
