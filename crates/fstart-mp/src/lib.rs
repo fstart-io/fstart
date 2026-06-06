@@ -85,51 +85,128 @@ mod sipi_blob {
 // Traits
 // ---------------------------------------------------------------------------
 
-/// Per-CPU-model initialization operations.
-///
-/// Implementations configure MSRs (C-states, SpeedStep, thermals, etc.).
-/// Every method in this trait either runs on the BSP only or on all
-/// logical CPUs — the doc comment on each method states which.
-///
-/// This is the Rust equivalent of coreboot's `struct cpu_driver::ops`.
-pub trait CpuOps: Send + Sync {
-    /// Human-readable CPU model name.
-    const NAME: &'static str;
+/// x86 CPU vendor identified by CPUID leaf 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuVendor {
+    /// GenuineIntel.
+    Intel,
+    /// AuthenticAMD.
+    Amd,
+    /// Any other vendor string.
+    Other,
+}
 
-    /// Called on *every* logical CPU after AP bringup.
-    ///
-    /// Configure model-specific MSRs here: C-state config,
-    /// SpeedStep/EIST, thermal monitoring, VMX feature control, etc.
-    fn init_cpu(&self);
+/// CPU identity used to select a model driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuIdentity {
+    /// CPUID vendor.
+    pub vendor: CpuVendor,
+    /// CPUID.1:EAX family/model/stepping signature.
+    pub signature: u32,
+}
 
-    /// BSP-only: called before SIPI, after LAPIC setup.
-    ///
-    /// Use for one-time setup: MTRR configuration, microcode discovery,
-    /// or early chipset programming that must happen before APs wake.
-    fn pre_mp_init(&self) {}
+impl CpuIdentity {
+    /// Identify the currently running x86 CPU.
+    pub fn current() -> Self {
+        let (_, ebx, ecx, edx) = fstart_arch_x86::cpuid(0);
+        let vendor = if ebx == 0x756e_6547 && edx == 0x4965_6e69 && ecx == 0x6c65_746e {
+            CpuVendor::Intel
+        } else if ebx == 0x6874_7541 && edx == 0x6974_6e65 && ecx == 0x444d_4163 {
+            CpuVendor::Amd
+        } else {
+            CpuVendor::Other
+        };
+        let (signature, _, _, _) = fstart_arch_x86::cpuid(1);
+        Self { vendor, signature }
+    }
 
-    /// BSP-only: called after all CPUs are initialized and APs are parked.
-    ///
-    /// Use for post-init validation, feature lockdown, or advertising
-    /// detected capabilities.
-    fn post_mp_init(&self) {}
+    /// CPUID family value with extended family folded in.
+    pub fn family(self) -> u32 {
+        ((self.signature >> 8) & 0x0f) + ((self.signature >> 20) & 0xff)
+    }
 
-    /// Microcode blob for this CPU model.
-    ///
-    /// If `Some((blob, parallel))`, microcode is loaded on all CPUs during
-    /// bringup.  `parallel` indicates whether concurrent loading is safe
-    /// (false on Hyper-Threading parts that share microcode update logic).
-    fn microcode(&self) -> Option<(&[u8], bool)> {
-        None
+    /// CPUID model value with extended model folded in.
+    pub fn model(self) -> u32 {
+        ((self.signature >> 4) & 0x0f) + ((self.signature >> 12) & 0xf0)
     }
 }
 
-/// Generic x86 CPU operations used by virtual boards until model-specific
-/// MSR programming is needed.
-pub struct GenericX86CpuOps;
+/// One CPUID match entry for a CPU model driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuIdMatch {
+    /// Required vendor.
+    pub vendor: CpuVendor,
+    /// Signature value after applying [`Self::mask`].
+    pub signature: u32,
+    /// Signature bits that must match.
+    pub mask: u32,
+}
 
-impl CpuOps for GenericX86CpuOps {
-    const NAME: &'static str = "generic-x86";
+impl CpuIdMatch {
+    /// Match all signature bits.
+    pub const EXACT_MASK: u32 = 0xffff_ffff;
+    /// Ignore stepping bits.
+    pub const ALL_STEPPINGS_MASK: u32 = 0xffff_fff0;
+
+    /// Return true if this entry matches `identity`.
+    pub fn matches(self, identity: CpuIdentity) -> bool {
+        self.vendor == identity.vendor
+            && (identity.signature & self.mask) == (self.signature & self.mask)
+    }
+}
+
+/// Imperative CPU model driver.
+///
+/// This is the Rust equivalent of coreboot's `struct cpu_driver`: generic MP
+/// bringup identifies each CPU, finds a matching driver, and calls the driver
+/// to perform model-specific MSR/MTRR/cache/microcode work.
+pub trait CpuDriver: Send + Sync {
+    /// Human-readable CPU model name.
+    fn name(&self) -> &'static str;
+
+    /// CPUID match table for this driver.
+    fn id_table(&self) -> &'static [CpuIdMatch];
+
+    /// Called on *every* logical CPU before [`Self::init_cpu`].
+    ///
+    /// Implement vendor-specific microcode loading here. Generic MP code does
+    /// not know Intel, AMD, or any update format.
+    fn update_microcode(&self) {}
+
+    /// Called on *every* logical CPU after AP bringup.
+    ///
+    /// Configure model-specific MSRs here: C-state config, SpeedStep/EIST,
+    /// thermal monitoring, VMX feature control, AMD PSP-related MSRs, etc.
+    fn init_cpu(&self);
+
+    /// BSP-only: called before SIPI, after LAPIC setup.
+    fn pre_mp_init(&self) {}
+
+    /// BSP-only: called after all CPUs are initialized and APs are parked.
+    fn post_mp_init(&self) {}
+
+    /// Return true if this driver supports `identity`.
+    fn matches(&self, identity: CpuIdentity) -> bool {
+        self.id_table().iter().any(|id| id.matches(identity))
+    }
+}
+
+/// Generic x86 CPU driver used by virtual boards until model-specific MSR
+/// programming is needed.
+pub struct GenericX86CpuDriver;
+
+impl CpuDriver for GenericX86CpuDriver {
+    fn name(&self) -> &'static str {
+        "generic-x86"
+    }
+
+    fn id_table(&self) -> &'static [CpuIdMatch] {
+        &[]
+    }
+
+    fn matches(&self, _identity: CpuIdentity) -> bool {
+        true
+    }
 
     fn init_cpu(&self) {
         // SAFETY: MP init runs this on every active CPU after memory detection
@@ -144,8 +221,8 @@ impl CpuOps for GenericX86CpuOps {
 /// Provided by the chipset/northbridge driver.  Controls TSEG geometry,
 /// SMM handler installation, and per-CPU SMBASE relocation.
 ///
-/// Designed as a separate trait from [`CpuOps`] because SMM is a chipset
-/// concern (NB owns TSEG/SMRAM, SB controls SMI routing), while `CpuOps`
+/// Designed as a separate trait from [`CpuDriver`] because SMM is a chipset
+/// concern (NB owns TSEG/SMRAM, SB controls SMI routing), while `CpuDriver`
 /// is a CPU-model concern (MSRs, C-states).
 ///
 /// When `SmmOps` is not provided to [`mp_init`], SMM flight plan steps
@@ -209,12 +286,11 @@ pub struct SmmInfo {
 
 /// MP initialization configuration.
 ///
-/// Generic over [`CpuOps`] (required).  Optionally accepts [`SmmOps`]
-/// (when SMM is needed).  When `smm` is `None`, the SMM flight plan
-/// steps are skipped entirely.
-pub struct MpConfig<'a, C: CpuOps> {
-    /// Per-CPU-model operations (MSR programming, etc.).
-    pub cpu_ops: &'a C,
+/// Supplies CPU model drivers plus optional [`SmmOps`].  When `smm` is
+/// `None`, the SMM flight plan steps are skipped entirely.
+pub struct MpConfig<'a> {
+    /// CPU model drivers available to the stage.
+    pub cpu_drivers: &'a [&'a dyn CpuDriver],
     /// Chipset SMM operations.  `None` = no SMM.
     pub smm: Option<&'a dyn SmmOps>,
     /// Standalone native PIC SMM image to install when `smm` is `Some`.
@@ -234,6 +310,8 @@ pub enum MpError {
     TrampolinePlacementFailed,
     /// SMM was requested but no SMM image was embedded/provided.
     MissingSmmImage,
+    /// No CPU driver matched one or more CPUs.
+    UnsupportedCpu,
     /// Chipset-specific SMM handler installation failed.
     SmmInstallFailed,
 }
@@ -358,10 +436,13 @@ static FLIGHT_PLAN_LEN: AtomicUsize = AtomicUsize::new(0);
 /// fn() signature for flight plan callbacks.
 type FlightFn = fn();
 
-/// Global CpuOps pointer — stores a `*const C` set by BSP before APs start.
-static CPU_OPS_PTR: AtomicUsize = AtomicUsize::new(0);
-/// Global cpu_init trampoline — monomorphized fn() that reads CPU_OPS_PTR.
+/// Global CPU-driver slice pointer — set by BSP before APs start.
+static CPU_DRIVERS_PTR: AtomicUsize = AtomicUsize::new(0);
+/// Global CPU-driver slice length — set by BSP before APs start.
+static CPU_DRIVERS_LEN: AtomicUsize = AtomicUsize::new(0);
+/// Global cpu_init trampoline.
 static CPU_INIT_FN: AtomicUsize = AtomicUsize::new(0);
+static CPU_INIT_ERRORS: AtomicUsize = AtomicUsize::new(0);
 /// Global `&dyn SmmOps` fat pointer split into data/vtable words for
 /// monomorphized `fn()` flight-plan callbacks.
 static SMM_OPS_DATA: AtomicUsize = AtomicUsize::new(0);
@@ -371,34 +452,78 @@ static SMM_RELOCATION_SMBASES: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::n
 /// Global smm_relocate trampoline.
 static SMM_RELOCATE_FN: AtomicUsize = AtomicUsize::new(0);
 
-/// Build a monomorphized cpu_init trampoline for concrete `CpuOps` type.
-///
-/// Returns a `fn()` that loads `CPU_OPS_PTR`, casts to `&C`, and calls
-/// `C::init_cpu()`. This avoids the recursion bug where `flight_cpu_init`
-/// would call itself through `CPU_INIT_FN`.
-fn make_cpu_init_trampoline<C: CpuOps>() -> fn() {
-    fn trampoline<C: CpuOps>() {
-        let ptr = CPU_OPS_PTR.load(Ordering::Acquire);
-        if ptr != 0 {
-            // SAFETY: ptr was set by BSP to a valid &C before APs started.
-            let ops: &C = unsafe { &*(ptr as *const C) };
-            if let Some((blob, _parallel)) = ops.microcode() {
-                log_microcode_revision("before update");
-                // SAFETY: CpuOps implementors only return blobs that are
-                // identity-mapped/reachable by all CPUs during MP init.
-                unsafe { fstart_microcode_intel::update_current_cpu_logged(blob) };
-                log_microcode_revision("after update");
-            }
-            ops.init_cpu();
-        }
-    }
-    trampoline::<C>
+fn store_cpu_drivers(drivers: &[&dyn CpuDriver]) {
+    CPU_DRIVERS_PTR.store(drivers.as_ptr() as usize, Ordering::Release);
+    CPU_DRIVERS_LEN.store(drivers.len(), Ordering::Release);
 }
 
-fn log_microcode_revision(label: &str) {
-    let cpu = current_cpu_index();
-    let rev = fstart_microcode_intel::current_revision();
-    fstart_log::info!("microcode: cpu{} {} rev={:#x}", cpu, label, rev);
+fn clear_cpu_drivers() {
+    CPU_DRIVERS_PTR.store(0, Ordering::Release);
+    CPU_DRIVERS_LEN.store(0, Ordering::Release);
+}
+
+fn clear_mp_globals() {
+    clear_cpu_drivers();
+    clear_smm_ops();
+}
+
+fn load_cpu_drivers() -> &'static [&'static dyn CpuDriver] {
+    let ptr = CPU_DRIVERS_PTR.load(Ordering::Acquire) as *const &'static dyn CpuDriver;
+    let len = CPU_DRIVERS_LEN.load(Ordering::Acquire);
+    if ptr.is_null() || len == 0 {
+        return &[];
+    }
+    // SAFETY: set by `store_cpu_drivers()` before APs start. The referenced
+    // slice and drivers remain alive until `mp_init()` finishes and clears the
+    // globals after all APs have entered the mailbox loop.
+    unsafe { core::slice::from_raw_parts(ptr, len) }
+}
+
+fn find_cpu_driver(identity: CpuIdentity) -> Option<&'static dyn CpuDriver> {
+    load_cpu_drivers()
+        .iter()
+        .copied()
+        .find(|driver| driver.matches(identity))
+}
+
+fn cpu_init_trampoline() {
+    let identity = CpuIdentity::current();
+    if let Some(driver) = find_cpu_driver(identity) {
+        fstart_log::info!(
+            "cpu: init cpu{} with {} (family {:#x} model {:#x})",
+            current_cpu_index(),
+            driver.name(),
+            identity.family(),
+            identity.model(),
+        );
+        driver.update_microcode();
+        driver.init_cpu();
+    } else {
+        let vendor = match identity.vendor {
+            CpuVendor::Intel => "Intel",
+            CpuVendor::Amd => "AMD",
+            CpuVendor::Other => "other",
+        };
+        fstart_log::error!(
+            "cpu: no driver for cpu{} vendor {} signature {:#x}",
+            current_cpu_index(),
+            vendor,
+            identity.signature,
+        );
+        CPU_INIT_ERRORS.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+fn pre_mp_cpu_drivers(drivers: &[&dyn CpuDriver]) {
+    for driver in drivers {
+        driver.pre_mp_init();
+    }
+}
+
+fn post_mp_cpu_drivers(drivers: &[&dyn CpuDriver]) {
+    for driver in drivers {
+        driver.post_mp_init();
+    }
 }
 
 fn store_smm_ops(ops: &dyn SmmOps) {
@@ -541,7 +666,7 @@ fn ap_mailbox_loop() {
 /// During AP bringup, each AP stores its index. The BSP is always 0.
 /// For now, we use the LAPIC ID as a proxy and map it via the AP
 /// assignment order.
-fn current_cpu_index() -> u32 {
+pub fn current_cpu_index() -> u32 {
     let lapic = Lapic::from_msr();
     let id = lapic.id();
     // Search mailboxes for our LAPIC ID.
@@ -633,25 +758,25 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
 ///
 /// # Sequence
 ///
-/// 1. BSP: enable LAPIC, call `cpu_ops.pre_mp_init()`
+/// 1. BSP: enable LAPIC, call CPU-driver `pre_mp_init()` hooks
 /// 2. BSP: copy SIPI trampoline to low memory (`0x1000`)
 /// 3. BSP: send INIT + SIPI to all APs
 /// 4. BSP: wait for APs to check in (with timeout)
 /// 5. Flight plan:
 ///    - If SMM: step "install handlers" (BSP), step "relocate" (all, parallel)
-///    - Step "cpu_init" (all CPUs, barriered)
+///    - Step "cpu_init" (all CPUs identify themselves and run a matching driver)
 ///    - Step "mailbox loop" (APs park, BSP continues)
-/// 6. BSP: `smm.post_smm_init()` (if SMM), `cpu_ops.post_mp_init()`
+/// 6. BSP: `smm.post_smm_init()` (if SMM), CPU-driver `post_mp_init()` hooks
 /// 7. Return [`MpHandle`]
 /// Return the number of logical CPUs brought online by the most recent MP init.
 pub fn online_cpus() -> u16 {
     ONLINE_CPUS.load(Ordering::Acquire) as u16
 }
 
-pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError> {
+pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     let num_aps = config.num_cpus.saturating_sub(1);
 
-    fstart_log::info!("mp: initializing {} CPUs ({})", config.num_cpus, C::NAME);
+    fstart_log::info!("mp: initializing {} CPUs", config.num_cpus);
 
     // --- Step 1: BSP LAPIC setup ---
     let lapic = Lapic::from_msr();
@@ -660,8 +785,10 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
 
     fstart_log::info!("mp: BSP LAPIC ID = {}", lapic.id());
 
-    // Pre-MP init (BSP only).
-    config.cpu_ops.pre_mp_init();
+    // Pre-MP CPU-driver hooks (BSP only).
+    pre_mp_cpu_drivers(config.cpu_drivers);
+    store_cpu_drivers(config.cpu_drivers);
+    CPU_INIT_ERRORS.store(0, Ordering::Release);
 
     if num_aps == 0 {
         // Single-CPU system.  Still perform the SMM install + relocation path
@@ -672,13 +799,19 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
             if let Some(info) = smm.smm_info() {
                 fstart_log::info!("mp: SMM pre init");
                 smm.pre_smm_init();
-                let image = config.smm_image.ok_or_else(|| {
+                let Some(image) = config.smm_image else {
                     fstart_log::error!("mp: SMM requested but no SMM image was provided");
-                    MpError::MissingSmmImage
-                })?;
+                    clear_mp_globals();
+                    return Err(MpError::MissingSmmImage);
+                };
                 fstart_log::info!("mp: installing SMM handlers");
-                smm.install_smm_handlers(&info, config.num_cpus, image)
-                    .map_err(|_| MpError::SmmInstallFailed)?;
+                if smm
+                    .install_smm_handlers(&info, config.num_cpus, image)
+                    .is_err()
+                {
+                    clear_mp_globals();
+                    return Err(MpError::SmmInstallFailed);
+                }
                 // First SMI runs the default-SMRAM relocation handler; after
                 // post_smm_init() closes/locks SMRAM, the second SMI proves the
                 // permanent copied handler is usable.
@@ -692,18 +825,15 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
                 fstart_log::info!("mp: SMM provider returned no SMRAM info");
             }
         }
-        if let Some((blob, _parallel)) = config.cpu_ops.microcode() {
-            fstart_log::info!("mp: BSP microcode update");
-            log_microcode_revision("before update");
-            // SAFETY: CpuOps implementors only return blobs that are
-            // identity-mapped/reachable by the CPU during MP init.
-            unsafe { fstart_microcode_intel::update_current_cpu_logged(blob) };
-            log_microcode_revision("after update");
-        }
         fstart_log::info!("mp: BSP CPU init");
-        config.cpu_ops.init_cpu();
+        cpu_init_trampoline();
+        if CPU_INIT_ERRORS.load(Ordering::Acquire) != 0 {
+            clear_mp_globals();
+            return Err(MpError::UnsupportedCpu);
+        }
         fstart_log::info!("mp: BSP post MP init");
-        config.cpu_ops.post_mp_init();
+        post_mp_cpu_drivers(config.cpu_drivers);
+        clear_cpu_drivers();
         ONLINE_CPUS.store(1, Ordering::Release);
         return Ok(MpHandle { num_aps: 0 });
     }
@@ -712,10 +842,6 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
     AP_COUNT.store(0, Ordering::Release);
     AP_IN_MAILBOX_LOOP.store(0, Ordering::Release);
     SMM_RELOCATION_LOCK.store(false, Ordering::Release);
-
-    // Store ops pointer globally so the monomorphized trampoline can access it.
-    CPU_OPS_PTR.store(config.cpu_ops as *const C as usize, Ordering::Release);
-    let cpu_init_trampoline = make_cpu_init_trampoline::<C>();
 
     // Build the flight plan.
     let mut step_count = 0usize;
@@ -778,17 +904,17 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
     }
 
     // Step: All CPUs run cpu_init (barriered).
-    CPU_INIT_FN.store(cpu_init_trampoline as usize, Ordering::Release);
+    CPU_INIT_FN.store(cpu_init_trampoline as *const () as usize, Ordering::Release);
     FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
     FLIGHT_PLAN[step_count]
         .cpus_entered
         .store(0, Ordering::Release);
     FLIGHT_PLAN[step_count]
         .ap_fn
-        .store(cpu_init_trampoline as usize, Ordering::Release);
+        .store(cpu_init_trampoline as *const () as usize, Ordering::Release);
     FLIGHT_PLAN[step_count]
         .bsp_fn
-        .store(cpu_init_trampoline as usize, Ordering::Release);
+        .store(cpu_init_trampoline as *const () as usize, Ordering::Release);
     step_count += 1;
 
     // Step: APs enter mailbox loop (barriered).
@@ -808,7 +934,10 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
     // --- Step 3: Copy SIPI trampoline to low memory ---
     // The trampoline will be defined in sipi.rs (global_asm!).
     // For now, we set up the parameter block and copy.
-    install_sipi_trampoline(num_aps, &lapic)?;
+    if let Err(err) = install_sipi_trampoline(num_aps, &lapic) {
+        clear_mp_globals();
+        return Err(err);
+    }
 
     // --- Step 4: Send INIT + SIPI ---
     fstart_log::info!("mp: sending INIT IPI");
@@ -840,6 +969,7 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
     fstart_log::info!("mp: {}/{} APs checked in", final_count, num_aps);
 
     if final_count == 0 {
+        clear_mp_globals();
         return Err(MpError::NoApsResponded);
     }
 
@@ -848,12 +978,18 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
     // permanent handlers, then let every CPU enter SMM to relocate SMBASE.
     if let (Some(smm), Some(info)) = (config.smm, smm_info) {
         smm.pre_smm_init();
-        let image = config.smm_image.ok_or_else(|| {
+        let Some(image) = config.smm_image else {
             fstart_log::error!("mp: SMM requested but no SMM image was provided");
-            MpError::MissingSmmImage
-        })?;
-        smm.install_smm_handlers(&info, config.num_cpus, image)
-            .map_err(|_| MpError::SmmInstallFailed)?;
+            clear_mp_globals();
+            return Err(MpError::MissingSmmImage);
+        };
+        if smm
+            .install_smm_handlers(&info, config.num_cpus, image)
+            .is_err()
+        {
+            clear_mp_globals();
+            return Err(MpError::SmmInstallFailed);
+        }
     }
 
     // --- Step 5: Walk the flight plan (BSP side) ---
@@ -886,9 +1022,15 @@ pub fn mp_init<C: CpuOps>(config: &MpConfig<'_, C>) -> Result<MpHandle, MpError>
         step.barrier.store(1, Ordering::Release);
     }
 
+    if CPU_INIT_ERRORS.load(Ordering::Acquire) != 0 {
+        clear_mp_globals();
+        return Err(MpError::UnsupportedCpu);
+    }
+
     // --- Step 6: Post-init ---
     clear_smm_ops();
-    config.cpu_ops.post_mp_init();
+    post_mp_cpu_drivers(config.cpu_drivers);
+    clear_cpu_drivers();
 
     ONLINE_CPUS.store((final_count + 1) as usize, Ordering::Release);
     fstart_log::info!("mp: initialization complete ({} CPUs)", final_count + 1);

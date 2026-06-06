@@ -226,22 +226,13 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &PlanCtx<'_>) -> Lowered
             LoweredOp::new(quote! { fstart_stage_runtime::StageOp::AcpiLoad(#id) })
                 .guarded("stage-flow-acpi", "AcpiLoad")
         }
-        C::MpInit {
-            cpu_model,
-            num_cpus,
-            smm,
-            ..
-        } => {
-            let cpu_model = cpu_model.as_str();
-            LoweredOp::new(quote! {
-                fstart_stage_runtime::StageOp::MpInit {
-                    cpu_model: #cpu_model,
-                    num_cpus: #num_cpus,
-                    smm: #smm,
-                }
-            })
-            .guarded("stage-flow-mp", "MpInit")
-        }
+        C::MpInit { num_cpus, smm, .. } => LoweredOp::new(quote! {
+            fstart_stage_runtime::StageOp::MpInit {
+                num_cpus: #num_cpus,
+                smm: #smm,
+            }
+        })
+        .guarded("stage-flow-mp", "MpInit"),
         C::ReturnToFel => LoweredOp::new(quote! { fstart_stage_runtime::StageOp::ReturnToFel })
             .guarded("stage-flow-fel", "ReturnToFel"),
         C::LoadNextStage {

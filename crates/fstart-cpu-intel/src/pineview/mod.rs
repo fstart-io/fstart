@@ -14,7 +14,7 @@ pub mod acpi;
 
 use fstart_arch_x86::mtrr;
 use fstart_arch_x86::x86::msr::{rdmsr, wrmsr};
-use fstart_mp::CpuOps;
+use fstart_mp::{CpuDriver, CpuIdMatch, CpuVendor};
 
 // ---------------------------------------------------------------------------
 // MSR indices
@@ -140,21 +140,34 @@ fn log_mtrr_solution(label: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// CpuOps implementation
+// CpuDriver implementation
 // ---------------------------------------------------------------------------
 
-/// CPU operations for Intel Atom Pineview (family 6, model 1Ch/26h).
+static PINEVIEW_IDS: &[CpuIdMatch] = &[
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x106c0,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x106ca,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+];
+
+/// CPU driver for Intel Atom Pineview (family 6, model 1Ch/26h).
 ///
 /// Configures C-states, Enhanced SpeedStep, and thermal monitoring
 /// on every logical CPU during MP initialization.
-pub struct PineviewCpuOps {
+pub struct PineviewCpuDriver {
     /// PM base I/O port (programmed by the ICH7 southbridge).
     pmbase: u32,
     /// Optional concatenated Intel microcode blob packaged in FFS.
     microcode: Option<&'static [u8]>,
 }
 
-impl PineviewCpuOps {
+impl PineviewCpuDriver {
     /// Create with the southbridge's PM base I/O address.
     pub fn new(pmbase: u32) -> Self {
         Self {
@@ -169,8 +182,27 @@ impl PineviewCpuOps {
     }
 }
 
-impl CpuOps for PineviewCpuOps {
-    const NAME: &'static str = "Intel Atom Pineview (106cx)";
+impl CpuDriver for PineviewCpuDriver {
+    fn name(&self) -> &'static str {
+        "Intel Atom Pineview (106cx)"
+    }
+
+    fn id_table(&self) -> &'static [CpuIdMatch] {
+        PINEVIEW_IDS
+    }
+
+    fn update_microcode(&self) {
+        if let Some(blob) = self.microcode {
+            let cpu = fstart_mp::current_cpu_index();
+            let before = fstart_microcode_intel::current_revision();
+            fstart_log::info!("microcode: cpu{} before rev={:#x}", cpu, before);
+            // SAFETY: board code supplies a firmware-image-backed Intel
+            // microcode blob that remains reachable throughout MP init.
+            unsafe { fstart_microcode_intel::update_current_cpu_logged(blob) };
+            let after = fstart_microcode_intel::current_revision();
+            fstart_log::info!("microcode: cpu{} after rev={:#x}", cpu, after);
+        }
+    }
 
     fn init_cpu(&self) {
         // SAFETY: MP init runs this on every active logical CPU.  All CPUs
@@ -184,9 +216,5 @@ impl CpuOps for PineviewCpuOps {
 
     fn post_mp_init(&self) {
         fstart_log::info!("cpu: Pineview post-MP init complete");
-    }
-
-    fn microcode(&self) -> Option<(&[u8], bool)> {
-        self.microcode.map(|blob| (blob, true))
     }
 }

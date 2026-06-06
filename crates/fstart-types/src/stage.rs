@@ -293,7 +293,7 @@ pub enum Capability {
     ///
     /// Must appear after `DramInit` — APs need stacks in DRAM.
     MpInit {
-        /// CPU model identifier (selects which `CpuOps` to use).
+        /// CPU model identifier used by codegen to select CPU-driver support.
         cpu_model: HString<32>,
         /// Expected logical CPU count (BSP + APs).
         num_cpus: u16,

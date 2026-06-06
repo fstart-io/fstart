@@ -133,15 +133,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             StageOp::FdtPrepare => fdt_prepare(board),
 
             #[cfg(feature = "flow-mp")]
-            StageOp::MpInit {
-                cpu_model,
-                num_cpus,
-                smm,
-            } => {
-                if board.mp_init(cpu_model, num_cpus, smm).is_err() {
-                    board.halt();
-                }
-            }
+            StageOp::MpInit { num_cpus, smm } => mp_init(board, num_cpus, smm),
 
             #[cfg(feature = "flow-acpi")]
             StageOp::AcpiPrepare => acpi_prepare(board),
@@ -453,6 +445,23 @@ fn stage_load<B: Board>(board: &B, next_stage: &'static str) -> ! {
         fstart_capabilities::stage_load(next_stage, anchor, media, |entry| board.jump_to(entry));
     });
     board.halt();
+}
+
+#[cfg(feature = "flow-mp")]
+fn mp_init<B: Board>(board: &mut B, num_cpus: u16, smm: bool) {
+    let result = board.with_mp_services(smm, |services| {
+        let config = fstart_mp::MpConfig {
+            cpu_drivers: services.cpu_drivers,
+            smm: services.smm_ops,
+            smm_image: services.smm_image,
+            num_cpus,
+        };
+        fstart_mp::mp_init(&config)
+    });
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) | Err(_) => board.halt(),
+    }
 }
 
 #[cfg(feature = "flow-fdt")]

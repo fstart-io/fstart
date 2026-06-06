@@ -537,6 +537,7 @@ dependencies = [
  "acpi_tables",
  "fstart-arch-x86",
  "fstart-log",
+ "fstart-microcode-intel",
  "fstart-mp",
  "ufmt",
 ]
@@ -1074,7 +1075,6 @@ dependencies = [
  "fstart-arch-x86",
  "fstart-lapic",
  "fstart-log",
- "fstart-microcode-intel",
  "fstart-smm",
  "object",
  "ufmt",
@@ -1286,6 +1286,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-capabilities",
  "fstart-log",
+ "fstart-mp",
  "fstart-services",
  "fstart-types",
  "ufmt",

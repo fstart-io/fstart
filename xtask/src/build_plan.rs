@@ -405,11 +405,12 @@ fn capability_features(
         if let Capability::MpInit { cpu_model, .. } = cap {
             features.push("stage-flow-mp");
             features.push("mp");
-            if cpu_model.as_str().contains("pineview") || cpu_model.as_str().contains("106cx") {
-                features.push("pineview-cpu");
-            }
-            if cpu_model.as_str().contains("core2") || cpu_model.as_str().contains("6fx") {
-                features.push("core2-cpu");
+            if cpu_model.as_str().contains("pineview")
+                || cpu_model.as_str().contains("106cx")
+                || cpu_model.as_str().contains("core2")
+                || cpu_model.as_str().contains("6fx")
+            {
+                features.push("intel-cpu");
             }
         }
     }

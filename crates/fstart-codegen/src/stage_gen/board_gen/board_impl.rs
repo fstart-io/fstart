@@ -170,12 +170,12 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #smbios_desc_body
             }
 
-            fn mp_init(
+            #[cfg(feature = "stage-flow-mp")]
+            fn with_mp_services<R>(
                 &mut self,
-                cpu_model: &str,
-                num_cpus: u16,
                 smm: bool,
-            ) -> Result<(), fstart_stage_runtime::RuntimeError> {
+                run: impl FnOnce(fstart_stage_runtime::MpServices<'_>) -> R,
+            ) -> Result<R, fstart_stage_runtime::RuntimeError> {
                 #mp_init_body
             }
 

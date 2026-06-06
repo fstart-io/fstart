@@ -13,5 +13,6 @@ acpi = ["dep:acpi_tables"]
 acpi_tables = { version = "0.2", optional = true }
 fstart-arch-x86 = { workspace = true }
 fstart-log = { workspace = true }
+fstart-microcode-intel = { workspace = true }
 fstart-mp = { workspace = true }
 ufmt = { workspace = true }

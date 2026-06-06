@@ -5,7 +5,7 @@
 
 use fstart_arch_x86::mtrr;
 use fstart_arch_x86::x86::msr::{rdmsr, wrmsr};
-use fstart_mp::CpuOps;
+use fstart_mp::{CpuDriver, CpuIdMatch, CpuVendor};
 
 const MSR_PKG_CST_CONFIG_CONTROL: u32 = 0xe2;
 const MSR_PMG_IO_BASE_ADDR: u32 = 0xe4;
@@ -81,21 +81,83 @@ fn configure_pic_thermal_sensors() {
     }
 }
 
-/// CPU operations for Intel Core/Core 2 family 6 model f/16h systems.
-pub struct Core2CpuOps {
+static CORE2_IDS: &[CpuIdMatch] = &[
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06f0,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06f2,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06f6,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06f7,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06fa,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06fb,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06fd,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x10661,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+];
+
+/// CPU driver for Intel Core/Core 2 family 6 model f/16h systems.
+pub struct Core2CpuDriver {
     pmbase: u32,
     microcode: Option<&'static [u8]>,
 }
 
-impl Core2CpuOps {
+impl Core2CpuDriver {
     /// Create Core 2 CPU ops with the southbridge PMBASE and optional ucode.
     pub fn new(pmbase: u32, microcode: Option<&'static [u8]>) -> Self {
         Self { pmbase, microcode }
     }
 }
 
-impl CpuOps for Core2CpuOps {
-    const NAME: &'static str = "Intel Core/Core 2";
+impl CpuDriver for Core2CpuDriver {
+    fn name(&self) -> &'static str {
+        "Intel Core/Core 2"
+    }
+
+    fn id_table(&self) -> &'static [CpuIdMatch] {
+        CORE2_IDS
+    }
+
+    fn update_microcode(&self) {
+        if let Some(blob) = self.microcode {
+            let cpu = fstart_mp::current_cpu_index();
+            let before = fstart_microcode_intel::current_revision();
+            fstart_log::info!("microcode: cpu{} before rev={:#x}", cpu, before);
+            // SAFETY: board code supplies a firmware-image-backed Intel
+            // microcode blob that remains reachable throughout MP init.
+            unsafe { fstart_microcode_intel::update_current_cpu_logged(blob) };
+            let after = fstart_microcode_intel::current_revision();
+            fstart_log::info!("microcode: cpu{} after rev={:#x}", cpu, after);
+        }
+    }
 
     fn init_cpu(&self) {
         // SAFETY: MP init runs this on every active logical CPU. All CPUs
@@ -105,9 +167,5 @@ impl CpuOps for Core2CpuOps {
         configure_misc();
         configure_pic_thermal_sensors();
         fstart_log::info!("cpu: Core 2 MSR configuration complete");
-    }
-
-    fn microcode(&self) -> Option<(&[u8], bool)> {
-        self.microcode.map(|blob| (blob, true))
     }
 }

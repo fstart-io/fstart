@@ -125,6 +125,17 @@ pub struct NextStageAddr {
     pub handoff_addr: u64,
 }
 
+/// MP services borrowed from a generated board adapter for one runtime call.
+#[cfg(feature = "flow-mp")]
+pub struct MpServices<'a> {
+    /// CPU model drivers available to generic MP bringup.
+    pub cpu_drivers: &'a [&'a dyn fstart_mp::CpuDriver],
+    /// Optional platform/chipset SMM operations.
+    pub smm_ops: Option<&'a dyn fstart_mp::SmmOps>,
+    /// Optional standalone SMM image to install.
+    pub smm_image: Option<&'a [u8]>,
+}
+
 /// eGON-published next-stage extent inside the selected firmware image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EgonNextStage {
@@ -406,15 +417,19 @@ pub trait Board: Sized {
     #[cfg(feature = "flow-smbios")]
     fn smbios_desc(&self) -> Option<fstart_capabilities::smbios::SmbiosDesc<'static>>;
 
-    /// Stage operation for `MpInit`.
+    /// Borrow generic MP services for one executor-owned `MpInit` call.
     ///
-    /// Board adapters that enable MP/SMM construct the concrete CPU and
-    /// platform SMM operations here and delegate to `fstart_mp::mp_init`.
-    /// The default no-op preserves existing non-x86 board adapters until
-    /// their codegen grows a real implementation.
-    fn mp_init(&mut self, cpu_model: &str, num_cpus: u16, smm: bool) -> Result<(), RuntimeError> {
-        let _ = (cpu_model, num_cpus, smm);
-        Ok(())
+    /// The board adapter constructs concrete CPU-driver values and dispatches
+    /// to the platform SMM provider. The executor owns MP sequencing and calls
+    /// `fstart_mp::mp_init` over these primitive services.
+    #[cfg(feature = "flow-mp")]
+    fn with_mp_services<R>(
+        &mut self,
+        smm: bool,
+        run: impl FnOnce(MpServices<'_>) -> R,
+    ) -> Result<R, RuntimeError> {
+        let _ = (smm, run);
+        Err(RuntimeError::Failed)
     }
 
     /// Run one device-local lifecycle phase hook.
