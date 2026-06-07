@@ -132,7 +132,7 @@ acpi = [
 smbios = ["fstart-capabilities/smbios"]
 # CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
 # Requires alloc (fstart-alloc provides #[global_allocator]).
-crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
+crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc", "stage-flow-uefi"]
 
 # Stage flow families. `fstart_main` is a data-only StagePlan shim into the
 # handwritten stage runtime; each optional family is explicitly feature-gated so
@@ -148,6 +148,7 @@ stage-flow-memory-detect = ["fstart-stage-runtime/flow-memory-detect"]
 stage-flow-boot-media = ["fstart-stage-runtime/flow-boot-media"]
 stage-flow-ffs = ["fstart-stage-runtime/flow-ffs"]
 stage-flow-payload-fit = ["fstart-stage-runtime/flow-payload-fit"]
+stage-flow-uefi = ["fstart-stage-runtime/flow-uefi"]
 stage-flow-fdt = ["fstart-stage-runtime/flow-fdt"]
 stage-flow-fdt-ffs = ["fstart-stage-runtime/flow-fdt-ffs"]
 stage-flow-mp = ["fstart-stage-runtime/flow-mp"]

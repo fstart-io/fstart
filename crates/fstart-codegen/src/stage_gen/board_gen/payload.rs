@@ -6,7 +6,6 @@ use quote::quote;
 use fstart_types::{Capability, Platform};
 
 use super::model::BoardEmitModel;
-use super::payload_uefi::payload_load_uefi_body;
 
 /// Emit the body of primitive `Board::payload_load_desc`.
 pub(super) fn payload_load_desc_body(_platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
@@ -72,19 +71,4 @@ pub(super) fn payload_load_desc_body(_platform: Platform, ctx: &BoardEmitModel<'
             print_x86_mtrrs: #print_x86_mtrrs,
         })
     }
-}
-
-/// Emit the temporary UEFI payload-load body.
-pub(super) fn uefi_payload_load_body(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
-    use crate::stage_gen::validation::is_uefi_payload;
-
-    let has_payload_load = ctx
-        .stage
-        .capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::PayloadLoad));
-    if has_payload_load && is_uefi_payload(ctx.config) {
-        return payload_load_uefi_body(platform, ctx);
-    }
-    quote! { unreachable!("board_gen::uefi_payload_load: stage does not use UEFI PayloadLoad") }
 }

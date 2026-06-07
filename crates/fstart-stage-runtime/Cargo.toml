@@ -30,6 +30,7 @@ flow-ffs = [
   "fstart-capabilities/ffs",
 ]
 flow-payload-fit = ["flow-ffs", "fstart-capabilities/fit"]
+flow-uefi = ["flow-ffs", "dep:fstart-crabefi"]
 flow-fdt = [
   "stage-executor",
   "dep:fstart-capabilities",
@@ -61,4 +62,5 @@ fstart-log = { workspace = true }
 fstart-mp = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, optional = true }
 fstart-capabilities = { workspace = true, optional = true }
+fstart-crabefi = { workspace = true, optional = true }
 ufmt = { workspace = true }

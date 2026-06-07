@@ -312,8 +312,199 @@ fn payload_load<B: Board>(board: &B) -> ! {
             let kernel_addr = payload_load_fit_runtime(board, desc, config);
             boot_linux(board, desc, kernel_addr);
         }
-        crate::PayloadLoadKind::Uefi => board.uefi_payload_load(),
+        #[cfg(feature = "flow-uefi")]
+        crate::PayloadLoadKind::Uefi => payload_load_uefi(board),
+        #[cfg(not(feature = "flow-uefi"))]
+        crate::PayloadLoadKind::Uefi => board.halt(),
     }
+}
+
+#[cfg(feature = "flow-uefi")]
+fn payload_load_uefi<B: Board>(board: &B) -> ! {
+    let Some(desc) = board.uefi_payload_desc() else {
+        board.halt();
+    };
+
+    fstart_log::info!("Launching CrabEFI UEFI payload...");
+
+    if let Some(fw_load_addr) = desc.bl31_load_addr {
+        let Some(anchor) = board.ffs_anchor() else {
+            board.halt();
+        };
+        let ok = board.with_boot_media("payload_load", false, |media, _scratch| {
+            fstart_capabilities::load_ffs_file_by_type(
+                anchor,
+                media,
+                fstart_types::ffs::FileType::Firmware,
+            )
+        });
+        if !ok {
+            fstart_log::error!("FATAL: failed to load BL31 firmware");
+            board.halt();
+        }
+        fstart_log::info!("booting BL31 (GIC, PSCI, NS switch)...");
+        board.uefi_boot_bl31_and_resume(fw_load_addr, desc.fdt_addr);
+        fstart_log::info!("resumed from BL31 at EL2 NS");
+    }
+
+    let fdt_blob = if desc.fdt_addr == 0 {
+        None
+    } else {
+        board.uefi_fdt_blob(desc.fdt_addr)
+    };
+    let fdt_reservation = if desc.mode == crate::UefiLaunchMode::Flat && desc.fdt_addr != 0 {
+        // SAFETY: the board adapter only returns a non-zero UEFI FDT address
+        // when the platform preserved a valid boot FDT blob at that address.
+        Some((desc.fdt_addr, unsafe {
+            fstart_crabefi::fdt_page_aligned_size(desc.fdt_addr)
+        }))
+    } else {
+        None
+    };
+
+    let acpi_rsdp = if desc.acpi_rsdp {
+        Some(board.acpi_rsdp_addr())
+    } else {
+        None
+    };
+    let smbios = uefi_smbios_entry(desc.smbios);
+
+    board.park_aps_for_payload();
+    board.disable_boot_media_rom_cache_for_handoff();
+
+    board.with_uefi_services(|services| {
+        let launch = fstart_crabefi::UefiLaunchConfig {
+            console: services.console,
+            framebuffer: services.framebuffer,
+            acpi_rsdp,
+            smbios,
+            fdt: fdt_blob,
+            ecam_base: services.ecam.map(|(base, _size)| base),
+            runtime_region: uefi_runtime_region(desc.mode),
+        };
+
+        match desc.mode {
+            crate::UefiLaunchMode::X86 => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    let e820_state = unsafe { fstart_services::memory_detect::e820_state() };
+                    let mut platform_entries_buf: [fstart_crabefi::MemoryRegion; 8] =
+                        [uefi_reserved_region(0, 0); 8];
+                    let mut platform_entries_idx = 0usize;
+
+                    for entry in desc.static_entries {
+                        platform_entries_buf[platform_entries_idx] = *entry;
+                        platform_entries_idx += 1;
+                    }
+                    if let Some((base, size)) = services.ecam {
+                        platform_entries_buf[platform_entries_idx] =
+                            uefi_reserved_region(base, size);
+                        platform_entries_idx += 1;
+                    }
+                    if desc.reserve_acpi {
+                        if let Some((base, size)) = uefi_acpi_prepared_region() {
+                            platform_entries_buf[platform_entries_idx] =
+                                fstart_crabefi::MemoryRegion {
+                                    base,
+                                    size,
+                                    region_type: fstart_crabefi::MemoryType::AcpiReclaimable,
+                                };
+                            platform_entries_idx += 1;
+                        }
+                    }
+                    if desc.reserve_smbios {
+                        if let Some((base, size)) = uefi_smbios_prepared_region() {
+                            platform_entries_buf[platform_entries_idx] =
+                                uefi_reserved_region(base, size);
+                            platform_entries_idx += 1;
+                        }
+                    }
+
+                    let platform_entries = &platform_entries_buf[..platform_entries_idx];
+                    fstart_crabefi::launch_x86_uefi(launch, e820_state.entries(), platform_entries)
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    let _ = launch;
+                    board.halt();
+                }
+            }
+            crate::UefiLaunchMode::Flat => fstart_crabefi::launch_flat_uefi(
+                launch,
+                desc.static_entries,
+                desc.ram_base,
+                desc.ram_size,
+                desc.fw_data_addr,
+                desc.fw_stack_size,
+                fdt_reservation,
+            ),
+        }
+    })
+}
+
+#[cfg(all(feature = "flow-uefi", target_arch = "x86_64"))]
+const fn uefi_reserved_region(base: u64, size: u64) -> fstart_crabefi::MemoryRegion {
+    fstart_crabefi::MemoryRegion {
+        base,
+        size,
+        region_type: fstart_crabefi::MemoryType::Reserved,
+    }
+}
+
+#[cfg(all(feature = "flow-uefi", target_arch = "x86_64"))]
+fn uefi_runtime_region(mode: crate::UefiLaunchMode) -> Option<fstart_crabefi::RuntimeRegion> {
+    if mode == crate::UefiLaunchMode::X86 {
+        Some(fstart_crabefi::compute_runtime_region())
+    } else {
+        None
+    }
+}
+
+#[cfg(all(feature = "flow-uefi", not(target_arch = "x86_64")))]
+fn uefi_runtime_region(_mode: crate::UefiLaunchMode) -> Option<fstart_crabefi::RuntimeRegion> {
+    None
+}
+
+#[cfg(all(feature = "flow-uefi", feature = "flow-smbios"))]
+fn uefi_smbios_entry(enabled: bool) -> Option<u64> {
+    if enabled {
+        fstart_capabilities::smbios::entry_point()
+    } else {
+        None
+    }
+}
+
+#[cfg(all(feature = "flow-uefi", not(feature = "flow-smbios")))]
+fn uefi_smbios_entry(_enabled: bool) -> Option<u64> {
+    None
+}
+
+#[cfg(all(feature = "flow-uefi", feature = "flow-acpi", target_arch = "x86_64"))]
+fn uefi_acpi_prepared_region() -> Option<(u64, u64)> {
+    fstart_capabilities::acpi::prepared_region()
+}
+
+#[cfg(all(
+    feature = "flow-uefi",
+    not(feature = "flow-acpi"),
+    target_arch = "x86_64"
+))]
+fn uefi_acpi_prepared_region() -> Option<(u64, u64)> {
+    None
+}
+
+#[cfg(all(feature = "flow-uefi", feature = "flow-smbios", target_arch = "x86_64"))]
+fn uefi_smbios_prepared_region() -> Option<(u64, u64)> {
+    fstart_capabilities::smbios::prepared_region()
+}
+
+#[cfg(all(
+    feature = "flow-uefi",
+    not(feature = "flow-smbios"),
+    target_arch = "x86_64"
+))]
+fn uefi_smbios_prepared_region() -> Option<(u64, u64)> {
+    None
 }
 
 #[cfg(feature = "flow-ffs")]

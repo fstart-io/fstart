@@ -389,6 +389,7 @@ fn capability_features(
         .any(|c| matches!(c, Capability::PayloadLoad));
     if has_payload_load && stage_uses_crabefi(config) {
         features.push("crabefi");
+        features.push("stage-flow-uefi");
     }
 
     if stage_uses_acpi(capabilities) {

@@ -1285,6 +1285,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-capabilities",
+ "fstart-crabefi",
  "fstart-log",
  "fstart-mp",
  "fstart-services",

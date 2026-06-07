@@ -42,6 +42,27 @@ fn payload_load_armv7_cleanup_before_linux() {
     );
 }
 
+#[test]
+fn payload_load_uefi_exposes_primitives_only() {
+    let src = adapter_source_for_stage("qemu-q35-uefi", "main");
+    assert!(
+        src.contains("PayloadLoadKind::Uefi") && src.contains("UefiPayloadDesc"),
+        "UEFI adapter must expose primitive launch data; got:\n{src}"
+    );
+    assert!(
+        src.contains("fn with_uefi_services"),
+        "UEFI adapter must expose service borrows; got:\n{src}"
+    );
+    assert!(
+        !src.contains("launch_x86_uefi") && !src.contains("launch_flat_uefi"),
+        "CrabEFI launch policy belongs to fstart-stage-runtime; got:\n{src}"
+    );
+    assert!(
+        !src.contains("Launching CrabEFI UEFI payload"),
+        "UEFI payload sequencing/logging belongs to fstart-stage-runtime; got:\n{src}"
+    );
+}
+
 // ===== init_device adapter tests ===============
 
 #[test]

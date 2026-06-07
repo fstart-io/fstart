@@ -85,8 +85,8 @@ pub enum PayloadLoadKind {
         /// Optional FIT configuration name.
         config: Option<&'static str>,
     },
-    /// UEFI/CrabEFI payload.  This path still needs platform-service
-    /// primitives and is delegated to a narrower board method for now.
+    /// UEFI/CrabEFI payload.  Handwritten runtime flow owns the launch
+    /// sequence; the board adapter supplies primitive services and descriptors.
     Uefi,
 }
 
@@ -134,6 +134,56 @@ pub struct MpServices<'a> {
     pub smm_ops: Option<&'a dyn fstart_mp::SmmOps>,
     /// Optional standalone SMM image to install.
     pub smm_image: Option<&'a [u8]>,
+}
+
+/// CrabEFI launch shape selected by primitive board data.
+#[cfg(feature = "flow-uefi")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UefiLaunchMode {
+    /// x86 launch from an E820 memory map plus platform reservations.
+    X86,
+    /// Flat launch from one static RAM region plus platform reservations.
+    Flat,
+}
+
+/// Primitive descriptor for the UEFI/CrabEFI payload path.
+#[cfg(feature = "flow-uefi")]
+pub struct UefiPayloadDesc {
+    /// Which CrabEFI launch helper to use.
+    pub mode: UefiLaunchMode,
+    /// Board-configured reserved/static memory entries.
+    pub static_entries: &'static [fstart_crabefi::MemoryRegion],
+    /// Flat-launch RAM base.
+    pub ram_base: u64,
+    /// Flat-launch RAM size.
+    pub ram_size: u64,
+    /// Firmware runtime data base for flat launch.
+    pub fw_data_addr: u64,
+    /// Firmware stack size to reserve for flat launch.
+    pub fw_stack_size: u64,
+    /// Source FDT address, or zero when no FDT should be passed.
+    pub fdt_addr: u64,
+    /// Optional BL31/ATF firmware load address to start before CrabEFI.
+    pub bl31_load_addr: Option<u64>,
+    /// Whether to pass the prepared ACPI RSDP address.
+    pub acpi_rsdp: bool,
+    /// Whether to pass the prepared SMBIOS entry point.
+    pub smbios: bool,
+    /// Whether to reserve the prepared ACPI table region in the EFI map.
+    pub reserve_acpi: bool,
+    /// Whether to reserve the prepared SMBIOS table region in the EFI map.
+    pub reserve_smbios: bool,
+}
+
+/// UEFI payload services borrowed from a generated board adapter for one call.
+#[cfg(feature = "flow-uefi")]
+pub struct UefiServices<'a> {
+    /// Console selected for CrabEFI debug output/input.
+    pub console: Option<&'a dyn fstart_services::Console>,
+    /// Framebuffer selected for GOP.
+    pub framebuffer: Option<fstart_crabefi::FramebufferConfig>,
+    /// Optional PCI ECAM reservation, as `(base, size)`.
+    pub ecam: Option<(u64, u64)>,
 }
 
 /// eGON-published next-stage extent inside the selected firmware image.
@@ -369,15 +419,45 @@ pub trait Board: Sized {
 
     /// Static payload-load descriptor, if this stage has one.
     ///
-    /// The executor owns FFS/FIT loading and Linux handoff sequencing. UEFI is
-    /// still delegated through [`Board::uefi_payload_load`] until its platform
-    /// service access is reduced further.
+    /// The executor owns FFS/FIT loading, Linux handoff sequencing, and the
+    /// UEFI launch sequence. Board adapters expose only primitive descriptors
+    /// and service borrows.
     #[cfg(feature = "flow-ffs")]
     fn payload_load_desc(&self) -> Option<PayloadLoadDesc>;
 
-    /// Remaining UEFI/CrabEFI payload path. Diverges.
-    #[cfg(feature = "flow-ffs")]
-    fn uefi_payload_load(&self) -> !;
+    /// Static UEFI payload descriptor, if this stage has one.
+    #[cfg(feature = "flow-uefi")]
+    fn uefi_payload_desc(&self) -> Option<UefiPayloadDesc> {
+        None
+    }
+
+    /// Borrow UEFI payload services for one executor-owned launch.
+    #[cfg(feature = "flow-uefi")]
+    fn with_uefi_services<R>(&self, run: impl FnOnce(UefiServices<'_>) -> R) -> R {
+        run(UefiServices {
+            console: None,
+            framebuffer: None,
+            ecam: None,
+        })
+    }
+
+    /// Resolve the FDT blob to pass to CrabEFI from a primitive source address.
+    #[cfg(feature = "flow-uefi")]
+    fn uefi_fdt_blob(&self, _addr: u64) -> Option<&'static [u8]> {
+        None
+    }
+
+    /// Platform BL31/ATF handoff primitive for AArch64 UEFI payloads.
+    #[cfg(feature = "flow-uefi")]
+    fn uefi_boot_bl31_and_resume(&self, _fw_load_addr: u64, _fdt_addr: u64) {}
+
+    /// Park secondary CPUs before entering a payload that expects only the BSP.
+    #[cfg(feature = "flow-uefi")]
+    fn park_aps_for_payload(&self) {}
+
+    /// Disable temporary boot-media ROM caching before handing off to UEFI.
+    #[cfg(feature = "flow-uefi")]
+    fn disable_boot_media_rom_cache_for_handoff(&self) {}
 
     /// Static `StageLoad` descriptor, if this stage has one.
     #[cfg(feature = "flow-ffs")]

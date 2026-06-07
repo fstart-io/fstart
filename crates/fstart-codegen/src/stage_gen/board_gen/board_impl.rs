@@ -21,7 +21,12 @@ use super::lifecycle::init_device_body;
 use super::logger::install_logger_body;
 use super::model::BoardEmitModel;
 use super::mp::mp_init_body;
-use super::payload::{payload_load_desc_body, uefi_payload_load_body};
+use super::payload::payload_load_desc_body;
+use super::payload_uefi::{
+    disable_boot_media_rom_cache_for_handoff_body, park_aps_for_payload_body,
+    uefi_boot_bl31_and_resume_body, uefi_fdt_blob_body, uefi_payload_desc_body,
+    with_uefi_services_body,
+};
 use super::phases::phase_init_body;
 use super::platform::sunxi::{
     dram_size_for_handoff_body, egon_next_stage_body, next_stage_addr_body, soc_boot_media_body,
@@ -99,7 +104,13 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let egon_next_stage_body = egon_next_stage_body(ctx);
     let dram_size_for_handoff_body = dram_size_for_handoff_body(ctx);
     let payload_load_desc_body = payload_load_desc_body(platform, ctx);
-    let uefi_payload_load_body = uefi_payload_load_body(platform, ctx);
+    let uefi_payload_desc_body = uefi_payload_desc_body(platform, ctx);
+    let with_uefi_services_body = with_uefi_services_body(ctx);
+    let uefi_fdt_blob_body = uefi_fdt_blob_body(platform, ctx);
+    let uefi_boot_bl31_and_resume_body = uefi_boot_bl31_and_resume_body(platform);
+    let park_aps_for_payload_body = park_aps_for_payload_body(platform);
+    let disable_boot_media_rom_cache_for_handoff_body =
+        disable_boot_media_rom_cache_for_handoff_body(platform);
     let init_device_body = init_device_body(ctx);
     let firmware_image_body = firmware_image_body(ctx);
     let ffs_anchor_body = ffs_anchor_body(ctx);
@@ -130,8 +141,38 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #payload_load_desc_body
             }
 
-            #[cfg(feature = "stage-flow-ffs")]
-            fn uefi_payload_load(&self) -> ! { #uefi_payload_load_body }
+            #[cfg(feature = "stage-flow-uefi")]
+            fn uefi_payload_desc(&self) -> Option<fstart_stage_runtime::UefiPayloadDesc> {
+                #uefi_payload_desc_body
+            }
+
+            #[cfg(feature = "stage-flow-uefi")]
+            fn with_uefi_services<R>(
+                &self,
+                run: impl FnOnce(fstart_stage_runtime::UefiServices<'_>) -> R,
+            ) -> R {
+                #with_uefi_services_body
+            }
+
+            #[cfg(feature = "stage-flow-uefi")]
+            fn uefi_fdt_blob(&self, addr: u64) -> Option<&'static [u8]> {
+                #uefi_fdt_blob_body
+            }
+
+            #[cfg(feature = "stage-flow-uefi")]
+            fn uefi_boot_bl31_and_resume(&self, fw_load_addr: u64, fdt_addr: u64) {
+                #uefi_boot_bl31_and_resume_body
+            }
+
+            #[cfg(feature = "stage-flow-uefi")]
+            fn park_aps_for_payload(&self) {
+                #park_aps_for_payload_body
+            }
+
+            #[cfg(feature = "stage-flow-uefi")]
+            fn disable_boot_media_rom_cache_for_handoff(&self) {
+                #disable_boot_media_rom_cache_for_handoff_body
+            }
 
             #[cfg(feature = "stage-flow-ffs")]
             fn stage_load_desc(&self) -> Option<fstart_stage_runtime::StageLoadDesc> {
