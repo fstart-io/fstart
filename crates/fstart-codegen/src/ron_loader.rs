@@ -23,7 +23,7 @@ use fstart_device_registry::{
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::device::BusAddress;
 use fstart_types::{
-    BoardConfig, BuildMode, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig, Platform,
+    BoardConfig, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig, Platform,
     SecurityConfig, SocImageFormat, StageLayout,
 };
 
@@ -72,7 +72,6 @@ struct RonBoardConfig {
     devices: Vec<RonDevice>,
     stages: StageLayout,
     security: SecurityConfig,
-    mode: BuildMode,
     payload: Option<PayloadConfig>,
     #[serde(default)]
     microcode: Option<fstart_types::board::MicrocodeConfig>,
@@ -233,7 +232,6 @@ fn convert(ron: RonBoardConfig) -> Result<ParsedBoard, String> {
         devices,
         stages: ron.stages,
         security: ron.security,
-        mode: ron.mode,
         payload: ron.payload,
         microcode: ron.microcode,
         soc_image_format: ron.soc_image_format,
@@ -692,14 +690,14 @@ mod tests {
     #[test]
     fn acpi_only_descriptor_requires_explicit_kind() {
         let source = qemu_sbsa_board_source();
-        let legacy_acpi_only = source.replacen(
+        let missing_kind = source.replacen(
             "kind: AcpiOnly,\n            acpi: Ahci((",
             "acpi: Ahci((",
             1,
         );
-        assert_ne!(source, legacy_acpi_only, "test fixture changed");
+        assert_ne!(source, missing_kind, "test fixture changed");
 
-        let err = expect_load_error(load_temp_board("legacy-acpi-only", legacy_acpi_only));
+        let err = expect_load_error(load_temp_board("acpi-only-missing-kind", missing_kind));
         assert!(
             err.contains("must use 'kind: AcpiOnly'"),
             "unexpected error: {err}"

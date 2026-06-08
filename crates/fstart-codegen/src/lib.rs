@@ -2,7 +2,7 @@
 //!
 //! Reads board.ron files and generates:
 //! - Stage `fstart_main()` entry point with capability call sequence
-//! - Static driver instantiation (rigid mode)
+//! - Static driver instantiation
 //! - Linker scripts from memory maps
 //! - Feature flags lists
 //!

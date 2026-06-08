@@ -112,15 +112,17 @@ pub trait BusDevice: Send + Sync + Sized {
 
     /// Construct from config + parent bus reference + bus address.
     ///
-    /// Most bus devices keep their address inside driver config, so the default
-    /// implementation ignores `address`. Devices whose address is modeled by
-    /// board topology can override this method.
+    /// Devices whose address is modeled by board topology must override this
+    /// method and consume the supplied address. The default accepts only
+    /// address-less topology, so codegen never silently drops bus wiring data.
     fn new_on_bus_at(
         config: &'static Self::Config,
         bus: &Self::Bus,
         address: Option<BusAddress>,
     ) -> Result<Self, DeviceError> {
-        let _ = address;
+        if address.is_some() {
+            return Err(DeviceError::MissingResource("bus_address_handler"));
+        }
         Self::new_on_bus(config, bus)
     }
 
@@ -128,12 +130,5 @@ pub trait BusDevice: Send + Sync + Sized {
     fn init(&mut self) -> Result<(), DeviceError>;
 
     /// Initialise hardware with access to the parent bus.
-    ///
-    /// The default implementation preserves existing devices whose `init()`
-    /// does not need bus transactions. Devices such as SMBus clock generators
-    /// can override this to program registers through the parent controller.
-    fn init_on_bus(&mut self, bus: &mut Self::Bus) -> Result<(), DeviceError> {
-        let _ = bus;
-        self.init()
-    }
+    fn init_on_bus(&mut self, bus: &mut Self::Bus) -> Result<(), DeviceError>;
 }

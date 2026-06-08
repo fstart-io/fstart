@@ -23,8 +23,8 @@ pub use acpi::{
     AcpiWatchdog, AcpiXhciDevice, ArmPlatformAcpi,
 };
 pub use board::{
-    BoardConfig, BuildMode, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig,
-    PayloadKind, Platform, SocImageFormat,
+    BoardConfig, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig, PayloadKind,
+    Platform, SocImageFormat,
 };
 pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode};
 pub use ffs::{

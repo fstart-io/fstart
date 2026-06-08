@@ -84,7 +84,6 @@
         required_digests: [Sha256, Sha3_256],
     ),
 
-    mode: Rigid,
 
     // Linux boot via OpenSBI fw_dynamic protocol.
     //

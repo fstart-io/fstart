@@ -404,14 +404,22 @@ pub(super) fn validate_stage_scope_requirements(
     }
 
     if has(|cap| matches!(cap, Capability::FdtPrepare)) {
-        if let Some(payload) = config.payload.as_ref() {
-            if matches!(
-                payload.fdt,
-                FdtSource::Override(_) | FdtSource::GeneratedWithOverride(_)
-            ) && !needs_ffs(capabilities)
-            {
+        let Some(payload) = config.payload.as_ref() else {
+            return Some("FdtPrepare requires a payload with an FDT source".to_string());
+        };
+
+        match payload.fdt {
+            FdtSource::Platform => {}
+            FdtSource::Override(_) => {
+                if !needs_ffs(capabilities) {
+                    return Some(
+                        "FdtPrepare with an override DTB requires an FFS-using stage".to_string(),
+                    );
+                }
+            }
+            FdtSource::Generated | FdtSource::GeneratedWithOverride(_) => {
                 return Some(
-                    "FdtPrepare with an override DTB requires an FFS-using stage".to_string(),
+                    "FdtPrepare supports only Platform or Override FDT sources".to_string(),
                 );
             }
         }

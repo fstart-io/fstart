@@ -1320,6 +1320,7 @@ dependencies = [
  "fstart-log",
  "fstart-pio",
  "fstart-services",
+ "fstart-types",
  "heapless",
  "serde",
  "ufmt",

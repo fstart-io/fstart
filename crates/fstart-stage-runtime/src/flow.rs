@@ -69,7 +69,8 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
         feature = "flow-acpi",
         feature = "flow-fel",
     ))]
-    let mut inited = DeviceMask::from_slice(plan.persistent_inited);
+    let _ = plan.persistent_inited;
+    let mut inited = DeviceMask::new();
 
     for op in plan.ops {
         match *op {
@@ -761,7 +762,6 @@ fn fdt_prepare<B: Board>(board: &B) {
         board.halt();
     };
     match desc.source {
-        crate::FdtPrepareSource::Stub => fstart_capabilities::fdt_prepare_stub(),
         crate::FdtPrepareSource::Platform { src_dtb_addr } => {
             fstart_capabilities::fdt_prepare_platform(
                 src_dtb_addr,

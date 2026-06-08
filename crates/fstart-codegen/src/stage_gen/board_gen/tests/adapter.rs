@@ -144,16 +144,12 @@ fn adapter_compiles_for_qemu_armv7() {
 }
 
 #[test]
-fn x86_adapter_has_jump_to_with_handoff_fallback() {
-    // On x86_64, fstart_platform has no jump_to_with_handoff; the
-    // emitter must substitute halt() so the trait impl still
-    // type-checks in downstream firmware builds.
+fn x86_adapter_uses_platform_handoff_jump() {
     let src = adapter_source_for_board("qemu-q35");
     assert!(src.contains("impl fstart_stage_runtime::Board for _BoardDevices"));
-    // Ensure we did not emit a call to the missing symbol.
     assert!(
-        !src.contains("fstart_platform::jump_to_with_handoff"),
-        "x86 adapter must not reference the non-existent jump_to_with_handoff; got:\n{src}"
+        src.contains("fstart_platform::jump_to_with_handoff"),
+        "x86 adapter must use the platform handoff jump primitive; got:\n{src}"
     );
 }
 

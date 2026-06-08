@@ -150,7 +150,6 @@
         required_digests: [Sha256],
     ),
 
-    mode: Rigid,
 
     payload: Some((
         kind: LinuxBoot,

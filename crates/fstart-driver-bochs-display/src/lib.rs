@@ -212,6 +212,10 @@ impl BusDevice for BochsDisplay {
         })
     }
 
+    fn init_on_bus(&mut self, _bus: &mut Self::Bus) -> Result<(), DeviceError> {
+        self.init()
+    }
+
     fn init(&mut self) -> Result<(), DeviceError> {
         if self.fb_base == 0 || self.mmio_base == 0 {
             fstart_log::error!("bochs-display: BAR0 or BAR2 not allocated");

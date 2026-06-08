@@ -97,7 +97,6 @@
         pubkey_file: "keys/dev-signing.pub",
         required_digests: [Sha256],
     ),
-    mode: Rigid,
     smm: Some((
         platform: QemuQ35,
         // Match the intended QEMU `-smp` value; xtask/codegen will require

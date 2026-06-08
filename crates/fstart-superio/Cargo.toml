@@ -16,5 +16,6 @@ heapless = { workspace = true }
 fstart-log = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true }
+fstart-types = { workspace = true }
 serde = { workspace = true }
 ufmt = { workspace = true }

@@ -84,8 +84,6 @@ pub struct BoardConfig {
     pub stages: StageLayout,
     /// Security: signing algorithm, pubkey, digest requirements
     pub security: SecurityConfig,
-    /// Build mode: rigid (compile-time) or flexible (runtime)
-    pub mode: BuildMode,
     /// Optional payload configuration
     pub payload: Option<PayloadConfig>,
     /// Optional CPU microcode updates to package into FFS.
@@ -216,24 +214,6 @@ pub enum SocImageFormat {
     ///
     /// See oreboot's D1 implementation for the reference Rust approach.
     AllwinnerEgon,
-}
-
-/// Build mode determines how the firmware is compiled and how drivers are bound.
-///
-/// Historically fstart supported two modes: `Rigid` (single board,
-/// compile-time driver binding) and `Flexible` (runtime driver
-/// dispatch via per-service enums).  Flexible was removed when the
-/// stage executor was split off into `fstart-stage-runtime` — the
-/// runtime executor is generic over `B: Board` and already supports
-/// the target of Flexible (one binary, many boards) through
-/// per-device `Option<enum-of-variants>` fields on `_BoardDevices`.
-///
-/// The enum is retained for forward compatibility (more variants may
-/// return in a different form later).  All boards today use `Rigid`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BuildMode {
-    /// Single board, compile-time driver binding, maximum dead code elimination.
-    Rigid,
 }
 
 /// Payload configuration: what to boot after firmware init.

@@ -64,7 +64,6 @@
         required_digests: [Sha256, Sha3_256],
     ),
 
-    mode: Rigid,
 
     // Linux boot — direct jump on 32-bit ARM (no ATF/SBI needed).
     //

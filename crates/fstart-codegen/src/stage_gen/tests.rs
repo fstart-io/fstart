@@ -101,7 +101,6 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
                 v
             },
         },
-        mode: BuildMode::Rigid,
         payload: None,
         full_flash_image: false,
         microcode: None,
@@ -204,6 +203,57 @@ fn smbios_prepare_requires_board_smbios_config() {
         source.contains("compile_error!")
             && source.contains("SmBiosPrepare capability requires top-level board.smbios config"),
         "should reject SmBiosPrepare without board.smbios config: {source}"
+    );
+}
+
+#[test]
+fn fdt_prepare_requires_payload() {
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::FdtPrepare);
+    let parsed = test_parsed_board(caps);
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("compile_error!")
+            && source.contains("FdtPrepare requires a payload with an FDT source"),
+        "should reject FdtPrepare without a payload instead of generating a stub: {source}"
+    );
+}
+
+#[test]
+fn fdt_generated_sources_are_rejected_until_implemented() {
+    use fstart_types::{FdtSource, PayloadConfig, PayloadKind};
+
+    let mut caps = heapless::Vec::new();
+    let _ = caps.push(Capability::ConsoleInit {
+        device: heapless::String::try_from("uart0").unwrap(),
+    });
+    let _ = caps.push(Capability::FdtPrepare);
+    let mut parsed = test_parsed_board(caps);
+    parsed.config.payload = Some(PayloadConfig {
+        kind: PayloadKind::LinuxBoot,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: FdtSource::Generated,
+        dtb_addr: Some(0x87f0_0000),
+        src_dtb_addr: None,
+        bootargs: None,
+        print_x86_mtrrs: false,
+        compression: fstart_types::ffs::Compression::Lz4,
+        firmware: None,
+        fit_file: None,
+        fit_config: None,
+        fit_parse: None,
+    });
+    let source = generate_stage_source(&parsed, None);
+
+    assert!(
+        source.contains("compile_error!")
+            && source.contains("FdtPrepare supports only Platform or Override FDT sources"),
+        "should reject generated FDT sources until codegen implements them: {source}"
     );
 }
 
@@ -321,7 +371,6 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
                 v
             },
         },
-        mode: BuildMode::Rigid,
         payload: None,
         full_flash_image: false,
         microcode: None,
@@ -738,7 +787,6 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
                 v
             },
         },
-        mode: BuildMode::Rigid,
         payload: None,
         full_flash_image: false,
         microcode: None,
@@ -1347,7 +1395,6 @@ fn load_next_stage_rejects_block_device_without_boot_media_mapping() {
                 v
             },
         },
-        mode: BuildMode::Rigid,
         payload: None,
         full_flash_image: false,
         microcode: None,

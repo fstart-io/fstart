@@ -30,6 +30,7 @@
 #![no_std]
 
 use fstart_services::device::{BusDevice, DeviceError};
+use fstart_types::BusAddress;
 use serde::{Deserialize, Serialize};
 
 use core::marker::PhantomData;
@@ -569,7 +570,19 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
     type Bus = dyn LpcBaseProvider;
 
     fn new_on_bus(config: &'static Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
-        let base_port = bus.lpc_base();
+        Self::new_on_bus_at(config, bus, None)
+    }
+
+    fn new_on_bus_at(
+        config: &'static Self::Config,
+        bus: &Self::Bus,
+        address: Option<BusAddress>,
+    ) -> Result<Self, DeviceError> {
+        let base_port = match address {
+            Some(BusAddress::Lpc(port)) => port,
+            Some(_) => return Err(DeviceError::MissingResource("lpc_address")),
+            None => bus.lpc_base(),
+        };
         if base_port == 0 {
             return Err(DeviceError::MissingResource("lpc_base"));
         }
@@ -578,6 +591,10 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
             config,
             _phantom: PhantomData,
         })
+    }
+
+    fn init_on_bus(&mut self, _bus: &mut Self::Bus) -> Result<(), DeviceError> {
+        self.init()
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {

@@ -23,17 +23,11 @@ pub(super) fn fdt_prepare_desc_body(platform: Platform, ctx: &BoardEmitModel<'_>
     }
 
     let dram_size = dram_size_expr();
-    let Some(payload) = ctx.config.payload.as_ref() else {
-        return quote! {
-            Some(fstart_stage_runtime::FdtPrepareDesc {
-                source: fstart_stage_runtime::FdtPrepareSource::Stub,
-                dst_dtb_addr: self._dtb_dst_addr,
-                bootargs: self._bootargs,
-                dram_base: self._dram_base,
-                dram_size: #dram_size,
-            })
-        };
-    };
+    let payload = ctx
+        .config
+        .payload
+        .as_ref()
+        .expect("FdtPrepare requires a payload with a supported FDT source");
 
     let source = match &payload.fdt {
         FdtSource::Platform => {
@@ -43,7 +37,9 @@ pub(super) fn fdt_prepare_desc_body(platform: Platform, ctx: &BoardEmitModel<'_>
         FdtSource::Override(_dtb_file) => {
             quote! { fstart_stage_runtime::FdtPrepareSource::Override }
         }
-        _ => quote! { fstart_stage_runtime::FdtPrepareSource::Stub },
+        FdtSource::Generated | FdtSource::GeneratedWithOverride(_) => {
+            unreachable!("validate_stage_scope_requirements rejects unsupported FDT generation")
+        }
     };
 
     quote! {

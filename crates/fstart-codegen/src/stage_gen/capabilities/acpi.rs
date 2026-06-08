@@ -86,13 +86,10 @@ pub(in crate::stage_gen) fn generate_acpi_only_device(
 
 /// Generate the RON-backed platform ACPI config struct literal.
 ///
-/// Emits `let platform_acpi = ...;` — a stateless binding usable in
-/// either the old `fstart_main` body or the new
-/// [`board_gen::acpi_prepare_body`] method body.
+/// Emits `let platform_acpi = ...;` — a stateless binding consumed by
+/// board-adapter ACPI descriptor generation.
 ///
 /// Exposed at `pub(in crate::stage_gen)` so `board_gen` can reuse it.
-///
-/// [`board_gen::acpi_prepare_body`]: crate::stage_gen::board_gen
 pub(in crate::stage_gen) fn generate_platform_acpi(
     platform: &fstart_types::acpi::AcpiPlatform,
 ) -> TokenStream {

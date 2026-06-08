@@ -375,15 +375,6 @@ pub fn read_anchor_at_offset(
 // FdtPrepare
 // ---------------------------------------------------------------------------
 
-/// Prepare a Flattened Device Tree for OS handoff (stub — no FDT feature).
-///
-/// When the `fdt` feature is not enabled, this logs a skip message.
-/// The real implementation is `fdt_prepare_platform()` behind `#[cfg(feature = "fdt")]`.
-pub fn fdt_prepare_stub() {
-    fstart_log::info!("capability: FdtPrepare");
-    fstart_log::info!("FDT prepare skipped (fdt feature not enabled)");
-}
-
 /// Prepare a Flattened Device Tree for OS handoff.
 ///
 /// Copies the source DTB to the destination address (if they differ),

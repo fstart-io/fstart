@@ -8,8 +8,7 @@
 //! 3. Implements `fstart_stage_runtime::Board` for typed board access.
 //! 4. Generates a small `fstart_main()` shim into the handwritten executor.
 //!
-//! In **Rigid** mode, all types are concrete — zero overhead.
-//!
+
 //! Driver-specific configuration comes from [`DriverInstance`] — each driver
 //! defines its own typed `Config` struct.  The `config_ser` module converts
 //! the validated config into a `TokenStream` for the generated source.

@@ -225,20 +225,18 @@ fn load_next_stage_dead_code_unreachable_on_non_sunxi_boards() {
 }
 
 #[test]
-fn board_struct_carries_egon_sram_base_field() {
-    // Every board's _BoardDevices carries _egon_sram_base.
-    // On non-sunxi boards it's initialised to 0 (harmless
-    // because dead-code trampolines never read it).
+fn board_struct_carries_egon_sram_base_only_for_egon_boards() {
+    let sunxi = adapter_source_for_stage("orangepi-pc2", "bootblock");
+    assert!(
+        sunxi.contains("_egon_sram_base: u64"),
+        "sunxi/eGON boards must declare _egon_sram_base; got:\n{sunxi}"
+    );
+
     for board in ["qemu-riscv64", "qemu-aarch64", "qemu-armv7"] {
         let src = adapter_source_for_board(board);
         assert!(
-            src.contains("_egon_sram_base: u64"),
-            "{board} must declare _egon_sram_base field; got:\n{src}"
-        );
-        // Non-sunxi boards have 0 for the SRAM base.
-        assert!(
-            src.contains("_egon_sram_base: 0x0"),
-            "{board} must const-init _egon_sram_base to 0; got:\n{src}"
+            !src.contains("_egon_sram_base"),
+            "{board} must not carry sunxi-only _egon_sram_base state; got:\n{src}"
         );
     }
 }

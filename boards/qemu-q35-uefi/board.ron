@@ -121,7 +121,6 @@
         pubkey_file: "keys/dev-signing.pub",
         required_digests: [Sha256],
     ),
-    mode: Rigid,
     // CrabEFI UEFI payload — linked as a library.
     // No kernel file — CrabEFI boots from AHCI disk via EFI boot manager.
     payload: Some((

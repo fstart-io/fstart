@@ -77,13 +77,8 @@ fn ffs_anchor_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
 
 /// Emit the `impl fstart_stage_runtime::Board for _BoardDevices` block.
 pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> TokenStream {
-    let jump_with_handoff_body = match platform {
-        Platform::X86_64 => quote! {
-            let _ = (entry, handoff_addr);
-            fstart_platform::halt()
-        },
-        _ => quote! { fstart_platform::jump_to_with_handoff(entry, handoff_addr) },
-    };
+    let jump_with_handoff_body =
+        quote! { fstart_platform::jump_to_with_handoff(entry, handoff_addr) };
 
     let fdt_prepare_desc_body = fdt_prepare_desc_body(platform, ctx);
     let install_logger_body = install_logger_body(ctx);

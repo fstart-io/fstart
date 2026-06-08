@@ -835,7 +835,9 @@ core::arch::global_asm!(
     // POST 0x43: RAM-stage runtime setup complete; entering Rust.
     "movb $0x43, %al",
     "outb %al, $0x80",
-    // Call fstart_main(handoff_ptr=0)
+    // Call fstart_main(handoff_ptr=0).  The x86 StageLoad paths do not yet
+    // serialize StageHandoff data for RAM stages; passing through an arbitrary
+    // caller `%rdi` can fault before ConsoleInit installs the logger.
     "xorl %edi, %edi",
     "call fstart_main",
     // Should never return
@@ -961,6 +963,25 @@ pub fn jump_to(addr: u64) -> ! {
             "jmp {0}",
             in(reg) addr,
             options(noreturn),
+        );
+    }
+}
+
+/// Jump to an absolute 64-bit address with a handoff pointer in `%rdi`.
+///
+/// The current x86 RAM-stage entry clears the handoff before `fstart_main`
+/// because x86 stage loaders do not serialize handoff data yet. Keep this
+/// primitive for payloads or future x86 stage entries that consume `%rdi`
+/// directly.
+pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
+    // SAFETY: caller guarantees `addr` points to a loaded x86_64 RAM stage and
+    // `handoff_addr` is either 0 or points to a valid serialized StageHandoff.
+    unsafe {
+        core::arch::asm!(
+            "jmp *%rax",
+            in("rax") addr,
+            in("rdi") handoff_addr,
+            options(noreturn, nostack, preserves_flags, att_syntax),
         );
     }
 }

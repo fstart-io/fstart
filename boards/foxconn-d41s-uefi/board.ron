@@ -344,7 +344,6 @@
         pubkey_file: "keys/dev-signing.pub",
         required_digests: [Sha256],
     ),
-    mode: Rigid,
     full_flash_image: true,
 
     acpi: (

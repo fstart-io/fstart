@@ -220,7 +220,6 @@
         required_digests: [Sha256, Sha3_256],
     ),
 
-    mode: Rigid,
 
     // No payload yet -- fstart's role on SBSA is ACPI/SMBIOS generation.
     // Future: add an EFI payload or LinuxBoot once table generation works.

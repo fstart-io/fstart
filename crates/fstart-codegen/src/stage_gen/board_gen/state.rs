@@ -14,6 +14,18 @@ pub(super) fn emit_adapter_struct(ctx: &BoardEmitModel<'_>) -> TokenStream {
         let field_type = format_ident!("{}", device.instance.meta().type_name);
         quote! { #field_name: Option<#field_type>, }
     });
+    let egon_sram_base_field =
+        if ctx.config.soc_image_format == fstart_types::SocImageFormat::AllwinnerEgon {
+            quote! {
+                /// eGON header SRAM base address for Allwinner sunxi
+                /// boards. Read by `soc_boot_media` and `load_next_stage`
+                /// to resolve the hardware boot-media byte and next-stage
+                /// header values.
+                _egon_sram_base: u64,
+            }
+        } else {
+            quote! {}
+        };
 
     quote! {
         /// Board adapter produced by `fstart-codegen::board_gen`.
@@ -42,11 +54,7 @@ pub(super) fn emit_adapter_struct(ctx: &BoardEmitModel<'_>) -> TokenStream {
             /// read by later table/payload primitives. `0` means "not set yet"; boards
             /// without `AcpiLoad` leave it at `0` forever.
             _acpi_rsdp_addr: u64,
-            /// eGON header SRAM base address for Allwinner sunxi
-            /// boards. Read by `soc_boot_media` and `load_next_stage`
-            /// to resolve the hardware boot-media byte and next-stage
-            /// header values.
-            _egon_sram_base: u64,
+            #egon_sram_base_field
         }
     }
 }
@@ -74,7 +82,14 @@ pub(super) fn emit_adapter_new(ctx: &BoardEmitModel<'_>) -> TokenStream {
         .unwrap_or("");
     let dram_base_lit = hex_addr(ctx.dram_base);
     let dram_size_lit = hex_addr(ctx.dram_size_static);
-    let egon_sram_base_lit = hex_addr(crate::stage_gen::capabilities::egon_sram_base(ctx.config));
+    let egon_sram_base_init =
+        if ctx.config.soc_image_format == fstart_types::SocImageFormat::AllwinnerEgon {
+            let egon_sram_base_lit =
+                hex_addr(crate::stage_gen::capabilities::egon_sram_base(ctx.config));
+            quote! { _egon_sram_base: #egon_sram_base_lit, }
+        } else {
+            quote! {}
+        };
 
     quote! {
         #[allow(dead_code)]
@@ -91,7 +106,7 @@ pub(super) fn emit_adapter_new(ctx: &BoardEmitModel<'_>) -> TokenStream {
                     _dram_size_static: #dram_size_lit,
                     _handoff,
                     _acpi_rsdp_addr: 0,
-                    _egon_sram_base: #egon_sram_base_lit,
+                    #egon_sram_base_init
                 }
             }
         }

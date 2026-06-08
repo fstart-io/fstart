@@ -4,9 +4,9 @@
 
 # fstart
 
-A firmware framework in Rust. You describe a board in a `.ron` file — memory
-map, devices, boot sequence — and fstart generates the stage binary, linker
-script, and driver initialization automatically. No hand-written stage code.
+A firmware framework in Rust. The project is moving from RON-driven generated
+stage code to Rust board crates with builder-pattern board metadata, fixed
+handwritten stage flow, and step-based hardware initialization.
 
 Supports RISC-V 64, AArch64, and ARMv7. Boots Linux. Runs on QEMU and real
 hardware (Allwinner A20).
@@ -30,7 +30,4 @@ cargo xtask assemble --board qemu-riscv64
 
 ## Documentation
 
-- **[User Guide](docs/user-guide.md)** — how to write a board file, available
-  drivers, capabilities, and build commands.
-- **[Architecture](docs/architecture.md)** — how fstart works: the build
-  pipeline, codegen, runtime boot flow, FFS format, and crate structure.
+- **[Rust Board Builder and Fixed Stage Flow Plan](docs/rust-board-builder-stage-flow-plan.md)** — current architecture direction replacing the previous RON/stage-codegen design.

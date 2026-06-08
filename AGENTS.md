@@ -2,22 +2,17 @@
 
 ## Project Overview
 
-fstart is a next-generation firmware framework in Rust. Board `.ron` files are the
-single source of truth — the build system reads them and generates stage entry points,
-driver instantiation, and linker scripts. No hand-written stage code.
+fstart is a next-generation firmware framework in Rust. The current architecture
+direction is Rust board crates with builder-pattern board metadata, fixed
+handwritten stage flow, and step-based hardware initialization. The old
+RON-driven generated-stage design is deprecated.
 
 For domain inspiration, reference codebases are available at `~/src/coreboot` (C,
 payload/stage architecture) and `~/src/u-boot` (C, device-tree-driven board defs).
 
 ## Design Documents
 
-- **[Driver Model](docs/driver-model.md)** — typed device/driver architecture inspired
-  by coreboot's device tree and U-Boot's uclass/ops model, redesigned for Rust's type
-  system. Covers the `Device` trait, associated `Config` types, codegen-produced
-  `Devices`/`StageContext` structs, bus hierarchies, and Rigid vs Flexible dispatch.
-- **[Continuation Plan](docs/continuation-plan.md)** — what has been built, what
-  remains, and the recommended order of work. Includes phase-by-phase status and
-  detailed next-step descriptions.
+- **[Rust Board Builder and Fixed Stage Flow Plan](docs/rust-board-builder-stage-flow-plan.md)** — current architecture direction. It supersedes the previous RON/stage-codegen design docs.
 
 ## Environment
 
@@ -37,7 +32,8 @@ cargo check --workspace --exclude fstart-stage \
     --exclude fstart-platform-riscv64 --exclude fstart-platform-aarch64 \
     --exclude fstart-platform-armv7 --exclude fstart-runtime
 
-# Build a specific board (sets FSTART_BOARD_RON, cross-compiles with -Z build-std=core)
+# Build a specific board (current implementation still uses transitional RON/codegen;
+# new work should follow the Rust board-builder plan)
 cargo xtask build --board qemu-riscv64
 cargo xtask build --board qemu-aarch64
 cargo xtask build --board qemu-armv7
@@ -82,8 +78,8 @@ via `fstart-types` or `fstart-codegen` (which are `std`-capable).
 | Crate | Purpose |
 |---|---|
 | `xtask` | Build orchestrator, QEMU launcher, eGON patching |
-| `fstart-codegen` | RON→Rust codegen, linker script gen (used in build.rs) |
-| `fstart-device-registry` | Aggregates all driver `Config` types for codegen |
+| `fstart-codegen` | Transitional RON→Rust codegen and linker script gen (to be replaced by the Rust board-builder/fixed-flow plan) |
+| `fstart-device-registry` | Transitional aggregation of driver `Config` types for codegen/dynamic matching |
 
 ### Shared crates (std feature for host, no_std for target)
 
@@ -163,7 +159,9 @@ use crate::stage::StageLayout;
 - MMIO registers: use the `tock-registers` crate (`register_structs!`, `register_bitfields!`)
   for all new drivers — never raw `read_volatile`/`write_volatile`
 - `unsafe impl Send + Sync` on MMIO driver structs with a `// SAFETY:` comment
-- Drivers implement the `Device` trait with `type Config`, `fn new(&Config)`, `fn init()`
+- Driver construction remains typed; long-term hardware initialization should use
+  step-based `HardwareInit` methods with default no-ops instead of a single
+  catch-all `Device::init()` lifecycle.
 - Serde derives on all config types: `#[derive(Debug, Clone, Serialize, Deserialize)]`
 - Enums also derive `Copy, PartialEq, Eq` when small/fieldless
 
@@ -185,56 +183,42 @@ Never use `.unwrap()` silently in firmware code. In host-side code, prefer
 - Inline `//` comments for register offsets, bit flags, and non-obvious logic
 - `// SAFETY:` before every `unsafe` block
 
-### Driver Pattern
+### Driver / Hardware Init Pattern
 Every driver struct:
-1. Lives in its own crate `fstart-driver-<name>/src/lib.rs`
-2. Defines registers with `register_structs!` / `register_bitfields!` (tock-registers)
-3. Stores `regs: &'static <Regs>` constructed from base address in `new()`
-4. Defines a typed `Config` struct (e.g., `Ns16550Config`) with only the fields it needs
-5. Implements `Device` trait: `const NAME`, `const COMPATIBLE`, `type Config`,
-   `fn new(&Config)`, `fn init()`
-6. Implements one or more service traits (`Console`, `BlockDevice`, `Timer`)
-7. Spin-waits use `core::hint::spin_loop()`
+1. Lives in its own crate `fstart-driver-<name>/src/lib.rs`.
+2. Defines registers with `register_structs!` / `register_bitfields!` (tock-registers).
+3. Stores `regs: &'static <Regs>` constructed from a typed config/address in `new()`.
+4. Defines a typed `Config`/builder with only the fields it needs.
+5. Implements the service traits it provides (`Console`, `BlockDevice`, `Timer`, etc.).
+6. Implements step-based `HardwareInit` methods only for the phases where it
+   participates; default no-op methods are preferred over a single catch-all
+   `init()`.
+7. Spin-waits use `core::hint::spin_loop()`.
 
-See [docs/driver-model.md](docs/driver-model.md) for the full architecture.
+See [docs/rust-board-builder-stage-flow-plan.md](docs/rust-board-builder-stage-flow-plan.md)
+for the current architecture direction.
 
-### Board RON Files
-- Located at `boards/<board-name>/board.ron`
-- Raw RON tuple syntax `( ... )` — no outer struct wrapper like `Board(...)`
-- Deserializes to `fstart_types::board::BoardConfig`
-- Always has: `name`, `platform`, `memory`, `devices`, `stages`, `security`, `mode`, `payload`
-- Comments use `//` (RON supports them)
-- `memory.regions` contains only ROM and RAM — device MMIO addresses go in
-  `devices[].resources.mmio_base`, not in the memory map
-- `stack_size` is per-stage (in `stages`), not in `memory`
-
-## Architecture: How a Build Works
-
-```
-boards/qemu-riscv64/board.ron
-  ──► xtask reads RON, determines target triple + features
-  ──► cargo build -p fstart-stage --target <triple> --features <feats>
-        ──► fstart-stage/build.rs reads $FSTART_BOARD_RON
-        ──► calls fstart_codegen to produce:
-              • generated_stage.rs  (fstart_main() with driver init sequence)
-              • link.ld             (memory regions from RON)
-        ──► fstart-stage/src/main.rs does include!(generated_stage.rs)
-  ──► final ELF: platform _start → fstart_main → halt
-  ──► (AArch64 only) llvm-objcopy -O binary → .bin for QEMU -bios
-```
+### Board Authoring Direction
+- Mainboards should become normal Rust board crates under `boards/<board-name>/`.
+- Use fluent builder-pattern metadata instead of RON for board information.
+- Keep mainboard code light: describe topology/configuration and board-specific
+  hook devices; generic phase behavior belongs in hardware init crates.
+- Fixed handwritten stage flow should call feature-gated init steps over the
+  device graph.
+- A separate dynamic board-blob mode may serialize the same builder metadata and
+  attach it to a generic stage at build/packaging time.
 
 ## Feature Flags
 
-Features flow from RON → xtask → `--features` on `fstart-stage`:
-- `riscv64` / `aarch64` — selects platform crate (optional dep)
-- `ns16550` / `pl011` / `sifive-uart` — enables driver modules
-- `fit` — FIT image runtime parsing (via `fstart-fit` + `ffs`)
-- `std` on `fstart-types` / `fstart-ffs` / `fstart-fit` — used by host-side tools only
+Features should be selected from board crate metadata/build mode and stage flow
+requirements:
+- platform features (`riscv64`, `aarch64`, `armv7`, `x86_64`) select platform crates.
+- driver features select compiled-in driver crates/registry variants.
+- flow features select fixed stage-flow steps.
+- `std` on shared crates is used by host-side tools only.
 
 ## Known IDE Issues (Not Real Errors)
 
-- `fstart-stage` shows `OUT_DIR` / `include!` errors in LSP — build.rs needs
-  `FSTART_BOARD_RON` which the IDE doesn't set. Actual builds are clean.
 - `fstart-runtime` conflicts with std's `panic_handler` when checked as host target.
   This is expected for `no_std` crates.
 
@@ -245,14 +229,14 @@ into a single DTB-format blob with SHA-256 hash integrity and configuration
 selection. The `fstart-fit` crate parses FIT images and runs identically at
 buildtime (xtask, `std`) and runtime (firmware, `no_std`) — zero code duplication.
 
-### Two Parse Modes (selected in RON via `fit_parse`)
+### Two Parse Modes
 
-- **Buildtime** (`fit_parse: Some(Buildtime)` or omitted): xtask reads the `.itb`,
-  extracts kernel/ramdisk/fdt as separate FFS entries. Firmware loads them like
-  LinuxBoot. The FIT parser runs in xtask at assembly time.
-- **Runtime** (`fit_parse: Some(Runtime)`): the whole `.itb` is embedded in FFS.
-  Firmware parses the FIT in-place (zero-copy on memory-mapped flash) and copies
-  each component to its load address from the FIT metadata.
+- **Buildtime**: xtask reads the `.itb`, extracts kernel/ramdisk/fdt as separate
+  FFS entries. Firmware loads them like LinuxBoot. The FIT parser runs in xtask
+  at assembly time.
+- **Runtime**: the whole `.itb` is embedded in FFS. Firmware parses the FIT
+  in-place (zero-copy on memory-mapped flash) and copies each component to its
+  load address from the FIT metadata.
 
 ### Building FIT Images
 
@@ -270,42 +254,15 @@ nix-shell -p ubootTools dtc --run "mkimage -f fit/qemu-riscv64.its fit/qemu-risc
 nix-shell -p ubootTools dtc --run "mkimage -f fit/qemu-aarch64.its fit/qemu-aarch64.itb"
 ```
 
-### RON Example (FIT Buildtime)
+### Builder-style FIT metadata sketch
 
-```ron
-payload: Some((
-    kind: FitImage,
-    fit_file: Some("../../fit/qemu-riscv64.itb"),
-    fit_config: None,           // use default FIT configuration
-    fit_parse: Some(Buildtime), // extract at build, embed as separate FFS entries
-    fdt: Platform,
-    dtb_addr: Some(0x87F00000),
-    bootargs: Some("console=ttyS0 earlycon=sbi"),
-    firmware: Some((
-        kind: OpenSbi,
-        file: "fw_dynamic.bin",
-        load_addr: 0x80100000,
-    )),
-))
-```
-
-### RON Example (FIT Runtime)
-
-```ron
-payload: Some((
-    kind: FitImage,
-    fit_file: Some("../../fit/qemu-riscv64.itb"),
-    fit_config: None,
-    fit_parse: Some(Runtime),   // embed whole .itb, parse at boot
-    fdt: Platform,
-    dtb_addr: Some(0x87F00000),
-    bootargs: Some("console=ttyS0 earlycon=sbi"),
-    firmware: Some((
-        kind: OpenSbi,
-        file: "fw_dynamic.bin",
-        load_addr: 0x80100000,
-    )),
-))
+```rust
+Payload::fit_image("../../fit/qemu-riscv64.itb")
+    .default_config()
+    .parse_buildtime() // or .parse_runtime()
+    .platform_fdt(0x87F0_0000)
+    .bootargs("console=ttyS0 earlycon=sbi")
+    .opensbi("fw_dynamic.bin", 0x8010_0000)
 ```
 
 ## Building Test Payloads
@@ -410,7 +367,6 @@ nix-shell -p qemu --run "
 
 - Do NOT add `alloc` to firmware crates without explicit discussion
 - Do NOT use `std` in any crate under `fstart-stage`'s dependency tree
-- Do NOT create separate crates per stage — `fstart-stage` is THE stage binary
-- Do NOT wrap board RON in `Board(...)` — use raw tuple `(...)` syntax
+- Do NOT reintroduce new RON/stage-codegen design docs; use the Rust board-builder/fixed-flow plan
 - Do NOT use `naked_functions` feature attribute (stabilized since rustc 1.88)
 - Do NOT use `[u8; 64]` in serde structs — split to `[u8; 32]` halves instead

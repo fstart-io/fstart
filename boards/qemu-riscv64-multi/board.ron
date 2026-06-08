@@ -70,7 +70,6 @@
         required_digests: [Sha256, Sha3_256],
     ),
 
-    mode: Rigid,
 
     payload: None,
 )

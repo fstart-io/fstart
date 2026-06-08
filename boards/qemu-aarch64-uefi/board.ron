@@ -101,7 +101,6 @@
         required_digests: [Sha256, Sha3_256],
     ),
 
-    mode: Rigid,
 
     // CrabEFI UEFI payload -- linked as a library, called via init_platform().
     // fstart handles hardware init (console, PCI BARs) and injects drivers

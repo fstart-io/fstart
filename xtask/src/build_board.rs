@@ -64,7 +64,6 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 
     eprintln!("[fstart] board: {}", config.name);
     eprintln!("[fstart] platform: {}", config.platform);
-    eprintln!("[fstart] mode: {:?}", config.mode);
 
     let smm_artifacts = build_smm_artifacts(&workspace_root, board_name, release, config)?;
     let plan = crate::build_plan::plan(&parsed);

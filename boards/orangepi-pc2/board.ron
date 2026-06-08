@@ -125,7 +125,6 @@
         required_digests: [Sha256],
     ),
 
-    mode: Rigid,
 
     // Linux boot via ARM Trusted Firmware BL31.
     //

@@ -56,8 +56,6 @@ pub type AcpiExtraTables = alloc::vec::Vec<alloc::vec::Vec<u8>>;
 /// Source policy for `FdtPrepare` expressed as data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FdtPrepareSource {
-    /// No real FDT source; run the stub capability.
-    Stub,
     /// Patch a platform-provided FDT at the given source address.
     Platform { src_dtb_addr: u64 },
     /// Load an override DTB from FFS, then patch it in place at the
@@ -408,13 +406,7 @@ pub trait Board: Sized {
     /// justifies extending the borrow to `'static` inside.
     unsafe fn install_logger(&self, id: DeviceId) -> Result<ConsoleReady, RuntimeError>;
 
-    // ----- Remaining high-level operations and primitive accessors --------
-    //
-    // This trait is being narrowed toward primitive board access.  Handwritten
-    // runtime flow owns operation sequencing and capability calls; generated
-    // adapters should expose only concrete device dispatch, static descriptors,
-    // and small scalar state.  A few older high-level methods remain below and
-    // are intentionally visible as the next refactor targets.
+    // ----- Primitive descriptors, service borrows, and platform endpoints --
 
     /// Static/handoff-derived FDT preparation descriptor, if this stage has one.
     ///
@@ -433,37 +425,27 @@ pub trait Board: Sized {
 
     /// Static UEFI payload descriptor, if this stage has one.
     #[cfg(feature = "flow-uefi")]
-    fn uefi_payload_desc(&self) -> Option<UefiPayloadDesc> {
-        None
-    }
+    fn uefi_payload_desc(&self) -> Option<UefiPayloadDesc>;
 
     /// Borrow UEFI payload services for one executor-owned launch.
     #[cfg(feature = "flow-uefi")]
-    fn with_uefi_services<R>(&self, run: impl FnOnce(UefiServices<'_>) -> R) -> R {
-        run(UefiServices {
-            console: None,
-            framebuffer: None,
-            ecam: None,
-        })
-    }
+    fn with_uefi_services<R>(&self, run: impl FnOnce(UefiServices<'_>) -> R) -> R;
 
     /// Resolve the FDT blob to pass to CrabEFI from a primitive source address.
     #[cfg(feature = "flow-uefi")]
-    fn uefi_fdt_blob(&self, _addr: u64) -> Option<&'static [u8]> {
-        None
-    }
+    fn uefi_fdt_blob(&self, addr: u64) -> Option<&'static [u8]>;
 
     /// Platform BL31/ATF handoff primitive for AArch64 UEFI payloads.
     #[cfg(feature = "flow-uefi")]
-    fn uefi_boot_bl31_and_resume(&self, _fw_load_addr: u64, _fdt_addr: u64) {}
+    fn uefi_boot_bl31_and_resume(&self, fw_load_addr: u64, fdt_addr: u64);
 
     /// Park secondary CPUs before entering a payload that expects only the BSP.
     #[cfg(feature = "flow-uefi")]
-    fn park_aps_for_payload(&self) {}
+    fn park_aps_for_payload(&self);
 
     /// Disable temporary boot-media ROM caching before handing off to UEFI.
     #[cfg(feature = "flow-uefi")]
-    fn disable_boot_media_rom_cache_for_handoff(&self) {}
+    fn disable_boot_media_rom_cache_for_handoff(&self);
 
     /// Static `StageLoad` descriptor, if this stage has one.
     #[cfg(feature = "flow-ffs")]
@@ -516,17 +498,12 @@ pub trait Board: Sized {
         &mut self,
         smm: bool,
         run: impl FnOnce(MpServices<'_>) -> R,
-    ) -> Result<R, RuntimeError> {
-        let _ = (smm, run);
-        Err(RuntimeError::Failed)
-    }
+    ) -> Result<R, RuntimeError>;
 
     /// Translate an active memory-mapped firmware-image byte range to a
     /// contiguous CPU-visible address.
     #[cfg(feature = "flow-mp")]
-    fn active_firmware_image_range(&self, _offset: u64, _size: u64) -> Option<u64> {
-        None
-    }
+    fn active_firmware_image_range(&self, offset: u64, size: u64) -> Option<u64>;
 
     /// Run one device-local lifecycle phase hook.
     ///
