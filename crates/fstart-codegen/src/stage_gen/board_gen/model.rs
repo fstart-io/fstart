@@ -228,7 +228,6 @@ impl<'a> RuntimeDeviceTable<'a> {
             current = parent.node.parent?;
         }
     }
-
 }
 
 impl<'a> BoardEmitModel<'a> {

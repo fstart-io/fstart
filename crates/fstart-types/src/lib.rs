@@ -40,6 +40,6 @@ pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
 pub use smm::{CorebootSmmCompat, SmmConfig, SmmPlatform};
 pub use stage::{
-    effective_stage_load_addr, BootMedium, Capability, LoadDevice, MonolithicConfig, RunsFrom,
-    StageConfig, StageLayout, TempRamBuffer,
+    effective_stage_load_addr, BootMedium, Capability, CpuDriverKind, LoadDevice, MonolithicConfig,
+    RunsFrom, StageConfig, StageLayout, TempRamBuffer,
 };

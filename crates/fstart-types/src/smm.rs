@@ -40,9 +40,9 @@ pub struct SmmConfig {
     pub platform: SmmPlatform,
     /// Number of PIC entry stubs to precompile into the SMM image.
     ///
-    /// If omitted, codegen/xtask should use the `MpInit.num_cpus` value of
+    /// If omitted, codegen/xtask should use the `MpInit.max_cpus` value of
     /// the stage that enables SMM.  When present, it must be greater than or
-    /// equal to `MpInit.num_cpus`.
+    /// equal to `MpInit.max_cpus`.
     #[serde(default)]
     pub entry_points: Option<u16>,
     /// Per-CPU SMM stack size in bytes.

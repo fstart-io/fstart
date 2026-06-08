@@ -220,7 +220,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             fn with_mp_services<R>(
                 &mut self,
                 smm: bool,
-                microcode_blob: Option<&'static [u8]>,
                 run: impl FnOnce(fstart_stage_runtime::MpServices<'_>) -> R,
             ) -> Result<R, fstart_stage_runtime::RuntimeError> {
                 #mp_init_body

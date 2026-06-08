@@ -295,8 +295,8 @@ pub struct MpConfig<'a> {
     pub smm: Option<&'a dyn SmmOps>,
     /// Standalone native PIC SMM image to install when `smm` is `Some`.
     pub smm_image: Option<&'a [u8]>,
-    /// Total logical CPU count (BSP + APs).
-    pub num_cpus: u16,
+    /// Maximum logical CPU count to attempt (BSP + APs).
+    pub max_cpus: u16,
 }
 
 /// Errors from MP initialization.
@@ -774,9 +774,9 @@ pub fn online_cpus() -> u16 {
 }
 
 pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
-    let num_aps = config.num_cpus.saturating_sub(1);
+    let max_aps = config.max_cpus.saturating_sub(1);
 
-    fstart_log::info!("mp: initializing {} CPUs", config.num_cpus);
+    fstart_log::info!("mp: initializing {} CPUs", config.max_cpus);
 
     // --- Step 1: BSP LAPIC setup ---
     let lapic = Lapic::from_msr();
@@ -790,7 +790,7 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     store_cpu_drivers(config.cpu_drivers);
     CPU_INIT_ERRORS.store(0, Ordering::Release);
 
-    if num_aps == 0 {
+    if max_aps == 0 {
         // Single-CPU system.  Still perform the SMM install + relocation path
         // when requested; coreboot also relocates the BSP before enabling
         // global SMIs.
@@ -806,7 +806,7 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
                 };
                 fstart_log::info!("mp: installing SMM handlers");
                 if smm
-                    .install_smm_handlers(&info, config.num_cpus, image)
+                    .install_smm_handlers(&info, config.max_cpus, image)
                     .is_err()
                 {
                     clear_mp_globals();
@@ -934,7 +934,7 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     // --- Step 3: Copy SIPI trampoline to low memory ---
     // The trampoline will be defined in sipi.rs (global_asm!).
     // For now, we set up the parameter block and copy.
-    if let Err(err) = install_sipi_trampoline(num_aps, &lapic) {
+    if let Err(err) = install_sipi_trampoline(max_aps, &lapic) {
         clear_mp_globals();
         return Err(err);
     }
@@ -953,20 +953,20 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
 
     // Check if all APs responded.
     let checked_in = AP_COUNT.load(Ordering::Acquire) as u16;
-    if checked_in < num_aps {
+    if checked_in < max_aps {
         // Second SIPI (per Intel SDM recommendation).
         lapic.send_sipi_all_but_self(SIPI_VECTOR_PAGE as u8);
         // Wait up to 50 ms per AP.
-        let timeout_us = 50_000u64 * num_aps as u64;
+        let timeout_us = 50_000u64 * max_aps as u64;
         let mut elapsed = 0u64;
-        while (AP_COUNT.load(Ordering::Acquire) as u16) < num_aps && elapsed < timeout_us {
+        while (AP_COUNT.load(Ordering::Acquire) as u16) < max_aps && elapsed < timeout_us {
             delay_us(50);
             elapsed += 50;
         }
     }
 
     let final_count = AP_COUNT.load(Ordering::Acquire) as u16;
-    fstart_log::info!("mp: {}/{} APs checked in", final_count, num_aps);
+    fstart_log::info!("mp: {}/{} APs checked in", final_count, max_aps);
 
     if final_count == 0 {
         clear_mp_globals();
@@ -984,7 +984,7 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
             return Err(MpError::MissingSmmImage);
         };
         if smm
-            .install_smm_handlers(&info, config.num_cpus, image)
+            .install_smm_handlers(&info, config.max_cpus, image)
             .is_err()
         {
             clear_mp_globals();
@@ -1035,10 +1035,10 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     ONLINE_CPUS.store((final_count + 1) as usize, Ordering::Release);
     fstart_log::info!("mp: initialization complete ({} CPUs)", final_count + 1);
 
-    if final_count < num_aps {
+    if final_count < max_aps {
         fstart_log::warn!(
             "mp: fewer APs than max responded (expected max {}, actual {})",
-            num_aps,
+            max_aps,
             final_count
         );
     }
@@ -1065,8 +1065,8 @@ const SIPI_VECTOR_ADDR: usize = (SIPI_VECTOR_PAGE as usize) << 12;
 ///
 /// Copies the trampoline code to `SIPI_VECTOR_ADDR` and patches the
 /// parameter block (GDT, stack, CR3, AP entry point, etc.).
-fn install_sipi_trampoline(num_aps: u16, _lapic: &Lapic) -> Result<(), MpError> {
-    if num_aps as usize > MAX_CPUS || sipi_blob::TRAMPOLINE.len() > 4096 {
+fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> {
+    if max_aps as usize > MAX_CPUS || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
     }
 

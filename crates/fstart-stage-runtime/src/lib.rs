@@ -137,8 +137,6 @@ pub struct NextStageAddr {
 /// MP services borrowed from a generated board adapter for one runtime call.
 #[cfg(feature = "flow-mp")]
 pub struct MpServices<'a> {
-    /// CPU model drivers available to generic MP bringup.
-    pub cpu_drivers: &'a [&'a dyn fstart_mp::CpuDriver],
     /// Optional platform/chipset SMM operations.
     pub smm_ops: Option<&'a dyn fstart_mp::SmmOps>,
     /// Optional standalone SMM image to install.
@@ -514,10 +512,9 @@ pub trait Board: Sized {
     fn with_mp_services<R>(
         &mut self,
         smm: bool,
-        microcode_blob: Option<&'static [u8]>,
         run: impl FnOnce(MpServices<'_>) -> R,
     ) -> Result<R, RuntimeError> {
-        let _ = (smm, microcode_blob, run);
+        let _ = (smm, run);
         Err(RuntimeError::Failed)
     }
 

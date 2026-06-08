@@ -101,6 +101,9 @@ fn generated_adapter_keeps_runtime_flow_out() {
         "fstart_capabilities::smbios::prepare",
         "launch_x86_uefi",
         "launch_flat_uefi",
+        "GenericX86CpuDriver",
+        "Core2CpuDriver",
+        "PineviewCpuDriver",
     ];
 
     for source in sources {

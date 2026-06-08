@@ -1285,12 +1285,14 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-capabilities",
+ "fstart-cpu-intel",
  "fstart-crabefi",
  "fstart-ffs",
  "fstart-log",
  "fstart-mp",
  "fstart-services",
  "fstart-types",
+ "heapless",
  "ufmt",
 ]
 

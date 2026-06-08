@@ -38,6 +38,9 @@ flow-fdt = [
 ]
 flow-fdt-ffs = ["flow-fdt", "fstart-capabilities/ffs"]
 flow-mp = ["stage-executor", "dep:fstart-mp", "dep:fstart-ffs"]
+cpu-generic-x86 = ["flow-mp"]
+cpu-intel-core2 = ["flow-mp", "dep:fstart-cpu-intel"]
+cpu-intel-pineview = ["flow-mp", "dep:fstart-cpu-intel"]
 flow-acpi = [
   "stage-executor",
   "dep:fstart-acpi",
@@ -61,7 +64,9 @@ fstart-services = { workspace = true }
 fstart-log = { workspace = true }
 fstart-mp = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
+fstart-cpu-intel = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, optional = true }
 fstart-capabilities = { workspace = true, optional = true }
 fstart-crabefi = { workspace = true, optional = true }
 ufmt = { workspace = true }
+heapless = { workspace = true }

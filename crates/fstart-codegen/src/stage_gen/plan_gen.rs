@@ -256,9 +256,9 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &PlanCtx<'_>) -> Lowered
             LoweredOp::new(quote! { fstart_stage_runtime::StageOp::AcpiLoad(#id) })
                 .guarded("stage-flow-acpi", "AcpiLoad")
         }
-        C::MpInit { num_cpus, smm, .. } => LoweredOp::new(quote! {
+        C::MpInit { max_cpus, smm, .. } => LoweredOp::new(quote! {
             fstart_stage_runtime::StageOp::MpInit {
-                num_cpus: #num_cpus,
+                max_cpus: #max_cpus,
                 smm: #smm,
             }
         })

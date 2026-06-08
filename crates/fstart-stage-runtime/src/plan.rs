@@ -138,8 +138,8 @@ pub enum StageOp {
     /// Initialize CPUs and optional SMM.
     #[cfg(feature = "flow-mp")]
     MpInit {
-        /// Expected logical CPU count.
-        num_cpus: u16,
+        /// Maximum logical CPU count to attempt.
+        max_cpus: u16,
         /// Whether SMM setup is enabled.
         smm: bool,
     },

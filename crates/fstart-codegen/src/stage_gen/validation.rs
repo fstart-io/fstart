@@ -29,6 +29,7 @@ pub(super) fn validate_capability_ordering(
     let mut console_inited = false;
     let mut boot_media_declared = false;
     let mut memory_ready = stage_runs_from_ram;
+    let mut mp_inited = false;
 
     // UefiPayload links CrabEFI statically and doesn't use FFS for the
     // payload itself. However, when firmware (BL31) is configured, it IS
@@ -112,6 +113,9 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
+            Capability::MpInit { cpu_drivers, .. } if cpu_drivers.is_empty() => {
+                return Some("MpInit requires at least one cpu_drivers entry".to_string());
+            }
             Capability::MpInit {
                 smm: true,
                 smm_provider: Some(provider),
@@ -148,15 +152,15 @@ pub(super) fn validate_capability_ordering(
             }
             Capability::MpInit {
                 smm: true,
-                num_cpus,
+                max_cpus,
                 ..
             } if config
                 .smm
                 .and_then(|s| s.entry_points)
-                .is_some_and(|entries| entries < *num_cpus) =>
+                .is_some_and(|entries| entries < *max_cpus) =>
             {
                 return Some(
-                    "board.smm.entry_points must be greater than or equal to MpInit.num_cpus"
+                    "board.smm.entry_points must be greater than or equal to MpInit.max_cpus"
                         .to_string(),
                 );
             }
@@ -167,7 +171,15 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
-            Capability::MpInit { .. } => {}
+            Capability::MpInit { .. } => {
+                mp_inited = true;
+            }
+            Capability::AcpiPrepare if x86_acpi_uses_mp_cpu_count(config) && !mp_inited => {
+                return Some(
+                    "AcpiPrepare with x86 num_cpus: None requires MpInit to appear earlier"
+                        .to_string(),
+                );
+            }
             Capability::DriverInit if !console_inited => {
                 return Some(
                     "DriverInit capability requires ConsoleInit to appear earlier \
@@ -632,4 +644,11 @@ fn require_device_service(
         "{capability} references device '{device_name}', but that device does not provide {}",
         service.as_str()
     ))
+}
+
+fn x86_acpi_uses_mp_cpu_count(config: &BoardConfig) -> bool {
+    matches!(
+        config.acpi.as_ref().map(|acpi| &acpi.platform),
+        Some(fstart_types::acpi::AcpiPlatform::X86(x86)) if x86.num_cpus.is_none()
+    )
 }

@@ -308,7 +308,7 @@
                 PostDramInit( devices: ["southbridge"] ),
                 FinalizeInit( devices: ["southbridge"] ),
                 // Install the Pineview/ICH7 SMM handler before ACPI and payload handoff.
-                MpInit(cpu_model: "pineview", num_cpus: 4, smm: true),
+                MpInit(cpu_drivers: [IntelPineview], max_cpus: 4, smm: true),
                 AcpiPrepare,
                 SmBiosPrepare,
                 PayloadLoad,
@@ -349,7 +349,7 @@
     acpi: (
         print_hex: false,
         platform: X86((
-            num_cpus: Some(4),
+            num_cpus: None,
             lapic_base: 0xFEE00000,
             ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
             isos: [

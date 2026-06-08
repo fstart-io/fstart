@@ -164,9 +164,9 @@ UEFI path still uses UEFI-shaped service-borrow/platform endpoint primitives
 until those are split into more generic platform/service accessors. `StageLoad`,
 `LoadNextStage`, and `PciInit` now use primitive descriptors/service borrowing
 while runtime owns FFS stage loading, eGON next-stage read/handoff sequencing,
-and PCI root init policy. MP now performs microcode anchor lookup in runtime;
-generated `with_mp_services` still owns CPU-driver kind dispatch and SMM
-provider selection.
+and PCI root init policy. MP now performs runtime CPU-driver probing over the
+RON-selected compiled-in candidate set, and runtime also owns microcode anchor
+lookup. Generated `with_mp_services` still owns SMM provider borrowing.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:
@@ -271,19 +271,20 @@ accessors.
 
 ### Phase 5 — move MP/SMM flow into handwritten Rust
 
-Status: runtime owns the `fstart_mp::mp_init` call/error policy and microcode
-anchor lookup. Generated `with_mp_services` still owns CPU-driver kind dispatch,
-SMM provider selection, and concrete CPU-driver construction.
+Status: runtime owns the `fstart_mp::mp_init` call/error policy, CPU-driver
+candidate construction/probing, and microcode anchor lookup. Generated
+`with_mp_services` still owns SMM provider borrowing.
 
 Handwritten Rust should own:
 
-- CPU kind dispatch;
+- ~~CPU kind dispatch~~;
 - SMM image selection;
 - SMM provider lookup/use through primitive accessors;
 - ~~microcode anchor lookup~~;
-- `fstart_mp::mp_init` call and error handling.
+- ~~`fstart_mp::mp_init` call and error handling~~.
 
-Codegen should emit only `MpPlan` data and the SMM-provider `DeviceId`.
+Codegen should emit only compiled-in CPU-driver feature selection and the
+SMM-provider `DeviceId`/borrow glue.
 
 ### Phase 6 — ACPI/SMBIOS data-only emission
 

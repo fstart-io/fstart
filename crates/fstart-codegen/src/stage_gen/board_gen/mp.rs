@@ -10,16 +10,17 @@ use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::with_mp_services`.
 pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
-    let mp_cap = ctx.stage.capabilities.iter().find_map(|cap| match cap {
-        Capability::MpInit { cpu_model, .. } => Some(cpu_model.as_str()),
-        _ => None,
-    });
-    let Some(cpu_model) = mp_cap else {
+    let has_mp = ctx
+        .stage
+        .capabilities
+        .iter()
+        .any(|cap| matches!(cap, Capability::MpInit { .. }));
+    if !has_mp {
         return quote! {
-            let _ = (smm, microcode_blob, run);
+            let _ = (smm, run);
             Err(fstart_stage_runtime::RuntimeError::Failed)
         };
-    };
+    }
 
     let uses_smm = ctx
         .stage
@@ -52,7 +53,6 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             .map(|device| device.index)
     };
 
-
     let smm_ops_expr = if let Some(idx) = smm_provider {
         let field = format_ident!("{}", ctx.devices[idx].name.as_str());
         quote! {
@@ -78,67 +78,12 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         }
     };
 
-    let cpu_driver_body = if cpu_model == "generic-x86"
-        || cpu_model == "qemu-x86"
-        || cpu_model == "qemu"
-    {
-        quote! {
-            let cpu_driver = fstart_mp::GenericX86CpuDriver;
-            let cpu_drivers: [&dyn fstart_mp::CpuDriver; 1] = [&cpu_driver];
-            Ok(run(fstart_stage_runtime::MpServices {
-                cpu_drivers: &cpu_drivers,
-                smm_ops,
-                smm_image,
-            }))
-        }
-    } else if cpu_model == "core2" || cpu_model == "6fx" {
-        quote! {
-            #[cfg(feature = "intel-cpu")]
-            {
-                let cpu_driver = fstart_cpu_intel::core2_cpu::Core2CpuDriver::new(0x0500, microcode_blob);
-                let cpu_drivers: [&dyn fstart_mp::CpuDriver; 1] = [&cpu_driver];
-                Ok(run(fstart_stage_runtime::MpServices {
-                    cpu_drivers: &cpu_drivers,
-                    smm_ops,
-                    smm_image,
-                }))
-            }
-            #[cfg(not(feature = "intel-cpu"))]
-            {
-                fstart_log::error!("mp: Intel CPU driver support is not enabled");
-                Err(fstart_stage_runtime::RuntimeError::Failed)
-            }
-        }
-    } else if cpu_model == "pineview" || cpu_model == "106cx" {
-        quote! {
-            #[cfg(feature = "intel-cpu")]
-            {
-                let cpu_driver = fstart_cpu_intel::pineview::PineviewCpuDriver::with_microcode(0x0500, microcode_blob);
-                let cpu_drivers: [&dyn fstart_mp::CpuDriver; 1] = [&cpu_driver];
-                Ok(run(fstart_stage_runtime::MpServices {
-                    cpu_drivers: &cpu_drivers,
-                    smm_ops,
-                    smm_image,
-                }))
-            }
-            #[cfg(not(feature = "intel-cpu"))]
-            {
-                fstart_log::error!("mp: Intel CPU driver support is not enabled");
-                Err(fstart_stage_runtime::RuntimeError::Failed)
-            }
-        }
-    } else {
-        let model = cpu_model;
-        quote! {
-            fstart_log::error!("mp: unsupported CPU model '{}'; no CpuDriver provider", #model);
-            Err(fstart_stage_runtime::RuntimeError::Failed)
-        }
-    };
-
     quote! {
         let smm_ops: Option<&dyn fstart_mp::SmmOps> = #smm_ops_expr;
         let smm_image: Option<&[u8]> = #smm_image_expr;
-        let _ = microcode_blob;
-        #cpu_driver_body
+        Ok(run(fstart_stage_runtime::MpServices {
+            smm_ops,
+            smm_image,
+        }))
     }
 }

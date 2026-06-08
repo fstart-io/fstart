@@ -168,16 +168,8 @@ pub struct PineviewCpuDriver {
 }
 
 impl PineviewCpuDriver {
-    /// Create with the southbridge's PM base I/O address.
-    pub fn new(pmbase: u32) -> Self {
-        Self {
-            pmbase,
-            microcode: None,
-        }
-    }
-
-    /// Create with the southbridge's PM base I/O address and microcode blob.
-    pub fn with_microcode(pmbase: u32, microcode: Option<&'static [u8]>) -> Self {
+    /// Create with the southbridge's PM base I/O address and optional microcode blob.
+    pub fn new(pmbase: u32, microcode: Option<&'static [u8]>) -> Self {
         Self { pmbase, microcode }
     }
 }

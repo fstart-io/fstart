@@ -84,25 +84,41 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             #[cfg(feature = "flow-driver-init")]
             StageOp::DriverInit => driver_init(board, plan, &mut inited),
             #[cfg(feature = "flow-phases")]
-            StageOp::PreConsoleInit(ids) => {
-                phase(board, plan, &mut inited, crate::StagePhase::PreConsoleInit, ids)
-            }
+            StageOp::PreConsoleInit(ids) => phase(
+                board,
+                plan,
+                &mut inited,
+                crate::StagePhase::PreConsoleInit,
+                ids,
+            ),
             #[cfg(feature = "flow-phases")]
             StageOp::EarlyInit(ids) => {
                 phase(board, plan, &mut inited, crate::StagePhase::EarlyInit, ids)
             }
             #[cfg(feature = "flow-phases")]
-            StageOp::StageLocalInit(ids) => {
-                phase(board, plan, &mut inited, crate::StagePhase::StageLocalInit, ids)
-            }
+            StageOp::StageLocalInit(ids) => phase(
+                board,
+                plan,
+                &mut inited,
+                crate::StagePhase::StageLocalInit,
+                ids,
+            ),
             #[cfg(feature = "flow-phases")]
-            StageOp::PostDramInit(ids) => {
-                phase(board, plan, &mut inited, crate::StagePhase::PostDramInit, ids)
-            }
+            StageOp::PostDramInit(ids) => phase(
+                board,
+                plan,
+                &mut inited,
+                crate::StagePhase::PostDramInit,
+                ids,
+            ),
             #[cfg(feature = "flow-phases")]
-            StageOp::FinalizeInit(ids) => {
-                phase(board, plan, &mut inited, crate::StagePhase::FinalizeInit, ids)
-            }
+            StageOp::FinalizeInit(ids) => phase(
+                board,
+                plan,
+                &mut inited,
+                crate::StagePhase::FinalizeInit,
+                ids,
+            ),
             #[cfg(feature = "flow-pci")]
             StageOp::PciInit(id) => pci_init(board, plan, &mut inited, id),
             #[cfg(feature = "flow-memory-detect")]
@@ -141,7 +157,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             StageOp::FdtPrepare => fdt_prepare(board),
 
             #[cfg(feature = "flow-mp")]
-            StageOp::MpInit { num_cpus, smm } => mp_init(board, num_cpus, smm),
+            StageOp::MpInit { max_cpus, smm } => mp_init(board, max_cpus, smm),
 
             #[cfg(feature = "flow-acpi")]
             StageOp::AcpiPrepare => acpi_prepare(board),
@@ -683,14 +699,35 @@ fn stage_load<B: Board>(board: &B, next_stage: &'static str) -> ! {
 }
 
 #[cfg(feature = "flow-mp")]
-fn mp_init<B: Board>(board: &mut B, num_cpus: u16, smm: bool) {
+fn mp_init<B: Board>(board: &mut B, max_cpus: u16, smm: bool) {
+    #[cfg(any(feature = "cpu-intel-core2", feature = "cpu-intel-pineview"))]
     let microcode_blob = mp_microcode_blob(board);
-    let result = board.with_mp_services(smm, microcode_blob, |services| {
+    #[cfg(feature = "cpu-intel-core2")]
+    let core2_cpu = fstart_cpu_intel::core2_cpu::Core2CpuDriver::new(0x0500, microcode_blob);
+    #[cfg(feature = "cpu-intel-pineview")]
+    let pineview_cpu = fstart_cpu_intel::pineview::PineviewCpuDriver::new(0x0500, microcode_blob);
+    #[cfg(feature = "cpu-generic-x86")]
+    let generic_cpu = fstart_mp::GenericX86CpuDriver;
+
+    let mut cpu_drivers: heapless::Vec<&dyn fstart_mp::CpuDriver, 4> = heapless::Vec::new();
+    #[cfg(feature = "cpu-intel-core2")]
+    let _ = cpu_drivers.push(&core2_cpu);
+    #[cfg(feature = "cpu-intel-pineview")]
+    let _ = cpu_drivers.push(&pineview_cpu);
+    #[cfg(feature = "cpu-generic-x86")]
+    let _ = cpu_drivers.push(&generic_cpu);
+
+    if cpu_drivers.is_empty() {
+        fstart_log::error!("mp: no CPU drivers compiled in");
+        board.halt();
+    }
+
+    let result = board.with_mp_services(smm, |services| {
         let config = fstart_mp::MpConfig {
-            cpu_drivers: services.cpu_drivers,
+            cpu_drivers: cpu_drivers.as_slice(),
             smm: services.smm_ops,
             smm_image: services.smm_image,
-            num_cpus,
+            max_cpus,
         };
         fstart_mp::mp_init(&config)
     });
@@ -700,7 +737,7 @@ fn mp_init<B: Board>(board: &mut B, num_cpus: u16, smm: bool) {
     }
 }
 
-#[cfg(feature = "flow-mp")]
+#[cfg(any(feature = "cpu-intel-core2", feature = "cpu-intel-pineview"))]
 fn mp_microcode_blob<B: Board>(board: &B) -> Option<&'static [u8]> {
     let anchor_bytes = board.ffs_anchor()?;
     // SAFETY: `ffs_anchor()` returns the generated anchor bytes for this stage;

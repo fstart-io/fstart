@@ -403,15 +403,17 @@ fn capability_features(
     }
 
     for cap in capabilities {
-        if let Capability::MpInit { cpu_model, .. } = cap {
+        if let Capability::MpInit { cpu_drivers, .. } = cap {
             features.push("stage-flow-mp");
             features.push("mp");
-            if cpu_model.as_str().contains("pineview")
-                || cpu_model.as_str().contains("106cx")
-                || cpu_model.as_str().contains("core2")
-                || cpu_model.as_str().contains("6fx")
-            {
-                features.push("intel-cpu");
+            for driver in cpu_drivers {
+                match driver {
+                    fstart_types::CpuDriverKind::GenericX86 => features.push("cpu-generic-x86"),
+                    fstart_types::CpuDriverKind::IntelCore2 => features.push("cpu-intel-core2"),
+                    fstart_types::CpuDriverKind::IntelPineview => {
+                        features.push("cpu-intel-pineview")
+                    }
+                }
             }
         }
     }

@@ -69,6 +69,9 @@ x86-boot = []
 mp = ["dep:fstart-mp"]
 # Intel x86 CPU drivers (model-specific MSR programming lives in fstart-cpu-intel).
 intel-cpu = ["mp", "dep:fstart-cpu-intel"]
+cpu-generic-x86 = ["mp", "fstart-stage-runtime/cpu-generic-x86"]
+cpu-intel-core2 = ["intel-cpu", "fstart-stage-runtime/cpu-intel-core2"]
+cpu-intel-pineview = ["intel-cpu", "fstart-stage-runtime/cpu-intel-pineview"]
 # x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
 x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
 # x86_64: build page tables at runtime in writable RAM. Enabled only for
