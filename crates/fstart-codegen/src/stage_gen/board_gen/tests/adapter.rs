@@ -81,6 +81,39 @@ fn adapter_compiles_for_qemu_riscv64() {
 }
 
 #[test]
+fn generated_adapter_keeps_runtime_flow_out() {
+    let sources = [
+        adapter_source_for_stage("qemu-q35-uefi", "main"),
+        adapter_source_for_stage("foxconn-d41s", "ramstage"),
+        adapter_source_for_stage("orangepi-r1", "bootblock"),
+    ];
+    let forbidden = [
+        "fstart_mp::mp_init",
+        "FfsReader::read_anchor_volatile",
+        "fstart_capabilities::console_ready",
+        "fstart_capabilities::sig_verify",
+        "fstart_capabilities::load_ffs_file_by_type",
+        "fstart_capabilities::stage_load(",
+        "fstart_capabilities::next_stage::read_stage_to_addr",
+        "fstart_capabilities::next_stage::serialize_handoff",
+        "fstart_capabilities::memory_detect",
+        "fstart_capabilities::acpi::prepare_with_options",
+        "fstart_capabilities::smbios::prepare",
+        "launch_x86_uefi",
+        "launch_flat_uefi",
+    ];
+
+    for source in sources {
+        for token in forbidden {
+            assert!(
+                !source.contains(token),
+                "generated adapter must not contain runtime flow token `{token}`; got:\n{source}"
+            );
+        }
+    }
+}
+
+#[test]
 fn adapter_compiles_for_qemu_aarch64() {
     let src = adapter_source_for_board("qemu-aarch64");
     assert!(src.contains("struct _BoardDevices"));
