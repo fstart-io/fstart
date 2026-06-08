@@ -35,6 +35,15 @@ use fstart_services::device::DeviceError;
 use fstart_services::{BootMedia, FirmwareImage, TempRamArena};
 use fstart_types::{DeviceId, TempRamBuffer};
 
+/// Metadata reported after a console logger is installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsoleReady {
+    /// Board device name selected for logging.
+    pub device_name: &'static str,
+    /// Driver name backing the selected console.
+    pub driver_name: &'static str,
+}
+
 /// Mutable DSDT AML buffer passed from the ACPI executor to board-local
 /// device table collection.
 #[cfg(feature = "flow-acpi")]
@@ -400,7 +409,7 @@ pub trait Board: Sized {
     /// already constructed by `init_device(id)`.  The board impl
     /// promises to hold the device for the stage's lifetime, which
     /// justifies extending the borrow to `'static` inside.
-    unsafe fn install_logger(&self, id: DeviceId);
+    unsafe fn install_logger(&self, id: DeviceId) -> Result<ConsoleReady, RuntimeError>;
 
     // ----- Remaining high-level operations and primitive accessors --------
     //

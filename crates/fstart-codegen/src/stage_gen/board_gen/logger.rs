@@ -1,4 +1,4 @@
-//! Logger installation trampoline emission.
+//! Logger installation primitive emission.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -10,9 +10,10 @@ use super::model::BoardEmitModel;
 /// Emit the body of `Board::install_logger`.
 ///
 /// Emits a `match id { ... }` where every arm corresponds to an enabled device
-/// providing the `Console` service. Direct stage codeflow calls
-/// `init_device(id)` before this trampoline, so matching arms can install the
-/// already-constructed console as the global logger.
+/// providing the `Console` service. The runtime executor calls
+/// `init_device(id)` before this primitive, so matching arms can install the
+/// already-constructed console as the global logger and return static metadata
+/// for runtime-owned readiness logging.
 pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx
         .runtime_devices
@@ -36,7 +37,10 @@ pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
                                 .unwrap_or_else(|| fstart_platform::halt()),
                         );
                     }
-                    fstart_capabilities::console_ready(#dev_name, #drv_name);
+                    Ok(fstart_stage_runtime::ConsoleReady {
+                        device_name: #dev_name,
+                        driver_name: #drv_name,
+                    })
                 }
             }
         });
@@ -48,9 +52,8 @@ pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
                 // Codegen contract violation — `install_logger` is only
                 // dispatched for ids declared `ConsoleInit`, and validation
                 // requires those ids to provide `Console`. Reaching this arm
-                // means an id we didn't emit a field for, so no recovery is
-                // possible.
-                fstart_platform::halt();
+                // means an id we didn't emit a field for.
+                Err(fstart_stage_runtime::RuntimeError::UnknownDevice)
             }
         }
     }

@@ -48,15 +48,16 @@ fn adapter_compiles_for_qemu_riscv64() {
     // `._handoff` token alone is a reliable indicator.
     assert!(src.contains("._handoff"));
     assert!(src.contains("_dram_size_static"));
-    // install_logger is a real body: the ConsoleInit id arm
-    // calls `fstart_log::init` + `console_ready`.
+    // install_logger is a real primitive body: the ConsoleInit id arm calls
+    // `fstart_log::init` and returns metadata for runtime-owned readiness
+    // logging.
     assert!(
         src.contains("fstart_log::init"),
         "install_logger must call fstart_log::init on the console device, got:\n{src}"
     );
     assert!(
-        src.contains("fstart_capabilities::console_ready"),
-        "install_logger must emit console_ready banner, got:\n{src}"
+        src.contains("ConsoleReady") && !src.contains("fstart_capabilities::console_ready"),
+        "install_logger must return ConsoleReady metadata without logging the banner, got:\n{src}"
     );
     // payload_load orchestration lives in runtime: qemu-riscv64 has LinuxBoot,
     // so the adapter exposes only a primitive descriptor and final platform

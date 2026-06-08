@@ -174,9 +174,11 @@ fn console_init<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) 
     }
     // SAFETY: codegen validation guarantees this operation names a Console
     // provider, and init_device has just constructed it.
-    unsafe {
-        board.install_logger(id);
-    }
+    let ready = match unsafe { board.install_logger(id) } {
+        Ok(ready) => ready,
+        Err(_) => board.halt(),
+    };
+    fstart_capabilities::console_ready(ready.device_name, ready.driver_name);
     inited.set(id);
 }
 

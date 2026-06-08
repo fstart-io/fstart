@@ -6,8 +6,8 @@ use super::adapter_source_for_board;
 fn install_logger_emits_arm_per_console_device() {
     // qemu-riscv64 has one Console-providing device: uart0 (ns16550).
     // The match must carry an arm that inits the logger against
-    // `.uart0` and emits the console_ready banner with both the
-    // RON device name and the driver crate name.
+    // `.uart0` and returns metadata with both the RON device name and the
+    // driver crate name. Runtime owns the console_ready banner.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
         src.contains("fstart_log::init"),
@@ -20,37 +20,40 @@ fn install_logger_emits_arm_per_console_device() {
         src.contains(".uart0"),
         "install_logger arm must reference self.uart0, got:\n{src}"
     );
-    // Banner call with device + driver name literals.
     assert!(
-        src.contains("fstart_capabilities::console_ready"),
-        "install_logger body must call console_ready, got:\n{src}"
+        !src.contains("fstart_capabilities::console_ready"),
+        "console_ready belongs to fstart-stage-runtime, got:\n{src}"
+    );
+    assert!(
+        src.contains("ConsoleReady"),
+        "install_logger body must return ConsoleReady metadata, got:\n{src}"
     );
     assert!(
         src.contains("\"uart0\""),
-        "console_ready must pass the RON device name, got:\n{src}"
+        "ConsoleReady must carry the RON device name, got:\n{src}"
     );
     assert!(
         src.contains("\"ns16550\""),
-        "console_ready must pass the driver crate name, got:\n{src}"
+        "ConsoleReady must carry the driver crate name, got:\n{src}"
     );
 }
 
 #[test]
 fn install_logger_pl011_on_aarch64() {
-    // qemu-aarch64 uses a Pl011 driver.  The driver-name literal
-    // in the console_ready banner must reflect that.
+    // qemu-aarch64 uses a Pl011 driver.  The driver-name literal in the
+    // returned ConsoleReady metadata must reflect that.
     let src = adapter_source_for_board("qemu-aarch64");
     assert!(src.contains("fstart_log::init"));
     assert!(
         src.contains("\"pl011\""),
-        "console_ready must pass \"pl011\" for qemu-aarch64, got:\n{src}"
+        "ConsoleReady must carry \"pl011\" for qemu-aarch64, got:\n{src}"
     );
 }
 
 #[test]
-fn install_logger_always_has_wildcard_halt() {
+fn install_logger_always_has_wildcard_error() {
     // Every generated install_logger body ends with a `_ =>` arm
-    // that halts.  The executor guarantees the id matches a
+    // that returns an error.  The executor guarantees the id matches a
     // Console provider, but the compiler still needs exhaustive
     // coverage of the match.
     let src = adapter_source_for_board("qemu-riscv64");
@@ -81,8 +84,8 @@ fn install_logger_always_has_wildcard_halt() {
     }
     let body = &src[open..end];
     assert!(
-        body.contains("_ =>") && body.contains("fstart_platform::halt()"),
-        "install_logger must include `_ => halt()` wildcard, got:\n{body}"
+        body.contains("_ =>") && body.contains("RuntimeError::UnknownDevice"),
+        "install_logger must include `_ => Err(UnknownDevice)` wildcard, got:\n{body}"
     );
 }
 

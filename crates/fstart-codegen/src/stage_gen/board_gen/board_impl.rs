@@ -128,7 +128,10 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
                 #init_device_body
             }
 
-            unsafe fn install_logger(&self, id: fstart_types::DeviceId) {
+            unsafe fn install_logger(
+                &self,
+                id: fstart_types::DeviceId,
+            ) -> Result<fstart_stage_runtime::ConsoleReady, fstart_stage_runtime::RuntimeError> {
                 #install_logger_body
             }
 
