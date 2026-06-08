@@ -6,7 +6,9 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use fstart_device_registry::{DriverInstance, PlatformBootMediaCandidate, Service, ServiceSet};
+use fstart_device_registry::{
+    ConstructionKind, DriverInstance, PlatformBootMediaCandidate, Service, ServiceSet,
+};
 use fstart_types::{
     BoardConfig, BootMedium, Capability, DeviceConfig, DeviceId, LoadDevice, StageLayout,
     TempRamBuffer,
@@ -49,6 +51,27 @@ pub(super) fn generate_stage_plan(
     let persistent = persistent_inited_ids(config, stage_name, &ids);
     let persistent_lits = persistent.iter().map(|id| Literal::u8_unsuffixed(*id));
 
+    let device_init = device_init_plans(&config.devices, instances, &ids);
+    let device_init_len = device_init.len();
+    let device_init_helpers = device_init.iter().enumerate().map(|(idx, (_id, chain))| {
+        let ident = format_ident!("_FSTART_STAGE_PLAN_DEVICE_INIT_CHAIN_{idx}");
+        let chain_lits = chain.iter().map(|id| Literal::u8_unsuffixed(*id));
+        let chain_len = chain.len();
+        quote! {
+            static #ident: [fstart_types::DeviceId; #chain_len] = [#(#chain_lits,)*];
+        }
+    });
+    let device_init_entries = device_init.iter().enumerate().map(|(idx, (id, _chain))| {
+        let ident = format_ident!("_FSTART_STAGE_PLAN_DEVICE_INIT_CHAIN_{idx}");
+        let id_lit = Literal::u8_unsuffixed(*id);
+        quote! {
+            fstart_stage_runtime::DeviceInitPlan {
+                device: #id_lit,
+                chain: &#ident,
+            }
+        }
+    });
+
     let all_devices = all_runtime_devices(&config.devices, instances, device_services, &ids);
     let all_device_lits = all_devices.iter().map(|id| Literal::u8_unsuffixed(*id));
     let all_device_len = all_devices.len();
@@ -76,6 +99,12 @@ pub(super) fn generate_stage_plan(
             #(#persistent_lits,)*
         ];
 
+        #(#device_init_helpers)*
+
+        static _FSTART_STAGE_PLAN_DEVICE_INIT: [fstart_stage_runtime::DeviceInitPlan; #device_init_len] = [
+            #(#device_init_entries,)*
+        ];
+
         static _FSTART_STAGE_PLAN_ALL_DEVICES: [fstart_types::DeviceId; #all_device_len] = [
             #(#all_device_lits,)*
         ];
@@ -92,6 +121,7 @@ pub(super) fn generate_stage_plan(
             stage_name: #stage_name,
             ops: &_FSTART_STAGE_PLAN_OPS,
             persistent_inited: _FSTART_STAGE_PLAN_PERSISTENT_INITED,
+            device_init: &_FSTART_STAGE_PLAN_DEVICE_INIT,
             all_devices: &_FSTART_STAGE_PLAN_ALL_DEVICES,
             optional_devices: &_FSTART_STAGE_PLAN_OPTIONAL_DEVICES,
             boot_media_gated: &_FSTART_STAGE_PLAN_BOOT_MEDIA_GATED,
@@ -594,6 +624,50 @@ fn driver_init_candidate_tokens(id: DeviceId, media_ids: &[u8]) -> TokenStream {
             media_ids: &[#(#media_ids),*],
         }
     }
+}
+
+fn device_init_plans(
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    ids: &DeviceIdMap<'_>,
+) -> Vec<(DeviceId, Vec<DeviceId>)> {
+    devices
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, device)| {
+            if !device.enabled || !instances[idx].has_runtime_driver() {
+                return None;
+            }
+            let id = ids.get(device.name.as_str())?;
+            Some((id, runtime_chain_from_root(idx, devices, instances, ids)))
+        })
+        .collect()
+}
+
+fn runtime_chain_from_root(
+    target_idx: usize,
+    devices: &[DeviceConfig],
+    instances: &[DriverInstance],
+    ids: &DeviceIdMap<'_>,
+) -> Vec<DeviceId> {
+    let mut chain = Vec::new();
+    let mut cursor = Some(target_idx);
+    while let Some(idx) = cursor {
+        if devices[idx].enabled
+            && instances[idx].has_runtime_driver()
+            && instances[idx].construction_kind() != ConstructionKind::Structural
+        {
+            if let Some(id) = ids.get(devices[idx].name.as_str()) {
+                chain.push(id);
+            }
+        }
+        cursor = devices[idx]
+            .parent
+            .as_ref()
+            .and_then(|parent| devices.iter().position(|device| device.name == *parent));
+    }
+    chain.reverse();
+    chain
 }
 
 fn all_runtime_devices(

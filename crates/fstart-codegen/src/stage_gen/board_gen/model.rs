@@ -229,21 +229,6 @@ impl<'a> RuntimeDeviceTable<'a> {
         }
     }
 
-    /// Runtime ancestor chain for `target_idx`, root first.
-    pub(super) fn runtime_chain_from_root(&self, target_idx: usize) -> Vec<usize> {
-        let mut chain = Vec::new();
-        let mut cursor = Some(target_idx);
-        while let Some(idx) = cursor {
-            if self.get(idx).is_some_and(|entry| entry.is_runtime()) {
-                chain.push(idx);
-            }
-            cursor = self
-                .get(idx)
-                .and_then(|entry| entry.node.parent.map(|parent| parent as usize));
-        }
-        chain.reverse();
-        chain
-    }
 }
 
 impl<'a> BoardEmitModel<'a> {

@@ -29,7 +29,7 @@ pub mod plan;
 #[cfg(feature = "stage-executor")]
 pub use flow::run_stage;
 pub use mask::DeviceMask;
-pub use plan::{StageOp, StagePlan};
+pub use plan::{DeviceInitPlan, StageOp, StagePlan};
 
 use fstart_services::device::DeviceError;
 use fstart_services::{BootMedia, FirmwareImage, TempRamArena};
@@ -388,25 +388,24 @@ pub enum StagePhase {
 pub trait Board: Sized {
     // ----- Device lifecycle ------------------------------------------------
 
-    /// Construct `id` (and any not-yet-constructed non-structural
-    /// ancestors) and call `Device::init` / `BusDevice::init` on each
-    /// in root-first order.  Idempotent: repeated calls for the same
-    /// `id` are no-ops.
+    /// Construct and initialize exactly one concrete runtime device by id.
     ///
-    /// Subsumes `ensure_device_ready`, `walk_to_real_parent`, and
-    /// `generate_device_construction` from `fstart-codegen`.
-    fn init_device(&mut self, id: DeviceId) -> Result<(), DeviceError>;
+    /// The handwritten executor owns root-first ancestor traversal and the
+    /// stage-local init mask. The generated adapter only dispatches one
+    /// `DeviceId` to one concrete field/config pair; bus children may assume
+    /// the executor has already constructed their real parent.
+    fn construct_device(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
     // ----- Logging --------------------------------------------------------
 
     /// Install the global `fstart_log` logger on the console device
-    /// with id `id`.  Must be called after `init_device(id)` and
+    /// with id `id`.  Must be called after `construct_device(id)` and
     /// before any `fstart_log::*!` macro runs.
     ///
     /// # Safety
     ///
     /// `id` must be a device that provides `Console` and that was
-    /// already constructed by `init_device(id)`.  The board impl
+    /// already constructed by `construct_device(id)`.  The board impl
     /// promises to hold the device for the stage's lifetime, which
     /// justifies extending the borrow to `'static` inside.
     unsafe fn install_logger(&self, id: DeviceId) -> Result<ConsoleReady, RuntimeError>;
@@ -532,7 +531,7 @@ pub trait Board: Sized {
     ///
     /// Generated adapter dispatches to `MemoryController::dram_init()` on the
     /// already-constructed controller. This deliberately does not go through
-    /// only `init_device()`: memory controllers may already be constructed by
+    /// only `construct_device()`: memory controllers may already be constructed by
     /// a `PreConsoleInit` phase, while DRAM training must happen later after
     /// chipset/SMBus setup.
     fn dram_init(&mut self, id: DeviceId) -> Result<(), DeviceError>;

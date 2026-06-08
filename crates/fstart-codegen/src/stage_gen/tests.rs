@@ -1118,6 +1118,11 @@ fn stage_plan_driver_init_emits_device_tables() {
         "DriverInit should emit all-runtime-device data: {source}"
     );
     assert!(
+        source.contains("static _FSTART_STAGE_PLAN_DEVICE_INIT")
+            && source.contains("DeviceInitPlan"),
+        "device lifecycle chains should be emitted as StagePlan data: {source}"
+    );
+    assert!(
         source.contains("static _FSTART_STAGE_PLAN_OPTIONAL_DEVICES"),
         "DriverInit should emit optional-device data: {source}"
     );

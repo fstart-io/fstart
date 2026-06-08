@@ -63,19 +63,21 @@ fn payload_load_uefi_exposes_primitives_only() {
     );
 }
 
-// ===== init_device adapter tests ===============
+// ===== construct_device adapter tests ===============
 
 #[test]
-fn init_device_emits_match_arm_per_enabled_device() {
+fn construct_device_emits_match_arm_per_enabled_device() {
     // qemu-riscv64 has uart0 (ns16550) as an enabled,
-    // non-structural, non-ACPI device.  init_device must have a
+    // non-structural, non-ACPI device. construct_device must have a
     // match arm that references `self.uart0` and emits both the
     // construction and init calls.
     let src = adapter_source_for_board("qemu-riscv64");
+    assert!(src.contains("fn construct_device"));
+    assert!(!src.contains("fn init_device"));
     // Per-arm fast path: if already inited, return Ok.
     assert!(
         src.contains("if this._inited.contains") || src.contains("if self._inited.contains"),
-        "init_device arms must check the init mask; got:\n{src}"
+        "construct_device arms must check the adapter init mask; got:\n{src}"
     );
     // Construction path uses Device::new (or ::new_on_bus for bus
     // children — but qemu-riscv64 is flat).  prettyplease emits
@@ -83,33 +85,22 @@ fn init_device_emits_match_arm_per_enabled_device() {
     // disambiguate the trait method resolution.
     assert!(
         src.contains("<Ns16550>::new"),
-        "init_device must call Ns16550::new for uart0; got:\n{src}"
+        "construct_device must call Ns16550::new for uart0; got:\n{src}"
     );
     assert!(
         src.contains(".init()?"),
-        "init_device must call .init() on each device; got:\n{src}"
+        "construct_device must call .init() on each device; got:\n{src}"
     );
     assert!(
         src.contains("this._inited.set") || src.contains("self._inited.set"),
-        "init_device must set the init mask; got:\n{src}"
+        "construct_device must set the adapter init mask; got:\n{src}"
     );
 }
 
 #[test]
-fn init_device_ancestors_walked_root_first() {
-    // Verify the ancestor-walking helpers produce the right
-    // init-chain shape.  We can't easily build a fixture board
-    // with a bus-device-children tree that exercises new_on_bus
-    // without a live board using it (q35 / sbsa have pre-existing
-    // build failures), so the structural check is:
-    //
-    // - qemu-riscv64 (flat) uses Device::new, not new_on_bus.
-    // - The chain-walking helper `walk_to_real_parent` is
-    //   unit-tested indirectly via the sunxi sig_verify body
-    //   which already dispatches on BlockDevice ids.
-    //
-    // If a new fixture board with a non-trivial bus tree lands,
-    // add a stronger assertion here.
+fn construct_device_does_not_emit_root_walk_for_flat_board() {
+    // Runtime owns root-first traversal over StagePlan device-init chains.
+    // The generated adapter only constructs the requested concrete device.
     let src = adapter_source_for_board("qemu-riscv64");
     // Flat board: no new_on_bus calls.
     assert!(

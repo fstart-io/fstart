@@ -74,43 +74,45 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
     for op in plan.ops {
         match *op {
             #[cfg(feature = "flow-clock-init")]
-            StageOp::ClockInit(id) => init_once(board, &mut inited, id),
+            StageOp::ClockInit(id) => init_once(board, plan, &mut inited, id),
             #[cfg(feature = "flow-console-init")]
-            StageOp::ConsoleInit(id) => console_init(board, &mut inited, id),
+            StageOp::ConsoleInit(id) => console_init(board, plan, &mut inited, id),
             #[cfg(feature = "flow-memory-init")]
             StageOp::MemoryInit => fstart_capabilities::memory_init(),
             #[cfg(feature = "flow-dram-init")]
-            StageOp::DramInit(id) => dram_init(board, &mut inited, id),
+            StageOp::DramInit(id) => dram_init(board, plan, &mut inited, id),
             #[cfg(feature = "flow-driver-init")]
             StageOp::DriverInit => driver_init(board, plan, &mut inited),
             #[cfg(feature = "flow-phases")]
             StageOp::PreConsoleInit(ids) => {
-                phase(board, &mut inited, crate::StagePhase::PreConsoleInit, ids)
+                phase(board, plan, &mut inited, crate::StagePhase::PreConsoleInit, ids)
             }
             #[cfg(feature = "flow-phases")]
-            StageOp::EarlyInit(ids) => phase(board, &mut inited, crate::StagePhase::EarlyInit, ids),
+            StageOp::EarlyInit(ids) => {
+                phase(board, plan, &mut inited, crate::StagePhase::EarlyInit, ids)
+            }
             #[cfg(feature = "flow-phases")]
             StageOp::StageLocalInit(ids) => {
-                phase(board, &mut inited, crate::StagePhase::StageLocalInit, ids)
+                phase(board, plan, &mut inited, crate::StagePhase::StageLocalInit, ids)
             }
             #[cfg(feature = "flow-phases")]
             StageOp::PostDramInit(ids) => {
-                phase(board, &mut inited, crate::StagePhase::PostDramInit, ids)
+                phase(board, plan, &mut inited, crate::StagePhase::PostDramInit, ids)
             }
             #[cfg(feature = "flow-phases")]
             StageOp::FinalizeInit(ids) => {
-                phase(board, &mut inited, crate::StagePhase::FinalizeInit, ids)
+                phase(board, plan, &mut inited, crate::StagePhase::FinalizeInit, ids)
             }
             #[cfg(feature = "flow-pci")]
-            StageOp::PciInit(id) => pci_init(board, &mut inited, id),
+            StageOp::PciInit(id) => pci_init(board, plan, &mut inited, id),
             #[cfg(feature = "flow-memory-detect")]
-            StageOp::MemoryDetect(id) => memory_detect(board, &mut inited, id),
+            StageOp::MemoryDetect(id) => memory_detect(board, plan, &mut inited, id),
 
             #[cfg(feature = "flow-boot-media")]
             StageOp::BootMediaFirmwareProvider {
                 provider,
                 temp_ram_buffer,
-            } => boot_media_firmware_provider(board, &mut inited, provider, temp_ram_buffer),
+            } => boot_media_firmware_provider(board, plan, &mut inited, provider, temp_ram_buffer),
             #[cfg(feature = "flow-boot-media")]
             StageOp::BootMediaPlatformFirmwareImage {
                 image,
@@ -120,7 +122,13 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             StageOp::BootMediaPlatformBootSource {
                 candidates,
                 temp_ram_buffer,
-            } => boot_media_platform_boot_source(board, &mut inited, candidates, temp_ram_buffer),
+            } => boot_media_platform_boot_source(
+                board,
+                plan,
+                &mut inited,
+                candidates,
+                temp_ram_buffer,
+            ),
 
             #[cfg(feature = "flow-ffs")]
             StageOp::SigVerify => sig_verify(board),
@@ -138,7 +146,7 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             #[cfg(feature = "flow-acpi")]
             StageOp::AcpiPrepare => acpi_prepare(board),
             #[cfg(feature = "flow-acpi")]
-            StageOp::AcpiLoad(id) => acpi_load(board, &mut inited, id),
+            StageOp::AcpiLoad(id) => acpi_load(board, plan, &mut inited, id),
 
             #[cfg(feature = "flow-smbios")]
             StageOp::SmBiosPrepare => smbios_prepare(board),
@@ -149,27 +157,60 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             StageOp::LoadNextStage {
                 candidates,
                 next_stage,
-            } => load_next_stage(board, &mut inited, candidates, next_stage),
+            } => load_next_stage(board, plan, &mut inited, candidates, next_stage),
         }
     }
 
     board.halt()
 }
 
-#[cfg(feature = "flow-clock-init")]
-fn init_once<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
+#[cfg(any(
+    feature = "flow-clock-init",
+    feature = "flow-console-init",
+    feature = "flow-dram-init",
+    feature = "flow-driver-init",
+    feature = "flow-phases",
+    feature = "flow-pci",
+    feature = "flow-memory-detect",
+    feature = "flow-boot-media",
+    feature = "flow-acpi",
+    feature = "flow-fel",
+))]
+fn init_device<B: Board>(
+    board: &mut B,
+    plan: &StagePlan,
+    inited: &mut DeviceMask,
+    id: DeviceId,
+) -> Result<(), fstart_services::device::DeviceError> {
     if inited.contains(id) {
-        return;
+        return Ok(());
     }
-    if board.init_device(id).is_err() {
+
+    if let Some(entry) = plan.device_init.iter().find(|entry| entry.device == id) {
+        for step in entry.chain {
+            if inited.contains(*step) {
+                continue;
+            }
+            board.construct_device(*step)?;
+            inited.set(*step);
+        }
+    } else {
+        board.construct_device(id)?;
+        inited.set(id);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "flow-clock-init")]
+fn init_once<B: Board>(board: &mut B, plan: &StagePlan, inited: &mut DeviceMask, id: DeviceId) {
+    if init_device(board, plan, inited, id).is_err() {
         board.halt();
     }
-    inited.set(id);
 }
 
 #[cfg(feature = "flow-console-init")]
-fn console_init<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
-    if board.init_device(id).is_err() {
+fn console_init<B: Board>(board: &mut B, plan: &StagePlan, inited: &mut DeviceMask, id: DeviceId) {
+    if init_device(board, plan, inited, id).is_err() {
         board.halt();
     }
     // SAFETY: codegen validation guarantees this operation names a Console
@@ -183,8 +224,8 @@ fn console_init<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) 
 }
 
 #[cfg(feature = "flow-dram-init")]
-fn dram_init<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
-    if board.init_device(id).is_err() {
+fn dram_init<B: Board>(board: &mut B, plan: &StagePlan, inited: &mut DeviceMask, id: DeviceId) {
+    if init_device(board, plan, inited, id).is_err() {
         board.halt();
     }
     if board.dram_init(id).is_err() {
@@ -196,12 +237,13 @@ fn dram_init<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
 #[cfg(feature = "flow-phases")]
 fn phase<B: Board>(
     board: &mut B,
+    plan: &StagePlan,
     inited: &mut DeviceMask,
     phase: crate::StagePhase,
     ids: &'static [DeviceId],
 ) {
     for id in ids {
-        if board.init_device(*id).is_err() {
+        if init_device(board, plan, inited, *id).is_err() {
             board.halt();
         }
     }
@@ -216,8 +258,8 @@ fn phase<B: Board>(
 }
 
 #[cfg(feature = "flow-pci")]
-fn pci_init<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
-    if board.init_device(id).is_err() {
+fn pci_init<B: Board>(board: &mut B, plan: &StagePlan, inited: &mut DeviceMask, id: DeviceId) {
+    if init_device(board, plan, inited, id).is_err() {
         board.halt();
     }
     match board.with_pci_root(id, |root, dev_name, drv_name| {
@@ -247,8 +289,8 @@ fn driver_init<B: Board>(board: &mut B, plan: &StagePlan, inited: &mut DeviceMas
             );
             continue;
         }
-        match board.init_device(*id) {
-            Ok(()) => inited.set(*id),
+        match init_device(board, plan, inited, *id) {
+            Ok(()) => {}
             Err(_) if driver_init_is_optional(plan, *id) => {
                 fstart_log::warn!("driver init failed (optional), continuing: id {}", *id);
             }
@@ -273,8 +315,8 @@ fn driver_init_is_optional(plan: &StagePlan, id: DeviceId) -> bool {
 }
 
 #[cfg(feature = "flow-memory-detect")]
-fn memory_detect<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
-    if board.init_device(id).is_err() {
+fn memory_detect<B: Board>(board: &mut B, plan: &StagePlan, inited: &mut DeviceMask, id: DeviceId) {
+    if init_device(board, plan, inited, id).is_err() {
         board.halt();
     }
 
@@ -708,14 +750,14 @@ fn fdt_prepare_override<B: Board>(board: &B, _desc: crate::FdtPrepareDesc) {
 #[cfg(feature = "flow-boot-media")]
 fn boot_media_firmware_provider<B: Board>(
     board: &mut B,
+    plan: &StagePlan,
     inited: &mut DeviceMask,
     provider: DeviceId,
     temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
 ) {
-    if board.init_device(provider).is_err() {
+    if init_device(board, plan, inited, provider).is_err() {
         board.halt();
     }
-    inited.set(provider);
     let Ok(image) = board.firmware_image(provider) else {
         board.halt();
     };
@@ -751,6 +793,7 @@ fn publish_firmware_image_boot_media<B: Board>(
 #[cfg(feature = "flow-boot-media")]
 fn boot_media_platform_boot_source<B: Board>(
     board: &mut B,
+    plan: &StagePlan,
     inited: &mut DeviceMask,
     candidates: &'static [crate::BootMediaCandidate],
     temp_ram_buffer: Option<fstart_types::TempRamBuffer>,
@@ -759,10 +802,9 @@ fn boot_media_platform_boot_source<B: Board>(
         board.halt();
     };
     let id = candidate.device;
-    if board.init_device(id).is_err() {
+    if init_device(board, plan, inited, id).is_err() {
         board.halt();
     }
-    inited.set(id);
     publish_block_boot_media(
         board,
         candidate.device,
@@ -814,8 +856,8 @@ fn acpi_prepare<B: Board>(board: &mut B) {
 }
 
 #[cfg(feature = "flow-acpi")]
-fn acpi_load<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
-    if board.init_device(id).is_err() {
+fn acpi_load<B: Board>(board: &mut B, plan: &StagePlan, inited: &mut DeviceMask, id: DeviceId) {
+    if init_device(board, plan, inited, id).is_err() {
         board.halt();
     }
 
@@ -845,6 +887,7 @@ fn acpi_load<B: Board>(board: &mut B, inited: &mut DeviceMask, id: DeviceId) {
 #[cfg(feature = "flow-fel")]
 fn load_next_stage<B: Board>(
     board: &mut B,
+    plan: &StagePlan,
     inited: &mut DeviceMask,
     candidates: &'static [crate::BootMediaCandidate],
     next_stage: &'static str,
@@ -853,10 +896,9 @@ fn load_next_stage<B: Board>(
         board.halt();
     };
     let id = candidate.device;
-    if board.init_device(id).is_err() {
+    if init_device(board, plan, inited, id).is_err() {
         board.halt();
     }
-    inited.set(id);
     publish_block_boot_media(
         board,
         candidate.device,

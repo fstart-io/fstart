@@ -21,6 +21,8 @@ pub struct StagePlan {
     pub ops: &'static [StageOp],
     /// Devices whose hardware state is known to persist from a previous stage.
     pub persistent_inited: &'static [DeviceId],
+    /// Root-first construction chains for runtime devices.
+    pub device_init: &'static [DeviceInitPlan],
     /// Enabled runtime devices for `DriverInit`, in root-first order.
     pub all_devices: &'static [DeviceId],
     /// Devices that may fail `DriverInit` without halting the stage.
@@ -29,12 +31,22 @@ pub struct StagePlan {
     pub boot_media_gated: &'static [BootMediaCandidate],
 }
 
+/// Root-first construction chain for one target device.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceInitPlan {
+    /// Device whose ready state this chain establishes.
+    pub device: DeviceId,
+    /// Runtime device IDs to construct/init before `device` is considered ready.
+    pub chain: &'static [DeviceId],
+}
+
 impl StagePlan {
     /// Empty plan for tests and safe defaults.
     pub const EMPTY: Self = Self {
         stage_name: "",
         ops: &[],
         persistent_inited: &[],
+        device_init: &[],
         all_devices: &[],
         optional_devices: &[],
         boot_media_gated: &[],

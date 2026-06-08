@@ -14,11 +14,9 @@
 //!    signature is a codegen-private detail free to grow later.
 //! 2. `impl Board` method bodies read state from `&self` — no
 //!    board-level addresses/sizes/strings as method arguments.
-//! 3. Per-device lifecycle logic lives in codegen-private
-//!    `_BoardDevices::init_<name>` helpers rather than in `init_device`
-//!    itself, so a future multi-platform codegen can swap one device
-//!    field to an enum-of-variants without touching the executor-facing
-//!    trait method.
+//! 3. Per-device construction glue lives in codegen-private helpers behind
+//!    `construct_device(id)`. Root-first lifecycle traversal and init policy
+//!    belong to the handwritten executor over `StagePlan` topology data.
 
 use fstart_device_registry::{DriverInstance, Service, ServiceSet};
 use fstart_types::{

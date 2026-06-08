@@ -11,7 +11,7 @@ use super::model::BoardEmitModel;
 ///
 /// Emits a `match id { ... }` where every arm corresponds to an enabled device
 /// providing the `Console` service. The runtime executor calls
-/// `init_device(id)` before this primitive, so matching arms can install the
+/// `construct_device(id)` before this primitive, so matching arms can install the
 /// already-constructed console as the global logger and return static metadata
 /// for runtime-owned readiness logging.
 pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
@@ -26,7 +26,7 @@ pub(super) fn install_logger_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             quote! {
                 #id_lit => {
                     // SAFETY: direct `ConsoleInit` codeflow calls
-                    // `init_device(id)` before `install_logger(id)`, so
+                    // `construct_device(id)` before `install_logger(id)`, so
                     // `self.#field` is `Some`. `fstart_log::init` promotes
                     // the borrow to `'static`; we own the device for the
                     // stage's lifetime, so that is sound.

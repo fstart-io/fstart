@@ -17,7 +17,7 @@ use super::fdt::{
     fdt_prepare_desc_body, return_to_fel_body, stage_load_desc_body, stage_load_postcar_mmio_body,
 };
 use super::init_caps::{dram_init_body, with_pci_root_body};
-use super::lifecycle::init_device_body;
+use super::lifecycle::construct_device_body;
 use super::logger::install_logger_body;
 use super::model::BoardEmitModel;
 use super::mp::mp_init_body;
@@ -111,7 +111,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let park_aps_for_payload_body = park_aps_for_payload_body(platform);
     let disable_boot_media_rom_cache_for_handoff_body =
         disable_boot_media_rom_cache_for_handoff_body(platform);
-    let init_device_body = init_device_body(ctx);
+    let construct_device_body = construct_device_body(ctx);
     let firmware_image_body = firmware_image_body(ctx);
     let ffs_anchor_body = ffs_anchor_body(ctx);
     let with_boot_media_body = with_boot_media_body(ctx);
@@ -121,11 +121,11 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     quote! {
         #[allow(dead_code, unused_variables)]
         impl fstart_stage_runtime::Board for _BoardDevices {
-            fn init_device(
+            fn construct_device(
                 &mut self,
                 id: fstart_types::DeviceId,
             ) -> Result<(), fstart_services::device::DeviceError> {
-                #init_device_body
+                #construct_device_body
             }
 
             unsafe fn install_logger(
