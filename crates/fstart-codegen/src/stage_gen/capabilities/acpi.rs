@@ -84,7 +84,7 @@ pub(in crate::stage_gen) fn generate_acpi_only_device(
     }
 }
 
-/// Generate the platform ACPI config struct literal.
+/// Generate the RON-backed platform ACPI config struct literal.
 ///
 /// Emits `let platform_acpi = ...;` — a stateless binding usable in
 /// either the old `fstart_main` body or the new
@@ -177,91 +177,8 @@ pub(in crate::stage_gen) fn generate_platform_acpi(
                 );
             }
         }
-        AcpiPlatform::X86(x86) => {
-            // `num_cpus = None` is encoded as 0 and resolved by runtime from
-            // the MP state populated by `MpInit`.
-            let num_cpus = Literal::u32_unsuffixed(x86.num_cpus.unwrap_or(0));
-            let lapic_base = Literal::u64_unsuffixed(x86.lapic_base);
-            let sci_irq = Literal::u8_unsuffixed(x86.sci_irq);
-            let pmbase = Literal::u16_unsuffixed(x86.pmbase);
-            let legacy = x86.legacy_devices;
-            let acpi_smi_expr = match x86.acpi_smi {
-                Some(smi) => {
-                    let smi_cmd = Literal::u32_unsuffixed(smi.smi_cmd);
-                    let acpi_enable = Literal::u8_unsuffixed(smi.acpi_enable);
-                    let acpi_disable = Literal::u8_unsuffixed(smi.acpi_disable);
-                    quote! {
-                        Some(fstart_types::acpi::AcpiSmiConfig {
-                            smi_cmd: #smi_cmd,
-                            acpi_enable: #acpi_enable,
-                            acpi_disable: #acpi_disable,
-                        })
-                    }
-                }
-                None => quote! { None },
-            };
-
-            let ioapic_entries: Vec<_> = x86
-                .ioapics
-                .iter()
-                .map(|ioapic| {
-                    let id = Literal::u8_unsuffixed(ioapic.id);
-                    let base = Literal::u64_unsuffixed(ioapic.base);
-                    let gsi = Literal::u32_unsuffixed(ioapic.gsi_base);
-                    quote! {
-                        fstart_acpi::platform::IoApicConfig {
-                            id: #id, base: #base, gsi_base: #gsi,
-                        }
-                    }
-                })
-                .collect();
-
-            let iso_entries: Vec<_> = x86
-                .isos
-                .iter()
-                .map(|iso| {
-                    let bus = Literal::u8_unsuffixed(iso.bus);
-                    let source = Literal::u8_unsuffixed(iso.source);
-                    let gsi = Literal::u32_unsuffixed(iso.gsi);
-                    let flags = Literal::u16_unsuffixed(iso.flags);
-                    quote! {
-                        fstart_acpi::platform::IsoConfig {
-                            bus: #bus, source: #source, gsi: #gsi, flags: #flags,
-                        }
-                    }
-                })
-                .collect();
-
-            let hpet_expr = match x86.hpet_base {
-                Some(base) => {
-                    let base_lit = Literal::u64_unsuffixed(base);
-                    quote! { Some(#base_lit) }
-                }
-                None => quote! { None },
-            };
-
-            let num_ioapics = Literal::usize_unsuffixed(x86.ioapics.len());
-            let num_isos = Literal::usize_unsuffixed(x86.isos.len());
-
-            quote! {
-                static _IOAPICS: [fstart_acpi::platform::IoApicConfig; #num_ioapics] =
-                    [#(#ioapic_entries),*];
-                static _ISOS: [fstart_acpi::platform::IsoConfig; #num_isos] =
-                    [#(#iso_entries),*];
-                let platform_acpi = fstart_acpi::platform::PlatformConfig::X86(
-                    fstart_acpi::platform::X86Config {
-                        num_cpus: if #num_cpus == 0 { fstart_mp::online_cpus() as u32 } else { #num_cpus },
-                        lapic_base: #lapic_base,
-                        ioapics: &_IOAPICS,
-                        isos: &_ISOS,
-                        hpet_base: #hpet_expr,
-                        legacy_devices: #legacy,
-                        sci_irq: #sci_irq,
-                        pmbase: #pmbase,
-                        acpi_smi: #acpi_smi_expr,
-                    }
-                );
-            }
-        }
+        AcpiPlatform::X86 => quote! {
+            compile_error!("internal error: x86 platform ACPI is supplied by a runtime provider");
+        },
     }
 }

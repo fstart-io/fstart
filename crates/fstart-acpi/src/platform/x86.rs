@@ -60,6 +60,17 @@ pub struct X86Config {
     pub acpi_smi: Option<AcpiSmiConfig>,
 }
 
+/// Runtime provider for chipset/platform-owned x86 ACPI topology.
+///
+/// Board RON selects that x86 ACPI tables are needed; the southbridge or
+/// platform driver supplies APIC, HPET, PMBASE, and SCI details from the
+/// hardware model it initializes.
+pub trait X86PlatformProvider {
+    /// Build the x86 platform ACPI configuration using the runtime CPU count
+    /// discovered by MP init.
+    fn x86_platform_config(&self, online_cpus: u32) -> X86Config;
+}
+
 /// I/O APIC configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct IoApicConfig {

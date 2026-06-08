@@ -197,6 +197,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             #[cfg(feature = "stage-flow-acpi")]
             fn acpi_platform_config(
                 &self,
+                x86_online_cpus: Option<u32>,
             ) -> Option<(fstart_acpi::platform::PlatformConfig, bool)> {
                 #acpi_platform_config_body
             }

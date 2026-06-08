@@ -89,6 +89,7 @@ fn generated_adapter_keeps_runtime_flow_out() {
     ];
     let forbidden = [
         "fstart_mp::mp_init",
+        "fstart_mp::online_cpus",
         "FfsReader::read_anchor_volatile",
         "fstart_capabilities::console_ready",
         "fstart_capabilities::sig_verify",
@@ -104,6 +105,12 @@ fn generated_adapter_keeps_runtime_flow_out() {
         "GenericX86CpuDriver",
         "Core2CpuDriver",
         "PineviewCpuDriver",
+        "IoApicConfig",
+        "IsoConfig",
+        "lapic_base:",
+        "hpet_base:",
+        "legacy_devices:",
+        "sci_irq:",
     ];
 
     for source in sources {

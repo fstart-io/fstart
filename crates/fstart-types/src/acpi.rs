@@ -1,8 +1,9 @@
 //! ACPI configuration types for board RON.
 //!
-//! Defines the board-level ACPI configuration: platform table parameters
-//! (MADT, GTDT, FADT) and declarations for ACPI-only devices (hardware
-//! without fstart driver crates).
+//! Defines the board-level ACPI configuration. ARM boards still carry
+//! platform table parameters in RON; x86 platform topology comes from the
+//! chipset/platform driver. ACPI-only devices are declared separately in
+//! `devices[]`.
 //!
 //! Per-driver ACPI fields (e.g., `acpi_name`, `acpi_gsiv`) live in each
 //! driver's own `Config` struct, not here.
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcpiConfig {
-    /// Platform-specific ACPI parameters (MADT, GTDT, FADT).
+    /// Platform ACPI selector/parameters.
     pub platform: AcpiPlatform,
     /// Print ACPICA/acpixtract-compatible hex dumps of generated tables.
     #[serde(default = "default_print_hex")]
@@ -25,11 +26,11 @@ fn default_print_hex() -> bool {
     true
 }
 
-/// Platform-specific ACPI table parameters.
+/// Platform-specific ACPI table selector/parameters.
 ///
-/// Each variant carries the parameters needed for platform-level tables
-/// (MADT, GTDT/HPET, FADT) that describe the interrupt controller,
-/// timers, and power management model.
+/// ARM carries platform-level table parameters in RON. x86 carries only a
+/// selector; its interrupt-controller, timer, and power-management facts are
+/// provided by the chipset/platform driver.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AcpiPlatform {
     /// ARM platform -- GICv3, generic timers, HW-reduced ACPI with PSCI.
@@ -40,10 +41,9 @@ pub enum AcpiPlatform {
 
     /// x86 platform -- Local APIC + I/O APIC, optional HPET.
     ///
-    /// Applicable to any x86/x86_64 system with APIC interrupt
-    /// controller.  Supports both legacy (8259 PIC) and modern
-    /// (HW-reduced) configurations.
-    X86(X86PlatformAcpi),
+    /// The interrupt/timer topology is supplied by the chipset/platform
+    /// driver at runtime; board RON only selects that x86 ACPI is needed.
+    X86,
 }
 
 /// ARM platform ACPI parameters.
@@ -252,57 +252,6 @@ fn default_bus_range() -> (u8, u8) {
 // x86 platform ACPI types
 // ---------------------------------------------------------------------------
 
-/// x86 platform ACPI parameters.
-///
-/// Describes the APIC interrupt controller, optional HPET, and
-/// boot configuration for MADT, HPET, and FADT generation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct X86PlatformAcpi {
-    /// Number of CPUs.
-    ///
-    /// When `None`, the MADT builder enumerates LAPIC IDs at runtime via
-    /// CPUID leaf 0x0B (x2APIC topology). This is essential for
-    /// multi-board images where CPU counts differ per board.
-    #[serde(default)]
-    pub num_cpus: Option<u32>,
-    /// Local APIC base address (usually `0xFEE0_0000`).
-    #[serde(default = "default_lapic_base")]
-    pub lapic_base: u64,
-    /// I/O APIC entries.
-    pub ioapics: heapless::Vec<IoApicEntry, 4>,
-    /// Interrupt Source Override entries (ISA IRQ remapping).
-    ///
-    /// The most common override maps ISA IRQ 0 (PIT timer) to GSI 2.
-    #[serde(default)]
-    pub isos: heapless::Vec<IsoEntry, 16>,
-    /// HPET base address (optional).
-    ///
-    /// If `None`, the platform uses the PM Timer from FADT instead.
-    #[serde(default)]
-    pub hpet_base: Option<u64>,
-    /// Whether legacy devices (8259 PIC, ISA bus) are present.
-    ///
-    /// Controls the MADT `PCAT_COMPAT` flag and FADT legacy fields.
-    #[serde(default)]
-    pub legacy_devices: bool,
-    /// SCI interrupt number (System Control Interrupt for ACPI events).
-    #[serde(default = "default_sci_irq")]
-    pub sci_irq: u8,
-    /// PMBASE I/O port base (chipset-specific, e.g. 0x500 for ICH7).
-    ///
-    /// Used by FADT to derive PM1a_EVT_BLK, PM1a_CNT_BLK, PM_TMR_BLK,
-    /// and GPE0_BLK register addresses.
-    #[serde(default = "default_pmbase")]
-    pub pmbase: u16,
-    /// Optional SMI-based ACPI mode switch advertised in the FADT.
-    ///
-    /// Only set this when the board/stage installs an SMI handler that
-    /// implements these commands.
-    #[serde(default)]
-    pub acpi_smi: Option<AcpiSmiConfig>,
-}
-
 /// SMI command values for ACPI mode switching.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -313,48 +262,4 @@ pub struct AcpiSmiConfig {
     pub acpi_enable: u8,
     /// ACPI disable command value.
     pub acpi_disable: u8,
-}
-
-/// I/O APIC configuration for x86 MADT.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IoApicEntry {
-    /// I/O APIC ID.
-    pub id: u8,
-    /// Memory-mapped base address.
-    pub base: u64,
-    /// Global System Interrupt base (first GSI handled by this I/O APIC).
-    pub gsi_base: u32,
-}
-
-/// Interrupt Source Override (ISO) for x86 MADT.
-///
-/// Maps an ISA interrupt to a different GSI with specified
-/// trigger/polarity settings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IsoEntry {
-    /// Bus source (0 = ISA).
-    #[serde(default)]
-    pub bus: u8,
-    /// Source IRQ (ISA IRQ number).
-    pub source: u8,
-    /// Global System Interrupt target.
-    pub gsi: u32,
-    /// MPS INTI flags (trigger mode and polarity).
-    #[serde(default)]
-    pub flags: u16,
-}
-
-fn default_lapic_base() -> u64 {
-    0xFEE0_0000
-}
-
-fn default_sci_irq() -> u8 {
-    9
-}
-
-/// Default PMBASE for ICH7-era southbridges.
-fn default_pmbase() -> u16 {
-    0x0500
 }

@@ -46,7 +46,7 @@ pub use arm::{ArmConfig, IortConfig, WatchdogConfig};
 
 // Re-export x86 types when available.
 #[cfg(feature = "x86")]
-pub use x86::{HpetConfig, IoApicConfig, IsoConfig, X86Config};
+pub use x86::{HpetConfig, IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
 
 /// Platform-specific ACPI configuration enum.
 ///

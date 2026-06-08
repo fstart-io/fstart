@@ -896,7 +896,12 @@ fn smbios_prepare<B: Board>(board: &B) {
 
 #[cfg(feature = "flow-acpi")]
 fn acpi_prepare<B: Board>(board: &mut B) {
-    let Some((platform, print_hex)) = board.acpi_platform_config() else {
+    #[cfg(feature = "flow-mp")]
+    let x86_online_cpus = Some(fstart_mp::online_cpus() as u32);
+    #[cfg(not(feature = "flow-mp"))]
+    let x86_online_cpus = None;
+
+    let Some((platform, print_hex)) = board.acpi_platform_config(x86_online_cpus) else {
         board.halt();
     };
     let rsdp = fstart_capabilities::acpi::prepare_with_options(

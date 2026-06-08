@@ -325,19 +325,7 @@
 
     acpi: Some((
         print_hex: true,
-        platform: X86((
-            // Platform ACPI constants for the X61 interrupt/timer topology.
-            num_cpus: None,
-            lapic_base: 0xFEE00000,
-            ioapics: [( id: 0, base: 0xFEC00000, gsi_base: 0 )],
-            isos: [
-                ( bus: 0, source: 0, gsi: 2, flags: 0 ),
-                ( bus: 0, source: 9, gsi: 9, flags: 0x000D ),
-            ],
-            hpet_base: 0xFED00000,
-            legacy_devices: true,
-            sci_irq: 9,
-        )),
+        platform: X86,
     )),
 
     smbios: (

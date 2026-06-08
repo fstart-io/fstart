@@ -483,9 +483,12 @@ pub trait Board: Sized {
         image_size: u64,
     ) -> !;
 
-    /// Static platform ACPI descriptor for `AcpiPrepare`, if this stage has one.
+    /// Platform ACPI descriptor for `AcpiPrepare`, if this stage has one.
     #[cfg(feature = "flow-acpi")]
-    fn acpi_platform_config(&self) -> Option<(fstart_acpi::platform::PlatformConfig, bool)>;
+    fn acpi_platform_config(
+        &self,
+        x86_online_cpus: Option<u32>,
+    ) -> Option<(fstart_acpi::platform::PlatformConfig, bool)>;
 
     /// Collect board/device AML and standalone ACPI tables.
     ///
@@ -505,9 +508,9 @@ pub trait Board: Sized {
 
     /// Borrow generic MP services for one executor-owned `MpInit` call.
     ///
-    /// The board adapter constructs concrete CPU-driver values and dispatches
-    /// to the platform SMM provider. The executor owns MP sequencing and calls
-    /// `fstart_mp::mp_init` over these primitive services.
+    /// The board adapter dispatches to the platform SMM provider. The executor
+    /// owns CPU-driver candidate construction, MP sequencing, and the
+    /// `fstart_mp::mp_init` call over these primitive services.
     #[cfg(feature = "flow-mp")]
     fn with_mp_services<R>(
         &mut self,

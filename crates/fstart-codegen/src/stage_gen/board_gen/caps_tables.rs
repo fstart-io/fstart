@@ -65,6 +65,7 @@ pub(super) fn with_memory_detector_body(ctx: &BoardEmitModel<'_>) -> TokenStream
 /// Emit the body of primitive `Board::acpi_platform_config`.
 pub(super) fn acpi_platform_config_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     use crate::stage_gen::capabilities::acpi as cap_acpi;
+    use fstart_types::acpi::AcpiPlatform;
 
     if !ctx.stage.uses_acpi_prepare {
         return quote! { None };
@@ -74,12 +75,36 @@ pub(super) fn acpi_platform_config_body(ctx: &BoardEmitModel<'_>) -> TokenStream
         return quote! { None };
     };
 
-    let platform_block = cap_acpi::generate_platform_acpi(&acpi_cfg.platform);
     let print_hex = acpi_cfg.print_hex;
 
-    quote! {
-        #platform_block
-        Some((platform_acpi, #print_hex))
+    match &acpi_cfg.platform {
+        AcpiPlatform::Arm(_) => {
+            let platform_block = cap_acpi::generate_platform_acpi(&acpi_cfg.platform);
+            quote! {
+                let _ = x86_online_cpus;
+                #platform_block
+                Some((platform_acpi, #print_hex))
+            }
+        }
+        AcpiPlatform::X86 => {
+            let mut providers = ctx
+                .runtime_devices
+                .providers(Service::X86AcpiPlatformProvider);
+            let Some(provider) = providers.next() else {
+                return quote! { None };
+            };
+            let field = format_ident!("{}", provider.name);
+            quote! {
+                let provider = self.#field.as_ref()?;
+                let platform_acpi = fstart_acpi::platform::PlatformConfig::X86(
+                    fstart_acpi::platform::X86PlatformProvider::x86_platform_config(
+                        provider,
+                        x86_online_cpus?,
+                    )
+                );
+                Some((platform_acpi, #print_hex))
+            }
+        }
     }
 }
 

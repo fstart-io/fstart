@@ -1984,6 +1984,7 @@ mod acpi_impl {
     use alloc::vec::Vec;
     use fstart_acpi::aml::{Path, Scope};
     use fstart_acpi::device::AcpiDevice;
+    use fstart_acpi::platform::{IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
     use fstart_acpi::{Aml, AmlSink};
     use fstart_acpi_macros::acpi_dsl;
 
@@ -2008,6 +2009,54 @@ mod acpi_impl {
     /// ICH7 PCI device IDs (LPC bridge variants).
     #[allow(dead_code)]
     const LPC_PIDS: &[u16] = &[0x27B0, 0x27B8, 0x27B9, 0x27BC, 0x27BD];
+
+    const LAPIC_BASE: u64 = 0xFEE0_0000;
+    const IOAPIC_BASE: u64 = 0xFEC0_0000;
+    const HPET_BASE: u64 = 0xFED0_0000;
+    const SCI_IRQ: u8 = 9;
+    const PMBASE: u16 = 0x0500;
+
+    static IOAPICS: [IoApicConfig; 1] = [IoApicConfig {
+        id: 0,
+        base: IOAPIC_BASE,
+        gsi_base: 0,
+    }];
+
+    static ISOS: [IsoConfig; 2] = [
+        // coreboot acpi_create_madt_ioapic_gsi0_default(): ISA IRQ0 -> GSI2,
+        // edge-triggered, active-high.
+        IsoConfig {
+            bus: 0,
+            source: 0,
+            gsi: 2,
+            flags: 0x0005,
+        },
+        // coreboot southbridge/intel/common/pmbase.c ioapic_get_sci_pin():
+        // SCI IRQ9/GSI9, level-triggered, active-high.
+        IsoConfig {
+            bus: 0,
+            source: SCI_IRQ,
+            gsi: SCI_IRQ as u32,
+            flags: 0x000D,
+        },
+    ];
+
+    impl X86PlatformProvider for IntelIch7 {
+        fn x86_platform_config(&self, online_cpus: u32) -> X86Config {
+            let _ = self;
+            X86Config {
+                num_cpus: online_cpus,
+                lapic_base: LAPIC_BASE,
+                ioapics: &IOAPICS,
+                isos: &ISOS,
+                hpet_base: Some(HPET_BASE),
+                legacy_devices: true,
+                sci_irq: SCI_IRQ,
+                pmbase: PMBASE,
+                acpi_smi: None,
+            }
+        }
+    }
 
     impl AcpiDevice for IntelIch7 {
         type Config = IntelIch7Config;

@@ -174,9 +174,22 @@ pub(super) fn validate_capability_ordering(
             Capability::MpInit { .. } => {
                 mp_inited = true;
             }
-            Capability::AcpiPrepare if x86_acpi_uses_mp_cpu_count(config) && !mp_inited => {
+            Capability::AcpiPrepare if x86_acpi_requires_mp(config) && !mp_inited => {
                 return Some(
-                    "AcpiPrepare with x86 num_cpus: None requires MpInit to appear earlier"
+                    "AcpiPrepare with x86 platform ACPI requires MpInit to appear earlier"
+                        .to_string(),
+                );
+            }
+            Capability::AcpiPrepare
+                if x86_acpi_requires_mp(config)
+                    && device_services
+                        .iter()
+                        .filter(|services| services.contains(Service::X86AcpiPlatformProvider))
+                        .count()
+                        != 1 =>
+            {
+                return Some(
+                    "AcpiPrepare with x86 platform ACPI requires exactly one device that provides X86AcpiPlatformProvider"
                         .to_string(),
                 );
             }
@@ -646,9 +659,9 @@ fn require_device_service(
     ))
 }
 
-fn x86_acpi_uses_mp_cpu_count(config: &BoardConfig) -> bool {
+fn x86_acpi_requires_mp(config: &BoardConfig) -> bool {
     matches!(
         config.acpi.as_ref().map(|acpi| &acpi.platform),
-        Some(fstart_types::acpi::AcpiPlatform::X86(x86)) if x86.num_cpus.is_none()
+        Some(fstart_types::acpi::AcpiPlatform::X86)
     )
 }
