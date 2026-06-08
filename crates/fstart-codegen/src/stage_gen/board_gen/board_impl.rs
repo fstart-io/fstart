@@ -7,7 +7,8 @@ use fstart_device_registry::Service;
 use fstart_types::Platform;
 
 use super::boot_media::{
-    active_firmware_window_body, with_block_device_body, with_boot_media_body,
+    active_firmware_image_range_body, active_firmware_window_body, with_block_device_body,
+    with_boot_media_body,
 };
 use super::caps_tables::{
     acpi_platform_config_body, collect_acpi_tables_body, smbios_desc_body,
@@ -117,6 +118,7 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let with_boot_media_body = with_boot_media_body(ctx);
     let with_block_device_body = with_block_device_body(ctx);
     let active_firmware_window_body = active_firmware_window_body();
+    let active_firmware_image_range_body = active_firmware_image_range_body();
 
     quote! {
         #[allow(dead_code, unused_variables)]
@@ -218,9 +220,15 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             fn with_mp_services<R>(
                 &mut self,
                 smm: bool,
+                microcode_blob: Option<&'static [u8]>,
                 run: impl FnOnce(fstart_stage_runtime::MpServices<'_>) -> R,
             ) -> Result<R, fstart_stage_runtime::RuntimeError> {
                 #mp_init_body
+            }
+
+            #[cfg(feature = "stage-flow-mp")]
+            fn active_firmware_image_range(&self, offset: u64, size: u64) -> Option<u64> {
+                #active_firmware_image_range_body
             }
 
             fn phase_init(

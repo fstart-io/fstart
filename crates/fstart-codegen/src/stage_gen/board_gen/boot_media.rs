@@ -7,25 +7,6 @@ use fstart_device_registry::Service;
 
 use super::model::BoardEmitModel;
 
-/// Emit the volatile FSTART_ANCHOR byte-slice binding used by FFS operations.
-pub(super) fn anchor_bytes_stmt() -> TokenStream {
-    quote! {
-        // SAFETY: FSTART_ANCHOR is emitted by
-        // `generate_anchor_static` in this same stage with proper
-        // alignment (`#[link_section = ".fstart.anchor"]` + `#[used]`)
-        // and is the size of `AnchorBlock`.  The FFS builder may
-        // patch its contents post-link, so downstream
-        // `FfsReader::read_anchor_volatile` reads it through
-        // `ptr::read_volatile`.
-        let _anchor_bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(
-                &FSTART_ANCHOR as *const fstart_types::ffs::AnchorBlock as *const u8,
-                core::mem::size_of::<fstart_types::ffs::AnchorBlock>(),
-            )
-        };
-    }
-}
-
 /// Emit the body of primitive `Board::with_block_device`.
 pub(super) fn with_block_device_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     let arms = ctx
@@ -58,6 +39,27 @@ pub(super) fn active_firmware_window_body() -> TokenStream {
         match self._boot_media {
             fstart_stage_runtime::BootMediaState::FirmwareImage { image, .. } => {
                 image.contiguous_window().map(|window| (window.cpu_base, window.size))
+            }
+            fstart_stage_runtime::BootMediaState::None
+            | fstart_stage_runtime::BootMediaState::FirmwareImageBlock { .. } => None,
+        }
+    }
+}
+
+/// Emit the body of primitive `Board::active_firmware_image_range`.
+pub(super) fn active_firmware_image_range_body() -> TokenStream {
+    quote! {
+        match self._boot_media {
+            fstart_stage_runtime::BootMediaState::FirmwareImage { image, .. } => {
+                let end = offset.checked_add(size)?;
+                let first = image.translate(offset)?;
+                if size != 0 {
+                    let last = image.translate(end.checked_sub(1)?)?;
+                    if last.checked_sub(first)? != size - 1 {
+                        return None;
+                    }
+                }
+                Some(first)
             }
             fstart_stage_runtime::BootMediaState::None
             | fstart_stage_runtime::BootMediaState::FirmwareImageBlock { .. } => None,

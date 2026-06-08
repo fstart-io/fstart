@@ -37,7 +37,7 @@ flow-fdt = [
   "fstart-capabilities/fdt",
 ]
 flow-fdt-ffs = ["flow-fdt", "fstart-capabilities/ffs"]
-flow-mp = ["stage-executor", "dep:fstart-mp"]
+flow-mp = ["stage-executor", "dep:fstart-mp", "dep:fstart-ffs"]
 flow-acpi = [
   "stage-executor",
   "dep:fstart-acpi",
@@ -60,6 +60,7 @@ fstart-types = { workspace = true }
 fstart-services = { workspace = true }
 fstart-log = { workspace = true }
 fstart-mp = { workspace = true, optional = true }
+fstart-ffs = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, optional = true }
 fstart-capabilities = { workspace = true, optional = true }
 fstart-crabefi = { workspace = true, optional = true }

@@ -6,7 +6,6 @@ use quote::{format_ident, quote};
 use fstart_device_registry::Service;
 use fstart_types::Capability;
 
-use super::boot_media::anchor_bytes_stmt;
 use super::model::BoardEmitModel;
 
 /// Emit the body of `Board::with_mp_services`.
@@ -17,7 +16,7 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     });
     let Some(cpu_model) = mp_cap else {
         return quote! {
-            let _ = (smm, run);
+            let _ = (smm, microcode_blob, run);
             Err(fstart_stage_runtime::RuntimeError::Failed)
         };
     };
@@ -53,50 +52,6 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
             .map(|device| device.index)
     };
 
-    let mp_microcode_enabled = matches!(
-        ctx.config.microcode.as_ref(),
-        Some(fstart_types::board::MicrocodeConfig::Intel(config)) if config.mp
-    );
-    let microcode_expr = if mp_microcode_enabled {
-        let anchor_stmt = anchor_bytes_stmt();
-        quote! {
-            {
-                #anchor_stmt
-                let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(_anchor_bytes) }
-                    .ok();
-                anchor.and_then(|anchor| {
-                    if anchor.microcode_offset == 0 || anchor.microcode_size == 0 {
-                        return None;
-                    }
-                    let offset = anchor.microcode_offset as u64;
-                    let size = anchor.microcode_size as u64;
-                    let addr = match self._boot_media {
-                        fstart_stage_runtime::BootMediaState::FirmwareImage { image, temp_ram_buffer: _ } => {
-                            let end = offset.checked_add(size)?;
-                            let first = image.translate(offset)?;
-                            if size != 0 {
-                                let last = image.translate(end.checked_sub(1)?)?;
-                                if last.checked_sub(first)? != size - 1 {
-                                    return None;
-                                }
-                            }
-                            first
-                        }
-                        fstart_stage_runtime::BootMediaState::None
-                        | fstart_stage_runtime::BootMediaState::FirmwareImageBlock { .. } => return None,
-                    };
-                    // SAFETY: xtask patched the anchor with a range inside the active
-                    // boot-media image. The checks above verify the selected memory
-                    // mapping contains that byte range contiguously.
-                    Some(unsafe {
-                        core::slice::from_raw_parts(addr as *const u8, anchor.microcode_size as usize)
-                    })
-                })
-            }
-        }
-    } else {
-        quote! { None }
-    };
 
     let smm_ops_expr = if let Some(idx) = smm_provider {
         let field = format_ident!("{}", ctx.devices[idx].name.as_str());
@@ -183,7 +138,6 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
     quote! {
         let smm_ops: Option<&dyn fstart_mp::SmmOps> = #smm_ops_expr;
         let smm_image: Option<&[u8]> = #smm_image_expr;
-        let microcode_blob: Option<&'static [u8]> = #microcode_expr;
         let _ = microcode_blob;
         #cpu_driver_body
     }

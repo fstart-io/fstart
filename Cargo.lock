@@ -1286,6 +1286,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-capabilities",
  "fstart-crabefi",
+ "fstart-ffs",
  "fstart-log",
  "fstart-mp",
  "fstart-services",

@@ -514,10 +514,18 @@ pub trait Board: Sized {
     fn with_mp_services<R>(
         &mut self,
         smm: bool,
+        microcode_blob: Option<&'static [u8]>,
         run: impl FnOnce(MpServices<'_>) -> R,
     ) -> Result<R, RuntimeError> {
-        let _ = (smm, run);
+        let _ = (smm, microcode_blob, run);
         Err(RuntimeError::Failed)
+    }
+
+    /// Translate an active memory-mapped firmware-image byte range to a
+    /// contiguous CPU-visible address.
+    #[cfg(feature = "flow-mp")]
+    fn active_firmware_image_range(&self, _offset: u64, _size: u64) -> Option<u64> {
+        None
     }
 
     /// Run one device-local lifecycle phase hook.

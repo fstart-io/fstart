@@ -684,7 +684,8 @@ fn stage_load<B: Board>(board: &B, next_stage: &'static str) -> ! {
 
 #[cfg(feature = "flow-mp")]
 fn mp_init<B: Board>(board: &mut B, num_cpus: u16, smm: bool) {
-    let result = board.with_mp_services(smm, |services| {
+    let microcode_blob = mp_microcode_blob(board);
+    let result = board.with_mp_services(smm, microcode_blob, |services| {
         let config = fstart_mp::MpConfig {
             cpu_drivers: services.cpu_drivers,
             smm: services.smm_ops,
@@ -697,6 +698,24 @@ fn mp_init<B: Board>(board: &mut B, num_cpus: u16, smm: bool) {
         Ok(Ok(_)) => {}
         Ok(Err(_)) | Err(_) => board.halt(),
     }
+}
+
+#[cfg(feature = "flow-mp")]
+fn mp_microcode_blob<B: Board>(board: &B) -> Option<&'static [u8]> {
+    let anchor_bytes = board.ffs_anchor()?;
+    // SAFETY: `ffs_anchor()` returns the generated anchor bytes for this stage;
+    // the FFS builder may patch them post-link, so read through volatile.
+    let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }.ok()?;
+    if anchor.microcode_offset == 0 || anchor.microcode_size == 0 {
+        return None;
+    }
+    let offset = anchor.microcode_offset as u64;
+    let size = anchor.microcode_size as u64;
+    let addr = board.active_firmware_image_range(offset, size)?;
+    // SAFETY: xtask patched the anchor with a range inside the active
+    // boot-media image. The board primitive verifies the selected memory
+    // mapping contains that byte range contiguously.
+    Some(unsafe { core::slice::from_raw_parts(addr as *const u8, anchor.microcode_size as usize) })
 }
 
 #[cfg(feature = "flow-fdt")]
