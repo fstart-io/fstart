@@ -20,11 +20,11 @@ pub(super) fn emit_adapter_struct(ctx: &BoardEmitModel<'_>) -> TokenStream {
         ///
         /// Carries one `Option<Driver>` per enabled device plus the
         /// bookkeeping state [`Board`](fstart_stage_runtime::Board)
-        /// trampolines need ([`DeviceMask`] for init tracking,
+        /// primitives need ([`DeviceMask`] for adapter-local construction tracking,
         /// [`BootMediaState`] for the current boot medium, static
         /// FDT data, and the previous-stage handoff).  Implements
-        /// [`fstart_stage_runtime::Board`] so generated direct
-        /// codeflow can drive typed lifecycle/capability trampolines.
+        /// [`fstart_stage_runtime::Board`] so handwritten runtime flow can use
+        /// typed construction, service, descriptor, and platform primitives.
         ///
         /// [`DeviceMask`]: fstart_stage_runtime::DeviceMask
         /// [`BootMediaState`]: fstart_stage_runtime::BootMediaState
@@ -39,8 +39,7 @@ pub(super) fn emit_adapter_struct(ctx: &BoardEmitModel<'_>) -> TokenStream {
             _dram_size_static: u64,
             _handoff: Option<fstart_types::handoff::StageHandoff>,
             /// RSDP physical address, populated by `acpi_load` and
-            /// read by future `acpi_prepare` / `payload_load`
-            /// trampolines.  `0` means "not set yet"; boards
+            /// read by later table/payload primitives. `0` means "not set yet"; boards
             /// without `AcpiLoad` leave it at `0` forever.
             _acpi_rsdp_addr: u64,
             /// eGON header SRAM base address for Allwinner sunxi

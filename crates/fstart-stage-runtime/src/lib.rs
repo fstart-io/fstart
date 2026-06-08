@@ -224,7 +224,7 @@ pub struct EgonNextStage {
 ///
 /// - [`FirmwareImageBlock`](Self::FirmwareImageBlock): a firmware image whose
 ///   backing storage is reached through a Rust platform-selected block device
-///   (for example sunxi eGON boot-source selection). The generated trampolines
+///   (for example sunxi eGON boot-source selection). The generated primitives
 ///   match on the device id to pick the right `self.<name>.as_ref().unwrap()`
 ///   and wrap it in [`fstart_services::boot_media::BlockDeviceMedia`].
 ///

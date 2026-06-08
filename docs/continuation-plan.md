@@ -681,11 +681,12 @@ creation path:
 
 `crates/fstart-stage-runtime/` — `#![no_std]` shared support types:
 
-- **`Board` trait**: primitive `init_device`, `install_logger`, boot-media
-  selection, remaining capability trampolines, and platform primitives.
+- **`Board` trait**: primitive `construct_device`, logger install metadata,
+  boot-media selection/state primitives, service borrows, and platform
+  primitives.
 - **`DeviceMask`** — 256-bit bitset over `DeviceId` for init tracking.
 - **`BootMediaState`** — enum tracking the current boot medium (None /
-  FirmwareImage / Block) so trampolines can reconstruct the concrete
+  FirmwareImage / Block) so board primitives can reconstruct the concrete
   `impl BootMedia`.
 - **`BootMediaCandidate`** — static candidate rows for Rust platform
   boot-source metadata and `LoadNextStage`.
@@ -700,20 +701,21 @@ creation path:
 - Seeds persistent init state from prior stages' `ClockInit` / `DramInit`.
 - Emits one `StageOp` fact per capability in board RON order.
 - Emits boot-media candidate tables with `media_ids` for auto-select.
-- Emits DriverInit device tables, optional-device tables, and boot-media gated
-  candidate tables.
+- Emits root-first device-init chain tables, DriverInit device tables,
+  optional-device tables, and boot-media gated candidate tables.
 
 **`board_gen.rs`** emits the complete board adapter:
 - `struct _BoardDevices` — `Option<Driver>` fields + bookkeeping
   (`_inited`, `_boot_media`, `_dtb_dst_addr`, `_bootargs`, `_dram_base`,
   `_dram_size_static`, `_handoff`, `_acpi_rsdp_addr`, `_egon_sram_base`).
 - `impl _BoardDevices { const fn new(handoff) -> Self }` — driver fields `None`, scalar bookkeeping zeroed, previous-stage handoff stored.
-- `impl Board for _BoardDevices` — methods with real bodies:
-  - `init_device`: per-device `match id` with ancestor-chain walking
-    (root-first, bus-device `new_on_bus`).
-  - `install_logger`: per-Console-device match with `fstart_log::init`.
-  - Capability trampolines: read board state from `&self` fields and
-    delegate to `fstart_capabilities::*`.
+- `impl Board for _BoardDevices` — primitive methods with real bodies:
+  - `construct_device`: per-device `match id` for one concrete field/config
+    pair; root-first traversal lives in runtime over `StagePlan` chains.
+  - `install_logger`: per-Console-device match with `fstart_log::init`,
+    returning metadata for runtime-owned console-ready logging.
+  - Service/descriptor primitives: read board state from `&self` fields and
+    dispatch to concrete providers without owning capability sequencing.
   - Unreachable bodies for methods the stage cannot call.
 
 #### What was deleted

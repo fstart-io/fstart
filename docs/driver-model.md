@@ -453,7 +453,7 @@ One `Option<Driver>` field per enabled device, plus bookkeeping state:
 // Generated for qemu-riscv64:
 struct _BoardDevices {
     uart0: Option<Ns16550>,
-    // Bookkeeping (populated by new(), updated by trampolines):
+    // Bookkeeping (populated by new(), updated by board primitives):
     _inited: fstart_stage_runtime::DeviceMask,
     _boot_media: fstart_stage_runtime::BootMediaState,
     _dtb_dst_addr: u64,
@@ -466,9 +466,9 @@ struct _BoardDevices {
 }
 ```
 
-All device fields are `Option<T>` because `init_device(id)` is the sole
-construction site — devices are lazily materialised when the stage executor
-asks for them.
+All device fields are `Option<T>` because `construct_device(id)` is the sole
+concrete construction site — devices are lazily materialised when the stage
+executor's root-first lifecycle helper asks for them.
 
 ### impl Board for _BoardDevices
 
@@ -478,7 +478,7 @@ via a `match id { ... }` on `DeviceId`:
 
 ```rust
 impl fstart_stage_runtime::Board for _BoardDevices {
-    fn init_device(&mut self, id: DeviceId) -> Result<(), DeviceError> {
+    fn construct_device(&mut self, id: DeviceId) -> Result<(), DeviceError> {
         match id {
             0 => {
                 if self._inited.contains(0) { return Ok(()); }
@@ -493,26 +493,27 @@ impl fstart_stage_runtime::Board for _BoardDevices {
         }
     }
 
-    unsafe fn install_logger(&self, id: DeviceId) {
+    unsafe fn install_logger(&self, id: DeviceId) -> Result<ConsoleReady, RuntimeError> {
         match id {
             0 => {
                 fstart_log::init(self.uart0.as_ref().unwrap_or_else(|| halt()));
-                fstart_capabilities::console_ready("uart0", "ns16550");
+                Ok(ConsoleReady { device_name: "uart0", driver_name: "ns16550" })
             }
-            _ => fstart_platform::halt(),
+            _ => Err(RuntimeError::UnknownDevice),
         }
     }
 
-    fn sig_verify(&self) { /* reads &FSTART_ANCHOR + self._boot_media */ }
-    fn fdt_prepare(&self) { /* reads self._dtb_dst_addr, self._bootargs, etc. */ }
-    fn payload_load(&self) -> ! { /* loads kernel from FFS, jumps via platform */ }
-    // ... 15 more methods
+    fn fdt_prepare_desc(&self) -> Option<FdtPrepareDesc> { /* descriptor data */ }
+    fn payload_load_desc(&self) -> Option<PayloadLoadDesc> { /* descriptor data */ }
+    fn with_boot_media<R>(&self, /* ... */) -> R { /* primitive dispatch */ }
+    // ... service/descriptor/platform primitive methods
     fn halt(&self) -> ! { fstart_platform::halt() }
 }
 ```
 
-Capability trampolines read board-level data from `&self` fields — no
-constants as method arguments (multi-platform invariant).
+Board primitives read board-level data from `&self` fields — no constants as
+method arguments (multi-platform invariant). Runtime-owned capability flow
+consumes these primitives.
 
 ### Init Sequence (StagePlan executor)
 
@@ -815,14 +816,15 @@ redundant — if runtime driver selection is needed, it lives inside
 - [x] ~~Generate `ConsoleDevice` / `I2cBusDevice` / etc. enums.~~ → deleted
 - [x] ~~Implement the service traits on the generated enums.~~ → deleted
 
-### Phase 6: Direct Stage Codeflow + Board Adapter ✓
+### Phase 6: StagePlan Executor + Board Adapter ✓
 
 - [x] Create `fstart-stage-runtime` crate with `Board` trait, `DeviceMask`,
-      `BootMediaState`, and `BootMediaCandidate`.
+      `BootMediaState`, `BootMediaCandidate`, and `DeviceInitPlan`.
 - [x] `board_gen.rs`: emit `struct _BoardDevices` + `impl Board for _BoardDevices`
-      with lifecycle methods, capability trampolines, and platform primitives.
-- [x] Generate direct `fstart_main` codeflow from the ordered stage
-      capabilities. This is the only stage-creation path.
+      with one-device construction glue, service/descriptor primitives, and
+      platform primitives.
+- [x] Generate data-only `STAGE_PLAN` facts plus the small `fstart_main` shim
+      into the handwritten executor. This is the only stage-creation path.
 - [x] Delete old codegen: `Devices`, `StageContext`, `flexible.rs`,
       `ensure_device_ready`, `walk_to_real_parent`, `make_prelude`,
       `generate_driver_init`, `generate_boot_media_auto_device`.

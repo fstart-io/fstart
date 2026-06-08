@@ -33,9 +33,15 @@ The stage entry path now follows the target shape:
   `stage-flow-ffs`, `stage-flow-fdt`, `stage-flow-mp`, `stage-flow-acpi`,
   `stage-flow-smbios`, `stage-flow-fel`).
 - `xtask` derives those flow features from each stage's capability list.
-- `DriverInit` policy now lives in the handwritten executor: codegen emits
-  device ID tables, optional-device tables, and boot-media gated candidate
-  tables; generated board code only provides `init_device(id)`.
+- Lifecycle/init policy now lives in the handwritten executor: codegen emits
+  root-first device-init chain tables, device ID tables, optional-device
+  tables, and boot-media gated candidate tables; generated board code only
+  provides `construct_device(id)` for one concrete device.
+- Console-ready logging now lives in the executor: generated board code only
+  installs the selected logger and returns static console metadata.
+- MP microcode anchor lookup now lives in the executor: generated board code
+  only translates a selected firmware-image byte range into a contiguous
+  CPU-visible address.
 
 The remaining transition is to narrow `Board`: the executor currently calls
 high-level `Board` methods for several capability families. Those methods must
@@ -85,6 +91,7 @@ pub struct StagePlan {
     pub stage_name: &'static str,
     pub ops: &'static [StageOp],
     pub persistent_inited: &'static [DeviceId],
+    pub device_init: &'static [DeviceInitPlan],
     pub all_devices: &'static [DeviceId],
     pub optional_devices: &'static [DeviceId],
     pub boot_media_gated: &'static [BootMediaCandidate],
@@ -137,9 +144,11 @@ firmware-image setup now uses primitive `set_boot_media_state(...)` plus
 `ffs_anchor()` for memory-mapped FFS context publication. `MemoryInit` and
 `SigVerify` are now handwritten runtime flow: the board adapter exposes
 primitive `with_boot_media(...)` dispatch instead of calling
-`fstart_capabilities::sig_verify` itself. Phase sequencing is also runtime-owned:
-the adapter exposes a single primitive `(StagePhase, DeviceId)` dispatcher
-instead of per-phase list trampolines such as `pre_console_init(ids)`.
+`fstart_capabilities::sig_verify` itself. Lifecycle traversal and phase
+sequencing are also runtime-owned: `StagePlan` carries root-first device-init
+chains, while the adapter exposes only one-device construction glue and a
+single primitive `(StagePhase, DeviceId)` dispatcher instead of per-phase list
+trampolines such as `pre_console_init(ids)`.
 `SmBiosPrepare` is runtime-owned too: generated code now emits only an
 `SmbiosDesc` primitive while the executor calls `smbios::prepare`. `AcpiLoad`
 now follows the same boundary: the adapter exposes primitive provider borrowing
@@ -150,18 +159,21 @@ only platform descriptors plus device table collection; runtime owns ACPI table
 allocation and the `prepare_with_options` call. `FdtPrepare` now exposes a
 primitive descriptor while runtime owns platform FDT patching and override-DTB
 FFS loading. `PayloadLoad` now exposes a primitive payload descriptor while
-runtime owns FFS/FIT loading and Linux handoff; the UEFI/CrabEFI branch remains
-as a narrower temporary board method until its platform-service primitives are
-split out. `StageLoad`, `LoadNextStage`, and `PciInit` now use primitive
-descriptors/service borrowing while runtime owns FFS stage loading, eGON
-next-stage read/handoff sequencing, and PCI root init policy.
+runtime owns FFS/FIT loading, Linux handoff, and CrabEFI launch sequencing; the
+UEFI path still uses UEFI-shaped service-borrow/platform endpoint primitives
+until those are split into more generic platform/service accessors. `StageLoad`,
+`LoadNextStage`, and `PciInit` now use primitive descriptors/service borrowing
+while runtime owns FFS stage loading, eGON next-stage read/handoff sequencing,
+and PCI root init policy. MP now performs microcode anchor lookup in runtime;
+generated `with_mp_services` still owns CPU-driver kind dispatch and SMM
+provider selection.
 
 A likely primitive shape is closure-based service borrowing, avoiding `alloc`
 while allowing handwritten runtime code to stay generic:
 
 ```rust
 pub trait Board: Sized {
-    fn init_device(&mut self, id: DeviceId) -> Result<(), DeviceError>;
+    fn construct_device(&mut self, id: DeviceId) -> Result<(), DeviceError>;
 
     fn with_console<R, F>(&mut self, id: DeviceId, f: F) -> Result<R, RuntimeError>
     where
@@ -215,6 +227,10 @@ Add source and API-shape tests that enforce:
 
 ### Phase 2 — move lifecycle and phases into handwritten Rust
 
+Status: root-first traversal, DriverInit skip/gated policy, phase loops, and
+console-ready logging have moved into `fstart-stage-runtime`. Generated code
+retains one-device construction and per-service dispatch glue.
+
 Move these algorithms out of generated board methods:
 
 - root-first parent traversal;
@@ -255,12 +271,16 @@ accessors.
 
 ### Phase 5 — move MP/SMM flow into handwritten Rust
 
+Status: runtime owns the `fstart_mp::mp_init` call/error policy and microcode
+anchor lookup. Generated `with_mp_services` still owns CPU-driver kind dispatch,
+SMM provider selection, and concrete CPU-driver construction.
+
 Handwritten Rust should own:
 
 - CPU kind dispatch;
 - SMM image selection;
 - SMM provider lookup/use through primitive accessors;
-- microcode anchor lookup;
+- ~~microcode anchor lookup~~;
 - `fstart_mp::mp_init` call and error handling.
 
 Codegen should emit only `MpPlan` data and the SMM-provider `DeviceId`.
@@ -286,7 +306,7 @@ Exit criteria:
 
 - `crates/fstart-codegen/src/stage_gen/board_gen/board_impl.rs`
 - `crates/fstart-codegen/src/stage_gen/board_gen/mp.rs`
-- `crates/fstart-codegen/src/stage_gen/board_gen/lifecycle.rs`
+- `crates/fstart-codegen/src/stage_gen/board_gen/lifecycle.rs` (construction glue only; traversal moved)
 - `crates/fstart-codegen/src/stage_gen/board_gen/boot_media.rs`
 - `crates/fstart-codegen/src/stage_gen/board_gen/payload.rs`
 - `crates/fstart-codegen/src/stage_gen/board_gen/payload_uefi.rs`
