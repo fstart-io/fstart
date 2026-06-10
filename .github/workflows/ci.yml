@@ -20,7 +20,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -28,7 +28,7 @@ jobs:
           components: rust-src, llvm-tools, clippy, rustfmt
           targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi, x86_64-unknown-none
 
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -77,7 +77,7 @@ jobs:
     outputs:
       boards: ${{ steps.boards.outputs.boards }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Discover boards
         id: boards
@@ -106,7 +106,7 @@ jobs:
       matrix:
         board: ${{ fromJson(needs.discover-boards.outputs.boards) }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           submodules: true
 
@@ -121,7 +121,7 @@ jobs:
           TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
           echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
 
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: release-${{ matrix.board }}
 
@@ -151,7 +151,7 @@ jobs:
   build-payloads:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install cross-compilers and build tools
         run: |
@@ -165,7 +165,7 @@ jobs:
 
       - name: Cache payloads
         id: cache-payloads
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: payloads
           key: payloads-opensbi${{ env.OPENSBI_VERSION }}-tfa${{ env.TFA_VERSION }}-linux${{ env.LINUX_VERSION }}-${{ hashFiles('ci/kernel-*.config', 'ci/build-payloads.sh') }}
@@ -174,7 +174,7 @@ jobs:
         if: steps.cache-payloads.outputs.cache-hit != 'true'
         run: bash ci/build-payloads.sh payloads
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: payloads
           path: payloads/
@@ -194,7 +194,7 @@ jobs:
           - board: qemu-aarch64-multi
             expect: "console ready"
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -207,11 +207,11 @@ jobs:
           TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
           echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
 
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Cache QEMU packages
         id: cache-qemu
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/qemu-debs
           key: qemu-debs-${{ runner.os }}-v1
@@ -255,20 +255,20 @@ jobs:
   build-boot-assets-x86_64:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
       - name: Restore cached boot assets
         id: cache-boot-assets
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: boot-assets/x86_64
           key: boot-assets-x86_64-${{ hashFiles('ci/build-boot-assets.sh') }}
 
       - name: Set up Go (for u-root)
         if: steps.cache-boot-assets.outputs.cache-hit != 'true'
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: stable
 
@@ -284,7 +284,7 @@ jobs:
         if: steps.cache-boot-assets.outputs.cache-hit != 'true'
         run: bash ci/build-boot-assets.sh --arch x86_64
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: boot-assets-x86_64
           path: boot-assets/x86_64/
@@ -297,7 +297,7 @@ jobs:
     needs: [build-boot-assets-x86_64]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
@@ -312,7 +312,7 @@ jobs:
           TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
           echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
 
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: qemu-crabefi-x86_64
 
@@ -324,7 +324,7 @@ jobs:
             qemu-system-x86 qemu-system-data ipxe-qemu \
             mtools dosfstools gdisk
 
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: boot-assets-x86_64
           path: boot-assets/x86_64
@@ -423,7 +423,7 @@ jobs:
             kernel: payloads/Image-riscv64
             memory: 1G
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -436,11 +436,11 @@ jobs:
           TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
           echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
 
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Cache QEMU packages
         id: cache-qemu
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/qemu-debs
           key: qemu-debs-${{ runner.os }}-v1
@@ -465,7 +465,7 @@ jobs:
               qemu-system-data ipxe-qemu
           fi
 
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: payloads
           path: payloads
