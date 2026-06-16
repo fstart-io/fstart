@@ -23,7 +23,7 @@ mod rcomplut;
 mod spd;
 mod timing;
 
-use crate::regs::{mchbar, MchBar};
+use crate::regs::{ich7, mchbar, MchBar, Rcba};
 use fstart_ecam as ecam;
 use fstart_services::ServiceError;
 use fstart_spd::DimmInfo;
@@ -43,10 +43,40 @@ pub const DIMM_TYPE_SODIMM: u8 = 2;
 pub const PLATFORM_DESKTOP: u8 = 0;
 pub const PLATFORM_MOBILE: u8 = 1;
 
-#[allow(dead_code)]
-const BOOT_PATH_NORMAL: u8 = 0;
-const BOOT_PATH_RESET: u8 = 1;
-const BOOT_PATH_RESUME: u8 = 2;
+pub(crate) const BOOT_PATH_NORMAL: u8 = 0;
+pub(crate) const BOOT_PATH_RESET: u8 = 1;
+pub(crate) const BOOT_PATH_RESUME: u8 = 2;
+
+const PINEVIEW_TSC_HZ: u64 = 1_666_666_667;
+const RCBA_HPTC: u32 = 0x3404;
+
+/// Delay for Pineview raminit timing sequences.
+pub(super) fn udelay(us: u32) {
+    fstart_arch_x86::udelay_tsc(us, PINEVIEW_TSC_HZ);
+}
+
+fn enable_hpet() -> Result<(), ServiceError> {
+    let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+    let rcba_base = lpc.read32(ich7::RCBA_REG) & 0xffff_c000;
+    if rcba_base == 0 {
+        fstart_log::error!("raminit: RCBA is not enabled, cannot enable HPET");
+        return Err(ServiceError::HardwareError);
+    }
+
+    let rcba = Rcba::new(rcba_base as usize);
+    rcba.write32(RCBA_HPTC, (rcba.read32(RCBA_HPTC) & !0x83) | (1 << 7));
+    let _ = rcba.read32(RCBA_HPTC);
+
+    // SAFETY: HPET MMIO is enabled at the fixed ICH7 HPET base above. Setting
+    // bit 0 in the main configuration register starts the counter for raminit
+    // microsecond delays, matching coreboot `enable_hpet()`.
+    unsafe {
+        let cfg = fstart_mmio::read32((mchbar::HPET_BASE as usize + 0x10) as *const u32);
+        fstart_mmio::write32((mchbar::HPET_BASE as usize + 0x10) as *mut u32, cfg | 1);
+    }
+
+    Ok(())
+}
 
 // ===================================================================
 // Sysinfo — raminit state
@@ -182,13 +212,13 @@ pub fn sdram_initialize(
     spd::read_spds(&mut si, smbus)?;
 
     // 2. Detect RAM speed (common frequency).
-    timing::detect_ram_speed(&mut si, mch);
+    timing::detect_ram_speed(&mut si, mch)?;
 
     // 3. Detect smallest common timings.
-    timing::detect_smallest_params(&mut si);
+    timing::detect_smallest_params(&mut si)?;
 
     // 4. Enable HPET.
-    // (Handled by platform code, not raminit.)
+    enable_hpet()?;
 
     // 5. Clock crossing.
     mch.setbits32(mchbar::CPCTL, 1 << 15);
@@ -210,7 +240,7 @@ pub fn sdram_initialize(
 
     // 10. RCOMP (skip on reset path).
     if si.boot_path != BOOT_PATH_RESET {
-        phy::rcomp(&si, mch);
+        phy::rcomp(&si, mch)?;
     }
 
     // 11. ODT.
@@ -265,11 +295,11 @@ pub fn sdram_initialize(
     mmap::sdram_dradrb(&mut si, mch);
 
     // 21. Receive enable calibration.
-    phy::sdram_rcven(&mut si, mch);
+    phy::sdram_rcven(&mut si, mch)?;
 
-    // Coreboot now runs additional Vref margining here for desktop
-    // DDR2 UDIMMs. fstart intentionally skips it until the temporary
-    // cache/MTRR dance used by that routine is ported safely.
+    if si.spd_type == fstart_spd::DDR2 && !si.is_sodimm() && si.boot_path != BOOT_PATH_RESUME {
+        phy::sdram_vref_margining(mch)?;
+    }
 
     // 22. New tRD.
     phy::sdram_new_trd(&si, mch);

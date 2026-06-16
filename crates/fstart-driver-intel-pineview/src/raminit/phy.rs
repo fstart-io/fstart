@@ -10,18 +10,7 @@
 use super::{PllParam, SysInfo};
 use crate::regs::{mchbar, MchBar};
 use fstart_ecam as ecam;
-
-const PINEVIEW_TSC_HZ: u64 = 1_666_666_667;
-
-/// Microsecond delay for raminit sequences.
-///
-/// Pineview boards supported here use Atom D410/D510-class parts with a
-/// constant 1.66 GHz TSC.  Use TSC-based delays instead of raw spin-loop
-/// guesses so the JEDEC/RCVEN waits match coreboot's `udelay()` much more
-/// closely once HPET is enabled.
-fn hpet_udelay(us: u32) {
-    fstart_arch_x86::udelay_tsc(us, PINEVIEW_TSC_HZ);
-}
+use fstart_services::ServiceError;
 
 // ===================================================================
 // PLL calibration tables (from coreboot sdram_calibratepll)
@@ -451,7 +440,7 @@ const RCOMPCTL: [u32; 7] = [
 /// Full RCOMP calibration.
 ///
 /// Ported from coreboot `sdram_rcomp()`.
-pub fn rcomp(si: &SysInfo, mch: &MchBar) {
+pub fn rcomp(si: &SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     let rcompslew: u8 = 0x0A;
 
     static RCOMPUPDATE: [u8; 7] = [0, 0, 0, 1, 1, 0, 0];
@@ -508,10 +497,14 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
         // Clear slew base / LUTs.
         let v = mch.read16(base + 0x16);
         mch.write16(base + 0x16, v & !0x7F7F);
-        mch.write16(base + 0x18, 0);
-        mch.write16(base + 0x18 + 2, 0);
-        mch.write16(base + 0x1C, 0);
-        mch.write16(base + 0x1C + 2, 0);
+        let v = mch.read16(base + 0x18);
+        mch.write16(base + 0x18, v & !0x3F3F);
+        let v = mch.read16(base + 0x18 + 2);
+        mch.write16(base + 0x18 + 2, v & !0x3F3F);
+        let v = mch.read16(base + 0x1C);
+        mch.write16(base + 0x1C, v & !0x3F3F);
+        let v = mch.read16(base + 0x1C + 2);
+        mch.write16(base + 0x1C + 2, v & !0x3F3F);
     }
 
     // ODT record.
@@ -527,8 +520,8 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
             continue;
         }
         let base = RCOMPCTL[i];
-        let v = mch.read8(base + 2);
-        mch.write8(base + 2, v & !0x71);
+        let v = mch.read8(base);
+        mch.write8(base, v & !(3 << 5));
         let v = mch.read16(base + 2);
         mch.write16(base + 2, v & !0x0706);
         let v = mch.read16(base + 0x0A);
@@ -615,9 +608,23 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
 
             let p_step = 1u8 << (srup + 1);
             let n_step = 1u8 << (srun + 1);
-            if rcompp < p_step || rcompn < n_step {
-                fstart_log::error!("raminit: RCOMP base underflow for group {}", i);
-                continue;
+            if rcompp < p_step {
+                fstart_log::error!(
+                    "raminit: RCOMP group {} P base underflow: raw={} granularity={}",
+                    i,
+                    rcompp as u32,
+                    srup as u32,
+                );
+                return Err(ServiceError::HardwareError);
+            }
+            if rcompn < n_step {
+                fstart_log::error!(
+                    "raminit: RCOMP group {} N base underflow: raw={} granularity={}",
+                    i,
+                    rcompn as u32,
+                    srun as u32,
+                );
+                return Err(ServiceError::HardwareError);
             }
             let base_p = rcompp - p_step;
             let base_n = rcompn - n_step;
@@ -629,15 +636,16 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
             );
         }
 
-        let lutpbase = rcompp.saturating_sub(1 << (last_srup + 1));
-        let lutnbase = rcompn.saturating_sub(1 << (last_srun + 1));
-        program_rcomp_luts(si, mch, lutpbase, last_srup, lutnbase, last_srun);
+        let lutpbase = rcompp - (1 << (last_srup + 1));
+        let lutnbase = rcompn - (1 << (last_srun + 1));
+        program_rcomp_luts(si, mch, lutpbase, last_srup, lutnbase, last_srun)?;
     }
 
     // Start final RCOMP.
     mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
 
     fstart_log::info!("raminit: RCOMP calibration done");
+    Ok(())
 }
 
 fn program_lut_byte(mch: &MchBar, off: u32, value: u8) {
@@ -645,14 +653,21 @@ fn program_lut_byte(mch: &MchBar, off: u32, value: u8) {
     mch.write8(off, (v & !0x3f) | (value & 0x3f));
 }
 
-fn program_rcomp_luts(si: &SysInfo, mch: &MchBar, lutpbase: u8, srup: u8, lutnbase: u8, srun: u8) {
+fn program_rcomp_luts(
+    si: &SysInfo,
+    mch: &MchBar,
+    lutpbase: u8,
+    srup: u8,
+    lutnbase: u8,
+    srun: u8,
+) -> Result<(), ServiceError> {
     use super::rcomplut::RCOMPLUT;
 
     for i in 0..4u32 {
         let j = lutpbase as usize + ((i as usize) << srup);
         if j >= RCOMPLUT.len() {
-            fstart_log::error!("raminit: RCOMP P LUT index out of range");
-            return;
+            fstart_log::error!("raminit: RCOMP P LUT index out of range: {}", j as u32);
+            return Err(ServiceError::HardwareError);
         }
         program_lut_byte(mch, RCOMPCTL[0] + 0x18 + i, RCOMPLUT[j][0]);
         if !si.is_sodimm() {
@@ -669,8 +684,8 @@ fn program_rcomp_luts(si: &SysInfo, mch: &MchBar, lutpbase: u8, srup: u8, lutnba
     for i in 0..4u32 {
         let j = lutnbase as usize + ((i as usize) << srun);
         if j >= RCOMPLUT.len() {
-            fstart_log::error!("raminit: RCOMP N LUT index out of range");
-            return;
+            fstart_log::error!("raminit: RCOMP N LUT index out of range: {}", j as u32);
+            return Err(ServiceError::HardwareError);
         }
         program_lut_byte(mch, RCOMPCTL[0] + 0x1c + i, RCOMPLUT[j][1]);
         if !si.is_sodimm() {
@@ -683,6 +698,7 @@ fn program_rcomp_luts(si: &SysInfo, mch: &MchBar, lutpbase: u8, srup: u8, lutnba
         program_lut_byte(mch, RCOMPCTL[5] + 0x1c + i, RCOMPLUT[j][9]);
         program_lut_byte(mch, RCOMPCTL[6] + 0x1c + i, RCOMPLUT[j][9]);
     }
+    Ok(())
 }
 
 // ===================================================================
@@ -793,7 +809,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
 
     for _ in 0..3 {
         mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
-        hpet_udelay(1000);
+        super::udelay(1000);
         while mch.read8(mchbar::COMPCTRL1) & 1 != 0 {
             core::hint::spin_loop();
         }
@@ -807,7 +823,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
     }
 
     mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
-    hpet_udelay(1000);
+    super::udelay(1000);
     while mch.read8(mchbar::COMPCTRL1) & 1 != 0 {
         core::hint::spin_loop();
     }
@@ -823,7 +839,19 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_rcven()`. Trains the DQS receive enable
 /// timing for each byte lane by sweeping coarse + medium + PI delay.
-pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
+fn rcven_fail(step: &str, lane: u8, coarse: u8, medium: u8, pi: u8) -> Result<(), ServiceError> {
+    fstart_log::error!(
+        "raminit: RCVEN lane {} failed {}: coarse={} medium={} pi={}",
+        lane,
+        step,
+        coarse,
+        medium,
+        pi,
+    );
+    Err(ServiceError::HardwareError)
+}
+
+pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     let v = mch.read8(mchbar::C0RSTCTL);
     mch.write8(mchbar::C0RSTCTL, v & !(3 << 2));
     let v = mch.read8(mchbar::CMNDQFIFORST);
@@ -861,15 +889,14 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
         // Phase 1: sweep until DQS goes high.
         while !sample_dqs(mch, dqshighaddr, 0, 3) {
             if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-                fstart_log::error!("raminit: RCVEN lane {} failed before DQS-low search", lane);
-                break;
+                return rcven_fail("before DQS-low search", lane, coarse, medium, pi);
             }
         }
 
         savecoarse = coarse;
         savemedium = medium;
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-            fstart_log::error!("raminit: RCVEN lane {} failed before DQS-high search", lane);
+            return rcven_fail("before DQS-high search", lane, coarse, medium, pi);
         }
 
         // Phase 2: continue until DQS stays high.
@@ -877,8 +904,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
             savecoarse = coarse;
             savemedium = medium;
             if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-                fstart_log::error!("raminit: RCVEN lane {} failed before PI search", lane);
-                break;
+                return rcven_fail("before PI search", lane, coarse, medium, pi);
             }
         }
 
@@ -904,9 +930,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
                     savepi = si.maxpi;
                     break;
                 }
-                fstart_log::error!("raminit: RCVEN lane {} PI search failed", lane);
-                savepi = si.maxpi;
-                break;
+                return rcven_fail("during PI search", lane, coarse, medium, savepi);
             }
             let v = mch.read8(mchbar::ly(0x560, lane as u32));
             mch.write8(
@@ -922,13 +946,16 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
             (v & !0x3F) | (pi << si.pioffset),
         );
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-            fstart_log::error!("raminit: RCVEN lane {} failed after PI search", lane);
+            return rcven_fail("after PI search", lane, coarse, medium, pi);
+        }
+        if !sample_dqs(mch, dqshighaddr, 1, 3) {
+            return rcven_fail("after centering", lane, coarse, medium, pi);
         }
 
         // Phase 4: back off until DQS goes low.
         while !sample_dqs(mch, dqshighaddr, 0, 3) {
             if coarse == 0 {
-                break;
+                return rcven_fail("finding final DQS-low edge", lane, coarse, medium, pi);
             }
             coarse -= 1;
             let v = mch.read32(mchbar::C0STATRDCTRL);
@@ -939,7 +966,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
         }
 
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-            fstart_log::error!("raminit: RCVEN lane {} failed at final clock step", lane);
+            return rcven_fail("at final clock step", lane, coarse, medium, pi);
         }
         si.pi[lane as usize] = pi;
         lanecoarse[lane as usize] = coarse;
@@ -954,7 +981,14 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
     for lane in (0..maxlane as usize).rev() {
         let offset = lanecoarse[lane].saturating_sub(minlanecoarse);
         if offset > 3 {
-            fstart_log::error!("raminit: RCVEN lane {} coarse offset too large", lane);
+            fstart_log::error!(
+                "raminit: RCVEN lane {} coarse offset too large: offset={} coarse={} min={}",
+                lane as u32,
+                offset as u32,
+                lanecoarse[lane] as u32,
+                minlanecoarse as u32,
+            );
+            return Err(ServiceError::HardwareError);
         }
         let v = mch.read16(mchbar::C0COARSEDLY0);
         mch.write16(
@@ -985,6 +1019,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
     mch.setbits32(mchbar::CMNDQFIFORST, 1 << 7);
 
     fstart_log::info!("raminit: receive enable calibration done");
+    Ok(())
 }
 
 /// Sample DQS for the given lane.
@@ -992,9 +1027,9 @@ fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
     let mut matches = true;
     for _ in 0..count {
         mch.clrbits32(mchbar::C0RSTCTL, 1 << 1);
-        hpet_udelay(1);
+        super::udelay(1);
         mch.setbits32(mchbar::C0RSTCTL, 1 << 1);
-        hpet_udelay(1);
+        super::udelay(1);
 
         // SAFETY: Intentionally reads from physical address 0 to trigger
         // a DRAM read cycle for DQS sampling during receive-enable
@@ -1004,13 +1039,177 @@ fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
         unsafe {
             core::ptr::read_volatile(core::ptr::null::<u32>());
         }
-        hpet_udelay(1);
+        super::udelay(1);
 
         if ((mch.read8(dqshighaddr) & (1 << 6)) >> 6) != highlow {
             matches = false;
         }
     }
     matches
+}
+
+fn vref_pattern(addr: u32, inverse: bool) -> u8 {
+    let mut pattern_a = 0xffu8;
+    pattern_a &= !(((1u16 << ((addr >> 13) & 0x0f)) >> 1) as u8);
+    let mut pattern_b = !pattern_a;
+
+    if addr & 0x100 != 0 {
+        core::mem::swap(&mut pattern_a, &mut pattern_b);
+    }
+
+    let isi_left = ((addr >> 11) & 0x03) + 1;
+    let isi_total = isi_left + ((addr >> 9) & 0x03) + 1;
+
+    let mut pattern = pattern_a;
+    if (((addr & 0xff) >> 3) % isi_total) >= isi_left {
+        pattern = pattern_b;
+    }
+
+    if inverse {
+        !pattern
+    } else {
+        pattern
+    }
+}
+
+fn vref_write_pattern(addr: u32) {
+    for i in 0..1024u32 {
+        // SAFETY: Vref margining intentionally writes the already-initialized
+        // low DRAM test window, matching coreboot's raminit sequence.
+        unsafe {
+            core::ptr::write_volatile((addr + i) as usize as *mut u8, vref_pattern(addr + i, true));
+        }
+    }
+}
+
+fn vref_flush(addr: u32) {
+    for offset in (0..0x2000u32).step_by(64) {
+        let ptr = (addr + offset) as usize as *const u8;
+        // SAFETY: CLFLUSH is used on the temporary DRAM test window to force
+        // refills while sweeping Vref, exactly as required by the training
+        // algorithm.  The address range is covered by a temporary MTRR below.
+        unsafe {
+            core::arch::asm!("clflush [{}]", in(reg) ptr, options(nostack, preserves_flags));
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct VrefMtrrSave {
+    base: u64,
+    mask: u64,
+}
+
+fn vref_temp_cache_enable(addr: u32) -> VrefMtrrSave {
+    const VREF_MTRR_INDEX: u32 = 3;
+    // SAFETY: Pineview exposes at least the vendor-MRC variable MTRR slot 3.
+    // The saved values are restored after each short probe.
+    let save = unsafe {
+        let (base, mask) = fstart_arch_x86::mtrr::read_variable(VREF_MTRR_INDEX);
+        VrefMtrrSave { base, mask }
+    };
+    // SAFETY: Programs a temporary 8KiB write-protected MTRR over low DRAM for
+    // the Vref readback window.  The caller restores the original slot.
+    unsafe {
+        fstart_arch_x86::mtrr::set_variable(
+            VREF_MTRR_INDEX,
+            addr as u64,
+            0x2000,
+            fstart_arch_x86::mtrr::MTRR_TYPE_WRITE_PROTECT,
+        );
+    }
+    save
+}
+
+fn vref_temp_cache_disable(save: VrefMtrrSave) {
+    const VREF_MTRR_INDEX: u32 = 3;
+    let base_msr = fstart_arch_x86::mtrr::IA32_MTRR_PHYSBASE0 + VREF_MTRR_INDEX * 2;
+    let mask_msr = fstart_arch_x86::mtrr::IA32_MTRR_PHYSMASK0 + VREF_MTRR_INDEX * 2;
+    // SAFETY: Restores the exact variable MTRR pair saved by
+    // `vref_temp_cache_enable`.
+    unsafe {
+        fstart_arch_x86::x86::msr::wrmsr(base_msr, save.base);
+        fstart_arch_x86::x86::msr::wrmsr(mask_msr, save.mask);
+    }
+}
+
+fn vref_read_aligned(mch: &MchBar, addr: u32, vref: u8) -> bool {
+    let v = mch.read8(mchbar::CSHRMISCCTL1);
+    mch.write8(mchbar::CSHRMISCCTL1, (v & !0x3f) | vref);
+
+    for _ in 0..3 {
+        let save = vref_temp_cache_enable(addr);
+        vref_flush(addr);
+        for i in 0..1024u32 {
+            // SAFETY: Reads the low DRAM Vref pattern window after raminit has
+            // mapped DRAM at address 0.
+            let data = unsafe { core::ptr::read_volatile((addr + i) as usize as *const u8) };
+            let expected = vref_pattern(addr + i, true);
+            if data != expected {
+                vref_temp_cache_disable(save);
+                fstart_log::info!(
+                    "raminit: Vref {:#x} failed at {:#x}: wr={:#x} rd={:#x}",
+                    vref as u32,
+                    addr + i,
+                    expected as u32,
+                    data as u32,
+                );
+                return false;
+            }
+        }
+        vref_temp_cache_disable(save);
+    }
+
+    true
+}
+
+/// Run DDR2 UDIMM Vref margining.
+pub fn sdram_vref_margining(mch: &MchBar) -> Result<(), ServiceError> {
+    static POSITIVE: [u8; 4] = [0x07, 0x0e, 0x15, 0x1c];
+    static NEGATIVE: [u8; 4] = [0x27, 0x2e, 0x35, 0x3c];
+    static LOOKUP: [[u8; 5]; 5] = [
+        [0x00, 0x03, 0x04, 0x05, 0x05],
+        [0x23, 0x00, 0x03, 0x04, 0x05],
+        [0x24, 0x23, 0x00, 0x03, 0x04],
+        [0x25, 0x24, 0x23, 0x00, 0x03],
+        [0x25, 0x25, 0x24, 0x23, 0x00],
+    ];
+    let addr = 0u32;
+    let mut pos_pass = 0usize;
+    let mut neg_pass = 0usize;
+
+    let v = mch.read16(mchbar::CSHRMISCCTL1);
+    mch.write16(mchbar::CSHRMISCCTL1, v & !(1 << 8));
+    vref_write_pattern(addr);
+
+    for &vref in &POSITIVE {
+        if !vref_read_aligned(mch, addr, vref) {
+            break;
+        }
+        pos_pass += 1;
+    }
+    for &vref in &NEGATIVE {
+        if !vref_read_aligned(mch, addr, vref) {
+            break;
+        }
+        neg_pass += 1;
+    }
+
+    if pos_pass == 0 && neg_pass == 0 {
+        fstart_log::error!("raminit: Vref margining failed");
+        return Err(ServiceError::HardwareError);
+    }
+
+    let vref = LOOKUP[neg_pass][pos_pass];
+    let v = mch.read8(mchbar::CSHRMISCCTL1);
+    mch.write8(mchbar::CSHRMISCCTL1, (v & !0x3f) | vref);
+    fstart_log::info!(
+        "raminit: Vref margining pos={} neg={} value={:#x}",
+        pos_pass as u32,
+        neg_pass as u32,
+        vref as u32,
+    );
+    Ok(())
 }
 
 /// Advance receive enable clock (medium, then coarse).
@@ -1045,18 +1244,19 @@ fn rcven_clock(mch: &MchBar, coarse: &mut u8, medium: &mut u8, lane: u8) -> bool
 ///
 /// Ported from coreboot `sdram_new_trd()`.
 pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
-    let tmclk: u32 = if si.selected_timings.mem_clock == 0 {
+    let raw_tmclk: u32 = if si.selected_timings.mem_clock == 0 {
         3000
     } else {
         2500
     };
-    let thclk: u32 = if si.selected_timings.fsb_clock == 0 {
+    let raw_thclk: u32 = if si.selected_timings.fsb_clock == 0 {
         6000
     } else {
         5000
     };
     let freqgb: u32 = 110;
-    let tmclk_adj = tmclk * 100 / freqgb;
+    let tmclk_adj = raw_tmclk * 100 / freqgb;
+    let thclk = raw_thclk * 100 / freqgb;
     let buffertocore: u32 = if si.platform_type == super::PLATFORM_MOBILE {
         5500
     } else {
@@ -1108,11 +1308,11 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
         + buffertocore as i64
         + postcalib as i64
         + if si.r#async != 0 {
-            (tmclk_adj / 2) as i64
+            (raw_tmclk / 2) as i64
         } else {
             0
         };
-    let datadelay = datadelay_signed.max(0) as u32;
+    let mut datadelay = datadelay_signed.max(0) as u32;
 
     let j = si.selected_timings.mem_clock as usize;
     let k = si.selected_timings.fsb_clock as usize;
@@ -1129,6 +1329,18 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
         _ => 2,
     };
 
+    if si.selected_timings.cas == 5 {
+        if si.platform_type == super::PLATFORM_MOBILE {
+            if j == 0 && k == 0 {
+                datadelay = datadelay.saturating_sub(3084);
+            }
+        } else if j == 0 && k == 0 {
+            datadelay = datadelay.saturating_sub(1848);
+        } else if j == 1 && k == 1 {
+            datadelay = datadelay.saturating_sub(2750);
+        }
+    }
+
     let mut trd: u8 = 0;
     for i in 0..cc {
         let adj = TRD_ADJUST[k][j][i] * 100 / freqgb;
@@ -1139,15 +1351,6 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
         }
         phase_trd += 1;
         trd = trd.max(phase_trd);
-    }
-
-    if j == 0 && k == 0 {
-        let corrected = datadelay.saturating_sub(3084);
-        let mut phase_trd = (corrected / thclk) as u8;
-        if phase_trd >= 2 {
-            phase_trd -= 2;
-        }
-        trd = trd.max(phase_trd + 1);
     }
 
     let v = mch.read16(mchbar::C0STATRDCTRL);

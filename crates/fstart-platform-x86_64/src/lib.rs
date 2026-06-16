@@ -63,6 +63,7 @@ pub fn disable_boot_media_rom_cache_for_handoff() {
 //
 // Page tables: identity-mapped 2 MiB pages covering 4 GiB.
 // PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
+#[cfg(not(test))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is
     // the natural syntax for 16-bit / mixed-mode x86 assembly.
@@ -250,6 +251,7 @@ core::arch::global_asm!(
 // Entry/return convention matches coreboot's no-stack helpers: `%esp` contains
 // the absolute return address. The routine may clobber all general registers.
 #[cfg(feature = "early-ffs-anchor")]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -327,6 +329,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(not(feature = "early-ffs-anchor"))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -340,6 +343,7 @@ core::arch::global_asm!(
 // 1 GiB pages: PDPT[0..511] = 512 x 1 GiB identity-mapped pages.
 // Requires PDPE1GB. Covers 512 GiB. Compact: only 2 pages total.
 #[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -376,6 +380,7 @@ core::arch::global_asm!(
 // Writable page-table setup for QEMU-style low-RAM page tables.
 // 2 MiB pages (default): PDPT[0..3] -> PD0..PD3, each PD 512 x 2 MiB.
 #[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -428,6 +433,7 @@ core::arch::global_asm!(
 // - QEMU/writable-PT boards reserve BSS storage here; `_setup_page_tables`
 //   fills it at runtime.
 #[cfg(not(feature = "x86-writable-page-tables"))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -438,6 +444,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(feature = "x86-static-page-tables", feature = "x86-1g-pages"))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .rodata, \"a\"",
     ".balign 4096",
@@ -459,6 +466,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .bss, \"aw\", @nobits",
     ".balign 4096",
@@ -473,6 +481,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .bss, \"aw\", @nobits",
     ".balign 4096",
@@ -490,6 +499,7 @@ core::arch::global_asm!(
     feature = "x86-static-page-tables",
     feature = "x86-writable-page-tables"
 )))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .bss, \"aw\", @nobits",
     ".balign 4096",
@@ -503,6 +513,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(feature = "x86-static-page-tables", not(feature = "x86-1g-pages")))]
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .rodata, \"a\"",
     ".balign 4096",
@@ -532,6 +543,7 @@ core::arch::global_asm!(
 );
 
 // Continue the entry sequence after page table setup.
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -772,6 +784,7 @@ core::arch::global_asm!(
 // place it in CAR-backed BSS, and RAM stages place it in DRAM-backed BSS.
 // The assembly labels are sufficient; the linker script does not need a
 // dedicated IDT output section or linker-provided IDT symbols.
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .bss, \"aw\", @nobits",
     ".align 4096",
@@ -794,6 +807,7 @@ core::arch::global_asm!(
 // Placed in `.text.entry` so `KEEP(*(.text.entry))` in the linker script
 // ensures it's at the start of the binary (= the load address that the
 // bootblock's `jump_to()` targets).
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text.entry, \"ax\"",
     ".code64",

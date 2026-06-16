@@ -10,9 +10,10 @@ use crate::regs::{mchbar, MchBar};
 const NOP_CMD: u8 = 1 << 1;
 const PRE_CHARGE_CMD: u8 = 1 << 2;
 const MRS_CMD: u8 = (1 << 2) | (1 << 1);
-const EMRS1_CMD: u8 = 1 << 3;
-const EMRS2_CMD: u8 = (1 << 3) | (1 << 2);
-const EMRS3_CMD: u8 = (1 << 3) | (1 << 2) | (1 << 1);
+const EMRS_CMD: u8 = 1 << 3;
+const EMRS1_CMD: u8 = EMRS_CMD | (1 << 4);
+const EMRS2_CMD: u8 = EMRS_CMD | (1 << 5);
+const EMRS3_CMD: u8 = EMRS_CMD | (1 << 5) | (1 << 4);
 const CBR_CMD: u8 = (1 << 3) | (1 << 2);
 const NORMAL_OP_CMD: u8 = (1 << 3) | (1 << 2) | (1 << 1);
 
@@ -36,10 +37,8 @@ fn send_jedec_cmd(mch: &MchBar, rank: u8, jmode: u8, jval: u16) {
     }
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 
-    // 1 µs delay for command execution.
-    for _ in 0..200 {
-        core::hint::spin_loop();
-    }
+    // Current coreboot/MRC waits 2 µs between JEDEC commands.
+    super::udelay(2);
 }
 
 /// JEDEC DDR2 initialization sequence.
@@ -81,10 +80,7 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
         rttnom |= 1 << 6;
     }
 
-    // 200 µs settling time.
-    for _ in 0..40_000 {
-        core::hint::spin_loop();
-    }
+    super::udelay(200);
 
     // Execute JEDEC sequence for each populated rank.  The controller's
     // JEDEC command rank field is packed over populated ranks, not physical
