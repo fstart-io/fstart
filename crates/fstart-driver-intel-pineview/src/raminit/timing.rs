@@ -7,6 +7,8 @@
 use super::SysInfo;
 use crate::regs::{ich7, mchbar, MchBar};
 use fstart_ecam as ecam;
+use fstart_services::ServiceError;
+use fstart_spd::ChipWidth;
 
 // ===================================================================
 // Helpers
@@ -34,6 +36,14 @@ fn div_round_up(a: u32, b: u32) -> u32 {
     a.div_ceil(b)
 }
 
+fn chip_width_code(width: ChipWidth) -> u8 {
+    match width {
+        ChipWidth::X8 => 0,
+        ChipWidth::X16 | ChipWidth::X32 => 1,
+        ChipWidth::X4 => 0,
+    }
+}
+
 // ===================================================================
 // RAM speed detection
 // ===================================================================
@@ -42,27 +52,49 @@ fn div_round_up(a: u32, b: u32) -> u32 {
 /// then find the common CAS latency across all populated DIMMs.
 ///
 /// Ported from coreboot `sdram_detect_ram_speed()`.
-pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
-    // --- Read FSB frequency from host bridge register 0xE3 ---
+pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     let hb = ecam::EcamDevice::new(0, 0, 0);
-    let e3 = hb.read8(0xE3);
-    let fsb_raw = (e3 & 0x70) >> 4;
-    let fsb: u8 = if fsb_raw != 0 {
-        // 5 - fsb_raw: 4→1(800), 3→2(invalid), 2→3(invalid), 1→4(invalid)
-        // In practice only 4 (=800MHz) and 0 (=800MHz default) appear on Pineview.
-        (5u8.saturating_sub(fsb_raw)).min(1)
-    } else {
-        1 // FSB_CLOCK_800MHz
+
+    // Core frequency comes from MCHBAR CLKCFG on Pineview.
+    let fsb: u8 = match mch.read8(mchbar::CLKCFG) & 0x07 {
+        0x02 => 1, // FSB_CLOCK_800MHz
+        0x03 => 0, // FSB_CLOCK_667MHz
+        raw => {
+            fstart_log::error!(
+                "raminit: unsupported core frequency strap {:#x}",
+                raw as u32
+            );
+            return Err(ServiceError::HardwareError);
+        }
     };
 
     // --- Read DDR frequency from host bridge registers 0xE3/0xE4 ---
+    let e3 = hb.read8(0xE3);
     let freq_raw = ((e3 & 0x80) >> 7) | ((hb.read8(0xE4) & 0x03) << 1);
     let mut freq: u8 = if freq_raw != 0 {
-        // 6 - freq_raw: 5→1(800), 4→2(invalid), ... Only 5 (=800) and 0 used.
-        (6u8.saturating_sub(freq_raw)).min(1)
+        if freq_raw > 6 {
+            fstart_log::error!(
+                "raminit: unsupported DDR frequency strap {:#x}",
+                freq_raw as u32
+            );
+            return Err(ServiceError::HardwareError);
+        }
+        let converted = 6 - freq_raw;
+        if converted > 1 {
+            fstart_log::error!(
+                "raminit: DDR frequency strap {:#x} converts to unsupported index {}",
+                freq_raw as u32,
+                converted as u32,
+            );
+            return Err(ServiceError::HardwareError);
+        }
+        converted
     } else {
         1 // MEM_CLOCK_800MHz
     };
+    if si.is_sodimm() {
+        freq = 0; // Mobile/SO-DIMM MRC path is DDR667-only.
+    }
 
     si.selected_timings.fsb_clock = fsb;
     fstart_log::info!(
@@ -76,47 +108,51 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
     for i in 0..super::TOTAL_DIMMS {
         if si.dimm_populated(i) {
             let d = si.dimms[i].as_ref().expect("populated");
-            common_cas &= d.cas_latencies;
+            common_cas &= d.spd_data[18];
         }
     }
     if common_cas == 0 {
         fstart_log::error!("raminit: no common CAS latency among DIMMs");
-        common_cas = 7; // fallback
+        return Err(ServiceError::HardwareError);
     }
 
     let msb = msbpos(common_cas);
     let lsb = lsbpos(common_cas);
     let mut highcas = msb as u8;
-    let lowcas = (lsb.max(5)) as u8;
+    let mut lowcas = (lsb.max(5)) as u8;
     let mut cas: u8 = 0;
 
     // --- CAS / frequency negotiation loop ---
-    // For each populated DIMM, check if its tCK (SPD[9]) and
-    // tAA (SPD[10]) meet the current frequency's requirements.
+    // Match coreboot's per-DIMM loop: each DIMM can lower `highcas`, while
+    // an acceptable DIMM sets the selected CAS for the current pass.
     while cas == 0 && highcas >= lowcas {
-        let mut all_ok = true;
         for i in 0..super::TOTAL_DIMMS {
             if !si.dimm_populated(i) {
                 continue;
             }
             let d = si.dimms[i].as_ref().expect("populated");
-            let (max_tck, max_taa) = if freq == 1 {
-                (0x25u8, 0x40u8) // 800 MHz: tCK ≤ 2.5 ns, tAA ≤ 10 ns
-            } else {
-                (0x30u8, 0x45u8) // 667 MHz: tCK ≤ 3.0 ns, tAA ≤ ~11 ns
+            let ok = match freq {
+                1 => d.spd_data[9] <= 0x25 && d.spd_data[10] <= 0x40,
+                0 => d.spd_data[9] <= 0x30 && d.spd_data[10] <= 0x45,
+                _ => {
+                    fstart_log::error!(
+                        "raminit: unsupported DDR frequency index {} during CAS selection",
+                        freq as u32,
+                    );
+                    return Err(ServiceError::HardwareError);
+                }
             };
-            if d.spd_data[9] > max_tck || d.spd_data[10] > max_taa {
-                all_ok = false;
-                break;
+            if ok {
+                cas = highcas;
+            } else if highcas == 0 {
+                fstart_log::error!(
+                    "raminit: CAS search underflow at DDR frequency {}",
+                    freq as u32
+                );
+                return Err(ServiceError::HardwareError);
+            } else {
+                highcas -= 1;
             }
-        }
-        if all_ok {
-            cas = highcas;
-        } else {
-            if highcas == 0 {
-                break;
-            }
-            highcas -= 1;
         }
     }
 
@@ -125,37 +161,35 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
         freq = 0;
         fstart_log::warn!("raminit: dropping to 667 MHz due to timing constraints");
         highcas = msb as u8;
+        lowcas = lsb as u8;
         while cas == 0 && highcas >= lowcas {
-            let mut all_ok = true;
             for i in 0..super::TOTAL_DIMMS {
                 if !si.dimm_populated(i) {
                     continue;
                 }
                 let d = si.dimms[i].as_ref().expect("populated");
                 if d.spd_data[9] > 0x30 || d.spd_data[10] > 0x45 {
-                    all_ok = false;
-                    break;
+                    if highcas == 0 {
+                        fstart_log::error!("raminit: CAS retry underflow at DDR667");
+                        return Err(ServiceError::HardwareError);
+                    }
+                    highcas -= 1;
+                } else {
+                    cas = highcas;
                 }
-            }
-            if all_ok {
-                cas = highcas;
-            } else {
-                if highcas == 0 {
-                    break;
-                }
-                highcas -= 1;
             }
         }
     }
 
     if cas == 0 {
-        fstart_log::error!("raminit: no valid CAS latency found, defaulting to 5");
-        cas = 5;
+        fstart_log::error!("raminit: no valid CAS latency found");
+        return Err(ServiceError::HardwareError);
     }
 
     si.selected_timings.cas = cas;
     si.selected_timings.mem_clock = freq;
     si.selected_timings.fsb_clock = fsb;
+    update_clock_dependent_vars(si);
 
     // --- Program the selected frequency into MCHBAR CLKCFG ---
     if si.boot_path != super::BOOT_PATH_RESET {
@@ -167,18 +201,20 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
 
         // Read back the MCH-validated frequency.
         let validated = ((mch.read32(mchbar::CLKCFG) >> 4) & 0x07).wrapping_sub(2) as u8;
-        si.selected_timings.mem_clock = validated.min(1);
+        si.selected_timings.mem_clock = validated;
 
         if si.selected_timings.mem_clock == 1 {
             fstart_log::info!("raminit: MCH validated at 800MHz");
-            si.nodll = 0;
-            si.maxpi = 63;
-            si.pioffset = 0;
-        } else {
+            update_clock_dependent_vars(si);
+        } else if si.selected_timings.mem_clock == 0 {
             fstart_log::info!("raminit: MCH validated at 667MHz");
-            si.nodll = 1;
-            si.maxpi = 15;
-            si.pioffset = 1;
+            update_clock_dependent_vars(si);
+        } else {
+            fstart_log::error!(
+                "raminit: MCH validated unknown DDR frequency {:#x}",
+                si.selected_timings.mem_clock as u32,
+            );
+            return Err(ServiceError::HardwareError);
         }
     }
 
@@ -196,12 +232,25 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
             667
         }
     );
+    Ok(())
+}
+
+fn update_clock_dependent_vars(si: &mut SysInfo) {
+    if si.selected_timings.mem_clock == 1 {
+        si.nodll = 0;
+        si.maxpi = 63;
+        si.pioffset = 0;
+    } else {
+        si.nodll = 1;
+        si.maxpi = 15;
+        si.pioffset = 1;
+    }
 }
 
 /// Detect the smallest common timing parameters across all DIMMs.
 ///
 /// Ported from coreboot `sdram_detect_smallest_params()`.
-pub fn detect_smallest_params(si: &mut SysInfo) {
+pub fn detect_smallest_params(si: &mut SysInfo) -> Result<(), ServiceError> {
     // Cycle time in ps for DDR667 and DDR800.
     let mult: [u32; 2] = [3000, 2500];
     let m = mult[si.selected_timings.mem_clock as usize];
@@ -215,6 +264,10 @@ pub fn detect_smallest_params(si: &mut SysInfo) {
     let mut max_trrd: u32 = 0;
     let mut max_trtp: u32 = 0;
 
+    static TRFC_EXTENSION: [u32; 12] = [
+        0, 256_000, 250, 256_250, 333, 256_333, 500, 256_500, 667, 256_667, 750, 256_750,
+    ];
+
     for i in 0..super::TOTAL_DIMMS {
         if !si.dimm_populated(i) {
             continue;
@@ -225,7 +278,12 @@ pub fn detect_smallest_params(si: &mut SysInfo) {
         max_trp = max_trp.max(((spd[27] as u32) * 1000) >> 2);
         max_trcd = max_trcd.max(((spd[29] as u32) * 1000) >> 2);
         max_twr = max_twr.max(((spd[36] as u32) * 1000) >> 2);
-        max_trfc = max_trfc.max((spd[42] as u32) * 1000 + (spd[40] as u32 & 0xF));
+        let trfc_ext = (spd[40] & 0x0f) as usize;
+        let Some(extension) = TRFC_EXTENSION.get(trfc_ext) else {
+            fstart_log::error!("raminit: unsupported DDR2 tRFC extension");
+            return Err(ServiceError::HardwareError);
+        };
+        max_trfc = max_trfc.max((spd[42] as u32) * 1000 + *extension);
         max_twtr = max_twtr.max(((spd[37] as u32) * 1000) >> 2);
         max_trrd = max_trrd.max(((spd[28] as u32) * 1000) >> 2);
         max_trtp = max_trtp.max(((spd[38] as u32) * 1000) >> 2);
@@ -253,6 +311,7 @@ pub fn detect_smallest_params(si: &mut SysInfo) {
         si.selected_timings.trrd,
         si.selected_timings.trtp
     );
+    Ok(())
 }
 
 // ===================================================================
@@ -523,7 +582,7 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
                     trp_adj = 1;
                     bank = 0;
                 }
-                if d.page_size == 2048 {
+                if chip_width_code(d.width) + d.cols.saturating_sub(9) > 1 {
                     page = 1;
                 }
             }

@@ -265,6 +265,23 @@ impl IntelPineview {
         mch.read32(mchbar::PMSTS) & (1 << 8) != 0
     }
 
+    fn detect_boot_path(&self) -> u8 {
+        let pm = fstart_pmio_ich::PmIo::new(ICH7_PMBASE);
+        if pm.is_s3_resume() {
+            let pm1_cnt = pm.read32(fstart_pmio_ich::PM1_CNT);
+            pm.write32(
+                fstart_pmio_ich::PM1_CNT,
+                pm1_cnt & !fstart_pmio_ich::SLP_TYP_MASK,
+            );
+            fstart_log::info!("pineview: S3 resume detected");
+            raminit::BOOT_PATH_RESUME
+        } else if self.detect_warm_reset() {
+            raminit::BOOT_PATH_RESET
+        } else {
+            raminit::BOOT_PATH_NORMAL
+        }
+    }
+
     fn platform_type(&self) -> u8 {
         const PINEVIEW_DID_MASK: u16 = 0xfff0;
         const PINEVIEW_MOBILE_DID: u16 = 0xa010;
@@ -661,7 +678,7 @@ impl MemoryController for IntelPineview {
         if self.config.ck505_pre_raminit {
             pineview_ck505_pre_raminit(&mut smbus);
         }
-        let boot_path = if self.detect_warm_reset() { 1 } else { 0 };
+        let boot_path = self.detect_boot_path();
         let platform_type = self.platform_type();
         let size = raminit::sdram_initialize(
             &self.mchbar(),

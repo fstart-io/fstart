@@ -63,6 +63,8 @@ pub fn read_spds(
             info.cas_latencies = 7;
         }
 
+        validate_pineview_spd(&info, i)?;
+
         si.dt0mode |= (info.spd_data[49] & 0x2) >> 1;
 
         let dimm_type = match info.spd_data[20] {
@@ -111,7 +113,7 @@ pub fn read_spds(
 
     // Determine DIMM configuration per channel (coreboot find_ramconfig).
     for chan in 0..super::TOTAL_CHANNELS {
-        si.dimm_config[chan] = find_ramconfig(si, chan);
+        si.dimm_config[chan] = find_ramconfig(si, chan)?;
         fstart_log::info!("raminit: config[CH{}] = {}", chan, si.dimm_config[chan]);
     }
 
@@ -127,71 +129,101 @@ fn chip_width_bits(width: ChipWidth) -> u8 {
     }
 }
 
+fn validate_pineview_spd(info: &fstart_spd::DimmInfo, idx: usize) -> Result<(), ServiceError> {
+    if info.spd_data[11] & 0x02 != 0 {
+        fstart_log::error!(
+            "raminit: DIMM {} uses unsupported DDR2 module configuration bits",
+            idx
+        );
+        return Err(ServiceError::HardwareError);
+    }
+    if !matches!(info.banks, 4 | 8)
+        || !matches!(info.width, ChipWidth::X8 | ChipWidth::X16)
+        || info.ranks > 2
+        || info.sides > 2
+        || !(12..=15).contains(&info.rows)
+        || !(9..=10).contains(&info.cols)
+    {
+        fstart_log::error!(
+            "raminit: DIMM {} unsupported geometry banks={} width=x{} ranks={} sides={} rows={} cols={}",
+            idx,
+            info.banks as u32,
+            chip_width_bits(info.width) as u32,
+            info.ranks as u32,
+            info.sides as u32,
+            info.rows as u32,
+            info.cols as u32,
+        );
+        return Err(ServiceError::HardwareError);
+    }
+    Ok(())
+}
+
 /// Determine the DIMM configuration code for a channel.
 ///
 /// Pineview has two incompatible encodings.  Desktop/UDIMM uses the
 /// vendor-MRC 4-bit DIMMA/DIMMB matrix.  Mobile/SO-DIMM keeps the older
 /// 0..6 encoding used by coreboot for DDR2 SO-DIMMs.
-fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
+fn find_ramconfig(si: &SysInfo, chan: usize) -> Result<u8, ServiceError> {
     let dimma = chan * 2;
     let dimmb = dimma + 1;
     let a = &si.dimms[dimma];
     let b = &si.dimms[dimmb];
 
     if !si.is_sodimm() {
-        let a_cfg = a.as_ref().map_or(0, dimm_config_desktop);
-        let b_cfg = b.as_ref().map_or(0, dimm_config_desktop);
-        return a_cfg | (b_cfg << 2);
+        let a_cfg = a.as_ref().map_or(Ok(0), dimm_config_desktop)?;
+        let b_cfg = b.as_ref().map_or(Ok(0), dimm_config_desktop)?;
+        return Ok(a_cfg | (b_cfg << 2));
     }
 
-    let a_sides = a.as_ref().map_or(0, |d| d.sides);
-    let b_sides = b.as_ref().map_or(0, |d| d.sides);
-    let a_x8 = a.as_ref().is_some_and(|d| d.width == ChipWidth::X8);
-    let b_x8 = b.as_ref().is_some_and(|d| d.width == ChipWidth::X8);
+    let a_pop = a.as_ref().is_some_and(|d| d.card_type != 0);
+    let b_pop = b.as_ref().is_some_and(|d| d.card_type != 0);
 
-    match (a_sides, b_sides) {
-        (0, 0) => 0,
-        (0, 1) => 1,
-        (0, s) if s > 1 => {
-            if b_x8 {
-                5
-            } else {
-                2
-            }
+    if a_pop && b_pop {
+        let Some(dimma) = a.as_ref() else {
+            return Ok(0);
+        };
+        let mut config = 3;
+        if dimma.sides > 1 {
+            config += 1;
         }
-        (1, 0) => 1,
-        (1, 1) => 3,
-        (s, 0) if s > 1 => {
-            if a_x8 {
-                5
-            } else {
-                4
-            }
+        if dimma.width == ChipWidth::X8 && dimma.sides > 1 {
+            config = 6;
         }
-        (s1, s2) if s1 > 1 && s2 > 1 => {
-            if a_x8 && b_x8 {
-                6
-            } else {
-                4
-            }
-        }
-        _ => 0,
+        return Ok(config);
     }
+
+    if a_pop || b_pop {
+        let a_sides = a.as_ref().map_or(0, |d| d.sides);
+        let b_sides = b.as_ref().map_or(0, |d| d.sides);
+        let a_x8 = a.as_ref().is_none_or(|d| d.width == ChipWidth::X8);
+        let b_x8 = b.as_ref().is_none_or(|d| d.width == ChipWidth::X8);
+        let mut config = 1;
+        if a_sides > 1 || b_sides > 1 {
+            config += 1;
+            if a_x8 || b_x8 {
+                config = 5;
+            }
+        }
+        return Ok(config);
+    }
+
+    Ok(0)
 }
 
-fn dimm_config_desktop(d: &fstart_spd::DimmInfo) -> u8 {
+fn dimm_config_desktop(d: &fstart_spd::DimmInfo) -> Result<u8, ServiceError> {
     if d.card_type == 0 {
-        return 0;
+        return Ok(0);
     }
     let x8 = d.width == ChipWidth::X8;
     let x16 = matches!(d.width, ChipWidth::X16 | ChipWidth::X32);
     match (d.ranks, x8, x16) {
-        (1, true, _) => 1,
-        (2, true, _) => 2,
-        (1, _, true) => 3,
+        (1, true, _) => Ok(1),
+        (2, true, _) => Ok(2),
+        (1, _, true) => Ok(3),
         _ => {
             fstart_log::error!("raminit: unsupported UDIMM rank/width config");
-            0
+            Err(ServiceError::HardwareError)
         }
     }
 }
