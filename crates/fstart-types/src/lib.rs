@@ -9,6 +9,7 @@
 
 pub mod acpi;
 pub mod board;
+pub mod builder;
 pub mod device;
 pub mod ffs;
 pub mod handoff;
@@ -17,6 +18,7 @@ pub mod security;
 pub mod smbios;
 pub mod smm;
 pub mod stage;
+pub mod typed;
 
 pub use acpi::{
     AcpiAhciDevice, AcpiConfig, AcpiGenericDevice, AcpiPcieRootDevice, AcpiPlatform, AcpiResource,
@@ -25,6 +27,10 @@ pub use acpi::{
 pub use board::{
     BoardConfig, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig, PayloadKind,
     Platform, SocImageFormat,
+};
+pub use builder::{
+    Board, BoardBlob, BoardDataMode, BoardInfo, Build, BuildInfo, BuildProfile, FlowProfile,
+    ImageBuildInfo, PayloadInputInfo, StageBuildInfo, BOARD_BLOB_ABI_VERSION,
 };
 pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode};
 pub use ffs::{
@@ -42,4 +48,9 @@ pub use smm::{CorebootSmmCompat, SmmConfig, SmmPlatform};
 pub use stage::{
     effective_stage_load_addr, BootMedium, Capability, CpuDriverKind, LoadDevice, MonolithicConfig,
     RunsFrom, StageConfig, StageLayout, TempRamBuffer,
+};
+pub use typed::{
+    i2c_child, io16, lpc_child, mmio32, pci_child, spi_child, BusKind, BusPortId, ChildAttachment,
+    DeviceEdge, I2cBus, Io16, Io8, IoAddr, Irq, LpcBus, Mmio16, Mmio32, Mmio64, Mmio8, MmioAddr,
+    PciBdf, PciBus, SimpleBus, SmbusBus, SpiBus, TypedBus,
 };
