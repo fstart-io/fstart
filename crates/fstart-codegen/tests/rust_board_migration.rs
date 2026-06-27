@@ -45,6 +45,9 @@ struct RustBoardCase {
     platform: Platform,
     feature: &'static str,
     driver_feature: &'static str,
+    root_device: &'static str,
+    device_count: usize,
+    driver_count: usize,
 }
 
 const RUST_BOARD_CASES: &[RustBoardCase] = &[
@@ -54,6 +57,9 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         platform: Platform::Riscv64,
         feature: "riscv64",
         driver_feature: "ns16550",
+        root_device: "uart0",
+        device_count: 1,
+        driver_count: 1,
     },
     RustBoardCase {
         board: "qemu-aarch64",
@@ -61,6 +67,29 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         platform: Platform::Aarch64,
         feature: "aarch64",
         driver_feature: "pl011",
+        root_device: "uart0",
+        device_count: 1,
+        driver_count: 1,
+    },
+    RustBoardCase {
+        board: "foxconn-d41s",
+        package: "fstart-board-foxconn-d41s",
+        platform: Platform::X86_64,
+        feature: "x86_64",
+        driver_feature: "intel-pineview",
+        root_device: "northbridge",
+        device_count: 10,
+        driver_count: 10,
+    },
+    RustBoardCase {
+        board: "foxconn-d41s-uefi",
+        package: "fstart-board-foxconn-d41s-uefi",
+        platform: Platform::X86_64,
+        feature: "x86_64",
+        driver_feature: "intel-pineview",
+        root_device: "northbridge",
+        device_count: 10,
+        driver_count: 10,
     },
 ];
 
@@ -89,9 +118,9 @@ fn rust_boards_emit_parseable_codegen_metadata() {
 
                 assert_eq!(parsed.config.name.as_str(), case.board);
                 assert_eq!(parsed.config.platform, case.platform);
-                assert_eq!(parsed.config.devices.len(), 1);
-                assert_eq!(parsed.config.devices[0].name.as_str(), "uart0");
-                assert_eq!(parsed.driver_instances.len(), 1);
+                assert_eq!(parsed.config.devices.len(), case.device_count);
+                assert_eq!(parsed.config.devices[0].name.as_str(), case.root_device);
+                assert_eq!(parsed.driver_instances.len(), case.driver_count);
             }
         })
         .expect("spawn board metadata test")

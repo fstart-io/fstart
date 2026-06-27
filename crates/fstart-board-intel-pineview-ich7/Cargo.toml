@@ -1,0 +1,14 @@
+[package]
+name = "fstart-board-intel-pineview-ich7"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fstart-types = { workspace = true, features = ["std"] }
+fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-driver-intel-ich7 = { workspace = true }
+fstart-driver-intel-pineview = { workspace = true }
+fstart-driver-ite8721f = { workspace = true }
+heapless = { workspace = true }

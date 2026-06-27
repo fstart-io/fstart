@@ -491,6 +491,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-foxconn-d41s"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-intel-pineview-ich7",
+ "fstart-codegen",
+ "fstart-device-registry",
+ "fstart-types",
+ "ron",
+ "serde",
+]
+
+[[package]]
+name = "fstart-board-foxconn-d41s-uefi"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-intel-pineview-ich7",
+ "fstart-codegen",
+ "fstart-device-registry",
+ "fstart-types",
+ "ron",
+ "serde",
+]
+
+[[package]]
+name = "fstart-board-intel-pineview-ich7"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-driver-intel-ich7",
+ "fstart-driver-intel-pineview",
+ "fstart-driver-ite8721f",
+ "fstart-types",
+ "heapless",
+]
+
+[[package]]
 name = "fstart-board-qemu-aarch64"
 version = "0.1.0"
 dependencies = [

@@ -122,11 +122,11 @@ struct RustBoardRon {
 struct RustBoardRonDevice {
     name: HString<32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    parent: Option<HString<32>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     bus: Option<BusAddress>,
     enabled: bool,
     driver: DriverInstance,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<RustBoardRonDevice>,
 }
 
 impl RustBoardRon {
@@ -139,19 +139,7 @@ impl RustBoardRon {
                 driver_instances.len()
             ));
         }
-        let devices = config
-            .devices
-            .iter()
-            .cloned()
-            .zip(driver_instances)
-            .map(|(device, driver)| RustBoardRonDevice {
-                name: device.name,
-                parent: device.parent,
-                bus: device.bus,
-                enabled: device.enabled,
-                driver,
-            })
-            .collect();
+        let devices = nested_ron_devices(&config.devices, &driver_instances)?;
 
         Ok(Self {
             name: config.name,
@@ -170,6 +158,49 @@ impl RustBoardRon {
             boot_hart_id: config.boot_hart_id,
         })
     }
+}
+
+fn nested_ron_devices(
+    devices: &[DeviceConfig],
+    driver_instances: &[DriverInstance],
+) -> Result<Vec<RustBoardRonDevice>, String> {
+    fn build_children(
+        parent: Option<&HString<32>>,
+        devices: &[DeviceConfig],
+        driver_instances: &[DriverInstance],
+    ) -> Result<Vec<RustBoardRonDevice>, String> {
+        let mut out = Vec::new();
+        for (index, device) in devices.iter().enumerate() {
+            if device.parent.as_ref() != parent {
+                continue;
+            }
+            let children = build_children(Some(&device.name), devices, driver_instances)?;
+            out.push(RustBoardRonDevice {
+                name: device.name.clone(),
+                bus: device.bus,
+                enabled: device.enabled,
+                driver: driver_instances[index].clone(),
+                children,
+            });
+        }
+        Ok(out)
+    }
+
+    for device in devices {
+        if let Some(parent_name) = &device.parent {
+            if !devices
+                .iter()
+                .any(|candidate| candidate.name == *parent_name)
+            {
+                return Err(format!(
+                    "device '{}' refers to unknown parent '{}'",
+                    device.name, parent_name
+                ));
+            }
+        }
+    }
+
+    build_children(None, devices, driver_instances)
 }
 
 fn default_enabled() -> bool {

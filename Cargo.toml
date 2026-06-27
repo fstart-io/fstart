@@ -1,10 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
+  "boards/foxconn-d41s",
+  "boards/foxconn-d41s-uefi",
   "boards/qemu-aarch64",
   "boards/qemu-riscv64",
   "xtask",
   "crates/fstart-types",
+  "crates/fstart-board-intel-pineview-ich7",
   "crates/fstart-board-qemu-virt",
   "crates/fstart-codegen",
   "crates/fstart-ffs",
@@ -121,6 +124,7 @@ clap = { version = "4", features = ["derive"] }
 # Internal workspace crates
 fstart-types = { path = "crates/fstart-types" }
 fstart-board-qemu-virt = { path = "crates/fstart-board-qemu-virt" }
+fstart-board-intel-pineview-ich7 = { path = "crates/fstart-board-intel-pineview-ich7" }
 fstart-codegen = { path = "crates/fstart-codegen" }
 fstart-pci = { path = "crates/fstart-pci" }
 fstart-ffs = { path = "crates/fstart-ffs" }
