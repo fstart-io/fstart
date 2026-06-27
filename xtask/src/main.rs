@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 use std::process;
 
 pub mod assemble;
+mod board_manifest;
 pub mod build_board;
 mod build_plan;
 mod image;
@@ -80,7 +81,7 @@ enum Command {
         /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
         #[arg(short, long)]
         firmware: Option<String>,
-        /// Dry-run ACPI DSDT generation from board.ron and validate with iasl.
+        /// Dry-run ACPI DSDT generation from Rust board metadata and validate with iasl.
         #[arg(long, default_value_t = false)]
         acpi_check: bool,
     },
@@ -126,11 +127,7 @@ fn run_board(
 ) -> Result<(), String> {
     // Check if this board needs assembly (multi-stage or has payload blobs)
     let workspace_root = build_board::workspace_root_pub()?;
-    let board_ron = workspace_root
-        .join("boards")
-        .join(board_name)
-        .join("board.ron");
-    let config = fstart_codegen::ron_loader::load_board_config(&board_ron)?;
+    let config = crate::board_manifest::load_board_config(&workspace_root, board_name)?;
 
     let is_multi_stage = matches!(config.stages, fstart_types::StageLayout::MultiStage(_));
     let has_payload_blobs = kernel.is_some()

@@ -46,8 +46,8 @@ pub fn assemble_release(board_name: &str, release: bool) -> Result<PathBuf, Stri
 
 /// Assemble with full options: release flag and optional kernel/firmware paths.
 ///
-/// If `kernel`/`firmware` are `None`, falls back to paths from the board RON
-/// `payload` config (resolved relative to the board directory). If neither
+/// If `kernel`/`firmware` are `None`, falls back to paths from the Rust board
+/// `payload` metadata (resolved relative to the board directory). If neither
 /// is available, no external blobs are added to the image.
 pub fn assemble_with_opts(
     board_name: &str,
@@ -79,15 +79,14 @@ fn assemble_impl(
     firmware_path: Option<&str>,
 ) -> Result<PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let board_dir = workspace_root.join("boards").join(board_name);
-    let board_ron = board_dir.join("board.ron");
+    let board_manifest = crate::board_manifest::find(&workspace_root, board_name)?;
+    let board_dir = board_manifest.dir;
 
-    if !board_ron.exists() {
-        return Err(format!("board config not found: {}", board_ron.display()));
-    }
-
-    eprintln!("[fstart] loading board config: {}", board_ron.display());
-    let parsed = fstart_codegen::ron_loader::load_parsed_board(&board_ron)?;
+    eprintln!(
+        "[fstart] loading Rust board metadata from package: {}",
+        board_manifest.package
+    );
+    let parsed = crate::board_manifest::load_parsed_board(&workspace_root, board_name)?;
     let config = parsed.config.clone();
 
     eprintln!("[fstart] assembling FFS image for: {}", config.name);
@@ -231,8 +230,8 @@ fn assemble_impl(
     //
     // Resolution order for paths:
     //   1. CLI flags (--kernel, --firmware)
-    //   2. Board RON payload config (payload.firmware.file, payload.kernel_file,
-    //      payload.fit_file) resolved relative to the board directory
+    //   2. Rust board payload metadata (payload.firmware.file,
+    //      payload.kernel_file, payload.fit_file) resolved relative to the board directory
     //   3. Skip — no external blob added
     if let Some(ref microcode) = config.microcode {
         assemble_microcode(microcode, &board_dir, &mut ro_files)?;
@@ -1981,11 +1980,7 @@ impl LpcBaseProvider for DryLpcBus {
 
 fn dry_run_acpi_check(board_name: &str) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let board_ron = workspace_root
-        .join("boards")
-        .join(board_name)
-        .join("board.ron");
-    let parsed = fstart_codegen::ron_loader::load_parsed_board(&board_ron)?;
+    let parsed = crate::board_manifest::load_parsed_board(&workspace_root, board_name)?;
 
     if parsed.config.acpi.is_none() {
         eprintln!("[fstart] ACPI check: board has no acpi config, skipping");

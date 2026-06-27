@@ -484,14 +484,7 @@ fn find_board_dir_by_name(binary: &Path, board_name: &str) -> Result<PathBuf, St
             let contents =
                 std::fs::read_to_string(&cargo_toml).map_err(|e| format!("read error: {e}"))?;
             if contents.contains("[workspace]") {
-                let board_dir = dir.join("boards").join(board_name);
-                if board_dir.is_dir() {
-                    return Ok(board_dir);
-                }
-                return Err(format!(
-                    "board directory not found: {}",
-                    board_dir.display()
-                ));
+                return crate::board_manifest::find(&dir, board_name).map(|manifest| manifest.dir);
             }
         }
         if !dir.pop() {

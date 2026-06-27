@@ -1,11 +1,10 @@
 //! Board build orchestration.
 //!
-//! 1. Parse board.ron
+//! 1. Ask the Rust board crate for metadata
 //! 2. Determine target triple, cargo features, and environment
 //! 3. Invoke cargo build on fstart-stage (once for monolithic, per-stage for multi-stage)
 //! 4. Return the path(s) to the built binary(ies)
 
-use fstart_codegen::ron_loader;
 use fstart_types::{Capability, SocImageFormat, StageLayout};
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
@@ -51,24 +50,30 @@ impl BuildResult {
 /// Build firmware for the given board. Returns all stage binaries.
 pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     let workspace_root = workspace_root()?;
-    let board_dir = workspace_root.join("boards").join(board_name);
-    let board_ron = board_dir.join("board.ron");
+    let board_manifest = crate::board_manifest::find(&workspace_root, board_name)?;
 
-    if !board_ron.exists() {
-        return Err(format!("board config not found: {}", board_ron.display()));
-    }
-
-    eprintln!("[fstart] loading board config: {}", board_ron.display());
-    let parsed = ron_loader::load_parsed_board(&board_ron)?;
+    eprintln!(
+        "[fstart] loading Rust board metadata from package: {}",
+        board_manifest.package
+    );
+    let build_info = crate::board_manifest::load_build_info(&workspace_root, board_name)?;
+    let parsed = crate::board_manifest::load_parsed_board(&workspace_root, board_name)?;
     let config = &parsed.config;
 
     eprintln!("[fstart] board: {}", config.name);
     eprintln!("[fstart] platform: {}", config.platform);
+    eprintln!("[fstart] board package: {}", build_info.board_package);
 
     let smm_artifacts = build_smm_artifacts(&workspace_root, board_name, release, config)?;
     let plan = crate::build_plan::plan(&parsed);
+    if build_info.target.as_str() != plan.target.triple {
+        return Err(format!(
+            "build_info target '{}' does not match platform-derived target '{}'",
+            build_info.target, plan.target.triple
+        ));
+    }
 
-    eprintln!("[fstart] target: {}", plan.target.triple);
+    eprintln!("[fstart] target: {}", build_info.target);
 
     let mut result = Vec::new();
     for stage in &plan.stages {
@@ -80,7 +85,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 
         let (elf_path, run_path) = build_one_stage(
             &workspace_root,
-            &board_ron,
+            &board_manifest,
             stage.stage_name.as_deref(),
             plan.target.triple,
             &features,
@@ -191,7 +196,7 @@ fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
 /// (ELF vs flat binary for QEMU); for other platforms they are the same.
 fn build_one_stage(
     workspace_root: &std::path::Path,
-    board_ron: &std::path::Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
     stage_name: Option<&str>,
     target: &str,
     features: &str,
@@ -202,12 +207,14 @@ fn build_one_stage(
     smm_artifacts: Option<&SmmArtifacts>,
 ) -> Result<(PathBuf, PathBuf), String> {
     let profile = if release { "release" } else { "debug" };
-    let board_label = board_ron
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("board");
+    let board_label = board_manifest.board.as_str();
     let stage_label = stage_name.unwrap_or("stage");
+    let board_ron = crate::board_manifest::materialize_board_config(
+        workspace_root,
+        board_manifest,
+        profile,
+        stage_label,
+    )?;
     let artifact_dir = workspace_root
         .join("target")
         .join("fstart-generated")

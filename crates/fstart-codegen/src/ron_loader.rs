@@ -27,6 +27,151 @@ use fstart_types::{
     SecurityConfig, SocImageFormat, StageLayout,
 };
 
+/// Serialize Rust-authored board metadata into the legacy RON shape consumed by
+/// the current stage build script.
+///
+/// This is intentionally hosted in codegen, not in board crates. Board crates
+/// should author Rust facts and typed driver instances; this function is only a
+/// temporary host-side adapter while stage build.rs still accepts a RON file.
+pub fn rust_board_config_to_ron(
+    config: BoardConfig,
+    driver_instances: Vec<DriverInstance>,
+) -> Result<String, String> {
+    let ron = RustBoardRon::new(config, driver_instances)?;
+    let pretty = ron::ser::PrettyConfig::default();
+    ron::ser::to_string_pretty(&ron, pretty)
+        .map_err(|e| format!("failed to serialize Rust board metadata as transitional RON: {e}"))
+}
+
+/// Build a [`ParsedBoard`] directly from Rust-authored metadata.
+///
+/// This bypasses the RON parser entirely and is the preferred host API for Rust
+/// board crates. The RON serializer above remains only for the current
+/// `fstart-stage/build.rs` file handoff.
+pub fn load_parsed_board_from_rust(
+    mut config: BoardConfig,
+    driver_instances: Vec<DriverInstance>,
+) -> Result<ParsedBoard, String> {
+    config
+        .memory
+        .normalize_derived_flash()
+        .map_err(|err| err.to_string())?;
+    if config.devices.len() != driver_instances.len() {
+        return Err(format!(
+            "Rust board '{}' has {} device declarations but {} driver instances",
+            config.name,
+            config.devices.len(),
+            driver_instances.len()
+        ));
+    }
+
+    let mut device_tree: Vec<DeviceNode> = Vec::with_capacity(config.devices.len());
+    let mut device_services: Vec<ServiceSet> = Vec::with_capacity(config.devices.len());
+
+    for (index, device) in config.devices.iter().enumerate() {
+        let parent = match &device.parent {
+            Some(parent_name) => {
+                let parent_idx = config.devices[..index]
+                    .iter()
+                    .position(|candidate| candidate.name == *parent_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "device '{}' refers to unknown or later parent '{}'",
+                            device.name, parent_name
+                        )
+                    })?;
+                Some(parent_idx as DeviceId)
+            }
+            None => None,
+        };
+        let depth = parent
+            .map(|parent_idx| device_tree[parent_idx as usize].depth.saturating_add(1))
+            .unwrap_or(0);
+        device_tree.push(DeviceNode { parent, depth });
+        device_services.push(driver_instances[index].provided_services());
+    }
+
+    Ok(ParsedBoard {
+        config,
+        driver_instances,
+        device_tree,
+        device_services,
+        acpi_only_devices: Vec::new(),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct RustBoardRon {
+    name: HString<64>,
+    platform: Platform,
+    memory: MemoryMap,
+    devices: Vec<RustBoardRonDevice>,
+    stages: StageLayout,
+    security: SecurityConfig,
+    payload: Option<PayloadConfig>,
+    microcode: Option<fstart_types::board::MicrocodeConfig>,
+    soc_image_format: SocImageFormat,
+    full_flash_image: bool,
+    acpi: Option<fstart_types::acpi::AcpiConfig>,
+    smbios: Option<fstart_types::smbios::SmbiosConfig>,
+    smm: Option<fstart_types::smm::SmmConfig>,
+    boot_hart_id: u32,
+}
+
+#[derive(serde::Serialize)]
+struct RustBoardRonDevice {
+    name: HString<32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<HString<32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bus: Option<BusAddress>,
+    enabled: bool,
+    driver: DriverInstance,
+}
+
+impl RustBoardRon {
+    fn new(config: BoardConfig, driver_instances: Vec<DriverInstance>) -> Result<Self, String> {
+        if config.devices.len() != driver_instances.len() {
+            return Err(format!(
+                "Rust board '{}' has {} device declarations but {} driver instances",
+                config.name,
+                config.devices.len(),
+                driver_instances.len()
+            ));
+        }
+        let devices = config
+            .devices
+            .iter()
+            .cloned()
+            .zip(driver_instances)
+            .map(|(device, driver)| RustBoardRonDevice {
+                name: device.name,
+                parent: device.parent,
+                bus: device.bus,
+                enabled: device.enabled,
+                driver,
+            })
+            .collect();
+
+        Ok(Self {
+            name: config.name,
+            platform: config.platform,
+            memory: config.memory,
+            devices,
+            stages: config.stages,
+            security: config.security,
+            payload: config.payload,
+            microcode: config.microcode,
+            soc_image_format: config.soc_image_format,
+            full_flash_image: config.full_flash_image,
+            acpi: config.acpi,
+            smbios: config.smbios,
+            smm: config.smm,
+            boot_hart_id: config.boot_hart_id,
+        })
+    }
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -159,15 +304,23 @@ struct RonDevice {
 pub fn load_parsed_board(path: &Path) -> Result<ParsedBoard, String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    // Enable `implicit_some` so board.ron files can write `field: 42`
-    // for `Option<T>` schema fields without wrapping in `Some(42)`.
-    // This is forward-compatible: changing a concrete field to `Option<T>`
-    // no longer breaks existing board files that use the bare value.
+    load_parsed_board_from_str(&contents, &path.display().to_string())
+}
+
+/// Load and fully validate a board config from an in-memory RON transport.
+///
+/// Rust board crates use this for metadata helper output: the source of truth is
+/// normal Rust code in the board package, while RON remains only the temporary
+/// host-side serialization format shared with the transitional code generator.
+pub fn load_parsed_board_from_str(contents: &str, source: &str) -> Result<ParsedBoard, String> {
+    // Enable `implicit_some` so legacy RON and Rust-board helper output can
+    // write `field: 42` for `Option<T>` schema fields without wrapping in
+    // `Some(42)`.
     let options =
         ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
     let mut ron_cfg: RonBoardConfig = options
-        .from_str(&contents)
-        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+        .from_str(contents)
+        .map_err(|e| format!("failed to parse {source}: {e}"))?;
     normalize_ron_config(&mut ron_cfg)?;
     convert(ron_cfg)
 }
@@ -178,6 +331,12 @@ pub fn load_parsed_board(path: &Path) -> Result<ParsedBoard, String> {
 /// (e.g., xtask feature derivation).
 pub fn load_board_config(path: &Path) -> Result<BoardConfig, String> {
     let parsed = load_parsed_board(path)?;
+    Ok(parsed.config)
+}
+
+/// Load only [`BoardConfig`] metadata from an in-memory board description.
+pub fn load_board_config_from_str(contents: &str, source: &str) -> Result<BoardConfig, String> {
+    let parsed = load_parsed_board_from_str(contents, source)?;
     Ok(parsed.config)
 }
 
