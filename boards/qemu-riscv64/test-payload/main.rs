@@ -92,20 +92,19 @@ fn print_hex(val: usize) {
     }
 }
 
-#[unsafe(link_section = ".text.entry")]
-#[unsafe(no_mangle)]
-unsafe extern "C" fn _start() -> ! {
-    core::arch::asm!(
-        // a0 = hartid (passed by SBI, preserve it)
-        // a1 = dtb_addr (passed by SBI, preserve it)
-        "la sp, __stack_top",
-        "call payload_main",
-        // Should not return, but just in case:
-        "1: wfi",
-        "j 1b",
-        options(noreturn),
-    );
-}
+core::arch::global_asm!(
+    r#"
+    .section .text.entry, "ax"
+    .globl _start
+_start:
+    /* a0 = hartid, a1 = dtb_addr, passed by SBI */
+    la sp, __stack_top
+    call payload_main
+1:
+    wfi
+    j 1b
+"#
+);
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {

@@ -1,12 +1,12 @@
 /* Linker script for S-mode test payload.
- * Loaded at 0x80200000 by fstart via FFS → RustSBI jumps here in S-mode.
+ * Loaded at 0x82000000 by fstart via FFS → RustSBI jumps here in S-mode.
  * RustSBI passes: a0 = hartid, a1 = dtb_addr.
  */
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x80200000;
+    . = 0x82000000;
 
     .text : {
         *(.text.entry)
