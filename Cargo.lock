@@ -491,6 +491,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-qemu-aarch64"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-qemu-virt",
+ "fstart-codegen",
+ "fstart-device-registry",
+ "fstart-types",
+ "heapless",
+ "ron",
+ "serde",
+]
+
+[[package]]
+name = "fstart-board-qemu-riscv64"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-qemu-virt",
+ "fstart-codegen",
+ "fstart-device-registry",
+ "fstart-types",
+ "heapless",
+ "ron",
+ "serde",
+]
+
+[[package]]
+name = "fstart-board-qemu-virt"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+ "heapless",
+]
+
+[[package]]
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
@@ -2078,6 +2113,7 @@ dependencies = [
  "heapless",
  "object",
  "rand_core",
+ "ron",
 ]
 
 [[package]]

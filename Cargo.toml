@@ -1,8 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+  "boards/qemu-aarch64",
+  "boards/qemu-riscv64",
   "xtask",
   "crates/fstart-types",
+  "crates/fstart-board-qemu-virt",
   "crates/fstart-codegen",
   "crates/fstart-ffs",
   "crates/fstart-crypto",
@@ -117,6 +120,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Internal workspace crates
 fstart-types = { path = "crates/fstart-types" }
+fstart-board-qemu-virt = { path = "crates/fstart-board-qemu-virt" }
 fstart-codegen = { path = "crates/fstart-codegen" }
 fstart-pci = { path = "crates/fstart-pci" }
 fstart-ffs = { path = "crates/fstart-ffs" }

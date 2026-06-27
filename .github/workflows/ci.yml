@@ -86,9 +86,25 @@ jobs:
           import json
           from pathlib import Path
 
-          names = sorted(path.parent.name for path in Path("boards").glob("*/board.ron"))
+          names = set()
+          for manifest in Path("boards").glob("*/Cargo.toml"):
+              text = manifest.read_text()
+              in_meta = False
+              board = None
+              for raw in text.splitlines():
+                  line = raw.strip()
+                  if line.startswith("[") and line.endswith("]"):
+                      in_meta = line == "[package.metadata.fstart]"
+                      continue
+                  if in_meta and "=" in line:
+                      key, value = line.split("=", 1)
+                      if key.strip() == "board":
+                          board = value.strip().strip('"')
+                          break
+              names.add(board or manifest.parent.name)
+          names = sorted(names)
           if not names:
-              raise SystemExit("no boards/*/board.ron files found")
+              raise SystemExit("no boards found under boards/*")
           print(json.dumps(names))
           PY
           )
@@ -132,7 +148,23 @@ jobs:
           mkdir -p target/ci
           printf 'fstart CI placeholder payload\n' > target/ci/payload.bin
 
-          if grep -q 'kind: FitImage' "boards/$BOARD/board.ron"; then
+          PKG=$(python3 - <<'PY'
+          import os
+          from pathlib import Path
+          text = Path("boards", os.environ["BOARD"], "Cargo.toml").read_text()
+          in_package = False
+          for raw in text.splitlines():
+              line = raw.strip()
+              if line.startswith("[") and line.endswith("]"):
+                  in_package = line == "[package]"
+                  continue
+              if in_package and line.startswith("name") and "=" in line:
+                  print(line.split("=", 1)[1].strip().strip('"'))
+                  break
+          PY
+          )
+
+          if cargo run --quiet --package "$PKG" -- board-config | grep -q 'kind: FitImage'; then
             # FIT images are structured payloads; if a board uses FIT, test the
             # board-declared FIT path rather than replacing it with a raw blob.
             cargo xtask assemble --board "$BOARD" --release
