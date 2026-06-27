@@ -47,7 +47,7 @@ use validation::{
 
 /// Generate the complete Rust source for a stage's main.rs.
 ///
-/// This is the heart of fstart's "RON drives everything" philosophy.
+/// Lower a parsed transitional board description into stage facts and adapter glue.
 /// The returned string is valid Rust source to be `include!()`d in the
 /// `#![no_std] #![no_main]` crate root.
 pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> String {

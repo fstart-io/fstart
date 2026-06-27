@@ -56,7 +56,10 @@ pub use flash_layout::FlashLayoutVerifier;
 pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use gpio::GpioController;
 pub use i2c::I2c;
-pub use init::{EarlyInit, FinalizeInit, PostDramInit, PreConsoleInit, StageLocalInit};
+pub use init::{
+    EarlyInit, FinalizeInit, HardwareInit, InitContext, PostDramInit, PreConsoleInit,
+    StageLocalInit,
+};
 pub use lpc::LpcBus;
 pub use mainboard::Mainboard;
 pub use memory_controller::MemoryController;

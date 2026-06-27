@@ -12,6 +12,18 @@ default = []
 # Pulls in the std-requiring `DeviceMask` tests. Host-only; firmware
 # builds leave this off.
 std = ["fstart-types/std"]
+# Static typed-board executor. This is the migration target: board crates pass
+# concrete device containers implementing HardwareInit into a fixed handwritten
+# flow selected by coarse profile features.
+fixed-flow = []
+flow-early-platform-v2 = ["fixed-flow"]
+flow-memory-v2 = ["fixed-flow"]
+flow-bus-v2 = ["fixed-flow"]
+flow-storage-v2 = ["fixed-flow"]
+flow-security-v2 = ["fixed-flow"]
+flow-payload-v2 = ["fixed-flow"]
+flow-handoff-v2 = ["fixed-flow"]
+
 # Handwritten executor over codegen-emitted `StagePlan` data. Flow arms are
 # separately gated so size-sensitive stages do not compile unused paths.
 stage-executor = []

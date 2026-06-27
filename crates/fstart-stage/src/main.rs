@@ -1,8 +1,10 @@
 //! fstart-stage: the single firmware stage binary crate.
 //!
-//! This crate's entire behavior is generated at build time from the board
-//! RON file via `build.rs` + `fstart-codegen`. The generated code provides
-//! `fstart_main()` with platform entry, driver init, and capability sequence.
+//! This crate links a fixed handwritten stage executor with board-specific
+//! data and typed adapter glue produced at build time. During the migration to
+//! Rust board crates, `build.rs` still reads the board's transitional RON file
+//! and emits only the `StagePlan` facts plus concrete driver construction
+//! adapter used by `fstart-stage-runtime`.
 //!
 //! To build for a specific board:
 //!   FSTART_BOARD_RON=boards/qemu-riscv64/board.ron \
@@ -24,5 +26,5 @@
 ))]
 extern crate fstart_alloc;
 
-// Include the generated stage code (fstart_main, driver instances, etc.)
+// Include board-specific stage data and typed adapter glue.
 include!(concat!(env!("OUT_DIR"), "/generated_stage.rs"));

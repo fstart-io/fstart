@@ -2,8 +2,10 @@
 //!
 //! These traits model firmware sequencing phases without encoding a
 //! particular chipset topology such as northbridge/southbridge or PCH.  A
-//! board stage selects the devices that participate in each phase via the
-//! matching capability in the board RON.
+//! board stage selects the devices that participate in each phase via Rust
+//! board/build metadata and flow profiles.
+
+use core::marker::PhantomData;
 
 use crate::ServiceError;
 
@@ -47,3 +49,134 @@ pub trait FinalizeInit: Send + Sync {
     /// Lock write-once/security-sensitive hardware state.
     fn finalize_init(&mut self) -> Result<(), ServiceError>;
 }
+
+/// Context shared across step-based hardware initialization methods.
+///
+/// The initial context is deliberately small so existing generated-stage paths
+/// can adopt [`HardwareInit`] without changing behavior. Future static board
+/// crates can extend this with generic device lookup and stage-local services
+/// without adding chipset-specific helpers to common code.
+pub struct InitContext<'stage> {
+    _stage: PhantomData<&'stage mut ()>,
+}
+
+impl<'stage> InitContext<'stage> {
+    /// Construct an empty initialization context.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            _stage: PhantomData,
+        }
+    }
+}
+
+impl Default for InitContext<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Step-based hardware initialization lifecycle.
+///
+/// Drivers implement only the steps where they participate. Default no-op
+/// methods make static typed board containers cheap: monomorphized release
+/// builds can inline and remove calls to steps a concrete driver does not use.
+pub trait HardwareInit {
+    /// Run board/SoC operations that must happen before clocks or console.
+    #[inline(always)]
+    fn very_early(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Enable clocks/resets needed by pinmux, UART, timers, and DRAM setup.
+    #[inline(always)]
+    fn early_clocks(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Route pins for early UART, DRAM, boot media, and board straps.
+    #[inline(always)]
+    fn pinmux(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Decode/register setup required before a console driver can work.
+    #[inline(always)]
+    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Initialize the selected boot console.
+    #[inline(always)]
+    fn console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Run diagnostics and safety checks after logging is available.
+    #[inline(always)]
+    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Read SPD, straps, or board config needed for memory init.
+    #[inline(always)]
+    fn memory_discovery(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Train/enable DRAM or validate fixed RAM setup.
+    #[inline(always)]
+    fn dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Run DRAM-backed platform/device setup.
+    #[inline(always)]
+    fn post_dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Enable fixed bridges/resources before probing children.
+    #[inline(always)]
+    fn bus_early(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Discover or instantiate child devices on enumerable buses.
+    #[inline(always)]
+    fn bus_probe(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Run hooks after generic drivers are available.
+    #[inline(always)]
+    fn drivers_ready(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Bring up boot media and firmware-volume access.
+    #[inline(always)]
+    fn storage(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Measure or verify firmware and policy inputs.
+    #[inline(always)]
+    fn security(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Let devices participate in payload loading.
+    #[inline(always)]
+    fn payload_load(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Finalize handoff tables and quiesce firmware-owned devices.
+    #[inline(always)]
+    fn handoff(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+impl HardwareInit for () {}

@@ -1,11 +1,12 @@
 //! Shared stage-runtime types for the fstart firmware framework.
 //!
-//! This crate contains the `Board` trait implemented by generated board
-//! adapters plus small scalar helper types shared by generated stage code.
+//! This crate contains both the transitional `Board` trait implemented by
+//! generated board adapters and the static typed-board fixed flow used by Rust
+//! board crates. Small scalar helper types are shared by both paths.
 //!
-//! There is exactly one production stage creation path: `fstart-codegen` emits
-//! data-only `StagePlan` tables plus a small `fstart_main()` shim into
-//! [`run_stage`]. The executor runs handwritten Rust flow over those facts.
+//! The migration target is [`fixed_flow::run`]: it executes a fixed,
+//! handwritten sequence over concrete `HardwareInit` device containers. The
+//! older [`run_stage`] path remains while all boards are converted.
 //!
 //! # Multi-platform constraints
 //!
@@ -21,11 +22,15 @@
 #[cfg(feature = "flow-acpi")]
 extern crate alloc;
 
+#[cfg(feature = "fixed-flow")]
+pub mod fixed_flow;
 #[cfg(feature = "stage-executor")]
 pub mod flow;
 pub mod mask;
 pub mod plan;
 
+#[cfg(feature = "fixed-flow")]
+pub use fixed_flow::{run as run_fixed_flow, StaticBoard};
 #[cfg(feature = "stage-executor")]
 pub use flow::run_stage;
 pub use mask::DeviceMask;

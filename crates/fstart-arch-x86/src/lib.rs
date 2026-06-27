@@ -366,6 +366,7 @@ pub mod mtrr {
         }
     }
 
+    #[allow(clippy::manual_isolate_lowest_one)]
     fn largest_mtrr_chunk(base: u64, remaining: u64) -> u64 {
         let max_by_remaining = 1u64 << (63 - remaining.leading_zeros());
         if base == 0 {
