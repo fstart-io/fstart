@@ -113,7 +113,7 @@ pub fn generate_stage_source(parsed: &ParsedBoard, stage_name: Option<&str>) -> 
     };
 
     // Validate device tree (bus service requirements).
-    // Ordering is already correct — ron_loader flattens in pre-order DFS.
+    // Ordering is already correct: the board loader flattens in pre-order DFS.
     if let Err(err) = validate_device_tree(
         &config.devices,
         &parsed.driver_instances,

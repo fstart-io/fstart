@@ -1,6 +1,6 @@
 //! Build-time code generation library.
 //!
-//! Reads board.ron files and generates:
+//! Lowers Rust board metadata and generates:
 //! - Stage `fstart_main()` entry point with capability call sequence
 //! - Static driver instantiation
 //! - Linker scripts from memory maps

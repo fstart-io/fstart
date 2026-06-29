@@ -491,6 +491,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-bananapi-m1"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
 name = "fstart-board-foxconn-d41s"
 version = "0.1.0"
 dependencies = [
@@ -528,6 +536,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-licheerv-dock"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-orangepi-pc2"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-orangepi-r1"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
 name = "fstart-board-qemu-aarch64"
 version = "0.1.0"
 dependencies = [
@@ -535,6 +567,46 @@ dependencies = [
  "fstart-device-registry",
  "fstart-types",
  "heapless",
+]
+
+[[package]]
+name = "fstart-board-qemu-aarch64-multi"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-aarch64-uefi"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-armv7"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-q35"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-q35-uefi"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
 ]
 
 [[package]]
@@ -548,12 +620,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-qemu-riscv64-multi"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-sbsa"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
 name = "fstart-board-qemu-virt"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
  "fstart-types",
  "heapless",
+]
+
+[[package]]
+name = "fstart-board-sifive-unmatched"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-sifive-unmatched-hw"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-types",
 ]
 
 [[package]]
@@ -580,11 +684,24 @@ dependencies = [
  "acpi_tables",
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-board-bananapi-m1",
  "fstart-board-foxconn-d41s",
  "fstart-board-foxconn-d41s-uefi",
  "fstart-board-lenovo-x61",
+ "fstart-board-licheerv-dock",
+ "fstart-board-orangepi-pc2",
+ "fstart-board-orangepi-r1",
  "fstart-board-qemu-aarch64",
+ "fstart-board-qemu-aarch64-multi",
+ "fstart-board-qemu-aarch64-uefi",
+ "fstart-board-qemu-armv7",
+ "fstart-board-qemu-q35",
+ "fstart-board-qemu-q35-uefi",
  "fstart-board-qemu-riscv64",
+ "fstart-board-qemu-riscv64-multi",
+ "fstart-board-qemu-sbsa",
+ "fstart-board-sifive-unmatched",
+ "fstart-board-sifive-unmatched-hw",
  "fstart-device-registry",
  "fstart-driver-designware-i2c",
  "fstart-driver-intel-ich7",
@@ -1326,11 +1443,24 @@ dependencies = [
  "fstart-acpi",
  "fstart-alloc",
  "fstart-arch",
+ "fstart-board-bananapi-m1",
  "fstart-board-foxconn-d41s",
  "fstart-board-foxconn-d41s-uefi",
  "fstart-board-lenovo-x61",
+ "fstart-board-licheerv-dock",
+ "fstart-board-orangepi-pc2",
+ "fstart-board-orangepi-r1",
  "fstart-board-qemu-aarch64",
+ "fstart-board-qemu-aarch64-multi",
+ "fstart-board-qemu-aarch64-uefi",
+ "fstart-board-qemu-armv7",
+ "fstart-board-qemu-q35",
+ "fstart-board-qemu-q35-uefi",
  "fstart-board-qemu-riscv64",
+ "fstart-board-qemu-riscv64-multi",
+ "fstart-board-qemu-sbsa",
+ "fstart-board-sifive-unmatched",
+ "fstart-board-sifive-unmatched-hw",
  "fstart-capabilities",
  "fstart-codegen",
  "fstart-cpu-intel",
@@ -2167,11 +2297,24 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "fstart-acpi",
+ "fstart-board-bananapi-m1",
  "fstart-board-foxconn-d41s",
  "fstart-board-foxconn-d41s-uefi",
  "fstart-board-lenovo-x61",
+ "fstart-board-licheerv-dock",
+ "fstart-board-orangepi-pc2",
+ "fstart-board-orangepi-r1",
  "fstart-board-qemu-aarch64",
+ "fstart-board-qemu-aarch64-multi",
+ "fstart-board-qemu-aarch64-uefi",
+ "fstart-board-qemu-armv7",
+ "fstart-board-qemu-q35",
+ "fstart-board-qemu-q35-uefi",
  "fstart-board-qemu-riscv64",
+ "fstart-board-qemu-riscv64-multi",
+ "fstart-board-qemu-sbsa",
+ "fstart-board-sifive-unmatched",
+ "fstart-board-sifive-unmatched-hw",
  "fstart-codegen",
  "fstart-crypto",
  "fstart-device-registry",
@@ -2186,7 +2329,6 @@ dependencies = [
  "heapless",
  "object",
  "rand_core",
- "ron",
 ]
 
 [[package]]

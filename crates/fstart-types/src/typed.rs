@@ -102,6 +102,7 @@ pub const fn io16(raw: u16) -> IoAddr<Io16> {
 
 /// Interrupt request line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Irq(pub u8);
 
 /// PCI bus/device/function address.

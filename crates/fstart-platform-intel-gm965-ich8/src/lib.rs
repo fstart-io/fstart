@@ -342,17 +342,15 @@ impl Gm965Ich8Platform {
                 self.pcie_ports,
                 self.dlpc_superio
                     .as_ref()
-                    .map_or(true, |policy| policy.enabled),
+                    .is_none_or(|policy| policy.enabled),
                 self.dock_superio
                     .as_ref()
-                    .map_or(false, |policy| policy.enabled),
-                self.uart0.as_ref().map_or(true, |policy| policy.enabled),
+                    .is_some_and(|policy| policy.enabled),
+                self.uart0.as_ref().is_none_or(|policy| policy.enabled),
                 self.clock_generator
                     .as_ref()
-                    .map_or(false, |policy| policy.enabled),
-                self.mainboard
-                    .as_ref()
-                    .map_or(true, |policy| policy.enabled),
+                    .is_some_and(|policy| policy.enabled),
+                self.mainboard.as_ref().is_none_or(|policy| policy.enabled),
             ),
             stages: gm965_ich8_stages(),
             security: dev_security_config("keys/dev-signing.pub"),

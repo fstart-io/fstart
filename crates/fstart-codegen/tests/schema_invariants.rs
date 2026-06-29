@@ -3,8 +3,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use fstart_codegen::ron_loader::load_parsed_board;
-
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -128,106 +126,15 @@ fn serde_deserialize_structs_deny_unknown_fields() {
 }
 
 #[test]
-fn all_board_ron_files_parse() {
+fn repository_has_no_board_ron_files() {
     let root = repo_root();
     let boards: Vec<_> = files_under(&root, "boards", |p| {
         p.file_name().is_some_and(|n| n == "board.ron")
     });
 
-    std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
-        .spawn(move || {
-            for board in boards {
-                load_parsed_board(&board)
-                    .unwrap_or_else(|e| panic!("failed to parse {}: {e}", board.display()));
-            }
-        })
-        .expect("spawn board parser thread")
-        .join()
-        .expect("board parser thread panicked");
-}
-
-#[test]
-fn parsed_runtime_device_tables_exclude_acpi_only_descriptors() {
-    let root = repo_root();
-    let boards: Vec<_> = files_under(&root, "boards", |p| {
-        p.file_name().is_some_and(|n| n == "board.ron")
-    });
-
-    std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
-        .spawn(move || {
-            for board in boards {
-                let parsed = load_parsed_board(&board)
-                    .unwrap_or_else(|e| panic!("failed to parse {}: {e}", board.display()));
-                assert_eq!(parsed.config.devices.len(), parsed.driver_instances.len());
-                assert_eq!(parsed.config.devices.len(), parsed.device_services.len());
-                assert_eq!(parsed.config.devices.len(), parsed.device_tree.len());
-                assert!(
-                    parsed
-                        .driver_instances
-                        .iter()
-                        .all(|inst| inst.has_runtime_driver() || inst.meta().name == "structural"),
-                    "ACPI-only descriptors must stay outside runtime device tables: {}",
-                    board.display()
-                );
-            }
-        })
-        .expect("spawn board parser thread")
-        .join()
-        .expect("board parser thread panicked");
-}
-
-#[test]
-fn board_ron_acpi_only_descriptors_use_acpi_field() {
-    let root = repo_root();
-    let mut offenders = Vec::new();
-
-    for path in files_under(&root, "boards", |p| {
-        p.file_name().is_some_and(|n| n == "board.ron")
-    }) {
-        let text = fs::read_to_string(&path).expect("read board");
-        let lines: Vec<_> = text.lines().collect();
-        for (idx, line) in lines.iter().enumerate() {
-            if !line.contains("kind: AcpiOnly") {
-                continue;
-            }
-            let window = lines
-                .iter()
-                .skip(idx + 1)
-                .take(4)
-                .copied()
-                .collect::<Vec<_>>()
-                .join("\n");
-            if window.contains("driver:") || !window.contains("acpi:") {
-                offenders.push(format!("{}:{}", path.display(), idx + 1));
-            }
-        }
-    }
-
     assert!(
-        offenders.is_empty(),
-        "ACPI-only RON entries must use `acpi:`, not runtime `driver:`: {offenders:?}"
-    );
-}
-
-#[test]
-fn board_ron_does_not_declare_board_owned_service_list() {
-    let root = repo_root();
-    let offenders: Vec<_> = files_under(&root, "boards", |p| {
-        p.extension().is_some_and(|e| e == "ron")
-    })
-    .into_iter()
-    .filter(|path| {
-        fs::read_to_string(path)
-            .expect("read board")
-            .contains(concat!("services", ":"))
-    })
-    .collect();
-
-    assert!(
-        offenders.is_empty(),
-        "board RON files must not declare board-owned service lists: {offenders:?}"
+        boards.is_empty(),
+        "board metadata must be Rust crates, not board.ron files: {boards:?}"
     );
 }
 

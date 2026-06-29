@@ -32,7 +32,7 @@ pub struct CorebootSmmCompat {
     pub module_args: bool,
 }
 
-/// Top-level SMM settings from `board.ron`.
+/// Top-level SMM settings from board metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmmConfig {

@@ -1,4 +1,4 @@
-//! Board configuration — the top-level type deserialized from board.ron.
+//! Board configuration — the top-level Rust board metadata type.
 
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ impl core::fmt::Display for Platform {
     }
 }
 
-/// Top-level board configuration, deserialized from a board.ron file.
+/// Top-level board configuration produced by board crates.
 ///
 /// This is the single source of truth for board wiring, stage policy, and
 /// security settings. Rust driver crates and the host registry are the source
@@ -78,7 +78,7 @@ pub struct BoardConfig {
     pub platform: Platform,
     /// Memory map: ROM, RAM, MMIO regions
     pub memory: MemoryMap,
-    /// Device declarations with driver bindings and board wiring.
+    /// Device declarations with board wiring.
     pub devices: heapless::Vec<DeviceConfig, 32>,
     /// Stage composition: monolithic or multi-stage
     pub stages: StageLayout,
@@ -226,7 +226,7 @@ pub struct PayloadConfig {
     pub kernel_file: Option<HString<64>>,
     /// Load address for the kernel in RAM
     pub kernel_load_addr: Option<u64>,
-    /// FDT source
+    /// FDT source.
     pub fdt: FdtSource,
     /// Target address for the patched DTB in RAM
     pub dtb_addr: Option<u64>,
@@ -318,7 +318,7 @@ pub enum FitParseMode {
 pub enum FdtSource {
     /// Use the DTB passed by QEMU/firmware at reset
     Platform,
-    /// Generate FDT automatically from this board.ron
+    /// Generate FDT automatically from board metadata.
     Generated,
     /// Use a separate DTS file (path relative to board directory)
     Override(HString<128>),

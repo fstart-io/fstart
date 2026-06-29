@@ -11,7 +11,20 @@ fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
 fstart-board-qemu-riscv64 = { path = "../boards/qemu-riscv64" }
+fstart-board-qemu-riscv64-multi = { path = "../boards/qemu-riscv64-multi" }
 fstart-board-qemu-aarch64 = { path = "../boards/qemu-aarch64" }
+fstart-board-qemu-aarch64-multi = { path = "../boards/qemu-aarch64-multi" }
+fstart-board-qemu-aarch64-uefi = { path = "../boards/qemu-aarch64-uefi" }
+fstart-board-qemu-armv7 = { path = "../boards/qemu-armv7" }
+fstart-board-qemu-sbsa = { path = "../boards/qemu-sbsa" }
+fstart-board-qemu-q35 = { path = "../boards/qemu-q35" }
+fstart-board-qemu-q35-uefi = { path = "../boards/qemu-q35-uefi" }
+fstart-board-bananapi-m1 = { path = "../boards/bananapi-m1" }
+fstart-board-orangepi-r1 = { path = "../boards/orangepi-r1" }
+fstart-board-orangepi-pc2 = { path = "../boards/orangepi-pc2" }
+fstart-board-licheerv-dock = { path = "../boards/licheerv-dock" }
+fstart-board-sifive-unmatched = { path = "../boards/sifive-unmatched" }
+fstart-board-sifive-unmatched-hw = { path = "../boards/sifive-unmatched-hw" }
 fstart-board-foxconn-d41s = { path = "../boards/foxconn-d41s" }
 fstart-board-foxconn-d41s-uefi = { path = "../boards/foxconn-d41s-uefi" }
 fstart-board-lenovo-x61 = { path = "../boards/lenovo-x61" }
@@ -23,7 +36,6 @@ fstart-services = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-fit = { workspace = true, features = ["std"] }
 heapless = { workspace = true }
-ron = { workspace = true }
 fstart-crypto = { workspace = true, features = ["all"] }
 fstart-smm-image = { workspace = true }
 ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }

@@ -1,4 +1,4 @@
-//! Load and parse board.ron files.
+//! Load Rust board metadata and legacy RON board descriptions.
 //!
 //! Performs two-phase parsing:
 //! 1. Deserialize into [`RonBoardConfig`] — an internal type where
@@ -185,8 +185,21 @@ pub fn load_parsed_board_from_str(contents: &str, source: &str) -> Result<Parsed
 /// this helper derives the flattened topology and effective service tables from
 /// those Rust values. No RON/JSON/postcard transport is involved.
 pub fn load_parsed_board_from_rust(
+    config: BoardConfig,
+    driver_bindings: Vec<DriverBinding>,
+) -> Result<ParsedBoard, String> {
+    load_parsed_board_from_rust_with_acpi(config, driver_bindings, Vec::new())
+}
+
+/// Load and fully validate a board from native Rust metadata plus ACPI-only devices.
+///
+/// ACPI-only descriptors are side-table metadata for table generation. They are
+/// not runtime devices and therefore do not participate in the flat runtime
+/// topology or driver binding validation.
+pub fn load_parsed_board_from_rust_with_acpi(
     mut config: BoardConfig,
     driver_bindings: Vec<DriverBinding>,
+    acpi_only_devices: Vec<AcpiExtraDevice>,
 ) -> Result<ParsedBoard, String> {
     config
         .memory
@@ -275,7 +288,7 @@ pub fn load_parsed_board_from_rust(
         driver_instances,
         device_tree,
         device_services,
-        acpi_only_devices: Vec::new(),
+        acpi_only_devices,
     })
 }
 
@@ -512,92 +525,15 @@ fn effective_services(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_parsed_board, load_parsed_board_from_rust};
-    use std::path::PathBuf;
-
-    fn temp_board_path(name: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "fstart-ron-loader-{name}-{}-{}.ron",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        path
-    }
-
-    fn qemu_riscv64_board_source() -> String {
-        let board_path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/qemu-riscv64/board.ron");
-        std::fs::read_to_string(board_path).expect("read qemu-riscv64 board")
-    }
-
-    fn qemu_sbsa_board_source() -> String {
-        let board_path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/qemu-sbsa/board.ron");
-        std::fs::read_to_string(board_path).expect("read qemu-sbsa board")
-    }
-
-    fn load_temp_parsed(name: &str, source: String) -> Result<super::ParsedBoard, String> {
-        let path = temp_board_path(name);
-        std::fs::write(&path, source).expect("write temp board");
-        let load_path = path.clone();
-        let result = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(move || load_parsed_board(&load_path))
-            .expect("spawn board loader")
-            .join()
-            .expect("join board loader");
-        let _ = std::fs::remove_file(&path);
-        result
-    }
-
-    fn load_temp_board(name: &str, source: String) -> Result<(), String> {
-        load_temp_parsed(name, source).map(|_| ())
-    }
-
-    fn expect_load_error(result: Result<(), String>) -> String {
-        match result {
-            Ok(()) => panic!("board load must fail"),
-            Err(err) => err,
-        }
-    }
-
-    #[test]
-    fn unknown_car_field_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let with_unknown_car_method = source.replacen(
-            "        ],\n    ),\n\n    devices:",
-            "        ],\n        car: Some((\n            method: NonEvictMode,\n            base: 0xFEF00000,\n            size: 0x80000,\n        )),\n    ),\n\n    devices:",
-            1,
-        );
-        assert_ne!(source, with_unknown_car_method, "test fixture changed");
-
-        let err = expect_load_error(load_temp_board(
-            "unknown-car-field",
-            with_unknown_car_method,
-        ));
-        assert!(
-            err.contains("unknown field `method`")
-                || err.contains("unknown field 'method'")
-                || err.contains("Unexpected field named `method`"),
-            "unexpected error: {err}"
-        );
-    }
+    use super::{load_parsed_board_from_rust, load_parsed_board_from_rust_with_acpi};
 
     #[test]
     fn ifd_bios_region_derives_flash_window_and_boot_media() {
-        let parsed = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(move || {
-                load_parsed_board_from_rust(
-                    fstart_board_lenovo_x61::board_config(),
-                    fstart_board_lenovo_x61::driver_bindings(),
-                )
-                .unwrap()
-            })
-            .expect("spawn ron loader worker")
-            .join()
-            .expect("ron loader worker panicked");
+        let parsed = load_parsed_board_from_rust(
+            fstart_board_lenovo_x61::board_config(),
+            fstart_board_lenovo_x61::driver_bindings(),
+        )
+        .unwrap();
 
         assert_eq!(
             parsed.config.memory.firmware_window(),
@@ -608,317 +544,6 @@ mod tests {
                 && region.base == 0xFFE8_0000
                 && region.size == 0x0018_0000
         }));
-
-        let fstart_types::StageLayout::MultiStage(stages) = &parsed.config.stages else {
-            panic!("lenovo-x61 should be multi-stage");
-        };
-        assert!(stages
-            .iter()
-            .all(|stage| stage.capabilities.iter().any(|cap| {
-                matches!(
-                    cap,
-                    fstart_types::Capability::BootMedia(
-                        fstart_types::BootMedium::FirmwareImage { .. }
-                    )
-                )
-            })));
-    }
-
-    #[test]
-    fn contiguous_rom_regions_derive_flash_window_and_boot_media() {
-        let source = r#"
-(
-    name: "contiguous-rom-test",
-    platform: Riscv64,
-    memory: (
-        regions: [
-            ( name: "flash_a", base: 0x20000000, size: 0x00100000, kind: Rom ),
-            ( name: "flash_b", base: 0x20100000, size: 0x00200000, kind: Rom ),
-            ( name: "ram", base: 0x80000000, size: 0x08000000, kind: Ram ),
-        ],
-    ),
-    devices: [
-        (
-            name: "uart0",
-            driver: Ns16550((
-                regs: Mmio(base: 0x10000000, reg_shift: 0, reg_width: 0),
-                clock_freq: 3686400,
-                baud_rate: 115200,
-            )),
-        ),
-    ],
-    stages: MultiStage([
-        (
-            name: "bootblock",
-            capabilities: [
-                ConsoleInit,
-                BootMedia(FirmwareImage()),
-                SigVerify,
-                StageLoad( next_stage: "main" ),
-            ],
-            load_addr: 0x20000000,
-            stack_size: 0x4000,
-            runs_from: Rom,
-        ),
-        (
-            name: "main",
-            capabilities: [
-                ConsoleInit,
-                MemoryInit,
-                BootMedia(FirmwareImage()),
-                DriverInit,
-            ],
-            load_addr: 0x80100000,
-            stack_size: 0x10000,
-            runs_from: Ram,
-        ),
-    ]),
-    security: (
-        signing_algorithm: Ed25519,
-        pubkey_file: "keys/dev-signing.pub",
-        required_digests: [Sha256],
-    ),
-    payload: None,
-)
-"#
-        .to_string();
-        let parsed = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(move || {
-                let path = temp_board_path("rom-derived-flash");
-                std::fs::write(&path, source).expect("write temp board");
-                let parsed = match load_parsed_board(&path) {
-                    Ok(parsed) => parsed,
-                    Err(err) => panic!("load synthetic contiguous-ROM board: {err}"),
-                };
-                let _ = std::fs::remove_file(&path);
-                parsed
-            })
-            .expect("spawn ron loader worker")
-            .join()
-            .expect("ron loader worker panicked");
-
-        assert_eq!(
-            parsed.config.memory.firmware_window(),
-            Some((0x2000_0000, 0x0030_0000))
-        );
-
-        let fstart_types::StageLayout::MultiStage(stages) = &parsed.config.stages else {
-            panic!("synthetic contiguous-ROM board should be multi-stage");
-        };
-        assert!(stages.iter().all(|stage| {
-            stage.capabilities.iter().any(|cap| {
-                matches!(
-                    cap,
-                    fstart_types::Capability::BootMedia(
-                        fstart_types::BootMedium::FirmwareImage { .. }
-                    )
-                )
-            })
-        }));
-    }
-
-    #[test]
-    fn raw_auto_device_boot_media_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let with_auto_device = source.replacen(
-            "BootMedia(FirmwareImage())",
-            "BootMedia(AutoDevice(devices: [(name: \"mmc0\", offset: 0x2000, size: 0x800000)]))",
-            1,
-        );
-        assert_ne!(source, with_auto_device, "test fixture changed");
-
-        let err = expect_load_error(load_temp_board("raw-auto-device", with_auto_device));
-        assert!(
-            err.contains("unknown variant `AutoDevice`")
-                || err.contains("unknown variant 'AutoDevice'")
-                || err.contains("Unexpected variant named `AutoDevice`")
-                || err.contains("Expected identifier"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn raw_memory_mapped_boot_media_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let with_raw_mapping = source.replacen(
-            "BootMedia(FirmwareImage())",
-            "BootMedia(MemoryMapped( base: 0x20000000, size: 0x02000000 ))",
-            1,
-        );
-        assert_ne!(source, with_raw_mapping, "test fixture changed");
-
-        let err = expect_load_error(load_temp_board("raw-memory-mapped", with_raw_mapping));
-        assert!(
-            err.contains("unknown variant `MemoryMapped`")
-                || err.contains("unknown variant 'MemoryMapped'")
-                || err.contains("Unexpected variant named `MemoryMapped`")
-                || err.contains("Expected identifier"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn board_owned_service_list_field_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let with_board_owned_service_list = source.replacen(
-            "driver: Ns16550((",
-            &format!(
-                "{} [\"Console\"],\n            driver: Ns16550((",
-                concat!("services", ":")
-            ),
-            1,
-        );
-        assert_ne!(
-            source, with_board_owned_service_list,
-            "test fixture changed"
-        );
-
-        let err = expect_load_error(load_temp_board(
-            "board-owned-service-list",
-            with_board_owned_service_list,
-        ));
-
-        assert!(
-            err.contains("unknown field `services`")
-                || err.contains("unknown field 'services'")
-                || err.contains("Unexpected field named `services`"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn string_disabled_services_field_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let with_string_disabled_console = source.replacen(
-            "driver: Ns16550((",
-            "disabled_services: [\"Console\"],\n            driver: Ns16550((",
-            1,
-        );
-        assert_ne!(source, with_string_disabled_console, "test fixture changed");
-
-        let err = expect_load_error(load_temp_board(
-            "string-disabled-services",
-            with_string_disabled_console,
-        ));
-
-        assert!(
-            err.contains("Expected identifier")
-                || err.contains("Expected enum")
-                || err.contains("invalid type"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn disabled_services_removes_single_service() {
-        let source = qemu_riscv64_board_source();
-        let with_disabled_console = source.replacen(
-            "driver: Ns16550((",
-            "disabled_services: [Console],\n            driver: Ns16550((",
-            1,
-        );
-        assert_ne!(source, with_disabled_console, "test fixture changed");
-
-        let parsed = std::thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || {
-                let path = temp_board_path("disabled-console");
-                std::fs::write(&path, with_disabled_console).unwrap();
-                let parsed = load_parsed_board(&path).unwrap();
-                let _ = std::fs::remove_file(&path);
-                parsed
-            })
-            .expect("spawn ron loader worker")
-            .join()
-            .expect("ron loader worker panicked");
-
-        assert!(parsed.driver_instances[0].provides(fstart_device_registry::Service::Console));
-        assert!(!parsed.device_services[0].contains(fstart_device_registry::Service::Console));
-    }
-
-    #[test]
-    fn runtime_device_without_driver_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let missing_driver = source.replacen(
-            r#"        (
-            name: "uart0",
-            driver: Ns16550((
-                regs: Mmio(base: 0x10000000, reg_shift: 0, reg_width: 0),
-                clock_freq: 3686400,
-                baud_rate: 115200,
-            )),
-        ),"#,
-            r#"        (
-            name: "uart0",
-        ),"#,
-            1,
-        );
-        assert_ne!(source, missing_driver, "test fixture changed");
-
-        let err = expect_load_error(load_temp_board("missing-driver", missing_driver));
-        assert!(
-            err.contains("missing 'driver', 'kind: Structural(...)', or 'kind: AcpiOnly'"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn acpi_only_descriptor_requires_explicit_kind() {
-        let source = qemu_sbsa_board_source();
-        let missing_kind = source.replacen(
-            "kind: AcpiOnly,\n            acpi: Ahci((",
-            "acpi: Ahci((",
-            1,
-        );
-        assert_ne!(source, missing_kind, "test fixture changed");
-
-        let err = expect_load_error(load_temp_board("acpi-only-missing-kind", missing_kind));
-        assert!(
-            err.contains("must use 'kind: AcpiOnly'"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn acpi_only_descriptors_are_collected_in_side_table() {
-        let parsed = load_temp_parsed("acpi-side-table", qemu_sbsa_board_source())
-            .expect("qemu-sbsa board should parse");
-
-        assert_eq!(parsed.acpi_only_devices.len(), 2);
-        assert!(matches!(
-            parsed.acpi_only_devices[0],
-            fstart_types::acpi::AcpiExtraDevice::Ahci(_)
-        ));
-        assert!(matches!(
-            parsed.acpi_only_devices[1],
-            fstart_types::acpi::AcpiExtraDevice::Xhci(_)
-        ));
-        assert!(parsed
-            .config
-            .devices
-            .iter()
-            .all(|dev| dev.name.as_str() != "ahci0" && dev.name.as_str() != "xhci0"));
-        assert_eq!(parsed.config.devices.len(), parsed.driver_instances.len());
-        assert_eq!(parsed.config.devices.len(), parsed.device_services.len());
-        assert_eq!(parsed.config.devices.len(), parsed.device_tree.len());
-    }
-
-    #[test]
-    fn acpi_only_kind_with_runtime_driver_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let conflicting = source.replacen(
-            "driver: Ns16550((",
-            "kind: AcpiOnly,\n            driver: Ns16550((",
-            1,
-        );
-        assert_ne!(source, conflicting, "test fixture changed");
-
-        let err = expect_load_error(load_temp_board("acpi-only-runtime", conflicting));
-        assert!(
-            err.contains("uses 'kind: AcpiOnly' with a runtime driver"),
-            "unexpected error: {err}"
-        );
     }
 
     #[test]
@@ -945,19 +570,46 @@ mod tests {
     }
 
     #[test]
-    fn device_with_driver_and_topology_kind_is_rejected() {
-        let source = qemu_riscv64_board_source();
-        let conflicting = source.replacen(
-            "driver: Ns16550((",
-            "kind: Structural(PciBridge),\n            driver: Ns16550((",
-            1,
-        );
-        assert_ne!(source, conflicting, "test fixture changed");
+    fn rust_board_bindings_for_unknown_devices_are_rejected() {
+        let mut bindings = fstart_board_qemu_riscv64::driver_bindings();
+        let instance = bindings[0].instance.clone();
+        bindings.push(fstart_device_registry::DriverBinding::new(
+            "missing", instance,
+        ));
 
-        let err = expect_load_error(load_temp_board("driver-and-kind", conflicting));
+        let err = match load_parsed_board_from_rust(
+            fstart_board_qemu_riscv64::board_config(),
+            bindings,
+        ) {
+            Ok(_) => panic!("unknown binding must fail"),
+            Err(err) => err,
+        };
         assert!(
-            err.contains("specifies both runtime/ACPI descriptor and structural 'kind'"),
+            err.contains("driver bindings for unknown devices: missing"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn acpi_only_descriptors_are_collected_in_side_table() {
+        let parsed = load_parsed_board_from_rust_with_acpi(
+            fstart_board_qemu_sbsa::board_config(),
+            fstart_board_qemu_sbsa::driver_bindings(),
+            fstart_board_qemu_sbsa::acpi_only_devices(),
+        )
+        .expect("qemu-sbsa board should parse");
+
+        assert_eq!(parsed.acpi_only_devices.len(), 2);
+        assert!(matches!(
+            parsed.acpi_only_devices[0],
+            fstart_types::acpi::AcpiExtraDevice::Ahci(_)
+        ));
+        assert!(matches!(
+            parsed.acpi_only_devices[1],
+            fstart_types::acpi::AcpiExtraDevice::Xhci(_)
+        ));
+        assert_eq!(parsed.config.devices.len(), parsed.driver_instances.len());
+        assert_eq!(parsed.config.devices.len(), parsed.device_services.len());
+        assert_eq!(parsed.config.devices.len(), parsed.device_tree.len());
     }
 }

@@ -52,7 +52,7 @@ pub mod sunxi_a20_dramc {
 
 #[cfg(feature = "sunxi-h3-dramc")]
 pub mod sunxi_h3_dramc {
-    pub use fstart_driver_sunxi_h3_dramc::SunxiH3DramcConfig;
+    pub use fstart_driver_sunxi_h3_dramc::{SunxiDramcVariant, SunxiH3DramcConfig};
 }
 
 #[cfg(feature = "sunxi-mmc")]
@@ -719,6 +719,7 @@ pub enum DriverInstance {
 /// fake positional `Structural` entries. Codegen still lowers this into its
 /// legacy parallel table internally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverBinding {
     /// Device name in the board's flat topology table.
     pub device: HString<32>,

@@ -504,7 +504,7 @@ pub struct HdaVerbTable {
 /// HD Audio configuration block for a board.
 ///
 /// Contains verb tables for all codecs present on the board.
-/// Placed in the southbridge/chipset driver config in the board RON.
+/// Placed in the southbridge/chipset driver config in Rust board metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HdaConfig {
@@ -514,6 +514,7 @@ pub struct HdaConfig {
 }
 
 /// Construct a typed HDA pin configuration for board metadata.
+#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub const fn pin_config(
     nid: u8,

@@ -1,0 +1,15 @@
+[package]
+name = "fstart-board-licheerv-dock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.fstart]
+board = "licheerv-dock"
+platform = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+
+[dependencies]
+fstart-types = { workspace = true, features = ["std"] }
+fstart-device-registry = { workspace = true, features = ["all-drivers"] }

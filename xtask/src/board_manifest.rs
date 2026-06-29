@@ -1,27 +1,14 @@
 //! Board discovery from per-board Cargo metadata.
 //!
-//! Rust-ported boards are normal crates under `boards/` with a small
+//! Boards are normal crates under `boards/` with a small
 //! `[package.metadata.fstart]` table. `xtask` discovers those packages and loads
-//! board/build facts by calling their Rust APIs directly. Legacy RON remains only
-//! for unported board directories that do not have a Cargo manifest.
+//! board/build facts by calling their Rust APIs directly.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use fstart_codegen::ron_loader::{self, ParsedBoard};
-use fstart_types::{
-    BoardConfig, Build, BuildInfo, BuildProfile, FlowProfile, ImageBuildInfo, PayloadInputInfo,
-    SocImageFormat, StageBuildInfo, StageLayout,
-};
-
-/// Where a board's authoritative metadata currently lives.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BoardSource {
-    /// Normal Rust board crate with `[package.metadata.fstart]`.
-    RustCrate,
-    /// Legacy `boards/<name>/board.ron` file, not yet ported.
-    LegacyRon,
-}
+use fstart_codegen::ron_loader::ParsedBoard;
+use fstart_types::{BoardConfig, BuildInfo};
 
 /// Discovery metadata for one board crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,8 +23,6 @@ pub struct BoardManifest {
     pub platform: Option<String>,
     /// Rust target triple metadata string from the board crate.
     pub target: Option<String>,
-    /// Metadata source for this board.
-    pub source: BoardSource,
 }
 
 /// Discover every board crate below `boards/`.
@@ -57,20 +42,6 @@ pub fn discover(workspace_root: &Path) -> Result<Vec<BoardManifest>, String> {
         let manifest = dir.join("Cargo.toml");
         if manifest.exists() {
             boards.push(read(&manifest)?);
-        } else if dir.join("board.ron").exists() {
-            let board = dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| format!("invalid board directory name: {}", dir.display()))?
-                .to_string();
-            boards.push(BoardManifest {
-                board,
-                package: String::new(),
-                dir,
-                platform: None,
-                target: None,
-                source: BoardSource::LegacyRon,
-            });
         }
     }
 
@@ -93,18 +64,6 @@ pub fn find(workspace_root: &Path, board_name: &str) -> Result<BoardManifest, St
             ));
         }
         return Ok(board);
-    }
-
-    let ron = dir.join("board.ron");
-    if ron.exists() {
-        return Ok(BoardManifest {
-            board: board_name.to_string(),
-            package: String::new(),
-            dir,
-            platform: None,
-            target: None,
-            source: BoardSource::LegacyRon,
-        });
     }
 
     Err(format!(
@@ -145,16 +104,12 @@ fn read(manifest: &Path) -> Result<BoardManifest, String> {
         dir,
         platform: metadata_value(&text, "platform"),
         target: metadata_value(&text, "target"),
-        source: BoardSource::RustCrate,
     })
 }
 
 /// Load a fully parsed board by asking the Rust board crate for metadata.
 pub fn load_parsed_board(workspace_root: &Path, board_name: &str) -> Result<ParsedBoard, String> {
     let manifest = find(workspace_root, board_name)?;
-    if manifest.source == BoardSource::LegacyRon {
-        return ron_loader::load_parsed_board(&manifest.dir.join("board.ron"));
-    }
     crate::rust_board_provider::parsed_board(&manifest.board)
         .ok_or_else(|| format!("Rust board '{}' has no direct provider", manifest.board))?
 }
@@ -168,10 +123,6 @@ pub fn load_board_config(workspace_root: &Path, board_name: &str) -> Result<Boar
 /// Load host build/package metadata by asking the Rust board crate.
 pub fn load_build_info(workspace_root: &Path, board_name: &str) -> Result<BuildInfo, String> {
     let manifest = find(workspace_root, board_name)?;
-    if manifest.source == BoardSource::LegacyRon {
-        let parsed = ron_loader::load_parsed_board(&manifest.dir.join("board.ron"))?;
-        return legacy_build_info(&manifest, &parsed.config, &parsed.driver_instances);
-    }
     let info = crate::rust_board_provider::build_info(&manifest.board)
         .ok_or_else(|| format!("Rust board '{}' has no direct provider", manifest.board))?;
     validate_build_info(&manifest, &info)?;
@@ -200,72 +151,6 @@ fn validate_build_info(manifest: &BoardManifest, info: &BuildInfo) -> Result<(),
         }
     }
     Ok(())
-}
-
-/// Return the legacy board RON path for unported boards.
-pub fn legacy_board_config_path(manifest: &BoardManifest) -> Result<PathBuf, String> {
-    if manifest.source == BoardSource::LegacyRon {
-        return Ok(manifest.dir.join("board.ron"));
-    }
-    Err(format!(
-        "Rust board '{}' is loaded directly and has no serialized board config path",
-        manifest.board
-    ))
-}
-
-fn legacy_build_info(
-    manifest: &BoardManifest,
-    config: &BoardConfig,
-    drivers: &[fstart_device_registry::DriverInstance],
-) -> Result<BuildInfo, String> {
-    let flow_profile = match &config.stages {
-        StageLayout::Monolithic(_) => FlowProfile::LinuxBoot,
-        StageLayout::MultiStage(_) => FlowProfile::MultiStage,
-    };
-    let mut build = Build::new(config.name.as_str())
-        .board_package(manifest.package.as_str())
-        .target(config.platform.target_triple())
-        .profile(BuildProfile::Dev)
-        .flow_profile(flow_profile)
-        .image(ImageBuildInfo {
-            full_flash_image: config.full_flash_image,
-            soc_image_format: config.soc_image_format,
-        })
-        .feature(config.platform.as_str());
-
-    match &config.stages {
-        StageLayout::Monolithic(stage) => {
-            build = build.stage(StageBuildInfo::new("stage", stage.load_addr));
-        }
-        StageLayout::MultiStage(stages) => {
-            for stage in stages {
-                build = build.stage(StageBuildInfo::new(stage.name.as_str(), stage.load_addr));
-            }
-        }
-    }
-
-    for driver in drivers {
-        if let Some(feature) = driver.driver_feature() {
-            build = build.feature(feature);
-        }
-    }
-    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
-        build = build.feature("sunxi");
-    }
-
-    if let Some(payload) = &config.payload {
-        if let Some(kernel) = &payload.kernel_file {
-            build = build.payload_input(PayloadInputInfo::new("kernel", kernel.as_str()));
-        }
-        if let Some(fit) = &payload.fit_file {
-            build = build.payload_input(PayloadInputInfo::new("fit", fit.as_str()));
-        }
-        if let Some(firmware) = &payload.firmware {
-            build = build.payload_input(PayloadInputInfo::new("firmware", firmware.file.as_str()));
-        }
-    }
-
-    Ok(build.build())
 }
 
 fn package_name(text: &str) -> Option<String> {

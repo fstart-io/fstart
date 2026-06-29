@@ -1,12 +1,10 @@
 use super::*;
-use crate::ron_loader::{load_parsed_board, load_parsed_board_from_rust, ParsedBoard};
-use std::path::PathBuf;
+use crate::ron_loader::{load_parsed_board_from_rust_with_acpi, ParsedBoard};
 
 /// Load a fixture board, generate the adapter for its first (or
 /// only) stage, and return the formatted source.
 ///
-/// Legacy fixtures are loaded from `boards/<name>/board.ron`; migrated Rust
-/// boards are loaded through their direct Rust metadata API.
+/// Fixture boards are loaded through their direct Rust metadata API.
 fn adapter_source_for_board(board: &str) -> String {
     adapter_source_inner(board, None)
 }
@@ -18,12 +16,7 @@ fn adapter_source_for_stage(board: &str, stage: &str) -> String {
     adapter_source_inner(board, Some(stage.to_owned()))
 }
 
-/// Runs the ron loader + codegen on a fresh thread with a
-/// generous stack (8 MiB).  The Rust default test-thread stack
-/// is 2 MiB and `prettyplease` + serde-de-deep-ron can exceed that
-/// for some boards when compiled in debug mode.  Using a worker
-/// thread keeps every test robust without forcing every CI run
-/// to export `RUST_MIN_STACK`.
+/// Runs board loading + codegen on a fresh thread with a generous stack.
 fn adapter_source_inner(board: &str, stage: Option<String>) -> String {
     let board = board.to_owned();
     std::thread::Builder::new()
@@ -65,26 +58,82 @@ fn adapter_source_inner(board: &str, stage: Option<String>) -> String {
 }
 
 fn load_fixture_board(board: &str) -> Result<ParsedBoard, String> {
-    match board {
-        "foxconn-d41s" => load_parsed_board_from_rust(
+    let (config, drivers) = match board {
+        "qemu-riscv64" => (
+            fstart_board_qemu_riscv64::board_config(),
+            fstart_board_qemu_riscv64::driver_bindings(),
+        ),
+        "qemu-riscv64-multi" => (
+            fstart_board_qemu_riscv64_multi::board_config(),
+            fstart_board_qemu_riscv64_multi::driver_bindings(),
+        ),
+        "qemu-aarch64" => (
+            fstart_board_qemu_aarch64::board_config(),
+            fstart_board_qemu_aarch64::driver_bindings(),
+        ),
+        "qemu-aarch64-uefi" => (
+            fstart_board_qemu_aarch64_uefi::board_config(),
+            fstart_board_qemu_aarch64_uefi::driver_bindings(),
+        ),
+        "qemu-armv7" => (
+            fstart_board_qemu_armv7::board_config(),
+            fstart_board_qemu_armv7::driver_bindings(),
+        ),
+        "qemu-sbsa" => (
+            fstart_board_qemu_sbsa::board_config(),
+            fstart_board_qemu_sbsa::driver_bindings(),
+        ),
+        "qemu-q35" => (
+            fstart_board_qemu_q35::board_config(),
+            fstart_board_qemu_q35::driver_bindings(),
+        ),
+        "qemu-q35-uefi" => (
+            fstart_board_qemu_q35_uefi::board_config(),
+            fstart_board_qemu_q35_uefi::driver_bindings(),
+        ),
+        "bananapi-m1" => (
+            fstart_board_bananapi_m1::board_config(),
+            fstart_board_bananapi_m1::driver_bindings(),
+        ),
+        "orangepi-r1" => (
+            fstart_board_orangepi_r1::board_config(),
+            fstart_board_orangepi_r1::driver_bindings(),
+        ),
+        "orangepi-pc2" => (
+            fstart_board_orangepi_pc2::board_config(),
+            fstart_board_orangepi_pc2::driver_bindings(),
+        ),
+        "licheerv-dock" => (
+            fstart_board_licheerv_dock::board_config(),
+            fstart_board_licheerv_dock::driver_bindings(),
+        ),
+        "sifive-unmatched" => (
+            fstart_board_sifive_unmatched::board_config(),
+            fstart_board_sifive_unmatched::driver_bindings(),
+        ),
+        "sifive-unmatched-hw" => (
+            fstart_board_sifive_unmatched_hw::board_config(),
+            fstart_board_sifive_unmatched_hw::driver_bindings(),
+        ),
+        "foxconn-d41s" => (
             fstart_board_foxconn_d41s::board_config(),
             fstart_board_foxconn_d41s::driver_bindings(),
         ),
-        "foxconn-d41s-uefi" => load_parsed_board_from_rust(
+        "foxconn-d41s-uefi" => (
             fstart_board_foxconn_d41s_uefi::board_config(),
             fstart_board_foxconn_d41s_uefi::driver_bindings(),
         ),
-        _ => {
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .to_path_buf();
-            let ron = root.join("boards").join(board).join("board.ron");
-            load_parsed_board(&ron)
-        }
-    }
+        "lenovo-x61" => (
+            fstart_board_lenovo_x61::board_config(),
+            fstart_board_lenovo_x61::driver_bindings(),
+        ),
+        _ => return Err(format!("unknown Rust board fixture '{board}'")),
+    };
+    let acpi_only_devices = match board {
+        "qemu-sbsa" => fstart_board_qemu_sbsa::acpi_only_devices(),
+        _ => Vec::new(),
+    };
+    load_parsed_board_from_rust_with_acpi(config, drivers, acpi_only_devices)
 }
 
 mod adapter;

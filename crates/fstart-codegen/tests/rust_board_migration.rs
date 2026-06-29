@@ -1,9 +1,8 @@
 //! Migration safety checks for Rust board crate metadata.
 //!
-//! These tests keep the opt-in Rust board crate path honest without requiring
-//! every legacy `board.ron` board to be ported at once. Rust boards must expose
-//! normal Rust functions. They must not require helper binaries or serialized
-//! board metadata transport.
+//! These tests keep the Rust board crate path honest. Boards must expose normal
+//! Rust functions and must not require helper binaries or serialized board
+//! metadata transport.
 
 use std::path::{Path, PathBuf};
 

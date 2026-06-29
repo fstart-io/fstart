@@ -1,0 +1,15 @@
+[package]
+name = "fstart-board-qemu-q35"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.fstart]
+board = "qemu-q35"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+
+[dependencies]
+fstart-types = { workspace = true, features = ["std"] }
+fstart-device-registry = { workspace = true, features = ["all-drivers"] }

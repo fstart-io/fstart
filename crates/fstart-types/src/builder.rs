@@ -444,9 +444,12 @@ pub fn dev_security_config(pubkey_file: &str) -> SecurityConfig {
 /// Derive the coarse flow profile from payload kind.
 #[must_use]
 pub fn flow_profile_from_config(config: &crate::BoardConfig) -> FlowProfile {
-    match config.payload.as_ref().map(|payload| &payload.kind) {
-        Some(PayloadKind::UefiPayload) => FlowProfile::Uefi,
-        _ => FlowProfile::LinuxBoot,
+    match &config.stages {
+        StageLayout::MultiStage(_) => FlowProfile::MultiStage,
+        StageLayout::Monolithic(_) => match config.payload.as_ref().map(|payload| &payload.kind) {
+            Some(PayloadKind::UefiPayload) => FlowProfile::Uefi,
+            _ => FlowProfile::LinuxBoot,
+        },
     }
 }
 
@@ -710,6 +713,9 @@ where
     for feature in driver_features {
         build = build.feature(feature);
     }
+    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
+        build = build.feature("sunxi");
+    }
 
     build.payload_inputs_from_config(config).build()
 }
@@ -855,6 +861,9 @@ impl Build {
         if let Some(payload) = &config.payload {
             if let Some(kernel) = &payload.kernel_file {
                 self = self.payload_input(PayloadInputInfo::new("kernel", kernel.as_str()));
+            }
+            if let Some(fit) = &payload.fit_file {
+                self = self.payload_input(PayloadInputInfo::new("fit", fit.as_str()));
             }
             if let Some(firmware) = &payload.firmware {
                 self =

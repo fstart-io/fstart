@@ -1,7 +1,6 @@
 //! Build script for fstart-stage.
 //!
-//! For migrated Rust boards, reads board facts directly from the board crate via
-//! `FSTART_RUST_BOARD`. For legacy boards, `FSTART_BOARD_RON` remains supported.
+//! Reads board facts directly from the board crate via `FSTART_RUST_BOARD`.
 //! The generated stage source/linker script are still build artifacts, but board
 //! facts are not transported through RON/JSON/postcard for Rust boards.
 
@@ -15,32 +14,17 @@ fn main() {
     let stage_name = env::var("FSTART_STAGE_NAME").ok();
 
     println!("cargo:rerun-if-env-changed=FSTART_RUST_BOARD");
-    println!("cargo:rerun-if-env-changed=FSTART_BOARD_RON");
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_NAME");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_COREBOOT_HEADER");
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_ARTIFACT_DIR");
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_FEATURES");
 
-    let (parsed, board_source) = if let Ok(board) = env::var("FSTART_RUST_BOARD") {
-        (
-            load_rust_board(&board)
-                .unwrap_or_else(|e| panic!("failed to load Rust board {board}: {e}")),
-            format!("rust:{board}"),
-        )
-    } else {
-        let board_ron_path = env::var("FSTART_BOARD_RON").unwrap_or_else(|_| {
-            panic!(
-                "neither FSTART_RUST_BOARD nor FSTART_BOARD_RON set; xtask should pass one board source"
-            )
-        });
-        println!("cargo:rerun-if-changed={board_ron_path}");
-        (
-            ron_loader::load_parsed_board(&PathBuf::from(&board_ron_path))
-                .unwrap_or_else(|e| panic!("failed to load legacy board config: {e}")),
-            format!("legacy-ron:{board_ron_path}"),
-        )
-    };
+    let board = env::var("FSTART_RUST_BOARD")
+        .unwrap_or_else(|_| panic!("FSTART_RUST_BOARD not set; xtask should pass a Rust board"));
+    let parsed = load_rust_board(&board)
+        .unwrap_or_else(|e| panic!("failed to load Rust board {board}: {e}"));
+    let board_source = format!("rust:{board}");
 
     if let Ok(smm_image) = env::var("FSTART_SMM_IMAGE") {
         println!("cargo:rerun-if-changed={smm_image}");
@@ -92,9 +76,61 @@ fn load_rust_board(board: &str) -> Result<ron_loader::ParsedBoard, String> {
             fstart_board_qemu_riscv64::board_config(),
             fstart_board_qemu_riscv64::driver_bindings(),
         ),
+        "qemu-riscv64-multi" => (
+            fstart_board_qemu_riscv64_multi::board_config(),
+            fstart_board_qemu_riscv64_multi::driver_bindings(),
+        ),
         "qemu-aarch64" => (
             fstart_board_qemu_aarch64::board_config(),
             fstart_board_qemu_aarch64::driver_bindings(),
+        ),
+        "qemu-aarch64-multi" => (
+            fstart_board_qemu_aarch64_multi::board_config(),
+            fstart_board_qemu_aarch64_multi::driver_bindings(),
+        ),
+        "qemu-aarch64-uefi" => (
+            fstart_board_qemu_aarch64_uefi::board_config(),
+            fstart_board_qemu_aarch64_uefi::driver_bindings(),
+        ),
+        "qemu-armv7" => (
+            fstart_board_qemu_armv7::board_config(),
+            fstart_board_qemu_armv7::driver_bindings(),
+        ),
+        "qemu-sbsa" => (
+            fstart_board_qemu_sbsa::board_config(),
+            fstart_board_qemu_sbsa::driver_bindings(),
+        ),
+        "qemu-q35" => (
+            fstart_board_qemu_q35::board_config(),
+            fstart_board_qemu_q35::driver_bindings(),
+        ),
+        "qemu-q35-uefi" => (
+            fstart_board_qemu_q35_uefi::board_config(),
+            fstart_board_qemu_q35_uefi::driver_bindings(),
+        ),
+        "bananapi-m1" => (
+            fstart_board_bananapi_m1::board_config(),
+            fstart_board_bananapi_m1::driver_bindings(),
+        ),
+        "orangepi-r1" => (
+            fstart_board_orangepi_r1::board_config(),
+            fstart_board_orangepi_r1::driver_bindings(),
+        ),
+        "orangepi-pc2" => (
+            fstart_board_orangepi_pc2::board_config(),
+            fstart_board_orangepi_pc2::driver_bindings(),
+        ),
+        "licheerv-dock" => (
+            fstart_board_licheerv_dock::board_config(),
+            fstart_board_licheerv_dock::driver_bindings(),
+        ),
+        "sifive-unmatched" => (
+            fstart_board_sifive_unmatched::board_config(),
+            fstart_board_sifive_unmatched::driver_bindings(),
+        ),
+        "sifive-unmatched-hw" => (
+            fstart_board_sifive_unmatched_hw::board_config(),
+            fstart_board_sifive_unmatched_hw::driver_bindings(),
         ),
         "foxconn-d41s" => (
             fstart_board_foxconn_d41s::board_config(),
@@ -110,5 +146,9 @@ fn load_rust_board(board: &str) -> Result<ron_loader::ParsedBoard, String> {
         ),
         _ => return Err(format!("unknown Rust board '{board}'")),
     };
-    ron_loader::load_parsed_board_from_rust(config, drivers)
+    let acpi_only_devices = match board {
+        "qemu-sbsa" => fstart_board_qemu_sbsa::acpi_only_devices(),
+        _ => Vec::new(),
+    };
+    ron_loader::load_parsed_board_from_rust_with_acpi(config, drivers, acpi_only_devices)
 }

@@ -1,0 +1,15 @@
+[package]
+name = "fstart-board-qemu-armv7"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.fstart]
+board = "qemu-armv7"
+platform = "armv7"
+target = "armv7a-none-eabi"
+
+[dependencies]
+fstart-types = { workspace = true, features = ["std"] }
+fstart-device-registry = { workspace = true, features = ["all-drivers"] }

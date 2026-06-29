@@ -95,6 +95,12 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
     let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
     let pci_root_backend = pci_root_backend(parsed);
     let has_pci_driver = pci_root_backend.is_some();
+    let plan_context = PlanContext {
+        base_features: &base_features,
+        instances: &parsed.driver_instances,
+        needs_flat_binary: target.needs_flat_binary,
+        pci_root_backend,
+    };
 
     let stages = match &config.stages {
         StageLayout::Monolithic(stage) => {
@@ -110,12 +116,9 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
                     stage_idx: 0,
                     load_addr: stage.load_addr,
                 },
-                &base_features,
-                &parsed.driver_instances,
-                target.needs_flat_binary,
+                &plan_context,
                 config.soc_image_format,
                 false,
-                pci_root_backend,
             )]
         }
         StageLayout::MultiStage(stages) => stages
@@ -139,12 +142,9 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
                         stage_idx: idx,
                         load_addr: effective_stage_load_addr(config, idx, stage),
                     },
-                    &base_features,
-                    &parsed.driver_instances,
-                    target.needs_flat_binary,
+                    &plan_context,
                     soc_format,
                     has_pci_driver,
-                    pci_root_backend,
                 )
             })
             .collect(),
@@ -222,6 +222,14 @@ fn needs_aarch64_el2_relocate_entry(config: &BoardConfig) -> bool {
 }
 
 #[derive(Debug)]
+struct PlanContext<'a> {
+    base_features: &'a FeatureSet,
+    instances: &'a [DriverInstance],
+    needs_flat_binary: bool,
+    pci_root_backend: Option<PciRootBackend>,
+}
+
+#[derive(Debug)]
 struct StageContext<'a> {
     capabilities: &'a [Capability],
     heap_size: Option<u32>,
@@ -256,22 +264,19 @@ fn pci_root_backend(parsed: &ParsedBoard) -> Option<PciRootBackend> {
 fn stage_plan(
     config: &BoardConfig,
     stage: &StageContext<'_>,
-    base_features: &FeatureSet,
-    instances: &[DriverInstance],
-    needs_flat_binary: bool,
+    plan_context: &PlanContext<'_>,
     soc_format: SocImageFormat,
     include_global_pci_alloc: bool,
-    pci_root_backend: Option<PciRootBackend>,
 ) -> StageBuildPlan {
-    let mut features = base_features.clone();
+    let mut features = plan_context.base_features.clone();
     features.extend(capability_features(
         stage.capabilities,
         &config.security,
         config,
-        pci_root_backend,
+        plan_context.pci_root_backend,
     ));
     if stage_uses_mp(stage.capabilities) {
-        features.extend(cpu_driver_features(config, instances));
+        features.extend(cpu_driver_features(config, plan_context.instances));
     }
 
     if stage.page_size == PageSize::Size1GiB {
@@ -301,7 +306,7 @@ fn stage_plan(
         stage_name: stage.stage_name.clone(),
         display_name: stage.display_name.clone(),
         features,
-        needs_flat_binary,
+        needs_flat_binary: plan_context.needs_flat_binary,
         build_std,
         soc_format,
         load_addr: stage.load_addr,
@@ -504,10 +509,6 @@ fn cpu_driver_features(config: &BoardConfig, instances: &[DriverInstance]) -> Ve
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use fstart_codegen::ron_loader;
-
     fn load_plan(board: &'static str) -> super::BuildPlan {
         // The all-drivers registry has large enum/config values; parse on a
         // larger stack so x86 boards with nested chipset configs are reliable
@@ -515,20 +516,11 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
-                if let Some(parsed) = crate::rust_board_provider::parsed_board(board) {
-                    return super::plan(&parsed.unwrap_or_else(|e| {
+                let parsed = crate::rust_board_provider::parsed_board(board)
+                    .unwrap_or_else(|| panic!("Rust board '{board}' has no direct provider"))
+                    .unwrap_or_else(|e| {
                         panic!("failed to load Rust board metadata for {board}: {e}")
-                    }));
-                }
-
-                let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                let board_ron = manifest
-                    .join("..")
-                    .join("boards")
-                    .join(board)
-                    .join("board.ron");
-                let parsed = ron_loader::load_parsed_board(&board_ron)
-                    .unwrap_or_else(|e| panic!("failed to load {}: {e}", board_ron.display()));
+                    });
                 super::plan(&parsed)
             })
             .expect("spawn build-plan test loader")
