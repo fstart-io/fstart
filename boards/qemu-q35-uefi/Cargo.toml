@@ -8,17 +8,11 @@ publish = false
 [package.metadata.fstart]
 board = "qemu-q35-uefi"
 platform = "x86_64"
-tool-bin = "fstart-board-tool"
 target = "x86_64-unknown-none"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
-xtask = { path = "../../xtask" }
 fstart-driver-ns16550 = { workspace = true }
 fstart-driver-qemu-fw-cfg = { workspace = true }
 fstart-driver-q35-hostbridge = { workspace = true }
-
-[[bin]]
-name = "fstart-board-tool"
-path = "src/bin/fstart-board-tool.rs"

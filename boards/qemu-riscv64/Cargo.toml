@@ -10,7 +10,6 @@ board = "qemu-riscv64"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
 stage-bin = "fstart-stage"
-tool-bin = "fstart-board-tool"
 
 [features]
 default = ["host"]
@@ -19,7 +18,6 @@ host = [
   "dep:fstart-board-qemu-virt",
   "dep:fstart-board-meta",
   "dep:heapless",
-  "dep:xtask",
 ]
 stage = [
   "dep:fstart-stage",
@@ -50,7 +48,6 @@ fstart-types = { workspace = true }
 fstart-board-qemu-virt = { workspace = true, optional = true }
 fstart-board-meta = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
-xtask = { path = "../../xtask", optional = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-stage-runtime = { workspace = true, optional = true }
 fstart-services = { workspace = true, optional = true }
@@ -60,10 +57,6 @@ fstart-platform-riscv64 = { workspace = true, optional = true }
 fstart-driver-ns16550 = { workspace = true, optional = true }
 ufmt = { workspace = true, optional = true }
 
-[[bin]]
-name = "fstart-board-tool"
-path = "src/bin/fstart-board-tool.rs"
-required-features = ["host"]
 
 [[bin]]
 name = "fstart-stage"

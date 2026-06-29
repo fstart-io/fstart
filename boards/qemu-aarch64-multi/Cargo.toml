@@ -8,15 +8,9 @@ publish = false
 [package.metadata.fstart]
 board = "qemu-aarch64-multi"
 platform = "aarch64"
-tool-bin = "fstart-board-tool"
 target = "aarch64-unknown-none"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
-xtask = { path = "../../xtask" }
 fstart-driver-pl011 = { workspace = true }
-
-[[bin]]
-name = "fstart-board-tool"
-path = "src/bin/fstart-board-tool.rs"

@@ -8,15 +8,9 @@ publish = false
 [package.metadata.fstart]
 board = "qemu-armv7"
 platform = "armv7"
-tool-bin = "fstart-board-tool"
 target = "armv7a-none-eabi"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
-xtask = { path = "../../xtask" }
 fstart-driver-pl011 = { workspace = true }
-
-[[bin]]
-name = "fstart-board-tool"
-path = "src/bin/fstart-board-tool.rs"

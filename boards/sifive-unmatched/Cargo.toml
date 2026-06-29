@@ -8,15 +8,9 @@ publish = false
 [package.metadata.fstart]
 board = "sifive-unmatched"
 platform = "riscv64"
-tool-bin = "fstart-board-tool"
 target = "riscv64gc-unknown-none-elf"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
-xtask = { path = "../../xtask" }
 fstart-driver-sifive-uart = { workspace = true }
-
-[[bin]]
-name = "fstart-board-tool"
-path = "src/bin/fstart-board-tool.rs"

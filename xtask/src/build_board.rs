@@ -242,6 +242,7 @@ fn build_one_stage(
         .map_err(|e| format!("failed to write stage metadata: {e}"))?;
 
     let mut cmd = Command::new("cargo");
+    cmd.current_dir(workspace_root);
     cmd.arg("build")
         .arg("--package")
         .arg(&board_manifest.package)
@@ -452,6 +453,10 @@ where
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
+    if let Ok(root) = std::env::var("FSTART_WORKSPACE_ROOT") {
+        return Ok(PathBuf::from(root));
+    }
+
     // Walk up from current dir looking for the workspace Cargo.toml
     let mut dir = std::env::current_dir().map_err(|e| format!("no cwd: {e}"))?;
     loop {

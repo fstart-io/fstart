@@ -8,18 +8,12 @@ publish = false
 [package.metadata.fstart]
 board = "orangepi-pc2"
 platform = "aarch64"
-tool-bin = "fstart-board-tool"
 target = "aarch64-unknown-none"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
-xtask = { path = "../../xtask" }
 fstart-driver-ns16550 = { workspace = true }
 fstart-driver-sunxi-h3-ccu = { workspace = true }
 fstart-driver-sunxi-h3-dramc = { workspace = true }
 fstart-driver-sunxi-mmc = { workspace = true }
-
-[[bin]]
-name = "fstart-board-tool"
-path = "src/bin/fstart-board-tool.rs"

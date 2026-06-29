@@ -1,10 +1,12 @@
 //! Board discovery from per-board Cargo metadata.
 //!
 //! Boards are normal crates under `boards/` with a small
-//! `[package.metadata.fstart]` table. `xtask` discovers those packages and loads
-//! board/build actions by dispatching to each board crate's host tool binary.
+//! `[package.metadata.fstart]` table. `xtask` discovers those packages and runs a
+//! temporary host tool crate that aliases the selected board crate as
+//! `fstart_board`.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,8 +23,10 @@ pub struct BoardManifest {
     pub platform: Option<String>,
     /// Rust target triple metadata string from the board crate.
     pub target: Option<String>,
-    /// Cargo binary that owns host build orchestration for this board.
-    pub tool_bin: String,
+    /// Whether this board exports ACPI-only device metadata.
+    pub acpi_only_devices: bool,
+    /// Whether this board has a host feature for host-only dependencies.
+    pub host_feature: bool,
     /// Optional Cargo binary that owns this board's static stage adapter.
     pub stage_bin: Option<String>,
 }
@@ -106,29 +110,81 @@ fn read(manifest: &Path) -> Result<BoardManifest, String> {
         dir,
         platform: metadata_value(&text, "platform"),
         target: metadata_value(&text, "target"),
-        tool_bin: metadata_value(&text, "tool-bin")
-            .unwrap_or_else(|| "fstart-board-tool".to_string()),
+        acpi_only_devices: metadata_bool(&text, "acpi-only-devices").unwrap_or(false),
+        host_feature: has_feature(&text, "host"),
         stage_bin: metadata_value(&text, "stage-bin"),
     })
 }
 
-/// Dispatch an xtask subcommand to the selected board's host tool binary.
+/// Dispatch an xtask subcommand to a generated host tool for the selected board.
 pub fn run_board_tool(
     workspace_root: &Path,
     board_name: &str,
     args: &[String],
 ) -> Result<(), String> {
     let manifest = find(workspace_root, board_name)?;
+    let tool_dir = workspace_root
+        .join("target")
+        .join("fstart-board-tools")
+        .join(&manifest.board);
+    let src_dir = tool_dir.join("src");
+    fs::create_dir_all(&src_dir)
+        .map_err(|e| format!("failed to create {}: {e}", src_dir.display()))?;
+
+    let board_path = path_for_toml(&manifest.dir);
+    let xtask_path = path_for_toml(&workspace_root.join("xtask"));
+    let board_dependency = if manifest.host_feature {
+        format!(
+            "fstart_board = {{ package = \"{}\", path = \"{}\", default-features = false, features = [\"host\"] }}\n",
+            manifest.package, board_path
+        )
+    } else {
+        format!(
+            "fstart_board = {{ package = \"{}\", path = \"{}\" }}\n",
+            manifest.package, board_path
+        )
+    };
+    let cargo_toml = format!(
+        r#"[package]
+name = "fstart-board-tool-{board}"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+xtask = {{ path = "{xtask_path}" }}
+{board_dependency}"#,
+        board = manifest.board.replace('_', "-")
+    );
+    write_if_changed(&tool_dir.join("Cargo.toml"), &cargo_toml)?;
+
+    let acpi_callback = if manifest.acpi_only_devices {
+        "Some(fstart_board::acpi_only_devices)"
+    } else {
+        "None"
+    };
+    let main_rs = format!(
+        r#"fn main() {{
+    xtask::board_tool::main(xtask::board_tool::BoardCallbacks {{
+        board_config: fstart_board::board_config,
+        build_info: fstart_board::build_info,
+        driver_bindings: fstart_board::driver_bindings,
+        acpi_only_devices: {acpi_callback},
+    }});
+}}
+"#
+    );
+    write_if_changed(&src_dir.join("main.rs"), &main_rs)?;
+
     let status = Command::new("cargo")
-        .current_dir(workspace_root)
+        .current_dir(&tool_dir)
         .arg("run")
         .arg("--quiet")
-        .arg("--package")
-        .arg(&manifest.package)
-        .arg("--bin")
-        .arg(&manifest.tool_bin)
         .arg("--")
         .args(args)
+        .env("FSTART_WORKSPACE_ROOT", workspace_root)
         .status()
         .map_err(|e| format!("failed to run board tool for {}: {e}", manifest.board))?;
 
@@ -136,10 +192,24 @@ pub fn run_board_tool(
         Ok(())
     } else {
         Err(format!(
-            "board tool '{}:{}' failed with {status}",
-            manifest.package, manifest.tool_bin
+            "generated board tool for '{}' failed with {status}",
+            manifest.board
         ))
     }
+}
+
+fn path_for_toml(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
+fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
+    if fs::read_to_string(path).is_ok_and(|existing| existing == content) {
+        return Ok(());
+    }
+    let mut file =
+        fs::File::create(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 fn package_name(text: &str) -> Option<String> {
@@ -188,6 +258,33 @@ fn metadata_value(text: &str, key: &str) -> Option<String> {
     }
 
     None
+}
+
+fn metadata_bool(text: &str, key: &str) -> Option<bool> {
+    metadata_value(text, key).and_then(|value| value.parse().ok())
+}
+
+fn has_feature(text: &str, feature: &str) -> bool {
+    let mut in_features = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_features = trimmed == "[features]";
+            continue;
+        }
+        if !in_features || trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        let Some((found_key, _)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if found_key.trim() == feature {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]

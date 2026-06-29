@@ -8,18 +8,12 @@ publish = false
 [package.metadata.fstart]
 board = "bananapi-m1"
 platform = "armv7"
-tool-bin = "fstart-board-tool"
 target = "armv7a-none-eabi"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
-xtask = { path = "../../xtask" }
 fstart-driver-ns16550 = { workspace = true }
 fstart-driver-sunxi-ccu = { workspace = true }
 fstart-driver-sunxi-a20-dramc = { workspace = true }
 fstart-driver-sunxi-mmc = { workspace = true }
-
-[[bin]]
-name = "fstart-board-tool"
-path = "src/bin/fstart-board-tool.rs"

@@ -1,7 +1,8 @@
 //! Board-owned host tool entry points.
 //!
-//! A board crate calls this module from its `fstart-board-tool` binary with its
-//! Rust metadata functions. The metadata stays in-process as typed Rust values.
+//! The generated host-tool crate calls this module with the selected board
+//! crate's Rust metadata functions. The metadata stays in-process as typed Rust
+//! values.
 
 use clap::{Parser, Subcommand};
 use fstart_board_meta::DriverBinding;

@@ -491,7 +491,6 @@ dependencies = [
  "fstart-driver-sunxi-ccu",
  "fstart-driver-sunxi-mmc",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -506,7 +505,6 @@ dependencies = [
  "fstart-platform-intel-pineview-ich7",
  "fstart-types",
  "heapless",
- "xtask",
 ]
 
 [[package]]
@@ -517,7 +515,6 @@ dependencies = [
  "fstart-board-meta",
  "fstart-platform-intel-pineview-ich7",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -534,7 +531,6 @@ dependencies = [
  "fstart-platform-intel-gm965-ich8",
  "fstart-types",
  "heapless",
- "xtask",
 ]
 
 [[package]]
@@ -547,7 +543,6 @@ dependencies = [
  "fstart-driver-sunxi-d1-dramc",
  "fstart-driver-sunxi-mmc",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -570,7 +565,6 @@ dependencies = [
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -584,7 +578,6 @@ dependencies = [
  "fstart-driver-sunxi-mmc",
  "fstart-driver-sunxi-spi",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -595,7 +588,6 @@ dependencies = [
  "fstart-board-qemu-virt",
  "fstart-types",
  "heapless",
- "xtask",
 ]
 
 [[package]]
@@ -605,7 +597,6 @@ dependencies = [
  "fstart-board-meta",
  "fstart-driver-pl011",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -617,7 +608,6 @@ dependencies = [
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -627,7 +617,6 @@ dependencies = [
  "fstart-board-meta",
  "fstart-driver-pl011",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -640,7 +629,6 @@ dependencies = [
  "fstart-driver-q35-hostbridge",
  "fstart-driver-qemu-fw-cfg",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -652,7 +640,6 @@ dependencies = [
  "fstart-driver-q35-hostbridge",
  "fstart-driver-qemu-fw-cfg",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -671,7 +658,6 @@ dependencies = [
  "fstart-types",
  "heapless",
  "ufmt",
- "xtask",
 ]
 
 [[package]]
@@ -681,7 +667,6 @@ dependencies = [
  "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -692,7 +677,6 @@ dependencies = [
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -713,7 +697,6 @@ dependencies = [
  "fstart-board-meta",
  "fstart-driver-sifive-uart",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
@@ -725,7 +708,6 @@ dependencies = [
  "fstart-driver-fu740-prci",
  "fstart-driver-sifive-uart",
  "fstart-types",
- "xtask",
 ]
 
 [[package]]
