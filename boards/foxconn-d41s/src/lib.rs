@@ -4,7 +4,9 @@ use fstart_device_registry::{i2c_ck505, DriverBinding, DriverInstance};
 use fstart_driver_ite8721f as ite8721f;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
-use fstart_platform_intel_pineview_ich7::{PcieRootPort, PineviewIch7Platform};
+use fstart_platform_intel_pineview_ich7::{
+    LpcGenericIoDecode, PcieRootPort, PineviewIch7Platform, SataConfig, SataMode, UsbConfig,
+};
 use fstart_types::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
@@ -18,6 +20,19 @@ fn board() -> PineviewIch7Platform {
     PineviewIch7Platform::new(BOARD_NAME, BOARD_PACKAGE)
         .pcie_port(PcieRootPort::Port0, true)
         .pcie_port(PcieRootPort::Port1, true)
+        .lpc_generic_io(LpcGenericIoDecode {
+            base: 0x0a00,
+            size: 0x0100,
+        })
+        .gpe0_en(0x441)
+        .sata(SataConfig {
+            mode: SataMode::Ahci,
+            ports: 0x3,
+        })
+        .usb(UsbConfig {
+            ehci: true,
+            uhci: [true, true, true, true],
+        })
         .hda(d41s_hda_config())
         .gpio(d41s_gpio_config())
         .superio(d41s_superio_config())

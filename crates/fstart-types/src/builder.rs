@@ -9,8 +9,8 @@ use heapless::{String as HString, Vec as HVec};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BusAddress, DeviceConfig, DeviceEdge, DeviceRole, MemoryMap, PayloadConfig, Platform,
-    SocImageFormat,
+    BusAddress, DeviceConfig, DeviceEdge, DeviceRole, DigestAlgorithm, MemoryMap, PayloadConfig,
+    PayloadKind, Platform, SecurityConfig, SignatureAlgorithm, SocImageFormat,
 };
 
 /// Construct a bounded heapless string for static board metadata.
@@ -30,6 +30,19 @@ pub fn hvec<T, const N: usize, const C: usize>(items: [T; N]) -> HVec<T, C> {
     let mut out = HVec::new();
     for item in items {
         out.push(item).ok().expect("heapless vec capacity");
+    }
+    out
+}
+
+/// Construct a bounded vector of heapless metadata names.
+///
+/// This is the string-specialized companion to [`hvec`] for schema fields such
+/// as ordered stage phase device lists.
+#[must_use]
+pub fn hnames<const N: usize, const C: usize>(items: [&str; N]) -> HVec<HString<32>, C> {
+    let mut out = HVec::new();
+    for item in items {
+        out.push(hstr(item)).expect("metadata name vector capacity");
     }
     out
 }
@@ -79,6 +92,20 @@ impl DeviceTopology {
         self.device(name, Some(parent), None, role, true)
     }
 
+    /// Add a driverless child bus and declare its children in a scoped branch.
+    #[must_use]
+    pub fn bus<'a, F>(self, parent: &str, name: &'a str, role: DeviceRole, children: F) -> Self
+    where
+        F: FnOnce(DeviceBranch<'a>) -> DeviceBranch<'a>,
+    {
+        let topology = self.child_bus(parent, name, role);
+        children(DeviceBranch {
+            topology,
+            parent: name,
+        })
+        .finish()
+    }
+
     /// Add a driverless PCI/PCIe bridge/root-port node.
     #[must_use]
     pub fn pci_bridge(
@@ -122,6 +149,41 @@ impl DeviceTopology {
             })
             .expect("device table capacity");
         self
+    }
+}
+
+/// Scoped child builder returned by [`DeviceTopology::bus`].
+#[derive(Debug, Clone)]
+pub struct DeviceBranch<'a> {
+    topology: DeviceTopology,
+    parent: &'a str,
+}
+
+impl<'a> DeviceBranch<'a> {
+    /// Add a runtime child to this branch's parent bus.
+    #[must_use]
+    pub fn child(self, name: &str, bus: BusAddress) -> Self {
+        Self {
+            topology: self.topology.child(self.parent, name, bus),
+            parent: self.parent,
+        }
+    }
+
+    /// Add a nested driverless bus below this branch.
+    #[must_use]
+    pub fn bus<'b, F>(self, name: &'b str, role: DeviceRole, children: F) -> DeviceBranch<'a>
+    where
+        F: FnOnce(DeviceBranch<'b>) -> DeviceBranch<'b>,
+    {
+        let topology = self.topology.bus(self.parent, name, role, children);
+        DeviceBranch {
+            topology,
+            parent: self.parent,
+        }
+    }
+
+    fn finish(self) -> DeviceTopology {
+        self.topology
     }
 }
 
@@ -171,6 +233,40 @@ pub struct BoardInfo {
 #[derive(Debug, Clone)]
 pub struct Board {
     info: BoardInfo,
+}
+
+/// Convert full board configuration into runtime [`BoardInfo`].
+#[must_use]
+pub fn board_info_from_config(config: crate::BoardConfig) -> BoardInfo {
+    let mut board = Board::new(config.name.as_str())
+        .platform(config.platform)
+        .memory(config.memory);
+    for device in config.devices {
+        board = board.device(device);
+    }
+    if let Some(payload) = config.payload {
+        board = board.payload(payload);
+    }
+    board.build()
+}
+
+/// Common development signing policy for board metadata.
+#[must_use]
+pub fn dev_security_config(pubkey_file: &str) -> SecurityConfig {
+    SecurityConfig {
+        signing_algorithm: SignatureAlgorithm::Ed25519,
+        pubkey_file: hstr(pubkey_file),
+        required_digests: hvec([DigestAlgorithm::Sha256]),
+    }
+}
+
+/// Derive the coarse flow profile from payload kind.
+#[must_use]
+pub fn flow_profile_from_config(config: &crate::BoardConfig) -> FlowProfile {
+    match config.payload.as_ref().map(|payload| &payload.kind) {
+        Some(PayloadKind::UefiPayload) => FlowProfile::Uefi,
+        _ => FlowProfile::LinuxBoot,
+    }
 }
 
 impl Board {
@@ -414,6 +510,27 @@ impl Build {
         }
     }
 
+    /// Start host build metadata from common board configuration fields.
+    #[must_use]
+    pub fn from_board_config(
+        board_name: &str,
+        board_package: &str,
+        config: &crate::BoardConfig,
+        profile: BuildProfile,
+        flow_profile: FlowProfile,
+    ) -> Self {
+        Self::new(board_name)
+            .board_package(board_package)
+            .target(config.platform.target_triple())
+            .profile(profile)
+            .flow_profile(flow_profile)
+            .image(ImageBuildInfo {
+                full_flash_image: config.full_flash_image,
+                soc_image_format: config.soc_image_format,
+            })
+            .feature(config.platform.as_str())
+    }
+
     /// Set the Cargo board package name.
     #[must_use]
     pub fn board_package(mut self, package: &str) -> Self {
@@ -495,6 +612,21 @@ impl Build {
             .payload_inputs
             .push(input)
             .expect("build info has more than 16 payload inputs");
+        self
+    }
+
+    /// Append payload and firmware input files declared by board payload policy.
+    #[must_use]
+    pub fn payload_inputs_from_config(mut self, config: &crate::BoardConfig) -> Self {
+        if let Some(payload) = &config.payload {
+            if let Some(kernel) = &payload.kernel_file {
+                self = self.payload_input(PayloadInputInfo::new("kernel", kernel.as_str()));
+            }
+            if let Some(firmware) = &payload.firmware {
+                self =
+                    self.payload_input(PayloadInputInfo::new("firmware", firmware.file.as_str()));
+            }
+        }
         self
     }
 

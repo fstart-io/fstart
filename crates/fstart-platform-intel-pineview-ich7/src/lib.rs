@@ -14,14 +14,16 @@ use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
-    hstr, hvec, AcpiConfig, AcpiPlatform, Board, BoardConfig, BoardInfo, BootMedium, Build,
-    BuildInfo, BuildProfile, BusAddress, Capability, CarConfig, Compression, CorebootSmmCompat,
-    CpuDriverKind, DeviceConfig, DeviceRole, DeviceTopology, DigestAlgorithm, FdtSource,
-    FlowProfile, ImageBuildInfo, MemoryMap, MemoryRegion, PayloadConfig, PayloadInputInfo,
-    PayloadKind, Platform, RegionKind, RunsFrom, SecurityConfig, SignatureAlgorithm, SmbiosConfig,
-    SmmConfig, SmmPlatform, StageBuildInfo, StageConfig, StageLayout, TempRamBuffer,
+    board_info_from_config, dev_security_config, flow_profile_from_config, hstr, hvec, AcpiConfig,
+    AcpiPlatform, BoardConfig, BoardInfo, BootMedium, Build, BuildInfo, BuildProfile, BusAddress,
+    Capability, CarConfig, Compression, CorebootSmmCompat, CpuDriverKind, DeviceConfig, DeviceRole,
+    DeviceTopology, FdtSource, MemoryMap, MemoryRegion, PayloadConfig, PayloadKind, Platform,
+    RegionKind, RunsFrom, SmbiosConfig, SmmConfig, SmmPlatform, StageBuildInfo, StageConfig,
+    StageLayout, TempRamBuffer,
 };
-use heapless::{String as HString, Vec as HVec};
+use heapless::Vec as HVec;
+
+pub use fstart_driver_intel_ich7::{LpcGenericIoDecode, SataConfig, SataMode, UsbConfig};
 
 /// Shared Pineview + ICH7/NM10 platform metadata for a concrete mainboard.
 #[derive(Debug, Clone)]
@@ -35,6 +37,10 @@ pub struct PineviewIch7Platform {
     clock_generator: Option<i2c_ck505::I2cCk505Config>,
     smbios: Option<SmbiosConfig>,
     pcie_ports: [bool; 4],
+    lpc_generic_io: HVec<LpcGenericIoDecode, 4>,
+    gpe0_en: u32,
+    sata: Option<SataConfig>,
+    usb: Option<UsbConfig>,
 }
 
 /// ICH7/NM10 PCIe root-port selector.
@@ -70,6 +76,10 @@ impl PineviewIch7Platform {
             clock_generator: None,
             smbios: None,
             pcie_ports: [false; 4],
+            lpc_generic_io: HVec::new(),
+            gpe0_en: 0,
+            sata: None,
+            usb: None,
         }
     }
 
@@ -124,6 +134,36 @@ impl PineviewIch7Platform {
         self
     }
 
+    /// Add one board-selected LPC generic I/O decode window.
+    #[must_use]
+    pub fn lpc_generic_io(mut self, decode: LpcGenericIoDecode) -> Self {
+        self.lpc_generic_io
+            .push(decode)
+            .expect("ICH7 LPC generic I/O decode capacity");
+        self
+    }
+
+    /// Set board-selected ACPI GPE0 enable bits.
+    #[must_use]
+    pub const fn gpe0_en(mut self, value: u32) -> Self {
+        self.gpe0_en = value;
+        self
+    }
+
+    /// Enable and configure SATA for this board.
+    #[must_use]
+    pub const fn sata(mut self, sata: SataConfig) -> Self {
+        self.sata = Some(sata);
+        self
+    }
+
+    /// Enable and configure USB controllers for this board.
+    #[must_use]
+    pub const fn usb(mut self, usb: UsbConfig) -> Self {
+        self.usb = Some(usb);
+        self
+    }
+
     #[must_use]
     pub fn board_config(&self) -> BoardConfig {
         BoardConfig {
@@ -132,7 +172,7 @@ impl PineviewIch7Platform {
             memory: pineview_ich7_memory(),
             devices: pineview_ich7_devices(self.pcie_ports),
             stages: pineview_ich7_stages(),
-            security: security_config(),
+            security: dev_security_config("keys/dev-signing.pub"),
             payload: Some(self.payload.clone()),
             microcode: Some(pineview_microcode()),
             soc_image_format: Default::default(),
@@ -162,6 +202,10 @@ impl PineviewIch7Platform {
             DriverInstance::IntelIch7(ich7_config(
                 self.hda.clone(),
                 self.gpio.clone().unwrap_or_default(),
+                self.lpc_generic_io.clone(),
+                self.gpe0_en,
+                self.sata,
+                self.usb,
             ))
             .bind("southbridge"),
             self.superio
@@ -267,10 +311,12 @@ fn pineview_ich7_devices(pcie_ports: [bool; 4]) -> HVec<DeviceConfig, 32> {
         .pci_bridge("southbridge", "pcie1", 0x1c, 1, pcie_ports[1])
         .pci_bridge("southbridge", "pcie2", 0x1c, 2, pcie_ports[2])
         .pci_bridge("southbridge", "pcie3", 0x1c, 3, pcie_ports[3])
-        .child_bus("southbridge", "lpc", DeviceRole::LpcBus)
-        .child("lpc", "superio", BusAddress::Lpc(0x2e))
-        .child_bus("southbridge", "smbus", DeviceRole::SmBus)
-        .child("smbus", "ck505", BusAddress::I2c(0x69))
+        .bus("southbridge", "lpc", DeviceRole::LpcBus, |lpc| {
+            lpc.child("superio", BusAddress::Lpc(0x2e))
+        })
+        .bus("southbridge", "smbus", DeviceRole::SmBus, |smbus| {
+            smbus.child("ck505", BusAddress::I2c(0x69))
+        })
         .build()
 }
 
@@ -305,15 +351,11 @@ fn pineview_ich7_stages() -> StageLayout {
 
 fn pineview_bootblock_capabilities() -> HVec<Capability, 16> {
     hvec([
-        Capability::PreConsoleInit {
-            devices: names(["northbridge", "southbridge"]),
-        },
+        Capability::pre_console_init(["northbridge", "southbridge"]),
         Capability::ConsoleInit {
             device: hstr("superio"),
         },
-        Capability::EarlyInit {
-            devices: names(["northbridge", "southbridge"]),
-        },
+        Capability::early_init(["northbridge", "southbridge"]),
         Capability::DramInit {
             device: hstr("northbridge"),
         },
@@ -341,21 +383,15 @@ fn pineview_ramstage_capabilities() -> HVec<Capability, 16> {
         }),
         Capability::SigVerify,
         Capability::DriverInit,
-        Capability::StageLocalInit {
-            devices: names(["northbridge"]),
-        },
+        Capability::stage_local_init(["northbridge"]),
         Capability::MemoryDetect {
             device: hstr("northbridge"),
         },
         Capability::PciInit {
             device: hstr("northbridge"),
         },
-        Capability::PostDramInit {
-            devices: names(["southbridge"]),
-        },
-        Capability::FinalizeInit {
-            devices: names(["southbridge"]),
-        },
+        Capability::post_dram_init(["southbridge"]),
+        Capability::finalize_init(["southbridge"]),
         Capability::MpInit {
             cpu_drivers: hvec([CpuDriverKind::IntelPineview]),
             max_cpus: 4,
@@ -386,31 +422,25 @@ fn pineview_config() -> intel_pineview::IntelPineviewConfig {
     }
 }
 
-fn ich7_config(hda: Option<hda::HdaConfig>, gpio: gpio::GpioConfig) -> ich7::IntelIch7Config {
-    let mut generic_io = HVec::new();
-    generic_io
-        .push(ich7::LpcGenericIoDecode {
-            base: 0x0a00,
-            size: 0x0100,
-        })
-        .expect("generic I/O decode capacity");
+fn ich7_config(
+    hda: Option<hda::HdaConfig>,
+    gpio: gpio::GpioConfig,
+    generic_io: HVec<LpcGenericIoDecode, 4>,
+    gpe0_en: u32,
+    sata: Option<SataConfig>,
+    usb: Option<UsbConfig>,
+) -> ich7::IntelIch7Config {
     ich7::IntelIch7Config {
         rcba: 0xFED1_C000,
         pirq_routing: [0x0b; 8],
-        gpe0_en: 0x441,
+        gpe0_en,
         lpc_decode: ich7::LpcDecodeConfig {
             fixed_io: ich7::LpcFixedIoDecode::default(),
             generic_io,
         },
         hda,
-        sata: Some(ich7::SataConfig {
-            mode: ich7::SataMode::Ahci,
-            ports: 0x3,
-        }),
-        usb: Some(ich7::UsbConfig {
-            ehci: true,
-            uhci: [true, true, true, true],
-        }),
+        sata,
+        usb,
         pata: false,
         smbus_base: 0x0400,
         gpio,
@@ -431,72 +461,25 @@ fn pineview_microcode() -> MicrocodeConfig {
     })
 }
 
-fn security_config() -> SecurityConfig {
-    SecurityConfig {
-        signing_algorithm: SignatureAlgorithm::Ed25519,
-        pubkey_file: hstr("keys/dev-signing.pub"),
-        required_digests: hvec([DigestAlgorithm::Sha256]),
-    }
-}
-
-fn flow_profile(config: &BoardConfig) -> FlowProfile {
-    match config.payload.as_ref().map(|payload| &payload.kind) {
-        Some(PayloadKind::UefiPayload) => FlowProfile::Uefi,
-        _ => FlowProfile::LinuxBoot,
-    }
-}
-
-fn board_info_from_config(config: BoardConfig) -> BoardInfo {
-    let mut board = Board::new(config.name.as_str())
-        .platform(config.platform)
-        .memory(config.memory);
-    for device in config.devices {
-        board = board.device(device);
-    }
-    if let Some(payload) = config.payload {
-        board = board.payload(payload);
-    }
-    board.build()
-}
-
 fn build_info_from_parts(
     board_name: &str,
     board_package: &str,
     config: BoardConfig,
     drivers: Vec<DriverBinding>,
 ) -> BuildInfo {
-    let mut build = Build::new(board_name)
-        .board_package(board_package)
-        .target(Platform::X86_64.target_triple())
-        .profile(BuildProfile::Dev)
-        .flow_profile(flow_profile(&config))
-        .image(ImageBuildInfo {
-            full_flash_image: config.full_flash_image,
-            soc_image_format: config.soc_image_format,
-        })
-        .stage(StageBuildInfo::new("bootblock", 0xFFFF_FFFF))
-        .stage(StageBuildInfo::new("ramstage", 0x0400_0000))
-        .feature(Platform::X86_64.as_str());
+    let mut build = Build::from_board_config(
+        board_name,
+        board_package,
+        &config,
+        BuildProfile::Dev,
+        flow_profile_from_config(&config),
+    )
+    .stage(StageBuildInfo::new("bootblock", 0xFFFF_FFFF))
+    .stage(StageBuildInfo::new("ramstage", 0x0400_0000));
     for driver in drivers {
         if let Some(feature) = driver.driver_feature() {
             build = build.feature(feature);
         }
     }
-    if let Some(payload) = &config.payload {
-        if let Some(kernel) = &payload.kernel_file {
-            build = build.payload_input(PayloadInputInfo::new("kernel", kernel.as_str()));
-        }
-        if let Some(firmware) = &payload.firmware {
-            build = build.payload_input(PayloadInputInfo::new("firmware", firmware.file.as_str()));
-        }
-    }
-    build.build()
-}
-
-fn names<const N: usize>(items: [&str; N]) -> HVec<HString<32>, 8> {
-    let mut out = HVec::new();
-    for item in items {
-        out.push(hstr(item)).expect("names capacity");
-    }
-    out
+    build.payload_inputs_from_config(&config).build()
 }

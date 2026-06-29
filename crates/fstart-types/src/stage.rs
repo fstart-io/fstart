@@ -424,6 +424,48 @@ pub enum Capability {
     },
 }
 
+impl Capability {
+    /// Construct a pre-console phase over ordered device names.
+    #[must_use]
+    pub fn pre_console_init<const N: usize>(devices: [&str; N]) -> Self {
+        Self::PreConsoleInit {
+            devices: crate::hnames(devices),
+        }
+    }
+
+    /// Construct early platform/device setup over ordered device names.
+    #[must_use]
+    pub fn early_init<const N: usize>(devices: [&str; N]) -> Self {
+        Self::EarlyInit {
+            devices: crate::hnames(devices),
+        }
+    }
+
+    /// Construct per-stage local init over ordered device names.
+    #[must_use]
+    pub fn stage_local_init<const N: usize>(devices: [&str; N]) -> Self {
+        Self::StageLocalInit {
+            devices: crate::hnames(devices),
+        }
+    }
+
+    /// Construct post-DRAM platform/device setup over ordered device names.
+    #[must_use]
+    pub fn post_dram_init<const N: usize>(devices: [&str; N]) -> Self {
+        Self::PostDramInit {
+            devices: crate::hnames(devices),
+        }
+    }
+
+    /// Construct final platform/device setup over ordered device names.
+    #[must_use]
+    pub fn finalize_init<const N: usize>(devices: [&str; N]) -> Self {
+        Self::FinalizeInit {
+            devices: crate::hnames(devices),
+        }
+    }
+}
+
 /// A boot device candidate for `LoadNextStage`.
 ///
 /// Each entry maps a block device name to its firmware image offset
