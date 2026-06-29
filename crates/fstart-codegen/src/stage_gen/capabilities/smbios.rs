@@ -1,7 +1,7 @@
 //! Code generation for SMBIOS table preparation.
 //!
 //! Emits a static [`SmbiosDesc`](fstart_capabilities::smbios::SmbiosDesc)
-//! descriptor from the board RON config and calls
+//! descriptor from typed board config and calls
 //! [`prepare`](fstart_capabilities::smbios::prepare) at runtime.
 //! All iteration logic (cache handle mapping, memory array linking) is
 //! in the library function — codegen only emits the data.
@@ -17,11 +17,11 @@ use super::super::tokens::hex_addr;
 /// Generate the static descriptor expression for the SmBiosPrepare capability.
 ///
 /// Constructs a `fstart_capabilities::smbios::SmbiosDesc` struct literal
-/// from the board RON's `smbios` config. The handwritten runtime executor
+/// from the board's `smbios` config. The handwritten runtime executor
 /// owns the call to `fstart_capabilities::smbios::prepare()`.
 pub(in crate::stage_gen) fn generate_smbios_desc(config: &BoardConfig) -> TokenStream {
     let smbios_cfg = config.smbios.as_ref().unwrap_or_else(|| {
-        panic!("SmBiosPrepare capability requires `smbios` config in board RON");
+        panic!("SmBiosPrepare capability requires `smbios` config");
     });
 
     // Type 0: BIOS Information

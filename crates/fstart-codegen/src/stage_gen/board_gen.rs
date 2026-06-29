@@ -19,9 +19,7 @@
 //!    belong to the handwritten executor over `StagePlan` topology data.
 
 use fstart_device_registry::{DriverInstance, Service, ServiceSet};
-use fstart_types::{
-    acpi::AcpiExtraDevice, BoardConfig, BootMedium, Capability, DeviceConfig, DeviceNode,
-};
+use fstart_types::{acpi::AcpiExtraDevice, BoardConfig, Capability, DeviceConfig, DeviceNode};
 use proc_macro2::TokenStream;
 
 mod board_impl;
@@ -124,19 +122,25 @@ fn compute_excluded_indices(
 
     let mut referenced: Vec<&str> = Vec::new();
     for cap in capabilities {
+        let service = match cap {
+            Capability::ClockInit => Some(Service::ClockController),
+            Capability::ConsoleInit => Some(Service::Console),
+            Capability::DramInit => Some(Service::MemoryController),
+            Capability::PciInit => Some(Service::PciRootBus),
+            Capability::AcpiLoad => Some(Service::AcpiTableProvider),
+            Capability::MemoryDetect => Some(Service::MemoryDetector),
+            _ => None,
+        };
+        if let Some(service) = service {
+            referenced.extend(devices.iter().zip(device_services.iter()).filter_map(
+                |(device, services)| {
+                    (device.enabled && services.contains(service)).then_some(device.name.as_str())
+                },
+            ));
+        }
         match cap {
-            Capability::ClockInit { device }
-            | Capability::ConsoleInit { device }
-            | Capability::DramInit { device }
-            | Capability::PciInit { device }
-            | Capability::AcpiLoad { device }
-            | Capability::MemoryDetect { device } => referenced.push(device.as_str()),
-            Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
-                if let Some(provider) = provider {
-                    referenced.push(provider.as_str());
-                } else if let Some(provider) =
-                    sole_enabled_firmware_provider(devices, device_services)
-                {
+            Capability::BootMedia(_) => {
+                if let Some(provider) = sole_enabled_firmware_provider(devices, device_services) {
                     referenced.push(provider);
                 } else {
                     for candidate in fstart_device_registry::platform_boot_media_candidates(
@@ -147,9 +151,12 @@ fn compute_excluded_indices(
                     }
                 }
             }
-            Capability::LoadNextStage { devices, .. } => {
-                for dev in devices {
-                    referenced.push(dev.name.as_str());
+            Capability::LoadNextStage { .. } => {
+                for candidate in fstart_device_registry::platform_boot_media_candidates(
+                    config.name.as_str(),
+                    config.platform,
+                ) {
+                    referenced.push(candidate.device);
                 }
             }
             _ => {}

@@ -136,20 +136,7 @@ pub(super) fn with_uefi_services_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         };
     }
 
-    let stage_console_name = ctx.stage.capabilities.iter().find_map(|cap| {
-        if let fstart_types::Capability::ConsoleInit { device } = cap {
-            Some(device.as_str())
-        } else {
-            None
-        }
-    });
-    let console_device = stage_console_name
-        .and_then(|name| {
-            ctx.runtime_devices
-                .providers(Service::Console)
-                .find(|device| device.name == name)
-        })
-        .or_else(|| ctx.runtime_devices.providers(Service::Console).next());
+    let console_device = ctx.runtime_devices.providers(Service::Console).next();
     let console_setup = match console_device {
         Some(device) => {
             let field = format_ident!("{}", device.name);

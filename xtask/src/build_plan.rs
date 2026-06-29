@@ -319,13 +319,13 @@ fn capability_features(
 
     for cap in capabilities {
         match cap {
-            Capability::ClockInit { .. } => features.push("stage-flow-clock-init"),
-            Capability::ConsoleInit { .. } => features.push("stage-flow-console-init"),
+            Capability::ClockInit => features.push("stage-flow-clock-init"),
+            Capability::ConsoleInit => features.push("stage-flow-console-init"),
             Capability::MemoryInit => features.push("stage-flow-memory-init"),
-            Capability::DramInit { .. } => features.push("stage-flow-dram-init"),
+            Capability::DramInit => features.push("stage-flow-dram-init"),
             Capability::DriverInit => features.push("stage-flow-driver-init"),
-            Capability::PciInit { .. } => features.push("stage-flow-pci"),
-            Capability::MemoryDetect { .. } => features.push("stage-flow-memory-detect"),
+            Capability::PciInit => features.push("stage-flow-pci"),
+            Capability::MemoryDetect => features.push("stage-flow-memory-detect"),
             _ => {}
         }
     }
@@ -410,7 +410,7 @@ fn capability_features(
 
     if capabilities
         .iter()
-        .any(|c| matches!(c, Capability::AcpiLoad { .. }))
+        .any(|c| matches!(c, Capability::AcpiLoad))
     {
         features.push("acpi-load");
     }
@@ -433,7 +433,7 @@ fn capability_features(
 
     if capabilities
         .iter()
-        .any(|c| matches!(c, Capability::MemoryDetect { .. }))
+        .any(|c| matches!(c, Capability::MemoryDetect))
     {
         features.push("memory-detect");
     }
@@ -455,13 +455,13 @@ fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
 fn stage_uses_pci(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
-        .any(|c| matches!(c, Capability::PciInit { .. }))
+        .any(|c| matches!(c, Capability::PciInit))
 }
 
 fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
-        .any(|c| matches!(c, Capability::AcpiPrepare | Capability::AcpiLoad { .. }))
+        .any(|c| matches!(c, Capability::AcpiPrepare | Capability::AcpiLoad))
 }
 
 fn stage_uses_crabefi(config: &BoardConfig) -> bool {

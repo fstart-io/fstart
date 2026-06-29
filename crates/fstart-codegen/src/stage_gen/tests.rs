@@ -1,7 +1,5 @@
-use std::path::PathBuf;
-
 use super::*;
-use crate::ron_loader::{load_parsed_board, load_parsed_board_from_rust, ParsedBoard};
+use crate::ron_loader::{load_parsed_board_from_rust, ParsedBoard};
 use fstart_device_registry::{DriverInstance, ServiceSet};
 
 fn services_for(instances: &[DriverInstance]) -> Vec<ServiceSet> {
@@ -9,12 +7,6 @@ fn services_for(instances: &[DriverInstance]) -> Vec<ServiceSet> {
         .iter()
         .map(DriverInstance::provided_services)
         .collect()
-}
-
-fn load_lenovo_x61_board() -> ParsedBoard {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    load_parsed_board(&manifest_dir.join("../../boards/lenovo-x61/board.ron"))
-        .expect("lenovo-x61 board should parse")
 }
 
 fn load_foxconn_d41s_board() -> ParsedBoard {
@@ -32,17 +24,6 @@ fn fstart_main_source(source: &str) -> &str {
     &source[start..]
 }
 
-fn assert_ordered(source: &str, needles: &[&str], context: &str) {
-    let mut start = 0;
-    for needle in needles {
-        let relative = source[start..]
-            .find(needle)
-            .unwrap_or_else(|| panic!("missing {needle:?} while checking {context}"));
-        start += relative + needle.len();
-    }
-}
-
-/// Helper: create a minimal parsed board for testing.
 fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard {
     use fstart_types::*;
     use heapless::String as HString;
@@ -130,9 +111,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
 #[test]
 fn test_memory_init_after_console() {
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::MemoryInit);
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
@@ -161,26 +140,9 @@ fn test_memory_init_without_console_is_error() {
 }
 
 #[test]
-fn test_console_init_requires_console_service() {
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("i2c0").unwrap(),
-    });
-    let parsed = test_parsed_board_with_i2c_bus(caps);
-    let source = generate_stage_source(&parsed, None);
-
-    assert!(
-        source.contains("compile_error!") && source.contains("does not provide Console"),
-        "should reject ConsoleInit on non-console device: {source}"
-    );
-}
-
-#[test]
 fn acpi_prepare_requires_board_acpi_config() {
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::AcpiPrepare);
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
@@ -195,9 +157,7 @@ fn acpi_prepare_requires_board_acpi_config() {
 #[test]
 fn smbios_prepare_requires_board_smbios_config() {
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::SmBiosPrepare);
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
@@ -212,9 +172,7 @@ fn smbios_prepare_requires_board_smbios_config() {
 #[test]
 fn fdt_prepare_requires_payload() {
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::FdtPrepare);
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
@@ -231,9 +189,7 @@ fn fdt_generated_sources_are_rejected_until_implemented() {
     use fstart_types::{FdtSource, PayloadConfig, PayloadKind};
 
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::FdtPrepare);
     let mut parsed = test_parsed_board(caps);
     parsed.config.payload = Some(PayloadConfig {
@@ -265,9 +221,7 @@ fn fdt_override_requires_ffs_using_stage() {
     use fstart_types::{FdtSource, PayloadConfig, PayloadKind};
 
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::FdtPrepare);
     let mut parsed = test_parsed_board(caps);
     parsed.config.payload = Some(PayloadConfig {
@@ -636,9 +590,7 @@ fn test_validate_device_tree_plain_device_child_ok() {
 #[test]
 fn test_i2c_bus_generates_embedded_hal_import() {
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let parsed = test_parsed_board_with_i2c_bus(caps);
     let source = generate_stage_source(&parsed, None);
 
@@ -659,9 +611,7 @@ fn test_non_bus_parent_is_compile_error() {
     use heapless::String as HString;
 
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: HString::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
 
     let mut parsed = test_parsed_board(caps);
     // Add a bus-device child (CK505) nested under uart0 (index 0).
@@ -731,11 +681,8 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         name: HString::try_from("bootblock").unwrap(),
         capabilities: {
             let mut v = heapless::Vec::new();
-            let _ = v.push(Capability::ConsoleInit {
-                device: HString::try_from("uart0").unwrap(),
-            });
+            let _ = v.push(Capability::ConsoleInit);
             let _ = v.push(Capability::BootMedia(BootMedium::FirmwareImage {
-                provider: None,
                 temp_ram_buffer: None,
             }));
             let _ = v.push(Capability::SigVerify);
@@ -757,9 +704,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         name: HString::try_from("main").unwrap(),
         capabilities: {
             let mut v = heapless::Vec::new();
-            let _ = v.push(Capability::ConsoleInit {
-                device: HString::try_from("uart0").unwrap(),
-            });
+            let _ = v.push(Capability::ConsoleInit);
             let _ = v.push(Capability::MemoryInit);
             let _ = v.push(Capability::DriverInit);
             v
@@ -861,11 +806,8 @@ fn test_multi_stage_unknown_stage_name_is_error() {
 #[test]
 fn test_stage_ending_with_payload_load_no_completion() {
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::BootMedia(BootMedium::FirmwareImage {
-        provider: None,
         temp_ram_buffer: None,
     }));
     let _ = caps.push(Capability::PayloadLoad);
@@ -1082,9 +1024,7 @@ fn test_config_ser_nested_option_in_struct() {
 #[test]
 fn stage_plan_entry_emits_data_and_run_stage() {
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::MemoryInit);
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
@@ -1105,41 +1045,6 @@ fn stage_plan_entry_emits_data_and_run_stage() {
     assert!(
         !fstart_main.contains("fstart_stage_runtime::Board::memory_init(&board)"),
         "fstart_main must not contain capability flow: {fstart_main}"
-    );
-}
-
-#[test]
-fn stage_plan_emits_flow_feature_guards() {
-    let source = std::thread::Builder::new()
-        .name("stage-plan-qemu-riscv64-codegen".to_string())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            let parsed = load_parsed_board(
-                &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../boards/qemu-riscv64/board.ron"),
-            )
-            .expect("qemu-riscv64 board should parse");
-            generate_stage_source(&parsed, None)
-        })
-        .expect("spawn qemu-riscv64 codegen thread")
-        .join()
-        .expect("qemu-riscv64 codegen should not panic");
-
-    assert!(
-        source.contains("stage-flow-console-init"),
-        "ConsoleInit should require the console-init flow feature: {source}"
-    );
-    assert!(
-        source.contains("stage-flow-memory-init"),
-        "MemoryInit should require the memory-init flow feature: {source}"
-    );
-    assert!(
-        source.contains("stage-flow-boot-media"),
-        "BootMedia should require the boot-media flow feature: {source}"
-    );
-    assert!(
-        source.contains("stage-flow-ffs"),
-        "SigVerify/PayloadLoad should require the FFS flow feature: {source}"
     );
 }
 
@@ -1165,9 +1070,7 @@ fn generated_imports_include_smbus_for_typed_smbus_provider() {
 #[test]
 fn stage_plan_driver_init_emits_device_tables() {
     let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
+    let _ = caps.push(Capability::ConsoleInit);
     let _ = caps.push(Capability::DriverInit);
     let parsed = test_parsed_board(caps);
     let source = generate_stage_source(&parsed, None);
@@ -1196,243 +1099,5 @@ fn stage_plan_driver_init_emits_device_tables() {
     assert!(
         source.contains("0u8") || source.contains("[0]"),
         "DriverInit should preserve the runtime uart device ID: {source}"
-    );
-}
-
-#[test]
-fn stage_plan_driver_init_gated_devices_are_candidates() {
-    let source = std::thread::Builder::new()
-        .name("orangepi-r1-stage-plan-codegen".to_string())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            let parsed = load_parsed_board(
-                &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../boards/orangepi-r1/board.ron"),
-            )
-            .expect("orangepi-r1 board should parse");
-            generate_stage_source(&parsed, Some("main"))
-        })
-        .expect("spawn orangepi-r1 codegen thread")
-        .join()
-        .expect("orangepi-r1 codegen should not panic");
-
-    assert!(
-        source.contains(
-            "static _FSTART_STAGE_PLAN_BOOT_MEDIA_GATED: [fstart_stage_runtime::BootMediaCandidate; 2usize]"
-        ),
-        "DriverInit boot-media gating should be candidate data: {source}"
-    );
-    assert!(
-        source.contains("media_ids")
-            && source.contains("device: 3")
-            && source.contains("device: 4"),
-        "gated candidate data should include both boot media devices and media ids: {source}"
-    );
-}
-
-#[test]
-fn stage_plan_lenovo_x61_bootblock_and_ramstage_data_are_explicit() {
-    // X61's generated source is large enough that prettyplease can exhaust the
-    // default test-thread stack.  Generate it on a larger stack, then keep the
-    // assertions to stable substrings.
-    let (bootblock, ramstage) = std::thread::Builder::new()
-        .name("x61-codegen-direct-flow".to_string())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            let parsed = load_lenovo_x61_board();
-            (
-                generate_stage_source(&parsed, Some("bootblock")),
-                generate_stage_source(&parsed, Some("ramstage")),
-            )
-        })
-        .expect("spawn x61 codegen thread")
-        .join()
-        .expect("x61 codegen should not panic");
-
-    assert!(
-        fstart_main_source(&bootblock)
-            .contains("fstart_stage_runtime::run_stage(&mut board, &STAGE_PLAN)"),
-        "X61 bootblock should enter through the stage executor"
-    );
-    assert!(
-        fstart_main_source(&ramstage)
-            .contains("fstart_stage_runtime::run_stage(&mut board, &STAGE_PLAN)"),
-        "X61 ramstage should enter through the stage executor"
-    );
-
-    assert_ordered(
-        &bootblock,
-        &["StageOp::DramInit(0)", "StageOp::StageLoad"],
-        "X61 bootblock stage plan data",
-    );
-    assert_ordered(
-        &ramstage,
-        &[
-            "StageOp::MemoryDetect(0)",
-            "StageOp::PciInit(0)",
-            "StageOp::MpInit",
-            "StageOp::AcpiPrepare",
-            "StageOp::SmBiosPrepare",
-            "StageOp::PayloadLoad",
-        ],
-        "X61 ramstage stage plan data",
-    );
-    assert!(
-        ramstage.contains("TempRamBuffer")
-            && ramstage.contains("base: 0x2000000")
-            && ramstage.contains("size: 0x1000000"),
-        "X61 ramstage FirmwareImage BootMedia must keep temp_ram_buffer data"
-    );
-    assert!(
-        ramstage.contains("TempRamArena::new") && !ramstage.contains("copy_firmware_image_to_ram"),
-        "X61 ramstage adapter must treat temp_ram_buffer as scratch RAM, not a whole-image copy"
-    );
-}
-
-#[test]
-fn load_next_stage_rejects_non_block_device() {
-    // ns16550 has no boot_media_values_for_device mapping; LoadNextStage
-    // should reject it before generating an unusable candidate table.
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: heapless::String::try_from("uart0").unwrap(),
-    });
-    let mut load_devs = heapless::Vec::new();
-    let _ = load_devs.push(fstart_types::LoadDevice {
-        name: heapless::String::try_from("uart0").unwrap(),
-        base_offset: 0,
-    });
-    let _ = caps.push(Capability::LoadNextStage {
-        devices: load_devs,
-        next_stage: heapless::String::try_from("main").unwrap(),
-    });
-    let parsed = test_parsed_board(caps);
-    let source = generate_stage_source(&parsed, None);
-
-    assert!(
-        source.contains("compile_error!") && source.contains("does not provide BlockDevice"),
-        "LoadNextStage should reject non-block devices before candidate emission: {source}"
-    );
-}
-
-#[test]
-fn load_next_stage_rejects_block_device_without_boot_media_mapping() {
-    use fstart_device_registry::sunxi_mmc::SunxiMmcConfig;
-    use fstart_types::*;
-    use heapless::String as HString;
-
-    let mut caps = heapless::Vec::new();
-    let _ = caps.push(Capability::ConsoleInit {
-        device: HString::try_from("uart0").unwrap(),
-    });
-    let mut load_devs = heapless::Vec::new();
-    let _ = load_devs.push(LoadDevice {
-        name: HString::try_from("mmc1").unwrap(),
-        base_offset: 0,
-    });
-    let _ = caps.push(Capability::LoadNextStage {
-        devices: load_devs,
-        next_stage: HString::try_from("main").unwrap(),
-    });
-
-    let mut devices = heapless::Vec::new();
-    let _ = devices.push(DeviceConfig {
-        name: HString::try_from("uart0").unwrap(),
-        parent: None,
-        bus: None,
-        role: DeviceRole::Runtime,
-        enabled: true,
-    });
-    let _ = devices.push(DeviceConfig {
-        name: HString::try_from("mmc1").unwrap(),
-        parent: None,
-        bus: None,
-        role: DeviceRole::Runtime,
-        enabled: true,
-    });
-
-    let driver_instances = vec![
-        DriverInstance::Ns16550(fstart_driver_ns16550::Ns16550Config {
-            regs: fstart_driver_ns16550::AccessMode::Mmio {
-                base: 0x1000_0000,
-                reg_shift: 0,
-                reg_width: 0,
-            },
-            clock_freq: 3_686_400,
-            baud_rate: 115_200,
-        }),
-        DriverInstance::SunxiMmc(SunxiMmcConfig::Sun7iA20 {
-            base_addr: 0x01c1_0000,
-            ccu_base: 0x01c2_0000,
-            pio_base: 0x01c2_0800,
-            mmc_index: 1,
-        }),
-    ];
-    let config = BoardConfig {
-        name: HString::try_from("test-sunxi-mmc1").unwrap(),
-        platform: Platform::Armv7,
-        memory: MemoryMap {
-            regions: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(MemoryRegion {
-                    name: HString::try_from("ram").unwrap(),
-                    base: 0x4000_0000,
-                    size: 0x0800_0000,
-                    kind: RegionKind::Ram,
-                });
-                v
-            },
-            flash_layout: None,
-            car: None,
-        },
-        devices,
-        stages: StageLayout::Monolithic(MonolithicConfig {
-            capabilities: caps,
-            load_addr: 0x4000_0000,
-            stack_size: 0x10000,
-            heap_size: None,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: fstart_types::stage::PageSize::default(),
-        }),
-        security: SecurityConfig {
-            signing_algorithm: SignatureAlgorithm::Ed25519,
-            pubkey_file: HString::try_from("keys/dev.pub").unwrap(),
-            required_digests: {
-                let mut v = heapless::Vec::new();
-                let _ = v.push(DigestAlgorithm::Sha256);
-                v
-            },
-        },
-        payload: None,
-        full_flash_image: false,
-        microcode: None,
-        soc_image_format: SocImageFormat::AllwinnerEgon,
-        acpi: None,
-        smbios: None,
-        smm: None,
-        boot_hart_id: 0,
-    };
-    let parsed = ParsedBoard {
-        config,
-        device_services: services_for(&driver_instances),
-        acpi_only_devices: Vec::new(),
-        driver_instances,
-        device_tree: vec![
-            DeviceNode {
-                parent: None,
-                depth: 0,
-            },
-            DeviceNode {
-                parent: None,
-                depth: 0,
-            },
-        ],
-    };
-    let source = generate_stage_source(&parsed, None);
-
-    assert!(
-        source.contains("compile_error!") && source.contains("has no boot-source mapping"),
-        "LoadNextStage should reject block devices without boot-source mapping: {source}"
     );
 }

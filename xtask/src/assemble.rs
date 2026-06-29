@@ -22,9 +22,7 @@ use fstart_types::ffs::{
     FFS_MAGIC, FFS_VERSION,
 };
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
-use fstart_types::{
-    BoardConfig, BootMedium, Capability, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout,
-};
+use fstart_types::{BoardConfig, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout};
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use std::fs;
@@ -692,26 +690,6 @@ fn firmware_image_from_provider(
         flash_layout: config.memory.flash_layout.as_ref(),
         intel_ifd: descriptor.as_deref(),
     };
-    if let Some(provider) = selected_firmware_provider(config)? {
-        let idx = config
-            .devices
-            .iter()
-            .position(|device| device.name.as_str() == provider)
-            .ok_or_else(|| {
-                format!("BootMedia(FirmwareImage) names unknown provider '{provider}'")
-            })?;
-        if !config.devices[idx].enabled
-            || !device_services
-                .get(idx)
-                .is_some_and(|services| services.contains(Service::FirmwareImageProvider))
-        {
-            return Err(format!(
-                "BootMedia(FirmwareImage) provider '{provider}' is disabled or does not provide FirmwareImageProvider"
-            ));
-        }
-        return instances[idx].build_firmware_image(&ctx);
-    }
-
     let mut images = Vec::new();
     for ((device, instance), services) in config
         .devices
@@ -735,43 +713,6 @@ fn firmware_image_from_provider(
             "multiple FirmwareImageProvider build mappings; specify provider support".to_string(),
         ),
     }
-}
-
-fn selected_firmware_provider(config: &BoardConfig) -> Result<Option<String>, String> {
-    let mut selected: Option<String> = None;
-
-    let mut visit_caps = |capabilities: &[Capability]| -> Result<(), String> {
-        for capability in capabilities {
-            let Capability::BootMedia(BootMedium::FirmwareImage {
-                provider: Some(provider),
-                ..
-            }) = capability
-            else {
-                continue;
-            };
-            let provider = provider.as_str();
-            if let Some(existing) = selected.as_deref() {
-                if existing != provider {
-                    return Err(format!(
-                        "multiple explicit FirmwareImage providers ('{existing}', '{provider}') are used by stages; xtask needs one firmware image mapping"
-                    ));
-                }
-            } else {
-                selected = Some(provider.to_string());
-            }
-        }
-        Ok(())
-    };
-
-    match &config.stages {
-        StageLayout::Monolithic(stage) => visit_caps(&stage.capabilities)?,
-        StageLayout::MultiStage(stages) => {
-            for stage in stages {
-                visit_caps(&stage.capabilities)?;
-            }
-        }
-    }
-    Ok(selected)
 }
 
 fn read_intel_ifd_descriptor(

@@ -44,11 +44,11 @@ pub(super) fn validate_capability_ordering(
 
     for cap in capabilities {
         match cap {
-            Capability::ClockInit { .. } => {
+            Capability::ClockInit => {
                 // ClockInit runs before ConsoleInit (clocks must be up
                 // before the UART can work).  No logging requirement.
             }
-            Capability::ConsoleInit { .. } => {
+            Capability::ConsoleInit => {
                 console_inited = true;
             }
             Capability::BootMedia(_) => {
@@ -71,14 +71,14 @@ pub(super) fn validate_capability_ordering(
             Capability::MemoryInit => {
                 memory_ready = true;
             }
-            Capability::DramInit { .. } if !console_inited => {
+            Capability::DramInit if !console_inited => {
                 return Some(
                     "DramInit capability requires ConsoleInit to appear earlier \
                      in the capability list (needed for logging)"
                         .to_string(),
                 );
             }
-            Capability::DramInit { .. } => {
+            Capability::DramInit => {
                 memory_ready = true;
             }
             Capability::MpInit { smm, .. } if !console_inited => {
@@ -97,36 +97,15 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
-            Capability::MpInit {
-                smm: true,
-                smm_provider: Some(provider),
-                ..
-            } if !config
-                .devices
-                .iter()
-                .zip(device_services.iter())
-                .any(|(dev, services)| {
-                    dev.name.as_str() == provider.as_str() && services.contains(Service::SmmOps)
-                }) =>
-            {
-                return Some(format!(
-                    "MpInit(smm: true, smm_provider: {:?}) requires that device to provide \
-                     SmmOps",
-                    provider.as_str()
-                ));
-            }
-            Capability::MpInit {
-                smm: true,
-                smm_provider: None,
-                ..
-            } if device_services
-                .iter()
-                .filter(|services| services.contains(Service::SmmOps))
-                .count()
-                != 1 =>
+            Capability::MpInit { smm: true, .. }
+                if device_services
+                    .iter()
+                    .filter(|services| services.contains(Service::SmmOps))
+                    .count()
+                    != 1 =>
             {
                 return Some(
-                    "MpInit(smm: true) without smm_provider requires exactly one device \
+                    "MpInit(smm: true) requires exactly one device \
                      that provides SmmOps"
                         .to_string(),
                 );
@@ -181,7 +160,7 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
-            Capability::PciInit { .. } if !console_inited => {
+            Capability::PciInit if !console_inited => {
                 return Some(
                     "PciInit capability requires ConsoleInit to appear earlier \
                      in the capability list (needed for logging)"
@@ -258,14 +237,14 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
-            Capability::AcpiLoad { .. } if !console_inited => {
+            Capability::AcpiLoad if !console_inited => {
                 return Some(
                     "AcpiLoad capability requires ConsoleInit to appear earlier \
                      in the capability list (needed for logging)"
                         .to_string(),
                 );
             }
-            Capability::MemoryDetect { .. } if !console_inited => {
+            Capability::MemoryDetect if !console_inited => {
                 return Some(
                     "MemoryDetect capability requires ConsoleInit to appear earlier \
                      in the capability list (needed for logging)"
@@ -416,100 +395,54 @@ fn validate_capability_service(
     device_services: &[ServiceSet],
 ) -> Result<(), String> {
     match cap {
-        Capability::ClockInit { device } => require_device_service(
+        Capability::ClockInit => require_unique_service(
             config,
             device_services,
-            device.as_str(),
             Service::ClockController,
             "ClockInit",
         ),
-        Capability::ConsoleInit { device } => require_device_service(
-            config,
-            device_services,
-            device.as_str(),
-            Service::Console,
-            "ConsoleInit",
-        ),
-        Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
-            validate_firmware_image_provider(
-                provider.as_ref().map(|p| p.as_str()),
-                config,
-                instances,
-                device_services,
-            )
+        Capability::ConsoleInit => {
+            require_unique_service(config, device_services, Service::Console, "ConsoleInit")
         }
-        Capability::DramInit { device } => require_device_service(
+        Capability::BootMedia(BootMedium::FirmwareImage { .. }) => {
+            validate_firmware_image_provider(config, instances, device_services)
+        }
+        Capability::DramInit => require_unique_service(
             config,
             device_services,
-            device.as_str(),
             Service::MemoryController,
             "DramInit",
         ),
-        Capability::PciInit { device } => require_device_service(
+        Capability::PciInit => {
+            require_unique_service(config, device_services, Service::PciRootBus, "PciInit")
+        }
+        Capability::AcpiLoad => require_unique_service(
             config,
             device_services,
-            device.as_str(),
-            Service::PciRootBus,
-            "PciInit",
-        ),
-        Capability::AcpiLoad { device } => require_device_service(
-            config,
-            device_services,
-            device.as_str(),
             Service::AcpiTableProvider,
             "AcpiLoad",
         ),
-        Capability::MemoryDetect { device } => require_device_service(
+        Capability::MemoryDetect => require_unique_service(
             config,
             device_services,
-            device.as_str(),
             Service::MemoryDetector,
             "MemoryDetect",
         ),
-        Capability::LoadNextStage { devices, .. } => {
-            for device in devices {
-                require_device_service(
-                    config,
-                    device_services,
-                    device.name.as_str(),
-                    Service::BlockDevice,
-                    "LoadNextStage",
-                )?;
-                if crate::stage_gen::capabilities::boot_media_values_for_device(
-                    device.name.as_str(),
-                    &config.devices,
-                    instances,
-                )
-                .is_empty()
-                {
-                    return Err(format!(
-                        "LoadNextStage device '{}' has no boot-source mapping",
-                        device.name.as_str()
-                    ));
-                }
-            }
-            Ok(())
-        }
+        Capability::LoadNextStage { .. } => validate_platform_boot_source_candidates(
+            "LoadNextStage",
+            config,
+            instances,
+            device_services,
+        ),
         _ => Ok(()),
     }
 }
 
 fn validate_firmware_image_provider(
-    provider: Option<&str>,
     config: &BoardConfig,
     instances: &[DriverInstance],
     device_services: &[ServiceSet],
 ) -> Result<(), String> {
-    if let Some(provider) = provider {
-        return require_device_service(
-            config,
-            device_services,
-            provider,
-            Service::FirmwareImageProvider,
-            "BootMedia(FirmwareImage)",
-        );
-    }
-
     let mut providers = config
         .devices
         .iter()
@@ -524,42 +457,82 @@ fn validate_firmware_image_provider(
         {
             return Ok(());
         }
-        let candidates = fstart_device_registry::platform_boot_media_candidates(
-            config.name.as_str(),
-            config.platform,
-        );
-        if !candidates.is_empty() {
-            for candidate in candidates {
-                require_device_service(
-                    config,
-                    device_services,
-                    candidate.device,
-                    Service::BlockDevice,
-                    "BootMedia(FirmwareImage)",
-                )?;
-                if crate::stage_gen::capabilities::boot_media_values_for_device(
-                    candidate.device,
-                    &config.devices,
-                    instances,
-                )
-                .is_empty()
-                {
-                    return Err(format!(
-                        "BootMedia(FirmwareImage) platform candidate '{}' has no boot-source mapping",
-                        candidate.device
-                    ));
-                }
-            }
-            return Ok(());
-        }
-        return Err(
-            "BootMedia(FirmwareImage) requires a device that provides FirmwareImageProvider, Rust platform firmware-image support, or Rust platform boot-source candidates"
-                .to_string(),
+        return validate_platform_boot_source_candidates(
+            "BootMedia(FirmwareImage)",
+            config,
+            instances,
+            device_services,
         );
     };
     if let Some(second) = providers.next() {
         return Err(format!(
-            "BootMedia(FirmwareImage) has multiple providers ('{first}', '{second}', ...); set provider"
+            "BootMedia(FirmwareImage) has multiple providers ('{first}', '{second}', ...); provider choice must live in typed board/build policy, not Capability"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_platform_boot_source_candidates(
+    capability: &str,
+    config: &BoardConfig,
+    instances: &[DriverInstance],
+    device_services: &[ServiceSet],
+) -> Result<(), String> {
+    let candidates = fstart_device_registry::platform_boot_media_candidates(
+        config.name.as_str(),
+        config.platform,
+    );
+    if candidates.is_empty() {
+        return Err(format!(
+            "{capability} requires Rust platform boot-source candidates; board capabilities may not name boot devices"
+        ));
+    }
+    for candidate in candidates {
+        require_device_service(
+            config,
+            device_services,
+            candidate.device,
+            Service::BlockDevice,
+            capability,
+        )?;
+        if crate::stage_gen::capabilities::boot_media_values_for_device(
+            candidate.device,
+            &config.devices,
+            instances,
+        )
+        .is_empty()
+        {
+            return Err(format!(
+                "{capability} platform candidate '{}' has no boot-source mapping",
+                candidate.device
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_unique_service(
+    config: &BoardConfig,
+    device_services: &[ServiceSet],
+    service: Service,
+    capability: &str,
+) -> Result<(), String> {
+    let mut matches = config
+        .devices
+        .iter()
+        .zip(device_services.iter())
+        .filter(|(device, services)| device.enabled && services.contains(service))
+        .map(|(device, _)| device.name.as_str());
+    let Some(first) = matches.next() else {
+        return Err(format!(
+            "{capability} requires exactly one enabled {} provider, found none",
+            service.as_str()
+        ));
+    };
+    if let Some(second) = matches.next() {
+        return Err(format!(
+            "{capability} requires exactly one enabled {} provider, found '{first}' and '{second}'",
+            service.as_str()
         ));
     }
     Ok(())
@@ -578,7 +551,7 @@ fn require_device_service(
         .position(|dev| dev.name.as_str() == device_name)
     else {
         return Err(format!(
-            "{capability} references unknown device '{device_name}'"
+            "{capability} references unknown platform candidate '{device_name}'"
         ));
     };
     if device_services
@@ -589,7 +562,7 @@ fn require_device_service(
     }
 
     Err(format!(
-        "{capability} references device '{device_name}', but that device does not provide {}",
+        "{capability} platform candidate '{device_name}' does not provide {}",
         service.as_str()
     ))
 }

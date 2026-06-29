@@ -351,14 +351,9 @@ fn pineview_ich7_stages() -> StageLayout {
 
 fn pineview_bootblock_capabilities() -> HVec<Capability, 16> {
     hvec([
-        Capability::ConsoleInit {
-            device: hstr("superio"),
-        },
-        Capability::DramInit {
-            device: hstr("northbridge"),
-        },
+        Capability::ConsoleInit,
+        Capability::DramInit,
         Capability::BootMedia(BootMedium::FirmwareImage {
-            provider: None,
             temp_ram_buffer: None,
         }),
         Capability::StageLoad {
@@ -369,11 +364,8 @@ fn pineview_bootblock_capabilities() -> HVec<Capability, 16> {
 
 fn pineview_ramstage_capabilities() -> HVec<Capability, 16> {
     hvec([
-        Capability::ConsoleInit {
-            device: hstr("superio"),
-        },
+        Capability::ConsoleInit,
         Capability::BootMedia(BootMedium::FirmwareImage {
-            provider: None,
             temp_ram_buffer: Some(TempRamBuffer {
                 base: 0x0200_0000,
                 size: 0x0100_0000,
@@ -381,16 +373,11 @@ fn pineview_ramstage_capabilities() -> HVec<Capability, 16> {
         }),
         Capability::SigVerify,
         Capability::DriverInit,
-        Capability::MemoryDetect {
-            device: hstr("northbridge"),
-        },
-        Capability::PciInit {
-            device: hstr("northbridge"),
-        },
+        Capability::MemoryDetect,
+        Capability::PciInit,
         Capability::MpInit {
             max_cpus: 4,
             smm: true,
-            smm_provider: None,
         },
         Capability::AcpiPrepare,
         Capability::SmBiosPrepare,

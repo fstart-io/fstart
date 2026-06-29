@@ -33,27 +33,13 @@ pub(super) fn mp_init_body(ctx: &BoardEmitModel<'_>) -> TokenStream {
         quote! { None }
     };
 
-    let explicit_smm_provider = ctx.stage.capabilities.iter().find_map(|cap| match cap {
-        Capability::MpInit {
-            smm: true,
-            smm_provider: Some(provider),
-            ..
-        } => Some(provider.as_str()),
-        _ => None,
-    });
-    let smm_provider = if let Some(provider) = explicit_smm_provider {
-        ctx.runtime_devices
-            .runtime()
-            .find(|device| device.name == provider)
-            .map(|device| device.index)
-    } else {
-        ctx.runtime_devices
-            .providers(Service::SmmOps)
-            .next()
-            .map(|device| device.index)
-    };
+    let smm_ops_device = ctx
+        .runtime_devices
+        .providers(Service::SmmOps)
+        .next()
+        .map(|device| device.index);
 
-    let smm_ops_expr = if let Some(idx) = smm_provider {
+    let smm_ops_expr = if let Some(idx) = smm_ops_device {
         let field = format_ident!("{}", ctx.devices[idx].name.as_str());
         quote! {
             if smm {

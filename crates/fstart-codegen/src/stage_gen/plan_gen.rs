@@ -1,7 +1,8 @@
 //! Emit data-only `StagePlan` statics for the handwritten executor.
 //!
-//! This module lowers board RON capabilities to static facts only. The
-//! handwritten executor owns behavior.
+//! This module lowers transitional semantic capabilities to static facts only.
+//! The handwritten executor owns behavior, and device participation is selected
+//! from services/platform metadata rather than capability device strings.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
@@ -10,8 +11,7 @@ use fstart_device_registry::{
     ConstructionKind, DriverInstance, PlatformBootMediaCandidate, Service, ServiceSet,
 };
 use fstart_types::{
-    BoardConfig, BootMedium, Capability, DeviceConfig, DeviceId, LoadDevice, StageLayout,
-    TempRamBuffer,
+    BoardConfig, BootMedium, Capability, DeviceConfig, DeviceId, StageLayout, TempRamBuffer,
 };
 
 use super::capabilities::boot_media_values_for_device;
@@ -48,7 +48,7 @@ pub(super) fn generate_stage_plan(
         .collect();
     let ops_len = capabilities.len();
 
-    let persistent = persistent_inited_ids(config, stage_name, &ids);
+    let persistent = persistent_inited_ids(config, stage_name, device_services, &ids);
     let persistent_lits = persistent.iter().map(|id| Literal::u8_unsuffixed(*id));
 
     let device_init = device_init_plans(&config.devices, instances, &ids);
@@ -199,35 +199,30 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &PlanCtx<'_>) -> Lowered
     use Capability as C;
 
     match cap {
-        C::ClockInit { device } => {
-            let id = ctx.ids.lit(device.as_str(), "ClockInit");
-            LoweredOp::new(quote! { fstart_stage_runtime::StageOp::ClockInit(#id) })
-                .guarded("stage-flow-clock-init", "ClockInit")
-        }
-        C::ConsoleInit { device } => {
-            let id = ctx.ids.lit(device.as_str(), "ConsoleInit");
-            LoweredOp::new(quote! { fstart_stage_runtime::StageOp::ConsoleInit(#id) })
-                .guarded("stage-flow-console-init", "ConsoleInit")
-        }
+        C::ClockInit => service_op(Service::ClockController, "ClockInit", ctx, |id| {
+            quote! { fstart_stage_runtime::StageOp::ClockInit(#id) }
+        })
+        .guarded("stage-flow-clock-init", "ClockInit"),
+        C::ConsoleInit => service_op(Service::Console, "ConsoleInit", ctx, |id| {
+            quote! { fstart_stage_runtime::StageOp::ConsoleInit(#id) }
+        })
+        .guarded("stage-flow-console-init", "ConsoleInit"),
         C::MemoryInit => LoweredOp::new(quote! { fstart_stage_runtime::StageOp::MemoryInit })
             .guarded("stage-flow-memory-init", "MemoryInit"),
-        C::DramInit { device } => {
-            let id = ctx.ids.lit(device.as_str(), "DramInit");
-            LoweredOp::new(quote! { fstart_stage_runtime::StageOp::DramInit(#id) })
-                .guarded("stage-flow-dram-init", "DramInit")
-        }
+        C::DramInit => service_op(Service::MemoryController, "DramInit", ctx, |id| {
+            quote! { fstart_stage_runtime::StageOp::DramInit(#id) }
+        })
+        .guarded("stage-flow-dram-init", "DramInit"),
         C::DriverInit => LoweredOp::new(quote! { fstart_stage_runtime::StageOp::DriverInit })
             .guarded("stage-flow-driver-init", "DriverInit"),
-        C::PciInit { device } => {
-            let id = ctx.ids.lit(device.as_str(), "PciInit");
-            LoweredOp::new(quote! { fstart_stage_runtime::StageOp::PciInit(#id) })
-                .guarded("stage-flow-pci", "PciInit")
-        }
-        C::MemoryDetect { device } => {
-            let id = ctx.ids.lit(device.as_str(), "MemoryDetect");
-            LoweredOp::new(quote! { fstart_stage_runtime::StageOp::MemoryDetect(#id) })
-                .guarded("stage-flow-memory-detect", "MemoryDetect")
-        }
+        C::PciInit => service_op(Service::PciRootBus, "PciInit", ctx, |id| {
+            quote! { fstart_stage_runtime::StageOp::PciInit(#id) }
+        })
+        .guarded("stage-flow-pci", "PciInit"),
+        C::MemoryDetect => service_op(Service::MemoryDetector, "MemoryDetect", ctx, |id| {
+            quote! { fstart_stage_runtime::StageOp::MemoryDetect(#id) }
+        })
+        .guarded("stage-flow-memory-detect", "MemoryDetect"),
         C::BootMedia(medium) => boot_media_op(idx, medium, ctx),
         C::SigVerify => LoweredOp::new(quote! { fstart_stage_runtime::StageOp::SigVerify })
             .guarded("stage-flow-ffs", "SigVerify"),
@@ -246,12 +241,11 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &PlanCtx<'_>) -> Lowered
             .guarded("stage-flow-acpi", "AcpiPrepare"),
         C::SmBiosPrepare => LoweredOp::new(quote! { fstart_stage_runtime::StageOp::SmBiosPrepare })
             .guarded("stage-flow-smbios", "SmBiosPrepare"),
-        C::AcpiLoad { device } => {
-            let id = ctx.ids.lit(device.as_str(), "AcpiLoad");
-            LoweredOp::new(quote! { fstart_stage_runtime::StageOp::AcpiLoad(#id) })
-                .guarded("stage-flow-acpi", "AcpiLoad")
-        }
-        C::MpInit { max_cpus, smm, .. } => LoweredOp::new(quote! {
+        C::AcpiLoad => service_op(Service::AcpiTableProvider, "AcpiLoad", ctx, |id| {
+            quote! { fstart_stage_runtime::StageOp::AcpiLoad(#id) }
+        })
+        .guarded("stage-flow-acpi", "AcpiLoad"),
+        C::MpInit { max_cpus, smm } => LoweredOp::new(quote! {
             fstart_stage_runtime::StageOp::MpInit {
                 max_cpus: #max_cpus,
                 smm: #smm,
@@ -260,36 +254,65 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &PlanCtx<'_>) -> Lowered
         .guarded("stage-flow-mp", "MpInit"),
         C::ReturnToFel => LoweredOp::new(quote! { fstart_stage_runtime::StageOp::ReturnToFel })
             .guarded("stage-flow-fel", "ReturnToFel"),
-        C::LoadNextStage {
-            devices,
-            next_stage,
-        } => load_next_stage_op(idx, devices.as_slice(), next_stage.as_str(), ctx),
+        C::LoadNextStage { next_stage } => load_next_stage_op(idx, next_stage.as_str(), ctx),
     }
+}
+
+fn service_op(
+    service: Service,
+    capability: &'static str,
+    ctx: &PlanCtx<'_>,
+    op: impl FnOnce(Literal) -> TokenStream,
+) -> LoweredOp {
+    match unique_service_device(service, capability, ctx) {
+        Ok(id) => LoweredOp::new(op(id)),
+        Err(message) => LoweredOp::new(quote! { compile_error!(#message) }),
+    }
+}
+
+fn unique_service_device(
+    service: Service,
+    capability: &'static str,
+    ctx: &PlanCtx<'_>,
+) -> Result<Literal, String> {
+    let mut matches = ctx
+        .devices
+        .iter()
+        .zip(ctx.device_services.iter())
+        .filter(|(device, services)| device.enabled && services.contains(service))
+        .map(|(device, _)| device.name.as_str());
+
+    let Some(first) = matches.next() else {
+        return Err(format!(
+            "{capability} requires exactly one enabled {} provider, found none",
+            service.as_str()
+        ));
+    };
+    if matches.next().is_some() {
+        return Err(format!(
+            "{capability} requires exactly one enabled {} provider; choose through typed board/build policy before enabling this stage flow",
+            service.as_str()
+        ));
+    }
+    Ok(ctx.ids.lit(first, capability))
 }
 
 fn boot_media_op(idx: usize, medium: &BootMedium, ctx: &PlanCtx<'_>) -> LoweredOp {
     match medium {
-        BootMedium::FirmwareImage {
-            provider,
-            temp_ram_buffer,
-        } => firmware_image_boot_media_op(
-            idx,
-            provider.as_ref().map(|provider| provider.as_str()),
-            *temp_ram_buffer,
-            ctx,
-        ),
+        BootMedium::FirmwareImage { temp_ram_buffer } => {
+            firmware_image_boot_media_op(idx, *temp_ram_buffer, ctx)
+        }
     }
 }
 
 fn firmware_image_boot_media_op(
     idx: usize,
-    provider: Option<&str>,
     temp_ram_buffer: Option<TempRamBuffer>,
     ctx: &PlanCtx<'_>,
 ) -> LoweredOp {
-    let Some(resolved) = resolve_firmware_provider(provider, ctx) else {
+    let Some(resolved) = resolve_firmware_provider(ctx) else {
         return LoweredOp::new(quote! {
-            compile_error!("BootMedia(FirmwareImage(...)) requires exactly one enabled FirmwareImageProvider, an explicit provider, Rust platform firmware-image support, or Rust platform boot-source candidates")
+            compile_error!("BootMedia(FirmwareImage) requires exactly one enabled FirmwareImageProvider, Rust platform firmware-image support, or Rust platform boot-source candidates")
         });
     };
     let temp_ram_buffer = temp_ram_buffer_tokens(temp_ram_buffer);
@@ -338,14 +361,19 @@ fn firmware_image_boot_media_op(
     }
 }
 
-fn load_next_stage_op(
-    idx: usize,
-    devices: &[LoadDevice],
-    next_stage: &str,
-    ctx: &PlanCtx<'_>,
-) -> LoweredOp {
+fn load_next_stage_op(idx: usize, next_stage: &str, ctx: &PlanCtx<'_>) -> LoweredOp {
+    let candidates = fstart_device_registry::platform_boot_media_candidates(
+        ctx.config.name.as_str(),
+        ctx.config.platform,
+    );
+    if candidates.is_empty() {
+        return LoweredOp::new(quote! {
+            compile_error!("LoadNextStage requires Rust platform boot-source candidates; board capabilities may not name boot devices")
+        });
+    }
+
     let ident = format_ident!("_FSTART_STAGE_PLAN_LNS_CANDIDATES_{idx}");
-    let candidates = load_candidates(devices, ctx);
+    let candidates = boot_source_candidates(candidates, ctx);
     let len = candidates.len();
     LoweredOp::new(quote! {
         fstart_stage_runtime::StageOp::LoadNextStage {
@@ -404,14 +432,7 @@ enum ResolvedFirmwareProvider<'a> {
     PlatformBootSource(&'static [PlatformBootMediaCandidate]),
 }
 
-fn resolve_firmware_provider<'a>(
-    provider: Option<&'a str>,
-    ctx: &PlanCtx<'a>,
-) -> Option<ResolvedFirmwareProvider<'a>> {
-    if let Some(provider) = provider {
-        return Some(ResolvedFirmwareProvider::Device(provider));
-    }
-
+fn resolve_firmware_provider<'a>(ctx: &PlanCtx<'a>) -> Option<ResolvedFirmwareProvider<'a>> {
     let mut matches = ctx
         .devices
         .iter()
@@ -468,25 +489,6 @@ fn boot_source_candidates(
         .collect()
 }
 
-fn load_candidates(candidates: &[LoadDevice], ctx: &PlanCtx<'_>) -> Vec<TokenStream> {
-    candidates
-        .iter()
-        .map(|candidate| {
-            let id = ctx.ids.lit(candidate.name.as_str(), "LoadNextStage");
-            let offset = hex_addr(candidate.base_offset);
-            let media_ids = media_ids_tokens(candidate.name.as_str(), ctx);
-            quote! {
-                fstart_stage_runtime::BootMediaCandidate {
-                    device: #id,
-                    offset: #offset,
-                    size: 0,
-                    media_ids: #media_ids,
-                }
-            }
-        })
-        .collect()
-}
-
 fn media_ids_tokens(device_name: &str, ctx: &PlanCtx<'_>) -> TokenStream {
     let values = boot_media_values_for_device(device_name, ctx.devices, ctx.instances);
     let lits = values.iter().map(|b| Literal::u8_unsuffixed(*b));
@@ -496,6 +498,7 @@ fn media_ids_tokens(device_name: &str, ctx: &PlanCtx<'_>) -> TokenStream {
 fn persistent_inited_ids(
     config: &BoardConfig,
     stage_name: Option<&str>,
+    device_services: &[ServiceSet],
     ids: &DeviceIdMap<'_>,
 ) -> Vec<DeviceId> {
     let StageLayout::MultiStage(stages) = &config.stages else {
@@ -514,15 +517,21 @@ fn persistent_inited_ids(
     let mut out = Vec::new();
     for stage in &stages[..pos] {
         for cap in &stage.capabilities {
-            let dev = match cap {
-                Capability::ClockInit { device } | Capability::DramInit { device } => {
-                    Some(device.as_str())
-                }
+            let service = match cap {
+                Capability::ClockInit => Some(Service::ClockController),
+                Capability::DramInit => Some(Service::MemoryController),
                 _ => None,
             };
-            if let Some(dev) = dev.and_then(|name| ids.get(name)) {
-                if !out.contains(&dev) {
-                    out.push(dev);
+            if let Some(service) = service {
+                for (device, services) in config.devices.iter().zip(device_services.iter()) {
+                    if !device.enabled || !services.contains(service) {
+                        continue;
+                    }
+                    if let Some(id) = ids.get(device.name.as_str()) {
+                        if !out.contains(&id) {
+                            out.push(id);
+                        }
+                    }
                 }
             }
         }
@@ -540,26 +549,8 @@ fn collect_boot_media_gated(
     let mut out = Vec::new();
     for cap in capabilities {
         match cap {
-            Capability::LoadNextStage {
-                devices: load_devs, ..
-            } if load_devs.len() > 1 => {
-                for load_dev in load_devs {
-                    if let Some(id) = ids.get(load_dev.name.as_str()) {
-                        if out.iter().any(|(existing, _)| *existing == id) {
-                            continue;
-                        }
-                        let values = boot_media_values_for_device(
-                            load_dev.name.as_str(),
-                            devices,
-                            instances,
-                        );
-                        if !values.is_empty() {
-                            out.push((id, driver_init_candidate_tokens(id, values.as_slice())));
-                        }
-                    }
-                }
-            }
-            Capability::BootMedia(BootMedium::FirmwareImage { provider: None, .. }) => {
+            Capability::LoadNextStage { .. }
+            | Capability::BootMedia(BootMedium::FirmwareImage { .. }) => {
                 let candidates = fstart_device_registry::platform_boot_media_candidates(
                     config.name.as_str(),
                     config.platform,

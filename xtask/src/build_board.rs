@@ -172,7 +172,6 @@ fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
                 Capability::MpInit {
                     max_cpus,
                     smm: true,
-                    ..
                 } => Some(*max_cpus),
                 _ => None,
             })

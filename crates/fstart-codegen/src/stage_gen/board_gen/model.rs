@@ -54,7 +54,7 @@ impl<'a> StageScope<'a> {
             .any(|cap| matches!(cap, Capability::AcpiPrepare));
         let uses_acpi = capabilities
             .iter()
-            .any(|cap| matches!(cap, Capability::AcpiPrepare | Capability::AcpiLoad { .. }));
+            .any(|cap| matches!(cap, Capability::AcpiPrepare | Capability::AcpiLoad));
         let uses_smbios = capabilities
             .iter()
             .any(|cap| matches!(cap, Capability::SmBiosPrepare));

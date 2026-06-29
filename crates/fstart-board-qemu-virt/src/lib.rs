@@ -278,12 +278,9 @@ fn monolithic_stage(
 ) -> StageLayout {
     let mut capabilities = HVec::new();
     for capability in [
-        Capability::ConsoleInit {
-            device: hstr("uart0"),
-        },
+        Capability::ConsoleInit,
         Capability::MemoryInit,
         Capability::BootMedia(fstart_types::BootMedium::FirmwareImage {
-            provider: None,
             temp_ram_buffer: None,
         }),
         Capability::SigVerify,

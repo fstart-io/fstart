@@ -1,7 +1,8 @@
-//! Stage composition types — capability-based stage definition.
+//! Stage composition types for transitional capability/profile metadata.
 //!
-//! Stages are not hand-written code. They are generated from the board RON
-//! file: an entry point that calls the declared capabilities in sequence.
+//! Rust-authored boards provide these values directly. The long-term fixed
+//! stage flow consumes coarse build profiles rather than board-authored device
+//! routing or generated flow code.
 
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
@@ -200,192 +201,65 @@ pub enum PageSize {
     Size1GiB,
 }
 
-/// A capability is a composable unit of firmware functionality.
+/// A semantic firmware capability/flow marker.
 ///
-/// The RON file specifies which capabilities run in which stage(s).
-/// At build time, the stage binary is generated to call these in order.
+/// Transitional code still uses this enum to select stage feature families and
+/// to emit legacy `StagePlan` facts, but board metadata must not route runtime
+/// work by device name. Device participation is selected from service metadata
+/// and platform/driver policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Capability {
     /// Initialize the clock tree / PLL configuration.
-    ///
-    /// Must appear before `ConsoleInit` when the UART clock gate needs
-    /// to be opened, and before `DramInit` when the DRAM PLL must be
-    /// programmed. The referenced device implements `ClockController`.
-    ///
-    /// On Allwinner SoCs this programs PLL1 (CPU), PLL6 (peripherals),
-    /// opens the UART clock gate, and muxes UART GPIO pins.
-    ClockInit {
-        /// Device name from the devices list (e.g., "ccu0")
-        device: HString<32>,
-    },
+    ClockInit,
     /// Initialize an early console for debug output.
-    ConsoleInit {
-        /// Device name from the devices list (e.g., "uart0")
-        device: HString<32>,
-    },
+    ConsoleInit,
     /// Declare the boot medium for FFS operations.
-    ///
-    /// Must appear before any FFS-consuming capability (`SigVerify`,
-    /// `StageLoad`, `PayloadLoad`). Generates the `boot_media` variable
-    /// used by those capabilities.
     BootMedia(BootMedium),
     /// Verify the firmware filesystem manifest signature.
     SigVerify,
-    /// Mark DRAM as available without naming a memory-controller device.
-    ///
-    /// Used on platforms where DRAM is already available or QEMU-style
-    /// virtual boards. For real hardware, use `DramInit` instead.
+    /// Mark DRAM as available without a memory-controller service.
     MemoryInit,
-    /// Initialize DRAM via a specific memory controller driver.
-    ///
-    /// The referenced device implements `MemoryController`. Its `init()`
-    /// method performs the full DRAM initialization sequence (PLL setup,
-    /// PHY training, size detection). After this capability completes,
-    /// the DRAM region declared in the memory map is usable.
-    ///
-    /// Replaces `MemoryInit` for boards with real DRAM controllers.
-    DramInit {
-        /// Device name from the devices list (e.g., "dramc0")
-        device: HString<32>,
-    },
+    /// Initialize DRAM through the stage-selected memory controller service.
+    DramInit,
     /// Initialize all logical CPUs (BSP + APs).
-    ///
-    /// Brings up application processors via INIT+SIPI, runs per-CPU
-    /// MSR configuration (C-states, SpeedStep, thermals), optionally
-    /// performs SMM relocation, and parks APs for later work dispatch.
-    ///
-    /// Must appear after `DramInit` — APs need stacks in DRAM.
     MpInit {
         /// Maximum logical CPU count to attempt (BSP + APs).
         max_cpus: u16,
-        /// Enable SMM setup.  When true, the selected SMM provider must
-        /// implement `SmmOps`.  Default: false.
+        /// Enable SMM setup. When true, exactly one compiled runtime device must
+        /// provide `SmmOps`; selecting among multiple providers belongs in typed
+        /// board/build policy, not a capability string.
         #[serde(default)]
         smm: bool,
-        /// Device name of the chipset driver that provides `SmmOps`.
-        ///
-        /// If omitted, codegen selects the sole enabled device whose Rust-owned
-        /// registry metadata provides `SmmOps`.
-        #[serde(default)]
-        smm_provider: Option<HString<32>>,
     },
     /// Enumerate and initialize all declared devices/drivers.
     DriverInit,
     /// Enumerate a PCI root bus, allocate BAR resources, and enable devices.
-    ///
-    /// The referenced device implements `PciRootBus`.  Its `init()` method
-    /// walks the bus tree, sizes BARs, allocates from the MMIO/IO windows
-    /// in the driver config, programs hardware, and enables memory decode.
-    ///
-    /// Must appear after `ConsoleInit` (so enumeration can be logged).
-    PciInit {
-        /// Device name from the devices list (e.g., "pci0")
-        device: HString<32>,
-    },
+    PciInit,
     /// Prepare a Flattened Device Tree for OS handoff.
     FdtPrepare,
     /// Load and jump to the payload (OS kernel, shell, etc.).
     PayloadLoad,
     /// Load the next stage from FFS into RAM and jump to it.
     StageLoad {
-        /// Name of the next stage to load
+        /// Name of the next stage to load.
         next_stage: HString<32>,
     },
     /// Generate ACPI tables and write them to the configured address.
-    ///
-    /// Iterates devices with `AcpiDevice` impls and ACPI-only extra
-    /// devices from the board RON to collect DSDT entries and standalone
-    /// tables, then assembles the full table set (RSDP, XSDT, FADT,
-    /// MADT, GTDT, device tables, DSDT). Requires a heap (`heap_size`
-    /// must be set) and the board's `acpi` config section.
     AcpiPrepare,
     /// Generate SMBIOS tables and write them to the configured address.
-    ///
-    /// Writes SMBIOS 3.0 entry point and structure tables (Type 0/1/2/3/
-    /// 4/16/17/19/32/127) from the board RON's `smbios` config section.
-    /// Does not require a heap — writes directly to the target address.
     SmBiosPrepare,
-    /// Load ACPI tables from an external provider device.
-    ///
-    /// Calls the referenced device's `AcpiTableProvider` implementation
-    /// to load pre-built ACPI tables into memory. Used when the platform
-    /// provides ACPI tables externally (e.g., QEMU's fw_cfg device)
-    /// rather than generating them from the board RON.
-    ///
-    /// The loaded RSDP address is stored for the payload boot protocol
-    /// (e.g., x86 zero page, or UEFI system table).
-    ///
-    /// For platforms that generate their own ACPI tables, use
-    /// `AcpiPrepare` instead.
-    AcpiLoad {
-        /// Device name implementing `AcpiTableProvider` (e.g., "fw_cfg0")
-        device: HString<32>,
-    },
-    /// Detect system memory layout at runtime.
-    ///
-    /// Calls the referenced device's `MemoryDetector` implementation
-    /// to discover the memory map. On QEMU this reads e820 entries from
-    /// the fw_cfg device. On real hardware, a future implementation
-    /// might read SPD data and perform memory training.
-    ///
-    /// Results are stored for later use by the boot protocol (e.g.,
-    /// x86 zero page e820 table, or FDT `/memory` node updates).
-    MemoryDetect {
-        /// Device name implementing `MemoryDetector` (e.g., "fw_cfg0")
-        device: HString<32>,
-    },
+    /// Load ACPI tables from the selected external provider service.
+    AcpiLoad,
+    /// Detect system memory layout through the selected memory detector service.
+    MemoryDetect,
     /// Return to the BROM's FEL (USB recovery) mode.
-    ///
-    /// Restores the saved BROM state (SP, LR, CPSR, SCTLR, VBAR) from
-    /// the `fel_stash` written by `save_boot_params` at reset, then
-    /// returns via the saved LR. This function never returns.
-    ///
-    /// Useful for debugging: boot from SD card, run clock/UART init,
-    /// then return to FEL so the host can poke registers via `sunxi-fel`.
-    ///
-    /// Currently supported on `armv7` (Allwinner sunxi) only.
     ReturnToFel,
-    /// Load the next stage directly from a block device into its load
-    /// address and jump to it.
-    ///
-    /// The stage's offset and size on the block device are read at
-    /// runtime from the eGON header (patched by the FFS assembler).
-    /// The absolute byte offset on the device is `base_offset` +
-    /// `next_stage_offset` (from the header).
-    ///
-    /// When multiple devices are specified, the boot device is
-    /// auto-detected at runtime via `fstart_soc_sunxi::boot_device()`
-    /// (reads the BROM-written `boot_media` field from the eGON header).
-    ///
-    /// Used by bootblocks that are too small to contain the FFS reader
-    /// (e.g., Allwinner A20 with 24K SRAM). The bootblock reads just
-    /// the next stage binary and jumps — no FFS parsing, no intermediate
-    /// DRAM buffer.
+    /// Load the next stage directly from platform boot-source metadata.
     LoadNextStage {
-        /// Boot device candidates. When multiple are specified, the
-        /// active boot device is auto-detected from the eGON header.
-        devices: heapless::Vec<LoadDevice, 4>,
         /// Name of the next stage to jump to after loading.
         next_stage: HString<32>,
     },
-}
-
-/// A boot device candidate for `LoadNextStage`.
-///
-/// Each entry maps a block device name to its firmware image offset
-/// on the medium. The codegen derives the eGON `boot_media` match
-/// value from the device's driver type at build time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LoadDevice {
-    /// Device name from the devices list (e.g., "mmc0", "spi0").
-    pub name: HString<32>,
-    /// Byte offset on the device where the firmware image starts.
-    ///
-    /// For SD card on sunxi: `0x2000` (sector 16, where BROM looks).
-    /// For SPI NOR flash: `0` (image starts at the beginning of flash).
-    pub base_offset: u64,
 }
 
 /// Temporary RAM scratch buffer for firmware-image/FFS operations.
@@ -405,23 +279,16 @@ pub struct TempRamBuffer {
 
 /// Boot medium — how the firmware image is accessed at runtime.
 ///
-/// Specified via the `BootMedia(...)` capability in the board RON.
+/// Declared via the `BootMedia(...)` capability for transitional stage metadata.
 /// Firmware image mapping and boot-source candidate tables are supplied by
-/// Rust platform/chipset/provider code, not by raw board-local RON mappings.
+/// Rust platform/chipset/provider code, not by board-local device strings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum BootMedium {
-    /// Firmware image exposed by a hardware provider.
-    ///
-    /// The named provider device implements `FirmwareImageProvider`; if omitted,
-    /// codegen selects the sole enabled provider, or a Rust platform mapping for
-    /// fixed emulator/SoC ROM windows. The provider owns the hardware-specific
-    /// flash/MMIO decode information, including chipsets with multiple
-    /// memory-mapped windows.
+    /// Firmware image exposed by the selected provider service or by platform
+    /// firmware-image/boot-source metadata. The capability does not name a
+    /// provider device.
     FirmwareImage {
-        /// Optional device name implementing `FirmwareImageProvider`.
-        #[serde(default)]
-        provider: Option<HString<32>>,
         /// Optional scratch RAM arena available to FFS/payload code.
         #[serde(default)]
         temp_ram_buffer: Option<TempRamBuffer>,

@@ -6,7 +6,7 @@ use super::adapter_source_for_board;
 fn install_logger_emits_arm_per_console_device() {
     // qemu-riscv64 has one Console-providing device: uart0 (ns16550).
     // The match must carry an arm that inits the logger against
-    // `.uart0` and returns metadata with both the RON device name and the
+    // `.uart0` and returns metadata with both the service-selected device name and the
     // driver crate name. Runtime owns the console_ready banner.
     let src = adapter_source_for_board("qemu-riscv64");
     assert!(
@@ -30,7 +30,7 @@ fn install_logger_emits_arm_per_console_device() {
     );
     assert!(
         src.contains("\"uart0\""),
-        "ConsoleReady must carry the RON device name, got:\n{src}"
+        "ConsoleReady must carry the service-selected device name, got:\n{src}"
     );
     assert!(
         src.contains("\"ns16550\""),

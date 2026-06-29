@@ -172,12 +172,9 @@ pub fn generate_linker_script(parsed: &ParsedBoard, stage_name: Option<&str>) ->
                     .memory
                     .firmware_window()
                     .or_else(|| {
-                        firmware_image_from_provider(
-                            parsed,
-                            stage_firmware_provider(parsed, stage_name),
-                        )
-                        .and_then(|image| image.contiguous_window())
-                        .map(|window| (window.cpu_base, window.size))
+                        firmware_image_from_provider(parsed, None)
+                            .and_then(|image| image.contiguous_window())
+                            .map(|window| (window.cpu_base, window.size))
                     })
                     .unwrap_or((rom.base, rom.size)),
             }
@@ -295,20 +292,6 @@ fn firmware_image_from_provider(
     }
 }
 
-fn stage_firmware_provider<'a>(
-    parsed: &'a ParsedBoard,
-    stage_name: Option<&str>,
-) -> Option<&'a str> {
-    stage_capabilities(parsed, stage_name)?
-        .iter()
-        .find_map(|capability| match capability {
-            Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
-                provider.as_ref().map(|provider| provider.as_str())
-            }
-            _ => None,
-        })
-}
-
 fn stage_memory_mapped_boot_media(
     parsed: &ParsedBoard,
     stage_name: Option<&str>,
@@ -316,8 +299,8 @@ fn stage_memory_mapped_boot_media(
     let capabilities = stage_capabilities(parsed, stage_name)?;
 
     capabilities.iter().find_map(|capability| match capability {
-        Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
-            firmware_image_from_provider(parsed, provider.as_ref().map(|p| p.as_str()))
+        Capability::BootMedia(BootMedium::FirmwareImage { .. }) => {
+            firmware_image_from_provider(parsed, None)
                 .and_then(|image| image.contiguous_window())
                 .map(|window| (window.cpu_base, window.size))
         }

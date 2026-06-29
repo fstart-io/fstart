@@ -99,7 +99,7 @@ fn acpi_load_emits_real_body_on_q35() {
     // Device name is baked in.
     assert!(
         src.contains("\"fw_cfg0\""),
-        "acpi_load arm must pass the RON device name; got:\n{src}"
+        "acpi_load arm must pass the service-selected device name; got:\n{src}"
     );
 }
 
@@ -185,7 +185,7 @@ fn pci_init_emits_real_body_on_aarch64_sbsa() {
     );
     assert!(
         src.contains("\"pci0\""),
-        "pci_init arm must bake the RON device name; got:\n{src}"
+        "pci_init arm must bake the service-selected device name; got:\n{src}"
     );
 }
 

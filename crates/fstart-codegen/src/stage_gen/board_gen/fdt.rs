@@ -5,7 +5,7 @@ use quote::quote;
 
 use fstart_device_registry::Service;
 use fstart_types::memory::{FlashLayout, RegionKind};
-use fstart_types::{BootMedium, Capability, FdtSource, PayloadConfig, Platform};
+use fstart_types::{Capability, FdtSource, PayloadConfig, Platform};
 
 use crate::stage_gen::tokens::hex_addr;
 
@@ -105,28 +105,7 @@ fn x86_postcar_config_tokens(ctx: &BoardEmitModel<'_>) -> TokenStream {
                     flash_layout: ctx.config.memory.flash_layout.as_ref(),
                     intel_ifd: None,
                 };
-                let selected_provider =
-                    ctx.stage
-                        .capabilities
-                        .iter()
-                        .find_map(|capability| match capability {
-                            Capability::BootMedia(BootMedium::FirmwareImage {
-                                provider, ..
-                            }) => provider.as_ref().map(|provider| provider.as_str()),
-                            _ => None,
-                        });
-                let image = if let Some(provider) = selected_provider {
-                    ctx.devices
-                        .iter()
-                        .position(|device| device.name.as_str() == provider)
-                        .and_then(|idx| {
-                            ctx.instances[idx]
-                                .build_firmware_image(&build_ctx)
-                                .unwrap_or_else(|err| {
-                                    panic!("build firmware image provider failed: {err}")
-                                })
-                        })
-                } else {
+                let image = {
                     let mut images = ctx
                         .runtime_devices
                         .providers(Service::FirmwareImageProvider)

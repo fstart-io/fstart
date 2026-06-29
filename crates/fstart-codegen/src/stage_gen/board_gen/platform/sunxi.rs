@@ -3,6 +3,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use fstart_device_registry::Service;
 use fstart_types::{Capability, StageLayout};
 
 use crate::stage_gen::tokens::hex_addr;
@@ -97,13 +98,13 @@ pub(in crate::stage_gen::board_gen) fn egon_next_stage_body(
 pub(in crate::stage_gen::board_gen) fn dram_size_for_handoff_body(
     ctx: &BoardEmitModel<'_>,
 ) -> TokenStream {
-    let dram_device = ctx.stage.capabilities.iter().find_map(|cap| match cap {
-        Capability::DramInit { device } => Some(device.as_str()),
-        _ => None,
-    });
+    let dram_device = ctx
+        .runtime_devices
+        .providers(Service::MemoryController)
+        .next();
     match dram_device {
-        Some(dev_name) => {
-            let dev = format_ident!("{}", dev_name);
+        Some(device) => {
+            let dev = format_ident!("{}", device.name);
             quote! {
                 self._handoff
                     .as_ref()
