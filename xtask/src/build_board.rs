@@ -86,6 +86,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         let (elf_path, run_path) = build_one_stage(
             &workspace_root,
             &board_manifest,
+            config,
             stage.stage_name.as_deref(),
             plan.target.triple,
             &features,
@@ -196,6 +197,7 @@ fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
 fn build_one_stage(
     workspace_root: &std::path::Path,
     board_manifest: &crate::board_manifest::BoardManifest,
+    config: &fstart_types::BoardConfig,
     stage_name: Option<&str>,
     target: &str,
     features: &str,
@@ -210,10 +212,23 @@ fn build_one_stage(
     let stage_label = stage_name.unwrap_or("stage");
     let artifact_dir = workspace_root
         .join("target")
-        .join("fstart-generated")
+        .join("fstart-build")
         .join(board_label)
         .join(profile)
         .join(stage_label);
+    std::fs::create_dir_all(&artifact_dir)
+        .map_err(|e| format!("failed to create stage artifact dir: {e}"))?;
+    let link_ld = artifact_dir.join("link.ld");
+    let linker_script = fstart_codegen::linker::generate_linker_script(config, stage_name);
+    std::fs::write(&link_ld, linker_script)
+        .map_err(|e| format!("failed to write {}: {e}", link_ld.display()))?;
+    let metadata = format!(
+        "board_source=rust:{}\nstage={stage_label}\nprofile={profile}\ntarget={target}\nfeatures={features}\nlinker_script={}\n",
+        board_manifest.board,
+        link_ld.display()
+    );
+    std::fs::write(artifact_dir.join("metadata.txt"), metadata)
+        .map_err(|e| format!("failed to write stage metadata: {e}"))?;
 
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
@@ -239,11 +254,10 @@ fn build_one_stage(
     }
     cmd.env("RUSTFLAGS", &rustflags);
 
-    // Pass board/stage context to build.rs.  FSTART_STAGE_ARTIFACT_DIR
-    // mirrors link.ld and other stage build artifacts to a stable, human-readable path;
-    // Cargo's OUT_DIR remains the canonical path used by include!/linking.
+    // Pass board/stage context to build.rs. Board-aware planning already
+    // happened here; fstart-stage/build.rs only forwards link.ld to rustc.
     cmd.env("FSTART_RUST_BOARD", &board_manifest.board);
-    cmd.env("FSTART_STAGE_ARTIFACT_DIR", &artifact_dir);
+    cmd.env("FSTART_LINKER_SCRIPT", &link_ld);
     cmd.env("FSTART_STAGE_FEATURES", features);
     if let Some(name) = stage_name {
         cmd.env("FSTART_STAGE_NAME", name);
@@ -255,7 +269,7 @@ fn build_one_stage(
         }
     }
 
-    eprintln!("[fstart] generated artifacts: {}", artifact_dir.display());
+    eprintln!("[fstart] build artifacts: {}", artifact_dir.display());
     eprintln!("[fstart] building fstart-stage...");
     let status = cmd
         .status()

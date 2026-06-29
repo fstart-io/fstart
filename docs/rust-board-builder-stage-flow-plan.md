@@ -71,6 +71,9 @@ not hand-write generic device init ordering.
 - **Build metadata needs its own builder.** Host paths, Cargo features, image
   packaging, linker choices, payload files, and build profiles are board facts
   for `xtask`, not target-stage runtime logic.
+  `xtask` may emit ordinary build artifacts such as `link.ld` and
+  human-readable metadata, but it must not generate Rust stage code or recreate a
+  central `match board_name` registry in the stage crate.
 
 ## Plain Rust builder pattern
 

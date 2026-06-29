@@ -2,18 +2,14 @@
 
 use std::fmt::Write;
 
-use fstart_device_registry::Service;
 use fstart_types::memory::FlashLayout;
 use fstart_types::{
-    effective_stage_load_addr, BootMedium, Capability, Platform, RegionKind, SocImageFormat,
-    StageLayout,
+    effective_stage_load_addr, BoardConfig, BootMedium, Capability, Platform, RegionKind,
+    SocImageFormat, StageLayout,
 };
 
-use crate::board_loader::ParsedBoard;
-
 /// Generate a linker script for the given board and (optional) stage.
-pub fn generate_linker_script(parsed: &ParsedBoard, stage_name: Option<&str>) -> String {
-    let config = &parsed.config;
+pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
     let mut out = String::new();
 
     let arch = config.platform.linker_arch();
@@ -171,11 +167,6 @@ pub fn generate_linker_script(parsed: &ParsedBoard, stage_name: Option<&str>) ->
                 None => config
                     .memory
                     .firmware_window()
-                    .or_else(|| {
-                        firmware_image_from_provider(parsed, None)
-                            .and_then(|image| image.contiguous_window())
-                            .map(|window| (window.cpu_base, window.size))
-                    })
                     .unwrap_or((rom.base, rom.size)),
             }
         } else {
@@ -212,7 +203,7 @@ pub fn generate_linker_script(parsed: &ParsedBoard, stage_name: Option<&str>) ->
         // the manifest and other embedded files before fstart_main can read
         // them.
         let bss_origin =
-            stage_memory_mapped_boot_media(parsed, stage_name).and_then(|(base, size)| {
+            stage_memory_mapped_boot_media(config, stage_name).and_then(|(base, size)| {
                 if base != load_addr || size == 0 {
                     return None;
                 }
@@ -241,78 +232,23 @@ pub fn generate_linker_script(parsed: &ParsedBoard, stage_name: Option<&str>) ->
     out
 }
 
-fn firmware_image_from_provider(
-    parsed: &ParsedBoard,
-    provider: Option<&str>,
-) -> Option<fstart_services::FirmwareImage> {
-    let ctx = fstart_device_registry::BuildFirmwareImageContext {
-        flash_layout: parsed.config.memory.flash_layout.as_ref(),
-        intel_ifd: None,
-    };
-    let image_for_idx = |idx: usize| {
-        parsed.driver_instances[idx]
-            .build_firmware_image(&ctx)
-            .unwrap_or_else(|err| panic!("build firmware image provider failed: {err}"))
-    };
-
-    if let Some(provider) = provider {
-        let idx = parsed
-            .config
-            .devices
-            .iter()
-            .position(|device| device.name.as_str() == provider)?;
-        if !parsed.config.devices[idx].enabled
-            || !parsed.device_services[idx].contains(Service::FirmwareImageProvider)
-        {
-            return None;
-        }
-        return image_for_idx(idx);
-    }
-
-    let mut images = parsed
-        .config
-        .devices
-        .iter()
-        .zip(parsed.device_services.iter())
-        .enumerate()
-        .filter(|(_, (device, services))| {
-            device.enabled && services.contains(Service::FirmwareImageProvider)
-        })
-        .filter_map(|(idx, _)| image_for_idx(idx));
-    let first = images.next();
-    if images.next().is_none() {
-        first.or_else(|| {
-            fstart_device_registry::platform_firmware_image(
-                parsed.config.name.as_str(),
-                parsed.config.platform,
-            )
-        })
-    } else {
-        None
-    }
-}
-
 fn stage_memory_mapped_boot_media(
-    parsed: &ParsedBoard,
+    config: &BoardConfig,
     stage_name: Option<&str>,
 ) -> Option<(u64, u64)> {
-    let capabilities = stage_capabilities(parsed, stage_name)?;
+    let capabilities = stage_capabilities(config, stage_name)?;
 
     capabilities.iter().find_map(|capability| match capability {
-        Capability::BootMedia(BootMedium::FirmwareImage { .. }) => {
-            firmware_image_from_provider(parsed, None)
-                .and_then(|image| image.contiguous_window())
-                .map(|window| (window.cpu_base, window.size))
-        }
+        Capability::BootMedia(BootMedium::FirmwareImage { .. }) => config.memory.firmware_window(),
         _ => None,
     })
 }
 
 fn stage_capabilities<'a>(
-    parsed: &'a ParsedBoard,
+    config: &'a BoardConfig,
     stage_name: Option<&str>,
 ) -> Option<&'a [Capability]> {
-    match (&parsed.config.stages, stage_name) {
+    match (&config.stages, stage_name) {
         (StageLayout::Monolithic(mono), _) => Some(&mono.capabilities),
         (StageLayout::MultiStage(stages), Some(name)) => stages
             .iter()
