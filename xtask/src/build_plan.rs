@@ -94,13 +94,16 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
     let target = TargetSpec::for_platform(config.platform);
     let base_features = base_features(parsed, target);
     let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
-    let pci_root_backend = pci_root_backend(parsed);
-    let has_pci_driver = pci_root_backend.is_some();
+    let pci_root_feature = config.build.pci_root_feature.as_deref();
+    let has_pci_driver = parsed
+        .device_services
+        .iter()
+        .any(|services| services.contains(Service::PciRootBus));
     let plan_context = PlanContext {
         base_features: &base_features,
         instances: &parsed.driver_instances,
         needs_flat_binary: target.needs_flat_binary,
-        pci_root_backend,
+        pci_root_feature,
     };
 
     let stages = match &config.stages {
@@ -227,7 +230,7 @@ struct PlanContext<'a> {
     base_features: &'a FeatureSet,
     instances: &'a [DriverInstance],
     needs_flat_binary: bool,
-    pci_root_backend: Option<PciRootBackend>,
+    pci_root_feature: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -242,26 +245,6 @@ struct StageContext<'a> {
     load_addr: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PciRootBackend {
-    GenericEcam,
-    Q35HostBridge,
-}
-
-fn pci_root_backend(parsed: &ParsedBoard) -> Option<PciRootBackend> {
-    let (idx, _) = parsed
-        .device_services
-        .iter()
-        .enumerate()
-        .find(|(_, services)| services.contains(Service::PciRootBus))?;
-
-    if parsed.driver_instances[idx].driver_name() == "q35-hostbridge" {
-        Some(PciRootBackend::Q35HostBridge)
-    } else {
-        Some(PciRootBackend::GenericEcam)
-    }
-}
-
 fn stage_plan(
     config: &BoardConfig,
     stage: &StageContext<'_>,
@@ -274,8 +257,10 @@ fn stage_plan(
         stage.capabilities,
         &config.security,
         config,
-        plan_context.pci_root_backend,
     ));
+    if stage_uses_pci(stage.capabilities) {
+        features.insert(plan_context.pci_root_feature.unwrap_or("pci-ecam"));
+    }
     if stage_uses_mp(stage.capabilities) {
         features.extend(cpu_driver_features(config, plan_context.instances));
     }
@@ -319,7 +304,6 @@ fn capability_features(
     capabilities: &[Capability],
     security: &SecurityConfig,
     config: &BoardConfig,
-    pci_root_backend: Option<PciRootBackend>,
 ) -> Vec<&'static str> {
     let mut features = Vec::new();
 
@@ -381,13 +365,6 @@ fn capability_features(
             .is_some_and(|payload| matches!(payload.fdt, fstart_types::FdtSource::Override(_)))
         {
             features.push("stage-flow-fdt-ffs");
-        }
-    }
-
-    if stage_uses_pci(capabilities) {
-        match pci_root_backend {
-            Some(PciRootBackend::Q35HostBridge) => features.push("q35-hostbridge"),
-            Some(PciRootBackend::GenericEcam) | None => features.push("pci-ecam"),
         }
     }
 

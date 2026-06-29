@@ -115,6 +115,10 @@ pub struct BoardConfig {
     #[serde(default)]
     pub full_flash_image: bool,
 
+    /// Host build policy that belongs to the board/platform, not to driver metadata.
+    #[serde(default)]
+    pub build: BoardBuildPolicy,
+
     /// ACPI table generation configuration.
     ///
     /// Required when any stage has the `AcpiPrepare` capability. Contains
@@ -157,6 +161,41 @@ pub struct BoardConfig {
     /// without S-mode; hart 1 is the first U74 application core).
     #[serde(default)]
     pub boot_hart_id: u32,
+}
+
+/// Board/platform-owned host build policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoardBuildPolicy {
+    /// How host tooling should map the firmware image at build/package time.
+    #[serde(default)]
+    pub firmware_image: FirmwareImagePolicy,
+    /// Optional stage feature for the board/platform PCI root implementation.
+    ///
+    /// When absent, `PciInit` uses the generic ECAM implementation.
+    #[serde(default)]
+    pub pci_root_feature: Option<HString<32>>,
+}
+
+/// Board/platform-owned firmware-image mapping policy for host tooling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub enum FirmwareImagePolicy {
+    /// Derive from board memory metadata, such as an explicit flash layout or a
+    /// contiguous ROM window.
+    #[default]
+    Auto,
+    /// This board does not expose a host-side firmware-image mapping.
+    None,
+    /// Firmware image is a fixed memory-mapped window.
+    MemoryMapped { cpu_base: u64, size: u64 },
+}
+
+impl FirmwareImagePolicy {
+    /// Construct a fixed memory-mapped firmware-image policy.
+    pub const fn memory_mapped(cpu_base: u64, size: u64) -> Self {
+        Self::MemoryMapped { cpu_base, size }
+    }
 }
 
 /// CPU microcode packaging configuration.

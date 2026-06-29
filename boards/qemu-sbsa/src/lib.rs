@@ -55,6 +55,7 @@ pub fn board_config() -> BoardConfig {
         acpi: Some(acpi_config()),
         smbios: Some(smbios_config()),
         smm: None,
+        build: Default::default(),
         boot_hart_id: 0,
     }
 }

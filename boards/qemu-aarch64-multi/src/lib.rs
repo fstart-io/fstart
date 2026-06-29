@@ -68,6 +68,7 @@ pub fn board_config() -> BoardConfig {
         acpi: None,
         smbios: None,
         smm: None,
+        build: Default::default(),
         boot_hart_id: 0,
     }
 }

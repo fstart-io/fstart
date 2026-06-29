@@ -16,14 +16,15 @@ use fstart_ffs::builder::{
     build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
 };
 use fstart_services::device::{BusDevice, Device};
-use fstart_services::{ServiceKind as Service, ServiceSet};
 use fstart_types::device::BusAddress;
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_SIZE,
     FFS_MAGIC, FFS_VERSION,
 };
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
-use fstart_types::{BoardConfig, FdtSource, Platform, RunsFrom, SocImageFormat, StageLayout};
+use fstart_types::{
+    BoardConfig, FdtSource, FirmwareImagePolicy, Platform, RunsFrom, SocImageFormat, StageLayout,
+};
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use std::fs;
@@ -291,13 +292,7 @@ fn assemble_impl(
 
     let mut image_config = FfsImageConfig {
         keys: vec![verification_key],
-        regions: ffs_input_regions(
-            &config,
-            &parsed.driver_instances,
-            &parsed.device_services,
-            &board_dir,
-            ro_files,
-        )?,
+        regions: ffs_input_regions(&config, ro_files)?,
     };
 
     // Build the image with signing. Compressed stages that use FFS contain a
@@ -395,8 +390,6 @@ fn assemble_impl(
     if config.full_flash_image || flash_layout_files {
         let full_flash = FullFlashInput {
             config: &config,
-            instances: &parsed.driver_instances,
-            device_services: &parsed.device_services,
             board_dir: &board_dir,
             bootblock_elf: &build_result.stages[0].path,
             bootblock_bin: &build_result.stages[0].run_path,
@@ -535,29 +528,18 @@ fn patch_compressed_anchor_slots(
 
 fn ffs_input_regions(
     config: &BoardConfig,
-    instances: &[DriverInstance],
-    device_services: &[ServiceSet],
-    board_dir: &Path,
     ro_files: Vec<InputFile>,
 ) -> Result<Vec<InputRegion>, String> {
     let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
         if config.full_flash_image {
-            let flash_image =
-                firmware_image_from_provider(config, instances, device_services, board_dir)?
-                    .ok_or_else(|| {
-                        "full_flash_image requires a FirmwareImageProvider".to_string()
-                    })?;
+            let flash_image = firmware_image_from_policy(config)?.ok_or_else(|| {
+                "full_flash_image requires a firmware image build policy".to_string()
+            })?;
             let flash_size = flash_image.size;
             let flash_size_u32 = u32::try_from(flash_size)
                 .map_err(|_| format!("flash size {flash_size:#x} exceeds FFS u32 limits"))?;
-            let (files, external_files) = externalize_xip_bootblock(
-                config,
-                instances,
-                device_services,
-                board_dir,
-                ro_files,
-                flash_size_u32,
-            )?;
+            let (files, external_files) =
+                externalize_xip_bootblock(config, ro_files, flash_size_u32)?;
             if !external_files.is_empty() {
                 return Ok(vec![InputRegion::ContainerWithExternal {
                     name: "ro".to_string(),
@@ -596,14 +578,7 @@ fn ffs_input_regions(
             fill: 0xff,
         });
     }
-    let (files, external_files) = externalize_xip_bootblock(
-        config,
-        instances,
-        device_services,
-        board_dir,
-        ro_files,
-        bios.size,
-    )?;
+    let (files, external_files) = externalize_xip_bootblock(config, ro_files, bios.size)?;
 
     regions.push(InputRegion::ContainerWithExternal {
         name: "ro".to_string(),
@@ -617,9 +592,6 @@ fn ffs_input_regions(
 
 fn externalize_xip_bootblock(
     config: &BoardConfig,
-    instances: &[DriverInstance],
-    device_services: &[ServiceSet],
-    board_dir: &Path,
     mut files: Vec<InputFile>,
     container_size: u32,
 ) -> Result<(Vec<InputFile>, Vec<ExternalInputFile>), String> {
@@ -642,11 +614,11 @@ fn externalize_xip_bootblock(
             .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
         layout.base + u64::from(bios.offset)
     } else {
-        firmware_image_from_provider(config, instances, device_services, board_dir)?
+        firmware_image_from_policy(config)?
             .and_then(|image| image.contiguous_window())
             .map(|window| window.cpu_base)
             .ok_or_else(|| {
-                "x86 XIP bootblock requires a contiguous FirmwareImageProvider window".to_string()
+                "x86 XIP bootblock requires a contiguous firmware image build policy".to_string()
             })?
     };
     let mut bootblock = files.remove(0);
@@ -680,61 +652,19 @@ fn externalize_xip_bootblock(
     ))
 }
 
-fn firmware_image_from_provider(
+fn firmware_image_from_policy(
     config: &BoardConfig,
-    instances: &[DriverInstance],
-    device_services: &[ServiceSet],
-    board_dir: &Path,
 ) -> Result<Option<fstart_services::FirmwareImage>, String> {
-    let descriptor = read_intel_ifd_descriptor(config, board_dir)?;
-    let ctx = fstart_device_registry::BuildFirmwareImageContext {
-        flash_layout: config.memory.flash_layout.as_ref(),
-        intel_ifd: descriptor.as_deref(),
-    };
-    let mut images = Vec::new();
-    for ((device, instance), services) in config
-        .devices
-        .iter()
-        .zip(instances.iter())
-        .zip(device_services.iter())
-    {
-        if device.enabled && services.contains(Service::FirmwareImageProvider) {
-            if let Some(image) = instance.build_firmware_image(&ctx)? {
-                images.push(image);
-            }
-        }
-    }
-    match images.as_slice() {
-        [] => Ok(fstart_device_registry::platform_firmware_image(
-            config.name.as_str(),
-            config.platform,
+    match config.build.firmware_image {
+        FirmwareImagePolicy::None => Ok(None),
+        FirmwareImagePolicy::MemoryMapped { cpu_base, size } => Ok(Some(
+            fstart_services::FirmwareImage::single_window(cpu_base, size),
         )),
-        [image] => Ok(Some(*image)),
-        _ => Err(
-            "multiple FirmwareImageProvider build mappings; specify provider support".to_string(),
-        ),
+        FirmwareImagePolicy::Auto => Ok(config
+            .memory
+            .firmware_window()
+            .map(|(base, size)| fstart_services::FirmwareImage::single_window(base, size))),
     }
-}
-
-fn read_intel_ifd_descriptor(
-    config: &BoardConfig,
-    board_dir: &Path,
-) -> Result<Option<Vec<u8>>, String> {
-    let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
-        return Ok(None);
-    };
-    let Some(file) = layout
-        .regions
-        .iter()
-        .find(|region| region.kind == IntelIfdRegion::Descriptor)
-        .and_then(|region| region.file.as_ref())
-    else {
-        return Ok(None);
-    };
-    let path = resolve_board_path(board_dir, file.as_str());
-    fs::read(&path)
-        .map(Some)
-        .map_err(|e| format!("failed to read Intel descriptor {}: {e}", path.display()))
 }
 
 fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
@@ -752,8 +682,6 @@ fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
 
 struct FullFlashInput<'a> {
     config: &'a BoardConfig,
-    instances: &'a [DriverInstance],
-    device_services: &'a [ServiceSet],
     board_dir: &'a Path,
     bootblock_elf: &'a Path,
     bootblock_bin: &'a Path,
@@ -765,8 +693,6 @@ struct FullFlashInput<'a> {
 fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String> {
     let FullFlashInput {
         config,
-        instances,
-        device_services,
         board_dir,
         bootblock_elf,
         bootblock_bin,
@@ -788,8 +714,8 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         );
     }
 
-    let flash_image = firmware_image_from_provider(config, instances, device_services, board_dir)?
-        .ok_or_else(|| "full_flash_image requires a FirmwareImageProvider".to_string())?;
+    let flash_image = firmware_image_from_policy(config)?
+        .ok_or_else(|| "full_flash_image requires a firmware image build policy".to_string())?;
     let flash_window = flash_image.contiguous_window().ok_or_else(|| {
         "full_flash_image requires a contiguous firmware image window".to_string()
     })?;

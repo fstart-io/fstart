@@ -322,6 +322,7 @@ impl Gm965Ich8Platform {
             }),
             smbios: self.smbios.clone(),
             smm: None,
+            build: Default::default(),
             boot_hart_id: 0,
         }
     }

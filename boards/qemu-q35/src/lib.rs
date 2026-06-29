@@ -6,11 +6,11 @@ use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
 use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
 use fstart_types::{
-    board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
-    BusAddress, Capability, Compression, CorebootSmmCompat, DeviceTopology, DigestAlgorithm,
-    FdtSource, MemoryMap, MemoryRegion, MonolithicConfig, PayloadConfig, PayloadKind, Platform,
-    RegionKind, SecurityConfig, SignatureAlgorithm, SmmConfig, SmmPlatform, SocImageFormat,
-    StageLayout, TempRamBuffer,
+    board_info_from_config, build_info_from_config, hstr, hvec, BoardBuildPolicy, BoardConfig,
+    BoardInfo, BuildInfo, BusAddress, Capability, Compression, CorebootSmmCompat, DeviceTopology,
+    DigestAlgorithm, FdtSource, FirmwareImagePolicy, MemoryMap, MemoryRegion, MonolithicConfig,
+    PayloadConfig, PayloadKind, Platform, RegionKind, SecurityConfig, SignatureAlgorithm,
+    SmmConfig, SmmPlatform, SocImageFormat, StageLayout, TempRamBuffer,
 };
 
 pub const BOARD_NAME: &str = "qemu-q35";
@@ -90,6 +90,10 @@ pub fn board_config() -> BoardConfig {
                 module_args: true,
             },
         }),
+        build: BoardBuildPolicy {
+            firmware_image: FirmwareImagePolicy::memory_mapped(0xff90_0000, 0x006f_f000),
+            pci_root_feature: Some(hstr("q35-hostbridge")),
+        },
         boot_hart_id: 0,
     }
 }

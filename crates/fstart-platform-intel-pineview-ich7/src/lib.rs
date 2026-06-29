@@ -215,6 +215,7 @@ impl PineviewIch7Platform {
                     module_args: true,
                 },
             }),
+            build: Default::default(),
             boot_hart_id: 0,
         }
     }

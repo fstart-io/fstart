@@ -25,8 +25,8 @@ pub use acpi::{
     AcpiWatchdog, AcpiXhciDevice, ArmPlatformAcpi,
 };
 pub use board::{
-    BoardConfig, FdtSource, FirmwareConfig, FirmwareKind, FitParseMode, PayloadConfig, PayloadKind,
-    Platform, SocImageFormat,
+    BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FirmwareKind,
+    FitParseMode, PayloadConfig, PayloadKind, Platform, SocImageFormat,
 };
 pub use builder::{
     board_info_from_config, build_info_from_config, dev_security_config, flow_profile_from_config,
