@@ -76,7 +76,7 @@ Board::new("qemu-q35")
     )
     .stage(
         Stage::ramstage()
-            .mp_init(MpInit::new().cpu_driver(CpuDriverKind::GenericX86).max_cpus(4).smm(true)),
+            .mp_init(MpInit::new().max_cpus(4).smm(true)),
     );
 ```
 

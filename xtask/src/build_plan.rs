@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 
 use fstart_codegen::ron_loader::ParsedBoard;
-use fstart_device_registry::Service;
+use fstart_device_registry::{DriverInstance, Service};
 use fstart_types::stage::PageSize;
 use fstart_types::{
     effective_stage_load_addr, BoardConfig, Capability, Platform, RegionKind, SecurityConfig,
@@ -111,6 +111,7 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
                     load_addr: stage.load_addr,
                 },
                 &base_features,
+                &parsed.driver_instances,
                 target.needs_flat_binary,
                 config.soc_image_format,
                 false,
@@ -139,6 +140,7 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
                         load_addr: effective_stage_load_addr(config, idx, stage),
                     },
                     &base_features,
+                    &parsed.driver_instances,
                     target.needs_flat_binary,
                     soc_format,
                     has_pci_driver,
@@ -255,6 +257,7 @@ fn stage_plan(
     config: &BoardConfig,
     stage: &StageContext<'_>,
     base_features: &FeatureSet,
+    instances: &[DriverInstance],
     needs_flat_binary: bool,
     soc_format: SocImageFormat,
     include_global_pci_alloc: bool,
@@ -267,6 +270,9 @@ fn stage_plan(
         config,
         pci_root_backend,
     ));
+    if stage_uses_mp(stage.capabilities) {
+        features.extend(cpu_driver_features(config, instances));
+    }
 
     if stage.page_size == PageSize::Size1GiB {
         features.insert("x86-1g-pages");
@@ -397,20 +403,9 @@ fn capability_features(
         features.push("smbios");
     }
 
-    for cap in capabilities {
-        if let Capability::MpInit { cpu_drivers, .. } = cap {
-            features.push("stage-flow-mp");
-            features.push("mp");
-            for driver in cpu_drivers {
-                match driver {
-                    fstart_types::CpuDriverKind::GenericX86 => features.push("cpu-generic-x86"),
-                    fstart_types::CpuDriverKind::IntelCore2 => features.push("cpu-intel-core2"),
-                    fstart_types::CpuDriverKind::IntelPineview => {
-                        features.push("cpu-intel-pineview")
-                    }
-                }
-            }
-        }
+    if stage_uses_mp(capabilities) {
+        features.push("stage-flow-mp");
+        features.push("mp");
     }
 
     if capabilities
@@ -482,6 +477,31 @@ fn stage_uses_smbios(capabilities: &[Capability]) -> bool {
         .any(|c| matches!(c, Capability::SmBiosPrepare))
 }
 
+fn stage_uses_mp(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::MpInit { .. }))
+}
+
+fn cpu_driver_features(config: &BoardConfig, instances: &[DriverInstance]) -> Vec<&'static str> {
+    if config.platform != Platform::X86_64 {
+        return Vec::new();
+    }
+
+    let mut features = Vec::new();
+    for instance in instances {
+        match instance {
+            DriverInstance::IntelPineview(_) => features.push("cpu-intel-pineview"),
+            DriverInstance::IntelGm965(_) => features.push("cpu-intel-core2"),
+            _ => {}
+        }
+    }
+    if features.is_empty() {
+        features.push("cpu-generic-x86");
+    }
+    features
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -495,6 +515,12 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
+                if let Some(parsed) = crate::rust_board_provider::parsed_board(board) {
+                    return super::plan(&parsed.unwrap_or_else(|e| {
+                        panic!("failed to load Rust board metadata for {board}: {e}")
+                    }));
+                }
+
                 let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
                 let board_ron = manifest
                     .join("..")

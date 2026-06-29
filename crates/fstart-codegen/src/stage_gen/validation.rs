@@ -97,9 +97,6 @@ pub(super) fn validate_capability_ordering(
                         .to_string(),
                 );
             }
-            Capability::MpInit { cpu_drivers, .. } if cpu_drivers.is_empty() => {
-                return Some("MpInit requires at least one cpu_drivers entry".to_string());
-            }
             Capability::MpInit {
                 smm: true,
                 smm_provider: Some(provider),

@@ -283,7 +283,7 @@
                 // until the X61-specific I/O-trap dock/EC SMI callbacks are
                 // ported; enabling only the generic ACPI APM handler would be
                 // incomplete for this mainboard.
-                MpInit(cpu_drivers: [IntelCore2], max_cpus: 2, smm: false),
+                MpInit(max_cpus: 2, smm: false),
                 AcpiPrepare,
                 SmBiosPrepare,
                 PayloadLoad,

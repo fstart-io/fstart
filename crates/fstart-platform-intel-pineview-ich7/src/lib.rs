@@ -16,7 +16,7 @@ use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
     board_info_from_config, dev_security_config, flow_profile_from_config, hstr, hvec, AcpiConfig,
     AcpiPlatform, BoardConfig, BoardInfo, BootMedium, Build, BuildInfo, BuildProfile, BusAddress,
-    Capability, CarConfig, Compression, CorebootSmmCompat, CpuDriverKind, DeviceConfig, DeviceRole,
+    Capability, CarConfig, Compression, CorebootSmmCompat, DeviceConfig, DeviceRole,
     DeviceTopology, FdtSource, MemoryMap, MemoryRegion, PayloadConfig, PayloadKind, Platform,
     RegionKind, RunsFrom, SmbiosConfig, SmmConfig, SmmPlatform, StageBuildInfo, StageConfig,
     StageLayout, TempRamBuffer,
@@ -388,7 +388,6 @@ fn pineview_ramstage_capabilities() -> HVec<Capability, 16> {
             device: hstr("northbridge"),
         },
         Capability::MpInit {
-            cpu_drivers: hvec([CpuDriverKind::IntelPineview]),
             max_cpus: 4,
             smm: true,
             smm_provider: None,

@@ -200,21 +200,6 @@ pub enum PageSize {
     Size1GiB,
 }
 
-/// CPU model-driver candidate compiled into an x86 MP stage.
-///
-/// Board RON selects which driver implementations are present in the binary.
-/// Runtime MP code probes CPUID and chooses the matching driver from this
-/// candidate set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CpuDriverKind {
-    /// Generic fallback x86 CPU driver for virtual/simple systems.
-    GenericX86,
-    /// Intel Core/Core 2 family 6 model f/16h driver.
-    IntelCore2,
-    /// Intel Atom Pineview family 6 model 1Ch/26h driver.
-    IntelPineview,
-}
-
 /// A capability is a composable unit of firmware functionality.
 ///
 /// The RON file specifies which capabilities run in which stage(s).
@@ -272,8 +257,6 @@ pub enum Capability {
     ///
     /// Must appear after `DramInit` — APs need stacks in DRAM.
     MpInit {
-        /// CPU driver candidates to compile in for runtime CPUID probing.
-        cpu_drivers: heapless::Vec<CpuDriverKind, 8>,
         /// Maximum logical CPU count to attempt (BSP + APs).
         max_cpus: u16,
         /// Enable SMM setup.  When true, the selected SMM provider must
