@@ -29,10 +29,10 @@ pub use board::{
     Platform, SocImageFormat,
 };
 pub use builder::{
-    board_info_from_config, dev_security_config, flow_profile_from_config, hstr, hvec, Board,
-    BoardBlob, BoardDataMode, BoardInfo, Build, BuildInfo, BuildProfile, DeviceBranch,
-    DeviceTopology, FlowProfile, ImageBuildInfo, PayloadInputInfo, StageBuildInfo,
-    BOARD_BLOB_ABI_VERSION,
+    board_info_from_config, dev_security_config, flow_profile_from_config, hstr, hvec,
+    x86_linuxboot_payload, x86_uefi_payload, Board, BoardBlob, BoardDataMode, BoardInfo, Build,
+    BuildInfo, BuildProfile, DeviceBranch, DeviceTopology, FlowProfile, ImageBuildInfo,
+    PayloadInputInfo, StageBuildInfo, BOARD_BLOB_ABI_VERSION,
 };
 pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode, DeviceRole};
 pub use ffs::{

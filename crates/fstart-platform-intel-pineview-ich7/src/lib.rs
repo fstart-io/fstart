@@ -14,10 +14,10 @@ use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
-    board_info_from_config, dev_security_config, flow_profile_from_config, hstr, hvec, AcpiConfig,
-    AcpiPlatform, BoardConfig, BoardInfo, BootMedium, Build, BuildInfo, BuildProfile, BusAddress,
-    Capability, CarConfig, Compression, CorebootSmmCompat, DeviceConfig, DeviceRole,
-    DeviceTopology, FdtSource, MemoryMap, MemoryRegion, PayloadConfig, PayloadKind, Platform,
+    board_info_from_config, dev_security_config, flow_profile_from_config, hstr, hvec,
+    x86_linuxboot_payload, AcpiConfig, AcpiPlatform, BoardConfig, BoardInfo, BootMedium, Build,
+    BuildInfo, BuildProfile, BusAddress, Capability, CarConfig, Compression, CorebootSmmCompat,
+    DeviceConfig, DeviceRole, DeviceTopology, MemoryMap, MemoryRegion, PayloadConfig, Platform,
     RegionKind, RunsFrom, SmbiosConfig, SmmConfig, SmmPlatform, StageBuildInfo, StageConfig,
     StageLayout, TempRamBuffer,
 };
@@ -69,7 +69,7 @@ impl PineviewIch7Platform {
         Self {
             board_name,
             board_package,
-            payload: linuxboot_payload(),
+            payload: x86_linuxboot_payload(),
             hda: None,
             gpio: None,
             superio: None,
@@ -234,46 +234,6 @@ impl PineviewIch7Platform {
             self.board_config(),
             self.driver_bindings(),
         )
-    }
-}
-
-#[must_use]
-pub fn linuxboot_payload() -> PayloadConfig {
-    PayloadConfig {
-        kind: PayloadKind::LinuxBoot,
-        kernel_file: Some(hstr("bzImage")),
-        kernel_load_addr: Some(0x0200_0000),
-        fdt: FdtSource::Platform,
-        dtb_addr: None,
-        src_dtb_addr: None,
-        bootargs: Some(hstr(
-            "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 ignore_loglevel loglevel=8",
-        )),
-        print_x86_mtrrs: true,
-        compression: Compression::Lz4,
-        firmware: None,
-        fit_file: None,
-        fit_config: None,
-        fit_parse: None,
-    }
-}
-
-#[must_use]
-pub fn uefi_payload() -> PayloadConfig {
-    PayloadConfig {
-        kind: PayloadKind::UefiPayload,
-        kernel_file: None,
-        kernel_load_addr: None,
-        fdt: FdtSource::Platform,
-        dtb_addr: None,
-        src_dtb_addr: None,
-        bootargs: None,
-        print_x86_mtrrs: true,
-        compression: Compression::Lz4,
-        firmware: None,
-        fit_file: None,
-        fit_config: None,
-        fit_parse: None,
     }
 }
 

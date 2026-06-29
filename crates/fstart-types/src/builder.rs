@@ -9,8 +9,9 @@ use heapless::{String as HString, Vec as HVec};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BusAddress, DeviceConfig, DeviceEdge, DeviceRole, DigestAlgorithm, MemoryMap, PayloadConfig,
-    PayloadKind, Platform, SecurityConfig, SignatureAlgorithm, SocImageFormat,
+    BusAddress, Compression, DeviceConfig, DeviceEdge, DeviceRole, DigestAlgorithm, FdtSource,
+    MemoryMap, PayloadConfig, PayloadKind, Platform, SecurityConfig, SignatureAlgorithm,
+    SocImageFormat,
 };
 
 /// Construct a bounded heapless string for static board metadata.
@@ -32,6 +33,48 @@ pub fn hvec<T, const N: usize, const C: usize>(items: [T; N]) -> HVec<T, C> {
         out.push(item).ok().expect("heapless vec capacity");
     }
     out
+}
+
+/// Default x86 LinuxBoot payload policy used by simple PC-compatible boards.
+#[must_use]
+pub fn x86_linuxboot_payload() -> PayloadConfig {
+    PayloadConfig {
+        kind: PayloadKind::LinuxBoot,
+        kernel_file: Some(hstr("bzImage")),
+        kernel_load_addr: Some(0x0200_0000),
+        fdt: FdtSource::Platform,
+        dtb_addr: None,
+        src_dtb_addr: None,
+        bootargs: Some(hstr(
+            "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 ignore_loglevel loglevel=8",
+        )),
+        print_x86_mtrrs: true,
+        compression: Compression::Lz4,
+        firmware: None,
+        fit_file: None,
+        fit_config: None,
+        fit_parse: None,
+    }
+}
+
+/// Default x86 UEFI payload policy used by PC-compatible boards.
+#[must_use]
+pub fn x86_uefi_payload() -> PayloadConfig {
+    PayloadConfig {
+        kind: PayloadKind::UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
+        fdt: FdtSource::Platform,
+        dtb_addr: None,
+        src_dtb_addr: None,
+        bootargs: None,
+        print_x86_mtrrs: true,
+        compression: Compression::Lz4,
+        firmware: None,
+        fit_file: None,
+        fit_config: None,
+        fit_parse: None,
+    }
 }
 
 /// Generic board-device topology builder.
