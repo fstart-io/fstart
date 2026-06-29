@@ -11,8 +11,8 @@ use fstart_codegen::board_loader::ParsedBoard;
 use fstart_services::ServiceKind as Service;
 use fstart_types::stage::PageSize;
 use fstart_types::{
-    effective_stage_load_addr, BoardConfig, Capability, Platform, RegionKind, SecurityConfig,
-    SocImageFormat, StageLayout,
+    effective_stage_load_addr, flow_profile_from_config, BoardConfig, Capability, FlowProfile,
+    Platform, RegionKind, SecurityConfig, SocImageFormat, StageLayout,
 };
 
 use crate::toolchain::TargetSpec;
@@ -100,6 +100,7 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
         .any(|services| services.contains(Service::PciRootBus));
     let plan_context = PlanContext {
         base_features: &base_features,
+        flow_profile: flow_profile_from_config(config),
         needs_flat_binary: target.needs_flat_binary,
         pci_root_feature,
     };
@@ -224,6 +225,7 @@ fn needs_aarch64_el2_relocate_entry(config: &BoardConfig) -> bool {
 #[derive(Debug)]
 struct PlanContext<'a> {
     base_features: &'a FeatureSet,
+    flow_profile: FlowProfile,
     needs_flat_binary: bool,
     pci_root_feature: Option<&'a str>,
 }
@@ -248,6 +250,7 @@ fn stage_plan(
     include_global_pci_alloc: bool,
 ) -> StageBuildPlan {
     let mut features = plan_context.base_features.clone();
+    features.extend(flow_profile_features(plan_context.flow_profile));
     features.extend(capability_features(
         stage.capabilities,
         &config.security,
@@ -298,26 +301,23 @@ fn stage_plan(
     }
 }
 
-/// Compute the capability-driven feature flags for a single stage.
+/// Compute the coarse fixed-flow feature families selected by board metadata.
+fn flow_profile_features(profile: FlowProfile) -> Vec<&'static str> {
+    match profile {
+        FlowProfile::Minimal => vec!["flow-profile-minimal"],
+        FlowProfile::LinuxBoot => vec!["flow-profile-linuxboot"],
+        FlowProfile::Uefi => vec!["flow-profile-uefi"],
+        FlowProfile::MultiStage => vec!["flow-profile-multistage"],
+    }
+}
+
+/// Compute backend feature flags for a single stage.
 fn capability_features(
     capabilities: &[Capability],
     security: &SecurityConfig,
     config: &BoardConfig,
 ) -> Vec<&'static str> {
     let mut features = Vec::new();
-
-    for cap in capabilities {
-        match cap {
-            Capability::ClockInit => features.push("stage-flow-clock-init"),
-            Capability::ConsoleInit => features.push("stage-flow-console-init"),
-            Capability::MemoryInit => features.push("stage-flow-memory-init"),
-            Capability::DramInit => features.push("stage-flow-dram-init"),
-            Capability::DriverInit => features.push("stage-flow-driver-init"),
-            Capability::PciInit => features.push("stage-flow-pci"),
-            Capability::MemoryDetect => features.push("stage-flow-memory-detect"),
-            _ => {}
-        }
-    }
 
     let uses_ffs = capabilities.iter().any(|c| {
         matches!(
@@ -327,7 +327,6 @@ fn capability_features(
     });
 
     if uses_ffs {
-        features.push("stage-flow-ffs");
         features.push("ffs");
         if capabilities
             .iter()
@@ -340,7 +339,7 @@ fn capability_features(
                         == fstart_types::FitParseMode::Runtime
             })
         {
-            features.push("stage-flow-payload-fit");
+            features.push("fit");
         }
         features.push("lz4");
         match security.signing_algorithm {
@@ -356,40 +355,25 @@ fn capability_features(
     }
 
     if stage_uses_fdt(capabilities) {
-        features.push("stage-flow-fdt");
         features.push("fdt");
-        if config
-            .payload
-            .as_ref()
-            .is_some_and(|payload| matches!(payload.fdt, fstart_types::FdtSource::Override(_)))
-        {
-            features.push("stage-flow-fdt-ffs");
-        }
     }
 
     let has_payload_load = capabilities
         .iter()
         .any(|c| matches!(c, Capability::PayloadLoad));
-    if has_payload_load {
-        features.push("stage-flow-payload-load");
-    }
     if has_payload_load && stage_uses_crabefi(config) {
         features.push("crabefi");
-        features.push("stage-flow-uefi");
     }
 
     if stage_uses_acpi(capabilities) {
-        features.push("stage-flow-acpi");
         features.push("acpi");
     }
 
     if stage_uses_smbios(capabilities) {
-        features.push("stage-flow-smbios");
         features.push("smbios");
     }
 
     if stage_uses_mp(capabilities) {
-        features.push("stage-flow-mp");
         features.push("mp");
     }
 
@@ -398,22 +382,6 @@ fn capability_features(
         .any(|c| matches!(c, Capability::AcpiLoad))
     {
         features.push("acpi-load");
-    }
-
-    if capabilities
-        .iter()
-        .any(|cap| matches!(cap, Capability::BootMedia(_)))
-    {
-        features.push("stage-flow-boot-media");
-    }
-
-    if capabilities.iter().any(|cap| {
-        matches!(
-            cap,
-            Capability::LoadNextStage { .. } | Capability::ReturnToFel
-        )
-    }) {
-        features.push("stage-flow-fel");
     }
 
     if capabilities

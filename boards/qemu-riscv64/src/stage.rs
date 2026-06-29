@@ -94,10 +94,7 @@ impl StaticBoard for StageBoard {
     }
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        #[cfg(feature = "stage-flow-console-init")]
-        {
-            fstart_capabilities::console_ready("uart0", "ns16550");
-        }
+        fstart_capabilities::console_ready("uart0", "ns16550");
         Ok(())
     }
 

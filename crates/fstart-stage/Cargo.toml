@@ -130,30 +130,34 @@ acpi = [
 smbios = ["fstart-capabilities/smbios"]
 # CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
 # Requires alloc (fstart-alloc provides #[global_allocator]).
-crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc", "stage-flow-uefi"]
+crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
 
-# Stage flow families. These select coarse handwritten fixed-flow barriers.
-# Old capability-derived names intentionally map to the new fixed flow so board
-# build metadata can keep selecting semantic participation without generating
-# Rust source.
-stage-flow-clock-init = ["fstart-stage-runtime/flow-early-platform-v2"]
-stage-flow-console-init = ["fstart-stage-runtime/flow-early-platform-v2"]
-stage-flow-memory-init = ["fstart-stage-runtime/flow-memory-v2"]
-stage-flow-dram-init = ["fstart-stage-runtime/flow-memory-v2"]
-stage-flow-driver-init = ["fstart-stage-runtime/flow-bus-v2"]
-stage-flow-pci = ["fstart-stage-runtime/flow-bus-v2"]
-stage-flow-memory-detect = ["fstart-stage-runtime/flow-memory-v2"]
-stage-flow-boot-media = ["fstart-stage-runtime/flow-storage-v2"]
-stage-flow-ffs = ["fstart-stage-runtime/flow-storage-v2"]
-stage-flow-payload-load = ["fstart-stage-runtime/flow-payload-v2"]
-stage-flow-payload-fit = ["stage-flow-payload-load"]
-stage-flow-uefi = ["fstart-stage-runtime/flow-payload-v2", "fstart-stage-runtime/flow-handoff-v2"]
-stage-flow-fdt = ["fstart-stage-runtime/flow-handoff-v2"]
-stage-flow-fdt-ffs = ["stage-flow-fdt", "stage-flow-ffs"]
-stage-flow-mp = ["fstart-stage-runtime/flow-bus-v2"]
-stage-flow-acpi = ["fstart-stage-runtime/flow-handoff-v2"]
-stage-flow-smbios = ["fstart-stage-runtime/flow-handoff-v2"]
-stage-flow-fel = ["fstart-stage-runtime/flow-storage-v2", "fstart-stage-runtime/flow-handoff-v2"]
+# Coarse fixed-flow profiles. Board metadata selects one profile, and backend
+# features such as `ffs`, `fdt`, `acpi`, and driver features supply the concrete
+# services used inside the fixed handwritten barriers.
+flow-profile-minimal = ["fstart-stage-runtime/flow-early-platform-v2"]
+flow-profile-linuxboot = [
+  "fstart-stage-runtime/flow-early-platform-v2",
+  "fstart-stage-runtime/flow-memory-v2",
+  "fstart-stage-runtime/flow-storage-v2",
+  "fstart-stage-runtime/flow-payload-v2",
+  "fstart-stage-runtime/flow-handoff-v2",
+]
+flow-profile-uefi = [
+  "fstart-stage-runtime/flow-early-platform-v2",
+  "fstart-stage-runtime/flow-memory-v2",
+  "fstart-stage-runtime/flow-bus-v2",
+  "fstart-stage-runtime/flow-payload-v2",
+  "fstart-stage-runtime/flow-handoff-v2",
+]
+flow-profile-multistage = [
+  "fstart-stage-runtime/flow-early-platform-v2",
+  "fstart-stage-runtime/flow-memory-v2",
+  "fstart-stage-runtime/flow-bus-v2",
+  "fstart-stage-runtime/flow-storage-v2",
+  "fstart-stage-runtime/flow-payload-v2",
+  "fstart-stage-runtime/flow-handoff-v2",
+]
 
 [dependencies]
 # Core firmware infrastructure
