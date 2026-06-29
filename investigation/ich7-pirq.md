@@ -19,7 +19,7 @@
 15. `/home/arthur/src/coreboot/src/mainboard/foxconn/d41s/devicetree.cb` (lines 1-60) - D41S coreboot device topology and PIRQ byte values, all `0x0b`.
 16. `crates/fstart-driver-intel-ich7/src/lib.rs` (lines 260-350, 530-585, 735-785, 900-980, 1956-2339, 2336-2570, 2570-2628) - fstart ICH7 hardware PIRQ setup and ACPI AML generation.
 17. `crates/fstart-driver-intel-pineview/src/lib.rs` (lines 1343-1622) - fstart Pineview ACPI root bridge generation.
-18. `boards/foxconn-d41s-uefi/board.ron` (lines 75-225, 364-388) - fstart D41S topology, ACPI names/parents, PIRQ bytes, MADT config.
+18. `boards/foxconn-d41s-uefi/src/lib.rs` (lines 75-225, 364-388) - fstart D41S topology, ACPI names/parents, PIRQ bytes, MADT config.
 19. `crates/fstart-codegen/src/stage_gen/board_gen/model.rs` (lines 212-296) - fstart ACPI path derivation from topology names and `acpi_parent`.
 20. `crates/fstart-codegen/src/stage_gen/board_gen/caps_tables.rs` (lines 118-182) - fstart wraps driver AML under derived ACPI parent path.
 21. `crates/fstart-types/src/device.rs` (lines 77-101) - `DeviceConfig.acpi_name` and `acpi_parent` semantics.
@@ -346,7 +346,7 @@ and comments/docstrings assume PCI0 placement:
 For current D41S this happens to line up because board topology names the northbridge `PCI0` and sets the southbridge `acpi_parent` to `northbridge`:
 
 ```ron
-// boards/foxconn-d41s-uefi/board.ron:75-96
+// boards/foxconn-d41s-uefi/src/lib.rs:75-96
 (
     name: "northbridge",
     acpi_name: "PCI0",
@@ -365,7 +365,7 @@ But the design is brittle: if a board's root bridge ACPI name is not `PCI0`, ICH
 Board RON uses topology `acpi_name: "PCI0"` for the northbridge node and Pineview driver config `acpi_name: "MCHC"` for the host bridge PCI function:
 
 ```ron
-// boards/foxconn-d41s-uefi/board.ron:75-91
+// boards/foxconn-d41s-uefi/src/lib.rs:75-91
 name: "northbridge",
 acpi_name: "PCI0",
 driver: IntelPineview((
@@ -429,7 +429,7 @@ lpc.pirqe_rout.set(pirq_high);
 and board RON has the same bytes as coreboot devicetree:
 
 ```ron
-// boards/foxconn-d41s-uefi/board.ron:96-100
+// boards/foxconn-d41s-uefi/src/lib.rs:96-100
 pirq_routing: (0x0b, 0x0b, 0x0b, 0x0b,
                0x0b, 0x0b, 0x0b, 0x0b),
 ```
@@ -459,7 +459,7 @@ But fstart's ACPI `_PRT` tables are static literals; they do not walk root-bus d
 /// `isos` (Interrupt Source Overrides) in the MADT.
 ```
 
-MADT interrupt-source overrides handle legacy ISA IRQ remaps/polarity (D41S board RON only has PIT IRQ0->GSI2 and SCI IRQ9 flags at `boards/foxconn-d41s-uefi/board.ron:370-381`). They do not describe PCI INTx routing for root-bus devices or downstream bridges. PCI routing must be in `_PRT` (with direct GSI or link-source entries).
+MADT interrupt-source overrides handle legacy ISA IRQ remaps/polarity (D41S board RON only has PIT IRQ0->GSI2 and SCI IRQ9 flags at `boards/foxconn-d41s-uefi/src/lib.rs:370-381`). They do not describe PCI INTx routing for root-bus devices or downstream bridges. PCI routing must be in `_PRT` (with direct GSI or link-source entries).
 
 ## Architecture
 

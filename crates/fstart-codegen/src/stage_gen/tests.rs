@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::ron_loader::{load_parsed_board, ParsedBoard};
+use crate::ron_loader::{load_parsed_board, load_parsed_board_from_rust, ParsedBoard};
 use fstart_device_registry::{DriverInstance, ServiceSet};
 
 fn services_for(instances: &[DriverInstance]) -> Vec<ServiceSet> {
@@ -18,9 +18,11 @@ fn load_lenovo_x61_board() -> ParsedBoard {
 }
 
 fn load_foxconn_d41s_board() -> ParsedBoard {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    load_parsed_board(&manifest_dir.join("../../boards/foxconn-d41s/board.ron"))
-        .expect("foxconn-d41s board should parse")
+    load_parsed_board_from_rust(
+        fstart_board_foxconn_d41s::board_config(),
+        fstart_board_foxconn_d41s::driver_bindings(),
+    )
+    .expect("foxconn-d41s Rust metadata should parse")
 }
 
 fn fstart_main_source(source: &str) -> &str {

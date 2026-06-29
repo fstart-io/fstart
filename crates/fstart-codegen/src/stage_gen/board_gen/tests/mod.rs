@@ -1,12 +1,12 @@
 use super::*;
-use crate::ron_loader::load_parsed_board;
+use crate::ron_loader::{load_parsed_board, load_parsed_board_from_rust, ParsedBoard};
 use std::path::PathBuf;
 
 /// Load a fixture board, generate the adapter for its first (or
 /// only) stage, and return the formatted source.
 ///
-/// Matches the path resolution `tests.rs` already uses — look up
-/// `boards/<name>/board.ron` relative to the workspace root.
+/// Legacy fixtures are loaded from `boards/<name>/board.ron`; migrated Rust
+/// boards are loaded through their direct Rust metadata API.
 fn adapter_source_for_board(board: &str) -> String {
     adapter_source_inner(board, None)
 }
@@ -29,15 +29,8 @@ fn adapter_source_inner(board: &str, stage: Option<String>) -> String {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || {
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .to_path_buf();
-            let ron = root.join("boards").join(&board).join("board.ron");
-            let parsed =
-                load_parsed_board(&ron).unwrap_or_else(|e| panic!("failed to load {board}: {e}"));
+            let parsed = load_fixture_board(&board)
+                .unwrap_or_else(|e| panic!("failed to load {board}: {e}"));
 
             // Pick the selected stage, or default to first /
             // monolithic — mirrors `generate_stage_source`.
@@ -69,6 +62,29 @@ fn adapter_source_inner(board: &str, stage: Option<String>) -> String {
         .expect("spawn codegen worker thread")
         .join()
         .expect("codegen worker thread panicked")
+}
+
+fn load_fixture_board(board: &str) -> Result<ParsedBoard, String> {
+    match board {
+        "foxconn-d41s" => load_parsed_board_from_rust(
+            fstart_board_foxconn_d41s::board_config(),
+            fstart_board_foxconn_d41s::driver_bindings(),
+        ),
+        "foxconn-d41s-uefi" => load_parsed_board_from_rust(
+            fstart_board_foxconn_d41s_uefi::board_config(),
+            fstart_board_foxconn_d41s_uefi::driver_bindings(),
+        ),
+        _ => {
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let ron = root.join("boards").join(board).join("board.ron");
+            load_parsed_board(&ron)
+        }
+    }
 }
 
 mod adapter;

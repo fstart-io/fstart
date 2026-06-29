@@ -19,7 +19,7 @@ Clean direction: make the nested board topology the only parent relation, give A
 
 - The worktree adds `DeviceConfig.acpi_parent` at `crates/fstart-types/src/device.rs:90-96` and parses it from RON at `crates/fstart-codegen/src/ron_loader.rs:148-154` / `323-329`.
 - `RuntimeDeviceTable::acpi_parent_index()` at `crates/fstart-codegen/src/stage_gen/board_gen/model.rs:275-284` resolves that string by scanning entries by name. This reintroduces ad hoc cross references.
-- `boards/foxconn-d41s/board.ron:75-96` and `boards/lenovo-x61/board.ron:53-80` now set `acpi_name: "PCI0"` on the northbridge and `acpi_parent: "northbridge"` on the southbridge. These are workaround annotations, not topology.
+- `boards/foxconn-d41s/src/lib.rs:75-96` and `boards/lenovo-x61/board.ron:53-80` now set `acpi_name: "PCI0"` on the northbridge and `acpi_parent: "northbridge"` on the southbridge. These are workaround annotations, not topology.
 - `crates/fstart-codegen/src/stage_gen/board_gen/caps_tables.rs:135-143` wraps driver AML with `scoped_aml_with_root_fragments(parent_path, ...)`, where `parent_path` may be derived from `acpi_parent`.
 
 ### ACPI assembly currently assumes unscoped device AML goes under `\_SB_`
@@ -31,7 +31,7 @@ Clean direction: make the nested board topology the only parent relation, give A
 
 ### Driver AML is inconsistent today
 
-- Pineview currently emits sibling `Device(MCHC)`, `Device(PDRC)`, and `Device("PCI0")` at one caller scope (`crates/fstart-driver-intel-pineview/src/lib.rs:1370-1508`). The board workaround sets topology `acpi_name: "PCI0"` while the Pineview config still uses `acpi_name: "MCHC"` (`boards/foxconn-d41s/board.ron:75-91`). That is two conflicting meanings of “the device ACPI name”.
+- Pineview currently emits sibling `Device(MCHC)`, `Device(PDRC)`, and `Device("PCI0")` at one caller scope (`crates/fstart-driver-intel-pineview/src/lib.rs:1370-1508`). The board workaround sets topology `acpi_name: "PCI0"` while the Pineview config still uses `acpi_name: "MCHC"` (`boards/foxconn-d41s/src/lib.rs:75-91`). That is two conflicting meanings of “the device ACPI name”.
 - GM965 is closer to the desired host-bridge shape: it emits one `Device(PCI0)` containing `MCHC`, `PDRC`, GFX, etc. (`crates/fstart-driver-intel-gm965/src/lib.rs:2112-2148`). But its root fragments `_PIC`/sleep states are appended as normal AML (`crates/fstart-driver-intel-gm965/src/lib.rs:2337-2350`), so if this driver ever has a parent wrapper, those root objects would be misplaced. They should use `RootScope`/`Scope("\\")`.
 - ICH7 says the caller should embed its output inside the appropriate PCI0 scope (`crates/fstart-driver-intel-ich7/src/lib.rs:1972-1978`) and emits `Device(LPCB)` plus PCI function siblings as relative AML, but it also emits an absolute `Scope("\\_SB_.PCI0")` for RCRB (`crates/fstart-driver-intel-ich7/src/lib.rs:2054-2086`). That hardcoded root path must go.
 - ICH8 currently emits PCI0-relative fragments as a local `pci0_aml` (`crates/fstart-driver-intel-ich8/src/lib.rs:2070-2223`), but its doc still says `\_SB.PCI0` (`2032`) and its device names (`LPCB`, `SATA`, `SBUS`, `RP01`...) are hardcoded.

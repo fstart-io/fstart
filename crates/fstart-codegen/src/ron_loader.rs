@@ -538,12 +538,6 @@ mod tests {
         std::fs::read_to_string(board_path).expect("read lenovo-x61 board")
     }
 
-    fn foxconn_d41s_board_source() -> String {
-        let board_path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/foxconn-d41s/board.ron");
-        std::fs::read_to_string(board_path).expect("read foxconn-d41s board")
-    }
-
     fn load_temp_parsed(name: &str, source: String) -> Result<super::ParsedBoard, String> {
         let path = temp_board_path(name);
         std::fs::write(&path, source).expect("write temp board");
@@ -634,7 +628,62 @@ mod tests {
 
     #[test]
     fn contiguous_rom_regions_derive_flash_window_and_boot_media() {
-        let source = foxconn_d41s_board_source();
+        let source = r#"
+(
+    name: "contiguous-rom-test",
+    platform: Riscv64,
+    memory: (
+        regions: [
+            ( name: "flash_a", base: 0x20000000, size: 0x00100000, kind: Rom ),
+            ( name: "flash_b", base: 0x20100000, size: 0x00200000, kind: Rom ),
+            ( name: "ram", base: 0x80000000, size: 0x08000000, kind: Ram ),
+        ],
+    ),
+    devices: [
+        (
+            name: "uart0",
+            driver: Ns16550((
+                regs: Mmio(base: 0x10000000, reg_shift: 0, reg_width: 0),
+                clock_freq: 3686400,
+                baud_rate: 115200,
+            )),
+        ),
+    ],
+    stages: MultiStage([
+        (
+            name: "bootblock",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                BootMedia(FirmwareImage()),
+                SigVerify,
+                StageLoad( next_stage: "main" ),
+            ],
+            load_addr: 0x20000000,
+            stack_size: 0x4000,
+            runs_from: Rom,
+        ),
+        (
+            name: "main",
+            capabilities: [
+                ConsoleInit( device: "uart0" ),
+                MemoryInit,
+                BootMedia(FirmwareImage()),
+                DriverInit,
+            ],
+            load_addr: 0x80100000,
+            stack_size: 0x10000,
+            runs_from: Ram,
+        ),
+    ]),
+    security: (
+        signing_algorithm: Ed25519,
+        pubkey_file: "keys/dev-signing.pub",
+        required_digests: [Sha256],
+    ),
+    payload: None,
+)
+"#
+        .to_string();
         let parsed = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
@@ -642,7 +691,7 @@ mod tests {
                 std::fs::write(&path, source).expect("write temp board");
                 let parsed = match load_parsed_board(&path) {
                     Ok(parsed) => parsed,
-                    Err(err) => panic!("load foxconn-d41s board: {err}"),
+                    Err(err) => panic!("load synthetic contiguous-ROM board: {err}"),
                 };
                 let _ = std::fs::remove_file(&path);
                 parsed
@@ -653,11 +702,11 @@ mod tests {
 
         assert_eq!(
             parsed.config.memory.firmware_window(),
-            Some((0xFF00_0000, 0x0100_0000))
+            Some((0x2000_0000, 0x0030_0000))
         );
 
         let fstart_types::StageLayout::MultiStage(stages) = &parsed.config.stages else {
-            panic!("foxconn-d41s should be multi-stage");
+            panic!("synthetic contiguous-ROM board should be multi-stage");
         };
         assert!(stages.iter().all(|stage| {
             stage.capabilities.iter().any(|cap| {
@@ -876,8 +925,8 @@ mod tests {
 
     #[test]
     fn structural_nodes_do_not_gain_pseudo_services() {
-        let parsed = load_temp_parsed("structural-services", foxconn_d41s_board_source())
-            .expect("foxconn board should parse");
+        let parsed = load_temp_parsed("structural-services", lenovo_x61_board_source())
+            .expect("lenovo-x61 board should parse");
         let idx = parsed
             .config
             .devices
