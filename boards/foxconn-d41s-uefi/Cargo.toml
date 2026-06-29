@@ -12,9 +12,6 @@ target = "x86_64-unknown-none"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-codegen = { workspace = true }
 fstart-board-foxconn-d41s = { path = "../foxconn-d41s" }
-fstart-board-intel-pineview-ich7 = { workspace = true }
+fstart-platform-intel-pineview-ich7 = { workspace = true }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
-ron = { workspace = true }
-serde = { workspace = true, features = ["std"] }

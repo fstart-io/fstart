@@ -209,12 +209,6 @@ fn build_one_stage(
     let profile = if release { "release" } else { "debug" };
     let board_label = board_manifest.board.as_str();
     let stage_label = stage_name.unwrap_or("stage");
-    let board_ron = crate::board_manifest::materialize_board_config(
-        workspace_root,
-        board_manifest,
-        profile,
-        stage_label,
-    )?;
     let artifact_dir = workspace_root
         .join("target")
         .join("fstart-generated")
@@ -249,7 +243,15 @@ fn build_one_stage(
     // Pass board/stage context to build.rs.  FSTART_STAGE_ARTIFACT_DIR
     // mirrors generated_stage.rs/link.ld to a stable, human-readable path;
     // Cargo's OUT_DIR remains the canonical path used by include!/linking.
-    cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
+    match board_manifest.source {
+        crate::board_manifest::BoardSource::RustCrate => {
+            cmd.env("FSTART_RUST_BOARD", &board_manifest.board);
+        }
+        crate::board_manifest::BoardSource::LegacyRon => {
+            let board_ron = crate::board_manifest::legacy_board_config_path(board_manifest)?;
+            cmd.env("FSTART_BOARD_RON", board_ron.to_str().unwrap());
+        }
+    }
     cmd.env("FSTART_STAGE_ARTIFACT_DIR", &artifact_dir);
     cmd.env("FSTART_STAGE_FEATURES", features);
     if let Some(name) = stage_name {

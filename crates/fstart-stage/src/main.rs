@@ -7,7 +7,7 @@
 //! adapter used by `fstart-stage-runtime`.
 //!
 //! To build for a specific board:
-//!   FSTART_BOARD_RON=boards/qemu-riscv64/board.ron \
+//!   FSTART_RUST_BOARD=qemu-riscv64 \
 //!     cargo build -p fstart-stage --target riscv64gc-unknown-none-elf \
 //!     --features riscv64,ns16550 -Z build-std=core
 

@@ -12,9 +12,6 @@ target = "aarch64-unknown-none"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-codegen = { workspace = true }
 fstart-board-qemu-virt = { workspace = true }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
 heapless = { workspace = true }
-ron = { workspace = true }
-serde = { workspace = true, features = ["std"] }

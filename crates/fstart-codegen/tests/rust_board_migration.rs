@@ -1,13 +1,15 @@
 //! Migration safety checks for Rust board crate metadata.
 //!
 //! These tests keep the opt-in Rust board crate path honest without requiring
-//! every legacy `board.ron` board to be ported at once.
+//! every legacy `board.ron` board to be ported at once. Rust boards must expose
+//! normal Rust functions. They must not require helper binaries or serialized
+//! board metadata transport.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use fstart_codegen::ron_loader::load_parsed_board_from_str;
-use fstart_types::{BuildInfo, Platform};
+use fstart_codegen::ron_loader::load_parsed_board_from_rust;
+use fstart_device_registry::DriverInstance;
+use fstart_types::{BoardConfig, BuildInfo, Platform};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -15,27 +17,6 @@ fn repo_root() -> PathBuf {
         .and_then(Path::parent)
         .expect("crate is under crates/fstart-codegen")
         .to_path_buf()
-}
-
-fn helper(package: &str, command: &str) -> String {
-    let output = Command::new("cargo")
-        .arg("run")
-        .arg("--quiet")
-        .arg("--package")
-        .arg(package)
-        .arg("--")
-        .arg(command)
-        .current_dir(repo_root())
-        .output()
-        .unwrap_or_else(|e| panic!("run {package} metadata helper: {e}"));
-
-    assert!(
-        output.status.success(),
-        "{package} helper failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("helper output is UTF-8")
 }
 
 #[derive(Clone, Copy)]
@@ -48,6 +29,9 @@ struct RustBoardCase {
     root_device: &'static str,
     device_count: usize,
     driver_count: usize,
+    board_config: fn() -> BoardConfig,
+    driver_instances: fn() -> Vec<DriverInstance>,
+    build_info: fn() -> BuildInfo,
 }
 
 const RUST_BOARD_CASES: &[RustBoardCase] = &[
@@ -60,6 +44,9 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         root_device: "uart0",
         device_count: 1,
         driver_count: 1,
+        board_config: fstart_board_qemu_riscv64::board_config,
+        driver_instances: fstart_board_qemu_riscv64::driver_instances,
+        build_info: fstart_board_qemu_riscv64::build_info,
     },
     RustBoardCase {
         board: "qemu-aarch64",
@@ -70,6 +57,9 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         root_device: "uart0",
         device_count: 1,
         driver_count: 1,
+        board_config: fstart_board_qemu_aarch64::board_config,
+        driver_instances: fstart_board_qemu_aarch64::driver_instances,
+        build_info: fstart_board_qemu_aarch64::build_info,
     },
     RustBoardCase {
         board: "foxconn-d41s",
@@ -80,6 +70,9 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         root_device: "northbridge",
         device_count: 10,
         driver_count: 10,
+        board_config: fstart_board_foxconn_d41s::board_config,
+        driver_instances: fstart_board_foxconn_d41s::driver_instances,
+        build_info: fstart_board_foxconn_d41s::build_info,
     },
     RustBoardCase {
         board: "foxconn-d41s-uefi",
@@ -90,31 +83,26 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         root_device: "northbridge",
         device_count: 10,
         driver_count: 10,
+        board_config: fstart_board_foxconn_d41s_uefi::board_config,
+        driver_instances: fstart_board_foxconn_d41s_uefi::driver_instances,
+        build_info: fstart_board_foxconn_d41s_uefi::build_info,
     },
 ];
 
 #[test]
-fn rust_boards_emit_parseable_codegen_metadata() {
+fn rust_boards_parse_from_direct_rust_metadata() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             for case in RUST_BOARD_CASES {
-                let board_config = helper(case.package, "board-config");
-                assert!(
-                    !board_config.contains("BOARD_CONFIG_RON"),
-                    "{} helper output should be serialized metadata, not an embedded source constant",
-                    case.board
-                );
-                let parsed = load_parsed_board_from_str(
-                    &board_config,
-                    &format!("{} board-config", case.board),
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Rust-authored {} metadata parses through codegen: {e}",
-                        case.board
-                    )
-                });
+                let parsed =
+                    load_parsed_board_from_rust((case.board_config)(), (case.driver_instances)())
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "Rust-authored {} metadata parses through codegen: {e}",
+                                case.board
+                            )
+                        });
 
                 assert_eq!(parsed.config.name.as_str(), case.board);
                 assert_eq!(parsed.config.platform, case.platform);
@@ -129,11 +117,9 @@ fn rust_boards_emit_parseable_codegen_metadata() {
 }
 
 #[test]
-fn rust_boards_emit_build_info() {
+fn rust_boards_emit_build_info_from_direct_rust_metadata() {
     for case in RUST_BOARD_CASES {
-        let build_info: BuildInfo = ron::Options::default()
-            .from_str(&helper(case.package, "build-info"))
-            .expect("build-info should be RON-serialized BuildInfo");
+        let build_info = (case.build_info)();
 
         assert_eq!(build_info.name.as_str(), case.board);
         assert_eq!(build_info.board_package.as_str(), case.package);
@@ -146,5 +132,23 @@ fn rust_boards_emit_build_info() {
             .features
             .iter()
             .any(|feature| feature == case.driver_feature));
+    }
+}
+
+#[test]
+fn rust_board_crates_do_not_define_metadata_helper_binaries() {
+    let root = repo_root();
+    for case in RUST_BOARD_CASES {
+        let helper = root
+            .join("boards")
+            .join(case.board)
+            .join("src")
+            .join("main.rs");
+        assert!(
+            !helper.exists(),
+            "{} must expose Rust metadata directly, not a serialized helper binary at {}",
+            case.board,
+            helper.display()
+        );
     }
 }

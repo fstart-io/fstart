@@ -210,6 +210,34 @@ pub struct GpioConfig {
     pub pins: HVec<GpioPin, 76>,
 }
 
+/// Construct a GPIO output pad configuration.
+#[must_use]
+pub const fn output(pin: u8, level: GpioLevel) -> GpioPin {
+    GpioPin {
+        pin,
+        mode: GpioMode::Gpio,
+        dir: GpioDir::Output,
+        level,
+        blink: false,
+        invert: false,
+        reset: GpioReset::Pwrok,
+    }
+}
+
+/// Construct a GPIO input pad configuration.
+#[must_use]
+pub const fn input(pin: u8) -> GpioPin {
+    GpioPin {
+        pin,
+        mode: GpioMode::Gpio,
+        dir: GpioDir::Input,
+        level: GpioLevel::Low,
+        blink: false,
+        invert: false,
+        reset: GpioReset::Pwrok,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal: register-level representation
 // ---------------------------------------------------------------------------

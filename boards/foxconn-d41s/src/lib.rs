@@ -1,20 +1,29 @@
 //! Foxconn D41S Rust board metadata.
 
-use fstart_board_intel_pineview_ich7::PineviewIch7Board;
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::{i2c_ck505, DriverInstance};
+use fstart_driver_ite8721f as ite8721f;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
-use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform};
+use fstart_platform_intel_pineview_ich7::PineviewIch7Platform;
+use fstart_types::smbios::{
+    CacheAssociativity, CacheType, ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosCache,
+    SmbiosMemoryDevice, SmbiosProcessor,
+};
+use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform, SmbiosConfig};
+use heapless::String as HString;
 use heapless::Vec as HVec;
 
 pub const BOARD_NAME: &str = "foxconn-d41s";
 pub const BOARD_PACKAGE: &str = "fstart-board-foxconn-d41s";
 pub const PLATFORM: Platform = Platform::X86_64;
 
-fn board() -> PineviewIch7Board {
-    PineviewIch7Board::new(BOARD_NAME, BOARD_PACKAGE)
+fn board() -> PineviewIch7Platform {
+    PineviewIch7Platform::new(BOARD_NAME, BOARD_PACKAGE)
         .hda(d41s_hda_config())
         .gpio(d41s_gpio_config())
+        .superio(d41s_superio_config())
+        .clock_generator(d41s_ck505_config())
+        .smbios(d41s_smbios())
 }
 
 #[must_use]
@@ -48,7 +57,7 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
             vendor_id: 0x10ec_0662,
             subsystem_id: 0x105b_0d55,
             pins: hvec([
-                hda_pin(
+                hda::pin_config(
                     0x14,
                     hda::PinDevice::LineOut,
                     hda::PinConn::Jack,
@@ -60,9 +69,9 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
                     1,
                     0,
                 ),
-                hda_pin_nc(0x15, 0),
-                hda_pin_nc(0x16, 0),
-                hda_pin(
+                hda::pin_not_connected(0x15, 0),
+                hda::pin_not_connected(0x16, 0),
+                hda::pin_config(
                     0x18,
                     hda::PinDevice::MicIn,
                     hda::PinConn::Jack,
@@ -74,7 +83,7 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
                     3,
                     0,
                 ),
-                hda_pin(
+                hda::pin_config(
                     0x19,
                     hda::PinDevice::MicIn,
                     hda::PinConn::Jack,
@@ -86,7 +95,7 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
                     3,
                     1,
                 ),
-                hda_pin(
+                hda::pin_config(
                     0x1a,
                     hda::PinDevice::LineIn,
                     hda::PinConn::Jack,
@@ -98,7 +107,7 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
                     3,
                     15,
                 ),
-                hda_pin(
+                hda::pin_config(
                     0x1b,
                     hda::PinDevice::HpOut,
                     hda::PinConn::Jack,
@@ -110,8 +119,8 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
                     1,
                     15,
                 ),
-                hda_pin_nc(0x1c, 0),
-                hda_pin(
+                hda::pin_not_connected(0x1c, 0),
+                hda::pin_config(
                     0x1d,
                     hda::PinDevice::DeviceOther,
                     hda::PinConn::Nc,
@@ -123,7 +132,7 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
                     0,
                     3,
                 ),
-                hda_pin(
+                hda::pin_config(
                     0x1e,
                     hda::PinDevice::SpdifOut,
                     hda::PinConn::Integrated,
@@ -141,92 +150,148 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
     }
 }
 
-fn hda_pin(
-    nid: u8,
-    device: hda::PinDevice,
-    conn: hda::PinConn,
-    loc: hda::PinLoc,
-    geo: hda::PinGeoLoc,
-    connector: hda::PinConnector,
-    color: hda::PinColor,
-    misc: u8,
-    group: u8,
-    seq: u8,
-) -> hda::PinConfig {
-    hda::PinConfig {
-        nid,
-        nc: None,
-        conn,
-        loc,
-        geo,
-        device,
-        connector,
-        color,
-        misc,
-        group,
-        seq,
-    }
-}
-
-fn hda_pin_nc(nid: u8, seq: u8) -> hda::PinConfig {
-    hda::PinConfig {
-        nid,
-        nc: Some(seq),
-        conn: Default::default(),
-        loc: Default::default(),
-        geo: Default::default(),
-        device: Default::default(),
-        connector: Default::default(),
-        color: Default::default(),
-        misc: 0,
-        group: 0,
-        seq: 0,
-    }
-}
-
 pub fn d41s_gpio_config() -> gpio::GpioConfig {
     gpio::GpioConfig {
         pins: hvec([
-            gpio_output(0),
-            gpio_output(6),
-            gpio_output(7),
-            gpio_output(8),
-            gpio_output(9),
-            gpio_output(10),
-            gpio_output(12),
-            gpio_output(13),
-            gpio_output(14),
-            gpio_output(15),
-            gpio_output(24),
-            gpio_output(25),
-            gpio_output(26),
-            gpio_output(27),
-            gpio_output(28),
-            gpio_input(33),
-            gpio_input(34),
-            gpio_input(38),
-            gpio_input(39),
+            gpio::output(0, gpio::GpioLevel::Low),
+            gpio::output(6, gpio::GpioLevel::Low),
+            gpio::output(7, gpio::GpioLevel::Low),
+            gpio::output(8, gpio::GpioLevel::Low),
+            gpio::output(9, gpio::GpioLevel::Low),
+            gpio::output(10, gpio::GpioLevel::Low),
+            gpio::output(12, gpio::GpioLevel::Low),
+            gpio::output(13, gpio::GpioLevel::Low),
+            gpio::output(14, gpio::GpioLevel::Low),
+            gpio::output(15, gpio::GpioLevel::Low),
+            gpio::output(24, gpio::GpioLevel::Low),
+            gpio::output(25, gpio::GpioLevel::Low),
+            gpio::output(26, gpio::GpioLevel::Low),
+            gpio::output(27, gpio::GpioLevel::Low),
+            gpio::output(28, gpio::GpioLevel::Low),
+            gpio::input(33),
+            gpio::input(34),
+            gpio::input(38),
+            gpio::input(39),
         ]),
     }
 }
 
-fn gpio_output(pin: u8) -> gpio::GpioPin {
-    gpio::GpioPin {
-        pin,
-        mode: gpio::GpioMode::Gpio,
-        dir: gpio::GpioDir::Output,
-        level: gpio::GpioLevel::Low,
-        blink: false,
-        invert: false,
-        reset: gpio::GpioReset::Pwrok,
+pub fn d41s_superio_config() -> DriverInstance {
+    DriverInstance::Ite8721f(ite8721f::Ite8721fConfig {
+        com1: Some(ite8721f::ComPortConfig {
+            io_base: 0x3f8,
+            irq: 4,
+            baud_rate: 115200,
+        }),
+        com2: Some(ite8721f::ComPortConfig {
+            io_base: 0x2f8,
+            irq: 3,
+            baud_rate: 115200,
+        }),
+        parallel: Some(ite8721f::ParallelConfig {
+            io_base: 0x378,
+            irq: 7,
+        }),
+        env_controller: Some(ite8721f::EcConfig {
+            io_base: 0xa10,
+            io_ext: 0xa00,
+        }),
+        keyboard: Some(ite8721f::KbcConfig {
+            io_base: 0x60,
+            io_ext: 0x64,
+            irq: 1,
+        }),
+        mouse: Some(ite8721f::MouseConfig { irq: 12 }),
+        cir: Some(ite8721f::CirConfig {
+            io_base: 0x3e0,
+            irq: 10,
+        }),
+        gpio: None,
+        acpi_name: Some(hstr("SIO0")),
+        console_port: Some(hstr("com1")),
+    })
+}
+
+pub fn d41s_ck505_config() -> i2c_ck505::I2cCk505Config {
+    i2c_ck505::I2cCk505Config {
+        mask: hvec([0x00, 0x80, 0xff, 0xff, 0xff]),
+        regs: hvec([0x00, 0x80, 0xfe, 0xff, 0xfc]),
     }
 }
 
-fn gpio_input(pin: u8) -> gpio::GpioPin {
-    gpio::GpioPin {
-        dir: gpio::GpioDir::Input,
-        ..gpio_output(pin)
+pub fn d41s_smbios() -> SmbiosConfig {
+    let mut caches = HVec::new();
+    for cache in [
+        SmbiosCache {
+            designation: hstr("L1 Data Cache"),
+            level: 1,
+            size_kb: 24,
+            associativity: CacheAssociativity::Way8,
+            cache_type: CacheType::Data,
+        },
+        SmbiosCache {
+            designation: hstr("L1 Instruction Cache"),
+            level: 1,
+            size_kb: 32,
+            associativity: CacheAssociativity::Way8,
+            cache_type: CacheType::Instruction,
+        },
+        SmbiosCache {
+            designation: hstr("L2 Cache"),
+            level: 2,
+            size_kb: 1024,
+            associativity: CacheAssociativity::Way8,
+            cache_type: CacheType::Unified,
+        },
+    ] {
+        caches.push(cache).expect("cache table capacity");
     }
+
+    let mut processors = HVec::new();
+    processors
+        .push(SmbiosProcessor {
+            socket: hstr("FCBGA559"),
+            manufacturer: hstr("Intel"),
+            processor_family: ProcessorFamily::X86_64,
+            max_speed_mhz: Some(1660),
+            core_count: Some(2),
+            thread_count: Some(4),
+            caches,
+        })
+        .expect("processor table capacity");
+
+    SmbiosConfig {
+        bios_vendor: hstr("fstart"),
+        bios_version: hstr("0.1.0"),
+        bios_release_date: hstr(option_env!("FSTART_SMBIOS_DATE").unwrap_or("04/15/2026")),
+        system_manufacturer: hstr("Foxconn"),
+        system_product: hstr("D41S"),
+        system_version: hstr("1.0"),
+        system_serial: HString::new(),
+        baseboard_manufacturer: hstr("Foxconn"),
+        baseboard_product: hstr("D41S"),
+        chassis_type: ChassisType::Desktop,
+        chassis_manufacturer: hstr("Foxconn"),
+        processors,
+        memory_devices: hvec([
+            SmbiosMemoryDevice {
+                locator: hstr("DIMM0"),
+                size_mb: Some(1024),
+                speed_mhz: Some(800),
+                memory_type: Some(MemoryDeviceType::Ddr2),
+            },
+            SmbiosMemoryDevice {
+                locator: hstr("DIMM1"),
+                size_mb: Some(1024),
+                speed_mhz: Some(800),
+                memory_type: Some(MemoryDeviceType::Ddr2),
+            },
+        ]),
+    }
+}
+
+fn hstr<const N: usize>(value: &str) -> HString<N> {
+    HString::try_from(value).expect("string exceeds heapless capacity")
 }
 
 fn hvec<T, const N: usize, const C: usize>(items: [T; N]) -> HVec<T, C> {

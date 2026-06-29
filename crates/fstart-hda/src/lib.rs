@@ -513,6 +513,53 @@ pub struct HdaConfig {
     pub verbs: HVec<HdaVerbTable, 4>,
 }
 
+/// Construct a typed HDA pin configuration for board metadata.
+#[must_use]
+pub const fn pin_config(
+    nid: u8,
+    device: PinDevice,
+    conn: PinConn,
+    loc: PinLoc,
+    geo: PinGeoLoc,
+    connector: PinConnector,
+    color: PinColor,
+    misc: u8,
+    group: u8,
+    seq: u8,
+) -> PinConfig {
+    PinConfig {
+        nid,
+        nc: None,
+        conn,
+        loc,
+        geo,
+        device,
+        connector,
+        color,
+        misc,
+        group,
+        seq,
+    }
+}
+
+/// Construct a not-connected HDA pin descriptor.
+#[must_use]
+pub const fn pin_not_connected(nid: u8, seq: u8) -> PinConfig {
+    PinConfig {
+        nid,
+        nc: Some(seq),
+        conn: PinConn::Nc,
+        loc: PinLoc::External,
+        geo: PinGeoLoc::NA,
+        device: PinDevice::LineOut,
+        connector: PinConnector::Unknown,
+        color: PinColor::ColorUnknown,
+        misc: 0,
+        group: 0,
+        seq: 0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HdaController — generic HDA MMIO interface
 // ---------------------------------------------------------------------------

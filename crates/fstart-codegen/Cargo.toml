@@ -25,3 +25,7 @@ fstart-driver-intel-pineview = { workspace = true, features = ["acpi"] }
 fstart-driver-ns16550 = { workspace = true }
 fstart-driver-pl011 = { workspace = true }
 fstart-driver-designware-i2c = { workspace = true }
+fstart-board-qemu-riscv64 = { path = "../../boards/qemu-riscv64" }
+fstart-board-qemu-aarch64 = { path = "../../boards/qemu-aarch64" }
+fstart-board-foxconn-d41s = { path = "../../boards/foxconn-d41s" }
+fstart-board-foxconn-d41s-uefi = { path = "../../boards/foxconn-d41s-uefi" }

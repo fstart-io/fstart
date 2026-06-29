@@ -1,14 +1,12 @@
 //! Board discovery from per-board Cargo metadata.
 //!
 //! Rust-ported boards are normal crates under `boards/` with a small
-//! `[package.metadata.fstart]` table. `xtask` discovers those packages and asks
-//! their metadata helper binaries to emit board/build facts. RON remains only a
-//! temporary transport into the transitional code generator; board files are no
-//! longer loaded directly by build orchestration.
+//! `[package.metadata.fstart]` table. `xtask` discovers those packages and loads
+//! board/build facts by calling their Rust APIs directly. Legacy RON remains only
+//! for unported board directories that do not have a Cargo manifest.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use fstart_codegen::ron_loader::{self, ParsedBoard};
 use fstart_types::{
@@ -157,8 +155,8 @@ pub fn load_parsed_board(workspace_root: &Path, board_name: &str) -> Result<Pars
     if manifest.source == BoardSource::LegacyRon {
         return ron_loader::load_parsed_board(&manifest.dir.join("board.ron"));
     }
-    let contents = board_metadata(workspace_root, &manifest, "board-config")?;
-    ron_loader::load_parsed_board_from_str(&contents, &format!("{} board-config", manifest.package))
+    crate::rust_board_provider::parsed_board(&manifest.board)
+        .ok_or_else(|| format!("Rust board '{}' has no direct provider", manifest.board))?
 }
 
 /// Load only board metadata by asking the Rust board crate for metadata.
@@ -174,10 +172,8 @@ pub fn load_build_info(workspace_root: &Path, board_name: &str) -> Result<BuildI
         let parsed = ron_loader::load_parsed_board(&manifest.dir.join("board.ron"))?;
         return legacy_build_info(&manifest, &parsed.config, &parsed.driver_instances);
     }
-    let contents = board_metadata(workspace_root, &manifest, "build-info")?;
-    let info: BuildInfo = ron::Options::default()
-        .from_str(&contents)
-        .map_err(|e| format!("failed to parse {} build-info: {e}", manifest.package))?;
+    let info = crate::rust_board_provider::build_info(&manifest.board)
+        .ok_or_else(|| format!("Rust board '{}' has no direct provider", manifest.board))?;
     validate_build_info(&manifest, &info)?;
     Ok(info)
 }
@@ -206,36 +202,15 @@ fn validate_build_info(manifest: &BoardManifest, info: &BuildInfo) -> Result<(),
     Ok(())
 }
 
-/// Materialize board metadata into a deterministic file for transitional stage build.rs.
-pub fn materialize_board_config(
-    workspace_root: &Path,
-    manifest: &BoardManifest,
-    profile: &str,
-    stage_label: &str,
-) -> Result<PathBuf, String> {
+/// Return the legacy board RON path for unported boards.
+pub fn legacy_board_config_path(manifest: &BoardManifest) -> Result<PathBuf, String> {
     if manifest.source == BoardSource::LegacyRon {
         return Ok(manifest.dir.join("board.ron"));
     }
-    let contents = board_metadata(workspace_root, manifest, "board-config")?;
-    // Validate before handing the file to stage build.rs so helper failures are
-    // reported at the xtask layer with the board package name attached.
-    ron_loader::load_parsed_board_from_str(
-        &contents,
-        &format!("{} board-config", manifest.package),
-    )?;
-
-    let out_dir = workspace_root
-        .join("target")
-        .join("rust-board-metadata")
-        .join(&manifest.board)
-        .join(profile)
-        .join(stage_label);
-    fs::create_dir_all(&out_dir)
-        .map_err(|e| format!("failed to create {}: {e}", out_dir.display()))?;
-    let out_path = out_dir.join("board.ron");
-    fs::write(&out_path, contents)
-        .map_err(|e| format!("failed to write {}: {e}", out_path.display()))?;
-    Ok(out_path)
+    Err(format!(
+        "Rust board '{}' is loaded directly and has no serialized board config path",
+        manifest.board
+    ))
 }
 
 fn legacy_build_info(
@@ -291,45 +266,6 @@ fn legacy_build_info(
     }
 
     Ok(build.build())
-}
-
-fn board_metadata(
-    workspace_root: &Path,
-    manifest: &BoardManifest,
-    command: &str,
-) -> Result<String, String> {
-    let output = Command::new("cargo")
-        .arg("run")
-        .arg("--quiet")
-        .arg("--package")
-        .arg(&manifest.package)
-        .arg("--")
-        .arg(command)
-        .current_dir(workspace_root)
-        .output()
-        .map_err(|e| {
-            format!(
-                "failed to run board metadata helper {}: {e}",
-                manifest.package
-            )
-        })?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "board metadata helper {} {command} failed with status {}\nstdout:\n{}\nstderr:\n{}",
-            manifest.package,
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    String::from_utf8(output.stdout).map_err(|e| {
-        format!(
-            "board metadata helper {} emitted non-UTF-8: {e}",
-            manifest.package
-        )
-    })
 }
 
 fn package_name(text: &str) -> Option<String> {

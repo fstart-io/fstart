@@ -27,182 +27,6 @@ use fstart_types::{
     SecurityConfig, SocImageFormat, StageLayout,
 };
 
-/// Serialize Rust-authored board metadata into the legacy RON shape consumed by
-/// the current stage build script.
-///
-/// This is intentionally hosted in codegen, not in board crates. Board crates
-/// should author Rust facts and typed driver instances; this function is only a
-/// temporary host-side adapter while stage build.rs still accepts a RON file.
-pub fn rust_board_config_to_ron(
-    config: BoardConfig,
-    driver_instances: Vec<DriverInstance>,
-) -> Result<String, String> {
-    let ron = RustBoardRon::new(config, driver_instances)?;
-    let pretty = ron::ser::PrettyConfig::default();
-    ron::ser::to_string_pretty(&ron, pretty)
-        .map_err(|e| format!("failed to serialize Rust board metadata as transitional RON: {e}"))
-}
-
-/// Build a [`ParsedBoard`] directly from Rust-authored metadata.
-///
-/// This bypasses the RON parser entirely and is the preferred host API for Rust
-/// board crates. The RON serializer above remains only for the current
-/// `fstart-stage/build.rs` file handoff.
-pub fn load_parsed_board_from_rust(
-    mut config: BoardConfig,
-    driver_instances: Vec<DriverInstance>,
-) -> Result<ParsedBoard, String> {
-    config
-        .memory
-        .normalize_derived_flash()
-        .map_err(|err| err.to_string())?;
-    if config.devices.len() != driver_instances.len() {
-        return Err(format!(
-            "Rust board '{}' has {} device declarations but {} driver instances",
-            config.name,
-            config.devices.len(),
-            driver_instances.len()
-        ));
-    }
-
-    let mut device_tree: Vec<DeviceNode> = Vec::with_capacity(config.devices.len());
-    let mut device_services: Vec<ServiceSet> = Vec::with_capacity(config.devices.len());
-
-    for (index, device) in config.devices.iter().enumerate() {
-        let parent = match &device.parent {
-            Some(parent_name) => {
-                let parent_idx = config.devices[..index]
-                    .iter()
-                    .position(|candidate| candidate.name == *parent_name)
-                    .ok_or_else(|| {
-                        format!(
-                            "device '{}' refers to unknown or later parent '{}'",
-                            device.name, parent_name
-                        )
-                    })?;
-                Some(parent_idx as DeviceId)
-            }
-            None => None,
-        };
-        let depth = parent
-            .map(|parent_idx| device_tree[parent_idx as usize].depth.saturating_add(1))
-            .unwrap_or(0);
-        device_tree.push(DeviceNode { parent, depth });
-        device_services.push(driver_instances[index].provided_services());
-    }
-
-    Ok(ParsedBoard {
-        config,
-        driver_instances,
-        device_tree,
-        device_services,
-        acpi_only_devices: Vec::new(),
-    })
-}
-
-#[derive(serde::Serialize)]
-struct RustBoardRon {
-    name: HString<64>,
-    platform: Platform,
-    memory: MemoryMap,
-    devices: Vec<RustBoardRonDevice>,
-    stages: StageLayout,
-    security: SecurityConfig,
-    payload: Option<PayloadConfig>,
-    microcode: Option<fstart_types::board::MicrocodeConfig>,
-    soc_image_format: SocImageFormat,
-    full_flash_image: bool,
-    acpi: Option<fstart_types::acpi::AcpiConfig>,
-    smbios: Option<fstart_types::smbios::SmbiosConfig>,
-    smm: Option<fstart_types::smm::SmmConfig>,
-    boot_hart_id: u32,
-}
-
-#[derive(serde::Serialize)]
-struct RustBoardRonDevice {
-    name: HString<32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bus: Option<BusAddress>,
-    enabled: bool,
-    driver: DriverInstance,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    children: Vec<RustBoardRonDevice>,
-}
-
-impl RustBoardRon {
-    fn new(config: BoardConfig, driver_instances: Vec<DriverInstance>) -> Result<Self, String> {
-        if config.devices.len() != driver_instances.len() {
-            return Err(format!(
-                "Rust board '{}' has {} device declarations but {} driver instances",
-                config.name,
-                config.devices.len(),
-                driver_instances.len()
-            ));
-        }
-        let devices = nested_ron_devices(&config.devices, &driver_instances)?;
-
-        Ok(Self {
-            name: config.name,
-            platform: config.platform,
-            memory: config.memory,
-            devices,
-            stages: config.stages,
-            security: config.security,
-            payload: config.payload,
-            microcode: config.microcode,
-            soc_image_format: config.soc_image_format,
-            full_flash_image: config.full_flash_image,
-            acpi: config.acpi,
-            smbios: config.smbios,
-            smm: config.smm,
-            boot_hart_id: config.boot_hart_id,
-        })
-    }
-}
-
-fn nested_ron_devices(
-    devices: &[DeviceConfig],
-    driver_instances: &[DriverInstance],
-) -> Result<Vec<RustBoardRonDevice>, String> {
-    fn build_children(
-        parent: Option<&HString<32>>,
-        devices: &[DeviceConfig],
-        driver_instances: &[DriverInstance],
-    ) -> Result<Vec<RustBoardRonDevice>, String> {
-        let mut out = Vec::new();
-        for (index, device) in devices.iter().enumerate() {
-            if device.parent.as_ref() != parent {
-                continue;
-            }
-            let children = build_children(Some(&device.name), devices, driver_instances)?;
-            out.push(RustBoardRonDevice {
-                name: device.name.clone(),
-                bus: device.bus,
-                enabled: device.enabled,
-                driver: driver_instances[index].clone(),
-                children,
-            });
-        }
-        Ok(out)
-    }
-
-    for device in devices {
-        if let Some(parent_name) = &device.parent {
-            if !devices
-                .iter()
-                .any(|candidate| candidate.name == *parent_name)
-            {
-                return Err(format!(
-                    "device '{}' refers to unknown parent '{}'",
-                    device.name, parent_name
-                ));
-            }
-        }
-    }
-
-    build_children(None, devices, driver_instances)
-}
-
 fn default_enabled() -> bool {
     true
 }
@@ -338,13 +162,11 @@ pub fn load_parsed_board(path: &Path) -> Result<ParsedBoard, String> {
     load_parsed_board_from_str(&contents, &path.display().to_string())
 }
 
-/// Load and fully validate a board config from an in-memory RON transport.
+/// Load and fully validate a legacy board config from an in-memory RON string.
 ///
-/// Rust board crates use this for metadata helper output: the source of truth is
-/// normal Rust code in the board package, while RON remains only the temporary
-/// host-side serialization format shared with the transitional code generator.
+/// Migrated Rust board crates should use [`load_parsed_board_from_rust`] instead.
 pub fn load_parsed_board_from_str(contents: &str, source: &str) -> Result<ParsedBoard, String> {
-    // Enable `implicit_some` so legacy RON and Rust-board helper output can
+    // Enable `implicit_some` so legacy RON can
     // write `field: 42` for `Option<T>` schema fields without wrapping in
     // `Some(42)`.
     let options =
@@ -354,6 +176,64 @@ pub fn load_parsed_board_from_str(contents: &str, source: &str) -> Result<Parsed
         .map_err(|e| format!("failed to parse {source}: {e}"))?;
     normalize_ron_config(&mut ron_cfg)?;
     convert(ron_cfg)
+}
+
+/// Load and fully validate a board from native Rust metadata.
+///
+/// This is the build-time entry point for migrated board crates. The board crate
+/// constructs typed [`BoardConfig`] and [`DriverInstance`] values directly, and
+/// this helper derives the flattened topology and effective service tables from
+/// those Rust values. No RON/JSON/postcard transport is involved.
+pub fn load_parsed_board_from_rust(
+    config: BoardConfig,
+    driver_instances: Vec<DriverInstance>,
+) -> Result<ParsedBoard, String> {
+    if config.devices.len() != driver_instances.len() {
+        return Err(format!(
+            "board '{}' declares {} devices but {} driver instances",
+            config.name,
+            config.devices.len(),
+            driver_instances.len()
+        ));
+    }
+
+    let mut device_tree: Vec<DeviceNode> = Vec::with_capacity(config.devices.len());
+    let mut device_services: Vec<ServiceSet> = Vec::with_capacity(driver_instances.len());
+
+    for (idx, device) in config.devices.iter().enumerate() {
+        let parent_idx = match &device.parent {
+            Some(parent_name) => Some(
+                config
+                    .devices
+                    .iter()
+                    .take(idx)
+                    .position(|candidate| candidate.name == *parent_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "device '{}' references missing or later parent '{}'",
+                            device.name, parent_name
+                        )
+                    })? as DeviceId,
+            ),
+            None => None,
+        };
+        let depth = parent_idx
+            .map(|parent_idx| device_tree[parent_idx as usize].depth.saturating_add(1))
+            .unwrap_or(0);
+        device_tree.push(DeviceNode {
+            parent: parent_idx,
+            depth,
+        });
+        device_services.push(driver_instances[idx].provided_services());
+    }
+
+    Ok(ParsedBoard {
+        config,
+        driver_instances,
+        device_tree,
+        device_services,
+        acpi_only_devices: Vec::new(),
+    })
 }
 
 /// Load only the [`BoardConfig`] metadata (no driver instance data).

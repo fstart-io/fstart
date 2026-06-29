@@ -227,3 +227,7 @@ fstart-crabefi = { workspace = true, optional = true }
 
 [build-dependencies]
 fstart-codegen = { workspace = true }
+fstart-board-qemu-riscv64 = { path = "../../boards/qemu-riscv64" }
+fstart-board-qemu-aarch64 = { path = "../../boards/qemu-aarch64" }
+fstart-board-foxconn-d41s = { path = "../../boards/foxconn-d41s" }
+fstart-board-foxconn-d41s-uefi = { path = "../../boards/foxconn-d41s-uefi" }

@@ -10,6 +10,10 @@ object = { workspace = true }
 fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-board-qemu-riscv64 = { path = "../boards/qemu-riscv64" }
+fstart-board-qemu-aarch64 = { path = "../boards/qemu-aarch64" }
+fstart-board-foxconn-d41s = { path = "../boards/foxconn-d41s" }
+fstart-board-foxconn-d41s-uefi = { path = "../boards/foxconn-d41s-uefi" }
 fstart-acpi = { workspace = true, features = ["x86"] }
 fstart-driver-intel-pineview = { workspace = true, features = ["acpi"] }
 fstart-driver-intel-ich7 = { workspace = true, features = ["acpi"] }

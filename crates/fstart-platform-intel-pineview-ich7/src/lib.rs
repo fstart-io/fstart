@@ -1,20 +1,18 @@
-//! Reusable Rust board defaults for Intel Pineview + ICH7/NM10 boards.
+//! Intel Pineview + ICH7/NM10 board-support metadata.
 //!
-//! Board crates provide identity and board-specific payload policy.  Fixed
-//! chipset flow facts, the flash/CAR memory model, and the standard Pineview
-//! northbridge plus ICH7 southbridge wiring live here so mainboards stay small.
+//! Runtime hardware init stays in the no_std driver crates.  This crate only
+//! composes shared host-side metadata for mainboards built from the Pineview
+//! northbridge and ICH7/NM10 southbridge: flash/CAR layout, stage flow, and
+//! chipset driver defaults.  Mainboard crates still provide board policy such
+//! as Super I/O wiring, clock-generator programming, GPIOs, HDA verbs, SMBIOS,
+//! and payload choice.
 
 use fstart_device_registry::{i2c_ck505, intel_pineview, DriverInstance};
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
-use fstart_driver_ite8721f as ite8721f;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
-use fstart_types::smbios::{
-    CacheAssociativity, CacheType, ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosCache,
-    SmbiosMemoryDevice, SmbiosProcessor,
-};
 use fstart_types::{
     AcpiConfig, AcpiPlatform, Board, BoardConfig, BoardInfo, BootMedium, Build, BuildInfo,
     BuildProfile, Capability, CarConfig, Compression, CorebootSmmCompat, CpuDriverKind,
@@ -25,17 +23,20 @@ use fstart_types::{
 };
 use heapless::{String as HString, Vec as HVec};
 
-/// Common Pineview + ICH7 two-stage board defaults.
+/// Shared Pineview + ICH7/NM10 platform metadata for a concrete mainboard.
 #[derive(Debug, Clone)]
-pub struct PineviewIch7Board {
+pub struct PineviewIch7Platform {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
     hda: Option<hda::HdaConfig>,
-    gpio: gpio::GpioConfig,
+    gpio: Option<gpio::GpioConfig>,
+    superio: Option<DriverInstance>,
+    clock_generator: Option<i2c_ck505::I2cCk505Config>,
+    smbios: Option<SmbiosConfig>,
 }
 
-impl PineviewIch7Board {
+impl PineviewIch7Platform {
     #[must_use]
     pub fn new(board_name: &'static str, board_package: &'static str) -> Self {
         Self {
@@ -43,7 +44,10 @@ impl PineviewIch7Board {
             board_package,
             payload: linuxboot_payload(),
             hda: None,
-            gpio: Default::default(),
+            gpio: None,
+            superio: None,
+            clock_generator: None,
+            smbios: None,
         }
     }
 
@@ -63,7 +67,28 @@ impl PineviewIch7Board {
     /// Set board-specific ICH GPIO pad configuration.
     #[must_use]
     pub fn gpio(mut self, gpio: gpio::GpioConfig) -> Self {
-        self.gpio = gpio;
+        self.gpio = Some(gpio);
+        self
+    }
+
+    /// Set board-specific Super I/O driver config.
+    #[must_use]
+    pub fn superio(mut self, superio: DriverInstance) -> Self {
+        self.superio = Some(superio);
+        self
+    }
+
+    /// Set board-specific CK505/clock-generator config.
+    #[must_use]
+    pub fn clock_generator(mut self, clock_generator: i2c_ck505::I2cCk505Config) -> Self {
+        self.clock_generator = Some(clock_generator);
+        self
+    }
+
+    /// Set board-specific SMBIOS static metadata.
+    #[must_use]
+    pub fn smbios(mut self, smbios: SmbiosConfig) -> Self {
+        self.smbios = Some(smbios);
         self
     }
 
@@ -84,7 +109,7 @@ impl PineviewIch7Board {
                 print_hex: false,
                 platform: AcpiPlatform::X86,
             }),
-            smbios: Some(d41s_smbios()),
+            smbios: self.smbios.clone(),
             smm: Some(SmmConfig {
                 platform: SmmPlatform::PineviewIch7,
                 entry_points: Some(4),
@@ -102,15 +127,24 @@ impl PineviewIch7Board {
     pub fn driver_instances(&self) -> Vec<DriverInstance> {
         vec![
             DriverInstance::IntelPineview(pineview_config()),
-            DriverInstance::IntelIch7(ich7_config(self.hda.clone(), self.gpio.clone())),
+            DriverInstance::IntelIch7(ich7_config(
+                self.hda.clone(),
+                self.gpio.clone().unwrap_or_default(),
+            )),
             DriverInstance::Structural(Default::default()),
             DriverInstance::Structural(Default::default()),
             DriverInstance::Structural(Default::default()),
             DriverInstance::Structural(Default::default()),
             DriverInstance::Structural(Default::default()),
-            DriverInstance::Ite8721f(superio_config()),
+            self.superio
+                .clone()
+                .expect("mainboard must provide Super I/O config"),
             DriverInstance::Structural(Default::default()),
-            DriverInstance::I2cCk505(ck505_config()),
+            DriverInstance::I2cCk505(
+                self.clock_generator
+                    .clone()
+                    .expect("mainboard must provide CK505 config"),
+            ),
         ]
     }
 
@@ -197,52 +231,34 @@ fn pineview_ich7_memory() -> MemoryMap {
 }
 
 fn pineview_ich7_devices() -> HVec<DeviceConfig, 32> {
-    let mut devices = HVec::new();
-    for device in [
-        dev("northbridge", None, None, true),
-        dev("southbridge", None, None, true),
-        dev(
+    DeviceTopology::new()
+        .root("northbridge")
+        .root("southbridge")
+        .child(
+            "southbridge",
             "pcie0",
-            Some("southbridge"),
-            Some(fstart_types::BusAddress::Pci(0x1c, 0)),
-            true,
-        ),
-        dev(
+            fstart_types::BusAddress::Pci(0x1c, 0),
+        )
+        .child(
+            "southbridge",
             "pcie1",
-            Some("southbridge"),
-            Some(fstart_types::BusAddress::Pci(0x1c, 1)),
-            true,
-        ),
-        dev(
+            fstart_types::BusAddress::Pci(0x1c, 1),
+        )
+        .disabled_child(
+            "southbridge",
             "pcie2",
-            Some("southbridge"),
-            Some(fstart_types::BusAddress::Pci(0x1c, 2)),
-            false,
-        ),
-        dev(
+            fstart_types::BusAddress::Pci(0x1c, 2),
+        )
+        .disabled_child(
+            "southbridge",
             "pcie3",
-            Some("southbridge"),
-            Some(fstart_types::BusAddress::Pci(0x1c, 3)),
-            false,
-        ),
-        dev("lpc", Some("southbridge"), None, true),
-        dev(
-            "superio",
-            Some("lpc"),
-            Some(fstart_types::BusAddress::Lpc(0x2e)),
-            true,
-        ),
-        dev("smbus", Some("southbridge"), None, true),
-        dev(
-            "ck505",
-            Some("smbus"),
-            Some(fstart_types::BusAddress::I2c(0x69)),
-            true,
-        ),
-    ] {
-        devices.push(device).expect("device table capacity");
-    }
-    devices
+            fstart_types::BusAddress::Pci(0x1c, 3),
+        )
+        .child_bus("southbridge", "lpc")
+        .child("lpc", "superio", fstart_types::BusAddress::Lpc(0x2e))
+        .child_bus("southbridge", "smbus")
+        .child("smbus", "ck505", fstart_types::BusAddress::I2c(0x69))
+        .finish()
 }
 
 fn pineview_ich7_stages() -> StageLayout {
@@ -383,49 +399,6 @@ fn ich7_config(hda: Option<hda::HdaConfig>, gpio: gpio::GpioConfig) -> ich7::Int
     }
 }
 
-fn superio_config() -> ite8721f::Ite8721fConfig {
-    ite8721f::Ite8721fConfig {
-        com1: Some(ite8721f::ComPortConfig {
-            io_base: 0x3f8,
-            irq: 4,
-            baud_rate: 115200,
-        }),
-        com2: Some(ite8721f::ComPortConfig {
-            io_base: 0x2f8,
-            irq: 3,
-            baud_rate: 115200,
-        }),
-        parallel: Some(ite8721f::ParallelConfig {
-            io_base: 0x378,
-            irq: 7,
-        }),
-        env_controller: Some(ite8721f::EcConfig {
-            io_base: 0xa10,
-            io_ext: 0xa00,
-        }),
-        keyboard: Some(ite8721f::KbcConfig {
-            io_base: 0x60,
-            io_ext: 0x64,
-            irq: 1,
-        }),
-        mouse: Some(ite8721f::MouseConfig { irq: 12 }),
-        cir: Some(ite8721f::CirConfig {
-            io_base: 0x3e0,
-            irq: 10,
-        }),
-        gpio: None,
-        acpi_name: Some(hstr("SIO0")),
-        console_port: Some(hstr("com1")),
-    }
-}
-
-fn ck505_config() -> i2c_ck505::I2cCk505Config {
-    i2c_ck505::I2cCk505Config {
-        mask: hvec([0x00, 0x80, 0xff, 0xff, 0xff]),
-        regs: hvec([0x00, 0x80, 0xfe, 0xff, 0xfc]),
-    }
-}
-
 fn pineview_microcode() -> MicrocodeConfig {
     MicrocodeConfig::Intel(IntelMicrocodeConfig {
         files: hvec([
@@ -445,74 +418,10 @@ fn security_config() -> SecurityConfig {
     }
 }
 
-fn d41s_smbios() -> SmbiosConfig {
-    let mut caches = HVec::new();
-    for cache in [
-        SmbiosCache {
-            designation: hstr("L1 Data Cache"),
-            level: 1,
-            size_kb: 24,
-            associativity: CacheAssociativity::Way8,
-            cache_type: CacheType::Data,
-        },
-        SmbiosCache {
-            designation: hstr("L1 Instruction Cache"),
-            level: 1,
-            size_kb: 32,
-            associativity: CacheAssociativity::Way8,
-            cache_type: CacheType::Instruction,
-        },
-        SmbiosCache {
-            designation: hstr("L2 Cache"),
-            level: 2,
-            size_kb: 1024,
-            associativity: CacheAssociativity::Way8,
-            cache_type: CacheType::Unified,
-        },
-    ] {
-        caches.push(cache).expect("cache table capacity");
-    }
-
-    let mut processors = HVec::new();
-    processors
-        .push(SmbiosProcessor {
-            socket: hstr("FCBGA559"),
-            manufacturer: hstr("Intel"),
-            processor_family: ProcessorFamily::X86_64,
-            max_speed_mhz: Some(1660),
-            core_count: Some(2),
-            thread_count: Some(4),
-            caches,
-        })
-        .expect("processor table capacity");
-
-    SmbiosConfig {
-        bios_vendor: hstr("fstart"),
-        bios_version: hstr("0.1.0"),
-        bios_release_date: hstr("04/15/2026"),
-        system_manufacturer: hstr("Foxconn"),
-        system_product: hstr("D41S"),
-        system_version: hstr("1.0"),
-        system_serial: HString::new(),
-        baseboard_manufacturer: hstr("Foxconn"),
-        baseboard_product: hstr("D41S"),
-        chassis_type: ChassisType::Desktop,
-        chassis_manufacturer: hstr("Foxconn"),
-        processors,
-        memory_devices: hvec([
-            SmbiosMemoryDevice {
-                locator: hstr("DIMM0"),
-                size_mb: Some(1024),
-                speed_mhz: Some(800),
-                memory_type: Some(MemoryDeviceType::Ddr2),
-            },
-            SmbiosMemoryDevice {
-                locator: hstr("DIMM1"),
-                size_mb: Some(1024),
-                speed_mhz: Some(800),
-                memory_type: Some(MemoryDeviceType::Ddr2),
-            },
-        ]),
+fn flow_profile(config: &BoardConfig) -> FlowProfile {
+    match config.payload.as_ref().map(|payload| &payload.kind) {
+        Some(PayloadKind::UefiPayload) => FlowProfile::Uefi,
+        _ => FlowProfile::LinuxBoot,
     }
 }
 
@@ -539,7 +448,7 @@ fn build_info_from_parts(
         .board_package(board_package)
         .target(Platform::X86_64.target_triple())
         .profile(BuildProfile::Dev)
-        .flow_profile(FlowProfile::LinuxBoot)
+        .flow_profile(flow_profile(&config))
         .image(ImageBuildInfo {
             full_flash_image: config.full_flash_image,
             soc_image_format: config.soc_image_format,
@@ -574,6 +483,46 @@ fn dev(
         parent: parent.map(hstr),
         bus,
         enabled,
+    }
+}
+
+struct DeviceTopology {
+    devices: HVec<DeviceConfig, 32>,
+}
+
+impl DeviceTopology {
+    fn new() -> Self {
+        Self {
+            devices: HVec::new(),
+        }
+    }
+
+    fn root(mut self, name: &str) -> Self {
+        self.push(dev(name, None, None, true));
+        self
+    }
+
+    fn child_bus(mut self, parent: &str, name: &str) -> Self {
+        self.push(dev(name, Some(parent), None, true));
+        self
+    }
+
+    fn child(mut self, parent: &str, name: &str, bus: fstart_types::BusAddress) -> Self {
+        self.push(dev(name, Some(parent), Some(bus), true));
+        self
+    }
+
+    fn disabled_child(mut self, parent: &str, name: &str, bus: fstart_types::BusAddress) -> Self {
+        self.push(dev(name, Some(parent), Some(bus), false));
+        self
+    }
+
+    fn finish(self) -> HVec<DeviceConfig, 32> {
+        self.devices
+    }
+
+    fn push(&mut self, device: DeviceConfig) {
+        self.devices.push(device).expect("device table capacity");
     }
 }
 
