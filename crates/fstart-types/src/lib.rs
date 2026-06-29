@@ -29,8 +29,8 @@ pub use board::{
     Platform, SocImageFormat,
 };
 pub use builder::{
-    board_info_from_config, dev_security_config, flow_profile_from_config, hnames, hstr, hvec,
-    Board, BoardBlob, BoardDataMode, BoardInfo, Build, BuildInfo, BuildProfile, DeviceBranch,
+    board_info_from_config, dev_security_config, flow_profile_from_config, hstr, hvec, Board,
+    BoardBlob, BoardDataMode, BoardInfo, Build, BuildInfo, BuildProfile, DeviceBranch,
     DeviceTopology, FlowProfile, ImageBuildInfo, PayloadInputInfo, StageBuildInfo,
     BOARD_BLOB_ABI_VERSION,
 };

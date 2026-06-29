@@ -8,7 +8,6 @@
     feature = "flow-console-init",
     feature = "flow-dram-init",
     feature = "flow-driver-init",
-    feature = "flow-phases",
     feature = "flow-pci",
     feature = "flow-memory-detect",
     feature = "flow-boot-media",
@@ -22,7 +21,6 @@ use fstart_types::DeviceId;
     feature = "flow-console-init",
     feature = "flow-dram-init",
     feature = "flow-driver-init",
-    feature = "flow-phases",
     feature = "flow-pci",
     feature = "flow-memory-detect",
     feature = "flow-boot-media",
@@ -36,7 +34,6 @@ use crate::DeviceMask;
     feature = "flow-memory-init",
     feature = "flow-dram-init",
     feature = "flow-driver-init",
-    feature = "flow-phases",
     feature = "flow-pci",
     feature = "flow-memory-detect",
     feature = "flow-boot-media",
@@ -62,7 +59,6 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
         feature = "flow-console-init",
         feature = "flow-dram-init",
         feature = "flow-driver-init",
-        feature = "flow-phases",
         feature = "flow-pci",
         feature = "flow-memory-detect",
         feature = "flow-boot-media",
@@ -84,42 +80,6 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
             StageOp::DramInit(id) => dram_init(board, plan, &mut inited, id),
             #[cfg(feature = "flow-driver-init")]
             StageOp::DriverInit => driver_init(board, plan, &mut inited),
-            #[cfg(feature = "flow-phases")]
-            StageOp::PreConsoleInit(ids) => phase(
-                board,
-                plan,
-                &mut inited,
-                crate::StagePhase::PreConsoleInit,
-                ids,
-            ),
-            #[cfg(feature = "flow-phases")]
-            StageOp::EarlyInit(ids) => {
-                phase(board, plan, &mut inited, crate::StagePhase::EarlyInit, ids)
-            }
-            #[cfg(feature = "flow-phases")]
-            StageOp::StageLocalInit(ids) => phase(
-                board,
-                plan,
-                &mut inited,
-                crate::StagePhase::StageLocalInit,
-                ids,
-            ),
-            #[cfg(feature = "flow-phases")]
-            StageOp::PostDramInit(ids) => phase(
-                board,
-                plan,
-                &mut inited,
-                crate::StagePhase::PostDramInit,
-                ids,
-            ),
-            #[cfg(feature = "flow-phases")]
-            StageOp::FinalizeInit(ids) => phase(
-                board,
-                plan,
-                &mut inited,
-                crate::StagePhase::FinalizeInit,
-                ids,
-            ),
             #[cfg(feature = "flow-pci")]
             StageOp::PciInit(id) => pci_init(board, plan, &mut inited, id),
             #[cfg(feature = "flow-memory-detect")]
@@ -186,7 +146,6 @@ pub fn run_stage<B: Board>(board: &mut B, plan: &'static StagePlan) -> ! {
     feature = "flow-console-init",
     feature = "flow-dram-init",
     feature = "flow-driver-init",
-    feature = "flow-phases",
     feature = "flow-pci",
     feature = "flow-memory-detect",
     feature = "flow-boot-media",
@@ -249,29 +208,6 @@ fn dram_init<B: Board>(board: &mut B, plan: &StagePlan, inited: &mut DeviceMask,
         board.halt();
     }
     inited.set(id);
-}
-
-#[cfg(feature = "flow-phases")]
-fn phase<B: Board>(
-    board: &mut B,
-    plan: &StagePlan,
-    inited: &mut DeviceMask,
-    phase: crate::StagePhase,
-    ids: &'static [DeviceId],
-) {
-    for id in ids {
-        if init_device(board, plan, inited, *id).is_err() {
-            board.halt();
-        }
-    }
-    for id in ids {
-        if board.phase_init(phase, *id).is_err() {
-            board.halt();
-        }
-    }
-    for id in ids {
-        inited.set(*id);
-    }
 }
 
 #[cfg(feature = "flow-pci")]

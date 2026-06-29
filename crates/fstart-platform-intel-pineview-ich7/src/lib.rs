@@ -351,11 +351,9 @@ fn pineview_ich7_stages() -> StageLayout {
 
 fn pineview_bootblock_capabilities() -> HVec<Capability, 16> {
     hvec([
-        Capability::pre_console_init(["northbridge", "southbridge"]),
         Capability::ConsoleInit {
             device: hstr("superio"),
         },
-        Capability::early_init(["northbridge", "southbridge"]),
         Capability::DramInit {
             device: hstr("northbridge"),
         },
@@ -383,15 +381,12 @@ fn pineview_ramstage_capabilities() -> HVec<Capability, 16> {
         }),
         Capability::SigVerify,
         Capability::DriverInit,
-        Capability::stage_local_init(["northbridge"]),
         Capability::MemoryDetect {
             device: hstr("northbridge"),
         },
         Capability::PciInit {
             device: hstr("northbridge"),
         },
-        Capability::post_dram_init(["southbridge"]),
-        Capability::finalize_init(["southbridge"]),
         Capability::MpInit {
             cpu_drivers: hvec([CpuDriverKind::IntelPineview]),
             max_cpus: 4,

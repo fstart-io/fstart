@@ -81,22 +81,6 @@ pub(super) fn validate_capability_ordering(
             Capability::DramInit { .. } => {
                 memory_ready = true;
             }
-            Capability::PreConsoleInit { .. } => {
-                // Pre-console phases must be log-free and may run before the
-                // logger exists.
-            }
-            Capability::EarlyInit { .. }
-            | Capability::StageLocalInit { .. }
-            | Capability::PostDramInit { .. }
-            | Capability::FinalizeInit { .. }
-                if !console_inited =>
-            {
-                return Some(
-                    "EarlyInit/StageLocalInit/PostDramInit/FinalizeInit require ConsoleInit to \
-                     appear earlier in the capability list (needed for logging)"
-                        .to_string(),
-                );
-            }
             Capability::MpInit { smm, .. } if !console_inited => {
                 return Some(
                     "MpInit capability requires ConsoleInit to appear earlier \
@@ -464,41 +448,6 @@ fn validate_capability_service(
             Service::MemoryController,
             "DramInit",
         ),
-        Capability::PreConsoleInit { devices } => require_devices_service(
-            config,
-            device_services,
-            devices,
-            Service::PreConsoleInit,
-            "PreConsoleInit",
-        ),
-        Capability::EarlyInit { devices } => require_devices_service(
-            config,
-            device_services,
-            devices,
-            Service::EarlyInit,
-            "EarlyInit",
-        ),
-        Capability::StageLocalInit { devices } => require_devices_service(
-            config,
-            device_services,
-            devices,
-            Service::StageLocalInit,
-            "StageLocalInit",
-        ),
-        Capability::PostDramInit { devices } => require_devices_service(
-            config,
-            device_services,
-            devices,
-            Service::PostDramInit,
-            "PostDramInit",
-        ),
-        Capability::FinalizeInit { devices } => require_devices_service(
-            config,
-            device_services,
-            devices,
-            Service::FinalizeInit,
-            "FinalizeInit",
-        ),
         Capability::PciInit { device } => require_device_service(
             config,
             device_services,
@@ -546,25 +495,6 @@ fn validate_capability_service(
         }
         _ => Ok(()),
     }
-}
-
-fn require_devices_service(
-    config: &BoardConfig,
-    device_services: &[ServiceSet],
-    devices: &[heapless::String<32>],
-    service: Service,
-    capability: &str,
-) -> Result<(), String> {
-    for device in devices {
-        require_device_service(
-            config,
-            device_services,
-            device.as_str(),
-            service,
-            capability,
-        )?;
-    }
-    Ok(())
 }
 
 fn validate_firmware_image_provider(

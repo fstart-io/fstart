@@ -168,7 +168,7 @@ fn board_struct_carries_acpi_rsdp_field() {
     }
 }
 
-// ===== pci_init + generic phase-init adapter tests ================
+// ===== pci_init adapter tests ======================================
 
 #[test]
 fn pci_init_emits_real_body_on_aarch64_sbsa() {
@@ -204,23 +204,6 @@ fn pci_init_boards_without_pci_root_have_wildcard_only() {
 }
 
 #[test]
-fn early_init_emits_generic_phase_calls_on_foxconn_d41s() {
-    let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
-    assert!(
-        src.contains("fstart_services::EarlyInit"),
-        "early_init must import EarlyInit trait; got:\n{src}"
-    );
-    assert!(
-        src.contains("_EarlyInit::early_init"),
-        "early_init must call EarlyInit::early_init; got:\n{src}"
-    );
-    assert!(
-        !src.contains("fstart_services::PciHost as _PciHost"),
-        "generic phase init must not depend on PciHost topology; got:\n{src}"
-    );
-}
-
-#[test]
 fn firmware_image_scratch_and_mp_microcode_use_boot_media_state() {
     let src = adapter_source_for_stage("foxconn-d41s", "ramstage");
     assert!(
@@ -238,45 +221,6 @@ fn firmware_image_scratch_and_mp_microcode_use_boot_media_state() {
     assert!(
         src.contains("fn ffs_anchor") && src.contains("FSTART_ANCHOR"),
         "adapter must expose primitive FFS anchor bytes for runtime context publication; got:\n{src}"
-    );
-}
-
-#[test]
-fn early_init_verifies_declared_flash_layout_on_lenovo_x61() {
-    let src = adapter_source_for_stage("lenovo-x61", "bootblock");
-    assert!(
-        src.contains("fstart_services::FlashLayoutVerifier::verify_flash_layout"),
-        "early_init must verify hardware flash layout through the generic service; got:\n{src}"
-    );
-    assert!(
-        src.contains("FlashLayout::IntelIfd(IntelIfdFlashLayout"),
-        "expected flash layout must come from board memory.flash_layout; got:\n{src}"
-    );
-    assert!(
-        src.contains("_EarlyInit::early_init(dev)"),
-        "early_init must still call the normal phase service after verification; got:\n{src}"
-    );
-}
-
-#[test]
-fn pre_console_init_emits_generic_phase_calls_on_foxconn_d41s() {
-    let src = adapter_source_for_stage("foxconn-d41s", "bootblock");
-    assert!(
-        src.contains("fstart_services::PreConsoleInit"),
-        "pre_console_init must import PreConsoleInit trait; got:\n{src}"
-    );
-    assert!(
-        src.contains("_PreConsoleInit::pre_console_init"),
-        "pre_console_init must call PreConsoleInit::pre_console_init; got:\n{src}"
-    );
-}
-
-#[test]
-fn phase_init_boards_without_provider_have_wildcard_only() {
-    let src = adapter_source_for_board("qemu-riscv64");
-    assert!(
-        src.contains("unknown or unsupported device id"),
-        "boards without a phase provider must still emit wildcard errors; got:\n{src}"
     );
 }
 

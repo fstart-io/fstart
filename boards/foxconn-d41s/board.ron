@@ -255,7 +255,6 @@
                 // then perform ICH7 SPI prefetch, fixed SB BAR setup, upper
                 // CMOS/watchdog disable, SERIRQ and LPC decode so the SuperIO at
                 // 0x2E/0x2F is reachable.
-                PreConsoleInit( devices: ["northbridge", "southbridge"] ),
                 // Console: SuperIO programs LDNs and initializes the
                 // 16550 UART at the COM port selected by `console_port`.
                 // LPC decode is now open, so PIO at 0x2E/0x2F works.
@@ -263,7 +262,6 @@
                 // Early platform init with console available for diagnostics.
                 // Opens NB BARs (MCHBAR, DMIBAR), PAM, graphics clocks; SB SMBus
                 // (needed by DramInit), BARs, PIRQ, GPIO, CIR, IOAPIC, HPET.
-                EarlyInit( devices: ["northbridge", "southbridge"] ),
                 // DDR2 training needs SMBus (enabled by EarlyInit).
                 DramInit( device: "northbridge" ),
                 // Load the ramstage from FFS in flash and jump to it.
@@ -296,7 +294,6 @@
                 // Re-initialize ramstage-local chipset access first: each stage
                 // has its own BSS, so ECAM's global base is zero again after
                 // the jump from bootblock. This only rebinds stage-local accessors.
-                StageLocalInit( devices: ["northbridge"] ),
                 // Now that ECAM is live in ramstage, rebuild the ramstage-local
                 // E820 state from DRAM controller registers programmed by
                 // bootblock raminit. Bootblock BSS globals do not carry over.
@@ -305,8 +302,6 @@
                 // Coreboot ramstage-equivalent southbridge finalization:
                 // SATA/USB/HDA, PM/C-state setup, PCIe root-port tuning,
                 // then SPI/SMI/TCO/BIOS-interface lockdown.
-                PostDramInit( devices: ["southbridge"] ),
-                FinalizeInit( devices: ["southbridge"] ),
                 // Install the Pineview/ICH7 SMM handler before ACPI and payload handoff.
                 MpInit(cpu_drivers: [IntelPineview], max_cpus: 4, smm: true),
                 AcpiPrepare,

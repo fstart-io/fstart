@@ -35,7 +35,6 @@ mod model;
 mod mp;
 mod payload;
 mod payload_uefi;
-mod phases;
 mod platform;
 mod state;
 
@@ -132,15 +131,6 @@ fn compute_excluded_indices(
             | Capability::PciInit { device }
             | Capability::AcpiLoad { device }
             | Capability::MemoryDetect { device } => referenced.push(device.as_str()),
-            Capability::PreConsoleInit { devices }
-            | Capability::EarlyInit { devices }
-            | Capability::StageLocalInit { devices }
-            | Capability::PostDramInit { devices }
-            | Capability::FinalizeInit { devices } => {
-                for device in devices {
-                    referenced.push(device.as_str());
-                }
-            }
             Capability::BootMedia(BootMedium::FirmwareImage { provider, .. }) => {
                 if let Some(provider) = provider {
                     referenced.push(provider.as_str());

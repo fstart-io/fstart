@@ -28,7 +28,6 @@ use super::payload_uefi::{
     uefi_boot_bl31_and_resume_body, uefi_fdt_blob_body, uefi_payload_desc_body,
     with_uefi_services_body,
 };
-use super::phases::phase_init_body;
 use super::platform::sunxi::{
     dram_size_for_handoff_body, egon_next_stage_body, next_stage_addr_body, soc_boot_media_body,
 };
@@ -87,8 +86,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
     let return_to_fel_body = return_to_fel_body(platform, ctx);
     let with_pci_root_body = with_pci_root_body(ctx);
     let dram_init_body = dram_init_body(ctx);
-    let phase_init_body = phase_init_body(ctx);
-
     let with_acpi_table_provider_body = with_acpi_table_provider_body(ctx);
     let with_memory_detector_body = with_memory_detector_body(ctx);
     let acpi_platform_config_body = acpi_platform_config_body(ctx);
@@ -224,14 +221,6 @@ pub(super) fn emit_board_impl(platform: Platform, ctx: &BoardEmitModel<'_>) -> T
             #[cfg(feature = "stage-flow-mp")]
             fn active_firmware_image_range(&self, offset: u64, size: u64) -> Option<u64> {
                 #active_firmware_image_range_body
-            }
-
-            fn phase_init(
-                &mut self,
-                phase: fstart_stage_runtime::StagePhase,
-                id: fstart_types::DeviceId,
-            ) -> Result<(), fstart_services::device::DeviceError> {
-                #phase_init_body
             }
 
             fn dram_init(

@@ -1260,22 +1260,14 @@ fn stage_plan_lenovo_x61_bootblock_and_ramstage_data_are_explicit() {
 
     assert_ordered(
         &bootblock,
-        &[
-            "StageOp::PreConsoleInit",
-            "StageOp::EarlyInit",
-            "StageOp::DramInit(0)",
-            "StageOp::StageLoad",
-        ],
+        &["StageOp::DramInit(0)", "StageOp::StageLoad"],
         "X61 bootblock stage plan data",
     );
     assert_ordered(
         &ramstage,
         &[
-            "StageOp::StageLocalInit",
             "StageOp::MemoryDetect(0)",
             "StageOp::PciInit(0)",
-            "StageOp::PostDramInit",
-            "StageOp::FinalizeInit",
             "StageOp::MpInit",
             "StageOp::AcpiPrepare",
             "StageOp::SmBiosPrepare",

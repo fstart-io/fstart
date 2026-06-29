@@ -34,19 +34,6 @@ pub fn hvec<T, const N: usize, const C: usize>(items: [T; N]) -> HVec<T, C> {
     out
 }
 
-/// Construct a bounded vector of heapless metadata names.
-///
-/// This is the string-specialized companion to [`hvec`] for schema fields such
-/// as ordered stage phase device lists.
-#[must_use]
-pub fn hnames<const N: usize, const C: usize>(items: [&str; N]) -> HVec<HString<32>, C> {
-    let mut out = HVec::new();
-    for item in items {
-        out.push(hstr(item)).expect("metadata name vector capacity");
-    }
-    out
-}
-
 /// Generic board-device topology builder.
 ///
 /// Platform and board crates should use this for flat [`DeviceConfig`] tables

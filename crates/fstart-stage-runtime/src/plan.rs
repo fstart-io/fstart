@@ -74,21 +74,6 @@ pub enum StageOp {
     /// Initialize all remaining runtime devices.
     #[cfg(feature = "flow-driver-init")]
     DriverInit,
-    /// Run the pre-console phase over the listed devices.
-    #[cfg(feature = "flow-phases")]
-    PreConsoleInit(&'static [DeviceId]),
-    /// Run the early-init phase over the listed devices.
-    #[cfg(feature = "flow-phases")]
-    EarlyInit(&'static [DeviceId]),
-    /// Rebuild per-stage software bindings.
-    #[cfg(feature = "flow-phases")]
-    StageLocalInit(&'static [DeviceId]),
-    /// Run post-DRAM initialization.
-    #[cfg(feature = "flow-phases")]
-    PostDramInit(&'static [DeviceId]),
-    /// Run final lockdown.
-    #[cfg(feature = "flow-phases")]
-    FinalizeInit(&'static [DeviceId]),
     /// Enumerate a PCI root bus.
     #[cfg(feature = "flow-pci")]
     PciInit(DeviceId),

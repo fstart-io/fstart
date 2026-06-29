@@ -342,21 +342,6 @@ pub enum RuntimeError {
     BufferTooSmall,
 }
 
-/// Generic device lifecycle phase selected by the handwritten executor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StagePhase {
-    /// `PreConsoleInit` provider hook.
-    PreConsoleInit,
-    /// `EarlyInit` provider hook.
-    EarlyInit,
-    /// `StageLocalInit` provider hook.
-    StageLocalInit,
-    /// `PostDramInit` provider hook.
-    PostDramInit,
-    /// `FinalizeInit` provider hook.
-    FinalizeInit,
-}
-
 // ---------------------------------------------------------------------------
 // Board trait
 // ---------------------------------------------------------------------------
@@ -509,13 +494,6 @@ pub trait Board: Sized {
     /// contiguous CPU-visible address.
     #[cfg(feature = "flow-mp")]
     fn active_firmware_image_range(&self, offset: u64, size: u64) -> Option<u64>;
-
-    /// Run one device-local lifecycle phase hook.
-    ///
-    /// The executor owns phase iteration and init-before-callback policy; the
-    /// board adapter only dispatches a `(phase, id)` pair to the concrete
-    /// service implementation.
-    fn phase_init(&mut self, phase: StagePhase, id: DeviceId) -> Result<(), DeviceError>;
 
     /// Stage operation for `DramInit`. `id` is the resolved device ID.
     ///

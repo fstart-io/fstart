@@ -256,9 +256,7 @@
         (
             name: "bootblock",
             capabilities: [
-                PreConsoleInit( devices: ["northbridge", "southbridge", "mainboard"] ),
                 ConsoleInit( device: "uart0" ),
-                EarlyInit( devices: ["northbridge", "southbridge"] ),
                 DramInit( device: "northbridge" ),
                 BootMedia(FirmwareImage()),
                 StageLoad( next_stage: "ramstage" ),
@@ -279,11 +277,8 @@
                 DriverInit,
                 // Rebind ramstage-local ECAM/chipset BAR access before reading
                 // GM965 TOM/TOLUD/TSEG registers for the runtime e820 map.
-                StageLocalInit( devices: ["northbridge"] ),
                 MemoryDetect( device: "northbridge" ),
                 PciInit( device: "northbridge" ),
-                PostDramInit( devices: ["northbridge", "southbridge", "mainboard"] ),
-                FinalizeInit( devices: ["southbridge", "mainboard"] ),
                 // GM965 now provides SmmOps, but keep permanent SMM disabled
                 // until the X61-specific I/O-trap dock/EC SMI callbacks are
                 // ported; enabling only the generic ACPI APM handler would be

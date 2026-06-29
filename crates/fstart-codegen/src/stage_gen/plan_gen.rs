@@ -216,11 +216,6 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &PlanCtx<'_>) -> Lowered
             LoweredOp::new(quote! { fstart_stage_runtime::StageOp::DramInit(#id) })
                 .guarded("stage-flow-dram-init", "DramInit")
         }
-        C::PreConsoleInit { devices } => phase_op(idx, "PreConsoleInit", devices, ctx),
-        C::EarlyInit { devices } => phase_op(idx, "EarlyInit", devices, ctx),
-        C::StageLocalInit { devices } => phase_op(idx, "StageLocalInit", devices, ctx),
-        C::PostDramInit { devices } => phase_op(idx, "PostDramInit", devices, ctx),
-        C::FinalizeInit { devices } => phase_op(idx, "FinalizeInit", devices, ctx),
         C::DriverInit => LoweredOp::new(quote! { fstart_stage_runtime::StageOp::DriverInit })
             .guarded("stage-flow-driver-init", "DriverInit"),
         C::PciInit { device } => {
@@ -270,29 +265,6 @@ fn capability_tokens(idx: usize, cap: &Capability, ctx: &PlanCtx<'_>) -> Lowered
             next_stage,
         } => load_next_stage_op(idx, devices.as_slice(), next_stage.as_str(), ctx),
     }
-}
-
-fn phase_op(
-    idx: usize,
-    variant: &'static str,
-    devices: &[heapless::String<32>],
-    ctx: &PlanCtx<'_>,
-) -> LoweredOp {
-    let ids: Vec<Literal> = devices
-        .iter()
-        .map(|device| ctx.ids.lit(device.as_str(), variant))
-        .collect();
-    let len = ids.len();
-    let ident = format_ident!(
-        "_FSTART_STAGE_PLAN_{}_IDS_{idx}",
-        variant.to_ascii_uppercase()
-    );
-    let op = format_ident!("{}", variant);
-    LoweredOp::new(quote! { fstart_stage_runtime::StageOp::#op(&#ident) })
-        .guarded("stage-flow-phases", variant)
-        .with_helper(quote! {
-            static #ident: [fstart_types::DeviceId; #len] = [#(#ids,)*];
-        })
 }
 
 fn boot_media_op(idx: usize, medium: &BootMedium, ctx: &PlanCtx<'_>) -> LoweredOp {

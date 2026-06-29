@@ -7,9 +7,7 @@ use fstart_hda as hda;
 use fstart_platform_intel_pineview_ich7::{
     LpcGenericIoDecode, PcieRootPort, PineviewIch7Platform, SataConfig, SataMode, UsbConfig,
 };
-use fstart_types::smbios::{
-    ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
-};
+use fstart_types::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
 use fstart_types::{hstr, hvec, BoardConfig, BoardInfo, BuildInfo, Platform, SmbiosConfig};
 
 pub const BOARD_NAME: &str = "foxconn-d41s";
@@ -238,9 +236,9 @@ pub fn d41s_smbios() -> SmbiosConfig {
         socket: hstr("FCBGA559"),
         manufacturer: hstr("Intel"),
         processor_family: ProcessorFamily::X86_64,
-        max_speed_mhz: Some(1660),
-        core_count: Some(2),
-        thread_count: Some(4),
+        max_speed_mhz: None,
+        core_count: None,
+        thread_count: None,
         caches: hvec([]),
     }]);
 
@@ -257,19 +255,6 @@ pub fn d41s_smbios() -> SmbiosConfig {
         chassis_type: ChassisType::Desktop,
         chassis_manufacturer: hstr("Foxconn"),
         processors,
-        memory_devices: hvec([
-            SmbiosMemoryDevice {
-                locator: hstr("DIMM0"),
-                size_mb: Some(1024),
-                speed_mhz: Some(800),
-                memory_type: Some(MemoryDeviceType::Ddr2),
-            },
-            SmbiosMemoryDevice {
-                locator: hstr("DIMM1"),
-                size_mb: Some(1024),
-                speed_mhz: Some(800),
-                memory_type: Some(MemoryDeviceType::Ddr2),
-            },
-        ]),
+        memory_devices: hvec([]),
     }
 }

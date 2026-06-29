@@ -318,11 +318,6 @@ fn capability_features(
             Capability::MemoryInit => features.push("stage-flow-memory-init"),
             Capability::DramInit { .. } => features.push("stage-flow-dram-init"),
             Capability::DriverInit => features.push("stage-flow-driver-init"),
-            Capability::PreConsoleInit { .. }
-            | Capability::EarlyInit { .. }
-            | Capability::StageLocalInit { .. }
-            | Capability::PostDramInit { .. }
-            | Capability::FinalizeInit { .. } => features.push("stage-flow-phases"),
             Capability::PciInit { .. } => features.push("stage-flow-pci"),
             Capability::MemoryDetect { .. } => features.push("stage-flow-memory-detect"),
             _ => {}

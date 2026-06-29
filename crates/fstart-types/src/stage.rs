@@ -264,42 +264,6 @@ pub enum Capability {
         /// Device name from the devices list (e.g., "dramc0")
         device: HString<32>,
     },
-    /// Minimal platform/device setup before the console can be initialized.
-    ///
-    /// The referenced devices implement `PreConsoleInit`.  This is a portable
-    /// phase abstraction used for work such as opening UART clock gates,
-    /// applying pinmux, enabling ECAM, or opening LPC decode windows.
-    PreConsoleInit {
-        /// Ordered device list participating in the phase.
-        devices: heapless::Vec<HString<32>, 8>,
-    },
-    /// Logged early platform/device setup before DRAM training or bus probing.
-    ///
-    /// The referenced devices implement `EarlyInit`.  This replaces topology-
-    /// specific capability names such as x86 northbridge/southbridge init.
-    EarlyInit {
-        /// Ordered device list participating in the phase.
-        devices: heapless::Vec<HString<32>, 8>,
-    },
-    /// Rebuild per-stage software state for already-programmed hardware.
-    ///
-    /// The referenced devices implement `StageLocalInit`.  Multi-stage boards
-    /// use this when a later stage has a fresh BSS and must rebind accessors
-    /// such as ECAM globals without repeating heavyweight hardware init.
-    StageLocalInit {
-        /// Ordered device list participating in the phase.
-        devices: heapless::Vec<HString<32>, 8>,
-    },
-    /// DRAM-backed platform/device setup after memory is usable.
-    PostDramInit {
-        /// Ordered device list participating in the phase.
-        devices: heapless::Vec<HString<32>, 8>,
-    },
-    /// Final platform/device lockdown before payload handoff.
-    FinalizeInit {
-        /// Ordered device list participating in the phase.
-        devices: heapless::Vec<HString<32>, 8>,
-    },
     /// Initialize all logical CPUs (BSP + APs).
     ///
     /// Brings up application processors via INIT+SIPI, runs per-CPU
@@ -422,48 +386,6 @@ pub enum Capability {
         /// Name of the next stage to jump to after loading.
         next_stage: HString<32>,
     },
-}
-
-impl Capability {
-    /// Construct a pre-console phase over ordered device names.
-    #[must_use]
-    pub fn pre_console_init<const N: usize>(devices: [&str; N]) -> Self {
-        Self::PreConsoleInit {
-            devices: crate::hnames(devices),
-        }
-    }
-
-    /// Construct early platform/device setup over ordered device names.
-    #[must_use]
-    pub fn early_init<const N: usize>(devices: [&str; N]) -> Self {
-        Self::EarlyInit {
-            devices: crate::hnames(devices),
-        }
-    }
-
-    /// Construct per-stage local init over ordered device names.
-    #[must_use]
-    pub fn stage_local_init<const N: usize>(devices: [&str; N]) -> Self {
-        Self::StageLocalInit {
-            devices: crate::hnames(devices),
-        }
-    }
-
-    /// Construct post-DRAM platform/device setup over ordered device names.
-    #[must_use]
-    pub fn post_dram_init<const N: usize>(devices: [&str; N]) -> Self {
-        Self::PostDramInit {
-            devices: crate::hnames(devices),
-        }
-    }
-
-    /// Construct final platform/device setup over ordered device names.
-    #[must_use]
-    pub fn finalize_init<const N: usize>(devices: [&str; N]) -> Self {
-        Self::FinalizeInit {
-            devices: crate::hnames(devices),
-        }
-    }
 }
 
 /// A boot device candidate for `LoadNextStage`.

@@ -24,6 +24,7 @@ use super::tokens::hex_addr;
 // =======================================================================
 
 /// Serialize any [`Serialize`] value to tokens.
+#[cfg(test)]
 pub(super) fn serialize_to_tokens<T: Serialize>(value: &T) -> TokenStream {
     value
         .serialize(ConfigTokenSerializer)
