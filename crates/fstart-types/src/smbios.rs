@@ -131,9 +131,9 @@ impl ProcessorFamily {
 
 /// Processor description for SMBIOS Type 4.
 ///
-/// RON carries board-fixed identity (socket, manufacturer, family) and any
-/// board-authored CPU details. Optional fields omitted in RON are emitted as
-/// SMBIOS unknown/zero values rather than guessed by codegen.
+/// Board metadata carries board-fixed identity (socket, manufacturer, family)
+/// and any board-authored CPU details. Optional fields are emitted as SMBIOS
+/// unknown/zero values rather than guessed by tooling.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmbiosProcessor {

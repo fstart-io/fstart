@@ -10,7 +10,7 @@
 
 use core::{cell::Cell, fmt};
 
-// Type aliases for generated code convenience.
+// Type aliases used by board-owned UEFI payload configuration.
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type FramebufferConfig = crabefi::FramebufferConfig;

@@ -13,7 +13,7 @@ use tock_registers::register_bitfields;
 use tock_registers::register_structs;
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{Console, ServiceError};
+use fstart_services::{Console, HardwareInit, InitContext, ServiceError};
 
 register_bitfields! [u32,
     /// Flag Register
@@ -72,8 +72,7 @@ register_structs! {
 /// Typed configuration for the PL011 driver.
 ///
 /// Contains exactly the fields this driver needs — no optional grab-bag.
-/// Serializable with both RON (build-time validation) and postcard
-/// (runtime config from FFS).
+/// Serializable for build-time validation and postcard runtime config from FFS.
 ///
 /// ACPI fields are always present (`Option<T>` with `#[serde(default)]`)
 /// but only used when the `acpi` feature is active.
@@ -198,6 +197,12 @@ impl Console for Pl011 {
         } else {
             Ok(None)
         }
+    }
+}
+
+impl HardwareInit for Pl011 {
+    fn console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.init().map_err(|_| ServiceError::HardwareError)
     }
 }
 

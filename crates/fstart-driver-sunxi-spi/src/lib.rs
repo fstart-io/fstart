@@ -6,8 +6,8 @@
 //!
 //! ## Clock and command selection
 //!
-//! The SPI bus frequency is configurable via `spi_freq` in the board
-//! RON. The driver auto-selects the clock source:
+//! The SPI bus frequency is configurable via `spi_freq` in board metadata. The
+//! driver auto-selects the clock source:
 //! - **≤ 24 MHz**: OSC24M (always available, no PLL dependency)
 //! - **> 24 MHz**: PLL_PERIPH (600 MHz, divided down via CCU N/M and
 //!   SPI controller CDR2 dividers)

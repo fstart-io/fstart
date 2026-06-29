@@ -82,7 +82,7 @@ pub struct PhysicalRange {
     pub size: u64,
 }
 
-/// Data block, stored in ROM by generated code, that describes post-CAR work.
+/// Data block, stored in ROM by board-owned stage code, that describes post-CAR work.
 #[repr(C)]
 pub struct PostcarConfig {
     /// Static RAM ranges from board configuration.
@@ -195,8 +195,8 @@ pub unsafe fn postcar_mtrr_setup(config: &PostcarConfig) {
 /// # Safety
 ///
 /// `config` must describe trained DRAM and memory-mapped boot media. `anchor`
-/// and `next_stage` must remain readable after the stack switch; generated code
-/// stores both in ROM. This function never returns.
+/// and `next_stage` must remain readable after the stack switch; board-owned
+/// stage code stores both in ROM. This function never returns.
 #[cfg(feature = "postcar-stage-load")]
 pub unsafe fn stage_load_mmio(
     config: &'static PostcarConfig,
@@ -240,11 +240,11 @@ extern "C" fn stage_load_mmio_trampoline(
     base: u64,
     size: u64,
 ) -> ! {
-    // SAFETY: generated code passes pointers derived from ROM-resident strings
+    // SAFETY: board-owned stage code passes pointers derived from ROM-resident strings
     // and anchor bytes with their original lengths.
     let next_stage =
         unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(next_ptr, next_len)) };
-    // SAFETY: generated code passes the embedded anchor slice pointer/length.
+    // SAFETY: board-owned stage code passes the embedded anchor slice pointer/length.
     let anchor = unsafe { core::slice::from_raw_parts(anchor_ptr, anchor_len) };
     // SAFETY: `config` points at the ROM-resident generated config block.
     let config = unsafe { &*config };
@@ -267,7 +267,7 @@ extern "C" fn stage_load_mmio_trampoline(
 fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) -> u64 {
     use fstart_types::ffs::{Compression, EntryContent, SegmentKind};
 
-    // SAFETY: generated code passes the effective memory-mapped FFS base/size
+    // SAFETY: board-owned stage code passes the effective memory-mapped FFS base/size
     // from the Rust firmware-image provider or platform mapping.
     let image = unsafe { core::slice::from_raw_parts(base as *const u8, size as usize) };
     let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {

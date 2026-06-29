@@ -1,9 +1,9 @@
 //! ACPI configuration types for board metadata.
 //!
-//! Defines the board-level ACPI configuration. ARM boards still carry
-//! platform table parameters in RON; x86 platform topology comes from the
-//! chipset/platform driver. ACPI-only devices are declared separately in
-//! `devices[]`.
+//! Defines the board-level ACPI configuration. ARM boards carry platform table
+//! parameters in Rust metadata; x86 platform topology comes from the
+//! chipset/platform driver. ACPI-only devices are declared separately by the
+//! board crate.
 //!
 //! Per-driver ACPI fields (e.g., `acpi_name`, `acpi_gsiv`) live in each
 //! driver's own `Config` struct, not here.
@@ -28,7 +28,7 @@ fn default_print_hex() -> bool {
 
 /// Platform-specific ACPI table selector/parameters.
 ///
-/// ARM carries platform-level table parameters in RON. x86 carries only a
+/// ARM carries platform-level table parameters. x86 carries only a
 /// selector; its interrupt-controller, timer, and power-management facts are
 /// provided by the chipset/platform driver.
 #[derive(Debug, Clone, Serialize, Deserialize)]

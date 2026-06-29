@@ -274,9 +274,25 @@ impl<'a> PlatformAttachPoint<'a> {
     where
         D: BoardDriver + Clone,
     {
-        self.runtime(
+        self.pci_enabled(name, device, function, true, driver)
+    }
+
+    /// Add a PCI child below this attachment point with an explicit enabled policy.
+    pub fn pci_enabled<D>(
+        &mut self,
+        name: &str,
+        device: u8,
+        function: u8,
+        enabled: bool,
+        driver: D,
+    ) -> &mut Self
+    where
+        D: BoardDriver + Clone,
+    {
+        self.runtime_enabled(
             name,
             fstart_types::BusAddress::Pci(device, function),
+            enabled,
             driver,
         )
     }
@@ -286,7 +302,26 @@ impl<'a> PlatformAttachPoint<'a> {
     where
         D: BoardDriver + Clone,
     {
-        self.runtime(name, fstart_types::BusAddress::Lpc(config_port), driver)
+        self.lpc_enabled(name, config_port, true, driver)
+    }
+
+    /// Add an LPC child below this attachment point with an explicit enabled policy.
+    pub fn lpc_enabled<D>(
+        &mut self,
+        name: &str,
+        config_port: u16,
+        enabled: bool,
+        driver: D,
+    ) -> &mut Self
+    where
+        D: BoardDriver + Clone,
+    {
+        self.runtime_enabled(
+            name,
+            fstart_types::BusAddress::Lpc(config_port),
+            enabled,
+            driver,
+        )
     }
 
     /// Add an SMBus/I2C-addressed child below this attachment point.
@@ -294,7 +329,42 @@ impl<'a> PlatformAttachPoint<'a> {
     where
         D: BoardDriver + Clone,
     {
-        self.runtime(name, fstart_types::BusAddress::I2c(address), driver)
+        self.i2c_enabled(name, address, true, driver)
+    }
+
+    /// Add an SMBus-addressed child below this attachment point.
+    pub fn smbus<D>(&mut self, name: &str, address: u8, driver: D) -> &mut Self
+    where
+        D: BoardDriver + Clone,
+    {
+        self.i2c(name, address, driver)
+    }
+
+    /// Add an SMBus-addressed child below this attachment point with an explicit enabled policy.
+    pub fn smbus_enabled<D>(
+        &mut self,
+        name: &str,
+        address: u8,
+        enabled: bool,
+        driver: D,
+    ) -> &mut Self
+    where
+        D: BoardDriver + Clone,
+    {
+        self.i2c_enabled(name, address, enabled, driver)
+    }
+
+    /// Add an I2C-addressed child below this attachment point with an explicit enabled policy.
+    pub fn i2c_enabled<D>(&mut self, name: &str, address: u8, enabled: bool, driver: D) -> &mut Self
+    where
+        D: BoardDriver + Clone,
+    {
+        self.runtime_enabled(
+            name,
+            fstart_types::BusAddress::I2c(address),
+            enabled,
+            driver,
+        )
     }
 
     /// Add an SPI child below this attachment point.
@@ -302,7 +372,26 @@ impl<'a> PlatformAttachPoint<'a> {
     where
         D: BoardDriver + Clone,
     {
-        self.runtime(name, fstart_types::BusAddress::Spi(chip_select), driver)
+        self.spi_enabled(name, chip_select, true, driver)
+    }
+
+    /// Add an SPI child below this attachment point with an explicit enabled policy.
+    pub fn spi_enabled<D>(
+        &mut self,
+        name: &str,
+        chip_select: u8,
+        enabled: bool,
+        driver: D,
+    ) -> &mut Self
+    where
+        D: BoardDriver + Clone,
+    {
+        self.runtime_enabled(
+            name,
+            fstart_types::BusAddress::Spi(chip_select),
+            enabled,
+            driver,
+        )
     }
 }
 
@@ -418,5 +507,90 @@ impl PlatformTopology {
 impl Default for PlatformTopology {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fstart_services::ServiceSet;
+    use fstart_types::{BusAddress, DeviceRole};
+
+    #[derive(Debug, Clone)]
+    struct TestDriver(&'static str);
+
+    impl BoardDriver for TestDriver {
+        fn feature(&self) -> &'static str {
+            self.0
+        }
+
+        fn services(&self) -> ServiceSet {
+            ServiceSet::empty()
+        }
+
+        fn clone_box(&self) -> Box<dyn BoardDriver> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn attach_point_authors_typed_bus_children_with_enabled_policy() {
+        let mut extensions = PlatformDeviceExtensions::new();
+        extensions.on("southbridge", |bus| {
+            bus.pci_enabled("ethernet", 3, 0, false, TestDriver("e1000"))
+                .lpc("superio", 0x2e, TestDriver("superio"))
+                .smbus_enabled("spd0", 0x50, true, TestDriver("spd"))
+                .spi_enabled("flash0", 0, false, TestDriver("spi-flash"));
+        });
+
+        let (devices, bindings) = PlatformTopology::new()
+            .root("southbridge", TestDriver("ich"))
+            .extend(&extensions)
+            .build();
+
+        assert_eq!(devices.len(), 5);
+        assert_eq!(bindings.len(), 5);
+
+        let ethernet = devices.iter().find(|d| d.name == "ethernet").unwrap();
+        assert_eq!(ethernet.parent.as_deref(), Some("southbridge"));
+        assert_eq!(ethernet.bus, Some(BusAddress::Pci(3, 0)));
+        assert_eq!(ethernet.role, DeviceRole::Runtime);
+        assert!(!ethernet.enabled);
+
+        let superio = devices.iter().find(|d| d.name == "superio").unwrap();
+        assert_eq!(superio.bus, Some(BusAddress::Lpc(0x2e)));
+        assert!(superio.enabled);
+
+        let spd = devices.iter().find(|d| d.name == "spd0").unwrap();
+        assert_eq!(spd.bus, Some(BusAddress::I2c(0x50)));
+
+        let flash = devices.iter().find(|d| d.name == "flash0").unwrap();
+        assert_eq!(flash.bus, Some(BusAddress::Spi(0)));
+        assert!(!flash.enabled);
+
+        assert!(bindings.iter().any(|binding| binding.device == "ethernet"));
+        assert!(bindings.iter().any(|binding| binding.device == "flash0"));
+    }
+
+    #[test]
+    fn platform_topology_builds_structural_bus_nodes() {
+        let devices = PlatformTopology::new()
+            .root("host", TestDriver("host"))
+            .pci_bridge("host", "pcie-root-port0", 1, 0, true)
+            .child_bus("host", "lpc", DeviceRole::LpcBus)
+            .build_devices();
+
+        let port = devices
+            .iter()
+            .find(|device| device.name == "pcie-root-port0")
+            .unwrap();
+        assert_eq!(port.parent.as_deref(), Some("host"));
+        assert_eq!(port.bus, Some(BusAddress::Pci(1, 0)));
+        assert_eq!(port.role, DeviceRole::PciBridge);
+
+        let lpc = devices.iter().find(|device| device.name == "lpc").unwrap();
+        assert_eq!(lpc.parent.as_deref(), Some("host"));
+        assert_eq!(lpc.bus, None);
+        assert_eq!(lpc.role, DeviceRole::LpcBus);
     }
 }

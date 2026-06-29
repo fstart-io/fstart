@@ -1,7 +1,7 @@
 //! Core types for the fstart firmware framework.
 //!
-//! These types define the board configuration schema (RON-deserializable),
-//! firmware filesystem structures, and security primitives.
+//! These types define the Rust board configuration schema, firmware filesystem
+//! structures, and security primitives.
 //!
 //! `no_std` by default — uses `heapless` collections for bounded containers.
 

@@ -249,15 +249,14 @@ pub struct GpioConfig {
 
 /// Generic SuperIO driver parameterized by a [`SuperIoChip`] descriptor.
 ///
-/// Constructed via [`BusDevice::new_on_bus`] — the base port comes from
-/// the parent LPC bus, not from the config. Board authors set
-/// `bus: Lpc(0x2e)` in the RON and the LPC bus driver passes the port
-/// number through when constructing the child.
+/// Constructed via [`BusDevice::new_on_bus`]: the base port comes from
+/// board-authored typed topology (`BusAddress::Lpc`) and is passed through by
+/// the LPC bus driver when constructing the child.
 ///
 /// When the `com1` config is present, the driver implements [`Console`]
 /// by accessing the classic NS16550 registers at `com1.io_base`. This
-/// makes the SuperIO usable as an early console without needing a
-/// separate NS16550 device in the RON.
+/// makes the SuperIO usable as an early console without needing a separate
+/// NS16550 runtime device.
 pub struct SuperIo<C: SuperIoChip> {
     /// LPC config index port (e.g., `0x2e` or `0x4e`).
     base_port: u16,

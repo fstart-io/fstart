@@ -1,14 +1,12 @@
 //! SMBIOS table generation from static descriptors.
 //!
-//! Moves the SMBIOS table iteration logic out of codegen into a testable
-//! library function. Codegen emits a const [`SmbiosDesc`] descriptor
-//! (string literals + fixed arrays) and calls [`prepare`], which handles
-//! all the writer sequencing, cache handle mapping, and memory array
-//! linking that was previously inlined in generated code.
+//! Keeps SMBIOS table iteration in a testable library function. Static board
+//! code supplies a const [`SmbiosDesc`] descriptor (string literals + fixed
+//! arrays) and calls [`prepare`], which handles writer sequencing, cache handle
+//! mapping, and memory array linking.
 //!
 //! The descriptor types use `&str` and `&[T]` so they are
-//! const-constructible — codegen can emit them as `const` or inline
-//! struct literals with zero runtime overhead.
+//! const-constructible and cheap to embed in board-owned stage code.
 
 extern crate alloc;
 

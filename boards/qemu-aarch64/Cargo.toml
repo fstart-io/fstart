@@ -8,10 +8,16 @@ publish = false
 [package.metadata.fstart]
 board = "qemu-aarch64"
 platform = "aarch64"
+tool-bin = "fstart-board-tool"
 target = "aarch64-unknown-none"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-qemu-virt = { workspace = true }
 fstart-board-meta = { workspace = true }
+xtask = { path = "../../xtask" }
 heapless = { workspace = true }
+
+[[bin]]
+name = "fstart-board-tool"
+path = "src/bin/fstart-board-tool.rs"

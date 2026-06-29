@@ -31,7 +31,7 @@
 extern crate alloc;
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{Console, ServiceError};
+use fstart_services::{Console, HardwareInit, InitContext, ServiceError};
 use tock_registers::register_bitfields;
 use tock_registers::LocalRegisterCopy;
 
@@ -214,6 +214,12 @@ impl Console for SifiveUart {
         } else {
             Ok(Some(rxdata.read(RXDATA::DATA) as u8))
         }
+    }
+}
+
+impl HardwareInit for SifiveUart {
+    fn console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.init().map_err(|_| ServiceError::HardwareError)
     }
 }
 

@@ -4,9 +4,8 @@
 
 # fstart
 
-A firmware framework in Rust. The project is moving from RON-driven generated
-stage code to Rust board crates with builder-pattern board metadata, fixed
-handwritten stage flow, and step-based hardware initialization.
+A firmware framework in Rust using Rust board crates with builder-pattern board
+metadata, fixed handwritten stage flow, and step-based hardware initialization.
 
 Supports RISC-V 64, AArch64, and ARMv7. Boots Linux. Runs on QEMU and real
 hardware (Allwinner A20).
@@ -30,4 +29,4 @@ cargo xtask assemble --board qemu-riscv64
 
 ## Documentation
 
-- **[Rust Board Builder and Fixed Stage Flow Plan](docs/rust-board-builder-stage-flow-plan.md)** — current architecture direction replacing the previous RON/stage-codegen design.
+- **[Rust Board Builder and Fixed Stage Flow Plan](docs/rust-board-builder-stage-flow-plan.md)** — current architecture direction.

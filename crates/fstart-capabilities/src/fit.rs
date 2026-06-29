@@ -33,8 +33,8 @@ pub enum FitBootError {
 
 /// Return a static string description for a [`FitBootError`].
 ///
-/// Used by generated code for error logging without requiring
-/// `Display` or `Debug` formatting (which pull in format machinery).
+/// Used by fixed-flow payload setup for error logging without requiring
+/// `Display` or `Debug` formatting, which pull in format machinery.
 pub fn error_str(err: &FitBootError) -> &'static str {
     match err {
         FitBootError::NotFound => "FIT image not found in FFS",

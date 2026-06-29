@@ -74,8 +74,8 @@ pub type DeviceId = u8;
 
 /// A node in the flat, index-based device tree.
 ///
-/// Generated into the firmware binary as a `static` table for runtime
-/// introspection (power sequencing, diagnostics, etc.).  Stored in
+/// Embedded in the firmware binary as a `static` table for runtime
+/// introspection (power sequencing, diagnostics, etc.). Stored in
 /// topological order: a node's `parent` index is always less than its
 /// own index — roots come first, then children in pre-order.
 ///
@@ -130,7 +130,7 @@ pub struct DeviceConfig {
     ///
     /// Disabled devices still appear in the device tree (and in ACPI
     /// tables with `_STA` returning 0) but are not constructed or
-    /// initialized by the generated code.
+    /// initialized by the fixed stage flow.
     ///
     /// Defaults to `true`.
     #[serde(default = "default_enabled")]

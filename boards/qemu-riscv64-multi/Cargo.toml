@@ -8,9 +8,15 @@ publish = false
 [package.metadata.fstart]
 board = "qemu-riscv64-multi"
 platform = "riscv64"
+tool-bin = "fstart-board-tool"
 target = "riscv64gc-unknown-none-elf"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
+xtask = { path = "../../xtask" }
 fstart-driver-ns16550 = { workspace = true }
+
+[[bin]]
+name = "fstart-board-tool"
+path = "src/bin/fstart-board-tool.rs"

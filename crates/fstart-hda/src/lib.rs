@@ -325,7 +325,7 @@ pub const MISC_PRESENCE_DETECT: u8 = 0;
 pub const MISC_NO_PRESENCE_DETECT: u8 = 1;
 
 // ---------------------------------------------------------------------------
-// Per-pin descriptor (RON-friendly)
+// Per-pin descriptor
 // ---------------------------------------------------------------------------
 
 /// Per-pin configuration for a single HDA widget node.
@@ -337,14 +337,14 @@ pub const MISC_NO_PRESENCE_DETECT: u8 = 1;
 /// # Not-connected shorthand
 ///
 /// For unused pins, set `nc` to a sequence number:
-/// ```ron
+/// ```text
 /// ( nid: 0x15, nc: 0 )
 /// ```
 /// This produces the standard `0x411111f0 | seq` value.
 ///
 /// # Full explicit form
 ///
-/// ```ron
+/// ```text
 /// ( nid: 0x14, device: LineOut, conn: Jack, color: Green,
 ///   loc: Rear, connector: StereoMono18, group: 1, seq: 0 )
 /// ```
@@ -487,7 +487,7 @@ pub const fn hda_get_param(codec: u32, nid: u32, param: u32) -> u32 {
 /// Each entry describes one HDA codec's pin configuration and optional
 /// extra verb commands.
 ///
-/// # RON example
+/// # Example
 ///
 /// ```ron
 /// ( vendor_id: 0x10ec0662, subsystem_id: 0x105b0d55, pins: [

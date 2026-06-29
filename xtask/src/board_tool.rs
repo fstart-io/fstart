@@ -1,12 +1,12 @@
 //! Board-owned host tool entry points.
 //!
 //! A board crate calls this module from its `fstart-board-tool` binary with its
-//! Rust metadata functions. The metadata stays in-process as typed Rust values:
-//! there is no JSON/RON/schema transport between board and tooling.
+//! Rust metadata functions. The metadata stays in-process as typed Rust values.
 
 use clap::{Parser, Subcommand};
 use fstart_board_meta::DriverBinding;
-use fstart_codegen::board_loader::{load_parsed_board_from_rust, ParsedBoard};
+use fstart_codegen::board_loader::{load_parsed_board_from_rust_with_acpi, ParsedBoard};
+use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, BuildInfo, StageLayout};
 
 /// Rust callbacks exported by a board crate for host tooling.
@@ -14,6 +14,7 @@ pub struct BoardCallbacks {
     pub board_config: fn() -> BoardConfig,
     pub build_info: fn() -> BuildInfo,
     pub driver_bindings: fn() -> Vec<DriverBinding>,
+    pub acpi_only_devices: Option<fn() -> Vec<AcpiExtraDevice>>,
 }
 
 #[derive(Parser)]
@@ -90,7 +91,14 @@ fn load(
 ) -> Result<(crate::board_manifest::BoardManifest, BuildInfo, ParsedBoard), String> {
     let config = (callbacks.board_config)();
     let build_info = (callbacks.build_info)();
-    let parsed = load_parsed_board_from_rust(config, (callbacks.driver_bindings)())?;
+    let acpi_only_devices = callbacks
+        .acpi_only_devices
+        .map_or_else(Vec::new, |load| load());
+    let parsed = load_parsed_board_from_rust_with_acpi(
+        config,
+        (callbacks.driver_bindings)(),
+        acpi_only_devices,
+    )?;
     let workspace_root = crate::build_board::workspace_root_pub()?;
     let manifest = crate::board_manifest::find(&workspace_root, parsed.config.name.as_str())?;
     validate(&manifest, &build_info)?;

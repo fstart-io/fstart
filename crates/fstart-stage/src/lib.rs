@@ -20,8 +20,7 @@ extern crate fstart_runtime;
 /// Fixed FFS anchor placeholder for handwritten stage flow.
 ///
 /// `xtask assemble` patches this block in the flat stage binary after laying out
-/// the complete firmware image. This replaces the old generated-stage anchor
-/// without generating Rust source.
+/// the complete firmware image.
 #[used]
 #[cfg_attr(target_os = "none", link_section = ".fstart.anchor")]
 pub static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock =

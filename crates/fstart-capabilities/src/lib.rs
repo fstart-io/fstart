@@ -96,7 +96,7 @@ use fstart_services::BootMedia;
 
 /// Log the console-ready banner after a console device is initialised.
 ///
-/// Called by generated code after `Device::init()` succeeds on a console device.
+/// Called by fixed-flow console setup after a console device is ready.
 pub fn console_ready(device_name: &str, driver_name: &str) {
     fstart_log::info!("{}: {} console ready", device_name, driver_name);
 }

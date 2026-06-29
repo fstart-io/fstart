@@ -1,8 +1,7 @@
 //! Lower native Rust board metadata into build-time board facts.
 //!
-//! RON board descriptions and generated stage source have been removed. This
-//! module keeps only the host-side normalization needed by linker generation,
-//! xtask feature derivation, and future static-board build support.
+//! This module keeps only the host-side normalization needed by linker setup,
+//! xtask feature derivation, and static-board build support.
 
 use std::collections::HashMap;
 

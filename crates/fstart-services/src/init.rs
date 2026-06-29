@@ -52,10 +52,9 @@ pub trait FinalizeInit: Send + Sync {
 
 /// Context shared across step-based hardware initialization methods.
 ///
-/// The initial context is deliberately small so existing generated-stage paths
-/// can adopt [`HardwareInit`] without changing behavior. Future static board
-/// crates can extend this with generic device lookup and stage-local services
-/// without adding chipset-specific helpers to common code.
+/// The initial context is deliberately small. Board-owned stage adapters can
+/// extend this with generic device lookup and stage-local services without
+/// adding chipset-specific helpers to common code.
 pub struct InitContext<'stage> {
     _stage: PhantomData<&'stage mut ()>,
 }

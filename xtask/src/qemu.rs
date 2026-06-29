@@ -132,7 +132,7 @@ pub fn run(
                     // virtualization=on: EL2 exists (standard for UEFI)
                     // gic-version=3: GICv3 initialized by the GicInit capability
                     //   which issues SMC FSTART_GIC_INIT to configure GICD/GICR
-                    //   from EL3 (addresses from board RON `gic` config).
+                    //   from EL3 (addresses from board-owned GIC metadata).
                     "virt,secure=on,virtualization=on,gic-version=3".to_string(),
                     // cortex-a72: ARMv8.0 without FEAT_S1PIE and other
                     // ARMv9 extensions that trap from Secure EL1 to EL3.
