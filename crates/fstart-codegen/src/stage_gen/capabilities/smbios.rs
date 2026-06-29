@@ -52,8 +52,8 @@ pub(in crate::stage_gen) fn generate_smbios_desc(config: &BoardConfig) -> TokenS
         smbios_cfg.chassis_manufacturer.as_str()
     };
 
-    // Type 4/7: Processors with caches. Optional board fields emit SMBIOS
-    // unknown/zero values when omitted.
+    // Type 4/7: Processors. If a board omits cache descriptors, the runtime
+    // detects caches where the platform supports that (x86 CPUID leaf 4).
     let processor_items: Vec<TokenStream> = smbios_cfg
         .processors
         .iter()

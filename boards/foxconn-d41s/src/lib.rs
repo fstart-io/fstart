@@ -6,8 +6,7 @@ use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_platform_intel_pineview_ich7::PineviewIch7Platform;
 use fstart_types::smbios::{
-    CacheAssociativity, CacheType, ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosCache,
-    SmbiosMemoryDevice, SmbiosProcessor,
+    ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
 use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform, SmbiosConfig};
 use heapless::String as HString;
@@ -220,33 +219,6 @@ pub fn d41s_ck505_config() -> i2c_ck505::I2cCk505Config {
 }
 
 pub fn d41s_smbios() -> SmbiosConfig {
-    let mut caches = HVec::new();
-    for cache in [
-        SmbiosCache {
-            designation: hstr("L1 Data Cache"),
-            level: 1,
-            size_kb: 24,
-            associativity: CacheAssociativity::Way8,
-            cache_type: CacheType::Data,
-        },
-        SmbiosCache {
-            designation: hstr("L1 Instruction Cache"),
-            level: 1,
-            size_kb: 32,
-            associativity: CacheAssociativity::Way8,
-            cache_type: CacheType::Instruction,
-        },
-        SmbiosCache {
-            designation: hstr("L2 Cache"),
-            level: 2,
-            size_kb: 1024,
-            associativity: CacheAssociativity::Way8,
-            cache_type: CacheType::Unified,
-        },
-    ] {
-        caches.push(cache).expect("cache table capacity");
-    }
-
     let mut processors = HVec::new();
     processors
         .push(SmbiosProcessor {
@@ -256,7 +228,7 @@ pub fn d41s_smbios() -> SmbiosConfig {
             max_speed_mhz: Some(1660),
             core_count: Some(2),
             thread_count: Some(4),
-            caches,
+            caches: HVec::new(),
         })
         .expect("processor table capacity");
 

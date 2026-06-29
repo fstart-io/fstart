@@ -75,7 +75,7 @@ pub struct ProcessorDesc<'a> {
     pub core_count: u16,
     /// Number of threads.
     pub thread_count: u16,
-    /// Cache descriptors (empty = use simple `add_processor`).
+    /// Cache descriptors. Empty means the runtime should detect caches when supported.
     pub caches: &'a [CacheDesc<'a>],
 }
 
@@ -91,6 +91,16 @@ pub struct CacheDesc<'a> {
     pub associativity: u8,
     /// Cache type: unified, instruction, or data (SMBIOS byte encoding).
     pub cache_type: u8,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy)]
+struct RuntimeCacheDesc {
+    designation: &'static str,
+    level: u8,
+    size_kb: u32,
+    associativity: u8,
+    cache_type: u8,
 }
 
 static SMBIOS_ENTRY_POINT: AtomicU64 = AtomicU64::new(0);
@@ -111,6 +121,119 @@ pub fn prepared_region() -> Option<(u64, u64)> {
         None
     } else {
         Some((base, size))
+    }
+}
+
+fn add_runtime_cache_info(w: &mut fstart_smbios::SmbiosWriter) -> (u16, u16, u16) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let caches = runtime_x86_caches::<8>();
+        let mut l1 = 0xFFFFu16;
+        let mut l2 = 0xFFFFu16;
+        let mut l3 = 0xFFFFu16;
+        for cache in caches.iter().flatten() {
+            let handle = w.add_cache_info(
+                cache.designation,
+                cache.level,
+                cache.size_kb,
+                cache.associativity,
+                cache.cache_type,
+            );
+            match cache.level {
+                1 => l1 = handle,
+                2 => l2 = handle,
+                3 => l3 = handle,
+                _ => {}
+            }
+        }
+        (l1, l2, l3)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = w;
+        (0xFFFF, 0xFFFF, 0xFFFF)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn runtime_x86_caches<const N: usize>() -> [Option<RuntimeCacheDesc>; N] {
+    let mut out = [None; N];
+    let (max_leaf, _, _, _) = fstart_arch_x86::cpuid(0);
+    if max_leaf < 4 {
+        return out;
+    }
+
+    let mut count = 0usize;
+    for idx in 0..N as u32 {
+        let (eax, ebx, ecx, _) = fstart_arch_x86::cpuid_count(4, idx);
+        let cache_type = (eax & 0x1f) as u8;
+        if cache_type == 0 {
+            break;
+        }
+
+        let level = ((eax >> 5) & 0x7) as u8;
+        let ways = ((ebx >> 22) & 0x3ff) + 1;
+        let partitions = ((ebx >> 12) & 0x3ff) + 1;
+        let line_size = (ebx & 0xfff) + 1;
+        let sets = ecx + 1;
+        let size_kb = ways
+            .saturating_mul(partitions)
+            .saturating_mul(line_size)
+            .saturating_mul(sets)
+            / 1024;
+
+        out[count] = Some(RuntimeCacheDesc {
+            designation: cache_designation(level, cache_type),
+            level,
+            size_kb,
+            associativity: smbios_associativity(ways),
+            cache_type: smbios_cache_type(cache_type),
+        });
+        count += 1;
+        if count == N {
+            break;
+        }
+    }
+    out
+}
+
+#[cfg(target_arch = "x86_64")]
+fn cache_designation(level: u8, cache_type: u8) -> &'static str {
+    match (level, cache_type) {
+        (1, 1) => "L1 Data Cache",
+        (1, 2) => "L1 Instruction Cache",
+        (1, _) => "L1 Cache",
+        (2, _) => "L2 Cache",
+        (3, _) => "L3 Cache",
+        _ => "CPU Cache",
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn smbios_cache_type(cache_type: u8) -> u8 {
+    match cache_type {
+        1 => 0x05, // Data
+        2 => 0x04, // Instruction
+        3 => 0x03, // Unified
+        _ => 0x02, // Unknown
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn smbios_associativity(ways: u32) -> u8 {
+    match ways {
+        1 => 0x03,
+        2 => 0x04,
+        4 => 0x05,
+        8 => 0x06,
+        16 => 0x07,
+        12 => 0x08,
+        24 => 0x09,
+        32 => 0x0a,
+        48 => 0x0b,
+        64 => 0x0c,
+        20 => 0x0d,
+        _ => 0x02,
     }
 }
 
@@ -158,7 +281,7 @@ pub struct MemoryDeviceDesc<'a> {
     pub memory_type: u8,
 }
 
-/// Generate and write SMBIOS tables from a static descriptor.
+/// Generate and write SMBIOS tables from a static descriptor plus runtime facts.
 ///
 /// Allocates a 64 KiB heap buffer (leaked with `core::mem::forget` so
 /// tables persist for the OS), iterates the descriptor to emit all
@@ -166,7 +289,7 @@ pub struct MemoryDeviceDesc<'a> {
 ///
 /// Handles:
 /// - Type 0 (BIOS), Type 1 (System), Type 2 (Baseboard), Type 3 (Chassis)
-/// - Type 4 (Processor) with automatic Type 7 (Cache) handle linking
+/// - Type 4 (Processor) with runtime Type 7 (Cache) detection on x86 when descriptors are empty
 /// - Type 16 (Physical Memory Array), Type 17 (Memory Device), Type 19 (Mapped Address)
 /// - Type 32 (System Boot) and Type 127 (End of Table)
 pub fn prepare(desc: &SmbiosDesc) {
@@ -220,14 +343,29 @@ pub fn prepare(desc: &SmbiosDesc) {
         // Type 4 + Type 7: Processors and caches
         for proc in desc.processors {
             if proc.caches.is_empty() {
-                w.add_processor(
-                    proc.socket,
-                    proc.manufacturer,
-                    proc.family,
-                    proc.max_speed_mhz,
-                    proc.core_count,
-                    proc.thread_count,
-                );
+                let (l1, l2, l3) = add_runtime_cache_info(&mut *w);
+                if l1 == 0xFFFF && l2 == 0xFFFF && l3 == 0xFFFF {
+                    w.add_processor(
+                        proc.socket,
+                        proc.manufacturer,
+                        proc.family,
+                        proc.max_speed_mhz,
+                        proc.core_count,
+                        proc.thread_count,
+                    );
+                } else {
+                    w.add_processor_with_caches(
+                        proc.socket,
+                        proc.manufacturer,
+                        proc.family,
+                        proc.max_speed_mhz,
+                        proc.core_count,
+                        proc.thread_count,
+                        l1,
+                        l2,
+                        l3,
+                    );
+                }
             } else {
                 // Emit Type 7 cache entries first, collecting handles for
                 // the L1/L2/L3 slots that Type 4 references.
