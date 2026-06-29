@@ -105,8 +105,8 @@ fn acpi_load_emits_real_body_on_q35() {
 
 #[test]
 fn memory_detect_emits_real_body_on_q35() {
-    // qemu-q35 declares `MemoryDetect(device: "fw_cfg0")`. The adapter
-    // exposes primitive detector borrowing; runtime owns the E820 buffer and
+    // qemu-q35 has a service-selected MemoryDetector. The adapter exposes
+    // primitive detector borrowing; runtime owns the E820 buffer and
     // memory_detect call.
     let src = adapter_source_for_board("qemu-q35");
     assert!(
@@ -172,7 +172,7 @@ fn board_struct_carries_acpi_rsdp_field() {
 
 #[test]
 fn pci_init_emits_real_body_on_aarch64_sbsa() {
-    // qemu-sbsa uses `PciInit(device: "pci0")`. The adapter must expose
+    // qemu-sbsa has a service-selected PCI root. The adapter must expose
     // primitive PCI-root borrowing; runtime owns the init call and banner.
     let src = adapter_source_for_board("qemu-sbsa");
     assert!(

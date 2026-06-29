@@ -14,12 +14,11 @@ use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
-    board_info_from_config, dev_security_config, flow_profile_from_config, hstr, hvec,
-    x86_linuxboot_payload, AcpiConfig, AcpiPlatform, BoardConfig, BoardInfo, BootMedium, Build,
-    BuildInfo, BuildProfile, BusAddress, Capability, CarConfig, Compression, CorebootSmmCompat,
-    DeviceConfig, DeviceRole, DeviceTopology, MemoryMap, MemoryRegion, PayloadConfig, Platform,
-    RegionKind, RunsFrom, SmbiosConfig, SmmConfig, SmmPlatform, StageBuildInfo, StageConfig,
-    StageLayout, TempRamBuffer,
+    board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec, io16,
+    x86_linuxboot_payload, AcpiConfig, AcpiPlatform, BoardConfig, BoardInfo, BootMedium, BuildInfo,
+    BusAddress, Capability, CarConfig, Compression, CorebootSmmCompat, DeviceConfig,
+    DeviceTopology, MemoryMap, MemoryRegion, PayloadConfig, Platform, RegionKind, RunsFrom,
+    SmbiosConfig, SmmConfig, SmmPlatform, StageConfig, StageLayout, TempRamBuffer,
 };
 use heapless::Vec as HVec;
 
@@ -228,11 +227,13 @@ impl PineviewIch7Platform {
 
     #[must_use]
     pub fn build_info(&self) -> BuildInfo {
-        build_info_from_parts(
+        let config = self.board_config();
+        let drivers = self.driver_bindings();
+        build_info_from_config(
             self.board_name,
             self.board_package,
-            self.board_config(),
-            self.driver_bindings(),
+            &config,
+            drivers.iter().filter_map(DriverBinding::driver_feature),
         )
     }
 }
@@ -271,11 +272,11 @@ fn pineview_ich7_devices(pcie_ports: [bool; 4]) -> HVec<DeviceConfig, 32> {
         .pci_bridge("southbridge", "pcie1", 0x1c, 1, pcie_ports[1])
         .pci_bridge("southbridge", "pcie2", 0x1c, 2, pcie_ports[2])
         .pci_bridge("southbridge", "pcie3", 0x1c, 3, pcie_ports[3])
-        .bus("southbridge", "lpc", DeviceRole::LpcBus, |lpc| {
-            lpc.child("superio", BusAddress::Lpc(0x2e))
+        .lpc_bus("southbridge", "lpc", |lpc| {
+            lpc.lpc_device("superio", io16(0x2e))
         })
-        .bus("southbridge", "smbus", DeviceRole::SmBus, |smbus| {
-            smbus.child("ck505", BusAddress::I2c(0x69))
+        .smbus("southbridge", "smbus", |smbus| {
+            smbus.smbus_device("ck505", 0x69)
         })
         .build()
 }
@@ -400,27 +401,4 @@ fn pineview_microcode() -> MicrocodeConfig {
         early: true,
         mp: true,
     })
-}
-
-fn build_info_from_parts(
-    board_name: &str,
-    board_package: &str,
-    config: BoardConfig,
-    drivers: Vec<DriverBinding>,
-) -> BuildInfo {
-    let mut build = Build::from_board_config(
-        board_name,
-        board_package,
-        &config,
-        BuildProfile::Dev,
-        flow_profile_from_config(&config),
-    )
-    .stage(StageBuildInfo::new("bootblock", 0xFFFF_FFFF))
-    .stage(StageBuildInfo::new("ramstage", 0x0400_0000));
-    for driver in drivers {
-        if let Some(feature) = driver.driver_feature() {
-            build = build.feature(feature);
-        }
-    }
-    build.payload_inputs_from_config(&config).build()
 }

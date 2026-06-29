@@ -79,6 +79,20 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         build_info: fstart_board_foxconn_d41s::build_info,
     },
     RustBoardCase {
+        board: "lenovo-x61",
+        package: "fstart-board-lenovo-x61",
+        platform: Platform::X86_64,
+        feature: "x86_64",
+        driver_feature: "intel-gm965",
+        root_device: "northbridge",
+        device_count: 15,
+        binding_count: 7,
+        parsed_driver_count: 15,
+        board_config: fstart_board_lenovo_x61::board_config,
+        driver_bindings: fstart_board_lenovo_x61::driver_bindings,
+        build_info: fstart_board_lenovo_x61::build_info,
+    },
+    RustBoardCase {
         board: "foxconn-d41s-uefi",
         package: "fstart-board-foxconn-d41s-uefi",
         platform: Platform::X86_64,
@@ -116,6 +130,16 @@ fn rust_boards_parse_from_direct_rust_metadata() {
                 assert_eq!(parsed.config.devices.len(), case.device_count);
                 assert_eq!(parsed.config.devices[0].name.as_str(), case.root_device);
                 assert_eq!(parsed.driver_instances.len(), case.parsed_driver_count);
+                if case.board == "lenovo-x61" {
+                    assert_device_role(&parsed.config, "pcie1", DeviceRole::PciBridge, true);
+                    assert_device_role(&parsed.config, "pcie2", DeviceRole::PciBridge, true);
+                    assert_device_role(&parsed.config, "pcie3", DeviceRole::PciBridge, false);
+                    assert_device_role(&parsed.config, "pcie4", DeviceRole::PciBridge, false);
+                    assert_device_role(&parsed.config, "pcie5", DeviceRole::PciBridge, false);
+                    assert_device_role(&parsed.config, "pcie6", DeviceRole::PciBridge, false);
+                    assert_device_role(&parsed.config, "dock_superio", DeviceRole::Runtime, false);
+                    assert_device_role(&parsed.config, "ck505", DeviceRole::Runtime, false);
+                }
                 if case.board.starts_with("foxconn-d41s") {
                     assert_device_role(&parsed.config, "pcie0", DeviceRole::PciBridge, true);
                     assert_device_role(&parsed.config, "pcie1", DeviceRole::PciBridge, true);

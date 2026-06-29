@@ -19,6 +19,7 @@ pub fn build_info(board: &str) -> Option<BuildInfo> {
         "qemu-aarch64" => fstart_board_qemu_aarch64::build_info(),
         "foxconn-d41s" => fstart_board_foxconn_d41s::build_info(),
         "foxconn-d41s-uefi" => fstart_board_foxconn_d41s_uefi::build_info(),
+        "lenovo-x61" => fstart_board_lenovo_x61::build_info(),
         _ => return None,
     })
 }
@@ -40,6 +41,10 @@ pub fn board_config_and_driver_bindings(board: &str) -> Option<(BoardConfig, Vec
         "foxconn-d41s-uefi" => (
             fstart_board_foxconn_d41s_uefi::board_config(),
             fstart_board_foxconn_d41s_uefi::driver_bindings(),
+        ),
+        "lenovo-x61" => (
+            fstart_board_lenovo_x61::board_config(),
+            fstart_board_lenovo_x61::driver_bindings(),
         ),
         _ => return None,
     })

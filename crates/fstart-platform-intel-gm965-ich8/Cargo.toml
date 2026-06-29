@@ -1,0 +1,15 @@
+[package]
+name = "fstart-platform-intel-gm965-ich8"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fstart-types = { workspace = true, features = ["std"] }
+fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-driver-intel-gm965 = { workspace = true }
+fstart-driver-intel-ich8 = { workspace = true }
+fstart-gpio-ich = { workspace = true }
+fstart-hda = { workspace = true }
+heapless = { workspace = true }

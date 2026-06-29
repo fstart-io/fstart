@@ -41,7 +41,7 @@
 
     stages: Monolithic((
         capabilities: [
-            ConsoleInit( device: "uart0" ),
+            ConsoleInit,
             MemoryInit,
             BootMedia(FirmwareImage()),
             SigVerify,

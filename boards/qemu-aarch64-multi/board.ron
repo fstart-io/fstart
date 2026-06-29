@@ -43,7 +43,7 @@
         (
             name: "bootblock",
             capabilities: [
-                ConsoleInit( device: "uart0" ),
+                ConsoleInit,
                 BootMedia(FirmwareImage()),
                 SigVerify,
                 StageLoad( next_stage: "main" ),
@@ -59,7 +59,7 @@
         (
             name: "main",
             capabilities: [
-                ConsoleInit( device: "uart0" ),
+                ConsoleInit,
                 MemoryInit,
                 DriverInit,
             ],

@@ -104,6 +104,10 @@ fn load_rust_board(board: &str) -> Result<ron_loader::ParsedBoard, String> {
             fstart_board_foxconn_d41s_uefi::board_config(),
             fstart_board_foxconn_d41s_uefi::driver_bindings(),
         ),
+        "lenovo-x61" => (
+            fstart_board_lenovo_x61::board_config(),
+            fstart_board_lenovo_x61::driver_bindings(),
+        ),
         _ => return Err(format!("unknown Rust board '{board}'")),
     };
     ron_loader::load_parsed_board_from_rust(config, drivers)

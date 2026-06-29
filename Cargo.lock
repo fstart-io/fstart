@@ -514,6 +514,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-lenovo-x61"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-platform-intel-gm965-ich8",
+ "fstart-types",
+ "heapless",
+]
+
+[[package]]
 name = "fstart-board-qemu-aarch64"
 version = "0.1.0"
 dependencies = [
@@ -568,6 +582,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-board-foxconn-d41s",
  "fstart-board-foxconn-d41s-uefi",
+ "fstart-board-lenovo-x61",
  "fstart-board-qemu-aarch64",
  "fstart-board-qemu-riscv64",
  "fstart-device-registry",
@@ -1171,6 +1186,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-platform-intel-gm965-ich8"
+version = "0.1.0"
+dependencies = [
+ "fstart-device-registry",
+ "fstart-driver-intel-gm965",
+ "fstart-driver-intel-ich8",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-types",
+ "heapless",
+]
+
+[[package]]
 name = "fstart-platform-intel-pineview-ich7"
 version = "0.1.0"
 dependencies = [
@@ -1300,6 +1328,7 @@ dependencies = [
  "fstart-arch",
  "fstart-board-foxconn-d41s",
  "fstart-board-foxconn-d41s-uefi",
+ "fstart-board-lenovo-x61",
  "fstart-board-qemu-aarch64",
  "fstart-board-qemu-riscv64",
  "fstart-capabilities",
@@ -2140,6 +2169,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-board-foxconn-d41s",
  "fstart-board-foxconn-d41s-uefi",
+ "fstart-board-lenovo-x61",
  "fstart-board-qemu-aarch64",
  "fstart-board-qemu-riscv64",
  "fstart-codegen",

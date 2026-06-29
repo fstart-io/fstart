@@ -101,8 +101,8 @@
             name: "bootblock",
             capabilities: [
                 ClockInit( device: "ccu0" ),
-                ConsoleInit( device: "uart0" ),
-                DramInit( device: "dramc0" ),
+                ConsoleInit,
+                DramInit,
 //                ReturnToFel,
                 DriverInit,
                 LoadNextStage(
@@ -121,7 +121,7 @@
         (
             name: "main",
             capabilities: [
-                ConsoleInit( device: "uart0" ),
+                ConsoleInit,
                 DriverInit,
                 BootMedia(FirmwareImage()),
                 SigVerify,

@@ -112,9 +112,9 @@
     // (0x10000000) to this DRAM address, then jumps to _start in DRAM.
     stages: Monolithic((
         capabilities: [
-            ConsoleInit( device: "uart0" ),
+            ConsoleInit,
             MemoryInit,
-            PciInit( device: "pci0" ),
+            PciInit,
             AcpiPrepare,
             SmBiosPrepare,
         ],

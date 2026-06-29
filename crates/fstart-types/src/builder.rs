@@ -9,9 +9,10 @@ use heapless::{String as HString, Vec as HVec};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BusAddress, Compression, DeviceConfig, DeviceEdge, DeviceRole, DigestAlgorithm, FdtSource,
-    MemoryMap, PayloadConfig, PayloadKind, Platform, SecurityConfig, SignatureAlgorithm,
-    SocImageFormat,
+    effective_stage_load_addr, BusAddress, Compression, DeviceConfig, DeviceEdge, DeviceRole,
+    DigestAlgorithm, FdtSource, I2cBus, Io16, IoAddr, LpcBus, MemoryMap, PayloadConfig,
+    PayloadKind, PciBdf, PciBus, Platform, SecurityConfig, SignatureAlgorithm, SmbusBus,
+    SocImageFormat, SpiBus, StageLayout, TypedBus,
 };
 
 /// Construct a bounded heapless string for static board metadata.
@@ -86,6 +87,7 @@ pub fn x86_uefi_payload() -> PayloadConfig {
 #[derive(Debug, Clone)]
 pub struct DeviceTopology {
     devices: HVec<DeviceConfig, 32>,
+    edges: HVec<DeviceEdge, 64>,
 }
 
 impl DeviceTopology {
@@ -94,6 +96,7 @@ impl DeviceTopology {
     pub const fn new() -> Self {
         Self {
             devices: HVec::new(),
+            edges: HVec::new(),
         }
     }
 
@@ -101,6 +104,12 @@ impl DeviceTopology {
     #[must_use]
     pub fn root(self, name: &str) -> Self {
         self.device(name, None, None, DeviceRole::Runtime, true)
+    }
+
+    /// Add a root runtime device with an explicit enabled policy.
+    #[must_use]
+    pub fn runtime_root(self, name: &str, enabled: bool) -> Self {
+        self.device(name, None, None, DeviceRole::Runtime, enabled)
     }
 
     /// Add a child runtime device.
@@ -132,8 +141,58 @@ impl DeviceTopology {
         children(DeviceBranch {
             topology,
             parent: name,
+            _bus: core::marker::PhantomData,
         })
         .finish()
+    }
+
+    /// Add a typed child bus and declare its children in a scoped branch.
+    #[must_use]
+    pub fn typed_bus<'a, B, F>(
+        self,
+        parent: &str,
+        name: &'a str,
+        role: DeviceRole,
+        children: F,
+    ) -> Self
+    where
+        B: TypedBus,
+        F: FnOnce(DeviceBranch<'a, B>) -> DeviceBranch<'a, B>,
+    {
+        let topology = self.child_bus(parent, name, role);
+        children(DeviceBranch {
+            topology,
+            parent: name,
+            _bus: core::marker::PhantomData,
+        })
+        .finish()
+    }
+
+    /// Add a typed PCI child bus.
+    #[must_use]
+    pub fn pci_bus<'a, F>(self, parent: &str, name: &'a str, children: F) -> Self
+    where
+        F: FnOnce(DeviceBranch<'a, PciBus>) -> DeviceBranch<'a, PciBus>,
+    {
+        self.typed_bus::<PciBus, _>(parent, name, DeviceRole::PciBridge, children)
+    }
+
+    /// Add a typed LPC child bus.
+    #[must_use]
+    pub fn lpc_bus<'a, F>(self, parent: &str, name: &'a str, children: F) -> Self
+    where
+        F: FnOnce(DeviceBranch<'a, LpcBus>) -> DeviceBranch<'a, LpcBus>,
+    {
+        self.typed_bus::<LpcBus, _>(parent, name, DeviceRole::LpcBus, children)
+    }
+
+    /// Add a typed SMBus child bus.
+    #[must_use]
+    pub fn smbus<'a, F>(self, parent: &str, name: &'a str, children: F) -> Self
+    where
+        F: FnOnce(DeviceBranch<'a, SmbusBus>) -> DeviceBranch<'a, SmbusBus>,
+    {
+        self.typed_bus::<SmbusBus, _>(parent, name, DeviceRole::SmBus, children)
     }
 
     /// Add a driverless PCI/PCIe bridge/root-port node.
@@ -161,6 +220,12 @@ impl DeviceTopology {
         self.devices
     }
 
+    /// Finish as both the compatibility flat table and the lowered typed edges.
+    #[must_use]
+    pub fn build_graph(self) -> (HVec<DeviceConfig, 32>, HVec<DeviceEdge, 64>) {
+        (self.devices, self.edges)
+    }
+
     fn device(
         mut self,
         name: &str,
@@ -169,6 +234,14 @@ impl DeviceTopology {
         role: DeviceRole,
         enabled: bool,
     ) -> Self {
+        let parent_id = parent.and_then(|parent| {
+            self.devices
+                .iter()
+                .position(|candidate| candidate.name.as_str() == parent)
+                .map(|idx| idx as crate::DeviceId)
+        });
+        let child_id = self.devices.len() as crate::DeviceId;
+
         self.devices
             .push(DeviceConfig {
                 name: hstr(name),
@@ -178,24 +251,61 @@ impl DeviceTopology {
                 enabled,
             })
             .expect("device table capacity");
+        if let Some(parent_id) = parent_id {
+            self.edges
+                .push(DeviceEdge {
+                    parent: parent_id,
+                    child: child_id,
+                    port: crate::BusPortId::new(parent.unwrap_or("root"), bus_kind(role, bus)),
+                    address: bus,
+                })
+                .expect("device edge capacity");
+        }
         self
+    }
+}
+
+fn bus_kind(role: DeviceRole, bus: Option<BusAddress>) -> crate::BusKind {
+    match bus {
+        Some(BusAddress::Pci(_, _)) => crate::BusKind::Pci,
+        Some(BusAddress::Lpc(_)) => crate::BusKind::Lpc,
+        Some(BusAddress::I2c(_)) => crate::BusKind::I2c,
+        Some(BusAddress::Spi(_)) => crate::BusKind::Spi,
+        None => match role {
+            DeviceRole::PciBridge => crate::BusKind::Pci,
+            DeviceRole::LpcBus => crate::BusKind::Lpc,
+            DeviceRole::SmBus => crate::BusKind::Smbus,
+            DeviceRole::GenericBus | DeviceRole::Runtime => crate::BusKind::SimpleBus,
+        },
     }
 }
 
 /// Scoped child builder returned by [`DeviceTopology::bus`].
 #[derive(Debug, Clone)]
-pub struct DeviceBranch<'a> {
+pub struct DeviceBranch<'a, B = crate::SimpleBus> {
     topology: DeviceTopology,
     parent: &'a str,
+    _bus: core::marker::PhantomData<B>,
 }
 
-impl<'a> DeviceBranch<'a> {
+impl<'a, B> DeviceBranch<'a, B> {
     /// Add a runtime child to this branch's parent bus.
     #[must_use]
     pub fn child(self, name: &str, bus: BusAddress) -> Self {
         Self {
             topology: self.topology.child(self.parent, name, bus),
             parent: self.parent,
+            _bus: core::marker::PhantomData,
+        }
+    }
+
+    /// Add a runtime child to this branch's parent bus with an explicit enabled policy.
+    #[must_use]
+    pub fn runtime_child(self, name: &str, bus: BusAddress, enabled: bool) -> Self {
+        Self {
+            topology: self.topology.runtime_child(self.parent, name, bus, enabled),
+            parent: self.parent,
+            _bus: core::marker::PhantomData,
         }
     }
 
@@ -209,11 +319,52 @@ impl<'a> DeviceBranch<'a> {
         DeviceBranch {
             topology,
             parent: self.parent,
+            _bus: core::marker::PhantomData,
         }
     }
 
     fn finish(self) -> DeviceTopology {
         self.topology
+    }
+}
+
+impl<'a> DeviceBranch<'a, PciBus> {
+    /// Add a child on this PCI bus using a typed BDF address.
+    #[must_use]
+    pub fn pci_device(self, name: &str, bdf: PciBdf) -> Self {
+        self.child(name, BusAddress::Pci(bdf.device, bdf.function))
+    }
+}
+
+impl<'a> DeviceBranch<'a, LpcBus> {
+    /// Add a child on this LPC bus using a typed config-port address.
+    #[must_use]
+    pub fn lpc_device(self, name: &str, config_port: IoAddr<Io16>) -> Self {
+        self.child(name, BusAddress::Lpc(config_port.raw()))
+    }
+}
+
+impl<'a> DeviceBranch<'a, SmbusBus> {
+    /// Add a child on this SMBus using a 7-bit address.
+    #[must_use]
+    pub fn smbus_device(self, name: &str, address: u8) -> Self {
+        self.child(name, BusAddress::I2c(address))
+    }
+}
+
+impl<'a> DeviceBranch<'a, I2cBus> {
+    /// Add a child on this I2C bus using a 7-bit address.
+    #[must_use]
+    pub fn i2c_device(self, name: &str, address: u8) -> Self {
+        self.child(name, BusAddress::I2c(address))
+    }
+}
+
+impl<'a> DeviceBranch<'a, SpiBus> {
+    /// Add a child on this SPI bus using a chip-select index.
+    #[must_use]
+    pub fn spi_device(self, name: &str, chip_select: u8) -> Self {
+        self.child(name, BusAddress::Spi(chip_select))
     }
 }
 
@@ -354,6 +505,19 @@ impl Board {
             .edges
             .push(edge)
             .expect("board has more than 64 topology edges");
+        self
+    }
+
+    /// Set device declarations from a topology builder.
+    ///
+    /// This keeps board/platform authoring on the structured builder API while
+    /// still lowering to the flat compatibility table consumed by current
+    /// codegen/runtime paths.
+    #[must_use]
+    pub fn topology(mut self, topology: DeviceTopology) -> Self {
+        let (devices, edges) = topology.build_graph();
+        self.info.devices = devices;
+        self.info.edges = edges;
         self
     }
 
@@ -508,6 +672,46 @@ pub struct BuildInfo {
     pub image: ImageBuildInfo,
     /// Host payload/firmware input files.
     pub payload_inputs: HVec<PayloadInputInfo, 16>,
+}
+
+/// Build host metadata from a board config and already-selected driver features.
+#[must_use]
+pub fn build_info_from_config<'a, I>(
+    board_name: &str,
+    board_package: &str,
+    config: &crate::BoardConfig,
+    driver_features: I,
+) -> BuildInfo
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut build = Build::from_board_config(
+        board_name,
+        board_package,
+        config,
+        BuildProfile::Dev,
+        flow_profile_from_config(config),
+    );
+
+    match &config.stages {
+        StageLayout::Monolithic(stage) => {
+            build = build.stage(StageBuildInfo::new("stage", stage.load_addr));
+        }
+        StageLayout::MultiStage(stages) => {
+            for (idx, stage) in stages.iter().enumerate() {
+                build = build.stage(StageBuildInfo::new(
+                    stage.name.as_str(),
+                    effective_stage_load_addr(config, idx, stage),
+                ));
+            }
+        }
+    }
+
+    for feature in driver_features {
+        build = build.feature(feature);
+    }
+
+    build.payload_inputs_from_config(config).build()
 }
 
 /// Builder for [`BuildInfo`].
@@ -671,7 +875,7 @@ impl Build {
 mod tests {
     use heapless::String as HString;
 
-    use super::{Board, Build, BuildProfile, FlowProfile};
+    use super::{Board, Build, BuildProfile, DeviceTopology, FlowProfile};
     use crate::{io16, lpc_child, BusKind, BusPortId, DeviceConfig, DeviceEdge, DeviceRole};
 
     #[test]
@@ -740,6 +944,29 @@ mod tests {
         assert_eq!(board.edges[0].child, 1);
         assert_eq!(board.edges[0].port.kind, BusKind::Lpc);
         assert_eq!(board.edges[0].address, Some(crate::BusAddress::Lpc(0x2e)));
+    }
+
+    #[test]
+    fn device_topology_lowers_typed_bus_to_flat_table_and_edges() {
+        let topology = DeviceTopology::new()
+            .root("southbridge")
+            .lpc_bus("southbridge", "lpc", |lpc| {
+                lpc.lpc_device("superio", io16(0x2e))
+            })
+            .smbus("southbridge", "smbus", |smbus| {
+                smbus.smbus_device("spd0", 0x50)
+            });
+        let board = Board::new("typed-topology").topology(topology).build();
+
+        assert_eq!(board.devices.len(), 5);
+        assert_eq!(board.devices[2].parent.as_ref().unwrap().as_str(), "lpc");
+        assert_eq!(board.devices[2].bus, Some(crate::BusAddress::Lpc(0x2e)));
+        assert_eq!(board.devices[4].parent.as_ref().unwrap().as_str(), "smbus");
+        assert_eq!(board.devices[4].bus, Some(crate::BusAddress::I2c(0x50)));
+        assert_eq!(board.edges.len(), 4);
+        assert_eq!(board.edges[1].parent, 1);
+        assert_eq!(board.edges[1].child, 2);
+        assert_eq!(board.edges[1].port.kind, BusKind::Lpc);
     }
 
     #[test]

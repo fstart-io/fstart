@@ -185,9 +185,14 @@ pub fn load_parsed_board_from_str(contents: &str, source: &str) -> Result<Parsed
 /// this helper derives the flattened topology and effective service tables from
 /// those Rust values. No RON/JSON/postcard transport is involved.
 pub fn load_parsed_board_from_rust(
-    config: BoardConfig,
+    mut config: BoardConfig,
     driver_bindings: Vec<DriverBinding>,
 ) -> Result<ParsedBoard, String> {
+    config
+        .memory
+        .normalize_derived_flash()
+        .map_err(|err| err.to_string())?;
+
     let mut bindings_by_device = HashMap::with_capacity(driver_bindings.len());
     for binding in driver_bindings {
         let device = binding.device.to_string();
@@ -507,7 +512,7 @@ fn effective_services(
 
 #[cfg(test)]
 mod tests {
-    use super::load_parsed_board;
+    use super::{load_parsed_board, load_parsed_board_from_rust};
     use std::path::PathBuf;
 
     fn temp_board_path(name: &str) -> PathBuf {
@@ -530,12 +535,6 @@ mod tests {
         let board_path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/qemu-sbsa/board.ron");
         std::fs::read_to_string(board_path).expect("read qemu-sbsa board")
-    }
-
-    fn lenovo_x61_board_source() -> String {
-        let board_path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/lenovo-x61/board.ron");
-        std::fs::read_to_string(board_path).expect("read lenovo-x61 board")
     }
 
     fn load_temp_parsed(name: &str, source: String) -> Result<super::ParsedBoard, String> {
@@ -565,10 +564,10 @@ mod tests {
 
     #[test]
     fn unknown_car_field_is_rejected() {
-        let source = lenovo_x61_board_source();
+        let source = qemu_riscv64_board_source();
         let with_unknown_car_method = source.replacen(
-            "car: Some((\n            base:",
-            "car: Some((\n            method: NonEvictMode,\n            base:",
+            "        ],\n    ),\n\n    devices:",
+            "        ],\n        car: Some((\n            method: NonEvictMode,\n            base: 0xFEF00000,\n            size: 0x80000,\n        )),\n    ),\n\n    devices:",
             1,
         );
         assert_ne!(source, with_unknown_car_method, "test fixture changed");
@@ -587,15 +586,14 @@ mod tests {
 
     #[test]
     fn ifd_bios_region_derives_flash_window_and_boot_media() {
-        let source = lenovo_x61_board_source();
         let parsed = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
-                let path = temp_board_path("ifd-derived-flash");
-                std::fs::write(&path, source).expect("write temp board");
-                let parsed = load_parsed_board(&path).unwrap();
-                let _ = std::fs::remove_file(&path);
-                parsed
+                load_parsed_board_from_rust(
+                    fstart_board_lenovo_x61::board_config(),
+                    fstart_board_lenovo_x61::driver_bindings(),
+                )
+                .unwrap()
             })
             .expect("spawn ron loader worker")
             .join()
@@ -653,7 +651,7 @@ mod tests {
         (
             name: "bootblock",
             capabilities: [
-                ConsoleInit( device: "uart0" ),
+                ConsoleInit,
                 BootMedia(FirmwareImage()),
                 SigVerify,
                 StageLoad( next_stage: "main" ),
@@ -665,7 +663,7 @@ mod tests {
         (
             name: "main",
             capabilities: [
-                ConsoleInit( device: "uart0" ),
+                ConsoleInit,
                 MemoryInit,
                 BootMedia(FirmwareImage()),
                 DriverInit,
@@ -925,8 +923,11 @@ mod tests {
 
     #[test]
     fn structural_nodes_do_not_gain_pseudo_services() {
-        let parsed = load_temp_parsed("structural-services", lenovo_x61_board_source())
-            .expect("lenovo-x61 board should parse");
+        let parsed = load_parsed_board_from_rust(
+            fstart_board_lenovo_x61::board_config(),
+            fstart_board_lenovo_x61::driver_bindings(),
+        )
+        .expect("lenovo-x61 board should parse");
         let idx = parsed
             .config
             .devices

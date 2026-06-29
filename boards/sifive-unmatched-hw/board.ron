@@ -90,10 +90,10 @@
             ClockInit( device: "prci0" ),
 
             // 2. Console init: UART at 115200 baud.
-            ConsoleInit( device: "uart0" ),
+            ConsoleInit,
 
             // 3. DRAM init: program DDR4 controller + PHY, run training.
-            DramInit( device: "ddr0" ),
+            DramInit,
 
             // 4. Boot media: FFS on SPI NOR, accessible via QSPI0 XIP window.
             BootMedia(FirmwareImage()),

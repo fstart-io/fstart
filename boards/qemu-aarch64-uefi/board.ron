@@ -77,11 +77,11 @@
 
     stages: Monolithic((
         capabilities: [
-            ConsoleInit( device: "uart0" ),
+            ConsoleInit,
             // BootMedia provides FFS access for loading BL31 firmware.
             BootMedia(FirmwareImage()),
             MemoryInit,
-            PciInit( device: "pci0" ),
+            PciInit,
             DriverInit,
             PayloadLoad,
         ],
