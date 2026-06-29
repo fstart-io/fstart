@@ -1,8 +1,10 @@
 //! Rust board metadata for LeMaker BananaPi M1.
 
-use fstart_device_registry::{ns16550, sunxi_a20_ccu, sunxi_a20_dramc, sunxi_mmc};
-
 use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_ns16550::{AccessMode, Ns16550Config};
+use fstart_driver_sunxi_a20_dramc::SunxiA20DramcConfig;
+use fstart_driver_sunxi_ccu::SunxiA20CcuConfig;
+use fstart_driver_sunxi_mmc::SunxiMmcConfig;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, MemoryMap, MemoryRegion,
@@ -50,14 +52,14 @@ fn config() -> BoardConfig {
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::SunxiA20Ccu(sunxi_a20_ccu::SunxiA20CcuConfig {
+        DriverInstance::SunxiA20Ccu(SunxiA20CcuConfig {
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,
             uart_index: 0,
         })
         .bind("ccu0"),
-        DriverInstance::Ns16550(ns16550::Ns16550Config {
-            regs: ns16550::AccessMode::Mmio {
+        DriverInstance::Ns16550(Ns16550Config {
+            regs: AccessMode::Mmio {
                 base: 0x01c2_8000,
                 reg_shift: 2,
                 reg_width: 0,
@@ -66,7 +68,7 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
             baud_rate: 115_200,
         })
         .bind("uart0"),
-        DriverInstance::SunxiA20Dramc(sunxi_a20_dramc::SunxiA20DramcConfig {
+        DriverInstance::SunxiA20Dramc(SunxiA20DramcConfig {
             dramc_base: 0x01c0_1000,
             ccu_base: 0x01c2_0000,
             clock: 432,
@@ -86,7 +88,7 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
             active_windowing: false,
         })
         .bind("dramc0"),
-        DriverInstance::SunxiMmc(sunxi_mmc::SunxiMmcConfig::Sun7iA20 {
+        DriverInstance::SunxiMmc(SunxiMmcConfig::Sun7iA20 {
             base_addr: 0x01c0_f000,
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,

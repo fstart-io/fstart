@@ -1,8 +1,11 @@
 //! Rust board metadata for Xunlong Orange Pi R1.
 
-use fstart_device_registry::{ns16550, sunxi_h3_ccu, sunxi_h3_dramc, sunxi_mmc, sunxi_spi};
-
 use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_ns16550::{AccessMode, Ns16550Config};
+use fstart_driver_sunxi_h3_ccu::SunxiH3CcuConfig;
+use fstart_driver_sunxi_h3_dramc::{SunxiDramcVariant, SunxiH3DramcConfig};
+use fstart_driver_sunxi_mmc::SunxiMmcConfig;
+use fstart_driver_sunxi_spi::SunxiSpiConfig;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, MemoryMap, MemoryRegion,
@@ -51,14 +54,14 @@ fn config() -> BoardConfig {
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::SunxiH3Ccu(sunxi_h3_ccu::SunxiH3CcuConfig {
+        DriverInstance::SunxiH3Ccu(SunxiH3CcuConfig {
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,
             uart_index: 0,
         })
         .bind("ccu0"),
-        DriverInstance::Ns16550(ns16550::Ns16550Config {
-            regs: ns16550::AccessMode::Mmio {
+        DriverInstance::Ns16550(Ns16550Config {
+            regs: AccessMode::Mmio {
                 base: 0x01c2_8000,
                 reg_shift: 2,
                 reg_width: 0,
@@ -67,23 +70,23 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
             baud_rate: 115_200,
         })
         .bind("uart0"),
-        DriverInstance::SunxiH3Dramc(sunxi_h3_dramc::SunxiH3DramcConfig {
+        DriverInstance::SunxiH3Dramc(SunxiH3DramcConfig {
             dramc_base: 0x01c6_2000,
             ccu_base: 0x01c2_0000,
             clock: 624,
             zq: 3_881_979,
             odt_en: true,
-            variant: sunxi_h3_dramc::SunxiDramcVariant::H3,
+            variant: SunxiDramcVariant::H3,
         })
         .bind("dramc0"),
-        DriverInstance::SunxiMmc(sunxi_mmc::SunxiMmcConfig::Sun8iH3 {
+        DriverInstance::SunxiMmc(SunxiMmcConfig::Sun8iH3 {
             base_addr: 0x01c0_f000,
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,
             mmc_index: 0,
         })
         .bind("mmc0"),
-        DriverInstance::SunxiSpi(sunxi_spi::SunxiSpiConfig::Sun8iH3 {
+        DriverInstance::SunxiSpi(SunxiSpiConfig::Sun8iH3 {
             base_addr: 0x01c6_8000,
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,

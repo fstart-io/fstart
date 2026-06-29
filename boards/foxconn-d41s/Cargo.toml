@@ -14,6 +14,7 @@ target = "x86_64-unknown-none"
 fstart-types = { workspace = true, features = ["std"] }
 fstart-platform-intel-pineview-ich7 = { workspace = true }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-driver-i2c-ck505 = { workspace = true }
 fstart-driver-ite8721f = { workspace = true }
 fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }

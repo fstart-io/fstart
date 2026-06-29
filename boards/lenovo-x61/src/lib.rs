@@ -1,10 +1,12 @@
 //! Lenovo ThinkPad X61 Rust board metadata.
 
-use fstart_device_registry::{i2c_ck505, lenovo_x61_mainboard, DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_i2c_ck505::I2cCk505Config;
 use fstart_driver_nsc_pc87382 as pc87382;
 use fstart_driver_nsc_pc87392 as pc87392;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
+use fstart_mainboard_lenovo_x61::LenovoX61MainboardConfig;
 use fstart_platform_intel_gm965_ich8::{
     Gm965Ich8Platform, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode,
     LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PcieRootPort, SataConfig, SataMode,
@@ -613,14 +615,14 @@ pub fn x61_dock_superio_config() -> DriverInstance {
 }
 
 pub fn x61_ck505_config() -> DriverInstance {
-    DriverInstance::I2cCk505(i2c_ck505::I2cCk505Config {
+    DriverInstance::I2cCk505(I2cCk505Config {
         mask: hvec([0xff, 0, 0, 0, 0]),
         regs: hvec([0x11, 0, 0, 0, 0]),
     })
 }
 
 pub fn x61_mainboard_config() -> DriverInstance {
-    DriverInstance::LenovoX61Mainboard(lenovo_x61_mainboard::LenovoX61MainboardConfig {
+    DriverInstance::LenovoX61Mainboard(LenovoX61MainboardConfig {
         dock_early_console: true,
         acpi_name: Some(hstr("X61")),
     })

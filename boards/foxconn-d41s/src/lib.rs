@@ -1,6 +1,7 @@
 //! Foxconn D41S Rust board metadata.
 
-use fstart_device_registry::{i2c_ck505, DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_i2c_ck505::I2cCk505Config;
 use fstart_driver_ite8721f as ite8721f;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
@@ -232,8 +233,8 @@ pub fn d41s_superio_config() -> DriverInstance {
     })
 }
 
-pub fn d41s_ck505_config() -> i2c_ck505::I2cCk505Config {
-    i2c_ck505::I2cCk505Config {
+pub fn d41s_ck505_config() -> I2cCk505Config {
+    I2cCk505Config {
         mask: hvec([0x00, 0x80, 0xff, 0xff, 0xff]),
         regs: hvec([0x00, 0x80, 0xfe, 0xff, 0xfc]),
     }

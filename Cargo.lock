@@ -486,6 +486,10 @@ name = "fstart-board-bananapi-m1"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-ns16550",
+ "fstart-driver-sunxi-a20-dramc",
+ "fstart-driver-sunxi-ccu",
+ "fstart-driver-sunxi-mmc",
  "fstart-types",
 ]
 
@@ -494,6 +498,7 @@ name = "fstart-board-foxconn-d41s"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-i2c-ck505",
  "fstart-driver-ite8721f",
  "fstart-gpio-ich",
  "fstart-hda",
@@ -517,10 +522,12 @@ name = "fstart-board-lenovo-x61"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-i2c-ck505",
  "fstart-driver-nsc-pc87382",
  "fstart-driver-nsc-pc87392",
  "fstart-gpio-ich",
  "fstart-hda",
+ "fstart-mainboard-lenovo-x61",
  "fstart-platform-intel-gm965-ich8",
  "fstart-types",
  "heapless",
@@ -531,6 +538,10 @@ name = "fstart-board-licheerv-dock"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-ns16550",
+ "fstart-driver-sunxi-d1-ccu",
+ "fstart-driver-sunxi-d1-dramc",
+ "fstart-driver-sunxi-mmc",
  "fstart-types",
 ]
 
@@ -548,6 +559,10 @@ name = "fstart-board-orangepi-pc2"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-ns16550",
+ "fstart-driver-sunxi-h3-ccu",
+ "fstart-driver-sunxi-h3-dramc",
+ "fstart-driver-sunxi-mmc",
  "fstart-types",
 ]
 
@@ -556,6 +571,11 @@ name = "fstart-board-orangepi-r1"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-ns16550",
+ "fstart-driver-sunxi-h3-ccu",
+ "fstart-driver-sunxi-h3-dramc",
+ "fstart-driver-sunxi-mmc",
+ "fstart-driver-sunxi-spi",
  "fstart-types",
 ]
 
@@ -673,6 +693,9 @@ name = "fstart-board-sifive-unmatched-hw"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-fu740-ddr",
+ "fstart-driver-fu740-prci",
+ "fstart-driver-sifive-uart",
  "fstart-types",
 ]
 

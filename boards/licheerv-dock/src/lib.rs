@@ -1,8 +1,10 @@
 //! Rust board metadata for Sipeed Lichee RV Dock.
 
-use fstart_device_registry::{ns16550, sunxi_d1_ccu, sunxi_d1_dramc, sunxi_mmc};
-
 use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_ns16550::{AccessMode, Ns16550Config};
+use fstart_driver_sunxi_d1_ccu::SunxiD1CcuConfig;
+use fstart_driver_sunxi_d1_dramc::SunxiD1DramcConfig;
+use fstart_driver_sunxi_mmc::SunxiMmcConfig;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig,
@@ -56,14 +58,14 @@ fn config() -> BoardConfig {
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::SunxiD1Ccu(sunxi_d1_ccu::SunxiD1CcuConfig {
+        DriverInstance::SunxiD1Ccu(SunxiD1CcuConfig {
             ccu_base: 0x0200_1000,
             pio_base: 0x0200_0000,
             uart_index: 0,
         })
         .bind("ccu0"),
-        DriverInstance::Ns16550(ns16550::Ns16550Config {
-            regs: ns16550::AccessMode::Mmio {
+        DriverInstance::Ns16550(Ns16550Config {
+            regs: AccessMode::Mmio {
                 base: 0x0250_0000,
                 reg_shift: 2,
                 reg_width: 4,
@@ -72,7 +74,7 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
             baud_rate: 115_200,
         })
         .bind("uart0"),
-        DriverInstance::SunxiD1Dramc(sunxi_d1_dramc::SunxiD1DramcConfig {
+        DriverInstance::SunxiD1Dramc(SunxiD1DramcConfig {
             dram_clk: 792,
             dram_type: 3,
             dram_zq: 0x007b_7bfb,
@@ -83,7 +85,7 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
             dram_tpr13: 0x3405_0100,
         })
         .bind("dramc0"),
-        DriverInstance::SunxiMmc(sunxi_mmc::SunxiMmcConfig::Sun20iD1 {
+        DriverInstance::SunxiMmc(SunxiMmcConfig::Sun20iD1 {
             base_addr: 0x0402_0000,
             ccu_base: 0x0200_1000,
             pio_base: 0x0200_0000,

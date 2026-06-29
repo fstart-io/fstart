@@ -13,3 +13,7 @@ target = "riscv64gc-unknown-none-elf"
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-driver-ns16550 = { workspace = true }
+fstart-driver-sunxi-d1-ccu = { workspace = true }
+fstart-driver-sunxi-d1-dramc = { workspace = true }
+fstart-driver-sunxi-mmc = { workspace = true }
