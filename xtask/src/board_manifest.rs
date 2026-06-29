@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use fstart_codegen::ron_loader::ParsedBoard;
+use fstart_codegen::board_loader::ParsedBoard;
 use fstart_types::{BoardConfig, BuildInfo};
 
 /// Discovery metadata for one board crate.

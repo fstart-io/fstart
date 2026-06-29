@@ -1,10 +1,9 @@
 //! Build script for fstart-stage.
 //!
-//! Reads board facts directly from the board crate via `FSTART_RUST_BOARD`.
-//! The generated stage source/linker script are still build artifacts, but board
-//! facts are not transported through RON/JSON/postcard for Rust boards.
+//! Reads board facts directly from the board crate via `FSTART_RUST_BOARD` and
+//! emits only non-Rust build artifacts such as the linker script.
 
-use fstart_codegen::{linker, ron_loader, stage_gen};
+use fstart_codegen::{board_loader, linker};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -35,10 +34,6 @@ fn main() {
         println!("cargo:rustc-env=FSTART_SMM_COREBOOT_HEADER={smm_header}");
     }
 
-    let stage_source = stage_gen::generate_stage_source(&parsed, stage_name.as_deref());
-    let stage_path = out_dir.join("generated_stage.rs");
-    fs::write(&stage_path, &stage_source).expect("failed to write generated stage");
-
     let linker_script = linker::generate_linker_script(&parsed, stage_name.as_deref());
     let ld_path = out_dir.join("link.ld");
     fs::write(&ld_path, &linker_script).expect("failed to write linker script");
@@ -46,8 +41,6 @@ fn main() {
     if let Ok(artifact_dir) = env::var("FSTART_STAGE_ARTIFACT_DIR") {
         let artifact_dir = PathBuf::from(artifact_dir);
         fs::create_dir_all(&artifact_dir).expect("failed to create stage artifact dir");
-        fs::write(artifact_dir.join("generated_stage.rs"), &stage_source)
-            .expect("failed to mirror generated stage");
         fs::write(artifact_dir.join("link.ld"), &linker_script)
             .expect("failed to mirror linker script");
 
@@ -62,7 +55,7 @@ fn main() {
         fs::write(artifact_dir.join("metadata.txt"), metadata)
             .expect("failed to mirror stage metadata");
         println!(
-            "cargo:warning=mirrored generated stage artifacts to {}",
+            "cargo:warning=mirrored stage build artifacts to {}",
             artifact_dir.display()
         );
     }
@@ -70,7 +63,7 @@ fn main() {
     println!("cargo:rustc-link-arg=-T{}", ld_path.display());
 }
 
-fn load_rust_board(board: &str) -> Result<ron_loader::ParsedBoard, String> {
+fn load_rust_board(board: &str) -> Result<board_loader::ParsedBoard, String> {
     let (config, drivers) = match board {
         "qemu-riscv64" => (
             fstart_board_qemu_riscv64::board_config(),
@@ -150,5 +143,5 @@ fn load_rust_board(board: &str) -> Result<ron_loader::ParsedBoard, String> {
         "qemu-sbsa" => fstart_board_qemu_sbsa::acpi_only_devices(),
         _ => Vec::new(),
     };
-    ron_loader::load_parsed_board_from_rust_with_acpi(config, drivers, acpi_only_devices)
+    board_loader::load_parsed_board_from_rust_with_acpi(config, drivers, acpi_only_devices)
 }

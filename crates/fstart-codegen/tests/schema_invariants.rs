@@ -29,55 +29,6 @@ fn files_under(root: &Path, rel: &str, pred: fn(&Path) -> bool) -> Vec<PathBuf> 
 }
 
 #[test]
-fn board_gen_modules_stay_small() {
-    let root = repo_root();
-    let board_gen = root.join("crates/fstart-codegen/src/stage_gen/board_gen");
-    let mut oversized = Vec::new();
-
-    for path in files_under(&board_gen, "", |p| {
-        p.extension().is_some_and(|ext| ext == "rs")
-    }) {
-        let text = fs::read_to_string(&path).expect("read board_gen module");
-        let lines = text.lines().count();
-        if lines > 700 {
-            oversized.push(format!("{} ({lines} lines)", path.display()));
-        }
-    }
-
-    assert!(
-        oversized.is_empty(),
-        "board_gen modules should stay below the Phase 6 size budget: {oversized:?}"
-    );
-}
-
-#[test]
-fn board_gen_production_code_has_no_todo_stubs() {
-    let root = repo_root();
-    let board_gen = root.join("crates/fstart-codegen/src/stage_gen/board_gen");
-    let mut offenders = Vec::new();
-
-    for path in files_under(&board_gen, "", |p| {
-        p.extension().is_some_and(|ext| ext == "rs")
-    }) {
-        if path
-            .components()
-            .any(|component| component.as_os_str() == "tests")
-        {
-            continue;
-        }
-        let text = fs::read_to_string(&path).expect("read board_gen module");
-        if text.contains(concat!("todo", "!(")) {
-            offenders.push(path);
-        }
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "generated board adapter code must use explicit validation or unreachable bodies, not todo! stubs: {offenders:?}"
-    );
-}
-
-#[test]
 fn serde_deserialize_structs_deny_unknown_fields() {
     let root = repo_root();
     let mut offenders = Vec::new();
@@ -176,14 +127,14 @@ fn device_config_has_no_services_field() {
 }
 
 #[test]
-fn ron_loader_production_schema_has_no_board_owned_service_list_field() {
+fn rust_board_loader_has_no_board_owned_service_list_field() {
     let root = repo_root();
-    let ron_loader = root.join("crates/fstart-codegen/src/ron_loader.rs");
-    let text = fs::read_to_string(ron_loader).expect("read RON loader");
+    let board_loader = root.join("crates/fstart-codegen/src/board_loader.rs");
+    let text = fs::read_to_string(board_loader).expect("read Rust board loader");
     let production = text
         .split("#[cfg(test)]")
         .next()
-        .expect("RON loader should have production section before tests");
+        .expect("Rust board loader should have production section before tests");
 
     let offenders: Vec<_> = production
         .lines()
@@ -198,7 +149,7 @@ fn ron_loader_production_schema_has_no_board_owned_service_list_field() {
 
     assert!(
         offenders.is_empty(),
-        "production RON schema must not restore board-owned service-list field: {offenders:?}"
+        "Rust board loader must not restore board-owned service-list field: {offenders:?}"
     );
 }
 

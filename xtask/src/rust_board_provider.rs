@@ -4,7 +4,7 @@
 //! It deliberately calls board crate Rust functions directly: no helper binary, no
 //! RON/JSON/postcard transport.
 
-use fstart_codegen::ron_loader::{load_parsed_board_from_rust_with_acpi, ParsedBoard};
+use fstart_codegen::board_loader::{load_parsed_board_from_rust_with_acpi, ParsedBoard};
 use fstart_device_registry::DriverBinding;
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, BuildInfo};

@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use fstart_codegen::ron_loader::ParsedBoard;
+use fstart_codegen::board_loader::ParsedBoard;
 use fstart_device_registry::{DriverInstance, Service};
 use fstart_types::stage::PageSize;
 use fstart_types::{

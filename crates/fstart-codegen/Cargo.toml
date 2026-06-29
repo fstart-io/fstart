@@ -9,7 +9,6 @@ fstart-types = { workspace = true, features = ["std"] }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
 fstart-services = { workspace = true }
 heapless = { workspace = true }
-ron = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 quote = "1"
 proc-macro2 = "1"

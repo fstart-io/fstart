@@ -1,16 +1,13 @@
-//! Build-time code generation library.
+//! Build-time board lowering library.
 //!
-//! Lowers Rust board metadata and generates:
-//! - Stage `fstart_main()` entry point with capability call sequence
-//! - Static driver instantiation
+//! Lowers Rust board metadata and generates non-Rust build artifacts:
 //! - Linker scripts from memory maps
 //! - Feature flags lists
 //!
 //! Used by `fstart-stage/build.rs` and by `xtask`.
 
+pub mod board_loader;
 pub mod linker;
-pub mod ron_loader;
-pub mod stage_gen;
 
 // Re-export the parsed board type so callers can use it directly.
-pub use ron_loader::ParsedBoard;
+pub use board_loader::ParsedBoard;

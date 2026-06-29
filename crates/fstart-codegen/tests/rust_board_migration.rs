@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fstart_codegen::ron_loader::load_parsed_board_from_rust;
+use fstart_codegen::board_loader::load_parsed_board_from_rust;
 use fstart_device_registry::DriverBinding;
 use fstart_types::{BoardConfig, BuildInfo, DeviceRole, Platform};
 

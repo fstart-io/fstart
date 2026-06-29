@@ -9,7 +9,7 @@ use fstart_types::{
     StageLayout,
 };
 
-use crate::ron_loader::ParsedBoard;
+use crate::board_loader::ParsedBoard;
 
 /// Generate a linker script for the given board and (optional) stage.
 pub fn generate_linker_script(parsed: &ParsedBoard, stage_name: Option<&str>) -> String {

@@ -137,26 +137,27 @@ smbios = ["fstart-capabilities/smbios"]
 # Requires alloc (fstart-alloc provides #[global_allocator]).
 crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc", "stage-flow-uefi"]
 
-# Stage flow families. `fstart_main` is a data-only StagePlan shim into the
-# handwritten stage runtime; each optional family is explicitly feature-gated so
-# stages compile only the flow arms they use.
-stage-flow-clock-init = ["fstart-stage-runtime/flow-clock-init"]
-stage-flow-console-init = ["fstart-stage-runtime/flow-console-init"]
-stage-flow-memory-init = ["fstart-stage-runtime/flow-memory-init"]
-stage-flow-dram-init = ["fstart-stage-runtime/flow-dram-init"]
-stage-flow-driver-init = ["fstart-stage-runtime/flow-driver-init"]
-stage-flow-pci = ["fstart-stage-runtime/flow-pci"]
-stage-flow-memory-detect = ["fstart-stage-runtime/flow-memory-detect"]
-stage-flow-boot-media = ["fstart-stage-runtime/flow-boot-media"]
-stage-flow-ffs = ["fstart-stage-runtime/flow-ffs"]
-stage-flow-payload-fit = ["fstart-stage-runtime/flow-payload-fit"]
-stage-flow-uefi = ["fstart-stage-runtime/flow-uefi"]
-stage-flow-fdt = ["fstart-stage-runtime/flow-fdt"]
-stage-flow-fdt-ffs = ["fstart-stage-runtime/flow-fdt-ffs"]
-stage-flow-mp = ["fstart-stage-runtime/flow-mp"]
-stage-flow-acpi = ["fstart-stage-runtime/flow-acpi"]
-stage-flow-smbios = ["fstart-stage-runtime/flow-smbios"]
-stage-flow-fel = ["fstart-stage-runtime/flow-fel"]
+# Stage flow families. These select coarse handwritten fixed-flow barriers.
+# Old capability-derived names intentionally map to the new fixed flow so board
+# build metadata can keep selecting semantic participation without generating
+# Rust source.
+stage-flow-clock-init = ["fstart-stage-runtime/flow-early-platform-v2"]
+stage-flow-console-init = ["fstart-stage-runtime/flow-early-platform-v2"]
+stage-flow-memory-init = ["fstart-stage-runtime/flow-memory-v2"]
+stage-flow-dram-init = ["fstart-stage-runtime/flow-memory-v2"]
+stage-flow-driver-init = ["fstart-stage-runtime/flow-bus-v2"]
+stage-flow-pci = ["fstart-stage-runtime/flow-bus-v2"]
+stage-flow-memory-detect = ["fstart-stage-runtime/flow-memory-v2"]
+stage-flow-boot-media = ["fstart-stage-runtime/flow-storage-v2"]
+stage-flow-ffs = ["fstart-stage-runtime/flow-storage-v2"]
+stage-flow-payload-fit = ["fstart-stage-runtime/flow-payload-v2"]
+stage-flow-uefi = ["fstart-stage-runtime/flow-payload-v2", "fstart-stage-runtime/flow-handoff-v2"]
+stage-flow-fdt = ["fstart-stage-runtime/flow-handoff-v2"]
+stage-flow-fdt-ffs = ["stage-flow-fdt", "stage-flow-ffs"]
+stage-flow-mp = ["fstart-stage-runtime/flow-bus-v2"]
+stage-flow-acpi = ["fstart-stage-runtime/flow-handoff-v2"]
+stage-flow-smbios = ["fstart-stage-runtime/flow-handoff-v2"]
+stage-flow-fel = ["fstart-stage-runtime/flow-storage-v2", "fstart-stage-runtime/flow-handoff-v2"]
 
 [dependencies]
 # Core firmware infrastructure
@@ -166,7 +167,7 @@ fstart-capabilities = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
-fstart-stage-runtime = { workspace = true, features = ["stage-executor"] }
+fstart-stage-runtime = { workspace = true, features = ["fixed-flow"] }
 fstart-types = { workspace = true }
 fstart-pio = { workspace = true, optional = true }
 heapless = { workspace = true }

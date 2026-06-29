@@ -240,7 +240,7 @@ fn build_one_stage(
     cmd.env("RUSTFLAGS", &rustflags);
 
     // Pass board/stage context to build.rs.  FSTART_STAGE_ARTIFACT_DIR
-    // mirrors generated_stage.rs/link.ld to a stable, human-readable path;
+    // mirrors link.ld and other stage build artifacts to a stable, human-readable path;
     // Cargo's OUT_DIR remains the canonical path used by include!/linking.
     cmd.env("FSTART_RUST_BOARD", &board_manifest.board);
     cmd.env("FSTART_STAGE_ARTIFACT_DIR", &artifact_dir);

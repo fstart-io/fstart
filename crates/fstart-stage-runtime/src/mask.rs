@@ -3,7 +3,7 @@
 //! Used by the executor to track which devices have been constructed or
 //! initialised so a later capability does not redo the work. Replaces
 //! the codegen-side `Vec<String>` tracking that lived in
-//! `fstart-codegen::stage_gen::generate_fstart_main`.
+//! the fixed stage flow and legacy stage-plan tests.
 
 use fstart_types::DeviceId;
 

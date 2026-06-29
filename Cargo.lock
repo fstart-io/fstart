@@ -714,7 +714,6 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "ron",
  "serde",
  "syn 2.0.114",
 ]
