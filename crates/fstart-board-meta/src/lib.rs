@@ -150,38 +150,6 @@ impl DriverFact {
     }
 }
 
-/// Serializable board metadata emitted by board crates for host tooling.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostBoardMetadata {
-    /// Board metadata (name, platform, memory, stages, security, etc.).
-    pub config: fstart_types::BoardConfig,
-    /// Build/package metadata consumed by xtask.
-    pub build_info: fstart_types::BuildInfo,
-    /// Erased runtime driver facts keyed by board device name.
-    pub drivers: Vec<DriverFact>,
-    /// ACPI-only descriptors that do not participate in runtime topology.
-    pub acpi_only_devices: Vec<fstart_types::acpi::AcpiExtraDevice>,
-}
-
-impl HostBoardMetadata {
-    /// Construct serializable host metadata from board-owned typed bindings.
-    #[must_use]
-    pub fn from_bindings(
-        config: fstart_types::BoardConfig,
-        build_info: fstart_types::BuildInfo,
-        bindings: Vec<DriverBinding>,
-        acpi_only_devices: Vec<fstart_types::acpi::AcpiExtraDevice>,
-    ) -> Self {
-        Self {
-            config,
-            build_info,
-            drivers: bindings.iter().map(DriverFact::from_binding).collect(),
-            acpi_only_devices,
-        }
-    }
-}
-
 impl DriverBinding {
     /// Bind a driver metadata object to a board device name.
     #[must_use]

@@ -2,15 +2,11 @@
 //!
 //! Boards are normal crates under `boards/` with a small
 //! `[package.metadata.fstart]` table. `xtask` discovers those packages and loads
-//! board/build facts by running each board crate's metadata binary.
+//! board/build actions by dispatching to each board crate's host tool binary.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-use fstart_board_meta::HostBoardMetadata;
-use fstart_codegen::board_loader::ParsedBoard;
-use fstart_types::{BoardConfig, BuildInfo};
 
 /// Discovery metadata for one board crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,8 +21,8 @@ pub struct BoardManifest {
     pub platform: Option<String>,
     /// Rust target triple metadata string from the board crate.
     pub target: Option<String>,
-    /// Cargo binary that emits host board metadata as JSON.
-    pub metadata_bin: String,
+    /// Cargo binary that owns host build orchestration for this board.
+    pub tool_bin: String,
     /// Optional Cargo binary that owns this board's static stage adapter.
     pub stage_bin: Option<String>,
 }
@@ -110,106 +106,40 @@ fn read(manifest: &Path) -> Result<BoardManifest, String> {
         dir,
         platform: metadata_value(&text, "platform"),
         target: metadata_value(&text, "target"),
-        metadata_bin: metadata_value(&text, "metadata-bin")
-            .unwrap_or_else(|| "fstart-board-metadata".to_string()),
+        tool_bin: metadata_value(&text, "tool-bin")
+            .unwrap_or_else(|| "fstart-board-tool".to_string()),
         stage_bin: metadata_value(&text, "stage-bin"),
     })
 }
 
-/// Load a fully parsed board by asking the Rust board crate for metadata.
-pub fn load_parsed_board(workspace_root: &Path, board_name: &str) -> Result<ParsedBoard, String> {
-    let metadata = load_host_metadata(workspace_root, board_name)?;
-    fstart_codegen::board_loader::load_parsed_board_from_metadata(metadata)
-}
-
-/// Load only board metadata by asking the Rust board crate for metadata.
-pub fn load_board_config(workspace_root: &Path, board_name: &str) -> Result<BoardConfig, String> {
-    let parsed = load_parsed_board(workspace_root, board_name)?;
-    Ok(parsed.config)
-}
-
-/// Load host build/package metadata by asking the Rust board crate.
-pub fn load_build_info(workspace_root: &Path, board_name: &str) -> Result<BuildInfo, String> {
-    let manifest = find(workspace_root, board_name)?;
-    let info = load_host_metadata_from_manifest(workspace_root, &manifest)?.build_info;
-    validate_build_info(&manifest, &info)?;
-    Ok(info)
-}
-
-/// Load host board metadata by running the discovered board metadata binary.
-pub fn load_host_metadata(
+/// Dispatch an xtask subcommand to the selected board's host tool binary.
+pub fn run_board_tool(
     workspace_root: &Path,
     board_name: &str,
-) -> Result<HostBoardMetadata, String> {
+    args: &[String],
+) -> Result<(), String> {
     let manifest = find(workspace_root, board_name)?;
-    let metadata = load_host_metadata_from_manifest(workspace_root, &manifest)?;
-    validate_build_info(&manifest, &metadata.build_info)?;
-    Ok(metadata)
-}
-
-fn load_host_metadata_from_manifest(
-    workspace_root: &Path,
-    manifest: &BoardManifest,
-) -> Result<HostBoardMetadata, String> {
-    let output = Command::new("cargo")
+    let status = Command::new("cargo")
         .current_dir(workspace_root)
         .arg("run")
         .arg("--quiet")
         .arg("--package")
         .arg(&manifest.package)
         .arg("--bin")
-        .arg(&manifest.metadata_bin)
-        .output()
-        .map_err(|e| {
-            format!(
-                "failed to run board metadata binary for {}: {e}",
-                manifest.board
-            )
-        })?;
+        .arg(&manifest.tool_bin)
+        .arg("--")
+        .args(args)
+        .status()
+        .map_err(|e| format!("failed to run board tool for {}: {e}", manifest.board))?;
 
-    if !output.status.success() {
-        return Err(format!(
-            "board metadata binary '{}' for '{}' failed with {}\n{}",
-            manifest.metadata_bin,
-            manifest.board,
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "board tool '{}:{}' failed with {status}",
+            manifest.package, manifest.tool_bin
+        ))
     }
-
-    serde_json::from_slice(&output.stdout).map_err(|e| {
-        format!(
-            "failed to parse board metadata JSON from {}:{}: {e}\nstdout:\n{}\nstderr:\n{}",
-            manifest.package,
-            manifest.metadata_bin,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-    })
-}
-
-fn validate_build_info(manifest: &BoardManifest, info: &BuildInfo) -> Result<(), String> {
-    if info.name.as_str() != manifest.board {
-        return Err(format!(
-            "build_info name mismatch for {}: manifest board is '{}', helper returned '{}'",
-            manifest.package, manifest.board, info.name
-        ));
-    }
-    if info.board_package.as_str() != manifest.package {
-        return Err(format!(
-            "build_info package mismatch for {}: helper returned '{}'",
-            manifest.package, info.board_package
-        ));
-    }
-    if let Some(target) = &manifest.target {
-        if info.target.as_str() != target {
-            return Err(format!(
-                "build_info target mismatch for {}: manifest target is '{}', helper returned '{}'",
-                manifest.package, target, info.target
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn package_name(text: &str) -> Option<String> {

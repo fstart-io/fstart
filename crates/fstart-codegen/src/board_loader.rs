@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use fstart_board_meta::{DriverBinding, DriverFact, HostBoardMetadata, StructuralKind};
+use fstart_board_meta::{DriverBinding, DriverFact, StructuralKind};
 use fstart_services::ServiceSet;
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, DeviceId, DeviceNode, DeviceRole};
@@ -45,41 +45,16 @@ pub fn load_parsed_board_from_rust_with_acpi(
     driver_bindings: Vec<DriverBinding>,
     acpi_only_devices: Vec<AcpiExtraDevice>,
 ) -> Result<ParsedBoard, String> {
-    let driver_features: Vec<&str> = driver_bindings
-        .iter()
-        .map(|binding| binding.driver.feature())
-        .collect();
-    let build_info = fstart_types::builder::build_info_from_config(
-        config.name.as_str(),
-        "",
-        &config,
-        driver_features,
-    );
-    load_parsed_board_from_metadata(HostBoardMetadata::from_bindings(
-        config,
-        build_info,
-        driver_bindings,
-        acpi_only_devices,
-    ))
-}
-
-/// Load and validate a board from serializable host metadata.
-pub fn load_parsed_board_from_metadata(metadata: HostBoardMetadata) -> Result<ParsedBoard, String> {
-    let HostBoardMetadata {
-        mut config,
-        build_info: _,
-        drivers,
-        acpi_only_devices,
-    } = metadata;
-
+    let mut config = config;
     config
         .memory
         .normalize_derived_flash()
         .map_err(|err| err.to_string())?;
 
-    let driver_count = drivers.len();
+    let driver_count = driver_bindings.len();
     let mut facts_by_device = HashMap::with_capacity(driver_count);
-    for fact in drivers {
+    for binding in driver_bindings {
+        let fact = DriverFact::from_binding(&binding);
         let device = fact.device.to_string();
         if facts_by_device.insert(device.clone(), fact).is_some() {
             return Err(format!(

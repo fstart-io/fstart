@@ -12,15 +12,7 @@
 
 use clap::{Parser, Subcommand};
 use std::process;
-
-pub mod assemble;
-mod board_manifest;
-pub mod build_board;
-mod build_plan;
-mod image;
-mod inspect;
-mod qemu;
-mod toolchain;
+use xtask::{assemble, board_manifest, build_board, inspect};
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "fstart firmware build orchestrator")]
@@ -106,50 +98,6 @@ enum Command {
         #[arg(long)]
         probe: Option<String>,
     },
-}
-
-/// Build and run a board in QEMU.
-///
-/// For monolithic boards without external payload blobs, builds the single
-/// stage and boots it directly. For multi-stage boards or boards with
-/// LinuxBoot payloads (which need firmware + kernel in FFS), assembles the
-/// full FFS image first.
-fn run_board(
-    board_name: &str,
-    release: bool,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-    disk: Option<&str>,
-    memory: Option<&str>,
-) -> Result<(), String> {
-    // Check if this board needs assembly (multi-stage or has payload blobs)
-    let workspace_root = build_board::workspace_root_pub()?;
-    let config = crate::board_manifest::load_board_config(&workspace_root, board_name)?;
-
-    let is_multi_stage = matches!(config.stages, fstart_types::StageLayout::MultiStage(_));
-    let has_payload_blobs = kernel.is_some()
-        || firmware.is_some()
-        || config.payload.as_ref().is_some_and(|p| {
-            p.firmware.is_some()
-                || p.kernel_file.is_some()
-                || p.kind == fstart_types::PayloadKind::FitImage
-        });
-
-    if is_multi_stage || has_payload_blobs {
-        // Assemble the FFS image (includes stage + firmware + kernel)
-        let image_path = assemble::assemble_with_opts(board_name, release, kernel, firmware)?;
-        qemu::run(board_name, config.platform, &image_path, disk, memory)
-    } else {
-        // Simple monolithic: build and boot the single binary directly
-        let res = build_board::build(board_name, release)?;
-        qemu::run(
-            board_name,
-            config.platform,
-            &res.primary_binary().run_path,
-            disk,
-            memory,
-        )
-    }
 }
 
 /// Build and flash firmware to real hardware via probe-rs.
@@ -284,11 +232,64 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+fn dispatch_board_tool(board: &str, args: &[String]) -> Result<(), String> {
+    let workspace_root = build_board::workspace_root_pub()?;
+    board_manifest::run_board_tool(&workspace_root, board, args)
+}
+
+fn board_tool_assemble_args(
+    subcommand: &str,
+    release: bool,
+    kernel: Option<String>,
+    firmware: Option<String>,
+) -> Vec<String> {
+    let mut args = vec![subcommand.to_string()];
+    if release {
+        args.push("--release".to_string());
+    }
+    if let Some(kernel) = kernel {
+        args.push("--kernel".to_string());
+        args.push(kernel);
+    }
+    if let Some(firmware) = firmware {
+        args.push("--firmware".to_string());
+        args.push(firmware);
+    }
+    args
+}
+
+fn board_tool_run_args(
+    subcommand: &str,
+    release: bool,
+    kernel: Option<String>,
+    firmware: Option<String>,
+    disk: Option<String>,
+    memory: Option<String>,
+) -> Vec<String> {
+    let mut args = board_tool_assemble_args(subcommand, release, kernel, firmware);
+    if let Some(disk) = disk {
+        args.push("--disk".to_string());
+        args.push(disk);
+    }
+    if let Some(memory) = memory {
+        args.push("--memory".to_string());
+        args.push(memory);
+    }
+    args
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let result: Result<(), String> = match cli.command {
-        Command::Build { board, release } => build_board::build(&board, release).map(|_| ()),
+        Command::Build { board, release } => dispatch_board_tool(
+            &board,
+            vec!["build".into()]
+                .into_iter()
+                .chain(release.then_some("--release".into()))
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
         Command::Run {
             board,
             release,
@@ -296,22 +297,20 @@ fn main() {
             firmware,
             disk,
             memory,
-        } => run_board(
+        } => dispatch_board_tool(
             &board,
-            release,
-            kernel.as_deref(),
-            firmware.as_deref(),
-            disk.as_deref(),
-            memory.as_deref(),
+            &board_tool_run_args("run", release, kernel, firmware, disk, memory),
         ),
-        Command::Test { board } => run_board(&board, true, None, None, None, None),
+        Command::Test { board } => dispatch_board_tool(&board, &["test".into()]),
         Command::Assemble {
             board,
             release,
             kernel,
             firmware,
-        } => assemble::assemble_with_opts(&board, release, kernel.as_deref(), firmware.as_deref())
-            .map(|_| ()),
+        } => dispatch_board_tool(
+            &board,
+            &board_tool_assemble_args("assemble", release, kernel, firmware),
+        ),
         Command::Inspect { image } => inspect::inspect(&image),
         Command::Flash {
             board,

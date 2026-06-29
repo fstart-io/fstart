@@ -10,7 +10,6 @@ object = { workspace = true }
 fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
 fstart-board-meta = { workspace = true }
-serde_json = { workspace = true }
 fstart-services = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-fit = { workspace = true, features = ["std"] }

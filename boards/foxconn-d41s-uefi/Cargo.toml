@@ -15,10 +15,3 @@ fstart-types = { workspace = true, features = ["std"] }
 fstart-board-foxconn-d41s = { path = "../foxconn-d41s" }
 fstart-platform-intel-pineview-ich7 = { workspace = true }
 fstart-board-meta = { workspace = true }
-
-serde_json = { workspace = true }
-
-[[bin]]
-name = "fstart-board-metadata"
-path = "src/bin/fstart-board-metadata.rs"
-

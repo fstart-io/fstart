@@ -49,22 +49,27 @@ impl BuildResult {
 
 /// Build firmware for the given board. Returns all stage binaries.
 pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
-    let workspace_root = workspace_root()?;
-    let board_manifest = crate::board_manifest::find(&workspace_root, board_name)?;
+    let _ = release;
+    Err(format!(
+        "board '{board_name}' must be built through its board-owned host tool"
+    ))
+}
 
-    eprintln!(
-        "[fstart] loading Rust board metadata from package: {}",
-        board_manifest.package
-    );
-    let build_info = crate::board_manifest::load_build_info(&workspace_root, board_name)?;
-    let parsed = crate::board_manifest::load_parsed_board(&workspace_root, board_name)?;
+/// Build firmware from already-loaded Rust board metadata.
+pub fn build_with_parsed(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+    build_info: fstart_types::BuildInfo,
+    parsed: &fstart_codegen::board_loader::ParsedBoard,
+    release: bool,
+) -> Result<BuildResult, String> {
     let config = &parsed.config;
 
     eprintln!("[fstart] board: {}", config.name);
     eprintln!("[fstart] platform: {}", config.platform);
     eprintln!("[fstart] board package: {}", build_info.board_package);
 
-    let smm_artifacts = build_smm_artifacts(&workspace_root, board_name, release, config)?;
+    let smm_artifacts = build_smm_artifacts(workspace_root, config.name.as_str(), release, config)?;
     let plan = crate::build_plan::plan(&parsed);
     if build_info.target.as_str() != plan.target.triple {
         return Err(format!(
@@ -84,7 +89,7 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
         eprintln!("[fstart] features: {features}");
 
         let (elf_path, run_path) = build_one_stage(
-            &workspace_root,
+            workspace_root,
             &board_manifest,
             config,
             stage.stage_name.as_deref(),

@@ -59,21 +59,35 @@ fn assemble_impl(
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let board_manifest = crate::board_manifest::find(&workspace_root, board_name)?;
-    let board_dir = board_manifest.dir;
+    let _ = (release, kernel_path, firmware_path);
+    Err(format!(
+        "board '{board_name}' must be assembled through its board-owned host tool"
+    ))
+}
 
-    eprintln!(
-        "[fstart] loading Rust board metadata from package: {}",
-        board_manifest.package
-    );
-    let parsed = crate::board_manifest::load_parsed_board(&workspace_root, board_name)?;
+/// Assemble an FFS image from already-loaded Rust board metadata.
+pub fn assemble_with_parsed(
+    workspace_root: &Path,
+    board_manifest: crate::board_manifest::BoardManifest,
+    build_info: fstart_types::BuildInfo,
+    parsed: fstart_codegen::board_loader::ParsedBoard,
+    release: bool,
+    kernel_path: Option<&str>,
+    firmware_path: Option<&str>,
+) -> Result<PathBuf, String> {
+    let board_dir = board_manifest.dir.clone();
     let config = parsed.config.clone();
 
     eprintln!("[fstart] assembling FFS image for: {}", config.name);
 
     // Build all stages first
-    let build_result = crate::build_board::build(board_name, release)?;
+    let build_result = crate::build_board::build_with_parsed(
+        workspace_root,
+        &board_manifest,
+        build_info,
+        &parsed,
+        release,
+    )?;
 
     // Read the public key (or generate a dev key pair if not present)
     let (signing_key, verification_key) = get_or_create_dev_keys(&board_dir, &config)?;
