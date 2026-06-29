@@ -50,6 +50,7 @@ fn test_parsed_board(capabilities: heapless::Vec<Capability, 16>) -> ParsedBoard
         name: HString::try_from("uart0").unwrap(),
         parent: None,
         bus: None,
+        role: DeviceRole::Runtime,
         enabled: true,
     });
 
@@ -307,6 +308,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
         name: HString::try_from("uart0").unwrap(),
         parent: None,
         bus: None,
+        role: DeviceRole::Runtime,
         enabled: true,
     });
 
@@ -315,6 +317,7 @@ fn test_parsed_board_with_i2c_bus(capabilities: heapless::Vec<Capability, 16>) -
         name: HString::try_from("i2c0").unwrap(),
         parent: None,
         bus: None,
+        role: DeviceRole::Runtime,
         enabled: true,
     });
 
@@ -448,12 +451,14 @@ fn test_validate_device_tree_all_roots() {
             name: HString::try_from("uart0").unwrap(),
             parent: None,
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("i2c0").unwrap(),
             parent: None,
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         },
     ];
@@ -490,12 +495,14 @@ fn test_validate_device_tree_valid_bus_child() {
             name: HString::try_from("pci0").unwrap(),
             parent: None,
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("bochs0").unwrap(),
             parent: Some(HString::try_from("pci0").unwrap()),
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         },
     ];
@@ -545,12 +552,14 @@ fn test_validate_device_tree_non_bus_parent_is_error() {
             name: HString::try_from("uart0").unwrap(),
             parent: None,
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("bochs0").unwrap(),
             parent: Some(HString::try_from("uart0").unwrap()),
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         },
     ];
@@ -592,12 +601,14 @@ fn test_validate_device_tree_plain_device_child_ok() {
             name: HString::try_from("uart0").unwrap(),
             parent: None,
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         },
         DeviceConfig {
             name: HString::try_from("uart1").unwrap(),
             parent: Some(HString::try_from("uart0").unwrap()),
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         },
     ];
@@ -657,6 +668,7 @@ fn test_non_bus_parent_is_compile_error() {
         name: HString::try_from("ck0").unwrap(),
         parent: Some(HString::try_from("uart0").unwrap()),
         bus: Some(fstart_types::BusAddress::I2c(0x69)),
+        role: DeviceRole::Runtime,
         enabled: true,
     });
     parsed.driver_instances.push(DriverInstance::I2cCk505(
@@ -696,6 +708,7 @@ fn test_multi_stage_parsed_board() -> ParsedBoard {
         name: HString::try_from("uart0").unwrap(),
         parent: None,
         bus: None,
+        role: DeviceRole::Runtime,
         enabled: true,
     });
 
@@ -1333,12 +1346,14 @@ fn load_next_stage_rejects_block_device_without_boot_media_mapping() {
         name: HString::try_from("uart0").unwrap(),
         parent: None,
         bus: None,
+        role: DeviceRole::Runtime,
         enabled: true,
     });
     let _ = devices.push(DeviceConfig {
         name: HString::try_from("mmc1").unwrap(),
         parent: None,
         bus: None,
+        role: DeviceRole::Runtime,
         enabled: true,
     });
 

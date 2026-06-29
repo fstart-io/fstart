@@ -7,7 +7,7 @@
 //! as Super I/O wiring, clock-generator programming, GPIOs, HDA verbs, SMBIOS,
 //! and payload choice.
 
-use fstart_device_registry::{i2c_ck505, intel_pineview, DriverInstance};
+use fstart_device_registry::{i2c_ck505, intel_pineview, DriverBinding, DriverInstance};
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
 use fstart_gpio_ich as gpio;
@@ -15,11 +15,11 @@ use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
     hstr, hvec, AcpiConfig, AcpiPlatform, Board, BoardConfig, BoardInfo, BootMedium, Build,
-    BuildInfo, BuildProfile, Capability, CarConfig, Compression, CorebootSmmCompat, CpuDriverKind,
-    DeviceConfig, DigestAlgorithm, FdtSource, FlowProfile, ImageBuildInfo, MemoryMap, MemoryRegion,
-    PayloadConfig, PayloadInputInfo, PayloadKind, Platform, RegionKind, RunsFrom, SecurityConfig,
-    SignatureAlgorithm, SmbiosConfig, SmmConfig, SmmPlatform, StageBuildInfo, StageConfig,
-    StageLayout, TempRamBuffer,
+    BuildInfo, BuildProfile, BusAddress, Capability, CarConfig, Compression, CorebootSmmCompat,
+    CpuDriverKind, DeviceConfig, DeviceRole, DeviceTopology, DigestAlgorithm, FdtSource,
+    FlowProfile, ImageBuildInfo, MemoryMap, MemoryRegion, PayloadConfig, PayloadInputInfo,
+    PayloadKind, Platform, RegionKind, RunsFrom, SecurityConfig, SignatureAlgorithm, SmbiosConfig,
+    SmmConfig, SmmPlatform, StageBuildInfo, StageConfig, StageLayout, TempRamBuffer,
 };
 use heapless::{String as HString, Vec as HVec};
 
@@ -34,6 +34,27 @@ pub struct PineviewIch7Platform {
     superio: Option<DriverInstance>,
     clock_generator: Option<i2c_ck505::I2cCk505Config>,
     smbios: Option<SmbiosConfig>,
+    pcie_ports: [bool; 4],
+}
+
+/// ICH7/NM10 PCIe root-port selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PcieRootPort {
+    Port0,
+    Port1,
+    Port2,
+    Port3,
+}
+
+impl PcieRootPort {
+    const fn index(self) -> usize {
+        match self {
+            Self::Port0 => 0,
+            Self::Port1 => 1,
+            Self::Port2 => 2,
+            Self::Port3 => 3,
+        }
+    }
 }
 
 impl PineviewIch7Platform {
@@ -48,6 +69,7 @@ impl PineviewIch7Platform {
             superio: None,
             clock_generator: None,
             smbios: None,
+            pcie_ports: [false; 4],
         }
     }
 
@@ -92,13 +114,23 @@ impl PineviewIch7Platform {
         self
     }
 
+    /// Set board policy for one ICH7/NM10 PCIe root port.
+    ///
+    /// The platform default keeps all ports disabled. A mainboard enables only
+    /// the ports routed on that board.
+    #[must_use]
+    pub fn pcie_port(mut self, port: PcieRootPort, enabled: bool) -> Self {
+        self.pcie_ports[port.index()] = enabled;
+        self
+    }
+
     #[must_use]
     pub fn board_config(&self) -> BoardConfig {
         BoardConfig {
             name: hstr(self.board_name),
             platform: Platform::X86_64,
             memory: pineview_ich7_memory(),
-            devices: pineview_ich7_devices(),
+            devices: pineview_ich7_devices(self.pcie_ports),
             stages: pineview_ich7_stages(),
             security: security_config(),
             payload: Some(self.payload.clone()),
@@ -124,30 +156,24 @@ impl PineviewIch7Platform {
     }
 
     #[must_use]
-    // AI! this looks bad. What is all this structural nonsense? You must know that this maps to PCI devices.
-    // The 'Structural' Thing was what we needed when doing RON->code. This is rust. we can have typed data.
-    // Also driver_instances... Structural shoulkd have none??
-    pub fn driver_instances(&self) -> Vec<DriverInstance> {
+    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
         vec![
-            DriverInstance::IntelPineview(pineview_config()),
+            DriverInstance::IntelPineview(pineview_config()).bind("northbridge"),
             DriverInstance::IntelIch7(ich7_config(
                 self.hda.clone(),
                 self.gpio.clone().unwrap_or_default(),
-            )),
-            DriverInstance::Structural(Default::default()),
-            DriverInstance::Structural(Default::default()),
-            DriverInstance::Structural(Default::default()),
-            DriverInstance::Structural(Default::default()),
-            DriverInstance::Structural(Default::default()),
+            ))
+            .bind("southbridge"),
             self.superio
                 .clone()
-                .expect("mainboard must provide Super I/O config"),
-            DriverInstance::Structural(Default::default()),
+                .expect("mainboard must provide Super I/O config")
+                .bind("superio"),
             DriverInstance::I2cCk505(
                 self.clock_generator
                     .clone()
                     .expect("mainboard must provide CK505 config"),
-            ),
+            )
+            .bind("ck505"),
         ]
     }
 
@@ -162,7 +188,7 @@ impl PineviewIch7Platform {
             self.board_name,
             self.board_package,
             self.board_config(),
-            self.driver_instances(),
+            self.driver_bindings(),
         )
     }
 }
@@ -233,64 +259,26 @@ fn pineview_ich7_memory() -> MemoryMap {
     }
 }
 
-fn pineview_ich7_devices() -> HVec<DeviceConfig, 32> {
+fn pineview_ich7_devices(pcie_ports: [bool; 4]) -> HVec<DeviceConfig, 32> {
     DeviceTopology::new()
         .root("northbridge")
         .root("southbridge")
-        // AI! again... DISABLE ALL PORTS AND ENABLE THEM IN BOARD PORT
-        .child(
-            "southbridge",
-            "pcie0",
-            fstart_types::BusAddress::Pci(0x1c, 0),
-        )
-        .child(
-            "southbridge",
-            "pcie1",
-            fstart_types::BusAddress::Pci(0x1c, 1),
-        )
-        .disabled_child(
-            "southbridge",
-            "pcie2",
-            fstart_types::BusAddress::Pci(0x1c, 2),
-        )
-        .disabled_child(
-            "southbridge",
-            "pcie3",
-            fstart_types::BusAddress::Pci(0x1c, 3),
-        )
-        .child_bus("southbridge", "lpc")
-        .child("lpc", "superio", fstart_types::BusAddress::Lpc(0x2e))
-        .child_bus("southbridge", "smbus")
-        .child("smbus", "ck505", fstart_types::BusAddress::I2c(0x69))
-        .finish()
+        .pci_bridge("southbridge", "pcie0", 0x1c, 0, pcie_ports[0])
+        .pci_bridge("southbridge", "pcie1", 0x1c, 1, pcie_ports[1])
+        .pci_bridge("southbridge", "pcie2", 0x1c, 2, pcie_ports[2])
+        .pci_bridge("southbridge", "pcie3", 0x1c, 3, pcie_ports[3])
+        .child_bus("southbridge", "lpc", DeviceRole::LpcBus)
+        .child("lpc", "superio", BusAddress::Lpc(0x2e))
+        .child_bus("southbridge", "smbus", DeviceRole::SmBus)
+        .child("smbus", "ck505", BusAddress::I2c(0x69))
+        .build()
 }
 
 fn pineview_ich7_stages() -> StageLayout {
     StageLayout::MultiStage(hvec([
         StageConfig {
             name: hstr("bootblock"),
-            capabilities: hvec([
-                            // AI! This capabilities with devices entries is not according to our plan
-                Capability::PreConsoleInit {
-                    devices: names(["northbridge", "southbridge"]),
-                },
-                Capability::ConsoleInit {
-                    device: hstr("superio"),
-                },
-                Capability::EarlyInit {
-                    devices: names(["northbridge", "southbridge"]),
-                },
-                Capability::DramInit {
-                    device: hstr("northbridge"),
-                },
-                Capability::BootMedia(BootMedium::FirmwareImage {
-                    provider: None,
-                    temp_ram_buffer: None,
-                }),
-                Capability::StageLoad {
-                    next_stage: hstr("ramstage"),
-                },
-            ]),
+            capabilities: pineview_bootblock_capabilities(),
             load_addr: 0,
             stack_size: 0x2000,
             heap_size: Some(0x100),
@@ -302,44 +290,7 @@ fn pineview_ich7_stages() -> StageLayout {
         },
         StageConfig {
             name: hstr("ramstage"),
-            capabilities: hvec([
-                Capability::ConsoleInit {
-                    device: hstr("superio"),
-                },
-                Capability::BootMedia(BootMedium::FirmwareImage {
-                    provider: None,
-                    temp_ram_buffer: Some(TempRamBuffer {
-                        base: 0x0200_0000,
-                        size: 0x0100_0000,
-                    }),
-                }),
-                Capability::SigVerify,
-                Capability::DriverInit,
-                Capability::StageLocalInit {
-                    devices: names(["northbridge"]),
-                },
-                Capability::MemoryDetect {
-                    device: hstr("northbridge"),
-                },
-                Capability::PciInit {
-                    device: hstr("northbridge"),
-                },
-                Capability::PostDramInit {
-                    devices: names(["southbridge"]),
-                },
-                Capability::FinalizeInit {
-                    devices: names(["southbridge"]),
-                },
-                Capability::MpInit {
-                    cpu_drivers: hvec([CpuDriverKind::IntelPineview]),
-                    max_cpus: 4,
-                    smm: true,
-                    smm_provider: None,
-                },
-                Capability::AcpiPrepare,
-                Capability::SmBiosPrepare,
-                Capability::PayloadLoad,
-            ]),
+            capabilities: pineview_ramstage_capabilities(),
             load_addr: 0x0400_0000,
             stack_size: 0x8000,
             heap_size: Some(0x200000),
@@ -350,6 +301,71 @@ fn pineview_ich7_stages() -> StageLayout {
             page_size: Default::default(),
         },
     ]))
+}
+
+fn pineview_bootblock_capabilities() -> HVec<Capability, 16> {
+    hvec([
+        Capability::PreConsoleInit {
+            devices: names(["northbridge", "southbridge"]),
+        },
+        Capability::ConsoleInit {
+            device: hstr("superio"),
+        },
+        Capability::EarlyInit {
+            devices: names(["northbridge", "southbridge"]),
+        },
+        Capability::DramInit {
+            device: hstr("northbridge"),
+        },
+        Capability::BootMedia(BootMedium::FirmwareImage {
+            provider: None,
+            temp_ram_buffer: None,
+        }),
+        Capability::StageLoad {
+            next_stage: hstr("ramstage"),
+        },
+    ])
+}
+
+fn pineview_ramstage_capabilities() -> HVec<Capability, 16> {
+    hvec([
+        Capability::ConsoleInit {
+            device: hstr("superio"),
+        },
+        Capability::BootMedia(BootMedium::FirmwareImage {
+            provider: None,
+            temp_ram_buffer: Some(TempRamBuffer {
+                base: 0x0200_0000,
+                size: 0x0100_0000,
+            }),
+        }),
+        Capability::SigVerify,
+        Capability::DriverInit,
+        Capability::StageLocalInit {
+            devices: names(["northbridge"]),
+        },
+        Capability::MemoryDetect {
+            device: hstr("northbridge"),
+        },
+        Capability::PciInit {
+            device: hstr("northbridge"),
+        },
+        Capability::PostDramInit {
+            devices: names(["southbridge"]),
+        },
+        Capability::FinalizeInit {
+            devices: names(["southbridge"]),
+        },
+        Capability::MpInit {
+            cpu_drivers: hvec([CpuDriverKind::IntelPineview]),
+            max_cpus: 4,
+            smm: true,
+            smm_provider: None,
+        },
+        Capability::AcpiPrepare,
+        Capability::SmBiosPrepare,
+        Capability::PayloadLoad,
+    ])
 }
 
 fn pineview_config() -> intel_pineview::IntelPineviewConfig {
@@ -447,7 +463,7 @@ fn build_info_from_parts(
     board_name: &str,
     board_package: &str,
     config: BoardConfig,
-    drivers: Vec<DriverInstance>,
+    drivers: Vec<DriverBinding>,
 ) -> BuildInfo {
     let mut build = Build::new(board_name)
         .board_package(board_package)
@@ -475,60 +491,6 @@ fn build_info_from_parts(
         }
     }
     build.build()
-}
-
-fn dev(
-    name: &str,
-    parent: Option<&str>,
-    bus: Option<fstart_types::BusAddress>,
-    enabled: bool,
-) -> DeviceConfig {
-    DeviceConfig {
-        name: hstr(name),
-        parent: parent.map(hstr),
-        bus,
-        enabled,
-    }
-}
-
-struct DeviceTopology {
-    devices: HVec<DeviceConfig, 32>,
-}
-
-impl DeviceTopology {
-    fn new() -> Self {
-        Self {
-            devices: HVec::new(),
-        }
-    }
-
-    fn root(mut self, name: &str) -> Self {
-        self.push(dev(name, None, None, true));
-        self
-    }
-
-    fn child_bus(mut self, parent: &str, name: &str) -> Self {
-        self.push(dev(name, Some(parent), None, true));
-        self
-    }
-
-    fn child(mut self, parent: &str, name: &str, bus: fstart_types::BusAddress) -> Self {
-        self.push(dev(name, Some(parent), Some(bus), true));
-        self
-    }
-
-    fn disabled_child(mut self, parent: &str, name: &str, bus: fstart_types::BusAddress) -> Self {
-        self.push(dev(name, Some(parent), Some(bus), false));
-        self
-    }
-
-    fn finish(self) -> HVec<DeviceConfig, 32> {
-        self.devices
-    }
-
-    fn push(&mut self, device: DeviceConfig) {
-        self.devices.push(device).expect("device table capacity");
-    }
 }
 
 fn names<const N: usize>(items: [&str; N]) -> HVec<HString<32>, 8> {

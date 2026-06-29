@@ -1,10 +1,10 @@
 //! Foxconn D41S Rust board metadata.
 
-use fstart_device_registry::{i2c_ck505, DriverInstance};
+use fstart_device_registry::{i2c_ck505, DriverBinding, DriverInstance};
 use fstart_driver_ite8721f as ite8721f;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
-use fstart_platform_intel_pineview_ich7::PineviewIch7Platform;
+use fstart_platform_intel_pineview_ich7::{PcieRootPort, PineviewIch7Platform};
 use fstart_types::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
@@ -16,6 +16,8 @@ pub const PLATFORM: Platform = Platform::X86_64;
 
 fn board() -> PineviewIch7Platform {
     PineviewIch7Platform::new(BOARD_NAME, BOARD_PACKAGE)
+        .pcie_port(PcieRootPort::Port0, true)
+        .pcie_port(PcieRootPort::Port1, true)
         .hda(d41s_hda_config())
         .gpio(d41s_gpio_config())
         .superio(d41s_superio_config())
@@ -29,8 +31,8 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_instances() -> Vec<DriverInstance> {
-    board().driver_instances()
+pub fn driver_bindings() -> Vec<DriverBinding> {
+    board().driver_bindings()
 }
 
 #[must_use]

@@ -4,13 +4,13 @@
 //! name, Cargo package, payload file names, and load addresses. Fixed emulator
 //! facts such as flash/RAM windows and default UART configuration live here.
 
-use fstart_device_registry::{ns16550, pl011, DriverInstance};
+use fstart_device_registry::{ns16550, pl011, DriverBinding, DriverInstance};
 use fstart_types::{
     hstr, Board, BoardConfig, BoardInfo, Build, BuildInfo, BuildProfile, Capability, Compression,
-    DigestAlgorithm, FdtSource, FirmwareConfig, FirmwareKind, FlowProfile, ImageBuildInfo,
-    MemoryMap, MemoryRegion, MonolithicConfig, PayloadConfig, PayloadInputInfo, PayloadKind,
-    Platform, RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat, StageBuildInfo,
-    StageLayout,
+    DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig, FirmwareKind, FlowProfile,
+    ImageBuildInfo, MemoryMap, MemoryRegion, MonolithicConfig, PayloadConfig, PayloadInputInfo,
+    PayloadKind, Platform, RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat,
+    StageBuildInfo, StageLayout,
 };
 use heapless::Vec as HVec;
 
@@ -82,9 +82,9 @@ impl QemuRiscv64Virt {
         }
     }
 
-    /// Typed driver configs parallel to [`Self::board_config`] device order.
+    /// Typed driver configs bound to device names.
     #[must_use]
-    pub fn driver_instances(&self) -> Vec<DriverInstance> {
+    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
         vec![DriverInstance::Ns16550(ns16550::Ns16550Config {
             regs: ns16550::AccessMode::Mmio {
                 base: 0x1000_0000,
@@ -93,7 +93,8 @@ impl QemuRiscv64Virt {
             },
             clock_freq: 3_686_400,
             baud_rate: 115_200,
-        })]
+        })
+        .bind("uart0")]
     }
 
     /// Runtime hardware facts for static typed board mode.
@@ -111,7 +112,7 @@ impl QemuRiscv64Virt {
             Platform::Riscv64,
             0x2000_0000,
             self.board_config(),
-            self.driver_instances(),
+            self.driver_bindings(),
         )
     }
 }
@@ -184,9 +185,9 @@ impl QemuAarch64Virt {
         }
     }
 
-    /// Typed driver configs parallel to [`Self::board_config`] device order.
+    /// Typed driver configs bound to device names.
     #[must_use]
-    pub fn driver_instances(&self) -> Vec<DriverInstance> {
+    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
         vec![DriverInstance::Pl011(pl011::Pl011Config {
             base_addr: 0x0900_0000,
             clock_freq: 1_843_200,
@@ -194,7 +195,8 @@ impl QemuAarch64Virt {
             acpi_name: None,
             acpi_gsiv: None,
             acpi_dbg2: false,
-        })]
+        })
+        .bind("uart0")]
     }
 
     /// Runtime hardware facts for static typed board mode.
@@ -212,7 +214,7 @@ impl QemuAarch64Virt {
             Platform::Aarch64,
             0x0000_0000,
             self.board_config(),
-            self.driver_instances(),
+            self.driver_bindings(),
         )
     }
 }
@@ -236,7 +238,7 @@ fn build_info_from_parts(
     platform: Platform,
     stage_load_addr: u64,
     config: BoardConfig,
-    drivers: Vec<DriverInstance>,
+    drivers: Vec<DriverBinding>,
 ) -> BuildInfo {
     let mut build = Build::new(board_name)
         .board_package(board_package)
@@ -321,16 +323,7 @@ fn memory_map(regions: &[(&str, u64, u64, RegionKind)]) -> MemoryMap {
 }
 
 fn single_device(name: &str) -> HVec<fstart_types::DeviceConfig, 32> {
-    let mut devices = HVec::new();
-    devices
-        .push(fstart_types::DeviceConfig {
-            name: hstr(name),
-            parent: None,
-            bus: None,
-            enabled: true,
-        })
-        .expect("device table capacity");
-    devices
+    DeviceTopology::new().root(name).build()
 }
 
 fn security_config() -> SecurityConfig {

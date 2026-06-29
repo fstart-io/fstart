@@ -5,7 +5,7 @@
 //! flow, and default LinuxBoot/OpenSBI placement live in `fstart-board-qemu-virt`.
 
 use fstart_board_qemu_virt::QemuRiscv64Virt;
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::DriverBinding;
 use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform};
 
 /// Stable fstart board name.
@@ -27,9 +27,9 @@ pub fn board_config() -> BoardConfig {
     board().board_config()
 }
 
-/// Typed driver configurations, parallel to [`board_config`] device order.
-pub fn driver_instances() -> Vec<DriverInstance> {
-    board().driver_instances()
+/// Typed driver configurations bound to board device names.
+pub fn driver_bindings() -> Vec<DriverBinding> {
+    board().driver_bindings()
 }
 
 /// Runtime hardware facts for static typed board mode.

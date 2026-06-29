@@ -228,6 +228,32 @@ pub enum BusKind {
 }
 ```
 
+For Rust-authored boards, this generic graph should not require a fake runtime
+driver for every structural topology node. A `DeviceConfig` should carry a
+topology role such as `Runtime`, `PciBridge`, `LpcBus`, or `SmBus`, while real
+driver configs are bound by device name:
+
+```rust
+DeviceTopology::new()
+    .root("northbridge")
+    .root("southbridge")
+    .pci_bridge("southbridge", "pcie0", 0x1c, 0, true)
+    .child_bus("southbridge", "lpc", DeviceRole::LpcBus)
+    .child("lpc", "superio", BusAddress::Lpc(0x2e))
+    .build();
+
+vec![
+    DriverInstance::IntelPineview(pineview_config()).bind("northbridge"),
+    DriverInstance::IntelIch7(ich7_config()).bind("southbridge"),
+    superio_config().bind("superio"),
+]
+```
+
+Host codegen may still lower this to its existing parallel internal tables, but
+that lowering is an implementation detail. Public board/platform APIs should not
+make mainboard crates pad driver arrays with `Structural` placeholders or depend
+on device declaration order for driver association.
+
 That split is important:
 
 - Static typed mode gets compile-time help from typed child builders.

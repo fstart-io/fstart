@@ -3,8 +3,8 @@
 use fstart_board_foxconn_d41s::{
     d41s_ck505_config, d41s_gpio_config, d41s_hda_config, d41s_smbios, d41s_superio_config,
 };
-use fstart_device_registry::DriverInstance;
-use fstart_platform_intel_pineview_ich7::{uefi_payload, PineviewIch7Platform};
+use fstart_device_registry::DriverBinding;
+use fstart_platform_intel_pineview_ich7::{uefi_payload, PcieRootPort, PineviewIch7Platform};
 use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform};
 
 pub const BOARD_NAME: &str = "foxconn-d41s-uefi";
@@ -14,6 +14,8 @@ pub const PLATFORM: Platform = Platform::X86_64;
 fn board() -> PineviewIch7Platform {
     PineviewIch7Platform::new(BOARD_NAME, BOARD_PACKAGE)
         .payload(uefi_payload())
+        .pcie_port(PcieRootPort::Port0, true)
+        .pcie_port(PcieRootPort::Port1, true)
         .hda(d41s_hda_config())
         .gpio(d41s_gpio_config())
         .superio(d41s_superio_config())
@@ -27,8 +29,8 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_instances() -> Vec<DriverInstance> {
-    board().driver_instances()
+pub fn driver_bindings() -> Vec<DriverBinding> {
+    board().driver_bindings()
 }
 
 #[must_use]

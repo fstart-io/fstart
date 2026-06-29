@@ -12,19 +12,19 @@
 //! This keeps `fstart-types` independent of driver crate details while
 //! giving codegen compile-time-validated, typed configs.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use heapless::String as HString;
 use serde::Deserialize;
 
 use fstart_device_registry::{
-    DriverInstance, Service, ServiceSet, StructuralConfig, StructuralKind,
+    DriverBinding, DriverInstance, Service, ServiceSet, StructuralConfig, StructuralKind,
 };
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::device::BusAddress;
 use fstart_types::{
-    BoardConfig, DeviceConfig, DeviceId, DeviceNode, MemoryMap, PayloadConfig, Platform,
-    SecurityConfig, SocImageFormat, StageLayout,
+    BoardConfig, DeviceConfig, DeviceId, DeviceNode, DeviceRole, MemoryMap, PayloadConfig,
+    Platform, SecurityConfig, SocImageFormat, StageLayout,
 };
 
 fn default_enabled() -> bool {
@@ -186,19 +186,25 @@ pub fn load_parsed_board_from_str(contents: &str, source: &str) -> Result<Parsed
 /// those Rust values. No RON/JSON/postcard transport is involved.
 pub fn load_parsed_board_from_rust(
     config: BoardConfig,
-    driver_instances: Vec<DriverInstance>,
+    driver_bindings: Vec<DriverBinding>,
 ) -> Result<ParsedBoard, String> {
-    if config.devices.len() != driver_instances.len() {
-        return Err(format!(
-            "board '{}' declares {} devices but {} driver instances",
-            config.name,
-            config.devices.len(),
-            driver_instances.len()
-        ));
+    let mut bindings_by_device = HashMap::with_capacity(driver_bindings.len());
+    for binding in driver_bindings {
+        let device = binding.device.to_string();
+        if bindings_by_device
+            .insert(device.clone(), binding.instance)
+            .is_some()
+        {
+            return Err(format!(
+                "board '{}' has duplicate driver binding for device '{}'",
+                config.name, device
+            ));
+        }
     }
 
     let mut device_tree: Vec<DeviceNode> = Vec::with_capacity(config.devices.len());
-    let mut device_services: Vec<ServiceSet> = Vec::with_capacity(driver_instances.len());
+    let mut driver_instances: Vec<DriverInstance> = Vec::with_capacity(config.devices.len());
+    let mut device_services: Vec<ServiceSet> = Vec::with_capacity(config.devices.len());
 
     for (idx, device) in config.devices.iter().enumerate() {
         let parent_idx = match &device.parent {
@@ -224,7 +230,39 @@ pub fn load_parsed_board_from_rust(
             parent: parent_idx,
             depth,
         });
-        device_services.push(driver_instances[idx].provided_services());
+
+        let instance = if device.role.is_runtime() {
+            bindings_by_device
+                .remove(device.name.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "runtime device '{}' in board '{}' has no named driver binding",
+                        device.name, config.name
+                    )
+                })?
+        } else {
+            if bindings_by_device.contains_key(device.name.as_str()) {
+                return Err(format!(
+                    "structural device '{}' in board '{}' must not have a runtime driver binding",
+                    device.name, config.name
+                ));
+            }
+            DriverInstance::Structural(StructuralConfig {
+                kind: structural_kind_for_role(device.role)?,
+            })
+        };
+        device_services.push(instance.provided_services());
+        driver_instances.push(instance);
+    }
+
+    if !bindings_by_device.is_empty() {
+        let mut names: Vec<_> = bindings_by_device.keys().cloned().collect();
+        names.sort();
+        return Err(format!(
+            "board '{}' has driver bindings for unknown devices: {}",
+            config.name,
+            names.join(", ")
+        ));
     }
 
     Ok(ParsedBoard {
@@ -234,6 +272,16 @@ pub fn load_parsed_board_from_rust(
         device_services,
         acpi_only_devices: Vec::new(),
     })
+}
+
+fn structural_kind_for_role(role: DeviceRole) -> Result<StructuralKind, String> {
+    match role {
+        DeviceRole::Runtime => Err("runtime device role is not structural".to_string()),
+        DeviceRole::PciBridge => Ok(StructuralKind::PciBridge),
+        DeviceRole::LpcBus => Ok(StructuralKind::LpcBus),
+        DeviceRole::SmBus => Ok(StructuralKind::SmBus),
+        DeviceRole::GenericBus => Ok(StructuralKind::GenericBus),
+    }
 }
 
 /// Load only the [`BoardConfig`] metadata (no driver instance data).
@@ -347,17 +395,18 @@ fn flatten_device(
 
     // Structural nodes become explicit instances in the typed driver instance
     // table. DeviceConfig stays pure topology metadata.
-    let instance = match (rd.driver, rd.kind, rd.acpi) {
+    let (instance, role) = match (rd.driver, rd.kind, rd.acpi) {
         (_, None, Some(_)) => {
             return Err(format!(
                 "ACPI-only descriptor '{}' must use 'kind: AcpiOnly'",
                 rd.name
             ));
         }
-        (Some(instance), None, None) => instance,
-        (None, Some(RonDeviceKind::Structural(kind)), None) => {
-            DriverInstance::Structural(StructuralConfig { kind })
-        }
+        (Some(instance), None, None) => (instance, DeviceRole::Runtime),
+        (None, Some(RonDeviceKind::Structural(kind)), None) => (
+            DriverInstance::Structural(StructuralConfig { kind }),
+            role_for_structural_kind(kind),
+        ),
         (Some(_), Some(RonDeviceKind::Structural(_)), _)
         | (_, Some(RonDeviceKind::Structural(_)), Some(_)) => {
             return Err(format!(
@@ -382,6 +431,7 @@ fn flatten_device(
             name: rd.name,
             parent: parent_name,
             bus: rd.bus,
+            role,
             enabled: rd.enabled,
         })
         .map_err(|_| "board declares more than 32 runtime/structural devices".to_string())?;
@@ -398,6 +448,15 @@ fn flatten_device(
     }
 
     Ok(())
+}
+
+fn role_for_structural_kind(kind: StructuralKind) -> DeviceRole {
+    match kind {
+        StructuralKind::PciBridge => DeviceRole::PciBridge,
+        StructuralKind::LpcBus => DeviceRole::LpcBus,
+        StructuralKind::SmBus => DeviceRole::SmBus,
+        StructuralKind::GenericBus => DeviceRole::GenericBus,
+    }
 }
 
 fn flatten_acpi_only_device(rd: RonDevice, state: &mut FlattenState<'_>) -> Result<(), String> {

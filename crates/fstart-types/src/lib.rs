@@ -30,9 +30,10 @@ pub use board::{
 };
 pub use builder::{
     hstr, hvec, Board, BoardBlob, BoardDataMode, BoardInfo, Build, BuildInfo, BuildProfile,
-    FlowProfile, ImageBuildInfo, PayloadInputInfo, StageBuildInfo, BOARD_BLOB_ABI_VERSION,
+    DeviceTopology, FlowProfile, ImageBuildInfo, PayloadInputInfo, StageBuildInfo,
+    BOARD_BLOB_ABI_VERSION,
 };
-pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode};
+pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode, DeviceRole};
 pub use ffs::{
     AnchorBlock, Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, Region,
     RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,

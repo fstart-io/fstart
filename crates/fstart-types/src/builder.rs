@@ -8,7 +8,10 @@
 use heapless::{String as HString, Vec as HVec};
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceConfig, DeviceEdge, MemoryMap, PayloadConfig, Platform, SocImageFormat};
+use crate::{
+    BusAddress, DeviceConfig, DeviceEdge, DeviceRole, MemoryMap, PayloadConfig, Platform,
+    SocImageFormat,
+};
 
 /// Construct a bounded heapless string for static board metadata.
 ///
@@ -29,6 +32,103 @@ pub fn hvec<T, const N: usize, const C: usize>(items: [T; N]) -> HVec<T, C> {
         out.push(item).ok().expect("heapless vec capacity");
     }
     out
+}
+
+/// Generic board-device topology builder.
+///
+/// Platform and board crates should use this for flat [`DeviceConfig`] tables
+/// instead of each carrying local `push`/capacity boilerplate. It deliberately
+/// records topology facts only. Runtime driver bindings live separately and are
+/// matched by device name by host codegen.
+#[derive(Debug, Clone)]
+pub struct DeviceTopology {
+    devices: HVec<DeviceConfig, 32>,
+}
+
+impl DeviceTopology {
+    /// Start an empty device topology.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            devices: HVec::new(),
+        }
+    }
+
+    /// Add a root runtime device.
+    #[must_use]
+    pub fn root(self, name: &str) -> Self {
+        self.device(name, None, None, DeviceRole::Runtime, true)
+    }
+
+    /// Add a child runtime device.
+    #[must_use]
+    pub fn child(self, parent: &str, name: &str, bus: BusAddress) -> Self {
+        self.device(name, Some(parent), Some(bus), DeviceRole::Runtime, true)
+    }
+
+    /// Add a child runtime device with an explicit enabled policy.
+    #[must_use]
+    pub fn runtime_child(self, parent: &str, name: &str, bus: BusAddress, enabled: bool) -> Self {
+        self.device(name, Some(parent), Some(bus), DeviceRole::Runtime, enabled)
+    }
+
+    /// Add a driverless child bus owned by its parent device.
+    #[must_use]
+    pub fn child_bus(self, parent: &str, name: &str, role: DeviceRole) -> Self {
+        assert!(!role.is_runtime(), "child_bus requires a structural role");
+        self.device(name, Some(parent), None, role, true)
+    }
+
+    /// Add a driverless PCI/PCIe bridge/root-port node.
+    #[must_use]
+    pub fn pci_bridge(
+        self,
+        parent: &str,
+        name: &str,
+        device: u8,
+        function: u8,
+        enabled: bool,
+    ) -> Self {
+        self.device(
+            name,
+            Some(parent),
+            Some(BusAddress::Pci(device, function)),
+            DeviceRole::PciBridge,
+            enabled,
+        )
+    }
+
+    /// Finish as the bounded flat table consumed by existing board metadata.
+    #[must_use]
+    pub fn build(self) -> HVec<DeviceConfig, 32> {
+        self.devices
+    }
+
+    fn device(
+        mut self,
+        name: &str,
+        parent: Option<&str>,
+        bus: Option<BusAddress>,
+        role: DeviceRole,
+        enabled: bool,
+    ) -> Self {
+        self.devices
+            .push(DeviceConfig {
+                name: hstr(name),
+                parent: parent.map(hstr),
+                bus,
+                role,
+                enabled,
+            })
+            .expect("device table capacity");
+        self
+    }
+}
+
+impl Default for DeviceTopology {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Dynamic-board blob ABI version emitted by [`Board::build_blob`].
@@ -410,7 +510,7 @@ mod tests {
     use heapless::String as HString;
 
     use super::{Board, Build, BuildProfile, FlowProfile};
-    use crate::{io16, lpc_child, BusKind, BusPortId, DeviceConfig, DeviceEdge};
+    use crate::{io16, lpc_child, BusKind, BusPortId, DeviceConfig, DeviceEdge, DeviceRole};
 
     #[test]
     fn build_info_builder_records_host_metadata() {
@@ -444,6 +544,7 @@ mod tests {
             name: device_name,
             parent: None,
             bus: None,
+            role: DeviceRole::Runtime,
             enabled: true,
         };
 

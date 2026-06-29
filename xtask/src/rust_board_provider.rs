@@ -5,12 +5,12 @@
 //! RON/JSON/postcard transport.
 
 use fstart_codegen::ron_loader::{load_parsed_board_from_rust, ParsedBoard};
-use fstart_device_registry::DriverInstance;
+use fstart_device_registry::DriverBinding;
 use fstart_types::{BoardConfig, BuildInfo};
 
 pub fn parsed_board(board: &str) -> Option<Result<ParsedBoard, String>> {
-    let (config, drivers) = board_config_and_drivers(board)?;
-    Some(load_parsed_board_from_rust(config, drivers))
+    let (config, driver_bindings) = board_config_and_driver_bindings(board)?;
+    Some(load_parsed_board_from_rust(config, driver_bindings))
 }
 
 pub fn build_info(board: &str) -> Option<BuildInfo> {
@@ -23,23 +23,23 @@ pub fn build_info(board: &str) -> Option<BuildInfo> {
     })
 }
 
-pub fn board_config_and_drivers(board: &str) -> Option<(BoardConfig, Vec<DriverInstance>)> {
+pub fn board_config_and_driver_bindings(board: &str) -> Option<(BoardConfig, Vec<DriverBinding>)> {
     Some(match board {
         "qemu-riscv64" => (
             fstart_board_qemu_riscv64::board_config(),
-            fstart_board_qemu_riscv64::driver_instances(),
+            fstart_board_qemu_riscv64::driver_bindings(),
         ),
         "qemu-aarch64" => (
             fstart_board_qemu_aarch64::board_config(),
-            fstart_board_qemu_aarch64::driver_instances(),
+            fstart_board_qemu_aarch64::driver_bindings(),
         ),
         "foxconn-d41s" => (
             fstart_board_foxconn_d41s::board_config(),
-            fstart_board_foxconn_d41s::driver_instances(),
+            fstart_board_foxconn_d41s::driver_bindings(),
         ),
         "foxconn-d41s-uefi" => (
             fstart_board_foxconn_d41s_uefi::board_config(),
-            fstart_board_foxconn_d41s_uefi::driver_instances(),
+            fstart_board_foxconn_d41s_uefi::driver_bindings(),
         ),
         _ => return None,
     })

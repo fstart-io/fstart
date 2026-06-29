@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use fstart_codegen::ron_loader::load_parsed_board_from_rust;
-use fstart_device_registry::DriverInstance;
-use fstart_types::{BoardConfig, BuildInfo, Platform};
+use fstart_device_registry::DriverBinding;
+use fstart_types::{BoardConfig, BuildInfo, DeviceRole, Platform};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -28,9 +28,10 @@ struct RustBoardCase {
     driver_feature: &'static str,
     root_device: &'static str,
     device_count: usize,
-    driver_count: usize,
+    binding_count: usize,
+    parsed_driver_count: usize,
     board_config: fn() -> BoardConfig,
-    driver_instances: fn() -> Vec<DriverInstance>,
+    driver_bindings: fn() -> Vec<DriverBinding>,
     build_info: fn() -> BuildInfo,
 }
 
@@ -43,9 +44,10 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "ns16550",
         root_device: "uart0",
         device_count: 1,
-        driver_count: 1,
+        binding_count: 1,
+        parsed_driver_count: 1,
         board_config: fstart_board_qemu_riscv64::board_config,
-        driver_instances: fstart_board_qemu_riscv64::driver_instances,
+        driver_bindings: fstart_board_qemu_riscv64::driver_bindings,
         build_info: fstart_board_qemu_riscv64::build_info,
     },
     RustBoardCase {
@@ -56,9 +58,10 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "pl011",
         root_device: "uart0",
         device_count: 1,
-        driver_count: 1,
+        binding_count: 1,
+        parsed_driver_count: 1,
         board_config: fstart_board_qemu_aarch64::board_config,
-        driver_instances: fstart_board_qemu_aarch64::driver_instances,
+        driver_bindings: fstart_board_qemu_aarch64::driver_bindings,
         build_info: fstart_board_qemu_aarch64::build_info,
     },
     RustBoardCase {
@@ -69,9 +72,10 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "intel-pineview",
         root_device: "northbridge",
         device_count: 10,
-        driver_count: 10,
+        binding_count: 4,
+        parsed_driver_count: 10,
         board_config: fstart_board_foxconn_d41s::board_config,
-        driver_instances: fstart_board_foxconn_d41s::driver_instances,
+        driver_bindings: fstart_board_foxconn_d41s::driver_bindings,
         build_info: fstart_board_foxconn_d41s::build_info,
     },
     RustBoardCase {
@@ -82,9 +86,10 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "intel-pineview",
         root_device: "northbridge",
         device_count: 10,
-        driver_count: 10,
+        binding_count: 4,
+        parsed_driver_count: 10,
         board_config: fstart_board_foxconn_d41s_uefi::board_config,
-        driver_instances: fstart_board_foxconn_d41s_uefi::driver_instances,
+        driver_bindings: fstart_board_foxconn_d41s_uefi::driver_bindings,
         build_info: fstart_board_foxconn_d41s_uefi::build_info,
     },
 ];
@@ -95,25 +100,45 @@ fn rust_boards_parse_from_direct_rust_metadata() {
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             for case in RUST_BOARD_CASES {
-                let parsed =
-                    load_parsed_board_from_rust((case.board_config)(), (case.driver_instances)())
-                        .unwrap_or_else(|e| {
-                            panic!(
-                                "Rust-authored {} metadata parses through codegen: {e}",
-                                case.board
-                            )
-                        });
+                let driver_bindings = (case.driver_bindings)();
+                assert_eq!(driver_bindings.len(), case.binding_count);
+
+                let parsed = load_parsed_board_from_rust((case.board_config)(), driver_bindings)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "Rust-authored {} metadata parses through codegen: {e}",
+                            case.board
+                        )
+                    });
 
                 assert_eq!(parsed.config.name.as_str(), case.board);
                 assert_eq!(parsed.config.platform, case.platform);
                 assert_eq!(parsed.config.devices.len(), case.device_count);
                 assert_eq!(parsed.config.devices[0].name.as_str(), case.root_device);
-                assert_eq!(parsed.driver_instances.len(), case.driver_count);
+                assert_eq!(parsed.driver_instances.len(), case.parsed_driver_count);
+                if case.board.starts_with("foxconn-d41s") {
+                    assert_device_role(&parsed.config, "pcie0", DeviceRole::PciBridge, true);
+                    assert_device_role(&parsed.config, "pcie1", DeviceRole::PciBridge, true);
+                    assert_device_role(&parsed.config, "pcie2", DeviceRole::PciBridge, false);
+                    assert_device_role(&parsed.config, "pcie3", DeviceRole::PciBridge, false);
+                    assert_device_role(&parsed.config, "lpc", DeviceRole::LpcBus, true);
+                    assert_device_role(&parsed.config, "smbus", DeviceRole::SmBus, true);
+                }
             }
         })
         .expect("spawn board metadata test")
         .join()
         .expect("board metadata test panicked");
+}
+
+fn assert_device_role(config: &BoardConfig, name: &str, role: DeviceRole, enabled: bool) {
+    let device = config
+        .devices
+        .iter()
+        .find(|device| device.name.as_str() == name)
+        .unwrap_or_else(|| panic!("{} should declare device {name}", config.name));
+    assert_eq!(device.role, role, "device {name} role");
+    assert_eq!(device.enabled, enabled, "device {name} enabled policy");
 }
 
 #[test]

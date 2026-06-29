@@ -90,19 +90,19 @@ fn load_rust_board(board: &str) -> Result<ron_loader::ParsedBoard, String> {
     let (config, drivers) = match board {
         "qemu-riscv64" => (
             fstart_board_qemu_riscv64::board_config(),
-            fstart_board_qemu_riscv64::driver_instances(),
+            fstart_board_qemu_riscv64::driver_bindings(),
         ),
         "qemu-aarch64" => (
             fstart_board_qemu_aarch64::board_config(),
-            fstart_board_qemu_aarch64::driver_instances(),
+            fstart_board_qemu_aarch64::driver_bindings(),
         ),
         "foxconn-d41s" => (
             fstart_board_foxconn_d41s::board_config(),
-            fstart_board_foxconn_d41s::driver_instances(),
+            fstart_board_foxconn_d41s::driver_bindings(),
         ),
         "foxconn-d41s-uefi" => (
             fstart_board_foxconn_d41s_uefi::board_config(),
-            fstart_board_foxconn_d41s_uefi::driver_instances(),
+            fstart_board_foxconn_d41s_uefi::driver_bindings(),
         ),
         _ => return Err(format!("unknown Rust board '{board}'")),
     };

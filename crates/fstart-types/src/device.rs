@@ -35,6 +35,34 @@ fn default_enabled() -> bool {
     true
 }
 
+/// How a [`DeviceConfig`] participates in the board topology.
+///
+/// Rust-authored boards should use this instead of carrying fake driver
+/// instances for topology-only nodes. Runtime devices bind to a real driver by
+/// name. Structural roles are driverless child buses or bridge ports owned by
+/// their parent device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DeviceRole {
+    /// Normal runtime device with a typed driver configuration.
+    #[default]
+    Runtime,
+    /// PCI/PCIe bridge or root-port grouping downstream children.
+    PciBridge,
+    /// LPC bus branch below a southbridge.
+    LpcBus,
+    /// SMBus branch below a southbridge.
+    SmBus,
+    /// Generic driverless topology-only bus branch.
+    GenericBus,
+}
+
+impl DeviceRole {
+    /// Returns `true` when this role is backed by a runtime driver binding.
+    pub const fn is_runtime(self) -> bool {
+        matches!(self, Self::Runtime)
+    }
+}
+
 /// Stable device identifier — index into the flat device table.
 ///
 /// Maximum 256 devices per board (more than sufficient for firmware).
@@ -91,6 +119,9 @@ pub struct DeviceConfig {
     /// to their children.
     #[serde(default)]
     pub bus: Option<BusAddress>,
+    /// Runtime device or driverless structural topology role.
+    #[serde(default)]
+    pub role: DeviceRole,
     /// Whether this device is enabled.
     ///
     /// Disabled devices still appear in the device tree (and in ACPI
