@@ -1,6 +1,6 @@
 //! Lenovo ThinkPad X61 Rust board metadata.
 
-use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
 use fstart_driver_i2c_ck505::I2cCk505Config;
 use fstart_driver_nsc_pc87382 as pc87382;
 use fstart_driver_nsc_pc87392 as pc87392;
@@ -93,7 +93,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
+pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
     board().driver_bindings()
 }
 

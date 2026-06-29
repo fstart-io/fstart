@@ -1,6 +1,6 @@
 //! Rust board metadata for `qemu-aarch64-uefi`.
 
-use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
 use fstart_driver_bochs_display::BochsDisplayConfig;
 use fstart_driver_pci_ecam::PciEcamConfig;
 use fstart_driver_pl011::Pl011Config;
@@ -78,7 +78,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
+pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
     vec![
         DriverInstance::Pl011(Pl011Config {
             base_addr: 0x0900_0000,
@@ -125,7 +125,9 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings.iter().filter_map(DriverBinding::driver_feature),
+        bindings
+            .iter()
+            .filter_map(DriverInstanceBinding::driver_feature),
     )
 }
 

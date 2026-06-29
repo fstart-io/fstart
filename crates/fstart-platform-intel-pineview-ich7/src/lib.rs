@@ -8,8 +8,8 @@
 //! and payload choice.
 
 use fstart_device_registry::{
-    intel_pineview, DriverBinding, DriverInstance, PlatformAttachPoint, PlatformDeviceExtensions,
-    PlatformTopology,
+    intel_pineview, DriverInstance, DriverInstanceBinding, PlatformAttachPoint,
+    PlatformDeviceExtensions, PlatformTopology,
 };
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
@@ -221,7 +221,7 @@ impl PineviewIch7Platform {
     }
 
     #[must_use]
-    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
+    pub fn driver_bindings(&self) -> Vec<DriverInstanceBinding> {
         self.platform_topology().build().1
     }
 
@@ -238,7 +238,9 @@ impl PineviewIch7Platform {
             self.board_name,
             self.board_package,
             &config,
-            drivers.iter().filter_map(DriverBinding::driver_feature),
+            drivers
+                .iter()
+                .filter_map(DriverInstanceBinding::driver_feature),
         )
     }
 }

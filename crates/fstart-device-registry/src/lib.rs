@@ -16,6 +16,8 @@
 use heapless::{String as HString, Vec as HVec};
 use serde::{Deserialize, Serialize};
 
+pub use fstart_board_meta::{StructuralConfig, StructuralKind};
+
 use fstart_superio::SuperIoChip;
 
 // ---------------------------------------------------------------------------
@@ -217,41 +219,6 @@ pub enum ConstructionKind {
 // DriverInstance — typed enum of all known driver configs
 // ---------------------------------------------------------------------------
 
-/// Typed topology role for structural (driverless) device tree nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StructuralKind {
-    /// PCI bridge/port grouping children below a PCI root or host.
-    PciBridge,
-    /// LPC bus branch below a southbridge.
-    LpcBus,
-    /// SMBus branch below a southbridge.
-    SmBus,
-    /// Generic topology-only bus branch.
-    GenericBus,
-    /// Plug-and-Play logical device below a SuperIO chip.
-    PnpDevice,
-}
-
-/// Configuration for structural (driverless) device tree nodes.
-///
-/// Used by `DriverInstance::Structural`. The node remains topology only and
-/// provides no Rust service traits; `kind` records the board-owned topology
-/// role so bus hierarchy validation does not need pseudo-services.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StructuralConfig {
-    /// Board-owned topology role for this structural node.
-    pub kind: StructuralKind,
-}
-
-impl Default for StructuralConfig {
-    fn default() -> Self {
-        Self {
-            kind: StructuralKind::GenericBus,
-        }
-    }
-}
-
 /// One Rust-owned block-device candidate for firmware-image boot media.
 ///
 /// Used for platforms where hardware boot-source registers select among block
@@ -452,7 +419,7 @@ pub enum DriverInstance {
 /// legacy parallel table internally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DriverBinding {
+pub struct DriverInstanceBinding {
     /// Device name in the board's flat topology table.
     pub device: HString<32>,
     /// Typed runtime driver configuration for that device.
@@ -506,7 +473,7 @@ pub struct PlatformAttachPoint<'a> {
 #[derive(Debug, Clone)]
 pub struct PlatformTopology {
     topology: fstart_types::DeviceTopology,
-    bindings: Vec<DriverBinding>,
+    bindings: Vec<DriverInstanceBinding>,
 }
 
 impl PlatformDeviceExtensions {
@@ -684,7 +651,7 @@ impl PlatformTopology {
         self,
     ) -> (
         heapless::Vec<fstart_types::DeviceConfig, 32>,
-        Vec<DriverBinding>,
+        Vec<DriverInstanceBinding>,
     ) {
         (self.topology.build(), self.bindings)
     }
@@ -696,7 +663,7 @@ impl Default for PlatformTopology {
     }
 }
 
-impl DriverBinding {
+impl DriverInstanceBinding {
     /// Bind a typed driver instance to a board device name.
     #[must_use]
     pub fn new(device: &str, instance: DriverInstance) -> Self {
@@ -719,8 +686,8 @@ impl DriverBinding {
 impl DriverInstance {
     /// Bind this instance to a named board device.
     #[must_use]
-    pub fn bind(self, device: &str) -> DriverBinding {
-        DriverBinding::new(device, self)
+    pub fn bind(self, device: &str) -> DriverInstanceBinding {
+        DriverInstanceBinding::new(device, self)
     }
 
     /// Derive the SuperIO PnP logical devices for this driver instance.

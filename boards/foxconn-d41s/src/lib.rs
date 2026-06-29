@@ -1,6 +1,6 @@
 //! Foxconn D41S Rust board metadata.
 
-use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
 use fstart_driver_i2c_ck505::I2cCk505Config;
 use fstart_driver_ite8721f as ite8721f;
 use fstart_gpio_ich as gpio;
@@ -53,7 +53,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
+pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
     board().driver_bindings()
 }
 

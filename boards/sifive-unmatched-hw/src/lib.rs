@@ -1,6 +1,6 @@
 //! Rust board metadata for SiFive HiFive Unmatched hardware.
 
-use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
 use fstart_driver_fu740_ddr::Fu740DdrConfig;
 use fstart_driver_fu740_prci::Fu740PrciConfig;
 use fstart_driver_sifive_uart::SifiveUartConfig;
@@ -63,7 +63,7 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
+pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
     vec![
         DriverInstance::Fu740Prci(Fu740PrciConfig {
             base_addr: 0x1000_0000,
@@ -104,7 +104,9 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings.iter().filter_map(DriverBinding::driver_feature),
+        bindings
+            .iter()
+            .filter_map(DriverInstanceBinding::driver_feature),
     )
 }
 

@@ -1,6 +1,6 @@
 //! Rust board metadata for LeMaker BananaPi M1.
 
-use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_sunxi_a20_dramc::SunxiA20DramcConfig;
 use fstart_driver_sunxi_ccu::SunxiA20CcuConfig;
@@ -51,7 +51,7 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
+pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
     vec![
         DriverInstance::SunxiA20Ccu(SunxiA20CcuConfig {
             ccu_base: 0x01c2_0000,
@@ -117,7 +117,9 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings.iter().filter_map(DriverBinding::driver_feature),
+        bindings
+            .iter()
+            .filter_map(DriverInstanceBinding::driver_feature),
     )
 }
 

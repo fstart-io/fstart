@@ -15,8 +15,40 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use heapless::String as HString;
+use serde::{Deserialize, Serialize};
 
 pub use fstart_services::{ServiceKind, ServiceSet};
+
+/// Typed topology role for structural (driverless) device tree nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StructuralKind {
+    /// PCI bridge/port grouping children below a PCI root or host.
+    PciBridge,
+    /// LPC bus branch below a southbridge.
+    LpcBus,
+    /// SMBus branch below a southbridge.
+    SmBus,
+    /// Generic topology-only bus branch.
+    GenericBus,
+    /// Plug-and-Play logical device below a SuperIO chip.
+    PnpDevice,
+}
+
+/// Configuration for structural (driverless) device tree nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StructuralConfig {
+    /// Board-owned topology role for this structural node.
+    pub kind: StructuralKind,
+}
+
+impl Default for StructuralConfig {
+    fn default() -> Self {
+        Self {
+            kind: StructuralKind::GenericBus,
+        }
+    }
+}
 
 /// Build-time metadata supplied by configured board drivers.
 ///

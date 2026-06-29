@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use fstart_codegen::board_loader::load_parsed_board_from_rust;
-use fstart_device_registry::DriverBinding;
+use fstart_device_registry::DriverInstanceBinding;
 use fstart_types::{BoardConfig, BuildInfo, DeviceRole, Platform};
 
 fn repo_root() -> PathBuf {
@@ -30,7 +30,7 @@ struct RustBoardCase {
     binding_count: usize,
     parsed_driver_count: usize,
     board_config: fn() -> BoardConfig,
-    driver_bindings: fn() -> Vec<DriverBinding>,
+    driver_bindings: fn() -> Vec<DriverInstanceBinding>,
     build_info: fn() -> BuildInfo,
 }
 

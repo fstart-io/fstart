@@ -1,6 +1,6 @@
 //! Rust board metadata for `qemu-q35-uefi`.
 
-use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
 use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
@@ -105,7 +105,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
+pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
     vec![
         DriverInstance::Ns16550(Ns16550Config {
             regs: AccessMode::Pio { base: 0x3f8 },
@@ -141,7 +141,9 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings.iter().filter_map(DriverBinding::driver_feature),
+        bindings
+            .iter()
+            .filter_map(DriverInstanceBinding::driver_feature),
     )
 }
 

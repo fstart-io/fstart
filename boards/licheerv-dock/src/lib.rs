@@ -1,6 +1,6 @@
 //! Rust board metadata for Sipeed Lichee RV Dock.
 
-use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_sunxi_d1_ccu::SunxiD1CcuConfig;
 use fstart_driver_sunxi_d1_dramc::SunxiD1DramcConfig;
@@ -57,7 +57,7 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
+pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
     vec![
         DriverInstance::SunxiD1Ccu(SunxiD1CcuConfig {
             ccu_base: 0x0200_1000,
@@ -114,7 +114,9 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings.iter().filter_map(DriverBinding::driver_feature),
+        bindings
+            .iter()
+            .filter_map(DriverInstanceBinding::driver_feature),
     )
 }
 

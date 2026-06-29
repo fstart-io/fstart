@@ -6,7 +6,8 @@
 
 use std::collections::HashMap;
 
-use fstart_device_registry::{DriverBinding, DriverInstance, StructuralConfig, StructuralKind};
+use fstart_board_meta::{StructuralConfig, StructuralKind};
+use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
 use fstart_services::ServiceSet;
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, DeviceId, DeviceNode, DeviceRole};
@@ -32,7 +33,7 @@ pub struct ParsedBoard {
 /// Load and validate a board from native Rust metadata.
 pub fn load_parsed_board_from_rust(
     config: BoardConfig,
-    driver_bindings: Vec<DriverBinding>,
+    driver_bindings: Vec<DriverInstanceBinding>,
 ) -> Result<ParsedBoard, String> {
     load_parsed_board_from_rust_with_acpi(config, driver_bindings, Vec::new())
 }
@@ -44,7 +45,7 @@ pub fn load_parsed_board_from_rust(
 /// topology or driver binding validation.
 pub fn load_parsed_board_from_rust_with_acpi(
     mut config: BoardConfig,
-    driver_bindings: Vec<DriverBinding>,
+    driver_bindings: Vec<DriverInstanceBinding>,
     acpi_only_devices: Vec<AcpiExtraDevice>,
 ) -> Result<ParsedBoard, String> {
     config

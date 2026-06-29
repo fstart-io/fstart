@@ -7,7 +7,8 @@
 //! HDA verbs, SMBIOS identity, payload choice, and optional peripheral instances.
 
 use fstart_device_registry::{
-    DriverBinding, DriverInstance, PlatformAttachPoint, PlatformDeviceExtensions, PlatformTopology,
+    DriverInstance, DriverInstanceBinding, PlatformAttachPoint, PlatformDeviceExtensions,
+    PlatformTopology,
 };
 use fstart_driver_intel_gm965 as gm965;
 use fstart_driver_intel_ich8 as ich8;
@@ -328,7 +329,7 @@ impl Gm965Ich8Platform {
     }
 
     #[must_use]
-    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
+    pub fn driver_bindings(&self) -> Vec<DriverInstanceBinding> {
         self.platform_topology().build().1
     }
 
@@ -345,7 +346,9 @@ impl Gm965Ich8Platform {
             self.board_name,
             self.board_package,
             &config,
-            drivers.iter().filter_map(DriverBinding::driver_feature),
+            drivers
+                .iter()
+                .filter_map(DriverInstanceBinding::driver_feature),
         )
     }
 }
