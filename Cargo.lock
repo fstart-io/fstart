@@ -784,6 +784,7 @@ dependencies = [
  "fstart-driver-sunxi-spi",
  "fstart-mainboard-lenovo-x61",
  "fstart-services",
+ "fstart-superio",
  "fstart-types",
  "heapless",
  "serde",

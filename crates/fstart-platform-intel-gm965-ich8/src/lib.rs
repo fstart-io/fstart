@@ -6,19 +6,20 @@
 //! bindings. Concrete board crates supply board policy such as dock wiring, GPIOs,
 //! HDA verbs, SMBIOS identity, payload choice, and optional peripheral instances.
 
-use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_device_registry::{
+    DriverBinding, DriverInstance, PlatformAttachPoint, PlatformDeviceExtensions, PlatformTopology,
+};
 use fstart_driver_intel_gm965 as gm965;
 use fstart_driver_intel_ich8 as ich8;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
-    board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec, io16,
+    board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec,
     x86_linuxboot_payload, AcpiConfig, AcpiPlatform, BoardConfig, BoardInfo, BootMedium, BuildInfo,
-    BusAddress, Capability, CarConfig, Compression, DeviceConfig, DeviceTopology, FlashLayout,
-    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap, MemoryRegion,
-    PayloadConfig, Platform, RegionKind, RunsFrom, SmbiosConfig, StageConfig, StageLayout,
-    TempRamBuffer,
+    BusAddress, Capability, CarConfig, Compression, DeviceRole, FlashLayout, Io16, IoAddr,
+    MemoryMap, MemoryRegion, PayloadConfig, Platform, RegionKind, RunsFrom, SmbiosConfig,
+    StageConfig, StageLayout, TempRamBuffer,
 };
 use heapless::Vec as HVec;
 
@@ -40,14 +41,13 @@ pub struct Gm965Ich8Platform {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
+    flash_layout: Option<FlashLayout>,
     igd: Gm965IgdConfig,
     hda: Option<hda::HdaConfig>,
     gpio: gpio::GpioConfig,
     smbios: Option<SmbiosConfig>,
     mainboard: Option<RuntimeDevicePolicy>,
-    dlpc_superio: Option<RuntimeDevicePolicy>,
-    dock_superio: Option<RuntimeDevicePolicy>,
-    uart0: Option<RuntimeDevicePolicy>,
+    extensions: PlatformDeviceExtensions,
     clock_generator: Option<RuntimeDevicePolicy>,
     pcie_ports: [bool; 6],
     pcie_slots: [bool; 6],
@@ -98,14 +98,13 @@ impl Gm965Ich8Platform {
             board_name,
             board_package,
             payload: x86_linuxboot_payload(),
+            flash_layout: None,
             igd: Gm965IgdConfig::default(),
             hda: None,
             gpio: gpio::GpioConfig::default(),
             smbios: None,
             mainboard: None,
-            dlpc_superio: None,
-            dock_superio: None,
-            uart0: None,
+            extensions: PlatformDeviceExtensions::new(),
             clock_generator: None,
             pcie_ports: [false; 6],
             pcie_slots: [false; 6],
@@ -113,7 +112,7 @@ impl Gm965Ich8Platform {
             lpc_decode: LpcDecodeConfig::default(),
             gpe0_en: 0,
             gpi_routing: [0; 16],
-            c4_on_c3: false,
+            c4_on_c3: true,
             c5_enable: false,
             c6_enable: false,
             ide: None,
@@ -126,42 +125,42 @@ impl Gm965Ich8Platform {
         }
     }
 
-    #[must_use]
     pub fn payload(mut self, payload: PayloadConfig) -> Self {
         self.payload = payload;
         self
     }
 
+    /// Set the board flash layout.
+    pub fn flash_layout(mut self, flash_layout: Option<FlashLayout>) -> Self {
+        self.flash_layout = flash_layout;
+        self
+    }
+
     /// Set board-specific integrated graphics policy, including VBT source.
-    #[must_use]
     pub fn igd(mut self, igd: Gm965IgdConfig) -> Self {
         self.igd = igd;
         self
     }
 
     /// Set board-specific HD Audio verb tables.
-    #[must_use]
     pub fn hda(mut self, hda: hda::HdaConfig) -> Self {
         self.hda = Some(hda);
         self
     }
 
     /// Set board-specific ICH GPIO pad configuration.
-    #[must_use]
     pub fn gpio(mut self, gpio: gpio::GpioConfig) -> Self {
         self.gpio = gpio;
         self
     }
 
     /// Set board-specific SMBIOS static identity metadata.
-    #[must_use]
     pub fn smbios(mut self, smbios: SmbiosConfig) -> Self {
         self.smbios = Some(smbios);
         self
     }
 
     /// Attach the board-specific mainboard hook driver.
-    #[must_use]
     pub fn mainboard(mut self, mainboard: DriverInstance) -> Self {
         self.mainboard = Some(RuntimeDevicePolicy {
             instance: mainboard,
@@ -170,38 +169,48 @@ impl Gm965Ich8Platform {
         self
     }
 
-    /// Attach the laptop-side DLPC/Super I/O driver.
-    #[must_use]
-    pub fn dlpc_superio(mut self, superio: DriverInstance) -> Self {
-        self.dlpc_superio = Some(RuntimeDevicePolicy {
-            instance: superio,
-            enabled: true,
+    /// Attach a SuperIO chip on the ICH8 LPC bus.
+    pub fn superio(
+        mut self,
+        name: &str,
+        address: IoAddr<Io16>,
+        instance: DriverInstance,
+        enabled: bool,
+    ) -> Self {
+        self.extensions.on("lpc", |lpc| {
+            lpc.runtime_enabled(name, BusAddress::Lpc(address.raw()), enabled, instance);
         });
         self
     }
 
-    /// Attach the optional dock-side Super I/O driver.
-    #[must_use]
-    pub fn dock_superio(mut self, superio: DriverInstance, enabled: bool) -> Self {
-        self.dock_superio = Some(RuntimeDevicePolicy {
-            instance: superio,
-            enabled,
-        });
+    /// Add board devices below the platform-owned LPC bus.
+    pub fn on_lpc<F>(mut self, extend: F) -> Self
+    where
+        F: FnOnce(&mut PlatformAttachPoint<'_>),
+    {
+        self.extensions.on("lpc", extend);
         self
     }
 
-    /// Attach the platform UART driver.
-    #[must_use]
-    pub fn uart0(mut self, uart: DriverInstance) -> Self {
-        self.uart0 = Some(RuntimeDevicePolicy {
-            instance: uart,
-            enabled: true,
-        });
+    /// Add board devices below the platform-owned SMBus.
+    pub fn on_smbus<F>(mut self, extend: F) -> Self
+    where
+        F: FnOnce(&mut PlatformAttachPoint<'_>),
+    {
+        self.extensions.on("smbus", extend);
+        self
+    }
+
+    /// Add board devices below one platform-owned PCIe root port.
+    pub fn on_pcie<F>(mut self, port: PcieRootPort, extend: F) -> Self
+    where
+        F: FnOnce(&mut PlatformAttachPoint<'_>),
+    {
+        self.extensions.on(port.node_name(), extend);
         self
     }
 
     /// Attach the optional CK505/clock-generator driver.
-    #[must_use]
     pub fn clock_generator(mut self, clock_generator: DriverInstance, enabled: bool) -> Self {
         self.clock_generator = Some(RuntimeDevicePolicy {
             instance: clock_generator,
@@ -211,35 +220,30 @@ impl Gm965Ich8Platform {
     }
 
     /// Set board policy for one ICH8 PCIe root port.
-    #[must_use]
     pub fn pcie_port(mut self, port: PcieRootPort, enabled: bool) -> Self {
         self.pcie_ports[port.index()] = enabled;
         self
     }
 
     /// Mark an ICH8 PCIe root port as a physical slot.
-    #[must_use]
     pub fn pcie_slot(mut self, port: PcieRootPort, is_slot: bool) -> Self {
         self.pcie_slots[port.index()] = is_slot;
         self
     }
 
     /// Set PCIe slot power-limit encoding for one root port.
-    #[must_use]
     pub fn pcie_power_limit(mut self, port: PcieRootPort, limit: ich8::PciePowerLimit) -> Self {
         self.pcie_power_limits[port.index()] = limit;
         self
     }
 
     /// Set board-selected LPC fixed decode policy.
-    #[must_use]
     pub fn lpc_fixed_io(mut self, fixed_io: LpcFixedIoDecode) -> Self {
         self.lpc_decode.fixed_io = fixed_io;
         self
     }
 
     /// Add one board-selected LPC generic I/O decode window.
-    #[must_use]
     pub fn lpc_generic_io(mut self, decode: LpcGenericIoDecode) -> Self {
         self.lpc_decode
             .generic_io
@@ -249,84 +253,72 @@ impl Gm965Ich8Platform {
     }
 
     /// Set board-selected ACPI GPE0 enable bits.
-    #[must_use]
     pub const fn gpe0_en(mut self, value: u32) -> Self {
         self.gpe0_en = value;
         self
     }
 
     /// Set board-selected GPI routing policy for GPIO0..15.
-    #[must_use]
     pub const fn gpi_routing(mut self, value: [u8; 16]) -> Self {
         self.gpi_routing = value;
         self
     }
 
     /// Enable C4-on-C3 mobile power policy.
-    #[must_use]
     pub const fn c4_on_c3(mut self, enabled: bool) -> Self {
         self.c4_on_c3 = enabled;
         self
     }
 
     /// Enable C5 PMSYNC policy.
-    #[must_use]
     pub const fn c5_enable(mut self, enabled: bool) -> Self {
         self.c5_enable = enabled;
         self
     }
 
     /// Enable C6 PMSYNC exit timing policy.
-    #[must_use]
     pub const fn c6_enable(mut self, enabled: bool) -> Self {
         self.c6_enable = enabled;
         self
     }
 
     /// Enable and configure IDE/PATA for this board.
-    #[must_use]
     pub const fn ide(mut self, ide: IdeConfig) -> Self {
         self.ide = Some(ide);
         self
     }
 
     /// Enable and configure SATA for this board.
-    #[must_use]
     pub const fn sata(mut self, sata: SataConfig) -> Self {
         self.sata = Some(sata);
         self
     }
 
     /// Enable and configure USB controllers for this board.
-    #[must_use]
     pub const fn usb(mut self, usb: UsbConfig) -> Self {
         self.usb = Some(usb);
         self
     }
 
     /// Add one board-selected ICH8 I/O trap.
-    #[must_use]
     pub fn io_trap(mut self, trap: IoTrapConfig) -> Self {
         self.io_traps.push(trap).expect("ICH8 I/O trap capacity");
         self
     }
 
     /// Set the ACPI C3 latency value in microseconds.
-    #[must_use]
     pub const fn c3_latency(mut self, value: u16) -> Self {
         self.c3_latency = value;
         self
     }
 
     /// Set after-power-failure behaviour: 0=off, 1=on, 2=last-state.
-    #[must_use]
     pub const fn power_on_after_fail(mut self, value: u8) -> Self {
         self.power_on_after_fail = value;
         self
     }
 
     /// Enable ACPI debug hex printing for this board.
-    #[must_use]
     pub const fn acpi_print_hex(mut self, enabled: bool) -> Self {
         self.acpi_print_hex = enabled;
         self
@@ -337,21 +329,8 @@ impl Gm965Ich8Platform {
         BoardConfig {
             name: hstr(self.board_name),
             platform: Platform::X86_64,
-            memory: gm965_ich8_memory(),
-            devices: gm965_ich8_devices(
-                self.pcie_ports,
-                self.dlpc_superio
-                    .as_ref()
-                    .is_none_or(|policy| policy.enabled),
-                self.dock_superio
-                    .as_ref()
-                    .is_some_and(|policy| policy.enabled),
-                self.uart0.as_ref().is_none_or(|policy| policy.enabled),
-                self.clock_generator
-                    .as_ref()
-                    .is_some_and(|policy| policy.enabled),
-                self.mainboard.as_ref().is_none_or(|policy| policy.enabled),
-            ),
+            memory: gm965_ich8_memory(self.flash_layout.clone()),
+            devices: self.platform_topology().build_devices(),
             stages: gm965_ich8_stages(),
             security: dev_security_config("keys/dev-signing.pub"),
             payload: Some(self.payload.clone()),
@@ -370,72 +349,7 @@ impl Gm965Ich8Platform {
 
     #[must_use]
     pub fn driver_bindings(&self) -> Vec<DriverBinding> {
-        let mut bindings = vec![
-            DriverInstance::IntelGm965(gm965_config(self.igd.clone())).bind("northbridge"),
-            DriverInstance::IntelIch8(ich8_config(
-                self.hda.clone(),
-                self.gpio.clone(),
-                self.lpc_decode.clone(),
-                self.gpe0_en,
-                self.gpi_routing,
-                self.c4_on_c3,
-                self.c5_enable,
-                self.c6_enable,
-                self.ide,
-                self.sata,
-                self.usb,
-                self.pcie_ports,
-                self.pcie_slots,
-                self.pcie_power_limits,
-                self.io_traps.clone(),
-                self.c3_latency,
-                self.power_on_after_fail,
-            ))
-            .bind("southbridge"),
-        ];
-
-        bindings.push(
-            self.dlpc_superio
-                .as_ref()
-                .expect("mainboard must provide laptop-side DLPC Super I/O config")
-                .instance
-                .clone()
-                .bind("dlpc_superio"),
-        );
-        bindings.push(
-            self.dock_superio
-                .as_ref()
-                .expect("mainboard must provide dock-side Super I/O config")
-                .instance
-                .clone()
-                .bind("dock_superio"),
-        );
-        bindings.push(
-            self.uart0
-                .as_ref()
-                .expect("mainboard must provide UART config")
-                .instance
-                .clone()
-                .bind("uart0"),
-        );
-        bindings.push(
-            self.clock_generator
-                .as_ref()
-                .expect("mainboard must provide CK505 config")
-                .instance
-                .clone()
-                .bind("ck505"),
-        );
-        bindings.push(
-            self.mainboard
-                .as_ref()
-                .expect("mainboard must provide mainboard hook config")
-                .instance
-                .clone()
-                .bind("mainboard"),
-        );
-
-        bindings
+        self.platform_topology().build().1
     }
 
     #[must_use]
@@ -456,7 +370,83 @@ impl Gm965Ich8Platform {
     }
 }
 
-fn gm965_ich8_memory() -> MemoryMap {
+impl PcieRootPort {
+    const fn node_name(self) -> &'static str {
+        match self {
+            Self::Port1 => "pcie1",
+            Self::Port2 => "pcie2",
+            Self::Port3 => "pcie3",
+            Self::Port4 => "pcie4",
+            Self::Port5 => "pcie5",
+            Self::Port6 => "pcie6",
+        }
+    }
+}
+
+impl Gm965Ich8Platform {
+    fn platform_topology(&self) -> PlatformTopology {
+        PlatformTopology::new()
+            .root(
+                "northbridge",
+                DriverInstance::IntelGm965(gm965_config(self.igd.clone())),
+            )
+            .root(
+                "southbridge",
+                DriverInstance::IntelIch8(ich8_config(
+                    self.hda.clone(),
+                    self.gpio.clone(),
+                    self.lpc_decode.clone(),
+                    self.gpe0_en,
+                    self.gpi_routing,
+                    self.c4_on_c3,
+                    self.c5_enable,
+                    self.c6_enable,
+                    self.ide,
+                    self.sata,
+                    self.usb,
+                    self.pcie_ports,
+                    self.pcie_slots,
+                    self.pcie_power_limits,
+                    self.io_traps.clone(),
+                    self.c3_latency,
+                    self.power_on_after_fail,
+                )),
+            )
+            .pci_bridge("southbridge", "pcie1", 0x1c, 0, self.pcie_ports[0])
+            .pci_bridge("southbridge", "pcie2", 0x1c, 1, self.pcie_ports[1])
+            .pci_bridge("southbridge", "pcie3", 0x1c, 2, self.pcie_ports[2])
+            .pci_bridge("southbridge", "pcie4", 0x1c, 3, self.pcie_ports[3])
+            .pci_bridge("southbridge", "pcie5", 0x1c, 4, self.pcie_ports[4])
+            .pci_bridge("southbridge", "pcie6", 0x1c, 5, self.pcie_ports[5])
+            .child_bus("southbridge", "lpc", DeviceRole::LpcBus)
+            .child_bus("southbridge", "smbus", DeviceRole::SmBus)
+            .runtime(
+                "smbus",
+                "ck505",
+                BusAddress::I2c(0x69),
+                self.clock_generator
+                    .as_ref()
+                    .is_some_and(|policy| policy.enabled),
+                self.clock_generator
+                    .as_ref()
+                    .expect("mainboard must provide CK505 config")
+                    .instance
+                    .clone(),
+            )
+            .root_enabled(
+                "mainboard",
+                self.mainboard.as_ref().is_none_or(|policy| policy.enabled),
+                self.mainboard
+                    .as_ref()
+                    .expect("mainboard must provide mainboard hook config")
+                    .instance
+                    .clone(),
+            )
+            .extend(&self.extensions)
+    }
+}
+
+fn gm965_ich8_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
     MemoryMap {
         regions: hvec([MemoryRegion {
             name: hstr("workram"),
@@ -464,74 +454,12 @@ fn gm965_ich8_memory() -> MemoryMap {
             size: 0x3FF0_0000,
             kind: RegionKind::Ram,
         }]),
-        flash_layout: Some(FlashLayout::IntelIfd(IntelIfdFlashLayout {
-            base: 0xFFC0_0000,
-            size: 0x0040_0000,
-            regions: hvec([
-                IntelIfdRegionConfig {
-                    kind: IntelIfdRegion::Descriptor,
-                    offset: 0x000000,
-                    size: 0x001000,
-                    file: None,
-                },
-                IntelIfdRegionConfig {
-                    kind: IntelIfdRegion::Gbe,
-                    offset: 0x001000,
-                    size: 0x002000,
-                    file: None,
-                },
-                IntelIfdRegionConfig {
-                    kind: IntelIfdRegion::Me,
-                    offset: 0x003000,
-                    size: 0x27D000,
-                    file: None,
-                },
-                IntelIfdRegionConfig {
-                    kind: IntelIfdRegion::Bios,
-                    offset: 0x280000,
-                    size: 0x180000,
-                    file: None,
-                },
-            ]),
-        })),
+        flash_layout,
         car: Some(CarConfig {
             base: 0xFEF0_0000,
             size: 0x80000,
         }),
     }
-}
-
-fn gm965_ich8_devices(
-    pcie_ports: [bool; 6],
-    dlpc_superio_enabled: bool,
-    dock_superio_enabled: bool,
-    uart0_enabled: bool,
-    clock_generator_enabled: bool,
-    mainboard_enabled: bool,
-) -> HVec<DeviceConfig, 32> {
-    DeviceTopology::new()
-        .root("northbridge")
-        .root("southbridge")
-        .pci_bridge("southbridge", "pcie1", 0x1c, 0, pcie_ports[0])
-        .pci_bridge("southbridge", "pcie2", 0x1c, 1, pcie_ports[1])
-        .pci_bridge("southbridge", "pcie3", 0x1c, 2, pcie_ports[2])
-        .pci_bridge("southbridge", "pcie4", 0x1c, 3, pcie_ports[3])
-        .pci_bridge("southbridge", "pcie5", 0x1c, 4, pcie_ports[4])
-        .pci_bridge("southbridge", "pcie6", 0x1c, 5, pcie_ports[5])
-        .lpc_bus("southbridge", "lpc", |lpc| {
-            lpc.runtime_child(
-                "dlpc_superio",
-                BusAddress::Lpc(0x164e),
-                dlpc_superio_enabled,
-            )
-            .runtime_child("dock_superio", BusAddress::Lpc(0x2e), dock_superio_enabled)
-            .runtime_child("uart0", BusAddress::Lpc(io16(0x3f8).raw()), uart0_enabled)
-        })
-        .smbus("southbridge", "smbus", |smbus| {
-            smbus.runtime_child("ck505", BusAddress::I2c(0x69), clock_generator_enabled)
-        })
-        .runtime_root("mainboard", mainboard_enabled)
-        .build()
 }
 
 fn gm965_ich8_stages() -> StageLayout {

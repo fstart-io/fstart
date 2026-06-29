@@ -15,6 +15,7 @@ fn bus_address_tokens(address: Option<BusAddress>) -> TokenStream {
         Some(BusAddress::Lpc(port)) => quote! { Some(fstart_types::BusAddress::Lpc(#port)) },
         Some(BusAddress::I2c(addr)) => quote! { Some(fstart_types::BusAddress::I2c(#addr)) },
         Some(BusAddress::Spi(cs)) => quote! { Some(fstart_types::BusAddress::Spi(#cs)) },
+        Some(BusAddress::Pnp(ldn)) => quote! { Some(fstart_types::BusAddress::Pnp(#ldn)) },
         None => quote! { None },
     }
 }

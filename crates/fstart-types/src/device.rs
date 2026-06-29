@@ -29,6 +29,8 @@ pub enum BusAddress {
     I2c(u8),
     /// SPI chip-select index.
     Spi(u8),
+    /// Plug-and-Play logical device number below a SuperIO config-port device.
+    Pnp(u8),
 }
 
 fn default_enabled() -> bool {
@@ -54,6 +56,8 @@ pub enum DeviceRole {
     SmBus,
     /// Generic driverless topology-only bus branch.
     GenericBus,
+    /// Plug-and-Play logical device below a SuperIO chip.
+    PnpDevice,
 }
 
 impl DeviceRole {

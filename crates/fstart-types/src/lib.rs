@@ -31,8 +31,9 @@ pub use board::{
 pub use builder::{
     board_info_from_config, build_info_from_config, dev_security_config, flow_profile_from_config,
     hstr, hvec, x86_linuxboot_payload, x86_uefi_payload, Board, BoardBlob, BoardDataMode,
-    BoardInfo, Build, BuildInfo, BuildProfile, DeviceBranch, DeviceTopology, FlowProfile,
-    ImageBuildInfo, PayloadInputInfo, StageBuildInfo, BOARD_BLOB_ABI_VERSION,
+    BoardInfo, Build, BuildInfo, BuildProfile, BusChild, DeviceBranch, DeviceTopology, FlowProfile,
+    I2cChild, ImageBuildInfo, LpcChild, PayloadInputInfo, PciChild, SmbusChild, SpiChild,
+    StageBuildInfo, TopologyChild, BOARD_BLOB_ABI_VERSION,
 };
 pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode, DeviceRole};
 pub use ffs::{
@@ -54,5 +55,5 @@ pub use stage::{
 pub use typed::{
     i2c_child, io16, lpc_child, mmio32, pci_child, spi_child, BusKind, BusPortId, ChildAttachment,
     DeviceEdge, I2cBus, Io16, Io8, IoAddr, Irq, LpcBus, Mmio16, Mmio32, Mmio64, Mmio8, MmioAddr,
-    PciBdf, PciBus, SimpleBus, SmbusBus, SpiBus, TypedBus,
+    PciBdf, PciBus, PnpBus, SimpleBus, SmbusBus, SpiBus, TypedBus,
 };

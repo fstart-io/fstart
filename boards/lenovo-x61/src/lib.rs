@@ -1,8 +1,6 @@
 //! Lenovo ThinkPad X61 Rust board metadata.
 
-use fstart_device_registry::{
-    i2c_ck505, lenovo_x61_mainboard, ns16550, DriverBinding, DriverInstance,
-};
+use fstart_device_registry::{i2c_ck505, lenovo_x61_mainboard, DriverBinding, DriverInstance};
 use fstart_driver_nsc_pc87382 as pc87382;
 use fstart_driver_nsc_pc87392 as pc87392;
 use fstart_gpio_ich as gpio;
@@ -14,7 +12,8 @@ use fstart_platform_intel_gm965_ich8::{
 };
 use fstart_types::smbios::{ChassisType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor};
 use fstart_types::{
-    hstr, hvec, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, Platform, SmbiosConfig,
+    hstr, hvec, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, FlashLayout,
+    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
 };
 
 pub const BOARD_NAME: &str = "lenovo-x61";
@@ -24,6 +23,7 @@ pub const PLATFORM: Platform = Platform::X86_64;
 fn board() -> Gm965Ich8Platform {
     Gm965Ich8Platform::new(BOARD_NAME, BOARD_PACKAGE)
         .payload(x86_uefi_payload())
+        .flash_layout(Some(x61_flash_layout()))
         .igd(x61_igd_config())
         .pcie_port(PcieRootPort::Port1, true)
         .pcie_port(PcieRootPort::Port2, true)
@@ -47,7 +47,6 @@ fn board() -> Gm965Ich8Platform {
         })
         .gpe0_en(0x0104_0046)
         .gpi_routing([0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0])
-        .c4_on_c3(true)
         .ide(IdeConfig {
             enable_primary: true,
             enable_secondary: false,
@@ -71,12 +70,14 @@ fn board() -> Gm965Ich8Platform {
             size: 0x10,
             access: IoTrapAccess::Any,
         })
-        .c3_latency(85)
-        .power_on_after_fail(0)
         .acpi_print_hex(true)
-        .dlpc_superio(x61_dlpc_superio_config())
-        .dock_superio(x61_dock_superio_config(), false)
-        .uart0(x61_uart0_config())
+        .superio(
+            "dlpc_superio",
+            io16(0x164e),
+            x61_dlpc_superio_config(),
+            true,
+        )
+        .superio("dock_superio", io16(0x2e), x61_dock_superio_config(), false)
         .clock_generator(x61_ck505_config(), false)
         .mainboard(x61_mainboard_config())
         .smbios(x61_smbios())
@@ -105,6 +106,39 @@ pub fn build_info() -> BuildInfo {
 #[must_use]
 pub const fn board_name() -> &'static str {
     BOARD_NAME
+}
+
+pub fn x61_flash_layout() -> FlashLayout {
+    FlashLayout::IntelIfd(IntelIfdFlashLayout {
+        base: 0xFFC0_0000,
+        size: 0x0040_0000,
+        regions: hvec([
+            IntelIfdRegionConfig {
+                kind: IntelIfdRegion::Descriptor,
+                offset: 0x000000,
+                size: 0x001000,
+                file: None,
+            },
+            IntelIfdRegionConfig {
+                kind: IntelIfdRegion::Gbe,
+                offset: 0x001000,
+                size: 0x002000,
+                file: None,
+            },
+            IntelIfdRegionConfig {
+                kind: IntelIfdRegion::Me,
+                offset: 0x003000,
+                size: 0x27D000,
+                file: None,
+            },
+            IntelIfdRegionConfig {
+                kind: IntelIfdRegion::Bios,
+                offset: 0x280000,
+                size: 0x180000,
+                file: None,
+            },
+        ]),
+    })
 }
 
 pub fn x61_igd_config() -> Gm965IgdConfig {
@@ -573,14 +607,6 @@ pub fn x61_dock_superio_config() -> DriverInstance {
         }),
         gpio: Some(pc87392::GpioConfig { io_base: 0x1620 }),
         ..Default::default()
-    })
-}
-
-pub fn x61_uart0_config() -> DriverInstance {
-    DriverInstance::Ns16550(ns16550::Ns16550Config {
-        regs: ns16550::AccessMode::Pio { base: 0x3f8 },
-        clock_freq: 1_843_200,
-        baud_rate: 115_200,
     })
 }
 

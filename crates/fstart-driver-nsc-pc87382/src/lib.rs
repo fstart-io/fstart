@@ -40,3 +40,6 @@ pub type Pc87382 = SuperIo<Pc87382Chip>;
 
 /// Board-facing config alias.
 pub type Pc87382Config = SuperIoConfig;
+
+/// PC87382 DLPC logical-device number used by the X61 mainboard DLPC block.
+pub const PC87382_DLPC_LDN: u8 = 0x19;

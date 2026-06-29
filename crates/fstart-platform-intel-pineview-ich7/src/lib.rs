@@ -7,18 +7,21 @@
 //! as Super I/O wiring, clock-generator programming, GPIOs, HDA verbs, SMBIOS,
 //! and payload choice.
 
-use fstart_device_registry::{i2c_ck505, intel_pineview, DriverBinding, DriverInstance};
+use fstart_device_registry::{
+    i2c_ck505, intel_pineview, DriverBinding, DriverInstance, PlatformAttachPoint,
+    PlatformDeviceExtensions, PlatformTopology,
+};
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
-    board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec, io16,
+    board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec,
     x86_linuxboot_payload, AcpiConfig, AcpiPlatform, BoardConfig, BoardInfo, BootMedium, BuildInfo,
-    BusAddress, Capability, CarConfig, Compression, CorebootSmmCompat, DeviceConfig,
-    DeviceTopology, MemoryMap, MemoryRegion, PayloadConfig, Platform, RegionKind, RunsFrom,
-    SmbiosConfig, SmmConfig, SmmPlatform, StageConfig, StageLayout, TempRamBuffer,
+    Capability, CarConfig, Compression, CorebootSmmCompat, DeviceRole, Io16, IoAddr, MemoryMap,
+    MemoryRegion, PayloadConfig, Platform, RegionKind, RunsFrom, SmbiosConfig, SmmConfig,
+    SmmPlatform, StageConfig, StageLayout, TempRamBuffer,
 };
 use heapless::Vec as HVec;
 
@@ -32,8 +35,8 @@ pub struct PineviewIch7Platform {
     payload: PayloadConfig,
     hda: Option<hda::HdaConfig>,
     gpio: Option<gpio::GpioConfig>,
-    superio: Option<DriverInstance>,
     clock_generator: Option<i2c_ck505::I2cCk505Config>,
+    extensions: PlatformDeviceExtensions,
     smbios: Option<SmbiosConfig>,
     pcie_ports: [bool; 4],
     lpc_generic_io: HVec<LpcGenericIoDecode, 4>,
@@ -71,8 +74,8 @@ impl PineviewIch7Platform {
             payload: x86_linuxboot_payload(),
             hda: None,
             gpio: None,
-            superio: None,
             clock_generator: None,
+            extensions: PlatformDeviceExtensions::new(),
             smbios: None,
             pcie_ports: [false; 4],
             lpc_generic_io: HVec::new(),
@@ -82,42 +85,65 @@ impl PineviewIch7Platform {
         }
     }
 
-    #[must_use]
     pub fn payload(mut self, payload: PayloadConfig) -> Self {
         self.payload = payload;
         self
     }
 
     /// Set board-specific HD Audio verb tables.
-    #[must_use]
     pub fn hda(mut self, hda: hda::HdaConfig) -> Self {
         self.hda = Some(hda);
         self
     }
 
     /// Set board-specific ICH GPIO pad configuration.
-    #[must_use]
     pub fn gpio(mut self, gpio: gpio::GpioConfig) -> Self {
         self.gpio = Some(gpio);
         self
     }
 
-    /// Set board-specific Super I/O driver config.
-    #[must_use]
-    pub fn superio(mut self, superio: DriverInstance) -> Self {
-        self.superio = Some(superio);
+    /// Attach the board-specific SuperIO chip.
+    pub fn superio(mut self, name: &str, address: IoAddr<Io16>, instance: DriverInstance) -> Self {
+        self.extensions.on("lpc", |lpc| {
+            lpc.runtime(name, fstart_types::BusAddress::Lpc(address.raw()), instance);
+        });
+        self
+    }
+
+    /// Add board devices below the platform-owned LPC bus.
+    pub fn on_lpc<F>(mut self, extend: F) -> Self
+    where
+        F: FnOnce(&mut PlatformAttachPoint<'_>),
+    {
+        self.extensions.on("lpc", extend);
+        self
+    }
+
+    /// Add board devices below the platform-owned SMBus.
+    pub fn on_smbus<F>(mut self, extend: F) -> Self
+    where
+        F: FnOnce(&mut PlatformAttachPoint<'_>),
+    {
+        self.extensions.on("smbus", extend);
+        self
+    }
+
+    /// Add board devices below one platform-owned PCIe root port.
+    pub fn on_pcie<F>(mut self, port: PcieRootPort, extend: F) -> Self
+    where
+        F: FnOnce(&mut PlatformAttachPoint<'_>),
+    {
+        self.extensions.on(port.node_name(), extend);
         self
     }
 
     /// Set board-specific CK505/clock-generator config.
-    #[must_use]
     pub fn clock_generator(mut self, clock_generator: i2c_ck505::I2cCk505Config) -> Self {
         self.clock_generator = Some(clock_generator);
         self
     }
 
     /// Set board-specific SMBIOS static metadata.
-    #[must_use]
     pub fn smbios(mut self, smbios: SmbiosConfig) -> Self {
         self.smbios = Some(smbios);
         self
@@ -127,14 +153,12 @@ impl PineviewIch7Platform {
     ///
     /// The platform default keeps all ports disabled. A mainboard enables only
     /// the ports routed on that board.
-    #[must_use]
     pub fn pcie_port(mut self, port: PcieRootPort, enabled: bool) -> Self {
         self.pcie_ports[port.index()] = enabled;
         self
     }
 
     /// Add one board-selected LPC generic I/O decode window.
-    #[must_use]
     pub fn lpc_generic_io(mut self, decode: LpcGenericIoDecode) -> Self {
         self.lpc_generic_io
             .push(decode)
@@ -143,21 +167,18 @@ impl PineviewIch7Platform {
     }
 
     /// Set board-selected ACPI GPE0 enable bits.
-    #[must_use]
     pub const fn gpe0_en(mut self, value: u32) -> Self {
         self.gpe0_en = value;
         self
     }
 
     /// Enable and configure SATA for this board.
-    #[must_use]
     pub const fn sata(mut self, sata: SataConfig) -> Self {
         self.sata = Some(sata);
         self
     }
 
     /// Enable and configure USB controllers for this board.
-    #[must_use]
     pub const fn usb(mut self, usb: UsbConfig) -> Self {
         self.usb = Some(usb);
         self
@@ -169,7 +190,7 @@ impl PineviewIch7Platform {
             name: hstr(self.board_name),
             platform: Platform::X86_64,
             memory: pineview_ich7_memory(),
-            devices: pineview_ich7_devices(self.pcie_ports),
+            devices: self.platform_topology().build_devices(),
             stages: pineview_ich7_stages(),
             security: dev_security_config("keys/dev-signing.pub"),
             payload: Some(self.payload.clone()),
@@ -196,28 +217,7 @@ impl PineviewIch7Platform {
 
     #[must_use]
     pub fn driver_bindings(&self) -> Vec<DriverBinding> {
-        vec![
-            DriverInstance::IntelPineview(pineview_config()).bind("northbridge"),
-            DriverInstance::IntelIch7(ich7_config(
-                self.hda.clone(),
-                self.gpio.clone().unwrap_or_default(),
-                self.lpc_generic_io.clone(),
-                self.gpe0_en,
-                self.sata,
-                self.usb,
-            ))
-            .bind("southbridge"),
-            self.superio
-                .clone()
-                .expect("mainboard must provide Super I/O config")
-                .bind("superio"),
-            DriverInstance::I2cCk505(
-                self.clock_generator
-                    .clone()
-                    .expect("mainboard must provide CK505 config"),
-            )
-            .bind("ck505"),
-        ]
+        self.platform_topology().build().1
     }
 
     #[must_use]
@@ -235,6 +235,56 @@ impl PineviewIch7Platform {
             &config,
             drivers.iter().filter_map(DriverBinding::driver_feature),
         )
+    }
+}
+
+impl PcieRootPort {
+    const fn node_name(self) -> &'static str {
+        match self {
+            Self::Port0 => "pcie0",
+            Self::Port1 => "pcie1",
+            Self::Port2 => "pcie2",
+            Self::Port3 => "pcie3",
+        }
+    }
+}
+
+impl PineviewIch7Platform {
+    fn platform_topology(&self) -> PlatformTopology {
+        PlatformTopology::new()
+            .root(
+                "northbridge",
+                DriverInstance::IntelPineview(pineview_config()),
+            )
+            .root(
+                "southbridge",
+                DriverInstance::IntelIch7(ich7_config(
+                    self.hda.clone(),
+                    self.gpio.clone().unwrap_or_default(),
+                    self.lpc_generic_io.clone(),
+                    self.gpe0_en,
+                    self.sata,
+                    self.usb,
+                )),
+            )
+            .pci_bridge("southbridge", "pcie0", 0x1c, 0, self.pcie_ports[0])
+            .pci_bridge("southbridge", "pcie1", 0x1c, 1, self.pcie_ports[1])
+            .pci_bridge("southbridge", "pcie2", 0x1c, 2, self.pcie_ports[2])
+            .pci_bridge("southbridge", "pcie3", 0x1c, 3, self.pcie_ports[3])
+            .child_bus("southbridge", "lpc", DeviceRole::LpcBus)
+            .child_bus("southbridge", "smbus", DeviceRole::SmBus)
+            .runtime(
+                "smbus",
+                "ck505",
+                fstart_types::BusAddress::I2c(0x69),
+                true,
+                DriverInstance::I2cCk505(
+                    self.clock_generator
+                        .clone()
+                        .expect("mainboard must provide CK505 config"),
+                ),
+            )
+            .extend(&self.extensions)
     }
 }
 
@@ -262,23 +312,6 @@ fn pineview_ich7_memory() -> MemoryMap {
             size: 0x8000,
         }),
     }
-}
-
-fn pineview_ich7_devices(pcie_ports: [bool; 4]) -> HVec<DeviceConfig, 32> {
-    DeviceTopology::new()
-        .root("northbridge")
-        .root("southbridge")
-        .pci_bridge("southbridge", "pcie0", 0x1c, 0, pcie_ports[0])
-        .pci_bridge("southbridge", "pcie1", 0x1c, 1, pcie_ports[1])
-        .pci_bridge("southbridge", "pcie2", 0x1c, 2, pcie_ports[2])
-        .pci_bridge("southbridge", "pcie3", 0x1c, 3, pcie_ports[3])
-        .lpc_bus("southbridge", "lpc", |lpc| {
-            lpc.lpc_device("superio", io16(0x2e))
-        })
-        .smbus("southbridge", "smbus", |smbus| {
-            smbus.smbus_device("ck505", 0x69)
-        })
-        .build()
 }
 
 fn pineview_ich7_stages() -> StageLayout {

@@ -142,6 +142,8 @@ pub enum BusKind {
     Smbus,
     /// SPI bus.
     Spi,
+    /// Plug-and-Play logical-device bus below a SuperIO config-port device.
+    Pnp,
     /// Non-enumerable memory-mapped simple bus.
     SimpleBus,
 }
@@ -191,6 +193,10 @@ pub enum SmbusBus {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpiBus {}
 
+/// Marker for a typed SuperIO Plug-and-Play logical-device bus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PnpBus {}
+
 /// Marker for a typed non-enumerable simple bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimpleBus {}
@@ -219,6 +225,10 @@ impl TypedBus for SmbusBus {
 
 impl TypedBus for SpiBus {
     const KIND: BusKind = BusKind::Spi;
+}
+
+impl TypedBus for PnpBus {
+    const KIND: BusKind = BusKind::Pnp;
 }
 
 impl TypedBus for SimpleBus {

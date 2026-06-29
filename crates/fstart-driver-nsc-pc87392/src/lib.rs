@@ -40,5 +40,8 @@ pub type Pc87392 = SuperIo<Pc87392Chip>;
 /// Board-facing config alias.
 pub type Pc87392Config = SuperIoConfig;
 
+/// PC87392 floppy-controller logical-device number from coreboot's X61 dock devicetree.
+pub const PC87392_FDC_LDN: u8 = 0x00;
+
 /// PC87392 watchdog logical-device number from coreboot's `pc87392.h`.
 pub const PC87392_WDT_LDN: u8 = 0x0a;

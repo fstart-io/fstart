@@ -13,8 +13,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(unused_imports)] // Conditional imports below
 
-use heapless::String as HString;
+use heapless::{String as HString, Vec as HVec};
 use serde::{Deserialize, Serialize};
+
+use fstart_superio::SuperIoChip;
 
 // ---------------------------------------------------------------------------
 // Re-export driver config types (conditionally based on features)
@@ -367,6 +369,8 @@ pub enum StructuralKind {
     SmBus,
     /// Generic topology-only bus branch.
     GenericBus,
+    /// Plug-and-Play logical device below a SuperIO chip.
+    PnpDevice,
 }
 
 /// Configuration for structural (driverless) device tree nodes.
@@ -727,6 +731,243 @@ pub struct DriverBinding {
     pub instance: DriverInstance,
 }
 
+/// PnP logical-device descriptor derived from a concrete SuperIO driver config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuperIoLdnDescriptor {
+    /// Stable child-node suffix. Platform code prefixes this with the SuperIO node name.
+    pub suffix: &'static str,
+    /// Chip-specific logical-device number selected through config register `0x07`.
+    pub ldn: u8,
+    /// Whether this function is configured/enabled on this board.
+    pub enabled: bool,
+}
+
+/// Board-supplied runtime device to attach to a platform-owned topology point.
+///
+/// Platform crates own the canonical chipset skeleton, while board crates add
+/// devices at named extension points such as an LPC bus, SMBus, or PCIe root
+/// port.  This helper keeps the runtime device declaration and its driver
+/// binding together so board/platform code cannot forget one side.
+#[derive(Debug, Clone)]
+pub struct PlatformRuntimeDevice {
+    /// Runtime device name in the flattened board topology.
+    pub name: HString<32>,
+    /// Parent node supplied by the platform topology template.
+    pub parent: HString<32>,
+    /// Physical attachment below the parent.
+    pub bus: fstart_types::BusAddress,
+    /// Whether the board declares this device present/enabled.
+    pub enabled: bool,
+    /// Typed runtime driver configuration for this device.
+    pub instance: DriverInstance,
+}
+
+/// Reusable collection of board additions for platform topology templates.
+#[derive(Debug, Clone, Default)]
+pub struct PlatformDeviceExtensions {
+    runtime_devices: Vec<PlatformRuntimeDevice>,
+}
+
+/// Scoped builder for one platform-owned attachment point.
+pub struct PlatformAttachPoint<'a> {
+    parent: &'static str,
+    extensions: &'a mut PlatformDeviceExtensions,
+}
+
+/// Platform topology plus the driver bindings produced while authoring it.
+#[derive(Debug, Clone)]
+pub struct PlatformTopology {
+    topology: fstart_types::DeviceTopology,
+    bindings: Vec<DriverBinding>,
+}
+
+impl PlatformDeviceExtensions {
+    /// Create an empty extension set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Author board devices below a platform-owned parent node.
+    pub fn on<F>(&mut self, parent: &'static str, extend: F)
+    where
+        F: FnOnce(&mut PlatformAttachPoint<'_>),
+    {
+        let mut point = PlatformAttachPoint {
+            parent,
+            extensions: self,
+        };
+        extend(&mut point);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &PlatformRuntimeDevice> {
+        self.runtime_devices.iter()
+    }
+}
+
+impl<'a> PlatformAttachPoint<'a> {
+    /// Add a runtime child with an explicit attachment address.
+    pub fn runtime(
+        &mut self,
+        name: &str,
+        bus: fstart_types::BusAddress,
+        instance: DriverInstance,
+    ) -> &mut Self {
+        self.runtime_enabled(name, bus, true, instance)
+    }
+
+    /// Add a runtime child with an explicit enabled policy.
+    pub fn runtime_enabled(
+        &mut self,
+        name: &str,
+        bus: fstart_types::BusAddress,
+        enabled: bool,
+        instance: DriverInstance,
+    ) -> &mut Self {
+        self.extensions.runtime_devices.push(PlatformRuntimeDevice {
+            name: fstart_types::hstr(name),
+            parent: fstart_types::hstr(self.parent),
+            bus,
+            enabled,
+            instance,
+        });
+        self
+    }
+
+    /// Add a PCI child below this attachment point.
+    pub fn pci(
+        &mut self,
+        name: &str,
+        device: u8,
+        function: u8,
+        instance: DriverInstance,
+    ) -> &mut Self {
+        self.runtime(
+            name,
+            fstart_types::BusAddress::Pci(device, function),
+            instance,
+        )
+    }
+
+    /// Add an LPC child below this attachment point.
+    pub fn lpc(&mut self, name: &str, config_port: u16, instance: DriverInstance) -> &mut Self {
+        self.runtime(name, fstart_types::BusAddress::Lpc(config_port), instance)
+    }
+
+    /// Add an SMBus/I2C-addressed child below this attachment point.
+    pub fn i2c(&mut self, name: &str, address: u8, instance: DriverInstance) -> &mut Self {
+        self.runtime(name, fstart_types::BusAddress::I2c(address), instance)
+    }
+
+    /// Add an SPI child below this attachment point.
+    pub fn spi(&mut self, name: &str, chip_select: u8, instance: DriverInstance) -> &mut Self {
+        self.runtime(name, fstart_types::BusAddress::Spi(chip_select), instance)
+    }
+}
+
+impl PlatformTopology {
+    /// Start an empty platform topology template.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            topology: fstart_types::DeviceTopology::new(),
+            bindings: Vec::new(),
+        }
+    }
+
+    /// Add a root runtime device and bind its driver in one step.
+    #[must_use]
+    pub fn root(mut self, name: &str, instance: DriverInstance) -> Self {
+        self.topology = self.topology.root(name);
+        self.bindings.push(instance.bind(name));
+        self
+    }
+
+    /// Add a root runtime device with an explicit enabled policy and bind its driver.
+    #[must_use]
+    pub fn root_enabled(mut self, name: &str, enabled: bool, instance: DriverInstance) -> Self {
+        self.topology = self.topology.runtime_root(name, enabled);
+        self.bindings.push(instance.bind(name));
+        self
+    }
+
+    /// Add a driverless child bus owned by a platform device.
+    #[must_use]
+    pub fn child_bus(mut self, parent: &str, name: &str, role: fstart_types::DeviceRole) -> Self {
+        self.topology = self.topology.child_bus(parent, name, role);
+        self
+    }
+
+    /// Add a driverless PCI/PCIe bridge or root-port node.
+    #[must_use]
+    pub fn pci_bridge(
+        mut self,
+        parent: &str,
+        name: &str,
+        device: u8,
+        function: u8,
+        enabled: bool,
+    ) -> Self {
+        self.topology = self
+            .topology
+            .pci_bridge(parent, name, device, function, enabled);
+        self
+    }
+
+    /// Add a runtime child and bind its driver in one step.
+    #[must_use]
+    pub fn runtime(
+        mut self,
+        parent: &str,
+        name: &str,
+        bus: fstart_types::BusAddress,
+        enabled: bool,
+        instance: DriverInstance,
+    ) -> Self {
+        self.topology = self.topology.runtime_child(parent, name, bus, enabled);
+        self.bindings.push(instance.bind(name));
+        self
+    }
+
+    /// Apply board-supplied runtime devices to this platform topology.
+    #[must_use]
+    pub fn extend(mut self, extensions: &PlatformDeviceExtensions) -> Self {
+        for device in extensions.iter() {
+            self = self.runtime(
+                device.parent.as_str(),
+                device.name.as_str(),
+                device.bus,
+                device.enabled,
+                device.instance.clone(),
+            );
+        }
+        self
+    }
+
+    /// Finish as the flattened runtime device table.
+    #[must_use]
+    pub fn build_devices(self) -> heapless::Vec<fstart_types::DeviceConfig, 32> {
+        self.topology.build()
+    }
+
+    /// Finish as flattened devices and matching driver bindings.
+    #[must_use]
+    pub fn build(
+        self,
+    ) -> (
+        heapless::Vec<fstart_types::DeviceConfig, 32>,
+        Vec<DriverBinding>,
+    ) {
+        (self.topology.build(), self.bindings)
+    }
+}
+
+impl Default for PlatformTopology {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DriverBinding {
     /// Bind a typed driver instance to a board device name.
     #[must_use]
@@ -752,6 +993,152 @@ impl DriverInstance {
     #[must_use]
     pub fn bind(self, device: &str) -> DriverBinding {
         DriverBinding::new(device, self)
+    }
+
+    /// Derive the SuperIO PnP logical devices for this driver instance.
+    ///
+    /// Boards select and configure the concrete SuperIO chip. The chip driver owns
+    /// the mapping from function to LDN, so board crates never spell out what an
+    /// LDN means.
+    pub fn superio_ldns(&self) -> HVec<SuperIoLdnDescriptor, 16> {
+        let mut ldns = HVec::new();
+        match self {
+            #[cfg(feature = "ite8721f")]
+            Self::Ite8721f(cfg) => {
+                push_superio_ldn(
+                    &mut ldns,
+                    "com1",
+                    <fstart_driver_ite8721f::Ite8721fChip as SuperIoChip>::COM1_LDN,
+                    cfg.com1.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "com2",
+                    <fstart_driver_ite8721f::Ite8721fChip as SuperIoChip>::COM2_LDN,
+                    cfg.com2.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "parallel",
+                    <fstart_driver_ite8721f::Ite8721fChip as SuperIoChip>::PARALLEL_LDN,
+                    cfg.parallel.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "ec",
+                    <fstart_driver_ite8721f::Ite8721fChip as SuperIoChip>::EC_LDN,
+                    cfg.env_controller.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "keyboard",
+                    <fstart_driver_ite8721f::Ite8721fChip as SuperIoChip>::KBC_LDN,
+                    cfg.keyboard.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "mouse",
+                    <fstart_driver_ite8721f::Ite8721fChip as SuperIoChip>::MOUSE_LDN,
+                    cfg.mouse.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "gpio",
+                    <fstart_driver_ite8721f::Ite8721fChip as SuperIoChip>::GPIO_LDN,
+                    cfg.gpio.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "cir",
+                    <fstart_driver_ite8721f::Ite8721fChip as SuperIoChip>::CIR_LDN,
+                    cfg.cir.is_some(),
+                );
+            }
+            #[cfg(feature = "nsc-pc87382")]
+            Self::NscPc87382(cfg) => {
+                push_superio_ldn(
+                    &mut ldns,
+                    "com2",
+                    <fstart_driver_nsc_pc87382::Pc87382Chip as SuperIoChip>::COM2_LDN,
+                    cfg.com2.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "cir",
+                    <fstart_driver_nsc_pc87382::Pc87382Chip as SuperIoChip>::CIR_LDN,
+                    cfg.cir.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "gpio",
+                    <fstart_driver_nsc_pc87382::Pc87382Chip as SuperIoChip>::GPIO_LDN,
+                    cfg.gpio.is_some(),
+                );
+                ldns.push(SuperIoLdnDescriptor {
+                    suffix: "dlpc",
+                    ldn: fstart_driver_nsc_pc87382::PC87382_DLPC_LDN,
+                    enabled: true,
+                })
+                .expect("SuperIO LDN descriptor capacity");
+            }
+            #[cfg(feature = "nsc-pc87392")]
+            Self::NscPc87392(cfg) => {
+                ldns.push(SuperIoLdnDescriptor {
+                    suffix: "fdc",
+                    ldn: fstart_driver_nsc_pc87392::PC87392_FDC_LDN,
+                    enabled: false,
+                })
+                .expect("SuperIO LDN descriptor capacity");
+                push_superio_ldn(
+                    &mut ldns,
+                    "parallel",
+                    <fstart_driver_nsc_pc87392::Pc87392Chip as SuperIoChip>::PARALLEL_LDN,
+                    cfg.parallel.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "com2",
+                    <fstart_driver_nsc_pc87392::Pc87392Chip as SuperIoChip>::COM2_LDN,
+                    cfg.com2.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "com1",
+                    <fstart_driver_nsc_pc87392::Pc87392Chip as SuperIoChip>::COM1_LDN,
+                    cfg.com1.is_some(),
+                );
+                push_superio_ldn(
+                    &mut ldns,
+                    "gpio",
+                    <fstart_driver_nsc_pc87392::Pc87392Chip as SuperIoChip>::GPIO_LDN,
+                    cfg.gpio.is_some(),
+                );
+                ldns.push(SuperIoLdnDescriptor {
+                    suffix: "wdt",
+                    ldn: fstart_driver_nsc_pc87392::PC87392_WDT_LDN,
+                    enabled: false,
+                })
+                .expect("SuperIO LDN descriptor capacity");
+            }
+            _ => {}
+        }
+        ldns
+    }
+}
+
+fn push_superio_ldn(
+    ldns: &mut HVec<SuperIoLdnDescriptor, 16>,
+    suffix: &'static str,
+    ldn: Option<u8>,
+    enabled: bool,
+) {
+    if let Some(ldn) = ldn {
+        ldns.push(SuperIoLdnDescriptor {
+            suffix,
+            ldn,
+            enabled,
+        })
+        .expect("SuperIO LDN descriptor capacity");
     }
 }
 

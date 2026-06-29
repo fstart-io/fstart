@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     effective_stage_load_addr, BusAddress, Compression, DeviceConfig, DeviceEdge, DeviceRole,
     DigestAlgorithm, FdtSource, I2cBus, Io16, IoAddr, LpcBus, MemoryMap, PayloadConfig,
-    PayloadKind, PciBdf, PciBus, Platform, SecurityConfig, SignatureAlgorithm, SmbusBus,
+    PayloadKind, PciBdf, PciBus, Platform, PnpBus, SecurityConfig, SignatureAlgorithm, SmbusBus,
     SocImageFormat, SpiBus, StageLayout, TypedBus,
 };
 
@@ -271,10 +271,12 @@ fn bus_kind(role: DeviceRole, bus: Option<BusAddress>) -> crate::BusKind {
         Some(BusAddress::Lpc(_)) => crate::BusKind::Lpc,
         Some(BusAddress::I2c(_)) => crate::BusKind::I2c,
         Some(BusAddress::Spi(_)) => crate::BusKind::Spi,
+        Some(BusAddress::Pnp(_)) => crate::BusKind::Pnp,
         None => match role {
             DeviceRole::PciBridge => crate::BusKind::Pci,
             DeviceRole::LpcBus => crate::BusKind::Lpc,
             DeviceRole::SmBus => crate::BusKind::Smbus,
+            DeviceRole::PnpDevice => crate::BusKind::Pnp,
             DeviceRole::GenericBus | DeviceRole::Runtime => crate::BusKind::SimpleBus,
         },
     }
@@ -288,7 +290,175 @@ pub struct DeviceBranch<'a, B = crate::SimpleBus> {
     _bus: core::marker::PhantomData<B>,
 }
 
+/// Lowered child device produced by typed bus-child descriptors.
+#[derive(Debug, Clone)]
+pub struct TopologyChild {
+    name: HString<32>,
+    address: BusAddress,
+    enabled: bool,
+}
+
+impl TopologyChild {
+    /// Construct a lowered child device attachment.
+    pub fn new(name: &str, address: BusAddress) -> Self {
+        Self {
+            name: hstr(name),
+            address,
+            enabled: true,
+        }
+    }
+
+    /// Set whether the child is present/enabled in this board configuration.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+/// A child descriptor that can attach to bus `B`.
+pub trait BusChild<B: TypedBus> {
+    /// Lower this typed child into generic topology facts.
+    fn into_topology_child(self) -> TopologyChild;
+}
+
+/// Child device that attaches to a PCI bus.
+#[derive(Debug, Clone)]
+pub struct PciChild(TopologyChild);
+
+impl PciChild {
+    /// Create a PCI child at the given BDF.
+    pub fn new(name: &str, bdf: PciBdf) -> Self {
+        Self(TopologyChild::new(
+            name,
+            BusAddress::Pci(bdf.device, bdf.function),
+        ))
+    }
+
+    /// Set whether the child is present/enabled in this board configuration.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.0 = self.0.enabled(enabled);
+        self
+    }
+}
+
+impl BusChild<PciBus> for PciChild {
+    fn into_topology_child(self) -> TopologyChild {
+        self.0
+    }
+}
+
+/// Child device that attaches to an LPC bus.
+#[derive(Debug, Clone)]
+pub struct LpcChild(TopologyChild);
+
+impl LpcChild {
+    /// Create an LPC child at the given config-port address.
+    pub fn new(name: &str, config_port: IoAddr<Io16>) -> Self {
+        Self(TopologyChild::new(name, BusAddress::Lpc(config_port.raw())))
+    }
+
+    /// Set whether the child is present/enabled in this board configuration.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.0 = self.0.enabled(enabled);
+        self
+    }
+}
+
+impl BusChild<LpcBus> for LpcChild {
+    fn into_topology_child(self) -> TopologyChild {
+        self.0
+    }
+}
+
+/// Child device that attaches to an I2C bus.
+#[derive(Debug, Clone)]
+pub struct I2cChild(TopologyChild);
+
+impl I2cChild {
+    /// Create an I2C child at the given 7-bit address.
+    pub fn new(name: &str, address: u8) -> Self {
+        Self(TopologyChild::new(name, BusAddress::I2c(address)))
+    }
+
+    /// Set whether the child is present/enabled in this board configuration.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.0 = self.0.enabled(enabled);
+        self
+    }
+}
+
+impl BusChild<I2cBus> for I2cChild {
+    fn into_topology_child(self) -> TopologyChild {
+        self.0
+    }
+}
+
+/// Child device that attaches to an SMBus.
+#[derive(Debug, Clone)]
+pub struct SmbusChild(TopologyChild);
+
+impl SmbusChild {
+    /// Create an SMBus child at the given 7-bit address.
+    pub fn new(name: &str, address: u8) -> Self {
+        Self(TopologyChild::new(name, BusAddress::I2c(address)))
+    }
+
+    /// Set whether the child is present/enabled in this board configuration.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.0 = self.0.enabled(enabled);
+        self
+    }
+}
+
+impl BusChild<SmbusBus> for SmbusChild {
+    fn into_topology_child(self) -> TopologyChild {
+        self.0
+    }
+}
+
+/// Child device that attaches to an SPI bus.
+#[derive(Debug, Clone)]
+pub struct SpiChild(TopologyChild);
+
+impl SpiChild {
+    /// Create an SPI child at the given chip-select index.
+    pub fn new(name: &str, chip_select: u8) -> Self {
+        Self(TopologyChild::new(name, BusAddress::Spi(chip_select)))
+    }
+
+    /// Set whether the child is present/enabled in this board configuration.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.0 = self.0.enabled(enabled);
+        self
+    }
+}
+
+impl BusChild<SpiBus> for SpiChild {
+    fn into_topology_child(self) -> TopologyChild {
+        self.0
+    }
+}
+
 impl<'a, B> DeviceBranch<'a, B> {
+    /// Attach a typed child accepted by this branch's bus type.
+    pub fn attach<C>(self, child: C) -> Self
+    where
+        B: TypedBus,
+        C: BusChild<B>,
+    {
+        let child = child.into_topology_child();
+        Self {
+            topology: self.topology.runtime_child(
+                self.parent,
+                child.name.as_str(),
+                child.address,
+                child.enabled,
+            ),
+            parent: self.parent,
+            _bus: core::marker::PhantomData,
+        }
+    }
+
     /// Add a runtime child to this branch's parent bus.
     #[must_use]
     pub fn child(self, name: &str, bus: BusAddress) -> Self {
@@ -332,7 +502,7 @@ impl<'a> DeviceBranch<'a, PciBus> {
     /// Add a child on this PCI bus using a typed BDF address.
     #[must_use]
     pub fn pci_device(self, name: &str, bdf: PciBdf) -> Self {
-        self.child(name, BusAddress::Pci(bdf.device, bdf.function))
+        self.attach(PciChild::new(name, bdf))
     }
 }
 
@@ -340,7 +510,55 @@ impl<'a> DeviceBranch<'a, LpcBus> {
     /// Add a child on this LPC bus using a typed config-port address.
     #[must_use]
     pub fn lpc_device(self, name: &str, config_port: IoAddr<Io16>) -> Self {
-        self.child(name, BusAddress::Lpc(config_port.raw()))
+        self.attach(LpcChild::new(name, config_port))
+    }
+
+    /// Add a SuperIO chip on this LPC bus and describe its PnP logical devices.
+    pub fn superio<'b, F>(
+        self,
+        name: &'b str,
+        config_port: IoAddr<Io16>,
+        enabled: bool,
+        ldns: F,
+    ) -> Self
+    where
+        F: FnOnce(DeviceBranch<'b, PnpBus>) -> DeviceBranch<'b, PnpBus>,
+    {
+        let topology = self.topology.device(
+            name,
+            Some(self.parent),
+            Some(BusAddress::Lpc(config_port.raw())),
+            DeviceRole::Runtime,
+            enabled,
+        );
+        let topology = ldns(DeviceBranch {
+            topology,
+            parent: name,
+            _bus: core::marker::PhantomData,
+        })
+        .finish();
+        DeviceBranch {
+            topology,
+            parent: self.parent,
+            _bus: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a> DeviceBranch<'a, PnpBus> {
+    /// Add a structural Plug-and-Play logical device below a SuperIO chip.
+    pub fn ldn(self, name: &str, ldn: u8, enabled: bool) -> Self {
+        Self {
+            topology: self.topology.device(
+                name,
+                Some(self.parent),
+                Some(BusAddress::Pnp(ldn)),
+                DeviceRole::PnpDevice,
+                enabled,
+            ),
+            parent: self.parent,
+            _bus: core::marker::PhantomData,
+        }
     }
 }
 
@@ -348,7 +566,7 @@ impl<'a> DeviceBranch<'a, SmbusBus> {
     /// Add a child on this SMBus using a 7-bit address.
     #[must_use]
     pub fn smbus_device(self, name: &str, address: u8) -> Self {
-        self.child(name, BusAddress::I2c(address))
+        self.attach(SmbusChild::new(name, address))
     }
 }
 
@@ -356,7 +574,7 @@ impl<'a> DeviceBranch<'a, I2cBus> {
     /// Add a child on this I2C bus using a 7-bit address.
     #[must_use]
     pub fn i2c_device(self, name: &str, address: u8) -> Self {
-        self.child(name, BusAddress::I2c(address))
+        self.attach(I2cChild::new(name, address))
     }
 }
 
@@ -364,7 +582,7 @@ impl<'a> DeviceBranch<'a, SpiBus> {
     /// Add a child on this SPI bus using a chip-select index.
     #[must_use]
     pub fn spi_device(self, name: &str, chip_select: u8) -> Self {
-        self.child(name, BusAddress::Spi(chip_select))
+        self.attach(SpiChild::new(name, chip_select))
     }
 }
 
@@ -960,22 +1178,32 @@ mod tests {
         let topology = DeviceTopology::new()
             .root("southbridge")
             .lpc_bus("southbridge", "lpc", |lpc| {
-                lpc.lpc_device("superio", io16(0x2e))
+                lpc.superio("superio", io16(0x2e), true, |pnp| {
+                    pnp.ldn("superio_com1", 0x01, true)
+                })
             })
             .smbus("southbridge", "smbus", |smbus| {
                 smbus.smbus_device("spd0", 0x50)
             });
         let board = Board::new("typed-topology").topology(topology).build();
 
-        assert_eq!(board.devices.len(), 5);
+        assert_eq!(board.devices.len(), 6);
         assert_eq!(board.devices[2].parent.as_ref().unwrap().as_str(), "lpc");
         assert_eq!(board.devices[2].bus, Some(crate::BusAddress::Lpc(0x2e)));
-        assert_eq!(board.devices[4].parent.as_ref().unwrap().as_str(), "smbus");
-        assert_eq!(board.devices[4].bus, Some(crate::BusAddress::I2c(0x50)));
-        assert_eq!(board.edges.len(), 4);
+        assert_eq!(
+            board.devices[3].parent.as_ref().unwrap().as_str(),
+            "superio"
+        );
+        assert_eq!(board.devices[3].bus, Some(crate::BusAddress::Pnp(0x01)));
+        assert_eq!(board.devices[5].parent.as_ref().unwrap().as_str(), "smbus");
+        assert_eq!(board.devices[5].bus, Some(crate::BusAddress::I2c(0x50)));
+        assert_eq!(board.edges.len(), 5);
         assert_eq!(board.edges[1].parent, 1);
         assert_eq!(board.edges[1].child, 2);
         assert_eq!(board.edges[1].port.kind, BusKind::Lpc);
+        assert_eq!(board.edges[2].parent, 2);
+        assert_eq!(board.edges[2].child, 3);
+        assert_eq!(board.edges[2].port.kind, BusKind::Pnp);
     }
 
     #[test]

@@ -299,6 +299,7 @@ fn structural_kind_for_role(role: DeviceRole) -> Result<StructuralKind, String> 
         DeviceRole::LpcBus => Ok(StructuralKind::LpcBus),
         DeviceRole::SmBus => Ok(StructuralKind::SmBus),
         DeviceRole::GenericBus => Ok(StructuralKind::GenericBus),
+        DeviceRole::PnpDevice => Ok(StructuralKind::PnpDevice),
     }
 }
 
@@ -474,6 +475,7 @@ fn role_for_structural_kind(kind: StructuralKind) -> DeviceRole {
         StructuralKind::LpcBus => DeviceRole::LpcBus,
         StructuralKind::SmBus => DeviceRole::SmBus,
         StructuralKind::GenericBus => DeviceRole::GenericBus,
+        StructuralKind::PnpDevice => DeviceRole::PnpDevice,
     }
 }
 

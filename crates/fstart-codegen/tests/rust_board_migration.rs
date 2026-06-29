@@ -84,9 +84,9 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         feature: "x86_64",
         driver_feature: "intel-gm965",
         root_device: "northbridge",
-        device_count: 15,
-        binding_count: 7,
-        parsed_driver_count: 15,
+        device_count: 14,
+        binding_count: 6,
+        parsed_driver_count: 14,
         board_config: fstart_board_lenovo_x61::board_config,
         driver_bindings: fstart_board_lenovo_x61::driver_bindings,
         build_info: fstart_board_lenovo_x61::build_info,
@@ -137,6 +137,7 @@ fn rust_boards_parse_from_direct_rust_metadata() {
                     assert_device_role(&parsed.config, "pcie5", DeviceRole::PciBridge, false);
                     assert_device_role(&parsed.config, "pcie6", DeviceRole::PciBridge, false);
                     assert_device_role(&parsed.config, "dock_superio", DeviceRole::Runtime, false);
+                    assert_device_role(&parsed.config, "dlpc_superio", DeviceRole::Runtime, true);
                     assert_device_role(&parsed.config, "ck505", DeviceRole::Runtime, false);
                 }
                 if case.board.starts_with("foxconn-d41s") {
@@ -145,6 +146,7 @@ fn rust_boards_parse_from_direct_rust_metadata() {
                     assert_device_role(&parsed.config, "pcie2", DeviceRole::PciBridge, false);
                     assert_device_role(&parsed.config, "pcie3", DeviceRole::PciBridge, false);
                     assert_device_role(&parsed.config, "lpc", DeviceRole::LpcBus, true);
+                    assert_device_role(&parsed.config, "superio", DeviceRole::Runtime, true);
                     assert_device_role(&parsed.config, "smbus", DeviceRole::SmBus, true);
                 }
             }
