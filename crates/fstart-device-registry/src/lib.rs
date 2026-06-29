@@ -1612,32 +1612,6 @@ impl fstart_board_meta::BoardDriver for DriverInstance {
         self.provided_services()
     }
 
-    fn pci_root_backend(&self) -> Option<fstart_board_meta::PciRootBackend> {
-        if !self.provides(Service::PciRootBus) {
-            return None;
-        }
-
-        match self.driver_name() {
-            "q35-hostbridge" => Some(fstart_board_meta::PciRootBackend::Q35HostBridge),
-            _ => Some(fstart_board_meta::PciRootBackend::GenericEcam),
-        }
-    }
-
-    fn build_firmware_image(
-        &self,
-        ctx: &fstart_board_meta::BuildFirmwareImageContext<'_>,
-    ) -> Result<Option<fstart_services::FirmwareImage>, heapless::String<128>> {
-        let legacy_ctx = BuildFirmwareImageContext {
-            flash_layout: ctx.flash_layout,
-            intel_ifd: ctx.intel_ifd,
-        };
-        self.build_firmware_image(&legacy_ctx).map_err(|err| {
-            let mut out = heapless::String::new();
-            let _ = out.push_str(&err);
-            out
-        })
-    }
-
     fn clone_box(&self) -> Box<dyn fstart_board_meta::BoardDriver> {
         Box::new(self.clone())
     }

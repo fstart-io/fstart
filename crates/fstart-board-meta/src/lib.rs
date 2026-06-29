@@ -18,46 +18,17 @@ use heapless::String as HString;
 
 pub use fstart_services::{ServiceKind, ServiceSet};
 
-/// Host/build-time inputs for hardware firmware-image providers.
-///
-/// Runtime providers read chipset registers. Host tooling cannot, so it supplies
-/// equivalent build artifacts here, such as an Intel Flash Descriptor blob.
-pub struct BuildFirmwareImageContext<'a> {
-    /// Optional board-declared flash layout policy.
-    pub flash_layout: Option<&'a fstart_types::memory::FlashLayout>,
-    /// Optional Intel Flash Descriptor bytes for descriptor-based SPI flash.
-    pub intel_ifd: Option<&'a [u8]>,
-}
-
-/// PCI root implementation selected by a board driver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PciRootBackend {
-    /// Generic ECAM-backed PCI root.
-    GenericEcam,
-    /// QEMU/Intel Q35 host bridge.
-    Q35HostBridge,
-}
-
 /// Build-time metadata supplied by configured board drivers.
+///
+/// This trait intentionally describes only generic driver facts. Platform,
+/// chipset, firmware-image, flash-layout, and packaging policy belongs in
+/// board/platform build metadata, not on individual driver configs.
 pub trait BoardDriver: Debug + Send + Sync + 'static {
     /// Cargo feature that enables this driver in `fstart-stage`.
     fn feature(&self) -> &'static str;
 
     /// Runtime services this configured driver provides.
     fn services(&self) -> ServiceSet;
-
-    /// PCI root backend, when this driver provides a PCI root bus.
-    fn pci_root_backend(&self) -> Option<PciRootBackend> {
-        None
-    }
-
-    /// Build-time firmware image mapping, if this driver provides one.
-    fn build_firmware_image(
-        &self,
-        _ctx: &BuildFirmwareImageContext<'_>,
-    ) -> Result<Option<fstart_services::FirmwareImage>, HString<128>> {
-        Ok(None)
-    }
 
     /// Clone this configured driver behind a trait object.
     fn clone_box(&self) -> Box<dyn BoardDriver>;

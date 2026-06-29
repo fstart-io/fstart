@@ -2303,7 +2303,6 @@ dependencies = [
  "fstart-board-foxconn-d41s-uefi",
  "fstart-board-lenovo-x61",
  "fstart-board-licheerv-dock",
- "fstart-board-meta",
  "fstart-board-orangepi-pc2",
  "fstart-board-orangepi-r1",
  "fstart-board-qemu-aarch64",
