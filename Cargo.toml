@@ -117,6 +117,7 @@ embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", default-features = false, features = ["serde"] }
 ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
+zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 tock-registers = "0.10"
 x86 = { version = "0.52", default-features = false }
 

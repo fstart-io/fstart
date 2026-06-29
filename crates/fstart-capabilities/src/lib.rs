@@ -254,24 +254,12 @@ pub fn sig_verify(anchor_data: &[u8], media: &(impl BootMedia + ?Sized)) {
         }
     };
 
-    let mut regions = 0usize;
-    let mut entries = 0usize;
-    for region in &manifest.regions {
-        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
-            fstart_log::info!(
-                "sig verify: region '{}' ({} entries)",
-                region.name.as_str(),
-                children.len()
-            );
-            regions += 1;
-            entries += children.len();
-        }
-    }
+    let summary = manifest.summary();
 
     fstart_log::info!(
         "sig verify: manifest signature verified ({} regions, {} entries); file digests verify after load",
-        regions,
-        entries
+        summary.regions,
+        summary.entries
     );
 }
 
@@ -536,41 +524,28 @@ pub fn payload_load(anchor_data: &[u8], media: &(impl BootMedia + ?Sized), jump_
         }
     };
 
-    // Look for a Payload file type in any container region
-    let mut payload_found = None;
-    for region in &manifest.regions {
-        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
-            for entry in children {
-                if let fstart_types::ffs::EntryContent::File { file_type, .. } = &entry.content {
-                    if *file_type == fstart_types::ffs::FileType::Payload {
-                        payload_found = Some((region, entry));
-                        break;
-                    }
-                }
-            }
-        }
-        if payload_found.is_some() {
-            break;
-        }
-    }
-
-    let (region, entry) = match payload_found {
-        Some(found) => found,
-        None => {
+    let file = match manifest.find_file_by_type(fstart_types::ffs::FileType::Payload) {
+        Ok(file) => file,
+        Err(fstart_ffs::ReaderError::FileNotFound) => {
             fstart_log::error!("payload load: no payload found in manifest");
+            return;
+        }
+        Err(e) => {
+            fstart_log::error!("payload load: manifest error: {}", reader_error_str(e));
             return;
         }
     };
 
-    fstart_log::info!("payload load: loading '{}'", entry.name.as_str());
+    let name = file.name().unwrap_or("<invalid>");
+    fstart_log::info!("payload load: loading '{}'", name);
 
     // Load segments
     let image_size = effective_image_size(media.size(), &anchor);
-    let entry_addr = match load_entry_segments_from_media(media, entry, region, image_size) {
+    let entry_addr = match load_file_segments_from_media(media, &file, image_size) {
         Some(addr) => addr,
         None => return,
     };
-    if !verify_loaded_entry_digests(entry) {
+    if !verify_loaded_file_digests(&file) {
         return;
     }
 
@@ -640,7 +615,8 @@ pub fn stage_load(
     fstart_log::info!("stage load: reading manifest");
     let manifest = match read_manifest_from_media(media, &anchor) {
         Ok(m) => {
-            fstart_log::info!("stage load: manifest ok, regions={}", m.regions.len());
+            let summary = m.summary();
+            fstart_log::info!("stage load: manifest ok, regions={}", summary.regions);
             m
         }
         Err(e) => {
@@ -649,48 +625,35 @@ pub fn stage_load(
         }
     };
 
-    // Search all container regions for the named stage
-    let mut stage_found = None;
-    for region in &manifest.regions {
-        match fstart_ffs::FfsReader::find_entry(region, next_stage) {
-            Ok(entry) => {
-                stage_found = Some((region, entry));
-                break;
-            }
-            Err(_) => continue,
-        }
-    }
-
-    let (region, entry) = match stage_found {
-        Some(found) => found,
-        None => {
+    let file = match manifest.find_file_by_name(next_stage) {
+        Ok(file) => file,
+        Err(fstart_ffs::ReaderError::FileNotFound) => {
             fstart_log::error!("stage load: stage '{}' not found in manifest", next_stage);
             return;
         }
-    };
-
-    let segments_len = match &entry.content {
-        fstart_types::ffs::EntryContent::File { segments, .. } => segments.len(),
-        _ => 0,
+        Err(e) => {
+            fstart_log::error!("stage load: manifest error: {}", reader_error_str(e));
+            return;
+        }
     };
 
     fstart_log::info!(
         "stage load: loading '{}' ({} segments)",
         next_stage,
-        segments_len
+        file.segments().len()
     );
 
     // Load all segments to their load addresses
     let image_size = effective_image_size(media.size(), &anchor);
     fstart_log::info!("stage load: loading segments, image_size={:#x}", image_size);
-    let entry_addr = match load_entry_segments_from_media(media, entry, region, image_size) {
+    let entry_addr = match load_file_segments_from_media(media, &file, image_size) {
         Some(addr) => addr,
         None => {
             fstart_log::error!("stage load: segment load failed");
             return;
         }
     };
-    if !verify_loaded_entry_digests(entry) {
+    if !verify_loaded_file_digests(&file) {
         fstart_log::error!("stage load: digest verification failed");
         return;
     }
@@ -742,7 +705,7 @@ unsafe impl Sync for SyncBuf {}
 #[cfg(feature = "ffs")]
 static MANIFEST_BUF: SyncBuf = SyncBuf(core::cell::UnsafeCell::new([0u8; MAX_MANIFEST_SIZE]));
 
-/// Read and verify the FFS manifest from any boot medium.
+/// Read and verify the FFS manifest view from any boot medium.
 ///
 /// Reads the signed manifest into a static buffer, verifies it, and returns the
 /// inner [`ImageManifest`](fstart_types::ffs::ImageManifest).
@@ -753,7 +716,7 @@ static MANIFEST_BUF: SyncBuf = SyncBuf(core::cell::UnsafeCell::new([0u8; MAX_MAN
 fn read_manifest_from_media(
     media: &(impl BootMedia + ?Sized),
     anchor: &fstart_types::ffs::AnchorBlock,
-) -> Result<fstart_types::ffs::ImageManifest, fstart_ffs::ReaderError> {
+) -> Result<fstart_ffs::ManifestView<'static>, fstart_ffs::ReaderError> {
     // Read signed manifest into the static buffer. Uses a static rather than a
     // stack allocation to keep stack usage predictable for firmware stages.
     let manifest_offset = anchor.manifest_offset as usize;
@@ -771,7 +734,7 @@ fn read_manifest_from_media(
         .read_at(manifest_offset, &mut buf[..manifest_size])
         .map_err(|_| fstart_ffs::ReaderError::OutOfBounds)?;
 
-    fstart_ffs::verify_and_parse_manifest(&buf[..manifest_size], anchor.valid_keys())
+    fstart_ffs::reader::verify_and_manifest_view(&buf[..manifest_size], anchor.valid_keys())
 }
 
 /// Load a file from FFS by its `FileType`, placing segments at their load addresses.
@@ -808,53 +771,36 @@ pub fn load_ffs_file_by_type(
         }
     };
 
-    // Search for first file matching the requested type
-    let mut found = None;
-    for region in &manifest.regions {
-        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
-            for entry in children {
-                if let fstart_types::ffs::EntryContent::File { file_type: ft, .. } = &entry.content
-                {
-                    if *ft == file_type {
-                        found = Some((region, entry));
-                        break;
-                    }
-                }
-            }
-        }
-        if found.is_some() {
-            break;
-        }
-    }
-
-    let (region, entry) = match found {
-        Some(f) => f,
-        None => {
+    let file = match manifest.find_file_by_type(file_type) {
+        Ok(file) => file,
+        Err(fstart_ffs::ReaderError::FileNotFound) => {
             fstart_log::error!("load file: no file of requested type in FFS");
+            return false;
+        }
+        Err(e) => {
+            fstart_log::error!("load file: manifest error: {}", reader_error_str(e));
             return false;
         }
     };
 
-    // Log load address from segment metadata for debugging.
-    if let fstart_types::ffs::EntryContent::File { segments, .. } = &entry.content {
-        for seg in segments {
-            fstart_log::info!(
-                "load file: '{}' seg '{}' -> {} ({} bytes)",
-                entry.name.as_str(),
-                seg.name.as_str(),
-                Hex(seg.load_addr),
-                seg.stored_size,
-            );
-        }
+    let name = file.name().unwrap_or("<invalid>");
+    for seg in file.segments() {
+        fstart_log::info!(
+            "load file: '{}' seg '{}' -> {} ({} bytes)",
+            name,
+            "<segment>",
+            Hex(seg.load_addr()),
+            seg.stored_size(),
+        );
     }
 
     let image_size = effective_image_size(media.size(), &anchor);
-    let loaded = load_entry_segments_from_media(media, entry, region, image_size).is_some();
+    let loaded = load_file_segments_from_media(media, &file, image_size).is_some();
     if !loaded {
         return false;
     }
 
-    verify_loaded_entry_digests(entry)
+    verify_loaded_file_digests(&file)
 }
 
 /// Find a file in FFS by its `FileType` and return a slice to its raw data.
@@ -888,39 +834,28 @@ pub fn find_ffs_file_data<'a>(
     };
 
     let image_size = effective_image_size(media.size(), &anchor);
-    let reader = fstart_ffs::FfsReader::new(&image[..image_size]);
-
-    let manifest = match reader.read_manifest(&anchor) {
-        Ok(m) => m,
-        Err(e) => {
-            fstart_log::error!("find file data: manifest error: {}", reader_error_str(e));
-            return None;
-        }
-    };
-
-    // Search for the file entry
-    for region in &manifest.regions {
-        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
-            for entry in children {
-                if let fstart_types::ffs::EntryContent::File {
-                    file_type: ft,
-                    segments,
-                    ..
-                } = &entry.content
-                {
-                    if *ft == file_type {
-                        // Return a slice to the first segment's data
-                        if let Some(seg) = segments.first() {
-                            let offset = (region.offset + entry.offset + seg.offset) as usize;
-                            let size = seg.stored_size as usize;
-                            if offset + size <= image.len() {
-                                return Some(&image[offset..offset + size]);
-                            }
-                        }
-                    }
-                }
+    let manifest_offset = anchor.manifest_offset as usize;
+    let manifest_size = anchor.manifest_size as usize;
+    let manifest_end = manifest_offset.checked_add(manifest_size)?;
+    if manifest_end > image_size {
+        return None;
+    }
+    let signed_manifest = image.get(manifest_offset..manifest_end)?;
+    let manifest =
+        match fstart_ffs::reader::verify_and_manifest_view(signed_manifest, anchor.valid_keys()) {
+            Ok(m) => m,
+            Err(e) => {
+                fstart_log::error!("find file data: manifest error: {}", reader_error_str(e));
+                return None;
             }
-        }
+        };
+
+    let file = manifest.find_file_by_type(file_type).ok()?;
+    let seg = file.segments().first()?;
+    let offset = (file.region_offset() + file.entry_offset() + seg.offset()) as usize;
+    let size = seg.stored_size() as usize;
+    if offset + size <= image.len() {
+        return Some(&image[offset..offset + size]);
     }
 
     fstart_log::error!("find file data: file type not found in FFS");
@@ -962,146 +897,90 @@ pub fn find_ffs_file_data_with_scratch<'a>(
         }
     };
 
+    let file = manifest.find_file_by_type(file_type).ok()?;
     let image_size = effective_image_size(media.size(), &anchor) as u64;
-    for region in &manifest.regions {
-        if let fstart_types::ffs::RegionContent::Container { children } = &region.content {
-            for entry in children {
-                if let fstart_types::ffs::EntryContent::File {
-                    file_type: ft,
-                    segments,
-                    ..
-                } = &entry.content
-                {
-                    if *ft == file_type {
-                        let seg = segments.first()?;
-                        let offset = u64::from(region.offset)
-                            + u64::from(entry.offset)
-                            + u64::from(seg.offset);
-                        let size = seg.stored_size as usize;
-                        if offset.checked_add(size as u64)? > image_size {
-                            return None;
-                        }
-                        return fstart_services::boot_media::read_to_temp(
-                            media,
-                            usize::try_from(offset).ok()?,
-                            size,
-                            scratch,
-                        )
-                        .ok();
-                    }
-                }
-            }
-        }
+    let seg = file.segments().first()?;
+    let offset =
+        u64::from(file.region_offset()) + u64::from(file.entry_offset()) + u64::from(seg.offset());
+    let size = seg.stored_size() as usize;
+    if offset.checked_add(size as u64)? > image_size {
+        return None;
     }
 
-    fstart_log::error!("find file data: file type not found in FFS");
-    None
+    fstart_services::boot_media::read_to_temp(media, usize::try_from(offset).ok()?, size, scratch)
+        .ok()
 }
 
 #[cfg(feature = "ffs")]
-fn verify_loaded_entry_digests(entry: &fstart_types::ffs::RegionEntry) -> bool {
-    let (segments, digests) = match &entry.content {
-        fstart_types::ffs::EntryContent::File {
-            segments, digests, ..
-        } => (segments, digests),
-        fstart_types::ffs::EntryContent::Raw { .. } => return true,
-    };
-
+fn verify_loaded_file_digests(file: &fstart_ffs::FileView<'_>) -> bool {
+    let segments = file.segments();
+    let name = file.name().unwrap_or("<invalid>");
     if segments.len() != 1 {
         fstart_log::info!(
             "load file: digest verify skipped for '{}' ({} loaded segments)",
-            entry.name.as_str(),
+            name,
             segments.len()
         );
         return true;
     }
 
     let seg = &segments[0];
-    let verify_size = seg.loaded_size as usize;
-    // SAFETY: the segment has just been loaded/decompressed to `load_addr`,
-    // and the FFS manifest's loaded_size describes the initialized bytes that
-    // the builder hashed when creating the file digest.
-    let data = unsafe { core::slice::from_raw_parts(seg.load_addr as *const u8, verify_size) };
-    match fstart_crypto::digest::verify_digest_set(data, digests) {
+    let verify_size = seg.loaded_size() as usize;
+    let data = unsafe { core::slice::from_raw_parts(seg.load_addr() as *const u8, verify_size) };
+    match fstart_crypto::digest::verify_digest_set(data, &file.digests()) {
         Ok(()) => {
-            fstart_log::info!(
-                "load file: '{}' digest verified after load",
-                entry.name.as_str()
-            );
+            fstart_log::info!("load file: '{}' digest verified after load", name);
             true
         }
         Err(_) => {
-            fstart_log::error!(
-                "load file: '{}' digest FAILED after load",
-                entry.name.as_str()
-            );
+            fstart_log::error!("load file: '{}' digest FAILED after load", name);
             false
         }
     }
 }
 
-/// Load all segments of a file entry to their load addresses from any boot medium.
-///
-/// For each segment, reads data from the boot medium directly to the
-/// target load address. This works uniformly for both memory-mapped and
-/// block-device-backed media:
-///
-/// - **Memory-mapped**: `media.read_at()` inlines to `memmove`, identical
-///   to the previous direct `ptr::copy` implementation.
-/// - **Block device**: `media.read_at()` calls the device's `read()` method,
-///   copying data directly to the load address — single copy, no intermediate
-///   buffer.
-///
-/// `image_size` is the effective image size (capped by the anchor's
-/// `total_image_size`). All segment source offsets are bounds-checked
-/// against this limit as defense-in-depth — even though the manifest is
-/// signature-verified, corrupt offsets would require a compromised key.
-///
-/// Returns the entry address (load_addr of the first Code segment, or
-/// load_addr of the first segment if no Code segments).
 #[cfg(feature = "ffs")]
-fn load_entry_segments_from_media(
+fn load_file_segments_from_media(
     media: &(impl BootMedia + ?Sized),
-    entry: &fstart_types::ffs::RegionEntry,
-    region: &fstart_types::ffs::Region,
+    file: &fstart_ffs::FileView<'_>,
     image_size: usize,
 ) -> Option<u64> {
-    let segments = match &entry.content {
-        fstart_types::ffs::EntryContent::File { segments, .. } => segments,
-        _ => {
-            fstart_log::error!("entry is not a file");
-            return None;
-        }
-    };
-
     let mut entry_addr: Option<u64> = None;
 
-    for seg in segments {
-        if seg.kind == fstart_types::ffs::SegmentKind::Bss {
+    for seg in file.segments() {
+        let kind = match seg.kind() {
+            Ok(kind) => kind,
+            Err(_) => return None,
+        };
+        let compression = match seg.compression() {
+            Ok(compression) => compression,
+            Err(_) => return None,
+        };
+
+        if kind == fstart_types::ffs::SegmentKind::Bss {
             // BSS: zero-fill at load_addr
-            let dest = seg.load_addr as *mut u8;
+            let dest = seg.load_addr() as *mut u8;
             // SAFETY: we trust the board config; the load_addr points to writable RAM.
             unsafe {
-                core::ptr::write_bytes(dest, 0, seg.loaded_size as usize);
+                core::ptr::write_bytes(dest, 0, seg.loaded_size() as usize);
             }
             fstart_log::debug!(
                 "  BSS: {} ({} bytes zeroed)",
-                Hex(seg.load_addr),
-                seg.loaded_size
+                Hex(seg.load_addr()),
+                seg.loaded_size()
             );
         } else {
             // Data segment: read from boot medium to load_addr
-            let src_offset = (region.offset + entry.offset + seg.offset) as usize;
-            let stored_size = seg.stored_size as usize;
-            let dest = seg.load_addr as *mut u8;
+            let src_offset = (file.region_offset() + file.entry_offset() + seg.offset()) as usize;
+            let stored_size = seg.stored_size() as usize;
+            let dest = seg.load_addr() as *mut u8;
 
             // Defense-in-depth: verify the segment's source data falls within
             // the effective image size. The manifest is signature-verified so
             // this should never trip unless the signing key is compromised.
             if src_offset.saturating_add(stored_size) > image_size {
                 fstart_log::error!(
-                    "segment '{}' out of bounds: offset {} + size {} > image {}",
-                    seg.name.as_str(),
+                    "segment out of bounds: offset {} + size {} > image {}",
                     src_offset as u32,
                     stored_size as u32,
                     image_size as u32,
@@ -1109,7 +988,7 @@ fn load_entry_segments_from_media(
                 return None;
             }
 
-            match seg.compression {
+            match compression {
                 fstart_types::ffs::Compression::None => {
                     // Read directly from boot medium to the load address.
                     // For memory-mapped media, this inlines to memmove
@@ -1125,9 +1004,8 @@ fn load_entry_segments_from_media(
                     }
 
                     fstart_log::debug!(
-                        "  {}: {} ({} bytes)",
-                        seg.name.as_str(),
-                        Hex(seg.load_addr),
+                        "  segment: {} ({} bytes)",
+                        Hex(seg.load_addr()),
                         stored_size
                     );
                 }
@@ -1140,8 +1018,8 @@ fn load_entry_segments_from_media(
                     //    dest + in_place_size - stored_size
                     // 3. Decompress from tail to head — the decompressor
                     //    reads from the tail while writing from the head.
-                    let buf_size = seg.in_place_size as usize;
-                    let loaded_size = seg.loaded_size as usize;
+                    let buf_size = seg.in_place_size() as usize;
+                    let loaded_size = seg.loaded_size() as usize;
 
                     // SAFETY: load_addr points to writable RAM with at least
                     // `in_place_size` bytes available (verified by the builder
@@ -1173,18 +1051,14 @@ fn load_entry_segments_from_media(
                     match result {
                         Ok(n) => {
                             fstart_log::debug!(
-                                "  {}: {} ({} -> {} bytes, lz4 in-place)",
-                                seg.name.as_str(),
-                                Hex(seg.load_addr),
+                                "  segment: {} ({} -> {} bytes, lz4 in-place)",
+                                Hex(seg.load_addr()),
                                 stored_size,
                                 n
                             );
                         }
                         Err(_) => {
-                            fstart_log::error!(
-                                "LZ4 in-place decompress failed: {}",
-                                seg.name.as_str()
-                            );
+                            fstart_log::error!("LZ4 in-place decompress failed");
                             return None;
                         }
                     }
@@ -1199,8 +1073,8 @@ fn load_entry_segments_from_media(
 
         // Use the first Code segment's load_addr as the entry point,
         // or fall back to the first segment's load_addr.
-        if entry_addr.is_none() || seg.kind == fstart_types::ffs::SegmentKind::Code {
-            entry_addr = Some(seg.load_addr);
+        if entry_addr.is_none() || kind == fstart_types::ffs::SegmentKind::Code {
+            entry_addr = Some(seg.load_addr());
         }
     }
 

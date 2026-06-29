@@ -260,9 +260,24 @@ pub fn verify_and_parse_manifest(
     data: &[u8],
     keys: &[fstart_types::ffs::VerificationKey],
 ) -> Result<ImageManifest, ReaderError> {
+    let manifest_bytes = verify_and_borrow_manifest(data, keys)?;
+    crate::manifest::ManifestView::parse(manifest_bytes)?.to_owned_manifest()
+}
+
+pub fn verify_and_borrow_manifest<'a>(
+    data: &'a [u8],
+    keys: &[fstart_types::ffs::VerificationKey],
+) -> Result<&'a [u8], ReaderError> {
     let (manifest_bytes, signature) = parse_signed_manifest(data)?;
     verify_manifest_signature(manifest_bytes, &signature, keys)?;
-    postcard::from_bytes(manifest_bytes).map_err(|_| ReaderError::DeserializeError)
+    Ok(manifest_bytes)
+}
+
+pub fn verify_and_manifest_view<'a>(
+    data: &'a [u8],
+    keys: &[fstart_types::ffs::VerificationKey],
+) -> Result<crate::manifest::ManifestView<'a>, ReaderError> {
+    crate::manifest::ManifestView::parse(verify_and_borrow_manifest(data, keys)?)
 }
 
 fn verify_manifest_signature(

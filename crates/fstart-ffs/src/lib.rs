@@ -19,10 +19,15 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "std")]
+extern crate alloc;
+
 pub mod lz4;
+pub mod manifest;
 pub mod reader;
 
 #[cfg(feature = "std")]
 pub mod builder;
 
+pub use manifest::{FileView, ManifestSummary, ManifestView};
 pub use reader::{verify_and_parse_manifest, FfsReader, ReaderError};

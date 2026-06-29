@@ -842,8 +842,7 @@ fn sign_manifest<F>(manifest: &ImageManifest, sign: &F) -> Result<SignedManifest
 where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
-    let manifest_bytes_vec =
-        postcard::to_allocvec(manifest).map_err(|e| format!("serialize manifest: {e}"))?;
+    let manifest_bytes_vec = crate::manifest::encode_manifest(manifest)?;
 
     if manifest_bytes_vec.len() > 8192 {
         return Err(format!(

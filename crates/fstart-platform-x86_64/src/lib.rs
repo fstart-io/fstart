@@ -703,7 +703,9 @@ core::arch::global_asm!(
     "movq 32(%rsp), %r8",  // RFLAGS
     "leaq 40(%rsp), %r9",  // approximate interrupted RSP
     "movq %cr2, %rax",
-    "subq $16, %rsp",    // stack arg slot + preserve SysV call alignment
+    // Normalized exception frames leave RSP 8 mod 16. SysV requires the caller
+    // to have RSP 0 mod 16 before `call`, so reserve one stack-argument slot.
+    "subq $8, %rsp",
     "movq %rax, (%rsp)", // 7th arg: CR2
     "call x86_exception_handler",
     // Should not return, but halt if it does

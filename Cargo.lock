@@ -1222,6 +1222,7 @@ dependencies = [
  "lz4_flex",
  "postcard",
  "rand_core",
+ "zerocopy",
 ]
 
 [[package]]

@@ -18,6 +18,7 @@ fstart-types = { workspace = true }
 fstart-crypto = { workspace = true }
 postcard = { workspace = true }
 heapless = { workspace = true }
+zerocopy = { workspace = true }
 lz4_flex = { workspace = true, optional = true }
 
 [dev-dependencies]
