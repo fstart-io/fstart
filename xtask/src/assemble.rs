@@ -1102,10 +1102,10 @@ fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), S
         let path = resolve_board_path(board_dir, file.as_str());
         let data = fs::read(&path)
             .map_err(|e| format!("failed to read Intel descriptor {}: {e}", path.display()))?;
-        let parsed = fstart_device_registry::parse_intel_ifd(&data)?;
+        let parsed = parse_intel_ifd(&data)?;
         if parsed.flash_size != layout.size {
             return Err(format!(
-                "Intel descriptor {} flash size is {:#x}, but board RON declares {:#x}",
+                "Intel descriptor {} flash size is {:#x}, but board metadata declares {:#x}",
                 path.display(),
                 parsed.flash_size,
                 layout.size
@@ -1129,7 +1129,7 @@ fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), S
             if offset != region.offset || size != region.size {
                 return Err(format!(
                     "Intel descriptor {} FLREG{} ({}) is offset={offset:#x} size={size:#x}, \
-                     but board RON declares offset={:#x} size={:#x}",
+                     but board metadata declares offset={:#x} size={:#x}",
                     path.display(),
                     idx,
                     region.kind.as_str(),
@@ -1154,6 +1154,73 @@ fn resolve_board_path(board_dir: &Path, file: &str) -> PathBuf {
     } else {
         board_dir.join(path)
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedIntelIfd {
+    flash_size: u32,
+    regions: [Option<(u32, u32)>; 16],
+}
+
+fn parse_intel_ifd(data: &[u8]) -> Result<ParsedIntelIfd, String> {
+    let sig_offset = data
+        .windows(4)
+        .enumerate()
+        .step_by(4)
+        .find_map(|(offset, bytes)| {
+            let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            (value == 0x0ff0_a55a).then_some(offset)
+        })
+        .ok_or_else(|| "Intel flash descriptor signature 0x0ff0a55a not found".to_string())?;
+
+    if sig_offset + 8 > data.len() {
+        return Err("Intel flash descriptor too small for FLMAP0".to_string());
+    }
+    let flmap0 = u32::from_le_bytes([
+        data[sig_offset + 4],
+        data[sig_offset + 5],
+        data[sig_offset + 6],
+        data[sig_offset + 7],
+    ]);
+
+    let fcba = ((flmap0 & 0xff) << 4) as usize;
+    let component_count = ((flmap0 >> 8) & 0x3) + 1;
+    if fcba + 4 > data.len() {
+        return Err(format!(
+            "Intel flash descriptor FCBA {fcba:#x} outside descriptor file"
+        ));
+    }
+    let flcomp = u32::from_le_bytes([data[fcba], data[fcba + 1], data[fcba + 2], data[fcba + 3]]);
+    let mut flash_size = 1u32 << (19 + (flcomp & 0x7));
+    if component_count > 1 {
+        flash_size = flash_size.saturating_add(1u32 << (19 + ((flcomp >> 3) & 0x7)));
+    }
+
+    let frba = (((flmap0 >> 16) & 0xff) << 4) as usize;
+    if frba + 4 > data.len() {
+        return Err(format!(
+            "Intel flash descriptor FRBA {frba:#x} outside descriptor file"
+        ));
+    }
+
+    let mut regions = [None; 16];
+    for (idx, slot) in regions.iter_mut().enumerate() {
+        let off = frba + idx * 4;
+        if off + 4 > data.len() {
+            break;
+        }
+        let flreg = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+        let base = (flreg & 0x7fff) << 12;
+        let limit = ((flreg >> 16) & 0x7fff) << 12 | 0xfff;
+        if limit >= base {
+            *slot = Some((base, limit - base + 1));
+        }
+    }
+
+    Ok(ParsedIntelIfd {
+        flash_size,
+        regions,
+    })
 }
 
 // ============================================================================
