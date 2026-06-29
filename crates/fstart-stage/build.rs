@@ -18,9 +18,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FSTART_SMM_COREBOOT_HEADER");
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_ARTIFACT_DIR");
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_FEATURES");
+    println!("cargo:rustc-check-cfg=cfg(fstart_board, values(any()))");
 
     let board = env::var("FSTART_RUST_BOARD")
         .unwrap_or_else(|_| panic!("FSTART_RUST_BOARD not set; xtask should pass a Rust board"));
+    println!("cargo:rustc-cfg=fstart_board=\"{board}\"");
     let parsed = load_rust_board(&board)
         .unwrap_or_else(|e| panic!("failed to load Rust board {board}: {e}"));
     let board_source = format!("rust:{board}");
