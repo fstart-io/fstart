@@ -15,5 +15,8 @@ fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
 fstart-board-intel-pineview-ich7 = { workspace = true }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-gpio-ich = { workspace = true }
+fstart-hda = { workspace = true }
+heapless = { workspace = true }
 ron = { workspace = true }
 serde = { workspace = true, features = ["std"] }

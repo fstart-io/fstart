@@ -8,6 +8,8 @@ use fstart_device_registry::{i2c_ck505, intel_pineview, DriverInstance};
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
 use fstart_driver_ite8721f as ite8721f;
+use fstart_gpio_ich as gpio;
+use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::smbios::{
     CacheAssociativity, CacheType, ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosCache,
@@ -29,6 +31,8 @@ pub struct PineviewIch7Board {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
+    hda: Option<hda::HdaConfig>,
+    gpio: gpio::GpioConfig,
 }
 
 impl PineviewIch7Board {
@@ -38,12 +42,28 @@ impl PineviewIch7Board {
             board_name,
             board_package,
             payload: linuxboot_payload(),
+            hda: None,
+            gpio: Default::default(),
         }
     }
 
     #[must_use]
     pub fn payload(mut self, payload: PayloadConfig) -> Self {
         self.payload = payload;
+        self
+    }
+
+    /// Set board-specific HD Audio verb tables.
+    #[must_use]
+    pub fn hda(mut self, hda: hda::HdaConfig) -> Self {
+        self.hda = Some(hda);
+        self
+    }
+
+    /// Set board-specific ICH GPIO pad configuration.
+    #[must_use]
+    pub fn gpio(mut self, gpio: gpio::GpioConfig) -> Self {
+        self.gpio = gpio;
         self
     }
 
@@ -82,7 +102,7 @@ impl PineviewIch7Board {
     pub fn driver_instances(&self) -> Vec<DriverInstance> {
         vec![
             DriverInstance::IntelPineview(pineview_config()),
-            DriverInstance::IntelIch7(ich7_config()),
+            DriverInstance::IntelIch7(ich7_config(self.hda.clone(), self.gpio.clone())),
             DriverInstance::Structural(Default::default()),
             DriverInstance::Structural(Default::default()),
             DriverInstance::Structural(Default::default()),
@@ -329,7 +349,7 @@ fn pineview_config() -> intel_pineview::IntelPineviewConfig {
     }
 }
 
-fn ich7_config() -> ich7::IntelIch7Config {
+fn ich7_config(hda: Option<hda::HdaConfig>, gpio: gpio::GpioConfig) -> ich7::IntelIch7Config {
     let mut generic_io = HVec::new();
     generic_io
         .push(ich7::LpcGenericIoDecode {
@@ -345,7 +365,7 @@ fn ich7_config() -> ich7::IntelIch7Config {
             fixed_io: ich7::LpcFixedIoDecode::default(),
             generic_io,
         },
-        hda: None,
+        hda,
         sata: Some(ich7::SataConfig {
             mode: ich7::SataMode::Ahci,
             ports: 0x3,
@@ -356,7 +376,7 @@ fn ich7_config() -> ich7::IntelIch7Config {
         }),
         pata: false,
         smbus_base: 0x0400,
-        gpio: Default::default(),
+        gpio,
         acpi_name: Some(hstr("LPCB")),
         c3_latency: 85,
         power_on_after_fail: 0,

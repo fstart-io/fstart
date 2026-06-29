@@ -497,7 +497,10 @@ dependencies = [
  "fstart-board-intel-pineview-ich7",
  "fstart-codegen",
  "fstart-device-registry",
+ "fstart-gpio-ich",
+ "fstart-hda",
  "fstart-types",
+ "heapless",
  "ron",
  "serde",
 ]
@@ -506,6 +509,7 @@ dependencies = [
 name = "fstart-board-foxconn-d41s-uefi"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-foxconn-d41s",
  "fstart-board-intel-pineview-ich7",
  "fstart-codegen",
  "fstart-device-registry",
@@ -522,6 +526,8 @@ dependencies = [
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-pineview",
  "fstart-driver-ite8721f",
+ "fstart-gpio-ich",
+ "fstart-hda",
  "fstart-types",
  "heapless",
 ]

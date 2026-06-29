@@ -11,4 +11,6 @@ fstart-device-registry = { workspace = true, features = ["all-drivers"] }
 fstart-driver-intel-ich7 = { workspace = true }
 fstart-driver-intel-pineview = { workspace = true }
 fstart-driver-ite8721f = { workspace = true }
+fstart-gpio-ich = { workspace = true }
+fstart-hda = { workspace = true }
 heapless = { workspace = true }
