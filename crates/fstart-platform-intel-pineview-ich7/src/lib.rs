@@ -14,8 +14,8 @@ use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
-    AcpiConfig, AcpiPlatform, Board, BoardConfig, BoardInfo, BootMedium, Build, BuildInfo,
-    BuildProfile, Capability, CarConfig, Compression, CorebootSmmCompat, CpuDriverKind,
+    hstr, hvec, AcpiConfig, AcpiPlatform, Board, BoardConfig, BoardInfo, BootMedium, Build,
+    BuildInfo, BuildProfile, Capability, CarConfig, Compression, CorebootSmmCompat, CpuDriverKind,
     DeviceConfig, DigestAlgorithm, FdtSource, FlowProfile, ImageBuildInfo, MemoryMap, MemoryRegion,
     PayloadConfig, PayloadInputInfo, PayloadKind, Platform, RegionKind, RunsFrom, SecurityConfig,
     SignatureAlgorithm, SmbiosConfig, SmmConfig, SmmPlatform, StageBuildInfo, StageConfig,
@@ -124,6 +124,9 @@ impl PineviewIch7Platform {
     }
 
     #[must_use]
+    // AI! this looks bad. What is all this structural nonsense? You must know that this maps to PCI devices.
+    // The 'Structural' Thing was what we needed when doing RON->code. This is rust. we can have typed data.
+    // Also driver_instances... Structural shoulkd have none??
     pub fn driver_instances(&self) -> Vec<DriverInstance> {
         vec![
             DriverInstance::IntelPineview(pineview_config()),
@@ -234,6 +237,7 @@ fn pineview_ich7_devices() -> HVec<DeviceConfig, 32> {
     DeviceTopology::new()
         .root("northbridge")
         .root("southbridge")
+        // AI! again... DISABLE ALL PORTS AND ENABLE THEM IN BOARD PORT
         .child(
             "southbridge",
             "pcie0",
@@ -266,6 +270,7 @@ fn pineview_ich7_stages() -> StageLayout {
         StageConfig {
             name: hstr("bootblock"),
             capabilities: hvec([
+                            // AI! This capabilities with devices entries is not according to our plan
                 Capability::PreConsoleInit {
                     devices: names(["northbridge", "southbridge"]),
                 },
@@ -532,16 +537,4 @@ fn names<const N: usize>(items: [&str; N]) -> HVec<HString<32>, 8> {
         out.push(hstr(item)).expect("names capacity");
     }
     out
-}
-
-fn hvec<T, const N: usize, const C: usize>(items: [T; N]) -> HVec<T, C> {
-    let mut out = HVec::new();
-    for item in items {
-        out.push(item).ok().expect("heapless vec capacity");
-    }
-    out
-}
-
-fn hstr<const N: usize>(value: &str) -> HString<N> {
-    HString::try_from(value).expect("string exceeds heapless capacity")
 }

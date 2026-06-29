@@ -6,13 +6,13 @@
 
 use fstart_device_registry::{ns16550, pl011, DriverInstance};
 use fstart_types::{
-    Board, BoardConfig, BoardInfo, Build, BuildInfo, BuildProfile, Capability, Compression,
+    hstr, Board, BoardConfig, BoardInfo, Build, BuildInfo, BuildProfile, Capability, Compression,
     DigestAlgorithm, FdtSource, FirmwareConfig, FirmwareKind, FlowProfile, ImageBuildInfo,
     MemoryMap, MemoryRegion, MonolithicConfig, PayloadConfig, PayloadInputInfo, PayloadKind,
     Platform, RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat, StageBuildInfo,
     StageLayout,
 };
-use heapless::{String as HString, Vec as HVec};
+use heapless::Vec as HVec;
 
 /// QEMU RISC-V `virt` board defaults.
 #[derive(Debug, Clone)]
@@ -347,8 +347,4 @@ fn security_config() -> SecurityConfig {
         pubkey_file: hstr("keys/dev-signing.pub"),
         required_digests,
     }
-}
-
-fn hstr<const N: usize>(value: &str) -> HString<N> {
-    HString::try_from(value).expect("string exceeds heapless capacity")
 }

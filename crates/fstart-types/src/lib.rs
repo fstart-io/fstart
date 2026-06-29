@@ -29,8 +29,8 @@ pub use board::{
     Platform, SocImageFormat,
 };
 pub use builder::{
-    Board, BoardBlob, BoardDataMode, BoardInfo, Build, BuildInfo, BuildProfile, FlowProfile,
-    ImageBuildInfo, PayloadInputInfo, StageBuildInfo, BOARD_BLOB_ABI_VERSION,
+    hstr, hvec, Board, BoardBlob, BoardDataMode, BoardInfo, Build, BuildInfo, BuildProfile,
+    FlowProfile, ImageBuildInfo, PayloadInputInfo, StageBuildInfo, BOARD_BLOB_ABI_VERSION,
 };
 pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode};
 pub use ffs::{

@@ -8,9 +8,7 @@ use fstart_platform_intel_pineview_ich7::PineviewIch7Platform;
 use fstart_types::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
-use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform, SmbiosConfig};
-use heapless::String as HString;
-use heapless::Vec as HVec;
+use fstart_types::{hstr, hvec, BoardConfig, BoardInfo, BuildInfo, Platform, SmbiosConfig};
 
 pub const BOARD_NAME: &str = "foxconn-d41s";
 pub const BOARD_PACKAGE: &str = "fstart-board-foxconn-d41s";
@@ -144,7 +142,7 @@ pub fn d41s_hda_config() -> hda::HdaConfig {
                     0,
                 ),
             ]),
-            extra_verbs: HVec::new(),
+            extra_verbs: hvec([]),
         }]),
     }
 }
@@ -219,18 +217,15 @@ pub fn d41s_ck505_config() -> i2c_ck505::I2cCk505Config {
 }
 
 pub fn d41s_smbios() -> SmbiosConfig {
-    let mut processors = HVec::new();
-    processors
-        .push(SmbiosProcessor {
-            socket: hstr("FCBGA559"),
-            manufacturer: hstr("Intel"),
-            processor_family: ProcessorFamily::X86_64,
-            max_speed_mhz: Some(1660),
-            core_count: Some(2),
-            thread_count: Some(4),
-            caches: HVec::new(),
-        })
-        .expect("processor table capacity");
+    let processors = hvec([SmbiosProcessor {
+        socket: hstr("FCBGA559"),
+        manufacturer: hstr("Intel"),
+        processor_family: ProcessorFamily::X86_64,
+        max_speed_mhz: Some(1660),
+        core_count: Some(2),
+        thread_count: Some(4),
+        caches: hvec([]),
+    }]);
 
     SmbiosConfig {
         bios_vendor: hstr("fstart"),
@@ -239,7 +234,7 @@ pub fn d41s_smbios() -> SmbiosConfig {
         system_manufacturer: hstr("Foxconn"),
         system_product: hstr("D41S"),
         system_version: hstr("1.0"),
-        system_serial: HString::new(),
+        system_serial: Default::default(),
         baseboard_manufacturer: hstr("Foxconn"),
         baseboard_product: hstr("D41S"),
         chassis_type: ChassisType::Desktop,
@@ -260,16 +255,4 @@ pub fn d41s_smbios() -> SmbiosConfig {
             },
         ]),
     }
-}
-
-fn hstr<const N: usize>(value: &str) -> HString<N> {
-    HString::try_from(value).expect("string exceeds heapless capacity")
-}
-
-fn hvec<T, const N: usize, const C: usize>(items: [T; N]) -> HVec<T, C> {
-    let mut out = HVec::new();
-    for item in items {
-        out.push(item).ok().expect("heapless vec capacity");
-    }
-    out
 }
