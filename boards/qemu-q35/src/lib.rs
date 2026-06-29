@@ -1,10 +1,18 @@
 //! Rust board metadata for `qemu-q35`.
 
+#![cfg_attr(not(feature = "host"), no_std)]
+
+#[cfg(feature = "host")]
 use fstart_board_meta::{BindDriver, DriverBinding};
+#[cfg(feature = "host")]
 use fstart_driver_bochs_display::BochsDisplayConfig;
+#[cfg(feature = "host")]
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
+#[cfg(feature = "host")]
 use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
+#[cfg(feature = "host")]
 use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
+#[cfg(feature = "host")]
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardBuildPolicy, BoardConfig,
     BoardInfo, BuildInfo, BusAddress, Capability, Compression, CorebootSmmCompat, DeviceTopology,
@@ -15,8 +23,10 @@ use fstart_types::{
 
 pub const BOARD_NAME: &str = "qemu-q35";
 pub const BOARD_PACKAGE: &str = "fstart-board-qemu-q35";
+#[cfg(feature = "host")]
 pub const PLATFORM: Platform = Platform::X86_64;
 
+#[cfg(feature = "host")]
 #[must_use]
 pub fn board_config() -> BoardConfig {
     BoardConfig {
@@ -99,6 +109,7 @@ pub fn board_config() -> BoardConfig {
     }
 }
 
+#[cfg(feature = "host")]
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
@@ -130,11 +141,13 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
     ]
 }
 
+#[cfg(feature = "host")]
 #[must_use]
 pub fn board_info() -> BoardInfo {
     board_info_from_config(board_config())
 }
 
+#[cfg(feature = "host")]
 #[must_use]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
@@ -152,6 +165,7 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
+#[cfg(feature = "host")]
 fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> MemoryMap {
     MemoryMap {
         regions: hvec(regions.map(|(name, base, size, kind)| MemoryRegion {
@@ -165,6 +179,7 @@ fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> Mem
     }
 }
 
+#[cfg(feature = "host")]
 fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityConfig {
     SecurityConfig {
         signing_algorithm: SignatureAlgorithm::Ed25519,

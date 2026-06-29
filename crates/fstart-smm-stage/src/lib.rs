@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+extern crate fstart_alloc;
+
 #[cfg(target_os = "none")]
 use core::panic::PanicInfo;
 
@@ -17,6 +19,16 @@ use fstart_smm_runtime::{
     NoBoardSmmHandler, SmmContext, SmmEntryParams, SmmHandler, SMM_PLATFORM_INTEL_ICH,
     SMM_PLATFORM_NONE,
 };
+
+#[repr(align(16))]
+#[allow(dead_code)]
+struct HeapStore([u8; 4096]);
+
+#[no_mangle]
+static _FSTART_HEAP: HeapStore = HeapStore([0; 4096]);
+
+#[no_mangle]
+static _FSTART_HEAP_SIZE: usize = 4096;
 
 /// SMM entry point called by the assembly/runtime trampoline.
 ///
