@@ -2,6 +2,7 @@
 
 use std::fmt::Write;
 
+use fstart_types::board::MicrocodeConfig;
 use fstart_types::memory::FlashLayout;
 use fstart_types::{
     effective_stage_load_addr, BoardConfig, BootMedium, Capability, Platform, RegionKind,
@@ -186,6 +187,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             car_config,
             x86_rom_mtrr_base,
             x86_rom_mtrr_size,
+            x86_early_microcode_enabled(config),
         );
     } else {
         // RAM-only layout: everything in RAM at load_addr.
@@ -260,6 +262,13 @@ fn stage_capabilities<'a>(
     }
 }
 
+fn x86_early_microcode_enabled(config: &BoardConfig) -> bool {
+    match &config.microcode {
+        Some(MicrocodeConfig::Intel(intel)) => intel.early,
+        None => false,
+    }
+}
+
 fn write_x86_car_symbols(out: &mut String, platform: Platform, has_x86_car: bool) {
     if platform != Platform::X86_64 {
         return;
@@ -298,6 +307,7 @@ fn generate_xip_layout(
     car_config: Option<(u64, u64)>,
     x86_rom_mtrr_base: u64,
     x86_rom_mtrr_size: u64,
+    x86_early_microcode_enabled: bool,
 ) {
     // When data_addr is set, split RAM into two memory regions:
     // RAMRO for read-only data (unused currently, but reserved),
@@ -390,6 +400,15 @@ fn generate_xip_layout(
 
     // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
     writeln!(out, "    .fstart.anchor : ALIGN(16) {{").unwrap();
+    if platform == Platform::X86_64 {
+        writeln!(out, "        _fstart_anchor_early = .;").unwrap();
+        writeln!(
+            out,
+            "        _fstart_early_microcode_enabled = {};",
+            u8::from(x86_early_microcode_enabled)
+        )
+        .unwrap();
+    }
     writeln!(out, "        *(.fstart.anchor)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
