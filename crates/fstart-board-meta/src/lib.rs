@@ -17,6 +17,7 @@ use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
 pub use fstart_services::{ServiceKind, ServiceSet};
+use fstart_types::{Io16, IoAddr, PciBdf};
 
 /// Typed topology role for structural (driverless) device tree nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -270,35 +271,28 @@ impl<'a> PlatformAttachPoint<'a> {
     }
 
     /// Add a PCI child below this attachment point.
-    pub fn pci<D>(&mut self, name: &str, device: u8, function: u8, driver: D) -> &mut Self
+    pub fn pci<D>(&mut self, name: &str, bdf: PciBdf, driver: D) -> &mut Self
     where
         D: BoardDriver + Clone,
     {
-        self.pci_enabled(name, device, function, true, driver)
+        self.pci_enabled(name, bdf, true, driver)
     }
 
     /// Add a PCI child below this attachment point with an explicit enabled policy.
-    pub fn pci_enabled<D>(
-        &mut self,
-        name: &str,
-        device: u8,
-        function: u8,
-        enabled: bool,
-        driver: D,
-    ) -> &mut Self
+    pub fn pci_enabled<D>(&mut self, name: &str, bdf: PciBdf, enabled: bool, driver: D) -> &mut Self
     where
         D: BoardDriver + Clone,
     {
         self.runtime_enabled(
             name,
-            fstart_types::BusAddress::Pci(device, function),
+            fstart_types::BusAddress::Pci(bdf.device, bdf.function),
             enabled,
             driver,
         )
     }
 
     /// Add an LPC child below this attachment point.
-    pub fn lpc<D>(&mut self, name: &str, config_port: u16, driver: D) -> &mut Self
+    pub fn lpc<D>(&mut self, name: &str, config_port: IoAddr<Io16>, driver: D) -> &mut Self
     where
         D: BoardDriver + Clone,
     {
@@ -309,7 +303,7 @@ impl<'a> PlatformAttachPoint<'a> {
     pub fn lpc_enabled<D>(
         &mut self,
         name: &str,
-        config_port: u16,
+        config_port: IoAddr<Io16>,
         enabled: bool,
         driver: D,
     ) -> &mut Self
@@ -318,7 +312,7 @@ impl<'a> PlatformAttachPoint<'a> {
     {
         self.runtime_enabled(
             name,
-            fstart_types::BusAddress::Lpc(config_port),
+            fstart_types::BusAddress::Lpc(config_port.raw()),
             enabled,
             driver,
         )
@@ -514,7 +508,7 @@ impl Default for PlatformTopology {
 mod tests {
     use super::*;
     use fstart_services::ServiceSet;
-    use fstart_types::{BusAddress, DeviceRole};
+    use fstart_types::{io16, BusAddress, DeviceRole, PciBdf};
 
     #[derive(Debug, Clone)]
     struct TestDriver(&'static str);
@@ -537,8 +531,8 @@ mod tests {
     fn attach_point_authors_typed_bus_children_with_enabled_policy() {
         let mut extensions = PlatformDeviceExtensions::new();
         extensions.on("southbridge", |bus| {
-            bus.pci_enabled("ethernet", 3, 0, false, TestDriver("e1000"))
-                .lpc("superio", 0x2e, TestDriver("superio"))
+            bus.pci_enabled("ethernet", PciBdf::new(0, 3, 0), false, TestDriver("e1000"))
+                .lpc("superio", io16(0x2e), TestDriver("superio"))
                 .smbus_enabled("spd0", 0x50, true, TestDriver("spd"))
                 .spi_enabled("flash0", 0, false, TestDriver("spi-flash"));
         });
