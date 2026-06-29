@@ -12,7 +12,7 @@ use fstart_platform_intel_gm965_ich8::{
 };
 use fstart_types::smbios::{ChassisType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor};
 use fstart_types::{
-    hstr, hvec, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, FlashLayout,
+    hstr, hvec, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, BusAddress, FlashLayout,
     IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
 };
 
@@ -78,7 +78,9 @@ fn board() -> Gm965Ich8Platform {
             true,
         )
         .superio("dock_superio", io16(0x2e), x61_dock_superio_config(), false)
-        .clock_generator(x61_ck505_config(), false)
+        .on_smbus(|smbus| {
+            smbus.runtime_enabled("ck505", BusAddress::I2c(0x69), false, x61_ck505_config());
+        })
         .mainboard(x61_mainboard_config())
         .smbios(x61_smbios())
 }

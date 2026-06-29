@@ -48,7 +48,6 @@ pub struct Gm965Ich8Platform {
     smbios: Option<SmbiosConfig>,
     mainboard: Option<RuntimeDevicePolicy>,
     extensions: PlatformDeviceExtensions,
-    clock_generator: Option<RuntimeDevicePolicy>,
     pcie_ports: [bool; 6],
     pcie_slots: [bool; 6],
     pcie_power_limits: [ich8::PciePowerLimit; 6],
@@ -105,7 +104,6 @@ impl Gm965Ich8Platform {
             smbios: None,
             mainboard: None,
             extensions: PlatformDeviceExtensions::new(),
-            clock_generator: None,
             pcie_ports: [false; 6],
             pcie_slots: [false; 6],
             pcie_power_limits: [ich8::PciePowerLimit::default(); 6],
@@ -207,15 +205,6 @@ impl Gm965Ich8Platform {
         F: FnOnce(&mut PlatformAttachPoint<'_>),
     {
         self.extensions.on(port.node_name(), extend);
-        self
-    }
-
-    /// Attach the optional CK505/clock-generator driver.
-    pub fn clock_generator(mut self, clock_generator: DriverInstance, enabled: bool) -> Self {
-        self.clock_generator = Some(RuntimeDevicePolicy {
-            instance: clock_generator,
-            enabled,
-        });
         self
     }
 
@@ -420,19 +409,6 @@ impl Gm965Ich8Platform {
             .pci_bridge("southbridge", "pcie6", 0x1c, 5, self.pcie_ports[5])
             .child_bus("southbridge", "lpc", DeviceRole::LpcBus)
             .child_bus("southbridge", "smbus", DeviceRole::SmBus)
-            .runtime(
-                "smbus",
-                "ck505",
-                BusAddress::I2c(0x69),
-                self.clock_generator
-                    .as_ref()
-                    .is_some_and(|policy| policy.enabled),
-                self.clock_generator
-                    .as_ref()
-                    .expect("mainboard must provide CK505 config")
-                    .instance
-                    .clone(),
-            )
             .root_enabled(
                 "mainboard",
                 self.mainboard.as_ref().is_none_or(|policy| policy.enabled),

@@ -8,8 +8,8 @@
 //! and payload choice.
 
 use fstart_device_registry::{
-    i2c_ck505, intel_pineview, DriverBinding, DriverInstance, PlatformAttachPoint,
-    PlatformDeviceExtensions, PlatformTopology,
+    intel_pineview, DriverBinding, DriverInstance, PlatformAttachPoint, PlatformDeviceExtensions,
+    PlatformTopology,
 };
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
@@ -35,7 +35,6 @@ pub struct PineviewIch7Platform {
     payload: PayloadConfig,
     hda: Option<hda::HdaConfig>,
     gpio: Option<gpio::GpioConfig>,
-    clock_generator: Option<i2c_ck505::I2cCk505Config>,
     extensions: PlatformDeviceExtensions,
     smbios: Option<SmbiosConfig>,
     pcie_ports: [bool; 4],
@@ -74,7 +73,6 @@ impl PineviewIch7Platform {
             payload: x86_linuxboot_payload(),
             hda: None,
             gpio: None,
-            clock_generator: None,
             extensions: PlatformDeviceExtensions::new(),
             smbios: None,
             pcie_ports: [false; 4],
@@ -134,12 +132,6 @@ impl PineviewIch7Platform {
         F: FnOnce(&mut PlatformAttachPoint<'_>),
     {
         self.extensions.on(port.node_name(), extend);
-        self
-    }
-
-    /// Set board-specific CK505/clock-generator config.
-    pub fn clock_generator(mut self, clock_generator: i2c_ck505::I2cCk505Config) -> Self {
-        self.clock_generator = Some(clock_generator);
         self
     }
 
@@ -273,17 +265,6 @@ impl PineviewIch7Platform {
             .pci_bridge("southbridge", "pcie3", 0x1c, 3, self.pcie_ports[3])
             .child_bus("southbridge", "lpc", DeviceRole::LpcBus)
             .child_bus("southbridge", "smbus", DeviceRole::SmBus)
-            .runtime(
-                "smbus",
-                "ck505",
-                fstart_types::BusAddress::I2c(0x69),
-                true,
-                DriverInstance::I2cCk505(
-                    self.clock_generator
-                        .clone()
-                        .expect("mainboard must provide CK505 config"),
-                ),
-            )
             .extend(&self.extensions)
     }
 }
