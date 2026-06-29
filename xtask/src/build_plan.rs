@@ -161,8 +161,8 @@ fn base_features(parsed: &ParsedBoard, target: TargetSpec) -> FeatureSet {
     let mut features = FeatureSet::default();
     features.insert(target.platform_feature);
 
-    for binding in &parsed.driver_bindings {
-        features.insert(binding.driver_feature());
+    for fact in &parsed.driver_facts {
+        features.insert(fact.feature.as_str());
     }
 
     if matches!(&config.stages, StageLayout::MultiStage(_)) {
@@ -477,9 +477,9 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
-                let parsed = crate::rust_board_provider::parsed_board(board)
-                    .unwrap_or_else(|| panic!("Rust board '{board}' has no direct provider"))
-                    .unwrap_or_else(|e| {
+                let root = crate::build_board::workspace_root_pub().unwrap();
+                let parsed =
+                    crate::board_manifest::load_parsed_board(&root, board).unwrap_or_else(|e| {
                         panic!("failed to load Rust board metadata for {board}: {e}")
                     });
                 super::plan(&parsed)

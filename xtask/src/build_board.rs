@@ -2,7 +2,7 @@
 //!
 //! 1. Ask the Rust board crate for metadata
 //! 2. Determine target triple, cargo features, and environment
-//! 3. Invoke cargo build on fstart-stage (once for monolithic, per-stage for multi-stage)
+//! 3. Invoke cargo build on the board-owned stage binary
 //! 4. Return the path(s) to the built binary(ies)
 
 use fstart_types::{Capability, SocImageFormat, StageLayout};
@@ -188,7 +188,7 @@ fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
     }
 }
 
-/// Build a single fstart-stage binary.
+/// Build a single board-owned stage binary.
 ///
 /// `stage_name` is `None` for monolithic, `Some("bootblock")` etc. for multi-stage.
 #[allow(clippy::too_many_arguments)]
@@ -208,6 +208,12 @@ fn build_one_stage(
     smm_artifacts: Option<&SmmArtifacts>,
 ) -> Result<(PathBuf, PathBuf), String> {
     let profile = if release { "release" } else { "debug" };
+    let stage_bin = board_manifest.stage_bin.as_deref().ok_or_else(|| {
+        format!(
+            "board '{}' does not declare package.metadata.fstart.stage-bin; static stage adapter is not implemented",
+            board_manifest.board
+        )
+    })?;
     let board_label = board_manifest.board.as_str();
     let stage_label = stage_name.unwrap_or("stage");
     let artifact_dir = workspace_root
@@ -233,9 +239,12 @@ fn build_one_stage(
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("--package")
-        .arg("fstart-stage")
+        .arg(&board_manifest.package)
+        .arg("--bin")
+        .arg(stage_bin)
         .arg("--target")
         .arg(target)
+        .arg("--no-default-features")
         .arg("--features")
         .arg(features)
         .arg("-Z")
@@ -270,7 +279,10 @@ fn build_one_stage(
     }
 
     eprintln!("[fstart] build artifacts: {}", artifact_dir.display());
-    eprintln!("[fstart] building fstart-stage...");
+    eprintln!(
+        "[fstart] building {}:{}...",
+        board_manifest.package, stage_bin
+    );
     let status = cmd
         .status()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
@@ -288,10 +300,10 @@ fn build_one_stage(
         .join("target")
         .join(target)
         .join(profile)
-        .join("fstart-stage");
+        .join(stage_bin);
 
     // For multi-stage: copy the binary to a stage-specific name so subsequent
-    // builds don't overwrite it (cargo always outputs to "fstart-stage").
+    // builds don't overwrite it (cargo always outputs to the selected stage-bin name).
     let final_elf = if let Some(name) = stage_name {
         let dest = elf_path.with_file_name(format!("fstart-{name}"));
         std::fs::copy(&elf_path, &dest).map_err(|e| format!("failed to copy stage binary: {e}"))?;

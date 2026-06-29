@@ -14,3 +14,10 @@ target = "armv7a-none-eabi"
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
 fstart-driver-pl011 = { workspace = true }
+
+serde_json = { workspace = true }
+
+[[bin]]
+name = "fstart-board-metadata"
+path = "src/bin/fstart-board-metadata.rs"
+

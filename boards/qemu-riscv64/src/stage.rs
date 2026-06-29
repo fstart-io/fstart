@@ -106,7 +106,7 @@ impl StaticBoard for StageBoard {
     fn mount_firmware_volume(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         fstart_log::info!("mounting memory-mapped FFS at {:#x}", FLASH_BASE);
         fstart_services::ffs_context::set_memory_mapped(
-            crate::fstart_anchor_bytes(),
+            fstart_stage::fstart_anchor_bytes(),
             FLASH_BASE,
             FLASH_SIZE as u64,
         );
@@ -117,7 +117,7 @@ impl StaticBoard for StageBoard {
         #[cfg(feature = "ffs")]
         {
             let media = Self::boot_media();
-            fstart_capabilities::sig_verify(crate::fstart_anchor_bytes(), &media);
+            fstart_capabilities::sig_verify(fstart_stage::fstart_anchor_bytes(), &media);
         }
         Ok(())
     }
@@ -127,7 +127,7 @@ impl StaticBoard for StageBoard {
         {
             let media = Self::boot_media();
             if !fstart_capabilities::load_ffs_file_by_type(
-                crate::fstart_anchor_bytes(),
+                fstart_stage::fstart_anchor_bytes(),
                 &media,
                 FileType::Firmware,
             ) {
@@ -136,7 +136,7 @@ impl StaticBoard for StageBoard {
             self.firmware_loaded = true;
 
             if !fstart_capabilities::load_ffs_file_by_type(
-                crate::fstart_anchor_bytes(),
+                fstart_stage::fstart_anchor_bytes(),
                 &media,
                 FileType::Payload,
             ) {

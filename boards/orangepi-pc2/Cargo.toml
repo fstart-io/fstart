@@ -17,3 +17,10 @@ fstart-driver-ns16550 = { workspace = true }
 fstart-driver-sunxi-h3-ccu = { workspace = true }
 fstart-driver-sunxi-h3-dramc = { workspace = true }
 fstart-driver-sunxi-mmc = { workspace = true }
+
+serde_json = { workspace = true }
+
+[[bin]]
+name = "fstart-board-metadata"
+path = "src/bin/fstart-board-metadata.rs"
+

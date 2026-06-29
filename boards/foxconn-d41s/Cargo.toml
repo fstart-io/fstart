@@ -19,3 +19,9 @@ fstart-driver-ite8721f = { workspace = true }
 fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }
 heapless = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "fstart-board-metadata"
+path = "src/bin/fstart-board-metadata.rs"
+

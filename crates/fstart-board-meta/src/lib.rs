@@ -71,7 +71,8 @@ pub trait BoardDriver: Debug + Send + Sync + 'static {
 }
 
 /// Board-relative file required by a configured driver at runtime.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverPackageFile {
     /// Logical file name inside the firmware package.
     pub name: HString<128>,
@@ -120,6 +121,65 @@ pub struct DriverBinding {
     pub device: HString<32>,
     /// Board-owned driver metadata for that device.
     pub driver: Box<dyn BoardDriver>,
+}
+
+/// Serializable driver metadata fact emitted by board host metadata binaries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriverFact {
+    /// Device name in the board's flat topology table.
+    pub device: HString<32>,
+    /// Cargo feature that enables this driver in the selected stage binary.
+    pub feature: HString<64>,
+    /// Runtime services this configured driver provides.
+    pub services: ServiceSet,
+    /// Optional board-relative files this configured driver needs packaged.
+    pub package_files: Vec<DriverPackageFile>,
+}
+
+impl DriverFact {
+    /// Convert a typed in-process driver binding into a serializable host fact.
+    #[must_use]
+    pub fn from_binding(binding: &DriverBinding) -> Self {
+        Self {
+            device: binding.device.clone(),
+            feature: fstart_types::hstr(binding.driver.feature()),
+            services: binding.driver.services(),
+            package_files: binding.driver.package_files(),
+        }
+    }
+}
+
+/// Serializable board metadata emitted by board crates for host tooling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostBoardMetadata {
+    /// Board metadata (name, platform, memory, stages, security, etc.).
+    pub config: fstart_types::BoardConfig,
+    /// Build/package metadata consumed by xtask.
+    pub build_info: fstart_types::BuildInfo,
+    /// Erased runtime driver facts keyed by board device name.
+    pub drivers: Vec<DriverFact>,
+    /// ACPI-only descriptors that do not participate in runtime topology.
+    pub acpi_only_devices: Vec<fstart_types::acpi::AcpiExtraDevice>,
+}
+
+impl HostBoardMetadata {
+    /// Construct serializable host metadata from board-owned typed bindings.
+    #[must_use]
+    pub fn from_bindings(
+        config: fstart_types::BoardConfig,
+        build_info: fstart_types::BuildInfo,
+        bindings: Vec<DriverBinding>,
+        acpi_only_devices: Vec<fstart_types::acpi::AcpiExtraDevice>,
+    ) -> Self {
+        Self {
+            config,
+            build_info,
+            drivers: bindings.iter().map(DriverFact::from_binding).collect(),
+            acpi_only_devices,
+        }
+    }
 }
 
 impl DriverBinding {

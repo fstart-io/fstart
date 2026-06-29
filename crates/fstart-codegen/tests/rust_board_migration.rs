@@ -1,8 +1,8 @@
 //! Migration safety checks for Rust board crate metadata.
 //!
-//! These tests keep the Rust board crate path honest. Boards must expose normal
-//! Rust functions and must not require helper binaries or serialized board
-//! metadata transport.
+//! These tests keep the Rust board crate path honest. Boards own their metadata
+//! and expose it through the standard host metadata binary, while host tooling
+//! must not link every concrete board crate directly.
 
 use std::path::{Path, PathBuf};
 
@@ -128,7 +128,7 @@ fn rust_boards_parse_from_direct_rust_metadata() {
                 assert_eq!(parsed.config.platform, case.platform);
                 assert_eq!(parsed.config.devices.len(), case.device_count);
                 assert_eq!(parsed.config.devices[0].name.as_str(), case.root_device);
-                assert_eq!(parsed.driver_bindings.len(), case.parsed_driver_count);
+                assert_eq!(parsed.driver_facts.len(), case.parsed_driver_count);
                 if case.board == "lenovo-x61" {
                     assert_device_role(&parsed.config, "pcie1", DeviceRole::PciBridge, true);
                     assert_device_role(&parsed.config, "pcie2", DeviceRole::PciBridge, true);
@@ -193,19 +193,16 @@ fn rust_boards_emit_build_info_from_direct_rust_metadata() {
 }
 
 #[test]
-fn rust_board_crates_do_not_define_metadata_helper_binaries() {
-    let root = repo_root();
+fn xtask_does_not_link_concrete_board_crates() {
+    let manifest =
+        std::fs::read_to_string(repo_root().join("xtask/Cargo.toml")).expect("read xtask manifest");
+
     for case in RUST_BOARD_CASES {
-        let helper = root
-            .join("boards")
-            .join(case.board)
-            .join("src")
-            .join("main.rs");
         assert!(
-            !helper.exists(),
-            "{} must expose Rust metadata directly, not a serialized helper binary at {}",
+            !manifest.contains(case.package),
+            "xtask must discover {} through its board metadata binary, not link {} directly",
             case.board,
-            helper.display()
+            case.package
         );
     }
 }

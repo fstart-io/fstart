@@ -16,3 +16,10 @@ fstart-board-meta = { workspace = true }
 fstart-driver-pl011 = { workspace = true }
 fstart-driver-pci-ecam = { workspace = true }
 fstart-driver-bochs-display = { workspace = true }
+
+serde_json = { workspace = true }
+
+[[bin]]
+name = "fstart-board-metadata"
+path = "src/bin/fstart-board-metadata.rs"
+

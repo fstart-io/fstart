@@ -218,7 +218,7 @@ fn assemble_impl(
         assemble_microcode(microcode, &board_dir, &mut ro_files)?;
     }
 
-    assemble_driver_package_files(&parsed.driver_bindings, &board_dir, &mut ro_files)?;
+    assemble_driver_package_files(&parsed.driver_facts, &board_dir, &mut ro_files)?;
 
     if let Some(ref payload) = config.payload {
         // Handle FIT image payloads
@@ -1209,12 +1209,12 @@ fn parse_intel_ifd(data: &[u8]) -> Result<ParsedIntelIfd, String> {
 // ============================================================================
 
 fn assemble_driver_package_files(
-    bindings: &[fstart_board_meta::DriverBinding],
+    drivers: &[fstart_board_meta::DriverFact],
     board_dir: &Path,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
-    for binding in bindings {
-        for package_file in binding.driver.package_files() {
+    for driver in drivers {
+        for package_file in &driver.package_files {
             if ro_files
                 .iter()
                 .any(|file| file.name == package_file.name.as_str())

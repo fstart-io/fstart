@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use fstart_board_meta::{DriverBinding, StructuralKind};
+use fstart_board_meta::{DriverBinding, DriverFact, HostBoardMetadata, StructuralKind};
 use fstart_services::ServiceSet;
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, DeviceId, DeviceNode, DeviceRole};
@@ -17,8 +17,8 @@ use fstart_types::{BoardConfig, DeviceId, DeviceNode, DeviceRole};
 pub struct ParsedBoard {
     /// Board metadata (name, platform, memory, stages, security, etc.).
     pub config: BoardConfig,
-    /// Typed runtime driver metadata supplied by the board/platform crate.
-    pub driver_bindings: Vec<DriverBinding>,
+    /// Runtime driver facts supplied by the board/platform crate.
+    pub driver_facts: Vec<DriverFact>,
     /// Flat index-based device tree, parallel to `config.devices`.
     pub device_tree: Vec<DeviceNode>,
     /// Effective service set per device after applying board policy.
@@ -41,20 +41,47 @@ pub fn load_parsed_board_from_rust(
 /// not runtime devices and therefore do not participate in the flat runtime
 /// topology or driver binding validation.
 pub fn load_parsed_board_from_rust_with_acpi(
-    mut config: BoardConfig,
+    config: BoardConfig,
     driver_bindings: Vec<DriverBinding>,
     acpi_only_devices: Vec<AcpiExtraDevice>,
 ) -> Result<ParsedBoard, String> {
+    let driver_features: Vec<&str> = driver_bindings
+        .iter()
+        .map(|binding| binding.driver.feature())
+        .collect();
+    let build_info = fstart_types::builder::build_info_from_config(
+        config.name.as_str(),
+        "",
+        &config,
+        driver_features,
+    );
+    load_parsed_board_from_metadata(HostBoardMetadata::from_bindings(
+        config,
+        build_info,
+        driver_bindings,
+        acpi_only_devices,
+    ))
+}
+
+/// Load and validate a board from serializable host metadata.
+pub fn load_parsed_board_from_metadata(metadata: HostBoardMetadata) -> Result<ParsedBoard, String> {
+    let HostBoardMetadata {
+        mut config,
+        build_info: _,
+        drivers,
+        acpi_only_devices,
+    } = metadata;
+
     config
         .memory
         .normalize_derived_flash()
         .map_err(|err| err.to_string())?;
 
-    let driver_binding_count = driver_bindings.len();
-    let mut bindings_by_device = HashMap::with_capacity(driver_binding_count);
-    for binding in driver_bindings {
-        let device = binding.device.to_string();
-        if bindings_by_device.insert(device.clone(), binding).is_some() {
+    let driver_count = drivers.len();
+    let mut facts_by_device = HashMap::with_capacity(driver_count);
+    for fact in drivers {
+        let device = fact.device.to_string();
+        if facts_by_device.insert(device.clone(), fact).is_some() {
             return Err(format!(
                 "board '{}' has duplicate driver binding for device '{}'",
                 config.name, device
@@ -63,7 +90,7 @@ pub fn load_parsed_board_from_rust_with_acpi(
     }
 
     let mut device_tree: Vec<DeviceNode> = Vec::with_capacity(config.devices.len());
-    let mut runtime_driver_bindings: Vec<DriverBinding> = Vec::with_capacity(driver_binding_count);
+    let mut runtime_driver_facts: Vec<DriverFact> = Vec::with_capacity(driver_count);
     let mut device_services: Vec<ServiceSet> = Vec::with_capacity(config.devices.len());
 
     for (idx, device) in config.devices.iter().enumerate() {
@@ -92,7 +119,7 @@ pub fn load_parsed_board_from_rust_with_acpi(
         });
 
         if device.role.is_runtime() {
-            let binding = bindings_by_device
+            let fact = facts_by_device
                 .remove(device.name.as_str())
                 .ok_or_else(|| {
                     format!(
@@ -100,10 +127,10 @@ pub fn load_parsed_board_from_rust_with_acpi(
                         device.name, config.name
                     )
                 })?;
-            device_services.push(binding.driver.services());
-            runtime_driver_bindings.push(binding);
+            device_services.push(fact.services);
+            runtime_driver_facts.push(fact);
         } else {
-            if bindings_by_device.contains_key(device.name.as_str()) {
+            if facts_by_device.contains_key(device.name.as_str()) {
                 return Err(format!(
                     "structural device '{}' in board '{}' must not have a runtime driver binding",
                     device.name, config.name
@@ -114,8 +141,8 @@ pub fn load_parsed_board_from_rust_with_acpi(
         };
     }
 
-    if !bindings_by_device.is_empty() {
-        let mut names: Vec<_> = bindings_by_device.keys().cloned().collect();
+    if !facts_by_device.is_empty() {
+        let mut names: Vec<_> = facts_by_device.keys().cloned().collect();
         names.sort();
         return Err(format!(
             "board '{}' has driver bindings for unknown devices: {}",
@@ -126,7 +153,7 @@ pub fn load_parsed_board_from_rust_with_acpi(
 
     Ok(ParsedBoard {
         config,
-        driver_bindings: runtime_driver_bindings,
+        driver_facts: runtime_driver_facts,
         device_tree,
         device_services,
         acpi_only_devices,

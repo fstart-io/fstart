@@ -9,4 +9,4 @@ license.workspace = true
 fstart-services = { workspace = true }
 fstart-types = { workspace = true }
 heapless = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["alloc"] }

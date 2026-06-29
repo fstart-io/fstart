@@ -491,6 +491,7 @@ dependencies = [
  "fstart-driver-sunxi-ccu",
  "fstart-driver-sunxi-mmc",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -505,6 +506,7 @@ dependencies = [
  "fstart-platform-intel-pineview-ich7",
  "fstart-types",
  "heapless",
+ "serde_json",
 ]
 
 [[package]]
@@ -515,6 +517,7 @@ dependencies = [
  "fstart-board-meta",
  "fstart-platform-intel-pineview-ich7",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -531,6 +534,7 @@ dependencies = [
  "fstart-platform-intel-gm965-ich8",
  "fstart-types",
  "heapless",
+ "serde_json",
 ]
 
 [[package]]
@@ -543,6 +547,7 @@ dependencies = [
  "fstart-driver-sunxi-d1-dramc",
  "fstart-driver-sunxi-mmc",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -565,6 +570,7 @@ dependencies = [
  "fstart-driver-sunxi-h3-dramc",
  "fstart-driver-sunxi-mmc",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -578,6 +584,7 @@ dependencies = [
  "fstart-driver-sunxi-mmc",
  "fstart-driver-sunxi-spi",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -588,6 +595,7 @@ dependencies = [
  "fstart-board-qemu-virt",
  "fstart-types",
  "heapless",
+ "serde_json",
 ]
 
 [[package]]
@@ -597,6 +605,7 @@ dependencies = [
  "fstart-board-meta",
  "fstart-driver-pl011",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -608,6 +617,7 @@ dependencies = [
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -617,6 +627,7 @@ dependencies = [
  "fstart-board-meta",
  "fstart-driver-pl011",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -629,6 +640,7 @@ dependencies = [
  "fstart-driver-q35-hostbridge",
  "fstart-driver-qemu-fw-cfg",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -640,6 +652,7 @@ dependencies = [
  "fstart-driver-q35-hostbridge",
  "fstart-driver-qemu-fw-cfg",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -648,8 +661,17 @@ version = "0.1.0"
 dependencies = [
  "fstart-board-meta",
  "fstart-board-qemu-virt",
+ "fstart-capabilities",
+ "fstart-driver-ns16550",
+ "fstart-log",
+ "fstart-platform-riscv64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
  "fstart-types",
  "heapless",
+ "serde_json",
+ "ufmt",
 ]
 
 [[package]]
@@ -659,6 +681,7 @@ dependencies = [
  "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -669,6 +692,7 @@ dependencies = [
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -689,6 +713,7 @@ dependencies = [
  "fstart-board-meta",
  "fstart-driver-sifive-uart",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -700,6 +725,7 @@ dependencies = [
  "fstart-driver-fu740-prci",
  "fstart-driver-sifive-uart",
  "fstart-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -1666,6 +1692,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "itoa"
+version = "1.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
 name = "keccak"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2034,6 +2066,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_json"
+version = "1.0.150"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+dependencies = [
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2291,25 +2336,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
- "fstart-board-bananapi-m1",
- "fstart-board-foxconn-d41s",
- "fstart-board-foxconn-d41s-uefi",
- "fstart-board-lenovo-x61",
- "fstart-board-licheerv-dock",
  "fstart-board-meta",
- "fstart-board-orangepi-pc2",
- "fstart-board-orangepi-r1",
- "fstart-board-qemu-aarch64",
- "fstart-board-qemu-aarch64-multi",
- "fstart-board-qemu-aarch64-uefi",
- "fstart-board-qemu-armv7",
- "fstart-board-qemu-q35",
- "fstart-board-qemu-q35-uefi",
- "fstart-board-qemu-riscv64",
- "fstart-board-qemu-riscv64-multi",
- "fstart-board-qemu-sbsa",
- "fstart-board-sifive-unmatched",
- "fstart-board-sifive-unmatched-hw",
  "fstart-codegen",
  "fstart-crypto",
  "fstart-ffs",
@@ -2320,6 +2347,7 @@ dependencies = [
  "heapless",
  "object",
  "rand_core",
+ "serde_json",
 ]
 
 [[package]]
@@ -2347,3 +2375,9 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+
+[[package]]
+name = "zmij"
+version = "1.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"

@@ -3,12 +3,6 @@ name = "fstart-stage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-autobins = false
-
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
-
 [features]
 default = []
 # Platform selection (exactly one must be enabled)

@@ -20,7 +20,6 @@ mod build_plan;
 mod image;
 mod inspect;
 mod qemu;
-mod rust_board_provider;
 mod toolchain;
 
 #[derive(Parser)]
