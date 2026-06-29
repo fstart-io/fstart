@@ -6,17 +6,16 @@
 
 use std::collections::HashMap;
 
-use fstart_device_registry::{
-    DriverBinding, DriverInstance, ServiceSet, StructuralConfig, StructuralKind,
-};
+use fstart_device_registry::{DriverBinding, DriverInstance, StructuralConfig, StructuralKind};
+use fstart_services::ServiceSet;
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, DeviceId, DeviceNode, DeviceRole};
 
 /// A fully-parsed board configuration.
 ///
-/// Combines [`BoardConfig`] metadata with typed driver configurations from
-/// [`DriverInstance`]. The parallel arrays share indices: `device_tree[i]`
-/// describes `config.devices[i]` / `driver_instances[i]`.
+/// Combines [`BoardConfig`] metadata with typed driver bindings. The parallel
+/// arrays share indices: `device_tree[i]` describes `config.devices[i]` /
+/// `driver_instances[i]` while the registry is being migrated away.
 pub struct ParsedBoard {
     /// Board metadata (name, platform, memory, stages, security, etc.).
     pub config: BoardConfig,

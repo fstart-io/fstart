@@ -10,6 +10,7 @@ object = { workspace = true }
 fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-board-meta = { workspace = true }
 fstart-board-qemu-riscv64 = { path = "../boards/qemu-riscv64" }
 fstart-board-qemu-riscv64-multi = { path = "../boards/qemu-riscv64-multi" }
 fstart-board-qemu-aarch64 = { path = "../boards/qemu-aarch64" }

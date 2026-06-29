@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fstart-board-meta = { workspace = true }
 fstart-services = { path = "../fstart-services" }
 fstart-superio = { path = "../fstart-superio" }
 fstart-types = { path = "../fstart-types" }

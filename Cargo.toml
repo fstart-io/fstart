@@ -25,6 +25,7 @@ members = [
   "crates/fstart-platform-intel-gm965-ich8",
   "crates/fstart-board-qemu-virt",
   "crates/fstart-codegen",
+  "crates/fstart-board-meta",
   "crates/fstart-ffs",
   "crates/fstart-crypto",
   "crates/fstart-mmio",
@@ -141,6 +142,7 @@ fstart-board-qemu-virt = { path = "crates/fstart-board-qemu-virt" }
 fstart-platform-intel-pineview-ich7 = { path = "crates/fstart-platform-intel-pineview-ich7" }
 fstart-platform-intel-gm965-ich8 = { path = "crates/fstart-platform-intel-gm965-ich8" }
 fstart-codegen = { path = "crates/fstart-codegen" }
+fstart-board-meta = { path = "crates/fstart-board-meta" }
 fstart-pci = { path = "crates/fstart-pci" }
 fstart-ffs = { path = "crates/fstart-ffs" }
 fstart-crypto = { path = "crates/fstart-crypto" }

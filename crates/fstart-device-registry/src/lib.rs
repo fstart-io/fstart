@@ -162,155 +162,14 @@ pub mod i2c_ck505 {
 // ---------------------------------------------------------------------------
 
 /// Service traits a driver instance can provide.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Service {
-    Console,
-    BlockDevice,
-    ClockController,
-    MemoryController,
-    PciRootBus,
-    PciHost,
-    SmmOps,
-    Framebuffer,
-    AcpiTableProvider,
-    X86AcpiPlatformProvider,
-    MemoryDetector,
-    SuperIoHost,
-    Southbridge,
-    Mainboard,
-    PreConsoleInit,
-    EarlyInit,
-    StageLocalInit,
-    PostDramInit,
-    FinalizeInit,
-    FlashLayoutVerifier,
-    FirmwareImageProvider,
-    I2cBus,
-    SpiBus,
-    GpioController,
-    SystemManagementBus,
-}
+///
+/// Kept as a compatibility alias while board metadata moves out of this crate.
+pub use fstart_services::ServiceKind as Service;
 
-impl Service {
-    /// All known service variants in stable display order.
-    pub const ALL: &'static [Self] = &[
-        Self::Console,
-        Self::BlockDevice,
-        Self::ClockController,
-        Self::MemoryController,
-        Self::PciRootBus,
-        Self::PciHost,
-        Self::SmmOps,
-        Self::Framebuffer,
-        Self::AcpiTableProvider,
-        Self::X86AcpiPlatformProvider,
-        Self::MemoryDetector,
-        Self::SuperIoHost,
-        Self::Southbridge,
-        Self::Mainboard,
-        Self::PreConsoleInit,
-        Self::EarlyInit,
-        Self::StageLocalInit,
-        Self::PostDramInit,
-        Self::FinalizeInit,
-        Self::FlashLayoutVerifier,
-        Self::FirmwareImageProvider,
-        Self::I2cBus,
-        Self::SpiBus,
-        Self::GpioController,
-        Self::SystemManagementBus,
-    ];
-
-    /// Stable service name used in diagnostics and generated imports.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Console => "Console",
-            Self::BlockDevice => "BlockDevice",
-            Self::ClockController => "ClockController",
-            Self::MemoryController => "MemoryController",
-            Self::PciRootBus => "PciRootBus",
-            Self::PciHost => "PciHost",
-            Self::SmmOps => "SmmOps",
-            Self::Framebuffer => "Framebuffer",
-            Self::AcpiTableProvider => "AcpiTableProvider",
-            Self::X86AcpiPlatformProvider => "X86AcpiPlatformProvider",
-            Self::MemoryDetector => "MemoryDetector",
-            Self::SuperIoHost => "SuperIoHost",
-            Self::Southbridge => "Southbridge",
-            Self::Mainboard => "Mainboard",
-            Self::PreConsoleInit => "PreConsoleInit",
-            Self::EarlyInit => "EarlyInit",
-            Self::StageLocalInit => "StageLocalInit",
-            Self::PostDramInit => "PostDramInit",
-            Self::FinalizeInit => "FinalizeInit",
-            Self::FlashLayoutVerifier => "FlashLayoutVerifier",
-            Self::FirmwareImageProvider => "FirmwareImageProvider",
-            Self::I2cBus => "I2cBus",
-            Self::SpiBus => "SpiBus",
-            Self::GpioController => "GpioController",
-            Self::SystemManagementBus => "SmBus",
-        }
-    }
-
-    const fn bit(self) -> u128 {
-        1u128 << (self as u8)
-    }
-}
-
-/// Compact set of driver-provided services used by codegen.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ServiceSet(u128);
-
-impl ServiceSet {
-    /// Construct an empty service set.
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    /// Construct a service set from static driver metadata.
-    pub const fn from_static(services: &'static [Service]) -> Self {
-        let mut idx = 0;
-        let mut bits = 0;
-        while idx < services.len() {
-            bits |= services[idx].bit();
-            idx += 1;
-        }
-        Self(bits)
-    }
-
-    /// Insert a service into the set.
-    pub fn insert(&mut self, service: Service) {
-        self.0 |= service.bit();
-    }
-
-    /// Return a copy of this set with `service` inserted.
-    pub const fn with(self, service: Service) -> Self {
-        Self(self.0 | service.bit())
-    }
-
-    /// Remove a service from the set.
-    pub fn remove(&mut self, service: Service) {
-        self.0 &= !service.bit();
-    }
-
-    /// Return true if the set contains `service`.
-    pub const fn contains(self, service: Service) -> bool {
-        self.0 & service.bit() != 0
-    }
-
-    /// Iterate over services present in this set.
-    pub fn iter(self) -> impl Iterator<Item = Service> {
-        Service::ALL
-            .iter()
-            .copied()
-            .filter(move |service| self.contains(*service))
-    }
-
-    /// Return true if the set contains no services.
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-}
+/// Compact set of driver-provided services used by host tooling.
+///
+/// Kept as a compatibility re-export while call sites migrate to `fstart-services`.
+pub use fstart_services::ServiceSet;
 
 /// Static metadata about a driver.
 ///
@@ -1740,6 +1599,47 @@ impl DriverInstance {
             #[cfg(feature = "i2c-ck505")]
             Self::I2cCk505(cfg) => serde::Serialize::serialize(cfg, ser),
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for DriverInstance {
+    fn feature(&self) -> &'static str {
+        self.driver_feature()
+            .expect("structural device nodes are not runtime board drivers")
+    }
+
+    fn services(&self) -> ServiceSet {
+        self.provided_services()
+    }
+
+    fn pci_root_backend(&self) -> Option<fstart_board_meta::PciRootBackend> {
+        if !self.provides(Service::PciRootBus) {
+            return None;
+        }
+
+        match self.driver_name() {
+            "q35-hostbridge" => Some(fstart_board_meta::PciRootBackend::Q35HostBridge),
+            _ => Some(fstart_board_meta::PciRootBackend::GenericEcam),
+        }
+    }
+
+    fn build_firmware_image(
+        &self,
+        ctx: &fstart_board_meta::BuildFirmwareImageContext<'_>,
+    ) -> Result<Option<fstart_services::FirmwareImage>, heapless::String<128>> {
+        let legacy_ctx = BuildFirmwareImageContext {
+            flash_layout: ctx.flash_layout,
+            intel_ifd: ctx.intel_ifd,
+        };
+        self.build_firmware_image(&legacy_ctx).map_err(|err| {
+            let mut out = heapless::String::new();
+            let _ = out.push_str(&err);
+            out
+        })
+    }
+
+    fn clone_box(&self) -> Box<dyn fstart_board_meta::BoardDriver> {
+        Box::new(self.clone())
     }
 }
 

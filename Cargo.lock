@@ -535,6 +535,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-meta"
+version = "0.1.0"
+dependencies = [
+ "fstart-services",
+ "fstart-types",
+ "heapless",
+]
+
+[[package]]
 name = "fstart-board-orangepi-pc2"
 version = "0.1.0"
 dependencies = [
@@ -746,6 +755,7 @@ dependencies = [
 name = "fstart-device-registry"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-driver-bochs-display",
  "fstart-driver-designware-i2c",
  "fstart-driver-fu740-ddr",
@@ -1359,6 +1369,7 @@ dependencies = [
  "embedded-hal",
  "fstart-pci",
  "fstart-types",
+ "serde",
 ]
 
 [[package]]
@@ -2251,6 +2262,7 @@ dependencies = [
  "fstart-board-foxconn-d41s-uefi",
  "fstart-board-lenovo-x61",
  "fstart-board-licheerv-dock",
+ "fstart-board-meta",
  "fstart-board-orangepi-pc2",
  "fstart-board-orangepi-r1",
  "fstart-board-qemu-aarch64",

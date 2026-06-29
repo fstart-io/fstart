@@ -178,13 +178,13 @@ fn driver_instance_has_no_acpi_only_pseudo_devices() {
 #[test]
 fn service_enum_excludes_topology_variants() {
     let root = repo_root();
-    let registry_rs = root.join("crates/fstart-device-registry/src/lib.rs");
-    let text = fs::read_to_string(registry_rs).expect("read registry");
+    let service_kind_rs = root.join("crates/fstart-services/src/service_kind.rs");
+    let text = fs::read_to_string(service_kind_rs).expect("read service metadata");
     let service_enum = text
-        .split("pub enum Service {")
+        .split("pub enum ServiceKind {")
         .nth(1)
-        .and_then(|tail| tail.split("impl Service").next())
-        .expect("registry should define Service enum before impl Service");
+        .and_then(|tail| tail.split("impl ServiceKind").next())
+        .expect("fstart-services should define ServiceKind enum before impl ServiceKind");
 
     for variant in ["PciBridge", "LpcBus", "SmBus"] {
         assert!(

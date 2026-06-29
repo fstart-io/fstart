@@ -7,8 +7,10 @@
 
 use std::collections::BTreeSet;
 
+use fstart_board_meta::{BoardDriver, PciRootBackend};
 use fstart_codegen::board_loader::ParsedBoard;
-use fstart_device_registry::{DriverInstance, Service};
+use fstart_device_registry::DriverInstance;
+use fstart_services::ServiceKind as Service;
 use fstart_types::stage::PageSize;
 use fstart_types::{
     effective_stage_load_addr, BoardConfig, Capability, Platform, RegionKind, SecurityConfig,
@@ -241,12 +243,6 @@ struct StageContext<'a> {
     load_addr: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PciRootBackend {
-    GenericEcam,
-    Q35HostBridge,
-}
-
 fn pci_root_backend(parsed: &ParsedBoard) -> Option<PciRootBackend> {
     let (idx, _) = parsed
         .device_services
@@ -254,11 +250,7 @@ fn pci_root_backend(parsed: &ParsedBoard) -> Option<PciRootBackend> {
         .enumerate()
         .find(|(_, services)| services.contains(Service::PciRootBus))?;
 
-    if parsed.driver_instances[idx].driver_name() == "q35-hostbridge" {
-        Some(PciRootBackend::Q35HostBridge)
-    } else {
-        Some(PciRootBackend::GenericEcam)
-    }
+    parsed.driver_instances[idx].pci_root_backend()
 }
 
 fn stage_plan(

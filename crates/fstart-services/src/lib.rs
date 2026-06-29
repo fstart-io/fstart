@@ -36,6 +36,7 @@ pub mod network;
 #[cfg(feature = "pci")]
 pub mod pci;
 pub mod pci_host;
+pub mod service_kind;
 pub mod smbus;
 pub mod soc_boot;
 pub mod southbridge;
@@ -67,6 +68,7 @@ pub use network::Network;
 #[cfg(feature = "pci")]
 pub use pci::{PciBdf, PciRootBus, PciWindow, PciWindowKind};
 pub use pci_host::PciHost;
+pub use service_kind::{ServiceKind, ServiceSet};
 pub use smbus::SmBus;
 pub use soc_boot::SocBootHeader;
 pub use southbridge::Southbridge;

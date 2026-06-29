@@ -10,12 +10,13 @@
 //! ELF parsing is retained only for diagnostic logging.
 
 use fstart_acpi::device::AcpiDevice;
-use fstart_device_registry::{DriverInstance, Service, ServiceSet};
+use fstart_device_registry::DriverInstance;
 use fstart_driver_ite8721f::LpcBaseProvider;
 use fstart_ffs::builder::{
     build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
 };
 use fstart_services::device::{BusDevice, Device};
+use fstart_services::{ServiceKind as Service, ServiceSet};
 use fstart_types::device::BusAddress;
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_SIZE,
