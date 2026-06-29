@@ -4,17 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Shared no_std stage support. Codegen emits a data-only `StagePlan` and a
-# small `fstart_main` shim into the handwritten stage executor.
-
 [features]
 default = []
-# Pulls in the std-requiring `DeviceMask` tests. Host-only; firmware
-# builds leave this off.
+# Host-only convenience for tests/docs that need std through shared types.
 std = ["fstart-types/std"]
-# Static typed-board executor. This is the migration target: board crates pass
-# concrete device containers implementing HardwareInit into a fixed handwritten
-# flow selected by coarse profile features.
+# Static typed-board executor. Board crates pass concrete device containers
+# implementing HardwareInit into a fixed handwritten flow selected by coarse
+# profile features.
 fixed-flow = []
 flow-early-platform-v2 = ["fixed-flow"]
 flow-memory-v2 = ["fixed-flow"]
@@ -24,60 +20,6 @@ flow-security-v2 = ["fixed-flow"]
 flow-payload-v2 = ["fixed-flow"]
 flow-handoff-v2 = ["fixed-flow"]
 
-# Handwritten executor over codegen-emitted `StagePlan` data. Flow arms are
-# separately gated so size-sensitive stages do not compile unused paths.
-stage-executor = []
-flow-clock-init = ["stage-executor"]
-flow-console-init = ["stage-executor"]
-flow-memory-init = ["stage-executor", "dep:fstart-capabilities"]
-flow-dram-init = ["stage-executor"]
-flow-driver-init = ["stage-executor"]
-flow-pci = ["stage-executor", "fstart-services/pci"]
-flow-memory-detect = ["stage-executor", "dep:fstart-capabilities"]
-flow-boot-media = ["stage-executor"]
-flow-ffs = [
-  "stage-executor",
-  "dep:fstart-capabilities",
-  "fstart-capabilities/ffs",
-]
-flow-payload-fit = ["flow-ffs", "fstart-capabilities/fit"]
-flow-uefi = ["flow-ffs", "dep:fstart-crabefi"]
-flow-fdt = [
-  "stage-executor",
-  "dep:fstart-capabilities",
-  "fstart-capabilities/fdt",
-]
-flow-fdt-ffs = ["flow-fdt", "fstart-capabilities/ffs"]
-flow-mp = ["stage-executor", "dep:fstart-mp", "dep:fstart-ffs"]
-cpu-generic-x86 = ["flow-mp"]
-cpu-intel-core2 = ["flow-mp", "dep:fstart-cpu-intel"]
-cpu-intel-pineview = ["flow-mp", "dep:fstart-cpu-intel"]
-flow-acpi = [
-  "stage-executor",
-  "dep:fstart-acpi",
-  "dep:fstart-capabilities",
-  "fstart-capabilities/acpi",
-]
-flow-smbios = [
-  "stage-executor",
-  "dep:fstart-capabilities",
-  "fstart-capabilities/smbios",
-]
-flow-fel = [
-  "stage-executor",
-  "dep:fstart-capabilities",
-  "fstart-capabilities/handoff",
-]
-
 [dependencies]
 fstart-types = { workspace = true }
 fstart-services = { workspace = true }
-fstart-log = { workspace = true }
-fstart-mp = { workspace = true, optional = true }
-fstart-ffs = { workspace = true, optional = true }
-fstart-cpu-intel = { workspace = true, optional = true }
-fstart-acpi = { workspace = true, optional = true }
-fstart-capabilities = { workspace = true, optional = true }
-fstart-crabefi = { workspace = true, optional = true }
-ufmt = { workspace = true }
-heapless = { workspace = true }

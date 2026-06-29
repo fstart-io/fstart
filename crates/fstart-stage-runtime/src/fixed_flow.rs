@@ -1,10 +1,11 @@
 //! Fixed handwritten stage flow for static typed board crates.
 //!
 //! This module is the migration target described in the Rust board-builder
-//! plan. Unlike [`crate::flow`], it does not replay generated [`crate::StageOp`]
-//! tables. The order of semantic barriers is fixed in this Rust function, and
+//! plan. The order of semantic barriers is fixed in this Rust function, and
 //! board/device participation is expressed by concrete [`HardwareInit`]
 //! implementations that optimize away when a device uses default no-op methods.
+
+#![allow(dead_code, unreachable_code, unused_mut, unused_variables)]
 
 use fstart_services::{HardwareInit, InitContext, ServiceError};
 
@@ -146,7 +147,11 @@ pub fn run<B: StaticBoard>() -> ! {
         board.boot_payload();
     }
 
-    B::halt()
+    #[cfg(not(feature = "flow-handoff-v2"))]
+    B::halt();
+
+    #[cfg(feature = "flow-handoff-v2")]
+    unreachable!("flow-handoff-v2 boot_payload must diverge")
 }
 
 fn run_step<B: StaticBoard>(
