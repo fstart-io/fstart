@@ -11,5 +11,3 @@ heapless = { workspace = true }
 serde = { workspace = true }
 ufmt = { workspace = true }
 
-[dev-dependencies]
-ron = { workspace = true }

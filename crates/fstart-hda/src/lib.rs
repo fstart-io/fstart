@@ -7,26 +7,42 @@
 //! - **Controller operations**: reset, codec detection, verb programming
 //!   via the Immediate Command interface (IC/IR/ICS registers).
 //! - **Verb table types**: [`HdaVerbTable`] and [`HdaConfig`] for
-//!   describing codec pin configurations in board RON files.
+//!   describing codec pin configurations in Rust board metadata.
 //! - **Pin descriptor types**: [`PinConfig`] with named enums matching
 //!   coreboot's `AZALIA_PIN_DESC` / `AZALIA_PIN_CFG` macros — readable
 //!   per-pin configuration instead of raw 32-bit values.
 //! - **Helper functions**: [`hda_verb`], [`hda_pin_cfg`], [`hda_pin_nc`]
 //!   for raw verb encoding when needed.
 //!
-//! # RON pin configuration
+//! # Rust pin configuration
 //!
-//! ```ron
-//! hda: (verbs: [( vendor_id: 0x10ec0662, subsystem_id: 0x105b0d55, pins: [
-//!     // NID 0x14: rear line-out, jack, rear, green, 3.5mm
-//!     ( nid: 0x14, device: LineOut, conn: Jack, color: Green,
-//!       loc: Rear, connector: StereoMono18, group: 1, seq: 0 ),
-//!     // NID 0x15: not connected
-//!     ( nid: 0x15, nc: 0 ),
-//!     // NID 0x18: rear mic, jack, rear, pink
-//!     ( nid: 0x18, device: MicIn, conn: Jack, color: Pink, loc: Rear,
-//!       connector: StereoMono18, group: 3, seq: 0 ),
-//! ])])
+//! ```ignore
+//! use fstart_hda::{HdaConfig, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc};
+//! use fstart_types::hvec;
+//!
+//! let hda = HdaConfig {
+//!     verbs: hvec([HdaVerbTable {
+//!         vendor_id: 0x10ec0662,
+//!         subsystem_id: 0x105b0d55,
+//!         pins: hvec([
+//!             PinConfig {
+//!                 nid: 0x14,
+//!                 device: PinDevice::LineOut,
+//!                 conn: PinConn::Jack,
+//!                 color: PinColor::Green,
+//!                 loc: PinLoc::External,
+//!                 geo: PinGeoLoc::Rear,
+//!                 connector: PinConnector::StereoMono18,
+//!                 misc: 0xC,
+//!                 group: 1,
+//!                 seq: 0,
+//!                 nc: None,
+//!             },
+//!             PinConfig::not_connected(0x15),
+//!         ]),
+//!         extra_verbs: hvec([]),
+//!     }]),
+//! };
 //! ```
 
 #![allow(clippy::derivable_impls, clippy::identity_op)]
@@ -994,28 +1010,5 @@ mod tests {
             seq: 15,
         };
         assert_eq!(p.encode(), 0x0181343f, "line-in pin config mismatch");
-    }
-
-    /// RON deserialization with per-pin syntax.
-    #[test]
-    fn ron_deserialize_verb_table() {
-        let ron = r#"(verbs: [(
-            vendor_id: 0x10ec0662,
-            subsystem_id: 0x105b0d55,
-            pins: [
-                ( nid: 0x14, device: LineOut, conn: Jack, color: Green,
-                  loc: External, geo: Rear, connector: StereoMono18, misc: 0xC, group: 1, seq: 0 ),
-                ( nid: 0x15, nc: Some(0) ),
-            ],
-            extra_verbs: [0x00c3b027],
-        )])"#;
-        let cfg: HdaConfig = ron::from_str(ron).expect("RON parse");
-        assert_eq!(cfg.verbs.len(), 1);
-        assert_eq!(cfg.verbs[0].vendor_id, 0x10ec0662);
-        assert_eq!(cfg.verbs[0].pins.len(), 2);
-        assert_eq!(cfg.verbs[0].pins[0].nid, 0x14);
-        assert_eq!(cfg.verbs[0].pins[0].encode(), 0x01014c10);
-        assert_eq!(cfg.verbs[0].pins[1].nc, Some(0));
-        assert_eq!(cfg.verbs[0].extra_verbs.len(), 1);
     }
 }

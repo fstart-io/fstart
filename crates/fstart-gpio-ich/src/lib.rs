@@ -16,24 +16,19 @@
 //!
 //! # Board configuration
 //!
-//! GPIO pads are configured from the board RON file using [`GpioConfig`],
-//! which contains a list of [`GpioPin`] entries — one per pin that differs
-//! from the default (Native mode).  Pins not listed are left in their
+//! GPIO pads are configured from Rust board metadata using [`GpioConfig`],
+//! which contains a list of [`GpioPin`] entries, one per pin that differs
+//! from the default (Native mode). Pins not listed are left in their
 //! native/reset state.
 //!
-//! ```ron
-//! gpio: (pins: [
-//!     // GPIO outputs (default: mode=Gpio, dir=Output, level=Low)
-//!     ( pin: 0 ),
-//!     ( pin: 6 ),
-//!     ( pin: 7 ),
-//!     // GPIO input
-//!     ( pin: 33, dir: Input ),
-//!     // GPIO output, driven high
-//!     ( pin: 24, level: High ),
-//!     // Full explicit form
-//!     ( pin: 10, mode: Gpio, dir: Output, level: Low, reset: Rsmrst ),
-//! ])
+//! ```rust
+//! use fstart_gpio_ich::{input, output, GpioConfig, GpioLevel};
+//!
+//! let mut gpio = GpioConfig::default();
+//! gpio.pins.push(output(0, GpioLevel::Low)).ok();
+//! gpio.pins.push(output(6, GpioLevel::Low)).ok();
+//! gpio.pins.push(input(33)).ok();
+//! gpio.pins.push(output(24, GpioLevel::High)).ok();
 //! ```
 //!
 //! Since you only list pins that are GPIO (not Native), the default for
@@ -78,7 +73,7 @@ const IO_SEL_REGS: [u16; 3] = [GP_IO_SEL, GP_IO_SEL2, GP_IO_SEL3];
 const LVL_REGS: [u16; 3] = [GP_LVL, GP_LVL2, GP_LVL3];
 
 // ---------------------------------------------------------------------------
-// Per-pin configuration types (serde, for board RON)
+// Per-pin configuration types (serde, for Rust board metadata)
 // ---------------------------------------------------------------------------
 
 /// GPIO pin function select.
@@ -145,18 +140,19 @@ impl Default for GpioReset {
 /// Configuration for a single GPIO pin.
 ///
 /// Only pins that differ from the default (Native mode) need to be
-/// listed in the board RON.  For the most common case — a GPIO output
-/// driven low — just `( pin: N )` suffices.
+/// listed in board metadata. For the most common case, a GPIO output
+/// driven low, use `GpioPin { pin: N, ..GpioPin::default() }`.
 ///
-/// # RON examples
+/// # Rust examples
 ///
-/// ```ron
-/// ( pin: 0 )                          // GPIO output, low (all defaults)
-/// ( pin: 33, dir: Input )             // GPIO input
-/// ( pin: 24, level: High )            // GPIO output, high
-/// ( pin: 7, blink: true )             // GPIO output with blink
-/// ( pin: 10, reset: Rsmrst )          // survives S3/S4
-/// ( pin: 5, mode: Native )            // explicitly native (rare)
+/// ```rust
+/// # use fstart_gpio_ich::*;
+/// output(0, GpioLevel::Low);                  // GPIO output, low
+/// input(33);                                  // GPIO input
+/// output(24, GpioLevel::High);                // output high
+/// GpioPin { pin: 7, blink: true, ..output(7, GpioLevel::Low) }; // blink
+/// GpioPin { pin: 10, reset: GpioReset::Rsmrst, ..output(10, GpioLevel::Low) }; // S3/S4
+/// GpioPin { pin: 5, mode: GpioMode::Native, ..output(5, GpioLevel::Low) }; // explicit native
 /// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -188,19 +184,17 @@ pub struct GpioPin {
 /// Contains a sparse list of per-pin configurations. Pins not listed
 /// remain in their power-on default state (typically Native mode).
 ///
-/// # RON example
+/// # Rust example
 ///
-/// ```ron
-/// gpio: (pins: [
-///     // GPIO outputs (active-low LEDs, active-low resets)
-///     ( pin: 0 ),
-///     ( pin: 6 ),
-///     ( pin: 7 ),
-///     ( pin: 8 ),
-///     // GPIO inputs (buttons, jumpers, detect pins)
-///     ( pin: 33, dir: Input ),
-///     ( pin: 34, dir: Input ),
-/// ])
+/// ```rust
+/// # use fstart_gpio_ich::*;
+/// let mut gpio = GpioConfig::default();
+/// gpio.pins.push(output(0, GpioLevel::Low)).ok();
+/// gpio.pins.push(output(6, GpioLevel::Low)).ok();
+/// gpio.pins.push(output(7, GpioLevel::Low)).ok();
+/// gpio.pins.push(output(8, GpioLevel::Low)).ok();
+/// gpio.pins.push(input(33)).ok();
+/// gpio.pins.push(input(34)).ok();
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -727,23 +721,5 @@ mod tests {
         for i in 0..3 {
             assert_eq!(regs.use_sel[i], 0);
         }
-    }
-
-    /// Verify RON deserialization works with minimal per-pin syntax.
-    #[test]
-    fn ron_deserialize_minimal() {
-        let ron_str = r#"(pins: [
-            ( pin: 0 ),
-            ( pin: 6 ),
-            ( pin: 33, dir: Input ),
-        ])"#;
-        let cfg: GpioConfig = ron::from_str(ron_str).expect("RON parse");
-        assert_eq!(cfg.pins.len(), 3);
-        assert_eq!(cfg.pins[0].pin, 0);
-        assert_eq!(cfg.pins[0].mode, GpioMode::Gpio);
-        assert_eq!(cfg.pins[0].dir, GpioDir::Output);
-        assert_eq!(cfg.pins[1].pin, 6);
-        assert_eq!(cfg.pins[2].pin, 33);
-        assert_eq!(cfg.pins[2].dir, GpioDir::Input);
     }
 }

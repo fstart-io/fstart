@@ -105,7 +105,6 @@ license = "MIT OR Apache-2.0"
 # Serialization
 serde = { version = "1", default-features = false, features = ["derive"] }
 postcard = { version = "1", default-features = false }
-ron = "0.8"
 
 # Crypto (RustCrypto)
 sha2 = { version = "0.10", default-features = false }
