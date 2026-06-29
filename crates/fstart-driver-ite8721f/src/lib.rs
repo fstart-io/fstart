@@ -13,7 +13,7 @@ extern crate alloc;
 
 use fstart_superio::{SuperIo, SuperIoChip};
 
-// Re-export all SuperIO config types so generated stage code can refer
+// Re-export all SuperIO config types so selected stage code can refer
 // to them via `use fstart_driver_ite8721f::*;` without a second glob
 // import from `fstart_superio`.
 pub use fstart_superio::{

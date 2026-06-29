@@ -1,8 +1,7 @@
 //! Composable capability modules for firmware stages.
 //!
-//! Each capability is a unit of firmware functionality. The board RON file
-//! declares which capabilities run in which order. Codegen generates a
-//! `fstart_main()` that calls them in sequence.
+//! Each capability is a unit of firmware functionality. Fixed handwritten
+//! stage flow calls these capabilities from board/platform-owned Rust adapters.
 //!
 //! Capability functions use the global logger ([`fstart_log`]) for output
 //! rather than accepting `&dyn Console` parameters. The console must be

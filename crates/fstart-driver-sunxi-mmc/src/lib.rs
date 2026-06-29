@@ -30,7 +30,7 @@ use fstart_sunxi_ccu_regs::{D1_MMC_CLK, MMC_CLK};
 use fstart_arch::udelay;
 
 // ---------------------------------------------------------------------------
-// Driver configuration (from board RON)
+// Driver configuration (from board metadata)
 // ---------------------------------------------------------------------------
 
 /// Configuration for the Allwinner sunxi MMC controller.

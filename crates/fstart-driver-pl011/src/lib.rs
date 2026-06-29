@@ -87,7 +87,7 @@ pub struct Pl011Config {
     /// Desired baud rate.
     pub baud_rate: u32,
 
-    // -- ACPI fields (board-specific, from RON) --
+    // -- ACPI fields (board-specific, from board metadata) --
     /// ACPI namespace name (e.g., "COM0").
     /// Only used on ACPI-capable platforms.
     #[serde(default)]
@@ -121,7 +121,7 @@ pub struct Pl011 {
 }
 
 // SAFETY: MMIO registers are hardware-fixed addresses; access is safe
-// as long as the base address is correct (which comes from the board RON).
+// as long as the base address is correct (which comes from the board metadata).
 unsafe impl Send for Pl011 {}
 unsafe impl Sync for Pl011 {}
 
@@ -131,7 +131,7 @@ impl Pl011 {
     /// # Safety
     ///
     /// The base address must point to a valid PL011 register block.
-    /// This is guaranteed by the board RON (validated at codegen time).
+    /// This is guaranteed by the board metadata (validated during board construction).
     #[inline(always)]
     fn regs(&self) -> &Pl011Regs {
         // SAFETY: `self.base` was set from the board config's

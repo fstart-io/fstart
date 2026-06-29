@@ -65,7 +65,7 @@ pub struct SunxiD1Ccu {
     uart_index: u8,
 }
 
-// SAFETY: MMIO registers are at fixed hardware addresses from the board RON.
+// SAFETY: MMIO registers are at fixed hardware addresses from the board metadata.
 unsafe impl Send for SunxiD1Ccu {}
 unsafe impl Sync for SunxiD1Ccu {}
 
@@ -74,7 +74,7 @@ impl SunxiD1Ccu {
     #[inline(always)]
     fn ccu_read(&self, offset: usize) -> u32 {
         // SAFETY: address is a valid MMIO register within the CCU block at a
-        // fixed hardware address (ccu_base from board RON).
+        // fixed hardware address (ccu_base from board metadata).
         unsafe { fstart_mmio::read32((self.ccu_base + offset) as *const u32) }
     }
 
@@ -82,7 +82,7 @@ impl SunxiD1Ccu {
     #[inline(always)]
     fn ccu_write(&self, offset: usize, val: u32) {
         // SAFETY: address is a valid MMIO register within the CCU block at a
-        // fixed hardware address (ccu_base from board RON).
+        // fixed hardware address (ccu_base from board metadata).
         unsafe { fstart_mmio::write32((self.ccu_base + offset) as *mut u32, val) }
     }
 
@@ -204,7 +204,7 @@ impl Device for SunxiD1Ccu {
 
     fn new(config: &'static SunxiD1CcuConfig) -> Result<Self, DeviceError> {
         Ok(Self {
-            // SAFETY: addresses come from the board RON, validated by codegen.
+            // SAFETY: addresses come from the board metadata, validated by board construction.
             ccu: unsafe { &*(config.ccu_base as *const SunxiD1CcuRegs) },
             ccu_base: config.ccu_base as usize,
             pio_base: config.pio_base as usize,

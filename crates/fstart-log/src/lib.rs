@@ -9,8 +9,8 @@
 //! Call [`init`] once after the console device is initialised:
 //!
 //! ```ignore
-//! // In generated fstart_main():
-//! uart0.init().unwrap_or_else(|_| halt());
+//! // In a board-owned fixed-flow console step:
+//! uart0.console(&mut ctx).unwrap_or_else(|_| halt());
 //! // SAFETY: uart0 lives in fstart_main() which never returns.
 //! unsafe { fstart_log::init(&uart0) };
 //!

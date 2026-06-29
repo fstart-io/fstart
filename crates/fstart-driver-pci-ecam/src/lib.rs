@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 /// Typed configuration for the PCI ECAM host bridge.
 ///
-/// All addresses come from the board RON and describe the fixed platform
+/// All addresses come from the board metadata and describe the fixed platform
 /// windows that QEMU / the SoC provides for PCI.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,7 +160,7 @@ pub struct PciEcam {
     next_bus: u8,
 }
 
-// SAFETY: MMIO registers are hardware-fixed addresses from the board RON.
+// SAFETY: MMIO registers are hardware-fixed addresses from the board metadata.
 // The driver is used single-threaded during firmware init.
 unsafe impl Send for PciEcam {}
 unsafe impl Sync for PciEcam {}

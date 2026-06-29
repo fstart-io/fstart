@@ -34,7 +34,7 @@ use fstart_services::memory_detect::E820Entry;
 /// about to read memory-mapped flash. It is cleared before Linux handoff.
 pub fn enable_boot_media_rom_cache() {
     fstart_log::info!("mtrr: enabling temporary BSP ROM WP for memory-mapped boot media");
-    // SAFETY: generated stage code calls this on the BSP immediately before
+    // SAFETY: selected stage code calls this on the BSP immediately before
     // memory-mapped boot-media reads. The MTRR is cleared before OS handoff.
     unsafe { mtrr::set_boot_rom_wp(true) };
 }
@@ -42,7 +42,7 @@ pub fn enable_boot_media_rom_cache() {
 /// Clear the BSP-local temporary ROM cacheability MTRR before payload/OS handoff.
 pub fn disable_boot_media_rom_cache_for_handoff() {
     fstart_log::info!("mtrr: clearing temporary BSP ROM WP before payload handoff");
-    // SAFETY: generated stage code calls this on the BSP immediately before
+    // SAFETY: selected stage code calls this on the BSP immediately before
     // handing control to a payload/OS that expects coherent MTRR state.
     unsafe { mtrr::set_boot_rom_wp(false) };
 }
@@ -232,7 +232,7 @@ core::arch::global_asm!(
     //
     // Real XIP boards keep prebuilt page tables in ROM: CR3 only needs
     // the physical address and the CPU reads the descriptors during page
-    // walks. QEMU is the exception: its board RON supplies a writable
+    // walks. QEMU is the exception: its board metadata supplies a writable
     // `page_table_addr`, enabling `x86-writable-page-tables`, so the
     // setup routine below builds the tables in low RAM.
     //
@@ -942,7 +942,7 @@ pub extern "C" fn x86_exception_handler(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — consumed by generated stage code via fstart_platform:: alias
+// Public API — consumed by selected stage code via fstart_platform:: alias
 // ---------------------------------------------------------------------------
 
 /// Halt the processor in a low-power wait state (never returns).

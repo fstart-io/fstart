@@ -706,7 +706,7 @@ impl Device for SunxiH3Dramc {
     fn new(config: &'static SunxiH3DramcConfig) -> Result<Self, DeviceError> {
         let base = config.dramc_base as usize;
         Ok(Self {
-            // SAFETY: addresses from board RON.
+            // SAFETY: addresses from board metadata.
             com: unsafe { &*(base as *const SunxiH3DramComRegs) },
             ctl: unsafe { &*((base + 0x1000) as *const SunxiH3DramCtlRegs) },
             ccu: unsafe { &*(config.ccu_base as *const SunxiH3CcuRegs) },

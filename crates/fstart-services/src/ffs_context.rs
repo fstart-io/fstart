@@ -64,7 +64,7 @@ impl MemoryMappedFfsContext {
     ///
     /// # Safety
     ///
-    /// The generated stage publishes a pointer to its static `FSTART_ANCHOR`,
+    /// The selected stage publishes a pointer to its static `FSTART_ANCHOR`,
     /// which lives for the entire stage execution.
     #[inline]
     pub unsafe fn anchor_bytes(&self) -> &'static [u8] {

@@ -36,7 +36,7 @@ pub const HANDOFF_MAX_SIZE: usize = 256;
 ///
 /// Carries runtime-discovered parameters from one stage to the next.
 /// Device init state is determined at compile time by the codegen
-/// (which can see all stages' capabilities in the board RON), so it
+/// (which can see all stages' capabilities in the board metadata), so it
 /// is NOT included here — only truly dynamic data belongs in the handoff.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

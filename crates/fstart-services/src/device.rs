@@ -1,11 +1,11 @@
 //! Device trait — base lifecycle for all hardware devices.
 //!
 //! Every driver implements `Device` with an associated `Config` type that
-//! captures exactly the resources it needs.  Codegen maps the RON driver
-//! config to the driver-specific struct at build time.
+//! captures exactly the resources it needs. Rust board crates construct these
+//! driver-specific structs directly.
 //!
-//! Bus-attached devices implement [`BusDevice`] instead. Codegen passes the
-//! parent bus controller reference and parsed bus address directly
+//! Bus-attached devices implement [`BusDevice`] instead. Board/platform-owned
+//! topology builders pass the parent bus controller reference and typed bus address directly
 //! (compile-away approach: no runtime lookup).
 //!
 //! See [docs/driver-model.md](../../../docs/driver-model.md) for the full design.
@@ -27,8 +27,9 @@ pub enum DeviceError {
 
 /// Base trait for all root-level hardware devices.
 ///
-/// Separates construction (`new`) from hardware initialisation (`init`) so
-/// that codegen can control init ordering via the capability list.
+/// Separates construction (`new`) from hardware initialization. New static
+/// board flows should prefer step-based [`crate::HardwareInit`] methods over
+/// calling `init()` directly.
 ///
 /// # Associated Types
 ///
@@ -46,7 +47,8 @@ pub trait Device: Send + Sync + Sized {
     /// Construct from typed config.  Does NOT touch hardware.
     fn new(config: &'static Self::Config) -> Result<Self, DeviceError>;
 
-    /// Initialise hardware.  Called after `new()`, in capability order.
+    /// Legacy whole-device initialization hook. Prefer step-based
+    /// [`crate::HardwareInit`] implementations for fixed-flow boards.
     fn init(&mut self) -> Result<(), DeviceError>;
 }
 
@@ -81,7 +83,7 @@ pub trait Device: Send + Sync + Sized {
 /// }
 /// ```
 ///
-/// Codegen generates construction with the parsed RON bus address and then
+/// Board-owned topology constructs children with typed bus addresses and then
 /// initializes the child with mutable parent-bus access:
 /// ```ignore
 /// let mut tpm0 = Slb9670::new_on_bus_at(
@@ -98,7 +100,7 @@ pub trait BusDevice: Send + Sync + Sized {
     /// Compatible strings.
     const COMPATIBLE: &'static [&'static str];
 
-    /// Driver-specific configuration type (deserialized from RON).
+    /// Driver-specific configuration type supplied by board metadata.
     type Config;
 
     /// The parent bus interface type this device requires.
@@ -114,7 +116,7 @@ pub trait BusDevice: Send + Sync + Sized {
     ///
     /// Devices whose address is modeled by board topology must override this
     /// method and consume the supplied address. The default accepts only
-    /// address-less topology, so codegen never silently drops bus wiring data.
+    /// address-less topology, so board topology never silently drops bus wiring data.
     fn new_on_bus_at(
         config: &'static Self::Config,
         bus: &Self::Bus,

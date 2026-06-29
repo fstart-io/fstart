@@ -1,6 +1,6 @@
 /* RISC-V 64 default linker script for QEMU virt machine.
  *
- * In practice, the linker script is generated from the board RON memory map.
+ * In practice, the linker script is generated from the board metadata memory map.
  * This is a fallback / reference.
  */
 

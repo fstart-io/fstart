@@ -237,7 +237,7 @@ use fstart_superio::LpcBaseProvider;
 use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 
-// Re-export HDA types from the shared crate so board RON configs
+// Re-export HDA types from the shared crate so board configs
 // can reference them via the ICH7 driver path.
 pub use fstart_hda::{
     HdaConfig, HdaController, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice,
@@ -2710,7 +2710,7 @@ mod acpi_impl {
         ///
         /// The PM block addresses are carried in the x86 platform config
         /// (`X86PlatformAcpi`), so the LPC bridge does not produce any
-        /// standalone tables. PIRQ routing is handled by the board RON
+        /// standalone tables. PIRQ routing is handled by board metadata
         /// `isos` (Interrupt Source Overrides) in the MADT.
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
             Vec::new()

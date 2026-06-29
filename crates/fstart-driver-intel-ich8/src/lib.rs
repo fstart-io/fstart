@@ -514,7 +514,7 @@ const LPC_EN_COREBOOT_BASE: u16 =
 mod rcba_pirq {
     /// Default ICH8/ICH8-M RCBA interrupt routing.
     ///
-    /// The route table belongs in the chipset driver rather than board RON
+    /// The route table belongs in the chipset driver rather than generic board metadata
     /// because it is tightly coupled to the fixed internal ICH8 device/function
     /// layout.
     #[derive(Clone, Copy)]
@@ -1063,7 +1063,7 @@ impl IntelIch8 {
         let runtime_size = self.spi_flash_component_size();
         if runtime_size != expected.size {
             fstart_log::error!(
-                "intel-ich8: SPI flash size mismatch: RON={:#x} runtime={:#x}",
+                "intel-ich8: SPI flash size mismatch: configured={:#x} runtime={:#x}",
                 expected.size,
                 runtime_size
             );
@@ -1077,7 +1077,7 @@ impl IntelIch8 {
             let (runtime_offset, runtime_size) = self.spi_ifd_region(index);
             if runtime_offset != region.offset || runtime_size != region.size {
                 fstart_log::error!(
-                    "intel-ich8: SPI {} region mismatch: RON off={:#x} size={:#x} runtime off={:#x} size={:#x}",
+                    "intel-ich8: SPI {} region mismatch: configured off={:#x} size={:#x} runtime off={:#x} size={:#x}",
                     region.kind.as_str(),
                     region.offset,
                     region.size,
@@ -1093,7 +1093,7 @@ impl IntelIch8 {
             let runtime_host_base = 0x1_0000_0000u64 - u64::from(bios.size);
             if expected_host_base != runtime_host_base {
                 fstart_log::error!(
-                    "intel-ich8: BIOS host window mismatch: RON={:#x} runtime={:#x}",
+                    "intel-ich8: BIOS host window mismatch: configured={:#x} runtime={:#x}",
                     expected_host_base,
                     runtime_host_base
                 );

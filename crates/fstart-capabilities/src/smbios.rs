@@ -21,7 +21,7 @@ use fstart_services::memory_detect::E820Kind;
 /// Static descriptor for SMBIOS table generation.
 ///
 /// All strings are `&str` for const-constructibility. Codegen constructs
-/// this from the board RON's `smbios` config section.
+/// this from the board-owned `smbios` config section.
 pub struct SmbiosDesc<'a> {
     /// Type 0: BIOS vendor string.
     pub bios_vendor: &'a str,

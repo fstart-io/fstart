@@ -1372,7 +1372,7 @@ impl IntelGm965 {
     fn ffs_vbt(&self) -> Option<Vec<u8>> {
         let file_name = self.config.igd.vbt_file.as_ref()?;
         let ctx = fstart_services::ffs_context::memory_mapped()?;
-        // SAFETY: the generated stage publishes a static anchor and a valid
+        // SAFETY: the selected stage publishes a static anchor and a valid
         // memory-mapped boot-media window when BootMedia runs.
         let anchor_bytes = unsafe { ctx.anchor_bytes() };
         let image = unsafe { ctx.image_bytes() };

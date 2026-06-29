@@ -1498,7 +1498,7 @@ mod acpi_impl {
 
             // The PCI host-bridge MMIO aperture begins at the live chipset
             // TOLUD value programmed by raminit. This is evaluated while ACPI
-            // tables are generated in ramstage, not baked into the board RON.
+            // tables are generated in ramstage, not baked into the board metadata.
             #[cfg(target_os = "none")]
             let pci_mmio_base = self.tolud();
             #[cfg(not(target_os = "none"))]

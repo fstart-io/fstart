@@ -50,7 +50,7 @@
 extern crate alloc;
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{Console, ServiceError};
+use fstart_services::{Console, HardwareInit, InitContext, ServiceError};
 use tock_registers::register_bitfields;
 use tock_registers::LocalRegisterCopy;
 
@@ -169,8 +169,8 @@ impl Default for AccessMode {
 ///   - `Mmio { base, reg_shift, reg_width }` — memory-mapped I/O
 ///   - `Pio { base }` — x86 port I/O (always byte-stride, byte-width)
 ///
-/// Serde defaults ensure backward compatibility: existing board RON
-/// files without explicit `regs` get `Mmio { base: 0, reg_shift: 0, reg_width: 0 }`.
+/// The `regs` field defaults to `Mmio { base: 0, reg_shift: 0, reg_width: 0 }`
+/// for board crates that use `Default` during incremental construction.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ns16550Config {
@@ -204,8 +204,8 @@ enum ResolvedRegs {
     Pio { base: u16 },
 }
 
-// SAFETY: MMIO registers are hardware-fixed addresses; access is safe
-// as long as the base address is correct (which comes from the board RON).
+// SAFETY: MMIO registers are hardware-fixed addresses; access is safe as long
+// as the base address comes from correct board-owned hardware metadata.
 unsafe impl Send for Ns16550 {}
 unsafe impl Sync for Ns16550 {}
 
@@ -423,6 +423,12 @@ impl Console for Ns16550 {
             core::hint::spin_loop();
         }
         Ok(())
+    }
+}
+
+impl HardwareInit for Ns16550 {
+    fn console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.init().map_err(|_| ServiceError::HardwareError)
     }
 }
 

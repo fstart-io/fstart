@@ -1,6 +1,6 @@
 //! Security configuration types.
 //!
-//! These types are used in the board RON to declare the signing/verification
+//! These types are used in the board metadata to declare the signing/verification
 //! setup. At build time, codegen reads the public key file and embeds the
 //! key material into the anchor block inside the bootblock binary.
 

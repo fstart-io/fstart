@@ -49,7 +49,7 @@ use fstart_services::device::{Device, DeviceError};
 use fstart_services::{BlockDevice, ServiceError};
 
 // ---------------------------------------------------------------------------
-// Driver configuration (from board RON)
+// Driver configuration (from board metadata)
 // ---------------------------------------------------------------------------
 
 /// Configuration for the Allwinner sunxi SPI NOR flash boot driver.

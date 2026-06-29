@@ -4,8 +4,8 @@
 //! (e.g., MCFG for PCIe) without going through the `AcpiDevice` trait,
 //! since they have no associated driver struct.
 //!
-//! The codegen emits construction + `dsdt_aml()` / `extra_tables()` calls
-//! for each `AcpiExtraDevice` entry in the board RON.
+//! Board/platform ACPI table code calls `dsdt_aml()` / `extra_tables()` for
+//! each board-owned `AcpiExtraDevice` entry.
 
 extern crate alloc;
 

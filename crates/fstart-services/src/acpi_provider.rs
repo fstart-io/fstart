@@ -5,7 +5,7 @@
 //! load the tables into a buffer, then passes the RSDP address to the OS
 //! via the boot protocol (e.g., x86 zero page, UEFI system table).
 //!
-//! For platforms that generate their own ACPI tables from the board RON,
+//! For platforms that generate their own ACPI tables from the board metadata,
 //! the `AcpiPrepare` capability is used instead — it does not go through
 //! this trait.
 

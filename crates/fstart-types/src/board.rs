@@ -364,7 +364,7 @@ pub enum FdtSource {
     Generated,
     /// Use a separate DTS file (path relative to board directory)
     Override(HString<128>),
-    /// Generate from RON but merge in DTS fragments
+    /// Generate from board metadata but merge in DTS fragments
     GeneratedWithOverride(HString<128>),
 }
 

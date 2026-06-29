@@ -134,7 +134,7 @@ pub struct SunxiH3Ccu {
     uart_index: u8,
 }
 
-// SAFETY: MMIO registers are at fixed hardware addresses from the board RON.
+// SAFETY: MMIO registers are at fixed hardware addresses from the board metadata.
 unsafe impl Send for SunxiH3Ccu {}
 unsafe impl Sync for SunxiH3Ccu {}
 
@@ -289,7 +289,7 @@ impl Device for SunxiH3Ccu {
 
     fn new(config: &'static SunxiH3CcuConfig) -> Result<Self, DeviceError> {
         Ok(Self {
-            // SAFETY: addresses come from the board RON, validated by codegen.
+            // SAFETY: addresses come from the board metadata, validated by board construction.
             ccu: unsafe { &*(config.ccu_base as *const SunxiH3CcuRegs) },
             ccu_base: config.ccu_base as usize,
             pio_base: config.pio_base as usize,

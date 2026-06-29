@@ -1,4 +1,4 @@
-//! ACPI configuration types for board RON.
+//! ACPI configuration types for board metadata.
 //!
 //! Defines the board-level ACPI configuration. ARM boards still carry
 //! platform table parameters in RON; x86 platform topology comes from the
@@ -11,7 +11,7 @@
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
-/// Top-level ACPI configuration, from the board RON `acpi` field.
+/// Top-level ACPI configuration, from the board metadata `acpi` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcpiConfig {
@@ -42,7 +42,7 @@ pub enum AcpiPlatform {
     /// x86 platform -- Local APIC + I/O APIC, optional HPET.
     ///
     /// The interrupt/timer topology is supplied by the chipset/platform
-    /// driver at runtime; board RON only selects that x86 ACPI is needed.
+    /// driver at runtime; board metadata only selects that x86 ACPI is needed.
     X86,
 }
 

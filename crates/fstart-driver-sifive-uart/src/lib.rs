@@ -128,7 +128,7 @@ pub struct SifiveUart {
 }
 
 // SAFETY: MMIO registers are hardware-fixed addresses; access is safe
-// as long as the base address is correct (which comes from the board RON).
+// as long as the base address is correct (which comes from the board metadata).
 unsafe impl Send for SifiveUart {}
 unsafe impl Sync for SifiveUart {}
 

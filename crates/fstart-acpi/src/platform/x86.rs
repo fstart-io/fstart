@@ -62,7 +62,7 @@ pub struct X86Config {
 
 /// Runtime provider for chipset/platform-owned x86 ACPI topology.
 ///
-/// Board RON selects that x86 ACPI tables are needed; the southbridge or
+/// Board metadata selects that x86 ACPI tables are needed; the southbridge or
 /// platform driver supplies APIC, HPET, PMBASE, and SCI details from the
 /// hardware model it initializes.
 pub trait X86PlatformProvider {

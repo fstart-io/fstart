@@ -269,7 +269,7 @@ impl IntelIfdFlashLayout {
     }
 }
 
-/// One Intel IFD flash region declared in board RON.
+/// One Intel IFD flash region declared in board metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntelIfdRegionConfig {

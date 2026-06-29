@@ -190,7 +190,7 @@ pub enum I2cSpeed {
 /// Typed configuration for the DesignWare I2C driver.
 ///
 /// Contains exactly the fields this driver needs.
-/// Serializable with both RON (build-time validation) and postcard
+/// Serializable for build-time validation and postcard
 /// (runtime config from FFS).
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -216,7 +216,7 @@ pub struct DesignwareI2c {
 }
 
 // SAFETY: MMIO registers are hardware-fixed addresses; access is safe
-// as long as the base address is correct (which comes from the board RON).
+// as long as the base address is correct (which comes from board metadata).
 unsafe impl Send for DesignwareI2c {}
 unsafe impl Sync for DesignwareI2c {}
 
@@ -233,7 +233,7 @@ impl Device for DesignwareI2c {
 
     fn new(config: &'static DesignwareI2cConfig) -> Result<Self, DeviceError> {
         Ok(Self {
-            // SAFETY: base_addr comes from the board RON and is validated
+            // SAFETY: base_addr comes from board metadata and is validated
             // by codegen at build time.
             regs: unsafe { &*(config.base_addr as *const DesignwareI2cRegs) },
             clock_freq: config.clock_freq,

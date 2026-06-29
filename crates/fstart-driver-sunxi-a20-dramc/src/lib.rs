@@ -339,7 +339,7 @@ pub struct SunxiA20Dramc {
     detected_size: Cell<u64>,
 }
 
-// SAFETY: MMIO registers are at fixed hardware addresses from the board RON.
+// SAFETY: MMIO registers are at fixed hardware addresses from the board metadata.
 // Early boot is single-threaded; no concurrent access to Cell fields.
 unsafe impl Send for SunxiA20Dramc {}
 unsafe impl Sync for SunxiA20Dramc {}
@@ -355,7 +355,7 @@ impl Device for SunxiA20Dramc {
 
     fn new(config: &'static SunxiA20DramcConfig) -> Result<Self, DeviceError> {
         Ok(Self {
-            // SAFETY: addresses come from the board RON, validated by codegen.
+            // SAFETY: addresses come from the board metadata, validated by board construction.
             regs: unsafe { &*(config.dramc_base as *const SunxiDramcRegs) },
             ccu: unsafe { &*(config.ccu_base as *const SunxiA20CcuRegs) },
             clock: config.clock,

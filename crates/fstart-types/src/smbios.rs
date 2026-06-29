@@ -1,8 +1,8 @@
-//! SMBIOS configuration types for board RON.
+//! SMBIOS configuration types for board metadata.
 //!
 //! Defines the board-level SMBIOS configuration: system identity, processor
 //! descriptions, and memory device declarations.  These types are deserialized
-//! from the `smbios` field in the board RON and drive codegen for the
+//! from the `smbios` field in the board metadata and drive table construction for the
 //! `SmBiosPrepare` capability.
 //!
 //! The actual table generation lives in the `fstart-smbios` crate.
@@ -10,7 +10,7 @@
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
-/// Top-level SMBIOS configuration, from the board RON `smbios` field.
+/// Top-level SMBIOS configuration, from the board metadata `smbios` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmbiosConfig {

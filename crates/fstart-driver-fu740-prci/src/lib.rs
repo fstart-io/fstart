@@ -228,7 +228,7 @@ pub struct Fu740Prci {
     gpio_base: usize,
 }
 
-// SAFETY: MMIO registers are at fixed hardware addresses from the board RON.
+// SAFETY: MMIO registers are at fixed hardware addresses from board metadata.
 unsafe impl Send for Fu740Prci {}
 unsafe impl Sync for Fu740Prci {}
 

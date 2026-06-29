@@ -2,7 +2,7 @@
 //!
 //! Hardware that exposes the boot firmware image through memory-mapped
 //! apertures implements [`FirmwareImageProvider`].  The provider is the single
-//! source of truth for flash-to-CPU address translation: board RON should not
+//! source of truth for flash-to-CPU address translation: board metadata should not
 //! repeat SPI/ROM decode windows that are properties of the chipset or SoC.
 
 use crate::ServiceError;

@@ -287,7 +287,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     /// Enter configuration mode by writing the chip-specific sequence.
     fn enter_config(&self) {
         for b in C::ENTER_SEQ {
-            // SAFETY: base_port is from the board RON, `b` is a chip constant.
+            // SAFETY: base_port is from the board metadata, `b` is a chip constant.
             unsafe { fstart_pio::outb(self.idx_port(), *b) };
         }
         // Some chips (ITE) need a port-dependent final byte.
@@ -747,7 +747,7 @@ fn uart_init(io_base: u16, baud_rate: u32) {
     let baud = if baud_rate == 0 { 115_200 } else { baud_rate };
     let divisor = (ISA_UART_CLOCK + baud * 8) / (baud * 16);
 
-    // SAFETY: io_base comes from the board RON config.
+    // SAFETY: io_base comes from the board metadata config.
     unsafe {
         // Disable interrupts.
         fstart_pio::outb(io_base + UART_IER, 0);

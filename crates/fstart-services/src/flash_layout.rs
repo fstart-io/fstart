@@ -1,6 +1,6 @@
 //! Runtime firmware flash-layout verification service.
 //!
-//! Board RON describes the expected firmware image layout at build time.  Some
+//! Board metadata describes the expected firmware image layout at build time.  Some
 //! platforms can also read the active flash/descriptor map from hardware at
 //! runtime (for example Intel SPI controllers with an IFD).  Drivers implement
 //! this trait to compare those two sources of truth before trusting the boot

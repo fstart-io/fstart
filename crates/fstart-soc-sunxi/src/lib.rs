@@ -27,7 +27,7 @@
 /// in `include/sunxi_image.h`.
 ///
 /// The branch instruction is emitted separately via `global_asm!` in
-/// the generated stage code. This struct is placed immediately after it
+/// the selected stage code. This struct is placed immediately after it
 /// via `#[link_section = ".head.egon"]`.
 ///
 /// `length` and `checksum` are placeholders, patched by xtask post-build.

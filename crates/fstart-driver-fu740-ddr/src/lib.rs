@@ -137,7 +137,7 @@ pub struct Fu740Ddr {
     dram_size: u64,
 }
 
-// SAFETY: MMIO registers are at fixed hardware addresses from the board RON.
+// SAFETY: MMIO registers are at fixed hardware addresses from board metadata.
 unsafe impl Send for Fu740Ddr {}
 unsafe impl Sync for Fu740Ddr {}
 

@@ -479,7 +479,7 @@ pub const fn hda_get_param(codec: u32, nid: u32, param: u32) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Verb table types (serde-compatible for board RON)
+// Verb table types (serde-compatible for board metadata)
 // ---------------------------------------------------------------------------
 
 /// A single codec's verb table entry.
