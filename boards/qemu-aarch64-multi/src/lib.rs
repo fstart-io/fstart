@@ -1,6 +1,6 @@
 //! Rust board metadata for `qemu-aarch64-multi`.
 
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::{BindDriver, DriverBinding};
 use fstart_driver_pl011::Pl011Config;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
@@ -74,15 +74,15 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
-    vec![DriverInstance::Pl011(Pl011Config {
+pub fn driver_bindings() -> Vec<DriverBinding> {
+    vec![Pl011Config {
         base_addr: 0x0900_0000,
         clock_freq: 1_843_200,
         baud_rate: 115_200,
         acpi_name: None,
         acpi_gsiv: None,
         acpi_dbg2: false,
-    })
+    }
     .bind("uart0")]
 }
 
@@ -99,9 +99,7 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings
-            .iter()
-            .filter_map(DriverInstanceBinding::driver_feature),
+        bindings.iter().map(DriverBinding::driver_feature),
     )
 }
 

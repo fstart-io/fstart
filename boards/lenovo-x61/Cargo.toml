@@ -13,7 +13,7 @@ target = "x86_64-unknown-none"
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-platform-intel-gm965-ich8 = { workspace = true }
-fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-board-meta = { workspace = true }
 fstart-driver-i2c-ck505 = { workspace = true }
 fstart-mainboard-lenovo-x61 = { workspace = true }
 fstart-driver-nsc-pc87382 = { workspace = true }

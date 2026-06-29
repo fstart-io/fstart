@@ -37,6 +37,7 @@
 //! Ported from U-Boot `arch/arm/mach-sunxi/spl_spi_sunxi.c`.
 
 #![no_std]
+extern crate alloc;
 
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
@@ -1005,5 +1006,20 @@ impl BlockDevice for SunxiSpi {
     /// SPI NOR flash is byte-addressable.
     fn block_size(&self) -> u32 {
         1
+    }
+}
+
+impl fstart_board_meta::BoardDriver for SunxiSpiConfig {
+    fn feature(&self) -> &'static str {
+        "sunxi-spi"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::BlockDevice])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

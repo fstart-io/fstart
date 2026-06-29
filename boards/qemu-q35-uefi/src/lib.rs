@@ -1,6 +1,6 @@
 //! Rust board metadata for `qemu-q35-uefi`.
 
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::{BindDriver, DriverBinding};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
 use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
@@ -99,31 +99,32 @@ pub fn board_config() -> BoardConfig {
         build: BoardBuildPolicy {
             firmware_image: FirmwareImagePolicy::memory_mapped(0xff90_0000, 0x006f_f000),
             pci_root_feature: Some(hstr("q35-hostbridge")),
+            ..Default::default()
         },
         boot_hart_id: 0,
     }
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::Ns16550(Ns16550Config {
+        Ns16550Config {
             regs: AccessMode::Pio { base: 0x3f8 },
             clock_freq: 1_843_200,
             baud_rate: 115_200,
-        })
+        }
         .bind("uart0"),
-        DriverInstance::QemuFwCfg(QemuFwCfgConfig {
+        QemuFwCfgConfig {
             ctl_port: 0x510,
             data_port: 0x511,
-        })
+        }
         .bind("fw_cfg0"),
-        DriverInstance::Q35HostBridge(Q35HostBridgeConfig {
+        Q35HostBridgeConfig {
             ecam_base: 0xb000_0000,
             ecam_size: 0x1000_0000,
             bus_start: 0,
             bus_end: 255,
-        })
+        }
         .bind("pci0"),
     ]
 }
@@ -141,9 +142,7 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings
-            .iter()
-            .filter_map(DriverInstanceBinding::driver_feature),
+        bindings.iter().map(DriverBinding::driver_feature),
     )
 }
 

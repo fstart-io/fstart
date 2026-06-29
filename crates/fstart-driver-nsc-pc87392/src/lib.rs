@@ -7,6 +7,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use fstart_superio::{SuperIo, SuperIoChip};
 
 pub use fstart_superio::{
@@ -37,11 +39,52 @@ impl SuperIoChip for Pc87392Chip {
 /// Dock-side PC87392 SuperIO driver.
 pub type Pc87392 = SuperIo<Pc87392Chip>;
 
-/// Board-facing config alias.
-pub type Pc87392Config = SuperIoConfig;
+/// Board-facing PC87392 config.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pc87392Config(pub SuperIoConfig);
+
+impl core::ops::Deref for Pc87392Config {
+    type Target = SuperIoConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for Pc87392Config {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<SuperIoConfig> for Pc87392Config {
+    fn from(config: SuperIoConfig) -> Self {
+        Self(config)
+    }
+}
 
 /// PC87392 floppy-controller logical-device number from coreboot's X61 dock devicetree.
 pub const PC87392_FDC_LDN: u8 = 0x00;
 
 /// PC87392 watchdog logical-device number from coreboot's `pc87392.h`.
 pub const PC87392_WDT_LDN: u8 = 0x0a;
+
+impl fstart_board_meta::BoardDriver for Pc87392Config {
+    fn feature(&self) -> &'static str {
+        "nsc-pc87392"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        let mut services = fstart_board_meta::ServiceSet::from_static(&[ServiceKind::SuperIoHost]);
+        if self.console_port.is_some() {
+            services.insert(ServiceKind::Console);
+        }
+        services
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
+    }
+}

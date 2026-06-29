@@ -13,5 +13,5 @@ target = "riscv64gc-unknown-none-elf"
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-qemu-virt = { workspace = true }
-fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-board-meta = { workspace = true }
 heapless = { workspace = true }

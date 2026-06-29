@@ -18,6 +18,7 @@
 #![allow(clippy::identity_op)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
+extern crate alloc;
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::MemoryController;
@@ -1231,5 +1232,20 @@ impl Device for SunxiD1Dramc {
 impl MemoryController for SunxiD1Dramc {
     fn detected_size_bytes(&self) -> u64 {
         self.dramc_get_dram_size() as u64 * 1024 * 1024
+    }
+}
+
+impl fstart_board_meta::BoardDriver for SunxiD1DramcConfig {
+    fn feature(&self) -> &'static str {
+        "sunxi-d1-dramc"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::MemoryController])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

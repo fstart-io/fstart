@@ -1,6 +1,6 @@
 //! Lenovo ThinkPad X61 Rust board metadata.
 
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::DriverBinding;
 use fstart_driver_i2c_ck505::I2cCk505Config;
 use fstart_driver_nsc_pc87382 as pc87382;
 use fstart_driver_nsc_pc87392 as pc87392;
@@ -93,7 +93,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     board().driver_bindings()
 }
 
@@ -582,8 +582,8 @@ pub fn x61_gpio_config() -> gpio::GpioConfig {
     }
 }
 
-pub fn x61_dlpc_superio_config() -> DriverInstance {
-    DriverInstance::NscPc87382(pc87382::Pc87382Config {
+pub fn x61_dlpc_superio_config() -> pc87382::Pc87382Config {
+    pc87382::Pc87382Config(pc87382::SuperIoConfig {
         com2: Some(pc87382::ComPortConfig {
             io_base: 0x2f8,
             irq: 0,
@@ -598,8 +598,8 @@ pub fn x61_dlpc_superio_config() -> DriverInstance {
     })
 }
 
-pub fn x61_dock_superio_config() -> DriverInstance {
-    DriverInstance::NscPc87392(pc87392::Pc87392Config {
+pub fn x61_dock_superio_config() -> pc87392::Pc87392Config {
+    pc87392::Pc87392Config(pc87392::SuperIoConfig {
         com1: Some(pc87392::ComPortConfig {
             io_base: 0x3f8,
             irq: 4,
@@ -614,18 +614,18 @@ pub fn x61_dock_superio_config() -> DriverInstance {
     })
 }
 
-pub fn x61_ck505_config() -> DriverInstance {
-    DriverInstance::I2cCk505(I2cCk505Config {
+pub fn x61_ck505_config() -> I2cCk505Config {
+    I2cCk505Config {
         mask: hvec([0xff, 0, 0, 0, 0]),
         regs: hvec([0x11, 0, 0, 0, 0]),
-    })
+    }
 }
 
-pub fn x61_mainboard_config() -> DriverInstance {
-    DriverInstance::LenovoX61Mainboard(LenovoX61MainboardConfig {
+pub fn x61_mainboard_config() -> LenovoX61MainboardConfig {
+    LenovoX61MainboardConfig {
         dock_early_console: true,
         acpi_name: Some(hstr("X61")),
-    })
+    }
 }
 
 pub fn x61_smbios() -> SmbiosConfig {

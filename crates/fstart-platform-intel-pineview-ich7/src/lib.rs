@@ -7,9 +7,8 @@
 //! as Super I/O wiring, clock-generator programming, GPIOs, HDA verbs, SMBIOS,
 //! and payload choice.
 
-use fstart_device_registry::{
-    intel_pineview, DriverInstance, DriverInstanceBinding, PlatformAttachPoint,
-    PlatformDeviceExtensions, PlatformTopology,
+use fstart_board_meta::{
+    DriverBinding, PlatformAttachPoint, PlatformDeviceExtensions, PlatformTopology,
 };
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
@@ -33,7 +32,7 @@ pub struct PineviewIch7Platform {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
-    pineview: intel_pineview::IntelPineviewConfig,
+    pineview: pineview::IntelPineviewConfig,
     ich7: ich7::IntelIch7Config,
     extensions: PlatformDeviceExtensions,
     smbios: Option<SmbiosConfig>,
@@ -95,7 +94,7 @@ impl PineviewIch7Platform {
     /// Override the northbridge config defaults directly.
     pub fn pineview<F>(mut self, configure: F) -> Self
     where
-        F: FnOnce(&mut intel_pineview::IntelPineviewConfig),
+        F: FnOnce(&mut pineview::IntelPineviewConfig),
     {
         configure(&mut self.pineview);
         self
@@ -111,7 +110,10 @@ impl PineviewIch7Platform {
     }
 
     /// Attach the board-specific SuperIO chip.
-    pub fn superio(mut self, name: &str, address: IoAddr<Io16>, instance: DriverInstance) -> Self {
+    pub fn superio<D>(mut self, name: &str, address: IoAddr<Io16>, instance: D) -> Self
+    where
+        D: fstart_board_meta::BoardDriver + Clone,
+    {
         self.extensions.on("lpc", |lpc| {
             lpc.runtime(name, fstart_types::BusAddress::Lpc(address.raw()), instance);
         });
@@ -215,13 +217,16 @@ impl PineviewIch7Platform {
                     module_args: true,
                 },
             }),
-            build: Default::default(),
+            build: fstart_types::BoardBuildPolicy {
+                cpu_feature: Some(fstart_types::hstr("cpu-intel-pineview")),
+                ..Default::default()
+            },
             boot_hart_id: 0,
         }
     }
 
     #[must_use]
-    pub fn driver_bindings(&self) -> Vec<DriverInstanceBinding> {
+    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
         self.platform_topology().build().1
     }
 
@@ -238,9 +243,7 @@ impl PineviewIch7Platform {
             self.board_name,
             self.board_package,
             &config,
-            drivers
-                .iter()
-                .filter_map(DriverInstanceBinding::driver_feature),
+            drivers.iter().map(DriverBinding::driver_feature),
         )
     }
 }
@@ -259,11 +262,8 @@ impl PcieRootPort {
 impl PineviewIch7Platform {
     fn platform_topology(&self) -> PlatformTopology {
         PlatformTopology::new()
-            .root(
-                "northbridge",
-                DriverInstance::IntelPineview(self.pineview.clone()),
-            )
-            .root("southbridge", DriverInstance::IntelIch7(self.ich7.clone()))
+            .root("northbridge", self.pineview.clone())
+            .root("southbridge", self.ich7.clone())
             .pci_bridge("southbridge", "pcie0", 0x1c, 0, self.pcie_ports[0])
             .pci_bridge("southbridge", "pcie1", 0x1c, 1, self.pcie_ports[1])
             .pci_bridge("southbridge", "pcie2", 0x1c, 2, self.pcie_ports[2])
@@ -365,8 +365,8 @@ fn pineview_ramstage_capabilities() -> HVec<Capability, 16> {
     ])
 }
 
-fn pineview_defaults() -> intel_pineview::IntelPineviewConfig {
-    intel_pineview::IntelPineviewConfig {
+fn pineview_defaults() -> pineview::IntelPineviewConfig {
+    pineview::IntelPineviewConfig {
         mchbar: 0xFED1_0000,
         dmibar: 0xFED1_8000,
         epbar: 0xFED1_9000,

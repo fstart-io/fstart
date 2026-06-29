@@ -485,7 +485,7 @@ dependencies = [
 name = "fstart-board-bananapi-m1"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
@@ -497,7 +497,7 @@ dependencies = [
 name = "fstart-board-foxconn-d41s"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-i2c-ck505",
  "fstart-driver-ite8721f",
  "fstart-gpio-ich",
@@ -512,7 +512,7 @@ name = "fstart-board-foxconn-d41s-uefi"
 version = "0.1.0"
 dependencies = [
  "fstart-board-foxconn-d41s",
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-platform-intel-pineview-ich7",
  "fstart-types",
 ]
@@ -521,7 +521,7 @@ dependencies = [
 name = "fstart-board-lenovo-x61"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-i2c-ck505",
  "fstart-driver-nsc-pc87382",
  "fstart-driver-nsc-pc87392",
@@ -537,7 +537,7 @@ dependencies = [
 name = "fstart-board-licheerv-dock"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-driver-sunxi-d1-ccu",
  "fstart-driver-sunxi-d1-dramc",
@@ -559,7 +559,7 @@ dependencies = [
 name = "fstart-board-orangepi-pc2"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
@@ -571,7 +571,7 @@ dependencies = [
 name = "fstart-board-orangepi-r1"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
@@ -584,8 +584,8 @@ dependencies = [
 name = "fstart-board-qemu-aarch64"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-board-qemu-virt",
- "fstart-device-registry",
  "fstart-types",
  "heapless",
 ]
@@ -594,7 +594,7 @@ dependencies = [
 name = "fstart-board-qemu-aarch64-multi"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-pl011",
  "fstart-types",
 ]
@@ -603,7 +603,7 @@ dependencies = [
 name = "fstart-board-qemu-aarch64-uefi"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-bochs-display",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
@@ -614,7 +614,7 @@ dependencies = [
 name = "fstart-board-qemu-armv7"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-pl011",
  "fstart-types",
 ]
@@ -623,7 +623,7 @@ dependencies = [
 name = "fstart-board-qemu-q35"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-bochs-display",
  "fstart-driver-ns16550",
  "fstart-driver-q35-hostbridge",
@@ -635,7 +635,7 @@ dependencies = [
 name = "fstart-board-qemu-q35-uefi"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-driver-q35-hostbridge",
  "fstart-driver-qemu-fw-cfg",
@@ -646,8 +646,8 @@ dependencies = [
 name = "fstart-board-qemu-riscv64"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-board-qemu-virt",
- "fstart-device-registry",
  "fstart-types",
  "heapless",
 ]
@@ -656,7 +656,7 @@ dependencies = [
 name = "fstart-board-qemu-riscv64-multi"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-types",
 ]
@@ -665,7 +665,7 @@ dependencies = [
 name = "fstart-board-qemu-sbsa"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
  "fstart-types",
@@ -675,7 +675,7 @@ dependencies = [
 name = "fstart-board-qemu-virt"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-ns16550",
  "fstart-driver-pl011",
  "fstart-types",
@@ -686,7 +686,7 @@ dependencies = [
 name = "fstart-board-sifive-unmatched"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-sifive-uart",
  "fstart-types",
 ]
@@ -695,7 +695,7 @@ dependencies = [
 name = "fstart-board-sifive-unmatched-hw"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-fu740-ddr",
  "fstart-driver-fu740-prci",
  "fstart-driver-sifive-uart",
@@ -745,7 +745,6 @@ dependencies = [
  "fstart-board-qemu-sbsa",
  "fstart-board-sifive-unmatched",
  "fstart-board-sifive-unmatched-hw",
- "fstart-device-registry",
  "fstart-driver-designware-i2c",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-pineview",
@@ -795,48 +794,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-device-registry"
-version = "0.1.0"
-dependencies = [
- "fstart-board-meta",
- "fstart-driver-bochs-display",
- "fstart-driver-designware-i2c",
- "fstart-driver-fu740-ddr",
- "fstart-driver-fu740-prci",
- "fstart-driver-i2c-ck505",
- "fstart-driver-intel-gm965",
- "fstart-driver-intel-ich7",
- "fstart-driver-intel-ich8",
- "fstart-driver-intel-pineview",
- "fstart-driver-ite8721f",
- "fstart-driver-ns16550",
- "fstart-driver-nsc-pc87382",
- "fstart-driver-nsc-pc87392",
- "fstart-driver-pci-ecam",
- "fstart-driver-pl011",
- "fstart-driver-q35-hostbridge",
- "fstart-driver-qemu-fw-cfg",
- "fstart-driver-sifive-uart",
- "fstart-driver-sunxi-a20-dramc",
- "fstart-driver-sunxi-ccu",
- "fstart-driver-sunxi-d1-ccu",
- "fstart-driver-sunxi-d1-dramc",
- "fstart-driver-sunxi-h3-ccu",
- "fstart-driver-sunxi-h3-dramc",
- "fstart-driver-sunxi-mmc",
- "fstart-driver-sunxi-spi",
- "fstart-mainboard-lenovo-x61",
- "fstart-services",
- "fstart-superio",
- "fstart-types",
- "heapless",
- "serde",
-]
-
-[[package]]
 name = "fstart-driver-bochs-display"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
@@ -849,6 +810,7 @@ name = "fstart-driver-designware-i2c"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-board-meta",
  "fstart-mmio",
  "fstart-services",
  "serde",
@@ -859,6 +821,7 @@ dependencies = [
 name = "fstart-driver-fu740-ddr"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
@@ -870,6 +833,7 @@ dependencies = [
 name = "fstart-driver-fu740-prci"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-mmio",
  "fstart-services",
  "serde",
@@ -879,6 +843,7 @@ dependencies = [
 name = "fstart-driver-i2c-ck505"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-log",
  "fstart-services",
  "fstart-types",
@@ -894,6 +859,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
+ "fstart-board-meta",
  "fstart-cpu-intel",
  "fstart-crypto",
  "fstart-driver-pci-ecam",
@@ -923,6 +889,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-board-meta",
  "fstart-ecam",
  "fstart-gpio-ich",
  "fstart-hda",
@@ -948,6 +915,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
+ "fstart-board-meta",
  "fstart-ecam",
  "fstart-gpio-ich",
  "fstart-hda",
@@ -974,6 +942,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
+ "fstart-board-meta",
  "fstart-cpu-intel",
  "fstart-crypto",
  "fstart-driver-pci-ecam",
@@ -1001,13 +970,16 @@ dependencies = [
 name = "fstart-driver-ite8721f"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-superio",
+ "serde",
 ]
 
 [[package]]
 name = "fstart-driver-ns16550"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-mmio",
  "fstart-pio",
  "fstart-services",
@@ -1019,20 +991,25 @@ dependencies = [
 name = "fstart-driver-nsc-pc87382"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-superio",
+ "serde",
 ]
 
 [[package]]
 name = "fstart-driver-nsc-pc87392"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-superio",
+ "serde",
 ]
 
 [[package]]
 name = "fstart-driver-pci-ecam"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
@@ -1047,6 +1024,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-board-meta",
  "fstart-mmio",
  "fstart-services",
  "heapless",
@@ -1059,6 +1037,7 @@ name = "fstart-driver-q35-hostbridge"
 version = "0.1.0"
 dependencies = [
  "fstart-arch-x86",
+ "fstart-board-meta",
  "fstart-driver-pci-ecam",
  "fstart-log",
  "fstart-mp",
@@ -1075,6 +1054,7 @@ name = "fstart-driver-qemu-fw-cfg"
 version = "0.1.0"
 dependencies = [
  "fstart-arch-x86",
+ "fstart-board-meta",
  "fstart-log",
  "fstart-pio",
  "fstart-services",
@@ -1086,6 +1066,7 @@ dependencies = [
 name = "fstart-driver-sifive-uart"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-meta",
  "fstart-mmio",
  "fstart-services",
  "serde",
@@ -1097,6 +1078,7 @@ name = "fstart-driver-sunxi-a20-dramc"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-board-meta",
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
@@ -1111,6 +1093,7 @@ name = "fstart-driver-sunxi-ccu"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-board-meta",
  "fstart-mmio",
  "fstart-services",
  "fstart-sunxi-ccu-regs",
@@ -1124,6 +1107,7 @@ name = "fstart-driver-sunxi-d1-ccu"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-board-meta",
  "fstart-mmio",
  "fstart-services",
  "fstart-sunxi-ccu-regs",
@@ -1137,6 +1121,7 @@ name = "fstart-driver-sunxi-d1-dramc"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-board-meta",
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
@@ -1149,6 +1134,7 @@ name = "fstart-driver-sunxi-h3-ccu"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-board-meta",
  "fstart-mmio",
  "fstart-services",
  "fstart-sunxi-ccu-regs",
@@ -1162,6 +1148,7 @@ name = "fstart-driver-sunxi-h3-dramc"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-board-meta",
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
@@ -1176,6 +1163,7 @@ name = "fstart-driver-sunxi-mmc"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-board-meta",
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
@@ -1191,6 +1179,7 @@ name = "fstart-driver-sunxi-spi"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-board-meta",
  "fstart-log",
  "fstart-mmio",
  "fstart-services",
@@ -1275,6 +1264,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
+ "fstart-board-meta",
  "fstart-gpio-ich",
  "fstart-pio",
  "fstart-services",
@@ -1348,7 +1338,7 @@ dependencies = [
 name = "fstart-platform-intel-gm965-ich8"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-intel-gm965",
  "fstart-driver-intel-ich8",
  "fstart-gpio-ich",
@@ -1361,7 +1351,7 @@ dependencies = [
 name = "fstart-platform-intel-pineview-ich7"
 version = "0.1.0"
 dependencies = [
- "fstart-device-registry",
+ "fstart-board-meta",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-pineview",
  "fstart-gpio-ich",
@@ -2299,12 +2289,12 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
- "fstart-acpi",
  "fstart-board-bananapi-m1",
  "fstart-board-foxconn-d41s",
  "fstart-board-foxconn-d41s-uefi",
  "fstart-board-lenovo-x61",
  "fstart-board-licheerv-dock",
+ "fstart-board-meta",
  "fstart-board-orangepi-pc2",
  "fstart-board-orangepi-r1",
  "fstart-board-qemu-aarch64",
@@ -2320,10 +2310,6 @@ dependencies = [
  "fstart-board-sifive-unmatched-hw",
  "fstart-codegen",
  "fstart-crypto",
- "fstart-device-registry",
- "fstart-driver-intel-ich7",
- "fstart-driver-intel-pineview",
- "fstart-driver-ite8721f",
  "fstart-ffs",
  "fstart-fit",
  "fstart-services",

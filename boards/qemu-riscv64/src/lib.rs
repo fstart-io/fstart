@@ -4,8 +4,8 @@
 //! QEMU RISC-V `virt` defaults. Emulator memory maps, UART wiring, fixed stage
 //! flow, and default LinuxBoot/OpenSBI placement live in `fstart-board-qemu-virt`.
 
+use fstart_board_meta::DriverBinding;
 use fstart_board_qemu_virt::QemuRiscv64Virt;
-use fstart_device_registry::DriverInstanceBinding;
 use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform};
 
 /// Stable fstart board name.
@@ -28,7 +28,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 /// Typed driver configurations bound to board device names.
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     board().driver_bindings()
 }
 

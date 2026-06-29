@@ -9,14 +9,9 @@
 //! critical for XIP boards that read the anchor at its link-time VMA.
 //! ELF parsing is retained only for diagnostic logging.
 
-use fstart_acpi::device::AcpiDevice;
-use fstart_device_registry::DriverInstance;
-use fstart_driver_ite8721f::LpcBaseProvider;
 use fstart_ffs::builder::{
     build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
 };
-use fstart_services::device::{BusDevice, Device};
-use fstart_types::device::BusAddress;
 use fstart_types::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_SIZE,
     FFS_MAGIC, FFS_VERSION,
@@ -55,21 +50,7 @@ pub fn assemble_with_opts(
     kernel: Option<&str>,
     firmware: Option<&str>,
 ) -> Result<PathBuf, String> {
-    assemble_with_opts_and_acpi_check(board_name, release, kernel, firmware, false)
-}
-
-pub fn assemble_with_opts_and_acpi_check(
-    board_name: &str,
-    release: bool,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-    acpi_check: bool,
-) -> Result<PathBuf, String> {
-    let image = assemble_impl(board_name, release, kernel, firmware)?;
-    if acpi_check {
-        dry_run_acpi_check(board_name)?;
-    }
-    Ok(image)
+    assemble_impl(board_name, release, kernel, firmware)
 }
 
 fn assemble_impl(
@@ -237,7 +218,7 @@ fn assemble_impl(
         assemble_microcode(microcode, &board_dir, &mut ro_files)?;
     }
 
-    assemble_board_vbt_blobs(&parsed.driver_instances, &board_dir, &mut ro_files)?;
+    assemble_driver_package_files(&parsed.driver_bindings, &board_dir, &mut ro_files)?;
 
     if let Some(ref payload) = config.payload {
         // Handle FIT image payloads
@@ -1227,47 +1208,42 @@ fn parse_intel_ifd(data: &[u8]) -> Result<ParsedIntelIfd, String> {
 // Board asset assembly helpers
 // ============================================================================
 
-fn assemble_board_vbt_blobs(
-    instances: &[DriverInstance],
+fn assemble_driver_package_files(
+    bindings: &[fstart_board_meta::DriverBinding],
     board_dir: &Path,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
-    for instance in instances {
-        let vbt_file = match instance {
-            DriverInstance::IntelGm965(config) => config.igd.vbt_file.as_ref(),
-            DriverInstance::IntelPineview(config) => {
-                config.igd.as_ref().and_then(|igd| igd.vbt_file.as_ref())
+    for binding in bindings {
+        for package_file in binding.driver.package_files() {
+            if ro_files
+                .iter()
+                .any(|file| file.name == package_file.name.as_str())
+            {
+                continue;
             }
-            _ => None,
-        };
-        let Some(vbt_file) = vbt_file else {
-            continue;
-        };
-        if ro_files.iter().any(|file| file.name == vbt_file.as_str()) {
-            continue;
-        }
 
-        let path = resolve_board_path(board_dir, vbt_file.as_str());
-        let data = fs::read(&path)
-            .map_err(|e| format!("failed to read VBT file {}: {e}", path.display()))?;
-        eprintln!(
-            "[fstart] VBT: {} ({} bytes, lz4)",
-            path.display(),
-            data.len()
-        );
-        ro_files.push(InputFile {
-            name: vbt_file.to_string(),
-            file_type: FileType::Data,
-            segments: vec![InputSegment {
-                name: ".vbt".to_string(),
-                kind: SegmentKind::ReadOnlyData,
-                data,
-                mem_size: None,
-                load_addr: 0,
-                compression: Compression::Lz4,
-                flags: SegmentFlags::RODATA,
-            }],
-        });
+            let path = resolve_board_path(board_dir, package_file.path.as_str());
+            let data = fs::read(&path)
+                .map_err(|e| format!("failed to read package file {}: {e}", path.display()))?;
+            eprintln!(
+                "[fstart] package file: {} ({} bytes, lz4)",
+                path.display(),
+                data.len()
+            );
+            ro_files.push(InputFile {
+                name: package_file.name.to_string(),
+                file_type: FileType::Data,
+                segments: vec![InputSegment {
+                    name: format!(".{}", package_file.name.as_str()),
+                    kind: SegmentKind::ReadOnlyData,
+                    data,
+                    mem_size: None,
+                    load_addr: 0,
+                    compression: Compression::Lz4,
+                    flags: SegmentFlags::RODATA,
+                }],
+            });
+        }
     }
 
     Ok(())
@@ -1901,158 +1877,4 @@ fn sign_with_ed25519(
 
     let sig = signing_key.sign(message);
     Ok(Signature::ed25519(0, sig.to_bytes()))
-}
-
-struct DryLpcBus {
-    base: u16,
-}
-
-impl LpcBaseProvider for DryLpcBus {
-    fn lpc_base(&self) -> u16 {
-        self.base
-    }
-}
-
-fn dry_run_acpi_check(board_name: &str) -> Result<(), String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let parsed = crate::board_manifest::load_parsed_board(&workspace_root, board_name)?;
-
-    if parsed.config.acpi.is_none() {
-        eprintln!("[fstart] ACPI check: board has no acpi config, skipping");
-        return Ok(());
-    }
-
-    let mut dsdt_aml = Vec::new();
-    let mut extra_tables: Vec<Vec<u8>> = Vec::new();
-
-    for (idx, inst) in parsed.driver_instances.iter().enumerate() {
-        let dev = &parsed.config.devices[idx];
-        if !dev.enabled {
-            continue;
-        }
-
-        match inst {
-            DriverInstance::IntelPineview(cfg) if cfg.acpi_name.is_some() => {
-                let static_cfg = Box::leak(Box::new(cfg.clone()));
-                let driver = fstart_driver_intel_pineview::IntelPineview::new(static_cfg)
-                    .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
-                dsdt_aml.extend(driver.dsdt_aml(cfg));
-                extra_tables.extend(driver.extra_tables(cfg));
-            }
-            DriverInstance::IntelIch7(cfg) if cfg.acpi_name.is_some() => {
-                let static_cfg = Box::leak(Box::new(cfg.clone()));
-                let driver = fstart_driver_intel_ich7::IntelIch7::new(static_cfg)
-                    .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
-                dsdt_aml.extend(driver.dsdt_aml(cfg));
-                extra_tables.extend(driver.extra_tables(cfg));
-            }
-            DriverInstance::Ite8721f(cfg) if cfg.acpi_name.is_some() => {
-                let base = match dev.bus {
-                    Some(BusAddress::Lpc(base)) => base,
-                    _ => 0x2e,
-                };
-                let bus = DryLpcBus { base };
-                let static_cfg = Box::leak(Box::new(cfg.clone()));
-                let driver = fstart_driver_ite8721f::Ite8721f::new_on_bus(static_cfg, &bus)
-                    .map_err(|e| format!("ACPI check: failed to construct {}: {e:?}", dev.name))?;
-                dsdt_aml.extend(driver.dsdt_aml(cfg));
-                extra_tables.extend(driver.extra_tables(cfg));
-            }
-            _ => {}
-        }
-    }
-
-    let table_set = fstart_acpi::platform::assemble(
-        0x0010_0000,
-        &fstart_acpi::platform::FadtConfig::default(),
-        &[],
-        &dsdt_aml,
-        &extra_tables,
-    );
-    let dsdt = extract_dsdt(&table_set)?;
-
-    let out_dir = workspace_root.join("target/acpi");
-    fs::create_dir_all(&out_dir)
-        .map_err(|e| format!("ACPI check: failed to create {}: {e}", out_dir.display()))?;
-    let aml_path = out_dir.join(format!("{board_name}-dsdt.aml"));
-    let dsl_prefix = out_dir.join(format!("{board_name}-dsdt"));
-    let dsl_path = out_dir.join(format!("{board_name}-dsdt.dsl"));
-    fs::write(&aml_path, &dsdt)
-        .map_err(|e| format!("ACPI check: failed to write {}: {e}", aml_path.display()))?;
-
-    eprintln!(
-        "[fstart] ACPI check: wrote DSDT {} ({} bytes)",
-        aml_path.display(),
-        dsdt.len()
-    );
-    run_iasl_check(&aml_path, &dsl_prefix, &dsl_path)?;
-    Ok(())
-}
-
-fn extract_dsdt(table_set: &[u8]) -> Result<Vec<u8>, String> {
-    let dsdt_off = table_set
-        .windows(4)
-        .position(|w| w == b"DSDT")
-        .ok_or_else(|| "ACPI check: DSDT signature not found".to_string())?;
-    if dsdt_off + 8 > table_set.len() {
-        return Err("ACPI check: truncated DSDT header".to_string());
-    }
-    let len = u32::from_le_bytes(
-        table_set[dsdt_off + 4..dsdt_off + 8]
-            .try_into()
-            .map_err(|_| "ACPI check: invalid DSDT length field".to_string())?,
-    ) as usize;
-    if dsdt_off + len > table_set.len() {
-        return Err(format!(
-            "ACPI check: DSDT length {len} extends past table set size {}",
-            table_set.len()
-        ));
-    }
-    let dsdt = table_set[dsdt_off..dsdt_off + len].to_vec();
-    let sum = dsdt.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
-    if sum != 0 {
-        return Err(format!("ACPI check: DSDT checksum failed ({sum:#04x})"));
-    }
-    Ok(dsdt)
-}
-
-fn run_iasl_check(aml_path: &Path, dsl_prefix: &Path, dsl_path: &Path) -> Result<(), String> {
-    let disassemble = format!(
-        "iasl -d -p '{}' '{}'",
-        dsl_prefix.display(),
-        aml_path.display()
-    );
-    run_acpica_command(&disassemble, "disassemble")?;
-
-    let compile = format!("iasl -tc '{}'", dsl_path.display());
-    run_acpica_command(&compile, "compile")?;
-
-    eprintln!("[fstart] ACPI check: iasl disassemble/compile passed");
-    Ok(())
-}
-
-fn run_acpica_command(command: &str, phase: &str) -> Result<(), String> {
-    let shell = if crate::which_in_path("iasl").is_some() {
-        command.to_string()
-    } else if crate::which_in_path("nix-shell").is_some() {
-        format!("nix-shell -p acpica-tools --run {:?}", command)
-    } else {
-        return Err(
-            "ACPI check requires `iasl` in PATH or `nix-shell -p acpica-tools`".to_string(),
-        );
-    };
-
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&shell)
-        .output()
-        .map_err(|e| format!("ACPI check: failed to run iasl {phase}: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "ACPI check: iasl {phase} failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(())
 }

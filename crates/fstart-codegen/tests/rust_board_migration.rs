@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
+use fstart_board_meta::DriverBinding;
 use fstart_codegen::board_loader::load_parsed_board_from_rust;
-use fstart_device_registry::DriverInstanceBinding;
 use fstart_types::{BoardConfig, BuildInfo, DeviceRole, Platform};
 
 fn repo_root() -> PathBuf {
@@ -30,7 +30,7 @@ struct RustBoardCase {
     binding_count: usize,
     parsed_driver_count: usize,
     board_config: fn() -> BoardConfig,
-    driver_bindings: fn() -> Vec<DriverInstanceBinding>,
+    driver_bindings: fn() -> Vec<DriverBinding>,
     build_info: fn() -> BuildInfo,
 }
 
@@ -72,7 +72,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         root_device: "northbridge",
         device_count: 10,
         binding_count: 4,
-        parsed_driver_count: 10,
+        parsed_driver_count: 4,
         board_config: fstart_board_foxconn_d41s::board_config,
         driver_bindings: fstart_board_foxconn_d41s::driver_bindings,
         build_info: fstart_board_foxconn_d41s::build_info,
@@ -86,7 +86,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         root_device: "northbridge",
         device_count: 14,
         binding_count: 6,
-        parsed_driver_count: 14,
+        parsed_driver_count: 6,
         board_config: fstart_board_lenovo_x61::board_config,
         driver_bindings: fstart_board_lenovo_x61::driver_bindings,
         build_info: fstart_board_lenovo_x61::build_info,
@@ -100,7 +100,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         root_device: "northbridge",
         device_count: 10,
         binding_count: 4,
-        parsed_driver_count: 10,
+        parsed_driver_count: 4,
         board_config: fstart_board_foxconn_d41s_uefi::board_config,
         driver_bindings: fstart_board_foxconn_d41s_uefi::driver_bindings,
         build_info: fstart_board_foxconn_d41s_uefi::build_info,
@@ -110,7 +110,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
 #[test]
 fn rust_boards_parse_from_direct_rust_metadata() {
     std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(64 * 1024 * 1024)
         .spawn(|| {
             for case in RUST_BOARD_CASES {
                 let driver_bindings = (case.driver_bindings)();
@@ -128,7 +128,7 @@ fn rust_boards_parse_from_direct_rust_metadata() {
                 assert_eq!(parsed.config.platform, case.platform);
                 assert_eq!(parsed.config.devices.len(), case.device_count);
                 assert_eq!(parsed.config.devices[0].name.as_str(), case.root_device);
-                assert_eq!(parsed.driver_instances.len(), case.parsed_driver_count);
+                assert_eq!(parsed.driver_bindings.len(), case.parsed_driver_count);
                 if case.board == "lenovo-x61" {
                     assert_device_role(&parsed.config, "pcie1", DeviceRole::PciBridge, true);
                     assert_device_role(&parsed.config, "pcie2", DeviceRole::PciBridge, true);
@@ -168,21 +168,28 @@ fn assert_device_role(config: &BoardConfig, name: &str, role: DeviceRole, enable
 
 #[test]
 fn rust_boards_emit_build_info_from_direct_rust_metadata() {
-    for case in RUST_BOARD_CASES {
-        let build_info = (case.build_info)();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            for case in RUST_BOARD_CASES {
+                let build_info = (case.build_info)();
 
-        assert_eq!(build_info.name.as_str(), case.board);
-        assert_eq!(build_info.board_package.as_str(), case.package);
-        assert_eq!(build_info.target.as_str(), case.platform.target_triple());
-        assert!(build_info
-            .features
-            .iter()
-            .any(|feature| feature == case.feature));
-        assert!(build_info
-            .features
-            .iter()
-            .any(|feature| feature == case.driver_feature));
-    }
+                assert_eq!(build_info.name.as_str(), case.board);
+                assert_eq!(build_info.board_package.as_str(), case.package);
+                assert_eq!(build_info.target.as_str(), case.platform.target_triple());
+                assert!(build_info
+                    .features
+                    .iter()
+                    .any(|feature| feature == case.feature));
+                assert!(build_info
+                    .features
+                    .iter()
+                    .any(|feature| feature == case.driver_feature));
+            }
+        })
+        .expect("spawn board build-info test")
+        .join()
+        .expect("board build-info test panicked");
 }
 
 #[test]

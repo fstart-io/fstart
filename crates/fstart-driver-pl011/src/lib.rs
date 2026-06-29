@@ -4,6 +4,7 @@
 //! Register access uses barrier-aware MMIO types from `fstart-mmio`.
 
 #![no_std]
+extern crate alloc;
 
 use fstart_mmio::MmioReadOnly;
 use fstart_mmio::MmioReadWrite;
@@ -197,5 +198,20 @@ impl Console for Pl011 {
         } else {
             Ok(None)
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for Pl011Config {
+    fn feature(&self) -> &'static str {
+        "pl011"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::Console])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

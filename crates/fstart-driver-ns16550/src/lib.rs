@@ -47,6 +47,7 @@
 //!             `"allwinner,sun7i-a20-uart"`.
 
 #![no_std]
+extern crate alloc;
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{Console, ServiceError};
@@ -422,5 +423,20 @@ impl Console for Ns16550 {
             core::hint::spin_loop();
         }
         Ok(())
+    }
+}
+
+impl fstart_board_meta::BoardDriver for Ns16550Config {
+    fn feature(&self) -> &'static str {
+        "ns16550"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::Console])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

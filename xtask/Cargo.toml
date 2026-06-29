@@ -9,7 +9,7 @@ clap = { workspace = true }
 object = { workspace = true }
 fstart-types = { workspace = true, features = ["std"] }
 fstart-codegen = { workspace = true }
-fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-board-meta = { workspace = true }
 fstart-board-qemu-riscv64 = { path = "../boards/qemu-riscv64" }
 fstart-board-qemu-riscv64-multi = { path = "../boards/qemu-riscv64-multi" }
 fstart-board-qemu-aarch64 = { path = "../boards/qemu-aarch64" }
@@ -28,10 +28,6 @@ fstart-board-sifive-unmatched-hw = { path = "../boards/sifive-unmatched-hw" }
 fstart-board-foxconn-d41s = { path = "../boards/foxconn-d41s" }
 fstart-board-foxconn-d41s-uefi = { path = "../boards/foxconn-d41s-uefi" }
 fstart-board-lenovo-x61 = { path = "../boards/lenovo-x61" }
-fstart-acpi = { workspace = true, features = ["x86"] }
-fstart-driver-intel-pineview = { workspace = true, features = ["acpi"] }
-fstart-driver-intel-ich7 = { workspace = true, features = ["acpi"] }
-fstart-driver-ite8721f = { workspace = true, features = ["acpi"] }
 fstart-services = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-fit = { workspace = true, features = ["std"] }

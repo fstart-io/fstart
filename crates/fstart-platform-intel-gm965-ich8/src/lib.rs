@@ -6,9 +6,8 @@
 //! bindings. Concrete board crates supply board policy such as dock wiring, GPIOs,
 //! HDA verbs, SMBIOS identity, payload choice, and optional peripheral instances.
 
-use fstart_device_registry::{
-    DriverInstance, DriverInstanceBinding, PlatformAttachPoint, PlatformDeviceExtensions,
-    PlatformTopology,
+use fstart_board_meta::{
+    BoardDriver, DriverBinding, PlatformAttachPoint, PlatformDeviceExtensions, PlatformTopology,
 };
 use fstart_driver_intel_gm965 as gm965;
 use fstart_driver_intel_ich8 as ich8;
@@ -32,7 +31,7 @@ pub use fstart_driver_intel_ich8::{
 
 #[derive(Debug, Clone)]
 struct RuntimeDevicePolicy {
-    instance: DriverInstance,
+    instance: Box<dyn BoardDriver>,
     enabled: bool,
 }
 
@@ -146,22 +145,28 @@ impl Gm965Ich8Platform {
     }
 
     /// Attach the board-specific mainboard hook driver.
-    pub fn mainboard(mut self, mainboard: DriverInstance) -> Self {
+    pub fn mainboard<D>(mut self, mainboard: D) -> Self
+    where
+        D: BoardDriver + Clone,
+    {
         self.mainboard = Some(RuntimeDevicePolicy {
-            instance: mainboard,
+            instance: Box::new(mainboard),
             enabled: true,
         });
         self
     }
 
     /// Attach a SuperIO chip on the ICH8 LPC bus.
-    pub fn superio(
+    pub fn superio<D>(
         mut self,
         name: &str,
         address: IoAddr<Io16>,
-        instance: DriverInstance,
+        instance: D,
         enabled: bool,
-    ) -> Self {
+    ) -> Self
+    where
+        D: BoardDriver + Clone,
+    {
         self.extensions.on("lpc", |lpc| {
             lpc.runtime_enabled(name, BusAddress::Lpc(address.raw()), enabled, instance);
         });
@@ -323,13 +328,16 @@ impl Gm965Ich8Platform {
             }),
             smbios: self.smbios.clone(),
             smm: None,
-            build: Default::default(),
+            build: fstart_types::BoardBuildPolicy {
+                cpu_feature: Some(fstart_types::hstr("cpu-intel-core2")),
+                ..Default::default()
+            },
             boot_hart_id: 0,
         }
     }
 
     #[must_use]
-    pub fn driver_bindings(&self) -> Vec<DriverInstanceBinding> {
+    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
         self.platform_topology().build().1
     }
 
@@ -346,9 +354,7 @@ impl Gm965Ich8Platform {
             self.board_name,
             self.board_package,
             &config,
-            drivers
-                .iter()
-                .filter_map(DriverInstanceBinding::driver_feature),
+            drivers.iter().map(DriverBinding::driver_feature),
         )
     }
 }
@@ -369,11 +375,8 @@ impl PcieRootPort {
 impl Gm965Ich8Platform {
     fn platform_topology(&self) -> PlatformTopology {
         PlatformTopology::new()
-            .root(
-                "northbridge",
-                DriverInstance::IntelGm965(self.gm965.clone()),
-            )
-            .root("southbridge", DriverInstance::IntelIch8(self.ich8.clone()))
+            .root("northbridge", self.gm965.clone())
+            .root("southbridge", self.ich8.clone())
             .pci_bridge("southbridge", "pcie1", 0x1c, 0, self.ich8.pcie_ports[0])
             .pci_bridge("southbridge", "pcie2", 0x1c, 1, self.ich8.pcie_ports[1])
             .pci_bridge("southbridge", "pcie3", 0x1c, 2, self.ich8.pcie_ports[2])

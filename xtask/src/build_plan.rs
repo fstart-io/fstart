@@ -2,13 +2,12 @@
 //!
 //! This module turns a parsed board description into stage build plans: target
 //! triple, cargo features, build-std selection, and stage image post-processing
-//! requirements.  It intentionally keeps driver classification in the typed
-//! device registry instead of duplicating string lists in xtask.
+//! requirements. Driver features come from board-owned metadata rather than a
+//! central device registry.
 
 use std::collections::BTreeSet;
 
 use fstart_codegen::board_loader::ParsedBoard;
-use fstart_device_registry::DriverInstance;
 use fstart_services::ServiceKind as Service;
 use fstart_types::stage::PageSize;
 use fstart_types::{
@@ -101,7 +100,6 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
         .any(|services| services.contains(Service::PciRootBus));
     let plan_context = PlanContext {
         base_features: &base_features,
-        instances: &parsed.driver_instances,
         needs_flat_binary: target.needs_flat_binary,
         pci_root_feature,
     };
@@ -163,10 +161,8 @@ fn base_features(parsed: &ParsedBoard, target: TargetSpec) -> FeatureSet {
     let mut features = FeatureSet::default();
     features.insert(target.platform_feature);
 
-    for inst in &parsed.driver_instances {
-        if let Some(feature) = inst.driver_feature() {
-            features.insert(feature);
-        }
+    for binding in &parsed.driver_bindings {
+        features.insert(binding.driver_feature());
     }
 
     if matches!(&config.stages, StageLayout::MultiStage(_)) {
@@ -228,7 +224,6 @@ fn needs_aarch64_el2_relocate_entry(config: &BoardConfig) -> bool {
 #[derive(Debug)]
 struct PlanContext<'a> {
     base_features: &'a FeatureSet,
-    instances: &'a [DriverInstance],
     needs_flat_binary: bool,
     pci_root_feature: Option<&'a str>,
 }
@@ -262,7 +257,11 @@ fn stage_plan(
         features.insert(plan_context.pci_root_feature.unwrap_or("pci-ecam"));
     }
     if stage_uses_mp(stage.capabilities) {
-        features.extend(cpu_driver_features(config, plan_context.instances));
+        if let Some(cpu_feature) = config.build.cpu_feature.as_deref() {
+            features.insert(cpu_feature);
+        } else if config.platform == Platform::X86_64 {
+            features.insert("cpu-generic-x86");
+        }
     }
 
     if stage.page_size == PageSize::Size1GiB {
@@ -464,25 +463,6 @@ fn stage_uses_mp(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::MpInit { .. }))
-}
-
-fn cpu_driver_features(config: &BoardConfig, instances: &[DriverInstance]) -> Vec<&'static str> {
-    if config.platform != Platform::X86_64 {
-        return Vec::new();
-    }
-
-    let mut features = Vec::new();
-    for instance in instances {
-        match instance {
-            DriverInstance::IntelPineview(_) => features.push("cpu-intel-pineview"),
-            DriverInstance::IntelGm965(_) => features.push("cpu-intel-core2"),
-            _ => {}
-        }
-    }
-    if features.is_empty() {
-        features.push("cpu-generic-x86");
-    }
-    features
 }
 
 #[cfg(test)]

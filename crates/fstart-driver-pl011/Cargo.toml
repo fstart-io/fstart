@@ -9,6 +9,7 @@ default = []
 acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
 
 [dependencies]
+fstart-board-meta = { workspace = true }
 fstart-mmio = { workspace = true }
 fstart-services = { workspace = true }
 heapless = { workspace = true }

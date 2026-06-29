@@ -1,6 +1,6 @@
 //! Foxconn D41S Rust board metadata.
 
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::DriverBinding;
 use fstart_driver_i2c_ck505::I2cCk505Config;
 use fstart_driver_ite8721f as ite8721f;
 use fstart_gpio_ich as gpio;
@@ -38,11 +38,7 @@ fn board() -> PineviewIch7Platform {
         .gpio(d41s_gpio_config())
         .superio("superio", io16(0x2e), d41s_superio_config())
         .on_smbus(|smbus| {
-            smbus.runtime(
-                "ck505",
-                BusAddress::I2c(0x69),
-                DriverInstance::I2cCk505(d41s_ck505_config()),
-            );
+            smbus.runtime("ck505", BusAddress::I2c(0x69), d41s_ck505_config());
         })
         .smbios(d41s_smbios())
 }
@@ -53,7 +49,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     board().driver_bindings()
 }
 
@@ -197,8 +193,8 @@ pub fn d41s_gpio_config() -> gpio::GpioConfig {
     }
 }
 
-pub fn d41s_superio_config() -> DriverInstance {
-    DriverInstance::Ite8721f(ite8721f::Ite8721fConfig {
+pub fn d41s_superio_config() -> ite8721f::Ite8721fConfig {
+    ite8721f::Ite8721fConfig(ite8721f::SuperIoConfig {
         com1: Some(ite8721f::ComPortConfig {
             io_base: 0x3f8,
             irq: 4,

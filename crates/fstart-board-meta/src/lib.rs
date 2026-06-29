@@ -7,7 +7,6 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(unexpected_cfgs)]
-
 extern crate alloc;
 
 use alloc::boxed::Box;
@@ -62,13 +61,55 @@ pub trait BoardDriver: Debug + Send + Sync + 'static {
     /// Runtime services this configured driver provides.
     fn services(&self) -> ServiceSet;
 
+    /// Optional board-relative files this configured driver needs packaged.
+    fn package_files(&self) -> Vec<DriverPackageFile> {
+        Vec::new()
+    }
+
     /// Clone this configured driver behind a trait object.
     fn clone_box(&self) -> Box<dyn BoardDriver>;
+}
+
+/// Board-relative file required by a configured driver at runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverPackageFile {
+    /// Logical file name inside the firmware package.
+    pub name: HString<128>,
+    /// Board-relative source path.
+    pub path: HString<128>,
+}
+
+impl DriverPackageFile {
+    #[must_use]
+    pub fn new(name: &str, path: &str) -> Self {
+        Self {
+            name: fstart_types::hstr(name),
+            path: fstart_types::hstr(path),
+        }
+    }
 }
 
 impl Clone for Box<dyn BoardDriver> {
     fn clone(&self) -> Self {
         self.clone_box()
+    }
+}
+
+impl BoardDriver for Box<dyn BoardDriver> {
+    fn feature(&self) -> &'static str {
+        self.as_ref().feature()
+    }
+
+    fn services(&self) -> ServiceSet {
+        self.as_ref().services()
+    }
+
+    fn package_files(&self) -> Vec<DriverPackageFile> {
+        self.as_ref().package_files()
+    }
+
+    fn clone_box(&self) -> Box<dyn BoardDriver> {
+        self.as_ref().clone_box()
     }
 }
 

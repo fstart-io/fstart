@@ -12,10 +12,9 @@
 
 #![no_std]
 #![allow(clippy::modulo_one)]
-
-#[cfg(feature = "ffs-vbt")]
 extern crate alloc;
 
+#[cfg(feature = "ffs-vbt")]
 pub mod raminit;
 
 #[cfg(feature = "ffs-vbt")]
@@ -2436,5 +2435,36 @@ mod acpi_impl {
             mcfg.to_aml_bytes(&mut bytes);
             alloc::vec![bytes]
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for IntelGm965Config {
+    fn feature(&self) -> &'static str {
+        "intel-gm965"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[
+            ServiceKind::PciHost,
+            ServiceKind::MemoryController,
+        ])
+    }
+
+    fn package_files(&self) -> alloc::vec::Vec<fstart_board_meta::DriverPackageFile> {
+        self.igd
+            .vbt_file
+            .as_ref()
+            .map(|file| {
+                alloc::vec![fstart_board_meta::DriverPackageFile::new(
+                    file.as_str(),
+                    file.as_str()
+                )]
+            })
+            .unwrap_or_default()
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

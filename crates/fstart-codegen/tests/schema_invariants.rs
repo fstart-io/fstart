@@ -154,24 +154,11 @@ fn rust_board_loader_has_no_board_owned_service_list_field() {
 }
 
 #[test]
-fn driver_instance_has_no_acpi_only_pseudo_devices() {
+fn repository_has_no_device_registry_crate() {
     let root = repo_root();
-    let registry_rs = root.join("crates/fstart-device-registry/src/lib.rs");
-    let text = fs::read_to_string(registry_rs).expect("read registry");
-
-    for variant in [
-        "Ahci(fstart_types::acpi::AcpiAhciDevice)",
-        "Xhci(fstart_types::acpi::AcpiXhciDevice)",
-        "PcieRoot(fstart_types::acpi::AcpiPcieRootDevice)",
-    ] {
-        assert!(
-            !text.contains(variant),
-            "ACPI-only descriptors must not be DriverInstance pseudo-devices: {variant}"
-        );
-    }
     assert!(
-        !text.contains("ConstructionKind::AcpiOnly"),
-        "ACPI-only descriptors must stay outside DriverInstance construction kinds"
+        !root.join("crates/fstart-device-registry").exists(),
+        "central device registry crate must not be restored"
     );
 }
 

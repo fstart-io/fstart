@@ -16,6 +16,7 @@
 
 #![no_std]
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
+extern crate alloc;
 
 use tock_registers::interfaces::{Readable, Writeable};
 
@@ -332,5 +333,20 @@ impl ClockController for SunxiH3Ccu {
             1 => Ok(600_000_000), // PLL6 (PERIPH0)
             _ => Err(ServiceError::NotSupported),
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for SunxiH3CcuConfig {
+    fn feature(&self) -> &'static str {
+        "sunxi-h3-ccu"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::ClockController])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

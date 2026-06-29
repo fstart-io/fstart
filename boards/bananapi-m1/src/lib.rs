@@ -1,6 +1,6 @@
 //! Rust board metadata for LeMaker BananaPi M1.
 
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::{BindDriver, DriverBinding};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_sunxi_a20_dramc::SunxiA20DramcConfig;
 use fstart_driver_sunxi_ccu::SunxiA20CcuConfig;
@@ -51,15 +51,15 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::SunxiA20Ccu(SunxiA20CcuConfig {
+        SunxiA20CcuConfig {
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,
             uart_index: 0,
-        })
+        }
         .bind("ccu0"),
-        DriverInstance::Ns16550(Ns16550Config {
+        Ns16550Config {
             regs: AccessMode::Mmio {
                 base: 0x01c2_8000,
                 reg_shift: 2,
@@ -67,9 +67,9 @@ pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
             },
             clock_freq: 24_000_000,
             baud_rate: 115_200,
-        })
+        }
         .bind("uart0"),
-        DriverInstance::SunxiA20Dramc(SunxiA20DramcConfig {
+        SunxiA20DramcConfig {
             dramc_base: 0x01c0_1000,
             ccu_base: 0x01c2_0000,
             clock: 432,
@@ -87,14 +87,14 @@ pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
             emr3: 0,
             dqs_gating_delay: 0,
             active_windowing: false,
-        })
+        }
         .bind("dramc0"),
-        DriverInstance::SunxiMmc(SunxiMmcConfig::Sun7iA20 {
+        SunxiMmcConfig::Sun7iA20 {
             base_addr: 0x01c0_f000,
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,
             mmc_index: 0,
-        })
+        }
         .bind("mmc0"),
     ]
 }
@@ -117,9 +117,7 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings
-            .iter()
-            .filter_map(DriverInstanceBinding::driver_feature),
+        bindings.iter().map(DriverBinding::driver_feature),
     )
 }
 

@@ -14,6 +14,7 @@
 
 #![allow(clippy::empty_line_after_doc_comments, clippy::unnecessary_cast)]
 #![no_std]
+extern crate alloc;
 
 pub mod smm;
 
@@ -2714,5 +2715,23 @@ mod acpi_impl {
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
             Vec::new()
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for IntelIch7Config {
+    fn feature(&self) -> &'static str {
+        "intel-ich7"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[
+            ServiceKind::Southbridge,
+            ServiceKind::SystemManagementBus,
+        ])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

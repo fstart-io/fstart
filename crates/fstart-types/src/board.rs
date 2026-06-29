@@ -175,6 +175,9 @@ pub struct BoardBuildPolicy {
     /// When absent, `PciInit` uses the generic ECAM implementation.
     #[serde(default)]
     pub pci_root_feature: Option<HString<32>>,
+    /// Optional stage feature for board/platform CPU initialization.
+    #[serde(default)]
+    pub cpu_feature: Option<HString<32>>,
 }
 
 /// Board/platform-owned firmware-image mapping policy for host tooling.

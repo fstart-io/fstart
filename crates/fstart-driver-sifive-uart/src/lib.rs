@@ -28,6 +28,7 @@
 //! Compatible: `"sifive,fu740-c000-uart"`, `"sifive,uart0"`.
 
 #![no_std]
+extern crate alloc;
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{Console, ServiceError};
@@ -213,5 +214,20 @@ impl Console for SifiveUart {
         } else {
             Ok(Some(rxdata.read(RXDATA::DATA) as u8))
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for SifiveUartConfig {
+    fn feature(&self) -> &'static str {
+        "sifive-uart"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::Console])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

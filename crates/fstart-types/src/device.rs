@@ -99,9 +99,9 @@ impl DeviceNode {
 ///
 /// Carries only the identity and topology metadata for a hardware device.
 /// Driver-specific configuration (register addresses, clocks, etc.) lives in
-/// the codegen-side `DriverInstance` table; each driver defines its own typed
-/// `Config` struct. Driver-provided services are owned by Rust driver metadata,
-/// not by this board schema.
+/// board-owned typed driver bindings; each driver defines its own typed `Config`
+/// struct. Driver-provided services are owned by Rust driver metadata, not by
+/// this board schema.
 ///
 /// Bus hierarchies are expressed via the `parent` field: a child device
 /// sets `parent` to its bus controller's name.  Codegen ensures parents

@@ -4,8 +4,8 @@
 //! It deliberately calls board crate Rust functions directly: no helper binary, no
 //! RON/JSON/postcard transport.
 
+use fstart_board_meta::DriverBinding;
 use fstart_codegen::board_loader::{load_parsed_board_from_rust_with_acpi, ParsedBoard};
-use fstart_device_registry::DriverInstanceBinding;
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, BuildInfo};
 
@@ -49,9 +49,7 @@ pub fn build_info(board: &str) -> Option<BuildInfo> {
     })
 }
 
-pub fn board_config_and_driver_bindings(
-    board: &str,
-) -> Option<(BoardConfig, Vec<DriverInstanceBinding>)> {
+pub fn board_config_and_driver_bindings(board: &str) -> Option<(BoardConfig, Vec<DriverBinding>)> {
     Some(match board {
         "qemu-riscv64" => (
             fstart_board_qemu_riscv64::board_config(),

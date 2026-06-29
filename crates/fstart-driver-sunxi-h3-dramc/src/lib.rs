@@ -18,6 +18,7 @@
 #![allow(clippy::too_many_arguments)] // mbus_configure_port mirrors U-Boot signature
 #![allow(clippy::unnecessary_cast)] // Explicit casts clarify register-width intent
 #![allow(clippy::needless_range_loop)] // Index-based loops match U-Boot's C style
+extern crate alloc;
 
 use core::cell::Cell;
 
@@ -1701,5 +1702,20 @@ impl SunxiH3Dramc {
 
         // Re-program CR with detected values
         self.mctl_set_cr(dual_rank, bus_full_width, page_size, row_bits, bank_bits);
+    }
+}
+
+impl fstart_board_meta::BoardDriver for SunxiH3DramcConfig {
+    fn feature(&self) -> &'static str {
+        "sunxi-h3-dramc"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::MemoryController])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

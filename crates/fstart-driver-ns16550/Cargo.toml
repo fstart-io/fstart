@@ -9,6 +9,7 @@ default = []
 pio = ["dep:fstart-pio"]
 
 [dependencies]
+fstart-board-meta = { workspace = true }
 fstart-mmio = { workspace = true }
 fstart-pio = { workspace = true, optional = true }
 fstart-services = { workspace = true }

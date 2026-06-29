@@ -246,8 +246,8 @@ DeviceTopology::new()
     .build();
 
 vec![
-    DriverInstance::IntelPineview(pineview_config()).bind("northbridge"),
-    DriverInstance::IntelIch7(ich7_config()).bind("southbridge"),
+    pineview_config().bind("northbridge"),
+    ich7_config().bind("southbridge"),
     superio_config().bind("superio"),
 ]
 ```

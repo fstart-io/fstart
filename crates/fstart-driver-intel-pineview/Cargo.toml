@@ -16,6 +16,7 @@ acpi = [
 ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-types"]
 
 [dependencies]
+fstart-board-meta = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
 fstart-arch-x86 = { workspace = true }

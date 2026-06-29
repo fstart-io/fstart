@@ -13,5 +13,5 @@ target = "aarch64-unknown-none"
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-qemu-virt = { workspace = true }
-fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-board-meta = { workspace = true }
 heapless = { workspace = true }

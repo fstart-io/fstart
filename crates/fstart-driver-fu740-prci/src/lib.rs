@@ -18,6 +18,7 @@
 //! Reference: FU740-C000 Manual Chapter 7, coreboot clock.c, U-Boot fu740-prci.c
 
 #![no_std]
+extern crate alloc;
 
 use core::sync::atomic::{compiler_fence, Ordering};
 
@@ -532,5 +533,20 @@ fn spin_delay_us(us: u32) {
     let count = us as u64 * 500;
     for _ in 0..count {
         core::hint::spin_loop();
+    }
+}
+
+impl fstart_board_meta::BoardDriver for Fu740PrciConfig {
+    fn feature(&self) -> &'static str {
+        "fu740-prci"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::ClockController])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

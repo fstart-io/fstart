@@ -3,7 +3,7 @@
 use fstart_board_foxconn_d41s::{
     d41s_ck505_config, d41s_gpio_config, d41s_hda_config, d41s_smbios, d41s_superio_config,
 };
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::DriverBinding;
 use fstart_platform_intel_pineview_ich7::{
     LpcGenericIoDecode, PcieRootPort, PineviewIch7Platform, SataConfig, SataMode, UsbConfig,
 };
@@ -37,11 +37,7 @@ fn board() -> PineviewIch7Platform {
         .gpio(d41s_gpio_config())
         .superio("superio", io16(0x2e), d41s_superio_config())
         .on_smbus(|smbus| {
-            smbus.runtime(
-                "ck505",
-                BusAddress::I2c(0x69),
-                DriverInstance::I2cCk505(d41s_ck505_config()),
-            );
+            smbus.runtime("ck505", BusAddress::I2c(0x69), d41s_ck505_config());
         })
         .smbios(d41s_smbios())
 }
@@ -52,7 +48,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     board().driver_bindings()
 }
 

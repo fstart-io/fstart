@@ -13,6 +13,7 @@
 //! Ported from u-boot `drivers/mmc/sunxi_mmc.c`.
 
 #![no_std]
+extern crate alloc;
 
 use core::cell::Cell;
 
@@ -1023,4 +1024,19 @@ enum RespType {
     R3,
     R6,
     R7,
+}
+
+impl fstart_board_meta::BoardDriver for SunxiMmcConfig {
+    fn feature(&self) -> &'static str {
+        "sunxi-mmc"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::BlockDevice])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
+    }
 }

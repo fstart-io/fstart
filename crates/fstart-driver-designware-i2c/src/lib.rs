@@ -4,6 +4,7 @@
 //! Provides [`Device`] and I2C master service (to be defined later).
 
 #![no_std]
+extern crate alloc;
 
 use fstart_mmio::MmioReadOnly;
 use fstart_mmio::MmioReadWrite;
@@ -495,5 +496,20 @@ impl embedded_hal::i2c::I2c for DesignwareI2c {
         }
 
         Ok(())
+    }
+}
+
+impl fstart_board_meta::BoardDriver for DesignwareI2cConfig {
+    fn feature(&self) -> &'static str {
+        "designware-i2c"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::I2cBus])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

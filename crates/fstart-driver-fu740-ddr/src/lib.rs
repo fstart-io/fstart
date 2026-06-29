@@ -31,6 +31,7 @@
 //! - FU740-C000 Manual Chapter 32: DDR Subsystem
 
 #![no_std]
+extern crate alloc;
 
 mod regs;
 
@@ -395,5 +396,20 @@ impl MemoryController for Fu740Ddr {
         } else {
             self.dram_size
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for Fu740DdrConfig {
+    fn feature(&self) -> &'static str {
+        "fu740-ddr"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::MemoryController])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fstart-board-meta = { workspace = true }
 fstart-mmio = { workspace = true }
 fstart-services = { workspace = true, features = ["pci"] }
 fstart-log = { workspace = true }

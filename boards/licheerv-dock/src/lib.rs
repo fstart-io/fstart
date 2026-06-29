@@ -1,6 +1,6 @@
 //! Rust board metadata for Sipeed Lichee RV Dock.
 
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::{BindDriver, DriverBinding};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_sunxi_d1_ccu::SunxiD1CcuConfig;
 use fstart_driver_sunxi_d1_dramc::SunxiD1DramcConfig;
@@ -57,15 +57,15 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::SunxiD1Ccu(SunxiD1CcuConfig {
+        SunxiD1CcuConfig {
             ccu_base: 0x0200_1000,
             pio_base: 0x0200_0000,
             uart_index: 0,
-        })
+        }
         .bind("ccu0"),
-        DriverInstance::Ns16550(Ns16550Config {
+        Ns16550Config {
             regs: AccessMode::Mmio {
                 base: 0x0250_0000,
                 reg_shift: 2,
@@ -73,9 +73,9 @@ pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
             },
             clock_freq: 24_000_000,
             baud_rate: 115_200,
-        })
+        }
         .bind("uart0"),
-        DriverInstance::SunxiD1Dramc(SunxiD1DramcConfig {
+        SunxiD1DramcConfig {
             dram_clk: 792,
             dram_type: 3,
             dram_zq: 0x007b_7bfb,
@@ -84,14 +84,14 @@ pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
             dram_tpr11: 0x870000,
             dram_tpr12: 0x24,
             dram_tpr13: 0x3405_0100,
-        })
+        }
         .bind("dramc0"),
-        DriverInstance::SunxiMmc(SunxiMmcConfig::Sun20iD1 {
+        SunxiMmcConfig::Sun20iD1 {
             base_addr: 0x0402_0000,
             ccu_base: 0x0200_1000,
             pio_base: 0x0200_0000,
             mmc_index: 0,
-        })
+        }
         .bind("mmc0"),
     ]
 }
@@ -114,9 +114,7 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings
-            .iter()
-            .filter_map(DriverInstanceBinding::driver_feature),
+        bindings.iter().map(DriverBinding::driver_feature),
     )
 }
 

@@ -19,6 +19,7 @@
 
 #![no_std]
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
+extern crate alloc;
 
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -243,5 +244,20 @@ impl ClockController for SunxiD1Ccu {
             1 => Ok(self.ccu.pll_periph0_freq()), // PLL_PERIPH0
             _ => Err(ServiceError::NotSupported),
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for SunxiD1CcuConfig {
+    fn feature(&self) -> &'static str {
+        "sunxi-d1-ccu"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::ClockController])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

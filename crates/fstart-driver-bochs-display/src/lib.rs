@@ -20,6 +20,7 @@
 //! This driver targets `bochs-display` (class 0x0380, MMIO via BAR2).
 
 #![no_std]
+extern crate alloc;
 
 use fstart_services::device::{BusDevice, DeviceError};
 use fstart_services::framebuffer::{Framebuffer, FramebufferInfo};
@@ -286,5 +287,20 @@ impl Framebuffer for BochsDisplay {
             blue_pos: 0,
             blue_size: 8,
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for BochsDisplayConfig {
+    fn feature(&self) -> &'static str {
+        "bochs-display"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::Framebuffer])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

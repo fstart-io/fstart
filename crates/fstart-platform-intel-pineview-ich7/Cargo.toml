@@ -7,9 +7,9 @@ publish = false
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-board-meta = { workspace = true }
 fstart-driver-intel-ich7 = { workspace = true }
-fstart-driver-intel-pineview = { workspace = true }
+fstart-driver-intel-pineview = { workspace = true, features = ["ffs-vbt"] }
 fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }
 heapless = { workspace = true }

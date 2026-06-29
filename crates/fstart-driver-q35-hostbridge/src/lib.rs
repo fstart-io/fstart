@@ -20,7 +20,6 @@
 //! Compatible: `"q35-hostbridge"`.
 
 #![no_std]
-
 extern crate alloc;
 
 use core::cell::UnsafeCell;
@@ -742,5 +741,20 @@ impl PciRootBus for Q35HostBridge {
 
     fn windows(&self) -> &[PciWindow] {
         self.ecam.windows()
+    }
+}
+
+impl fstart_board_meta::BoardDriver for Q35HostBridgeConfig {
+    fn feature(&self) -> &'static str {
+        "q35-hostbridge"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::PciRootBus])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

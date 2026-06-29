@@ -1,6 +1,6 @@
 //! Rust board metadata for Xunlong Orange Pi R1.
 
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::{BindDriver, DriverBinding};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_sunxi_h3_ccu::SunxiH3CcuConfig;
 use fstart_driver_sunxi_h3_dramc::{SunxiDramcVariant, SunxiH3DramcConfig};
@@ -53,15 +53,15 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::SunxiH3Ccu(SunxiH3CcuConfig {
+        SunxiH3CcuConfig {
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,
             uart_index: 0,
-        })
+        }
         .bind("ccu0"),
-        DriverInstance::Ns16550(Ns16550Config {
+        Ns16550Config {
             regs: AccessMode::Mmio {
                 base: 0x01c2_8000,
                 reg_shift: 2,
@@ -69,31 +69,31 @@ pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
             },
             clock_freq: 24_000_000,
             baud_rate: 115_200,
-        })
+        }
         .bind("uart0"),
-        DriverInstance::SunxiH3Dramc(SunxiH3DramcConfig {
+        SunxiH3DramcConfig {
             dramc_base: 0x01c6_2000,
             ccu_base: 0x01c2_0000,
             clock: 624,
             zq: 3_881_979,
             odt_en: true,
             variant: SunxiDramcVariant::H3,
-        })
+        }
         .bind("dramc0"),
-        DriverInstance::SunxiMmc(SunxiMmcConfig::Sun8iH3 {
+        SunxiMmcConfig::Sun8iH3 {
             base_addr: 0x01c0_f000,
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,
             mmc_index: 0,
-        })
+        }
         .bind("mmc0"),
-        DriverInstance::SunxiSpi(SunxiSpiConfig::Sun8iH3 {
+        SunxiSpiConfig::Sun8iH3 {
             base_addr: 0x01c6_8000,
             ccu_base: 0x01c2_0000,
             pio_base: 0x01c2_0800,
             flash_size: 0x0100_0000,
             spi_freq: 50_000_000,
-        })
+        }
         .bind("spi0"),
     ]
 }
@@ -116,9 +116,7 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings
-            .iter()
-            .filter_map(DriverInstanceBinding::driver_feature),
+        bindings.iter().map(DriverBinding::driver_feature),
     )
 }
 

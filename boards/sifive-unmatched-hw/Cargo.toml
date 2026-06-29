@@ -12,7 +12,7 @@ target = "riscv64gc-unknown-none-elf"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-board-meta = { workspace = true }
 fstart-driver-fu740-ddr = { workspace = true }
 fstart-driver-fu740-prci = { workspace = true }
 fstart-driver-sifive-uart = { workspace = true }

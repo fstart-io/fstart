@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fstart-board-meta = { workspace = true }
 fstart-arch = { workspace = true, features = ["armv7"] }
 fstart-sunxi-ccu-regs = { workspace = true }
 fstart-mmio = { workspace = true }

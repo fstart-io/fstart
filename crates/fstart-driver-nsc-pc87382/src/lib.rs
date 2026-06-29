@@ -7,6 +7,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use fstart_superio::{SuperIo, SuperIoChip};
 
 pub use fstart_superio::{
@@ -38,8 +40,49 @@ impl SuperIoChip for Pc87382Chip {
 /// PC87382 SuperIO driver.
 pub type Pc87382 = SuperIo<Pc87382Chip>;
 
-/// Board-facing config alias.
-pub type Pc87382Config = SuperIoConfig;
+/// Board-facing PC87382 config.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pc87382Config(pub SuperIoConfig);
+
+impl core::ops::Deref for Pc87382Config {
+    type Target = SuperIoConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for Pc87382Config {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<SuperIoConfig> for Pc87382Config {
+    fn from(config: SuperIoConfig) -> Self {
+        Self(config)
+    }
+}
 
 /// PC87382 DLPC logical-device number used by the X61 mainboard DLPC block.
 pub const PC87382_DLPC_LDN: u8 = 0x19;
+
+impl fstart_board_meta::BoardDriver for Pc87382Config {
+    fn feature(&self) -> &'static str {
+        "nsc-pc87382"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        let mut services = fstart_board_meta::ServiceSet::from_static(&[ServiceKind::SuperIoHost]);
+        if self.console_port.is_some() {
+            services.insert(ServiceKind::Console);
+        }
+        services
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
+    }
+}

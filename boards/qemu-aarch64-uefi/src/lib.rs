@@ -1,6 +1,6 @@
 //! Rust board metadata for `qemu-aarch64-uefi`.
 
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::{BindDriver, DriverBinding};
 use fstart_driver_bochs_display::BochsDisplayConfig;
 use fstart_driver_pci_ecam::PciEcamConfig;
 use fstart_driver_pl011::Pl011Config;
@@ -78,18 +78,18 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
+pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::Pl011(Pl011Config {
+        Pl011Config {
             base_addr: 0x0900_0000,
             clock_freq: 1_843_200,
             baud_rate: 115_200,
             acpi_name: None,
             acpi_gsiv: None,
             acpi_dbg2: false,
-        })
+        }
         .bind("uart0"),
-        DriverInstance::PciEcam(PciEcamConfig {
+        PciEcamConfig {
             ecam_base: 0x0040_1000_0000,
             ecam_size: 0x1000_0000,
             mmio32_base: 0x1000_0000,
@@ -100,14 +100,14 @@ pub fn driver_bindings() -> Vec<DriverInstanceBinding> {
             pio_size: 0x10000,
             bus_start: 0,
             bus_end: 255,
-        })
+        }
         .bind("pci0"),
-        DriverInstance::BochsDisplay(BochsDisplayConfig {
+        BochsDisplayConfig {
             device: 3,
             function: 0,
             width: 1024,
             height: 768,
-        })
+        }
         .bind("bochs0"),
     ]
 }
@@ -125,9 +125,7 @@ pub fn build_info() -> BuildInfo {
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings
-            .iter()
-            .filter_map(DriverInstanceBinding::driver_feature),
+        bindings.iter().map(DriverBinding::driver_feature),
     )
 }
 

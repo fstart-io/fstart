@@ -11,6 +11,7 @@
 //! The PIO (GPIO) register block is at `0x01C2_0800`.
 
 #![no_std]
+extern crate alloc;
 
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -246,5 +247,20 @@ impl ClockController for SunxiA20Ccu {
             1 => Ok(600_000_000),
             _ => Err(ServiceError::NotSupported),
         }
+    }
+}
+
+impl fstart_board_meta::BoardDriver for SunxiA20CcuConfig {
+    fn feature(&self) -> &'static str {
+        "sunxi-a20-ccu"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::ClockController])
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
     }
 }

@@ -9,6 +9,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use fstart_superio::{SuperIo, SuperIoChip};
 
 // Re-export all SuperIO config types so generated stage code can refer
@@ -50,6 +52,46 @@ impl SuperIoChip for Ite8721fChip {
 /// IT8721F SuperIO driver — alias for `SuperIo<Ite8721fChip>`.
 pub type Ite8721f = SuperIo<Ite8721fChip>;
 
-/// Board-facing config alias. Identical to the generic
-/// [`SuperIoConfig`] — the chip differences live in [`Ite8721fChip`].
-pub type Ite8721fConfig = SuperIoConfig;
+/// Board-facing IT8721F config.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ite8721fConfig(pub SuperIoConfig);
+
+impl core::ops::Deref for Ite8721fConfig {
+    type Target = SuperIoConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for Ite8721fConfig {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<SuperIoConfig> for Ite8721fConfig {
+    fn from(config: SuperIoConfig) -> Self {
+        Self(config)
+    }
+}
+
+impl fstart_board_meta::BoardDriver for Ite8721fConfig {
+    fn feature(&self) -> &'static str {
+        "ite8721f"
+    }
+
+    fn services(&self) -> fstart_board_meta::ServiceSet {
+        use fstart_board_meta::ServiceKind;
+        let mut services = fstart_board_meta::ServiceSet::from_static(&[ServiceKind::SuperIoHost]);
+        if self.console_port.is_some() {
+            services.insert(ServiceKind::Console);
+        }
+        services
+    }
+
+    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
+        alloc::boxed::Box::new(self.clone())
+    }
+}

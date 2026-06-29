@@ -6,22 +6,19 @@
 
 use std::collections::HashMap;
 
-use fstart_board_meta::{StructuralConfig, StructuralKind};
-use fstart_device_registry::{DriverInstance, DriverInstanceBinding};
+use fstart_board_meta::{DriverBinding, StructuralKind};
 use fstart_services::ServiceSet;
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, DeviceId, DeviceNode, DeviceRole};
 
 /// A fully-parsed board configuration.
 ///
-/// Combines [`BoardConfig`] metadata with typed driver bindings. The parallel
-/// arrays share indices: `device_tree[i]` describes `config.devices[i]` /
-/// `driver_instances[i]` while the registry is being migrated away.
+/// Combines [`BoardConfig`] metadata with board-owned driver bindings.
 pub struct ParsedBoard {
     /// Board metadata (name, platform, memory, stages, security, etc.).
     pub config: BoardConfig,
-    /// Typed driver configs, one per device, parallel to `config.devices`.
-    pub driver_instances: Vec<DriverInstance>,
+    /// Typed runtime driver metadata supplied by the board/platform crate.
+    pub driver_bindings: Vec<DriverBinding>,
     /// Flat index-based device tree, parallel to `config.devices`.
     pub device_tree: Vec<DeviceNode>,
     /// Effective service set per device after applying board policy.
@@ -33,7 +30,7 @@ pub struct ParsedBoard {
 /// Load and validate a board from native Rust metadata.
 pub fn load_parsed_board_from_rust(
     config: BoardConfig,
-    driver_bindings: Vec<DriverInstanceBinding>,
+    driver_bindings: Vec<DriverBinding>,
 ) -> Result<ParsedBoard, String> {
     load_parsed_board_from_rust_with_acpi(config, driver_bindings, Vec::new())
 }
@@ -45,7 +42,7 @@ pub fn load_parsed_board_from_rust(
 /// topology or driver binding validation.
 pub fn load_parsed_board_from_rust_with_acpi(
     mut config: BoardConfig,
-    driver_bindings: Vec<DriverInstanceBinding>,
+    driver_bindings: Vec<DriverBinding>,
     acpi_only_devices: Vec<AcpiExtraDevice>,
 ) -> Result<ParsedBoard, String> {
     config
@@ -53,13 +50,11 @@ pub fn load_parsed_board_from_rust_with_acpi(
         .normalize_derived_flash()
         .map_err(|err| err.to_string())?;
 
-    let mut bindings_by_device = HashMap::with_capacity(driver_bindings.len());
+    let driver_binding_count = driver_bindings.len();
+    let mut bindings_by_device = HashMap::with_capacity(driver_binding_count);
     for binding in driver_bindings {
         let device = binding.device.to_string();
-        if bindings_by_device
-            .insert(device.clone(), binding.instance)
-            .is_some()
-        {
+        if bindings_by_device.insert(device.clone(), binding).is_some() {
             return Err(format!(
                 "board '{}' has duplicate driver binding for device '{}'",
                 config.name, device
@@ -68,7 +63,7 @@ pub fn load_parsed_board_from_rust_with_acpi(
     }
 
     let mut device_tree: Vec<DeviceNode> = Vec::with_capacity(config.devices.len());
-    let mut driver_instances: Vec<DriverInstance> = Vec::with_capacity(config.devices.len());
+    let mut runtime_driver_bindings: Vec<DriverBinding> = Vec::with_capacity(driver_binding_count);
     let mut device_services: Vec<ServiceSet> = Vec::with_capacity(config.devices.len());
 
     for (idx, device) in config.devices.iter().enumerate() {
@@ -96,15 +91,17 @@ pub fn load_parsed_board_from_rust_with_acpi(
             depth,
         });
 
-        let instance = if device.role.is_runtime() {
-            bindings_by_device
+        if device.role.is_runtime() {
+            let binding = bindings_by_device
                 .remove(device.name.as_str())
                 .ok_or_else(|| {
                     format!(
                         "runtime device '{}' in board '{}' has no named driver binding",
                         device.name, config.name
                     )
-                })?
+                })?;
+            device_services.push(binding.driver.services());
+            runtime_driver_bindings.push(binding);
         } else {
             if bindings_by_device.contains_key(device.name.as_str()) {
                 return Err(format!(
@@ -112,12 +109,9 @@ pub fn load_parsed_board_from_rust_with_acpi(
                     device.name, config.name
                 ));
             }
-            DriverInstance::Structural(StructuralConfig {
-                kind: structural_kind_for_role(device.role)?,
-            })
+            let _kind = structural_kind_for_role(device.role)?;
+            device_services.push(ServiceSet::empty());
         };
-        device_services.push(instance.provided_services());
-        driver_instances.push(instance);
     }
 
     if !bindings_by_device.is_empty() {
@@ -132,7 +126,7 @@ pub fn load_parsed_board_from_rust_with_acpi(
 
     Ok(ParsedBoard {
         config,
-        driver_instances,
+        driver_bindings: runtime_driver_bindings,
         device_tree,
         device_services,
         acpi_only_devices,
@@ -153,26 +147,31 @@ fn structural_kind_for_role(role: DeviceRole) -> Result<StructuralKind, String> 
 #[cfg(test)]
 mod tests {
     use super::load_parsed_board_from_rust;
-    use fstart_device_registry::DriverInstance;
 
     #[test]
     fn structural_nodes_do_not_gain_pseudo_services() {
-        let parsed = load_parsed_board_from_rust(
-            fstart_board_foxconn_d41s::board_config(),
-            fstart_board_foxconn_d41s::driver_bindings(),
-        )
-        .unwrap();
+        let mut config = fstart_board_qemu_riscv64::board_config();
+        config
+            .devices
+            .push(fstart_types::DeviceConfig {
+                name: fstart_types::hstr("topology-only-bus"),
+                parent: None,
+                bus: None,
+                role: fstart_types::DeviceRole::GenericBus,
+                enabled: true,
+            })
+            .unwrap();
+
+        let parsed =
+            load_parsed_board_from_rust(config, fstart_board_qemu_riscv64::driver_bindings())
+                .unwrap();
 
         let structural_idx = parsed
             .config
             .devices
             .iter()
-            .position(|device| !device.role.is_runtime())
-            .expect("board has structural nodes");
-        assert!(matches!(
-            parsed.driver_instances[structural_idx],
-            DriverInstance::Structural(_)
-        ));
+            .position(|device| device.name.as_str() == "topology-only-bus")
+            .expect("synthetic structural node is present");
         assert!(parsed.device_services[structural_idx].is_empty());
     }
 
