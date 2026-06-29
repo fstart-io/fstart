@@ -1,6 +1,7 @@
 //! Rust board metadata for `qemu-aarch64-multi`.
 
-use fstart_device_registry::{pl011, DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_pl011::Pl011Config;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, MemoryMap, MemoryRegion, Platform,
@@ -73,7 +74,7 @@ pub fn board_config() -> BoardConfig {
 
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![DriverInstance::Pl011(pl011::Pl011Config {
+    vec![DriverInstance::Pl011(Pl011Config {
         base_addr: 0x0900_0000,
         clock_freq: 1_843_200,
         baud_rate: 115_200,

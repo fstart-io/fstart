@@ -1,6 +1,9 @@
 //! Rust board metadata for `qemu-aarch64-uefi`.
 
-use fstart_device_registry::{bochs_display, pci_ecam, pl011, DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_bochs_display::BochsDisplayConfig;
+use fstart_driver_pci_ecam::PciEcamConfig;
+use fstart_driver_pl011::Pl011Config;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     BusAddress, Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource,
@@ -76,7 +79,7 @@ pub fn board_config() -> BoardConfig {
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::Pl011(pl011::Pl011Config {
+        DriverInstance::Pl011(Pl011Config {
             base_addr: 0x0900_0000,
             clock_freq: 1_843_200,
             baud_rate: 115_200,
@@ -85,7 +88,7 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
             acpi_dbg2: false,
         })
         .bind("uart0"),
-        DriverInstance::PciEcam(pci_ecam::PciEcamConfig {
+        DriverInstance::PciEcam(PciEcamConfig {
             ecam_base: 0x0040_1000_0000,
             ecam_size: 0x1000_0000,
             mmio32_base: 0x1000_0000,
@@ -98,7 +101,7 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
             bus_end: 255,
         })
         .bind("pci0"),
-        DriverInstance::BochsDisplay(bochs_display::BochsDisplayConfig {
+        DriverInstance::BochsDisplay(BochsDisplayConfig {
             device: 3,
             function: 0,
             width: 1024,

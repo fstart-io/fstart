@@ -1,8 +1,10 @@
 //! Rust board metadata for `qemu-q35`.
 
-use fstart_device_registry::{
-    bochs_display, ns16550, q35_hostbridge, qemu_fw_cfg, DriverBinding, DriverInstance,
-};
+use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_bochs_display::BochsDisplayConfig;
+use fstart_driver_ns16550::{AccessMode, Ns16550Config};
+use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
+use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     BusAddress, Capability, Compression, CorebootSmmCompat, DeviceTopology, DigestAlgorithm,
@@ -95,25 +97,25 @@ pub fn board_config() -> BoardConfig {
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::Ns16550(ns16550::Ns16550Config {
-            regs: ns16550::AccessMode::Pio { base: 0x3f8 },
+        DriverInstance::Ns16550(Ns16550Config {
+            regs: AccessMode::Pio { base: 0x3f8 },
             clock_freq: 1_843_200,
             baud_rate: 115_200,
         })
         .bind("uart0"),
-        DriverInstance::QemuFwCfg(qemu_fw_cfg::QemuFwCfgConfig {
+        DriverInstance::QemuFwCfg(QemuFwCfgConfig {
             ctl_port: 0x510,
             data_port: 0x511,
         })
         .bind("fw_cfg0"),
-        DriverInstance::Q35HostBridge(q35_hostbridge::Q35HostBridgeConfig {
+        DriverInstance::Q35HostBridge(Q35HostBridgeConfig {
             ecam_base: 0xb000_0000,
             ecam_size: 0x1000_0000,
             bus_start: 0,
             bus_end: 255,
         })
         .bind("pci0"),
-        DriverInstance::BochsDisplay(bochs_display::BochsDisplayConfig {
+        DriverInstance::BochsDisplay(BochsDisplayConfig {
             device: 2,
             function: 0,
             width: 1024,

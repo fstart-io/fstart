@@ -4,7 +4,9 @@
 //! name, Cargo package, payload file names, and load addresses. Fixed emulator
 //! facts such as flash/RAM windows and default UART configuration live here.
 
-use fstart_device_registry::{ns16550, pl011, DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_ns16550::{AccessMode, Ns16550Config};
+use fstart_driver_pl011::Pl011Config;
 use fstart_types::{
     hstr, Board, BoardConfig, BoardInfo, Build, BuildInfo, BuildProfile, Capability, Compression,
     DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig, FirmwareKind, FlowProfile,
@@ -85,8 +87,8 @@ impl QemuRiscv64Virt {
     /// Typed driver configs bound to device names.
     #[must_use]
     pub fn driver_bindings(&self) -> Vec<DriverBinding> {
-        vec![DriverInstance::Ns16550(ns16550::Ns16550Config {
-            regs: ns16550::AccessMode::Mmio {
+        vec![DriverInstance::Ns16550(Ns16550Config {
+            regs: AccessMode::Mmio {
                 base: 0x1000_0000,
                 reg_shift: 0,
                 reg_width: 0,
@@ -188,7 +190,7 @@ impl QemuAarch64Virt {
     /// Typed driver configs bound to device names.
     #[must_use]
     pub fn driver_bindings(&self) -> Vec<DriverBinding> {
-        vec![DriverInstance::Pl011(pl011::Pl011Config {
+        vec![DriverInstance::Pl011(Pl011Config {
             base_addr: 0x0900_0000,
             clock_freq: 1_843_200,
             baud_rate: 115_200,

@@ -1,6 +1,8 @@
 //! Rust board metadata for QEMU SBSA-ref.
 
-use fstart_device_registry::{pci_ecam, pl011, DriverBinding, DriverInstance};
+use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_pci_ecam::PciEcamConfig;
+use fstart_driver_pl011::Pl011Config;
 use fstart_types::acpi::{
     AcpiAhciDevice, AcpiConfig, AcpiExtraDevice, AcpiIort, AcpiPlatform, AcpiWatchdog,
     AcpiXhciDevice, ArmPlatformAcpi,
@@ -60,7 +62,7 @@ pub fn board_config() -> BoardConfig {
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
-        DriverInstance::Pl011(pl011::Pl011Config {
+        DriverInstance::Pl011(Pl011Config {
             base_addr: 0x6000_0000,
             clock_freq: 1_843_200,
             baud_rate: 115_200,
@@ -69,7 +71,7 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
             acpi_dbg2: true,
         })
         .bind("uart0"),
-        DriverInstance::PciEcam(pci_ecam::PciEcamConfig {
+        DriverInstance::PciEcam(PciEcamConfig {
             ecam_base: 0xf000_0000,
             ecam_size: 0x1000_0000,
             mmio32_base: 0x8000_0000,
