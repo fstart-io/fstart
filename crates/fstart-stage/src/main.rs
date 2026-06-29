@@ -12,8 +12,6 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
-
 // When a feature requiring heap allocation is active, pull in fstart-alloc
 // to register the global allocator.  Without this explicit extern crate,
 // the linker would not include it (nothing else references the crate by
@@ -25,6 +23,17 @@ use core::panic::PanicInfo;
     feature = "crabefi"
 ))]
 extern crate fstart_alloc;
+
+#[cfg(feature = "aarch64")]
+extern crate fstart_platform_aarch64 as fstart_platform;
+#[cfg(feature = "armv7")]
+extern crate fstart_platform_armv7 as fstart_platform;
+#[cfg(feature = "riscv64")]
+extern crate fstart_platform_riscv64 as fstart_platform;
+#[cfg(feature = "x86_64")]
+extern crate fstart_platform_x86_64 as fstart_platform;
+
+extern crate fstart_runtime;
 
 use fstart_services::{HardwareInit, InitContext, ServiceError};
 use fstart_stage_runtime::StaticBoard;
@@ -58,7 +67,10 @@ impl StaticBoard for StageBoard {
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         #[cfg(feature = "stage-flow-console-init")]
-        fstart_capabilities::console_ready("static", "fixed-flow");
+        {
+            raw_boot_banner();
+            fstart_capabilities::console_ready("static", "fixed-flow");
+        }
         Ok(())
     }
 
@@ -74,7 +86,18 @@ pub extern "Rust" fn fstart_main(_handoff_ptr: usize) -> ! {
     fstart_stage_runtime::run_fixed_flow::<StageBoard>()
 }
 
-#[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
-    StageBoard::halt()
+#[used]
+#[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+
+#[cfg(all(feature = "riscv64", feature = "stage-flow-console-init"))]
+fn raw_boot_banner() {
+    const UART0: *mut u8 = 0x1000_0000 as *mut u8;
+    for byte in b"fstart fixed-flow\r\n" {
+        // SAFETY: QEMU virt exposes an NS16550-compatible UART at 0x1000_0000.
+        unsafe { core::ptr::write_volatile(UART0, *byte) };
+    }
 }
+
+#[cfg(not(all(feature = "riscv64", feature = "stage-flow-console-init")))]
+fn raw_boot_banner() {}
