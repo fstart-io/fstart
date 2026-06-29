@@ -370,6 +370,9 @@ fn capability_features(
     let has_payload_load = capabilities
         .iter()
         .any(|c| matches!(c, Capability::PayloadLoad));
+    if has_payload_load {
+        features.push("stage-flow-payload-load");
+    }
     if has_payload_load && stage_uses_crabefi(config) {
         features.push("crabefi");
         features.push("stage-flow-uefi");

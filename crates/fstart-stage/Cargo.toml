@@ -85,6 +85,7 @@ acpi-load = []
 memory-detect = []
 # FFS / crypto features (forwarded to fstart-capabilities)
 ffs = [
+  "dep:fstart-alloc",
   "fstart-capabilities/ffs",
   "dep:fstart-ffs",
   "fstart-platform-x86_64?/early-ffs-anchor",
@@ -150,7 +151,8 @@ stage-flow-pci = ["fstart-stage-runtime/flow-bus-v2"]
 stage-flow-memory-detect = ["fstart-stage-runtime/flow-memory-v2"]
 stage-flow-boot-media = ["fstart-stage-runtime/flow-storage-v2"]
 stage-flow-ffs = ["fstart-stage-runtime/flow-storage-v2"]
-stage-flow-payload-fit = ["fstart-stage-runtime/flow-payload-v2"]
+stage-flow-payload-load = ["fstart-stage-runtime/flow-payload-v2"]
+stage-flow-payload-fit = ["stage-flow-payload-load"]
 stage-flow-uefi = ["fstart-stage-runtime/flow-payload-v2", "fstart-stage-runtime/flow-handoff-v2"]
 stage-flow-fdt = ["fstart-stage-runtime/flow-handoff-v2"]
 stage-flow-fdt-ffs = ["stage-flow-fdt", "stage-flow-ffs"]

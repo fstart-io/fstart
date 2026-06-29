@@ -12,6 +12,7 @@
 // would not include it.
 #[cfg(any(
     feature = "acpi",
+    feature = "ffs",
     feature = "pci-ecam",
     feature = "q35-hostbridge",
     feature = "crabefi"
@@ -32,6 +33,27 @@ extern crate fstart_runtime;
 mod board_adapters;
 
 use board_adapters::StageBoard;
+
+/// Fixed FFS anchor placeholder for handwritten stage flow.
+///
+/// `xtask assemble` patches this block in the flat stage binary after laying out
+/// the complete firmware image. This replaces the old generated-stage anchor
+/// without generating Rust source.
+#[used]
+#[cfg_attr(target_os = "none", link_section = ".fstart.anchor")]
+pub static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock =
+    fstart_types::ffs::AnchorBlock::placeholder();
+
+pub(crate) fn fstart_anchor_bytes() -> &'static [u8] {
+    // SAFETY: FSTART_ANCHOR is a repr(C) static placed in `.fstart.anchor` and
+    // has exactly ANCHOR_SIZE initialized bytes.
+    unsafe {
+        core::slice::from_raw_parts(
+            (&FSTART_ANCHOR as *const fstart_types::ffs::AnchorBlock).cast::<u8>(),
+            fstart_types::ffs::ANCHOR_SIZE,
+        )
+    }
+}
 
 /// Stage entry point. Called by the platform's `_start` after register setup,
 /// BSS clearing, and stack pointer initialization.
