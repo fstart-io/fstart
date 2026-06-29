@@ -614,6 +614,7 @@ name = "fstart-board-qemu-armv7"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-pl011",
  "fstart-types",
 ]
 
@@ -685,6 +686,7 @@ name = "fstart-board-sifive-unmatched"
 version = "0.1.0"
 dependencies = [
  "fstart-device-registry",
+ "fstart-driver-sifive-uart",
  "fstart-types",
 ]
 

@@ -13,3 +13,4 @@ target = "armv7a-none-eabi"
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
 fstart-device-registry = { workspace = true, features = ["all-drivers"] }
+fstart-driver-pl011 = { workspace = true }

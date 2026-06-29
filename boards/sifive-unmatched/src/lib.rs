@@ -1,8 +1,7 @@
 //! Rust board metadata for SiFive HiFive Unmatched under QEMU `sifive_u`.
 
-use fstart_device_registry::sifive_uart;
-
 use fstart_device_registry::{DriverBinding, DriverInstance};
+use fstart_driver_sifive_uart::SifiveUartConfig;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig,
@@ -57,7 +56,7 @@ fn config() -> BoardConfig {
 
 #[must_use]
 pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![DriverInstance::SifiveUart(sifive_uart::SifiveUartConfig {
+    vec![DriverInstance::SifiveUart(SifiveUartConfig {
         base_addr: 0x1001_0000,
         clock_freq: 500_000_000,
         baud_rate: 115_200,
