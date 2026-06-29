@@ -1,114 +1,46 @@
-//! Minimal RISC-V S-mode test payload.
+//! Minimal all-assembly RISC-V S-mode test payload.
 //!
-//! This binary is entered by RustSBI in S-mode with:
-//!   a0 = hartid
-//!   a1 = DTB address
-//!
-//! It prints a success message via SBI console_putchar (legacy extension)
-//! and then shuts down via SBI SRST extension.
+//! Entered by OpenSBI with a0 = hartid and a1 = DTB address. It writes a
+//! visible marker to QEMU virt's UART and exits through QEMU's test finisher.
 
 #![no_std]
 #![no_main]
 
 use core::panic::PanicInfo;
 
-/// SBI legacy console_putchar (EID 0x01).
-fn sbi_console_putchar(ch: u8) {
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") 0x01_usize,  // legacy console_putchar
-            in("a0") ch as usize,
-            lateout("a0") _,
-            lateout("a1") _,
-        );
-    }
-}
-
-/// SBI system reset (EID 0x53525354 "SRST", FID 0).
-fn sbi_shutdown() -> ! {
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") 0x53525354_usize,  // SRST extension
-            in("a6") 0_usize,           // FID 0 = system_reset
-            in("a0") 0_usize,           // reset_type = shutdown
-            in("a1") 0_usize,           // reset_reason = no reason
-            options(noreturn),
-        );
-    }
-}
-
-fn print_str(s: &str) {
-    for byte in s.bytes() {
-        sbi_console_putchar(byte);
-    }
-}
-
-/// Entry point — called from `_start` after stack setup.
-#[unsafe(no_mangle)]
-extern "C" fn payload_main(_hartid: usize, _dtb_addr: usize) -> ! {
-    print_str("\r\n");
-    print_str("========================================\r\n");
-    print_str("  fstart test payload running in S-mode\r\n");
-    print_str("  Boot chain: QEMU -> fstart -> RustSBI -> HERE\r\n");
-    print_str("========================================\r\n");
-    print_str("\r\n");
-    print_str("[payload] hartid = 0x");
-    // Print hartid as hex (simple, no alloc needed)
-    print_hex(_hartid);
-    print_str("\r\n");
-    print_str("[payload] dtb    = 0x");
-    print_hex(_dtb_addr);
-    print_str("\r\n");
-    print_str("[payload] SUCCESS — full boot chain verified!\r\n");
-    print_str("\r\n");
-
-    // Shutdown via SBI SRST
-    print_str("[payload] Shutting down via SBI SRST...\r\n");
-    sbi_shutdown();
-}
-
-fn print_hex(val: usize) {
-    if val == 0 {
-        sbi_console_putchar(b'0');
-        return;
-    }
-    // Find the highest non-zero nibble
-    let mut started = false;
-    for i in (0..16).rev() {
-        let nibble = (val >> (i * 4)) & 0xF;
-        if nibble != 0 {
-            started = true;
-        }
-        if started {
-            let ch = if nibble < 10 {
-                b'0' + nibble as u8
-            } else {
-                b'a' + (nibble - 10) as u8
-            };
-            sbi_console_putchar(ch);
-        }
-    }
-}
-
 core::arch::global_asm!(
     r#"
     .section .text.entry, "ax"
     .globl _start
 _start:
-    /* a0 = hartid, a1 = dtb_addr, passed by SBI */
-    la sp, __stack_top
-    call payload_main
+    li sp, 0x82008000
+
+    la t2, payload_msg
 1:
-    wfi
+    lbu t1, 0(t2)
+    beqz t1, 2f
+    li t0, 0x10000000
+    sb t1, 0(t0)
+    addi t2, t2, 1
     j 1b
+
+2:
+    li t0, 0x00100000
+    li t1, 0x5555
+    sw t1, 0(t0)
+
+3:
+    wfi
+    j 3b
+
+payload_msg:
+    .ascii "\r\n[payload] FSTART_CI_BOOT_SUCCESS\r\n"
+    .byte 0
 "#
 );
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    print_str("[payload] PANIC!\r\n");
     loop {
         unsafe { core::arch::asm!("wfi") };
     }

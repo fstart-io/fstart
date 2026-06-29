@@ -1530,8 +1530,10 @@ dependencies = [
 name = "fstart-stage-runtime"
 version = "0.1.0"
 dependencies = [
+ "fstart-log",
  "fstart-services",
  "fstart-types",
+ "ufmt",
 ]
 
 [[package]]

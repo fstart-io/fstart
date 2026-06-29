@@ -73,77 +73,86 @@ pub fn run<B: StaticBoard>() -> ! {
 
     #[cfg(feature = "flow-early-platform-v2")]
     {
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("very-early", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().very_early(ctx)
         });
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("early-clocks", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().early_clocks(ctx)
         });
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| b.devices_mut().pinmux(ctx));
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("pinmux", &mut board, &mut ctx, |b, ctx| {
+            b.devices_mut().pinmux(ctx)
+        });
+        run_step::<B>("pre-console", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().pre_console(ctx)
         });
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("console", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().console(ctx)?;
             b.install_console(ctx)
         });
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("post-console", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().post_console(ctx)
         });
     }
 
     #[cfg(feature = "flow-memory-v2")]
     {
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("memory-discovery", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().memory_discovery(ctx)
         });
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| b.devices_mut().dram(ctx));
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("dram", &mut board, &mut ctx, |b, ctx| {
+            b.devices_mut().dram(ctx)
+        });
+        run_step::<B>("post-dram", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().post_dram(ctx)
         });
     }
 
     #[cfg(feature = "flow-bus-v2")]
     {
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("bus-early", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().bus_early(ctx)
         });
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("bus-probe", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().bus_probe(ctx)?;
             b.devices_mut().drivers_ready(ctx)
         });
     }
 
     #[cfg(feature = "flow-storage-v2")]
-    run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+    run_step::<B>("storage", &mut board, &mut ctx, |b, ctx| {
         b.devices_mut().storage(ctx)?;
         b.mount_firmware_volume(ctx)
     });
 
     #[cfg(feature = "flow-security-v2")]
-    run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+    run_step::<B>("security", &mut board, &mut ctx, |b, ctx| {
         b.devices_mut().security(ctx)?;
         b.verify_firmware_volume(ctx)
     });
 
     #[cfg(feature = "flow-payload-v2")]
     {
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| b.select_payload(ctx));
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("payload-select", &mut board, &mut ctx, |b, ctx| {
+            b.select_payload(ctx)
+        });
+        run_step::<B>("payload-load", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().payload_load(ctx)?;
             b.load_payload(ctx)
         });
 
         #[cfg(feature = "flow-security-v2")]
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| b.verify_loaded_payload(ctx));
+        run_step::<B>("payload-verify", &mut board, &mut ctx, |b, ctx| {
+            b.verify_loaded_payload(ctx)
+        });
     }
 
     #[cfg(feature = "flow-handoff-v2")]
     {
-        run_step::<B>(&mut board, &mut ctx, |b, ctx| {
+        run_step::<B>("handoff", &mut board, &mut ctx, |b, ctx| {
             b.devices_mut().handoff(ctx)?;
             b.finalize_handoff(ctx)
         });
+        fstart_log::info!("fixed-flow: boot-payload");
         board.boot_payload();
     }
 
@@ -155,11 +164,14 @@ pub fn run<B: StaticBoard>() -> ! {
 }
 
 fn run_step<B: StaticBoard>(
+    name: &str,
     board: &mut B,
     ctx: &mut InitContext<'_>,
     step: impl FnOnce(&mut B, &mut InitContext<'_>) -> Result<(), ServiceError>,
 ) {
+    fstart_log::info!("fixed-flow: {}", name);
     if step(board, ctx).is_err() {
+        fstart_log::error!("fixed-flow: {} failed", name);
         B::halt();
     }
 }

@@ -23,3 +23,5 @@ flow-handoff-v2 = ["fixed-flow"]
 [dependencies]
 fstart-types = { workspace = true }
 fstart-services = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
