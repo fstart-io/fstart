@@ -11,9 +11,9 @@ pub use fstart_pci::*;
 /// A PCI root bus (host bridge) that owns a segment's config-space and
 /// MMIO/IO address windows.
 ///
-/// The driver's `Device::init()` performs full bus enumeration and resource
-/// allocation. The trait methods below allow post-init queries and raw
-/// config-space access for consumers that need it.
+/// Board/platform PCI steps perform bus enumeration and resource allocation.
+/// The trait methods below allow post-init queries and raw config-space access
+/// for consumers that need it.
 pub trait PciRootBus: Send + Sync {
     /// Enumerate the root bus and allocate PCI resources.
     fn init_bus(&mut self) -> Result<(), ServiceError> {

@@ -125,13 +125,12 @@ pub fn memory_init() {
 
 /// Enumerate and initialise all declared devices/drivers.
 ///
-/// Codegen generates the actual `Device::init()` calls for each device
-/// that was not already initialised by an earlier capability (e.g.,
-/// ConsoleInit already inits the UART). This function logs the phase
-/// boundary; the individual init calls are inlined by codegen.
+/// Board-owned fixed-flow adapters run the actual per-device step methods for
+/// devices that were not already initialized by an earlier capability. This
+/// function records the phase boundary and the adapter-reported device count.
 ///
-/// `device_count` is the total number of devices that were initialised
-/// in this phase (provided by codegen, which knows the count).
+/// `device_count` is the total number of devices that were initialized
+/// in this phase.
 pub fn driver_init_complete(device_count: usize) {
     fstart_log::info!("capability: DriverInit ({} devices)", device_count);
 }

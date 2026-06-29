@@ -1,23 +1,23 @@
 //! Clock controller service trait.
 //!
 //! Implemented by SoC clock tree drivers (CCU, PLL controllers).
-//! The `init()` method on the `Device` trait handles the initial clock
-//! tree setup.  This trait provides runtime clock management for other
-//! drivers that need to enable/disable clock gates or query frequencies.
+//! Board/platform fixed-flow steps perform the initial clock tree setup.
+//! This trait provides runtime clock management for other drivers that need
+//! to enable/disable clock gates or query frequencies.
 
 use crate::ServiceError;
 
 /// Clock controller — manages PLL configuration and peripheral clock gates.
 ///
-/// The `Device::init()` method programs PLLs and sets up default clock
-/// dividers.  `ClockController` methods enable individual drivers to
-/// open their clock gates and query bus frequencies at runtime.
+/// Board/platform clock-init steps program PLLs and set up default clock
+/// dividers. `ClockController` methods enable individual drivers to open
+/// their clock gates and query bus frequencies at runtime.
 ///
 /// # Note
 ///
-/// For the initial boot stage (SRAM-only), only `Device::init()` is
-/// called (via the `ClockInit` capability).  The full `ClockController`
-/// interface is available to later stages running from DRAM.
+/// For the initial boot stage (SRAM-only), only the fixed-flow clock step
+/// should run. The full `ClockController` interface is available to later
+/// stages running from DRAM.
 pub trait ClockController: Send + Sync {
     /// Enable the clock gate for a peripheral identified by `gate_id`.
     ///

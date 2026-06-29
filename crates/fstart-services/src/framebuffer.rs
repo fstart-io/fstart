@@ -34,8 +34,9 @@ pub struct FramebufferInfo {
 
 /// A device that provides a linear framebuffer for display output.
 ///
-/// After `Device::init()`, the framebuffer is programmed and ready to use.
-/// Call `info()` to get the physical address, resolution, and pixel format.
+/// After the display init step, the framebuffer is programmed and ready to
+/// use. Call `info()` to get the physical address, resolution, and pixel
+/// format.
 pub trait Framebuffer: Send + Sync {
     /// Return information about the configured framebuffer.
     fn info(&self) -> FramebufferInfo;

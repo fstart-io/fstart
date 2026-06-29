@@ -1,30 +1,30 @@
 //! Memory controller service trait.
 //!
-//! Implemented by DRAM controller drivers.  The `Device::init()` method
-//! performs the full DRAM initialization sequence (PLL setup, PHY
-//! training, size detection).  This trait exposes detected parameters
-//! for use by later firmware stages.
+//! Implemented by DRAM controller drivers. Board/platform memory steps perform
+//! the full DRAM initialization sequence (PLL setup, PHY training, size
+//! detection). This trait exposes detected parameters for use by later firmware
+//! stages.
 
 use crate::ServiceError;
 
 /// Memory controller — DRAM initialization and detection.
 ///
-/// `Device::init()` runs the full hardware init sequence:
+/// Board/platform memory steps run the full hardware init sequence:
 /// - Program the DRAM PLL
 /// - Configure controller timing parameters
 /// - Reset the DRAM chips (DDR3 reset sequence)
 /// - Run DQS gate training / read calibration
 /// - Detect installed DRAM size
 ///
-/// After `init()` succeeds, `detected_size_bytes()` returns the usable
+/// After `dram_init()` succeeds, `detected_size_bytes()` returns the usable
 /// DRAM capacity.
 pub trait MemoryController: Send + Sync {
     /// Run DRAM initialization/training for this controller.
     ///
-    /// This is separate from [`Device::init`](crate::device::Device::init)
-    /// because x86 northbridge drivers are constructed before the console and
-    /// chipset init are available. Real DRAM training is dispatched later by
-    /// the `DramInit` capability, after SMBus/GPIO/BAR setup has completed.
+    /// This is intentionally a dedicated memory-init hook because x86
+    /// northbridge drivers are constructed before the console and chipset init
+    /// are available. Real DRAM training is dispatched later by the fixed-flow
+    /// memory step, after SMBus/GPIO/BAR setup has completed.
     fn dram_init(&mut self) -> Result<(), ServiceError> {
         Ok(())
     }

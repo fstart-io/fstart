@@ -319,12 +319,11 @@ impl Q35HostBridge {
         Ok(())
     }
 
-    /// Configure MMIO windows from the e820 memory map and call
-    /// `init()` on the inner PCI ECAM driver.
+    /// Configure MMIO windows from the e820 memory map and initialize the
+    /// inner PCI ECAM root driver.
     ///
-    /// This is the main entry point.  The codegen calls this instead of
-    /// the `Device::init()` trait method, passing the e820 data that
-    /// `MemoryDetect` has already populated.
+    /// This is the main board/platform step entry point for Q35 once
+    /// `MemoryDetect` has populated e820 data.
     ///
     /// Window computation follows coreboot's Q35/i440fx pattern:
     /// - **MMIO32**: `max(TOLUD, ecam_end)` up to `0xFE00_0000`
