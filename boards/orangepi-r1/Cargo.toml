@@ -9,6 +9,8 @@ publish = false
 board = "orangepi-r1"
 platform = "armv7"
 target = "armv7a-none-eabi"
+stage-package = "fstart-board-orangepi-r1-stage"
+stage-bin = "fstart-stage"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }

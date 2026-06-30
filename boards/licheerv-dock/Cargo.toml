@@ -9,6 +9,8 @@ publish = false
 board = "licheerv-dock"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
+stage-package = "fstart-board-licheerv-dock-stage"
+stage-bin = "fstart-stage"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }

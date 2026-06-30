@@ -1,0 +1,46 @@
+[package]
+name = "fstart-board-orangepi-pc2-stage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+aarch64 = ["fstart-stage/aarch64"]
+sunxi = ["fstart-stage/sunxi", "fstart-platform-aarch64/sunxi"]
+ns16550 = ["fstart-stage/ns16550"]
+sunxi-h3-ccu = ["fstart-stage/sunxi-h3-ccu"]
+sunxi-h3-dramc = ["fstart-stage/sunxi-h3-dramc"]
+sunxi-mmc = ["fstart-stage/sunxi-mmc"]
+ffs = ["fstart-stage/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+fdt = ["fstart-stage/fdt"]
+handoff = ["fstart-stage/handoff"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+[dependencies]
+fstart-board-orangepi-pc2-facts = { path = "../facts" }
+fstart-stage = { workspace = true }
+fstart-stage-runtime = { workspace = true }
+fstart-services = { workspace = true }
+fstart-capabilities = { workspace = true }
+fstart-log = { workspace = true }
+fstart-platform-aarch64 = { workspace = true }
+fstart-soc-sunxi = { workspace = true }
+fstart-driver-ns16550 = { workspace = true }
+fstart-driver-sunxi-h3-ccu = { workspace = true }
+fstart-driver-sunxi-h3-dramc = { workspace = true }
+fstart-driver-sunxi-mmc = { workspace = true }
+fstart-types = { workspace = true }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
