@@ -516,6 +516,8 @@ dependencies = [
 name = "fstart-board-foxconn-d41s"
 version = "0.1.0"
 dependencies = [
+ "fstart-gpio-ich",
+ "fstart-hda",
  "fstart-platform-intel-pineview-ich7",
  "fstart-types",
 ]
@@ -524,14 +526,12 @@ dependencies = [
 name = "fstart-board-foxconn-d41s-facts"
 version = "0.1.0"
 dependencies = [
+ "fstart-board-foxconn-d41s",
  "fstart-capabilities",
  "fstart-driver-i2c-ck505",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-pineview",
  "fstart-driver-ite8721f",
- "fstart-gpio-ich",
- "fstart-hda",
- "fstart-platform-intel-pineview-ich7",
  "fstart-superio",
  "fstart-types",
 ]

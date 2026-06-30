@@ -64,10 +64,10 @@ impl StaticBoard for BootblockBoard {
     type Devices = BootblockDevices;
 
     fn new() -> Result<Self, ServiceError> {
-        let runtime = common::runtime_config();
+        let config = board::gm965_ich8_config();
         Ok(Self {
             devices: BootblockDevices::new()?,
-            ffs: MemoryMappedFfs::new(runtime.firmware_base, runtime.firmware_size),
+            ffs: MemoryMappedFfs::new(config.firmware_base, config.firmware_size),
             ramstage_loaded: false,
         })
     }

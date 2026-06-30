@@ -15,13 +15,13 @@ use heapless::Vec as HVec;
 
 /// QEMU RISC-V `virt` board defaults.
 #[derive(Debug, Clone)]
-pub struct QemuRiscv64Virt {
+pub struct QemuRiscv64VirtConfig {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
 }
 
-impl QemuRiscv64Virt {
+impl QemuRiscv64VirtConfig {
     /// Start with QEMU RISC-V `virt` defaults.
     #[must_use]
     pub fn new(board_name: &'static str, board_package: &'static str) -> Self {
@@ -104,13 +104,13 @@ impl QemuRiscv64Virt {
 
 /// QEMU AArch64 `virt` board defaults.
 #[derive(Debug, Clone)]
-pub struct QemuAarch64Virt {
+pub struct QemuAarch64VirtConfig {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
 }
 
-impl QemuAarch64Virt {
+impl QemuAarch64VirtConfig {
     /// Start with QEMU AArch64 `virt` defaults.
     #[must_use]
     pub fn new(board_name: &'static str, board_package: &'static str) -> Self {

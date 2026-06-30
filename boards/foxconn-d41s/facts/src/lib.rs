@@ -1,14 +1,10 @@
 #![no_std]
 
+use fstart_board_foxconn_d41s as board;
 use fstart_capabilities::smbios::{ProcessorDesc, SmbiosDesc};
 use fstart_driver_i2c_ck505::I2cCk505Config;
-use fstart_driver_intel_ich7::{
-    IntelIch7Config, LpcGenericIoDecode, SataConfig, SataMode, UsbConfig,
-};
-use fstart_driver_intel_pineview::{IgdConfig, IntelPineviewConfig};
-use fstart_gpio_ich as gpio;
-use fstart_hda as hda;
-use fstart_platform_intel_pineview_ich7::PineviewIch7RuntimePolicy;
+use fstart_driver_intel_ich7::IntelIch7Config;
+use fstart_driver_intel_pineview::IntelPineviewConfig;
 use fstart_superio::{
     CirConfig, ComPortConfig, EcConfig, KbcConfig, MouseConfig, ParallelConfig, SuperIoConfig,
 };
@@ -48,50 +44,12 @@ pub const CK505_NODE: &str = "ck505";
 pub const ICH7_PMBASE: u32 = 0x0500;
 pub const CK505_ADDR: u8 = 0x69;
 
-fn runtime_policy() -> PineviewIch7RuntimePolicy {
-    PineviewIch7RuntimePolicy::new()
-        .pineview(|pineview| {
-            pineview.igd = Some(IgdConfig {
-                use_crt: true,
-                use_lvds: false,
-                spread_spectrum: false,
-                vbt_file: Some(hstr("data.vbt")),
-            });
-            pineview.spd_addresses = [0x50, 0x51, 0, 0];
-            pineview.ck505_pre_raminit = true;
-            pineview.acpi_name = Some(hstr("MCHC"));
-        })
-        .ich7(|ich7| {
-            ich7.pirq_routing = [0x0b; 8];
-            ich7.pata = false;
-            ich7.smbus_base = 0x0400;
-            ich7.acpi_name = Some(hstr("LPCB"));
-            ich7.c3_latency = 85;
-            ich7.power_on_after_fail = 0;
-        })
-        .lpc_generic_io(LpcGenericIoDecode {
-            base: 0x0a00,
-            size: 0x0100,
-        })
-        .gpe0_en(0x441)
-        .sata(SataConfig {
-            mode: SataMode::Ahci,
-            ports: 0x3,
-        })
-        .usb(UsbConfig {
-            ehci: true,
-            uhci: [true, true, true, true],
-        })
-        .hda(d41s_hda_config())
-        .gpio(d41s_gpio_config())
-}
-
 pub fn pineview_config() -> IntelPineviewConfig {
-    runtime_policy().runtime_config().0
+    board::pineview_ich7_config().pineview
 }
 
 pub fn ich7_config() -> IntelIch7Config {
-    runtime_policy().runtime_config().1
+    board::pineview_ich7_config().ich7
 }
 
 pub fn superio_config() -> SuperIoConfig {
@@ -134,131 +92,6 @@ pub fn ck505_config() -> I2cCk505Config {
     I2cCk505Config {
         mask: hvec([0x00, 0x80, 0xff, 0xff, 0xff]),
         regs: hvec([0x00, 0x80, 0xfe, 0xff, 0xfc]),
-    }
-}
-
-pub fn d41s_hda_config() -> hda::HdaConfig {
-    hda::HdaConfig {
-        verbs: hvec([hda::HdaVerbTable {
-            vendor_id: 0x10ec_0662,
-            subsystem_id: 0x105b_0d55,
-            pins: hvec([
-                hda::pin_config(
-                    0x14,
-                    hda::PinDevice::LineOut,
-                    hda::PinConn::Jack,
-                    hda::PinLoc::External,
-                    hda::PinGeoLoc::Rear,
-                    hda::PinConnector::StereoMono18,
-                    hda::PinColor::Green,
-                    0xC,
-                    1,
-                    0,
-                ),
-                hda::pin_not_connected(0x15, 0),
-                hda::pin_not_connected(0x16, 0),
-                hda::pin_config(
-                    0x18,
-                    hda::PinDevice::MicIn,
-                    hda::PinConn::Jack,
-                    hda::PinLoc::External,
-                    hda::PinGeoLoc::Rear,
-                    hda::PinConnector::StereoMono18,
-                    hda::PinColor::Pink,
-                    0xC,
-                    3,
-                    0,
-                ),
-                hda::pin_config(
-                    0x19,
-                    hda::PinDevice::MicIn,
-                    hda::PinConn::Jack,
-                    hda::PinLoc::External,
-                    hda::PinGeoLoc::Front,
-                    hda::PinConnector::StereoMono18,
-                    hda::PinColor::Pink,
-                    0xC,
-                    3,
-                    1,
-                ),
-                hda::pin_config(
-                    0x1a,
-                    hda::PinDevice::LineIn,
-                    hda::PinConn::Jack,
-                    hda::PinLoc::External,
-                    hda::PinGeoLoc::Rear,
-                    hda::PinConnector::StereoMono18,
-                    hda::PinColor::Blue,
-                    0x4,
-                    3,
-                    15,
-                ),
-                hda::pin_config(
-                    0x1b,
-                    hda::PinDevice::HpOut,
-                    hda::PinConn::Jack,
-                    hda::PinLoc::External,
-                    hda::PinGeoLoc::Front,
-                    hda::PinConnector::StereoMono18,
-                    hda::PinColor::Green,
-                    0xC,
-                    1,
-                    15,
-                ),
-                hda::pin_not_connected(0x1c, 0),
-                hda::pin_config(
-                    0x1d,
-                    hda::PinDevice::DeviceOther,
-                    hda::PinConn::Nc,
-                    hda::PinLoc::External,
-                    hda::PinGeoLoc::NA,
-                    hda::PinConnector::Optical,
-                    hda::PinColor::Orange,
-                    0x6,
-                    0,
-                    3,
-                ),
-                hda::pin_config(
-                    0x1e,
-                    hda::PinDevice::SpdifOut,
-                    hda::PinConn::Integrated,
-                    hda::PinLoc::Internal,
-                    hda::PinGeoLoc::Special9,
-                    hda::PinConnector::AtapiInternal,
-                    hda::PinColor::ColorUnknown,
-                    0x1,
-                    2,
-                    0,
-                ),
-            ]),
-            extra_verbs: hvec([]),
-        }]),
-    }
-}
-
-pub fn d41s_gpio_config() -> gpio::GpioConfig {
-    gpio::GpioConfig {
-        pins: hvec([
-            gpio::output(0, gpio::GpioLevel::Low),
-            gpio::output(6, gpio::GpioLevel::Low),
-            gpio::output(7, gpio::GpioLevel::Low),
-            gpio::output(8, gpio::GpioLevel::Low),
-            gpio::output(9, gpio::GpioLevel::Low),
-            gpio::output(10, gpio::GpioLevel::Low),
-            gpio::output(12, gpio::GpioLevel::Low),
-            gpio::output(13, gpio::GpioLevel::Low),
-            gpio::output(14, gpio::GpioLevel::Low),
-            gpio::output(15, gpio::GpioLevel::Low),
-            gpio::output(24, gpio::GpioLevel::Low),
-            gpio::output(25, gpio::GpioLevel::Low),
-            gpio::output(26, gpio::GpioLevel::Low),
-            gpio::output(27, gpio::GpioLevel::Low),
-            gpio::output(28, gpio::GpioLevel::Low),
-            gpio::input(33),
-            gpio::input(34),
-            gpio::input(38),
-            gpio::input(39),
-        ]),
     }
 }
 

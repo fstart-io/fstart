@@ -5,7 +5,7 @@
 //! stage package.
 
 use fstart_board_qemu_aarch64_facts as facts;
-use fstart_board_qemu_virt::QemuAarch64Virt;
+use fstart_board_qemu_virt::QemuAarch64VirtConfig;
 use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform};
 
 /// Stable fstart board name.
@@ -20,21 +20,21 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
-fn board() -> QemuAarch64Virt {
-    QemuAarch64Virt::new(BOARD_NAME, BOARD_PACKAGE)
+fn config() -> QemuAarch64VirtConfig {
+    QemuAarch64VirtConfig::new(BOARD_NAME, BOARD_PACKAGE)
 }
 
 /// Complete board facts for runtime hardware, stage policy, and packaging.
 pub fn board_config() -> BoardConfig {
-    board().board_config()
+    config().board_config()
 }
 
 /// Runtime hardware facts for static typed board mode.
 pub fn board_info() -> BoardInfo {
-    board().board_info()
+    config().board_info()
 }
 
 /// Host build/package facts for this board.
 pub fn build_info() -> BuildInfo {
-    board().build_info()
+    config().build_info()
 }

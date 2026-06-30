@@ -148,10 +148,10 @@ impl StaticBoard for MainBoard {
     type Devices = MainDevices;
 
     fn new() -> Result<Self, ServiceError> {
-        let runtime = common::runtime_config();
+        let config = board::gm965_ich8_config();
         Ok(Self {
             devices: MainDevices::new()?,
-            boot: MemoryMappedUefiBoot::new(runtime.firmware_base, runtime.firmware_size, 0),
+            boot: MemoryMappedUefiBoot::new(config.firmware_base, config.firmware_size, 0),
             payload_ready: false,
         })
     }
@@ -203,11 +203,11 @@ impl StaticBoard for MainBoard {
         };
 
         let acpi_base = self.devices.acpi_rsdp().unwrap_or(0) & !0xfff;
-        let runtime = common::runtime_config();
+        let config = board::gm965_ich8_config();
         let platform_entries = [
             MemoryRegion {
-                base: runtime.firmware_base,
-                size: runtime.firmware_size as u64,
+                base: config.firmware_base,
+                size: config.firmware_size as u64,
                 region_type: MemoryType::RuntimeServicesCode,
             },
             MemoryRegion {

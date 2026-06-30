@@ -13,5 +13,7 @@ stage-package = "fstart-board-foxconn-d41s-stage"
 stage-bin = "fstart-stage"
 
 [dependencies]
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
 fstart-platform-intel-pineview-ich7 = { workspace = true }
+fstart-gpio-ich = { workspace = true }
+fstart-hda = { workspace = true }

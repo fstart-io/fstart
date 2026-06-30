@@ -2,14 +2,17 @@
 
 #![no_std]
 
-use fstart_platform_intel_gm965_ich8::{Gm965Ich8Board, PcieRootPort};
+use fstart_mainboard_lenovo_x61::{x61_gpio_config, x61_hda_config, x61_igd_config};
+use fstart_platform_intel_gm965_ich8::{
+    Gm965Ich8Config, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode, LpcGenericIoDecode,
+    LpcParallelDecode, LpcSerialDecode, PcieRootPort, SataConfig, SataMode, UsbConfig,
+};
 use fstart_types::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
 use fstart_types::{
-    build_info_from_config, hstr, hvec, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo,
-    BusAddress, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform,
-    SmbiosConfig,
+    hstr, hvec, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, BusAddress, FlashLayout,
+    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
 };
 
 pub const BOARD_NAME: &str = "lenovo-x61";
@@ -20,13 +23,57 @@ pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
 
-fn board() -> Gm965Ich8Board {
-    Gm965Ich8Board::new(BOARD_NAME, BOARD_PACKAGE)
+pub fn gm965_ich8_config() -> Gm965Ich8Config {
+    Gm965Ich8Config::new(BOARD_NAME, BOARD_PACKAGE)
         .payload(x86_uefi_payload())
         .flash_layout(Some(x61_flash_layout()))
+        .igd(x61_igd_config())
         .pcie_port(PcieRootPort::Port1, true)
         .pcie_port(PcieRootPort::Port2, true)
         .acpi_print_hex(true)
+        .lpc_fixed_io(LpcFixedIoDecode {
+            com_a: LpcSerialDecode::Com1,
+            com_b: LpcSerialDecode::Com2,
+            lpt: Some(LpcParallelDecode::Lpt3bc),
+            fdd: None,
+        })
+        .lpc_generic_io(LpcGenericIoDecode {
+            base: 0x1600,
+            size: 0x0080,
+        })
+        .lpc_generic_io(LpcGenericIoDecode {
+            base: 0x15e0,
+            size: 0x0010,
+        })
+        .lpc_generic_io(LpcGenericIoDecode {
+            base: 0x1680,
+            size: 0x0020,
+        })
+        .gpe0_en(0x0104_0046)
+        .gpi_routing([0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0])
+        .ide(IdeConfig {
+            enable_primary: true,
+            enable_secondary: false,
+        })
+        .sata(SataConfig {
+            mode: SataMode::Ahci,
+            ports: 0x01,
+            hotplug_map: 0,
+            clock_request: false,
+            traffic_monitor: false,
+        })
+        .usb(UsbConfig {
+            ehci: [true, true],
+            uhci: [true, true, true, true, true, true],
+        })
+        .hda(x61_hda_config())
+        .gpio(x61_gpio_config())
+        .io_trap(IoTrapConfig {
+            index: 3,
+            base: 0x0800,
+            size: 0x10,
+            access: IoTrapAccess::Any,
+        })
         .superio("dlpc_superio", io16(0x164e), true)
         .superio("dock_superio", io16(0x2e), false)
         .on_smbus(|smbus| {
@@ -38,30 +85,24 @@ fn board() -> Gm965Ich8Board {
 
 #[must_use]
 pub fn board_config() -> BoardConfig {
-    board().board_config()
+    gm965_ich8_config().board_config()
 }
 
 #[must_use]
 pub fn board_info() -> BoardInfo {
-    board().board_info()
+    gm965_ich8_config().board_info()
 }
 
 #[must_use]
 pub fn build_info() -> BuildInfo {
-    let config = board_config();
-    build_info_from_config(
-        BOARD_NAME,
-        BOARD_PACKAGE,
-        &config,
-        [
-            "intel-gm965",
-            "intel-ich8",
-            "lenovo-x61-mainboard",
-            "nsc-pc87382",
-            "nsc-pc87392",
-            "i2c-ck505",
-        ],
-    )
+    gm965_ich8_config().build_info([
+        "intel-gm965",
+        "intel-ich8",
+        "lenovo-x61-mainboard",
+        "nsc-pc87382",
+        "nsc-pc87392",
+        "i2c-ck505",
+    ])
 }
 
 #[must_use]

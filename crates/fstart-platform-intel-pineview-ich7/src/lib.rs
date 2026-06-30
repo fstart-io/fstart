@@ -1,11 +1,8 @@
-//! Intel Pineview + ICH7/NM10 board-support metadata.
+//! Intel Pineview + ICH7/NM10 board hardware configuration.
 //!
-//! Runtime hardware init stays in the no_std driver crates.  This crate only
-//! composes shared host-side metadata for mainboards built from the Pineview
-//! northbridge and ICH7/NM10 southbridge: flash/CAR layout, stage flow, and
-//! chipset driver defaults.  Mainboard crates still provide board policy such
-//! as Super I/O wiring, clock-generator programming, GPIOs, HDA verbs, SMBIOS,
-//! and payload choice.
+//! This crate provides one concrete config object for Pineview/ICH7 mainboards.
+//! The same value feeds build metadata and runtime drivers, so topology, PCIe
+//! routing, GPIO, HDA, LPC decode, SATA, USB, and IGD settings live in one place.
 
 #![no_std]
 
@@ -25,27 +22,19 @@ use fstart_types::{
 use heapless::Vec as HVec;
 
 pub use fstart_driver_intel_ich7::{LpcGenericIoDecode, SataConfig, SataMode, UsbConfig};
+pub use fstart_driver_intel_pineview::IgdConfig;
 
-/// Shared Pineview + ICH7/NM10 host metadata for a concrete mainboard.
-///
-/// This builder is host-only: it describes board topology, payload policy, and
-/// table metadata. Target-side chipset, HDA, GPIO, LPC decode, SATA, USB, and
-/// IGD policy belongs in [`PineviewIch7RuntimePolicy`].
+/// Complete Pineview + ICH7/NM10 hardware config for a concrete mainboard.
 #[derive(Debug, Clone)]
-pub struct PineviewIch7Board {
+pub struct PineviewIch7Config {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
     extensions: PlatformDeviceExtensions,
     smbios: Option<SmbiosConfig>,
     pcie_ports: [bool; 4],
-}
-
-/// Target-side Pineview + ICH7/NM10 runtime driver policy.
-#[derive(Debug, Clone)]
-pub struct PineviewIch7RuntimePolicy {
-    pineview: pineview::IntelPineviewConfig,
-    ich7: ich7::IntelIch7Config,
+    pub pineview: pineview::IntelPineviewConfig,
+    pub ich7: ich7::IntelIch7Config,
 }
 
 /// ICH7/NM10 PCIe root-port selector.
@@ -68,7 +57,7 @@ impl PcieRootPort {
     }
 }
 
-impl PineviewIch7Board {
+impl PineviewIch7Config {
     #[must_use]
     pub fn new(board_name: &'static str, board_package: &'static str) -> Self {
         Self {
@@ -78,6 +67,8 @@ impl PineviewIch7Board {
             extensions: PlatformDeviceExtensions::new(),
             smbios: None,
             pcie_ports: [false; 4],
+            pineview: pineview_defaults(),
+            ich7: ich7_defaults(),
         }
     }
 
@@ -192,15 +183,7 @@ impl PineviewIch7Board {
     }
 }
 
-impl PineviewIch7RuntimePolicy {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            pineview: pineview_defaults(),
-            ich7: ich7_defaults(),
-        }
-    }
-
+impl PineviewIch7Config {
     /// Set board-specific HD Audio verb tables.
     pub fn hda(mut self, hda: hda::HdaConfig) -> Self {
         self.ich7.hda = Some(hda);
@@ -258,17 +241,11 @@ impl PineviewIch7RuntimePolicy {
         self.ich7.usb = Some(usb);
         self
     }
-
-    /// Return the target-side northbridge and southbridge configs.
-    #[must_use]
-    pub fn runtime_config(&self) -> (pineview::IntelPineviewConfig, ich7::IntelIch7Config) {
-        (self.pineview.clone(), self.ich7.clone())
-    }
 }
 
-impl Default for PineviewIch7RuntimePolicy {
+impl Default for PineviewIch7Config {
     fn default() -> Self {
-        Self::new()
+        Self::new("pineview-ich7", "fstart-platform-intel-pineview-ich7")
     }
 }
 
@@ -283,7 +260,7 @@ impl PcieRootPort {
     }
 }
 
-impl PineviewIch7Board {
+impl PineviewIch7Config {
     fn platform_topology(&self) -> PlatformTopology {
         PlatformTopology::new()
             .root("northbridge")

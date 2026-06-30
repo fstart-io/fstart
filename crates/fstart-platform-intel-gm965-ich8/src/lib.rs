@@ -1,10 +1,10 @@
-//! Intel GM965 + ICH8 board-support metadata.
+//! Intel GM965 + ICH8 board hardware configuration.
 //!
-//! Runtime chipset and mainboard initialization stays in the no_std driver crates.
-//! This crate composes reusable host-side metadata for GM965/ICH8 mainboards:
-//! flash/CAR layout, stage flow, chipset defaults, and device topology. Concrete
-//! board crates supply board policy such as dock wiring, GPIOs,
-//! HDA verbs, SMBIOS identity, payload choice, and optional peripheral instances.
+//! This crate provides one concrete config object for GM965/ICH8 mainboards. The
+//! same value feeds build metadata (`BoardConfig`, topology, flash layout) and
+//! runtime drivers (`IntelGm965Config`, `IntelIch8Config`). Keeping those facts in
+//! one object avoids the old host/runtime split where the same board policy had to
+//! be repeated in two builders.
 
 #![no_std]
 
@@ -40,26 +40,14 @@ pub const GM965_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
 pub const GM965_NEXT_STAGE_NAME: &str = "ramstage";
 pub const ICH8_PMBASE: u32 = 0x0500;
 
-/// Runtime chipset policy derived from the same platform builder used for host metadata.
-#[derive(Debug, Clone)]
-pub struct Gm965Ich8RuntimeConfig {
-    pub gm965: gm965::IntelGm965Config,
-    pub ich8: ich8::IntelIch8Config,
-    pub firmware_base: u64,
-    pub firmware_size: usize,
-    pub ram_base: u64,
-    pub ram_size: u64,
-}
-
-/// Shared GM965 + ICH8 host metadata for a concrete mainboard.
+/// Complete GM965 + ICH8 hardware config for a concrete mainboard.
 ///
-/// This builder intentionally carries only host-visible board facts: payload
-/// policy, flash layout, table metadata, and topology. Target-side driver
-/// policy belongs in [`Gm965Ich8RuntimePolicy`], so host tools can construct a
-/// [`BoardConfig`] without also constructing HDA, GPIO, IGD, LPC decode, or
-/// other runtime-only configs.
+/// Board crates construct this once from real hardware facts. Build-time metadata
+/// methods (`board_config`, `build_info`) and stage runtime code both consume the
+/// same value, so PCIe routing, flash windows, LPC decode, GPIOs, HDA verbs, and
+/// chipset driver configs cannot drift apart.
 #[derive(Debug, Clone)]
-pub struct Gm965Ich8Board {
+pub struct Gm965Ich8Config {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
@@ -68,15 +56,12 @@ pub struct Gm965Ich8Board {
     mainboard_enabled: bool,
     extensions: PlatformDeviceExtensions,
     acpi_print_hex: bool,
-    pcie_ports: [bool; 6],
-}
-
-/// Target-side GM965 + ICH8 runtime driver policy.
-#[derive(Debug, Clone)]
-pub struct Gm965Ich8RuntimePolicy {
-    gm965: gm965::IntelGm965Config,
-    ich8: ich8::IntelIch8Config,
-    flash_layout: Option<FlashLayout>,
+    pub gm965: gm965::IntelGm965Config,
+    pub ich8: ich8::IntelIch8Config,
+    pub firmware_base: u64,
+    pub firmware_size: usize,
+    pub ram_base: u64,
+    pub ram_size: u64,
 }
 
 /// ICH8 PCIe root-port selector.
@@ -103,9 +88,10 @@ impl PcieRootPort {
     }
 }
 
-impl Gm965Ich8Board {
+impl Gm965Ich8Config {
     #[must_use]
     pub fn new(board_name: &'static str, board_package: &'static str) -> Self {
+        let (firmware_base, firmware_size) = firmware_window(None);
         Self {
             board_name,
             board_package,
@@ -115,7 +101,12 @@ impl Gm965Ich8Board {
             mainboard_enabled: false,
             extensions: PlatformDeviceExtensions::new(),
             acpi_print_hex: false,
-            pcie_ports: [false; 6],
+            gm965: gm965_defaults(),
+            ich8: ich8_defaults(),
+            firmware_base,
+            firmware_size,
+            ram_base: 0x0010_0000,
+            ram_size: 0x3FF0_0000,
         }
     }
 
@@ -126,7 +117,10 @@ impl Gm965Ich8Board {
 
     /// Set the board flash layout.
     pub fn flash_layout(mut self, flash_layout: Option<FlashLayout>) -> Self {
+        let (firmware_base, firmware_size) = firmware_window(flash_layout.as_ref());
         self.flash_layout = flash_layout;
+        self.firmware_base = firmware_base;
+        self.firmware_size = firmware_size;
         self
     }
 
@@ -174,12 +168,6 @@ impl Gm965Ich8Board {
         F: FnOnce(&mut PlatformAttachPoint<'_>),
     {
         self.extensions.on(port.node_name(), extend);
-        self
-    }
-
-    /// Set board policy for one ICH8 PCIe root port.
-    pub fn pcie_port(mut self, port: PcieRootPort, enabled: bool) -> Self {
-        self.pcie_ports[port.index()] = enabled;
         self
     }
 
@@ -236,22 +224,7 @@ impl Gm965Ich8Board {
     }
 }
 
-impl Gm965Ich8RuntimePolicy {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            gm965: gm965_defaults(),
-            ich8: ich8_defaults(),
-            flash_layout: None,
-        }
-    }
-
-    /// Set the board flash layout used to derive the firmware window.
-    pub fn flash_layout(mut self, flash_layout: Option<FlashLayout>) -> Self {
-        self.flash_layout = flash_layout;
-        self
-    }
-
+impl Gm965Ich8Config {
     /// Set board-specific integrated graphics policy, including VBT source.
     pub fn igd(mut self, igd: Gm965IgdConfig) -> Self {
         self.gm965.igd = igd;
@@ -390,25 +363,11 @@ impl Gm965Ich8RuntimePolicy {
         self.ich8.power_on_after_fail = value;
         self
     }
-
-    /// Return target-side runtime policy for chipset drivers.
-    #[must_use]
-    pub fn runtime_config(&self) -> Gm965Ich8RuntimeConfig {
-        let (firmware_base, firmware_size) = firmware_window(self.flash_layout.as_ref());
-        Gm965Ich8RuntimeConfig {
-            gm965: self.gm965.clone(),
-            ich8: self.ich8.clone(),
-            firmware_base,
-            firmware_size,
-            ram_base: 0x0010_0000,
-            ram_size: 0x3FF0_0000,
-        }
-    }
 }
 
-impl Default for Gm965Ich8RuntimePolicy {
+impl Default for Gm965Ich8Config {
     fn default() -> Self {
-        Self::new()
+        Self::new("gm965-ich8", "fstart-platform-intel-gm965-ich8")
     }
 }
 
@@ -425,17 +384,17 @@ impl PcieRootPort {
     }
 }
 
-impl Gm965Ich8Board {
+impl Gm965Ich8Config {
     fn platform_topology(&self) -> PlatformTopology {
         PlatformTopology::new()
             .root("northbridge")
             .root("southbridge")
-            .pci_bridge("southbridge", "pcie1", 0x1c, 0, self.pcie_ports[0])
-            .pci_bridge("southbridge", "pcie2", 0x1c, 1, self.pcie_ports[1])
-            .pci_bridge("southbridge", "pcie3", 0x1c, 2, self.pcie_ports[2])
-            .pci_bridge("southbridge", "pcie4", 0x1c, 3, self.pcie_ports[3])
-            .pci_bridge("southbridge", "pcie5", 0x1c, 4, self.pcie_ports[4])
-            .pci_bridge("southbridge", "pcie6", 0x1c, 5, self.pcie_ports[5])
+            .pci_bridge("southbridge", "pcie1", 0x1c, 0, self.ich8.pcie_ports[0])
+            .pci_bridge("southbridge", "pcie2", 0x1c, 1, self.ich8.pcie_ports[1])
+            .pci_bridge("southbridge", "pcie3", 0x1c, 2, self.ich8.pcie_ports[2])
+            .pci_bridge("southbridge", "pcie4", 0x1c, 3, self.ich8.pcie_ports[3])
+            .pci_bridge("southbridge", "pcie5", 0x1c, 4, self.ich8.pcie_ports[4])
+            .pci_bridge("southbridge", "pcie6", 0x1c, 5, self.ich8.pcie_ports[5])
             .child_bus("southbridge", "lpc", DeviceRole::LpcBus)
             .child_bus("southbridge", "smbus", DeviceRole::SmBus)
             .root_enabled("mainboard", self.mainboard_enabled)
