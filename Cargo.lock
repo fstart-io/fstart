@@ -798,6 +798,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-qemu-q35-uefi-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-qemu-q35-uefi-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-qemu-q35-uefi-facts",
+ "fstart-capabilities",
+ "fstart-driver-ns16550",
+ "fstart-driver-q35-hostbridge",
+ "fstart-driver-qemu-fw-cfg",
+ "fstart-log",
+ "fstart-platform-x86_64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
+ "fstart-types",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-qemu-riscv64"
 version = "0.1.0"
 dependencies = [
