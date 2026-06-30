@@ -37,7 +37,10 @@ use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_controller::MemoryController;
 use fstart_services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_services::pci::{PciBdf, PciRootBus, PciWindow};
-use fstart_services::{EarlyInit, PciHost, PreConsoleInit, ServiceError, SmBus, StageLocalInit};
+use fstart_services::{
+    EarlyInit, HardwareInit, InitContext, PciHost, PreConsoleInit, ServiceError, SmBus,
+    StageLocalInit,
+};
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{Readable, Writeable};
 
@@ -539,6 +542,24 @@ impl StageLocalInit for IntelPineview {
         self.enable_ecam();
         self.init_igd_opregion();
         Ok(())
+    }
+}
+
+impl HardwareInit for IntelPineview {
+    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        PreConsoleInit::pre_console_init(self)
+    }
+
+    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        EarlyInit::early_init(self)
+    }
+
+    fn dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.dram_init()
+    }
+
+    fn post_dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        StageLocalInit::stage_local_init(self)
     }
 }
 

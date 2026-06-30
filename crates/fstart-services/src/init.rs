@@ -179,3 +179,187 @@ pub trait HardwareInit {
 }
 
 impl HardwareInit for () {}
+
+// Static board crates often need a small ordered set of concrete devices for a
+// stage. Tuple forwarding gives them parent-before-child style composition
+// without a board-local `impl HardwareInit` that repeats every flow step, and
+// without using dynamic dispatch that would keep no-op methods alive.
+macro_rules! impl_hardware_init_tuple {
+    ($($field:tt:$name:ident),+ $(,)?) => {
+        impl<$($name),+> HardwareInit for ($($name,)+)
+        where
+            $($name: HardwareInit,)+
+        {
+            #[inline(always)]
+            fn very_early(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.very_early(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn early_clocks(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.early_clocks(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn pinmux(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.pinmux(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.pre_console(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.console(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.post_console(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn memory_discovery(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.memory_discovery(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn dram(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.dram(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn post_dram(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.post_dram(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn bus_early(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.bus_early(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn bus_probe(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.bus_probe(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn drivers_ready(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.drivers_ready(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn storage(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.storage(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn security(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.security(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn payload_load(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.payload_load(ctx)?;)+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn handoff(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+                $(self.$field.handoff(ctx)?;)+
+                Ok(())
+            }
+        }
+    };
+}
+
+impl_hardware_init_tuple!(0:A);
+impl_hardware_init_tuple!(0:A, 1:B);
+impl_hardware_init_tuple!(0:A, 1:B, 2:C);
+impl_hardware_init_tuple!(0:A, 1:B, 2:C, 3:D);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct CountingDevice {
+        pre_console_calls: u8,
+        post_console_calls: u8,
+        fail_pre_console: bool,
+    }
+
+    impl CountingDevice {
+        const fn failing_pre_console() -> Self {
+            Self {
+                pre_console_calls: 0,
+                post_console_calls: 0,
+                fail_pre_console: true,
+            }
+        }
+    }
+
+    impl HardwareInit for CountingDevice {
+        fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+            self.pre_console_calls += 1;
+            if self.fail_pre_console {
+                Err(ServiceError::HardwareError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+            self.post_console_calls += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn tuple_hardware_init_forwards_steps_in_order() {
+        let mut devices = (CountingDevice::default(), CountingDevice::default());
+        let mut ctx = InitContext::new();
+
+        devices.pre_console(&mut ctx).unwrap();
+        devices.post_console(&mut ctx).unwrap();
+
+        assert_eq!(devices.0.pre_console_calls, 1);
+        assert_eq!(devices.1.pre_console_calls, 1);
+        assert_eq!(devices.0.post_console_calls, 1);
+        assert_eq!(devices.1.post_console_calls, 1);
+    }
+
+    #[test]
+    fn tuple_hardware_init_stops_on_first_error() {
+        let mut devices = (
+            CountingDevice::default(),
+            CountingDevice::failing_pre_console(),
+            CountingDevice::default(),
+        );
+        let mut ctx = InitContext::new();
+
+        assert_eq!(
+            devices.pre_console(&mut ctx),
+            Err(ServiceError::HardwareError)
+        );
+        assert_eq!(devices.0.pre_console_calls, 1);
+        assert_eq!(devices.1.pre_console_calls, 1);
+        assert_eq!(devices.2.pre_console_calls, 0);
+    }
+}

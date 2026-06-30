@@ -229,8 +229,8 @@ pub mod ich7 {
 }
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
-    EarlyInit, FinalizeInit, FirmwareImage, FirmwareImageProvider, PostDramInit, PreConsoleInit,
-    ServiceError, SmBus, Southbridge,
+    EarlyInit, FinalizeInit, FirmwareImage, FirmwareImageProvider, HardwareInit, InitContext,
+    PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
 };
 use fstart_smbus_intel::I801SmBus;
 use fstart_superio::LpcBaseProvider;
@@ -1054,6 +1054,24 @@ impl FinalizeInit for IntelIch7 {
     fn finalize_init(&mut self) -> Result<(), ServiceError> {
         IntelIch7::finalize(self);
         Ok(())
+    }
+}
+
+impl HardwareInit for IntelIch7 {
+    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        PreConsoleInit::pre_console_init(self)
+    }
+
+    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        EarlyInit::early_init(self)
+    }
+
+    fn post_dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        PostDramInit::post_dram_init(self)
+    }
+
+    fn handoff(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        FinalizeInit::finalize_init(self)
     }
 }
 

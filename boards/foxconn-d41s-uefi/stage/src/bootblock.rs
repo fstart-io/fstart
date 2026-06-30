@@ -4,53 +4,49 @@ use fstart_board_foxconn_d41s_facts as facts;
 use fstart_driver_intel_ich7::IntelIch7;
 use fstart_driver_intel_pineview::IntelPineview;
 use fstart_driver_ite8721f::Ite8721f;
-use fstart_services::{
-    EarlyInit, HardwareInit, InitContext, MemoryController, PreConsoleInit, ServiceError,
-};
+use fstart_services::{HardwareInit, InitContext, ServiceError};
 use fstart_stage::fixed_helpers::MemoryMappedFfs;
 use fstart_stage_runtime::StaticBoard;
 
 use crate::common;
 
+type ChipsetDevices = (IntelPineview, IntelIch7);
+
 const NEXT_STAGE_NAME: &str = facts::NEXT_STAGE_NAME;
 const MAIN_LOAD_ADDR: u64 = facts::RAMSTAGE_LOAD_ADDR;
 
 pub struct BootblockDevices {
-    northbridge: IntelPineview,
-    southbridge: IntelIch7,
+    chipset: ChipsetDevices,
     superio: Option<Ite8721f>,
 }
 
 impl BootblockDevices {
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            northbridge: common::new_pineview()?,
-            southbridge: common::new_ich7()?,
+            chipset: (common::new_pineview()?, common::new_ich7()?),
             superio: None,
         })
     }
 }
 
 impl HardwareInit for BootblockDevices {
-    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.northbridge.pre_console_init()?;
-        self.southbridge.pre_console_init()
+    fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.chipset.pre_console(ctx)
     }
 
     fn console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        let superio = common::init_superio(common::superio_config(), &mut self.southbridge)?;
+        let superio = common::init_superio(common::superio_config(), &mut self.chipset.1)?;
         self.superio = Some(superio);
         let console = self.superio.as_ref().expect("superio console initialized");
         common::install_superio_console(console)
     }
 
-    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.northbridge.early_init()?;
-        self.southbridge.early_init()
+    fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.chipset.post_console(ctx)
     }
 
-    fn dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.northbridge.dram_init()
+    fn dram(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.chipset.dram(ctx)
     }
 }
 
