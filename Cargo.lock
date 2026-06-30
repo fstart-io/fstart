@@ -677,6 +677,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-qemu-aarch64-multi-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-qemu-aarch64-multi-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-qemu-aarch64-multi-facts",
+ "fstart-driver-pl011",
+ "fstart-log",
+ "fstart-platform-aarch64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-qemu-aarch64-stage"
 version = "0.1.0"
 dependencies = [
@@ -796,6 +814,24 @@ name = "fstart-board-qemu-riscv64-multi"
 version = "0.1.0"
 dependencies = [
  "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-riscv64-multi-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-qemu-riscv64-multi-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-qemu-riscv64-multi-facts",
+ "fstart-driver-ns16550",
+ "fstart-log",
+ "fstart-platform-riscv64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
+ "ufmt",
 ]
 
 [[package]]

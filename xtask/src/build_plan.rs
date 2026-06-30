@@ -323,7 +323,7 @@ fn stage_plan(
     stage: &StageContext<'_>,
     plan_context: &PlanContext<'_>,
     soc_format: SocImageFormat,
-    include_global_pci_alloc: bool,
+    _include_global_pci_alloc: bool,
 ) -> StageBuildPlan {
     let mut features = plan_context.base_features.clone();
     features.extend(flow_profile_features(plan_context.flow_profile));
@@ -359,11 +359,12 @@ fn stage_plan(
         .iter()
         .any(|c| matches!(c, Capability::PayloadLoad))
         && stage_uses_crabefi(config);
-    let needs_alloc = stage_uses_fdt(stage.capabilities)
+    let needs_alloc = stage_uses_ffs(stage.capabilities)
+        || stage_uses_fdt(stage.capabilities)
         || stage_uses_acpi(stage.capabilities)
         || stage_has_crabefi
         || stage.heap_size.is_some()
-        || include_global_pci_alloc;
+        || _include_global_pci_alloc;
     let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
     StageBuildPlan {
@@ -395,12 +396,7 @@ fn capability_features(
 ) -> Vec<&'static str> {
     let mut features = Vec::new();
 
-    let uses_ffs = capabilities.iter().any(|c| {
-        matches!(
-            c,
-            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
-        )
-    });
+    let uses_ffs = stage_uses_ffs(capabilities);
 
     if uses_ffs {
         features.push("ffs");
@@ -479,6 +475,15 @@ fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::FdtPrepare))
+}
+
+fn stage_uses_ffs(capabilities: &[Capability]) -> bool {
+    capabilities.iter().any(|c| {
+        matches!(
+            c,
+            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
+        )
+    })
 }
 
 fn stage_uses_pci(capabilities: &[Capability]) -> bool {

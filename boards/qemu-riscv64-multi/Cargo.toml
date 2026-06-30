@@ -9,6 +9,8 @@ publish = false
 board = "qemu-riscv64-multi"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
+stage-package = "fstart-board-qemu-riscv64-multi-stage"
+stage-bin = "fstart-stage"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }

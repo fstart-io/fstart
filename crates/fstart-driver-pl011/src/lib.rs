@@ -4,6 +4,7 @@
 //! Register access uses barrier-aware MMIO types from `fstart-mmio`.
 
 #![no_std]
+#[cfg(feature = "acpi")]
 extern crate alloc;
 
 use fstart_mmio::MmioReadOnly;

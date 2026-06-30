@@ -142,6 +142,29 @@ impl MemoryMappedFfs {
             Err(ServiceError::NotSupported)
         }
     }
+
+    /// Load one file by FFS manifest name into its packaged load address.
+    pub fn load_file_by_name(self, name: &str) -> Result<(), ServiceError> {
+        #[cfg(feature = "ffs")]
+        {
+            let media = self.media();
+            if fstart_capabilities::load_ffs_file_by_name(
+                crate::fstart_anchor_bytes(),
+                &media,
+                name,
+            ) {
+                Ok(())
+            } else {
+                Err(ServiceError::NotInitialized)
+            }
+        }
+
+        #[cfg(not(feature = "ffs"))]
+        {
+            let _ = name;
+            Err(ServiceError::NotSupported)
+        }
+    }
 }
 
 /// LinuxBoot payload state backed by a memory-mapped FFS image.

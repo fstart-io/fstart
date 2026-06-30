@@ -803,6 +803,84 @@ pub fn load_ffs_file_by_type(
     verify_loaded_file_digests(&file)
 }
 
+/// Load a file from FFS by its manifest name, placing segments at their load addresses.
+///
+/// Searches all container regions in the manifest for `name`, then loads its segments.
+/// Returns `true` on success.
+///
+/// Used by multi-stage bootblocks where both the bootblock and next stage are
+/// `FileType::StageCode`; the exact next stage must be selected by name.
+#[cfg(feature = "ffs")]
+pub fn load_ffs_file_by_name(
+    anchor_data: &[u8],
+    media: &(impl BootMedia + ?Sized),
+    name: &str,
+) -> bool {
+    if media.size() == 0 || anchor_data.is_empty() {
+        fstart_log::error!("load file '{}': no flash image configured", name);
+        return false;
+    }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(e) => {
+            fstart_log::error!(
+                "load file '{}': anchor error: {}",
+                name,
+                reader_error_str(e)
+            );
+            return false;
+        }
+    };
+
+    let manifest = match read_manifest_from_media(media, &anchor) {
+        Ok(m) => m,
+        Err(e) => {
+            fstart_log::error!(
+                "load file '{}': manifest error: {}",
+                name,
+                reader_error_str(e)
+            );
+            return false;
+        }
+    };
+
+    let file = match manifest.find_file_by_name(name) {
+        Ok(file) => file,
+        Err(fstart_ffs::ReaderError::FileNotFound) => {
+            fstart_log::error!("load file '{}': not found in FFS", name);
+            return false;
+        }
+        Err(e) => {
+            fstart_log::error!(
+                "load file '{}': manifest error: {}",
+                name,
+                reader_error_str(e)
+            );
+            return false;
+        }
+    };
+
+    for seg in file.segments() {
+        fstart_log::info!(
+            "load file: '{}' seg '{}' -> {} ({} bytes)",
+            name,
+            "<segment>",
+            Hex(seg.load_addr()),
+            seg.stored_size(),
+        );
+    }
+
+    let image_size = effective_image_size(media.size(), &anchor);
+    let loaded = load_file_segments_from_media(media, &file, image_size).is_some();
+    if !loaded {
+        return false;
+    }
+
+    verify_loaded_file_digests(&file)
+}
+
 /// Find a file in FFS by its `FileType` and return a slice to its raw data.
 ///
 /// This is the zero-copy path for memory-mapped flash: the returned slice
