@@ -564,9 +564,27 @@ dependencies = [
 name = "fstart-board-qemu-aarch64"
 version = "0.1.0"
 dependencies = [
- "fstart-board-meta",
+ "fstart-board-qemu-aarch64-facts",
  "fstart-board-qemu-virt",
- "fstart-capabilities",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-aarch64-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-qemu-aarch64-multi"
+version = "0.1.0"
+dependencies = [
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-aarch64-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-qemu-aarch64-facts",
  "fstart-driver-pl011",
  "fstart-log",
  "fstart-platform-aarch64",
@@ -574,15 +592,7 @@ dependencies = [
  "fstart-stage",
  "fstart-stage-runtime",
  "fstart-types",
- "heapless",
  "ufmt",
-]
-
-[[package]]
-name = "fstart-board-qemu-aarch64-multi"
-version = "0.1.0"
-dependencies = [
- "fstart-types",
 ]
 
 [[package]]
@@ -616,8 +626,19 @@ dependencies = [
 name = "fstart-board-qemu-armv7"
 version = "0.1.0"
 dependencies = [
- "fstart-board-meta",
- "fstart-capabilities",
+ "fstart-board-qemu-armv7-facts",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-armv7-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-qemu-armv7-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-qemu-armv7-facts",
  "fstart-driver-pl011",
  "fstart-log",
  "fstart-platform-armv7",

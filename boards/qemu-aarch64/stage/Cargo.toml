@@ -1,0 +1,37 @@
+[package]
+name = "fstart-board-qemu-aarch64-stage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+aarch64 = ["fstart-stage/aarch64"]
+aarch64-el2-relocate-entry = ["fstart-stage/aarch64-el2-relocate-entry"]
+pl011 = ["fstart-stage/pl011"]
+ffs = ["fstart-stage/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+fdt = ["fstart-stage/fdt"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+[dependencies]
+fstart-board-qemu-aarch64-facts = { path = "../facts" }
+fstart-stage = { workspace = true }
+fstart-stage-runtime = { workspace = true }
+fstart-services = { workspace = true }
+fstart-log = { workspace = true }
+fstart-platform-aarch64 = { workspace = true }
+fstart-driver-pl011 = { workspace = true }
+fstart-types = { workspace = true }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
