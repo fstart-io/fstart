@@ -13,27 +13,27 @@ use fstart_types::ffs::FileType;
 
 /// Lazily constructed boot console device for static fixed-flow boards.
 ///
-/// The board supplies a concrete driver type and a static typed config. The
+/// The board supplies a concrete driver type and a typed config value. The
 /// helper constructs the driver only when the `console` flow step runs, invokes
 /// the driver's step-based console initialization, and installs it as the global
 /// logger backend.
 pub struct StaticConsole<D>
 where
     D: Device + Console + HardwareInit,
-    D::Config: 'static,
+    D::Config: Clone,
 {
     device: Option<D>,
-    config: &'static D::Config,
+    config: D::Config,
 }
 
 impl<D> StaticConsole<D>
 where
     D: Device + Console + HardwareInit,
-    D::Config: 'static,
+    D::Config: Clone,
 {
-    /// Construct a lazy console wrapper around a static driver config.
+    /// Construct a lazy console wrapper around a driver config value.
     #[must_use]
-    pub const fn new(config: &'static D::Config) -> Self {
+    pub fn new(config: D::Config) -> Self {
         Self {
             device: None,
             config,
@@ -42,7 +42,7 @@ where
 
     fn ensure(&mut self) -> Result<&mut D, ServiceError> {
         if self.device.is_none() {
-            let device = D::new(self.config).map_err(device_error_to_service_error)?;
+            let device = D::new(self.config.clone()).map_err(device_error_to_service_error)?;
             self.device = Some(device);
         }
         Ok(self.device.as_mut().expect("console device constructed"))
@@ -58,7 +58,7 @@ where
 impl<D> HardwareInit for StaticConsole<D>
 where
     D: Device + Console + HardwareInit,
-    D::Config: 'static,
+    D::Config: Clone,
 {
     fn console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         let console = self.ensure()?;

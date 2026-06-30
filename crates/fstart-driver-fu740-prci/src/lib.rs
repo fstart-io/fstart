@@ -444,7 +444,7 @@ impl Device for Fu740Prci {
     const COMPATIBLE: &'static [&'static str] = &["sifive,fu740-c000-prci"];
     type Config = Fu740PrciConfig;
 
-    fn new(config: &'static Fu740PrciConfig) -> Result<Self, DeviceError> {
+    fn new(config: Fu740PrciConfig) -> Result<Self, DeviceError> {
         Ok(Self {
             base: config.base_addr as usize,
             gpio_base: config.gpio_base as usize,

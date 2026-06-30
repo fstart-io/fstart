@@ -21,10 +21,10 @@ pub struct BootblockDevices {
 }
 
 impl BootblockDevices {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             ccu: None,
-            console: StaticConsole::new(&UART0_CONFIG),
+            console: StaticConsole::new(UART0_CONFIG.clone()),
             dramc: None,
             mmc0: None,
         }
@@ -32,7 +32,7 @@ impl BootblockDevices {
 
     fn ensure_mmc0(&mut self) -> Result<&mut SunxiMmc, ServiceError> {
         if self.mmc0.is_none() {
-            let mmc = SunxiMmc::new(&MMC0_CONFIG).map_err(device_error_to_service_error)?;
+            let mmc = SunxiMmc::new(MMC0_CONFIG.clone()).map_err(device_error_to_service_error)?;
             self.mmc0 = Some(mmc);
         }
         Ok(self.mmc0.as_mut().expect("MMC0 constructed"))
@@ -72,7 +72,7 @@ impl BootblockDevices {
 
 impl HardwareInit for BootblockDevices {
     fn early_clocks(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        let mut ccu = SunxiD1Ccu::new(&CCU_CONFIG).map_err(device_error_to_service_error)?;
+        let mut ccu = SunxiD1Ccu::new(CCU_CONFIG.clone()).map_err(device_error_to_service_error)?;
         ccu.init().map_err(device_error_to_service_error)?;
         self.ccu = Some(ccu);
         Ok(())
@@ -83,7 +83,8 @@ impl HardwareInit for BootblockDevices {
     }
 
     fn dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        let mut dramc = SunxiD1Dramc::new(&DRAMC_CONFIG).map_err(device_error_to_service_error)?;
+        let mut dramc =
+            SunxiD1Dramc::new(DRAMC_CONFIG.clone()).map_err(device_error_to_service_error)?;
         dramc.init().map_err(device_error_to_service_error)?;
         self.dramc = Some(dramc);
         Ok(())

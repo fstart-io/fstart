@@ -73,7 +73,7 @@ unsafe extern "C" {
 }
 
 /// One physical range from the board memory map.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct PhysicalRange {
     /// Physical base address.
@@ -84,6 +84,7 @@ pub struct PhysicalRange {
 
 /// Data block, stored in ROM by board-owned stage code, that describes post-CAR work.
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct PostcarConfig {
     /// Static RAM ranges from board configuration.
     pub ram_ranges: &'static [PhysicalRange],
@@ -199,7 +200,7 @@ pub unsafe fn postcar_mtrr_setup(config: &PostcarConfig) {
 /// stage code stores both in ROM. This function never returns.
 #[cfg(feature = "postcar-stage-load")]
 pub unsafe fn stage_load_mmio(
-    config: &'static PostcarConfig,
+    config: PostcarConfig,
     next_stage: &str,
     anchor: &'static [u8],
     base: u64,
@@ -219,7 +220,7 @@ pub unsafe fn stage_load_mmio(
             stack = in(reg) stack_top,
             image_size = in(reg) size,
             tramp = sym stage_load_mmio_trampoline,
-            in("rdi") config as *const PostcarConfig,
+            in("rdi") &config as *const PostcarConfig,
             in("rsi") next_stage.as_ptr(),
             in("rdx") next_stage.len(),
             in("rcx") anchor.as_ptr(),
@@ -246,14 +247,16 @@ extern "C" fn stage_load_mmio_trampoline(
         unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(next_ptr, next_len)) };
     // SAFETY: board-owned stage code passes the embedded anchor slice pointer/length.
     let anchor = unsafe { core::slice::from_raw_parts(anchor_ptr, anchor_len) };
-    // SAFETY: `config` points at the ROM-resident generated config block.
-    let config = unsafe { &*config };
+    // SAFETY: `config` points at the caller's pre-switch stack. CAR is still
+    // live here, so copy the small scalar config onto the new DRAM stack before
+    // tearing CAR down.
+    let config = unsafe { *config };
 
     // SAFETY: we are now on a DRAM stack and will never return to CAR-backed
     // state. MTRRs are installed before the large FFS/ramstage copy.
     unsafe {
         car_teardown();
-        postcar_mtrr_setup(config);
+        postcar_mtrr_setup(&config);
     }
 
     let entry = quiet_stage_load(next_stage, anchor, base, size);

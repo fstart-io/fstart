@@ -632,7 +632,7 @@ fn default_smbus_base() -> u16 {
 
 /// Intel ICH7 southbridge driver.
 pub struct IntelIch7 {
-    config: &'static IntelIch7Config,
+    config: IntelIch7Config,
     /// I801 SMBus controller, initialised during `early_init`.
     smbus: Option<I801SmBus>,
     /// PM I/O accessor (PMBASE, initialised during `early_init`).
@@ -644,6 +644,12 @@ unsafe impl Send for IntelIch7 {}
 unsafe impl Sync for IntelIch7 {}
 
 impl IntelIch7 {
+    /// Runtime config used by this driver instance.
+    #[must_use]
+    pub const fn config(&self) -> &IntelIch7Config {
+        &self.config
+    }
+
     /// Typed PCI config overlay for the LPC bridge.
     fn lpc_regs(&self) -> &'static Ich7LpcPciConfig {
         let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
@@ -880,7 +886,7 @@ impl Device for IntelIch7 {
     const COMPATIBLE: &'static [&'static str] = &["intel,ich7", "intel,nm10"];
     type Config = IntelIch7Config;
 
-    fn new(config: &'static IntelIch7Config) -> Result<Self, DeviceError> {
+    fn new(config: IntelIch7Config) -> Result<Self, DeviceError> {
         if config
             .lpc_decode
             .generic_io

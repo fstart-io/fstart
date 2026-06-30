@@ -25,16 +25,16 @@ pub struct MainDevices {
 }
 
 impl MainDevices {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            console: StaticConsole::new(&UART0_CONFIG),
+            console: StaticConsole::new(UART0_CONFIG.clone()),
             mmc0: None,
         }
     }
 
     fn ensure_mmc0(&mut self) -> Result<&mut SunxiMmc, ServiceError> {
         if self.mmc0.is_none() {
-            let mmc = SunxiMmc::new(&MMC0_CONFIG).map_err(device_error_to_service_error)?;
+            let mmc = SunxiMmc::new(MMC0_CONFIG.clone()).map_err(device_error_to_service_error)?;
             self.mmc0 = Some(mmc);
         }
         Ok(self.mmc0.as_mut().expect("MMC0 constructed"))

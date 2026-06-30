@@ -157,7 +157,7 @@ impl Device for SifiveUart {
     const COMPATIBLE: &'static [&'static str] = &["sifive,fu740-c000-uart", "sifive,uart0"];
     type Config = SifiveUartConfig;
 
-    fn new(config: &'static SifiveUartConfig) -> Result<Self, DeviceError> {
+    fn new(config: SifiveUartConfig) -> Result<Self, DeviceError> {
         if config.baud_rate == 0 || config.clock_freq == 0 {
             return Err(DeviceError::ConfigError);
         }

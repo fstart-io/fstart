@@ -337,7 +337,7 @@ impl Device for Fu740Ddr {
     const COMPATIBLE: &'static [&'static str] = &["sifive,fu740-c000-ddr"];
     type Config = Fu740DdrConfig;
 
-    fn new(config: &'static Fu740DdrConfig) -> Result<Self, DeviceError> {
+    fn new(config: Fu740DdrConfig) -> Result<Self, DeviceError> {
         // Minimum 16 KiB — setup_range_protection computes (size >> 14) - 1.
         if config.dram_size < 0x4000 {
             return Err(DeviceError::ConfigError);

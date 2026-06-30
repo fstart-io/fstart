@@ -12,9 +12,9 @@ mod common;
 mod main_stage;
 
 #[cfg(fstart_stage_bootblock)]
-const HEAP_SIZE: usize = fstart_board_lenovo_x61_facts::BOOTBLOCK_HEAP_SIZE;
+const HEAP_SIZE: usize = 0x100;
 #[cfg(not(fstart_stage_bootblock))]
-const HEAP_SIZE: usize = fstart_board_lenovo_x61_facts::RAMSTAGE_HEAP_SIZE;
+const HEAP_SIZE: usize = fstart_platform_intel_gm965_ich8::GM965_RAMSTAGE_HEAP_SIZE;
 
 #[repr(align(16))]
 #[allow(dead_code)]

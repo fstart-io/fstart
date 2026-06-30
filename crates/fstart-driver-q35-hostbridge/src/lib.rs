@@ -147,7 +147,7 @@ pub struct Q35HostBridgeConfig {
 /// Wraps a [`PciEcam`] with x86-specific ECAM bootstrap and
 /// runtime MMIO window computation.
 pub struct Q35HostBridge {
-    config: &'static Q35HostBridgeConfig,
+    config: Q35HostBridgeConfig,
     ecam: PciEcam,
 }
 
@@ -664,7 +664,7 @@ impl Device for Q35HostBridge {
     const COMPATIBLE: &'static [&'static str] = &["q35-hostbridge"];
     type Config = Q35HostBridgeConfig;
 
-    fn new(config: &'static Q35HostBridgeConfig) -> Result<Self, DeviceError> {
+    fn new(config: Q35HostBridgeConfig) -> Result<Self, DeviceError> {
         // Create the inner PciEcam with zero-sized windows.  The real
         // windows are set by init_with_e820() before enumeration.
         let ecam_config = PciEcamConfig {

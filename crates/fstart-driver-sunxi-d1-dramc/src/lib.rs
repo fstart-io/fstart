@@ -317,7 +317,7 @@ struct DramConfig {
 
 /// Allwinner D1/T113 DRAM controller driver.
 pub struct SunxiD1Dramc {
-    config: &'static SunxiD1DramcConfig,
+    config: SunxiD1DramcConfig,
 }
 
 // SAFETY: no mutable state after init; MMIO is at fixed hardware addresses.
@@ -1214,7 +1214,7 @@ impl Device for SunxiD1Dramc {
     const COMPATIBLE: &'static [&'static str] = &["allwinner,sun20i-d1-mbus"];
     type Config = SunxiD1DramcConfig;
 
-    fn new(config: &'static SunxiD1DramcConfig) -> Result<Self, DeviceError> {
+    fn new(config: SunxiD1DramcConfig) -> Result<Self, DeviceError> {
         Ok(Self { config })
     }
 

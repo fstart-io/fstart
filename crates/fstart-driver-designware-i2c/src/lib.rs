@@ -230,7 +230,7 @@ impl Device for DesignwareI2c {
     const COMPATIBLE: &'static [&'static str] = &["snps,designware-i2c", "dw-apb-i2c"];
     type Config = DesignwareI2cConfig;
 
-    fn new(config: &'static DesignwareI2cConfig) -> Result<Self, DeviceError> {
+    fn new(config: DesignwareI2cConfig) -> Result<Self, DeviceError> {
         Ok(Self {
             // SAFETY: base_addr comes from board metadata and is validated
             // by codegen at build time.

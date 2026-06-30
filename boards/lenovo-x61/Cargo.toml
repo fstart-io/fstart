@@ -13,13 +13,7 @@ stage-package = "fstart-board-lenovo-x61-stage"
 stage-bin = "fstart-stage"
 
 [dependencies]
-fstart-types = { workspace = true, features = ["std"] }
-fstart-platform-intel-gm965-ich8 = { workspace = true }
+fstart-types = { workspace = true }
 fstart-board-meta = { workspace = true }
-fstart-driver-i2c-ck505 = { workspace = true }
+fstart-platform-intel-gm965-ich8 = { workspace = true }
 fstart-mainboard-lenovo-x61 = { workspace = true }
-fstart-driver-nsc-pc87382 = { workspace = true }
-fstart-driver-nsc-pc87392 = { workspace = true }
-fstart-gpio-ich = { workspace = true }
-fstart-hda = { workspace = true }
-heapless = { workspace = true }

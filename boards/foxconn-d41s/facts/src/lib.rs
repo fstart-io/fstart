@@ -3,12 +3,12 @@
 use fstart_capabilities::smbios::{ProcessorDesc, SmbiosDesc};
 use fstart_driver_i2c_ck505::I2cCk505Config;
 use fstart_driver_intel_ich7::{
-    IntelIch7Config, LpcDecodeConfig, LpcFixedIoDecode, LpcGenericIoDecode, SataConfig, SataMode,
-    UsbConfig,
+    IntelIch7Config, LpcGenericIoDecode, SataConfig, SataMode, UsbConfig,
 };
 use fstart_driver_intel_pineview::{IgdConfig, IntelPineviewConfig};
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
+use fstart_platform_intel_pineview_ich7::PineviewIch7RuntimePolicy;
 use fstart_superio::{
     CirConfig, ComPortConfig, EcConfig, KbcConfig, MouseConfig, ParallelConfig, SuperIoConfig,
 };
@@ -48,52 +48,50 @@ pub const CK505_NODE: &str = "ck505";
 pub const ICH7_PMBASE: u32 = 0x0500;
 pub const CK505_ADDR: u8 = 0x69;
 
+fn runtime_policy() -> PineviewIch7RuntimePolicy {
+    PineviewIch7RuntimePolicy::new()
+        .pineview(|pineview| {
+            pineview.igd = Some(IgdConfig {
+                use_crt: true,
+                use_lvds: false,
+                spread_spectrum: false,
+                vbt_file: Some(hstr("data.vbt")),
+            });
+            pineview.spd_addresses = [0x50, 0x51, 0, 0];
+            pineview.ck505_pre_raminit = true;
+            pineview.acpi_name = Some(hstr("MCHC"));
+        })
+        .ich7(|ich7| {
+            ich7.pirq_routing = [0x0b; 8];
+            ich7.pata = false;
+            ich7.smbus_base = 0x0400;
+            ich7.acpi_name = Some(hstr("LPCB"));
+            ich7.c3_latency = 85;
+            ich7.power_on_after_fail = 0;
+        })
+        .lpc_generic_io(LpcGenericIoDecode {
+            base: 0x0a00,
+            size: 0x0100,
+        })
+        .gpe0_en(0x441)
+        .sata(SataConfig {
+            mode: SataMode::Ahci,
+            ports: 0x3,
+        })
+        .usb(UsbConfig {
+            ehci: true,
+            uhci: [true, true, true, true],
+        })
+        .hda(d41s_hda_config())
+        .gpio(d41s_gpio_config())
+}
+
 pub fn pineview_config() -> IntelPineviewConfig {
-    IntelPineviewConfig {
-        mchbar: 0xfed1_0000,
-        dmibar: 0xfed1_8000,
-        epbar: 0xfed1_9000,
-        ecam_base: 0xe000_0000,
-        igd: Some(IgdConfig {
-            use_crt: true,
-            use_lvds: false,
-            spread_spectrum: false,
-            vbt_file: Some(hstr("data.vbt")),
-        }),
-        spd_addresses: [0x50, 0x51, 0, 0],
-        ck505_pre_raminit: true,
-        acpi_name: Some(hstr("MCHC")),
-    }
+    runtime_policy().runtime_config().0
 }
 
 pub fn ich7_config() -> IntelIch7Config {
-    IntelIch7Config {
-        rcba: 0xfed1_c000,
-        pirq_routing: [0x0b; 8],
-        gpe0_en: 0x441,
-        lpc_decode: LpcDecodeConfig {
-            fixed_io: LpcFixedIoDecode::default(),
-            generic_io: hvec([LpcGenericIoDecode {
-                base: 0x0a00,
-                size: 0x0100,
-            }]),
-        },
-        hda: Some(d41s_hda_config()),
-        sata: Some(SataConfig {
-            mode: SataMode::Ahci,
-            ports: 0x3,
-        }),
-        usb: Some(UsbConfig {
-            ehci: true,
-            uhci: [true, true, true, true],
-        }),
-        pata: false,
-        smbus_base: 0x0400,
-        gpio: d41s_gpio_config(),
-        acpi_name: Some(hstr("LPCB")),
-        c3_latency: 85,
-        power_on_after_fail: 0,
-    }
+    runtime_policy().runtime_config().1
 }
 
 pub fn superio_config() -> SuperIoConfig {

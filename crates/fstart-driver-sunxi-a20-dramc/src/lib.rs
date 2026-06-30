@@ -352,7 +352,7 @@ impl Device for SunxiA20Dramc {
     const COMPATIBLE: &'static [&'static str] = &["allwinner,sun7i-a20-dramc"];
     type Config = SunxiA20DramcConfig;
 
-    fn new(config: &'static SunxiA20DramcConfig) -> Result<Self, DeviceError> {
+    fn new(config: SunxiA20DramcConfig) -> Result<Self, DeviceError> {
         Ok(Self {
             // SAFETY: addresses come from the board metadata, validated by board construction.
             regs: unsafe { &*(config.dramc_base as *const SunxiDramcRegs) },

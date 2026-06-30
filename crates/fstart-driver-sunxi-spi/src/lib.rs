@@ -381,8 +381,8 @@ impl Device for SunxiSpi {
 
     type Config = SunxiSpiConfig;
 
-    fn new(config: &'static Self::Config) -> Result<Self, DeviceError> {
-        let (base_addr, ccu_base, pio_base, flash_size, spi_freq, gen) = match *config {
+    fn new(config: Self::Config) -> Result<Self, DeviceError> {
+        let (base_addr, ccu_base, pio_base, flash_size, spi_freq, gen) = match config {
             SunxiSpiConfig::Sun7iA20 {
                 base_addr,
                 ccu_base,

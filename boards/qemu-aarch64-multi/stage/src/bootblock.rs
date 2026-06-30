@@ -28,7 +28,7 @@ impl StaticBoard for BootblockBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: BootblockDevices::new(&UART0_CONFIG),
+            devices: BootblockDevices::new(UART0_CONFIG.clone()),
             ffs: MemoryMappedFfs::new(facts::FLASH_BASE, facts::FLASH_SIZE),
             main_loaded: false,
         })

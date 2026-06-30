@@ -90,7 +90,7 @@ pub struct BochsDisplayConfig {
 /// with 32-bit XRGB8888 pixels.  Call `info()` to get the physical
 /// address and layout.
 pub struct BochsDisplay {
-    config: &'static BochsDisplayConfig,
+    config: BochsDisplayConfig,
     /// Framebuffer physical address (from PCI BAR0).
     fb_base: u64,
     /// MMIO register base (from PCI BAR2).
@@ -157,10 +157,7 @@ impl BusDevice for BochsDisplay {
     type Config = BochsDisplayConfig;
     type Bus = dyn PciRootBus;
 
-    fn new_on_bus(
-        config: &'static BochsDisplayConfig,
-        bus: &dyn PciRootBus,
-    ) -> Result<Self, DeviceError> {
+    fn new_on_bus(config: BochsDisplayConfig, bus: &dyn PciRootBus) -> Result<Self, DeviceError> {
         let addr = PciBdf {
             bus: bus.bus_start(),
             dev: config.device,

@@ -26,7 +26,7 @@ impl StaticBoard for StageBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: StageDevices::new(&UART0_CONFIG),
+            devices: StageDevices::new(UART0_CONFIG.clone()),
             boot: MemoryMappedLinuxBoot::new(facts::FFS_BASE, facts::FFS_SIZE, 0),
         })
     }

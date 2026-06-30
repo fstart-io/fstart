@@ -1,10 +1,11 @@
 //! Lenovo ThinkPad X61 bootblock fixed-flow adapter.
 
-use fstart_board_lenovo_x61_facts as facts;
+use fstart_board_lenovo_x61 as board;
 use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::Ns16550;
 use fstart_mainboard_lenovo_x61::LenovoX61Mainboard;
+use fstart_platform_intel_gm965_ich8 as platform;
 use fstart_services::{
     EarlyInit, HardwareInit, InitContext, Mainboard, MemoryController, PreConsoleInit, ServiceError,
 };
@@ -26,7 +27,7 @@ impl BootblockDevices {
             northbridge: common::new_gm965()?,
             southbridge: common::new_ich8()?,
             mainboard: common::new_mainboard()?,
-            console: StaticConsole::new(&common::UART0_CONFIG),
+            console: StaticConsole::new(common::UART0_CONFIG.clone()),
         })
     }
 }
@@ -63,9 +64,10 @@ impl StaticBoard for BootblockBoard {
     type Devices = BootblockDevices;
 
     fn new() -> Result<Self, ServiceError> {
+        let runtime = common::runtime_config();
         Ok(Self {
             devices: BootblockDevices::new()?,
-            ffs: MemoryMappedFfs::new(facts::FLASH_FFS_BASE, facts::FLASH_FFS_SIZE),
+            ffs: MemoryMappedFfs::new(runtime.firmware_base, runtime.firmware_size),
             ramstage_loaded: false,
         })
     }
@@ -79,7 +81,7 @@ impl StaticBoard for BootblockBoard {
     }
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        console_ready(facts::UART0_NODE, "ns16550");
+        console_ready(board::UART0_NODE, "ns16550");
         Ok(())
     }
 
@@ -93,7 +95,8 @@ impl StaticBoard for BootblockBoard {
     }
 
     fn load_payload(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.ffs.load_file_by_name(facts::NEXT_STAGE_NAME)?;
+        self.ffs
+            .load_file_by_name(platform::GM965_NEXT_STAGE_NAME)?;
         self.ramstage_loaded = true;
         Ok(())
     }
@@ -103,7 +106,10 @@ impl StaticBoard for BootblockBoard {
             fstart_log::error!("ramstage handoff requested before load");
             Self::halt();
         }
-        fstart_log::info!("jumping to ramstage at {:#x}", facts::RAMSTAGE_LOAD_ADDR);
-        fstart_platform::jump_to(facts::RAMSTAGE_LOAD_ADDR)
+        fstart_log::info!(
+            "jumping to ramstage at {:#x}",
+            platform::GM965_RAMSTAGE_LOAD_ADDR
+        );
+        fstart_platform::jump_to(platform::GM965_RAMSTAGE_LOAD_ADDR)
     }
 }

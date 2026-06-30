@@ -516,14 +516,8 @@ dependencies = [
 name = "fstart-board-foxconn-d41s"
 version = "0.1.0"
 dependencies = [
- "fstart-board-meta",
- "fstart-driver-i2c-ck505",
- "fstart-driver-ite8721f",
- "fstart-gpio-ich",
- "fstart-hda",
  "fstart-platform-intel-pineview-ich7",
  "fstart-types",
- "heapless",
 ]
 
 [[package]]
@@ -537,6 +531,7 @@ dependencies = [
  "fstart-driver-ite8721f",
  "fstart-gpio-ich",
  "fstart-hda",
+ "fstart-platform-intel-pineview-ich7",
  "fstart-superio",
  "fstart-types",
 ]
@@ -602,30 +597,8 @@ name = "fstart-board-lenovo-x61"
 version = "0.1.0"
 dependencies = [
  "fstart-board-meta",
- "fstart-driver-i2c-ck505",
- "fstart-driver-nsc-pc87382",
- "fstart-driver-nsc-pc87392",
- "fstart-gpio-ich",
- "fstart-hda",
  "fstart-mainboard-lenovo-x61",
  "fstart-platform-intel-gm965-ich8",
- "fstart-types",
- "heapless",
-]
-
-[[package]]
-name = "fstart-board-lenovo-x61-facts"
-version = "0.1.0"
-dependencies = [
- "fstart-capabilities",
- "fstart-driver-i2c-ck505",
- "fstart-driver-intel-gm965",
- "fstart-driver-intel-ich8",
- "fstart-driver-nsc-pc87382",
- "fstart-driver-nsc-pc87392",
- "fstart-gpio-ich",
- "fstart-hda",
- "fstart-mainboard-lenovo-x61",
  "fstart-types",
 ]
 
@@ -634,7 +607,7 @@ name = "fstart-board-lenovo-x61-stage"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
- "fstart-board-lenovo-x61-facts",
+ "fstart-board-lenovo-x61",
  "fstart-capabilities",
  "fstart-cpu-intel",
  "fstart-driver-i2c-ck505",
@@ -646,6 +619,7 @@ dependencies = [
  "fstart-log",
  "fstart-mainboard-lenovo-x61",
  "fstart-mp",
+ "fstart-platform-intel-gm965-ich8",
  "fstart-platform-x86_64",
  "fstart-services",
  "fstart-stage",
@@ -1606,10 +1580,17 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-gm965",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
  "fstart-gpio-ich",
+ "fstart-hda",
  "fstart-pio",
  "fstart-services",
+ "fstart-smbios",
  "fstart-smm-runtime",
+ "fstart-types",
  "heapless",
  "serde",
 ]

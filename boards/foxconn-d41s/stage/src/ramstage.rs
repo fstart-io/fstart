@@ -45,7 +45,7 @@ fn scope_aml(path: &str, children: &[u8]) -> Vec<u8> {
 pub struct RamstageDevices {
     northbridge: IntelPineview,
     southbridge: IntelIch7,
-    superio_config: &'static SuperIoConfig,
+    superio_config: SuperIoConfig,
     superio: Option<Ite8721f>,
     e820: [E820Entry; MAX_E820_ENTRIES],
     e820_count: usize,
@@ -78,14 +78,14 @@ impl RamstageDevices {
         );
         let rsdp =
             fstart_capabilities::acpi::prepare_with_options(&platform, false, |dsdt, extra| {
-                dsdt.extend(self.northbridge.dsdt_aml(common::pineview_config()));
-                dsdt.extend(self.southbridge.dsdt_aml(common::ich7_config()));
+                dsdt.extend(self.northbridge.dsdt_aml(self.northbridge.config()));
+                dsdt.extend(self.southbridge.dsdt_aml(self.southbridge.config()));
                 if let Some(superio) = self.superio.as_ref() {
-                    let sio = superio.dsdt_aml(self.superio_config);
+                    let sio = superio.dsdt_aml(&self.superio_config);
                     dsdt.extend(scope_aml("\\_SB_.PCI0.LPCB", &sio));
                 }
-                extra.extend(self.northbridge.extra_tables(common::pineview_config()));
-                extra.extend(self.southbridge.extra_tables(common::ich7_config()));
+                extra.extend(self.northbridge.extra_tables(self.northbridge.config()));
+                extra.extend(self.southbridge.extra_tables(self.southbridge.config()));
             });
         self.acpi_rsdp = Some(rsdp);
     }
@@ -130,7 +130,7 @@ impl HardwareInit for RamstageDevices {
     }
 
     fn console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        let superio = common::init_superio(self.superio_config, &mut self.southbridge)?;
+        let superio = common::init_superio(self.superio_config.clone(), &mut self.southbridge)?;
         self.superio = Some(superio);
         let console = self.superio.as_ref().expect("superio console initialized");
         common::install_superio_console(console)

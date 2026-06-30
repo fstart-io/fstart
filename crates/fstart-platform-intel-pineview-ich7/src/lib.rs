@@ -7,6 +7,8 @@
 //! as Super I/O wiring, clock-generator programming, GPIOs, HDA verbs, SMBIOS,
 //! and payload choice.
 
+#![no_std]
+
 use fstart_board_meta::{PlatformAttachPoint, PlatformDeviceExtensions, PlatformTopology};
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
@@ -24,17 +26,26 @@ use heapless::Vec as HVec;
 
 pub use fstart_driver_intel_ich7::{LpcGenericIoDecode, SataConfig, SataMode, UsbConfig};
 
-/// Shared Pineview + ICH7/NM10 platform metadata for a concrete mainboard.
+/// Shared Pineview + ICH7/NM10 host metadata for a concrete mainboard.
+///
+/// This builder is host-only: it describes board topology, payload policy, and
+/// table metadata. Target-side chipset, HDA, GPIO, LPC decode, SATA, USB, and
+/// IGD policy belongs in [`PineviewIch7RuntimePolicy`].
 #[derive(Debug, Clone)]
-pub struct PineviewIch7Platform {
+pub struct PineviewIch7Board {
     board_name: &'static str,
     board_package: &'static str,
     payload: PayloadConfig,
-    pineview: pineview::IntelPineviewConfig,
-    ich7: ich7::IntelIch7Config,
     extensions: PlatformDeviceExtensions,
     smbios: Option<SmbiosConfig>,
     pcie_ports: [bool; 4],
+}
+
+/// Target-side Pineview + ICH7/NM10 runtime driver policy.
+#[derive(Debug, Clone)]
+pub struct PineviewIch7RuntimePolicy {
+    pineview: pineview::IntelPineviewConfig,
+    ich7: ich7::IntelIch7Config,
 }
 
 /// ICH7/NM10 PCIe root-port selector.
@@ -57,15 +68,13 @@ impl PcieRootPort {
     }
 }
 
-impl PineviewIch7Platform {
+impl PineviewIch7Board {
     #[must_use]
     pub fn new(board_name: &'static str, board_package: &'static str) -> Self {
         Self {
             board_name,
             board_package,
             payload: x86_linuxboot_payload(),
-            pineview: pineview_defaults(),
-            ich7: ich7_defaults(),
             extensions: PlatformDeviceExtensions::new(),
             smbios: None,
             pcie_ports: [false; 4],
@@ -74,36 +83,6 @@ impl PineviewIch7Platform {
 
     pub fn payload(mut self, payload: PayloadConfig) -> Self {
         self.payload = payload;
-        self
-    }
-
-    /// Set board-specific HD Audio verb tables.
-    pub fn hda(mut self, hda: hda::HdaConfig) -> Self {
-        self.ich7.hda = Some(hda);
-        self
-    }
-
-    /// Set board-specific ICH GPIO pad configuration.
-    pub fn gpio(mut self, gpio: gpio::GpioConfig) -> Self {
-        self.ich7.gpio = gpio;
-        self
-    }
-
-    /// Override the northbridge config defaults directly.
-    pub fn pineview<F>(mut self, configure: F) -> Self
-    where
-        F: FnOnce(&mut pineview::IntelPineviewConfig),
-    {
-        configure(&mut self.pineview);
-        self
-    }
-
-    /// Override the southbridge config defaults directly.
-    pub fn ich7<F>(mut self, configure: F) -> Self
-    where
-        F: FnOnce(&mut ich7::IntelIch7Config),
-    {
-        configure(&mut self.ich7);
         self
     }
 
@@ -157,34 +136,6 @@ impl PineviewIch7Platform {
         self
     }
 
-    /// Add one board-selected LPC generic I/O decode window.
-    pub fn lpc_generic_io(mut self, decode: LpcGenericIoDecode) -> Self {
-        self.ich7
-            .lpc_decode
-            .generic_io
-            .push(decode)
-            .expect("ICH7 LPC generic I/O decode capacity");
-        self
-    }
-
-    /// Set board-selected ACPI GPE0 enable bits.
-    pub const fn gpe0_en(mut self, value: u32) -> Self {
-        self.ich7.gpe0_en = value;
-        self
-    }
-
-    /// Enable and configure SATA for this board.
-    pub const fn sata(mut self, sata: SataConfig) -> Self {
-        self.ich7.sata = Some(sata);
-        self
-    }
-
-    /// Enable and configure USB controllers for this board.
-    pub const fn usb(mut self, usb: UsbConfig) -> Self {
-        self.ich7.usb = Some(usb);
-        self
-    }
-
     #[must_use]
     pub fn board_config(&self) -> BoardConfig {
         BoardConfig {
@@ -227,14 +178,97 @@ impl PineviewIch7Platform {
     }
 
     #[must_use]
-    pub fn build_info(&self) -> BuildInfo {
+    pub fn build_info<I>(&self, driver_features: I) -> BuildInfo
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
         let config = self.board_config();
         build_info_from_config(
             self.board_name,
             self.board_package,
             &config,
-            ["intel-pineview", "intel-ich7", "ite8721f", "i2c-ck505"],
+            driver_features,
         )
+    }
+}
+
+impl PineviewIch7RuntimePolicy {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            pineview: pineview_defaults(),
+            ich7: ich7_defaults(),
+        }
+    }
+
+    /// Set board-specific HD Audio verb tables.
+    pub fn hda(mut self, hda: hda::HdaConfig) -> Self {
+        self.ich7.hda = Some(hda);
+        self
+    }
+
+    /// Set board-specific ICH GPIO pad configuration.
+    pub fn gpio(mut self, gpio: gpio::GpioConfig) -> Self {
+        self.ich7.gpio = gpio;
+        self
+    }
+
+    /// Override the northbridge config defaults directly.
+    pub fn pineview<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(&mut pineview::IntelPineviewConfig),
+    {
+        configure(&mut self.pineview);
+        self
+    }
+
+    /// Override the southbridge config defaults directly.
+    pub fn ich7<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(&mut ich7::IntelIch7Config),
+    {
+        configure(&mut self.ich7);
+        self
+    }
+
+    /// Add one board-selected LPC generic I/O decode window.
+    pub fn lpc_generic_io(mut self, decode: LpcGenericIoDecode) -> Self {
+        self.ich7
+            .lpc_decode
+            .generic_io
+            .push(decode)
+            .expect("ICH7 LPC generic I/O decode capacity");
+        self
+    }
+
+    /// Set board-selected ACPI GPE0 enable bits.
+    pub const fn gpe0_en(mut self, value: u32) -> Self {
+        self.ich7.gpe0_en = value;
+        self
+    }
+
+    /// Enable and configure SATA for this board.
+    pub const fn sata(mut self, sata: SataConfig) -> Self {
+        self.ich7.sata = Some(sata);
+        self
+    }
+
+    /// Enable and configure USB controllers for this board.
+    pub const fn usb(mut self, usb: UsbConfig) -> Self {
+        self.ich7.usb = Some(usb);
+        self
+    }
+
+    /// Return the target-side northbridge and southbridge configs.
+    #[must_use]
+    pub fn runtime_config(&self) -> (pineview::IntelPineviewConfig, ich7::IntelIch7Config) {
+        (self.pineview.clone(), self.ich7.clone())
+    }
+}
+
+impl Default for PineviewIch7RuntimePolicy {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -249,7 +283,7 @@ impl PcieRootPort {
     }
 }
 
-impl PineviewIch7Platform {
+impl PineviewIch7Board {
     fn platform_topology(&self) -> PlatformTopology {
         PlatformTopology::new()
             .root("northbridge")

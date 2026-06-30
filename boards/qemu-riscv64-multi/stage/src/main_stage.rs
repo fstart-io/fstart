@@ -27,7 +27,7 @@ impl StaticBoard for MainBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: MainDevices::new(&UART0_CONFIG),
+            devices: MainDevices::new(UART0_CONFIG.clone()),
         })
     }
 

@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
 fstart-board-meta = { workspace = true }
 fstart-driver-intel-gm965 = { workspace = true, features = ["ffs-vbt"] }
 fstart-driver-intel-ich8 = { workspace = true }

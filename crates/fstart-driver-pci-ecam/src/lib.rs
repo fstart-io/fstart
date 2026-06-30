@@ -918,8 +918,8 @@ impl Device for PciEcam {
     const COMPATIBLE: &'static [&'static str] = &["pci-host-ecam-generic"];
     type Config = PciEcamConfig;
 
-    fn new(config: &'static PciEcamConfig) -> Result<Self, DeviceError> {
-        Self::from_config(config)
+    fn new(config: PciEcamConfig) -> Result<Self, DeviceError> {
+        Self::from_config(&config)
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {

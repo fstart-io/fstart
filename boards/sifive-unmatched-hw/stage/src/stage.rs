@@ -34,24 +34,26 @@ pub struct StageDevices {
 }
 
 impl StageDevices {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             prci: None,
-            uart0: StaticConsole::new(&UART0_CONFIG),
+            uart0: StaticConsole::new(UART0_CONFIG),
             ddr: None,
         }
     }
 
     fn ensure_prci(&mut self) -> Result<&mut Fu740Prci, ServiceError> {
         if self.prci.is_none() {
-            self.prci = Some(Fu740Prci::new(&PRCI_CONFIG).map_err(device_error_to_service_error)?);
+            self.prci =
+                Some(Fu740Prci::new(PRCI_CONFIG.clone()).map_err(device_error_to_service_error)?);
         }
         Ok(self.prci.as_mut().expect("PRCI device constructed"))
     }
 
     fn ensure_ddr(&mut self) -> Result<&mut Fu740Ddr, ServiceError> {
         if self.ddr.is_none() {
-            self.ddr = Some(Fu740Ddr::new(&DDR_CONFIG).map_err(device_error_to_service_error)?);
+            self.ddr =
+                Some(Fu740Ddr::new(DDR_CONFIG.clone()).map_err(device_error_to_service_error)?);
         }
         Ok(self.ddr.as_mut().expect("DDR device constructed"))
     }

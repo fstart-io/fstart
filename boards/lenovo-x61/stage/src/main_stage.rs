@@ -2,11 +2,12 @@
 
 use fstart_acpi::device::AcpiDevice;
 use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
-use fstart_board_lenovo_x61_facts as facts;
+use fstart_board_lenovo_x61 as board;
 use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::Ns16550;
-use fstart_mainboard_lenovo_x61::LenovoX61Mainboard;
+use fstart_mainboard_lenovo_x61::{LenovoX61Mainboard, X61_SMBIOS_DESC};
+use fstart_platform_intel_gm965_ich8 as platform;
 use fstart_services::memory_detect::{E820Entry, MAX_E820_ENTRIES};
 use fstart_services::{
     EarlyInit, FinalizeInit, HardwareInit, InitContext, Mainboard, PciRootBus, PostDramInit,
@@ -35,7 +36,7 @@ impl MainDevices {
             northbridge: common::new_gm965()?,
             southbridge: common::new_ich8()?,
             mainboard: common::new_mainboard()?,
-            console: StaticConsole::new(&common::UART0_CONFIG),
+            console: StaticConsole::new(common::UART0_CONFIG.clone()),
             e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
             e820_count: 0,
             total_ram: 0,
@@ -62,22 +63,21 @@ impl MainDevices {
         );
         let rsdp =
             fstart_capabilities::acpi::prepare_with_options(&platform, true, |dsdt, extra| {
-                dsdt.extend(self.northbridge.dsdt_aml(common::gm965_config()));
-                dsdt.extend(self.southbridge.dsdt_aml(common::ich8_config()));
-                dsdt.extend(self.mainboard.dsdt_aml(common::mainboard_config()));
-                extra.extend(self.northbridge.extra_tables(common::gm965_config()));
-                extra.extend(self.southbridge.extra_tables(common::ich8_config()));
+                dsdt.extend(self.northbridge.dsdt_aml(self.northbridge.config()));
+                dsdt.extend(self.southbridge.dsdt_aml(self.southbridge.config()));
+                dsdt.extend(self.mainboard.dsdt_aml(self.mainboard.config()));
+                extra.extend(self.northbridge.extra_tables(self.northbridge.config()));
+                extra.extend(self.southbridge.extra_tables(self.southbridge.config()));
             });
         self.acpi_rsdp = Some(rsdp);
     }
 
     fn prepare_smbios(&self) {
-        let _ = self.total_ram;
-        fstart_capabilities::smbios::prepare(&facts::SMBIOS_DESC);
+        fstart_capabilities::smbios::prepare(&X61_SMBIOS_DESC);
     }
 
     fn init_mp(&self) -> Result<(), ServiceError> {
-        let cpu = fstart_cpu_intel::core2_cpu::Core2CpuDriver::new(facts::ICH8_PMBASE, None);
+        let cpu = fstart_cpu_intel::core2_cpu::Core2CpuDriver::new(platform::ICH8_PMBASE, None);
         let drivers: [&dyn fstart_mp::CpuDriver; 1] = [&cpu];
         fstart_mp::mp_init(&fstart_mp::MpConfig {
             cpu_drivers: &drivers,
@@ -110,7 +110,7 @@ impl HardwareInit for MainDevices {
         let (count, total) = fstart_capabilities::memory_detect(
             &self.northbridge,
             &mut self.e820,
-            facts::NORTHBRIDGE_NODE,
+            platform::GM965_NORTHBRIDGE_NODE,
         )?;
         self.e820_count = count;
         self.total_ram = total;
@@ -148,9 +148,10 @@ impl StaticBoard for MainBoard {
     type Devices = MainDevices;
 
     fn new() -> Result<Self, ServiceError> {
+        let runtime = common::runtime_config();
         Ok(Self {
             devices: MainDevices::new()?,
-            boot: MemoryMappedUefiBoot::new(facts::FLASH_FFS_BASE, facts::FLASH_FFS_SIZE, 0),
+            boot: MemoryMappedUefiBoot::new(runtime.firmware_base, runtime.firmware_size, 0),
             payload_ready: false,
         })
     }
@@ -164,7 +165,7 @@ impl StaticBoard for MainBoard {
     }
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        console_ready(facts::UART0_NODE, "ns16550");
+        console_ready(board::UART0_NODE, "ns16550");
         Ok(())
     }
 
@@ -202,10 +203,11 @@ impl StaticBoard for MainBoard {
         };
 
         let acpi_base = self.devices.acpi_rsdp().unwrap_or(0) & !0xfff;
+        let runtime = common::runtime_config();
         let platform_entries = [
             MemoryRegion {
-                base: facts::FLASH_FFS_BASE,
-                size: facts::FLASH_FFS_SIZE_U64,
+                base: runtime.firmware_base,
+                size: runtime.firmware_size as u64,
                 region_type: MemoryType::RuntimeServicesCode,
             },
             MemoryRegion {
@@ -219,7 +221,7 @@ impl StaticBoard for MainBoard {
             "launching CrabEFI: ram={} MiB, rsdp={:#x}, ecam={:#x}",
             (self.devices.total_ram >> 20) as u32,
             self.devices.acpi_rsdp().unwrap_or(0),
-            common::gm965_config().ecam_base,
+            self.devices.northbridge.config().ecam_base,
         );
         fstart_stage::crabefi::launch_x86_uefi(
             UefiLaunchConfig {
@@ -228,7 +230,7 @@ impl StaticBoard for MainBoard {
                 acpi_rsdp: self.devices.acpi_rsdp(),
                 smbios: None,
                 fdt: None,
-                ecam_base: Some(common::gm965_config().ecam_base),
+                ecam_base: Some(self.devices.northbridge.config().ecam_base),
                 runtime_region: Some(fstart_stage::crabefi::compute_runtime_region()),
             },
             self.devices.e820(),

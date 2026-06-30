@@ -47,9 +47,9 @@ pub struct MainDevices {
 }
 
 impl MainDevices {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            console: StaticConsole::new(&UART0_CONFIG),
+            console: StaticConsole::new(UART0_CONFIG.clone()),
             fw_cfg: None,
             q35: None,
             e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
@@ -61,7 +61,8 @@ impl MainDevices {
 
     fn ensure_fw_cfg(&mut self) -> Result<&mut QemuFwCfg, ServiceError> {
         if self.fw_cfg.is_none() {
-            let fw_cfg = QemuFwCfg::new(&FW_CFG_CONFIG).map_err(device_error_to_service_error)?;
+            let fw_cfg =
+                QemuFwCfg::new(FW_CFG_CONFIG.clone()).map_err(device_error_to_service_error)?;
             self.fw_cfg = Some(fw_cfg);
         }
         Ok(self.fw_cfg.as_mut().expect("fw_cfg constructed"))
@@ -69,7 +70,8 @@ impl MainDevices {
 
     fn ensure_q35(&mut self) -> Result<&mut Q35HostBridge, ServiceError> {
         if self.q35.is_none() {
-            let q35 = Q35HostBridge::new(&Q35_CONFIG).map_err(device_error_to_service_error)?;
+            let q35 =
+                Q35HostBridge::new(Q35_CONFIG.clone()).map_err(device_error_to_service_error)?;
             self.q35 = Some(q35);
         }
         Ok(self.q35.as_mut().expect("q35 constructed"))

@@ -48,7 +48,8 @@ flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
 flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
 
 [dependencies]
-fstart-board-lenovo-x61-facts = { path = "../facts" }
+fstart-board-lenovo-x61 = { path = ".." }
+fstart-platform-intel-gm965-ich8 = { workspace = true }
 fstart-stage = { workspace = true }
 fstart-stage-runtime = { workspace = true }
 fstart-services = { workspace = true }

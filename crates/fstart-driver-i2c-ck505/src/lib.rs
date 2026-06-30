@@ -35,7 +35,7 @@ pub struct I2cCk505Config {
 pub struct I2cCk505 {
     /// 7-bit SMBus slave address (supplied by the bus attachment).
     addr: u8,
-    config: &'static I2cCk505Config,
+    config: I2cCk505Config,
 }
 
 // SAFETY: state is CPU-exclusive during firmware phase.
@@ -48,12 +48,12 @@ impl BusDevice for I2cCk505 {
     type Config = I2cCk505Config;
     type Bus = dyn SmBus;
 
-    fn new_on_bus(config: &'static Self::Config, _bus: &Self::Bus) -> Result<Self, DeviceError> {
+    fn new_on_bus(config: Self::Config, _bus: &Self::Bus) -> Result<Self, DeviceError> {
         Self::new_on_bus_at(config, _bus, None)
     }
 
     fn new_on_bus_at(
-        config: &'static Self::Config,
+        config: Self::Config,
         _bus: &Self::Bus,
         address: Option<BusAddress>,
     ) -> Result<Self, DeviceError> {
@@ -107,8 +107,6 @@ extern crate std;
 
 #[cfg(test)]
 mod tests {
-    use std::boxed::Box;
-
     use super::*;
 
     struct FakeBus {
@@ -140,7 +138,6 @@ mod tests {
             mask: heapless::Vec::from_slice(&[0x0f, 0xf0]).unwrap(),
             regs: heapless::Vec::from_slice(&[0x05, 0xa0]).unwrap(),
         };
-        let cfg: &'static I2cCk505Config = Box::leak(Box::new(cfg));
         let mut bus = FakeBus {
             regs: [0xf0, 0x0f, 0, 0, 0, 0, 0, 0],
             writes: heapless::Vec::new(),
@@ -161,13 +158,12 @@ mod tests {
             mask: heapless::Vec::from_slice(&[0xff]).unwrap(),
             regs: heapless::Vec::from_slice(&[0x00]).unwrap(),
         };
-        let cfg: &'static I2cCk505Config = Box::leak(Box::new(cfg));
         let bus = FakeBus {
             regs: [0; 8],
             writes: heapless::Vec::new(),
         };
 
-        assert!(I2cCk505::new_on_bus_at(cfg, &bus, None).is_err());
+        assert!(I2cCk505::new_on_bus_at(cfg.clone(), &bus, None).is_err());
         assert!(I2cCk505::new_on_bus_at(cfg, &bus, Some(BusAddress::Lpc(0x2e))).is_err());
     }
 }

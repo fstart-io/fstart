@@ -34,6 +34,9 @@ pub enum DeviceError {
 /// # Associated Types
 ///
 /// `Config` is the driver-specific configuration struct (e.g., `Ns16550Config`).
+/// Drivers own this value. Board code may build it on the stack, in a stage
+/// device aggregate, or as a `static` constant for truly immutable facts, but
+/// the service model does not require leaked or fake `'static` references.
 pub trait Device: Send + Sync + Sized {
     /// Human-readable driver name (e.g., `"ns16550"`).
     const NAME: &'static str;
@@ -44,8 +47,8 @@ pub trait Device: Send + Sync + Sized {
     /// Driver-specific configuration type, with only the fields this driver needs.
     type Config;
 
-    /// Construct from typed config.  Does NOT touch hardware.
-    fn new(config: &'static Self::Config) -> Result<Self, DeviceError>;
+    /// Construct from typed config. Does NOT touch hardware.
+    fn new(config: Self::Config) -> Result<Self, DeviceError>;
 
     /// Legacy whole-device initialization hook. Prefer step-based
     /// [`crate::HardwareInit`] implementations for fixed-flow boards.
@@ -66,12 +69,12 @@ pub trait Device: Send + Sync + Sized {
 ///     type Bus = B;
 ///     type Config = Slb9670Config;
 ///
-///     fn new_on_bus(config: &'static Slb9670Config, bus: &B) -> Result<Self, DeviceError> {
+///     fn new_on_bus(config: Slb9670Config, bus: &B) -> Result<Self, DeviceError> {
 ///         Self::new_on_bus_at(config, bus, None)
 ///     }
 ///
 ///     fn new_on_bus_at(
-///         config: &'static Slb9670Config,
+///         config: Slb9670Config,
 ///         bus: &B,
 ///         address: Option<BusAddress>,
 ///     ) -> Result<Self, DeviceError> {
@@ -87,7 +90,7 @@ pub trait Device: Send + Sync + Sized {
 /// initializes the child with mutable parent-bus access:
 /// ```ignore
 /// let mut tpm0 = Slb9670::new_on_bus_at(
-///     &tpm0_config,
+///     tpm0_config,
 ///     &i2c0,
 ///     Some(BusAddress::I2c(0x50)),
 /// );
@@ -110,7 +113,7 @@ pub trait BusDevice: Send + Sync + Sized {
     type Bus: ?Sized;
 
     /// Construct from config + parent bus reference. Does NOT touch hardware.
-    fn new_on_bus(config: &'static Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
+    fn new_on_bus(config: Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError>;
 
     /// Construct from config + parent bus reference + bus address.
     ///
@@ -118,7 +121,7 @@ pub trait BusDevice: Send + Sync + Sized {
     /// method and consume the supplied address. The default accepts only
     /// address-less topology, so board topology never silently drops bus wiring data.
     fn new_on_bus_at(
-        config: &'static Self::Config,
+        config: Self::Config,
         bus: &Self::Bus,
         address: Option<BusAddress>,
     ) -> Result<Self, DeviceError> {

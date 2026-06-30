@@ -55,7 +55,7 @@ impl StaticBoard for StageBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: StageDevices::new(&UART0_CONFIG),
+            devices: StageDevices::new(UART0_CONFIG.clone()),
         })
     }
 

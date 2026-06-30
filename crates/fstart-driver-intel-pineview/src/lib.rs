@@ -191,7 +191,7 @@ static PINEVIEW_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new
 
 /// Pineview NB driver.
 pub struct IntelPineview {
-    config: &'static IntelPineviewConfig,
+    config: IntelPineviewConfig,
     /// Detected DRAM size (bytes), populated by `init()`.
     detected_size: u64,
     pci: Option<PciEcam>,
@@ -237,6 +237,12 @@ pci_type0_config! {
 }
 
 impl IntelPineview {
+    /// Runtime config used by this driver instance.
+    #[must_use]
+    pub const fn config(&self) -> &IntelPineviewConfig {
+        &self.config
+    }
+
     fn hostbridge_regs(&self) -> &'static PineviewHostBridgePciConfig {
         let hb = ecam::EcamDevice::new(0, 0, 0);
         // SAFETY: Pineview host bridge is fixed at 00:00.0 and ECAM is live
@@ -460,7 +466,7 @@ impl Device for IntelPineview {
     const COMPATIBLE: &'static [&'static str] = &["intel,pineview-mch", "intel,atom-d4xx-mch"];
     type Config = IntelPineviewConfig;
 
-    fn new(config: &'static IntelPineviewConfig) -> Result<Self, DeviceError> {
+    fn new(config: IntelPineviewConfig) -> Result<Self, DeviceError> {
         Ok(Self {
             config,
             detected_size: 0,

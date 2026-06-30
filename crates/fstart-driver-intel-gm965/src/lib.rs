@@ -812,7 +812,7 @@ fn default_spd_addresses() -> [u8; 4] {
 
 /// Intel GM965 northbridge driver.
 pub struct IntelGm965 {
-    config: &'static IntelGm965Config,
+    config: IntelGm965Config,
     detected_size: u64,
     pci: Option<PciEcam>,
 }
@@ -1737,7 +1737,7 @@ impl Device for IntelGm965 {
     const COMPATIBLE: &'static [&'static str] = &["intel,gm965", "intel,crestline"];
     type Config = IntelGm965Config;
 
-    fn new(config: &'static IntelGm965Config) -> Result<Self, DeviceError> {
+    fn new(config: IntelGm965Config) -> Result<Self, DeviceError> {
         Ok(Self {
             config,
             detected_size: 0,
@@ -1756,6 +1756,12 @@ impl Device for IntelGm965 {
 }
 
 impl IntelGm965 {
+    /// Runtime config used by this driver instance.
+    #[must_use]
+    pub const fn config(&self) -> &IntelGm965Config {
+        &self.config
+    }
+
     fn pre_console_phase(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         Ok(())

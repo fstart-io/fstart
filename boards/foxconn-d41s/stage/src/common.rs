@@ -1,52 +1,36 @@
-use core::mem::MaybeUninit;
-
 use fstart_board_foxconn_d41s_facts as facts;
 #[cfg(feature = "acpi")]
 use fstart_driver_i2c_ck505::I2cCk505Config;
-use fstart_driver_intel_ich7::{IntelIch7, IntelIch7Config};
-use fstart_driver_intel_pineview::{IntelPineview, IntelPineviewConfig};
+use fstart_driver_intel_ich7::IntelIch7;
+use fstart_driver_intel_pineview::IntelPineview;
 use fstart_driver_ite8721f::Ite8721f;
 use fstart_services::{BusDevice, Console, Device, DeviceError, ServiceError};
 use fstart_superio::{LpcBaseProvider, SuperIoConfig};
 use fstart_types::BusAddress;
 
-static mut PINEVIEW_CONFIG: MaybeUninit<IntelPineviewConfig> = MaybeUninit::uninit();
-static mut ICH7_CONFIG: MaybeUninit<IntelIch7Config> = MaybeUninit::uninit();
-static mut SUPERIO_CONFIG: MaybeUninit<SuperIoConfig> = MaybeUninit::uninit();
-#[cfg(feature = "acpi")]
-static mut CK505_CONFIG: MaybeUninit<I2cCk505Config> = MaybeUninit::uninit();
-
 pub fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
     ServiceError::HardwareError
 }
 
-pub fn pineview_config() -> &'static IntelPineviewConfig {
-    unsafe { (*core::ptr::addr_of_mut!(PINEVIEW_CONFIG)).write(facts::pineview_config()) }
-}
-
-pub fn ich7_config() -> &'static IntelIch7Config {
-    unsafe { (*core::ptr::addr_of_mut!(ICH7_CONFIG)).write(facts::ich7_config()) }
-}
-
-pub fn superio_config() -> &'static SuperIoConfig {
-    unsafe { (*core::ptr::addr_of_mut!(SUPERIO_CONFIG)).write(facts::superio_config()) }
+pub fn superio_config() -> SuperIoConfig {
+    facts::superio_config()
 }
 
 #[cfg(feature = "acpi")]
-pub fn ck505_config() -> &'static I2cCk505Config {
-    unsafe { (*core::ptr::addr_of_mut!(CK505_CONFIG)).write(facts::ck505_config()) }
+pub fn ck505_config() -> I2cCk505Config {
+    facts::ck505_config()
 }
 
 pub fn new_pineview() -> Result<IntelPineview, ServiceError> {
-    IntelPineview::new(pineview_config()).map_err(device_error_to_service_error)
+    IntelPineview::new(facts::pineview_config()).map_err(device_error_to_service_error)
 }
 
 pub fn new_ich7() -> Result<IntelIch7, ServiceError> {
-    IntelIch7::new(ich7_config()).map_err(device_error_to_service_error)
+    IntelIch7::new(facts::ich7_config()).map_err(device_error_to_service_error)
 }
 
 pub fn init_superio(
-    config: &'static SuperIoConfig,
+    config: SuperIoConfig,
     southbridge: &mut IntelIch7,
 ) -> Result<Ite8721f, ServiceError> {
     let mut superio = Ite8721f::new_on_bus_at(

@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 fstart-types = { workspace = true }
+fstart-platform-intel-pineview-ich7 = { workspace = true }
 fstart-driver-intel-pineview = { workspace = true, features = ["ffs-vbt"] }
 fstart-driver-intel-ich7 = { workspace = true }
 fstart-driver-i2c-ck505 = { workspace = true }

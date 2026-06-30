@@ -201,7 +201,7 @@ impl Device for SunxiD1Ccu {
     const COMPATIBLE: &'static [&'static str] = &["allwinner,sun20i-d1-ccu"];
     type Config = SunxiD1CcuConfig;
 
-    fn new(config: &'static SunxiD1CcuConfig) -> Result<Self, DeviceError> {
+    fn new(config: SunxiD1CcuConfig) -> Result<Self, DeviceError> {
         Ok(Self {
             // SAFETY: addresses come from the board metadata, validated by board construction.
             ccu: unsafe { &*(config.ccu_base as *const SunxiD1CcuRegs) },

@@ -971,7 +971,7 @@ impl Rcba {
 
 /// Intel ICH8 southbridge driver.
 pub struct IntelIch8 {
-    config: &'static IntelIch8Config,
+    config: IntelIch8Config,
     smbus: Option<I801SmBus>,
     pm: PmIo,
 }
@@ -2080,7 +2080,7 @@ impl Device for IntelIch8 {
     const COMPATIBLE: &'static [&'static str] = &["intel,ich8", "intel,ich8m", "intel,82801hx"];
     type Config = IntelIch8Config;
 
-    fn new(config: &'static IntelIch8Config) -> Result<Self, DeviceError> {
+    fn new(config: IntelIch8Config) -> Result<Self, DeviceError> {
         if config
             .lpc_decode
             .generic_io
@@ -2110,6 +2110,14 @@ impl Device for IntelIch8 {
         // Keep construction side-effect free. The pre-console hook programs
         // RCBA/PMBASE/GPIO/LPC before any hardware-dependent work runs.
         Ok(())
+    }
+}
+
+impl IntelIch8 {
+    /// Runtime config used by this driver instance.
+    #[must_use]
+    pub const fn config(&self) -> &IntelIch8Config {
+        &self.config
     }
 }
 
