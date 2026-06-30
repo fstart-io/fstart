@@ -214,6 +214,7 @@ impl PineviewIch7Platform {
             }),
             build: fstart_types::BoardBuildPolicy {
                 cpu_feature: Some(fstart_types::hstr("cpu-intel-pineview")),
+                pci_root_feature: Some(fstart_types::hstr("intel-pineview")),
                 ..Default::default()
             },
             boot_hart_id: 0,
