@@ -647,12 +647,20 @@ dependencies = [
 name = "fstart-board-qemu-q35"
 version = "0.1.0"
 dependencies = [
- "fstart-board-meta",
- "fstart-capabilities",
- "fstart-driver-bochs-display",
+ "fstart-board-qemu-q35-facts",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-q35-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-qemu-q35-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-qemu-q35-facts",
  "fstart-driver-ns16550",
- "fstart-driver-q35-hostbridge",
- "fstart-driver-qemu-fw-cfg",
  "fstart-log",
  "fstart-platform-x86_64",
  "fstart-services",

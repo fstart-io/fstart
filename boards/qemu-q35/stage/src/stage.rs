@@ -1,20 +1,17 @@
 //! Static fixed-flow adapter for QEMU Q35.
 
+use fstart_board_qemu_q35_facts as facts;
 use fstart_driver_ns16550::{AccessMode, Ns16550, Ns16550Config};
 use fstart_services::{InitContext, ServiceError};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedLinuxBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-const FFS_BASE: u64 = 0xff90_0000;
-const FFS_SIZE: usize = 0x006f_f000;
-const KERNEL_LOAD_ADDR: u64 = 0x0100_0000;
-const ZERO_PAGE_ADDR: u64 = 0x0009_0000;
-const BOOTARGS: &str = "console=ttyS0 earlyprintk=serial,ttyS0,115200";
-
 static UART0_CONFIG: Ns16550Config = Ns16550Config {
-    regs: AccessMode::Pio { base: 0x3f8 },
-    clock_freq: 1_843_200,
-    baud_rate: 115_200,
+    regs: AccessMode::Pio {
+        base: facts::UART0_PIO_BASE,
+    },
+    clock_freq: facts::UART0_CLOCK_FREQ,
+    baud_rate: facts::UART0_BAUD_RATE,
 };
 
 type StageDevices = StaticConsole<Ns16550>;
@@ -30,7 +27,7 @@ impl StaticBoard for StageBoard {
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
             devices: StageDevices::new(&UART0_CONFIG),
-            boot: MemoryMappedLinuxBoot::new(FFS_BASE, FFS_SIZE, 0),
+            boot: MemoryMappedLinuxBoot::new(facts::FFS_BASE, facts::FFS_SIZE, 0),
         })
     }
 
@@ -43,7 +40,7 @@ impl StaticBoard for StageBoard {
     }
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        console_ready("uart0", "ns16550");
+        console_ready(facts::UART0_NODE, "ns16550");
         Ok(())
     }
 
@@ -65,10 +62,12 @@ impl StaticBoard for StageBoard {
             Self::halt();
         }
 
-        fstart_log::info!("booting Linux bzImage at {:#x}", KERNEL_LOAD_ADDR);
-        let params = self
-            .boot
-            .x86_boot_params(KERNEL_LOAD_ADDR, ZERO_PAGE_ADDR, BOOTARGS);
+        fstart_log::info!("booting Linux bzImage at {:#x}", facts::KERNEL_LOAD_ADDR);
+        let params = self.boot.x86_boot_params(
+            facts::KERNEL_LOAD_ADDR,
+            facts::ZERO_PAGE_ADDR,
+            facts::STAGE_BOOTARGS,
+        );
         fstart_platform::boot_linux(&params)
     }
 }

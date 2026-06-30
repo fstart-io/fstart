@@ -8,15 +8,17 @@ extern crate ufmt;
 
 mod stage;
 
+const HEAP_SIZE: usize = fstart_board_qemu_q35_facts::STAGE_HEAP_SIZE as usize;
+
 #[repr(align(16))]
 #[allow(dead_code)]
-struct HeapStore([u8; 0x40000]);
+struct HeapStore([u8; HEAP_SIZE]);
 
 #[no_mangle]
-static _FSTART_HEAP: HeapStore = HeapStore([0; 0x40000]);
+static _FSTART_HEAP: HeapStore = HeapStore([0; HEAP_SIZE]);
 
 #[no_mangle]
-static _FSTART_HEAP_SIZE: usize = 0x40000;
+static _FSTART_HEAP_SIZE: usize = HEAP_SIZE;
 
 #[no_mangle]
 static _fstart_anchor_early: fstart_types::ffs::AnchorBlock =

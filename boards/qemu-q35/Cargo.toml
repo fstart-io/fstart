@@ -9,67 +9,9 @@ publish = false
 board = "qemu-q35"
 platform = "x86_64"
 target = "x86_64-unknown-none"
+stage-package = "fstart-board-qemu-q35-stage"
 stage-bin = "fstart-stage"
 
-[features]
-default = ["host"]
-host = [
-  "fstart-types/std",
-  "dep:fstart-board-meta",
-  "dep:fstart-driver-ns16550",
-  "dep:fstart-driver-qemu-fw-cfg",
-  "dep:fstart-driver-q35-hostbridge",
-  "dep:fstart-driver-bochs-display",
-]
-stage = [
-  "dep:fstart-stage",
-  "dep:fstart-stage-runtime",
-  "dep:fstart-services",
-  "dep:fstart-log",
-  "dep:fstart-capabilities",
-  "dep:fstart-platform-x86_64",
-  "dep:ufmt",
-]
-x86_64 = ["stage", "fstart-stage/x86_64"]
-ns16550 = ["stage", "dep:fstart-driver-ns16550", "fstart-stage/ns16550"]
-ns16550-pio = ["stage", "fstart-stage/ns16550-pio"]
-qemu-fw-cfg = ["stage", "fstart-stage/qemu-fw-cfg"]
-q35-hostbridge = ["stage", "fstart-stage/q35-hostbridge"]
-bochs-display = ["stage", "fstart-stage/bochs-display"]
-ffs = ["stage", "fstart-stage/ffs"]
-ed25519 = ["stage", "fstart-stage/ed25519"]
-sha2-digest = ["stage", "fstart-stage/sha2-digest"]
-sha3-digest = ["stage", "fstart-stage/sha3-digest"]
-lz4 = ["stage", "fstart-stage/lz4"]
-acpi = ["stage", "fstart-stage/acpi"]
-acpi-load = ["stage", "fstart-stage/acpi-load"]
-memory-detect = ["stage", "fstart-stage/memory-detect"]
-mp = ["stage", "fstart-stage/mp"]
-cpu-generic-x86 = ["stage", "fstart-stage/cpu-generic-x86"]
-x86-1g-pages = ["stage", "fstart-stage/x86-1g-pages"]
-x86-boot = ["stage", "fstart-stage/x86-boot"]
-x86-writable-page-tables = ["stage", "fstart-stage/x86-writable-page-tables"]
-flow-profile-minimal = ["stage", "fstart-stage/flow-profile-minimal"]
-flow-profile-linuxboot = ["stage", "fstart-stage/flow-profile-linuxboot"]
-flow-profile-uefi = ["stage", "fstart-stage/flow-profile-uefi"]
-flow-profile-multistage = ["stage", "fstart-stage/flow-profile-multistage"]
-
 [dependencies]
-fstart-types = { workspace = true }
-fstart-board-meta = { workspace = true, optional = true }
-fstart-driver-ns16550 = { workspace = true, optional = true }
-fstart-driver-qemu-fw-cfg = { workspace = true, optional = true }
-fstart-driver-q35-hostbridge = { workspace = true, optional = true }
-fstart-driver-bochs-display = { workspace = true, optional = true }
-fstart-stage = { workspace = true, optional = true }
-fstart-stage-runtime = { workspace = true, optional = true }
-fstart-services = { workspace = true, optional = true }
-fstart-log = { workspace = true, optional = true }
-fstart-capabilities = { workspace = true, optional = true }
-fstart-platform-x86_64 = { workspace = true, optional = true }
-ufmt = { workspace = true, optional = true }
-
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
-required-features = ["stage"]
+fstart-board-qemu-q35-facts = { path = "facts" }
+fstart-types = { workspace = true, features = ["std"] }

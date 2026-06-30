@@ -1,18 +1,6 @@
-//! Rust board metadata for `qemu-q35`.
+//! Host Rust board metadata for `qemu-q35`.
 
-#![cfg_attr(not(feature = "host"), no_std)]
-
-#[cfg(feature = "host")]
-use fstart_board_meta::{BindDriver, DriverBinding};
-#[cfg(feature = "host")]
-use fstart_driver_bochs_display::BochsDisplayConfig;
-#[cfg(feature = "host")]
-use fstart_driver_ns16550::{AccessMode, Ns16550Config};
-#[cfg(feature = "host")]
-use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
-#[cfg(feature = "host")]
-use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
-#[cfg(feature = "host")]
+use fstart_board_qemu_q35_facts as facts;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardBuildPolicy, BoardConfig,
     BoardInfo, BuildInfo, BusAddress, Capability, Compression, CorebootSmmCompat, DeviceTopology,
@@ -21,26 +9,38 @@ use fstart_types::{
     SmmConfig, SmmPlatform, SocImageFormat, StageLayout, TempRamBuffer,
 };
 
-pub const BOARD_NAME: &str = "qemu-q35";
-pub const BOARD_PACKAGE: &str = "fstart-board-qemu-q35";
-#[cfg(feature = "host")]
+pub const BOARD_NAME: &str = facts::BOARD_NAME;
+pub const BOARD_PACKAGE: &str = facts::BOARD_PACKAGE;
 pub const PLATFORM: Platform = Platform::X86_64;
 
-#[cfg(feature = "host")]
 #[must_use]
 pub fn board_config() -> BoardConfig {
     BoardConfig {
         name: hstr(BOARD_NAME),
         platform: PLATFORM,
         memory: memory_map([
-            ("flash", 0xff80_0000, 0x0080_0000, RegionKind::Rom),
-            ("workram", 0x0010_0000, 0x00f0_0000, RegionKind::Ram),
+            (
+                "flash",
+                facts::FLASH_BASE,
+                facts::FLASH_SIZE,
+                RegionKind::Rom,
+            ),
+            (
+                "workram",
+                facts::WORKRAM_BASE,
+                facts::WORKRAM_SIZE,
+                RegionKind::Ram,
+            ),
         ]),
         devices: DeviceTopology::new()
-            .root("uart0")
-            .root("fw_cfg0")
-            .root("pci0")
-            .child("pci0", "bochs0", BusAddress::Pci(2, 0))
+            .root(facts::UART0_NODE)
+            .root(facts::FW_CFG0_NODE)
+            .root(facts::PCI0_NODE)
+            .child(
+                facts::PCI0_NODE,
+                facts::BOCHS0_NODE,
+                BusAddress::Pci(facts::BOCHS0_DEVICE, facts::BOCHS0_FUNCTION),
+            )
             .build(),
         stages: StageLayout::Monolithic(MonolithicConfig {
             capabilities: hvec([
@@ -50,35 +50,35 @@ pub fn board_config() -> BoardConfig {
                 Capability::AcpiLoad,
                 Capability::PciInit,
                 Capability::MpInit {
-                    max_cpus: 4,
+                    max_cpus: facts::SMM_ENTRY_POINTS,
                     smm: true,
                 },
                 Capability::BootMedia(fstart_types::BootMedium::FirmwareImage {
                     temp_ram_buffer: Some(TempRamBuffer {
-                        base: 0x0200_0000,
-                        size: 0x0100_0000,
+                        base: facts::FFS_TEMP_RAM_BASE,
+                        size: facts::FFS_TEMP_RAM_SIZE,
                     }),
                 }),
                 Capability::SigVerify,
                 Capability::DriverInit,
                 Capability::PayloadLoad,
             ]),
-            load_addr: 0xff80_0000,
-            stack_size: 0x80000,
-            heap_size: Some(0x40000),
-            data_addr: Some(0x100000),
-            page_table_addr: Some((0x1000, 0x4000)),
+            load_addr: facts::STAGE_LOAD_ADDR,
+            stack_size: facts::STAGE_STACK_SIZE,
+            heap_size: Some(facts::STAGE_HEAP_SIZE),
+            data_addr: Some(facts::STAGE_DATA_ADDR),
+            page_table_addr: Some((facts::PAGE_TABLE_ADDR, facts::PAGE_TABLE_SIZE)),
             page_size: fstart_types::stage::PageSize::Size1GiB,
         }),
         security: security_config([DigestAlgorithm::Sha256]),
         payload: Some(PayloadConfig {
             kind: PayloadKind::LinuxBoot,
-            kernel_file: Some(hstr("bzImage")),
-            kernel_load_addr: Some(0x0100_0000),
+            kernel_file: Some(hstr(facts::KERNEL_FILE)),
+            kernel_load_addr: Some(facts::KERNEL_LOAD_ADDR),
             fdt: FdtSource::Platform,
             dtb_addr: None,
             src_dtb_addr: None,
-            bootargs: Some(hstr("console=ttyS0 earlycon=uart8250,io,0x3f8,115200n8")),
+            bootargs: Some(hstr(facts::METADATA_BOOTARGS)),
             print_x86_mtrrs: false,
             compression: Compression::Lz4,
             firmware: None,
@@ -93,15 +93,18 @@ pub fn board_config() -> BoardConfig {
         smbios: None,
         smm: Some(SmmConfig {
             platform: SmmPlatform::QemuQ35,
-            entry_points: Some(4),
-            stack_size: 0x400,
+            entry_points: Some(facts::SMM_ENTRY_POINTS),
+            stack_size: facts::SMM_STACK_SIZE,
             coreboot: CorebootSmmCompat {
                 emit_header: true,
                 module_args: true,
             },
         }),
         build: BoardBuildPolicy {
-            firmware_image: FirmwareImagePolicy::memory_mapped(0xff90_0000, 0x006f_f000),
+            firmware_image: FirmwareImagePolicy::memory_mapped(
+                facts::FFS_BASE,
+                facts::FFS_SIZE_U64,
+            ),
             pci_root_feature: Some(hstr("q35-hostbridge")),
             ..Default::default()
         },
@@ -109,55 +112,15 @@ pub fn board_config() -> BoardConfig {
     }
 }
 
-#[cfg(feature = "host")]
-#[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![
-        Ns16550Config {
-            regs: AccessMode::Pio { base: 0x3f8 },
-            clock_freq: 1_843_200,
-            baud_rate: 115_200,
-        }
-        .bind("uart0"),
-        QemuFwCfgConfig {
-            ctl_port: 0x510,
-            data_port: 0x511,
-        }
-        .bind("fw_cfg0"),
-        Q35HostBridgeConfig {
-            ecam_base: 0xb000_0000,
-            ecam_size: 0x1000_0000,
-            bus_start: 0,
-            bus_end: 255,
-        }
-        .bind("pci0"),
-        BochsDisplayConfig {
-            device: 2,
-            function: 0,
-            width: 1024,
-            height: 768,
-        }
-        .bind("bochs0"),
-    ]
-}
-
-#[cfg(feature = "host")]
 #[must_use]
 pub fn board_info() -> BoardInfo {
     board_info_from_config(board_config())
 }
 
-#[cfg(feature = "host")]
 #[must_use]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
-    let bindings = driver_bindings();
-    build_info_from_config(
-        BOARD_NAME,
-        BOARD_PACKAGE,
-        &config,
-        bindings.iter().map(DriverBinding::driver_feature),
-    )
+    build_info_from_config(BOARD_NAME, BOARD_PACKAGE, &config, ["ns16550"])
 }
 
 #[must_use]
@@ -165,7 +128,6 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
-#[cfg(feature = "host")]
 fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> MemoryMap {
     MemoryMap {
         regions: hvec(regions.map(|(name, base, size, kind)| MemoryRegion {
@@ -179,7 +141,6 @@ fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> Mem
     }
 }
 
-#[cfg(feature = "host")]
 fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityConfig {
     SecurityConfig {
         signing_algorithm: SignatureAlgorithm::Ed25519,
