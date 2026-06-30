@@ -1,24 +1,15 @@
 //! Static fixed-flow adapter for SiFive Unmatched under QEMU `sifive_u`.
 
+use fstart_board_sifive_unmatched_facts as facts;
 use fstart_driver_sifive_uart::{SifiveUart, SifiveUartConfig};
 use fstart_services::{InitContext, ServiceError};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedLinuxBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-const FFS_BASE: u64 = 0x8000_0000;
-const FFS_SIZE: usize = 0x0800_0000;
-const RAM_BASE: u64 = 0x8000_0000;
-const RAM_SIZE: u64 = 0x2000_0000;
-const KERNEL_LOAD_ADDR: u64 = 0x8400_0000;
-const FIRMWARE_LOAD_ADDR: u64 = 0x8300_0000;
-const FDT_ADDR: u64 = 0x8f00_0000;
-const BOOT_HART_ID: u64 = 1;
-const BOOTARGS: &str = "console=ttySIF0 earlycon=sbi";
-
 static UART0_CONFIG: SifiveUartConfig = SifiveUartConfig {
-    base_addr: 0x1001_0000,
-    clock_freq: 500_000_000,
-    baud_rate: 115_200,
+    base_addr: facts::UART0_BASE,
+    clock_freq: facts::UART0_CLOCK,
+    baud_rate: facts::UART0_BAUD,
 };
 
 type StageDevices = StaticConsole<SifiveUart>;
@@ -34,7 +25,11 @@ impl StaticBoard for StageBoard {
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
             devices: StageDevices::new(&UART0_CONFIG),
-            boot: MemoryMappedLinuxBoot::new(FFS_BASE, FFS_SIZE, fstart_platform::boot_dtb_addr()),
+            boot: MemoryMappedLinuxBoot::new(
+                facts::FFS_BASE,
+                facts::FFS_SIZE,
+                fstart_platform::boot_dtb_addr(),
+            ),
         })
     }
 
@@ -47,7 +42,7 @@ impl StaticBoard for StageBoard {
     }
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        console_ready("uart0", "sifive-uart");
+        console_ready(facts::UART0_NODE, "sifive-uart");
         Ok(())
     }
 
@@ -64,8 +59,12 @@ impl StaticBoard for StageBoard {
     }
 
     fn finalize_handoff(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.boot
-            .prepare_fdt(FDT_ADDR, BOOTARGS, RAM_BASE, RAM_SIZE)
+        self.boot.prepare_fdt(
+            facts::FDT_ADDR,
+            facts::BOOTARGS,
+            facts::RAM_BASE,
+            facts::RAM_SIZE,
+        )
     }
 
     fn boot_payload(self) -> ! {
@@ -76,13 +75,16 @@ impl StaticBoard for StageBoard {
 
         fstart_log::info!(
             "booting OpenSBI at {:#x}, kernel at {:#x}, dtb at {:#x}",
-            FIRMWARE_LOAD_ADDR,
-            KERNEL_LOAD_ADDR,
+            facts::FIRMWARE_LOAD_ADDR,
+            facts::KERNEL_LOAD_ADDR,
             self.boot.dtb_addr(),
         );
-        let params =
-            self.boot
-                .boot_params(KERNEL_LOAD_ADDR, FIRMWARE_LOAD_ADDR, BOOT_HART_ID, BOOTARGS);
+        let params = self.boot.boot_params(
+            facts::KERNEL_LOAD_ADDR,
+            facts::FIRMWARE_LOAD_ADDR,
+            u64::from(facts::BOOT_HART_ID),
+            facts::BOOTARGS,
+        );
         fstart_platform::boot_linux(&params)
     }
 }

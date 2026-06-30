@@ -1,39 +1,35 @@
-//! Rust board metadata for SiFive HiFive Unmatched under QEMU `sifive_u`.
+//! Host Rust board metadata for SiFive HiFive Unmatched under QEMU `sifive_u`.
 
-#![cfg_attr(not(feature = "host"), no_std)]
-
-#[cfg(feature = "host")]
-#[cfg(feature = "host")]
-#[cfg(feature = "host")]
+use fstart_board_sifive_unmatched_facts as facts;
 use fstart_types::{
-    board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
-    Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig,
+    board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BootMedium,
+    BuildInfo, Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig,
     FirmwareKind, MemoryMap, MemoryRegion, MonolithicConfig, PayloadConfig, PayloadKind, Platform,
     RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat, StageLayout,
 };
 
-pub const BOARD_NAME: &str = "sifive-unmatched";
-pub const BOARD_PACKAGE: &str = "fstart-board-sifive-unmatched";
-#[cfg(feature = "host")]
+pub const BOARD_NAME: &str = facts::BOARD_NAME;
+pub const BOARD_PACKAGE: &str = facts::BOARD_PACKAGE;
 pub const PLATFORM: Platform = Platform::Riscv64;
 
-#[cfg(feature = "host")]
 fn config() -> BoardConfig {
     BoardConfig {
         name: hstr(BOARD_NAME),
         platform: PLATFORM,
-        memory: memory_map([("ram", 0x8000_0000, 0x2000_0000, RegionKind::Ram)]),
-        devices: DeviceTopology::new().root("uart0").build(),
+        memory: memory_map([("ram", facts::RAM_BASE, facts::RAM_SIZE, RegionKind::Ram)]),
+        devices: DeviceTopology::new().root(facts::UART0_NODE).build(),
         stages: StageLayout::Monolithic(MonolithicConfig {
             capabilities: hvec([
                 Capability::ConsoleInit,
                 Capability::MemoryInit,
-                firmware_boot_media(),
+                Capability::BootMedia(BootMedium::FirmwareImage {
+                    temp_ram_buffer: None,
+                }),
                 Capability::SigVerify,
                 Capability::FdtPrepare,
                 Capability::PayloadLoad,
             ]),
-            load_addr: 0x8000_0000,
+            load_addr: facts::FFS_BASE,
             stack_size: 0x40000,
             heap_size: Some(0x40000),
             data_addr: None,
@@ -41,14 +37,7 @@ fn config() -> BoardConfig {
             page_size: Default::default(),
         }),
         security: security_config([DigestAlgorithm::Sha256, DigestAlgorithm::Sha3_256]),
-        payload: Some(linux_payload(
-            "Image",
-            0x8400_0000,
-            FdtSource::Platform,
-            0x8f00_0000,
-            "console=ttySIF0 earlycon=sbi",
-            0x8300_0000,
-        )),
+        payload: Some(linux_payload()),
         microcode: None,
         soc_image_format: SocImageFormat::None,
         full_flash_image: false,
@@ -56,24 +45,21 @@ fn config() -> BoardConfig {
         smbios: None,
         smm: None,
         build: Default::default(),
-        boot_hart_id: 1,
+        boot_hart_id: facts::BOOT_HART_ID,
     }
 }
 
 #[must_use]
-#[cfg(feature = "host")]
 pub fn board_config() -> BoardConfig {
     config()
 }
 
 #[must_use]
-#[cfg(feature = "host")]
 pub fn board_info() -> BoardInfo {
     board_info_from_config(board_config())
 }
 
 #[must_use]
-#[cfg(feature = "host")]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
     build_info_from_config(BOARD_NAME, BOARD_PACKAGE, &config, ["sifive-uart"])
@@ -84,7 +70,6 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
-#[cfg(feature = "host")]
 fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> MemoryMap {
     MemoryMap {
         regions: hvec(regions.map(|(name, base, size, kind)| MemoryRegion {
@@ -98,7 +83,6 @@ fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> Mem
     }
 }
 
-#[cfg(feature = "host")]
 fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityConfig {
     SecurityConfig {
         signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -107,36 +91,21 @@ fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityCon
     }
 }
 
-#[cfg(feature = "host")]
-fn firmware_boot_media() -> Capability {
-    Capability::BootMedia(fstart_types::BootMedium::FirmwareImage {
-        temp_ram_buffer: None,
-    })
-}
-
-#[cfg(feature = "host")]
-fn linux_payload(
-    kernel_file: &str,
-    kernel_load_addr: u64,
-    fdt: FdtSource,
-    dtb_addr: u64,
-    bootargs: &str,
-    firmware_load_addr: u64,
-) -> PayloadConfig {
+fn linux_payload() -> PayloadConfig {
     PayloadConfig {
         kind: PayloadKind::LinuxBoot,
-        kernel_file: Some(hstr(kernel_file)),
-        kernel_load_addr: Some(kernel_load_addr),
-        fdt,
-        dtb_addr: Some(dtb_addr),
+        kernel_file: Some(hstr(facts::KERNEL_FILE)),
+        kernel_load_addr: Some(facts::KERNEL_LOAD_ADDR),
+        fdt: FdtSource::Platform,
+        dtb_addr: Some(facts::FDT_ADDR),
         src_dtb_addr: None,
-        bootargs: Some(hstr(bootargs)),
+        bootargs: Some(hstr(facts::BOOTARGS)),
         print_x86_mtrrs: false,
         compression: Compression::Lz4,
         firmware: Some(FirmwareConfig {
             kind: FirmwareKind::OpenSbi,
-            file: hstr("fw_dynamic.bin"),
-            load_addr: firmware_load_addr,
+            file: hstr(facts::FIRMWARE_FILE),
+            load_addr: facts::FIRMWARE_LOAD_ADDR,
         }),
         fit_file: None,
         fit_config: None,

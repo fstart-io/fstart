@@ -762,8 +762,33 @@ dependencies = [
 name = "fstart-board-sifive-unmatched"
 version = "0.1.0"
 dependencies = [
- "fstart-board-meta",
- "fstart-capabilities",
+ "fstart-board-sifive-unmatched-facts",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-sifive-unmatched-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-sifive-unmatched-hw"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-sifive-unmatched-hw-facts",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-sifive-unmatched-hw-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-sifive-unmatched-hw-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-sifive-unmatched-hw-facts",
+ "fstart-driver-fu740-ddr",
+ "fstart-driver-fu740-prci",
  "fstart-driver-sifive-uart",
  "fstart-log",
  "fstart-platform-riscv64",
@@ -775,13 +800,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-sifive-unmatched-hw"
+name = "fstart-board-sifive-unmatched-stage"
 version = "0.1.0"
 dependencies = [
- "fstart-board-meta",
- "fstart-capabilities",
- "fstart-driver-fu740-ddr",
- "fstart-driver-fu740-prci",
+ "fstart-board-sifive-unmatched-facts",
  "fstart-driver-sifive-uart",
  "fstart-log",
  "fstart-platform-riscv64",

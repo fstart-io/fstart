@@ -1,0 +1,32 @@
+#![no_std]
+
+pub const BOARD_NAME: &str = "sifive-unmatched-hw";
+pub const BOARD_PACKAGE: &str = "fstart-board-sifive-unmatched-hw";
+
+pub const FFS_BASE: u64 = 0x0800_0000;
+pub const FFS_SIZE: usize = 0x20_0000;
+pub const RAM_BASE: u64 = 0x8000_0000;
+pub const RAM_SIZE: u64 = 0x4_0000_0000;
+
+pub const PRCI_NODE: &str = "prci0";
+pub const PRCI_BASE: u64 = 0x1000_0000;
+pub const PRCI_GPIO_BASE: u64 = 0x1006_0000;
+
+pub const UART0_NODE: &str = "uart0";
+pub const UART0_BASE: u64 = 0x1001_0000;
+pub const UART0_CLOCK: u32 = 130_000_000;
+pub const UART0_BAUD: u32 = 115_200;
+
+pub const DDR_NODE: &str = "ddr0";
+pub const DDR_CTL_BASE: u64 = 0x100b_0000;
+pub const DDR_PHY_BASE: u64 = 0x100b_2000;
+pub const DDR_FILTER_BASE: u64 = 0x100b_8000;
+
+pub const KERNEL_FILE: &str = "Image";
+pub const KERNEL_LOAD_ADDR: u64 = 0x8400_0000;
+pub const FIRMWARE_FILE: &str = "fw_dynamic.bin";
+pub const FIRMWARE_LOAD_ADDR: u64 = 0x8300_0000;
+pub const DTB_FILE: &str = "unmatched.dtb";
+pub const FDT_ADDR: u64 = 0x8f00_0000;
+pub const BOOT_HART_ID: u32 = 1;
+pub const BOOTARGS: &str = "console=ttySIF0 earlycon=sbi";
