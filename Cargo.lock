@@ -724,8 +724,15 @@ name = "fstart-board-sifive-unmatched"
 version = "0.1.0"
 dependencies = [
  "fstart-board-meta",
+ "fstart-capabilities",
  "fstart-driver-sifive-uart",
+ "fstart-log",
+ "fstart-platform-riscv64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
  "fstart-types",
+ "ufmt",
 ]
 
 [[package]]
