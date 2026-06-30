@@ -1,9 +1,16 @@
 //! Rust board metadata for SiFive HiFive Unmatched hardware.
 
+#![cfg_attr(not(feature = "host"), no_std)]
+
+#[cfg(feature = "host")]
 use fstart_board_meta::{BindDriver, DriverBinding};
+#[cfg(feature = "host")]
 use fstart_driver_fu740_ddr::Fu740DdrConfig;
+#[cfg(feature = "host")]
 use fstart_driver_fu740_prci::Fu740PrciConfig;
+#[cfg(feature = "host")]
 use fstart_driver_sifive_uart::SifiveUartConfig;
+#[cfg(feature = "host")]
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig,
@@ -13,8 +20,10 @@ use fstart_types::{
 
 pub const BOARD_NAME: &str = "sifive-unmatched-hw";
 pub const BOARD_PACKAGE: &str = "fstart-board-sifive-unmatched-hw";
+#[cfg(feature = "host")]
 pub const PLATFORM: Platform = Platform::Riscv64;
 
+#[cfg(feature = "host")]
 fn config() -> BoardConfig {
     BoardConfig {
         name: hstr(BOARD_NAME),
@@ -63,6 +72,7 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
         Fu740PrciConfig {
@@ -87,16 +97,19 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn board_config() -> BoardConfig {
     config()
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn board_info() -> BoardInfo {
     board_info_from_config(board_config())
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
     let bindings = driver_bindings();
@@ -113,6 +126,7 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
+#[cfg(feature = "host")]
 fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> MemoryMap {
     MemoryMap {
         regions: hvec(regions.map(|(name, base, size, kind)| MemoryRegion {
@@ -126,6 +140,7 @@ fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> Mem
     }
 }
 
+#[cfg(feature = "host")]
 fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityConfig {
     SecurityConfig {
         signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -134,12 +149,14 @@ fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityCon
     }
 }
 
+#[cfg(feature = "host")]
 fn firmware_boot_media() -> Capability {
     Capability::BootMedia(fstart_types::BootMedium::FirmwareImage {
         temp_ram_buffer: None,
     })
 }
 
+#[cfg(feature = "host")]
 fn linux_payload(
     kernel_file: &str,
     kernel_load_addr: u64,

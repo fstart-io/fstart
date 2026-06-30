@@ -24,7 +24,7 @@ use core::sync::atomic::{compiler_fence, Ordering};
 
 use fstart_mmio::{read32, write32};
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{ClockController, ServiceError};
+use fstart_services::{ClockController, HardwareInit, InitContext, ServiceError};
 
 // ---------------------------------------------------------------------------
 // PRCI register offsets (from base 0x1000_0000)
@@ -517,6 +517,12 @@ impl ClockController for Fu740Prci {
             8 => Ok(HFCLK_FREQ as u32),
             _ => Err(ServiceError::NotSupported),
         }
+    }
+}
+
+impl HardwareInit for Fu740Prci {
+    fn early_clocks(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.init().map_err(|_| ServiceError::HardwareError)
     }
 }
 

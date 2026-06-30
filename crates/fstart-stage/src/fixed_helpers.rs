@@ -262,6 +262,13 @@ impl MemoryMappedLinuxBoot {
         Ok(())
     }
 
+    /// Load an override FDT from FFS and make it the current DTB.
+    pub fn load_fdt(&mut self, dtb_addr: u64) -> Result<(), ServiceError> {
+        self.ffs.load_file(FileType::Fdt)?;
+        self.dtb_addr = dtb_addr;
+        Ok(())
+    }
+
     /// Load firmware, such as OpenSBI or BL31, and then the Linux kernel.
     pub fn load_firmware_and_kernel(&mut self) -> Result<(), ServiceError> {
         self.ffs.load_file(FileType::Firmware)?;

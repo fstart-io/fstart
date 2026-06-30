@@ -37,7 +37,7 @@ mod regs;
 
 use fstart_mmio::{read32, read64, write32, write64};
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::MemoryController;
+use fstart_services::{HardwareInit, InitContext, MemoryController, ServiceError};
 
 use regs::{DENALI_CTL, DENALI_PHY};
 
@@ -396,6 +396,12 @@ impl MemoryController for Fu740Ddr {
         } else {
             self.dram_size
         }
+    }
+}
+
+impl HardwareInit for Fu740Ddr {
+    fn dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.init().map_err(|_| ServiceError::HardwareError)
     }
 }
 
