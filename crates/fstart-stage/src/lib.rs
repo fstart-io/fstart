@@ -17,6 +17,9 @@ extern crate fstart_alloc;
 
 extern crate fstart_runtime;
 
+#[cfg(feature = "crabefi")]
+pub extern crate fstart_crabefi as crabefi;
+
 pub mod fixed_helpers;
 
 /// Fixed FFS anchor placeholder for handwritten stage flow.

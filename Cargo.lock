@@ -612,10 +612,17 @@ name = "fstart-board-qemu-aarch64-uefi"
 version = "0.1.0"
 dependencies = [
  "fstart-board-meta",
+ "fstart-capabilities",
  "fstart-driver-bochs-display",
  "fstart-driver-pci-ecam",
  "fstart-driver-pl011",
+ "fstart-log",
+ "fstart-platform-aarch64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
  "fstart-types",
+ "ufmt",
 ]
 
 [[package]]

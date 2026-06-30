@@ -9,10 +9,56 @@ publish = false
 board = "qemu-aarch64-uefi"
 platform = "aarch64"
 target = "aarch64-unknown-none"
+stage-bin = "fstart-stage"
+
+[features]
+default = ["host"]
+host = [
+  "fstart-types/std",
+  "dep:fstart-board-meta",
+  "dep:fstart-driver-pl011",
+  "dep:fstart-driver-pci-ecam",
+  "dep:fstart-driver-bochs-display",
+]
+stage = [
+  "dep:fstart-stage",
+  "dep:fstart-stage-runtime",
+  "dep:fstart-services",
+  "dep:fstart-log",
+  "dep:fstart-capabilities",
+  "dep:fstart-platform-aarch64",
+  "dep:ufmt",
+]
+aarch64 = ["stage", "fstart-stage/aarch64"]
+pl011 = ["stage", "fstart-stage/pl011", "dep:fstart-driver-pl011"]
+pci-ecam = ["stage", "fstart-stage/pci-ecam", "dep:fstart-driver-pci-ecam"]
+bochs-display = ["stage", "fstart-stage/bochs-display", "dep:fstart-driver-bochs-display"]
+ffs = ["stage", "fstart-stage/ffs"]
+ed25519 = ["stage", "fstart-stage/ed25519"]
+sha2-digest = ["stage", "fstart-stage/sha2-digest"]
+sha3-digest = ["stage", "fstart-stage/sha3-digest"]
+lz4 = ["stage", "fstart-stage/lz4"]
+crabefi = ["stage", "fstart-stage/crabefi"]
+flow-profile-minimal = ["stage", "fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["stage", "fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["stage", "fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["stage", "fstart-stage/flow-profile-multistage"]
 
 [dependencies]
-fstart-types = { workspace = true, features = ["std"] }
-fstart-board-meta = { workspace = true }
-fstart-driver-pl011 = { workspace = true }
-fstart-driver-pci-ecam = { workspace = true }
-fstart-driver-bochs-display = { workspace = true }
+fstart-types = { workspace = true }
+fstart-board-meta = { workspace = true, optional = true }
+fstart-driver-pl011 = { workspace = true, optional = true }
+fstart-driver-pci-ecam = { workspace = true, optional = true }
+fstart-driver-bochs-display = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-stage-runtime = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-capabilities = { workspace = true, optional = true }
+fstart-platform-aarch64 = { workspace = true, optional = true }
+ufmt = { workspace = true, optional = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+required-features = ["stage"]

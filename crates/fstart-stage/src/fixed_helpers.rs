@@ -47,6 +47,12 @@ where
         }
         Ok(self.device.as_mut().expect("console device constructed"))
     }
+
+    /// Return the constructed console device, if the console step already ran.
+    #[must_use]
+    pub fn device(&self) -> Option<&D> {
+        self.device.as_ref()
+    }
 }
 
 impl<D> HardwareInit for StaticConsole<D>
@@ -145,6 +151,80 @@ pub struct MemoryMappedLinuxBoot {
     firmware_loaded: bool,
     kernel_loaded: bool,
     dtb_addr: u64,
+}
+
+/// UEFI payload state backed by a memory-mapped FFS image.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryMappedUefiBoot {
+    ffs: MemoryMappedFfs,
+    firmware_loaded: bool,
+    fdt_addr: u64,
+}
+
+impl MemoryMappedUefiBoot {
+    /// Construct a UEFI helper with the board's FFS window and platform DTB.
+    #[must_use]
+    pub const fn new(ffs_base: u64, ffs_size: usize, fdt_addr: u64) -> Self {
+        Self {
+            ffs: MemoryMappedFfs::new(ffs_base, ffs_size),
+            firmware_loaded: false,
+            fdt_addr,
+        }
+    }
+
+    /// Current platform DTB address to expose to UEFI.
+    #[must_use]
+    pub const fn fdt_addr(&self) -> u64 {
+        self.fdt_addr
+    }
+
+    /// Mount the memory-mapped FFS window.
+    pub fn mount(&self) -> Result<(), ServiceError> {
+        self.ffs.mount()
+    }
+
+    /// Verify the FFS image policy.
+    pub fn verify(&self) -> Result<(), ServiceError> {
+        self.ffs.verify()
+    }
+
+    /// Load board firmware, such as TF-A BL31, from FFS.
+    pub fn load_firmware(&mut self) -> Result<(), ServiceError> {
+        self.ffs.load_file(FileType::Firmware)?;
+        self.firmware_loaded = true;
+        Ok(())
+    }
+
+    /// Return whether the firmware blob has been loaded.
+    #[must_use]
+    pub const fn firmware_loaded(&self) -> bool {
+        self.firmware_loaded
+    }
+
+    /// Borrow the platform FDT as bytes when the bootloader supplied a valid FDT.
+    ///
+    /// # Safety
+    ///
+    /// `self.fdt_addr()` must either be zero or point to a readable flattened
+    /// device tree that remains valid for the rest of the boot flow.
+    #[must_use]
+    pub unsafe fn fdt_bytes(&self) -> Option<&'static [u8]> {
+        let size = unsafe { fdt_total_size(self.fdt_addr)? };
+        // SAFETY: caller guarantees the address is readable for `size` bytes.
+        Some(unsafe { core::slice::from_raw_parts(self.fdt_addr as *const u8, size as usize) })
+    }
+
+    /// Return a page-aligned FDT reservation for UEFI memory-map construction.
+    ///
+    /// # Safety
+    ///
+    /// `self.fdt_addr()` must either be zero or point to a readable flattened
+    /// device tree header.
+    #[must_use]
+    pub unsafe fn fdt_reservation(&self) -> Option<(u64, u64)> {
+        let size = unsafe { fdt_total_size(self.fdt_addr)? };
+        Some((self.fdt_addr, (size + 0xfff) & !0xfff))
+    }
 }
 
 impl MemoryMappedLinuxBoot {
@@ -254,4 +334,23 @@ impl MemoryMappedLinuxBoot {
 
 fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
     ServiceError::HardwareError
+}
+
+unsafe fn fdt_total_size(fdt_addr: u64) -> Option<u64> {
+    const FDT_MAGIC: u32 = 0xd00d_feed;
+
+    if fdt_addr == 0 {
+        return None;
+    }
+
+    let ptr = fdt_addr as *const u8;
+    // SAFETY: caller guarantees that at least the FDT header is readable.
+    let magic = unsafe { u32::from_be(core::ptr::read_unaligned(ptr.cast::<u32>())) };
+    if magic != FDT_MAGIC {
+        return None;
+    }
+
+    // SAFETY: caller guarantees that at least the FDT header is readable.
+    let total = unsafe { u32::from_be(core::ptr::read_unaligned(ptr.add(4).cast::<u32>())) };
+    Some(u64::from(total))
 }

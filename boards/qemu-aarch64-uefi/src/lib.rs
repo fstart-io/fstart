@@ -1,9 +1,16 @@
 //! Rust board metadata for `qemu-aarch64-uefi`.
 
+#![cfg_attr(not(feature = "host"), no_std)]
+
+#[cfg(feature = "host")]
 use fstart_board_meta::{BindDriver, DriverBinding};
+#[cfg(feature = "host")]
 use fstart_driver_bochs_display::BochsDisplayConfig;
+#[cfg(feature = "host")]
 use fstart_driver_pci_ecam::PciEcamConfig;
+#[cfg(feature = "host")]
 use fstart_driver_pl011::Pl011Config;
+#[cfg(feature = "host")]
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     BusAddress, Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource,
@@ -14,9 +21,11 @@ use fstart_types::{
 
 pub const BOARD_NAME: &str = "qemu-aarch64-uefi";
 pub const BOARD_PACKAGE: &str = "fstart-board-qemu-aarch64-uefi";
+#[cfg(feature = "host")]
 pub const PLATFORM: Platform = Platform::Aarch64;
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn board_config() -> BoardConfig {
     BoardConfig {
         name: hstr(BOARD_NAME),
@@ -78,6 +87,7 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![
         Pl011Config {
@@ -113,11 +123,13 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn board_info() -> BoardInfo {
     board_info_from_config(board_config())
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
     let bindings = driver_bindings();
@@ -134,6 +146,7 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
+#[cfg(feature = "host")]
 fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> MemoryMap {
     MemoryMap {
         regions: hvec(regions.map(|(name, base, size, kind)| MemoryRegion {
@@ -147,6 +160,7 @@ fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> Mem
     }
 }
 
+#[cfg(feature = "host")]
 fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityConfig {
     SecurityConfig {
         signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -155,6 +169,7 @@ fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityCon
     }
 }
 
+#[cfg(feature = "host")]
 fn firmware_boot_media() -> Capability {
     Capability::BootMedia(fstart_types::BootMedium::FirmwareImage {
         temp_ram_buffer: None,
