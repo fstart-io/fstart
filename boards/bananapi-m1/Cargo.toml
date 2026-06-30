@@ -12,8 +12,3 @@ target = "armv7a-none-eabi"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-board-meta = { workspace = true }
-fstart-driver-ns16550 = { workspace = true }
-fstart-driver-sunxi-ccu = { workspace = true }
-fstart-driver-sunxi-a20-dramc = { workspace = true }
-fstart-driver-sunxi-mmc = { workspace = true }

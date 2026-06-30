@@ -3,13 +3,9 @@
 #![cfg_attr(not(feature = "host"), no_std)]
 
 #[cfg(feature = "host")]
-use fstart_board_meta::{BindDriver, DriverBinding};
 #[cfg(feature = "host")]
-use fstart_driver_fu740_ddr::Fu740DdrConfig;
 #[cfg(feature = "host")]
-use fstart_driver_fu740_prci::Fu740PrciConfig;
 #[cfg(feature = "host")]
-use fstart_driver_sifive_uart::SifiveUartConfig;
 #[cfg(feature = "host")]
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
@@ -73,31 +69,6 @@ fn config() -> BoardConfig {
 
 #[must_use]
 #[cfg(feature = "host")]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![
-        Fu740PrciConfig {
-            base_addr: 0x1000_0000,
-            gpio_base: 0x1006_0000,
-        }
-        .bind("prci0"),
-        SifiveUartConfig {
-            base_addr: 0x1001_0000,
-            clock_freq: 130_000_000,
-            baud_rate: 115_200,
-        }
-        .bind("uart0"),
-        Fu740DdrConfig {
-            ctl_base: 0x100b_0000,
-            phy_base: 0x100b_2000,
-            filter_base: 0x100b_8000,
-            dram_size: 0x4_0000_0000,
-        }
-        .bind("ddr0"),
-    ]
-}
-
-#[must_use]
-#[cfg(feature = "host")]
 pub fn board_config() -> BoardConfig {
     config()
 }
@@ -112,12 +83,11 @@ pub fn board_info() -> BoardInfo {
 #[cfg(feature = "host")]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
-    let bindings = driver_bindings();
     build_info_from_config(
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings.iter().map(DriverBinding::driver_feature),
+        ["fu740-prci", "sifive-uart", "fu740-ddr"],
     )
 }
 

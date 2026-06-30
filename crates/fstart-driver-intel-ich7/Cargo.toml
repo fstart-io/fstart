@@ -10,7 +10,6 @@ default = []
 acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
 
 [dependencies]
-fstart-board-meta = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
 fstart-ecam = { workspace = true }

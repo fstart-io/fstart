@@ -3,9 +3,7 @@
 #![cfg_attr(not(feature = "host"), no_std)]
 
 #[cfg(feature = "host")]
-use fstart_board_meta::{BindDriver, DriverBinding};
 #[cfg(feature = "host")]
-use fstart_driver_sifive_uart::SifiveUartConfig;
 #[cfg(feature = "host")]
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
@@ -64,17 +62,6 @@ fn config() -> BoardConfig {
 
 #[must_use]
 #[cfg(feature = "host")]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![SifiveUartConfig {
-        base_addr: 0x1001_0000,
-        clock_freq: 500_000_000,
-        baud_rate: 115_200,
-    }
-    .bind("uart0")]
-}
-
-#[must_use]
-#[cfg(feature = "host")]
 pub fn board_config() -> BoardConfig {
     config()
 }
@@ -89,13 +76,7 @@ pub fn board_info() -> BoardInfo {
 #[cfg(feature = "host")]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
-    let bindings = driver_bindings();
-    build_info_from_config(
-        BOARD_NAME,
-        BOARD_PACKAGE,
-        &config,
-        bindings.iter().map(DriverBinding::driver_feature),
-    )
+    build_info_from_config(BOARD_NAME, BOARD_PACKAGE, &config, ["sifive-uart"])
 }
 
 #[must_use]

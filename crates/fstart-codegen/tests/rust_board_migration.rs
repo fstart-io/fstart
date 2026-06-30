@@ -6,8 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fstart_board_meta::DriverBinding;
-use fstart_codegen::board_loader::load_parsed_board_from_rust;
+use fstart_codegen::board_loader::load_parsed_board_metadata_only;
 use fstart_types::{BoardConfig, BuildInfo, DeviceRole, Platform};
 
 fn repo_root() -> PathBuf {
@@ -27,10 +26,7 @@ struct RustBoardCase {
     driver_feature: &'static str,
     root_device: &'static str,
     device_count: usize,
-    binding_count: usize,
-    parsed_driver_count: usize,
     board_config: fn() -> BoardConfig,
-    driver_bindings: fn() -> Vec<DriverBinding>,
     build_info: fn() -> BuildInfo,
 }
 
@@ -43,10 +39,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "ns16550",
         root_device: "uart0",
         device_count: 1,
-        binding_count: 1,
-        parsed_driver_count: 1,
         board_config: fstart_board_qemu_riscv64::board_config,
-        driver_bindings: fstart_board_qemu_riscv64::driver_bindings,
         build_info: fstart_board_qemu_riscv64::build_info,
     },
     RustBoardCase {
@@ -57,10 +50,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "pl011",
         root_device: "uart0",
         device_count: 1,
-        binding_count: 1,
-        parsed_driver_count: 1,
         board_config: fstart_board_qemu_aarch64::board_config,
-        driver_bindings: fstart_board_qemu_aarch64::driver_bindings,
         build_info: fstart_board_qemu_aarch64::build_info,
     },
     RustBoardCase {
@@ -71,10 +61,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "intel-pineview",
         root_device: "northbridge",
         device_count: 10,
-        binding_count: 4,
-        parsed_driver_count: 4,
         board_config: fstart_board_foxconn_d41s::board_config,
-        driver_bindings: fstart_board_foxconn_d41s::driver_bindings,
         build_info: fstart_board_foxconn_d41s::build_info,
     },
     RustBoardCase {
@@ -85,10 +72,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "intel-gm965",
         root_device: "northbridge",
         device_count: 14,
-        binding_count: 6,
-        parsed_driver_count: 6,
         board_config: fstart_board_lenovo_x61::board_config,
-        driver_bindings: fstart_board_lenovo_x61::driver_bindings,
         build_info: fstart_board_lenovo_x61::build_info,
     },
     RustBoardCase {
@@ -99,10 +83,7 @@ const RUST_BOARD_CASES: &[RustBoardCase] = &[
         driver_feature: "intel-pineview",
         root_device: "northbridge",
         device_count: 10,
-        binding_count: 4,
-        parsed_driver_count: 4,
         board_config: fstart_board_foxconn_d41s_uefi::board_config,
-        driver_bindings: fstart_board_foxconn_d41s_uefi::driver_bindings,
         build_info: fstart_board_foxconn_d41s_uefi::build_info,
     },
 ];
@@ -113,10 +94,7 @@ fn rust_boards_parse_from_direct_rust_metadata() {
         .stack_size(64 * 1024 * 1024)
         .spawn(|| {
             for case in RUST_BOARD_CASES {
-                let driver_bindings = (case.driver_bindings)();
-                assert_eq!(driver_bindings.len(), case.binding_count);
-
-                let parsed = load_parsed_board_from_rust((case.board_config)(), driver_bindings)
+                let parsed = load_parsed_board_metadata_only((case.board_config)(), Vec::new())
                     .unwrap_or_else(|e| {
                         panic!(
                             "Rust-authored {} metadata parses through codegen: {e}",
@@ -128,7 +106,6 @@ fn rust_boards_parse_from_direct_rust_metadata() {
                 assert_eq!(parsed.config.platform, case.platform);
                 assert_eq!(parsed.config.devices.len(), case.device_count);
                 assert_eq!(parsed.config.devices[0].name.as_str(), case.root_device);
-                assert_eq!(parsed.driver_facts.len(), case.parsed_driver_count);
                 if case.board == "lenovo-x61" {
                     assert_device_role(&parsed.config, "pcie1", DeviceRole::PciBridge, true);
                     assert_device_role(&parsed.config, "pcie2", DeviceRole::PciBridge, true);

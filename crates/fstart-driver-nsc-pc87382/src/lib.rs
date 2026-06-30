@@ -67,22 +67,3 @@ impl From<SuperIoConfig> for Pc87382Config {
 
 /// PC87382 DLPC logical-device number used by the X61 mainboard DLPC block.
 pub const PC87382_DLPC_LDN: u8 = 0x19;
-
-impl fstart_board_meta::BoardDriver for Pc87382Config {
-    fn feature(&self) -> &'static str {
-        "nsc-pc87382"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        let mut services = fstart_board_meta::ServiceSet::from_static(&[ServiceKind::SuperIoHost]);
-        if self.console_port.is_some() {
-            services.insert(ServiceKind::Console);
-        }
-        services
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

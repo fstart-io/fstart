@@ -6,7 +6,4 @@ license.workspace = true
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-board-meta = { workspace = true }
-fstart-driver-ns16550 = { workspace = true }
-fstart-driver-pl011 = { workspace = true }
 heapless = { workspace = true }

@@ -1234,18 +1234,3 @@ impl MemoryController for SunxiD1Dramc {
         self.dramc_get_dram_size() as u64 * 1024 * 1024
     }
 }
-
-impl fstart_board_meta::BoardDriver for SunxiD1DramcConfig {
-    fn feature(&self) -> &'static str {
-        "sunxi-d1-dramc"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::MemoryController])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

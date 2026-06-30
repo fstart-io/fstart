@@ -742,18 +742,3 @@ impl PciRootBus for Q35HostBridge {
         self.ecam.windows()
     }
 }
-
-impl fstart_board_meta::BoardDriver for Q35HostBridgeConfig {
-    fn feature(&self) -> &'static str {
-        "q35-hostbridge"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::PciRootBus])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

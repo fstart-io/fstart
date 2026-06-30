@@ -69,22 +69,3 @@ pub const PC87392_FDC_LDN: u8 = 0x00;
 
 /// PC87392 watchdog logical-device number from coreboot's `pc87392.h`.
 pub const PC87392_WDT_LDN: u8 = 0x0a;
-
-impl fstart_board_meta::BoardDriver for Pc87392Config {
-    fn feature(&self) -> &'static str {
-        "nsc-pc87392"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        let mut services = fstart_board_meta::ServiceSet::from_static(&[ServiceKind::SuperIoHost]);
-        if self.console_port.is_some() {
-            services.insert(ServiceKind::Console);
-        }
-        services
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

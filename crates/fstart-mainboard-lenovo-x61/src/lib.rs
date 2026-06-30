@@ -740,18 +740,3 @@ mod acpi_impl {
         }
     }
 }
-
-impl fstart_board_meta::BoardDriver for LenovoX61MainboardConfig {
-    fn feature(&self) -> &'static str {
-        "lenovo-x61-mainboard"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::Mainboard])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

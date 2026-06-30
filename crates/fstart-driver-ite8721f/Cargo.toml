@@ -11,5 +11,4 @@ acpi = ["fstart-superio/acpi"]
 
 [dependencies]
 serde = { workspace = true }
-fstart-board-meta = { workspace = true }
 fstart-superio = { workspace = true }

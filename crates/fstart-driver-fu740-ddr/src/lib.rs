@@ -404,18 +404,3 @@ impl HardwareInit for Fu740Ddr {
         self.init().map_err(|_| ServiceError::HardwareError)
     }
 }
-
-impl fstart_board_meta::BoardDriver for Fu740DdrConfig {
-    fn feature(&self) -> &'static str {
-        "fu740-ddr"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::MemoryController])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

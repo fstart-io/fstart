@@ -5,7 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-fstart-board-meta = { workspace = true }
 fstart-arch-x86 = { workspace = true }
 fstart-driver-pci-ecam = { workspace = true }
 fstart-pio = { workspace = true }

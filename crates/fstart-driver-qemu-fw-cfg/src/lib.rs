@@ -603,18 +603,3 @@ fn find_alloc_entry_by_name<'a>(
 fn find_alloc_by_name(allocs: &[Option<AllocEntry>; 32], name: &[u8]) -> Option<usize> {
     find_alloc_entry_by_name(allocs, name).map(|entry| entry.offset)
 }
-
-impl fstart_board_meta::BoardDriver for QemuFwCfgConfig {
-    fn feature(&self) -> &'static str {
-        "qemu-fw-cfg"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::FirmwareImageProvider])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

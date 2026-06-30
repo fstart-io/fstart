@@ -205,18 +205,3 @@ impl HardwareInit for Pl011 {
         self.init().map_err(|_| ServiceError::HardwareError)
     }
 }
-
-impl fstart_board_meta::BoardDriver for Pl011Config {
-    fn feature(&self) -> &'static str {
-        "pl011"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::Console])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

@@ -289,18 +289,3 @@ impl Framebuffer for BochsDisplay {
         }
     }
 }
-
-impl fstart_board_meta::BoardDriver for BochsDisplayConfig {
-    fn feature(&self) -> &'static str {
-        "bochs-display"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::Framebuffer])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

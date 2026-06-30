@@ -12,5 +12,3 @@ target = "riscv64gc-unknown-none-elf"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-board-meta = { workspace = true }
-fstart-driver-ns16550 = { workspace = true }

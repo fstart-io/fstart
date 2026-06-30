@@ -16,9 +16,6 @@ default = ["host"]
 host = [
   "fstart-types/std",
   "dep:fstart-board-meta",
-  "dep:fstart-driver-fu740-ddr",
-  "dep:fstart-driver-fu740-prci",
-  "dep:fstart-driver-sifive-uart",
 ]
 stage = [
   "dep:fstart-stage",

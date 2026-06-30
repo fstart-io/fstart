@@ -76,22 +76,3 @@ impl From<SuperIoConfig> for Ite8721fConfig {
         Self(config)
     }
 }
-
-impl fstart_board_meta::BoardDriver for Ite8721fConfig {
-    fn feature(&self) -> &'static str {
-        "ite8721f"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        let mut services = fstart_board_meta::ServiceSet::from_static(&[ServiceKind::SuperIoHost]);
-        if self.console_port.is_some() {
-            services.insert(ServiceKind::Console);
-        }
-        services
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

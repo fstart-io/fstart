@@ -170,17 +170,11 @@ xtask = {{ path = "{xtask_path}" }}
     } else {
         "None"
     };
-    let driver_callback = if manifest.stage_package.is_some() {
-        "None"
-    } else {
-        "Some(fstart_board::driver_bindings)"
-    };
     let main_rs = format!(
         r#"fn main() {{
     xtask::board_tool::main(xtask::board_tool::BoardCallbacks {{
         board_config: fstart_board::board_config,
         build_info: fstart_board::build_info,
-        driver_bindings: {driver_callback},
         acpi_only_devices: {acpi_callback},
     }});
 }}

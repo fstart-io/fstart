@@ -1617,34 +1617,3 @@ mod acpi_impl {
         }
     }
 }
-
-impl fstart_board_meta::BoardDriver for IntelPineviewConfig {
-    fn feature(&self) -> &'static str {
-        "intel-pineview"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[
-            ServiceKind::PciHost,
-            ServiceKind::MemoryController,
-        ])
-    }
-
-    fn package_files(&self) -> alloc::vec::Vec<fstart_board_meta::DriverPackageFile> {
-        self.igd
-            .as_ref()
-            .and_then(|igd| igd.vbt_file.as_ref())
-            .map(|file| {
-                alloc::vec![fstart_board_meta::DriverPackageFile::new(
-                    file.as_str(),
-                    file.as_str()
-                )]
-            })
-            .unwrap_or_default()
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

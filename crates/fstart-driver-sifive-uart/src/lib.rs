@@ -222,18 +222,3 @@ impl HardwareInit for SifiveUart {
         self.init().map_err(|_| ServiceError::HardwareError)
     }
 }
-
-impl fstart_board_meta::BoardDriver for SifiveUartConfig {
-    fn feature(&self) -> &'static str {
-        "sifive-uart"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::Console])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

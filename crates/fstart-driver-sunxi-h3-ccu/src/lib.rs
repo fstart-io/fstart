@@ -335,18 +335,3 @@ impl ClockController for SunxiH3Ccu {
         }
     }
 }
-
-impl fstart_board_meta::BoardDriver for SunxiH3CcuConfig {
-    fn feature(&self) -> &'static str {
-        "sunxi-h3-ccu"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::ClockController])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

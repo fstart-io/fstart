@@ -1,7 +1,5 @@
 //! Rust board metadata for `qemu-riscv64-multi`.
 
-use fstart_board_meta::{BindDriver, DriverBinding};
-use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, MemoryMap, MemoryRegion, Platform,
@@ -74,20 +72,6 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![Ns16550Config {
-        regs: AccessMode::Mmio {
-            base: 0x1000_0000,
-            reg_shift: 0,
-            reg_width: 0,
-        },
-        clock_freq: 3_686_400,
-        baud_rate: 115_200,
-    }
-    .bind("uart0")]
-}
-
-#[must_use]
 pub fn board_info() -> BoardInfo {
     board_info_from_config(board_config())
 }
@@ -95,13 +79,7 @@ pub fn board_info() -> BoardInfo {
 #[must_use]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
-    let bindings = driver_bindings();
-    build_info_from_config(
-        BOARD_NAME,
-        BOARD_PACKAGE,
-        &config,
-        bindings.iter().map(DriverBinding::driver_feature),
-    )
+    build_info_from_config(BOARD_NAME, BOARD_PACKAGE, &config, ["ns16550"])
 }
 
 #[must_use]

@@ -249,18 +249,3 @@ impl ClockController for SunxiA20Ccu {
         }
     }
 }
-
-impl fstart_board_meta::BoardDriver for SunxiA20CcuConfig {
-    fn feature(&self) -> &'static str {
-        "sunxi-a20-ccu"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::ClockController])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

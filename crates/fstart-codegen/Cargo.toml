@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-board-meta = { workspace = true }
 fstart-services = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true, features = ["std"] }

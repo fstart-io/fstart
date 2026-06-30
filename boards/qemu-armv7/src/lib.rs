@@ -3,9 +3,7 @@
 #![cfg_attr(not(feature = "host"), no_std)]
 
 #[cfg(feature = "host")]
-use fstart_board_meta::{BindDriver, DriverBinding};
 #[cfg(feature = "host")]
-use fstart_driver_pl011::Pl011Config;
 #[cfg(feature = "host")]
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
@@ -74,20 +72,6 @@ fn config() -> BoardConfig {
 
 #[must_use]
 #[cfg(feature = "host")]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![Pl011Config {
-        base_addr: 0x0900_0000,
-        clock_freq: 1_843_200,
-        baud_rate: 115_200,
-        acpi_name: None,
-        acpi_gsiv: None,
-        acpi_dbg2: false,
-    }
-    .bind("uart0")]
-}
-
-#[must_use]
-#[cfg(feature = "host")]
 pub fn board_config() -> BoardConfig {
     config()
 }
@@ -146,11 +130,5 @@ fn board_info_from_board_config() -> BoardInfo {
 #[cfg(feature = "host")]
 fn build_info_from_board_config() -> BuildInfo {
     let config = board_config();
-    let bindings = driver_bindings();
-    build_info_from_config(
-        BOARD_NAME,
-        BOARD_PACKAGE,
-        &config,
-        bindings.iter().map(DriverBinding::driver_feature),
-    )
+    build_info_from_config(BOARD_NAME, BOARD_PACKAGE, &config, ["pl011"])
 }

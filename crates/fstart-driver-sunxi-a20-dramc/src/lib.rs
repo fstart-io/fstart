@@ -1104,18 +1104,3 @@ impl SunxiA20Dramc {
         DRAM_MAX_SIZE as u64
     }
 }
-
-impl fstart_board_meta::BoardDriver for SunxiA20DramcConfig {
-    fn feature(&self) -> &'static str {
-        "sunxi-a20-dramc"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::MemoryController])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

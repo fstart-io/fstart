@@ -1,14 +1,12 @@
 //! Foxconn D41S UEFI Rust board metadata.
 
-use fstart_board_foxconn_d41s::{
-    d41s_ck505_config, d41s_gpio_config, d41s_hda_config, d41s_smbios, d41s_superio_config,
-};
-use fstart_board_meta::DriverBinding;
+use fstart_board_foxconn_d41s::{d41s_gpio_config, d41s_hda_config, d41s_smbios};
 use fstart_platform_intel_pineview_ich7::{
     LpcGenericIoDecode, PcieRootPort, PineviewIch7Platform, SataConfig, SataMode, UsbConfig,
 };
 use fstart_types::{
-    io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, BusAddress, Platform,
+    build_info_from_config, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, BusAddress,
+    Platform,
 };
 
 pub const BOARD_NAME: &str = "foxconn-d41s-uefi";
@@ -35,9 +33,9 @@ fn board() -> PineviewIch7Platform {
         })
         .hda(d41s_hda_config())
         .gpio(d41s_gpio_config())
-        .superio("superio", io16(0x2e), d41s_superio_config())
+        .superio("superio", io16(0x2e))
         .on_smbus(|smbus| {
-            smbus.runtime("ck505", BusAddress::I2c(0x69), d41s_ck505_config());
+            smbus.runtime("ck505", BusAddress::I2c(0x69));
         })
         .smbios(d41s_smbios())
 }
@@ -48,18 +46,19 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    board().driver_bindings()
-}
-
-#[must_use]
 pub fn board_info() -> BoardInfo {
     board().board_info()
 }
 
 #[must_use]
 pub fn build_info() -> BuildInfo {
-    board().build_info()
+    let config = board_config();
+    build_info_from_config(
+        BOARD_NAME,
+        BOARD_PACKAGE,
+        &config,
+        ["intel-pineview", "intel-ich7", "ite8721f", "i2c-ck505"],
+    )
 }
 
 #[must_use]

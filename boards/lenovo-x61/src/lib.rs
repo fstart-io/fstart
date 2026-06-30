@@ -1,6 +1,5 @@
 //! Lenovo ThinkPad X61 Rust board metadata.
 
-use fstart_board_meta::DriverBinding;
 use fstart_driver_i2c_ck505::I2cCk505Config;
 use fstart_driver_nsc_pc87382 as pc87382;
 use fstart_driver_nsc_pc87392 as pc87392;
@@ -14,8 +13,9 @@ use fstart_platform_intel_gm965_ich8::{
 };
 use fstart_types::smbios::{ChassisType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor};
 use fstart_types::{
-    hstr, hvec, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, BusAddress, FlashLayout,
-    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
+    build_info_from_config, hstr, hvec, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo,
+    BusAddress, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform,
+    SmbiosConfig,
 };
 
 pub const BOARD_NAME: &str = "lenovo-x61";
@@ -73,17 +73,12 @@ fn board() -> Gm965Ich8Platform {
             access: IoTrapAccess::Any,
         })
         .acpi_print_hex(true)
-        .superio(
-            "dlpc_superio",
-            io16(0x164e),
-            x61_dlpc_superio_config(),
-            true,
-        )
-        .superio("dock_superio", io16(0x2e), x61_dock_superio_config(), false)
+        .superio("dlpc_superio", io16(0x164e), true)
+        .superio("dock_superio", io16(0x2e), false)
         .on_smbus(|smbus| {
-            smbus.runtime_enabled("ck505", BusAddress::I2c(0x69), false, x61_ck505_config());
+            smbus.runtime_enabled("ck505", BusAddress::I2c(0x69), false);
         })
-        .mainboard(x61_mainboard_config())
+        .mainboard()
         .smbios(x61_smbios())
 }
 
@@ -93,18 +88,26 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    board().driver_bindings()
-}
-
-#[must_use]
 pub fn board_info() -> BoardInfo {
     board().board_info()
 }
 
 #[must_use]
 pub fn build_info() -> BuildInfo {
-    board().build_info()
+    let config = board_config();
+    build_info_from_config(
+        BOARD_NAME,
+        BOARD_PACKAGE,
+        &config,
+        [
+            "intel-gm965",
+            "intel-ich8",
+            "lenovo-x61-mainboard",
+            "nsc-pc87382",
+            "nsc-pc87392",
+            "i2c-ck505",
+        ],
+    )
 }
 
 #[must_use]

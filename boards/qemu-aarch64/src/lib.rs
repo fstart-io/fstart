@@ -7,7 +7,6 @@
 #![cfg_attr(not(feature = "host"), no_std)]
 
 #[cfg(feature = "host")]
-use fstart_board_meta::DriverBinding;
 #[cfg(feature = "host")]
 use fstart_board_qemu_virt::QemuAarch64Virt;
 #[cfg(feature = "host")]
@@ -32,12 +31,6 @@ fn board() -> QemuAarch64Virt {
 #[cfg(feature = "host")]
 pub fn board_config() -> BoardConfig {
     board().board_config()
-}
-
-/// Typed driver configurations bound to board device names.
-#[cfg(feature = "host")]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    board().driver_bindings()
 }
 
 /// Runtime hardware facts for static typed board mode.

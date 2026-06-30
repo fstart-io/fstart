@@ -171,18 +171,3 @@ mod tests {
         assert!(I2cCk505::new_on_bus_at(cfg, &bus, Some(BusAddress::Lpc(0x2e))).is_err());
     }
 }
-
-impl fstart_board_meta::BoardDriver for I2cCk505Config {
-    fn feature(&self) -> &'static str {
-        "i2c-ck505"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::ClockController])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

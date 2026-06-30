@@ -232,8 +232,6 @@ pub fn assemble_with_parsed(
         assemble_microcode(microcode, &board_dir, &mut ro_files)?;
     }
 
-    assemble_driver_package_files(&parsed.driver_facts, &board_dir, &mut ro_files)?;
-
     if let Some(ref payload) = config.payload {
         // Handle FIT image payloads
         if payload.kind == fstart_types::PayloadKind::FitImage {
@@ -1221,47 +1219,6 @@ fn parse_intel_ifd(data: &[u8]) -> Result<ParsedIntelIfd, String> {
 // ============================================================================
 // Board asset assembly helpers
 // ============================================================================
-
-fn assemble_driver_package_files(
-    drivers: &[fstart_board_meta::DriverFact],
-    board_dir: &Path,
-    ro_files: &mut Vec<InputFile>,
-) -> Result<(), String> {
-    for driver in drivers {
-        for package_file in &driver.package_files {
-            if ro_files
-                .iter()
-                .any(|file| file.name == package_file.name.as_str())
-            {
-                continue;
-            }
-
-            let path = resolve_board_path(board_dir, package_file.path.as_str());
-            let data = fs::read(&path)
-                .map_err(|e| format!("failed to read package file {}: {e}", path.display()))?;
-            eprintln!(
-                "[fstart] package file: {} ({} bytes, lz4)",
-                path.display(),
-                data.len()
-            );
-            ro_files.push(InputFile {
-                name: package_file.name.to_string(),
-                file_type: FileType::Data,
-                segments: vec![InputSegment {
-                    name: format!(".{}", package_file.name.as_str()),
-                    kind: SegmentKind::ReadOnlyData,
-                    data,
-                    mem_size: None,
-                    load_addr: 0,
-                    compression: Compression::Lz4,
-                    flags: SegmentFlags::RODATA,
-                }],
-            });
-        }
-    }
-
-    Ok(())
-}
 
 // ============================================================================
 // Microcode assembly helpers

@@ -1704,18 +1704,3 @@ impl SunxiH3Dramc {
         self.mctl_set_cr(dual_rank, bus_full_width, page_size, row_bits, bank_bits);
     }
 }
-
-impl fstart_board_meta::BoardDriver for SunxiH3DramcConfig {
-    fn feature(&self) -> &'static str {
-        "sunxi-h3-dramc"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::MemoryController])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

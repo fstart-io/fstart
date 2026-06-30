@@ -2717,21 +2717,3 @@ mod acpi_impl {
         }
     }
 }
-
-impl fstart_board_meta::BoardDriver for IntelIch7Config {
-    fn feature(&self) -> &'static str {
-        "intel-ich7"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[
-            ServiceKind::Southbridge,
-            ServiceKind::SystemManagementBus,
-        ])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

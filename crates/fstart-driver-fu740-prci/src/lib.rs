@@ -541,18 +541,3 @@ fn spin_delay_us(us: u32) {
         core::hint::spin_loop();
     }
 }
-
-impl fstart_board_meta::BoardDriver for Fu740PrciConfig {
-    fn feature(&self) -> &'static str {
-        "fu740-prci"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::ClockController])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

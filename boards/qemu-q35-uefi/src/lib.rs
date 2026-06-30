@@ -1,9 +1,5 @@
 //! Rust board metadata for `qemu-q35-uefi`.
 
-use fstart_board_meta::{BindDriver, DriverBinding};
-use fstart_driver_ns16550::{AccessMode, Ns16550Config};
-use fstart_driver_q35_hostbridge::Q35HostBridgeConfig;
-use fstart_driver_qemu_fw_cfg::QemuFwCfgConfig;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardBuildPolicy, BoardConfig,
     BoardInfo, BuildInfo, Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource,
@@ -106,30 +102,6 @@ pub fn board_config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![
-        Ns16550Config {
-            regs: AccessMode::Pio { base: 0x3f8 },
-            clock_freq: 1_843_200,
-            baud_rate: 115_200,
-        }
-        .bind("uart0"),
-        QemuFwCfgConfig {
-            ctl_port: 0x510,
-            data_port: 0x511,
-        }
-        .bind("fw_cfg0"),
-        Q35HostBridgeConfig {
-            ecam_base: 0xb000_0000,
-            ecam_size: 0x1000_0000,
-            bus_start: 0,
-            bus_end: 255,
-        }
-        .bind("pci0"),
-    ]
-}
-
-#[must_use]
 pub fn board_info() -> BoardInfo {
     board_info_from_config(board_config())
 }
@@ -137,12 +109,11 @@ pub fn board_info() -> BoardInfo {
 #[must_use]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
-    let bindings = driver_bindings();
     build_info_from_config(
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings.iter().map(DriverBinding::driver_feature),
+        ["ns16550", "qemu-fw-cfg", "q35-hostbridge"],
     )
 }
 

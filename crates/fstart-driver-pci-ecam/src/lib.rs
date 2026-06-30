@@ -970,18 +970,3 @@ impl PciRootBus for PciEcam {
         &self.windows[..self.window_count]
     }
 }
-
-impl fstart_board_meta::BoardDriver for PciEcamConfig {
-    fn feature(&self) -> &'static str {
-        "pci-ecam"
-    }
-
-    fn services(&self) -> fstart_board_meta::ServiceSet {
-        use fstart_board_meta::ServiceKind;
-        fstart_board_meta::ServiceSet::from_static(&[ServiceKind::PciRootBus])
-    }
-
-    fn clone_box(&self) -> alloc::boxed::Box<dyn fstart_board_meta::BoardDriver> {
-        alloc::boxed::Box::new(self.clone())
-    }
-}

@@ -3,47 +3,28 @@
 //! This module keeps only the host-side normalization needed by linker setup,
 //! xtask feature derivation, and static-board build support.
 
-use std::collections::HashMap;
-
-use fstart_board_meta::{DriverBinding, DriverFact, StructuralKind};
 use fstart_services::ServiceSet;
 use fstart_types::acpi::AcpiExtraDevice;
-use fstart_types::{BoardConfig, DeviceId, DeviceNode, DeviceRole};
+use fstart_types::{BoardConfig, DeviceId, DeviceNode};
 
 /// A fully-parsed board configuration.
 ///
-/// Combines [`BoardConfig`] metadata with optional board-owned driver facts.
-/// Split board-owned stage packages can leave driver facts empty because their
-/// runtime dependencies live in the stage package itself.
+/// Combines [`BoardConfig`] metadata with normalized topology facts.
 pub struct ParsedBoard {
     /// Board metadata (name, platform, memory, stages, security, etc.).
     pub config: BoardConfig,
-    /// Runtime driver facts supplied by legacy board/platform host metadata.
-    /// Empty for split board-owned stage packages.
-    pub driver_facts: Vec<DriverFact>,
     /// Flat index-based device tree, parallel to `config.devices`.
     pub device_tree: Vec<DeviceNode>,
-    /// Effective service set per device after applying host driver metadata.
-    /// Empty per device for split board-owned stage packages.
+    /// Effective service set per device. Metadata-only board loading leaves these empty.
     pub device_services: Vec<ServiceSet>,
     /// ACPI-only descriptors collected separately from runtime devices.
     pub acpi_only_devices: Vec<AcpiExtraDevice>,
 }
 
-/// Load and validate a board from native Rust metadata.
-pub fn load_parsed_board_from_rust(
-    config: BoardConfig,
-    driver_bindings: Vec<DriverBinding>,
-) -> Result<ParsedBoard, String> {
-    load_parsed_board_from_rust_with_acpi(config, driver_bindings, Vec::new())
-}
-
-/// Load and validate a static board-owned stage that does not expose host-side
-/// runtime driver bindings.
+/// Load and validate static board metadata.
 ///
-/// In this mode the stage package owns its runtime dependencies and init code.
-/// Host metadata is still normalized and topology parent links are checked, but
-/// xtask does not require a parallel list of configured driver objects.
+/// Runtime driver binding is intentionally not part of build metadata. The
+/// board-owned stage package selects and configures concrete runtime devices.
 pub fn load_parsed_board_metadata_only(
     config: BoardConfig,
     acpi_only_devices: Vec<AcpiExtraDevice>,
@@ -59,98 +40,10 @@ pub fn load_parsed_board_metadata_only(
 
     Ok(ParsedBoard {
         config,
-        driver_facts: Vec::new(),
         device_tree,
         device_services,
         acpi_only_devices,
     })
-}
-
-/// Load and validate a board from native Rust metadata plus ACPI-only devices.
-///
-/// ACPI-only descriptors are side-table metadata for table generation. They are
-/// not runtime devices and therefore do not participate in the flat runtime
-/// topology or driver binding validation.
-pub fn load_parsed_board_from_rust_with_acpi(
-    config: BoardConfig,
-    driver_bindings: Vec<DriverBinding>,
-    acpi_only_devices: Vec<AcpiExtraDevice>,
-) -> Result<ParsedBoard, String> {
-    let mut config = config;
-    config
-        .memory
-        .normalize_derived_flash()
-        .map_err(|err| err.to_string())?;
-
-    let driver_count = driver_bindings.len();
-    let mut facts_by_device = HashMap::with_capacity(driver_count);
-    for binding in driver_bindings {
-        let fact = DriverFact::from_binding(&binding);
-        let device = fact.device.to_string();
-        if facts_by_device.insert(device.clone(), fact).is_some() {
-            return Err(format!(
-                "board '{}' has duplicate driver binding for device '{}'",
-                config.name, device
-            ));
-        }
-    }
-
-    let device_tree = build_device_tree(&config)?;
-    let mut runtime_driver_facts: Vec<DriverFact> = Vec::with_capacity(driver_count);
-    let mut device_services: Vec<ServiceSet> = Vec::with_capacity(config.devices.len());
-
-    for device in config.devices.iter() {
-        if device.role.is_runtime() {
-            let fact = facts_by_device
-                .remove(device.name.as_str())
-                .ok_or_else(|| {
-                    format!(
-                        "runtime device '{}' in board '{}' has no named driver binding",
-                        device.name, config.name
-                    )
-                })?;
-            device_services.push(fact.services);
-            runtime_driver_facts.push(fact);
-        } else {
-            if facts_by_device.contains_key(device.name.as_str()) {
-                return Err(format!(
-                    "structural device '{}' in board '{}' must not have a runtime driver binding",
-                    device.name, config.name
-                ));
-            }
-            let _kind = structural_kind_for_role(device.role)?;
-            device_services.push(ServiceSet::empty());
-        };
-    }
-
-    if !facts_by_device.is_empty() {
-        let mut names: Vec<_> = facts_by_device.keys().cloned().collect();
-        names.sort();
-        return Err(format!(
-            "board '{}' has driver bindings for unknown devices: {}",
-            config.name,
-            names.join(", ")
-        ));
-    }
-
-    Ok(ParsedBoard {
-        config,
-        driver_facts: runtime_driver_facts,
-        device_tree,
-        device_services,
-        acpi_only_devices,
-    })
-}
-
-fn structural_kind_for_role(role: DeviceRole) -> Result<StructuralKind, String> {
-    match role {
-        DeviceRole::Runtime => Err("runtime device role is not structural".to_string()),
-        DeviceRole::PciBridge => Ok(StructuralKind::PciBridge),
-        DeviceRole::LpcBus => Ok(StructuralKind::LpcBus),
-        DeviceRole::SmBus => Ok(StructuralKind::SmBus),
-        DeviceRole::GenericBus => Ok(StructuralKind::GenericBus),
-        DeviceRole::PnpDevice => Ok(StructuralKind::PnpDevice),
-    }
 }
 
 fn build_device_tree(config: &BoardConfig) -> Result<Vec<DeviceNode>, String> {
@@ -187,7 +80,7 @@ fn build_device_tree(config: &BoardConfig) -> Result<Vec<DeviceNode>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::load_parsed_board_from_rust;
+    use super::load_parsed_board_metadata_only;
 
     #[test]
     fn structural_nodes_do_not_gain_pseudo_services() {
@@ -203,9 +96,7 @@ mod tests {
             })
             .unwrap();
 
-        let parsed =
-            load_parsed_board_from_rust(config, fstart_board_qemu_riscv64::driver_bindings())
-                .unwrap();
+        let parsed = load_parsed_board_metadata_only(config, Vec::new()).unwrap();
 
         let structural_idx = parsed
             .config
@@ -218,11 +109,9 @@ mod tests {
 
     #[test]
     fn accepts_acpi_only_side_table() {
-        let parsed = load_parsed_board_from_rust(
-            fstart_board_qemu_riscv64::board_config(),
-            fstart_board_qemu_riscv64::driver_bindings(),
-        )
-        .unwrap();
+        let parsed =
+            load_parsed_board_metadata_only(fstart_board_qemu_riscv64::board_config(), Vec::new())
+                .unwrap();
         assert!(parsed.acpi_only_devices.is_empty());
     }
 }

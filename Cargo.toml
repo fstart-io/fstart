@@ -19,6 +19,8 @@ members = [
   "boards/qemu-q35/stage",
   "boards/qemu-q35-uefi",
   "boards/qemu-riscv64",
+  "boards/qemu-riscv64/facts",
+  "boards/qemu-riscv64/stage",
   "boards/qemu-riscv64-multi",
   "boards/qemu-sbsa",
   "boards/qemu-sbsa/facts",

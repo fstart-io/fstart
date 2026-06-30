@@ -584,7 +584,6 @@ mod tests {
     fn parsed(config: fstart_types::BoardConfig) -> ParsedBoard {
         ParsedBoard {
             config,
-            driver_facts: Vec::new(),
             device_tree: Vec::new(),
             device_services: Vec::new(),
             acpi_only_devices: Vec::new(),

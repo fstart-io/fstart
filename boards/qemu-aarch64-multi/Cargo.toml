@@ -12,5 +12,3 @@ target = "aarch64-unknown-none"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
-fstart-board-meta = { workspace = true }
-fstart-driver-pl011 = { workspace = true }

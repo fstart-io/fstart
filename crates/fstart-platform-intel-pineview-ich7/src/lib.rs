@@ -7,9 +7,7 @@
 //! as Super I/O wiring, clock-generator programming, GPIOs, HDA verbs, SMBIOS,
 //! and payload choice.
 
-use fstart_board_meta::{
-    DriverBinding, PlatformAttachPoint, PlatformDeviceExtensions, PlatformTopology,
-};
+use fstart_board_meta::{PlatformAttachPoint, PlatformDeviceExtensions, PlatformTopology};
 use fstart_driver_intel_ich7 as ich7;
 use fstart_driver_intel_pineview as pineview;
 use fstart_gpio_ich as gpio;
@@ -110,12 +108,9 @@ impl PineviewIch7Platform {
     }
 
     /// Attach the board-specific SuperIO chip.
-    pub fn superio<D>(mut self, name: &str, address: IoAddr<Io16>, instance: D) -> Self
-    where
-        D: fstart_board_meta::BoardDriver + Clone,
-    {
+    pub fn superio(mut self, name: &str, address: IoAddr<Io16>) -> Self {
         self.extensions.on("lpc", |lpc| {
-            lpc.runtime(name, fstart_types::BusAddress::Lpc(address.raw()), instance);
+            lpc.runtime(name, fstart_types::BusAddress::Lpc(address.raw()));
         });
         self
     }
@@ -226,11 +221,6 @@ impl PineviewIch7Platform {
     }
 
     #[must_use]
-    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
-        self.platform_topology().build().1
-    }
-
-    #[must_use]
     pub fn board_info(&self) -> BoardInfo {
         board_info_from_config(self.board_config())
     }
@@ -238,12 +228,11 @@ impl PineviewIch7Platform {
     #[must_use]
     pub fn build_info(&self) -> BuildInfo {
         let config = self.board_config();
-        let drivers = self.driver_bindings();
         build_info_from_config(
             self.board_name,
             self.board_package,
             &config,
-            drivers.iter().map(DriverBinding::driver_feature),
+            ["intel-pineview", "intel-ich7", "ite8721f", "i2c-ck505"],
         )
     }
 }
@@ -262,8 +251,8 @@ impl PcieRootPort {
 impl PineviewIch7Platform {
     fn platform_topology(&self) -> PlatformTopology {
         PlatformTopology::new()
-            .root("northbridge", self.pineview.clone())
-            .root("southbridge", self.ich7.clone())
+            .root("northbridge")
+            .root("southbridge")
             .pci_bridge("southbridge", "pcie0", 0x1c, 0, self.pcie_ports[0])
             .pci_bridge("southbridge", "pcie1", 0x1c, 1, self.pcie_ports[1])
             .pci_bridge("southbridge", "pcie2", 0x1c, 2, self.pcie_ports[2])

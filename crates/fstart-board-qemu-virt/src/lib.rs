@@ -4,9 +4,6 @@
 //! name, Cargo package, payload file names, and load addresses. Fixed emulator
 //! facts such as flash/RAM windows and default UART configuration live here.
 
-use fstart_board_meta::{BindDriver, DriverBinding};
-use fstart_driver_ns16550::{AccessMode, Ns16550Config};
-use fstart_driver_pl011::Pl011Config;
 use fstart_types::{
     hstr, Board, BoardConfig, BoardInfo, Build, BuildInfo, BuildProfile, Capability, Compression,
     DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig, FirmwareKind, FlowProfile,
@@ -85,21 +82,6 @@ impl QemuRiscv64Virt {
         }
     }
 
-    /// Typed driver configs bound to device names.
-    #[must_use]
-    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
-        vec![Ns16550Config {
-            regs: AccessMode::Mmio {
-                base: 0x1000_0000,
-                reg_shift: 0,
-                reg_width: 0,
-            },
-            clock_freq: 3_686_400,
-            baud_rate: 115_200,
-        }
-        .bind("uart0")]
-    }
-
     /// Runtime hardware facts for static typed board mode.
     #[must_use]
     pub fn board_info(&self) -> BoardInfo {
@@ -115,7 +97,7 @@ impl QemuRiscv64Virt {
             Platform::Riscv64,
             0x2000_0000,
             self.board_config(),
-            self.driver_bindings(),
+            ["ns16550"],
         )
     }
 }
@@ -189,20 +171,6 @@ impl QemuAarch64Virt {
         }
     }
 
-    /// Typed driver configs bound to device names.
-    #[must_use]
-    pub fn driver_bindings(&self) -> Vec<DriverBinding> {
-        vec![Pl011Config {
-            base_addr: 0x0900_0000,
-            clock_freq: 1_843_200,
-            baud_rate: 115_200,
-            acpi_name: None,
-            acpi_gsiv: None,
-            acpi_dbg2: false,
-        }
-        .bind("uart0")]
-    }
-
     /// Runtime hardware facts for static typed board mode.
     #[must_use]
     pub fn board_info(&self) -> BoardInfo {
@@ -218,7 +186,7 @@ impl QemuAarch64Virt {
             Platform::Aarch64,
             0x0000_0000,
             self.board_config(),
-            self.driver_bindings(),
+            ["pl011"],
         )
     }
 }
@@ -242,7 +210,7 @@ fn build_info_from_parts(
     platform: Platform,
     stage_load_addr: u64,
     config: BoardConfig,
-    drivers: Vec<DriverBinding>,
+    driver_features: impl IntoIterator<Item = &'static str>,
 ) -> BuildInfo {
     let mut build = Build::new(board_name)
         .board_package(board_package)
@@ -256,8 +224,8 @@ fn build_info_from_parts(
         .stage(StageBuildInfo::new("stage", stage_load_addr))
         .feature(platform.as_str());
 
-    for driver in drivers {
-        build = build.feature(driver.driver_feature());
+    for feature in driver_features {
+        build = build.feature(feature);
     }
 
     if let Some(payload) = &config.payload {

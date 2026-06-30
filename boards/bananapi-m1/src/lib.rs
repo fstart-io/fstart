@@ -1,10 +1,5 @@
 //! Rust board metadata for LeMaker BananaPi M1.
 
-use fstart_board_meta::{BindDriver, DriverBinding};
-use fstart_driver_ns16550::{AccessMode, Ns16550Config};
-use fstart_driver_sunxi_a20_dramc::SunxiA20DramcConfig;
-use fstart_driver_sunxi_ccu::SunxiA20CcuConfig;
-use fstart_driver_sunxi_mmc::SunxiMmcConfig;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, MemoryMap, MemoryRegion,
@@ -51,55 +46,6 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
-pub fn driver_bindings() -> Vec<DriverBinding> {
-    vec![
-        SunxiA20CcuConfig {
-            ccu_base: 0x01c2_0000,
-            pio_base: 0x01c2_0800,
-            uart_index: 0,
-        }
-        .bind("ccu0"),
-        Ns16550Config {
-            regs: AccessMode::Mmio {
-                base: 0x01c2_8000,
-                reg_shift: 2,
-                reg_width: 0,
-            },
-            clock_freq: 24_000_000,
-            baud_rate: 115_200,
-        }
-        .bind("uart0"),
-        SunxiA20DramcConfig {
-            dramc_base: 0x01c0_1000,
-            ccu_base: 0x01c2_0000,
-            clock: 432,
-            mbus_clock: 0,
-            zq: 123,
-            odt_en: false,
-            cas: 6,
-            tpr0: 0x3092_6692,
-            tpr1: 0x1090,
-            tpr2: 0x1a0c8,
-            tpr3: 0,
-            tpr4: 0,
-            emr1: 4,
-            emr2: 0,
-            emr3: 0,
-            dqs_gating_delay: 0,
-            active_windowing: false,
-        }
-        .bind("dramc0"),
-        SunxiMmcConfig::Sun7iA20 {
-            base_addr: 0x01c0_f000,
-            ccu_base: 0x01c2_0000,
-            pio_base: 0x01c2_0800,
-            mmc_index: 0,
-        }
-        .bind("mmc0"),
-    ]
-}
-
-#[must_use]
 pub fn board_config() -> BoardConfig {
     config()
 }
@@ -112,12 +58,11 @@ pub fn board_info() -> BoardInfo {
 #[must_use]
 pub fn build_info() -> BuildInfo {
     let config = board_config();
-    let bindings = driver_bindings();
     build_info_from_config(
         BOARD_NAME,
         BOARD_PACKAGE,
         &config,
-        bindings.iter().map(DriverBinding::driver_feature),
+        ["sunxi-a20-ccu", "ns16550", "sunxi-a20-dramc", "sunxi-mmc"],
     )
 }
 
