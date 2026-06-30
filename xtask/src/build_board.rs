@@ -213,6 +213,10 @@ fn build_one_stage(
             board_manifest.board
         )
     })?;
+    let stage_package = board_manifest
+        .stage_package
+        .as_deref()
+        .unwrap_or(&board_manifest.package);
     let board_label = board_manifest.board.as_str();
     let stage_label = stage_name.unwrap_or("stage");
     let artifact_dir = workspace_root
@@ -239,7 +243,7 @@ fn build_one_stage(
     cmd.current_dir(workspace_root);
     cmd.arg("build")
         .arg("--package")
-        .arg(&board_manifest.package)
+        .arg(stage_package)
         .arg("--bin")
         .arg(stage_bin)
         .arg("--target")
@@ -279,10 +283,7 @@ fn build_one_stage(
     }
 
     eprintln!("[fstart] build artifacts: {}", artifact_dir.display());
-    eprintln!(
-        "[fstart] building {}:{}...",
-        board_manifest.package, stage_bin
-    );
+    eprintln!("[fstart] building {}:{}...", stage_package, stage_bin);
     let status = cmd
         .status()
         .map_err(|e| format!("failed to run cargo: {e}"))?;

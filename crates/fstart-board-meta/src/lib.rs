@@ -17,7 +17,200 @@ use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
 pub use fstart_services::{ServiceKind, ServiceSet};
-use fstart_types::{Io16, IoAddr, PciBdf};
+use fstart_types::{hstr, Io16, IoAddr, PciBdf};
+
+/// Convert runtime ACPI table descriptors into host-side board metadata.
+///
+/// This keeps board crates from hand-writing per-board adapter code between the
+/// no_std table writer descriptors and the `fstart_types` metadata consumed by
+/// xtask validation.
+#[must_use]
+pub fn acpi_config_from_platform(
+    platform: &fstart_acpi::platform::PlatformConfig,
+) -> fstart_types::acpi::AcpiConfig {
+    match platform {
+        fstart_acpi::platform::PlatformConfig::Arm(arm) => fstart_types::acpi::AcpiConfig {
+            platform: fstart_types::acpi::AcpiPlatform::Arm(fstart_types::acpi::ArmPlatformAcpi {
+                num_cpus: arm.num_cpus,
+                gic_dist_base: arm.gic_dist_base,
+                gic_redist_base: arm.gic_redist_base,
+                gic_redist_length: arm.gic_redist_length,
+                gic_its_base: arm.gic_its_base,
+                timer_gsivs: arm.timer_gsivs,
+                watchdog: arm
+                    .watchdog
+                    .as_ref()
+                    .map(|watchdog| fstart_types::acpi::AcpiWatchdog {
+                        refresh_base: watchdog.refresh_base,
+                        control_base: watchdog.control_base,
+                        gsiv: watchdog.gsiv,
+                    }),
+                iort: arm.iort.as_ref().map(|iort| fstart_types::acpi::AcpiIort {
+                    its_ids: hvec_from_slice(iort.its_ids),
+                    pci_segment: iort.pci_segment,
+                    memory_address_limit: iort.memory_address_limit,
+                    id_count: iort.id_count,
+                }),
+            }),
+            print_hex: true,
+        },
+        #[allow(unreachable_patterns)]
+        _ => fstart_types::acpi::AcpiConfig {
+            platform: fstart_types::acpi::AcpiPlatform::X86,
+            print_hex: true,
+        },
+    }
+}
+
+/// Convert a runtime AHCI ACPI descriptor into host ACPI-only metadata.
+#[must_use]
+pub fn ahci_extra_device(
+    desc: &fstart_acpi::devices::AhciAcpi<'_>,
+) -> fstart_types::acpi::AcpiExtraDevice {
+    fstart_types::acpi::AcpiExtraDevice::Ahci(fstart_types::acpi::AcpiAhciDevice {
+        name: hstr(desc.name),
+        base: desc.base,
+        size: desc.size,
+        gsiv: desc.gsiv,
+    })
+}
+
+/// Convert a runtime xHCI ACPI descriptor into host ACPI-only metadata.
+#[must_use]
+pub fn xhci_extra_device(
+    desc: &fstart_acpi::devices::XhciAcpi<'_>,
+) -> fstart_types::acpi::AcpiExtraDevice {
+    fstart_types::acpi::AcpiExtraDevice::Xhci(fstart_types::acpi::AcpiXhciDevice {
+        name: hstr(desc.name),
+        base: desc.base,
+        size: desc.size,
+        gsiv: desc.gsiv,
+    })
+}
+
+/// Convert a static SMBIOS descriptor into host-side board metadata.
+#[must_use]
+pub fn smbios_config_from_desc(desc: &fstart_smbios::SmbiosDesc<'_>) -> fstart_types::SmbiosConfig {
+    let mut processors = heapless::Vec::new();
+    for processor in desc.processors {
+        let mut caches = heapless::Vec::new();
+        for cache in processor.caches {
+            caches
+                .push(fstart_types::smbios::SmbiosCache {
+                    designation: hstr(cache.designation),
+                    level: cache.level,
+                    size_kb: cache.size_kb,
+                    associativity: cache_associativity_from_smbios(cache.associativity),
+                    cache_type: cache_type_from_smbios(cache.cache_type),
+                })
+                .expect("SMBIOS cache metadata exceeds host capacity");
+        }
+
+        processors
+            .push(fstart_types::smbios::SmbiosProcessor {
+                socket: hstr(processor.socket),
+                manufacturer: hstr(processor.manufacturer),
+                processor_family: processor_family_from_smbios(processor.family),
+                max_speed_mhz: Some(processor.max_speed_mhz),
+                core_count: Some(processor.core_count),
+                thread_count: Some(processor.thread_count),
+                caches,
+            })
+            .expect("SMBIOS processor metadata exceeds host capacity");
+    }
+
+    let mut memory_devices = heapless::Vec::new();
+    for memory in desc.memory_devices {
+        memory_devices
+            .push(fstart_types::smbios::SmbiosMemoryDevice {
+                locator: hstr(memory.locator),
+                size_mb: Some(memory.size_mb),
+                speed_mhz: Some(memory.speed_mhz),
+                memory_type: Some(memory_type_from_smbios(memory.memory_type)),
+            })
+            .expect("SMBIOS memory metadata exceeds host capacity");
+    }
+
+    fstart_types::SmbiosConfig {
+        bios_vendor: hstr(desc.bios_vendor),
+        bios_version: hstr(desc.bios_version),
+        bios_release_date: hstr(desc.bios_release_date),
+        system_manufacturer: hstr(desc.sys_manufacturer),
+        system_product: hstr(desc.sys_product),
+        system_version: hstr(desc.sys_version),
+        system_serial: hstr(desc.sys_serial.unwrap_or("")),
+        baseboard_manufacturer: hstr(desc.bb_manufacturer),
+        baseboard_product: hstr(desc.bb_product),
+        chassis_type: chassis_type_from_smbios(desc.chassis_type),
+        chassis_manufacturer: hstr(desc.chassis_manufacturer),
+        processors,
+        memory_devices,
+    }
+}
+
+fn hvec_from_slice<T: Copy, const N: usize>(items: &[T]) -> heapless::Vec<T, N> {
+    let mut out = heapless::Vec::new();
+    for item in items {
+        out.push(*item)
+            .ok()
+            .expect("metadata exceeds host capacity");
+    }
+    out
+}
+
+fn chassis_type_from_smbios(value: u8) -> fstart_types::smbios::ChassisType {
+    match value {
+        0x03 => fstart_types::smbios::ChassisType::Desktop,
+        0x04 => fstart_types::smbios::ChassisType::LowProfileDesktop,
+        0x07 => fstart_types::smbios::ChassisType::Tower,
+        0x17 => fstart_types::smbios::ChassisType::RackMount,
+        0x1c => fstart_types::smbios::ChassisType::Blade,
+        0x1d => fstart_types::smbios::ChassisType::Embedded,
+        _ => fstart_types::smbios::ChassisType::Other,
+    }
+}
+
+fn processor_family_from_smbios(value: u16) -> fstart_types::smbios::ProcessorFamily {
+    match value {
+        0x0118 => fstart_types::smbios::ProcessorFamily::Arm,
+        0x0119 => fstart_types::smbios::ProcessorFamily::Aarch64,
+        0x28 => fstart_types::smbios::ProcessorFamily::X86_64,
+        0x0135 => fstart_types::smbios::ProcessorFamily::RiscV,
+        _ => fstart_types::smbios::ProcessorFamily::Unknown,
+    }
+}
+
+fn cache_associativity_from_smbios(value: u8) -> fstart_types::smbios::CacheAssociativity {
+    match value {
+        0x03 => fstart_types::smbios::CacheAssociativity::DirectMapped,
+        0x04 => fstart_types::smbios::CacheAssociativity::Way2,
+        0x05 => fstart_types::smbios::CacheAssociativity::Way4,
+        0x06 => fstart_types::smbios::CacheAssociativity::FullyAssociative,
+        0x07 => fstart_types::smbios::CacheAssociativity::Way8,
+        0x09 => fstart_types::smbios::CacheAssociativity::Way16,
+        _ => fstart_types::smbios::CacheAssociativity::Unknown,
+    }
+}
+
+fn cache_type_from_smbios(value: u8) -> fstart_types::smbios::CacheType {
+    match value {
+        0x03 => fstart_types::smbios::CacheType::Instruction,
+        0x04 => fstart_types::smbios::CacheType::Data,
+        _ => fstart_types::smbios::CacheType::Unified,
+    }
+}
+
+fn memory_type_from_smbios(value: u8) -> fstart_types::smbios::MemoryDeviceType {
+    match value {
+        0x13 => fstart_types::smbios::MemoryDeviceType::Ddr2,
+        0x18 => fstart_types::smbios::MemoryDeviceType::Ddr3,
+        0x1a => fstart_types::smbios::MemoryDeviceType::Ddr4,
+        0x1b => fstart_types::smbios::MemoryDeviceType::Lpddr4,
+        0x22 => fstart_types::smbios::MemoryDeviceType::Ddr5,
+        0x23 => fstart_types::smbios::MemoryDeviceType::Lpddr5,
+        _ => fstart_types::smbios::MemoryDeviceType::Unknown,
+    }
+}
 
 /// Typed topology role for structural (driverless) device tree nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

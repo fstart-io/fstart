@@ -29,6 +29,10 @@ pub struct BoardManifest {
     pub host_feature: bool,
     /// Optional Cargo binary that owns this board's static stage adapter.
     pub stage_bin: Option<String>,
+    /// Optional Cargo package that owns this board's static stage adapter.
+    ///
+    /// Defaults to `package` for legacy single-package boards.
+    pub stage_package: Option<String>,
 }
 
 /// Discover every board crate below `boards/`.
@@ -113,6 +117,7 @@ fn read(manifest: &Path) -> Result<BoardManifest, String> {
         acpi_only_devices: metadata_bool(&text, "acpi-only-devices").unwrap_or(false),
         host_feature: has_feature(&text, "host"),
         stage_bin: metadata_value(&text, "stage-bin"),
+        stage_package: metadata_value(&text, "stage-package"),
     })
 }
 
@@ -165,12 +170,17 @@ xtask = {{ path = "{xtask_path}" }}
     } else {
         "None"
     };
+    let driver_callback = if manifest.stage_package.is_some() {
+        "None"
+    } else {
+        "Some(fstart_board::driver_bindings)"
+    };
     let main_rs = format!(
         r#"fn main() {{
     xtask::board_tool::main(xtask::board_tool::BoardCallbacks {{
         board_config: fstart_board::board_config,
         build_info: fstart_board::build_info,
-        driver_bindings: fstart_board::driver_bindings,
+        driver_bindings: {driver_callback},
         acpi_only_devices: {acpi_callback},
     }});
 }}
@@ -289,7 +299,8 @@ fn has_feature(text: &str, feature: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::metadata_value;
+    use super::{metadata_value, read};
+    use std::fs;
 
     #[test]
     fn reads_only_fstart_metadata_values() {
@@ -311,5 +322,38 @@ mod tests {
             Some("riscv64gc-unknown-none-elf")
         );
         assert_eq!(metadata_value(text, "name"), None);
+    }
+
+    #[test]
+    fn reads_split_stage_package_metadata() {
+        let dir =
+            std::env::temp_dir().join(format!("fstart-board-manifest-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("Cargo.toml");
+        fs::write(
+            &manifest,
+            r#"
+            [package]
+            name = "fstart-board-qemu-sbsa"
+
+            [package.metadata.fstart]
+            board = "qemu-sbsa"
+            target = "aarch64-unknown-none"
+            stage-package = "fstart-board-qemu-sbsa-stage"
+            stage-bin = "fstart-stage"
+            "#,
+        )
+        .unwrap();
+
+        let parsed = read(&manifest).unwrap();
+        assert_eq!(parsed.board, "qemu-sbsa");
+        assert_eq!(parsed.package, "fstart-board-qemu-sbsa");
+        assert_eq!(
+            parsed.stage_package.as_deref(),
+            Some("fstart-board-qemu-sbsa-stage")
+        );
+        assert_eq!(parsed.stage_bin.as_deref(), Some("fstart-stage"));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }

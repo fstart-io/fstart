@@ -17,6 +17,8 @@ members = [
   "boards/qemu-riscv64",
   "boards/qemu-riscv64-multi",
   "boards/qemu-sbsa",
+  "boards/qemu-sbsa/facts",
+  "boards/qemu-sbsa/stage",
   "boards/sifive-unmatched",
   "boards/sifive-unmatched-hw",
   "xtask",

@@ -6,7 +6,9 @@
 
 use clap::{Parser, Subcommand};
 use fstart_board_meta::DriverBinding;
-use fstart_codegen::board_loader::{load_parsed_board_from_rust_with_acpi, ParsedBoard};
+use fstart_codegen::board_loader::{
+    load_parsed_board_from_rust_with_acpi, load_parsed_board_metadata_only, ParsedBoard,
+};
 use fstart_types::acpi::AcpiExtraDevice;
 use fstart_types::{BoardConfig, BuildInfo, StageLayout};
 
@@ -14,7 +16,7 @@ use fstart_types::{BoardConfig, BuildInfo, StageLayout};
 pub struct BoardCallbacks {
     pub board_config: fn() -> BoardConfig,
     pub build_info: fn() -> BuildInfo,
-    pub driver_bindings: fn() -> Vec<DriverBinding>,
+    pub driver_bindings: Option<fn() -> Vec<DriverBinding>>,
     pub acpi_only_devices: Option<fn() -> Vec<AcpiExtraDevice>>,
 }
 
@@ -95,13 +97,19 @@ fn load(
     let acpi_only_devices = callbacks
         .acpi_only_devices
         .map_or_else(Vec::new, |load| load());
-    let parsed = load_parsed_board_from_rust_with_acpi(
-        config,
-        (callbacks.driver_bindings)(),
-        acpi_only_devices,
-    )?;
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let manifest = crate::board_manifest::find(&workspace_root, parsed.config.name.as_str())?;
+    let manifest = crate::board_manifest::find(&workspace_root, config.name.as_str())?;
+    let parsed = if manifest.stage_package.is_some() {
+        load_parsed_board_metadata_only(config, acpi_only_devices)?
+    } else {
+        let load_drivers = callbacks.driver_bindings.ok_or_else(|| {
+            format!(
+                "legacy board '{}' must provide driver_bindings or declare stage-package",
+                manifest.board
+            )
+        })?;
+        load_parsed_board_from_rust_with_acpi(config, load_drivers(), acpi_only_devices)?
+    };
     validate(&manifest, &build_info)?;
     Ok((manifest, build_info, parsed))
 }

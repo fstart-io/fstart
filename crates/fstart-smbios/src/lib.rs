@@ -56,6 +56,98 @@ const TYPE_SYSTEM_BOOT: u8 = 32;
 const TYPE_END_OF_TABLE: u8 = 127;
 
 // ---------------------------------------------------------------------------
+// Static descriptors shared by board metadata and stage code
+// ---------------------------------------------------------------------------
+
+/// Static descriptor for SMBIOS table generation.
+///
+/// All strings are `&str` and slices so board crates can define a single
+/// const descriptor that is usable by both host metadata and no_std stage code.
+pub struct SmbiosDesc<'a> {
+    /// Type 0: BIOS vendor string.
+    pub bios_vendor: &'a str,
+    /// Type 0: BIOS version string.
+    pub bios_version: &'a str,
+    /// Type 0: BIOS release date (MM/DD/YYYY).
+    pub bios_release_date: &'a str,
+
+    /// Type 1: System manufacturer.
+    pub sys_manufacturer: &'a str,
+    /// Type 1: System product name.
+    pub sys_product: &'a str,
+    /// Type 1: System version.
+    pub sys_version: &'a str,
+    /// Type 1: System serial number (None = omit).
+    pub sys_serial: Option<&'a str>,
+
+    /// Type 2: Baseboard manufacturer (empty = skip Type 2).
+    pub bb_manufacturer: &'a str,
+    /// Type 2: Baseboard product name.
+    pub bb_product: &'a str,
+
+    /// Type 3: Chassis type byte (SMBIOS encoding).
+    pub chassis_type: u8,
+    /// Type 3: Chassis manufacturer.
+    pub chassis_manufacturer: &'a str,
+
+    /// Type 4/7: Processor entries with optional cache descriptors.
+    pub processors: &'a [ProcessorDesc<'a>],
+
+    /// Type 16/17: Memory device entries.
+    pub memory_devices: &'a [MemoryDeviceDesc<'a>],
+
+    /// Type 19: RAM region start address (0 = skip Type 19).
+    pub ram_base: u64,
+    /// Type 19: RAM region end address (inclusive).
+    pub ram_end: u64,
+}
+
+/// Processor descriptor for SMBIOS Type 4 + Type 7 generation.
+pub struct ProcessorDesc<'a> {
+    /// Socket designation string.
+    pub socket: &'a str,
+    /// Processor manufacturer.
+    pub manufacturer: &'a str,
+    /// Processor family (SMBIOS u16 encoding).
+    pub family: u16,
+    /// Maximum speed in MHz.
+    pub max_speed_mhz: u16,
+    /// Number of cores.
+    pub core_count: u16,
+    /// Number of threads.
+    pub thread_count: u16,
+    /// Cache descriptors. Empty means the runtime should detect caches when supported.
+    pub caches: &'a [CacheDesc<'a>],
+}
+
+/// Cache descriptor for SMBIOS Type 7 generation.
+#[derive(Clone, Copy)]
+pub struct CacheDesc<'a> {
+    /// Cache designation string (e.g., "L1 Data Cache").
+    pub designation: &'a str,
+    /// Cache level (1, 2, or 3).
+    pub level: u8,
+    /// Cache size in KiB.
+    pub size_kb: u32,
+    /// Associativity (SMBIOS byte encoding).
+    pub associativity: u8,
+    /// Cache type: unified, instruction, or data (SMBIOS byte encoding).
+    pub cache_type: u8,
+}
+
+/// Memory device descriptor for SMBIOS Type 17 generation.
+pub struct MemoryDeviceDesc<'a> {
+    /// Device locator string (e.g., "DIMM0", "Onboard").
+    pub locator: &'a str,
+    /// Size in MiB.
+    pub size_mb: u32,
+    /// Speed in MHz.
+    pub speed_mhz: u16,
+    /// Memory type (SMBIOS byte encoding).
+    pub memory_type: u8,
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

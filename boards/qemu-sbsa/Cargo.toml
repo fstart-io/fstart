@@ -10,9 +10,10 @@ board = "qemu-sbsa"
 platform = "aarch64"
 acpi-only-devices = true
 target = "aarch64-unknown-none"
+stage-package = "fstart-board-qemu-sbsa-stage"
+stage-bin = "fstart-stage"
 
 [dependencies]
+fstart-board-qemu-sbsa-facts = { path = "facts" }
 fstart-types = { workspace = true, features = ["std"] }
 fstart-board-meta = { workspace = true }
-fstart-driver-pl011 = { workspace = true }
-fstart-driver-pci-ecam = { workspace = true }

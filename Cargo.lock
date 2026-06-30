@@ -549,7 +549,9 @@ dependencies = [
 name = "fstart-board-meta"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-services",
+ "fstart-smbios",
  "fstart-types",
  "heapless",
  "serde",
@@ -703,9 +705,32 @@ name = "fstart-board-qemu-sbsa"
 version = "0.1.0"
 dependencies = [
  "fstart-board-meta",
- "fstart-driver-pci-ecam",
- "fstart-driver-pl011",
+ "fstart-board-qemu-sbsa-facts",
  "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-qemu-sbsa-facts"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-smbios",
+]
+
+[[package]]
+name = "fstart-board-qemu-sbsa-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-board-qemu-sbsa-facts",
+ "fstart-capabilities",
+ "fstart-driver-pl011",
+ "fstart-log",
+ "fstart-platform-aarch64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
+ "ufmt",
 ]
 
 [[package]]

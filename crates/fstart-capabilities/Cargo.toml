@@ -33,6 +33,8 @@ fstart-ffs = { workspace = true, optional = true }
 fstart-types = { workspace = true, optional = true }
 fstart-fit = { workspace = true, optional = true }
 fstart-smbios = { workspace = true, optional = true }
-fstart-arch-x86 = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, optional = true }
 postcard = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+fstart-arch-x86 = { workspace = true, optional = true }

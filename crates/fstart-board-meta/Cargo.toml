@@ -8,5 +8,7 @@ license.workspace = true
 [dependencies]
 fstart-services = { workspace = true }
 fstart-types = { workspace = true }
+fstart-acpi = { workspace = true }
+fstart-smbios = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true, features = ["alloc"] }

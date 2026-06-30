@@ -12,15 +12,19 @@ use fstart_types::{BoardConfig, DeviceId, DeviceNode, DeviceRole};
 
 /// A fully-parsed board configuration.
 ///
-/// Combines [`BoardConfig`] metadata with board-owned driver bindings.
+/// Combines [`BoardConfig`] metadata with optional board-owned driver facts.
+/// Split board-owned stage packages can leave driver facts empty because their
+/// runtime dependencies live in the stage package itself.
 pub struct ParsedBoard {
     /// Board metadata (name, platform, memory, stages, security, etc.).
     pub config: BoardConfig,
-    /// Runtime driver facts supplied by the board/platform crate.
+    /// Runtime driver facts supplied by legacy board/platform host metadata.
+    /// Empty for split board-owned stage packages.
     pub driver_facts: Vec<DriverFact>,
     /// Flat index-based device tree, parallel to `config.devices`.
     pub device_tree: Vec<DeviceNode>,
-    /// Effective service set per device after applying board policy.
+    /// Effective service set per device after applying host driver metadata.
+    /// Empty per device for split board-owned stage packages.
     pub device_services: Vec<ServiceSet>,
     /// ACPI-only descriptors collected separately from runtime devices.
     pub acpi_only_devices: Vec<AcpiExtraDevice>,
@@ -32,6 +36,34 @@ pub fn load_parsed_board_from_rust(
     driver_bindings: Vec<DriverBinding>,
 ) -> Result<ParsedBoard, String> {
     load_parsed_board_from_rust_with_acpi(config, driver_bindings, Vec::new())
+}
+
+/// Load and validate a static board-owned stage that does not expose host-side
+/// runtime driver bindings.
+///
+/// In this mode the stage package owns its runtime dependencies and init code.
+/// Host metadata is still normalized and topology parent links are checked, but
+/// xtask does not require a parallel list of configured driver objects.
+pub fn load_parsed_board_metadata_only(
+    config: BoardConfig,
+    acpi_only_devices: Vec<AcpiExtraDevice>,
+) -> Result<ParsedBoard, String> {
+    let mut config = config;
+    config
+        .memory
+        .normalize_derived_flash()
+        .map_err(|err| err.to_string())?;
+
+    let device_tree = build_device_tree(&config)?;
+    let device_services = vec![ServiceSet::empty(); config.devices.len()];
+
+    Ok(ParsedBoard {
+        config,
+        driver_facts: Vec::new(),
+        device_tree,
+        device_services,
+        acpi_only_devices,
+    })
 }
 
 /// Load and validate a board from native Rust metadata plus ACPI-only devices.
@@ -63,35 +95,11 @@ pub fn load_parsed_board_from_rust_with_acpi(
         }
     }
 
-    let mut device_tree: Vec<DeviceNode> = Vec::with_capacity(config.devices.len());
+    let device_tree = build_device_tree(&config)?;
     let mut runtime_driver_facts: Vec<DriverFact> = Vec::with_capacity(driver_count);
     let mut device_services: Vec<ServiceSet> = Vec::with_capacity(config.devices.len());
 
-    for (idx, device) in config.devices.iter().enumerate() {
-        let parent_idx = match &device.parent {
-            Some(parent_name) => Some(
-                config
-                    .devices
-                    .iter()
-                    .take(idx)
-                    .position(|candidate| candidate.name == *parent_name)
-                    .ok_or_else(|| {
-                        format!(
-                            "device '{}' references missing or later parent '{}'",
-                            device.name, parent_name
-                        )
-                    })? as DeviceId,
-            ),
-            None => None,
-        };
-        let depth = parent_idx
-            .map(|parent_idx| device_tree[parent_idx as usize].depth.saturating_add(1))
-            .unwrap_or(0);
-        device_tree.push(DeviceNode {
-            parent: parent_idx,
-            depth,
-        });
-
+    for device in config.devices.iter() {
         if device.role.is_runtime() {
             let fact = facts_by_device
                 .remove(device.name.as_str())
@@ -143,6 +151,38 @@ fn structural_kind_for_role(role: DeviceRole) -> Result<StructuralKind, String> 
         DeviceRole::GenericBus => Ok(StructuralKind::GenericBus),
         DeviceRole::PnpDevice => Ok(StructuralKind::PnpDevice),
     }
+}
+
+fn build_device_tree(config: &BoardConfig) -> Result<Vec<DeviceNode>, String> {
+    let mut device_tree: Vec<DeviceNode> = Vec::with_capacity(config.devices.len());
+
+    for (idx, device) in config.devices.iter().enumerate() {
+        let parent_idx = match &device.parent {
+            Some(parent_name) => Some(
+                config
+                    .devices
+                    .iter()
+                    .take(idx)
+                    .position(|candidate| candidate.name == *parent_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "device '{}' references missing or later parent '{}'",
+                            device.name, parent_name
+                        )
+                    })? as DeviceId,
+            ),
+            None => None,
+        };
+        let depth = parent_idx
+            .map(|parent_idx| device_tree[parent_idx as usize].depth.saturating_add(1))
+            .unwrap_or(0);
+        device_tree.push(DeviceNode {
+            parent: parent_idx,
+            depth,
+        });
+    }
+
+    Ok(device_tree)
 }
 
 #[cfg(test)]

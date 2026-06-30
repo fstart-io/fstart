@@ -1,0 +1,34 @@
+[package]
+name = "fstart-board-qemu-sbsa-stage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+aarch64 = ["fstart-stage/aarch64"]
+aarch64-el2-relocate-entry = ["fstart-stage/aarch64-el2-relocate-entry"]
+pl011 = ["fstart-stage/pl011"]
+acpi = ["fstart-stage/acpi", "dep:fstart-acpi"]
+smbios = ["fstart-stage/smbios"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+[dependencies]
+fstart-board-qemu-sbsa-facts = { path = "../facts" }
+fstart-stage = { workspace = true }
+fstart-stage-runtime = { workspace = true }
+fstart-services = { workspace = true }
+fstart-log = { workspace = true }
+fstart-capabilities = { workspace = true }
+fstart-platform-aarch64 = { workspace = true }
+fstart-driver-pl011 = { workspace = true, features = ["acpi"] }
+fstart-acpi = { workspace = true, optional = true }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
