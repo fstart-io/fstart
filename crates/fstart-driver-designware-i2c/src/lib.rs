@@ -190,8 +190,7 @@ pub enum I2cSpeed {
 /// Typed configuration for the DesignWare I2C driver.
 ///
 /// Contains exactly the fields this driver needs.
-/// Serializable for build-time validation and postcard
-/// (runtime config from FFS).
+/// Serializable for build-time validation and runtime config from FFS.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesignwareI2cConfig {

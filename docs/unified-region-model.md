@@ -104,10 +104,11 @@ pub struct ImageManifest {
 }
 ```
 
-Each `Container` region has its own `SignedManifest` serialized within the
-image. The root `ImageManifest` lives in the anchor's pointed-to location
-and covers the overall image layout. Each Container's children are serialized
-in a separate `SignedManifest` that the Container's offset/size points to.
+Each `Container` region could have its own signed child manifest serialized
+within the image. The root `ImageManifest` lives in the anchor's pointed-to
+location and covers the overall image layout. Each Container's children would
+be serialized in a separate signed manifest envelope that the Container's
+offset/size points to.
 
 **Wait — this adds a level of indirection.** Let's simplify.
 
@@ -116,8 +117,9 @@ in a separate `SignedManifest` that the Container's offset/size points to.
 For the current needs (RO-only images, no independent RW updates), the
 simplest correct design is:
 
-- The anchor points to **one** `SignedManifest`
-- That manifest contains an `ImageManifest` with all `Region`s
+- The anchor points to **one** signed manifest envelope
+- That envelope contains a fixed flat-table encoding of `ImageManifest`
+  with all `Region`s
 - Each `Container` region's `children` are inline in the manifest (not
   separately signed)
 
@@ -175,7 +177,7 @@ that bundles the base offset.
 ### What Stays the Same
 
 - `AnchorBlock` remains `#[repr(C)]`, read by volatile pointer cast
-- `SignedManifest` wrapping remains (postcard-serialized manifest + signature)
+- Signed manifest wrapping remains (fixed flat-table manifest + signature)
 - `Segment`, `SegmentKind`, `SegmentFlags`, `Compression` unchanged
 - `DigestSet`, `Signature`, `SignatureKind` unchanged
 - `VerificationKey` unchanged

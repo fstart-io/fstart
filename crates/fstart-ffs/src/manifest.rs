@@ -8,7 +8,7 @@
 use crate::reader::ReaderError;
 use fstart_types::ffs::{
     Compression, DigestSet, EntryContent, FileType, ImageManifest, Region, RegionContent,
-    RegionEntry, Segment, SegmentFlags, SegmentKind,
+    RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,
 };
 use heapless::String as HString;
 use zerocopy::byteorder::{LE, U32, U64};
@@ -16,6 +16,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"FSMZ");
 const VERSION: u32 = 1;
+const SIGNED_MAGIC: u32 = u32::from_le_bytes(*b"FSSZ");
+const SIGNED_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 #[repr(C)]
@@ -27,6 +29,24 @@ struct Header {
     segment_count: U32<LE>,
     string_table_offset: U32<LE>,
     string_table_size: U32<LE>,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C)]
+struct SignedHeader {
+    magic: U32<LE>,
+    version: U32<LE>,
+    manifest_size: U32<LE>,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C)]
+struct SignatureRecord {
+    key_id: u8,
+    kind: u8,
+    _reserved: [u8; 2],
+    sig_lo: [u8; 32],
+    sig_hi: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
@@ -476,6 +496,67 @@ pub fn encode_manifest(
 }
 
 #[cfg(feature = "std")]
+pub fn encode_signed_manifest(
+    manifest_bytes: &[u8],
+    signature: &Signature,
+) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
+
+    let manifest_size = manifest_bytes
+        .len()
+        .try_into()
+        .map_err(|_| "manifest too large".to_string())?;
+    let header = SignedHeader {
+        magic: U32::new(SIGNED_MAGIC),
+        version: U32::new(SIGNED_VERSION),
+        manifest_size: U32::new(manifest_size),
+    };
+    let signature = SignatureRecord::from_signature(signature);
+
+    let mut out = Vec::with_capacity(
+        core::mem::size_of::<SignedHeader>()
+            + manifest_bytes.len()
+            + core::mem::size_of::<SignatureRecord>(),
+    );
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(manifest_bytes);
+    out.extend_from_slice(signature.as_bytes());
+    Ok(out)
+}
+
+pub fn parse_signed_manifest(data: &[u8]) -> Result<(&[u8], Signature), ReaderError> {
+    let header_size = core::mem::size_of::<SignedHeader>();
+    let signature_size = core::mem::size_of::<SignatureRecord>();
+    let (header_ref, _) =
+        Ref::<_, SignedHeader>::from_prefix(data).map_err(|_| ReaderError::DeserializeError)?;
+    let header = *header_ref;
+    if header.magic.get() != SIGNED_MAGIC || header.version.get() != SIGNED_VERSION {
+        return Err(ReaderError::UnsupportedVersion);
+    }
+
+    let manifest_start = header_size;
+    let manifest_end = manifest_start
+        .checked_add(header.manifest_size.get() as usize)
+        .ok_or(ReaderError::OutOfBounds)?;
+    let signature_end = manifest_end
+        .checked_add(signature_size)
+        .ok_or(ReaderError::OutOfBounds)?;
+    if signature_end != data.len() {
+        return Err(ReaderError::DeserializeError);
+    }
+    let manifest = data
+        .get(manifest_start..manifest_end)
+        .ok_or(ReaderError::OutOfBounds)?;
+    let signature_bytes = data
+        .get(manifest_end..signature_end)
+        .ok_or(ReaderError::OutOfBounds)?;
+    let signature_ref = Ref::<_, SignatureRecord>::from_bytes(signature_bytes)
+        .map_err(|_| ReaderError::DeserializeError)?;
+    Ok((manifest, Ref::into_ref(signature_ref).to_signature()?))
+}
+
+#[cfg(feature = "std")]
 fn encode_entry(
     entry: &RegionEntry,
     entries: &mut alloc::vec::Vec<EntryRecord>,
@@ -572,6 +653,44 @@ fn checked_range(len: usize, start: usize, count: usize) -> Result<(), ReaderErr
         Ok(())
     } else {
         Err(ReaderError::OutOfBounds)
+    }
+}
+
+impl SignatureRecord {
+    #[cfg(feature = "std")]
+    fn from_signature(signature: &Signature) -> Self {
+        Self {
+            key_id: signature.key_id,
+            kind: encode_signature_kind(signature.kind),
+            _reserved: [0; 2],
+            sig_lo: signature.sig_lo,
+            sig_hi: signature.sig_hi,
+        }
+    }
+
+    fn to_signature(self) -> Result<Signature, ReaderError> {
+        Ok(Signature {
+            key_id: self.key_id,
+            kind: decode_signature_kind(self.kind)?,
+            sig_lo: self.sig_lo,
+            sig_hi: self.sig_hi,
+        })
+    }
+}
+
+#[cfg(feature = "std")]
+fn encode_signature_kind(kind: SignatureKind) -> u8 {
+    match kind {
+        SignatureKind::Ed25519 => 1,
+        SignatureKind::EcdsaP256 => 2,
+    }
+}
+
+fn decode_signature_kind(value: u8) -> Result<SignatureKind, ReaderError> {
+    match value {
+        1 => Ok(SignatureKind::Ed25519),
+        2 => Ok(SignatureKind::EcdsaP256),
+        _ => Err(ReaderError::DeserializeError),
     }
 }
 

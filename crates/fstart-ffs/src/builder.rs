@@ -21,8 +21,8 @@ use std::vec::Vec;
 use fstart_crypto::digest;
 use fstart_types::ffs::{
     AnchorBlock, Compression, EntryContent, FileType, ImageManifest, Region, RegionContent,
-    RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignedManifest, VerificationKey,
-    ANCHOR_MAX_KEYS, ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
+    RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_MAX_KEYS,
+    ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
 };
 use heapless::String as HString;
 
@@ -318,10 +318,8 @@ where
 
     let signed = sign_manifest(&manifest, sign)?;
     let manifest_offset = image.len() as u32;
-    let manifest_serialized =
-        postcard::to_allocvec(&signed).map_err(|e| format!("serialize manifest: {e}"))?;
-    let manifest_size = manifest_serialized.len() as u32;
-    image.extend_from_slice(&manifest_serialized);
+    let manifest_size = signed.len() as u32;
+    image.extend_from_slice(&signed);
 
     // ---- Phase 3: Build anchor and patch it into the bootblock binary ----
     if config.keys.len() > ANCHOR_MAX_KEYS {
@@ -390,9 +388,7 @@ where
         &anchor,
     )?;
 
-    let new_signed = sign_manifest(&manifest, sign)?;
-    let new_manifest_serialized =
-        postcard::to_allocvec(&new_signed).map_err(|e| format!("re-serialize manifest: {e}"))?;
+    let new_manifest_serialized = sign_manifest(&manifest, sign)?;
 
     if new_manifest_serialized.len() != manifest_size as usize {
         return Err(format!(
@@ -837,31 +833,14 @@ fn recompute_external_file_digests(
     Ok(())
 }
 
-/// Serialize a manifest, sign it, and return a `SignedManifest`.
-fn sign_manifest<F>(manifest: &ImageManifest, sign: &F) -> Result<SignedManifest, String>
+/// Encode a manifest, sign it, and return a fixed-format signed manifest envelope.
+fn sign_manifest<F>(manifest: &ImageManifest, sign: &F) -> Result<Vec<u8>, String>
 where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
-    let manifest_bytes_vec = crate::manifest::encode_manifest(manifest)?;
-
-    if manifest_bytes_vec.len() > 8192 {
-        return Err(format!(
-            "manifest too large ({} bytes, max 8192)",
-            manifest_bytes_vec.len()
-        ));
-    }
-
-    let mut manifest_bytes: heapless::Vec<u8, 8192> = heapless::Vec::new();
-    manifest_bytes
-        .extend_from_slice(&manifest_bytes_vec)
-        .map_err(|_| "manifest bytes overflow".to_string())?;
-
-    let signature = sign(&manifest_bytes_vec)?;
-
-    Ok(SignedManifest {
-        manifest_bytes,
-        signature,
-    })
+    let manifest_bytes = crate::manifest::encode_manifest(manifest)?;
+    let signature = sign(&manifest_bytes)?;
+    crate::manifest::encode_signed_manifest(&manifest_bytes, &signature)
 }
 
 /// Verify that an LZ4-compressed segment can be safely decompressed in-place.

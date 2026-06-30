@@ -6,7 +6,7 @@
 //!
 //! 1. The bootblock references the anchor as a static (known at link time).
 //! 2. It reads `manifest_offset` / `manifest_size` from the anchor.
-//! 3. It slices the image at those offsets and deserializes the `SignedManifest`.
+//! 3. It slices the image at those offsets and parses the signed manifest envelope.
 //! 4. It verifies the manifest signature using keys from the anchor.
 //! 5. It looks up regions by name, then entries by name, then loads segments.
 //!
@@ -30,7 +30,7 @@ pub enum ReaderError {
     BadMagic,
     /// Unsupported FFS version.
     UnsupportedVersion,
-    /// Failed to deserialize a postcard-encoded structure.
+    /// Failed to parse a fixed-format structure.
     DeserializeError,
     /// Manifest signature verification failed.
     SignatureInvalid,
@@ -134,7 +134,7 @@ impl<'a> FfsReader<'a> {
 
     /// Read and verify the signed image manifest referenced by the anchor.
     ///
-    /// 1. Reads the `SignedManifest` from the offset/size in the anchor.
+    /// 1. Reads the signed manifest envelope from the offset/size in the anchor.
     /// 2. Verifies the signature using the keys embedded in the anchor.
     /// 3. Deserializes and returns the `ImageManifest`.
     pub fn read_manifest(&self, anchor: &AnchorBlock) -> Result<ImageManifest, ReaderError> {
@@ -222,7 +222,7 @@ impl<'a> FfsReader<'a> {
 
     // ---- Internal helpers ----
 
-    /// Read a SignedManifest, verify its signature, and deserialize the ImageManifest.
+    /// Read a signed manifest envelope, verify its signature, and parse the ImageManifest.
     fn read_verified_manifest(
         &self,
         offset: usize,
@@ -239,7 +239,7 @@ impl<'a> FfsReader<'a> {
     }
 }
 
-/// Verify a signed manifest and deserialize the inner [`ImageManifest`].
+/// Verify a signed manifest envelope and parse the inner [`ImageManifest`].
 ///
 /// This is the core manifest verification logic, factored out of
 /// [`FfsReader`] so it can be reused by boot-media-aware code paths
@@ -248,12 +248,12 @@ impl<'a> FfsReader<'a> {
 ///
 /// # Arguments
 ///
-/// - `data`: The raw bytes of the serialized [`SignedManifest`].
+/// - `data`: The raw bytes of the fixed-format signed manifest envelope.
 /// - `keys`: Verification keys from the anchor block.
 ///
 /// # Errors
 ///
-/// Returns [`ReaderError::DeserializeError`] if postcard deserialization fails,
+/// Returns [`ReaderError::DeserializeError`] if envelope/manifest parsing fails,
 /// [`ReaderError::SignatureInvalid`] if the signature doesn't verify, or
 /// [`ReaderError::KeyNotFound`] if no matching key is found.
 pub fn verify_and_parse_manifest(
@@ -268,7 +268,7 @@ pub fn verify_and_borrow_manifest<'a>(
     data: &'a [u8],
     keys: &[fstart_types::ffs::VerificationKey],
 ) -> Result<&'a [u8], ReaderError> {
-    let (manifest_bytes, signature) = parse_signed_manifest(data)?;
+    let (manifest_bytes, signature) = crate::manifest::parse_signed_manifest(data)?;
     verify_manifest_signature(manifest_bytes, &signature, keys)?;
     Ok(manifest_bytes)
 }
@@ -290,45 +290,4 @@ fn verify_manifest_signature(
         verify::VerifyError::UnsupportedAlgorithm => ReaderError::UnsupportedAlgorithm,
         _ => ReaderError::SignatureInvalid,
     })
-}
-
-/// Borrow the inner manifest bytes and deserialize the trailing signature from
-/// a postcard-encoded `SignedManifest`.
-///
-/// `SignedManifest::manifest_bytes` has an 8 KiB heapless capacity. Fully
-/// deserializing that envelope in firmware materializes the whole capacity on
-/// the stack before we immediately borrow the bytes again. Parse the postcard
-/// sequence length directly so runtime verification stays zero-copy and small.
-fn parse_signed_manifest(data: &[u8]) -> Result<(&[u8], Signature), ReaderError> {
-    let (manifest_len, len_len) = decode_postcard_varint(data)?;
-    let manifest_end = len_len
-        .checked_add(manifest_len)
-        .ok_or(ReaderError::OutOfBounds)?;
-    let manifest_bytes = data
-        .get(len_len..manifest_end)
-        .ok_or(ReaderError::OutOfBounds)?;
-    let signature: Signature =
-        postcard::from_bytes(&data[manifest_end..]).map_err(|_| ReaderError::DeserializeError)?;
-    Ok((manifest_bytes, signature))
-}
-
-fn decode_postcard_varint(data: &[u8]) -> Result<(usize, usize), ReaderError> {
-    let mut value = 0usize;
-    let mut shift = 0usize;
-
-    for (index, &byte) in data.iter().enumerate() {
-        let part = (byte & 0x7f) as usize;
-        value |= part
-            .checked_shl(shift as u32)
-            .ok_or(ReaderError::DeserializeError)?;
-        if byte & 0x80 == 0 {
-            return Ok((value, index + 1));
-        }
-        shift += 7;
-        if shift >= usize::BITS as usize {
-            return Err(ReaderError::DeserializeError);
-        }
-    }
-
-    Err(ReaderError::DeserializeError)
 }

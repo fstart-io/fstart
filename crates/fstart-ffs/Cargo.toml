@@ -6,8 +6,8 @@ license.workspace = true
 
 [features]
 default = []
-std = ["fstart-types/std", "postcard/use-std", "postcard/alloc", "fstart-crypto/all", "dep:lz4_flex"]
-alloc = ["fstart-types/alloc", "postcard/alloc"]
+std = ["fstart-types/std", "fstart-crypto/all", "dep:lz4_flex"]
+alloc = ["fstart-types/alloc"]
 # Forward crypto features for firmware (no_std) builds that need verification
 ed25519 = ["fstart-crypto/ed25519"]
 sha2-digest = ["fstart-crypto/sha2-digest"]
@@ -16,7 +16,6 @@ sha3-digest = ["fstart-crypto/sha3-digest"]
 [dependencies]
 fstart-types = { workspace = true }
 fstart-crypto = { workspace = true }
-postcard = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
 lz4_flex = { workspace = true, optional = true }

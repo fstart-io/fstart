@@ -28,7 +28,7 @@
 //! ├─────────────────────────────────────────────────────────┤
 //! │ NVS region (optional, raw 0xFF-filled)                  │
 //! ├─────────────────────────────────────────────────────────┤
-//! │ Signed ImageManifest (postcard-serialized)              │
+//! │ Signed ImageManifest (fixed flat tables)                 │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -42,7 +42,8 @@
 //!
 //! See [docs/unified-region-model.md](../../../docs/unified-region-model.md).
 //!
-//! All types are serde-compatible for postcard serialization.
+//! The build-time ergonomic manifest types are encoded into fixed flat tables
+//! before being signed and written into firmware.
 
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
@@ -107,7 +108,7 @@ pub struct AnchorBlock {
     ///
     /// The bootblock adds this to the flash base address to get a pointer.
     pub manifest_offset: u32,
-    /// Size of the serialized `SignedManifest` in bytes.
+    /// Size of the fixed-format signed manifest envelope in bytes.
     pub manifest_size: u32,
     /// Total firmware image size in bytes (all regions combined).
     pub total_image_size: u32,
@@ -120,7 +121,7 @@ pub struct AnchorBlock {
     ///
     /// Zero means no early microcode blob is present. This is deliberately
     /// duplicated from the manifest so pre-Rust x86 entry code can apply BSP
-    /// microcode before it has a stack or postcard/FFS parser.
+    /// microcode before it has a stack or FFS parser.
     pub microcode_offset: u32,
     /// Size of the concatenated CPU microcode blob in bytes.
     pub microcode_size: u32,
@@ -325,23 +326,6 @@ pub enum KeyBytes {
 }
 
 // ============================================================================
-// Signed manifest
-// ============================================================================
-
-/// A manifest bundled with its cryptographic signature.
-///
-/// The `manifest_bytes` field contains the raw postcard-encoded `ImageManifest`.
-/// The signature covers exactly those bytes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SignedManifest {
-    /// Raw postcard-encoded `ImageManifest` bytes.
-    pub manifest_bytes: heapless::Vec<u8, 8192>,
-    /// Cryptographic signature over `manifest_bytes`.
-    pub signature: Signature,
-}
-
-// ============================================================================
 // Image manifest — the top-level region table
 // ============================================================================
 
@@ -471,7 +455,7 @@ pub enum EntryContent {
 pub enum FileType {
     /// Executable stage binary — loaded and jumped to.
     StageCode,
-    /// Board configuration (postcard-serialized `BoardConfig`).
+    /// Board configuration blob.
     BoardConfig,
     /// OS kernel or other payload.
     Payload,

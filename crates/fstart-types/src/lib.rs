@@ -39,7 +39,7 @@ pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode, DeviceRole};
 pub use ffs::{
     AnchorBlock, Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, Region,
     RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,
-    SignedManifest, VerificationKey, FFS_MAGIC, FFS_VERSION,
+    VerificationKey, FFS_MAGIC, FFS_VERSION,
 };
 pub use memory::{
     CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,

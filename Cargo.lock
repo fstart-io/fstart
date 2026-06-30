@@ -1256,7 +1256,6 @@ dependencies = [
  "fstart-types",
  "heapless",
  "lz4_flex",
- "postcard",
  "rand_core",
  "zerocopy",
 ]

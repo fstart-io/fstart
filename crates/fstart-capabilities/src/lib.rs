@@ -675,8 +675,8 @@ pub fn stage_load_stub(next_stage: &str) {
 
 /// Maximum signed manifest size for buffered reads from block devices.
 ///
-/// Manifests typically serialize to 1-4 KB with postcard. 8 KB provides
-/// generous headroom for boards with many files and regions.
+/// Signed manifest envelopes are usually 1-4 KiB. 8 KiB provides generous
+/// headroom for boards with many files and regions.
 #[cfg(all(feature = "ffs", target_arch = "x86_64"))]
 const MAX_MANIFEST_SIZE: usize = 4096;
 #[cfg(all(feature = "ffs", not(target_arch = "x86_64")))]
