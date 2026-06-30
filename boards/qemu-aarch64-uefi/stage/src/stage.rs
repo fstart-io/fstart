@@ -1,32 +1,24 @@
 //! Static fixed-flow adapter for QEMU AArch64 UEFI.
 
+use fstart_board_qemu_aarch64_uefi_facts as facts;
 use fstart_driver_pl011::{Pl011, Pl011Config};
 use fstart_services::{InitContext, ServiceError};
 use fstart_stage::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedUefiBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-const FLASH_BASE: u64 = 0x0000_0000;
-const FLASH_SIZE: usize = 0x0800_0000;
-const RAM_BASE: u64 = 0x4000_0000;
-const RAM_SIZE: u64 = 0x1_0000_0000;
-const FIRMWARE_LOAD_ADDR: u64 = 0x4010_0000;
-const FW_DATA_ADDR: u64 = 0x4020_0000;
-const FW_STACK_SIZE: u64 = 0x300000;
-const PCI_ECAM_BASE: u64 = 0x0040_1000_0000;
-
 static UART0_CONFIG: Pl011Config = Pl011Config {
-    base_addr: 0x0900_0000,
-    clock_freq: 1_843_200,
-    baud_rate: 115_200,
+    base_addr: facts::UART0_BASE,
+    clock_freq: facts::UART0_CLOCK_FREQ,
+    baud_rate: facts::UART0_BAUD_RATE,
     acpi_name: None,
     acpi_gsiv: None,
     acpi_dbg2: false,
 };
 
 static STATIC_MEMORY: [MemoryRegion; 1] = [MemoryRegion {
-    base: FLASH_BASE,
-    size: FLASH_SIZE as u64,
+    base: facts::FLASH_BASE,
+    size: facts::FLASH_SIZE_U64,
     region_type: MemoryType::Reserved,
 }];
 
@@ -44,8 +36,8 @@ impl StaticBoard for StageBoard {
         Ok(Self {
             devices: StageDevices::new(&UART0_CONFIG),
             boot: MemoryMappedUefiBoot::new(
-                FLASH_BASE,
-                FLASH_SIZE,
+                facts::FLASH_BASE,
+                facts::FLASH_SIZE,
                 fstart_platform::boot_dtb_addr(),
             ),
         })
@@ -60,7 +52,7 @@ impl StaticBoard for StageBoard {
     }
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        console_ready("uart0", "pl011");
+        console_ready(facts::UART0_NODE, "pl011");
         Ok(())
     }
 
@@ -87,10 +79,10 @@ impl StaticBoard for StageBoard {
 
         fstart_log::info!(
             "initializing BL31 at {:#x}, resume FDT at {:#x}",
-            FIRMWARE_LOAD_ADDR,
+            facts::FIRMWARE_LOAD_ADDR,
             self.boot.fdt_addr(),
         );
-        fstart_platform::boot_bl31_and_resume(FIRMWARE_LOAD_ADDR, self.boot.fdt_addr());
+        fstart_platform::boot_bl31_and_resume(facts::FIRMWARE_LOAD_ADDR, self.boot.fdt_addr());
 
         let console = match self.devices.device() {
             Some(console) => console,
@@ -108,14 +100,14 @@ impl StaticBoard for StageBoard {
                 acpi_rsdp: None,
                 smbios: None,
                 fdt,
-                ecam_base: Some(PCI_ECAM_BASE),
+                ecam_base: Some(facts::PCI0_ECAM_BASE),
                 runtime_region: None,
             },
             &STATIC_MEMORY,
-            RAM_BASE,
-            RAM_SIZE,
-            FW_DATA_ADDR,
-            FW_STACK_SIZE,
+            facts::RAM_BASE,
+            facts::RAM_SIZE,
+            facts::FW_DATA_ADDR,
+            facts::FW_STACK_SIZE,
             fdt_reservation,
         )
     }

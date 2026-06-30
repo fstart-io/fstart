@@ -11,6 +11,8 @@ members = [
   "boards/qemu-aarch64",
   "boards/qemu-aarch64-multi",
   "boards/qemu-aarch64-uefi",
+  "boards/qemu-aarch64-uefi/facts",
+  "boards/qemu-aarch64-uefi/stage",
   "boards/qemu-armv7",
   "boards/qemu-q35",
   "boards/qemu-q35/facts",
