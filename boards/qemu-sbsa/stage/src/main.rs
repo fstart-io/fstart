@@ -13,7 +13,7 @@ mod stage;
 struct HeapStore([u8; 0x40000]);
 
 #[no_mangle]
-static _FSTART_HEAP: HeapStore = HeapStore([0; 0x40000]);
+static mut _FSTART_HEAP: HeapStore = HeapStore([0; 0x40000]);
 
 #[no_mangle]
 static _FSTART_HEAP_SIZE: usize = 0x40000;

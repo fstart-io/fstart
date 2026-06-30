@@ -21,7 +21,7 @@ const HEAP_SIZE: usize = fstart_board_foxconn_d41s_facts::RAMSTAGE_HEAP_SIZE;
 struct HeapStore([u8; HEAP_SIZE]);
 
 #[no_mangle]
-static _FSTART_HEAP: HeapStore = HeapStore([0; HEAP_SIZE]);
+static mut _FSTART_HEAP: HeapStore = HeapStore([0; HEAP_SIZE]);
 
 #[no_mangle]
 static _FSTART_HEAP_SIZE: usize = HEAP_SIZE;
