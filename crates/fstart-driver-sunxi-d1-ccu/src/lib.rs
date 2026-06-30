@@ -19,7 +19,6 @@
 
 #![no_std]
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
-extern crate alloc;
 
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 

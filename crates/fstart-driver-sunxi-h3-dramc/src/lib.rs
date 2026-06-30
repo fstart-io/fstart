@@ -18,7 +18,6 @@
 #![allow(clippy::too_many_arguments)] // mbus_configure_port mirrors U-Boot signature
 #![allow(clippy::unnecessary_cast)] // Explicit casts clarify register-width intent
 #![allow(clippy::needless_range_loop)] // Index-based loops match U-Boot's C style
-extern crate alloc;
 
 use core::cell::Cell;
 

@@ -489,6 +489,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-bananapi-m1-facts"
+version = "0.1.0"
+
+[[package]]
+name = "fstart-board-bananapi-m1-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-board-bananapi-m1-facts",
+ "fstart-capabilities",
+ "fstart-driver-ns16550",
+ "fstart-driver-sunxi-a20-dramc",
+ "fstart-driver-sunxi-ccu",
+ "fstart-driver-sunxi-mmc",
+ "fstart-log",
+ "fstart-platform-armv7",
+ "fstart-services",
+ "fstart-soc-sunxi",
+ "fstart-stage",
+ "fstart-stage-runtime",
+ "fstart-types",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-foxconn-d41s"
 version = "0.1.0"
 dependencies = [

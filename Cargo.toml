@@ -5,6 +5,8 @@ members = [
   "boards/foxconn-d41s-uefi",
   "boards/lenovo-x61",
   "boards/bananapi-m1",
+  "boards/bananapi-m1/facts",
+  "boards/bananapi-m1/stage",
   "boards/licheerv-dock",
   "boards/orangepi-pc2",
   "boards/orangepi-r1",

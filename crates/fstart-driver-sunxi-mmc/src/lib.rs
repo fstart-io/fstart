@@ -13,7 +13,6 @@
 //! Ported from u-boot `drivers/mmc/sunxi_mmc.c`.
 
 #![no_std]
-extern crate alloc;
 
 use core::cell::Cell;
 

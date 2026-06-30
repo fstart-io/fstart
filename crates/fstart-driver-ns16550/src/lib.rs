@@ -47,7 +47,6 @@
 //!             `"allwinner,sun7i-a20-uart"`.
 
 #![no_std]
-extern crate alloc;
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{Console, HardwareInit, InitContext, ServiceError};

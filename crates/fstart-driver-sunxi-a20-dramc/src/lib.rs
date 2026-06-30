@@ -13,7 +13,6 @@
 
 #![no_std]
 #![allow(clippy::modulo_one)] // tock-registers alignment test
-extern crate alloc;
 
 use core::cell::Cell;
 

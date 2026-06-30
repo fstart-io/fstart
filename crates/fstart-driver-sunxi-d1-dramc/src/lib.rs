@@ -18,7 +18,6 @@
 #![allow(clippy::identity_op)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
-extern crate alloc;
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::MemoryController;

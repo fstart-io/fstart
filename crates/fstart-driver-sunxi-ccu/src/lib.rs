@@ -11,7 +11,6 @@
 //! The PIO (GPIO) register block is at `0x01C2_0800`.
 
 #![no_std]
-extern crate alloc;
 
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 

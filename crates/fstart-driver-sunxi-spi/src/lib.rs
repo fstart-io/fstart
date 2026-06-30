@@ -37,7 +37,6 @@
 //! Ported from U-Boot `arch/arm/mach-sunxi/spl_spi_sunxi.c`.
 
 #![no_std]
-extern crate alloc;
 
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;

@@ -9,6 +9,8 @@ publish = false
 board = "bananapi-m1"
 platform = "armv7"
 target = "armv7a-none-eabi"
+stage-package = "fstart-board-bananapi-m1-stage"
+stage-bin = "fstart-stage"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }

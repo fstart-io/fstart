@@ -41,7 +41,6 @@ impl FeatureSet {
     }
 
     /// Whether the set contains a feature.
-    #[cfg(test)]
     pub fn contains(&self, feature: &str) -> bool {
         self.features.contains(feature)
     }
