@@ -1,0 +1,69 @@
+[package]
+name = "fstart-board-foxconn-d41s-uefi-stage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+x86_64 = ["fstart-stage/x86_64"]
+intel-pineview = ["fstart-stage/intel-pineview"]
+intel-ich7 = ["fstart-stage/intel-ich7"]
+ite8721f = ["fstart-stage/ite8721f"]
+i2c-ck505 = ["fstart-stage/i2c-ck505"]
+pci-ecam = ["fstart-stage/pci-ecam"]
+ffs = ["fstart-stage/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+handoff = ["fstart-stage/handoff"]
+ns16550 = ["fstart-stage/ns16550"]
+ns16550-pio = ["fstart-stage/ns16550-pio"]
+acpi = [
+  "fstart-stage/acpi",
+  "fstart-acpi/x86",
+  "fstart-driver-intel-pineview/acpi",
+  "fstart-driver-intel-pineview/ffs-vbt",
+  "fstart-driver-intel-ich7/acpi",
+  "fstart-driver-ite8721f/acpi",
+]
+acpi-load = ["fstart-stage/acpi-load"]
+smbios = ["fstart-stage/smbios"]
+memory-detect = ["fstart-stage/memory-detect"]
+crabefi = ["fstart-stage/crabefi"]
+mp = ["fstart-stage/mp"]
+cpu-generic-x86 = ["fstart-stage/cpu-generic-x86"]
+cpu-intel-pineview = ["fstart-stage/cpu-intel-pineview"]
+x86-1g-pages = ["fstart-stage/x86-1g-pages"]
+x86-boot = ["fstart-stage/x86-boot"]
+x86-writable-page-tables = ["fstart-stage/x86-writable-page-tables"]
+x86-static-page-tables = ["fstart-stage/x86-static-page-tables"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+[dependencies]
+fstart-board-foxconn-d41s-facts = { path = "../../foxconn-d41s/facts" }
+fstart-stage = { workspace = true }
+fstart-stage-runtime = { workspace = true }
+fstart-services = { workspace = true }
+fstart-capabilities = { workspace = true }
+fstart-log = { workspace = true }
+fstart-platform-x86_64 = { workspace = true }
+fstart-driver-intel-pineview = { workspace = true }
+fstart-driver-intel-ich7 = { workspace = true }
+fstart-driver-i2c-ck505 = { workspace = true }
+fstart-driver-ite8721f = { workspace = true }
+fstart-superio = { workspace = true }
+fstart-types = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-mp = { workspace = true }
+fstart-cpu-intel = { workspace = true }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

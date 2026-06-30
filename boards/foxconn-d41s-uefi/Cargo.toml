@@ -9,6 +9,8 @@ publish = false
 board = "foxconn-d41s-uefi"
 platform = "x86_64"
 target = "x86_64-unknown-none"
+stage-package = "fstart-board-foxconn-d41s-uefi-stage"
+stage-bin = "fstart-stage"
 
 [dependencies]
 fstart-types = { workspace = true, features = ["std"] }
