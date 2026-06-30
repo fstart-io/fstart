@@ -70,13 +70,7 @@ pub fn build_with_parsed(
     eprintln!("[fstart] board package: {}", build_info.board_package);
 
     let smm_artifacts = build_smm_artifacts(workspace_root, config.name.as_str(), release, config)?;
-    let plan = crate::build_plan::plan(&parsed);
-    if build_info.target.as_str() != plan.target.triple {
-        return Err(format!(
-            "build_info target '{}' does not match platform-derived target '{}'",
-            build_info.target, plan.target.triple
-        ));
-    }
+    let plan = crate::build_plan::plan(parsed, &build_info)?;
 
     eprintln!("[fstart] target: {}", build_info.target);
 

@@ -11,7 +11,7 @@ use fstart_codegen::board_loader::ParsedBoard;
 use fstart_services::ServiceKind as Service;
 use fstart_types::stage::PageSize;
 use fstart_types::{
-    effective_stage_load_addr, flow_profile_from_config, BoardConfig, Capability, FlowProfile,
+    effective_stage_load_addr, BoardConfig, BoardDataMode, BuildInfo, Capability, FlowProfile,
     Platform, RegionKind, SecurityConfig, SocImageFormat, StageLayout,
 };
 
@@ -87,11 +87,12 @@ impl StageBuildPlan {
     }
 }
 
-/// Produce a complete build plan for a parsed board.
-pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
+/// Produce a complete build plan for a parsed board using board-owned build metadata.
+pub fn plan(parsed: &ParsedBoard, build_info: &BuildInfo) -> Result<BuildPlan, String> {
     let config = &parsed.config;
     let target = TargetSpec::for_platform(config.platform);
-    let base_features = base_features(parsed, target);
+    validate_build_info(config, build_info, target)?;
+    let base_features = base_features(config, build_info);
     let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
     let pci_root_feature = config.build.pci_root_feature.as_deref();
     let has_pci_driver = parsed
@@ -100,7 +101,7 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
         .any(|services| services.contains(Service::PciRootBus));
     let plan_context = PlanContext {
         base_features: &base_features,
-        flow_profile: flow_profile_from_config(config),
+        flow_profile: build_info.flow_profile,
         needs_flat_binary: target.needs_flat_binary,
         pci_root_feature,
     };
@@ -154,17 +155,93 @@ pub fn plan(parsed: &ParsedBoard) -> BuildPlan {
     };
 
     debug_assert_eq!(is_multi_stage, stages.len() > 1);
-    BuildPlan { target, stages }
+    Ok(BuildPlan { target, stages })
 }
 
-fn base_features(parsed: &ParsedBoard, target: TargetSpec) -> FeatureSet {
-    let config = &parsed.config;
-    let mut features = FeatureSet::default();
-    features.insert(target.platform_feature);
-
-    for fact in &parsed.driver_facts {
-        features.insert(fact.feature.as_str());
+fn validate_build_info(
+    config: &BoardConfig,
+    build_info: &BuildInfo,
+    target: TargetSpec,
+) -> Result<(), String> {
+    if build_info.board_data_mode != BoardDataMode::StaticTyped {
+        return Err(format!(
+            "board '{}' selected {:?}, but xtask static stage builds currently support only StaticTyped board data",
+            build_info.name, build_info.board_data_mode
+        ));
     }
+
+    if build_info.name.as_str() != config.name.as_str() {
+        return Err(format!(
+            "build_info name '{}' does not match board config name '{}'",
+            build_info.name, config.name
+        ));
+    }
+
+    if build_info.target.as_str() != target.triple {
+        return Err(format!(
+            "build_info target '{}' does not match platform-derived target '{}'",
+            build_info.target, target.triple
+        ));
+    }
+
+    let expected_stages = expected_stage_builds(config);
+    if build_info.stages.len() != expected_stages.len() {
+        return Err(format!(
+            "build_info declares {} stage(s), but board config declares {} stage(s)",
+            build_info.stages.len(),
+            expected_stages.len()
+        ));
+    }
+
+    for (idx, (actual, expected)) in build_info
+        .stages
+        .iter()
+        .zip(expected_stages.iter())
+        .enumerate()
+    {
+        if actual.name.as_str() != expected.name.as_str() {
+            return Err(format!(
+                "build_info stage {idx} is named '{}', but board config expects '{}'",
+                actual.name, expected.name
+            ));
+        }
+        if actual.load_addr != expected.load_addr {
+            return Err(format!(
+                "build_info stage '{}' load address {:#x} does not match board config {:#x}",
+                actual.name, actual.load_addr, expected.load_addr
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ExpectedStageBuild {
+    name: String,
+    load_addr: u64,
+}
+
+fn expected_stage_builds(config: &BoardConfig) -> Vec<ExpectedStageBuild> {
+    match &config.stages {
+        StageLayout::Monolithic(stage) => vec![ExpectedStageBuild {
+            name: "stage".to_string(),
+            load_addr: stage.load_addr,
+        }],
+        StageLayout::MultiStage(stages) => stages
+            .iter()
+            .enumerate()
+            .map(|(idx, stage)| ExpectedStageBuild {
+                name: stage.name.to_string(),
+                load_addr: effective_stage_load_addr(config, idx, stage),
+            })
+            .collect(),
+    }
+}
+
+fn base_features(config: &BoardConfig, build_info: &BuildInfo) -> FeatureSet {
+    let mut features = FeatureSet::default();
+    features.extend(build_info.features.iter().map(|feature| feature.as_str()));
 
     if matches!(&config.stages, StageLayout::MultiStage(_)) {
         features.insert("handoff");
@@ -434,4 +511,134 @@ fn stage_uses_mp(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::MpInit { .. }))
+}
+
+#[cfg(test)]
+mod tests {
+    use fstart_codegen::board_loader::ParsedBoard;
+    use fstart_types::{
+        hstr, BoardBuildPolicy, BoardDataMode, Build, BuildInfo, BuildProfile, Capability,
+        DigestAlgorithm, FlowProfile, MemoryMap, MemoryRegion, MonolithicConfig, Platform,
+        RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat, StageBuildInfo,
+        StageLayout,
+    };
+
+    use super::plan;
+
+    fn minimal_config() -> fstart_types::BoardConfig {
+        let mut regions = heapless::Vec::new();
+        regions
+            .push(MemoryRegion {
+                name: hstr("rom"),
+                base: 0x1000,
+                size: 0x1000,
+                kind: RegionKind::Rom,
+            })
+            .expect("memory region capacity");
+
+        let mut capabilities = heapless::Vec::new();
+        capabilities
+            .push(Capability::ConsoleInit)
+            .expect("capability capacity");
+
+        let mut digests = heapless::Vec::new();
+        digests
+            .push(DigestAlgorithm::Sha256)
+            .expect("digest capacity");
+
+        fstart_types::BoardConfig {
+            name: hstr("test-board"),
+            platform: Platform::Riscv64,
+            memory: MemoryMap {
+                regions,
+                flash_layout: None,
+                car: None,
+            },
+            devices: heapless::Vec::new(),
+            stages: StageLayout::Monolithic(MonolithicConfig {
+                capabilities,
+                load_addr: 0x1000,
+                stack_size: 0x4000,
+                heap_size: None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            }),
+            security: SecurityConfig {
+                signing_algorithm: SignatureAlgorithm::Ed25519,
+                pubkey_file: hstr("keys/dev-signing.pub"),
+                required_digests: digests,
+            },
+            payload: None,
+            microcode: None,
+            soc_image_format: SocImageFormat::None,
+            full_flash_image: false,
+            build: BoardBuildPolicy::default(),
+            acpi: None,
+            smbios: None,
+            smm: None,
+            boot_hart_id: 0,
+        }
+    }
+
+    fn parsed(config: fstart_types::BoardConfig) -> ParsedBoard {
+        ParsedBoard {
+            config,
+            driver_facts: Vec::new(),
+            device_tree: Vec::new(),
+            device_services: Vec::new(),
+            acpi_only_devices: Vec::new(),
+        }
+    }
+
+    fn build_info(
+        mode: BoardDataMode,
+        flow_profile: FlowProfile,
+        stage_load_addr: u64,
+    ) -> BuildInfo {
+        Build::new("test-board")
+            .board_package("fstart-board-test")
+            .target(Platform::Riscv64.target_triple())
+            .profile(BuildProfile::Dev)
+            .flow_profile(flow_profile)
+            .board_data_mode(mode)
+            .stage(StageBuildInfo::new("stage", stage_load_addr))
+            .feature("riscv64")
+            .feature("custom-driver")
+            .build()
+    }
+
+    #[test]
+    fn plan_uses_build_info_features_and_flow_profile() {
+        let parsed = parsed(minimal_config());
+        let info = build_info(BoardDataMode::StaticTyped, FlowProfile::Minimal, 0x1000);
+
+        let plan = plan(&parsed, &info).expect("build info should plan");
+        let features = &plan.stages[0].features;
+
+        assert!(features.contains("riscv64"));
+        assert!(features.contains("custom-driver"));
+        assert!(features.contains("flow-profile-minimal"));
+        assert!(!features.contains("flow-profile-linuxboot"));
+    }
+
+    #[test]
+    fn plan_rejects_dynamic_blob_until_runtime_loader_exists() {
+        let parsed = parsed(minimal_config());
+        let info = build_info(BoardDataMode::DynamicBlob, FlowProfile::Minimal, 0x1000);
+
+        let err = plan(&parsed, &info).expect_err("dynamic blob mode is not wired yet");
+        assert!(err.contains("DynamicBlob"));
+        assert!(err.contains("StaticTyped"));
+    }
+
+    #[test]
+    fn plan_rejects_build_info_stage_mismatch() {
+        let parsed = parsed(minimal_config());
+        let info = build_info(BoardDataMode::StaticTyped, FlowProfile::Minimal, 0x2000);
+
+        let err = plan(&parsed, &info).expect_err("stage load address mismatch should fail");
+        assert!(err.contains("load address"));
+        assert!(err.contains("0x2000"));
+    }
 }
