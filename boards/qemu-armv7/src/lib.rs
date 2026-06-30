@@ -1,7 +1,12 @@
 //! Rust board metadata for `qemu-armv7`.
 
+#![cfg_attr(not(feature = "host"), no_std)]
+
+#[cfg(feature = "host")]
 use fstart_board_meta::{BindDriver, DriverBinding};
+#[cfg(feature = "host")]
 use fstart_driver_pl011::Pl011Config;
+#[cfg(feature = "host")]
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, MemoryMap, MemoryRegion,
@@ -11,8 +16,10 @@ use fstart_types::{
 
 pub const BOARD_NAME: &str = "qemu-armv7";
 pub const BOARD_PACKAGE: &str = "fstart-board-qemu-armv7";
+#[cfg(feature = "host")]
 pub const PLATFORM: Platform = Platform::Armv7;
 
+#[cfg(feature = "host")]
 fn config() -> BoardConfig {
     BoardConfig {
         name: hstr(BOARD_NAME),
@@ -66,6 +73,7 @@ fn config() -> BoardConfig {
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn driver_bindings() -> Vec<DriverBinding> {
     vec![Pl011Config {
         base_addr: 0x0900_0000,
@@ -79,16 +87,19 @@ pub fn driver_bindings() -> Vec<DriverBinding> {
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn board_config() -> BoardConfig {
     config()
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn board_info() -> BoardInfo {
     board_info_from_board_config()
 }
 
 #[must_use]
+#[cfg(feature = "host")]
 pub fn build_info() -> BuildInfo {
     build_info_from_board_config()
 }
@@ -97,6 +108,7 @@ pub fn build_info() -> BuildInfo {
 pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
+#[cfg(feature = "host")]
 fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> MemoryMap {
     MemoryMap {
         regions: hvec(regions.map(|(name, base, size, kind)| MemoryRegion {
@@ -110,6 +122,7 @@ fn memory_map<const N: usize>(regions: [(&str, u64, u64, RegionKind); N]) -> Mem
     }
 }
 
+#[cfg(feature = "host")]
 fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityConfig {
     SecurityConfig {
         signing_algorithm: SignatureAlgorithm::Ed25519,
@@ -118,16 +131,19 @@ fn security_config<const N: usize>(digests: [DigestAlgorithm; N]) -> SecurityCon
     }
 }
 
+#[cfg(feature = "host")]
 fn firmware_boot_media() -> Capability {
     Capability::BootMedia(fstart_types::BootMedium::FirmwareImage {
         temp_ram_buffer: None,
     })
 }
 
+#[cfg(feature = "host")]
 fn board_info_from_board_config() -> BoardInfo {
     board_info_from_config(board_config())
 }
 
+#[cfg(feature = "host")]
 fn build_info_from_board_config() -> BuildInfo {
     let config = board_config();
     let bindings = driver_bindings();
