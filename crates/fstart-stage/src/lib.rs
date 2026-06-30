@@ -17,6 +17,8 @@ extern crate fstart_alloc;
 
 extern crate fstart_runtime;
 
+pub mod fixed_helpers;
+
 /// Fixed FFS anchor placeholder for handwritten stage flow.
 ///
 /// `xtask assemble` patches this block in the flat stage binary after laying out
