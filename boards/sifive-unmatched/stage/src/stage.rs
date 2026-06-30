@@ -6,7 +6,7 @@ use fstart_services::{InitContext, ServiceError};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedLinuxBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-static UART0_CONFIG: SifiveUartConfig = SifiveUartConfig {
+const UART0_CONFIG: SifiveUartConfig = SifiveUartConfig {
     base_addr: facts::UART0_BASE,
     clock_freq: facts::UART0_CLOCK,
     baud_rate: facts::UART0_BAUD,
@@ -24,7 +24,7 @@ impl StaticBoard for StageBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: StageDevices::new(UART0_CONFIG.clone()),
+            devices: StageDevices::new(UART0_CONFIG),
             boot: MemoryMappedLinuxBoot::new(
                 facts::FFS_BASE,
                 facts::FFS_SIZE,

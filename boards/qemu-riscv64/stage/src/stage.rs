@@ -6,7 +6,7 @@ use fstart_services::{InitContext, ServiceError};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedLinuxBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-static UART0_CONFIG: Ns16550Config = Ns16550Config {
+const UART0_CONFIG: Ns16550Config = Ns16550Config {
     regs: AccessMode::Mmio {
         base: facts::UART0_BASE,
         reg_shift: facts::UART0_REG_SHIFT,
@@ -28,7 +28,7 @@ impl StaticBoard for StageBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: StageDevices::new(UART0_CONFIG.clone()),
+            devices: StageDevices::new(UART0_CONFIG),
             boot: MemoryMappedLinuxBoot::new(
                 facts::FLASH_BASE,
                 facts::FLASH_SIZE,

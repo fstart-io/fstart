@@ -24,7 +24,7 @@ impl BootblockDevices {
     pub fn new() -> Self {
         Self {
             ccu: None,
-            console: StaticConsole::new(UART0_CONFIG.clone()),
+            console: StaticConsole::new(UART0_CONFIG),
             dramc: None,
             mmc0: None,
         }

@@ -12,7 +12,7 @@ use fstart_platform_intel_gm965_ich8::{
 };
 use fstart_services::{Device, DeviceError, ServiceError};
 
-pub static UART0_CONFIG: Ns16550Config = Ns16550Config {
+pub const UART0_CONFIG: Ns16550Config = Ns16550Config {
     regs: AccessMode::Pio {
         base: board::UART0_PIO_BASE as u64,
     },

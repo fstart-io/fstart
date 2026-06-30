@@ -14,7 +14,7 @@ static PRCI_CONFIG: Fu740PrciConfig = Fu740PrciConfig {
     gpio_base: facts::PRCI_GPIO_BASE,
 };
 
-static UART0_CONFIG: SifiveUartConfig = SifiveUartConfig {
+const UART0_CONFIG: SifiveUartConfig = SifiveUartConfig {
     base_addr: facts::UART0_BASE,
     clock_freq: facts::UART0_CLOCK,
     baud_rate: facts::UART0_BAUD,

@@ -20,45 +20,66 @@ use fstart_types::ffs::FileType;
 pub struct StaticConsole<D>
 where
     D: Device + Console + HardwareInit,
-    D::Config: Clone,
 {
-    device: Option<D>,
-    config: D::Config,
+    state: StaticConsoleState<D>,
+}
+
+enum StaticConsoleState<D>
+where
+    D: Device + Console + HardwareInit,
+{
+    Pending(D::Config),
+    Ready(D),
+    Failed,
 }
 
 impl<D> StaticConsole<D>
 where
     D: Device + Console + HardwareInit,
-    D::Config: Clone,
 {
     /// Construct a lazy console wrapper around a driver config value.
     #[must_use]
     pub fn new(config: D::Config) -> Self {
         Self {
-            device: None,
-            config,
+            state: StaticConsoleState::Pending(config),
         }
     }
 
     fn ensure(&mut self) -> Result<&mut D, ServiceError> {
-        if self.device.is_none() {
-            let device = D::new(self.config.clone()).map_err(device_error_to_service_error)?;
-            self.device = Some(device);
+        match self.state {
+            StaticConsoleState::Ready(ref mut device) => return Ok(device),
+            StaticConsoleState::Pending(_) => {}
+            StaticConsoleState::Failed => return Err(ServiceError::NotInitialized),
         }
-        Ok(self.device.as_mut().expect("console device constructed"))
+
+        let StaticConsoleState::Pending(config) =
+            core::mem::replace(&mut self.state, StaticConsoleState::Failed)
+        else {
+            return Err(ServiceError::NotInitialized);
+        };
+
+        let device = D::new(config).map_err(device_error_to_service_error)?;
+        self.state = StaticConsoleState::Ready(device);
+
+        match &mut self.state {
+            StaticConsoleState::Ready(device) => Ok(device),
+            StaticConsoleState::Pending(_) | StaticConsoleState::Failed => unreachable!(),
+        }
     }
 
     /// Return the constructed console device, if the console step already ran.
     #[must_use]
     pub fn device(&self) -> Option<&D> {
-        self.device.as_ref()
+        match &self.state {
+            StaticConsoleState::Ready(device) => Some(device),
+            StaticConsoleState::Pending(_) | StaticConsoleState::Failed => None,
+        }
     }
 }
 
 impl<D> HardwareInit for StaticConsole<D>
 where
     D: Device + Console + HardwareInit,
-    D::Config: Clone,
 {
     fn console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         let console = self.ensure()?;

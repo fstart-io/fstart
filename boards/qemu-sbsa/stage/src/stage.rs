@@ -7,16 +7,16 @@ use fstart_services::{InitContext, ServiceError};
 use fstart_stage::fixed_helpers::{console_ready, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-static UART0_CONFIG: Pl011Config = Pl011Config {
-    base_addr: common::UART0_BASE,
-    clock_freq: common::UART0_CLOCK,
-    baud_rate: common::UART0_BAUD,
-    // The PL011 ACPI implementation defaults a missing name to COM0. Keeping
-    // this None avoids constructing a heapless string in a static initializer.
-    acpi_name: None,
-    acpi_gsiv: Some(common::UART0_GSIV),
-    acpi_dbg2: common::UART0_DBG2,
-};
+fn uart0_config() -> Pl011Config {
+    Pl011Config {
+        base_addr: common::UART0_BASE,
+        clock_freq: common::UART0_CLOCK,
+        baud_rate: common::UART0_BAUD,
+        acpi_name: None,
+        acpi_gsiv: Some(common::UART0_GSIV),
+        acpi_dbg2: common::UART0_DBG2,
+    }
+}
 
 type StageDevices = StaticConsole<Pl011>;
 
@@ -31,10 +31,12 @@ impl StageBoard {
             None => return Err(ServiceError::NotInitialized),
         };
 
+        let uart0_config = uart0_config();
+
         fstart_capabilities::acpi::prepare(&common::ACPI_PLATFORM, |dsdt, tables| {
-            let uart_aml = console.dsdt_aml(&UART0_CONFIG);
+            let uart_aml = console.dsdt_aml(&uart0_config);
             dsdt.extend_from_slice(&uart_aml);
-            tables.extend(console.extra_tables(&UART0_CONFIG));
+            tables.extend(console.extra_tables(&uart0_config));
 
             let pci_aml = common::PCI0_ACPI.dsdt_aml();
             dsdt.extend_from_slice(&pci_aml);
@@ -55,7 +57,7 @@ impl StaticBoard for StageBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: StageDevices::new(UART0_CONFIG.clone()),
+            devices: StageDevices::new(uart0_config()),
         })
     }
 

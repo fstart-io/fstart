@@ -27,7 +27,7 @@ pub struct MainDevices {
 impl MainDevices {
     pub fn new() -> Self {
         Self {
-            console: StaticConsole::new(UART0_CONFIG.clone()),
+            console: StaticConsole::new(UART0_CONFIG),
             mmc0: None,
         }
     }

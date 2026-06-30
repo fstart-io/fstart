@@ -6,14 +6,16 @@ use fstart_services::{InitContext, ServiceError};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedLinuxBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-static UART0_CONFIG: Pl011Config = Pl011Config {
-    base_addr: facts::UART0_BASE,
-    clock_freq: facts::UART0_CLOCK,
-    baud_rate: facts::UART0_BAUD,
-    acpi_name: None,
-    acpi_gsiv: None,
-    acpi_dbg2: false,
-};
+fn uart0_config() -> Pl011Config {
+    Pl011Config {
+        base_addr: facts::UART0_BASE,
+        clock_freq: facts::UART0_CLOCK,
+        baud_rate: facts::UART0_BAUD,
+        acpi_name: None,
+        acpi_gsiv: None,
+        acpi_dbg2: false,
+    }
+}
 
 type StageDevices = StaticConsole<Pl011>;
 
@@ -27,7 +29,7 @@ impl StaticBoard for StageBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: StageDevices::new(UART0_CONFIG.clone()),
+            devices: StageDevices::new(uart0_config()),
             boot: MemoryMappedLinuxBoot::new(
                 facts::FLASH_BASE,
                 facts::FLASH_SIZE,

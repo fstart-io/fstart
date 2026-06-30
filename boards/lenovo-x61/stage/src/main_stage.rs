@@ -36,7 +36,7 @@ impl MainDevices {
             northbridge: common::new_gm965()?,
             southbridge: common::new_ich8()?,
             mainboard: common::new_mainboard()?,
-            console: StaticConsole::new(common::UART0_CONFIG.clone()),
+            console: StaticConsole::new(common::UART0_CONFIG),
             e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
             e820_count: 0,
             total_ram: 0,

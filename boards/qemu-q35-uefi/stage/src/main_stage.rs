@@ -10,7 +10,7 @@ use fstart_stage::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedUefiBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-static UART0_CONFIG: Ns16550Config = Ns16550Config {
+const UART0_CONFIG: Ns16550Config = Ns16550Config {
     regs: AccessMode::Pio {
         base: facts::UART0_PIO_BASE,
     },
@@ -49,7 +49,7 @@ pub struct MainDevices {
 impl MainDevices {
     pub fn new() -> Self {
         Self {
-            console: StaticConsole::new(UART0_CONFIG.clone()),
+            console: StaticConsole::new(UART0_CONFIG),
             fw_cfg: None,
             q35: None,
             e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],

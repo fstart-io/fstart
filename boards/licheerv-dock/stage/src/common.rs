@@ -13,7 +13,7 @@ pub static CCU_CONFIG: SunxiD1CcuConfig = SunxiD1CcuConfig {
     uart_index: 0,
 };
 
-pub static UART0_CONFIG: Ns16550Config = Ns16550Config {
+pub const UART0_CONFIG: Ns16550Config = Ns16550Config {
     regs: AccessMode::Mmio {
         base: facts::UART0_BASE,
         reg_shift: facts::UART0_REG_SHIFT,

@@ -6,7 +6,7 @@ use fstart_services::{InitContext, ServiceError};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedFfs, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-static UART0_CONFIG: Ns16550Config = Ns16550Config {
+const UART0_CONFIG: Ns16550Config = Ns16550Config {
     regs: AccessMode::Pio {
         base: facts::UART0_PIO_BASE,
     },
@@ -27,7 +27,7 @@ impl StaticBoard for BootblockBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: BootblockDevices::new(UART0_CONFIG.clone()),
+            devices: BootblockDevices::new(UART0_CONFIG),
             ffs: MemoryMappedFfs::new(facts::FFS_BASE, facts::FFS_SIZE),
             main_loaded: false,
         })

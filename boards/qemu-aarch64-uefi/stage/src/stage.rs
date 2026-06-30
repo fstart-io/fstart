@@ -7,14 +7,16 @@ use fstart_stage::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedUefiBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
-static UART0_CONFIG: Pl011Config = Pl011Config {
-    base_addr: facts::UART0_BASE,
-    clock_freq: facts::UART0_CLOCK_FREQ,
-    baud_rate: facts::UART0_BAUD_RATE,
-    acpi_name: None,
-    acpi_gsiv: None,
-    acpi_dbg2: false,
-};
+fn uart0_config() -> Pl011Config {
+    Pl011Config {
+        base_addr: facts::UART0_BASE,
+        clock_freq: facts::UART0_CLOCK_FREQ,
+        baud_rate: facts::UART0_BAUD_RATE,
+        acpi_name: None,
+        acpi_gsiv: None,
+        acpi_dbg2: false,
+    }
+}
 
 static STATIC_MEMORY: [MemoryRegion; 1] = [MemoryRegion {
     base: facts::FLASH_BASE,
@@ -34,7 +36,7 @@ impl StaticBoard for StageBoard {
 
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            devices: StageDevices::new(UART0_CONFIG.clone()),
+            devices: StageDevices::new(uart0_config()),
             boot: MemoryMappedUefiBoot::new(
                 facts::FLASH_BASE,
                 facts::FLASH_SIZE,
