@@ -1,0 +1,74 @@
+[package]
+name = "fstart-board-lenovo-x61-stage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+x86_64 = ["fstart-stage/x86_64"]
+intel-gm965 = ["fstart-stage/intel-gm965", "fstart-driver-intel-gm965/ffs-vbt"]
+intel-ich8 = ["fstart-stage/intel-ich8"]
+lenovo-x61-mainboard = ["fstart-stage/lenovo-x61-mainboard"]
+nsc-pc87382 = ["fstart-stage/nsc-pc87382"]
+nsc-pc87392 = ["fstart-stage/nsc-pc87392"]
+i2c-ck505 = ["fstart-stage/i2c-ck505"]
+pci-ecam = ["fstart-stage/pci-ecam"]
+ffs = ["fstart-stage/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+handoff = ["fstart-stage/handoff"]
+ns16550 = ["fstart-stage/ns16550"]
+ns16550-pio = ["fstart-stage/ns16550-pio"]
+acpi = [
+  "fstart-stage/acpi",
+  "fstart-acpi/x86",
+  "fstart-driver-intel-gm965/acpi",
+  "fstart-driver-intel-gm965/ffs-vbt",
+  "fstart-driver-intel-ich8/acpi",
+  "fstart-mainboard-lenovo-x61/acpi",
+]
+acpi-load = ["fstart-stage/acpi-load"]
+smbios = ["fstart-stage/smbios"]
+memory-detect = ["fstart-stage/memory-detect"]
+crabefi = ["fstart-stage/crabefi"]
+mp = ["fstart-stage/mp"]
+cpu-generic-x86 = ["fstart-stage/cpu-generic-x86"]
+cpu-intel-core2 = ["fstart-stage/cpu-intel-core2"]
+x86-1g-pages = ["fstart-stage/x86-1g-pages"]
+x86-boot = ["fstart-stage/x86-boot"]
+x86-writable-page-tables = ["fstart-stage/x86-writable-page-tables"]
+x86-static-page-tables = ["fstart-stage/x86-static-page-tables"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+[dependencies]
+fstart-board-lenovo-x61-facts = { path = "../facts" }
+fstart-stage = { workspace = true }
+fstart-stage-runtime = { workspace = true }
+fstart-services = { workspace = true }
+fstart-capabilities = { workspace = true }
+fstart-log = { workspace = true }
+fstart-platform-x86_64 = { workspace = true }
+fstart-driver-ns16550 = { workspace = true, features = ["pio"] }
+fstart-driver-intel-gm965 = { workspace = true }
+fstart-driver-intel-ich8 = { workspace = true }
+fstart-driver-i2c-ck505 = { workspace = true }
+fstart-driver-nsc-pc87382 = { workspace = true }
+fstart-driver-nsc-pc87392 = { workspace = true }
+fstart-mainboard-lenovo-x61 = { workspace = true }
+fstart-superio = { workspace = true }
+fstart-types = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-mp = { workspace = true }
+fstart-cpu-intel = { workspace = true }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

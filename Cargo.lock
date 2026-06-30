@@ -614,6 +614,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-lenovo-x61-facts"
+version = "0.1.0"
+dependencies = [
+ "fstart-capabilities",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-gm965",
+ "fstart-driver-intel-ich8",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-mainboard-lenovo-x61",
+ "fstart-types",
+]
+
+[[package]]
+name = "fstart-board-lenovo-x61-stage"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-board-lenovo-x61-facts",
+ "fstart-capabilities",
+ "fstart-cpu-intel",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-gm965",
+ "fstart-driver-intel-ich8",
+ "fstart-driver-ns16550",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
+ "fstart-log",
+ "fstart-mainboard-lenovo-x61",
+ "fstart-mp",
+ "fstart-platform-x86_64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
+ "fstart-superio",
+ "fstart-types",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-licheerv-dock"
 version = "0.1.0"
 dependencies = [

@@ -7,6 +7,8 @@ members = [
   "boards/foxconn-d41s-uefi",
   "boards/foxconn-d41s-uefi/stage",
   "boards/lenovo-x61",
+  "boards/lenovo-x61/facts",
+  "boards/lenovo-x61/stage",
   "boards/bananapi-m1",
   "boards/bananapi-m1/facts",
   "boards/bananapi-m1/stage",

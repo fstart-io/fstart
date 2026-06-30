@@ -389,7 +389,7 @@ fn gm965_ich8_stages() -> StageLayout {
         StageConfig {
             name: hstr("bootblock"),
             capabilities: gm965_bootblock_capabilities(),
-            load_addr: 0,
+            load_addr: 0xffff_ffff,
             stack_size: 0x2000,
             heap_size: None,
             runs_from: RunsFrom::Rom,
