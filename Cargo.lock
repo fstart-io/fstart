@@ -586,8 +586,16 @@ version = "0.1.0"
 dependencies = [
  "fstart-board-meta",
  "fstart-board-qemu-virt",
+ "fstart-capabilities",
+ "fstart-driver-pl011",
+ "fstart-log",
+ "fstart-platform-aarch64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
  "fstart-types",
  "heapless",
+ "ufmt",
 ]
 
 [[package]]
