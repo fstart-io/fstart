@@ -330,6 +330,27 @@ impl MemoryMappedLinuxBoot {
             print_x86_mtrrs: false,
         }
     }
+
+    /// Build x86 Linux bzImage boot params, including the zero-page address.
+    #[must_use]
+    pub const fn x86_boot_params<'a>(
+        &self,
+        kernel_addr: u64,
+        zero_page_addr: u64,
+        bootargs: &'a str,
+    ) -> BootLinuxParams<'a> {
+        BootLinuxParams {
+            kernel_addr,
+            dtb_addr: 0,
+            fw_addr: 0,
+            rsdp_addr: 0,
+            bootargs,
+            e820_entries: &[],
+            zero_page_addr,
+            hart_id: 0,
+            print_x86_mtrrs: false,
+        }
+    }
 }
 
 fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
