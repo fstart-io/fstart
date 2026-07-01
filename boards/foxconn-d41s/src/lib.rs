@@ -2,6 +2,9 @@
 
 #![no_std]
 
+pub mod facts;
+#[cfg(feature = "stage")]
+pub mod stage;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_platform_intel_pineview_ich7::{

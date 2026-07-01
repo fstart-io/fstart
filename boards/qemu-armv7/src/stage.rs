@@ -1,6 +1,6 @@
 //! QEMU ARMv7 virt stage recipe binding.
 
-use fstart_board_qemu_armv7_facts as facts;
+use crate::facts;
 use fstart_driver_pl011::{Pl011, Pl011Config};
 use fstart_services::boot::BootLinuxParams;
 use fstart_stage::fixed_helpers::QemuVirtLinuxBoard;

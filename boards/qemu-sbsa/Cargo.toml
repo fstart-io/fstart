@@ -10,10 +10,46 @@ board = "qemu-sbsa"
 platform = "aarch64"
 acpi-only-devices = true
 target = "aarch64-unknown-none"
-stage-package = "fstart-board-qemu-sbsa-stage"
+stage-recipe = "board-stage-wrapper"
 stage-bin = "fstart-stage"
 
+[features]
+default = []
+
+stage = [
+  "dep:fstart-stage",
+  "dep:fstart-stage-runtime",
+  "dep:fstart-services",
+  "dep:fstart-log",
+  "dep:fstart-capabilities",
+  "dep:fstart-platform-aarch64",
+  "dep:fstart-driver-pl011",
+  "dep:ufmt",
+]
+aarch64 = ["fstart-stage/aarch64"]
+aarch64-el2-relocate-entry = ["fstart-stage/aarch64-el2-relocate-entry"]
+pl011 = ["fstart-stage/pl011"]
+acpi = [
+  "fstart-stage/acpi",
+]
+smbios = ["fstart-stage/smbios"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+stage-bootblock = []
+
 [dependencies]
-fstart-board-qemu-sbsa-facts = { path = "facts" }
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
 fstart-board-meta = { workspace = true }
+fstart-acpi = { workspace = true }
+fstart-smbios = { workspace = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-stage-runtime = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-capabilities = { workspace = true, optional = true }
+fstart-platform-aarch64 = { workspace = true, optional = true }
+fstart-driver-pl011 = { workspace = true, features = ["acpi"], optional = true }
+ufmt = { workspace = true, optional = true }

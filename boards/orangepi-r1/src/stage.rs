@@ -1,6 +1,6 @@
 //! Orange Pi R1 stage policy and static driver configs.
 
-use fstart_board_orangepi_r1_facts as facts;
+use crate::facts;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_sunxi_h3_ccu::{SunxiH3Ccu, SunxiH3CcuConfig};
 use fstart_driver_sunxi_h3_dramc::{SunxiDramcVariant, SunxiH3Dramc, SunxiH3DramcConfig};

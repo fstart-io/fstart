@@ -9,9 +9,53 @@ publish = false
 board = "qemu-q35"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-package = "fstart-board-qemu-q35-stage"
+stage-recipe = "board-stage-wrapper"
 stage-bin = "fstart-stage"
 
+[features]
+default = []
+
+stage = [
+  "dep:fstart-stage",
+  "dep:fstart-stage-runtime",
+  "dep:fstart-services",
+  "dep:fstart-log",
+  "dep:fstart-platform-x86_64",
+  "dep:fstart-driver-ns16550",
+  "dep:ufmt",
+]
+x86_64 = ["fstart-stage/x86_64"]
+ns16550 = ["fstart-stage/ns16550"]
+ns16550-pio = ["fstart-stage/ns16550-pio"]
+qemu-fw-cfg = ["fstart-stage/qemu-fw-cfg"]
+q35-hostbridge = ["fstart-stage/q35-hostbridge"]
+bochs-display = ["fstart-stage/bochs-display"]
+ffs = ["fstart-stage/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+acpi = ["fstart-stage/acpi"]
+acpi-load = ["fstart-stage/acpi-load"]
+memory-detect = ["fstart-stage/memory-detect"]
+mp = ["fstart-stage/mp"]
+cpu-generic-x86 = ["fstart-stage/cpu-generic-x86"]
+x86-1g-pages = ["fstart-stage/x86-1g-pages"]
+x86-boot = ["fstart-stage/x86-boot"]
+x86-writable-page-tables = ["fstart-stage/x86-writable-page-tables"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+stage-bootblock = []
+
 [dependencies]
-fstart-board-qemu-q35-facts = { path = "facts" }
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-stage-runtime = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-platform-x86_64 = { workspace = true, optional = true }
+fstart-driver-ns16550 = { workspace = true, features = ["pio"], optional = true }
+ufmt = { workspace = true, optional = true }

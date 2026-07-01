@@ -15,7 +15,6 @@ stage-recipe = "sunxi-mmc-linux"
 [features]
 default = []
 stage = [
-  "dep:fstart-board-bananapi-m1-facts",
   "dep:fstart-stage",
   "dep:fstart-services",
   "dep:fstart-driver-ns16550",
@@ -30,7 +29,6 @@ ffs = ["stage", "fstart-stage/ffs"]
 
 [dependencies]
 fstart-types = { workspace = true }
-fstart-board-bananapi-m1-facts = { path = "facts", optional = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-services = { workspace = true, optional = true }
 fstart-driver-ns16550 = { workspace = true, optional = true }

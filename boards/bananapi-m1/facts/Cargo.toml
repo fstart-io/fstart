@@ -1,8 +1,0 @@
-[package]
-name = "fstart-board-bananapi-m1-facts"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-publish = false
-
-[dependencies]

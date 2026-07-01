@@ -220,6 +220,15 @@ fn build_one_stage(
     })?;
     let board_label = board_manifest.board.as_str();
     let stage_label = stage_name.unwrap_or("stage");
+    let feature_arg;
+    let features = if board_manifest.stage_recipe.as_deref() == Some("board-stage-wrapper")
+        && stage_name == Some("bootblock")
+    {
+        feature_arg = format!("{features},stage-bootblock");
+        feature_arg.as_str()
+    } else {
+        features
+    };
     let artifact_dir = workspace_root
         .join("target")
         .join("fstart-build")
@@ -376,6 +385,7 @@ fn stage_package_build(
     })?;
 
     match recipe {
+        "board-stage-wrapper" => write_board_stage_wrapper(workspace_root, board_manifest),
         "gm965-ich8-uefi" => write_gm965_ich8_stage_wrapper(workspace_root, board_manifest),
         "sunxi-mmc-linux" => write_sunxi_mmc_linux_stage_wrapper(workspace_root, board_manifest),
         "qemu-virt-linux" => write_qemu_virt_linux_stage_wrapper(workspace_root, board_manifest),
@@ -384,6 +394,151 @@ fn stage_package_build(
             board_manifest.board
         )),
     }
+}
+
+fn write_board_stage_wrapper(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+) -> Result<StagePackageBuild, String> {
+    let package_label = format!("fstart-selected-stage-{}", board_manifest.board);
+    let wrapper_dir = workspace_root
+        .join("target")
+        .join("fstart-build")
+        .join(&board_manifest.board)
+        .join("selected-stage");
+    let src_dir = wrapper_dir.join("src");
+    fs::create_dir_all(&src_dir)
+        .map_err(|e| format!("failed to create {}: {e}", src_dir.display()))?;
+
+    let cargo_toml = selected_board_stage_cargo_toml(board_manifest, &package_label);
+    write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
+    if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
+        write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
+    }
+    write_if_changed(
+        &wrapper_dir.join("build.rs"),
+        selected_board_stage_build_rs(),
+    )?;
+    write_if_changed(&src_dir.join("main.rs"), selected_board_stage_main_rs())?;
+
+    Ok(StagePackageBuild {
+        package_label,
+        manifest_path: Some(wrapper_dir.join("Cargo.toml")),
+    })
+}
+
+fn selected_board_stage_cargo_toml(
+    board_manifest: &crate::board_manifest::BoardManifest,
+    package_label: &str,
+) -> String {
+    let board_path = path_for_toml(&board_manifest.dir);
+    let feature_lines = board_feature_names(&board_manifest.dir.join("Cargo.toml"))
+        .into_iter()
+        .filter(|feature| feature != "default" && feature != "stage")
+        .map(|feature| format!("{feature} = [\"fstart-board-selected/{feature}\"]"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r#"[package]
+name = "{package_label}"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = []
+{feature_lines}
+
+[dependencies]
+fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["stage"] }}
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+"#,
+        board_package = board_manifest.package,
+    )
+}
+
+fn board_feature_names(manifest_path: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(manifest_path) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    let mut in_features = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[features]" {
+            in_features = true;
+            continue;
+        }
+        if in_features && trimmed.starts_with('[') {
+            break;
+        }
+        if !in_features || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((name, _)) = trimmed.split_once('=') {
+            names.push(name.trim().to_string());
+        }
+    }
+    names
+}
+
+fn selected_board_stage_main_rs() -> &'static str {
+    r#"//! Generated selected-board stage wrapper.
+
+#![no_std]
+#![no_main]
+
+#[no_mangle]
+pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
+    fstart_board_selected::stage::run_stage(handoff_ptr)
+}
+
+#[used]
+#[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+"#
+}
+
+fn selected_board_stage_build_rs() -> &'static str {
+    r#"use std::env;
+
+fn main() {
+    println!("cargo:rerun-if-env-changed=FSTART_LINKER_SCRIPT");
+    println!("cargo:rerun-if-env-changed=FSTART_STAGE_NAME");
+    println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
+    println!("cargo:rerun-if-env-changed=FSTART_SMM_COREBOOT_HEADER");
+    println!("cargo:rustc-check-cfg=cfg(fstart_stage_bootblock)");
+
+    if let Ok(script) = env::var("FSTART_LINKER_SCRIPT") {
+        println!("cargo:rustc-link-arg-bin=fstart-stage=-T{script}");
+        println!("cargo:rerun-if-changed={script}");
+    }
+
+    if env::var("FSTART_STAGE_NAME").as_deref() == Ok("bootblock") {
+        println!("cargo:rustc-cfg=fstart_stage_bootblock");
+    }
+
+    if let Ok(image) = env::var("FSTART_SMM_IMAGE") {
+        println!("cargo:rerun-if-changed={image}");
+        println!("cargo:rustc-env=FSTART_SMM_IMAGE={image}");
+    } else {
+        let out = env::var("OUT_DIR").expect("OUT_DIR set by Cargo");
+        let dummy = std::path::Path::new(&out).join("empty-smm.bin");
+        std::fs::write(&dummy, []).expect("write empty SMM image");
+        println!("cargo:rustc-env=FSTART_SMM_IMAGE={}", dummy.display());
+    }
+    if let Ok(header) = env::var("FSTART_SMM_COREBOOT_HEADER") {
+        println!("cargo:rerun-if-changed={header}");
+        println!("cargo:rustc-env=FSTART_SMM_COREBOOT_HEADER={header}");
+    }
+}
+"#
 }
 
 fn write_qemu_virt_linux_stage_wrapper(

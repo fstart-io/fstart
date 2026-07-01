@@ -1,6 +1,9 @@
 //! Host Rust board metadata for `qemu-aarch64-uefi`.
 
-use fstart_board_qemu_aarch64_uefi_facts as facts;
+#![cfg_attr(feature = "stage", no_std)]
+pub mod facts;
+#[cfg(feature = "stage")]
+pub mod stage;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     BusAddress, Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource,

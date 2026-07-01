@@ -2,6 +2,7 @@
 
 #![cfg_attr(feature = "stage", no_std)]
 
+pub mod facts;
 #[cfg(feature = "stage")]
 pub mod stage;
 

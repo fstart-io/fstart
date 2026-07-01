@@ -1,6 +1,6 @@
 //! Lichee RV Dock stage policy and static driver configs.
 
-use fstart_board_licheerv_dock_facts as facts;
+use crate::facts;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_sunxi_d1_ccu::{SunxiD1Ccu, SunxiD1CcuConfig};
 use fstart_driver_sunxi_d1_dramc::{SunxiD1Dramc, SunxiD1DramcConfig};

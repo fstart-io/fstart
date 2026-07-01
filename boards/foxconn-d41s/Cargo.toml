@@ -9,11 +9,79 @@ publish = false
 board = "foxconn-d41s"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-package = "fstart-board-foxconn-d41s-stage"
+stage-recipe = "board-stage-wrapper"
 stage-bin = "fstart-stage"
+
+[features]
+default = []
+
+stage = [
+  "dep:fstart-stage",
+  "dep:fstart-stage-runtime",
+  "dep:fstart-services",
+  "dep:fstart-log",
+  "dep:fstart-platform-x86_64",
+  "dep:fstart-driver-ite8721f",
+  "dep:fstart-acpi",
+  "dep:fstart-mp",
+  "dep:fstart-cpu-intel",
+  "dep:ufmt",
+]
+x86_64 = ["fstart-stage/x86_64"]
+intel-pineview = ["fstart-stage/intel-pineview"]
+intel-ich7 = ["fstart-stage/intel-ich7"]
+ite8721f = ["fstart-stage/ite8721f"]
+i2c-ck505 = ["fstart-stage/i2c-ck505"]
+pci-ecam = ["fstart-stage/pci-ecam"]
+ffs = ["fstart-stage/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+handoff = ["fstart-stage/handoff"]
+ns16550 = ["fstart-stage/ns16550"]
+ns16550-pio = ["fstart-stage/ns16550-pio"]
+acpi = [
+  "fstart-stage/acpi",
+  "fstart-acpi/x86",
+  "fstart-driver-intel-pineview/acpi",
+  "fstart-driver-intel-pineview/ffs-vbt",
+  "fstart-driver-intel-ich7/acpi",
+  "fstart-driver-ite8721f/acpi",
+]
+smbios = ["fstart-stage/smbios"]
+memory-detect = ["fstart-stage/memory-detect"]
+mp = ["fstart-stage/mp"]
+cpu-generic-x86 = ["fstart-stage/cpu-generic-x86"]
+cpu-intel-pineview = ["fstart-stage/cpu-intel-pineview"]
+x86-1g-pages = ["fstart-stage/x86-1g-pages"]
+x86-boot = ["fstart-stage/x86-boot"]
+x86-writable-page-tables = ["fstart-stage/x86-writable-page-tables"]
+x86-static-page-tables = ["fstart-stage/x86-static-page-tables"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+stage-bootblock = []
 
 [dependencies]
 fstart-types = { workspace = true }
 fstart-platform-intel-pineview-ich7 = { workspace = true }
 fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }
+fstart-capabilities = { workspace = true, features = ["smbios"] }
+fstart-driver-i2c-ck505 = { workspace = true }
+fstart-driver-intel-ich7 = { workspace = true }
+fstart-driver-intel-pineview = { workspace = true }
+fstart-superio = { workspace = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-stage-runtime = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-platform-x86_64 = { workspace = true, optional = true }
+fstart-driver-ite8721f = { workspace = true, optional = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-mp = { workspace = true, optional = true }
+fstart-cpu-intel = { workspace = true, optional = true }
+ufmt = { workspace = true, optional = true }

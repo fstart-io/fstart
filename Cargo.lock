@@ -485,7 +485,6 @@ dependencies = [
 name = "fstart-board-bananapi-m1"
 version = "0.1.0"
 dependencies = [
- "fstart-board-bananapi-m1-facts",
  "fstart-driver-ns16550",
  "fstart-driver-sunxi-a20-dramc",
  "fstart-driver-sunxi-ccu",
@@ -497,47 +496,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-bananapi-m1-facts"
-version = "0.1.0"
-
-[[package]]
 name = "fstart-board-foxconn-d41s"
 version = "0.1.0"
 dependencies = [
- "fstart-gpio-ich",
- "fstart-hda",
- "fstart-platform-intel-pineview-ich7",
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-foxconn-d41s-facts"
-version = "0.1.0"
-dependencies = [
- "fstart-board-foxconn-d41s",
- "fstart-capabilities",
- "fstart-driver-i2c-ck505",
- "fstart-driver-intel-ich7",
- "fstart-driver-intel-pineview",
- "fstart-driver-ite8721f",
- "fstart-superio",
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-foxconn-d41s-stage"
-version = "0.1.0"
-dependencies = [
  "fstart-acpi",
- "fstart-board-foxconn-d41s-facts",
  "fstart-capabilities",
  "fstart-cpu-intel",
  "fstart-driver-i2c-ck505",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-pineview",
  "fstart-driver-ite8721f",
+ "fstart-gpio-ich",
+ "fstart-hda",
  "fstart-log",
  "fstart-mp",
+ "fstart-platform-intel-pineview-ich7",
  "fstart-platform-x86_64",
  "fstart-services",
  "fstart-stage",
@@ -551,18 +524,9 @@ dependencies = [
 name = "fstart-board-foxconn-d41s-uefi"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-board-foxconn-d41s",
  "fstart-board-meta",
- "fstart-platform-intel-pineview-ich7",
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-foxconn-d41s-uefi-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-board-foxconn-d41s-facts",
  "fstart-capabilities",
  "fstart-cpu-intel",
  "fstart-driver-i2c-ck505",
@@ -571,6 +535,7 @@ dependencies = [
  "fstart-driver-ite8721f",
  "fstart-log",
  "fstart-mp",
+ "fstart-platform-intel-pineview-ich7",
  "fstart-platform-x86_64",
  "fstart-services",
  "fstart-stage",
@@ -612,7 +577,6 @@ dependencies = [
 name = "fstart-board-licheerv-dock"
 version = "0.1.0"
 dependencies = [
- "fstart-board-licheerv-dock-facts",
  "fstart-driver-ns16550",
  "fstart-driver-sunxi-d1-ccu",
  "fstart-driver-sunxi-d1-dramc",
@@ -622,10 +586,6 @@ dependencies = [
  "fstart-stage",
  "fstart-types",
 ]
-
-[[package]]
-name = "fstart-board-licheerv-dock-facts"
-version = "0.1.0"
 
 [[package]]
 name = "fstart-board-meta"
@@ -642,7 +602,6 @@ dependencies = [
 name = "fstart-board-orangepi-pc2"
 version = "0.1.0"
 dependencies = [
- "fstart-board-orangepi-pc2-facts",
  "fstart-driver-ns16550",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
@@ -654,14 +613,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-orangepi-pc2-facts"
-version = "0.1.0"
-
-[[package]]
 name = "fstart-board-orangepi-r1"
 version = "0.1.0"
 dependencies = [
- "fstart-board-orangepi-r1-facts",
  "fstart-driver-ns16550",
  "fstart-driver-sunxi-h3-ccu",
  "fstart-driver-sunxi-h3-dramc",
@@ -673,14 +627,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-orangepi-r1-facts"
-version = "0.1.0"
-
-[[package]]
 name = "fstart-board-qemu-aarch64"
 version = "0.1.0"
 dependencies = [
- "fstart-board-qemu-aarch64-facts",
  "fstart-board-qemu-virt",
  "fstart-driver-pl011",
  "fstart-platform-aarch64",
@@ -690,31 +639,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-qemu-aarch64-facts"
-version = "0.1.0"
-
-[[package]]
 name = "fstart-board-qemu-aarch64-multi"
 version = "0.1.0"
 dependencies = [
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-qemu-aarch64-multi-facts"
-version = "0.1.0"
-
-[[package]]
-name = "fstart-board-qemu-aarch64-multi-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-board-qemu-aarch64-multi-facts",
  "fstart-driver-pl011",
  "fstart-log",
  "fstart-platform-aarch64",
  "fstart-services",
  "fstart-stage",
  "fstart-stage-runtime",
+ "fstart-types",
  "ufmt",
 ]
 
@@ -722,19 +656,6 @@ dependencies = [
 name = "fstart-board-qemu-aarch64-uefi"
 version = "0.1.0"
 dependencies = [
- "fstart-board-qemu-aarch64-uefi-facts",
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-qemu-aarch64-uefi-facts"
-version = "0.1.0"
-
-[[package]]
-name = "fstart-board-qemu-aarch64-uefi-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-board-qemu-aarch64-uefi-facts",
  "fstart-driver-pl011",
  "fstart-log",
  "fstart-platform-aarch64",
@@ -749,7 +670,6 @@ dependencies = [
 name = "fstart-board-qemu-armv7"
 version = "0.1.0"
 dependencies = [
- "fstart-board-qemu-armv7-facts",
  "fstart-driver-pl011",
  "fstart-platform-armv7",
  "fstart-services",
@@ -758,26 +678,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-qemu-armv7-facts"
-version = "0.1.0"
-
-[[package]]
 name = "fstart-board-qemu-q35"
 version = "0.1.0"
 dependencies = [
- "fstart-board-qemu-q35-facts",
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-qemu-q35-facts"
-version = "0.1.0"
-
-[[package]]
-name = "fstart-board-qemu-q35-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-board-qemu-q35-facts",
  "fstart-driver-ns16550",
  "fstart-log",
  "fstart-platform-x86_64",
@@ -792,18 +695,6 @@ dependencies = [
 name = "fstart-board-qemu-q35-uefi"
 version = "0.1.0"
 dependencies = [
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-qemu-q35-uefi-facts"
-version = "0.1.0"
-
-[[package]]
-name = "fstart-board-qemu-q35-uefi-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-board-qemu-q35-uefi-facts",
  "fstart-capabilities",
  "fstart-driver-ns16550",
  "fstart-driver-q35-hostbridge",
@@ -821,7 +712,6 @@ dependencies = [
 name = "fstart-board-qemu-riscv64"
 version = "0.1.0"
 dependencies = [
- "fstart-board-qemu-riscv64-facts",
  "fstart-driver-ns16550",
  "fstart-platform-riscv64",
  "fstart-services",
@@ -830,31 +720,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-qemu-riscv64-facts"
-version = "0.1.0"
-
-[[package]]
 name = "fstart-board-qemu-riscv64-multi"
 version = "0.1.0"
 dependencies = [
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-qemu-riscv64-multi-facts"
-version = "0.1.0"
-
-[[package]]
-name = "fstart-board-qemu-riscv64-multi-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-board-qemu-riscv64-multi-facts",
  "fstart-driver-ns16550",
  "fstart-log",
  "fstart-platform-riscv64",
  "fstart-services",
  "fstart-stage",
  "fstart-stage-runtime",
+ "fstart-types",
  "ufmt",
 ]
 
@@ -862,32 +737,17 @@ dependencies = [
 name = "fstart-board-qemu-sbsa"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-board-meta",
- "fstart-board-qemu-sbsa-facts",
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-qemu-sbsa-facts"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-smbios",
-]
-
-[[package]]
-name = "fstart-board-qemu-sbsa-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-board-qemu-sbsa-facts",
  "fstart-capabilities",
  "fstart-driver-pl011",
  "fstart-log",
  "fstart-platform-aarch64",
  "fstart-services",
+ "fstart-smbios",
  "fstart-stage",
  "fstart-stage-runtime",
+ "fstart-types",
  "ufmt",
 ]
 
@@ -903,33 +763,6 @@ dependencies = [
 name = "fstart-board-sifive-unmatched"
 version = "0.1.0"
 dependencies = [
- "fstart-board-sifive-unmatched-facts",
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-sifive-unmatched-facts"
-version = "0.1.0"
-
-[[package]]
-name = "fstart-board-sifive-unmatched-hw"
-version = "0.1.0"
-dependencies = [
- "fstart-board-sifive-unmatched-hw-facts",
- "fstart-types",
-]
-
-[[package]]
-name = "fstart-board-sifive-unmatched-hw-facts"
-version = "0.1.0"
-
-[[package]]
-name = "fstart-board-sifive-unmatched-hw-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-board-sifive-unmatched-hw-facts",
- "fstart-driver-fu740-ddr",
- "fstart-driver-fu740-prci",
  "fstart-driver-sifive-uart",
  "fstart-log",
  "fstart-platform-riscv64",
@@ -941,10 +774,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-sifive-unmatched-stage"
+name = "fstart-board-sifive-unmatched-hw"
 version = "0.1.0"
 dependencies = [
- "fstart-board-sifive-unmatched-facts",
+ "fstart-driver-fu740-ddr",
+ "fstart-driver-fu740-prci",
  "fstart-driver-sifive-uart",
  "fstart-log",
  "fstart-platform-riscv64",

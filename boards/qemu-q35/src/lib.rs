@@ -1,6 +1,9 @@
 //! Host Rust board metadata for `qemu-q35`.
 
-use fstart_board_qemu_q35_facts as facts;
+#![cfg_attr(feature = "stage", no_std)]
+pub mod facts;
+#[cfg(feature = "stage")]
+pub mod stage;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardBuildPolicy, BoardConfig,
     BoardInfo, BuildInfo, BusAddress, Capability, Compression, CorebootSmmCompat, DeviceTopology,

@@ -1,6 +1,6 @@
 //! QEMU RISC-V virt stage recipe binding.
 
-use fstart_board_qemu_riscv64_facts as facts;
+use crate::facts;
 use fstart_driver_ns16550::{AccessMode, Ns16550, Ns16550Config};
 use fstart_services::boot::BootLinuxParams;
 use fstart_stage::fixed_helpers::QemuVirtLinuxBoard;

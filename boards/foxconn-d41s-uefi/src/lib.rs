@@ -2,6 +2,8 @@
 
 #![no_std]
 
+#[cfg(feature = "stage")]
+pub mod stage;
 use fstart_board_foxconn_d41s::d41s_pineview_ich7_config;
 use fstart_platform_intel_pineview_ich7::PineviewIch7Config;
 use fstart_types::{x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, Platform};

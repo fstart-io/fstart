@@ -1,5 +1,9 @@
 //! Rust board metadata for `qemu-aarch64-multi`.
 
+#![cfg_attr(feature = "stage", no_std)]
+pub mod facts;
+#[cfg(feature = "stage")]
+pub mod stage;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, MemoryMap, MemoryRegion, Platform,

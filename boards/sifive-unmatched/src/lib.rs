@@ -1,6 +1,9 @@
 //! Host Rust board metadata for SiFive HiFive Unmatched under QEMU `sifive_u`.
 
-use fstart_board_sifive_unmatched_facts as facts;
+#![cfg_attr(feature = "stage", no_std)]
+pub mod facts;
+#[cfg(feature = "stage")]
+pub mod stage;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BootMedium,
     BuildInfo, Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, FirmwareConfig,

@@ -1,6 +1,6 @@
 //! Banana Pi M1 stage policy and static driver configs.
 
-use fstart_board_bananapi_m1_facts as facts;
+use crate::facts;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_sunxi_a20_dramc::{SunxiA20Dramc, SunxiA20DramcConfig};
 use fstart_driver_sunxi_ccu::{SunxiA20Ccu, SunxiA20CcuConfig};

@@ -9,9 +9,42 @@ publish = false
 board = "sifive-unmatched"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-stage-package = "fstart-board-sifive-unmatched-stage"
+stage-recipe = "board-stage-wrapper"
 stage-bin = "fstart-stage"
 
+[features]
+default = []
+
+stage = [
+  "dep:fstart-stage",
+  "dep:fstart-stage-runtime",
+  "dep:fstart-services",
+  "dep:fstart-log",
+  "dep:fstart-platform-riscv64",
+  "dep:fstart-driver-sifive-uart",
+  "dep:ufmt",
+]
+riscv64 = ["fstart-stage/riscv64"]
+sifive-uart = ["fstart-stage/sifive-uart"]
+ffs = ["fstart-stage/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+fdt = ["fstart-stage/fdt"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+stage-bootblock = []
+
 [dependencies]
-fstart-board-sifive-unmatched-facts = { path = "facts" }
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-stage-runtime = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-platform-riscv64 = { workspace = true, optional = true }
+fstart-driver-sifive-uart = { workspace = true, optional = true }
+ufmt = { workspace = true, optional = true }

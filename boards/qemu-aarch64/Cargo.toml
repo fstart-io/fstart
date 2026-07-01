@@ -23,7 +23,6 @@ stage = [
 ]
 
 [dependencies]
-fstart-board-qemu-aarch64-facts = { path = "facts" }
 fstart-board-qemu-virt = { workspace = true }
 fstart-types = { workspace = true }
 fstart-stage = { workspace = true, optional = true }

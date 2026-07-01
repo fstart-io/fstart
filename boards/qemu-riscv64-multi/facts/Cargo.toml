@@ -1,8 +1,0 @@
-[package]
-name = "fstart-board-qemu-riscv64-multi-facts"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-publish = false
-
-[dependencies]
