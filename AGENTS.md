@@ -27,3 +27,7 @@ nix-shell -p binutils --run "objdump -d target/.../fstart-stage"
 
 ### Formatting
 Default `rustfmt` (no `rustfmt.toml`). 4-space indent. Edition 2021.
+
+## IMPORTANT NOTE
+This is a grassroots projects. Breaking changes are expected everywhere.
+We want no backwards compatibility or safe migrations to new architectural designs.
