@@ -6,23 +6,21 @@ use fstart_board_lenovo_x61 as board;
 use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::Ns16550;
-use fstart_mainboard_lenovo_x61::{LenovoX61Mainboard, X61_SMBIOS_DESC};
+use fstart_mainboard_lenovo_x61::{LenovoX61Southbridge, X61_SMBIOS_DESC};
 use fstart_platform_intel_gm965_ich8 as platform;
 use fstart_services::memory_detect::{E820Entry, MAX_E820_ENTRIES};
-use fstart_services::{
-    EarlyInit, FinalizeInit, HardwareInit, InitContext, Mainboard, PciRootBus, PostDramInit,
-    PreConsoleInit, ServiceError, StageLocalInit,
-};
+use fstart_services::{HardwareInit, InitContext, PciRootBus, ServiceError, StageLocalInit};
 use fstart_stage::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedUefiBoot, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
 use crate::common;
 
+type SouthbridgeDevices = LenovoX61Southbridge<IntelIch8>;
+
 pub struct MainDevices {
     northbridge: IntelGm965,
-    southbridge: IntelIch8,
-    mainboard: LenovoX61Mainboard,
+    southbridge: SouthbridgeDevices,
     console: StaticConsole<Ns16550>,
     e820: [E820Entry; MAX_E820_ENTRIES],
     e820_count: usize,
@@ -34,8 +32,7 @@ impl MainDevices {
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
             northbridge: common::new_gm965()?,
-            southbridge: common::new_ich8()?,
-            mainboard: common::new_mainboard()?,
+            southbridge: SouthbridgeDevices::new(common::new_ich8()?, common::new_mainboard()?),
             console: StaticConsole::new(common::UART0_CONFIG),
             e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
             e820_count: 0,
@@ -59,15 +56,19 @@ impl MainDevices {
     fn prepare_acpi(&mut self) {
         let platform = PlatformConfig::X86(
             self.southbridge
+                .southbridge()
                 .x86_platform_config(fstart_mp::online_cpus() as u32),
         );
         let rsdp =
             fstart_capabilities::acpi::prepare_with_options(&platform, true, |dsdt, extra| {
+                let southbridge = self.southbridge.southbridge();
+                let mainboard = self.southbridge.mainboard();
+
                 dsdt.extend(self.northbridge.dsdt_aml(self.northbridge.config()));
-                dsdt.extend(self.southbridge.dsdt_aml(self.southbridge.config()));
-                dsdt.extend(self.mainboard.dsdt_aml(self.mainboard.config()));
+                dsdt.extend(southbridge.dsdt_aml(southbridge.config()));
+                dsdt.extend(mainboard.dsdt_aml(mainboard.config()));
                 extra.extend(self.northbridge.extra_tables(self.northbridge.config()));
-                extra.extend(self.southbridge.extra_tables(self.southbridge.config()));
+                extra.extend(southbridge.extra_tables(southbridge.config()));
             });
         self.acpi_rsdp = Some(rsdp);
     }
@@ -91,19 +92,17 @@ impl MainDevices {
 }
 
 impl HardwareInit for MainDevices {
-    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.northbridge.pre_console_init()?;
-        self.southbridge.pre_console_init()?;
-        self.mainboard
-            .pre_console_init_with_southbridge(&mut self.southbridge)
+    fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.northbridge.pre_console(ctx)?;
+        self.southbridge.pre_console(ctx)
     }
 
     fn console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         self.console.console(ctx)
     }
 
-    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.southbridge.early_init()
+    fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.southbridge.post_console(ctx)
     }
 
     fn memory_discovery(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
@@ -119,9 +118,7 @@ impl HardwareInit for MainDevices {
 
     fn bus_probe(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         self.northbridge.init_bus()?;
-        self.southbridge.post_dram_init()?;
-        self.mainboard
-            .ramstage_init_with_southbridge(&mut self.southbridge)?;
+        self.southbridge.ramstage_init()?;
         self.init_mp()?;
         Ok(())
     }
@@ -185,8 +182,7 @@ impl StaticBoard for MainBoard {
     }
 
     fn finalize_handoff(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.devices.mainboard.finalize()?;
-        self.devices.southbridge.finalize_init()
+        self.devices.southbridge.finalize()
     }
 
     fn boot_payload(self) -> ! {

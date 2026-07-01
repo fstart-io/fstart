@@ -112,6 +112,25 @@ impl<S> LenovoX61Southbridge<S> {
     }
 }
 
+impl<S> LenovoX61Southbridge<S>
+where
+    S: Southbridge,
+{
+    /// Run DRAM-backed X61 southbridge and mainboard hook initialization.
+    pub fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+        self.southbridge.ramstage_init()?;
+        self.mainboard
+            .ramstage_init_with_southbridge(&mut self.southbridge)
+    }
+
+    /// Run X61 mainboard and southbridge payload-handoff finalization.
+    pub fn finalize(&mut self) -> Result<(), ServiceError> {
+        self.mainboard
+            .finalize_with_southbridge(&mut self.southbridge)?;
+        self.southbridge.finalize()
+    }
+}
+
 impl<S> HardwareInit for LenovoX61Southbridge<S>
 where
     S: HardwareInit + Southbridge,
