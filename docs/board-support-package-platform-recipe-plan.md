@@ -132,11 +132,15 @@ impl Gm965Ich8UefiBoard for Board {
     }
 
     fn mainboard() -> Result<Self::Mainboard, ServiceError> {
-        X61Mainboard::new(devices::x61_mainboard_config())
+        X61Mainboard::new(mainboard::x61_mainboard_config())
     }
 
     fn console_config() -> Ns16550Config {
-        devices::uart0_config()
+        Ns16550Config {
+            regs: AccessMode::Pio { base: config::UART0_PIO_BASE as u64 },
+            clock_freq: config::UART0_CLOCK_FREQ,
+            baud_rate: config::UART0_BAUD_RATE,
+        }
     }
 
     fn smbios() -> &'static SmbiosDesc<'static> {
@@ -201,9 +205,8 @@ boards/lenovo-x61/
   Cargo.toml
   src/
     lib.rs          # exports Board and board public API
-    config.rs       # board_info, build_info, flash layout, payload policy, SMBIOS metadata
-    devices.rs      # IGD, GPIO, HDA, CK505, SuperIO, UART config
-    mainboard.rs    # X61Mainboard, dock, DLPC, i8042, X61 ACPI
+    config.rs       # board_info, build_info, flash layout, payload policy, SMBIOS, device facts
+    mainboard.rs    # X61Mainboard, dock, DLPC, X61 ACPI
     smm.rs          # X61 SMM handler
 ```
 
