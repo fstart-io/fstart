@@ -52,6 +52,7 @@ fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true, features = ["pci"] }
+fstart-superio = { workspace = true }
 fstart-capabilities = { workspace = true, optional = true }
 fstart-cpu-intel = { workspace = true, optional = true }
 fstart-mp = { workspace = true, optional = true }

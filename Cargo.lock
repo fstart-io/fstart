@@ -616,6 +616,7 @@ dependencies = [
  "fstart-services",
  "fstart-smbios",
  "fstart-smm-runtime",
+ "fstart-superio",
  "fstart-types",
  "heapless",
  "serde",

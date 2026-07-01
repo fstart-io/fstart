@@ -113,7 +113,7 @@ where
 
     /// Run X61 mainboard and southbridge payload-handoff finalization.
     pub fn finalize(&mut self) -> Result<(), ServiceError> {
-        quiesce_i8042_for_os();
+        fstart_superio::quiesce_i8042_for_os();
         self.southbridge.finalize()
     }
 }
@@ -153,53 +153,6 @@ where
     fn finalize(&mut self) -> Result<(), ServiceError> {
         LenovoX61Southbridge::finalize(self)
     }
-}
-
-fn quiesce_i8042_for_os() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        const DATA: u16 = 0x60;
-        const STATUS: u16 = 0x64;
-        const CMD: u16 = 0x64;
-
-        if !i8042_flush(DATA, STATUS) || !i8042_wait_input_empty(STATUS) {
-            return;
-        }
-
-        // Leave the controller quiet for the OS handoff: keyboard interface
-        // enabled, AUX disabled, translation enabled, and both IRQ-enable bits
-        // clear. Linux's i8042 driver will run its own probe and re-enable IRQs
-        // after the handlers are installed.
-        fstart_pio::outb(CMD, 0x60);
-        if !i8042_wait_input_empty(STATUS) {
-            return;
-        }
-        fstart_pio::outb(DATA, 0x64);
-        let _ = i8042_flush(DATA, STATUS);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
-    for _ in 0..100_000 {
-        if fstart_pio::inb(status_port) & 0x02 == 0 {
-            return true;
-        }
-        core::hint::spin_loop();
-    }
-    false
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
-    for _ in 0..256 {
-        let status = fstart_pio::inb(status_port);
-        if status & 0x01 == 0 {
-            return true;
-        }
-        let _ = fstart_pio::inb(data_port);
-    }
-    false
 }
 
 /// X61 dock and DLPC helpers ported from coreboot `mainboard/lenovo/x61/dock.c`.

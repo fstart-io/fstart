@@ -35,6 +35,70 @@ use serde::{Deserialize, Serialize};
 
 use core::marker::PhantomData;
 
+/// Standard PC/AT i8042 data port.
+pub const I8042_DATA_PORT: u16 = 0x60;
+
+/// Standard PC/AT i8042 status and command port.
+pub const I8042_COMMAND_PORT: u16 = 0x64;
+
+/// Leave a PC/AT i8042 controller quiet for OS handoff.
+///
+/// This drains stale output bytes and writes a command byte with the keyboard
+/// interface enabled, AUX disabled, translation enabled, and IRQ generation
+/// disabled. Operating systems such as Linux run their own i8042 probe and
+/// re-enable IRQs after handlers are installed.
+pub fn quiesce_i8042_for_os() {
+    quiesce_i8042_for_os_at(I8042_DATA_PORT, I8042_COMMAND_PORT);
+}
+
+/// Leave an i8042 controller quiet for OS handoff using explicit ports.
+pub fn quiesce_i8042_for_os_at(data_port: u16, command_port: u16) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: callers select the legacy i8042 I/O ports decoded by the platform.
+        unsafe {
+            if !i8042_flush(data_port, command_port) || !i8042_wait_input_empty(command_port) {
+                return;
+            }
+
+            fstart_pio::outb(command_port, 0x60);
+            if !i8042_wait_input_empty(command_port) {
+                return;
+            }
+            fstart_pio::outb(data_port, 0x64);
+            let _ = i8042_flush(data_port, command_port);
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (data_port, command_port);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
+    for _ in 0..100_000 {
+        if fstart_pio::inb(status_port) & 0x02 == 0 {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
+    for _ in 0..256 {
+        let status = fstart_pio::inb(status_port);
+        if status & 0x01 == 0 {
+            return true;
+        }
+        let _ = fstart_pio::inb(data_port);
+    }
+    false
+}
+
 // ===================================================================
 // Common SuperIO configuration register indices
 // ===================================================================
