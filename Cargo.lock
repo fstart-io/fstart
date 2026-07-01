@@ -618,8 +618,6 @@ dependencies = [
  "fstart-smm-runtime",
  "fstart-superio",
  "fstart-types",
- "heapless",
- "serde",
 ]
 
 [[package]]

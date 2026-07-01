@@ -11,34 +11,22 @@
 
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{HardwareInit, InitContext, ServiceError, Southbridge};
-use serde::{Deserialize, Serialize};
 
 use fstart_platform_intel_gm965_ich8::Gm965Ich8Southbridge;
-use fstart_types::hstr;
 
 /// Lenovo ThinkPad X61 mainboard configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LenovoX61MainboardConfig {
     /// Initialize dock LPC and the dock-side PC87392 COM1 before console init.
-    #[serde(default = "default_true")]
     pub dock_early_console: bool,
-    /// ACPI contributor name marker for codegen.
-    #[serde(default)]
-    pub acpi_name: Option<heapless::String<8>>,
 }
 
 impl Default for LenovoX61MainboardConfig {
     fn default() -> Self {
         Self {
             dock_early_console: true,
-            acpi_name: None,
         }
     }
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Lenovo ThinkPad X61 mainboard hook driver.
@@ -446,7 +434,6 @@ pub mod dock {
 pub fn x61_mainboard_config() -> LenovoX61MainboardConfig {
     LenovoX61MainboardConfig {
         dock_early_console: true,
-        acpi_name: Some(hstr("X61")),
     }
 }
 

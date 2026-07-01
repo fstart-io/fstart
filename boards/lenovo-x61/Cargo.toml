@@ -58,5 +58,3 @@ fstart-cpu-intel = { workspace = true, optional = true }
 fstart-mp = { workspace = true, optional = true }
 fstart-smbios = { workspace = true }
 fstart-smm-runtime = { workspace = true, optional = true }
-heapless = { workspace = true }
-serde = { workspace = true }
