@@ -13,7 +13,6 @@ mod stage;
 pub struct Board;
 
 pub use config::*;
-pub use mainboard::{
-    x61_mainboard_config, LenovoX61Mainboard, LenovoX61MainboardConfig, LenovoX61Southbridge,
-    X61_SMBIOS_DESC,
-};
+#[cfg(feature = "acpi")]
+pub use mainboard::x61_mainboard_dsdt_aml;
+pub use mainboard::{LenovoX61Southbridge, X61_SMBIOS_DESC};

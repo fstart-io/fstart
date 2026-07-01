@@ -9,52 +9,9 @@
 
 #![allow(clippy::result_unit_err)]
 
-use fstart_services::device::{Device, DeviceError};
 use fstart_services::{HardwareInit, InitContext, ServiceError, Southbridge};
 
 use fstart_platform_intel_gm965_ich8::Gm965Ich8Southbridge;
-
-/// Lenovo ThinkPad X61 mainboard configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LenovoX61MainboardConfig {
-    /// Initialize dock LPC and the dock-side PC87392 COM1 before console init.
-    pub dock_early_console: bool,
-}
-
-impl Default for LenovoX61MainboardConfig {
-    fn default() -> Self {
-        Self {
-            dock_early_console: true,
-        }
-    }
-}
-
-/// Lenovo ThinkPad X61 mainboard hook driver.
-pub struct LenovoX61Mainboard {
-    config: LenovoX61MainboardConfig,
-}
-
-impl Device for LenovoX61Mainboard {
-    const NAME: &'static str = "lenovo-x61-mainboard";
-    const COMPATIBLE: &'static [&'static str] = &["lenovo,thinkpad-x61"];
-    type Config = LenovoX61MainboardConfig;
-
-    fn new(config: Self::Config) -> Result<Self, DeviceError> {
-        Ok(Self { config })
-    }
-
-    fn init(&mut self) -> Result<(), DeviceError> {
-        Ok(())
-    }
-}
-
-impl LenovoX61Mainboard {
-    /// Runtime config used by this mainboard hook instance.
-    #[must_use]
-    pub const fn config(&self) -> &LenovoX61MainboardConfig {
-        &self.config
-    }
-}
 
 /// Pair the X61 board hook with the southbridge it needs for dock/LPC glue.
 ///
@@ -62,29 +19,19 @@ impl LenovoX61Mainboard {
 /// of adding a generic `with_southbridge()` concept to common stage code.
 pub struct LenovoX61Southbridge<S> {
     southbridge: S,
-    mainboard: LenovoX61Mainboard,
 }
 
 impl<S> LenovoX61Southbridge<S> {
     /// Construct a Lenovo X61 board hook around a concrete southbridge driver.
     #[must_use]
-    pub const fn new(southbridge: S, mainboard: LenovoX61Mainboard) -> Self {
-        Self {
-            southbridge,
-            mainboard,
-        }
+    pub const fn new(southbridge: S) -> Self {
+        Self { southbridge }
     }
 
     /// Return the wrapped southbridge driver.
     #[must_use]
     pub const fn southbridge(&self) -> &S {
         &self.southbridge
-    }
-
-    /// Return the wrapped mainboard hook.
-    #[must_use]
-    pub const fn mainboard(&self) -> &LenovoX61Mainboard {
-        &self.mainboard
     }
 }
 
@@ -118,7 +65,7 @@ where
         // PC87392 COM1 enable after dock_connect(); do the same so a marginal
         // delay/timeout does not suppress all serial output.
         let _ = dock::dlpc_init();
-        if self.mainboard.config.dock_early_console && dock::dock_present(&self.southbridge) {
+        if dock::dock_present(&self.southbridge) {
             let _ = dock::dock_connect();
             dock::early_superio_config();
         }
@@ -431,12 +378,6 @@ pub mod dock {
     }
 }
 
-pub fn x61_mainboard_config() -> LenovoX61MainboardConfig {
-    LenovoX61MainboardConfig {
-        dock_early_console: true,
-    }
-}
-
 const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
     Some(date) => date,
     None => "05/08/2026",
@@ -491,284 +432,276 @@ mod acpi_impl {
     extern crate alloc;
 
     use alloc::vec::Vec;
-    use fstart_acpi::device::AcpiDevice;
     use fstart_acpi_macros::acpi_dsl;
 
-    use super::*;
-
-    impl AcpiDevice for LenovoX61Mainboard {
-        type Config = LenovoX61MainboardConfig;
-
-        fn dsdt_aml(&self, _config: &Self::Config) -> Vec<u8> {
-            let p = |s: &str| fstart_acpi::aml::Path::new(s);
-            acpi_dsl! {
-                Scope("\\") {
-                    Name("SMIF", 0u32);
-                    OperationRegion("IOT_", SystemIO, 0x0800u32, 0x10u32);
-                    Field("IOT_", ByteAcc, NoLock, Preserve) {
-                        Offset(0x08),
-                        TRP0, 8,
-                    }
-                    Method("TRAP", 1, Serialized) {
-                        SMIF = Arg0;
-                        TRP0 = 0u32;
-                        Return(SMIF);
-                    }
-
-                    Method("_PTS", 1, NotSerialized) {
-                        #{p("\\_SB_.PCI0.LPCB.EC__.MUTE")}(1u32);
-                        #{p("\\_SB_.PCI0.LPCB.EC__.USBP")}(0u32);
-                        #{p("\\_SB_.PCI0.LPCB.EC__.RADI")}(0u32);
-                        #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC")}(0u32);
-                    }
-                    Method("_WAK", 1, NotSerialized) {
-                        #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC")}(1u32);
-                        #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE")}(Arg0);
-                        Return(Package(0u32, 0u32));
-                    }
+    pub fn x61_mainboard_dsdt_aml() -> Vec<u8> {
+        let p = |s: &str| fstart_acpi::aml::Path::new(s);
+        acpi_dsl! {
+            Scope("\\") {
+                Name("SMIF", 0u32);
+                OperationRegion("IOT_", SystemIO, 0x0800u32, 0x10u32);
+                Field("IOT_", ByteAcc, NoLock, Preserve) {
+                    Offset(0x08),
+                    TRP0, 8,
+                }
+                Method("TRAP", 1, Serialized) {
+                    SMIF = Arg0;
+                    TRP0 = 0u32;
+                    Return(SMIF);
                 }
 
-                Scope("\\_SB_.PCI0.LPCB") {
-                        Device("EC__") {
-                            Name("_HID", EisaId("PNP0C09"));
-                            Name("_UID", 0u32);
-                            // Coreboot X61 uses THINKPAD_EC_GPE = 0x12 for
-                            // the EC query GPE.  The board-level _L18 method
-                            // below handles the level-triggered GPIO8 wake
-                            // event; using 0x18 here makes ACPICA install an
-                            // EC edge handler on the same GPE and produces a
-                            // level/edge type mismatch.
-                            Name("_GPE", 0x12u32);
-                            Name("_CRS", ResourceTemplate {
-                                IO(0x0062u16, 0x0062u16, 0x01u8, 0x01u8);
-                                IO(0x0066u16, 0x0066u16, 0x01u8, 0x01u8);
-                            });
-                            OperationRegion("ECOR", EmbeddedControl, 0x00u32, 0x100u32);
-                            Field("ECOR", ByteAcc, Lock, Preserve) {
-                                Offset(0x02),
-                                DKR1, 1,
-                                Offset(0x0F),
-                                , 7,
-                                TBSW, 1,
-                                Offset(0x2F),
-                                , 6,
-                                FAND, 1,
-                                FANA, 1,
-                                Offset(0x30),
-                                , 6,
-                                ALMT, 1,
-                                Offset(0x38),
-                                B0ST, 4,
-                                , 1,
-                                B0CH, 1,
-                                B0DI, 1,
-                                B0PR, 1,
-                                B1ST, 4,
-                                , 1,
-                                B1CH, 1,
-                                B1DI, 1,
-                                B1PR, 1,
-                                Offset(0x3A),
-                                AMUT, 1,
-                                , 3,
-                                BTEB, 1,
-                                WLEB, 1,
-                                WWEB, 1,
-                                Offset(0x3B),
-                                , 1,
-                                KBLT, 1,
-                                , 2,
-                                USPW, 1,
-                                Offset(0x46),
-                                , 4,
-                                HPAC, 1,
-                                Offset(0x48),
-                                HPPI, 1,
-                                GSTS, 1,
-                                Offset(0x4E),
-                                WAKE, 16,
-                                Offset(0x78),
-                                TMP0, 8,
-                                TMP1, 8,
-                                Offset(0x81),
-                                PAGE, 8,
-                                Offset(0xA0),
-                                BARC, 16,
-                                BAFC, 16,
-                                Offset(0xA8),
-                                BAPR, 16,
-                                BAVO, 16,
-                            }
-                            Method("MUTE", 1, NotSerialized) { AMUT = Arg0; }
-                            Method("RADI", 1, NotSerialized) { WLEB = Arg0; WWEB = Arg0; BTEB = Arg0; }
-                            Method("USBP", 1, NotSerialized) { USPW = Arg0; }
-                            Method("LGHT", 1, NotSerialized) { KBLT = Arg0; }
-                            Method("FANE", 1, NotSerialized) {
-                                If (Arg0) {
-                                    FAND = 1u32;
-                                    FANA = 0u32;
-                                } Else {
-                                    FAND = 0u32;
-                                    FANA = 1u32;
-                                }
-                            }
-
-                            Device("AC__") {
-                                Name("_HID", "ACPI0003");
-                                Name("_UID", 0u32);
-                                Name("_PCL", Package(#{p("\\_SB_")}));
-                                Method("_PSR", 0, NotSerialized) { Return(HPAC); }
-                                Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                            }
-                            Device("LID_") { Name("_HID", EisaId("PNP0C0D")); Method("_LID", 0, NotSerialized) { Return(1u32); } }
-                            Device("SLPB") { Name("_HID", EisaId("PNP0C0E")); }
-                            Device("HKEY") {
-                                Name("_HID", EisaId("IBM0068"));
-                                Name("BTN_", 0u32);
-                                Name("BTAB", 0u32);
-                                Name("DHKN", 0x080Cu32);
-                                Name("EMSK", 0u32);
-                                Name("ETAB", 0u32);
-                                Name("EN__", 0u32);
-                                Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                                Method("MHKP", 0, NotSerialized) {
-                                    Local0 = BTN_;
-                                    If (Local0 != 0u32) {
-                                        BTN_ = 0u32;
-                                        Local0 = Local0 + 0x1000u32;
-                                        Return(Local0);
-                                    }
-                                    Local0 = BTAB;
-                                    If (Local0 != 0u32) {
-                                        BTAB = 0u32;
-                                        Local0 = Local0 + 0x5000u32;
-                                        Return(Local0);
-                                    }
-                                    Return(0u32);
-                                }
-                                Method("RHK_", 1, NotSerialized) {
-                                    BTN_ = Arg0;
-                                    Notify(HKEY, 0x80u32);
-                                }
-                                Method("RTAB", 1, NotSerialized) {
-                                    BTAB = Arg0;
-                                    Notify(HKEY, 0x80u32);
-                                }
-                                Method("MHKC", 1, NotSerialized) {
-                                    If (Arg0) {
-                                        EMSK = DHKN;
-                                        ETAB = 0xFFFFFFFFu32;
-                                    } Else {
-                                        EMSK = 0u32;
-                                        ETAB = 0u32;
-                                    }
-                                    EN__ = Arg0;
-                                }
-                                Method("MHKV", 0, NotSerialized) { Return(0x0100u32); }
-                                Method("WLSW", 0, NotSerialized) { Return(GSTS); }
-                                Method("MHKG", 0, NotSerialized) { Return(TBSW << 3u32); }
-                                Method("WAKE", 1, NotSerialized) { Return(0u32); }
-                            }
-                            Device("BAT0") {
-                                Name("_HID", EisaId("PNP0C0A"));
-                                Name("_UID", 0u32);
-                                Name("_PCL", Package(#{p("\\_SB_")}));
-                                Method("_BIF", 0, NotSerialized) { Return(Package(0u32, 0xFFFFFFFFu32, 0xFFFFFFFFu32, 1u32, 10800u32, 0u32, 200u32, 1u32, 1u32, "", "", "", "")); }
-                                Method("_BST", 0, NotSerialized) {
-                                    If (B0PR) {
-                                        If (B0CH) { Return(Package(2u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
-                                        If (B0DI) { Return(Package(1u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
-                                    }
-                                    Return(Package(0u32, 0u32, 0u32, 0u32));
-                                }
-                                Method("_STA", 0, NotSerialized) { If (B0PR) { Return(0x1Fu32); } Else { Return(0x0Fu32); } }
-                            }
-                            Device("BAT1") {
-                                Name("_HID", EisaId("PNP0C0A"));
-                                Name("_UID", 1u32);
-                                Name("_PCL", Package(#{p("\\_SB_")}));
-                                Method("_BIF", 0, NotSerialized) { Return(Package(0u32, 0xFFFFFFFFu32, 0xFFFFFFFFu32, 1u32, 10800u32, 0u32, 200u32, 1u32, 1u32, "", "", "", "")); }
-                                Method("_BST", 0, NotSerialized) {
-                                    If (B1PR) {
-                                        If (B1CH) { Return(Package(2u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
-                                        If (B1DI) { Return(Package(1u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
-                                    }
-                                    Return(Package(0u32, 0u32, 0u32, 0u32));
-                                }
-                                Method("_STA", 0, NotSerialized) { If (B1PR) { Return(0x1Fu32); } Else { Return(0x0Fu32); } }
-                            }
-                            Method("_Q13", 0, NotSerialized) { Notify(SLPB, 0x80u32); }
-                            Method("_Q26", 0, NotSerialized) { Notify(AC__, 0x80u32); }
-                            Method("_Q27", 0, NotSerialized) { Notify(AC__, 0x80u32); }
-                            Method("_Q2A", 0, NotSerialized) { Notify(LID_, 0x80u32); }
-                            Method("_Q2B", 0, NotSerialized) { Notify(LID_, 0x80u32); }
-                            Method("_Q24", 0, NotSerialized) { Notify(BAT0, 0x80u32); }
-                            Method("_Q25", 0, NotSerialized) { Notify(BAT1, 0x80u32); }
-                            Method("_Q4A", 0, NotSerialized) { Notify(BAT0, 0x81u32); }
-                            Method("_Q4B", 0, NotSerialized) { Notify(BAT0, 0x80u32); }
-                            Method("_Q4C", 0, NotSerialized) { Notify(BAT1, 0x81u32); }
-                            Method("_Q4D", 0, NotSerialized) { Notify(BAT1, 0x80u32); }
-                            Method("_Q50", 0, NotSerialized) { Notify(#{p("\\_SB_.DOCK")}, 3u32); }
-                            Method("_Q58", 0, NotSerialized) { Notify(#{p("\\_SB_.DOCK")}, 0u32); }
-                        }
+                Method("_PTS", 1, NotSerialized) {
+                    #{p("\\_SB_.PCI0.LPCB.EC__.MUTE")}(1u32);
+                    #{p("\\_SB_.PCI0.LPCB.EC__.USBP")}(0u32);
+                    #{p("\\_SB_.PCI0.LPCB.EC__.RADI")}(0u32);
+                    #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC")}(0u32);
                 }
+                Method("_WAK", 1, NotSerialized) {
+                    #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC")}(1u32);
+                    #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE")}(Arg0);
+                    Return(Package(0u32, 0u32));
+                }
+            }
 
-                Scope("\\_SB_") {
-                    OperationRegion("DLPC", SystemIO, 0x164Cu32, 0x01u32);
-                    Field("DLPC", ByteAcc, NoLock, Preserve) {
-                        , 3,
-                        DSTA, 1,
-                    }
-                    OperationRegion("TCOX", SystemIO, 0x0560u32, 0x20u32);
-                    Field("TCOX", ByteAcc, NoLock, Preserve) {
-                        Offset(0x02),
-                        TDIN, 8,
-                        TDOT, 8,
-                    }
-                    Device("DOCK") {
-                        Name("_HID", "ACPI0003");
+            Scope("\\_SB_.PCI0.LPCB") {
+                    Device("EC__") {
+                        Name("_HID", EisaId("PNP0C09"));
                         Name("_UID", 0u32);
-                        Name("_PCL", Package(#{p("\\_SB_")}));
-                        Method("_DCK", 1, Serialized) {
+                        // Coreboot X61 uses THINKPAD_EC_GPE = 0x12 for
+                        // the EC query GPE.  The board-level _L18 method
+                        // below handles the level-triggered GPIO8 wake
+                        // event; using 0x18 here makes ACPICA install an
+                        // EC edge handler on the same GPE and produces a
+                        // level/edge type mismatch.
+                        Name("_GPE", 0x12u32);
+                        Name("_CRS", ResourceTemplate {
+                            IO(0x0062u16, 0x0062u16, 0x01u8, 0x01u8);
+                            IO(0x0066u16, 0x0066u16, 0x01u8, 0x01u8);
+                        });
+                        OperationRegion("ECOR", EmbeddedControl, 0x00u32, 0x100u32);
+                        Field("ECOR", ByteAcc, Lock, Preserve) {
+                            Offset(0x02),
+                            DKR1, 1,
+                            Offset(0x0F),
+                            , 7,
+                            TBSW, 1,
+                            Offset(0x2F),
+                            , 6,
+                            FAND, 1,
+                            FANA, 1,
+                            Offset(0x30),
+                            , 6,
+                            ALMT, 1,
+                            Offset(0x38),
+                            B0ST, 4,
+                            , 1,
+                            B0CH, 1,
+                            B0DI, 1,
+                            B0PR, 1,
+                            B1ST, 4,
+                            , 1,
+                            B1CH, 1,
+                            B1DI, 1,
+                            B1PR, 1,
+                            Offset(0x3A),
+                            AMUT, 1,
+                            , 3,
+                            BTEB, 1,
+                            WLEB, 1,
+                            WWEB, 1,
+                            Offset(0x3B),
+                            , 1,
+                            KBLT, 1,
+                            , 2,
+                            USPW, 1,
+                            Offset(0x46),
+                            , 4,
+                            HPAC, 1,
+                            Offset(0x48),
+                            HPPI, 1,
+                            GSTS, 1,
+                            Offset(0x4E),
+                            WAKE, 16,
+                            Offset(0x78),
+                            TMP0, 8,
+                            TMP1, 8,
+                            Offset(0x81),
+                            PAGE, 8,
+                            Offset(0xA0),
+                            BARC, 16,
+                            BAFC, 16,
+                            Offset(0xA8),
+                            BAPR, 16,
+                            BAVO, 16,
+                        }
+                        Method("MUTE", 1, NotSerialized) { AMUT = Arg0; }
+                        Method("RADI", 1, NotSerialized) { WLEB = Arg0; WWEB = Arg0; BTEB = Arg0; }
+                        Method("USBP", 1, NotSerialized) { USPW = Arg0; }
+                        Method("LGHT", 1, NotSerialized) { KBLT = Arg0; }
+                        Method("FANE", 1, NotSerialized) {
                             If (Arg0) {
-                                TDIN = 1u32;
+                                FAND = 1u32;
+                                FANA = 0u32;
                             } Else {
-                                TDIN = 2u32;
+                                FAND = 0u32;
+                                FANA = 1u32;
                             }
-                            Return(TDOT);
                         }
-                        Method("_PSR", 0, NotSerialized) {
-                            Return(DSTA);
+
+                        Device("AC__") {
+                            Name("_HID", "ACPI0003");
+                            Name("_UID", 0u32);
+                            Name("_PCL", Package(#{p("\\_SB_")}));
+                            Method("_PSR", 0, NotSerialized) { Return(HPAC); }
+                            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
                         }
-                        Method("_STA", 0, NotSerialized) {
-                            Return(DSTA);
+                        Device("LID_") { Name("_HID", EisaId("PNP0C0D")); Method("_LID", 0, NotSerialized) { Return(1u32); } }
+                        Device("SLPB") { Name("_HID", EisaId("PNP0C0E")); }
+                        Device("HKEY") {
+                            Name("_HID", EisaId("IBM0068"));
+                            Name("BTN_", 0u32);
+                            Name("BTAB", 0u32);
+                            Name("DHKN", 0x080Cu32);
+                            Name("EMSK", 0u32);
+                            Name("ETAB", 0u32);
+                            Name("EN__", 0u32);
+                            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+                            Method("MHKP", 0, NotSerialized) {
+                                Local0 = BTN_;
+                                If (Local0 != 0u32) {
+                                    BTN_ = 0u32;
+                                    Local0 = Local0 + 0x1000u32;
+                                    Return(Local0);
+                                }
+                                Local0 = BTAB;
+                                If (Local0 != 0u32) {
+                                    BTAB = 0u32;
+                                    Local0 = Local0 + 0x5000u32;
+                                    Return(Local0);
+                                }
+                                Return(0u32);
+                            }
+                            Method("RHK_", 1, NotSerialized) {
+                                BTN_ = Arg0;
+                                Notify(HKEY, 0x80u32);
+                            }
+                            Method("RTAB", 1, NotSerialized) {
+                                BTAB = Arg0;
+                                Notify(HKEY, 0x80u32);
+                            }
+                            Method("MHKC", 1, NotSerialized) {
+                                If (Arg0) {
+                                    EMSK = DHKN;
+                                    ETAB = 0xFFFFFFFFu32;
+                                } Else {
+                                    EMSK = 0u32;
+                                    ETAB = 0u32;
+                                }
+                                EN__ = Arg0;
+                            }
+                            Method("MHKV", 0, NotSerialized) { Return(0x0100u32); }
+                            Method("WLSW", 0, NotSerialized) { Return(GSTS); }
+                            Method("MHKG", 0, NotSerialized) { Return(TBSW << 3u32); }
+                            Method("WAKE", 1, NotSerialized) { Return(0u32); }
                         }
+                        Device("BAT0") {
+                            Name("_HID", EisaId("PNP0C0A"));
+                            Name("_UID", 0u32);
+                            Name("_PCL", Package(#{p("\\_SB_")}));
+                            Method("_BIF", 0, NotSerialized) { Return(Package(0u32, 0xFFFFFFFFu32, 0xFFFFFFFFu32, 1u32, 10800u32, 0u32, 200u32, 1u32, 1u32, "", "", "", "")); }
+                            Method("_BST", 0, NotSerialized) {
+                                If (B0PR) {
+                                    If (B0CH) { Return(Package(2u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
+                                    If (B0DI) { Return(Package(1u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
+                                }
+                                Return(Package(0u32, 0u32, 0u32, 0u32));
+                            }
+                            Method("_STA", 0, NotSerialized) { If (B0PR) { Return(0x1Fu32); } Else { Return(0x0Fu32); } }
+                        }
+                        Device("BAT1") {
+                            Name("_HID", EisaId("PNP0C0A"));
+                            Name("_UID", 1u32);
+                            Name("_PCL", Package(#{p("\\_SB_")}));
+                            Method("_BIF", 0, NotSerialized) { Return(Package(0u32, 0xFFFFFFFFu32, 0xFFFFFFFFu32, 1u32, 10800u32, 0u32, 200u32, 1u32, 1u32, "", "", "", "")); }
+                            Method("_BST", 0, NotSerialized) {
+                                If (B1PR) {
+                                    If (B1CH) { Return(Package(2u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
+                                    If (B1DI) { Return(Package(1u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
+                                }
+                                Return(Package(0u32, 0u32, 0u32, 0u32));
+                            }
+                            Method("_STA", 0, NotSerialized) { If (B1PR) { Return(0x1Fu32); } Else { Return(0x0Fu32); } }
+                        }
+                        Method("_Q13", 0, NotSerialized) { Notify(SLPB, 0x80u32); }
+                        Method("_Q26", 0, NotSerialized) { Notify(AC__, 0x80u32); }
+                        Method("_Q27", 0, NotSerialized) { Notify(AC__, 0x80u32); }
+                        Method("_Q2A", 0, NotSerialized) { Notify(LID_, 0x80u32); }
+                        Method("_Q2B", 0, NotSerialized) { Notify(LID_, 0x80u32); }
+                        Method("_Q24", 0, NotSerialized) { Notify(BAT0, 0x80u32); }
+                        Method("_Q25", 0, NotSerialized) { Notify(BAT1, 0x80u32); }
+                        Method("_Q4A", 0, NotSerialized) { Notify(BAT0, 0x81u32); }
+                        Method("_Q4B", 0, NotSerialized) { Notify(BAT0, 0x80u32); }
+                        Method("_Q4C", 0, NotSerialized) { Notify(BAT1, 0x81u32); }
+                        Method("_Q4D", 0, NotSerialized) { Notify(BAT1, 0x80u32); }
+                        Method("_Q50", 0, NotSerialized) { Notify(#{p("\\_SB_.DOCK")}, 3u32); }
+                        Method("_Q58", 0, NotSerialized) { Notify(#{p("\\_SB_.DOCK")}, 0u32); }
+                    }
+            }
+
+            Scope("\\_SB_") {
+                OperationRegion("DLPC", SystemIO, 0x164Cu32, 0x01u32);
+                Field("DLPC", ByteAcc, NoLock, Preserve) {
+                    , 3,
+                    DSTA, 1,
+                }
+                OperationRegion("TCOX", SystemIO, 0x0560u32, 0x20u32);
+                Field("TCOX", ByteAcc, NoLock, Preserve) {
+                    Offset(0x02),
+                    TDIN, 8,
+                    TDOT, 8,
+                }
+                Device("DOCK") {
+                    Name("_HID", "ACPI0003");
+                    Name("_UID", 0u32);
+                    Name("_PCL", Package(#{p("\\_SB_")}));
+                    Method("_DCK", 1, Serialized) {
+                        If (Arg0) {
+                            TDIN = 1u32;
+                        } Else {
+                            TDIN = 2u32;
+                        }
+                        Return(TDOT);
+                    }
+                    Method("_PSR", 0, NotSerialized) {
+                        Return(DSTA);
+                    }
+                    Method("_STA", 0, NotSerialized) {
+                        Return(DSTA);
                     }
                 }
+            }
 
-                Scope("\\_GPE") {
-                    Method("_L18", 0, NotSerialized) {
-                        Local0 = #{p("\\_SB_.PCI0.LPCB.EC__.WAKE")};
-                        If (Local0 & 0x04u32) {
-                            Notify(#{p("\\_SB_.PCI0.LPCB.EC__.LID_")}, 0x02u32);
-                        }
-                        If (Local0 & 0x08u32) {
-                            Notify(#{p("\\_SB_.DOCK")}, 0x03u32);
-                            Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
-                        }
-                        If (Local0 & 0x10u32) {
-                            Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
-                        }
-                        If (Local0 & 0x80u32) {
-                            Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
-                        }
+            Scope("\\_GPE") {
+                Method("_L18", 0, NotSerialized) {
+                    Local0 = #{p("\\_SB_.PCI0.LPCB.EC__.WAKE")};
+                    If (Local0 & 0x04u32) {
+                        Notify(#{p("\\_SB_.PCI0.LPCB.EC__.LID_")}, 0x02u32);
+                    }
+                    If (Local0 & 0x08u32) {
+                        Notify(#{p("\\_SB_.DOCK")}, 0x03u32);
+                        Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
+                    }
+                    If (Local0 & 0x10u32) {
+                        Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
+                    }
+                    If (Local0 & 0x80u32) {
+                        Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
                     }
                 }
             }
         }
-
-        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            Vec::new()
-        }
     }
 }
+
+#[cfg(feature = "acpi")]
+pub use acpi_impl::x61_mainboard_dsdt_aml;

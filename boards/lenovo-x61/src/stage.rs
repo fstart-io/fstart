@@ -39,9 +39,7 @@ impl Gm965Ich8UefiBoard for Board {
     fn new_southbridge() -> Result<Self::Southbridge, ServiceError> {
         let config = crate::gm965_ich8_config();
         let southbridge = IntelIch8::new(config.ich8).map_err(device_error_to_service_error)?;
-        let mainboard = crate::LenovoX61Mainboard::new(crate::x61_mainboard_config())
-            .map_err(device_error_to_service_error)?;
-        Ok(LenovoX61Southbridge::new(southbridge, mainboard))
+        Ok(LenovoX61Southbridge::new(southbridge))
     }
 
     #[cfg(feature = "mp")]
@@ -69,15 +67,13 @@ impl Gm965Ich8UefiBoard for Board {
         let rsdp =
             fstart_capabilities::acpi::prepare_with_options(&platform, true, |dsdt, extra| {
                 let southbridge = devices.southbridge().southbridge();
-                let mainboard = devices.southbridge().mainboard();
-
                 dsdt.extend(
                     devices
                         .northbridge()
                         .dsdt_aml(devices.northbridge().config()),
                 );
                 dsdt.extend(southbridge.dsdt_aml(southbridge.config()));
-                dsdt.extend(mainboard.dsdt_aml(mainboard.config()));
+                dsdt.extend(crate::x61_mainboard_dsdt_aml());
                 extra.extend(
                     devices
                         .northbridge()
