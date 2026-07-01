@@ -15,10 +15,10 @@ The current RON-based board description has two problems:
 2. Stage behavior is hard to read because board data is lowered into generated
    stage glue and `StagePlan` tables.
 
-The proposed direction is to replace board RON authoring with normal Rust and to
-move stage execution toward fixed, handwritten Rust flow. Mainboard code should
-stay light: it should describe topology/configuration and board-specific quirks,
-not hand-write generic device init ordering.
+The required direction is to replace board RON authoring with normal Rust and to
+make stage execution fixed, handwritten Rust flow. Board code should stay light:
+it describes topology, configuration, and board-specific quirks. It does not
+hand-write generic device init ordering.
 
 ## Goals
 
@@ -47,7 +47,7 @@ not hand-write generic device init ordering.
 - Do not require a central board registry with a `match board_name` table.
 - Do not make mainboards manually list `self.foo.init()?; self.bar.init()?;` for
   generic driver initialization.
-- Do not keep `Device::init()` as the long-term primary lifecycle API.
+- Do not keep `Device::init()` as a lifecycle API or compatibility path.
 - Do not rely on undocumented numeric priorities with “no guarantees” for
   hardware ordering. Firmware ordering must be deterministic and reviewable.
 
@@ -252,10 +252,10 @@ vec![
 ]
 ```
 
-Host codegen may still lower this to its existing parallel internal tables, but
-that lowering is an implementation detail. Public board/platform APIs should not
-make mainboard crates pad driver arrays with `Structural` placeholders or depend
-on device declaration order for driver association.
+Host tooling may lower this to parallel internal tables, but that lowering is an
+implementation detail. Public board/platform APIs must not make board crates pad
+driver arrays with `Structural` placeholders or depend on device declaration
+order for driver association.
 
 That split is important:
 
@@ -407,20 +407,25 @@ board definitions.
 
 ## Board crate layout and per-board build information
 
-Each board should be a normal crate under `boards/`:
+Each board is a board support package crate under `boards/`. A board crate exports
+metadata, board facts, and recipe trait implementations. It does not contain a
+committed firmware entrypoint or a committed `stage/` crate. Entrypoints are
+selected by `xtask` through generated wrapper packages under `target/`.
 
 ```text
 boards/
   qemu-riscv64/
     Cargo.toml
-    src/main.rs          # target firmware entry using fixed fstart stage flow
-    src/board_info.rs    # topology/runtime metadata builder
+    src/lib.rs           # exports Board and recipe trait impls
+    src/config.rs        # topology/runtime metadata builder
     src/build_info.rs    # host build/package metadata builder
   lenovo-x61/
     Cargo.toml
-    src/main.rs
-    src/board_info.rs
-    src/build_info.rs
+    src/lib.rs
+    src/config.rs
+    src/devices.rs
+    src/mainboard.rs     # only for board-specific quirks/hooks
+    src/smm.rs           # only when the board owns SMM behavior
 ```
 
 `Cargo.toml` carries simple discovery metadata:
@@ -433,9 +438,10 @@ target = "riscv64gc-unknown-none-elf"
 ```
 
 `xtask build --board qemu-riscv64` scans `boards/*/Cargo.toml`, finds the
-matching board metadata, and builds that package. The Cargo metadata should stay
-small and stable enough for discovery. The authoritative build information
-should come from normal Rust code, using a builder parallel to `board_info()`:
+matching board metadata, obtains `BuildInfo`, and creates a selected-board
+wrapper package. The Cargo metadata should stay small and stable enough for
+discovery. The authoritative build information comes from normal Rust code,
+using a builder parallel to `board_info()`:
 
 ```rust
 pub fn board_info() -> BoardInfo {
@@ -507,10 +513,11 @@ build metadata describes how `xtask` compiles, links, packages, and optionally
 serializes those facts. Keeping them separate prevents host paths and Cargo
 feature policy from leaking into firmware-stage runtime APIs.
 
-For richer metadata, `xtask` can run a host helper binary from the board crate
-that prints serialized `BoardInfo` and `BuildInfo`, or it can link a host-only
-metadata crate. Either approach still avoids a central `fstart-board-registry`
-crate.
+For richer metadata, the board package exposes a host-buildable metadata target
+that prints serialized `BoardInfo` and `BuildInfo`. Target-only runtime code is
+gated behind board features so metadata extraction does not require a separate
+per-board `facts/` crate. The board crate remains the single source of truth, and
+there is no central `fstart-board-registry` crate.
 
 ## Fixed handwritten stage flow
 
@@ -576,8 +583,8 @@ work to `HardwareInit` participants:
 | `handoff` | Finalize tables/FDT/boot params and quiesce firmware-owned devices. | FDT fixups, ACPI/coreboot-table-like handoff |
 | `boot` | Jump to payload or next firmware stage. | arch payload launcher |
 
-The first implementation can omit entries that no board uses yet, but new
-hardware work should add a named flow entry rather than recreating an opaque
+The implementation may omit semantic entries that no board uses, but new
+hardware work must add a named flow entry rather than recreating an opaque
 `Device::init()` bucket.
 
 Example stage shape (feature families gate groups, not every individual
@@ -683,8 +690,8 @@ changing the overall model.
 
 ## Step-based hardware initialization
 
-The long-term lifecycle should not be a single `Device::init()` method. Hardware
-initialization is naturally step-based.
+The lifecycle is not a single `Device::init()` method. Hardware initialization is
+naturally step-based.
 
 The trait should contain driver-participation barriers, not every operation the
 stage runner performs. Add or keep a method when it represents a real ordering
@@ -853,43 +860,48 @@ elimination.
 If code size becomes a problem later, add optional step masks/associated consts,
 but do not start there.
 
-## Mainboard-specific hooks as normal devices
+## Board-specific hooks stay in BSPs and platform recipes
 
-Mainboard-specific logic should be a hardware init participant, not special
-framework code:
+Board-specific behavior is not special framework code and is not a generic
+`mainboard` abstraction. It lives in the board crate and is exposed through the
+selected platform recipe's board trait. The common framework does not learn names
+such as `southbridge`, `northbridge`, `dock`, or `ec`.
+
+Example platform-specific hook trait:
 
 ```rust
-impl HardwareInit for LenovoX61Mainboard {
-    fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), Error> {
-        ctx.with_device::<IntelIch8, _>(self.southbridge, |ich8| {
-            self.setup_dock_console(ich8)
-        })
+pub trait Gm965Ich8Mainboard {
+    fn pre_console(&mut self, ich8: &mut IntelIch8) -> Result<(), Error> {
+        let _ = ich8;
+        Ok(())
     }
 
-    fn handoff(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), Error> {
+    fn handoff(&mut self, ich8: &mut IntelIch8) -> Result<(), Error> {
+        let _ = ich8;
+        Ok(())
+    }
+}
+```
+
+Example board implementation:
+
+```rust
+impl Gm965Ich8Mainboard for LenovoX61Mainboard {
+    fn pre_console(&mut self, ich8: &mut IntelIch8) -> Result<(), Error> {
+        self.setup_dock_console(ich8)
+    }
+
+    fn handoff(&mut self, _ich8: &mut IntelIch8) -> Result<(), Error> {
         self.quiesce_i8042_for_os();
         Ok(())
     }
 }
 ```
 
-The framework should expose generic accessors such as:
-
-```rust
-impl InitContext<'_> {
-    pub fn with_device<T, R>(
-        &mut self,
-        id: DeviceId,
-        f: impl FnOnce(&mut T) -> Result<R, Error>,
-    ) -> Result<R, Error>
-    where
-        T: RuntimeDriver;
-}
-```
-
-Do not add common-code methods like `with_southbridge()`, `with_northbridge()`,
-or `with_ec()`. Those are board/platform concepts and should stay in board or
-platform crates.
+A board-specific device can still implement `HardwareInit` directly when it is a
+real participant in the recipe's device container. The rule is ownership: generic
+framework traits stay generic, platform recipe traits stay platform-specific, and
+one-off board quirks stay in the BSP.
 
 ## Device graph and traversal
 
@@ -965,50 +977,64 @@ as under-specified.
 
 ## Static typed mode
 
-In static typed mode, the board crate compiles a concrete board/device graph into
-the firmware stage.
+In static typed mode, the selected board is a concrete Rust type and the selected
+platform recipe constructs concrete stage device containers. The board crate does
+not own the firmware entrypoint and does not implement a per-board `StaticBoard`
+adapter. `xtask` creates a temporary selected-board wrapper package that aliases
+the selected BSP to a stable crate name and calls the recipe.
 
 Example shape:
 
 ```rust
-pub struct LenovoX61 {
-    devices: LenovoX61Devices,
-}
+pub struct Board;
 
-pub struct LenovoX61Devices {
-    gm965: IntelGm965,
-    ich8: IntelIch8,
-    mainboard: LenovoX61Mainboard,
-    superio: NsPc87392,
-    uart0: Ns16550,
-}
+impl FirmwareBoard for Board {
+    type Recipe = Gm965Ich8UefiRecipe<Self>;
 
-impl Board for LenovoX61 {
-    type Devices = LenovoX61Devices;
+    const NAME: &'static str = "lenovo-x61";
+    const PLATFORM: Platform = Platform::X86_64;
 
-    fn new() -> Result<Self, Error> {
-        Ok(Self { devices: LenovoX61Devices::new()? })
+    fn board_info() -> BoardInfo {
+        config::board_info()
     }
 
-    fn devices_mut(&mut self) -> &mut Self::Devices {
-        &mut self.devices
+    fn build_info() -> BuildInfo {
+        config::build_info()
     }
 }
 
-#[no_mangle]
-extern "C" fn fstart_main() -> ! {
-    fstart_stage::run::<LenovoX61>()
+impl Gm965Ich8UefiBoard for Board {
+    type Mainboard = LenovoX61Mainboard;
+
+    fn platform_config() -> Gm965Ich8Config {
+        config::gm965_ich8_config()
+    }
+
+    fn mainboard() -> Result<Self::Mainboard, Error> {
+        LenovoX61Mainboard::new(devices::mainboard_config())
+    }
 }
 ```
 
-The mainboard does not manually write `driver_init`; it only owns the concrete
-device container. The device container may be produced by normal Rust helper
-code/macros later, but the baseline should stay plain Rust and readable.
+The selected-board wrapper is build glue, not board-authored stage flow:
+
+```rust
+use fstart_board_selected::Board;
+
+#[no_mangle]
+pub extern "C" fn fstart_main(handoff: usize) -> ! {
+    fstart_stage_template::run::<Board>(handoff)
+}
+```
+
+The recipe owns generic device construction and ordering. The board supplies only
+facts, configs, and board-specific hooks.
 
 ## Dynamic board-blob mode
 
 Some deployments need the board information to be added later as a binary blob,
-not compiled into the stage. This should be a separate build mode.
+not compiled into the stage. This is a separate build mode, not a compatibility
+layer for static BSPs.
 
 The same Rust builder can emit a serialized board blob:
 
@@ -1052,10 +1078,13 @@ driver can consume that attachment.
 Drivers are matched by a stable driver ID or compatible string:
 
 ```rust
-"intel,ich8"             -> IntelIch8
-"ns16550a"               -> Ns16550
-"lenovo,thinkpad-x61"    -> LenovoX61Mainboard
+"intel,ich8" -> IntelIch8
+"ns16550a"   -> Ns16550
 ```
+
+A truly generic dynamic stage contains reusable drivers only. Board-specific Rust
+hooks require a selected-board wrapper and are not smuggled into a central dynamic
+board registry.
 
 The dynamic runtime device can be a closed enum over compiled-in driver
 features:
@@ -1064,7 +1093,6 @@ features:
 pub enum RuntimeDevice {
     IntelIch8(IntelIch8),
     Ns16550(Ns16550),
-    LenovoX61Mainboard(LenovoX61Mainboard),
     Structural(StructuralDevice),
 }
 
@@ -1073,7 +1101,6 @@ impl HardwareInit for RuntimeDevice {
         match self {
             RuntimeDevice::IntelIch8(d) => d.pre_console(ctx),
             RuntimeDevice::Ns16550(d) => d.pre_console(ctx),
-            RuntimeDevice::LenovoX61Mainboard(d) => d.pre_console(ctx),
             RuntimeDevice::Structural(d) => d.pre_console(ctx),
         }
     }
@@ -1082,7 +1109,6 @@ impl HardwareInit for RuntimeDevice {
         match self {
             RuntimeDevice::IntelIch8(d) => d.handoff(ctx),
             RuntimeDevice::Ns16550(d) => d.handoff(ctx),
-            RuntimeDevice::LenovoX61Mainboard(d) => d.handoff(ctx),
             RuntimeDevice::Structural(d) => d.handoff(ctx),
         }
     }
@@ -1173,7 +1199,7 @@ compile time:
 
 ## Build metadata versus runtime flow
 
-Avoid thinking of either builder result as generated-stage input. There are two
+Avoid thinking of any builder result as generated-stage input. There are three
 separate products with different consumers:
 
 1. **`BoardInfo`**: topology, typed device configuration, memory map, payload
@@ -1191,46 +1217,25 @@ select a flow profile such as `FlowProfile::LinuxBoot`, but that profile only
 chooses which handwritten flow families compile into the stage. The order and
 meaning of those entries still live in the fixed stage runner.
 
-## Migration plan
+## Required cutover state
 
-1. Add Rust builder crates/types for `BoardInfo` and `BuildInfo`.
-2. Add typed address/resource wrappers used by driver config builders.
-3. Add typed child topology helpers for common bus ports, starting with simple
-   SoC `simple-bus`/UART cases and one x86 southbridge LPC/PCI example.
-4. Add platform/chipset default board templates for values that were RON
-   boilerplate, starting with simple SoC defaults such as `AllwinnerA20Default`.
-5. Add `HardwareInit` with default no-op methods.
-6. Add fixed handwritten stage flow that calls step methods under coarse feature
-   families/flow profiles rather than one Cargo feature per semantic step.
-7. Add deterministic ordering validation and explicit before/after constraints;
-   defer numeric order hints until a real board needs them.
-8. Migrate one simple board, such as `qemu-riscv64`, to a board crate.
-9. Teach `xtask` to discover boards dynamically from `boards/*/Cargo.toml` and
-   load board `BuildInfo` from a host helper.
-10. Add static typed mode support first.
-11. Add dynamic board-blob mode with a compiled-in driver registry and runtime
-   matching.
-12. Add an optional derive macro for runtime registry boilerplate after the
-    handwritten registry traits/ABI are stable.
-13. Convert existing drivers from `Device::init()` to step methods.
-14. Port remaining boards incrementally, deleting copied RON constants from board
-    ports as platform defaults take ownership of them.
-15. Remove RON loader, RON board files, and generated stage code when all boards
-    have migrated.
+This direction intentionally breaks the old RON/generated-stage architecture.
+There is no compatibility layer and no parallel legacy path.
 
-## Legacy cleanup plan
+Required end state:
 
-`Device::init()` and RON should be treated as transitional once this work begins.
-Do not leave compatibility code around indefinitely. Track explicit cleanup items:
-
-- Remove central RON capability validation once Rust board definitions cover all
-  boards.
-- Remove RON deserialization once no board depends on it.
-- Remove RON-era board boilerplate for fixed chipset/SoC constants as soon as
-  equivalent Rust platform defaults exist.
-- Remove generated `_BoardDevices`/`StagePlan` stage glue after fixed stage flow
-  is the only path.
-- Replace transitional one-capability/one-flow-feature plumbing with coarse flow
-  profiles and backend features.
-- Remove or demote `Device::init()` after every driver has step-based
-  `HardwareInit` methods.
+- Rust board definitions are the only board description format.
+- RON board files, RON deserialization, and central RON validation are gone.
+- Generated `_BoardDevices` and `StagePlan` stage glue are gone.
+- `Device::init()` is gone as a primary lifecycle hook; drivers use `HardwareInit`
+  step methods.
+- Board crates do not contain committed firmware entrypoints or stage adapters.
+- Platform recipes own reusable stage sequencing.
+- `xtask` discovers board crates from `boards/*/Cargo.toml`, obtains `BuildInfo`,
+  and creates selected-board wrapper packages under `target/`.
+- Flow selection uses coarse flow profiles and backend features, not one feature
+  per semantic step.
+- Numeric ordering hints are absent unless they are deterministic, scoped, and
+  validated. Undefined ordering APIs are not allowed.
+- Static typed mode is the primary path. Dynamic board-blob mode is a distinct
+  mode with its own registry and validation rules.

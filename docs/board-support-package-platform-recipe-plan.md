@@ -40,11 +40,11 @@ family recipe was missing.
 - Delete artificial per-board `mainboard` crates unless the code is genuinely
   shared across multiple boards.
 - Move common stage sequencing into reusable platform recipe crates.
-- Remove committed per-board stage adapters where a recipe can generate or select
-  the same entrypoint shape.
+- Remove committed per-board stage adapters. Every board is selected through a
+  generated wrapper and a reusable recipe.
 - Keep stage flow handwritten and readable, but place it at the recipe/platform
   level rather than copying it into every board.
-- Preserve static typed mode as the primary path.
+- Make static typed mode the primary path.
 - Keep dynamic board-blob mode possible, but do not let it complicate static BSP
   ergonomics.
 - Keep board-specific quirks out of generic framework code. Generic framework code
@@ -58,7 +58,7 @@ family recipe was missing.
   stage.
 - Do not force every board to have a `mainboard` abstraction.
 - Do not keep a separate crate just because a board has a lot of board-specific
-  code.
+  code. This includes artificial `mainboard` crates and per-board `facts/` crates.
 - Do not optimize for preserving current crate boundaries.
 
 ## Design principles
@@ -145,13 +145,14 @@ impl Gm965Ich8UefiBoard for Board {
 }
 ```
 
-No per-board `impl StaticBoard` should be needed when a recipe exists.
+Board crates must not implement per-board `StaticBoard` adapters. Recipes may
+use recipe-private adapter types internally, but board crates only implement
+`FirmwareBoard` and recipe-specific board traits.
 
 ### The selected-board stage wrapper is build glue, not generated flow
 
-Per-board stage crates are still too much boilerplate at 100s of boards.
-Instead, `xtask` should create a temporary selected-board wrapper package under
-`target/fstart-build/`.
+Committed per-board stage crates are not part of the architecture. `xtask`
+creates a temporary selected-board wrapper package under `target/fstart-build/`.
 
 The wrapper aliases the selected board package to a stable crate name:
 
@@ -167,13 +168,13 @@ The stage template has a generic entrypoint:
 use fstart_board_selected::Board;
 
 #[no_mangle]
-pub extern "Rust" fn fstart_main(handoff: usize) -> ! {
+pub extern "C" fn fstart_main(handoff: usize) -> ! {
     fstart_stage_template::run::<Board>(handoff)
 }
 ```
 
-This is acceptable because it does not generate board-specific control flow. It
-only selects a type. The flow remains handwritten in the selected board's recipe.
+This does not generate board-specific control flow. It only selects a type. The
+flow remains handwritten in the selected board's recipe.
 
 ## Target crate layout
 
@@ -206,7 +207,7 @@ boards/lenovo-x61/
     smm.rs          # X61 SMM handler
 ```
 
-The following crate should be deleted:
+The following crate must not exist:
 
 ```text
 crates/fstart-mainboard-lenovo-x61/
@@ -253,8 +254,8 @@ pub trait StageRecipe<B: FirmwareBoard> {
 ```
 
 `StageKind` is selected by build metadata and the temporary selected-board
-wrapper. A multi-stage board can dispatch to bootblock or ramstage. A monolithic
-board can ignore unsupported stages or fail at build validation.
+wrapper. A multi-stage recipe dispatches to bootblock or ramstage. Unsupported
+stage selections are build-validation errors.
 
 ### GM965/ICH8 UEFI board trait
 
@@ -353,8 +354,8 @@ supplies hardware operations.
 
 ## ACPI and topology paths
 
-ACPI should not hard-code absolute paths forever. A recipe can provide an ACPI
-context derived from the platform topology:
+ACPI must not hard-code absolute paths. A recipe provides an ACPI context derived
+from the platform topology:
 
 ```rust
 pub struct AcpiContext<'a> {
@@ -368,9 +369,9 @@ impl AcpiContext<'_> {
 }
 ```
 
-For the first migration, X61 ACPI can move as-is into `boards/lenovo-x61`, but the
-long-term target is that board ACPI emits fragments using recipe/topology-provided
-paths rather than string literals like `"\\_SB_.PCI0.LPCB"`.
+X61 ACPI lives in `boards/lenovo-x61` and emits fragments using
+recipe/topology-provided paths rather than string literals like
+`"\\_SB_.PCI0.LPCB"`.
 
 ## SMM ownership
 
@@ -382,16 +383,11 @@ For X61:
 boards/lenovo-x61/src/smm.rs
 ```
 
-`crates/fstart-smm-stage` currently depends on X61-specific code. That is a sign
-that SMM stage ownership is also wrong. There are two migration choices:
-
-1. Short-term: keep `crates/fstart-smm-stage`, but make it depend on
-   `fstart-board-lenovo-x61` instead of `fstart-mainboard-lenovo-x61`.
-2. Long-term: move board-specific SMM stages to selected-board recipe/wrapper
-   build flow, just like bootblock and ramstage.
-
-The short-term option is acceptable during the BSP merge. The long-term option is
-consistent with the selected-board stage template model.
+`crates/fstart-smm-stage` must not depend on X61-specific code or any other board
+crate directly. Board-specific SMM stages use the same selected-board
+recipe/wrapper build flow as bootblock and ramstage. The generic SMM stage crate
+owns reusable SMM runtime mechanics only; selected board wrappers bind a concrete
+board SMM handler when the board enables SMM.
 
 ## Cargo feature model
 
@@ -438,7 +434,8 @@ board.
 The build flow for a static typed board should be:
 
 1. `xtask build --board lenovo-x61` scans `boards/*/Cargo.toml`.
-2. It builds or runs board metadata code to obtain `BuildInfo`.
+2. It runs the selected board package's host-buildable metadata target to obtain
+   `BuildInfo`.
 3. It selects the board package and stage recipe features.
 4. It creates a temporary selected-board stage package under `target/fstart-build`.
 5. The temporary package depends on the board crate as `fstart-board-selected`.
@@ -447,9 +444,10 @@ The build flow for a static typed board should be:
 
 This gives static dispatch without committed per-board stage glue.
 
-## Dynamic board-blob mode compatibility
+## Dynamic board-blob mode
 
-Dynamic board-blob mode remains possible, but it is not the primary design driver.
+Dynamic board-blob mode exists as a separate mode, but it is not the primary
+design driver and is not a compatibility layer for static BSPs.
 
 Static BSP mode:
 
@@ -464,74 +462,33 @@ Dynamic mode:
 - The stage uses a compiled-in driver registry.
 - Runtime validation checks topology, feature availability, and config ABI.
 
-The important rule is that dynamic mode should reuse `BoardInfo`/topology data,
-not force static BSPs to look like dynamic registries.
+The important rule is that dynamic mode reuses `BoardInfo`/topology data without
+forcing static BSPs to look like dynamic registries. Generic dynamic firmware
+contains reusable drivers only; board-specific Rust hooks require selected-board
+wrappers.
 
-## Migration plan
+## Required architecture
 
-### Phase 1: X61 BSP ownership cleanup
+This is a breaking architecture. There is no backwards-compatible migration path,
+no committed per-board stage fallback, and no preserved board-specific crate split.
+The implementation must land at the target shape directly:
 
-- Move `crates/fstart-mainboard-lenovo-x61/src/lib.rs` into:
-  - `boards/lenovo-x61/src/devices.rs`
-  - `boards/lenovo-x61/src/mainboard.rs`
-  - `boards/lenovo-x61/src/smm.rs`
-- Move X61-specific runtime SMBIOS descriptor into `boards/lenovo-x61/src/config.rs`
-  or `mainboard.rs`.
-- Update X61 board and stage imports to use `fstart_board_lenovo_x61` only.
-- Change `fstart-smm-stage` to import X61 SMM code from the board crate.
-- Delete `crates/fstart-mainboard-lenovo-x61` from the workspace.
-- Remove all workspace dependencies and feature forwarding for the deleted crate.
+- `crates/fstart-mainboard-lenovo-x61/` is deleted.
+- X61-specific config, devices, ACPI, SMBIOS, SMM, dock logic, and quirks live in
+  `boards/lenovo-x61`.
+- `crates/fstart-smm-stage` has no direct board dependencies.
+- `crates/fstart-platform-intel-gm965-ich8` owns `Gm965Ich8UefiRecipe<B>`,
+  `Gm965Ich8UefiBoard`, and `Gm965Ich8Mainboard`.
+- X61 implements the GM965/ICH8 recipe trait and does not hand-write bootblock or
+  ramstage `StaticBoard` adapters.
+- `crates/fstart-stage-template` owns the generic entrypoint glue.
+- `xtask` creates selected-board wrapper packages under `target/fstart-build/`.
+- `boards/*/stage` crates are removed.
+- Sunxi, QEMU virt, Q35, and Pineview/ICH7 boards use platform recipes instead of
+  board-local stage adapters.
+- Adding a board requires board facts and recipe trait impls, not framework glue.
 
-Acceptance criteria:
-
-- There is no `fstart-mainboard-lenovo-x61` crate.
-- All X61-specific config lives under `boards/lenovo-x61`.
-- `boards/lenovo-x61/src/lib.rs` no longer imports X61 facts from another X61 crate.
-- `cargo run -p xtask -- build --board lenovo-x61` passes.
-
-### Phase 2: GM965/ICH8 recipe
-
-- Add `Gm965Ich8UefiBoard` and `Gm965Ich8Mainboard` traits to
-  `fstart-platform-intel-gm965-ich8`.
-- Move common X61 bootblock/ramstage sequencing into
-  `Gm965Ich8UefiRecipe<B>`.
-- Make `boards/lenovo-x61::Board` implement the recipe trait.
-- Reduce X61 stage files to temporary type aliases or delete them once the selected
-  wrapper exists.
-
-Acceptance criteria:
-
-- X61 does not hand-write `impl StaticBoard` for bootblock or ramstage.
-- X61 does not hand-write generic GM965/ICH8 init ordering.
-- X61 board code only supplies X61 facts and hooks.
-
-### Phase 3: Selected-board stage template
-
-- Add `crates/fstart-stage-template`.
-- Teach `xtask` to create a selected-board temporary wrapper package.
-- Build X61 through the wrapper.
-- Delete `boards/lenovo-x61/stage` once equivalent artifacts are produced.
-
-Acceptance criteria:
-
-- Adding a board does not require committing a `stage/` crate.
-- The selected wrapper contains only board selection, not stage flow.
-- Stage flow remains handwritten in recipe crates.
-
-### Phase 4: Generalize to existing families
-
-- Convert Sunxi boards from board-local stage crates to `SunxiMmcLinuxRecipe<B>`.
-- Convert QEMU virt boards to `QemuVirtLinuxRecipe<B>`.
-- Convert Q35 to `Q35UefiRecipe<B>`.
-- Convert Pineview/ICH7 boards to `PineviewIch7UefiRecipe<B>`.
-
-Acceptance criteria:
-
-- Board dirs contain BSP code and metadata, not repeated stage adapters.
-- Platform recipes cover repeated sequencing.
-- Board addition cost is dominated by board facts, not framework glue.
-
-## Expected end state
+## Board authoring end state
 
 For 100s of boards, adding a board should usually require:
 
@@ -543,7 +500,7 @@ boards/new-board/src/devices.rs
 boards/new-board/src/mainboard.rs   # only if board quirks exist
 ```
 
-The board author should not need to write:
+The board author does not write:
 
 - A stage crate.
 - A bootblock `StaticBoard` adapter.
@@ -552,7 +509,7 @@ The board author should not need to write:
 - A generic device lifecycle forwarding impl.
 - A central registry entry.
 
-The long-term architecture should be:
+The architecture is:
 
 ```text
 Board crate:     owns board facts and quirks.
