@@ -16,18 +16,16 @@ recipe = [
   "dep:fstart-stage-runtime",
   "dep:ufmt",
   "fstart-services/pci",
-  "fstart-stage/crabefi",
   "fstart-stage-runtime/fixed-flow",
 ]
+crabefi = ["fstart-stage/crabefi"]
 
 [dependencies]
 fstart-types = { workspace = true }
-fstart-board-meta = { workspace = true }
 fstart-driver-intel-gm965 = { workspace = true, features = ["ffs-vbt"] }
 fstart-driver-intel-ich8 = { workspace = true }
 fstart-driver-ns16550 = { workspace = true, optional = true }
 fstart-gpio-ich = { workspace = true }
-fstart-hda = { workspace = true }
 fstart-services = { workspace = true }
 fstart-capabilities = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }

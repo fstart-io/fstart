@@ -7,15 +7,15 @@ use fstart_driver_nsc_pc87392 as pc87392;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_platform_intel_gm965_ich8::{
-    Gm965Ich8Config, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode, LpcGenericIoDecode,
+    Gm965Ich8Board, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode, LpcGenericIoDecode,
     LpcParallelDecode, LpcSerialDecode, PcieRootPort, SataConfig, SataMode, UsbConfig,
 };
 use fstart_types::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
 use fstart_types::{
-    hstr, hvec, io16, x86_uefi_payload, BoardConfig, BoardInfo, BuildInfo, BusAddress, FlashLayout,
-    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
+    hstr, hvec, io16, BoardConfig, BoardInfo, BuildInfo, FlashLayout, IntelIfdFlashLayout,
+    IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
 };
 
 pub const BOARD_NAME: &str = "lenovo-x61";
@@ -26,79 +26,103 @@ pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
 
-pub fn gm965_ich8_config() -> Gm965Ich8Config {
-    Gm965Ich8Config::new(BOARD_NAME, BOARD_PACKAGE)
-        .payload(x86_uefi_payload())
-        .flash_layout(Some(x61_flash_layout()))
-        .igd(x61_igd_config())
-        .pcie_port(PcieRootPort::Port1, true)
-        .pcie_port(PcieRootPort::Port2, true)
-        .acpi_print_hex(true)
-        .lpc_fixed_io(LpcFixedIoDecode {
-            com_a: LpcSerialDecode::Com1,
-            com_b: LpcSerialDecode::Com2,
-            lpt: Some(LpcParallelDecode::Lpt3bc),
-            fdd: None,
-        })
-        .lpc_generic_io(LpcGenericIoDecode {
+pub fn gm965_ich8_board() -> Gm965Ich8Board {
+    let mut board = Gm965Ich8Board::new(BOARD_NAME, BOARD_PACKAGE);
+
+    board.flash_layout = Some(x61_flash_layout());
+    board.acpi_print_hex = true;
+    board.mainboard_enabled = true;
+    board.smbios = Some(x61_smbios());
+
+    board.northbridge.config.igd = x61_igd_config();
+
+    board.southbridge.pcie_mut(PcieRootPort::Port1).enabled = true;
+    board.southbridge.pcie_mut(PcieRootPort::Port2).enabled = true;
+    board.southbridge.config.lpc_decode.fixed_io = LpcFixedIoDecode {
+        com_a: LpcSerialDecode::Com1,
+        com_b: LpcSerialDecode::Com2,
+        lpt: Some(LpcParallelDecode::Lpt3bc),
+        fdd: None,
+    };
+    for decode in [
+        LpcGenericIoDecode {
             base: 0x1600,
             size: 0x0080,
-        })
-        .lpc_generic_io(LpcGenericIoDecode {
+        },
+        LpcGenericIoDecode {
             base: 0x15e0,
             size: 0x0010,
-        })
-        .lpc_generic_io(LpcGenericIoDecode {
+        },
+        LpcGenericIoDecode {
             base: 0x1680,
             size: 0x0020,
-        })
-        .gpe0_en(0x0104_0046)
-        .gpi_routing([0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0])
-        .ide(IdeConfig {
-            enable_primary: true,
-            enable_secondary: false,
-        })
-        .sata(SataConfig {
-            mode: SataMode::Ahci,
-            ports: 0x01,
-            hotplug_map: 0,
-            clock_request: false,
-            traffic_monitor: false,
-        })
-        .usb(UsbConfig {
-            ehci: [true, true],
-            uhci: [true, true, true, true, true, true],
-        })
-        .hda(x61_hda_config())
-        .gpio(x61_gpio_config())
-        .io_trap(IoTrapConfig {
+        },
+    ] {
+        board
+            .southbridge
+            .config
+            .lpc_decode
+            .generic_io
+            .push(decode)
+            .expect("X61 LPC generic I/O decode capacity");
+    }
+    board.southbridge.config.gpe0_en = 0x0104_0046;
+    board.southbridge.config.gpi_routing = [0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0];
+    board.southbridge.config.ide = Some(IdeConfig {
+        enable_primary: true,
+        enable_secondary: false,
+    });
+    board.southbridge.config.sata = Some(SataConfig {
+        mode: SataMode::Ahci,
+        ports: 0x01,
+        hotplug_map: 0,
+        clock_request: false,
+        traffic_monitor: false,
+    });
+    board.southbridge.config.usb = Some(UsbConfig {
+        ehci: [true, true],
+        uhci: [true, true, true, true, true, true],
+    });
+    board.southbridge.config.hda = Some(x61_hda_config());
+    board.southbridge.config.gpio = x61_gpio_config();
+    board
+        .southbridge
+        .config
+        .io_traps
+        .push(IoTrapConfig {
             index: 3,
             base: 0x0800,
             size: 0x10,
             access: IoTrapAccess::Any,
         })
-        .superio("dlpc_superio", io16(0x164e), true)
-        .superio("dock_superio", io16(0x2e), false)
-        .on_smbus(|smbus| {
-            smbus.runtime_enabled("ck505", BusAddress::I2c(0x69), false);
-        })
-        .mainboard()
-        .smbios(x61_smbios())
+        .expect("X61 I/O trap capacity");
+
+    board
+        .southbridge
+        .lpc
+        .lpc_device("dlpc_superio", io16(0x164e), true);
+    board
+        .southbridge
+        .lpc
+        .lpc_device("dock_superio", io16(0x2e), false);
+    board.southbridge.smbus.smbus_device("ck505", 0x69, false);
+
+    board
 }
 
 #[must_use]
 pub fn board_config() -> BoardConfig {
-    gm965_ich8_config().board_config()
+    gm965_ich8_board().board_config()
 }
 
 #[must_use]
 pub fn board_info() -> BoardInfo {
-    gm965_ich8_config().board_info()
+    gm965_ich8_board().board_info()
 }
 
 #[must_use]
 pub fn build_info() -> BuildInfo {
-    gm965_ich8_config().build_info([
+    gm965_ich8_board().build_info([
         "intel-gm965",
         "intel-ich8",
         "nsc-pc87382",

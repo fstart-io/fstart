@@ -1,7 +1,6 @@
-//! Fixed handwritten stage flow for static typed board crates.
+//! Fixed handwritten stage flow for concrete recipe stages.
 //!
-//! This module is the migration target described in the Rust board-builder
-//! plan. The order of semantic barriers is fixed in this Rust function, and
+//! The order of semantic barriers is fixed in this Rust function, and
 //! board/device participation is expressed by concrete [`HardwareInit`]
 //! implementations that optimize away when a device uses default no-op methods.
 
@@ -9,18 +8,18 @@
 
 use fstart_services::{HardwareInit, InitContext, ServiceError};
 
-/// Static typed board contract consumed by the fixed stage flow.
-pub trait StaticBoard: Sized {
-    /// Concrete device container for this board.
+/// Concrete recipe-stage contract consumed by the fixed stage flow.
+pub trait StageFlow: Sized {
+    /// Concrete device container for this stage.
     type Devices: HardwareInit;
 
-    /// Construct the board and its device container.
+    /// Construct the stage and its device container.
     fn new() -> Result<Self, ServiceError>;
 
     /// Mutable access to the device container.
     fn devices_mut(&mut self) -> &mut Self::Devices;
 
-    /// Called if board construction or any flow step fails before a richer
+    /// Called if stage construction or any flow step fails before a richer
     /// platform-specific panic path is available.
     fn halt() -> !;
 
@@ -63,8 +62,8 @@ pub trait StaticBoard: Sized {
     fn boot_payload(self) -> !;
 }
 
-/// Run the fixed handwritten stage sequence for a static typed board.
-pub fn run<B: StaticBoard>() -> ! {
+/// Run the fixed handwritten stage sequence for a concrete recipe stage.
+pub fn run<B: StageFlow>() -> ! {
     let mut board = match B::new() {
         Ok(board) => board,
         Err(_) => B::halt(),
@@ -163,7 +162,7 @@ pub fn run<B: StaticBoard>() -> ! {
     unreachable!("flow-handoff-v2 boot_payload must diverge")
 }
 
-fn run_step<B: StaticBoard>(
+fn run_step<B: StageFlow>(
     name: &str,
     board: &mut B,
     ctx: &mut InitContext<'_>,

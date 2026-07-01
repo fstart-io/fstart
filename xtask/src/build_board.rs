@@ -80,6 +80,7 @@ pub fn build_with_parsed(
     eprintln!("[fstart] target: {}", build_info.target);
 
     let mut result = Vec::new();
+    let stage_package = stage_package_build(workspace_root, board_manifest, config, &plan)?;
     for stage in &plan.stages {
         if stage.stage_name.is_some() {
             eprintln!("[fstart] building stage: {}", stage.display_name);
@@ -89,8 +90,9 @@ pub fn build_with_parsed(
 
         let (elf_path, run_path) = build_one_stage(
             workspace_root,
-            &board_manifest,
+            board_manifest,
             config,
+            &stage_package,
             stage.stage_name.as_deref(),
             plan.target.triple,
             &features,
@@ -202,6 +204,7 @@ fn build_one_stage(
     workspace_root: &std::path::Path,
     board_manifest: &crate::board_manifest::BoardManifest,
     config: &fstart_types::BoardConfig,
+    stage_package: &StagePackageBuild,
     stage_name: Option<&str>,
     target: &str,
     features: &str,
@@ -248,8 +251,6 @@ fn build_one_stage(
     );
     std::fs::write(artifact_dir.join("metadata.txt"), metadata)
         .map_err(|e| format!("failed to write stage metadata: {e}"))?;
-
-    let stage_package = stage_package_build(workspace_root, board_manifest)?;
 
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root);
@@ -369,6 +370,8 @@ fn build_one_stage(
 fn stage_package_build(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
+    config: &fstart_types::BoardConfig,
+    plan: &crate::build_plan::BuildPlan,
 ) -> Result<StagePackageBuild, String> {
     if let Some(stage_package) = &board_manifest.stage_package {
         return Ok(StagePackageBuild {
@@ -384,15 +387,15 @@ fn stage_package_build(
         )
     })?;
 
+    // Adapter-trait recipes with bespoke wrapper glue:
     match recipe {
         "board-stage-wrapper" => write_board_stage_wrapper(workspace_root, board_manifest),
-        "gm965-ich8-uefi" => write_gm965_ich8_stage_wrapper(workspace_root, board_manifest),
         "sunxi-mmc-linux" => write_sunxi_mmc_linux_stage_wrapper(workspace_root, board_manifest),
         "qemu-virt-linux" => write_qemu_virt_linux_stage_wrapper(workspace_root, board_manifest),
-        other => Err(format!(
-            "board '{}' selects unsupported stage-recipe '{other}'",
-            board_manifest.board
-        )),
+        // Everything else is a FirmwareBoard/StageRecipe recipe: the board
+        // crate's `stage` feature pulls its platform recipe crate, so the
+        // wrapper needs no recipe-specific knowledge.
+        _ => write_firmware_board_stage_wrapper(workspace_root, board_manifest, config, plan),
     }
 }
 
@@ -646,7 +649,7 @@ type StageBoard = fstart_stage::fixed_helpers::QemuVirtLinuxBoardAdapter<Board>;
 
 #[no_mangle]
 pub extern "Rust" fn fstart_main(_handoff_ptr: usize) -> ! {
-    fstart_stage::run_static_board::<StageBoard>()
+    fstart_stage::run_stage_flow::<StageBoard>()
 }
 
 #[used]
@@ -819,11 +822,11 @@ type MainBoard = fstart_stage::fixed_helpers::SunxiMainBoard<Board>;
 #[no_mangle]
 pub extern "Rust" fn fstart_main(_handoff_ptr: usize) -> ! {
     match option_env!("FSTART_STAGE_NAME") {
-        Some("bootblock") => fstart_stage::run_static_board::<BootblockBoard>(),
+        Some("bootblock") => fstart_stage::run_stage_flow::<BootblockBoard>(),
         #[cfg(feature = "ffs")]
         Some("main") => {
             fstart_stage::fixed_helpers::set_sunxi_handoff_ptr(_handoff_ptr);
-            fstart_stage::run_static_board::<MainBoard>()
+            fstart_stage::run_stage_flow::<MainBoard>()
         }
         _ => fstart_platform::halt(),
     }
@@ -855,9 +858,17 @@ fn main() {
 "#
 }
 
-fn write_gm965_ich8_stage_wrapper(
+/// Generate a selected-board stage wrapper for any `FirmwareBoard`/`StageRecipe`
+/// recipe. The wrapper is pure build glue: it selects the board type and calls
+/// `fstart_stage::run_board::<Board>`. Recipe-specific sequencing lives in the
+/// board's platform recipe crate, pulled in transitively by the board crate's
+/// `stage` feature. No recipe-specific knowledge lives here — adding a new
+/// FirmwareBoard recipe needs zero xtask changes.
+fn write_firmware_board_stage_wrapper(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
+    config: &fstart_types::BoardConfig,
+    plan: &crate::build_plan::BuildPlan,
 ) -> Result<StagePackageBuild, String> {
     let package_label = format!("fstart-selected-stage-{}", board_manifest.board);
     let wrapper_dir = workspace_root
@@ -869,16 +880,20 @@ fn write_gm965_ich8_stage_wrapper(
     fs::create_dir_all(&src_dir)
         .map_err(|e| format!("failed to create {}: {e}", src_dir.display()))?;
 
-    let cargo_toml = selected_gm965_ich8_cargo_toml(workspace_root, board_manifest, &package_label);
+    let cargo_toml = selected_firmware_board_cargo_toml(workspace_root, board_manifest, plan);
     write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
     if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
         write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
     }
     write_if_changed(
         &wrapper_dir.join("build.rs"),
-        selected_gm965_ich8_build_rs(),
+        selected_firmware_board_build_rs(),
     )?;
-    write_if_changed(&src_dir.join("main.rs"), selected_gm965_ich8_main_rs())?;
+    let (bootblock_heap, main_heap) = stage_heap_sizes(config);
+    write_if_changed(
+        &src_dir.join("main.rs"),
+        &selected_firmware_board_main_rs(bootblock_heap, main_heap),
+    )?;
 
     Ok(StagePackageBuild {
         package_label,
@@ -886,13 +901,44 @@ fn write_gm965_ich8_stage_wrapper(
     })
 }
 
-fn selected_gm965_ich8_cargo_toml(
+/// Build the wrapper `Cargo.toml`. Its `[features]` table forwards board
+/// features to the board crate, and only true stage flow/backend/build features
+/// to `fstart-stage`. Platform/driver recipe feature names may still appear in
+/// the generated wrapper so Cargo accepts the build-plan feature list, but they
+/// are not routed through a central stage driver registry.
+fn selected_firmware_board_cargo_toml(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
-    package_label: &str,
+    plan: &crate::build_plan::BuildPlan,
 ) -> String {
     let board_path = path_for_toml(&board_manifest.dir);
     let crate_path = |path: &str| path_for_toml(&workspace_root.join(path));
+
+    let board_features: std::collections::BTreeSet<String> =
+        board_feature_names(&board_manifest.dir.join("Cargo.toml"))
+            .into_iter()
+            .filter(|f| f != "default" && f != "stage")
+            .collect();
+    let plan_features: std::collections::BTreeSet<String> = plan
+        .stages
+        .iter()
+        .flat_map(|stage| stage.features.iter().map(str::to_owned))
+        .collect();
+
+    let mut feature_lines = String::new();
+    let mut all_features = std::collections::BTreeSet::new();
+    all_features.extend(board_features.iter().cloned());
+    all_features.extend(plan_features.iter().cloned());
+    for feature in &all_features {
+        let mut deps = Vec::new();
+        if board_features.contains(feature.as_str()) {
+            deps.push(format!("\"fstart-board-selected/{feature}\""));
+        }
+        if plan_features.contains(feature.as_str()) && firmware_wrapper_stage_feature(feature) {
+            deps.push(format!("\"fstart-stage/{feature}\""));
+        }
+        feature_lines.push_str(&format!("{feature} = [{}]\n", deps.join(", ")));
+    }
 
     format!(
         r#"[package]
@@ -905,64 +951,65 @@ publish = false
 
 [features]
 default = []
-x86_64 = ["fstart-stage/x86_64"]
-intel-gm965 = ["fstart-stage/intel-gm965"]
-intel-ich8 = ["fstart-stage/intel-ich8"]
-nsc-pc87382 = ["fstart-stage/nsc-pc87382"]
-nsc-pc87392 = ["fstart-stage/nsc-pc87392"]
-i2c-ck505 = ["fstart-stage/i2c-ck505"]
-pci-ecam = ["fstart-stage/pci-ecam"]
-ffs = ["fstart-stage/ffs"]
-ed25519 = ["fstart-stage/ed25519"]
-sha2-digest = ["fstart-stage/sha2-digest"]
-sha3-digest = ["fstart-stage/sha3-digest"]
-lz4 = ["fstart-stage/lz4"]
-handoff = ["fstart-stage/handoff"]
-ns16550 = ["fstart-stage/ns16550"]
-ns16550-pio = ["fstart-stage/ns16550-pio", "fstart-driver-ns16550/pio"]
-acpi = ["fstart-stage/acpi", "fstart-board-selected/acpi", "fstart-acpi/x86"]
-acpi-load = ["fstart-stage/acpi-load"]
-smbios = ["fstart-stage/smbios", "fstart-board-selected/smbios"]
-memory-detect = ["fstart-stage/memory-detect"]
-crabefi = ["fstart-stage/crabefi"]
-mp = ["fstart-stage/mp", "fstart-board-selected/mp"]
-cpu-generic-x86 = ["fstart-stage/cpu-generic-x86"]
-cpu-intel-core2 = ["fstart-stage/cpu-intel-core2"]
-x86-1g-pages = ["fstart-stage/x86-1g-pages"]
-x86-boot = ["fstart-stage/x86-boot"]
-x86-writable-page-tables = ["fstart-stage/x86-writable-page-tables"]
-x86-static-page-tables = ["fstart-stage/x86-static-page-tables"]
-flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
-flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
-flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
-flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
-
+{feature_lines}
 [dependencies]
 fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["stage"] }}
-fstart-platform-intel-gm965-ich8 = {{ path = "{platform_path}", features = ["recipe"] }}
 fstart-stage = {{ path = "{stage_path}" }}
 fstart-platform-x86_64 = {{ path = "{x86_platform_path}" }}
 fstart-types = {{ path = "{types_path}" }}
-fstart-driver-ns16550 = {{ path = "{ns16550_path}", features = ["pio"] }}
-fstart-acpi = {{ path = "{acpi_path}", features = ["x86"] }}
 ufmt = {{ version = "0.2", default-features = false }}
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
 "#,
+        package_label = format!("fstart-selected-stage-{}", board_manifest.board),
         board_package = board_manifest.package,
-        platform_path = crate_path("crates/fstart-platform-intel-gm965-ich8"),
         stage_path = crate_path("crates/fstart-stage"),
         x86_platform_path = crate_path("crates/fstart-platform-x86_64"),
         types_path = crate_path("crates/fstart-types"),
-        ns16550_path = crate_path("crates/fstart-driver-ns16550"),
-        acpi_path = crate_path("crates/fstart-acpi"),
     )
 }
 
-fn selected_gm965_ich8_main_rs() -> &'static str {
-    r#"//! Generated selected-board GM965/ICH8 stage wrapper.
+fn firmware_wrapper_stage_feature(feature: &str) -> bool {
+    feature.starts_with("flow-profile-")
+        || matches!(
+            feature,
+            "flow-security"
+                | "ffs"
+                | "ed25519"
+                | "sha2-digest"
+                | "sha3-digest"
+                | "lz4"
+                | "fit"
+                | "fdt"
+                | "handoff"
+                | "acpi"
+                | "acpi-load"
+                | "smbios"
+                | "memory-detect"
+                | "crabefi"
+                | "x86_64"
+                | "x86-boot"
+                | "x86-1g-pages"
+                | "x86-writable-page-tables"
+                | "x86-static-page-tables"
+                | "riscv64"
+                | "aarch64"
+                | "armv7"
+                | "sunxi"
+                | "aarch64-el2-relocate-entry"
+                | "ns16550"
+                | "ns16550-pio"
+        )
+}
+
+/// Wrapper `main.rs`: selects the board type and dispatches to its recipe via
+/// `fstart_stage::run_board`. Heap sizes are inlined from the board's stage
+/// config; the `fstart_stage_bootblock` cfg selects between them.
+fn selected_firmware_board_main_rs(bootblock_heap: usize, main_heap: usize) -> String {
+    format!(
+        r#"//! Generated selected-board FirmwareBoard stage wrapper.
 
 #![no_std]
 #![no_main]
@@ -973,9 +1020,9 @@ extern crate ufmt;
 use fstart_board_selected::Board;
 
 #[cfg(fstart_stage_bootblock)]
-const HEAP_SIZE: usize = 0x100;
+const HEAP_SIZE: usize = {bootblock_heap};
 #[cfg(not(fstart_stage_bootblock))]
-const HEAP_SIZE: usize = fstart_platform_intel_gm965_ich8::GM965_RAMSTAGE_HEAP_SIZE;
+const HEAP_SIZE: usize = {main_heap};
 
 #[repr(align(16))]
 #[allow(dead_code)]
@@ -998,27 +1045,24 @@ static _fstart_early_microcode_enabled: u32 = 1;
 #[no_mangle]
 static _fstart_early_microcode_enabled: u32 = 0;
 
-type BootblockBoard = fstart_platform_intel_gm965_ich8::Gm965Ich8BootblockBoard<Board>;
-#[cfg(feature = "crabefi")]
-type RamstageBoard = fstart_platform_intel_gm965_ich8::Gm965Ich8RamstageBoard<Board>;
-
 #[no_mangle]
-pub extern "Rust" fn fstart_main(_handoff_ptr: usize) -> ! {
-    match option_env!("FSTART_STAGE_NAME") {
-        Some("bootblock") => fstart_stage::run_static_board::<BootblockBoard>(),
-        #[cfg(feature = "crabefi")]
-        Some("ramstage") => fstart_stage::run_static_board::<RamstageBoard>(),
-        _ => fstart_platform::halt(),
-    }
-}
+pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {{
+    fstart_stage::run_board::<Board>(
+        fstart_stage::StageKind::from_option(option_env!("FSTART_STAGE_NAME")),
+        handoff_ptr,
+    )
+}}
 
 #[used]
 #[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
 static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
 "#
+    )
 }
 
-fn selected_gm965_ich8_build_rs() -> &'static str {
+/// Build script shared by all FirmwareBoard recipe wrappers: forwards the
+/// linker script, selects the bootblock cfg, and wires the optional SMM image.
+fn selected_firmware_board_build_rs() -> &'static str {
     r#"use std::{env, fs, path::PathBuf};
 
 fn main() {
@@ -1053,6 +1097,29 @@ fn main() {
     }
 }
 "#
+}
+
+/// Return `(bootblock_heap, main_heap)` for a board's stage layout, used to
+/// size the wrapper's `_FSTART_HEAP` static per stage. Falls back to small
+/// defaults when a stage omits `heap_size`.
+fn stage_heap_sizes(config: &fstart_types::BoardConfig) -> (usize, usize) {
+    use fstart_types::StageLayout;
+    let stages = match &config.stages {
+        StageLayout::MultiStage(stages) => stages.iter(),
+        StageLayout::Monolithic(_) => return (0x100, 0x200000),
+    };
+    let bootblock = stages
+        .clone()
+        .find(|s| s.name.as_str() == "bootblock")
+        .or_else(|| stages.clone().next());
+    let main = stages
+        .clone()
+        .find(|s| s.name.as_str() != "bootblock")
+        .or_else(|| stages.clone().last());
+    (
+        bootblock.and_then(|s| s.heap_size).unwrap_or(0x100) as usize,
+        main.and_then(|s| s.heap_size).unwrap_or(0x200000) as usize,
+    )
 }
 
 fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
@@ -1184,6 +1251,51 @@ fn workspace_root() -> Result<PathBuf, String> {
         }
         if !dir.pop() {
             return Err("could not find workspace root".to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::firmware_wrapper_stage_feature;
+
+    #[test]
+    fn build_board_firmware_wrapper_stage_feature_allowlist_excludes_recipe_drivers() {
+        for feature in [
+            "flow-profile-multistage",
+            "flow-security",
+            "ffs",
+            "sha2-digest",
+            "crabefi",
+            "x86_64",
+            "x86-boot",
+            "x86-static-page-tables",
+            "ns16550-pio",
+        ] {
+            assert!(
+                firmware_wrapper_stage_feature(feature),
+                "{feature} should route to fstart-stage"
+            );
+        }
+
+        for feature in [
+            "intel-gm965",
+            "intel-ich8",
+            "intel-pineview",
+            "intel-ich7",
+            "i2c-ck505",
+            "ite8721f",
+            "nsc-pc87392",
+            "q35-hostbridge",
+            "qemu-fw-cfg",
+            "pci-ecam",
+            "cpu-intel-core2",
+            "mp",
+        ] {
+            assert!(
+                !firmware_wrapper_stage_feature(feature),
+                "{feature} should stay with the selected board/recipe"
+            );
         }
     }
 }

@@ -133,6 +133,7 @@ crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
 # Coarse fixed-flow profiles. Board metadata selects one profile, and backend
 # features such as `ffs`, `fdt`, `acpi`, and driver features supply the concrete
 # services used inside the fixed handwritten barriers.
+flow-security = ["fstart-stage-runtime/flow-security-v2"]
 flow-profile-minimal = ["fstart-stage-runtime/flow-early-platform-v2"]
 flow-profile-linuxboot = [
   "fstart-stage-runtime/flow-early-platform-v2",

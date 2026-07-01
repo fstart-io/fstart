@@ -13,14 +13,18 @@ pub const SMI_DOCK_DISCONNECT: u8 = 0x02;
 pub struct LenovoX61SmmHandler;
 
 impl SmmBoardHandler for LenovoX61SmmHandler {
+    #[allow(unused_unsafe)]
     unsafe fn on_tco_command(_ctx: &mut SmmContext<'_>, command: u8) -> Option<u8> {
-        match command {
-            SMI_DOCK_CONNECT => Some(if dock::dock_connect().is_ok() { 1 } else { 0 }),
-            SMI_DOCK_DISCONNECT => {
-                dock::dock_disconnect();
-                Some(1)
+        // SAFETY: SMM dispatch runs with the platform I/O decode active.
+        unsafe {
+            match command {
+                SMI_DOCK_CONNECT => Some(if dock::dock_connect().is_ok() { 1 } else { 0 }),
+                SMI_DOCK_DISCONNECT => {
+                    dock::dock_disconnect();
+                    Some(1)
+                }
+                _ => Some(0),
             }
-            _ => Some(0),
         }
     }
 }

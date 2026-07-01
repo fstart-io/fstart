@@ -45,6 +45,11 @@ impl FeatureSet {
         self.features.contains(feature)
     }
 
+    /// Iterate over feature names in sorted order.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.features.iter().map(String::as_str)
+    }
+
     /// Return a comma-separated feature list for Cargo.
     pub fn to_cargo_arg(&self) -> String {
         self.features.iter().cloned().collect::<Vec<_>>().join(",")
@@ -397,6 +402,11 @@ fn capability_features(
     let mut features = Vec::new();
 
     let uses_ffs = stage_uses_ffs(capabilities);
+    let uses_security = stage_uses_security(capabilities);
+
+    if uses_security {
+        features.push("flow-security");
+    }
 
     if uses_ffs {
         features.push("ffs");
@@ -475,6 +485,12 @@ fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::FdtPrepare))
+}
+
+fn stage_uses_security(capabilities: &[Capability]) -> bool {
+    capabilities
+        .iter()
+        .any(|c| matches!(c, Capability::SigVerify))
 }
 
 fn stage_uses_ffs(capabilities: &[Capability]) -> bool {
@@ -623,6 +639,28 @@ mod tests {
         assert!(features.contains("custom-driver"));
         assert!(features.contains("flow-profile-minimal"));
         assert!(!features.contains("flow-profile-linuxboot"));
+    }
+
+    #[test]
+    fn plan_selects_security_flow_for_sigverify() {
+        let mut config = minimal_config();
+        match &mut config.stages {
+            StageLayout::Monolithic(stage) => stage
+                .capabilities
+                .push(Capability::SigVerify)
+                .expect("capability capacity"),
+            StageLayout::MultiStage(_) => unreachable!("minimal config is monolithic"),
+        }
+        let parsed = parsed(config);
+        let info = build_info(BoardDataMode::StaticTyped, FlowProfile::Minimal, 0x1000);
+
+        let plan = plan(&parsed, &info).expect("sigverify stage should plan");
+        let features = &plan.stages[0].features;
+
+        assert!(features.contains("flow-security"));
+        assert!(features.contains("ffs"));
+        assert!(features.contains("ed25519"));
+        assert!(features.contains("sha2-digest"));
     }
 
     #[test]

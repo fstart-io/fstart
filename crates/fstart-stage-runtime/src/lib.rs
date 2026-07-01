@@ -8,4 +8,4 @@
 
 pub mod fixed_flow;
 
-pub use fixed_flow::{run as run_fixed_flow, StaticBoard};
+pub use fixed_flow::{run as run_fixed_flow, StageFlow};

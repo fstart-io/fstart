@@ -1,56 +1,88 @@
-//! GM965/ICH8 UEFI-style static stage recipe.
-//!
-//! Board crates or selected-board stage wrappers supply [`Gm965Ich8UefiBoard`]
-//! facts. This module owns the reusable bootblock and ramstage sequencing.
+//! Reusable GM965/ICH8 UEFI-style stage recipe.
 
 use core::marker::PhantomData;
 
 use fstart_driver_intel_gm965::IntelGm965;
+use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::{Ns16550, Ns16550Config};
 use fstart_services::memory_detect::{E820Entry, MAX_E820_ENTRIES};
+#[cfg(feature = "crabefi")]
+use fstart_services::StageLocalInit;
 use fstart_services::{
-    Device, DeviceError, HardwareInit, InitContext, PciRootBus, ServiceError, StageLocalInit,
+    Device, DeviceError, HardwareInit, InitContext, PciRootBus, ServiceError, Southbridge,
 };
+#[cfg(feature = "crabefi")]
 use fstart_stage::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
-use fstart_stage::fixed_helpers::{
-    console_ready, MemoryMappedFfs, MemoryMappedUefiBoot, StaticConsole,
-};
-use fstart_stage_runtime::StaticBoard;
+#[cfg(feature = "crabefi")]
+use fstart_stage::fixed_helpers::MemoryMappedUefiBoot;
+use fstart_stage::fixed_helpers::{console_ready, MemoryMappedFfs, StaticConsole};
+use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
+use fstart_stage_runtime::StageFlow;
 
 use crate::{
-    Gm965Ich8Config, Gm965Ich8Southbridge, GM965_NEXT_STAGE_NAME, GM965_NORTHBRIDGE_NODE,
+    Gm965Ich8AcpiContext, Gm965Ich8Board, GM965_NEXT_STAGE_NAME, GM965_NORTHBRIDGE_NODE,
     GM965_RAMSTAGE_LOAD_ADDR,
 };
 
-/// Board facts and hooks required by the reusable GM965/ICH8 UEFI recipe.
-pub trait Gm965Ich8UefiBoard: Sized + 'static {
-    /// Board-specific southbridge wrapper or plain southbridge device.
-    type Southbridge: Gm965Ich8Southbridge;
+/// Platform recipe selected by GM965/ICH8 UEFI-style board crates.
+pub struct Gm965Ich8UefiRecipe<B>(PhantomData<B>);
 
-    /// Return the complete GM965/ICH8 board configuration.
-    fn platform_config() -> Gm965Ich8Config;
+impl<B> StageRecipe<B> for Gm965Ich8UefiRecipe<B>
+where
+    B: Gm965Ich8UefiBoard,
+{
+    fn run(stage: StageKind, _handoff: usize) -> ! {
+        if stage.is_named("bootblock") {
+            fstart_stage::run_stage_flow::<Gm965Ich8BootblockStage<B>>()
+        } else if stage.is_named(GM965_NEXT_STAGE_NAME) {
+            #[cfg(feature = "crabefi")]
+            {
+                fstart_stage::run_stage_flow::<Gm965Ich8Ramstage<B>>()
+            }
+            #[cfg(not(feature = "crabefi"))]
+            {
+                B::halt()
+            }
+        } else {
+            B::halt()
+        }
+    }
+}
 
-    /// Return the boot console configuration.
+/// Board facts and hooks required by the GM965/ICH8 UEFI recipe.
+pub trait Gm965Ich8UefiBoard: FirmwareBoard<Recipe = Gm965Ich8UefiRecipe<Self>> {
+    type Mainboard: Gm965Ich8Mainboard;
+
+    fn board() -> Gm965Ich8Board;
+    fn mainboard() -> Result<Self::Mainboard, ServiceError>;
     fn console_config() -> Ns16550Config;
-
-    /// Return the board topology node name for the boot console.
     fn console_node() -> &'static str;
+    fn halt() -> !;
 
-    /// Construct the board southbridge hook stack.
-    fn new_southbridge() -> Result<Self::Southbridge, ServiceError>;
-
-    /// Run board-selected multiprocessing initialization.
     fn init_mp() -> Result<(), ServiceError> {
         Ok(())
     }
 
-    /// Build ACPI tables and return the RSDP address when the board supports ACPI.
     fn prepare_acpi(_devices: &mut Gm965Ich8RamstageDevices<Self>) -> Option<u64> {
         None
     }
 
-    /// Prepare board-selected SMBIOS tables.
     fn prepare_smbios() {}
+}
+
+/// Board-specific hooks. Generic framework code never learns these names.
+pub trait Gm965Ich8Mainboard {
+    fn pre_console(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn post_dram(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn finalize(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+        Ok(())
+    }
 }
 
 fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
@@ -58,34 +90,68 @@ fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
 }
 
 fn new_gm965<B: Gm965Ich8UefiBoard>() -> Result<IntelGm965, ServiceError> {
-    IntelGm965::new(B::platform_config().gm965).map_err(device_error_to_service_error)
+    IntelGm965::new(B::board().northbridge.config).map_err(device_error_to_service_error)
 }
 
-/// Reusable GM965/ICH8 bootblock `StaticBoard` implementation.
-pub struct Gm965Ich8BootblockBoard<B: Gm965Ich8UefiBoard> {
-    devices: (IntelGm965, B::Southbridge, StaticConsole<Ns16550>),
-    ffs: MemoryMappedFfs,
-    ramstage_loaded: bool,
-    _board: PhantomData<B>,
+fn new_ich8<B: Gm965Ich8UefiBoard>() -> Result<IntelIch8, ServiceError> {
+    IntelIch8::new(B::board().southbridge.driver_config()).map_err(device_error_to_service_error)
 }
 
-impl<B> StaticBoard for Gm965Ich8BootblockBoard<B>
+pub struct Gm965Ich8BootblockDevices<B: Gm965Ich8UefiBoard> {
+    northbridge: IntelGm965,
+    southbridge: IntelIch8,
+    mainboard: B::Mainboard,
+    console: StaticConsole<Ns16550>,
+}
+
+impl<B> Gm965Ich8BootblockDevices<B>
 where
     B: Gm965Ich8UefiBoard,
 {
-    type Devices = (IntelGm965, B::Southbridge, StaticConsole<Ns16550>);
+    fn new() -> Result<Self, ServiceError> {
+        Ok(Self {
+            northbridge: new_gm965::<B>()?,
+            southbridge: new_ich8::<B>()?,
+            mainboard: B::mainboard()?,
+            console: StaticConsole::new(B::console_config()),
+        })
+    }
+}
+
+impl<B> HardwareInit for Gm965Ich8BootblockDevices<B>
+where
+    B: Gm965Ich8UefiBoard,
+{
+    fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.northbridge.pre_console(ctx)?;
+        self.southbridge.pre_console(ctx)?;
+        self.mainboard.pre_console(&mut self.southbridge)
+    }
+
+    fn console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.console.console(ctx)
+    }
+}
+
+/// GM965/ICH8 bootblock fixed-flow stage.
+pub struct Gm965Ich8BootblockStage<B: Gm965Ich8UefiBoard> {
+    devices: Gm965Ich8BootblockDevices<B>,
+    ffs: MemoryMappedFfs,
+    ramstage_loaded: bool,
+}
+
+impl<B> StageFlow for Gm965Ich8BootblockStage<B>
+where
+    B: Gm965Ich8UefiBoard,
+{
+    type Devices = Gm965Ich8BootblockDevices<B>;
 
     fn new() -> Result<Self, ServiceError> {
-        let config = B::platform_config();
+        let board = B::board();
         Ok(Self {
-            devices: (
-                new_gm965::<B>()?,
-                B::new_southbridge()?,
-                StaticConsole::new(B::console_config()),
-            ),
-            ffs: MemoryMappedFfs::new(config.firmware_base, config.firmware_size),
+            devices: Gm965Ich8BootblockDevices::new()?,
+            ffs: MemoryMappedFfs::new(board.firmware_base(), board.firmware_size()),
             ramstage_loaded: false,
-            _board: PhantomData,
         })
     }
 
@@ -94,7 +160,7 @@ where
     }
 
     fn halt() -> ! {
-        fstart_platform_x86_64::halt()
+        B::halt()
     }
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
@@ -120,7 +186,7 @@ where
     fn boot_payload(self) -> ! {
         if !self.ramstage_loaded {
             fstart_log::error!("ramstage handoff requested before load");
-            <Self as StaticBoard>::halt();
+            B::halt();
         }
         fstart_log::info!("jumping to ramstage at {:#x}", GM965_RAMSTAGE_LOAD_ADDR);
         fstart_platform_x86_64::jump_to(GM965_RAMSTAGE_LOAD_ADDR)
@@ -130,7 +196,8 @@ where
 /// Runtime device set owned by the GM965/ICH8 ramstage recipe.
 pub struct Gm965Ich8RamstageDevices<B: Gm965Ich8UefiBoard> {
     northbridge: IntelGm965,
-    southbridge: B::Southbridge,
+    southbridge: IntelIch8,
+    mainboard: B::Mainboard,
     console: StaticConsole<Ns16550>,
     e820: [E820Entry; MAX_E820_ENTRIES],
     e820_count: usize,
@@ -138,6 +205,7 @@ pub struct Gm965Ich8RamstageDevices<B: Gm965Ich8UefiBoard> {
     acpi_rsdp: Option<u64>,
 }
 
+#[cfg_attr(not(feature = "crabefi"), allow(dead_code))]
 impl<B> Gm965Ich8RamstageDevices<B>
 where
     B: Gm965Ich8UefiBoard,
@@ -145,7 +213,8 @@ where
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
             northbridge: new_gm965::<B>()?,
-            southbridge: B::new_southbridge()?,
+            southbridge: new_ich8::<B>()?,
+            mainboard: B::mainboard()?,
             console: StaticConsole::new(B::console_config()),
             e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
             e820_count: 0,
@@ -154,16 +223,19 @@ where
         })
     }
 
-    /// Return the northbridge driver.
     #[must_use]
     pub const fn northbridge(&self) -> &IntelGm965 {
         &self.northbridge
     }
 
-    /// Return the board southbridge wrapper.
     #[must_use]
-    pub const fn southbridge(&self) -> &B::Southbridge {
+    pub const fn southbridge(&self) -> &IntelIch8 {
         &self.southbridge
+    }
+
+    #[must_use]
+    pub const fn acpi_context(&self) -> Gm965Ich8AcpiContext {
+        Gm965Ich8AcpiContext
     }
 
     fn e820(&self) -> &[E820Entry] {
@@ -185,15 +257,12 @@ where
 {
     fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         self.northbridge.pre_console(ctx)?;
-        self.southbridge.pre_console(ctx)
+        self.southbridge.pre_console(ctx)?;
+        self.mainboard.pre_console(&mut self.southbridge)
     }
 
     fn console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         self.console.console(ctx)
-    }
-
-    fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.southbridge.post_console(ctx)
     }
 
     fn memory_discovery(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
@@ -210,6 +279,7 @@ where
     fn bus_probe(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         self.northbridge.init_bus()?;
         self.southbridge.ramstage_init()?;
+        self.mainboard.post_dram(&mut self.southbridge)?;
         B::init_mp()
     }
 
@@ -225,24 +295,26 @@ where
     }
 }
 
-/// Reusable GM965/ICH8 UEFI ramstage `StaticBoard` implementation.
-pub struct Gm965Ich8RamstageBoard<B: Gm965Ich8UefiBoard> {
+/// GM965/ICH8 ramstage fixed-flow stage.
+#[cfg(feature = "crabefi")]
+pub struct Gm965Ich8Ramstage<B: Gm965Ich8UefiBoard> {
     devices: Gm965Ich8RamstageDevices<B>,
     boot: MemoryMappedUefiBoot,
     payload_ready: bool,
 }
 
-impl<B> StaticBoard for Gm965Ich8RamstageBoard<B>
+#[cfg(feature = "crabefi")]
+impl<B> StageFlow for Gm965Ich8Ramstage<B>
 where
     B: Gm965Ich8UefiBoard,
 {
     type Devices = Gm965Ich8RamstageDevices<B>;
 
     fn new() -> Result<Self, ServiceError> {
-        let config = B::platform_config();
+        let board = B::board();
         Ok(Self {
             devices: Gm965Ich8RamstageDevices::new()?,
-            boot: MemoryMappedUefiBoot::new(config.firmware_base, config.firmware_size, 0),
+            boot: MemoryMappedUefiBoot::new(board.firmware_base(), board.firmware_size(), 0),
             payload_ready: false,
         })
     }
@@ -252,7 +324,7 @@ where
     }
 
     fn halt() -> ! {
-        fstart_platform_x86_64::halt()
+        B::halt()
     }
 
     fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
@@ -276,28 +348,31 @@ where
     }
 
     fn finalize_handoff(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.devices
+            .mainboard
+            .finalize(&mut self.devices.southbridge)?;
         self.devices.southbridge.finalize()
     }
 
     fn boot_payload(self) -> ! {
         if !self.payload_ready {
             fstart_log::error!("UEFI handoff requested before payload setup");
-            <Self as StaticBoard>::halt();
+            B::halt();
         }
         let console = match self.devices.console_device() {
             Some(console) => console,
             None => {
                 fstart_log::error!("UEFI handoff requested before console init");
-                <Self as StaticBoard>::halt();
+                B::halt();
             }
         };
 
         let acpi_base = self.devices.acpi_rsdp().unwrap_or(0) & !0xfff;
-        let config = B::platform_config();
+        let board = B::board();
         let platform_entries = [
             MemoryRegion {
-                base: config.firmware_base,
-                size: config.firmware_size as u64,
+                base: board.firmware_base(),
+                size: board.firmware_size() as u64,
                 region_type: MemoryType::RuntimeServicesCode,
             },
             MemoryRegion {

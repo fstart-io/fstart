@@ -1,25 +1,45 @@
-//! Lenovo ThinkPad X61 stage recipe binding.
+//! Lenovo ThinkPad X61 binding for the GM965/ICH8 recipe.
 
 #[cfg(feature = "acpi")]
 use fstart_acpi::device::AcpiDevice;
 #[cfg(feature = "acpi")]
 use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
-use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 #[cfg(feature = "acpi")]
 use fstart_platform_intel_gm965_ich8::Gm965Ich8RamstageDevices;
 #[cfg(feature = "mp")]
 use fstart_platform_intel_gm965_ich8::ICH8_PMBASE;
-use fstart_platform_intel_gm965_ich8::{Gm965Ich8Config, Gm965Ich8UefiBoard};
-use fstart_services::{Device, DeviceError, ServiceError};
+use fstart_platform_intel_gm965_ich8::{
+    FirmwareBoard, Gm965Ich8Board, Gm965Ich8UefiBoard, Gm965Ich8UefiRecipe,
+};
+use fstart_services::ServiceError;
 
-use crate::{Board, LenovoX61Southbridge};
+use crate::{Board, X61Mainboard};
+
+impl FirmwareBoard for Board {
+    type Recipe = Gm965Ich8UefiRecipe<Self>;
+
+    const NAME: &'static str = crate::BOARD_NAME;
+    const PLATFORM: fstart_types::Platform = crate::PLATFORM;
+
+    fn board_info() -> fstart_types::BoardInfo {
+        crate::board_info()
+    }
+
+    fn build_info() -> fstart_types::BuildInfo {
+        crate::build_info()
+    }
+}
 
 impl Gm965Ich8UefiBoard for Board {
-    type Southbridge = LenovoX61Southbridge<IntelIch8>;
+    type Mainboard = X61Mainboard;
 
-    fn platform_config() -> Gm965Ich8Config {
-        crate::gm965_ich8_config()
+    fn board() -> Gm965Ich8Board {
+        crate::gm965_ich8_board()
+    }
+
+    fn mainboard() -> Result<Self::Mainboard, ServiceError> {
+        Ok(X61Mainboard::new())
     }
 
     fn console_config() -> Ns16550Config {
@@ -36,10 +56,8 @@ impl Gm965Ich8UefiBoard for Board {
         crate::UART0_NODE
     }
 
-    fn new_southbridge() -> Result<Self::Southbridge, ServiceError> {
-        let config = crate::gm965_ich8_config();
-        let southbridge = IntelIch8::new(config.ich8).map_err(device_error_to_service_error)?;
-        Ok(LenovoX61Southbridge::new(southbridge))
+    fn halt() -> ! {
+        fstart_platform_x86_64::halt()
     }
 
     #[cfg(feature = "mp")]
@@ -58,22 +76,18 @@ impl Gm965Ich8UefiBoard for Board {
 
     #[cfg(feature = "acpi")]
     fn prepare_acpi(devices: &mut Gm965Ich8RamstageDevices<Self>) -> Option<u64> {
-        let platform = PlatformConfig::X86(
-            devices
-                .southbridge()
-                .southbridge()
-                .x86_platform_config(fstart_mp::online_cpus() as u32),
-        );
+        let southbridge = devices.southbridge();
+        let platform =
+            PlatformConfig::X86(southbridge.x86_platform_config(fstart_mp::online_cpus() as u32));
         let rsdp =
             fstart_capabilities::acpi::prepare_with_options(&platform, true, |dsdt, extra| {
-                let southbridge = devices.southbridge().southbridge();
                 dsdt.extend(
                     devices
                         .northbridge()
                         .dsdt_aml(devices.northbridge().config()),
                 );
                 dsdt.extend(southbridge.dsdt_aml(southbridge.config()));
-                dsdt.extend(crate::x61_mainboard_dsdt_aml());
+                dsdt.extend(crate::x61_mainboard_dsdt_aml(devices.acpi_context()));
                 extra.extend(
                     devices
                         .northbridge()
@@ -88,8 +102,4 @@ impl Gm965Ich8UefiBoard for Board {
     fn prepare_smbios() {
         fstart_capabilities::smbios::prepare(&crate::X61_SMBIOS_DESC);
     }
-}
-
-fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
-    ServiceError::HardwareError
 }

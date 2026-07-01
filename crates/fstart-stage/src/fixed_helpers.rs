@@ -1,7 +1,7 @@
 //! Reusable pieces for board-owned fixed-flow stage adapters.
 //!
 //! These helpers intentionally stop short of selecting a board or platform. Board
-//! crates still own their concrete [`StaticBoard`](fstart_stage_runtime::StaticBoard)
+//! crates still own their concrete [`StageFlow`](fstart_stage_runtime::StageFlow)
 //! type, platform boot call, and board constants. The helpers just remove the
 //! repeated mechanics around lazy console construction, memory-mapped FFS access,
 //! payload state tracking, and FDT patching.
@@ -244,7 +244,7 @@ where
     fn console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         let console = self.ensure()?;
         console.console(ctx)?;
-        // SAFETY: the console object is stored in the board's StaticBoard device
+        // SAFETY: the console object is stored in the board's StageFlow device
         // container, and fixed-flow stage entry never returns after construction.
         unsafe { fstart_log::init(console) };
         fstart_log::info!("fstart fixed-flow console ready");
@@ -826,7 +826,7 @@ pub struct QemuVirtLinuxBoardAdapter<B: QemuVirtLinuxBoard> {
 }
 
 #[cfg(all(feature = "ffs", feature = "fdt"))]
-impl<B> fstart_stage_runtime::StaticBoard for QemuVirtLinuxBoardAdapter<B>
+impl<B> fstart_stage_runtime::StageFlow for QemuVirtLinuxBoardAdapter<B>
 where
     B: QemuVirtLinuxBoard,
 {
@@ -1025,7 +1025,7 @@ where
 }
 
 #[cfg(all(feature = "sunxi", feature = "ns16550"))]
-impl<B> fstart_stage_runtime::StaticBoard for SunxiBootblockBoard<B>
+impl<B> fstart_stage_runtime::StageFlow for SunxiBootblockBoard<B>
 where
     B: SunxiFixedFlowBoard,
 {
@@ -1115,7 +1115,7 @@ where
 }
 
 #[cfg(all(feature = "sunxi", feature = "ns16550", feature = "ffs"))]
-impl<B> fstart_stage_runtime::StaticBoard for SunxiMainBoard<B>
+impl<B> fstart_stage_runtime::StageFlow for SunxiMainBoard<B>
 where
     B: SunxiLinuxBoard,
 {

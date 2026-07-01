@@ -15,10 +15,12 @@ stage-recipe = "gm965-ich8-uefi"
 [features]
 default = []
 runtime = []
+crabefi = ["fstart-platform-intel-gm965-ich8/crabefi"]
 stage = [
   "runtime",
   "dep:fstart-driver-intel-ich8",
   "dep:fstart-driver-ns16550",
+  "dep:fstart-platform-x86_64",
   "fstart-platform-intel-gm965-ich8/recipe",
 ]
 acpi = [
@@ -37,8 +39,8 @@ smm = ["dep:fstart-smm-runtime"]
 
 [dependencies]
 fstart-types = { workspace = true }
-fstart-board-meta = { workspace = true }
 fstart-platform-intel-gm965-ich8 = { workspace = true }
+fstart-platform-x86_64 = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../../crates/fstart-acpi-macros", optional = true }
 fstart-arch-x86 = { workspace = true }

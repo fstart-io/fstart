@@ -9,84 +9,46 @@
 
 #![allow(clippy::result_unit_err)]
 
-use fstart_services::{HardwareInit, InitContext, ServiceError, Southbridge};
+#[cfg(feature = "stage")]
+use fstart_driver_intel_ich8::IntelIch8;
+#[cfg(feature = "stage")]
+use fstart_platform_intel_gm965_ich8::Gm965Ich8Mainboard;
+#[cfg(feature = "stage")]
+use fstart_services::ServiceError;
 
-use fstart_platform_intel_gm965_ich8::Gm965Ich8Southbridge;
+/// Board-specific X61 hooks for the GM965/ICH8 recipe.
+#[cfg(feature = "stage")]
+pub struct X61Mainboard;
 
-/// Pair the X61 board hook with the southbridge it needs for dock/LPC glue.
-///
-/// This keeps southbridge-aware sequencing in the Lenovo board module instead
-/// of adding a generic `with_southbridge()` concept to common stage code.
-pub struct LenovoX61Southbridge<S> {
-    southbridge: S,
-}
-
-impl<S> LenovoX61Southbridge<S> {
-    /// Construct a Lenovo X61 board hook around a concrete southbridge driver.
+#[cfg(feature = "stage")]
+impl X61Mainboard {
     #[must_use]
-    pub const fn new(southbridge: S) -> Self {
-        Self { southbridge }
-    }
-
-    /// Return the wrapped southbridge driver.
-    #[must_use]
-    pub const fn southbridge(&self) -> &S {
-        &self.southbridge
+    pub const fn new() -> Self {
+        Self
     }
 }
 
-impl<S> LenovoX61Southbridge<S>
-where
-    S: Southbridge,
-{
-    /// Run DRAM-backed X61 southbridge and mainboard hook initialization.
-    pub fn ramstage_init(&mut self) -> Result<(), ServiceError> {
-        self.southbridge.ramstage_init()?;
-        dock::post_raminit_setup(&mut self.southbridge);
-        Ok(())
-    }
-
-    /// Run X61 mainboard and southbridge payload-handoff finalization.
-    pub fn finalize(&mut self) -> Result<(), ServiceError> {
-        fstart_superio::quiesce_i8042_for_os();
-        self.southbridge.finalize()
-    }
-}
-
-impl<S> HardwareInit for LenovoX61Southbridge<S>
-where
-    S: HardwareInit + Southbridge,
-{
-    fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.southbridge.pre_console(ctx)?;
+#[cfg(feature = "stage")]
+impl Gm965Ich8Mainboard for X61Mainboard {
+    fn pre_console(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
         // dock connection failures are non-fatal before the console exists.
-        // When the dock-present GPIO is asserted, coreboot still attempts the
-        // PC87392 COM1 enable after dock_connect(); do the same so a marginal
-        // delay/timeout does not suppress all serial output.
         let _ = dock::dlpc_init();
-        if dock::dock_present(&self.southbridge) {
+        if dock::dock_present(ich8) {
             let _ = dock::dock_connect();
             dock::early_superio_config();
         }
         Ok(())
     }
 
-    fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.southbridge.post_console(ctx)
-    }
-}
-
-impl<S> Gm965Ich8Southbridge for LenovoX61Southbridge<S>
-where
-    S: HardwareInit + Southbridge,
-{
-    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
-        LenovoX61Southbridge::ramstage_init(self)
+    fn post_dram(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+        dock::post_raminit_setup(ich8);
+        Ok(())
     }
 
-    fn finalize(&mut self) -> Result<(), ServiceError> {
-        LenovoX61Southbridge::finalize(self)
+    fn finalize(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+        fstart_superio::quiesce_i8042_for_os();
+        Ok(())
     }
 }
 
@@ -431,10 +393,108 @@ pub static X61_SMBIOS_DESC: fstart_smbios::SmbiosDesc<'static> = fstart_smbios::
 mod acpi_impl {
     extern crate alloc;
 
+    use alloc::string::String;
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
+    use fstart_platform_intel_gm965_ich8::Gm965Ich8AcpiContext;
 
-    pub fn x61_mainboard_dsdt_aml() -> Vec<u8> {
+    struct X61AcpiPaths {
+        sb_scope: &'static str,
+        lpc_scope: &'static str,
+        gpe_scope: &'static str,
+        dock: String,
+        ec_mute: String,
+        ec_usbp: String,
+        ec_radi: String,
+        ec_hkey_mhkc: String,
+        ec_hkey_wake: String,
+        ec_wake: String,
+        ec_lid: String,
+        ec_slpb: String,
+    }
+
+    impl X61AcpiPaths {
+        fn new(context: Gm965Ich8AcpiContext) -> Self {
+            let ec = child_path(context.lpc_scope(), "EC__");
+            let hkey = child_path(&ec, "HKEY");
+
+            Self {
+                sb_scope: context.sb_scope(),
+                lpc_scope: context.lpc_scope(),
+                gpe_scope: context.gpe_scope(),
+                dock: child_path(context.sb_scope(), "DOCK"),
+                ec_mute: child_path(&ec, "MUTE"),
+                ec_usbp: child_path(&ec, "USBP"),
+                ec_radi: child_path(&ec, "RADI"),
+                ec_hkey_mhkc: child_path(&hkey, "MHKC"),
+                ec_hkey_wake: child_path(&hkey, "WAKE"),
+                ec_wake: child_path(&ec, "WAKE"),
+                ec_lid: child_path(&ec, "LID_"),
+                ec_slpb: child_path(&ec, "SLPB"),
+            }
+        }
+
+        fn sb_scope(&self) -> &str {
+            self.sb_scope
+        }
+
+        fn lpc_scope(&self) -> &str {
+            self.lpc_scope
+        }
+
+        fn gpe_scope(&self) -> &str {
+            self.gpe_scope
+        }
+
+        fn dock(&self) -> &str {
+            &self.dock
+        }
+
+        fn ec_mute(&self) -> &str {
+            &self.ec_mute
+        }
+
+        fn ec_usbp(&self) -> &str {
+            &self.ec_usbp
+        }
+
+        fn ec_radi(&self) -> &str {
+            &self.ec_radi
+        }
+
+        fn ec_hkey_mhkc(&self) -> &str {
+            &self.ec_hkey_mhkc
+        }
+
+        fn ec_hkey_wake(&self) -> &str {
+            &self.ec_hkey_wake
+        }
+
+        fn ec_wake(&self) -> &str {
+            &self.ec_wake
+        }
+
+        fn ec_lid(&self) -> &str {
+            &self.ec_lid
+        }
+
+        fn ec_slpb(&self) -> &str {
+            &self.ec_slpb
+        }
+    }
+
+    fn child_path(scope: &str, name: &str) -> String {
+        let mut path = String::new();
+        path.push_str(scope);
+        if scope != "\\" && !scope.ends_with('.') {
+            path.push('.');
+        }
+        path.push_str(name);
+        path
+    }
+
+    pub fn x61_mainboard_dsdt_aml(context: Gm965Ich8AcpiContext) -> Vec<u8> {
+        let paths = X61AcpiPaths::new(context);
         let p = |s: &str| fstart_acpi::aml::Path::new(s);
         acpi_dsl! {
             Scope("\\") {
@@ -451,19 +511,19 @@ mod acpi_impl {
                 }
 
                 Method("_PTS", 1, NotSerialized) {
-                    #{p("\\_SB_.PCI0.LPCB.EC__.MUTE")}(1u32);
-                    #{p("\\_SB_.PCI0.LPCB.EC__.USBP")}(0u32);
-                    #{p("\\_SB_.PCI0.LPCB.EC__.RADI")}(0u32);
-                    #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC")}(0u32);
+                    #{p(paths.ec_mute())}(1u32);
+                    #{p(paths.ec_usbp())}(0u32);
+                    #{p(paths.ec_radi())}(0u32);
+                    #{p(paths.ec_hkey_mhkc())}(0u32);
                 }
                 Method("_WAK", 1, NotSerialized) {
-                    #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC")}(1u32);
-                    #{p("\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE")}(Arg0);
+                    #{p(paths.ec_hkey_mhkc())}(1u32);
+                    #{p(paths.ec_hkey_wake())}(Arg0);
                     Return(Package(0u32, 0u32));
                 }
             }
 
-            Scope("\\_SB_.PCI0.LPCB") {
+            Scope(#{paths.lpc_scope()}) {
                     Device("EC__") {
                         Name("_HID", EisaId("PNP0C09"));
                         Name("_UID", 0u32);
@@ -551,7 +611,7 @@ mod acpi_impl {
                         Device("AC__") {
                             Name("_HID", "ACPI0003");
                             Name("_UID", 0u32);
-                            Name("_PCL", Package(#{p("\\_SB_")}));
+                            Name("_PCL", Package(#{p(paths.sb_scope())}));
                             Method("_PSR", 0, NotSerialized) { Return(HPAC); }
                             Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
                         }
@@ -607,7 +667,7 @@ mod acpi_impl {
                         Device("BAT0") {
                             Name("_HID", EisaId("PNP0C0A"));
                             Name("_UID", 0u32);
-                            Name("_PCL", Package(#{p("\\_SB_")}));
+                            Name("_PCL", Package(#{p(paths.sb_scope())}));
                             Method("_BIF", 0, NotSerialized) { Return(Package(0u32, 0xFFFFFFFFu32, 0xFFFFFFFFu32, 1u32, 10800u32, 0u32, 200u32, 1u32, 1u32, "", "", "", "")); }
                             Method("_BST", 0, NotSerialized) {
                                 If (B0PR) {
@@ -621,7 +681,7 @@ mod acpi_impl {
                         Device("BAT1") {
                             Name("_HID", EisaId("PNP0C0A"));
                             Name("_UID", 1u32);
-                            Name("_PCL", Package(#{p("\\_SB_")}));
+                            Name("_PCL", Package(#{p(paths.sb_scope())}));
                             Method("_BIF", 0, NotSerialized) { Return(Package(0u32, 0xFFFFFFFFu32, 0xFFFFFFFFu32, 1u32, 10800u32, 0u32, 200u32, 1u32, 1u32, "", "", "", "")); }
                             Method("_BST", 0, NotSerialized) {
                                 If (B1PR) {
@@ -643,12 +703,12 @@ mod acpi_impl {
                         Method("_Q4B", 0, NotSerialized) { Notify(BAT0, 0x80u32); }
                         Method("_Q4C", 0, NotSerialized) { Notify(BAT1, 0x81u32); }
                         Method("_Q4D", 0, NotSerialized) { Notify(BAT1, 0x80u32); }
-                        Method("_Q50", 0, NotSerialized) { Notify(#{p("\\_SB_.DOCK")}, 3u32); }
-                        Method("_Q58", 0, NotSerialized) { Notify(#{p("\\_SB_.DOCK")}, 0u32); }
+                        Method("_Q50", 0, NotSerialized) { Notify(#{p(paths.dock())}, 3u32); }
+                        Method("_Q58", 0, NotSerialized) { Notify(#{p(paths.dock())}, 0u32); }
                     }
             }
 
-            Scope("\\_SB_") {
+            Scope(#{paths.sb_scope()}) {
                 OperationRegion("DLPC", SystemIO, 0x164Cu32, 0x01u32);
                 Field("DLPC", ByteAcc, NoLock, Preserve) {
                     , 3,
@@ -663,7 +723,7 @@ mod acpi_impl {
                 Device("DOCK") {
                     Name("_HID", "ACPI0003");
                     Name("_UID", 0u32);
-                    Name("_PCL", Package(#{p("\\_SB_")}));
+                    Name("_PCL", Package(#{p(paths.sb_scope())}));
                     Method("_DCK", 1, Serialized) {
                         If (Arg0) {
                             TDIN = 1u32;
@@ -681,21 +741,21 @@ mod acpi_impl {
                 }
             }
 
-            Scope("\\_GPE") {
+            Scope(#{paths.gpe_scope()}) {
                 Method("_L18", 0, NotSerialized) {
-                    Local0 = #{p("\\_SB_.PCI0.LPCB.EC__.WAKE")};
+                    Local0 = #{p(paths.ec_wake())};
                     If (Local0 & 0x04u32) {
-                        Notify(#{p("\\_SB_.PCI0.LPCB.EC__.LID_")}, 0x02u32);
+                        Notify(#{p(paths.ec_lid())}, 0x02u32);
                     }
                     If (Local0 & 0x08u32) {
-                        Notify(#{p("\\_SB_.DOCK")}, 0x03u32);
-                        Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
+                        Notify(#{p(paths.dock())}, 0x03u32);
+                        Notify(#{p(paths.ec_slpb())}, 0x02u32);
                     }
                     If (Local0 & 0x10u32) {
-                        Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
+                        Notify(#{p(paths.ec_slpb())}, 0x02u32);
                     }
                     If (Local0 & 0x80u32) {
-                        Notify(#{p("\\_SB_.PCI0.LPCB.EC__.SLPB")}, 0x02u32);
+                        Notify(#{p(paths.ec_slpb())}, 0x02u32);
                     }
                 }
             }

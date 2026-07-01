@@ -9,10 +9,13 @@ pub mod smm;
 #[cfg(feature = "stage")]
 mod stage;
 
-/// Lenovo ThinkPad X61 board marker for selected-board stage wrappers.
+/// Lenovo ThinkPad X61 board marker selected by generated stage wrappers.
 pub struct Board;
 
 pub use config::*;
 #[cfg(feature = "acpi")]
 pub use mainboard::x61_mainboard_dsdt_aml;
-pub use mainboard::{LenovoX61Southbridge, X61_SMBIOS_DESC};
+#[cfg(feature = "stage")]
+pub use mainboard::X61Mainboard;
+#[cfg(feature = "smbios")]
+pub use mainboard::X61_SMBIOS_DESC;

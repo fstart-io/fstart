@@ -1,8 +1,8 @@
-//! Common static-stage glue for board-owned fixed-flow stage binaries.
+//! Common fixed-flow stage glue.
 //!
-//! Board crates own concrete [`fstart_stage_runtime::StaticBoard`] adapters and
-//! binary entry points. This crate provides shared anchor/allocation linkage and
-//! the fixed-flow runner; it does not select boards.
+//! Board crates expose a [`FirmwareBoard`] type whose [`StageRecipe`] owns the
+//! handwritten stage sequence. This crate provides shared anchor/allocation
+//! linkage and selected-board dispatch.
 
 #![no_std]
 
@@ -43,6 +43,60 @@ pub fn fstart_anchor_bytes() -> &'static [u8] {
     }
 }
 
-pub fn run_static_board<B: fstart_stage_runtime::StaticBoard>() -> ! {
-    fstart_stage_runtime::run_fixed_flow::<B>()
+/// Stage selected by build glue for a firmware entry point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StageKind {
+    /// Single-stage/monolithic firmware image.
+    Monolithic,
+    /// Named stage in a multi-stage image.
+    Named(&'static str),
+}
+
+impl StageKind {
+    /// Convert the optional `FSTART_STAGE_NAME` value passed by generated wrappers.
+    #[must_use]
+    pub const fn from_option(name: Option<&'static str>) -> Self {
+        match name {
+            Some(name) => Self::Named(name),
+            None => Self::Monolithic,
+        }
+    }
+
+    /// Return whether this is the named stage.
+    #[must_use]
+    pub fn is_named(self, expected: &str) -> bool {
+        matches!(self, Self::Named(name) if name == expected)
+    }
+}
+
+/// Static typed firmware board selected by build glue.
+pub trait FirmwareBoard: Sized + 'static {
+    /// Recipe that owns this board family's handwritten stage flow.
+    type Recipe: StageRecipe<Self>;
+
+    /// Stable fstart board name.
+    const NAME: &'static str;
+    /// Runtime platform for this board.
+    const PLATFORM: fstart_types::Platform;
+
+    /// Runtime hardware facts.
+    fn board_info() -> fstart_types::BoardInfo;
+    /// Host build/package facts.
+    fn build_info() -> fstart_types::BuildInfo;
+}
+
+/// Handwritten stage flow selected by a [`FirmwareBoard`].
+pub trait StageRecipe<B: FirmwareBoard> {
+    /// Run the selected stage.
+    fn run(stage: StageKind, handoff: usize) -> !;
+}
+
+/// Dispatch to the selected board's recipe.
+pub fn run_board<B: FirmwareBoard>(stage: StageKind, handoff: usize) -> ! {
+    <B::Recipe as StageRecipe<B>>::run(stage, handoff)
+}
+
+/// Run one concrete recipe stage through the fixed handwritten flow.
+pub fn run_stage_flow<S: fstart_stage_runtime::StageFlow>() -> ! {
+    fstart_stage_runtime::run_fixed_flow::<S>()
 }
