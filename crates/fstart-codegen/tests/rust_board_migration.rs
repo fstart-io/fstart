@@ -30,63 +30,17 @@ struct RustBoardCase {
     build_info: fn() -> BuildInfo,
 }
 
-const RUST_BOARD_CASES: &[RustBoardCase] = &[
-    RustBoardCase {
-        board: "qemu-riscv64",
-        package: "fstart-board-qemu-riscv64",
-        platform: Platform::Riscv64,
-        feature: "riscv64",
-        driver_feature: "ns16550",
-        root_device: "uart0",
-        device_count: 1,
-        board_config: fstart_board_qemu_riscv64::board_config,
-        build_info: fstart_board_qemu_riscv64::build_info,
-    },
-    RustBoardCase {
-        board: "qemu-aarch64",
-        package: "fstart-board-qemu-aarch64",
-        platform: Platform::Aarch64,
-        feature: "aarch64",
-        driver_feature: "pl011",
-        root_device: "uart0",
-        device_count: 1,
-        board_config: fstart_board_qemu_aarch64::board_config,
-        build_info: fstart_board_qemu_aarch64::build_info,
-    },
-    RustBoardCase {
-        board: "foxconn-d41s",
-        package: "fstart-board-foxconn-d41s",
-        platform: Platform::X86_64,
-        feature: "x86_64",
-        driver_feature: "intel-pineview",
-        root_device: "northbridge",
-        device_count: 10,
-        board_config: fstart_board_foxconn_d41s::board_config,
-        build_info: fstart_board_foxconn_d41s::build_info,
-    },
-    RustBoardCase {
-        board: "lenovo-x61",
-        package: "fstart-board-lenovo-x61",
-        platform: Platform::X86_64,
-        feature: "x86_64",
-        driver_feature: "intel-gm965",
-        root_device: "northbridge",
-        device_count: 14,
-        board_config: fstart_board_lenovo_x61::board_config,
-        build_info: fstart_board_lenovo_x61::build_info,
-    },
-    RustBoardCase {
-        board: "foxconn-d41s-uefi",
-        package: "fstart-board-foxconn-d41s-uefi",
-        platform: Platform::X86_64,
-        feature: "x86_64",
-        driver_feature: "intel-pineview",
-        root_device: "northbridge",
-        device_count: 10,
-        board_config: fstart_board_foxconn_d41s_uefi::board_config,
-        build_info: fstart_board_foxconn_d41s_uefi::build_info,
-    },
-];
+const RUST_BOARD_CASES: &[RustBoardCase] = &[RustBoardCase {
+    board: "lenovo-x61",
+    package: "fstart-board-lenovo-x61",
+    platform: Platform::X86_64,
+    feature: "x86_64",
+    driver_feature: "intel-gm965",
+    root_device: "northbridge",
+    device_count: 14,
+    board_config: fstart_board_lenovo_x61::board_config,
+    build_info: fstart_board_lenovo_x61::build_info,
+}];
 
 #[test]
 fn rust_boards_parse_from_direct_rust_metadata() {
@@ -116,15 +70,6 @@ fn rust_boards_parse_from_direct_rust_metadata() {
                     assert_device_role(&parsed.config, "dock_superio", DeviceRole::Runtime, false);
                     assert_device_role(&parsed.config, "dlpc_superio", DeviceRole::Runtime, true);
                     assert_device_role(&parsed.config, "ck505", DeviceRole::Runtime, false);
-                }
-                if case.board.starts_with("foxconn-d41s") {
-                    assert_device_role(&parsed.config, "pcie0", DeviceRole::PciBridge, true);
-                    assert_device_role(&parsed.config, "pcie1", DeviceRole::PciBridge, true);
-                    assert_device_role(&parsed.config, "pcie2", DeviceRole::PciBridge, false);
-                    assert_device_role(&parsed.config, "pcie3", DeviceRole::PciBridge, false);
-                    assert_device_role(&parsed.config, "lpc", DeviceRole::LpcBus, true);
-                    assert_device_role(&parsed.config, "superio", DeviceRole::Runtime, true);
-                    assert_device_role(&parsed.config, "smbus", DeviceRole::SmBus, true);
                 }
             }
         })

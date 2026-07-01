@@ -15,29 +15,4 @@ syn = { version = "2", features = ["full"] }
 prettyplease = "0.2"
 
 [dev-dependencies]
-acpi_tables = "0.2"
-fstart-acpi = { workspace = true, features = ["x86"] }
-fstart-acpi-macros = { path = "../fstart-acpi-macros" }
-fstart-driver-intel-ich7 = { workspace = true, features = ["acpi"] }
-fstart-driver-intel-pineview = { workspace = true, features = ["acpi"] }
-fstart-driver-ns16550 = { workspace = true }
-fstart-driver-pl011 = { workspace = true }
-fstart-driver-designware-i2c = { workspace = true }
-fstart-board-qemu-riscv64 = { path = "../../boards/qemu-riscv64" }
-fstart-board-qemu-riscv64-multi = { path = "../../boards/qemu-riscv64-multi" }
-fstart-board-qemu-aarch64 = { path = "../../boards/qemu-aarch64" }
-fstart-board-qemu-aarch64-multi = { path = "../../boards/qemu-aarch64-multi" }
-fstart-board-qemu-aarch64-uefi = { path = "../../boards/qemu-aarch64-uefi" }
-fstart-board-qemu-armv7 = { path = "../../boards/qemu-armv7" }
-fstart-board-qemu-sbsa = { path = "../../boards/qemu-sbsa" }
-fstart-board-qemu-q35 = { path = "../../boards/qemu-q35" }
-fstart-board-qemu-q35-uefi = { path = "../../boards/qemu-q35-uefi" }
-fstart-board-bananapi-m1 = { path = "../../boards/bananapi-m1" }
-fstart-board-orangepi-r1 = { path = "../../boards/orangepi-r1" }
-fstart-board-orangepi-pc2 = { path = "../../boards/orangepi-pc2" }
-fstart-board-licheerv-dock = { path = "../../boards/licheerv-dock" }
-fstart-board-sifive-unmatched = { path = "../../boards/sifive-unmatched" }
-fstart-board-sifive-unmatched-hw = { path = "../../boards/sifive-unmatched-hw" }
-fstart-board-foxconn-d41s = { path = "../../boards/foxconn-d41s" }
-fstart-board-foxconn-d41s-uefi = { path = "../../boards/foxconn-d41s-uefi" }
 fstart-board-lenovo-x61 = { path = "../../boards/lenovo-x61" }

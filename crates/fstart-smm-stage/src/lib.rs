@@ -6,10 +6,6 @@ extern crate fstart_alloc;
 #[cfg(target_os = "none")]
 use core::panic::PanicInfo;
 
-#[cfg(smm_platform = "pineview-ich7")]
-use fstart_driver_intel_ich7::smm::Ich7SmmHandler;
-#[cfg(smm_platform = "qemu-q35")]
-use fstart_driver_intel_ich8::smm::Ich8SmmHandler;
 #[cfg(smm_platform = "lenovo-x61")]
 use fstart_driver_intel_ich8::smm::Ich8SmmHandler;
 use fstart_smm_runtime::{
@@ -67,19 +63,10 @@ pub unsafe extern "C" fn fstart_smm_handler(params: *mut SmmEntryParams) {
     }
 }
 
-#[cfg(smm_platform = "pineview-ich7")]
-unsafe fn dispatch_intel_ich(ctx: &mut SmmContext<'_>) {
-    Ich7SmmHandler::<NoBoardSmmHandler>::handle(ctx);
-}
-
-#[cfg(smm_platform = "qemu-q35")]
-unsafe fn dispatch_intel_ich(ctx: &mut SmmContext<'_>) {
-    Ich8SmmHandler::<NoBoardSmmHandler>::handle(ctx);
-}
-
 #[cfg(smm_platform = "lenovo-x61")]
 unsafe fn dispatch_intel_ich(ctx: &mut SmmContext<'_>) {
-    Ich8SmmHandler::<NoBoardSmmHandler>::handle(ctx);
+    // SAFETY: caller guarantees SMM entry context per SmmHandler::handle contract.
+    unsafe { Ich8SmmHandler::<NoBoardSmmHandler>::handle(ctx) };
 }
 
 #[cfg(target_os = "none")]

@@ -10,7 +10,6 @@
     feature = "acpi",
     feature = "ffs",
     feature = "pci-ecam",
-    feature = "q35-hostbridge",
     feature = "crabefi"
 ))]
 extern crate fstart_alloc;

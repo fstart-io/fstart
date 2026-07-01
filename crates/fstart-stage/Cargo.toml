@@ -6,51 +6,14 @@ license.workspace = true
 [features]
 default = []
 # Platform selection (exactly one must be enabled)
-riscv64 = ["dep:fstart-platform-riscv64"]
-aarch64 = ["dep:fstart-platform-aarch64"]
-armv7 = ["dep:fstart-platform-armv7"]
 x86_64 = ["dep:fstart-platform-x86_64", "dep:fstart-pio"]
-# Allwinner sunxi support — adds fstart-soc-sunxi and enables the sunxi
-# entry point on platforms that support it (AArch64 RMR switch for H5/A64,
-# ARMv7 eGON boot for A20/H3, RISC-V eGON boot for D1).  Driven by
-# `soc_image_format: AllwinnerEgon` in board metadata, not by platform —
-# sunxi boards exist on multiple ISAs.
-sunxi = [
-  "dep:fstart-soc-sunxi",
-  "fstart-platform-aarch64?/sunxi",
-  "fstart-platform-armv7?/sunxi",
-  "fstart-platform-riscv64?/sunxi",
-]
-# AArch64 EL2/TF-A ROM-to-RAM entry point. Derived from memory layout.
-aarch64-el2-relocate-entry = [
-  "fstart-platform-aarch64?/aarch64-el2-relocate-entry",
-]
 # Driver selection (enabled based on Rust board metadata)
 ns16550 = ["dep:fstart-driver-ns16550"]
-pl011 = ["dep:fstart-driver-pl011"]
-designware-i2c = ["dep:fstart-driver-designware-i2c"]
-sunxi-a20-ccu = ["dep:fstart-driver-sunxi-ccu"]
-sunxi-a20-dramc = ["dep:fstart-driver-sunxi-a20-dramc"]
-sunxi-mmc = ["dep:fstart-driver-sunxi-mmc"]
-sunxi-spi = ["dep:fstart-driver-sunxi-spi"]
-sunxi-h3-ccu = ["dep:fstart-driver-sunxi-h3-ccu"]
-sunxi-h3-dramc = ["dep:fstart-driver-sunxi-h3-dramc"]
-sunxi-d1-ccu = ["dep:fstart-driver-sunxi-d1-ccu"]
-sunxi-d1-dramc = ["dep:fstart-driver-sunxi-d1-dramc"]
-sifive-uart = ["dep:fstart-driver-sifive-uart"]
-fu740-prci = ["dep:fstart-driver-fu740-prci"]
-fu740-ddr = ["dep:fstart-driver-fu740-ddr"]
 pci-ecam = ["dep:fstart-driver-pci-ecam", "dep:fstart-alloc"]
 
-q35-hostbridge = ["dep:fstart-driver-q35-hostbridge", "dep:fstart-alloc"]
-bochs-display = ["dep:fstart-driver-bochs-display"]
-qemu-fw-cfg = ["dep:fstart-driver-qemu-fw-cfg"]
-# x86 chipset drivers (Atom D41x / ICH7 / IT8721F / CK505)
-ite8721f = ["dep:fstart-driver-ite8721f", "dep:fstart-superio"]
+# x86 chipset drivers
 nsc-pc87382 = ["dep:fstart-driver-nsc-pc87382", "dep:fstart-superio"]
 nsc-pc87392 = ["dep:fstart-driver-nsc-pc87392", "dep:fstart-superio"]
-intel-pineview = ["dep:fstart-driver-intel-pineview"]
-intel-ich7 = ["dep:fstart-driver-intel-ich7", "dep:fstart-gpio-ich"]
 intel-gm965 = ["dep:fstart-driver-intel-gm965"]
 intel-ich8 = ["dep:fstart-driver-intel-ich8", "dep:fstart-gpio-ich"]
 i2c-ck505 = ["dep:fstart-driver-i2c-ck505"]
@@ -64,7 +27,6 @@ mp = ["dep:fstart-mp"]
 intel-cpu = ["mp", "dep:fstart-cpu-intel"]
 cpu-generic-x86 = ["mp"]
 cpu-intel-core2 = ["intel-cpu"]
-cpu-intel-pineview = ["intel-cpu"]
 # x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
 x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
 # x86_64: build page tables at runtime in writable RAM. Enabled only for
@@ -109,16 +71,10 @@ handoff = ["fstart-capabilities/handoff"]
 acpi = [
   "dep:fstart-alloc",
   "dep:fstart-acpi",
-  "fstart-acpi?/arm",
   "fstart-acpi?/x86",
-  "fstart-driver-pl011?/acpi",
-  "fstart-driver-intel-pineview?/acpi",
-  "fstart-driver-intel-pineview?/ffs-vbt",
-  "fstart-driver-intel-ich7?/acpi",
   "fstart-driver-intel-gm965?/acpi",
   "fstart-driver-intel-gm965?/ffs-vbt",
   "fstart-driver-intel-ich8?/acpi",
-  "fstart-driver-ite8721f?/acpi",
   "fstart-driver-nsc-pc87382?/acpi",
   "fstart-driver-nsc-pc87392?/acpi",
   "fstart-capabilities/acpi",
@@ -172,37 +128,14 @@ fstart-pio = { workspace = true, optional = true }
 heapless = { workspace = true }
 
 # Platform crates (exactly one enabled via feature)
-fstart-platform-riscv64 = { workspace = true, optional = true }
-fstart-platform-aarch64 = { workspace = true, optional = true }
-fstart-platform-armv7 = { workspace = true, optional = true }
 fstart-platform-x86_64 = { workspace = true, optional = true }
-fstart-soc-sunxi = { workspace = true, optional = true }
 
 # Individual driver crates (enabled via features from Rust board metadata)
 fstart-driver-ns16550 = { workspace = true, optional = true }
-fstart-driver-pl011 = { workspace = true, optional = true }
-fstart-driver-designware-i2c = { workspace = true, optional = true }
-fstart-driver-sunxi-ccu = { workspace = true, optional = true }
-fstart-driver-sunxi-a20-dramc = { workspace = true, optional = true }
-fstart-driver-sunxi-mmc = { workspace = true, optional = true }
-fstart-driver-sunxi-spi = { workspace = true, optional = true }
-fstart-driver-sunxi-h3-ccu = { workspace = true, optional = true }
-fstart-driver-sunxi-h3-dramc = { workspace = true, optional = true }
-fstart-driver-sunxi-d1-ccu = { workspace = true, optional = true }
-fstart-driver-sunxi-d1-dramc = { workspace = true, optional = true }
-fstart-driver-sifive-uart = { workspace = true, optional = true }
-fstart-driver-fu740-prci = { workspace = true, optional = true }
-fstart-driver-fu740-ddr = { workspace = true, optional = true }
 fstart-driver-pci-ecam = { workspace = true, optional = true }
-fstart-driver-bochs-display = { workspace = true, optional = true }
-fstart-driver-qemu-fw-cfg = { workspace = true, optional = true }
-fstart-driver-q35-hostbridge = { workspace = true, optional = true }
-fstart-driver-ite8721f = { workspace = true, optional = true }
 fstart-superio = { workspace = true, optional = true }
 fstart-driver-nsc-pc87382 = { workspace = true, optional = true }
 fstart-driver-nsc-pc87392 = { workspace = true, optional = true }
-fstart-driver-intel-pineview = { workspace = true, optional = true }
-fstart-driver-intel-ich7 = { workspace = true, optional = true }
 fstart-driver-intel-gm965 = { workspace = true, optional = true }
 fstart-driver-intel-ich8 = { workspace = true, optional = true }
 fstart-driver-i2c-ck505 = { workspace = true, optional = true }

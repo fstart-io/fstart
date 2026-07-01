@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn structural_nodes_do_not_gain_pseudo_services() {
-        let mut config = fstart_board_qemu_riscv64::board_config();
+        let mut config = fstart_board_lenovo_x61::board_config();
         config
             .devices
             .push(fstart_types::DeviceConfig {
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn accepts_acpi_only_side_table() {
         let parsed =
-            load_parsed_board_metadata_only(fstart_board_qemu_riscv64::board_config(), Vec::new())
+            load_parsed_board_metadata_only(fstart_board_lenovo_x61::board_config(), Vec::new())
                 .unwrap();
         assert!(parsed.acpi_only_devices.is_empty());
     }

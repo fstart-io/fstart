@@ -10,6 +10,5 @@ test = false
 
 [dependencies]
 fstart-alloc = { workspace = true }
-fstart-driver-intel-ich7 = { workspace = true }
 fstart-driver-intel-ich8 = { workspace = true }
 fstart-smm-runtime = { workspace = true }
