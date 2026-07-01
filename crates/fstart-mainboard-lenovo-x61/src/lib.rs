@@ -14,10 +14,7 @@ extern crate alloc;
 pub mod smm;
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{
-    FinalizeInit, HardwareInit, InitContext, Mainboard, PostDramInit, PreConsoleInit, ServiceError,
-    Southbridge,
-};
+use fstart_services::{HardwareInit, InitContext, ServiceError, Southbridge};
 use serde::{Deserialize, Serialize};
 
 use fstart_driver_i2c_ck505::I2cCk505Config;
@@ -119,14 +116,13 @@ where
     /// Run DRAM-backed X61 southbridge and mainboard hook initialization.
     pub fn ramstage_init(&mut self) -> Result<(), ServiceError> {
         self.southbridge.ramstage_init()?;
-        self.mainboard
-            .ramstage_init_with_southbridge(&mut self.southbridge)
+        dock::post_raminit_setup(&mut self.southbridge);
+        Ok(())
     }
 
     /// Run X61 mainboard and southbridge payload-handoff finalization.
     pub fn finalize(&mut self) -> Result<(), ServiceError> {
-        self.mainboard
-            .finalize_with_southbridge(&mut self.southbridge)?;
+        quiesce_i8042_for_os();
         self.southbridge.finalize()
     }
 }
@@ -137,36 +133,21 @@ where
 {
     fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         self.southbridge.pre_console(ctx)?;
-        self.mainboard
-            .pre_console_init_with_southbridge(&mut self.southbridge)
-    }
-
-    fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.southbridge.post_console(ctx)
-    }
-}
-
-impl PreConsoleInit for LenovoX61Mainboard {
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
         // dock connection failures are non-fatal before the console exists.
         // When the dock-present GPIO is asserted, coreboot still attempts the
         // PC87392 COM1 enable after dock_connect(); do the same so a marginal
         // delay/timeout does not suppress all serial output.
+        let _ = dock::dlpc_init();
+        if self.mainboard.config.dock_early_console && dock::dock_present(&self.southbridge) {
+            let _ = dock::dock_connect();
+            dock::early_superio_config();
+        }
         Ok(())
     }
-}
 
-impl PostDramInit for LenovoX61Mainboard {
-    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-}
-
-impl FinalizeInit for LenovoX61Mainboard {
-    fn finalize_init(&mut self) -> Result<(), ServiceError> {
-        quiesce_i8042_for_os();
-        Ok(())
+    fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.southbridge.post_console(ctx)
     }
 }
 
@@ -215,40 +196,6 @@ unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
         let _ = fstart_pio::inb(data_port);
     }
     false
-}
-
-impl Mainboard for LenovoX61Mainboard {
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        PreConsoleInit::pre_console_init(self)
-    }
-
-    fn pre_console_init_with_southbridge(
-        &mut self,
-        southbridge: &mut dyn fstart_services::Southbridge,
-    ) -> Result<(), ServiceError> {
-        let _ = dock::dlpc_init();
-        if self.config.dock_early_console && dock::dock_present(southbridge) {
-            let _ = dock::dock_connect();
-            dock::early_superio_config();
-        }
-        Ok(())
-    }
-
-    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
-        PostDramInit::post_dram_init(self)
-    }
-
-    fn ramstage_init_with_southbridge(
-        &mut self,
-        southbridge: &mut dyn fstart_services::Southbridge,
-    ) -> Result<(), ServiceError> {
-        dock::post_raminit_setup(southbridge);
-        Ok(())
-    }
-
-    fn finalize(&mut self) -> Result<(), ServiceError> {
-        FinalizeInit::finalize_init(self)
-    }
 }
 
 /// X61 dock and DLPC helpers ported from coreboot `mainboard/lenovo/x61/dock.c`.

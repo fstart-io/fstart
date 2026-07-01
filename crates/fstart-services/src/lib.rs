@@ -29,7 +29,6 @@ pub mod gpio;
 pub mod i2c;
 pub mod init;
 pub mod lpc;
-pub mod mainboard;
 pub mod memory_controller;
 pub mod memory_detect;
 pub mod network;
@@ -62,7 +61,6 @@ pub use init::{
     StageLocalInit,
 };
 pub use lpc::LpcBus;
-pub use mainboard::Mainboard;
 pub use memory_controller::MemoryController;
 pub use network::Network;
 #[cfg(feature = "pci")]
