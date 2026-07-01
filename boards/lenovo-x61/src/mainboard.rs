@@ -13,6 +13,7 @@ use fstart_services::device::{Device, DeviceError};
 use fstart_services::{HardwareInit, InitContext, ServiceError, Southbridge};
 use serde::{Deserialize, Serialize};
 
+use fstart_platform_intel_gm965_ich8::Gm965Ich8Southbridge;
 use fstart_types::hstr;
 
 /// Lenovo ThinkPad X61 mainboard configuration.
@@ -138,6 +139,19 @@ where
 
     fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
         self.southbridge.post_console(ctx)
+    }
+}
+
+impl<S> Gm965Ich8Southbridge for LenovoX61Southbridge<S>
+where
+    S: HardwareInit + Southbridge,
+{
+    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
+        LenovoX61Southbridge::ramstage_init(self)
+    }
+
+    fn finalize(&mut self) -> Result<(), ServiceError> {
+        LenovoX61Southbridge::finalize(self)
     }
 }
 

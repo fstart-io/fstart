@@ -6,8 +6,8 @@
 extern crate fstart_platform_x86_64 as fstart_platform;
 extern crate ufmt;
 
+mod board;
 mod bootblock;
-mod common;
 #[cfg(feature = "crabefi")]
 mod main_stage;
 

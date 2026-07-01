@@ -8,11 +8,18 @@
 
 #![no_std]
 
+#[cfg(feature = "recipe")]
+extern crate ufmt;
+
+#[cfg(feature = "recipe")]
+pub mod recipe;
+
 use fstart_board_meta::{PlatformAttachPoint, PlatformDeviceExtensions, PlatformTopology};
 use fstart_driver_intel_gm965 as gm965;
 use fstart_driver_intel_ich8 as ich8;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
+use fstart_services::{HardwareInit, ServiceError};
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
     board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec,
@@ -28,6 +35,10 @@ pub use fstart_driver_intel_ich8::{
     IdeConfig, IoTrapAccess, IoTrapConfig, LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode,
     LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
 };
+#[cfg(feature = "recipe")]
+pub use recipe::{
+    Gm965Ich8BootblockBoard, Gm965Ich8RamstageBoard, Gm965Ich8RamstageDevices, Gm965Ich8UefiBoard,
+};
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const ICH8_SOUTHBRIDGE_NODE: &str = "southbridge";
@@ -39,6 +50,15 @@ pub const GM965_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
 pub const GM965_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
 pub const GM965_NEXT_STAGE_NAME: &str = "ramstage";
 pub const ICH8_PMBASE: u32 = 0x0500;
+
+/// Southbridge behavior required by the reusable GM965/ICH8 ramstage recipe.
+pub trait Gm965Ich8Southbridge: HardwareInit {
+    /// Run DRAM-backed southbridge and board hook initialization.
+    fn ramstage_init(&mut self) -> Result<(), ServiceError>;
+
+    /// Run payload-handoff finalization.
+    fn finalize(&mut self) -> Result<(), ServiceError>;
+}
 
 /// Complete GM965 + ICH8 hardware config for a concrete mainboard.
 ///

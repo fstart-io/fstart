@@ -624,20 +624,14 @@ dependencies = [
  "fstart-board-lenovo-x61",
  "fstart-capabilities",
  "fstart-cpu-intel",
- "fstart-driver-i2c-ck505",
  "fstart-driver-intel-gm965",
  "fstart-driver-intel-ich8",
  "fstart-driver-ns16550",
- "fstart-driver-nsc-pc87382",
- "fstart-driver-nsc-pc87392",
- "fstart-log",
  "fstart-mp",
  "fstart-platform-intel-gm965-ich8",
  "fstart-platform-x86_64",
  "fstart-services",
  "fstart-stage",
- "fstart-stage-runtime",
- "fstart-superio",
  "fstart-types",
  "ufmt",
 ]
@@ -1652,12 +1646,20 @@ name = "fstart-platform-intel-gm965-ich8"
 version = "0.1.0"
 dependencies = [
  "fstart-board-meta",
+ "fstart-capabilities",
  "fstart-driver-intel-gm965",
  "fstart-driver-intel-ich8",
+ "fstart-driver-ns16550",
  "fstart-gpio-ich",
  "fstart-hda",
+ "fstart-log",
+ "fstart-platform-x86_64",
+ "fstart-services",
+ "fstart-stage",
+ "fstart-stage-runtime",
  "fstart-types",
  "heapless",
+ "ufmt",
 ]
 
 [[package]]

@@ -48,20 +48,14 @@ flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
 
 [dependencies]
 fstart-board-lenovo-x61 = { path = ".." }
-fstart-platform-intel-gm965-ich8 = { workspace = true }
+fstart-platform-intel-gm965-ich8 = { workspace = true, features = ["recipe"] }
 fstart-stage = { workspace = true }
-fstart-stage-runtime = { workspace = true }
 fstart-services = { workspace = true }
 fstart-capabilities = { workspace = true }
-fstart-log = { workspace = true }
 fstart-platform-x86_64 = { workspace = true }
 fstart-driver-ns16550 = { workspace = true, features = ["pio"] }
 fstart-driver-intel-gm965 = { workspace = true }
 fstart-driver-intel-ich8 = { workspace = true }
-fstart-driver-i2c-ck505 = { workspace = true }
-fstart-driver-nsc-pc87382 = { workspace = true }
-fstart-driver-nsc-pc87392 = { workspace = true }
-fstart-superio = { workspace = true }
 fstart-types = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"] }
 fstart-mp = { workspace = true }

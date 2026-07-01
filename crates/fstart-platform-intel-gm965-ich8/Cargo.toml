@@ -5,11 +5,34 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+recipe = [
+  "dep:fstart-capabilities",
+  "dep:fstart-driver-ns16550",
+  "dep:fstart-log",
+  "dep:fstart-platform-x86_64",
+  "dep:fstart-stage",
+  "dep:fstart-stage-runtime",
+  "dep:ufmt",
+  "fstart-services/pci",
+  "fstart-stage/crabefi",
+  "fstart-stage-runtime/fixed-flow",
+]
+
 [dependencies]
 fstart-types = { workspace = true }
 fstart-board-meta = { workspace = true }
 fstart-driver-intel-gm965 = { workspace = true, features = ["ffs-vbt"] }
 fstart-driver-intel-ich8 = { workspace = true }
+fstart-driver-ns16550 = { workspace = true, optional = true }
 fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }
+fstart-services = { workspace = true }
+fstart-capabilities = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-platform-x86_64 = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-stage-runtime = { workspace = true, optional = true }
 heapless = { workspace = true }
+ufmt = { workspace = true, optional = true }
