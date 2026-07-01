@@ -1,4 +1,4 @@
-//! Shared Orange Pi PC2 stage policy and static driver configs.
+//! Orange Pi PC2 stage policy and static driver configs.
 
 use fstart_board_orangepi_pc2_facts as facts;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
@@ -75,11 +75,11 @@ impl SunxiFixedFlowBoard for SunxiBoard {
     }
 
     fn halt() -> ! {
-        crate::fstart_platform::halt()
+        fstart_platform_aarch64::halt()
     }
 
     fn jump_to_main(main_addr: u64, handoff_addr: usize) -> ! {
-        crate::fstart_platform::jump_to_with_handoff(main_addr, handoff_addr)
+        fstart_platform_aarch64::jump_to_with_handoff(main_addr, handoff_addr)
     }
 }
 
@@ -94,6 +94,6 @@ impl SunxiLinuxBoard for SunxiBoard {
     const FDT_RAM_FROM_HANDOFF: bool = true;
 
     fn boot_linux(params: &BootLinuxParams<'_>) -> ! {
-        crate::fstart_platform::boot_linux(params)
+        fstart_platform_aarch64::boot_linux(params)
     }
 }

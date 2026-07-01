@@ -1,5 +1,10 @@
 //! Host Rust board metadata for `qemu-armv7`.
 
+#![cfg_attr(feature = "stage", no_std)]
+
+#[cfg(feature = "stage")]
+pub mod stage;
+
 use fstart_board_qemu_armv7_facts as facts;
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BootMedium,

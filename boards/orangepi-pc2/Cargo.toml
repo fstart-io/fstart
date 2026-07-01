@@ -9,8 +9,32 @@ publish = false
 board = "orangepi-pc2"
 platform = "aarch64"
 target = "aarch64-unknown-none"
-stage-package = "fstart-board-orangepi-pc2-stage"
 stage-bin = "fstart-stage"
+stage-recipe = "sunxi-mmc-linux"
+
+[features]
+default = []
+stage = [
+  "dep:fstart-board-orangepi-pc2-facts",
+  "dep:fstart-stage",
+  "dep:fstart-services",
+  "dep:fstart-driver-ns16550",
+  "dep:fstart-driver-sunxi-mmc",
+  "dep:fstart-platform-aarch64",
+  "fstart-stage/sunxi",
+  "fstart-stage/ns16550",
+  "dep:fstart-driver-sunxi-h3-ccu",
+  "dep:fstart-driver-sunxi-h3-dramc",
+]
+ffs = ["stage", "fstart-stage/ffs"]
 
 [dependencies]
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
+fstart-board-orangepi-pc2-facts = { path = "facts", optional = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-driver-ns16550 = { workspace = true, optional = true }
+fstart-driver-sunxi-mmc = { workspace = true, optional = true }
+fstart-platform-aarch64 = { workspace = true, optional = true }
+fstart-driver-sunxi-h3-ccu = { workspace = true, optional = true }
+fstart-driver-sunxi-h3-dramc = { workspace = true, optional = true }

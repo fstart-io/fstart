@@ -9,8 +9,32 @@ publish = false
 board = "licheerv-dock"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-stage-package = "fstart-board-licheerv-dock-stage"
 stage-bin = "fstart-stage"
+stage-recipe = "sunxi-mmc-linux"
+
+[features]
+default = []
+stage = [
+  "dep:fstart-board-licheerv-dock-facts",
+  "dep:fstart-stage",
+  "dep:fstart-services",
+  "dep:fstart-driver-ns16550",
+  "dep:fstart-driver-sunxi-mmc",
+  "dep:fstart-platform-riscv64",
+  "fstart-stage/sunxi",
+  "fstart-stage/ns16550",
+  "dep:fstart-driver-sunxi-d1-ccu",
+  "dep:fstart-driver-sunxi-d1-dramc",
+]
+ffs = ["stage", "fstart-stage/ffs"]
 
 [dependencies]
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
+fstart-board-licheerv-dock-facts = { path = "facts", optional = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-driver-ns16550 = { workspace = true, optional = true }
+fstart-driver-sunxi-mmc = { workspace = true, optional = true }
+fstart-platform-riscv64 = { workspace = true, optional = true }
+fstart-driver-sunxi-d1-ccu = { workspace = true, optional = true }
+fstart-driver-sunxi-d1-dramc = { workspace = true, optional = true }

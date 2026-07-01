@@ -793,6 +793,125 @@ impl MemoryMappedLinuxBoot {
     }
 }
 
+/// Board policy consumed by the generic QEMU virt LinuxBoot recipe.
+#[cfg(all(feature = "ffs", feature = "fdt"))]
+pub trait QemuVirtLinuxBoard: Sized {
+    type Console: Device + Console + HardwareInit;
+
+    const UART0_NODE: &'static str;
+    const UART0_DRIVER: &'static str;
+    const FLASH_BASE: u64;
+    const FLASH_SIZE: usize;
+    const FDT_ADDR: u64;
+    const BOOTARGS: &'static str;
+    const RAM_BASE: u64;
+    const RAM_SIZE: u64;
+    const KERNEL_LOAD_ADDR: u64;
+    const FIRMWARE_LOAD_ADDR: u64;
+    const LOAD_FIRMWARE: bool;
+    const FIRMWARE_NAME: &'static str;
+
+    fn console_config() -> <Self::Console as Device>::Config;
+    fn source_dtb_addr() -> u64;
+    fn boot_hart_id() -> u64;
+    fn halt() -> !;
+    fn boot_linux(params: &BootLinuxParams<'_>) -> !;
+}
+
+/// Generic fixed-flow monolithic stage for QEMU virt boards that boot Linux from FFS.
+#[cfg(all(feature = "ffs", feature = "fdt"))]
+pub struct QemuVirtLinuxBoardAdapter<B: QemuVirtLinuxBoard> {
+    devices: StaticConsole<B::Console>,
+    boot: MemoryMappedLinuxBoot,
+}
+
+#[cfg(all(feature = "ffs", feature = "fdt"))]
+impl<B> fstart_stage_runtime::StaticBoard for QemuVirtLinuxBoardAdapter<B>
+where
+    B: QemuVirtLinuxBoard,
+{
+    type Devices = StaticConsole<B::Console>;
+
+    fn new() -> Result<Self, ServiceError> {
+        Ok(Self {
+            devices: StaticConsole::new(B::console_config()),
+            boot: MemoryMappedLinuxBoot::new(B::FLASH_BASE, B::FLASH_SIZE, B::source_dtb_addr()),
+        })
+    }
+
+    fn devices_mut(&mut self) -> &mut Self::Devices {
+        &mut self.devices
+    }
+
+    fn halt() -> ! {
+        B::halt()
+    }
+
+    fn install_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        console_ready(B::UART0_NODE, B::UART0_DRIVER);
+        Ok(())
+    }
+
+    fn mount_firmware_volume(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.boot.mount()
+    }
+
+    fn verify_firmware_volume(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.boot.verify()
+    }
+
+    fn load_payload(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        if B::LOAD_FIRMWARE {
+            self.boot.load_firmware_and_kernel()
+        } else {
+            self.boot.load_kernel()
+        }
+    }
+
+    fn finalize_handoff(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.boot
+            .prepare_fdt(B::FDT_ADDR, B::BOOTARGS, B::RAM_BASE, B::RAM_SIZE)
+    }
+
+    fn boot_payload(self) -> ! {
+        if !self.boot.kernel_loaded() || (B::LOAD_FIRMWARE && !self.boot.firmware_loaded()) {
+            if B::LOAD_FIRMWARE {
+                fstart_log::error!(
+                    "payload handoff requested before {}/kernel load",
+                    B::FIRMWARE_NAME,
+                );
+            } else {
+                fstart_log::error!("payload handoff requested before kernel load");
+            }
+            B::halt();
+        }
+
+        if B::LOAD_FIRMWARE {
+            fstart_log::info!(
+                "booting {} at {:#x}, kernel at {:#x}, dtb at {:#x}",
+                B::FIRMWARE_NAME,
+                B::FIRMWARE_LOAD_ADDR,
+                B::KERNEL_LOAD_ADDR,
+                self.boot.dtb_addr(),
+            );
+        } else {
+            fstart_log::info!(
+                "booting ARM Linux at {:#x}, dtb at {:#x}",
+                B::KERNEL_LOAD_ADDR,
+                self.boot.dtb_addr(),
+            );
+        }
+
+        let params = self.boot.boot_params(
+            B::KERNEL_LOAD_ADDR,
+            B::FIRMWARE_LOAD_ADDR,
+            B::boot_hart_id(),
+            B::BOOTARGS,
+        );
+        B::boot_linux(&params)
+    }
+}
+
 #[cfg(all(feature = "sunxi", feature = "ns16550", feature = "ffs"))]
 static SUNXI_HANDOFF_PTR: AtomicUsize = AtomicUsize::new(0);
 

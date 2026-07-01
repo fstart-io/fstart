@@ -9,9 +9,23 @@ publish = false
 board = "qemu-armv7"
 platform = "armv7"
 target = "armv7a-none-eabi"
-stage-package = "fstart-board-qemu-armv7-stage"
 stage-bin = "fstart-stage"
+stage-recipe = "qemu-virt-linux"
+[features]
+default = []
+stage = [
+  "dep:fstart-stage",
+  "dep:fstart-services",
+  "dep:fstart-platform-armv7",
+  "dep:fstart-driver-pl011",
+  "fstart-stage/ffs",
+  "fstart-stage/fdt",
+]
 
 [dependencies]
 fstart-board-qemu-armv7-facts = { path = "facts" }
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-platform-armv7 = { workspace = true, optional = true }
+fstart-driver-pl011 = { workspace = true, optional = true }

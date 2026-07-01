@@ -1,9 +1,9 @@
-//! Shared Banana Pi M1 stage policy and static driver configs.
+//! Orange Pi R1 stage policy and static driver configs.
 
-use fstart_board_bananapi_m1_facts as facts;
+use fstart_board_orangepi_r1_facts as facts;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
-use fstart_driver_sunxi_a20_dramc::{SunxiA20Dramc, SunxiA20DramcConfig};
-use fstart_driver_sunxi_ccu::{SunxiA20Ccu, SunxiA20CcuConfig};
+use fstart_driver_sunxi_h3_ccu::{SunxiH3Ccu, SunxiH3CcuConfig};
+use fstart_driver_sunxi_h3_dramc::{SunxiDramcVariant, SunxiH3Dramc, SunxiH3DramcConfig};
 use fstart_driver_sunxi_mmc::{SunxiMmc, SunxiMmcConfig};
 #[cfg(feature = "ffs")]
 use fstart_services::boot::BootLinuxParams;
@@ -11,7 +11,7 @@ use fstart_stage::fixed_helpers::SunxiFixedFlowBoard;
 #[cfg(feature = "ffs")]
 use fstart_stage::fixed_helpers::SunxiLinuxBoard;
 
-pub static CCU_CONFIG: SunxiA20CcuConfig = SunxiA20CcuConfig {
+pub static CCU_CONFIG: SunxiH3CcuConfig = SunxiH3CcuConfig {
     ccu_base: facts::CCU_BASE,
     pio_base: facts::PIO_BASE,
     uart_index: 0,
@@ -27,27 +27,16 @@ pub const UART0_CONFIG: Ns16550Config = Ns16550Config {
     baud_rate: facts::UART0_BAUD_RATE,
 };
 
-pub static DRAMC_CONFIG: SunxiA20DramcConfig = SunxiA20DramcConfig {
+pub static DRAMC_CONFIG: SunxiH3DramcConfig = SunxiH3DramcConfig {
     dramc_base: facts::DRAMC_BASE,
     ccu_base: facts::CCU_BASE,
-    clock: 432,
-    mbus_clock: 0,
-    zq: 123,
+    clock: 408,
+    zq: 3881979,
     odt_en: false,
-    cas: 6,
-    tpr0: 0x3092_6692,
-    tpr1: 0x1090,
-    tpr2: 0x0001_a0c8,
-    tpr3: 0,
-    tpr4: 0,
-    emr1: 4,
-    emr2: 0,
-    emr3: 0,
-    dqs_gating_delay: 0,
-    active_windowing: false,
+    variant: SunxiDramcVariant::H3,
 };
 
-pub static MMC0_CONFIG: SunxiMmcConfig = SunxiMmcConfig::Sun7iA20 {
+pub static MMC0_CONFIG: SunxiMmcConfig = SunxiMmcConfig::Sun8iH3 {
     base_addr: facts::MMC0_BASE,
     ccu_base: facts::CCU_BASE,
     pio_base: facts::PIO_BASE,
@@ -57,8 +46,8 @@ pub static MMC0_CONFIG: SunxiMmcConfig = SunxiMmcConfig::Sun7iA20 {
 pub struct SunxiBoard;
 
 impl SunxiFixedFlowBoard for SunxiBoard {
-    type Ccu = SunxiA20Ccu;
-    type Dramc = SunxiA20Dramc;
+    type Ccu = SunxiH3Ccu;
+    type Dramc = SunxiH3Dramc;
     type Mmc = SunxiMmc;
 
     const UART0_NODE: &'static str = facts::UART0_NODE;
@@ -86,11 +75,11 @@ impl SunxiFixedFlowBoard for SunxiBoard {
     }
 
     fn halt() -> ! {
-        crate::fstart_platform::halt()
+        fstart_platform_armv7::halt()
     }
 
     fn jump_to_main(main_addr: u64, handoff_addr: usize) -> ! {
-        crate::fstart_platform::jump_to_with_handoff(main_addr, handoff_addr)
+        fstart_platform_armv7::jump_to_with_handoff(main_addr, handoff_addr)
     }
 }
 
@@ -105,6 +94,6 @@ impl SunxiLinuxBoard for SunxiBoard {
     const FDT_RAM_FROM_HANDOFF: bool = false;
 
     fn boot_linux(params: &BootLinuxParams<'_>) -> ! {
-        crate::fstart_platform::boot_linux(params)
+        fstart_platform_armv7::boot_linux(params)
     }
 }

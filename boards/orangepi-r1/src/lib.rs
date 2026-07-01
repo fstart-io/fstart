@@ -1,5 +1,10 @@
 //! Rust board metadata for Xunlong Orange Pi R1.
 
+#![cfg_attr(feature = "stage", no_std)]
+
+#[cfg(feature = "stage")]
+pub mod stage;
+
 use fstart_types::{
     board_info_from_config, build_info_from_config, hstr, hvec, BoardConfig, BoardInfo, BuildInfo,
     Capability, Compression, DeviceTopology, DigestAlgorithm, FdtSource, MemoryMap, MemoryRegion,

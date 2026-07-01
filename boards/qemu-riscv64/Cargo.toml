@@ -9,9 +9,23 @@ publish = false
 board = "qemu-riscv64"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-stage-package = "fstart-board-qemu-riscv64-stage"
 stage-bin = "fstart-stage"
+stage-recipe = "qemu-virt-linux"
+[features]
+default = []
+stage = [
+  "dep:fstart-stage",
+  "dep:fstart-services",
+  "dep:fstart-platform-riscv64",
+  "dep:fstart-driver-ns16550",
+  "fstart-stage/ffs",
+  "fstart-stage/fdt",
+]
 
 [dependencies]
 fstart-board-qemu-riscv64-facts = { path = "facts" }
-fstart-types = { workspace = true, features = ["std"] }
+fstart-types = { workspace = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-services = { workspace = true, optional = true }
+fstart-platform-riscv64 = { workspace = true, optional = true }
+fstart-driver-ns16550 = { workspace = true, optional = true }

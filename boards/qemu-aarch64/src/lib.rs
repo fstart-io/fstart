@@ -4,9 +4,17 @@
 //! QEMU AArch64 `virt` defaults. Runtime driver wiring lives in the board-owned
 //! stage package.
 
+#![cfg_attr(feature = "stage", no_std)]
+
+#[cfg(feature = "stage")]
+pub mod stage;
+
 use fstart_board_qemu_aarch64_facts as facts;
+#[cfg(not(feature = "stage"))]
 use fstart_board_qemu_virt::QemuAarch64VirtConfig;
-use fstart_types::{BoardConfig, BoardInfo, BuildInfo, Platform};
+use fstart_types::Platform;
+#[cfg(not(feature = "stage"))]
+use fstart_types::{BoardConfig, BoardInfo, BuildInfo};
 
 /// Stable fstart board name.
 pub const BOARD_NAME: &str = facts::BOARD_NAME;
@@ -20,21 +28,25 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
+#[cfg(not(feature = "stage"))]
 fn config() -> QemuAarch64VirtConfig {
     QemuAarch64VirtConfig::new(BOARD_NAME, BOARD_PACKAGE)
 }
 
 /// Complete board facts for runtime hardware, stage policy, and packaging.
+#[cfg(not(feature = "stage"))]
 pub fn board_config() -> BoardConfig {
     config().board_config()
 }
 
 /// Runtime hardware facts for static typed board mode.
+#[cfg(not(feature = "stage"))]
 pub fn board_info() -> BoardInfo {
     config().board_info()
 }
 
 /// Host build/package facts for this board.
+#[cfg(not(feature = "stage"))]
 pub fn build_info() -> BuildInfo {
     config().build_info()
 }

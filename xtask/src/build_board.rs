@@ -377,11 +377,327 @@ fn stage_package_build(
 
     match recipe {
         "gm965-ich8-uefi" => write_gm965_ich8_stage_wrapper(workspace_root, board_manifest),
+        "sunxi-mmc-linux" => write_sunxi_mmc_linux_stage_wrapper(workspace_root, board_manifest),
+        "qemu-virt-linux" => write_qemu_virt_linux_stage_wrapper(workspace_root, board_manifest),
         other => Err(format!(
             "board '{}' selects unsupported stage-recipe '{other}'",
             board_manifest.board
         )),
     }
+}
+
+fn write_qemu_virt_linux_stage_wrapper(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+) -> Result<StagePackageBuild, String> {
+    let package_label = format!("fstart-selected-stage-{}", board_manifest.board);
+    let wrapper_dir = workspace_root
+        .join("target")
+        .join("fstart-build")
+        .join(&board_manifest.board)
+        .join("selected-stage");
+    let src_dir = wrapper_dir.join("src");
+    fs::create_dir_all(&src_dir)
+        .map_err(|e| format!("failed to create {}: {e}", src_dir.display()))?;
+
+    let cargo_toml =
+        selected_qemu_virt_linux_cargo_toml(workspace_root, board_manifest, &package_label);
+    write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
+    if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
+        write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
+    }
+    write_if_changed(&wrapper_dir.join("build.rs"), selected_sunxi_build_rs())?;
+    write_if_changed(&src_dir.join("main.rs"), selected_qemu_virt_linux_main_rs())?;
+
+    Ok(StagePackageBuild {
+        package_label,
+        manifest_path: Some(wrapper_dir.join("Cargo.toml")),
+    })
+}
+
+fn selected_qemu_virt_linux_cargo_toml(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+    package_label: &str,
+) -> String {
+    let board_path = path_for_toml(&board_manifest.dir);
+    let crate_path = |path: &str| path_for_toml(&workspace_root.join(path));
+
+    format!(
+        r#"[package]
+name = "{package_label}"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = []
+riscv64 = ["fstart-stage/riscv64", "dep:fstart-platform-riscv64"]
+aarch64 = ["fstart-stage/aarch64", "dep:fstart-platform-aarch64"]
+armv7 = ["fstart-stage/armv7", "dep:fstart-platform-armv7"]
+ns16550 = ["fstart-stage/ns16550"]
+pl011 = ["fstart-stage/pl011"]
+ffs = ["fstart-stage/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+fdt = ["fstart-stage/fdt"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+[dependencies]
+fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["stage"] }}
+fstart-stage = {{ path = "{stage_path}" }}
+fstart-types = {{ path = "{types_path}" }}
+fstart-platform-riscv64 = {{ path = "{riscv64_path}", optional = true }}
+fstart-platform-aarch64 = {{ path = "{aarch64_path}", optional = true }}
+fstart-platform-armv7 = {{ path = "{armv7_path}", optional = true }}
+ufmt = {{ version = "0.2", default-features = false }}
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+"#,
+        board_package = board_manifest.package,
+        stage_path = crate_path("crates/fstart-stage"),
+        types_path = crate_path("crates/fstart-types"),
+        riscv64_path = crate_path("crates/fstart-platform-riscv64"),
+        aarch64_path = crate_path("crates/fstart-platform-aarch64"),
+        armv7_path = crate_path("crates/fstart-platform-armv7"),
+    )
+}
+
+fn selected_qemu_virt_linux_main_rs() -> &'static str {
+    r#"//! Generated selected-board QEMU virt Linux stage wrapper.
+
+#![no_std]
+#![no_main]
+
+#[cfg(feature = "aarch64")]
+extern crate fstart_platform_aarch64 as fstart_platform;
+#[cfg(feature = "armv7")]
+extern crate fstart_platform_armv7 as fstart_platform;
+#[cfg(feature = "riscv64")]
+extern crate fstart_platform_riscv64 as fstart_platform;
+extern crate ufmt;
+
+type Board = fstart_board_selected::stage::Board;
+type StageBoard = fstart_stage::fixed_helpers::QemuVirtLinuxBoardAdapter<Board>;
+
+#[no_mangle]
+pub extern "Rust" fn fstart_main(_handoff_ptr: usize) -> ! {
+    fstart_stage::run_static_board::<StageBoard>()
+}
+
+#[used]
+#[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+"#
+}
+
+fn write_sunxi_mmc_linux_stage_wrapper(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+) -> Result<StagePackageBuild, String> {
+    let package_label = format!("fstart-selected-stage-{}", board_manifest.board);
+    let wrapper_dir = workspace_root
+        .join("target")
+        .join("fstart-build")
+        .join(&board_manifest.board)
+        .join("selected-stage");
+    let src_dir = wrapper_dir.join("src");
+    fs::create_dir_all(&src_dir)
+        .map_err(|e| format!("failed to create {}: {e}", src_dir.display()))?;
+
+    let cargo_toml =
+        selected_sunxi_mmc_linux_cargo_toml(workspace_root, board_manifest, &package_label);
+    write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
+    if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
+        write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
+    }
+    write_if_changed(&wrapper_dir.join("build.rs"), selected_sunxi_build_rs())?;
+    write_if_changed(&src_dir.join("main.rs"), selected_sunxi_mmc_linux_main_rs())?;
+
+    Ok(StagePackageBuild {
+        package_label,
+        manifest_path: Some(wrapper_dir.join("Cargo.toml")),
+    })
+}
+
+fn selected_sunxi_mmc_linux_cargo_toml(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+    package_label: &str,
+) -> String {
+    let board_path = path_for_toml(&board_manifest.dir);
+    let crate_path = |path: &str| path_for_toml(&workspace_root.join(path));
+
+    format!(
+        r#"[package]
+name = "{package_label}"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = []
+armv7 = ["fstart-stage/armv7", "dep:fstart-platform-armv7", "fstart-platform-armv7/sunxi"]
+aarch64 = ["fstart-stage/aarch64", "dep:fstart-platform-aarch64", "fstart-platform-aarch64/sunxi"]
+riscv64 = ["fstart-stage/riscv64", "dep:fstart-platform-riscv64", "fstart-platform-riscv64/sunxi"]
+sunxi = ["fstart-stage/sunxi"]
+ns16550 = ["fstart-stage/ns16550"]
+sunxi-a20-ccu = ["fstart-stage/sunxi-a20-ccu"]
+sunxi-a20-dramc = ["fstart-stage/sunxi-a20-dramc"]
+sunxi-h3-ccu = ["fstart-stage/sunxi-h3-ccu"]
+sunxi-h3-dramc = ["fstart-stage/sunxi-h3-dramc"]
+sunxi-d1-ccu = ["fstart-stage/sunxi-d1-ccu"]
+sunxi-d1-dramc = ["fstart-stage/sunxi-d1-dramc"]
+sunxi-mmc = ["fstart-stage/sunxi-mmc"]
+sunxi-spi = ["fstart-stage/sunxi-spi"]
+ffs = ["fstart-stage/ffs", "fstart-board-selected/ffs"]
+ed25519 = ["fstart-stage/ed25519"]
+sha2-digest = ["fstart-stage/sha2-digest"]
+sha3-digest = ["fstart-stage/sha3-digest"]
+lz4 = ["fstart-stage/lz4"]
+fdt = ["fstart-stage/fdt"]
+handoff = ["fstart-stage/handoff"]
+flow-profile-minimal = ["fstart-stage/flow-profile-minimal"]
+flow-profile-linuxboot = ["fstart-stage/flow-profile-linuxboot"]
+flow-profile-uefi = ["fstart-stage/flow-profile-uefi"]
+flow-profile-multistage = ["fstart-stage/flow-profile-multistage"]
+
+[dependencies]
+fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["stage"] }}
+fstart-stage = {{ path = "{stage_path}" }}
+fstart-types = {{ path = "{types_path}" }}
+fstart-soc-sunxi = {{ path = "{sunxi_path}" }}
+fstart-platform-armv7 = {{ path = "{armv7_path}", optional = true }}
+fstart-platform-aarch64 = {{ path = "{aarch64_path}", optional = true }}
+fstart-platform-riscv64 = {{ path = "{riscv64_path}", optional = true }}
+ufmt = {{ version = "0.2", default-features = false }}
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+"#,
+        board_package = board_manifest.package,
+        stage_path = crate_path("crates/fstart-stage"),
+        types_path = crate_path("crates/fstart-types"),
+        sunxi_path = crate_path("crates/fstart-soc-sunxi"),
+        armv7_path = crate_path("crates/fstart-platform-armv7"),
+        aarch64_path = crate_path("crates/fstart-platform-aarch64"),
+        riscv64_path = crate_path("crates/fstart-platform-riscv64"),
+    )
+}
+
+fn selected_sunxi_mmc_linux_main_rs() -> &'static str {
+    r##"//! Generated selected-board Sunxi MMC Linux stage wrapper.
+
+#![no_std]
+#![no_main]
+
+#[cfg(fstart_stage_bootblock)]
+use core::arch::global_asm;
+
+#[cfg(feature = "aarch64")]
+extern crate fstart_platform_aarch64 as fstart_platform;
+#[cfg(feature = "armv7")]
+extern crate fstart_platform_armv7 as fstart_platform;
+#[cfg(feature = "riscv64")]
+extern crate fstart_platform_riscv64 as fstart_platform;
+extern crate ufmt;
+
+#[cfg(all(fstart_stage_bootblock, feature = "armv7"))]
+global_asm!(
+    r#"
+    .section .head.text, "ax"
+    .global _head_jump
+    .arm
+_head_jump:
+    b _start
+"#
+);
+
+#[cfg(all(fstart_stage_bootblock, feature = "aarch64"))]
+global_asm!(
+    r#"
+    .section .head.text, "ax"
+    .global _head_jump
+_head_jump:
+    // ARM32 branch from eGON offset 0 to _start at offset 0x60.
+    .word 0xea000016
+"#
+);
+
+#[cfg(all(fstart_stage_bootblock, feature = "riscv64"))]
+global_asm!(
+    r#"
+    .section .head.text, "ax"
+    .global _head_jump
+_head_jump:
+    // Force a 32-bit RISC-V jump at eGON image offset 0. The D1 BROM
+    // expects the 96-byte header immediately after this first word.
+    .option push
+    .option norvc
+    j _start
+    .option pop
+"#
+);
+
+#[cfg(fstart_stage_bootblock)]
+#[used]
+#[cfg_attr(target_os = "none", link_section = ".head.egon")]
+static EGON_HEAD: fstart_soc_sunxi::EgonHead = fstart_soc_sunxi::EgonHead::new();
+
+type Board = fstart_board_selected::stage::SunxiBoard;
+type BootblockBoard = fstart_stage::fixed_helpers::SunxiBootblockBoard<Board>;
+#[cfg(feature = "ffs")]
+type MainBoard = fstart_stage::fixed_helpers::SunxiMainBoard<Board>;
+
+#[no_mangle]
+pub extern "Rust" fn fstart_main(_handoff_ptr: usize) -> ! {
+    match option_env!("FSTART_STAGE_NAME") {
+        Some("bootblock") => fstart_stage::run_static_board::<BootblockBoard>(),
+        #[cfg(feature = "ffs")]
+        Some("main") => {
+            fstart_stage::fixed_helpers::set_sunxi_handoff_ptr(_handoff_ptr);
+            fstart_stage::run_static_board::<MainBoard>()
+        }
+        _ => fstart_platform::halt(),
+    }
+}
+
+#[used]
+#[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+"##
+}
+
+fn selected_sunxi_build_rs() -> &'static str {
+    r#"use std::env;
+
+fn main() {
+    println!("cargo:rustc-check-cfg=cfg(fstart_stage_bootblock)");
+    println!("cargo:rerun-if-env-changed=FSTART_LINKER_SCRIPT");
+    println!("cargo:rerun-if-env-changed=FSTART_STAGE_NAME");
+
+    if let Ok(script) = env::var("FSTART_LINKER_SCRIPT") {
+        println!("cargo:rustc-link-arg-bin=fstart-stage=-T{script}");
+        println!("cargo:rerun-if-changed={script}");
+    }
+
+    if env::var("FSTART_STAGE_NAME").as_deref() == Ok("bootblock") {
+        println!("cargo:rustc-cfg=fstart_stage_bootblock");
+    }
+}
+"#
 }
 
 fn write_gm965_ich8_stage_wrapper(
