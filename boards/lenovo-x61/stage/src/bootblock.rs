@@ -4,54 +4,23 @@ use fstart_board_lenovo_x61 as board;
 use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::Ns16550;
-use fstart_mainboard_lenovo_x61::LenovoX61Mainboard;
+use fstart_mainboard_lenovo_x61::LenovoX61Southbridge;
 use fstart_platform_intel_gm965_ich8 as platform;
-use fstart_services::{
-    EarlyInit, HardwareInit, InitContext, Mainboard, MemoryController, PreConsoleInit, ServiceError,
-};
+use fstart_services::{InitContext, ServiceError};
 use fstart_stage::fixed_helpers::{console_ready, MemoryMappedFfs, StaticConsole};
 use fstart_stage_runtime::StaticBoard;
 
 use crate::common;
 
-pub struct BootblockDevices {
-    northbridge: IntelGm965,
-    southbridge: IntelIch8,
-    mainboard: LenovoX61Mainboard,
-    console: StaticConsole<Ns16550>,
-}
+type SouthbridgeDevices = LenovoX61Southbridge<IntelIch8>;
+type BootblockDevices = (IntelGm965, SouthbridgeDevices, StaticConsole<Ns16550>);
 
-impl BootblockDevices {
-    fn new() -> Result<Self, ServiceError> {
-        Ok(Self {
-            northbridge: common::new_gm965()?,
-            southbridge: common::new_ich8()?,
-            mainboard: common::new_mainboard()?,
-            console: StaticConsole::new(common::UART0_CONFIG),
-        })
-    }
-}
-
-impl HardwareInit for BootblockDevices {
-    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.northbridge.pre_console_init()?;
-        self.southbridge.pre_console_init()?;
-        self.mainboard
-            .pre_console_init_with_southbridge(&mut self.southbridge)
-    }
-
-    fn console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.console.console(ctx)
-    }
-
-    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.northbridge.early_init()?;
-        self.southbridge.early_init()
-    }
-
-    fn dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.northbridge.dram_init()
-    }
+fn new_bootblock_devices() -> Result<BootblockDevices, ServiceError> {
+    Ok((
+        common::new_gm965()?,
+        SouthbridgeDevices::new(common::new_ich8()?, common::new_mainboard()?),
+        StaticConsole::new(common::UART0_CONFIG),
+    ))
 }
 
 pub struct BootblockBoard {
@@ -66,7 +35,7 @@ impl StaticBoard for BootblockBoard {
     fn new() -> Result<Self, ServiceError> {
         let config = board::gm965_ich8_config();
         Ok(Self {
-            devices: BootblockDevices::new()?,
+            devices: new_bootblock_devices()?,
             ffs: MemoryMappedFfs::new(config.firmware_base, config.firmware_size),
             ramstage_loaded: false,
         })

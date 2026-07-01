@@ -14,7 +14,10 @@ extern crate alloc;
 pub mod smm;
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{FinalizeInit, Mainboard, PostDramInit, PreConsoleInit, ServiceError};
+use fstart_services::{
+    FinalizeInit, HardwareInit, InitContext, Mainboard, PostDramInit, PreConsoleInit, ServiceError,
+    Southbridge,
+};
 use serde::{Deserialize, Serialize};
 
 use fstart_driver_i2c_ck505::I2cCk505Config;
@@ -74,6 +77,53 @@ impl LenovoX61Mainboard {
     #[must_use]
     pub const fn config(&self) -> &LenovoX61MainboardConfig {
         &self.config
+    }
+}
+
+/// Pair the X61 board hook with the southbridge it needs for dock/LPC glue.
+///
+/// This keeps southbridge-aware sequencing in the Lenovo mainboard crate instead
+/// of adding a generic `with_southbridge()` concept to common stage code.
+pub struct LenovoX61Southbridge<S> {
+    southbridge: S,
+    mainboard: LenovoX61Mainboard,
+}
+
+impl<S> LenovoX61Southbridge<S> {
+    /// Construct a Lenovo X61 board hook around a concrete southbridge driver.
+    #[must_use]
+    pub const fn new(southbridge: S, mainboard: LenovoX61Mainboard) -> Self {
+        Self {
+            southbridge,
+            mainboard,
+        }
+    }
+
+    /// Return the wrapped southbridge driver.
+    #[must_use]
+    pub const fn southbridge(&self) -> &S {
+        &self.southbridge
+    }
+
+    /// Return the wrapped mainboard hook.
+    #[must_use]
+    pub const fn mainboard(&self) -> &LenovoX61Mainboard {
+        &self.mainboard
+    }
+}
+
+impl<S> HardwareInit for LenovoX61Southbridge<S>
+where
+    S: HardwareInit + Southbridge,
+{
+    fn pre_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.southbridge.pre_console(ctx)?;
+        self.mainboard
+            .pre_console_init_with_southbridge(&mut self.southbridge)
+    }
+
+    fn post_console(&mut self, ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.southbridge.post_console(ctx)
     }
 }
 

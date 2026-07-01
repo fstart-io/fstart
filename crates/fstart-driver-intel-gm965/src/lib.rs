@@ -31,8 +31,8 @@ use fstart_services::memory_detect::{
     build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
 };
 use fstart_services::{
-    EarlyInit, MemoryController, PciBdf, PciHost, PciRootBus, PciWindow, PostDramInit,
-    PreConsoleInit, ServiceError, StageLocalInit,
+    EarlyInit, HardwareInit, InitContext, MemoryController, PciBdf, PciHost, PciRootBus, PciWindow,
+    PostDramInit, PreConsoleInit, ServiceError, StageLocalInit,
 };
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -1791,6 +1791,20 @@ impl StageLocalInit for IntelGm965 {
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         Ok(())
+    }
+}
+
+impl HardwareInit for IntelGm965 {
+    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        PreConsoleInit::pre_console_init(self)
+    }
+
+    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        EarlyInit::early_init(self)
+    }
+
+    fn dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        self.dram_init()
     }
 }
 

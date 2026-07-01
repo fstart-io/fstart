@@ -19,7 +19,7 @@ use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
     EarlyInit, FinalizeInit, FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier,
-    PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
+    HardwareInit, InitContext, PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
 };
 use fstart_smbus_intel::I801SmBus;
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
@@ -2228,6 +2228,16 @@ impl FinalizeInit for IntelIch8 {
         rcba.regs().fdsw.modify(FDSW::FUNCTION_DISABLE_LOCK::SET);
         rcba.regs().map.set(rcba.regs().map.get());
         Ok(())
+    }
+}
+
+impl HardwareInit for IntelIch8 {
+    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        PreConsoleInit::pre_console_init(self)
+    }
+
+    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
+        EarlyInit::early_init(self)
     }
 }
 
