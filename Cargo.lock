@@ -596,10 +596,24 @@ dependencies = [
 name = "fstart-board-lenovo-x61"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch-x86",
  "fstart-board-meta",
- "fstart-mainboard-lenovo-x61",
+ "fstart-driver-i2c-ck505",
+ "fstart-driver-intel-gm965",
+ "fstart-driver-nsc-pc87382",
+ "fstart-driver-nsc-pc87392",
+ "fstart-gpio-ich",
+ "fstart-hda",
+ "fstart-pio",
  "fstart-platform-intel-gm965-ich8",
+ "fstart-services",
+ "fstart-smbios",
+ "fstart-smm-runtime",
  "fstart-types",
+ "heapless",
+ "serde",
 ]
 
 [[package]]
@@ -617,7 +631,6 @@ dependencies = [
  "fstart-driver-nsc-pc87382",
  "fstart-driver-nsc-pc87392",
  "fstart-log",
- "fstart-mainboard-lenovo-x61",
  "fstart-mp",
  "fstart-platform-intel-gm965-ich8",
  "fstart-platform-x86_64",
@@ -1574,28 +1587,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-mainboard-lenovo-x61"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-acpi-macros",
- "fstart-arch-x86",
- "fstart-driver-i2c-ck505",
- "fstart-driver-intel-gm965",
- "fstart-driver-nsc-pc87382",
- "fstart-driver-nsc-pc87392",
- "fstart-gpio-ich",
- "fstart-hda",
- "fstart-pio",
- "fstart-services",
- "fstart-smbios",
- "fstart-smm-runtime",
- "fstart-types",
- "heapless",
- "serde",
-]
-
-[[package]]
 name = "fstart-microcode-intel"
 version = "0.1.0"
 dependencies = [
@@ -1772,7 +1763,6 @@ dependencies = [
  "fstart-alloc",
  "fstart-driver-intel-ich7",
  "fstart-driver-intel-ich8",
- "fstart-mainboard-lenovo-x61",
  "fstart-smm-runtime",
 ]
 
@@ -1832,7 +1822,6 @@ dependencies = [
  "fstart-fit",
  "fstart-gpio-ich",
  "fstart-log",
- "fstart-mainboard-lenovo-x61",
  "fstart-mp",
  "fstart-pio",
  "fstart-platform-aarch64",

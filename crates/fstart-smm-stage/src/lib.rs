@@ -12,8 +12,6 @@ use fstart_driver_intel_ich7::smm::Ich7SmmHandler;
 use fstart_driver_intel_ich8::smm::Ich8SmmHandler;
 #[cfg(smm_platform = "lenovo-x61")]
 use fstart_driver_intel_ich8::smm::Ich8SmmHandler;
-#[cfg(smm_platform = "lenovo-x61")]
-use fstart_mainboard_lenovo_x61::smm::LenovoX61SmmHandler;
 use fstart_smm_runtime::{
     debug_trace, obtain_handler_lock, release_handler_lock, wait_for_handler_unlock,
     NoBoardSmmHandler, SmmContext, SmmEntryParams, SmmHandler, SMM_PLATFORM_INTEL_ICH,
@@ -81,7 +79,7 @@ unsafe fn dispatch_intel_ich(ctx: &mut SmmContext<'_>) {
 
 #[cfg(smm_platform = "lenovo-x61")]
 unsafe fn dispatch_intel_ich(ctx: &mut SmmContext<'_>) {
-    Ich8SmmHandler::<LenovoX61SmmHandler>::handle(ctx);
+    Ich8SmmHandler::<NoBoardSmmHandler>::handle(ctx);
 }
 
 #[cfg(target_os = "none")]

@@ -3,7 +3,7 @@
 //! The ThinkPad X61 uses this laptop-side SuperIO/DLPC block at LPC PnP
 //! config port `0x164e`.  The generic [`fstart_superio::SuperIo`] driver
 //! performs the common PnP resource programming; board-specific DLPC GPIO and
-//! dock-switch sequencing remains in `fstart-mainboard-lenovo-x61`.
+//! dock-switch sequencing remains in the X61 board support package.
 
 #![no_std]
 

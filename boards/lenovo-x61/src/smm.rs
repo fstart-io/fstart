@@ -2,7 +2,7 @@
 
 use fstart_smm_runtime::{SmmBoardHandler, SmmContext};
 
-use crate::dock;
+use crate::mainboard::dock;
 
 /// ACPI/SMM command byte for dock connect, shared with generated ACPI.
 pub const SMI_DOCK_CONNECT: u8 = 0x01;

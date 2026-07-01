@@ -12,8 +12,28 @@ target = "x86_64-unknown-none"
 stage-package = "fstart-board-lenovo-x61-stage"
 stage-bin = "fstart-stage"
 
+[features]
+default = []
+runtime = []
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
+smm = ["dep:fstart-smm-runtime"]
+
 [dependencies]
 fstart-types = { workspace = true }
 fstart-board-meta = { workspace = true }
 fstart-platform-intel-gm965-ich8 = { workspace = true }
-fstart-mainboard-lenovo-x61 = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../../crates/fstart-acpi-macros", optional = true }
+fstart-arch-x86 = { workspace = true }
+fstart-driver-i2c-ck505 = { workspace = true }
+fstart-driver-intel-gm965 = { workspace = true, features = ["ffs-vbt"] }
+fstart-driver-nsc-pc87382 = { workspace = true }
+fstart-driver-nsc-pc87392 = { workspace = true }
+fstart-gpio-ich = { workspace = true }
+fstart-hda = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true, features = ["pci"] }
+fstart-smbios = { workspace = true }
+fstart-smm-runtime = { workspace = true, optional = true }
+heapless = { workspace = true }
+serde = { workspace = true }

@@ -10,7 +10,6 @@ default = []
 x86_64 = ["fstart-stage/x86_64"]
 intel-gm965 = ["fstart-stage/intel-gm965", "fstart-driver-intel-gm965/ffs-vbt"]
 intel-ich8 = ["fstart-stage/intel-ich8"]
-lenovo-x61-mainboard = ["fstart-stage/lenovo-x61-mainboard"]
 nsc-pc87382 = ["fstart-stage/nsc-pc87382"]
 nsc-pc87392 = ["fstart-stage/nsc-pc87392"]
 i2c-ck505 = ["fstart-stage/i2c-ck505"]
@@ -29,7 +28,7 @@ acpi = [
   "fstart-driver-intel-gm965/acpi",
   "fstart-driver-intel-gm965/ffs-vbt",
   "fstart-driver-intel-ich8/acpi",
-  "fstart-mainboard-lenovo-x61/acpi",
+  "fstart-board-lenovo-x61/acpi",
 ]
 acpi-load = ["fstart-stage/acpi-load"]
 smbios = ["fstart-stage/smbios"]
@@ -62,7 +61,6 @@ fstart-driver-intel-ich8 = { workspace = true }
 fstart-driver-i2c-ck505 = { workspace = true }
 fstart-driver-nsc-pc87382 = { workspace = true }
 fstart-driver-nsc-pc87392 = { workspace = true }
-fstart-mainboard-lenovo-x61 = { workspace = true }
 fstart-superio = { workspace = true }
 fstart-types = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"] }

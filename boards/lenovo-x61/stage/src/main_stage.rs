@@ -3,10 +3,10 @@
 use fstart_acpi::device::AcpiDevice;
 use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
 use fstart_board_lenovo_x61 as board;
+use fstart_board_lenovo_x61::{LenovoX61Southbridge, X61_SMBIOS_DESC};
 use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::Ns16550;
-use fstart_mainboard_lenovo_x61::{LenovoX61Southbridge, X61_SMBIOS_DESC};
 use fstart_platform_intel_gm965_ich8 as platform;
 use fstart_services::memory_detect::{E820Entry, MAX_E820_ENTRIES};
 use fstart_services::{HardwareInit, InitContext, PciRootBus, ServiceError, StageLocalInit};

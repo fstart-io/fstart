@@ -3,7 +3,7 @@
 //! The initial target is the Lenovo ThinkPad X61 (GM965 + ICH8-M/HX). The
 //! reusable pre-console path opens the southbridge LPC/GPIO decode needed by
 //! board hooks. X61-specific DLPC/dock SuperIO setup lives in the
-//! `fstart-mainboard-lenovo-x61` crate.
+//! Board-specific dock/DLPC sequencing lives in `boards/lenovo-x61`.
 
 #![recursion_limit = "256"]
 #![no_std]

@@ -1,8 +1,8 @@
 use fstart_board_lenovo_x61 as board;
+use fstart_board_lenovo_x61::{x61_mainboard_config, LenovoX61Mainboard};
 use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
-use fstart_mainboard_lenovo_x61::{x61_mainboard_config, LenovoX61Mainboard};
 use fstart_services::{Device, DeviceError, ServiceError};
 
 pub const UART0_CONFIG: Ns16550Config = Ns16550Config {
