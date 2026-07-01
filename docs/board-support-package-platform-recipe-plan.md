@@ -2,6 +2,11 @@
 
 <!-- markdownlint-disable MD013 -->
 
+> **Superseded** by [architecture.md](architecture.md). Kept for history only.
+> The BSP-owns-all-board-facts rule and the board hooks/`Mainboard` associated
+> type were carried forward; recipes are replaced by fixed per-family flows
+> and `BuildInfo` by board `host.rs` defaults plus `fbuild` CLI.
+
 This document is a follow-on to
 [`rust-board-builder-stage-flow-plan.md`](rust-board-builder-stage-flow-plan.md).
 That plan establishes the direction of Rust board metadata and fixed handwritten

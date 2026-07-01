@@ -2,6 +2,12 @@
 
 <!-- markdownlint-disable MD013 -->
 
+> **Superseded** by [architecture.md](architecture.md) (config-as-data, fixed
+> family flows). Kept for history only. The typed newtypes, configuration
+> ownership rule, and validation split were carried forward; the generic
+> device graph, `HardwareInit` step trait, flow feature families, ordering
+> DSL, and dynamic board-blob design were dropped.
+
 This is the current architecture direction for board authoring and stage flow.
 It supersedes the previous RON/stage-codegen design documents, including the old
 architecture, driver model, continuation, topology DSL, generated StagePlan, and

@@ -12,7 +12,7 @@ payload/stage architecture) and `~/src/u-boot` (C, device-tree-driven board defs
 
 ## Design Documents
 
-- **[Rust Board Builder and Fixed Stage Flow Plan](docs/rust-board-builder-stage-flow-plan.md)** — current architecture direction. It supersedes the previous RON/stage-codegen design docs.
+- **[fstart Architecture: Config as Data, Fixed Family Flows, Few Crates](docs/architecture.md)** — the plan of record. It supersedes the earlier board-builder/stage-flow and BSP/platform-recipe plans, and consolidates the fstart-new reboot sketch.
 
 ## Environment
 
@@ -24,10 +24,11 @@ nix-shell -p qemu file --run "qemu-system-riscv64 -M virt -bios firmware.bin"
 nix-shell -p binutils --run "objdump -d target/.../fstart-stage"
 ```
 
-
 ### Formatting
+
 Default `rustfmt` (no `rustfmt.toml`). 4-space indent. Edition 2021.
 
 ## IMPORTANT NOTE
+
 This is a grassroots projects. Breaking changes are expected everywhere.
 We want no backwards compatibility or safe migrations to new architectural designs.
