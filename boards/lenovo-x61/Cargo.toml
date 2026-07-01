@@ -9,13 +9,30 @@ publish = false
 board = "lenovo-x61"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-package = "fstart-board-lenovo-x61-stage"
 stage-bin = "fstart-stage"
+stage-recipe = "gm965-ich8-uefi"
 
 [features]
 default = []
 runtime = []
-acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
+stage = [
+  "runtime",
+  "dep:fstart-driver-intel-ich8",
+  "dep:fstart-driver-ns16550",
+  "fstart-platform-intel-gm965-ich8/recipe",
+]
+acpi = [
+  "dep:fstart-acpi",
+  "dep:fstart-acpi-macros",
+  "dep:fstart-capabilities",
+  "fstart-capabilities/acpi",
+  "dep:fstart-mp",
+  "fstart-driver-intel-gm965/acpi",
+  "fstart-driver-intel-gm965/ffs-vbt",
+  "fstart-driver-intel-ich8?/acpi",
+]
+mp = ["stage", "dep:fstart-cpu-intel", "dep:fstart-mp"]
+smbios = ["dep:fstart-capabilities", "fstart-capabilities/smbios"]
 smm = ["dep:fstart-smm-runtime"]
 
 [dependencies]
@@ -27,12 +44,17 @@ fstart-acpi-macros = { path = "../../crates/fstart-acpi-macros", optional = true
 fstart-arch-x86 = { workspace = true }
 fstart-driver-i2c-ck505 = { workspace = true }
 fstart-driver-intel-gm965 = { workspace = true, features = ["ffs-vbt"] }
+fstart-driver-intel-ich8 = { workspace = true, optional = true }
+fstart-driver-ns16550 = { workspace = true, features = ["pio"], optional = true }
 fstart-driver-nsc-pc87382 = { workspace = true }
 fstart-driver-nsc-pc87392 = { workspace = true }
 fstart-gpio-ich = { workspace = true }
 fstart-hda = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true, features = ["pci"] }
+fstart-capabilities = { workspace = true, optional = true }
+fstart-cpu-intel = { workspace = true, optional = true }
+fstart-mp = { workspace = true, optional = true }
 fstart-smbios = { workspace = true }
 fstart-smm-runtime = { workspace = true, optional = true }
 heapless = { workspace = true }

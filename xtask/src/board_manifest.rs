@@ -29,6 +29,8 @@ pub struct BoardManifest {
     pub host_feature: bool,
     /// Optional Cargo binary that owns this board's static stage adapter.
     pub stage_bin: Option<String>,
+    /// Optional reusable stage recipe selected by generated wrapper glue.
+    pub stage_recipe: Option<String>,
     /// Optional Cargo package that owns this board's static stage adapter.
     ///
     /// Defaults to `package` for legacy single-package boards.
@@ -117,6 +119,7 @@ fn read(manifest: &Path) -> Result<BoardManifest, String> {
         acpi_only_devices: metadata_bool(&text, "acpi-only-devices").unwrap_or(false),
         host_feature: has_feature(&text, "host"),
         stage_bin: metadata_value(&text, "stage-bin"),
+        stage_recipe: metadata_value(&text, "stage-recipe"),
         stage_package: metadata_value(&text, "stage-package"),
     })
 }
@@ -346,6 +349,39 @@ mod tests {
             parsed.stage_package.as_deref(),
             Some("fstart-board-qemu-sbsa-stage")
         );
+        assert_eq!(parsed.stage_bin.as_deref(), Some("fstart-stage"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reads_stage_recipe_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "fstart-board-recipe-manifest-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("Cargo.toml");
+        fs::write(
+            &manifest,
+            r#"
+            [package]
+            name = "fstart-board-lenovo-x61"
+
+            [package.metadata.fstart]
+            board = "lenovo-x61"
+            target = "x86_64-unknown-none"
+            stage-recipe = "gm965-ich8-uefi"
+            stage-bin = "fstart-stage"
+            "#,
+        )
+        .unwrap();
+
+        let parsed = read(&manifest).unwrap();
+        assert_eq!(parsed.board, "lenovo-x61");
+        assert_eq!(parsed.package, "fstart-board-lenovo-x61");
+        assert_eq!(parsed.stage_recipe.as_deref(), Some("gm965-ich8-uefi"));
+        assert_eq!(parsed.stage_package, None);
         assert_eq!(parsed.stage_bin.as_deref(), Some("fstart-stage"));
 
         fs::remove_dir_all(dir).unwrap();

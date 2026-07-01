@@ -1,11 +1,9 @@
-//! Lenovo ThinkPad X61 binding for the reusable GM965/ICH8 recipe.
+//! Lenovo ThinkPad X61 stage recipe binding.
 
 #[cfg(feature = "acpi")]
 use fstart_acpi::device::AcpiDevice;
 #[cfg(feature = "acpi")]
 use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
-use fstart_board_lenovo_x61 as x61;
-use fstart_board_lenovo_x61::LenovoX61Southbridge;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 #[cfg(feature = "acpi")]
@@ -15,34 +13,33 @@ use fstart_platform_intel_gm965_ich8::ICH8_PMBASE;
 use fstart_platform_intel_gm965_ich8::{Gm965Ich8Config, Gm965Ich8UefiBoard};
 use fstart_services::{Device, DeviceError, ServiceError};
 
-/// Selected-board marker used by the GM965/ICH8 recipe.
-pub struct Board;
+use crate::{Board, LenovoX61Southbridge};
 
 impl Gm965Ich8UefiBoard for Board {
     type Southbridge = LenovoX61Southbridge<IntelIch8>;
 
     fn platform_config() -> Gm965Ich8Config {
-        x61::gm965_ich8_config()
+        crate::gm965_ich8_config()
     }
 
     fn console_config() -> Ns16550Config {
         Ns16550Config {
             regs: AccessMode::Pio {
-                base: x61::UART0_PIO_BASE as u64,
+                base: crate::UART0_PIO_BASE as u64,
             },
-            clock_freq: x61::UART0_CLOCK_FREQ,
-            baud_rate: x61::UART0_BAUD_RATE,
+            clock_freq: crate::UART0_CLOCK_FREQ,
+            baud_rate: crate::UART0_BAUD_RATE,
         }
     }
 
     fn console_node() -> &'static str {
-        x61::UART0_NODE
+        crate::UART0_NODE
     }
 
     fn new_southbridge() -> Result<Self::Southbridge, ServiceError> {
-        let config = x61::gm965_ich8_config();
+        let config = crate::gm965_ich8_config();
         let southbridge = IntelIch8::new(config.ich8).map_err(device_error_to_service_error)?;
-        let mainboard = x61::LenovoX61Mainboard::new(x61::x61_mainboard_config())
+        let mainboard = crate::LenovoX61Mainboard::new(crate::x61_mainboard_config())
             .map_err(device_error_to_service_error)?;
         Ok(LenovoX61Southbridge::new(southbridge, mainboard))
     }
@@ -93,7 +90,7 @@ impl Gm965Ich8UefiBoard for Board {
 
     #[cfg(feature = "smbios")]
     fn prepare_smbios() {
-        fstart_capabilities::smbios::prepare(&x61::X61_SMBIOS_DESC);
+        fstart_capabilities::smbios::prepare(&crate::X61_SMBIOS_DESC);
     }
 }
 

@@ -7,6 +7,11 @@ pub mod devices;
 pub mod mainboard;
 #[cfg(feature = "smm")]
 pub mod smm;
+#[cfg(feature = "stage")]
+mod stage;
+
+/// Lenovo ThinkPad X61 board marker for selected-board stage wrappers.
+pub struct Board;
 
 pub use config::*;
 pub use devices::*;
