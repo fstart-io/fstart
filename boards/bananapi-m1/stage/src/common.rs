@@ -1,11 +1,15 @@
-//! Shared Banana Pi M1 stage helpers and static driver configs.
+//! Shared Banana Pi M1 stage policy and static driver configs.
 
 use fstart_board_bananapi_m1_facts as facts;
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
-use fstart_driver_sunxi_a20_dramc::SunxiA20DramcConfig;
-use fstart_driver_sunxi_ccu::SunxiA20CcuConfig;
-use fstart_driver_sunxi_mmc::SunxiMmcConfig;
-use fstart_services::{DeviceError, ServiceError};
+use fstart_driver_sunxi_a20_dramc::{SunxiA20Dramc, SunxiA20DramcConfig};
+use fstart_driver_sunxi_ccu::{SunxiA20Ccu, SunxiA20CcuConfig};
+use fstart_driver_sunxi_mmc::{SunxiMmc, SunxiMmcConfig};
+#[cfg(feature = "ffs")]
+use fstart_services::boot::BootLinuxParams;
+use fstart_stage::fixed_helpers::SunxiFixedFlowBoard;
+#[cfg(feature = "ffs")]
+use fstart_stage::fixed_helpers::SunxiLinuxBoard;
 
 pub static CCU_CONFIG: SunxiA20CcuConfig = SunxiA20CcuConfig {
     ccu_base: facts::CCU_BASE,
@@ -50,6 +54,57 @@ pub static MMC0_CONFIG: SunxiMmcConfig = SunxiMmcConfig::Sun7iA20 {
     mmc_index: facts::MMC0_INDEX,
 };
 
-pub const fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
-    ServiceError::HardwareError
+pub struct SunxiBoard;
+
+impl SunxiFixedFlowBoard for SunxiBoard {
+    type Ccu = SunxiA20Ccu;
+    type Dramc = SunxiA20Dramc;
+    type Mmc = SunxiMmc;
+
+    const UART0_NODE: &'static str = facts::UART0_NODE;
+    const MMC0_NODE: &'static str = facts::MMC0_NODE;
+    const RAM_BASE: u64 = facts::RAM_BASE;
+    const RAM_SIZE: u64 = facts::RAM_SIZE;
+    const MMC_FIRMWARE_IMAGE_OFFSET: u64 = facts::MMC_FIRMWARE_IMAGE_OFFSET;
+    const MAIN_LOAD_ADDR: u64 = facts::MAIN_LOAD_ADDR;
+    const HANDOFF_ADDR: u64 = facts::HANDOFF_ADDR;
+
+    fn ccu_config() -> <Self::Ccu as fstart_services::Device>::Config {
+        CCU_CONFIG.clone()
+    }
+
+    fn dramc_config() -> <Self::Dramc as fstart_services::Device>::Config {
+        DRAMC_CONFIG.clone()
+    }
+
+    fn mmc_config() -> <Self::Mmc as fstart_services::Device>::Config {
+        MMC0_CONFIG.clone()
+    }
+
+    fn uart0_config() -> Ns16550Config {
+        UART0_CONFIG
+    }
+
+    fn halt() -> ! {
+        crate::fstart_platform::halt()
+    }
+
+    fn jump_to_main(main_addr: u64, handoff_addr: usize) -> ! {
+        crate::fstart_platform::jump_to_with_handoff(main_addr, handoff_addr)
+    }
+}
+
+#[cfg(feature = "ffs")]
+impl SunxiLinuxBoard for SunxiBoard {
+    const FDT_ADDR: u64 = facts::FDT_ADDR;
+    const KERNEL_LOAD_ADDR: u64 = facts::KERNEL_LOAD_ADDR;
+    const FIRMWARE_LOAD_ADDR: u64 = 0;
+    const BOOTARGS: &'static str = facts::BOOTARGS;
+    const LOAD_FIRMWARE: bool = false;
+    const FIRMWARE_NAME: &'static str = "";
+    const FDT_RAM_FROM_HANDOFF: bool = false;
+
+    fn boot_linux(params: &BootLinuxParams<'_>) -> ! {
+        crate::fstart_platform::boot_linux(params)
+    }
 }
