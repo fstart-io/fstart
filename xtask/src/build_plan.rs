@@ -11,8 +11,8 @@ use fstart_codegen::board_loader::ParsedBoard;
 use fstart_services::ServiceKind as Service;
 use fstart_types::stage::PageSize;
 use fstart_types::{
-    effective_stage_load_addr, BoardConfig, BoardDataMode, BuildInfo, Capability, FlowProfile,
-    Platform, RegionKind, SecurityConfig, SocImageFormat, StageLayout,
+    effective_stage_load_addr, BoardConfig, BoardDataMode, BuildInfo, Capability, Platform,
+    RegionKind, SecurityConfig, SocImageFormat, StageLayout,
 };
 
 use crate::toolchain::TargetSpec;
@@ -105,7 +105,6 @@ pub fn plan(parsed: &ParsedBoard, build_info: &BuildInfo) -> Result<BuildPlan, S
         .any(|services| services.contains(Service::PciRootBus));
     let plan_context = PlanContext {
         base_features: &base_features,
-        flow_profile: build_info.flow_profile,
         needs_flat_binary: target.needs_flat_binary,
         pci_root_feature,
     };
@@ -306,7 +305,6 @@ fn needs_aarch64_el2_relocate_entry(config: &BoardConfig) -> bool {
 #[derive(Debug)]
 struct PlanContext<'a> {
     base_features: &'a FeatureSet,
-    flow_profile: FlowProfile,
     needs_flat_binary: bool,
     pci_root_feature: Option<&'a str>,
 }
@@ -331,7 +329,6 @@ fn stage_plan(
     _include_global_pci_alloc: bool,
 ) -> StageBuildPlan {
     let mut features = plan_context.base_features.clone();
-    features.extend(flow_profile_features(plan_context.flow_profile));
     features.extend(capability_features(
         stage.capabilities,
         &config.security,
@@ -383,16 +380,6 @@ fn stage_plan(
     }
 }
 
-/// Compute the coarse fixed-flow feature families selected by board metadata.
-fn flow_profile_features(profile: FlowProfile) -> Vec<&'static str> {
-    match profile {
-        FlowProfile::Minimal => vec!["flow-profile-minimal"],
-        FlowProfile::LinuxBoot => vec!["flow-profile-linuxboot"],
-        FlowProfile::Uefi => vec!["flow-profile-uefi"],
-        FlowProfile::MultiStage => vec!["flow-profile-multistage"],
-    }
-}
-
 /// Compute backend feature flags for a single stage.
 fn capability_features(
     capabilities: &[Capability],
@@ -402,12 +389,6 @@ fn capability_features(
     let mut features = Vec::new();
 
     let uses_ffs = stage_uses_ffs(capabilities);
-    let uses_security = stage_uses_security(capabilities);
-
-    if uses_security {
-        features.push("flow-security");
-    }
-
     if uses_ffs {
         features.push("ffs");
         if capabilities
@@ -485,12 +466,6 @@ fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
     capabilities
         .iter()
         .any(|c| matches!(c, Capability::FdtPrepare))
-}
-
-fn stage_uses_security(capabilities: &[Capability]) -> bool {
-    capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::SigVerify))
 }
 
 fn stage_uses_ffs(capabilities: &[Capability]) -> bool {
@@ -628,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_uses_build_info_features_and_flow_profile() {
+    fn plan_uses_build_info_features() {
         let parsed = parsed(minimal_config());
         let info = build_info(BoardDataMode::StaticTyped, FlowProfile::Minimal, 0x1000);
 
@@ -637,8 +612,6 @@ mod tests {
 
         assert!(features.contains("riscv64"));
         assert!(features.contains("custom-driver"));
-        assert!(features.contains("flow-profile-minimal"));
-        assert!(!features.contains("flow-profile-linuxboot"));
     }
 
     #[test]
@@ -657,7 +630,6 @@ mod tests {
         let plan = plan(&parsed, &info).expect("sigverify stage should plan");
         let features = &plan.stages[0].features;
 
-        assert!(features.contains("flow-security"));
         assert!(features.contains("ffs"));
         assert!(features.contains("ed25519"));
         assert!(features.contains("sha2-digest"));

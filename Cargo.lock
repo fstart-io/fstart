@@ -818,7 +818,6 @@ dependencies = [
  "fstart-platform-x86_64",
  "fstart-services",
  "fstart-stage",
- "fstart-stage-runtime",
  "fstart-types",
  "heapless",
  "ufmt",
@@ -942,20 +941,9 @@ dependencies = [
  "fstart-platform-x86_64",
  "fstart-runtime",
  "fstart-services",
- "fstart-stage-runtime",
  "fstart-superio",
  "fstart-types",
  "heapless",
- "ufmt",
-]
-
-[[package]]
-name = "fstart-stage-runtime"
-version = "0.1.0"
-dependencies = [
- "fstart-log",
- "fstart-services",
- "fstart-types",
  "ufmt",
 ]
 

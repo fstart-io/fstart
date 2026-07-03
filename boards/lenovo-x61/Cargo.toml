@@ -10,7 +10,6 @@ board = "lenovo-x61"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
-stage-recipe = "gm965-ich8-uefi"
 
 [features]
 default = []

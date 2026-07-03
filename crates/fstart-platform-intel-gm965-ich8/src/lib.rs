@@ -1,7 +1,7 @@
 //! GM965/ICH8 platform defaults and recipe traits.
 //!
 //! Board crates provide board facts. This crate owns chipset defaults, topology,
-//! stage layout, and the reusable GM965/ICH8 UEFI-style recipe.
+//! stage layout, and the reusable GM965/ICH8 fixed-flow recipe.
 
 #![no_std]
 
@@ -16,11 +16,9 @@ use fstart_driver_intel_ich8 as ich8;
 use fstart_gpio_ich as gpio;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
-    board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec,
-    x86_uefi_payload, AcpiConfig, AcpiPlatform, BoardConfig, BoardInfo, BootMedium, BuildInfo,
-    Capability, CarConfig, Compression, DeviceRole, DeviceTopology, FlashLayout, IntelIfdRegion,
-    MemoryMap, MemoryRegion, PayloadConfig, Platform, RegionKind, RunsFrom, SmbiosConfig,
-    StageConfig, StageLayout, TempRamBuffer,
+    hstr, hvec, BootMedium, Capability, CarConfig, Compression, DeviceRole, DeviceTopology,
+    FlashLayout, IntelIfdRegion, MemoryMap, MemoryRegion, RegionKind, RunsFrom, StageConfig,
+    StageLayout, TempRamBuffer,
 };
 use heapless::Vec as HVec;
 
@@ -33,12 +31,11 @@ pub use fstart_driver_intel_ich8::{
 pub use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
 #[cfg(feature = "recipe")]
 pub use recipe::{
-    Gm965Ich8Mainboard, Gm965Ich8RamstageDevices, Gm965Ich8UefiBoard, Gm965Ich8UefiRecipe,
+    Gm965Ich8Mainboard, Gm965Ich8RamstageDevices, Gm965Ich8Recipe, Gm965Ich8StageBoard,
 };
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const ICH8_SOUTHBRIDGE_NODE: &str = "southbridge";
-pub const GM965_ICH8_MAINBOARD_NODE: &str = "mainboard";
 pub const ICH8_LPC_BUS_NODE: &str = "lpc";
 pub const ICH8_SMBUS_NODE: &str = "smbus";
 pub const GM965_DEFAULT_FIRMWARE_BASE: u64 = 0xFFE8_0000;
@@ -108,216 +105,27 @@ impl Gm965Ich8AcpiContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PcieRootPort {
-    Port1,
-    Port2,
-    Port3,
-    Port4,
-    Port5,
-    Port6,
+pub fn gm965_ich8_topology(config: &Gm965Ich8Config) -> DeviceTopology {
+    let mut topology = DeviceTopology::new()
+        .root(GM965_NORTHBRIDGE_NODE)
+        .root(ICH8_SOUTHBRIDGE_NODE);
+
+    for (idx, enabled) in config.southbridge.pcie_ports.iter().copied().enumerate() {
+        topology = topology.pci_bridge(
+            ICH8_SOUTHBRIDGE_NODE,
+            PCIE_ROOT_PORTS[idx],
+            0x1c,
+            idx as u8,
+            enabled,
+        );
+    }
+
+    topology
+        .child_bus(ICH8_SOUTHBRIDGE_NODE, ICH8_LPC_BUS_NODE, DeviceRole::LpcBus)
+        .child_bus(ICH8_SOUTHBRIDGE_NODE, ICH8_SMBUS_NODE, DeviceRole::SmBus)
 }
 
-impl PcieRootPort {
-    const fn index(self) -> usize {
-        match self {
-            Self::Port1 => 0,
-            Self::Port2 => 1,
-            Self::Port3 => 2,
-            Self::Port4 => 3,
-            Self::Port5 => 4,
-            Self::Port6 => 5,
-        }
-    }
-}
-
-/// GM965 northbridge config plus its topology node name.
-#[derive(Debug, Clone)]
-pub struct Gm965Northbridge {
-    pub name: &'static str,
-    pub config: gm965::IntelGm965Config,
-}
-
-/// ICH8 PCIe root port state owned by the closed chipset config.
-#[derive(Debug, Clone)]
-pub struct PcieRootPortNode {
-    pub name: &'static str,
-    pub device: u8,
-    pub function: u8,
-    pub enabled: bool,
-}
-
-impl PcieRootPortNode {
-    #[must_use]
-    pub const fn new(name: &'static str, device: u8, function: u8) -> Self {
-        Self {
-            name,
-            device,
-            function,
-            enabled: false,
-        }
-    }
-}
-
-/// ICH8 southbridge config plus the topology owned by that config.
-#[derive(Debug, Clone)]
-pub struct Ich8Southbridge {
-    pub name: &'static str,
-    pub config: ich8::IntelIch8Config,
-    pub pcie: [PcieRootPortNode; 6],
-}
-
-impl Ich8Southbridge {
-    #[must_use]
-    pub fn pcie_mut(&mut self, port: PcieRootPort) -> &mut PcieRootPortNode {
-        &mut self.pcie[port.index()]
-    }
-
-    #[must_use]
-    pub fn driver_config(&self) -> ich8::IntelIch8Config {
-        let mut config = self.config.clone();
-        for (idx, port) in self.pcie.iter().enumerate() {
-            config.pcie_ports[idx] = port.enabled;
-        }
-        config
-    }
-}
-
-/// GM965/ICH8 board definition used by metadata and runtime recipes.
-///
-/// This is the platform-family BSP data structure: it keeps chipset driver
-/// configs and the topology nodes they imply in one place. Board crates start
-/// from [`Gm965Ich8Board::new`] defaults and mutate nested fields directly.
-#[derive(Debug, Clone)]
-pub struct Gm965Ich8Board {
-    pub board_name: &'static str,
-    pub board_package: &'static str,
-    pub payload: PayloadConfig,
-    pub flash_layout: Option<FlashLayout>,
-    pub smbios: Option<SmbiosConfig>,
-    pub mainboard_enabled: bool,
-    pub acpi_print_hex: bool,
-    pub northbridge: Gm965Northbridge,
-    pub southbridge: Ich8Southbridge,
-}
-
-impl Gm965Ich8Board {
-    #[must_use]
-    pub fn new(board_name: &'static str, board_package: &'static str) -> Self {
-        Self {
-            board_name,
-            board_package,
-            payload: x86_uefi_payload(),
-            flash_layout: None,
-            smbios: None,
-            mainboard_enabled: false,
-            acpi_print_hex: false,
-            northbridge: Gm965Northbridge {
-                name: GM965_NORTHBRIDGE_NODE,
-                config: gm965_defaults(),
-            },
-            southbridge: Ich8Southbridge {
-                name: ICH8_SOUTHBRIDGE_NODE,
-                config: ich8_defaults(),
-                pcie: pcie_root_ports(),
-            },
-        }
-    }
-
-    #[must_use]
-    pub fn board_config(&self) -> BoardConfig {
-        BoardConfig {
-            name: hstr(self.board_name),
-            platform: Platform::X86_64,
-            memory: gm965_ich8_memory(self.flash_layout.clone()),
-            devices: self.topology().build(),
-            stages: gm965_ich8_stages(),
-            security: dev_security_config("keys/dev-signing.pub"),
-            payload: Some(self.payload.clone()),
-            microcode: Some(gm965_microcode()),
-            soc_image_format: Default::default(),
-            full_flash_image: true,
-            acpi: Some(AcpiConfig {
-                print_hex: self.acpi_print_hex,
-                platform: AcpiPlatform::X86,
-            }),
-            smbios: self.smbios.clone(),
-            smm: None,
-            build: fstart_types::BoardBuildPolicy {
-                cpu_feature: Some(hstr("cpu-intel-core2")),
-                ..Default::default()
-            },
-            boot_hart_id: 0,
-        }
-    }
-
-    #[must_use]
-    pub fn board_info(&self) -> BoardInfo {
-        board_info_from_config(self.board_config())
-    }
-
-    #[must_use]
-    pub fn build_info<I>(&self, driver_features: I) -> BuildInfo
-    where
-        I: IntoIterator<Item = &'static str>,
-    {
-        let config = self.board_config();
-        build_info_from_config(
-            self.board_name,
-            self.board_package,
-            &config,
-            driver_features,
-        )
-    }
-
-    #[must_use]
-    pub fn firmware_base(&self) -> u64 {
-        firmware_window(self.flash_layout.as_ref()).0
-    }
-
-    #[must_use]
-    pub fn firmware_size(&self) -> usize {
-        firmware_window(self.flash_layout.as_ref()).1
-    }
-
-    fn topology(&self) -> DeviceTopology {
-        let mut topology = DeviceTopology::new()
-            .root(self.northbridge.name)
-            .root(self.southbridge.name);
-
-        for port in &self.southbridge.pcie {
-            topology = topology.pci_bridge(
-                self.southbridge.name,
-                port.name,
-                port.device,
-                port.function,
-                port.enabled,
-            );
-        }
-
-        topology
-            .child_bus(self.southbridge.name, ICH8_LPC_BUS_NODE, DeviceRole::LpcBus)
-            .child_bus(self.southbridge.name, ICH8_SMBUS_NODE, DeviceRole::SmBus)
-            .runtime_root(GM965_ICH8_MAINBOARD_NODE, self.mainboard_enabled)
-    }
-}
-
-impl Default for Gm965Ich8Board {
-    fn default() -> Self {
-        Self::new("gm965-ich8", "fstart-platform-intel-gm965-ich8")
-    }
-}
-
-fn pcie_root_ports() -> [PcieRootPortNode; 6] {
-    [
-        PcieRootPortNode::new("pcie1", 0x1c, 0),
-        PcieRootPortNode::new("pcie2", 0x1c, 1),
-        PcieRootPortNode::new("pcie3", 0x1c, 2),
-        PcieRootPortNode::new("pcie4", 0x1c, 3),
-        PcieRootPortNode::new("pcie5", 0x1c, 4),
-        PcieRootPortNode::new("pcie6", 0x1c, 5),
-    ]
-}
+const PCIE_ROOT_PORTS: [&str; 6] = ["pcie1", "pcie2", "pcie3", "pcie4", "pcie5", "pcie6"];
 
 pub fn gm965_ich8_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
     MemoryMap {
@@ -440,7 +248,7 @@ pub fn ich8_defaults() -> ich8::IntelIch8Config {
     }
 }
 
-fn gm965_microcode() -> MicrocodeConfig {
+pub fn gm965_ich8_microcode() -> MicrocodeConfig {
     MicrocodeConfig::Intel(IntelMicrocodeConfig {
         files: hvec([
             hstr("../../intel-microcode/intel-ucode/06-0f-02"),

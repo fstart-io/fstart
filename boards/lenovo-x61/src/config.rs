@@ -7,16 +7,17 @@ use fstart_driver_nsc_pc87392 as pc87392;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_platform_intel_gm965_ich8::{
-    gm965_defaults, ich8_defaults, Gm965Ich8Board, Gm965Ich8Config, IdeConfig, IoTrapAccess,
-    IoTrapConfig, LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode,
-    PcieRootPort, SataConfig, SataMode, UsbConfig,
+    gm965_ich8_memory, gm965_ich8_microcode, gm965_ich8_stages, gm965_ich8_topology,
+    Gm965Ich8Config, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode, LpcGenericIoDecode,
+    LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
 };
 use fstart_types::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
 use fstart_types::{
-    hstr, hvec, BoardConfig, BoardInfo, BuildInfo, FlashLayout, IntelIfdFlashLayout,
-    IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
+    board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec, AcpiConfig,
+    AcpiPlatform, BoardBuildPolicy, BoardConfig, BoardInfo, BuildInfo, FlashLayout,
+    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
 };
 
 pub const BOARD_NAME: &str = "lenovo-x61";
@@ -26,15 +27,10 @@ pub const UART0_NODE: &str = "dock_superio/com1";
 pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
+const MAINBOARD_NODE: &str = "mainboard";
 
 pub fn gm965_ich8_config() -> Gm965Ich8Config {
-    let mut config = Gm965Ich8Config {
-        northbridge: gm965_defaults(),
-        southbridge: ich8_defaults(),
-        firmware_base: 0,
-        firmware_size: 0,
-    }
-    .with_flash_layout(Some(&x61_flash_layout()));
+    let mut config = Gm965Ich8Config::new().with_flash_layout(Some(&x61_flash_layout()));
 
     config.northbridge.igd = x61_igd_config();
 
@@ -100,41 +96,56 @@ pub fn gm965_ich8_config() -> Gm965Ich8Config {
     config
 }
 
-pub fn gm965_ich8_board() -> Gm965Ich8Board {
-    let config = gm965_ich8_config();
-    let mut board = Gm965Ich8Board::new(BOARD_NAME, BOARD_PACKAGE);
-
-    board.flash_layout = Some(x61_flash_layout());
-    board.acpi_print_hex = true;
-    board.mainboard_enabled = true;
-    board.smbios = Some(x61_smbios());
-    board.northbridge.config = config.northbridge;
-    board.southbridge.config = config.southbridge;
-    board.southbridge.pcie_mut(PcieRootPort::Port1).enabled = true;
-    board.southbridge.pcie_mut(PcieRootPort::Port2).enabled = true;
-
-    board
-}
-
 #[must_use]
 pub fn board_config() -> BoardConfig {
-    gm965_ich8_board().board_config()
+    let config = gm965_ich8_config();
+    let flash_layout = x61_flash_layout();
+    BoardConfig {
+        name: hstr(BOARD_NAME),
+        platform: PLATFORM,
+        memory: gm965_ich8_memory(Some(flash_layout)),
+        devices: gm965_ich8_topology(&config)
+            .runtime_root(MAINBOARD_NODE, true)
+            .build(),
+        stages: gm965_ich8_stages(),
+        security: dev_security_config("keys/dev-signing.pub"),
+        payload: None,
+        microcode: Some(gm965_ich8_microcode()),
+        soc_image_format: Default::default(),
+        full_flash_image: true,
+        acpi: Some(AcpiConfig {
+            print_hex: true,
+            platform: AcpiPlatform::X86,
+        }),
+        smbios: Some(x61_smbios()),
+        smm: None,
+        build: BoardBuildPolicy {
+            cpu_feature: Some(hstr("cpu-intel-core2")),
+            ..Default::default()
+        },
+        boot_hart_id: 0,
+    }
 }
 
 #[must_use]
 pub fn board_info() -> BoardInfo {
-    gm965_ich8_board().board_info()
+    board_info_from_config(board_config())
 }
 
 #[must_use]
 pub fn build_info() -> BuildInfo {
-    gm965_ich8_board().build_info([
-        "intel-gm965",
-        "intel-ich8",
-        "nsc-pc87382",
-        "nsc-pc87392",
-        "i2c-ck505",
-    ])
+    build_info_from_config(
+        BOARD_NAME,
+        BOARD_PACKAGE,
+        &board_config(),
+        [
+            "intel-gm965",
+            "intel-ich8",
+            "nsc-pc87382",
+            "nsc-pc87392",
+            "i2c-ck505",
+        ],
+    )
 }
 
 #[must_use]

@@ -371,17 +371,9 @@ fn stage_package_build(
         });
     }
 
-    let recipe = board_manifest.stage_recipe.as_deref().ok_or_else(|| {
-        format!(
-            "board '{}' does not declare package.metadata.fstart.stage-package or stage-recipe",
-            board_manifest.board
-        )
-    })?;
-
-    // Every recipe is a FirmwareBoard/StageRecipe recipe: the board crate's
-    // `stage` feature pulls its platform recipe crate, so the wrapper needs
-    // no recipe-specific knowledge.
-    let _ = (recipe, config);
+    // The selected board crate owns its FirmwareBoard/StageRecipe binding; the
+    // wrapper needs no recipe metadata or recipe-specific knowledge.
+    let _ = config;
     write_firmware_board_stage_wrapper(workspace_root, board_manifest, plan)
 }
 
@@ -411,11 +403,10 @@ fn board_feature_names(manifest_path: &Path) -> Vec<String> {
 }
 
 /// Generate a selected-board stage wrapper for any `FirmwareBoard`/`StageRecipe`
-/// recipe. The wrapper is pure build glue: it selects the board type and calls
+/// binding. The wrapper is pure build glue: it selects the board type and calls
 /// `fstart_stage::run_board::<Board>`. Recipe-specific sequencing lives in the
-/// board's platform recipe crate, pulled in transitively by the board crate's
-/// `stage` feature. No recipe-specific knowledge lives here — adding a new
-/// FirmwareBoard recipe needs zero xtask changes.
+/// board's platform crate, pulled in transitively by the board crate's `stage`
+/// feature. No recipe-specific knowledge lives here.
 fn write_firmware_board_stage_wrapper(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
@@ -514,31 +505,29 @@ path = "src/main.rs"
 }
 
 fn firmware_wrapper_stage_feature(feature: &str) -> bool {
-    feature.starts_with("flow-profile-")
-        || matches!(
-            feature,
-            "flow-security"
-                | "ffs"
-                | "ed25519"
-                | "sha2-digest"
-                | "sha3-digest"
-                | "lz4"
-                | "fit"
-                | "fdt"
-                | "handoff"
-                | "acpi"
-                | "acpi-load"
-                | "smbios"
-                | "memory-detect"
-                | "crabefi"
-                | "x86_64"
-                | "x86-boot"
-                | "x86-1g-pages"
-                | "x86-writable-page-tables"
-                | "x86-static-page-tables"
-                | "ns16550"
-                | "ns16550-pio"
-        )
+    matches!(
+        feature,
+        "ffs"
+            | "ed25519"
+            | "sha2-digest"
+            | "sha3-digest"
+            | "lz4"
+            | "fit"
+            | "fdt"
+            | "handoff"
+            | "acpi"
+            | "acpi-load"
+            | "smbios"
+            | "memory-detect"
+            | "crabefi"
+            | "x86_64"
+            | "x86-boot"
+            | "x86-1g-pages"
+            | "x86-writable-page-tables"
+            | "x86-static-page-tables"
+            | "ns16550"
+            | "ns16550-pio"
+    )
 }
 
 /// Wrapper `main.rs`: byte-identical for every board. It aliases the selected
@@ -724,8 +713,6 @@ mod tests {
     #[test]
     fn build_board_firmware_wrapper_stage_feature_allowlist_excludes_recipe_drivers() {
         for feature in [
-            "flow-profile-multistage",
-            "flow-security",
             "ffs",
             "sha2-digest",
             "crabefi",

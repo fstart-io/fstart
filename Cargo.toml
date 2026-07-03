@@ -17,7 +17,6 @@ members = [
   "crates/fstart-alloc",
   "crates/fstart-log",
   "crates/fstart-runtime",
-  "crates/fstart-stage-runtime",
   "crates/fstart-driver-ns16550",
   "crates/fstart-driver-pci-ecam",
   "crates/fstart-pci",
@@ -106,7 +105,6 @@ fstart-capabilities = { path = "crates/fstart-capabilities" }
 fstart-alloc = { path = "crates/fstart-alloc" }
 fstart-log = { path = "crates/fstart-log" }
 fstart-runtime = { path = "crates/fstart-runtime" }
-fstart-stage-runtime = { path = "crates/fstart-stage-runtime" }
 fstart-arch = { path = "crates/fstart-arch" }
 fstart-arch-x86 = { path = "crates/fstart-arch-x86" }
 fstart-driver-ns16550 = { path = "crates/fstart-driver-ns16550" }

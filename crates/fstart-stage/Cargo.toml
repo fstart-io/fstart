@@ -86,34 +86,6 @@ smbios = ["fstart-capabilities/smbios"]
 # Requires alloc (fstart-alloc provides #[global_allocator]).
 crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
 
-# Coarse fixed-flow profiles. Board metadata selects one profile, and backend
-# features such as `ffs`, `fdt`, `acpi`, and driver features supply the concrete
-# services used inside the fixed handwritten barriers.
-flow-security = ["fstart-stage-runtime/flow-security-v2"]
-flow-profile-minimal = ["fstart-stage-runtime/flow-early-platform-v2"]
-flow-profile-linuxboot = [
-  "fstart-stage-runtime/flow-early-platform-v2",
-  "fstart-stage-runtime/flow-memory-v2",
-  "fstart-stage-runtime/flow-storage-v2",
-  "fstart-stage-runtime/flow-payload-v2",
-  "fstart-stage-runtime/flow-handoff-v2",
-]
-flow-profile-uefi = [
-  "fstart-stage-runtime/flow-early-platform-v2",
-  "fstart-stage-runtime/flow-memory-v2",
-  "fstart-stage-runtime/flow-bus-v2",
-  "fstart-stage-runtime/flow-payload-v2",
-  "fstart-stage-runtime/flow-handoff-v2",
-]
-flow-profile-multistage = [
-  "fstart-stage-runtime/flow-early-platform-v2",
-  "fstart-stage-runtime/flow-memory-v2",
-  "fstart-stage-runtime/flow-bus-v2",
-  "fstart-stage-runtime/flow-storage-v2",
-  "fstart-stage-runtime/flow-payload-v2",
-  "fstart-stage-runtime/flow-handoff-v2",
-]
-
 [dependencies]
 # Core firmware infrastructure
 fstart-arch = { workspace = true }
@@ -122,7 +94,6 @@ fstart-capabilities = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
-fstart-stage-runtime = { workspace = true, features = ["fixed-flow"] }
 fstart-types = { workspace = true }
 fstart-pio = { workspace = true, optional = true }
 heapless = { workspace = true }

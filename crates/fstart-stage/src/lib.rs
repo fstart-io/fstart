@@ -99,8 +99,3 @@ pub trait StageRecipe<B: FirmwareBoard> {
 pub fn run_board<B: FirmwareBoard>(stage: StageKind, handoff: usize) -> ! {
     <B::Recipe as StageRecipe<B>>::run(stage, handoff)
 }
-
-/// Run one concrete recipe stage through the fixed handwritten flow.
-pub fn run_stage_flow<S: fstart_stage_runtime::StageFlow>() -> ! {
-    fstart_stage_runtime::run_fixed_flow::<S>()
-}

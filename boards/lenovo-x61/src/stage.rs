@@ -10,14 +10,14 @@ use fstart_platform_intel_gm965_ich8::Gm965Ich8RamstageDevices;
 #[cfg(feature = "mp")]
 use fstart_platform_intel_gm965_ich8::ICH8_PMBASE;
 use fstart_platform_intel_gm965_ich8::{
-    FirmwareBoard, Gm965Ich8Config, Gm965Ich8UefiBoard, Gm965Ich8UefiRecipe,
+    FirmwareBoard, Gm965Ich8Config, Gm965Ich8Recipe, Gm965Ich8StageBoard,
 };
 use fstart_services::ServiceError;
 
 use crate::{Board, X61Mainboard};
 
 impl FirmwareBoard for Board {
-    type Recipe = Gm965Ich8UefiRecipe<Self>;
+    type Recipe = Gm965Ich8Recipe<Self>;
 
     const NAME: &'static str = crate::BOARD_NAME;
     const PLATFORM: fstart_types::Platform = crate::PLATFORM;
@@ -31,7 +31,7 @@ impl FirmwareBoard for Board {
     }
 }
 
-impl Gm965Ich8UefiBoard for Board {
+impl Gm965Ich8StageBoard for Board {
     type Mainboard = X61Mainboard;
 
     fn config() -> Gm965Ich8Config {

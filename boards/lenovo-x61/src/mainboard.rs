@@ -30,7 +30,7 @@ impl X61Mainboard {
 
 #[cfg(feature = "stage")]
 impl Gm965Ich8Mainboard for X61Mainboard {
-    fn pre_console(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+    fn before_console(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
         // dock connection failures are non-fatal before the console exists.
         let _ = dock::dlpc_init();
