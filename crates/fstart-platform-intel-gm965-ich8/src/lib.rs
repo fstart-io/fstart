@@ -417,7 +417,8 @@ pub fn gm965_ich8_stages() -> StageLayout {
             ]),
             load_addr: GM965_BOOTBLOCK_LOAD_ADDR,
             stack_size: 0x2000,
-            heap_size: None,
+            // Small CAR heap for FFS/LZ4 scratch allocations.
+            heap_size: Some(0x100),
             runs_from: RunsFrom::Rom,
             compression: Compression::None,
             data_addr: None,

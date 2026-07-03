@@ -1,10 +1,11 @@
 //! Bump allocator for firmware stages.
 //!
 //! Provides a simple bump-only allocator whose backing store is supplied by
-//! the board-owned stage binary/linker layout. The stage binary emits
-//! `_FSTART_HEAP` (the storage) and `_FSTART_HEAP_SIZE` (the byte count) as
-//! `#[no_mangle]` statics;
-//! this crate references them via `extern "C"` at link time.
+//! the stage link. The generated linker script reserves `_FSTART_HEAP` (the
+//! storage, sized by the stage build config's `heap_size`) and emits
+//! `_FSTART_HEAP_SIZE` (a pointer-sized byte count); special stages such as
+//! the SMM stage may instead define both as `#[no_mangle]` statics.
+//! This crate references them via `extern "C"` at link time.
 //! Deallocation is a no-op — memory is never reclaimed.
 
 #![no_std]
@@ -14,11 +15,10 @@ extern crate alloc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-// The actual definitions are `_FstartHeapStore` (a repr(align(16)) struct) and
-// `usize` respectively, emitted by the selected board stage binary. We
-// declare `_FSTART_HEAP` as `u8` because only its *address* is
-// used — the type mismatch is intentional and harmless (same pattern as C
-// linker symbols declared as `extern char`).
+// The definitions come from the generated linker script (or `#[no_mangle]`
+// statics in special stages). We declare `_FSTART_HEAP` as `u8` because only
+// its *address* is used — the type mismatch is intentional and harmless (same
+// pattern as C linker symbols declared as `extern char`).
 extern "C" {
     /// Heap backing store (stage-provided, 16-byte aligned).
     static _FSTART_HEAP: u8;
@@ -29,16 +29,16 @@ extern "C" {
 /// Get the heap base address from the stage-provided symbol.
 #[inline]
 pub fn heap_start() -> usize {
-    // SAFETY: `_FSTART_HEAP` is a `#[no_mangle]` static defined in the
-    // stage binary; we only use its address.
+    // SAFETY: `_FSTART_HEAP` is defined by the stage link; we only use its
+    // address.
     unsafe { &_FSTART_HEAP as *const u8 as usize }
 }
 
 /// Get the heap size from the stage-provided symbol.
 #[inline]
 pub fn heap_size() -> usize {
-    // SAFETY: `_FSTART_HEAP_SIZE` is a `#[no_mangle]` static defined in
-    // the stage binary.
+    // SAFETY: `_FSTART_HEAP_SIZE` is pointer-sized data defined by the
+    // stage link.
     unsafe { _FSTART_HEAP_SIZE }
 }
 
@@ -71,9 +71,11 @@ unsafe impl GlobalAlloc for BumpAllocator {
                 .compare_exchange_weak(current, new_next, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
             {
-                // SAFETY: `aligned` is within bounds (checked above) and
-                // the region [aligned..new_next) is exclusively ours.
-                return (heap_start() + aligned) as *mut u8;
+                // SAFETY: `aligned` is within the linker-reserved heap
+                // (checked against `limit` above) and the region
+                // [aligned..new_next) is exclusively ours. Deriving the
+                // pointer from the heap base keeps its provenance.
+                return unsafe { (heap_start() as *mut u8).add(aligned) };
             }
         }
     }

@@ -381,8 +381,8 @@ fn stage_package_build(
     // Every recipe is a FirmwareBoard/StageRecipe recipe: the board crate's
     // `stage` feature pulls its platform recipe crate, so the wrapper needs
     // no recipe-specific knowledge.
-    let _ = recipe;
-    write_firmware_board_stage_wrapper(workspace_root, board_manifest, config, plan)
+    let _ = (recipe, config);
+    write_firmware_board_stage_wrapper(workspace_root, board_manifest, plan)
 }
 
 fn board_feature_names(manifest_path: &Path) -> Vec<String> {
@@ -419,7 +419,6 @@ fn board_feature_names(manifest_path: &Path) -> Vec<String> {
 fn write_firmware_board_stage_wrapper(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
-    config: &fstart_types::BoardConfig,
     plan: &crate::build_plan::BuildPlan,
 ) -> Result<StagePackageBuild, String> {
     let package_label = format!("fstart-selected-stage-{}", board_manifest.board);
@@ -441,11 +440,7 @@ fn write_firmware_board_stage_wrapper(
         &wrapper_dir.join("build.rs"),
         selected_firmware_board_build_rs(),
     )?;
-    let (bootblock_heap, main_heap) = stage_heap_sizes(config);
-    write_if_changed(
-        &src_dir.join("main.rs"),
-        &selected_firmware_board_main_rs(bootblock_heap, main_heap),
-    )?;
+    write_if_changed(&src_dir.join("main.rs"), selected_firmware_board_main_rs())?;
 
     Ok(StagePackageBuild {
         package_label,
@@ -507,9 +502,6 @@ default = []
 [dependencies]
 fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["stage"] }}
 fstart-stage = {{ path = "{stage_path}" }}
-fstart-platform-x86_64 = {{ path = "{x86_platform_path}" }}
-fstart-types = {{ path = "{types_path}" }}
-ufmt = {{ version = "0.2", default-features = false }}
 
 [[bin]]
 name = "fstart-stage"
@@ -518,8 +510,6 @@ path = "src/main.rs"
         package_label = format!("fstart-selected-stage-{}", board_manifest.board),
         board_package = board_manifest.package,
         stage_path = crate_path("crates/fstart-stage"),
-        x86_platform_path = crate_path("crates/fstart-platform-x86_64"),
-        types_path = crate_path("crates/fstart-types"),
     )
 }
 
@@ -551,122 +541,47 @@ fn firmware_wrapper_stage_feature(feature: &str) -> bool {
         )
 }
 
-/// Wrapper `main.rs`: selects the board type and dispatches to its recipe via
-/// `fstart_stage::run_board`. Heap sizes are inlined from the board's stage
-/// config; the `fstart_stage_bootblock` cfg selects between them.
-fn selected_firmware_board_main_rs(bootblock_heap: usize, main_heap: usize) -> String {
-    format!(
-        r#"//! Generated selected-board FirmwareBoard stage wrapper.
+/// Wrapper `main.rs`: byte-identical for every board. It aliases the selected
+/// board crate and dispatches to its recipe. All board/stage facts travel as
+/// data (board crate, stage build config, generated linker script) — never as
+/// generated source.
+fn selected_firmware_board_main_rs() -> &'static str {
+    r#"//! Generated selected-board FirmwareBoard stage wrapper.
 
 #![no_std]
 #![no_main]
 
-extern crate fstart_platform_x86_64 as fstart_platform;
-extern crate ufmt;
-
 use fstart_board_selected::Board;
 
-#[cfg(fstart_stage_bootblock)]
-const HEAP_SIZE: usize = {bootblock_heap};
-#[cfg(not(fstart_stage_bootblock))]
-const HEAP_SIZE: usize = {main_heap};
-
-#[repr(align(16))]
-#[allow(dead_code)]
-struct HeapStore([u8; HEAP_SIZE]);
-
 #[no_mangle]
-static mut _FSTART_HEAP: HeapStore = HeapStore([0; HEAP_SIZE]);
-
-#[no_mangle]
-static _FSTART_HEAP_SIZE: usize = HEAP_SIZE;
-
-#[no_mangle]
-static _fstart_anchor_early: fstart_types::ffs::AnchorBlock =
-    fstart_types::ffs::AnchorBlock::placeholder();
-
-#[cfg(fstart_stage_bootblock)]
-#[no_mangle]
-static _fstart_early_microcode_enabled: u32 = 1;
-#[cfg(not(fstart_stage_bootblock))]
-#[no_mangle]
-static _fstart_early_microcode_enabled: u32 = 0;
-
-#[no_mangle]
-pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {{
+pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
     fstart_stage::run_board::<Board>(
         fstart_stage::StageKind::from_option(option_env!("FSTART_STAGE_NAME")),
         handoff_ptr,
     )
-}}
+}
 
 #[used]
 #[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
 static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
 "#
-    )
 }
 
 /// Build script shared by all FirmwareBoard recipe wrappers: forwards the
 /// linker script, selects the bootblock cfg, and wires the optional SMM image.
+/// Wrapper `build.rs`: byte-identical for every board. Only forwards the
+/// generated linker script to the stage binary link.
 fn selected_firmware_board_build_rs() -> &'static str {
-    r#"use std::{env, fs, path::PathBuf};
+    r#"use std::env;
 
 fn main() {
-    println!("cargo:rustc-check-cfg=cfg(fstart_stage_bootblock)");
     println!("cargo:rerun-if-env-changed=FSTART_LINKER_SCRIPT");
-    println!("cargo:rerun-if-env-changed=FSTART_STAGE_NAME");
-    println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
-    println!("cargo:rerun-if-env-changed=FSTART_SMM_COREBOOT_HEADER");
-
     if let Ok(script) = env::var("FSTART_LINKER_SCRIPT") {
         println!("cargo:rustc-link-arg-bin=fstart-stage=-T{script}");
         println!("cargo:rerun-if-changed={script}");
     }
-
-    if env::var("FSTART_STAGE_NAME").as_deref() == Ok("bootblock") {
-        println!("cargo:rustc-cfg=fstart_stage_bootblock");
-    }
-
-    if let Ok(image) = env::var("FSTART_SMM_IMAGE") {
-        println!("cargo:rustc-env=FSTART_SMM_IMAGE={image}");
-        println!("cargo:rerun-if-changed={image}");
-    } else {
-        let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR set by Cargo"));
-        let empty = out.join("empty-smm.bin");
-        fs::write(&empty, []).expect("write empty SMM image placeholder");
-        println!("cargo:rustc-env=FSTART_SMM_IMAGE={}", empty.display());
-    }
-
-    if let Ok(header) = env::var("FSTART_SMM_COREBOOT_HEADER") {
-        println!("cargo:rustc-env=FSTART_SMM_COREBOOT_HEADER={header}");
-        println!("cargo:rerun-if-changed={header}");
-    }
 }
 "#
-}
-
-/// Return `(bootblock_heap, main_heap)` for a board's stage layout, used to
-/// size the wrapper's `_FSTART_HEAP` static per stage. Falls back to small
-/// defaults when a stage omits `heap_size`.
-fn stage_heap_sizes(config: &fstart_types::BoardConfig) -> (usize, usize) {
-    use fstart_types::StageLayout;
-    let stages = match &config.stages {
-        StageLayout::MultiStage(stages) => stages.iter(),
-        StageLayout::Monolithic(_) => return (0x100, 0x200000),
-    };
-    let bootblock = stages
-        .clone()
-        .find(|s| s.name.as_str() == "bootblock")
-        .or_else(|| stages.clone().next());
-    let main = stages
-        .clone()
-        .find(|s| s.name.as_str() != "bootblock")
-        .or_else(|| stages.clone().last());
-    (
-        bootblock.and_then(|s| s.heap_size).unwrap_or(0x100) as usize,
-        main.and_then(|s| s.heap_size).unwrap_or(0x200000) as usize,
-    )
 }
 
 fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {

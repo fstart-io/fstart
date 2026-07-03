@@ -16,6 +16,11 @@ extern crate fstart_alloc;
 
 extern crate fstart_runtime;
 
+// Link the platform crate so its entry-point/global asm reaches the stage
+// binary; the generated wrapper must not name platforms.
+#[cfg(feature = "x86_64")]
+extern crate fstart_platform_x86_64;
+
 #[cfg(feature = "crabefi")]
 pub extern crate fstart_crabefi as crabefi;
 

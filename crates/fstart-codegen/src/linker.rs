@@ -18,31 +18,34 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     // Load address, stack size, and optional data / page-table
     // reservations — pulled from either the monolithic stage or the
     // named multi-stage entry.
-    let (load_addr, stack_size, data_addr, _page_table_addr) = match (&config.stages, stage_name) {
-        (StageLayout::Monolithic(mono), _) => (
-            mono.load_addr,
-            mono.stack_size as u64,
-            mono.data_addr,
-            mono.page_table_addr,
-        ),
-        (StageLayout::MultiStage(stages), Some(name)) => {
-            if let Some((index, stage)) = stages
-                .iter()
-                .enumerate()
-                .find(|(_, s)| s.name.as_str() == name)
-            {
-                (
-                    effective_stage_load_addr(config, index, stage),
-                    stage.stack_size as u64,
-                    stage.data_addr,
-                    stage.page_table_addr,
-                )
-            } else {
-                (0x8000_0000, 0x10000, None, None)
+    let (load_addr, stack_size, heap_size, data_addr, _page_table_addr) =
+        match (&config.stages, stage_name) {
+            (StageLayout::Monolithic(mono), _) => (
+                mono.load_addr,
+                mono.stack_size as u64,
+                u64::from(mono.heap_size.unwrap_or(0)),
+                mono.data_addr,
+                mono.page_table_addr,
+            ),
+            (StageLayout::MultiStage(stages), Some(name)) => {
+                if let Some((index, stage)) = stages
+                    .iter()
+                    .enumerate()
+                    .find(|(_, s)| s.name.as_str() == name)
+                {
+                    (
+                        effective_stage_load_addr(config, index, stage),
+                        stage.stack_size as u64,
+                        u64::from(stage.heap_size.unwrap_or(0)),
+                        stage.data_addr,
+                        stage.page_table_addr,
+                    )
+                } else {
+                    (0x8000_0000, 0x10000, 0, None, None)
+                }
             }
-        }
-        _ => (0x8000_0000, 0x10000, None, None),
-    };
+            _ => (0x8000_0000, 0x10000, 0, None, None),
+        };
 
     // Check if load_addr falls within a ROM region (XIP) or RAM region.
     let rom_region =
@@ -180,6 +183,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             ram_origin,
             ram_length,
             stack_size,
+            heap_size,
             data_addr,
             needs_egon_header,
             is_first_stage,
@@ -224,6 +228,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             effective_origin,
             effective_length,
             stack_size,
+            heap_size,
             bss_origin,
             needs_egon_header,
             config.platform,
@@ -300,6 +305,7 @@ fn generate_xip_layout(
     ram_origin: u64,
     ram_length: u64,
     stack_size: u64,
+    heap_size: u64,
     data_addr: Option<u64>,
     needs_egon_header: bool,
     is_first_stage: bool,
@@ -398,18 +404,26 @@ fn generate_xip_layout(
     writeln!(out, "        _text_end = .;").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
-    // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning)
+    // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning),
+    // plus link-time stage constants read as data by asm/Rust.
     writeln!(out, "    .fstart.anchor : ALIGN(16) {{").unwrap();
     if platform == Platform::X86_64 {
         writeln!(out, "        _fstart_anchor_early = .;").unwrap();
+    }
+    writeln!(out, "        *(.fstart.anchor)").unwrap();
+    if platform == Platform::X86_64 {
+        // Real dword: the early-microcode asm reads it as a memory operand
+        // (`cmpl $0, sym`). An absolute assignment would make the asm read
+        // from address 0/1 instead.
+        writeln!(out, "        _fstart_early_microcode_enabled = .;").unwrap();
         writeln!(
             out,
-            "        _fstart_early_microcode_enabled = {};",
+            "        LONG({})",
             u8::from(x86_early_microcode_enabled)
         )
         .unwrap();
     }
-    writeln!(out, "        *(.fstart.anchor)").unwrap();
+    write_heap_size_constant(out, platform, heap_size);
     writeln!(out, "    }} > ROM\n").unwrap();
 
     // Read-only data in ROM.
@@ -444,6 +458,9 @@ fn generate_xip_layout(
 
     // AArch64 page tables are cleared explicitly by entry code.
     write_page_tables_section(out, "RAM", platform);
+
+    // Heap storage from the stage build config, consumed by fstart-alloc.
+    write_heap(out, heap_size, "RAM");
 
     // Stack: CAR/XIP stages use a dedicated CAR stack region; other XIP
     // stages allocate stack after BSS in RAM.
@@ -539,6 +556,7 @@ fn generate_ram_layout(
     ram_origin: u64,
     ram_length: u64,
     stack_size: u64,
+    heap_size: u64,
     bss_origin: Option<u64>,
     needs_egon_header: bool,
     platform: Platform,
@@ -566,11 +584,12 @@ fn generate_ram_layout(
             write_allwinner_egon_section(out, "CODE");
         }
         write_text_section(out, "CODE");
-        write_anchor_section(out, "CODE");
+        write_anchor_section(out, "CODE", platform, heap_size);
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
         write_bss_section(out, "RWDATA");
         write_page_tables_section(out, "RWDATA", platform);
+        write_heap(out, heap_size, "RWDATA");
         write_stack(out, stack_size, "RWDATA");
         write_x86_car_symbols(out, platform, has_x86_car);
         writeln!(out, "}}").unwrap();
@@ -588,11 +607,12 @@ fn generate_ram_layout(
             write_allwinner_egon_section(out, "RAM");
         }
         write_text_section(out, "RAM");
-        write_anchor_section(out, "RAM");
+        write_anchor_section(out, "RAM", platform, heap_size);
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
         write_bss_section(out, "RAM");
         write_page_tables_section(out, "RAM", platform);
+        write_heap(out, heap_size, "RAM");
         write_stack(out, stack_size, "RAM");
         write_x86_car_symbols(out, platform, has_x86_car);
         writeln!(out, "}}").unwrap();
@@ -614,9 +634,40 @@ fn write_text_section(out: &mut String, region: &str) {
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
-fn write_anchor_section(out: &mut String, region: &str) {
+fn write_anchor_section(out: &mut String, region: &str, platform: Platform, heap_size: u64) {
     writeln!(out, "    .fstart.anchor : ALIGN(8) {{").unwrap();
+    if platform == Platform::X86_64 {
+        writeln!(out, "        _fstart_anchor_early = .;").unwrap();
+    }
     writeln!(out, "        *(.fstart.anchor)").unwrap();
+    if platform == Platform::X86_64 {
+        // The early-microcode asm links these symbols in every stage;
+        // RAM-loaded stages never run the early path, so the flag is 0.
+        writeln!(out, "        _fstart_early_microcode_enabled = .;").unwrap();
+        writeln!(out, "        LONG(0)").unwrap();
+    }
+    write_heap_size_constant(out, platform, heap_size);
+    writeln!(out, "    }} > {region}\n").unwrap();
+}
+
+/// Emit `_FSTART_HEAP_SIZE` as pointer-sized data read by fstart-alloc.
+fn write_heap_size_constant(out: &mut String, platform: Platform, heap_size: u64) {
+    let word = match platform {
+        Platform::Armv7 => "LONG",
+        _ => "QUAD",
+    };
+    writeln!(out, "        . = ALIGN(8);").unwrap();
+    writeln!(out, "        _FSTART_HEAP_SIZE = .;").unwrap();
+    writeln!(out, "        {word}({heap_size:#x})").unwrap();
+}
+
+/// Reserve heap storage sized by the stage build config (`heap_size`).
+/// fstart-alloc finds it through `_FSTART_HEAP`; stages that declare no
+/// heap get an empty region and any allocation fails cleanly.
+fn write_heap(out: &mut String, heap_size: u64, region: &str) {
+    writeln!(out, "    .fstart.heap (NOLOAD) : ALIGN(16) {{").unwrap();
+    writeln!(out, "        _FSTART_HEAP = .;").unwrap();
+    writeln!(out, "        . = . + {heap_size:#x};").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
