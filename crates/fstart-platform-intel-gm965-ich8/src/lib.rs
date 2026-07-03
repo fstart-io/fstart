@@ -18,11 +18,11 @@ use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
     board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec,
     x86_uefi_payload, AcpiConfig, AcpiPlatform, BoardConfig, BoardInfo, BootMedium, BuildInfo,
-    BusAddress, Capability, CarConfig, Compression, DeviceRole, DeviceTopology, FlashLayout,
-    IntelIfdRegion, Io16, IoAddr, MemoryMap, MemoryRegion, PayloadConfig, Platform, RegionKind,
-    RunsFrom, SmbiosConfig, StageConfig, StageLayout, TempRamBuffer,
+    Capability, CarConfig, Compression, DeviceRole, DeviceTopology, FlashLayout, IntelIfdRegion,
+    MemoryMap, MemoryRegion, PayloadConfig, Platform, RegionKind, RunsFrom, SmbiosConfig,
+    StageConfig, StageLayout, TempRamBuffer,
 };
-use heapless::{String as HString, Vec as HVec};
+use heapless::Vec as HVec;
 
 pub use fstart_driver_intel_gm965::Gm965IgdConfig;
 pub use fstart_driver_intel_ich8::{
@@ -48,6 +48,44 @@ pub const GM965_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
 pub const GM965_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
 pub const GM965_NEXT_STAGE_NAME: &str = "ramstage";
 pub const ICH8_PMBASE: u32 = 0x0500;
+
+/// Closed GM965/ICH8 chipset policy consumed by fixed stage code.
+///
+/// Board-attached devices stay in board hooks/code; this only carries fields
+/// the GM965/ICH8 drivers program directly.
+#[derive(Debug, Clone)]
+pub struct Gm965Ich8Config {
+    pub northbridge: gm965::IntelGm965Config,
+    pub southbridge: ich8::IntelIch8Config,
+    pub firmware_base: u64,
+    pub firmware_size: usize,
+}
+
+impl Gm965Ich8Config {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            northbridge: gm965_defaults(),
+            southbridge: ich8_defaults(),
+            firmware_base: GM965_DEFAULT_FIRMWARE_BASE,
+            firmware_size: GM965_DEFAULT_FIRMWARE_SIZE,
+        }
+    }
+
+    #[must_use]
+    pub fn with_flash_layout(mut self, flash_layout: Option<&FlashLayout>) -> Self {
+        let (base, size) = firmware_window(flash_layout);
+        self.firmware_base = base;
+        self.firmware_size = size;
+        self
+    }
+}
+
+impl Default for Gm965Ich8Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Platform-owned ACPI namespace context for GM965/ICH8 recipes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,23 +131,6 @@ impl PcieRootPort {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RuntimeDevice {
-    name: HString<32>,
-    bus: BusAddress,
-    enabled: bool,
-}
-
-impl RuntimeDevice {
-    fn new(name: &str, bus: BusAddress, enabled: bool) -> Self {
-        Self {
-            name: hstr(name),
-            bus,
-            enabled,
-        }
-    }
-}
-
 /// GM965 northbridge config plus its topology node name.
 #[derive(Debug, Clone)]
 pub struct Gm965Northbridge {
@@ -117,48 +138,13 @@ pub struct Gm965Northbridge {
     pub config: gm965::IntelGm965Config,
 }
 
-/// ICH8 structural child bus plus its board-attached runtime children.
-#[derive(Debug, Clone)]
-pub struct Ich8ChildBus {
-    pub name: &'static str,
-    pub role: DeviceRole,
-    children: HVec<RuntimeDevice, 16>,
-}
-
-impl Ich8ChildBus {
-    #[must_use]
-    pub const fn new(name: &'static str, role: DeviceRole) -> Self {
-        Self {
-            name,
-            role,
-            children: HVec::new(),
-        }
-    }
-
-    pub fn device(&mut self, name: &str, bus: BusAddress, enabled: bool) -> &mut Self {
-        self.children
-            .push(RuntimeDevice::new(name, bus, enabled))
-            .expect("ICH8 child bus capacity");
-        self
-    }
-
-    pub fn lpc_device(&mut self, name: &str, address: IoAddr<Io16>, enabled: bool) -> &mut Self {
-        self.device(name, BusAddress::Lpc(address.raw()), enabled)
-    }
-
-    pub fn smbus_device(&mut self, name: &str, address: u8, enabled: bool) -> &mut Self {
-        self.device(name, BusAddress::I2c(address), enabled)
-    }
-}
-
-/// ICH8 PCIe root port plus its downstream board-attached runtime children.
+/// ICH8 PCIe root port state owned by the closed chipset config.
 #[derive(Debug, Clone)]
 pub struct PcieRootPortNode {
     pub name: &'static str,
     pub device: u8,
     pub function: u8,
     pub enabled: bool,
-    children: HVec<RuntimeDevice, 8>,
 }
 
 impl PcieRootPortNode {
@@ -169,20 +155,7 @@ impl PcieRootPortNode {
             device,
             function,
             enabled: false,
-            children: HVec::new(),
         }
-    }
-
-    pub fn device(&mut self, name: &str, device: u8, function: u8) -> &mut Self {
-        self.enabled = true;
-        self.children
-            .push(RuntimeDevice::new(
-                name,
-                BusAddress::Pci(device, function),
-                true,
-            ))
-            .expect("ICH8 PCIe child capacity");
-        self
     }
 }
 
@@ -192,8 +165,6 @@ pub struct Ich8Southbridge {
     pub name: &'static str,
     pub config: ich8::IntelIch8Config,
     pub pcie: [PcieRootPortNode; 6],
-    pub lpc: Ich8ChildBus,
-    pub smbus: Ich8ChildBus,
 }
 
 impl Ich8Southbridge {
@@ -249,8 +220,6 @@ impl Gm965Ich8Board {
                 name: ICH8_SOUTHBRIDGE_NODE,
                 config: ich8_defaults(),
                 pcie: pcie_root_ports(),
-                lpc: Ich8ChildBus::new(ICH8_LPC_BUS_NODE, DeviceRole::LpcBus),
-                smbus: Ich8ChildBus::new(ICH8_SMBUS_NODE, DeviceRole::SmBus),
             },
         }
     }
@@ -324,47 +293,12 @@ impl Gm965Ich8Board {
                 port.function,
                 port.enabled,
             );
-            for child in &port.children {
-                topology = topology.runtime_child(
-                    port.name,
-                    child.name.as_str(),
-                    child.bus,
-                    child.enabled,
-                );
-            }
-        }
-
-        topology = topology
-            .child_bus(
-                self.southbridge.name,
-                self.southbridge.lpc.name,
-                self.southbridge.lpc.role,
-            )
-            .child_bus(
-                self.southbridge.name,
-                self.southbridge.smbus.name,
-                self.southbridge.smbus.role,
-            )
-            .runtime_root(GM965_ICH8_MAINBOARD_NODE, self.mainboard_enabled);
-
-        for child in &self.southbridge.lpc.children {
-            topology = topology.runtime_child(
-                self.southbridge.lpc.name,
-                child.name.as_str(),
-                child.bus,
-                child.enabled,
-            );
-        }
-        for child in &self.southbridge.smbus.children {
-            topology = topology.runtime_child(
-                self.southbridge.smbus.name,
-                child.name.as_str(),
-                child.bus,
-                child.enabled,
-            );
         }
 
         topology
+            .child_bus(self.southbridge.name, ICH8_LPC_BUS_NODE, DeviceRole::LpcBus)
+            .child_bus(self.southbridge.name, ICH8_SMBUS_NODE, DeviceRole::SmBus)
+            .runtime_root(GM965_ICH8_MAINBOARD_NODE, self.mainboard_enabled)
     }
 }
 

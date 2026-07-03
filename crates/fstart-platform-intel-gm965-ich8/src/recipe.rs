@@ -20,7 +20,7 @@ use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
 use fstart_stage_runtime::StageFlow;
 
 use crate::{
-    Gm965Ich8AcpiContext, Gm965Ich8Board, GM965_NEXT_STAGE_NAME, GM965_NORTHBRIDGE_NODE,
+    Gm965Ich8AcpiContext, Gm965Ich8Config, GM965_NEXT_STAGE_NAME, GM965_NORTHBRIDGE_NODE,
     GM965_RAMSTAGE_LOAD_ADDR,
 };
 
@@ -53,7 +53,7 @@ where
 pub trait Gm965Ich8UefiBoard: FirmwareBoard<Recipe = Gm965Ich8UefiRecipe<Self>> {
     type Mainboard: Gm965Ich8Mainboard;
 
-    fn board() -> Gm965Ich8Board;
+    fn config() -> Gm965Ich8Config;
     fn mainboard() -> Result<Self::Mainboard, ServiceError>;
     fn console_config() -> Ns16550Config;
     fn console_node() -> &'static str;
@@ -90,11 +90,11 @@ fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
 }
 
 fn new_gm965<B: Gm965Ich8UefiBoard>() -> Result<IntelGm965, ServiceError> {
-    IntelGm965::new(B::board().northbridge.config).map_err(device_error_to_service_error)
+    IntelGm965::new(B::config().northbridge).map_err(device_error_to_service_error)
 }
 
 fn new_ich8<B: Gm965Ich8UefiBoard>() -> Result<IntelIch8, ServiceError> {
-    IntelIch8::new(B::board().southbridge.driver_config()).map_err(device_error_to_service_error)
+    IntelIch8::new(B::config().southbridge).map_err(device_error_to_service_error)
 }
 
 pub struct Gm965Ich8BootblockDevices<B: Gm965Ich8UefiBoard> {
@@ -147,10 +147,10 @@ where
     type Devices = Gm965Ich8BootblockDevices<B>;
 
     fn new() -> Result<Self, ServiceError> {
-        let board = B::board();
+        let config = B::config();
         Ok(Self {
             devices: Gm965Ich8BootblockDevices::new()?,
-            ffs: MemoryMappedFfs::new(board.firmware_base(), board.firmware_size()),
+            ffs: MemoryMappedFfs::new(config.firmware_base, config.firmware_size),
             ramstage_loaded: false,
         })
     }
@@ -311,10 +311,10 @@ where
     type Devices = Gm965Ich8RamstageDevices<B>;
 
     fn new() -> Result<Self, ServiceError> {
-        let board = B::board();
+        let config = B::config();
         Ok(Self {
             devices: Gm965Ich8RamstageDevices::new()?,
-            boot: MemoryMappedUefiBoot::new(board.firmware_base(), board.firmware_size(), 0),
+            boot: MemoryMappedUefiBoot::new(config.firmware_base, config.firmware_size, 0),
             payload_ready: false,
         })
     }
@@ -368,11 +368,11 @@ where
         };
 
         let acpi_base = self.devices.acpi_rsdp().unwrap_or(0) & !0xfff;
-        let board = B::board();
+        let config = B::config();
         let platform_entries = [
             MemoryRegion {
-                base: board.firmware_base(),
-                size: board.firmware_size() as u64,
+                base: config.firmware_base,
+                size: config.firmware_size as u64,
                 region_type: MemoryType::RuntimeServicesCode,
             },
             MemoryRegion {
