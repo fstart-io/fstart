@@ -1,15 +1,14 @@
 //! Lenovo ThinkPad X61 board metadata and build policy.
 
 use fstart_driver_i2c_ck505::I2cCk505Config;
-use fstart_driver_intel_gm965::Gm965IgdConfig;
 use fstart_driver_nsc_pc87382 as pc87382;
 use fstart_driver_nsc_pc87392 as pc87392;
 use fstart_gpio_ich as gpio;
 use fstart_hda as hda;
 use fstart_platform_intel_gm965_ich8::{
     gm965_ich8_memory, gm965_ich8_microcode, gm965_ich8_stages, gm965_ich8_topology,
-    Gm965Ich8Config, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode, LpcGenericIoDecode,
-    LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
+    Gm965Ich8Config, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode,
+    LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
 };
 use fstart_types::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
@@ -29,20 +28,17 @@ pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
 const MAINBOARD_NODE: &str = "mainboard";
 
-pub fn gm965_ich8_config() -> Gm965Ich8Config {
-    let mut config = Gm965Ich8Config::new().with_flash_layout(Some(&x61_flash_layout()));
-
-    config.northbridge.igd = x61_igd_config();
-
-    config.southbridge.pcie_ports[0] = true;
-    config.southbridge.pcie_ports[1] = true;
-    config.southbridge.lpc_decode.fixed_io = LpcFixedIoDecode {
+pub static X61_PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
+    .igd(x61_igd_config())
+    .pcie_port(0, true)
+    .pcie_port(1, true)
+    .lpc_fixed_io(LpcFixedIoDecode {
         com_a: LpcSerialDecode::Com1,
         com_b: LpcSerialDecode::Com2,
         lpt: Some(LpcParallelDecode::Lpt3bc),
         fdd: None,
-    };
-    for decode in [
+    })
+    .lpc_generic_io([
         LpcGenericIoDecode {
             base: 0x1600,
             size: 0x0080,
@@ -55,56 +51,47 @@ pub fn gm965_ich8_config() -> Gm965Ich8Config {
             base: 0x1680,
             size: 0x0020,
         },
-    ] {
-        config
-            .southbridge
-            .lpc_decode
-            .generic_io
-            .push(decode)
-            .expect("X61 LPC generic I/O decode capacity");
-    }
-    config.southbridge.gpe0_en = 0x0104_0046;
-    config.southbridge.gpi_routing = [0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0];
-    config.southbridge.ide = Some(IdeConfig {
+    ])
+    .gpe0_en(0x0104_0046)
+    .gpi_routing([0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0])
+    .ide(IdeConfig {
         enable_primary: true,
         enable_secondary: false,
-    });
-    config.southbridge.sata = Some(SataConfig {
+    })
+    .sata(SataConfig {
         mode: SataMode::Ahci,
         ports: 0x01,
         hotplug_map: 0,
         clock_request: false,
         traffic_monitor: false,
-    });
-    config.southbridge.usb = Some(UsbConfig {
+    })
+    .usb(UsbConfig {
         ehci: [true, true],
         uhci: [true, true, true, true, true, true],
-    });
-    config.southbridge.hda = Some(x61_hda_config());
-    config.southbridge.gpio = x61_gpio_config();
-    config
-        .southbridge
-        .io_traps
-        .push(IoTrapConfig {
-            index: 3,
-            base: 0x0800,
-            size: 0x10,
-            access: IoTrapAccess::Any,
-        })
-        .expect("X61 I/O trap capacity");
-
-    config
-}
+    })
+    .hda_verb(
+        0x11d4_1984,
+        0x17aa_20d6,
+        x61_hda_pins(),
+        x61_hda_extra_verbs(),
+    )
+    .gpio_pins(x61_gpio_pins())
+    .io_traps([IoTrapConfig {
+        index: 3,
+        base: 0x0800,
+        size: 0x10,
+        access: IoTrapAccess::Any,
+    }])
+    .build();
 
 #[must_use]
 pub fn board_config() -> BoardConfig {
-    let config = gm965_ich8_config();
     let flash_layout = x61_flash_layout();
     BoardConfig {
         name: hstr(BOARD_NAME),
         platform: PLATFORM,
         memory: gm965_ich8_memory(Some(flash_layout)),
-        devices: gm965_ich8_topology(&config)
+        devices: gm965_ich8_topology(&X61_PLATFORM)
             .runtime_root(MAINBOARD_NODE, true)
             .build(),
         stages: gm965_ich8_stages(),
@@ -229,13 +216,13 @@ pub fn x61_smbios() -> SmbiosConfig {
 // Board device configuration facts
 // ---------------------------------------------------------------------------
 
-pub fn x61_igd_config() -> Gm965IgdConfig {
+pub const fn x61_igd_config() -> Gm965IgdConfig {
     Gm965IgdConfig {
         enable_vga: true,
         enable_pipe_b: true,
         gtt_mmio_base: 0xFEB0_0000,
         stolen_memory_mb: 32,
-        vbt_file: Some(hstr("data.vbt")),
+        vbt_file: Some("data.vbt"),
         vbt_addr: None,
         vbt_size: 0,
         legacy_vbt_probe: Some(0x000C_0000),
@@ -249,421 +236,416 @@ pub fn x61_igd_config() -> Gm965IgdConfig {
     }
 }
 
-pub fn x61_hda_config() -> hda::HdaConfig {
-    hda::HdaConfig {
-        verbs: hvec([hda::HdaVerbTable {
-            vendor_id: 0x11d4_1984,
-            subsystem_id: 0x17aa_20d6,
-            pins: hvec([
-                hda::pin_config(
-                    0x11,
-                    hda::PinDevice::HpOut,
-                    hda::PinConn::Jack,
-                    hda::PinLoc::External,
-                    hda::PinGeoLoc::Right,
-                    hda::PinConnector::StereoMono18,
-                    hda::PinColor::Green,
-                    0,
-                    1,
-                    15,
-                ),
-                hda::pin_config(
-                    0x12,
-                    hda::PinDevice::Speaker,
-                    hda::PinConn::Integrated,
-                    hda::PinLoc::Internal,
-                    hda::PinGeoLoc::NA,
-                    hda::PinConnector::OtherAnalog,
-                    hda::PinColor::ColorUnknown,
-                    1,
-                    1,
-                    0,
-                ),
-                hda::pin_not_connected(0x13, 0),
-                hda::pin_config(
-                    0x14,
-                    hda::PinDevice::MicIn,
-                    hda::PinConn::Jack,
-                    hda::PinLoc::External,
-                    hda::PinGeoLoc::Right,
-                    hda::PinConnector::StereoMono18,
-                    hda::PinColor::Red,
-                    0,
-                    2,
-                    1,
-                ),
-                hda::pin_config(
-                    0x15,
-                    hda::PinDevice::MicIn,
-                    hda::PinConn::Integrated,
-                    hda::PinLoc::Internal,
-                    hda::PinGeoLoc::NA,
-                    hda::PinConnector::OtherAnalog,
-                    hda::PinColor::ColorUnknown,
-                    1,
-                    2,
-                    14,
-                ),
-                hda::pin_not_connected(0x16, 1),
-                hda::pin_not_connected(0x17, 2),
-                hda::pin_not_connected(0x18, 3),
-                hda::pin_not_connected(0x1a, 4),
-                hda::pin_not_connected(0x1b, 5),
-                hda::pin_config(
-                    0x1c,
-                    hda::PinDevice::MicIn,
-                    hda::PinConn::Jack,
-                    hda::PinLoc::SeparateChassis,
-                    hda::PinGeoLoc::Rear,
-                    hda::PinConnector::StereoMono18,
-                    hda::PinColor::Red,
-                    0,
-                    2,
-                    0,
-                ),
-            ]),
-            extra_verbs: hvec([
-                0x00c3_b027,
-                0x00d3_b027,
-                0x0073_7100,
-                0x00a3_7100,
-                0x0203_7318,
-                0x0213_b01f,
-                0x0113_b000,
-                0x0123_b000,
-                0x0037_0500,
-                0x0047_0500,
-                0x0057_0500,
-                0x0067_0500,
-                0x0087_0500,
-                0x0097_0500,
-                0x0197_0500,
-                0x0127_0c02,
-            ]),
-        }]),
-    }
+pub const fn x61_hda_pins() -> [hda::PinConfig; 11] {
+    [
+        hda::pin_config(
+            0x11,
+            hda::PinDevice::HpOut,
+            hda::PinConn::Jack,
+            hda::PinLoc::External,
+            hda::PinGeoLoc::Right,
+            hda::PinConnector::StereoMono18,
+            hda::PinColor::Green,
+            0,
+            1,
+            15,
+        ),
+        hda::pin_config(
+            0x12,
+            hda::PinDevice::Speaker,
+            hda::PinConn::Integrated,
+            hda::PinLoc::Internal,
+            hda::PinGeoLoc::NA,
+            hda::PinConnector::OtherAnalog,
+            hda::PinColor::ColorUnknown,
+            1,
+            1,
+            0,
+        ),
+        hda::pin_not_connected(0x13, 0),
+        hda::pin_config(
+            0x14,
+            hda::PinDevice::MicIn,
+            hda::PinConn::Jack,
+            hda::PinLoc::External,
+            hda::PinGeoLoc::Right,
+            hda::PinConnector::StereoMono18,
+            hda::PinColor::Red,
+            0,
+            2,
+            1,
+        ),
+        hda::pin_config(
+            0x15,
+            hda::PinDevice::MicIn,
+            hda::PinConn::Integrated,
+            hda::PinLoc::Internal,
+            hda::PinGeoLoc::NA,
+            hda::PinConnector::OtherAnalog,
+            hda::PinColor::ColorUnknown,
+            1,
+            2,
+            14,
+        ),
+        hda::pin_not_connected(0x16, 1),
+        hda::pin_not_connected(0x17, 2),
+        hda::pin_not_connected(0x18, 3),
+        hda::pin_not_connected(0x1a, 4),
+        hda::pin_not_connected(0x1b, 5),
+        hda::pin_config(
+            0x1c,
+            hda::PinDevice::MicIn,
+            hda::PinConn::Jack,
+            hda::PinLoc::SeparateChassis,
+            hda::PinGeoLoc::Rear,
+            hda::PinConnector::StereoMono18,
+            hda::PinColor::Red,
+            0,
+            2,
+            0,
+        ),
+    ]
 }
 
-pub fn x61_gpio_config() -> gpio::GpioConfig {
-    gpio::GpioConfig {
-        pins: hvec([
-            gpio::GpioPin {
-                pin: 0,
-                mode: gpio::GpioMode::Native,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 1,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 2,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 3,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 4,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 5,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 6,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 7,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 8,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 9,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 11,
-                mode: gpio::GpioMode::Native,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 12,
-                mode: gpio::GpioMode::Native,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 13,
-                mode: gpio::GpioMode::Native,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: true,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 17,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 18,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 19,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 20,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 21,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 22,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 24,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 27,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 28,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 29,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 30,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 31,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 33,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 34,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 36,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 37,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 38,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 39,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 41,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 42,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 43,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Output,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-            gpio::GpioPin {
-                pin: 48,
-                mode: gpio::GpioMode::Gpio,
-                dir: gpio::GpioDir::Input,
-                level: gpio::GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: gpio::GpioReset::Pwrok,
-            },
-        ]),
-    }
+pub const fn x61_hda_extra_verbs() -> [u32; 16] {
+    [
+        0x00c3_b027,
+        0x00d3_b027,
+        0x0073_7100,
+        0x00a3_7100,
+        0x0203_7318,
+        0x0213_b01f,
+        0x0113_b000,
+        0x0123_b000,
+        0x0037_0500,
+        0x0047_0500,
+        0x0057_0500,
+        0x0067_0500,
+        0x0087_0500,
+        0x0097_0500,
+        0x0197_0500,
+        0x0127_0c02,
+    ]
+}
+
+pub const fn x61_gpio_pins() -> [gpio::GpioPin; 35] {
+    [
+        gpio::GpioPin {
+            pin: 0,
+            mode: gpio::GpioMode::Native,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 1,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 2,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 3,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 4,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 5,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 6,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 7,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 8,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 9,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 11,
+            mode: gpio::GpioMode::Native,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 12,
+            mode: gpio::GpioMode::Native,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 13,
+            mode: gpio::GpioMode::Native,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: true,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 17,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 18,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 19,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 20,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 21,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 22,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 24,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 27,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 28,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 29,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 30,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 31,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 33,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 34,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 36,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 37,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 38,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 39,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 41,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 42,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 43,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Output,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+        gpio::GpioPin {
+            pin: 48,
+            mode: gpio::GpioMode::Gpio,
+            dir: gpio::GpioDir::Input,
+            level: gpio::GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: gpio::GpioReset::Pwrok,
+        },
+    ]
 }
 
 pub fn x61_dlpc_superio_config() -> pc87382::Pc87382Config {

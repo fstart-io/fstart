@@ -53,7 +53,7 @@ where
 pub trait Gm965Ich8StageBoard: FirmwareBoard<Recipe = Gm965Ich8Recipe<Self>> {
     type Mainboard: Gm965Ich8Mainboard;
 
-    fn config() -> Gm965Ich8Config;
+    fn config() -> &'static Gm965Ich8Config;
     fn mainboard() -> Result<Self::Mainboard, ServiceError>;
     fn console_config() -> Ns16550Config;
     fn console_node() -> &'static str;
@@ -90,11 +90,11 @@ fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
 }
 
 fn new_gm965<B: Gm965Ich8StageBoard>() -> Result<IntelGm965, ServiceError> {
-    IntelGm965::new(B::config().northbridge).map_err(device_error_to_service_error)
+    IntelGm965::new(B::config().gm965_driver_config()).map_err(device_error_to_service_error)
 }
 
 fn new_ich8<B: Gm965Ich8StageBoard>() -> Result<IntelIch8, ServiceError> {
-    IntelIch8::new(B::config().southbridge).map_err(device_error_to_service_error)
+    IntelIch8::new(B::config().ich8_driver_config()).map_err(device_error_to_service_error)
 }
 
 fn run_gm965_ich8_bootblock<B>() -> !

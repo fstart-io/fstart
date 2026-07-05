@@ -34,8 +34,8 @@ impl FirmwareBoard for Board {
 impl Gm965Ich8StageBoard for Board {
     type Mainboard = X61Mainboard;
 
-    fn config() -> Gm965Ich8Config {
-        crate::gm965_ich8_config()
+    fn config() -> &'static Gm965Ich8Config {
+        &crate::X61_PLATFORM
     }
 
     fn mainboard() -> Result<Self::Mainboard, ServiceError> {
