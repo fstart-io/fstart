@@ -1,14 +1,10 @@
-//! Device trait — base lifecycle for all hardware devices.
+//! Device construction errors and the bus-attached device contract.
 //!
-//! Every driver implements `Device` with an associated `Config` type that
-//! captures exactly the resources it needs. Rust board crates construct these
-//! driver-specific structs directly.
-//!
-//! Bus-attached devices implement [`BusDevice`] instead. Board/platform-owned
-//! topology builders pass the parent bus controller reference and typed bus address directly
-//! (compile-away approach: no runtime lookup).
-//!
-//! See [docs/driver-model.md](../../../docs/driver-model.md) for the full design.
+//! Root-level drivers expose inherent `new(config)` constructors returning
+//! [`DeviceError`]; fixed per-family flows call their concrete methods
+//! directly. Bus-attached devices implement [`BusDevice`]: board/platform
+//! topology passes the parent bus controller reference and typed bus address
+//! directly (compile-away approach: no runtime lookup).
 
 use fstart_types::BusAddress;
 
@@ -23,36 +19,6 @@ pub enum DeviceError {
     InitFailed,
     /// A bus error occurred communicating with a parent bus.
     BusError,
-}
-
-/// Base trait for all root-level hardware devices.
-///
-/// Separates construction (`new`) from hardware initialization. Fixed
-/// per-family flows call concrete driver methods for hardware sequencing;
-/// `init()` covers simple single-shot devices such as UARTs.
-///
-/// # Associated Types
-///
-/// `Config` is the driver-specific configuration struct (e.g., `Ns16550Config`).
-/// Drivers own this value. Board code may build it on the stack, in a stage
-/// device aggregate, or as a `static` constant for truly immutable facts, but
-/// the service model does not require leaked or fake `'static` references.
-pub trait Device: Send + Sync + Sized {
-    /// Human-readable driver name (e.g., `"ns16550"`).
-    const NAME: &'static str;
-
-    /// Compatible strings for matching (e.g., `&["ns16550a", "ns16550"]`).
-    const COMPATIBLE: &'static [&'static str];
-
-    /// Driver-specific configuration type, with only the fields this driver needs.
-    type Config;
-
-    /// Construct from typed config. Does NOT touch hardware.
-    fn new(config: Self::Config) -> Result<Self, DeviceError>;
-
-    /// Whole-device initialization hook for simple devices. Chipset drivers
-    /// keep this side-effect free and expose explicit flow methods instead.
-    fn init(&mut self) -> Result<(), DeviceError>;
 }
 
 /// Trait for devices that live on a parent bus.

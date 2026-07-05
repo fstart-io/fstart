@@ -25,15 +25,14 @@ stage = [
 acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
-  "dep:fstart-capabilities",
-  "fstart-capabilities/acpi",
+  "fstart-platform-intel-gm965-ich8/acpi",
   "dep:fstart-mp",
   "fstart-driver-intel-gm965/acpi",
   "fstart-driver-intel-gm965/ffs-vbt",
   "fstart-driver-intel-ich8?/acpi",
 ]
 mp = ["stage", "dep:fstart-cpu-intel", "dep:fstart-mp"]
-smbios = ["dep:fstart-capabilities", "fstart-capabilities/smbios"]
+smbios = ["fstart-platform-intel-gm965-ich8/smbios"]
 smm = ["dep:fstart-smm-runtime"]
 
 [dependencies]
@@ -54,7 +53,6 @@ fstart-hda = { workspace = true }
 fstart-pio = { workspace = true }
 fstart-services = { workspace = true, features = ["pci"] }
 fstart-superio = { workspace = true }
-fstart-capabilities = { workspace = true, optional = true }
 fstart-cpu-intel = { workspace = true, optional = true }
 fstart-mp = { workspace = true, optional = true }
 fstart-smbios = { workspace = true }

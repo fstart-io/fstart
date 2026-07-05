@@ -22,7 +22,7 @@ extern crate alloc;
 
 use heapless::Vec as HVec;
 
-use fstart_services::device::{Device, DeviceError};
+use fstart_services::device::DeviceError;
 use fstart_services::memory_detect::E820Kind;
 use fstart_services::pci::{
     PciBdf, PciRootBus, PciWindow, PciWindowKind, PCI_BAR0, PCI_CLASS_REVISION, PCI_CMD_BUS_MASTER,
@@ -910,20 +910,6 @@ impl PciEcam {
             devices: HVec::new(),
             next_bus: config.bus_start + 1,
         })
-    }
-}
-
-impl Device for PciEcam {
-    const NAME: &'static str = "pci-ecam";
-    const COMPATIBLE: &'static [&'static str] = &["pci-host-ecam-generic"];
-    type Config = PciEcamConfig;
-
-    fn new(config: PciEcamConfig) -> Result<Self, DeviceError> {
-        Self::from_config(&config)
-    }
-
-    fn init(&mut self) -> Result<(), DeviceError> {
-        Ok(())
     }
 }
 

@@ -6,7 +6,7 @@ use fstart_acpi::device::AcpiDevice;
 use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 #[cfg(feature = "acpi")]
-use fstart_platform_intel_gm965_ich8::Gm965Ich8RamstageDevices;
+use fstart_platform_intel_gm965_ich8::Gm965Ich8Mainstage;
 #[cfg(feature = "mp")]
 use fstart_platform_intel_gm965_ich8::ICH8_PMBASE;
 use fstart_platform_intel_gm965_ich8::{
@@ -75,12 +75,12 @@ impl Gm965Ich8StageBoard for Board {
     }
 
     #[cfg(feature = "acpi")]
-    fn prepare_acpi(devices: &mut Gm965Ich8RamstageDevices<Self>) -> Option<u64> {
+    fn prepare_acpi(devices: &mut Gm965Ich8Mainstage<Self>) -> Option<u64> {
         let southbridge = devices.southbridge();
         let platform =
             PlatformConfig::X86(southbridge.x86_platform_config(fstart_mp::online_cpus() as u32));
         let rsdp =
-            fstart_capabilities::acpi::prepare_with_options(&platform, true, |dsdt, extra| {
+            fstart_platform_intel_gm965_ich8::tables::prepare_acpi(&platform, |dsdt, extra| {
                 dsdt.extend(
                     devices
                         .northbridge()
@@ -100,6 +100,6 @@ impl Gm965Ich8StageBoard for Board {
 
     #[cfg(feature = "smbios")]
     fn prepare_smbios() {
-        fstart_capabilities::smbios::prepare(&crate::X61_SMBIOS_DESC);
+        fstart_platform_intel_gm965_ich8::tables::prepare_smbios(&crate::X61_SMBIOS_DESC);
     }
 }

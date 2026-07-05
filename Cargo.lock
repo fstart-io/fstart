@@ -488,7 +488,6 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
- "fstart-capabilities",
  "fstart-cpu-intel",
  "fstart-driver-i2c-ck505",
  "fstart-driver-intel-gm965",
@@ -524,14 +523,11 @@ dependencies = [
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
- "fstart-acpi",
- "fstart-arch-x86",
  "fstart-crypto",
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",
  "fstart-services",
- "fstart-smbios",
  "fstart-types",
  "postcard",
  "ufmt",
@@ -809,7 +805,8 @@ dependencies = [
 name = "fstart-platform-intel-gm965-ich8"
 version = "0.1.0"
 dependencies = [
- "fstart-capabilities",
+ "fstart-acpi",
+ "fstart-arch-x86",
  "fstart-driver-intel-gm965",
  "fstart-driver-intel-ich8",
  "fstart-driver-ns16550",
@@ -817,6 +814,7 @@ dependencies = [
  "fstart-log",
  "fstart-platform-x86_64",
  "fstart-services",
+ "fstart-smbios",
  "fstart-stage",
  "fstart-types",
  "heapless",

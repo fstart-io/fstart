@@ -11,6 +11,9 @@ extern crate ufmt;
 #[cfg(feature = "recipe")]
 pub mod recipe;
 
+#[cfg(any(feature = "acpi", feature = "smbios"))]
+pub mod tables;
+
 #[cfg(feature = "recipe")]
 use fstart_driver_intel_gm965 as gm965;
 use fstart_driver_intel_ich8 as ich8;
@@ -32,7 +35,7 @@ pub use fstart_driver_intel_ich8::{
 #[cfg(feature = "recipe")]
 pub use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
 #[cfg(feature = "recipe")]
-pub use recipe::{Gm965Ich8Hooks, Gm965Ich8RamstageDevices, Gm965Ich8Recipe, Gm965Ich8StageBoard};
+pub use recipe::{Gm965Ich8Hooks, Gm965Ich8Mainstage, Gm965Ich8Recipe, Gm965Ich8StageBoard};
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const ICH8_SOUTHBRIDGE_NODE: &str = "southbridge";

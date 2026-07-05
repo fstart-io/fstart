@@ -5,8 +5,8 @@ use core::marker::PhantomData;
 use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::{Ns16550, Ns16550Config};
-use fstart_services::memory_detect::{E820Entry, MAX_E820_ENTRIES};
-use fstart_services::{Device, DeviceError, MemoryController, PciRootBus, ServiceError};
+use fstart_services::memory_detect::{E820Entry, MemoryDetector, MAX_E820_ENTRIES};
+use fstart_services::{MemoryController, PciRootBus, ServiceError};
 #[cfg(feature = "crabefi")]
 use fstart_stage::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 use fstart_stage::fixed_helpers::MemoryMappedFfs;
@@ -32,7 +32,7 @@ where
         } else if stage.is_named(GM965_NEXT_STAGE_NAME) {
             #[cfg(feature = "crabefi")]
             {
-                run_gm965_ich8_ramstage::<B>()
+                run_gm965_ich8_mainstage::<B>()
             }
             #[cfg(not(feature = "crabefi"))]
             {
@@ -58,7 +58,7 @@ pub trait Gm965Ich8StageBoard: FirmwareBoard<Recipe = Gm965Ich8Recipe<Self>> {
         Ok(())
     }
 
-    fn prepare_acpi(_devices: &mut Gm965Ich8RamstageDevices<Self>) -> Option<u64> {
+    fn prepare_acpi(_mainstage: &mut Gm965Ich8Mainstage<Self>) -> Option<u64> {
         None
     }
 
@@ -90,28 +90,16 @@ pub trait Gm965Ich8Hooks {
     }
 }
 
-fn device_error_to_service_error(_err: DeviceError) -> ServiceError {
-    ServiceError::HardwareError
-}
-
-fn new_gm965<B: Gm965Ich8StageBoard>() -> Result<IntelGm965, ServiceError> {
-    IntelGm965::new(B::config().gm965_driver_config()).map_err(device_error_to_service_error)
-}
-
-fn new_ich8<B: Gm965Ich8StageBoard>() -> Result<IntelIch8, ServiceError> {
-    IntelIch8::new(B::config().ich8_driver_config()).map_err(device_error_to_service_error)
-}
-
 /// Handwritten fixed GM965/ICH8 bootblock flow. Ordering is this function.
 fn run_gm965_ich8_bootblock<B>() -> !
 where
     B: Gm965Ich8StageBoard,
 {
     let config = B::config();
-    let Ok(mut northbridge) = new_gm965::<B>() else {
+    let Ok(mut northbridge) = IntelGm965::new(config.gm965_driver_config()) else {
         B::halt();
     };
-    let Ok(mut southbridge) = new_ich8::<B>() else {
+    let Ok(mut southbridge) = IntelIch8::new(config.ich8_driver_config()) else {
         B::halt();
     };
     let Ok(mut hooks) = B::hooks() else {
@@ -126,8 +114,7 @@ where
         B::halt();
     }
 
-    let Ok(mut console) = Ns16550::new(B::console_config()).map_err(device_error_to_service_error)
-    else {
+    let Ok(mut console) = Ns16550::new(B::console_config()) else {
         B::halt();
     };
     if console.init().is_err() {
@@ -152,8 +139,9 @@ where
     fstart_platform_x86_64::jump_to(GM965_RAMSTAGE_LOAD_ADDR)
 }
 
-/// Runtime device set owned by the GM965/ICH8 ramstage recipe.
-pub struct Gm965Ich8RamstageDevices<B: Gm965Ich8StageBoard> {
+/// GM965/ICH8 mainstage: fixed platform devices bound from typed config and
+/// driven through explicit handwritten phases.
+pub struct Gm965Ich8Mainstage<B: Gm965Ich8StageBoard> {
     northbridge: IntelGm965,
     southbridge: IntelIch8,
     hooks: B::Hooks,
@@ -165,16 +153,21 @@ pub struct Gm965Ich8RamstageDevices<B: Gm965Ich8StageBoard> {
 }
 
 #[cfg_attr(not(feature = "crabefi"), allow(dead_code))]
-impl<B> Gm965Ich8RamstageDevices<B>
+impl<B> Gm965Ich8Mainstage<B>
 where
     B: Gm965Ich8StageBoard,
 {
-    fn new() -> Result<Self, ServiceError> {
+    /// Bind fixed platform devices from the board's typed config. No hardware
+    /// is touched; construction failures are config errors.
+    fn bind() -> Result<Self, ServiceError> {
+        let config = B::config();
         Ok(Self {
-            northbridge: new_gm965::<B>()?,
-            southbridge: new_ich8::<B>()?,
+            northbridge: IntelGm965::new(config.gm965_driver_config())
+                .map_err(|_| ServiceError::HardwareError)?,
+            southbridge: IntelIch8::new(config.ich8_driver_config())
+                .map_err(|_| ServiceError::HardwareError)?,
             hooks: B::hooks()?,
-            console: Ns16550::new(B::console_config()).map_err(device_error_to_service_error)?,
+            console: Ns16550::new(B::console_config()).map_err(|_| ServiceError::HardwareError)?,
             e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
             e820_count: 0,
             total_ram: 0,
@@ -205,102 +198,116 @@ where
         self.acpi_rsdp
     }
 
-    fn pre_console(&mut self) -> Result<(), ServiceError> {
+    /// Enable bridges/decode, bring up the console, and get DRAM usable —
+    /// everything that must happen before PCI enumeration.
+    fn pre_bus_scan(&mut self) -> Result<(), ServiceError> {
         self.northbridge.pre_console_init()?;
         self.southbridge.pre_console_init()?;
-        self.hooks.before_console(&mut self.southbridge)
-    }
+        self.hooks.before_console(&mut self.southbridge)?;
 
-    fn init_console(&mut self) -> Result<(), ServiceError> {
-        self.console.init().map_err(device_error_to_service_error)?;
-        // SAFETY: ramstage owns the console until it hands control to CrabEFI.
+        self.console
+            .init()
+            .map_err(|_| ServiceError::HardwareError)?;
+        // SAFETY: the mainstage owns the console until it hands control to
+        // the payload.
         unsafe { fstart_log::init(&self.console) };
         fstart_log::info!("fstart ramstage console ready");
         fstart_log::info!("{}: ns16550 console ready", B::console_node());
-        Ok(())
-    }
 
-    fn post_console(&mut self) -> Result<(), ServiceError> {
         self.northbridge.early_init()?;
-        self.southbridge.early_init()
-    }
+        self.southbridge.early_init()?;
 
-    fn memory_discovery(&mut self) -> Result<(), ServiceError> {
         self.hooks.before_memory(&mut self.southbridge)?;
-        let (count, total) = fstart_capabilities::memory_detect(
-            &self.northbridge,
-            &mut self.e820,
+        let count = self.northbridge.detect_memory(&mut self.e820)?;
+        let total = self.northbridge.total_ram_bytes()?;
+        fstart_log::info!(
+            "Detected {} MiB RAM, {} e820 entries from {}",
+            total >> 20,
+            count,
             GM965_NORTHBRIDGE_NODE,
-        )?;
+        );
+        // Publish the e820 map so PCI window allocation and table emission
+        // can read it.
+        // SAFETY: single-threaded firmware init, stored once per stage.
+        unsafe {
+            fstart_services::memory_detect::e820_state_mut().store(&self.e820, count, total);
+        }
         self.e820_count = count;
         self.total_ram = total;
-        Ok(())
-    }
 
-    fn dram(&mut self) -> Result<(), ServiceError> {
         self.northbridge.dram_init()
     }
 
-    fn bus_probe(&mut self) -> Result<(), ServiceError> {
-        self.northbridge.init_bus()?;
+    /// Enumerate PCI. BAR assignment and window confirmation happen in the
+    /// same ECAM pass as the scan.
+    fn bus_scan(&mut self) -> Result<(), ServiceError> {
+        self.northbridge.init_bus()
+    }
+
+    /// Initialize the devices the selected boot mode needs: southbridge
+    /// post-DRAM functions, board-attached devices, and APs.
+    fn init_devices(&mut self) -> Result<(), ServiceError> {
         self.southbridge.post_dram_init()?;
         self.hooks.after_memory(&mut self.southbridge)?;
         B::init_mp()
     }
 
-    fn handoff(&mut self) -> Result<(), ServiceError> {
+    /// Emit ACPI/SMBIOS tables from the existing board + platform code.
+    fn emit_tables(&mut self) -> Result<(), ServiceError> {
         self.acpi_rsdp = B::prepare_acpi(self);
         B::prepare_smbios();
         Ok(())
     }
+
+    /// Board lockdown and southbridge quiesce before payload handoff.
+    fn finalize(&mut self) -> Result<(), ServiceError> {
+        self.hooks.before_handoff(&mut self.southbridge)?;
+        self.southbridge.finalize_init()
+    }
 }
 
+/// Handwritten fixed GM965/ICH8 mainstage flow. Ordering is this function.
 #[cfg(feature = "crabefi")]
-fn run_gm965_ich8_ramstage<B>() -> !
+fn run_gm965_ich8_mainstage<B>() -> !
 where
     B: Gm965Ich8StageBoard,
 {
-    let mut devices = match Gm965Ich8RamstageDevices::<B>::new() {
-        Ok(devices) => devices,
-        Err(_) => B::halt(),
+    let Ok(mut mainstage) = Gm965Ich8Mainstage::<B>::bind() else {
+        B::halt();
     };
     let config = B::config();
     let boot = MemoryMappedUefiBoot::new(config.firmware_base, config.firmware_size, 0);
-    run_ramstage_step::<B>("pre-console", || devices.pre_console());
-    run_ramstage_step::<B>("console", || devices.init_console());
-    run_ramstage_step::<B>("post-console", || devices.post_console());
-    run_ramstage_step::<B>("memory-discovery", || devices.memory_discovery());
-    run_ramstage_step::<B>("dram", || devices.dram());
-    run_ramstage_step::<B>("bus-probe", || devices.bus_probe());
-    run_ramstage_step::<B>("storage", || {
+    run_mainstage_phase::<B>("pre_bus_scan", || mainstage.pre_bus_scan());
+    run_mainstage_phase::<B>("bus_scan", || mainstage.bus_scan());
+    run_mainstage_phase::<B>("init_devices", || mainstage.init_devices());
+    run_mainstage_phase::<B>("mount_boot_media", || {
         fstart_platform_x86_64::enable_boot_media_rom_cache();
         boot.mount()?;
-        devices.northbridge.stage_local_init()
+        mainstage.northbridge.stage_local_init()
     });
-    run_ramstage_step::<B>("security", || boot.verify());
-    run_ramstage_step::<B>("handoff", || {
-        devices.handoff()?;
-        devices.hooks.before_handoff(&mut devices.southbridge)?;
-        devices.southbridge.finalize_init()
-    });
+    run_mainstage_phase::<B>("verify_boot_media", || boot.verify());
+    run_mainstage_phase::<B>("emit_tables", || mainstage.emit_tables());
+    run_mainstage_phase::<B>("finalize", || mainstage.finalize());
 
-    boot_gm965_ich8_payload::<B>(devices)
+    boot_gm965_ich8_payload::<B>(mainstage)
 }
 
 #[cfg(feature = "crabefi")]
-fn run_ramstage_step<B>(name: &str, step: impl FnOnce() -> Result<(), ServiceError>)
+fn run_mainstage_phase<B>(name: &str, phase: impl FnOnce() -> Result<(), ServiceError>)
 where
     B: Gm965Ich8StageBoard,
 {
-    fstart_log::info!("gm965/ich8 ramstage: {}", name);
-    if step().is_err() {
-        fstart_log::error!("gm965/ich8 ramstage: {} failed", name);
+    fstart_log::info!("gm965/ich8 mainstage: {}", name);
+    if phase().is_err() {
+        fstart_log::error!("gm965/ich8 mainstage: {} failed", name);
         B::halt();
     }
 }
 
+/// Boot: launch the build-selected payload (CrabEFI via the `crabefi`
+/// feature). Payload choice is a build input, never board identity.
 #[cfg(feature = "crabefi")]
-fn boot_gm965_ich8_payload<B>(devices: Gm965Ich8RamstageDevices<B>) -> !
+fn boot_gm965_ich8_payload<B>(devices: Gm965Ich8Mainstage<B>) -> !
 where
     B: Gm965Ich8StageBoard,
 {

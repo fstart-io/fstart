@@ -8,7 +8,6 @@ publish = false
 [features]
 default = []
 recipe = [
-  "dep:fstart-capabilities",
   "dep:fstart-driver-ns16550",
   "dep:fstart-log",
   "dep:fstart-platform-x86_64",
@@ -17,15 +16,19 @@ recipe = [
   "fstart-services/pci",
 ]
 crabefi = ["fstart-stage/crabefi"]
+acpi = ["recipe", "dep:fstart-acpi"]
+smbios = ["recipe", "dep:fstart-smbios", "dep:fstart-arch-x86"]
 
 [dependencies]
 fstart-types = { workspace = true }
 fstart-driver-intel-gm965 = { workspace = true, features = ["ffs-vbt"] }
 fstart-driver-intel-ich8 = { workspace = true }
 fstart-driver-ns16550 = { workspace = true, optional = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-arch-x86 = { workspace = true, optional = true }
+fstart-smbios = { workspace = true, optional = true }
 fstart-gpio-ich = { workspace = true }
 fstart-services = { workspace = true }
-fstart-capabilities = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }
 fstart-platform-x86_64 = { workspace = true, optional = true }
 fstart-stage = { workspace = true, optional = true }

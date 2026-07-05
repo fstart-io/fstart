@@ -42,12 +42,6 @@ pub mod handoff;
 
 pub mod next_stage;
 
-#[cfg(feature = "smbios")]
-pub mod smbios;
-
-#[cfg(feature = "acpi")]
-pub mod acpi;
-
 // ---------------------------------------------------------------------------
 // FDT blob utilities
 // ---------------------------------------------------------------------------
@@ -76,12 +70,16 @@ pub unsafe fn fdt_blob_from_addr(addr: u64) -> Option<&'static [u8]> {
         return None;
     }
     let ptr = addr as *const u8;
-    let magic = u32::from_be(core::ptr::read_unaligned(ptr as *const u32));
+    // SAFETY: caller guarantees at least 8 readable bytes at `addr`.
+    let magic = u32::from_be(unsafe { core::ptr::read_unaligned(ptr as *const u32) });
     if magic != FDT_MAGIC {
         return None;
     }
-    let size = u32::from_be(core::ptr::read_unaligned(ptr.add(4) as *const u32)) as usize;
-    Some(core::slice::from_raw_parts(ptr, size))
+    // SAFETY: magic validated; caller guarantees the full blob is readable
+    // and remains valid for 'static.
+    let size =
+        u32::from_be(unsafe { core::ptr::read_unaligned(ptr.add(4) as *const u32) }) as usize;
+    Some(unsafe { core::slice::from_raw_parts(ptr, size) })
 }
 
 #[cfg(any(feature = "ffs", feature = "fdt"))]
@@ -89,113 +87,6 @@ use fstart_log::Hex;
 
 #[cfg(feature = "ffs")]
 use fstart_services::BootMedia;
-
-// ---------------------------------------------------------------------------
-// ConsoleInit
-// ---------------------------------------------------------------------------
-
-/// Log the console-ready banner after a console device is initialised.
-///
-/// Called by fixed-flow console setup after a console device is ready.
-pub fn console_ready(device_name: &str, driver_name: &str) {
-    fstart_log::info!("{}: {} console ready", device_name, driver_name);
-}
-
-// ---------------------------------------------------------------------------
-// MemoryInit
-// ---------------------------------------------------------------------------
-
-/// Initialise DRAM (memory training / memory controller setup).
-///
-/// In a real board this would perform SPD reads, memory training, and
-/// controller configuration. For QEMU virt machines, RAM is always available
-/// so this is a no-op that logs its execution.
-///
-/// Future: Accept a platform-specific memory-init trait or configuration.
-pub fn memory_init() {
-    fstart_log::info!("capability: MemoryInit");
-    // QEMU virt: RAM is pre-initialised, nothing to do.
-    // Real boards: SPD read → training → controller init would go here.
-    fstart_log::info!("memory init complete (no-op on QEMU)");
-}
-
-// ---------------------------------------------------------------------------
-// DriverInit
-// ---------------------------------------------------------------------------
-
-/// Enumerate and initialise all declared devices/drivers.
-///
-/// Board-owned fixed-flow adapters run the actual per-device step methods for
-/// devices that were not already initialized by an earlier capability. This
-/// function records the phase boundary and the adapter-reported device count.
-///
-/// `device_count` is the total number of devices that were initialized
-/// in this phase.
-pub fn driver_init_complete(device_count: usize) {
-    fstart_log::info!("capability: DriverInit ({} devices)", device_count);
-}
-
-// ---------------------------------------------------------------------------
-// AcpiLoad
-// ---------------------------------------------------------------------------
-
-/// Load ACPI tables from an external provider (e.g., QEMU fw_cfg).
-///
-/// Calls `load_acpi_tables()` on the given device, writing tables into
-/// `buffer`. Returns the RSDP physical address on success.
-///
-/// This function lives in firmware library code — codegen just calls it
-/// with the appropriate device reference and buffer.
-pub fn acpi_load(
-    provider: &(impl fstart_services::acpi_provider::AcpiTableProvider + ?Sized),
-    buffer: &mut [u8],
-    device_name: &str,
-) -> Result<u64, fstart_services::ServiceError> {
-    let rsdp = provider.load_acpi_tables(buffer)?;
-    fstart_log::info!(
-        "ACPI tables loaded from {}, RSDP at {:#x}",
-        device_name,
-        rsdp
-    );
-    Ok(rsdp)
-}
-
-// ---------------------------------------------------------------------------
-// MemoryDetect
-// ---------------------------------------------------------------------------
-
-/// Detect system memory layout at runtime (e.g., e820 from QEMU fw_cfg).
-///
-/// Calls `detect_memory()` and `total_ram_bytes()` on the given device.
-/// Populates `entries` with memory map entries and returns
-/// `(entry_count, total_ram_bytes)`.
-///
-/// This function lives in firmware library code — codegen just calls it
-/// with the appropriate device reference and entry buffer.
-pub fn memory_detect(
-    detector: &(impl fstart_services::memory_detect::MemoryDetector + ?Sized),
-    entries: &mut [fstart_services::memory_detect::E820Entry],
-    device_name: &str,
-) -> Result<(usize, u64), fstart_services::ServiceError> {
-    let count = detector.detect_memory(entries)?;
-    let total = detector.total_ram_bytes()?;
-    fstart_log::info!(
-        "Detected {} MiB RAM, {} e820 entries from {}",
-        total >> 20,
-        count,
-        device_name,
-    );
-
-    // Store in global state so PCI host bridges (and other consumers)
-    // can access e820 data without codegen passing it explicitly.
-    // SAFETY: single-threaded firmware init, called once during the
-    // MemoryDetect capability phase.
-    unsafe {
-        fstart_services::memory_detect::e820_state_mut().store(entries, count, total);
-    }
-
-    Ok((count, total))
-}
 
 // ---------------------------------------------------------------------------
 // SigVerify

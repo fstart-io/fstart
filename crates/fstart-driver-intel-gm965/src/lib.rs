@@ -26,7 +26,7 @@ use fstart_ecam as ecam;
 use fstart_mmio::MmioReadWrite;
 use fstart_mp::{SmmError, SmmInfo, SmmOps};
 use fstart_pci::pci_type0_config;
-use fstart_services::device::{Device, DeviceError};
+use fstart_services::device::DeviceError;
 use fstart_services::memory_detect::{
     build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
 };
@@ -1730,12 +1730,9 @@ impl IntelGm965 {
     }
 }
 
-impl Device for IntelGm965 {
-    const NAME: &'static str = "intel-gm965";
-    const COMPATIBLE: &'static [&'static str] = &["intel,gm965", "intel,crestline"];
-    type Config = IntelGm965Config;
-
-    fn new(config: IntelGm965Config) -> Result<Self, DeviceError> {
+impl IntelGm965 {
+    /// Construct from typed config. Does NOT touch hardware.
+    pub fn new(config: IntelGm965Config) -> Result<Self, DeviceError> {
         Ok(Self {
             config,
             detected_size: 0,
@@ -1743,17 +1740,6 @@ impl Device for IntelGm965 {
         })
     }
 
-    fn init(&mut self) -> Result<(), DeviceError> {
-        // Keep construction side-effect free. `ChipsetPreConsole` calls
-        // `init_device()` before ECAM and MCHBAR are enabled; touching PCI
-        // config or MCHBAR here can hang silently before the console exists.
-        // Runtime DRAM sizing is updated by `dram_init()` and later readers
-        // fall back to TOLUD/TOUUD after chipset setup.
-        Ok(())
-    }
-}
-
-impl IntelGm965 {
     /// Runtime config used by this driver instance.
     #[must_use]
     pub const fn config(&self) -> &IntelGm965Config {

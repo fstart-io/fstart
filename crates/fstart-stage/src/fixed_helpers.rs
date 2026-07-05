@@ -5,11 +5,6 @@ use fstart_services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};
 use fstart_services::{BlockDevice, ServiceError};
 use fstart_types::ffs::{FileType, ANCHOR_SIZE};
 
-/// Announce that the selected console is available.
-pub fn console_ready(device_name: &str, driver_name: &str) {
-    fstart_capabilities::console_ready(device_name, driver_name);
-}
-
 /// Firmware filesystem stored behind a block device such as MMC or SPI flash.
 pub struct BlockDeviceFfs {
     media_offset: u64,

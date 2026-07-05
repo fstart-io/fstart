@@ -48,7 +48,7 @@
 
 #![no_std]
 
-use fstart_services::device::{Device, DeviceError};
+use fstart_services::device::DeviceError;
 use fstart_services::{Console, ServiceError};
 use tock_registers::register_bitfields;
 use tock_registers::LocalRegisterCopy;
@@ -309,17 +309,9 @@ impl Ns16550 {
     }
 }
 
-impl Device for Ns16550 {
-    const NAME: &'static str = "ns16550";
-    const COMPATIBLE: &'static [&'static str] = &[
-        "ns16550a",
-        "ns16550",
-        "snps,dw-apb-uart",
-        "allwinner,sun7i-a20-uart",
-    ];
-    type Config = Ns16550Config;
-
-    fn new(config: Ns16550Config) -> Result<Self, DeviceError> {
+impl Ns16550 {
+    /// Construct from typed config. Does NOT touch hardware.
+    pub fn new(config: Ns16550Config) -> Result<Self, DeviceError> {
         let regs = match config.regs {
             #[cfg(feature = "pio")]
             AccessMode::Pio { base } => ResolvedRegs::Pio { base: base as u16 },
@@ -365,7 +357,8 @@ impl Device for Ns16550 {
         })
     }
 
-    fn init(&mut self) -> Result<(), DeviceError> {
+    /// Initialise the UART hardware.
+    pub fn init(&mut self) -> Result<(), DeviceError> {
         // Match coreboot's 8250 init path: program the UART directly rather
         // than waiting for TEMT first.  A disabled or floating LPC UART can
         // report LSR=0 forever, which would otherwise hang before the first

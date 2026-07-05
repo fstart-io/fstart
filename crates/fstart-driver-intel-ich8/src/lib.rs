@@ -16,7 +16,7 @@ use fstart_gpio_ich::IchGpio;
 use fstart_mmio::MmioReadWrite;
 use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_BITS};
 use fstart_pmio_ich::{self as pmio, PmIo};
-use fstart_services::device::{Device, DeviceError};
+use fstart_services::device::DeviceError;
 use fstart_services::{
     FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus, Southbridge,
 };
@@ -2074,12 +2074,9 @@ impl IntelIch8 {
     }
 }
 
-impl Device for IntelIch8 {
-    const NAME: &'static str = "intel-ich8";
-    const COMPATIBLE: &'static [&'static str] = &["intel,ich8", "intel,ich8m", "intel,82801hx"];
-    type Config = IntelIch8Config;
-
-    fn new(config: IntelIch8Config) -> Result<Self, DeviceError> {
+impl IntelIch8 {
+    /// Construct from typed config. Does NOT touch hardware.
+    pub fn new(config: IntelIch8Config) -> Result<Self, DeviceError> {
         if config
             .lpc_decode
             .generic_io
@@ -2105,14 +2102,6 @@ impl Device for IntelIch8 {
         })
     }
 
-    fn init(&mut self) -> Result<(), DeviceError> {
-        // Keep construction side-effect free. The pre-console hook programs
-        // RCBA/PMBASE/GPIO/LPC before any hardware-dependent work runs.
-        Ok(())
-    }
-}
-
-impl IntelIch8 {
     /// Runtime config used by this driver instance.
     #[must_use]
     pub const fn config(&self) -> &IntelIch8Config {

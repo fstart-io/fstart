@@ -1,10 +1,10 @@
 //! Service trait definitions.
 //!
-//! Services are the abstraction layer between firmware capabilities and
-//! hardware drivers. Drivers implement these traits. Capabilities consume them.
+//! Services are the abstraction layer between firmware stage flows and
+//! hardware drivers. Drivers implement these traits. Fixed stage flows and
+//! capability helpers consume them.
 //!
-//! This crate defines traits only — no implementations. It also defines the
-//! `Device` trait that all drivers implement for lifecycle management.
+//! This crate defines traits only — no implementations.
 //!
 //! See [docs/driver-model.md](../../docs/driver-model.md) for the full
 //! driver model architecture.
@@ -14,7 +14,6 @@
 #[cfg(test)]
 extern crate std;
 
-pub mod acpi_provider;
 pub mod block;
 pub mod boot;
 pub mod boot_media;
@@ -48,7 +47,7 @@ pub use boot_media::{
 };
 pub use clock::ClockController;
 pub use console::Console;
-pub use device::{BusDevice, Device, DeviceError};
+pub use device::{BusDevice, DeviceError};
 pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow};
 pub use flash_layout::FlashLayoutVerifier;
 pub use framebuffer::{Framebuffer, FramebufferInfo};
