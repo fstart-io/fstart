@@ -7,5 +7,6 @@ pub mod build_board;
 pub mod build_plan;
 pub mod image;
 pub mod inspect;
+pub mod linker;
 pub mod qemu;
 pub mod toolchain;

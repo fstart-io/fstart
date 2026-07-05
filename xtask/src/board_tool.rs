@@ -1,18 +1,18 @@
 //! Board-owned host tool entry points.
 //!
 //! The generated host-tool crate calls this module with the selected board
-//! crate's Rust metadata functions. The metadata stays in-process as typed Rust
-//! values.
+//! crate's Rust config function. Host build facts come from the board
+//! `Cargo.toml` `[package.metadata.fstart]` table.
 
 use clap::{Parser, Subcommand};
-use fstart_codegen::board_loader::{load_parsed_board_metadata_only, ParsedBoard};
 use fstart_types::acpi::AcpiExtraDevice;
-use fstart_types::{BoardConfig, BuildInfo, StageLayout};
+use fstart_types::{BoardConfig, StageLayout};
+
+use crate::build_plan::ParsedBoard;
 
 /// Rust callbacks exported by a board crate for host tooling.
 pub struct BoardCallbacks {
     pub board_config: fn() -> BoardConfig,
-    pub build_info: fn() -> BuildInfo,
     pub acpi_only_devices: Option<fn() -> Vec<AcpiExtraDevice>>,
 }
 
@@ -52,7 +52,7 @@ enum Command {
     },
 }
 
-/// Run a board-owned host tool using typed Rust metadata callbacks.
+/// Run a board-owned host tool using typed Rust config and Cargo metadata.
 pub fn main(callbacks: BoardCallbacks) {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -87,17 +87,25 @@ pub fn main(callbacks: BoardCallbacks) {
 
 fn load(
     callbacks: BoardCallbacks,
-) -> Result<(crate::board_manifest::BoardManifest, BuildInfo, ParsedBoard), String> {
-    let config = (callbacks.board_config)();
-    let build_info = (callbacks.build_info)();
+) -> Result<(crate::board_manifest::BoardManifest, ParsedBoard), String> {
+    let mut config = (callbacks.board_config)();
+    config
+        .memory
+        .normalize_derived_flash()
+        .map_err(|err| err.to_string())?;
     let acpi_only_devices = callbacks
         .acpi_only_devices
         .map_or_else(Vec::new, |load| load());
     let workspace_root = crate::build_board::workspace_root_pub()?;
     let manifest = crate::board_manifest::find(&workspace_root, config.name.as_str())?;
-    let parsed = load_parsed_board_metadata_only(config, acpi_only_devices)?;
-    validate(&manifest, &build_info)?;
-    Ok((manifest, build_info, parsed))
+    validate(&manifest, &config)?;
+    Ok((
+        manifest,
+        ParsedBoard {
+            config,
+            acpi_only_devices,
+        },
+    ))
 }
 
 fn build(
@@ -105,8 +113,8 @@ fn build(
     release: bool,
 ) -> Result<crate::build_board::BuildResult, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, build_info, parsed) = load(callbacks)?;
-    crate::build_board::build_with_parsed(&workspace_root, &manifest, build_info, &parsed, release)
+    let (manifest, parsed) = load(callbacks)?;
+    crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)
 }
 
 fn assemble(
@@ -116,11 +124,10 @@ fn assemble(
     firmware: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, build_info, parsed) = load(callbacks)?;
+    let (manifest, parsed) = load(callbacks)?;
     crate::assemble::assemble_with_parsed(
         &workspace_root,
         manifest,
-        build_info,
         parsed,
         release,
         kernel,
@@ -169,25 +176,29 @@ fn run(
 
 fn validate(
     manifest: &crate::board_manifest::BoardManifest,
-    info: &BuildInfo,
+    config: &BoardConfig,
 ) -> Result<(), String> {
-    if info.name.as_str() != manifest.board {
+    if config.name.as_str() != manifest.board {
         return Err(format!(
-            "build_info name mismatch for {}: manifest board is '{}', board returned '{}'",
-            manifest.package, manifest.board, info.name
+            "board config name mismatch for {}: manifest board is '{}', board returned '{}'",
+            manifest.package, manifest.board, config.name
         ));
     }
-    if info.board_package.as_str() != manifest.package {
-        return Err(format!(
-            "build_info package mismatch for {}: board returned '{}'",
-            manifest.package, info.board_package
-        ));
+    if let Some(platform) = &manifest.platform {
+        if config.platform.as_str() != platform {
+            return Err(format!(
+                "board platform mismatch for {}: manifest platform is '{}', board returned '{}'",
+                manifest.package, platform, config.platform
+            ));
+        }
     }
     if let Some(target) = &manifest.target {
-        if info.target.as_str() != target {
+        if config.platform.target_triple() != target {
             return Err(format!(
-                "build_info target mismatch for {}: manifest target is '{}', board returned '{}'",
-                manifest.package, target, info.target
+                "board target mismatch for {}: manifest target is '{}', platform implies '{}'",
+                manifest.package,
+                target,
+                config.platform.target_triple()
             ));
         }
     }

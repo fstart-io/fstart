@@ -82,11 +82,6 @@ pub trait FirmwareBoard: Sized + 'static {
     const NAME: &'static str;
     /// Runtime platform for this board.
     const PLATFORM: fstart_types::Platform;
-
-    /// Runtime hardware facts.
-    fn board_info() -> fstart_types::BoardInfo;
-    /// Host build/package facts.
-    fn build_info() -> fstart_types::BuildInfo;
 }
 
 /// Handwritten stage flow selected by a [`FirmwareBoard`].

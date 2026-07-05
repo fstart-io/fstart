@@ -14,9 +14,9 @@ use fstart_types::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
 use fstart_types::{
-    board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec, AcpiConfig,
-    AcpiPlatform, BoardBuildPolicy, BoardConfig, BoardInfo, BuildInfo, FlashLayout,
-    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig, SmmConfig,
+    dev_security_config, hstr, hvec, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig,
+    FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
+    SmmConfig,
 };
 
 pub const BOARD_NAME: &str = "lenovo-x61";
@@ -112,27 +112,6 @@ pub fn board_config() -> BoardConfig {
         },
         boot_hart_id: 0,
     }
-}
-
-#[must_use]
-pub fn board_info() -> BoardInfo {
-    board_info_from_config(board_config())
-}
-
-#[must_use]
-pub fn build_info() -> BuildInfo {
-    build_info_from_config(
-        BOARD_NAME,
-        BOARD_PACKAGE,
-        &board_config(),
-        [
-            "intel-gm965",
-            "intel-ich8",
-            "nsc-pc87382",
-            "nsc-pc87392",
-            "i2c-ck505",
-        ],
-    )
 }
 
 #[must_use]
@@ -690,15 +669,6 @@ pub fn x61_ck505_config() -> I2cCk505Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn x61_build_features_do_not_select_deleted_mainboard_crate() {
-        let build = build_info();
-        assert!(!build
-            .features
-            .iter()
-            .any(|feature| feature.as_str() == "lenovo-x61-mainboard"));
-    }
 
     #[test]
     fn x61_board_config_keeps_board_owned_mainboard_hook() {

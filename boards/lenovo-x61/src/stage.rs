@@ -21,14 +21,6 @@ impl FirmwareBoard for Board {
 
     const NAME: &'static str = crate::BOARD_NAME;
     const PLATFORM: fstart_types::Platform = crate::PLATFORM;
-
-    fn board_info() -> fstart_types::BoardInfo {
-        crate::board_info()
-    }
-
-    fn build_info() -> fstart_types::BuildInfo {
-        crate::build_info()
-    }
 }
 
 impl Gm965Ich8StageBoard for Board {

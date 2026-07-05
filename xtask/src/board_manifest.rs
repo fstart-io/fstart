@@ -23,6 +23,8 @@ pub struct BoardManifest {
     pub platform: Option<String>,
     /// Rust target triple metadata string from the board crate.
     pub target: Option<String>,
+    /// Board-selected Cargo/backend features.
+    pub features: Vec<String>,
     /// Whether this board exports ACPI-only device metadata.
     pub acpi_only_devices: bool,
     /// Whether this board has a host feature for host-only dependencies.
@@ -114,6 +116,7 @@ fn read(manifest: &Path) -> Result<BoardManifest, String> {
         dir,
         platform: metadata_value(&text, "platform"),
         target: metadata_value(&text, "target"),
+        features: metadata_list(&text, "features"),
         acpi_only_devices: metadata_bool(&text, "acpi-only-devices").unwrap_or(false),
         host_feature: has_feature(&text, "host"),
         stage_bin: metadata_value(&text, "stage-bin"),
@@ -174,7 +177,6 @@ xtask = {{ path = "{xtask_path}" }}
         r#"fn main() {{
     xtask::board_tool::main(xtask::board_tool::BoardCallbacks {{
         board_config: fstart_board::board_config,
-        build_info: fstart_board::build_info,
         acpi_only_devices: {acpi_callback},
     }});
 }}
@@ -264,6 +266,52 @@ fn metadata_value(text: &str, key: &str) -> Option<String> {
     None
 }
 
+fn metadata_list(text: &str, key: &str) -> Vec<String> {
+    let mut in_fstart_metadata = false;
+    let mut collecting = false;
+    let mut values = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_fstart_metadata = trimmed == "[package.metadata.fstart]";
+            collecting = false;
+            continue;
+        }
+        if !in_fstart_metadata || trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+
+        let list_text = if collecting {
+            trimmed
+        } else {
+            let Some((found_key, value)) = trimmed.split_once('=') else {
+                continue;
+            };
+            if found_key.trim() != key {
+                continue;
+            }
+            collecting = true;
+            value.trim()
+        };
+
+        for item in list_text
+            .trim_matches(['[', ']'])
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
+            values.push(item.trim_matches('"').to_string());
+        }
+
+        if list_text.contains(']') {
+            break;
+        }
+    }
+
+    values
+}
+
 fn metadata_bool(text: &str, key: &str) -> Option<bool> {
     metadata_value(text, key).and_then(|value| value.parse().ok())
 }
@@ -293,7 +341,7 @@ fn has_feature(text: &str, feature: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{metadata_value, read};
+    use super::{metadata_list, metadata_value, read};
     use std::fs;
 
     #[test]
@@ -316,6 +364,22 @@ mod tests {
             Some("riscv64gc-unknown-none-elf")
         );
         assert_eq!(metadata_value(text, "name"), None);
+    }
+
+    #[test]
+    fn reads_metadata_feature_list() {
+        let text = r#"
+            [package.metadata.fstart]
+            features = [
+              "intel-gm965",
+              "intel-ich8",
+            ]
+        "#;
+
+        assert_eq!(
+            metadata_list(text, "features"),
+            vec!["intel-gm965".to_string(), "intel-ich8".to_string()]
+        );
     }
 
     #[test]

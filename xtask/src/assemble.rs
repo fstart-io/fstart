@@ -69,8 +69,7 @@ fn assemble_impl(
 pub fn assemble_with_parsed(
     workspace_root: &Path,
     board_manifest: crate::board_manifest::BoardManifest,
-    build_info: fstart_types::BuildInfo,
-    parsed: fstart_codegen::board_loader::ParsedBoard,
+    parsed: crate::build_plan::ParsedBoard,
     release: bool,
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
@@ -81,13 +80,8 @@ pub fn assemble_with_parsed(
     eprintln!("[fstart] assembling FFS image for: {}", config.name);
 
     // Build all stages first
-    let build_result = crate::build_board::build_with_parsed(
-        workspace_root,
-        &board_manifest,
-        build_info,
-        &parsed,
-        release,
-    )?;
+    let build_result =
+        crate::build_board::build_with_parsed(workspace_root, &board_manifest, &parsed, release)?;
 
     // Read the public key (or generate a dev key pair if not present)
     let (signing_key, verification_key) = get_or_create_dev_keys(&board_dir, &config)?;

@@ -69,20 +69,19 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
 pub fn build_with_parsed(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
-    build_info: fstart_types::BuildInfo,
-    parsed: &fstart_codegen::board_loader::ParsedBoard,
+    parsed: &crate::build_plan::ParsedBoard,
     release: bool,
 ) -> Result<BuildResult, String> {
     let config = &parsed.config;
 
     eprintln!("[fstart] board: {}", config.name);
     eprintln!("[fstart] platform: {}", config.platform);
-    eprintln!("[fstart] board package: {}", build_info.board_package);
+    eprintln!("[fstart] board package: {}", board_manifest.package);
 
     let smm_artifacts = build_smm_artifacts(workspace_root, board_manifest, release, config)?;
-    let plan = crate::build_plan::plan(parsed, &build_info)?;
+    let plan = crate::build_plan::plan(parsed, board_manifest)?;
 
-    eprintln!("[fstart] target: {}", build_info.target);
+    eprintln!("[fstart] target: {}", plan.target.triple);
 
     let mut result = Vec::new();
     let stage_package = stage_package_build(workspace_root, board_manifest, config, &plan)?;
@@ -353,7 +352,7 @@ fn build_one_stage(
     std::fs::create_dir_all(&artifact_dir)
         .map_err(|e| format!("failed to create stage artifact dir: {e}"))?;
     let link_ld = artifact_dir.join("link.ld");
-    let linker_script = fstart_codegen::linker::generate_linker_script(config, stage_name);
+    let linker_script = crate::linker::generate_linker_script(config, stage_name);
     std::fs::write(&link_ld, linker_script)
         .map_err(|e| format!("failed to write {}: {e}", link_ld.display()))?;
     let metadata = format!(

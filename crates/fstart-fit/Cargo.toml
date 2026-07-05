@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = []
-std = ["fstart-types/std", "fstart-crypto/all"]
+std = ["fstart-crypto/all"]
 # Forward crypto features for firmware (no_std) builds that need hash verification
 sha2-digest = ["fstart-crypto/sha2-digest"]
 sha3-digest = ["fstart-crypto/sha3-digest"]

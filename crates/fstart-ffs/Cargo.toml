@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = []
-std = ["fstart-types/std", "fstart-crypto/all", "dep:lz4_flex"]
+std = ["fstart-crypto/all", "dep:lz4_flex"]
 alloc = ["fstart-types/alloc"]
 # Forward crypto features for firmware (no_std) builds that need verification
 ed25519 = ["fstart-crypto/ed25519"]
