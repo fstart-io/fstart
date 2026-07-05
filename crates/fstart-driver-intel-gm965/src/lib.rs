@@ -30,10 +30,7 @@ use fstart_services::device::{Device, DeviceError};
 use fstart_services::memory_detect::{
     build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
 };
-use fstart_services::{
-    EarlyInit, HardwareInit, InitContext, MemoryController, PciBdf, PciHost, PciRootBus, PciWindow,
-    PostDramInit, PreConsoleInit, ServiceError, StageLocalInit,
-};
+use fstart_services::{MemoryController, PciBdf, PciRootBus, PciWindow, ServiceError};
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -1716,7 +1713,8 @@ impl IntelGm965 {
         fstart_log::info!("intel-gm965: IGD non-display init complete");
     }
 
-    fn post_dram_chipset_init(&self) -> Result<(), ServiceError> {
+    /// DRAM-backed chipset init: DMI/egress link, PM tuning, and IGD setup.
+    pub fn post_dram_init(&self) -> Result<(), ServiceError> {
         self.gm965_dmi_init()?;
         self.gm965_pm_init();
         self.gm965_igd_init();
@@ -1762,65 +1760,24 @@ impl IntelGm965 {
         &self.config
     }
 
-    fn pre_console_phase(&mut self) -> Result<(), ServiceError> {
+    /// Bootblock pre-console setup: enable ECAM so PCI config is reachable.
+    pub fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         Ok(())
     }
 
-    fn early_phase(&mut self) -> Result<(), ServiceError> {
+    /// Post-console early init: fixed BARs, PAM shadowing, MCH/DMI tweaks.
+    pub fn early_init(&mut self) -> Result<(), ServiceError> {
         self.setup_bars_and_pam();
         self.early_mch_dmi_tweaks();
         fstart_log::info!("intel-gm965: early init complete");
         Ok(())
     }
-}
 
-impl PreConsoleInit for IntelGm965 {
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        self.pre_console_phase()
-    }
-}
-
-impl EarlyInit for IntelGm965 {
-    fn early_init(&mut self) -> Result<(), ServiceError> {
-        self.early_phase()
-    }
-}
-
-impl StageLocalInit for IntelGm965 {
-    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
+    /// Rebind stage-local ECAM state after a stage transition.
+    pub fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         Ok(())
-    }
-}
-
-impl HardwareInit for IntelGm965 {
-    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        PreConsoleInit::pre_console_init(self)
-    }
-
-    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        EarlyInit::early_init(self)
-    }
-
-    fn dram(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.dram_init()
-    }
-}
-
-impl PciHost for IntelGm965 {
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        self.pre_console_phase()
-    }
-
-    fn early_init(&mut self) -> Result<(), ServiceError> {
-        self.early_phase()
-    }
-}
-
-impl PostDramInit for IntelGm965 {
-    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        self.post_dram_chipset_init()
     }
 }
 

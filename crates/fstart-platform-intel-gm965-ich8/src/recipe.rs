@@ -6,17 +6,12 @@ use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::{Ns16550, Ns16550Config};
 use fstart_services::memory_detect::{E820Entry, MAX_E820_ENTRIES};
-#[cfg(feature = "crabefi")]
-use fstart_services::StageLocalInit;
-use fstart_services::{
-    Device, DeviceError, EarlyInit, MemoryController, PciRootBus, PreConsoleInit, ServiceError,
-    Southbridge,
-};
+use fstart_services::{Device, DeviceError, MemoryController, PciRootBus, ServiceError};
 #[cfg(feature = "crabefi")]
 use fstart_stage::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
+use fstart_stage::fixed_helpers::MemoryMappedFfs;
 #[cfg(feature = "crabefi")]
 use fstart_stage::fixed_helpers::MemoryMappedUefiBoot;
-use fstart_stage::fixed_helpers::{console_ready, MemoryMappedFfs};
 use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
 
 use crate::{
@@ -51,10 +46,10 @@ where
 
 /// Board facts and hooks required by the GM965/ICH8 recipe.
 pub trait Gm965Ich8StageBoard: FirmwareBoard<Recipe = Gm965Ich8Recipe<Self>> {
-    type Mainboard: Gm965Ich8Mainboard;
+    type Hooks: Gm965Ich8Hooks;
 
     fn config() -> &'static Gm965Ich8Config;
-    fn mainboard() -> Result<Self::Mainboard, ServiceError>;
+    fn hooks() -> Result<Self::Hooks, ServiceError>;
     fn console_config() -> Ns16550Config;
     fn console_node() -> &'static str;
     fn halt() -> !;
@@ -70,17 +65,27 @@ pub trait Gm965Ich8StageBoard: FirmwareBoard<Recipe = Gm965Ich8Recipe<Self>> {
     fn prepare_smbios() {}
 }
 
-/// Board-specific hooks. Generic framework code never learns these names.
-pub trait Gm965Ich8Mainboard {
+/// Board hooks at the fixed GM965/ICH8 flow seams. All methods default to
+/// no-ops that compile away; boards implement only what their hardware needs.
+pub trait Gm965Ich8Hooks {
+    /// Board work needed before the console UART is reachable (Super I/O,
+    /// dock LPC switches).
     fn before_console(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
         Ok(())
     }
 
-    fn post_dram(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+    /// Board work before memory discovery/training.
+    fn before_memory(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
         Ok(())
     }
 
-    fn finalize(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+    /// Board work after memory is usable (mux switches, board devices).
+    fn after_memory(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Board lockdown/quiesce before payload handoff.
+    fn before_handoff(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
         Ok(())
     }
 }
@@ -97,6 +102,7 @@ fn new_ich8<B: Gm965Ich8StageBoard>() -> Result<IntelIch8, ServiceError> {
     IntelIch8::new(B::config().ich8_driver_config()).map_err(device_error_to_service_error)
 }
 
+/// Handwritten fixed GM965/ICH8 bootblock flow. Ordering is this function.
 fn run_gm965_ich8_bootblock<B>() -> !
 where
     B: Gm965Ich8StageBoard,
@@ -108,14 +114,14 @@ where
     let Ok(mut southbridge) = new_ich8::<B>() else {
         B::halt();
     };
-    let Ok(mut mainboard) = B::mainboard() else {
+    let Ok(mut hooks) = B::hooks() else {
         B::halt();
     };
     let ffs = MemoryMappedFfs::new(config.firmware_base, config.firmware_size);
 
     if northbridge.pre_console_init().is_err()
-        || PreConsoleInit::pre_console_init(&mut southbridge).is_err()
-        || mainboard.before_console(&mut southbridge).is_err()
+        || southbridge.pre_console_init().is_err()
+        || hooks.before_console(&mut southbridge).is_err()
     {
         B::halt();
     }
@@ -130,7 +136,7 @@ where
     // SAFETY: this function never returns after installing the stack-owned console.
     let console_ref = &console;
     unsafe { fstart_log::init(console_ref) };
-    console_ready(B::console_node(), "ns16550");
+    fstart_log::info!("{}: ns16550 console ready", B::console_node());
     fstart_log::info!("gm965/ich8 bootblock console ready");
 
     fstart_platform_x86_64::enable_boot_media_rom_cache();
@@ -150,7 +156,7 @@ where
 pub struct Gm965Ich8RamstageDevices<B: Gm965Ich8StageBoard> {
     northbridge: IntelGm965,
     southbridge: IntelIch8,
-    mainboard: B::Mainboard,
+    hooks: B::Hooks,
     console: Ns16550,
     e820: [E820Entry; MAX_E820_ENTRIES],
     e820_count: usize,
@@ -167,7 +173,7 @@ where
         Ok(Self {
             northbridge: new_gm965::<B>()?,
             southbridge: new_ich8::<B>()?,
-            mainboard: B::mainboard()?,
+            hooks: B::hooks()?,
             console: Ns16550::new(B::console_config()).map_err(device_error_to_service_error)?,
             e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
             e820_count: 0,
@@ -201,8 +207,8 @@ where
 
     fn pre_console(&mut self) -> Result<(), ServiceError> {
         self.northbridge.pre_console_init()?;
-        PreConsoleInit::pre_console_init(&mut self.southbridge)?;
-        self.mainboard.before_console(&mut self.southbridge)
+        self.southbridge.pre_console_init()?;
+        self.hooks.before_console(&mut self.southbridge)
     }
 
     fn init_console(&mut self) -> Result<(), ServiceError> {
@@ -210,16 +216,17 @@ where
         // SAFETY: ramstage owns the console until it hands control to CrabEFI.
         unsafe { fstart_log::init(&self.console) };
         fstart_log::info!("fstart ramstage console ready");
-        console_ready(B::console_node(), "ns16550");
+        fstart_log::info!("{}: ns16550 console ready", B::console_node());
         Ok(())
     }
 
     fn post_console(&mut self) -> Result<(), ServiceError> {
         self.northbridge.early_init()?;
-        EarlyInit::early_init(&mut self.southbridge)
+        self.southbridge.early_init()
     }
 
     fn memory_discovery(&mut self) -> Result<(), ServiceError> {
+        self.hooks.before_memory(&mut self.southbridge)?;
         let (count, total) = fstart_capabilities::memory_detect(
             &self.northbridge,
             &mut self.e820,
@@ -236,11 +243,9 @@ where
 
     fn bus_probe(&mut self) -> Result<(), ServiceError> {
         self.northbridge.init_bus()?;
-        self.southbridge.ramstage_init()?;
-        self.mainboard.post_dram(&mut self.southbridge)?;
-        B::init_mp()?;
-        fstart_capabilities::driver_init_complete(4);
-        Ok(())
+        self.southbridge.post_dram_init()?;
+        self.hooks.after_memory(&mut self.southbridge)?;
+        B::init_mp()
     }
 
     fn handoff(&mut self) -> Result<(), ServiceError> {
@@ -275,8 +280,8 @@ where
     run_ramstage_step::<B>("security", || boot.verify());
     run_ramstage_step::<B>("handoff", || {
         devices.handoff()?;
-        devices.mainboard.finalize(&mut devices.southbridge)?;
-        devices.southbridge.finalize()
+        devices.hooks.before_handoff(&mut devices.southbridge)?;
+        devices.southbridge.finalize_init()
     });
 
     boot_gm965_ich8_payload::<B>(devices)

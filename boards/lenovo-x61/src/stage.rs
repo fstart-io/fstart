@@ -32,13 +32,13 @@ impl FirmwareBoard for Board {
 }
 
 impl Gm965Ich8StageBoard for Board {
-    type Mainboard = X61Mainboard;
+    type Hooks = X61Mainboard;
 
     fn config() -> &'static Gm965Ich8Config {
         &crate::X61_PLATFORM
     }
 
-    fn mainboard() -> Result<Self::Mainboard, ServiceError> {
+    fn hooks() -> Result<Self::Hooks, ServiceError> {
         Ok(X61Mainboard::new())
     }
 

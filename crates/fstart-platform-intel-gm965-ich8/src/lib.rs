@@ -32,9 +32,7 @@ pub use fstart_driver_intel_ich8::{
 #[cfg(feature = "recipe")]
 pub use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
 #[cfg(feature = "recipe")]
-pub use recipe::{
-    Gm965Ich8Mainboard, Gm965Ich8RamstageDevices, Gm965Ich8Recipe, Gm965Ich8StageBoard,
-};
+pub use recipe::{Gm965Ich8Hooks, Gm965Ich8RamstageDevices, Gm965Ich8Recipe, Gm965Ich8StageBoard};
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const ICH8_SOUTHBRIDGE_NODE: &str = "southbridge";

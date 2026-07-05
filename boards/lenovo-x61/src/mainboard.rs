@@ -12,7 +12,7 @@
 #[cfg(feature = "stage")]
 use fstart_driver_intel_ich8::IntelIch8;
 #[cfg(feature = "stage")]
-use fstart_platform_intel_gm965_ich8::Gm965Ich8Mainboard;
+use fstart_platform_intel_gm965_ich8::Gm965Ich8Hooks;
 #[cfg(feature = "stage")]
 use fstart_services::ServiceError;
 
@@ -29,7 +29,7 @@ impl X61Mainboard {
 }
 
 #[cfg(feature = "stage")]
-impl Gm965Ich8Mainboard for X61Mainboard {
+impl Gm965Ich8Hooks for X61Mainboard {
     fn before_console(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
         // dock connection failures are non-fatal before the console exists.
@@ -41,12 +41,12 @@ impl Gm965Ich8Mainboard for X61Mainboard {
         Ok(())
     }
 
-    fn post_dram(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+    fn after_memory(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
         dock::post_raminit_setup(ich8);
         Ok(())
     }
 
-    fn finalize(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+    fn before_handoff(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
         fstart_superio::quiesce_i8042_for_os();
         Ok(())
     }
@@ -176,7 +176,7 @@ pub mod dock {
     }
 
     /// Return whether an X6 UltraBase dock is attached.
-    pub fn dock_present(southbridge: &dyn fstart_services::Southbridge) -> bool {
+    pub fn dock_present(southbridge: &impl fstart_services::Southbridge) -> bool {
         // Coreboot samples ICH GPIO13 low for dock present.  Ask the reusable
         // southbridge driver instead of duplicating its GPIOBASE in board config.
         southbridge.gpio_get(13).is_ok_and(|high| !high)
@@ -335,7 +335,7 @@ pub mod dock {
     }
 
     /// Switch the X61 SMBus mux back to the EEPROM side after SPD/raminit.
-    pub fn post_raminit_setup(southbridge: &dyn fstart_services::Southbridge) {
+    pub fn post_raminit_setup(southbridge: &impl fstart_services::Southbridge) {
         let _ = southbridge.gpio_set(42, false);
     }
 }

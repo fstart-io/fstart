@@ -49,7 +49,7 @@
 #![no_std]
 
 use fstart_services::device::{Device, DeviceError};
-use fstart_services::{Console, HardwareInit, InitContext, ServiceError};
+use fstart_services::{Console, ServiceError};
 use tock_registers::register_bitfields;
 use tock_registers::LocalRegisterCopy;
 
@@ -422,11 +422,5 @@ impl Console for Ns16550 {
             core::hint::spin_loop();
         }
         Ok(())
-    }
-}
-
-impl HardwareInit for Ns16550 {
-    fn console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        self.init().map_err(|_| ServiceError::HardwareError)
     }
 }

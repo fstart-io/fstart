@@ -27,14 +27,12 @@ pub mod flash_layout;
 pub mod framebuffer;
 pub mod gpio;
 pub mod i2c;
-pub mod init;
 pub mod lpc;
 pub mod memory_controller;
 pub mod memory_detect;
 pub mod network;
 #[cfg(feature = "pci")]
 pub mod pci;
-pub mod pci_host;
 pub mod service_kind;
 pub mod smbus;
 pub mod soc_boot;
@@ -56,16 +54,11 @@ pub use flash_layout::FlashLayoutVerifier;
 pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use gpio::GpioController;
 pub use i2c::I2c;
-pub use init::{
-    EarlyInit, FinalizeInit, HardwareInit, InitContext, PostDramInit, PreConsoleInit,
-    StageLocalInit,
-};
 pub use lpc::LpcBus;
 pub use memory_controller::MemoryController;
 pub use network::Network;
 #[cfg(feature = "pci")]
 pub use pci::{PciBdf, PciRootBus, PciWindow, PciWindowKind};
-pub use pci_host::PciHost;
 pub use service_kind::{ServiceKind, ServiceSet};
 pub use smbus::SmBus;
 pub use soc_boot::SocBootHeader;

@@ -27,9 +27,9 @@ pub enum DeviceError {
 
 /// Base trait for all root-level hardware devices.
 ///
-/// Separates construction (`new`) from hardware initialization. New static
-/// board flows should prefer step-based [`crate::HardwareInit`] methods over
-/// calling `init()` directly.
+/// Separates construction (`new`) from hardware initialization. Fixed
+/// per-family flows call concrete driver methods for hardware sequencing;
+/// `init()` covers simple single-shot devices such as UARTs.
 ///
 /// # Associated Types
 ///
@@ -50,8 +50,8 @@ pub trait Device: Send + Sync + Sized {
     /// Construct from typed config. Does NOT touch hardware.
     fn new(config: Self::Config) -> Result<Self, DeviceError>;
 
-    /// Legacy whole-device initialization hook. Prefer step-based
-    /// [`crate::HardwareInit`] implementations for fixed-flow boards.
+    /// Whole-device initialization hook for simple devices. Chipset drivers
+    /// keep this side-effect free and expose explicit flow methods instead.
     fn init(&mut self) -> Result<(), DeviceError>;
 }
 

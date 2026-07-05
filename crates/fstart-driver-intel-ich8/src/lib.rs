@@ -18,8 +18,7 @@ use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_B
 use fstart_pmio_ich::{self as pmio, PmIo};
 use fstart_services::device::{Device, DeviceError};
 use fstart_services::{
-    EarlyInit, FinalizeInit, FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier,
-    HardwareInit, InitContext, PostDramInit, PreConsoleInit, ServiceError, SmBus, Southbridge,
+    FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus, Southbridge,
 };
 use fstart_smbus_intel::I801SmBus;
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
@@ -2119,10 +2118,10 @@ impl IntelIch8 {
     pub const fn config(&self) -> &IntelIch8Config {
         &self.config
     }
-}
 
-impl PreConsoleInit for IntelIch8 {
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+    /// Bootblock pre-console setup: SPI prefetch, fixed BARs, watchdog/CMOS,
+    /// LPC decode windows, and GPIO so LPC-attached consoles are reachable.
+    pub fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         self.enable_spi_prefetching_and_caching();
         self.program_fixed_bars();
         self.reset_watchdog_and_cmos();
@@ -2173,8 +2172,10 @@ impl FlashLayoutVerifier for IntelIch8 {
     }
 }
 
-impl EarlyInit for IntelIch8 {
-    fn early_init(&mut self) -> Result<(), ServiceError> {
+impl IntelIch8 {
+    /// Raminit-era southbridge init: SMBus, PIRQ routes, function disable,
+    /// early chipset settings, HPET, and DMI.
+    pub fn early_init(&mut self) -> Result<(), ServiceError> {
         // Bootblock-level SPI, fixed BAR, CMOS/watchdog, LPC decode, and GPIO
         // setup was already done by pre_console_init(). Avoid replaying those
         // writes here; early_init is the raminit-era southbridge path.
@@ -2198,8 +2199,10 @@ impl EarlyInit for IntelIch8 {
     }
 }
 
-impl PostDramInit for IntelIch8 {
-    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
+impl IntelIch8 {
+    /// DRAM-backed ramstage device init: PCIe/PCI bridge, USB, IDE/HDA/SATA,
+    /// LPC ramstage setup, interrupt routing, and I/O traps.
+    pub fn post_dram_init(&mut self) -> Result<(), ServiceError> {
         self.poll_vc1();
         self.early_chipset_settings();
         self.pcie_init();
@@ -2222,8 +2225,9 @@ impl PostDramInit for IntelIch8 {
     }
 }
 
-impl FinalizeInit for IntelIch8 {
-    fn finalize_init(&mut self) -> Result<(), ServiceError> {
+impl IntelIch8 {
+    /// Lock down write-once southbridge state before payload handoff.
+    pub fn finalize_init(&mut self) -> Result<(), ServiceError> {
         let rcba = self.rcba();
         rcba.regs().fdsw.modify(FDSW::FUNCTION_DISABLE_LOCK::SET);
         rcba.regs().map.set(rcba.regs().map.get());
@@ -2231,25 +2235,7 @@ impl FinalizeInit for IntelIch8 {
     }
 }
 
-impl HardwareInit for IntelIch8 {
-    fn pre_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        PreConsoleInit::pre_console_init(self)
-    }
-
-    fn post_console(&mut self, _ctx: &mut InitContext<'_>) -> Result<(), ServiceError> {
-        EarlyInit::early_init(self)
-    }
-}
-
 impl Southbridge for IntelIch8 {
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        PreConsoleInit::pre_console_init(self)
-    }
-
-    fn early_init(&mut self) -> Result<(), ServiceError> {
-        EarlyInit::early_init(self)
-    }
-
     fn gpio_get(&self, pin: u32) -> Result<bool, ServiceError> {
         Ok(IchGpio::new(ich8::DEFAULT_GPIOBASE).get(pin as u8))
     }
@@ -2257,14 +2243,6 @@ impl Southbridge for IntelIch8 {
     fn gpio_set(&self, pin: u32, value: bool) -> Result<(), ServiceError> {
         IchGpio::new(ich8::DEFAULT_GPIOBASE).set(pin as u8, value);
         Ok(())
-    }
-
-    fn ramstage_init(&mut self) -> Result<(), ServiceError> {
-        PostDramInit::post_dram_init(self)
-    }
-
-    fn finalize(&mut self) -> Result<(), ServiceError> {
-        FinalizeInit::finalize_init(self)
     }
 }
 
