@@ -5,10 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["staticlib"]
+crate-type = ["rlib"]
 test = false
 
 [dependencies]
 fstart-alloc = { workspace = true }
-fstart-driver-intel-ich8 = { workspace = true }
 fstart-smm-runtime = { workspace = true }

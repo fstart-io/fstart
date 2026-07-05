@@ -1,28 +1,17 @@
 //! Board-level System Management Mode (SMM) configuration.
 //!
-//! SMM handler images are built separately from normal stages.  The board
-//! configuration controls the platform-specific SMRAM adapter and the number
-//! of precompiled PIC entry stubs the image must contain.
+//! SMM handler images are built separately from normal stages. The selected
+//! board crate supplies the handler binding; this data only controls image
+//! layout and optional compatibility outputs.
 
 use serde::{Deserialize, Serialize};
-
-/// SMM platform backend used to open/lock SMRAM and trigger relocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SmmPlatform {
-    /// QEMU q35 / ICH9-compatible SMM model.
-    QemuQ35,
-    /// Intel Pineview northbridge with ICH7 southbridge.
-    PineviewIch7,
-    /// Lenovo ThinkPad X61: GM965 northbridge with ICH8-M southbridge and dock SMM policy.
-    LenovoX61,
-}
 
 /// Optional coreboot compatibility outputs for the standalone SMM image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CorebootSmmCompat {
     /// Generate a C header containing image-relative offsets that coreboot can
-    /// include from its build.  The header is an output artifact, not runtime
+    /// include from its build. The header is an output artifact, not runtime
     /// data in the firmware image.
     #[serde(default)]
     pub emit_header: bool,
@@ -32,17 +21,15 @@ pub struct CorebootSmmCompat {
     pub module_args: bool,
 }
 
-/// Top-level SMM settings from board metadata.
+/// Top-level SMM image settings from board metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmmConfig {
-    /// Platform-specific SMRAM/SMI backend.
-    pub platform: SmmPlatform,
     /// Number of PIC entry stubs to precompile into the SMM image.
     ///
-    /// If omitted, codegen/xtask should use the `MpInit.max_cpus` value of
-    /// the stage that enables SMM.  When present, it must be greater than or
-    /// equal to `MpInit.max_cpus`.
+    /// If omitted, xtask uses the `MpInit.max_cpus` value of the stage that
+    /// enables SMM. When present, it must be greater than or equal to
+    /// `MpInit.max_cpus`.
     #[serde(default)]
     pub entry_points: Option<u16>,
     /// Per-CPU SMM stack size in bytes.
@@ -51,6 +38,16 @@ pub struct SmmConfig {
     /// Coreboot compatibility outputs/ABI blocks.
     #[serde(default)]
     pub coreboot: CorebootSmmCompat,
+}
+
+impl Default for SmmConfig {
+    fn default() -> Self {
+        Self {
+            entry_points: None,
+            stack_size: default_stack_size(),
+            coreboot: CorebootSmmCompat::default(),
+        }
+    }
 }
 
 const fn default_stack_size() -> u32 {

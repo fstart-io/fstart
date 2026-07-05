@@ -16,7 +16,7 @@ use fstart_types::smbios::{
 use fstart_types::{
     board_info_from_config, build_info_from_config, dev_security_config, hstr, hvec, AcpiConfig,
     AcpiPlatform, BoardBuildPolicy, BoardConfig, BoardInfo, BuildInfo, FlashLayout,
-    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
+    IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig, SmmConfig,
 };
 
 pub const BOARD_NAME: &str = "lenovo-x61";
@@ -105,7 +105,7 @@ pub fn board_config() -> BoardConfig {
             platform: AcpiPlatform::X86,
         }),
         smbios: Some(x61_smbios()),
-        smm: None,
+        smm: Some(SmmConfig::default()),
         build: BoardBuildPolicy {
             cpu_feature: Some(hstr("cpu-intel-core2")),
             ..Default::default()

@@ -17,6 +17,11 @@ struct StagePackageBuild {
     manifest_path: Option<PathBuf>,
 }
 
+struct SelectedSmmStageBuild {
+    archive_path: PathBuf,
+    link_dir: PathBuf,
+}
+
 /// Result of building a board — one or more stage binaries.
 pub struct BuildResult {
     /// Built stage binaries, in order. For monolithic boards this has one entry
@@ -74,7 +79,7 @@ pub fn build_with_parsed(
     eprintln!("[fstart] platform: {}", config.platform);
     eprintln!("[fstart] board package: {}", build_info.board_package);
 
-    let smm_artifacts = build_smm_artifacts(workspace_root, config.name.as_str(), release, config)?;
+    let smm_artifacts = build_smm_artifacts(workspace_root, board_manifest, release, config)?;
     let plan = crate::build_plan::plan(parsed, &build_info)?;
 
     eprintln!("[fstart] target: {}", build_info.target);
@@ -115,7 +120,7 @@ pub fn build_with_parsed(
 /// Build the standalone SMM image artifacts requested by the board.
 fn build_smm_artifacts(
     workspace_root: &std::path::Path,
-    board_name: &str,
+    board_manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     config: &fstart_types::BoardConfig,
 ) -> Result<Option<SmmArtifacts>, String> {
@@ -138,7 +143,7 @@ fn build_smm_artifacts(
     let out_dir = workspace_root
         .join("target")
         .join("smm")
-        .join(board_name)
+        .join(&board_manifest.board)
         .join(profile);
     let image_path = out_dir.join("fstart-smm.bin");
     let header_path = smm
@@ -151,10 +156,14 @@ fn build_smm_artifacts(
         stack_size: smm.stack_size,
         coreboot_module_args: smm.coreboot.module_args,
         coreboot_header: smm.coreboot.emit_header,
-        platform: smm.platform,
     };
-    let built = fstart_smm_image::write_image(options, &image_path, header_path.as_deref())
-        .map_err(|e| format!("failed to build SMM image: {e}"))?;
+    let smm_stage = build_selected_smm_stage(workspace_root, board_manifest)?;
+    let handler =
+        fstart_smm_image::handler_from_archive(&smm_stage.archive_path, &smm_stage.link_dir)
+            .map_err(|e| format!("failed to link SMM handler: {e}"))?;
+    let built =
+        fstart_smm_image::write_image(options, &handler, &image_path, header_path.as_deref())
+            .map_err(|e| format!("failed to build SMM image: {e}"))?;
 
     eprintln!(
         "[fstart] SMM image: {} ({} bytes, {} entries)",
@@ -170,6 +179,118 @@ fn build_smm_artifacts(
         image_path,
         header_path,
     }))
+}
+
+fn build_selected_smm_stage(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+) -> Result<SelectedSmmStageBuild, String> {
+    let package_label = format!("fstart-selected-smm-{}", board_manifest.board);
+    let wrapper_dir = workspace_root
+        .join("target")
+        .join("fstart-build")
+        .join(&board_manifest.board)
+        .join("selected-smm");
+    let src_dir = wrapper_dir.join("src");
+    fs::create_dir_all(&src_dir)
+        .map_err(|e| format!("failed to create {}: {e}", src_dir.display()))?;
+
+    write_if_changed(
+        &wrapper_dir.join("Cargo.toml"),
+        &selected_smm_cargo_toml(workspace_root, board_manifest, &package_label),
+    )?;
+    if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
+        write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
+    }
+    write_if_changed(&src_dir.join("lib.rs"), selected_smm_lib_rs())?;
+
+    let target_dir = wrapper_dir.join("target");
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(workspace_root)
+        .arg("rustc")
+        .arg("--manifest-path")
+        .arg(wrapper_dir.join("Cargo.toml"))
+        .arg("--target")
+        .arg("x86_64-unknown-none")
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .arg("--release")
+        .arg("--")
+        .arg("-C")
+        .arg("panic=abort")
+        .arg("-C")
+        .arg("opt-level=s")
+        .arg("-C")
+        .arg("relocation-model=pic")
+        .arg("-C")
+        .arg("no-redzone=yes");
+
+    eprintln!("[fstart] building selected SMM stage: {package_label}...");
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to run cargo for SMM stage: {e}"))?;
+    if !status.success() {
+        return Err("selected SMM stage build failed".to_string());
+    }
+
+    Ok(SelectedSmmStageBuild {
+        archive_path: target_dir
+            .join("x86_64-unknown-none")
+            .join("release")
+            .join(format!("lib{}.a", package_label.replace('-', "_"))),
+        link_dir: wrapper_dir.join("link"),
+    })
+}
+
+fn selected_smm_cargo_toml(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+    package_label: &str,
+) -> String {
+    let board_path = path_for_toml(&board_manifest.dir);
+    let smm_stage_path = path_for_toml(&workspace_root.join("crates/fstart-smm-stage"));
+
+    format!(
+        r#"[package]
+name = "{package_label}"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["smm"] }}
+fstart-smm-stage = {{ path = "{smm_stage_path}" }}
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+path = "src/lib.rs"
+"#,
+        board_package = board_manifest.package,
+    )
+}
+
+fn selected_smm_lib_rs() -> &'static str {
+    r#"//! Generated selected-board SMM wrapper.
+
+#![no_std]
+#![no_main]
+
+use fstart_board_selected::Board;
+
+#[no_mangle]
+pub unsafe extern "C" fn fstart_smm_handler(params: *mut fstart_smm_stage::SmmEntryParams) {
+    // SAFETY: the SMM image trampoline provides the raw entry params.
+    unsafe { fstart_smm_stage::handle::<Board>(params) }
+}
+
+#[used]
+#[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+static FSTART_SMM_KEEP: unsafe extern "C" fn(*mut fstart_smm_stage::SmmEntryParams) =
+    fstart_smm_handler;
+"#
 }
 
 fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {

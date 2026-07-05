@@ -4,7 +4,7 @@
 //! optional coreboot loader integration.  Entry stubs are part of the image:
 //! loaders only copy bytes into SMRAM and patch data parameter blocks.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use object::{Object, ObjectSection};
@@ -16,7 +16,6 @@ use fstart_smm::header::{
 #[cfg(test)]
 use fstart_smm::runtime::SmmEntryParams;
 use fstart_smm::runtime::{CorebootModuleArgs, SmmRuntime, MAX_SMM_CPUS};
-use fstart_types::SmmPlatform;
 
 #[cfg(not(rust_analyzer))]
 mod asm {
@@ -81,8 +80,6 @@ pub struct ImageOptions {
     pub coreboot_module_args: bool,
     /// Mark the image as having been built with a generated coreboot header.
     pub coreboot_header: bool,
-    /// SMM handler composition to build into the stage.
-    pub platform: SmmPlatform,
 }
 
 /// A generated SMM image and its optional coreboot offset header text.
@@ -101,11 +98,13 @@ pub struct BuiltImage {
 /// enters protected mode, enables long mode using the patched CR3, sets the
 /// per-CPU stack from [`fstart_smm::runtime::SmmEntryParams`], calls the copied
 /// Rust SMM handler, and finally exits SMM with `rsm`.
-pub fn build_image(options: ImageOptions) -> Result<BuiltImage, BuildError> {
+pub fn build_image(
+    options: ImageOptions,
+    handler: &SmmHandlerImage,
+) -> Result<BuiltImage, BuildError> {
     validate_options(options)?;
 
     let stub = asm::ENTRY_STUB;
-    let handler = build_smm_stage(options.platform)?;
     let common_code = handler.code.as_slice();
 
     let header_size = size_of::<SmmImageHeader>();
@@ -220,10 +219,11 @@ pub fn build_image(options: ImageOptions) -> Result<BuiltImage, BuildError> {
 /// Build and write an SMM image, plus an optional generated coreboot header.
 pub fn write_image(
     options: ImageOptions,
+    handler: &SmmHandlerImage,
     image_path: &Path,
     header_path: Option<&Path>,
 ) -> Result<BuiltImage, BuildError> {
-    let built = build_image(options)?;
+    let built = build_image(options, handler)?;
     if let Some(parent) = image_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -240,54 +240,24 @@ pub fn write_image(
     Ok(built)
 }
 
-struct BuiltHandler {
-    code: Vec<u8>,
-    entry_offset: usize,
+/// Linked SMM handler code and entry offset.
+#[derive(Debug, Clone)]
+pub struct SmmHandlerImage {
+    /// PIC handler .text bytes copied into the common SMM image region.
+    pub code: Vec<u8>,
+    /// Offset of `fstart_smm_handler` inside `code`.
+    pub entry_offset: usize,
 }
 
-fn build_smm_stage(platform: SmmPlatform) -> Result<BuiltHandler, BuildError> {
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .ok_or(BuildError::Overflow)?
-        .to_path_buf();
-    let profile = "release";
-    let out_dir = workspace_root
-        .join("target")
-        .join("smm-stage")
-        .join(format!("{}-{}", platform_env(platform), std::process::id()));
-    let target_dir = out_dir.join("target");
-    let elf = out_dir.join("smm_handler.elf");
-    let bin = out_dir.join("smm_handler.bin");
-    std::fs::create_dir_all(&out_dir)?;
+/// Link a selected-board SMM staticlib and extract its handler text.
+pub fn handler_from_archive(
+    archive: &Path,
+    work_dir: &Path,
+) -> Result<SmmHandlerImage, BuildError> {
+    std::fs::create_dir_all(work_dir)?;
+    let elf = work_dir.join("smm_handler.elf");
+    let bin = work_dir.join("smm_handler.bin");
 
-    run_tool(
-        Command::new("cargo")
-            .arg("rustc")
-            .arg("-p")
-            .arg("fstart-smm-stage")
-            .arg("--target")
-            .arg("x86_64-unknown-none")
-            .arg("--target-dir")
-            .arg(&target_dir)
-            .arg("--release")
-            .arg("--")
-            .arg("-C")
-            .arg("panic=abort")
-            .arg("-C")
-            .arg("opt-level=s")
-            .arg("-C")
-            .arg("relocation-model=pic")
-            .arg("-C")
-            .arg("no-redzone=yes")
-            .env("FSTART_SMM_PLATFORM", platform_env(platform))
-            .current_dir(&workspace_root),
-    )?;
-
-    let archive = target_dir
-        .join("x86_64-unknown-none")
-        .join(profile)
-        .join("libfstart_smm_stage.a");
     run_tool(
         Command::new("ld")
             .arg("-nostdlib")
@@ -296,12 +266,12 @@ fn build_smm_stage(platform: SmmPlatform) -> Result<BuiltHandler, BuildError> {
             .arg("-o")
             .arg(&elf)
             .arg("--whole-archive")
-            .arg(&archive)
+            .arg(archive)
             .arg("--no-whole-archive"),
     )?;
     write_text_section(&elf, &bin)?;
 
-    Ok(BuiltHandler {
+    Ok(SmmHandlerImage {
         code: std::fs::read(&bin)?,
         entry_offset: find_symbol_offset(&elf, "fstart_smm_handler")?,
     })
@@ -319,14 +289,6 @@ fn write_text_section(elf: &Path, bin: &Path) -> Result<(), BuildError> {
     })?;
     std::fs::write(bin, text)?;
     Ok(())
-}
-
-fn platform_env(platform: SmmPlatform) -> &'static str {
-    match platform {
-        SmmPlatform::QemuQ35 => "qemu-q35",
-        SmmPlatform::PineviewIch7 => "pineview-ich7",
-        SmmPlatform::LenovoX61 => "lenovo-x61",
-    }
 }
 
 fn find_symbol_offset(elf: &Path, symbol: &str) -> Result<usize, BuildError> {
@@ -434,15 +396,24 @@ mod tests {
     use super::*;
     use fstart_smm::header::{HeaderError, SmmImageHeader};
 
+    fn test_handler() -> SmmHandlerImage {
+        SmmHandlerImage {
+            code: vec![0xcc],
+            entry_offset: 0,
+        }
+    }
+
     #[test]
     fn builds_parseable_image_with_four_entries() {
-        let built = build_image(ImageOptions {
-            entry_count: 4,
-            stack_size: 0x400,
-            coreboot_module_args: true,
-            coreboot_header: true,
-            platform: SmmPlatform::PineviewIch7,
-        })
+        let built = build_image(
+            ImageOptions {
+                entry_count: 4,
+                stack_size: 0x400,
+                coreboot_module_args: true,
+                coreboot_header: true,
+            },
+            &test_handler(),
+        )
         .unwrap();
 
         let header = SmmImageHeader::parse(&built.image).unwrap();
@@ -467,26 +438,30 @@ mod tests {
 
     #[test]
     fn rejects_zero_entries() {
-        let err = build_image(ImageOptions {
-            entry_count: 0,
-            stack_size: 0x400,
-            coreboot_module_args: false,
-            coreboot_header: false,
-            platform: SmmPlatform::PineviewIch7,
-        })
+        let err = build_image(
+            ImageOptions {
+                entry_count: 0,
+                stack_size: 0x400,
+                coreboot_module_args: false,
+                coreboot_header: false,
+            },
+            &test_handler(),
+        )
         .unwrap_err();
         assert!(matches!(err, BuildError::NoEntries));
     }
 
     #[test]
     fn generated_header_matches_blob_offsets() {
-        let built = build_image(ImageOptions {
-            entry_count: 2,
-            stack_size: 0x800,
-            coreboot_module_args: false,
-            coreboot_header: true,
-            platform: SmmPlatform::PineviewIch7,
-        })
+        let built = build_image(
+            ImageOptions {
+                entry_count: 2,
+                stack_size: 0x800,
+                coreboot_module_args: false,
+                coreboot_header: true,
+            },
+            &test_handler(),
+        )
         .unwrap();
         let header = SmmImageHeader::parse(&built.image).unwrap();
         assert_eq!(

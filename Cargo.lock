@@ -504,6 +504,7 @@ dependencies = [
  "fstart-services",
  "fstart-smbios",
  "fstart-smm-runtime",
+ "fstart-smm-stage",
  "fstart-superio",
  "fstart-types",
 ]
@@ -884,7 +885,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "fstart-smm",
- "fstart-types",
  "object",
 ]
 
@@ -901,7 +901,6 @@ name = "fstart-smm-stage"
 version = "0.1.0"
 dependencies = [
  "fstart-alloc",
- "fstart-driver-intel-ich8",
  "fstart-smm-runtime",
 ]
 

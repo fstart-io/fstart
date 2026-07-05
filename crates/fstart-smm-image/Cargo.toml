@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 clap = { workspace = true }
 fstart-smm = { workspace = true, features = ["std", "coreboot"] }
-fstart-types = { workspace = true }
 object = { workspace = true }
 
 [build-dependencies]

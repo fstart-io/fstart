@@ -33,7 +33,11 @@ acpi = [
 ]
 mp = ["stage", "dep:fstart-cpu-intel", "dep:fstart-mp"]
 smbios = ["fstart-platform-intel-gm965-ich8/smbios"]
-smm = ["dep:fstart-smm-runtime"]
+smm = [
+  "dep:fstart-driver-intel-ich8",
+  "dep:fstart-smm-runtime",
+  "dep:fstart-smm-stage",
+]
 
 [dependencies]
 fstart-types = { workspace = true }
@@ -57,3 +61,4 @@ fstart-cpu-intel = { workspace = true, optional = true }
 fstart-mp = { workspace = true, optional = true }
 fstart-smbios = { workspace = true }
 fstart-smm-runtime = { workspace = true, optional = true }
+fstart-smm-stage = { workspace = true, optional = true }

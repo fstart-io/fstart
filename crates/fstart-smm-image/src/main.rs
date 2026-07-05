@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use fstart_smm_image::{write_image, ImageOptions};
-use fstart_types::SmmPlatform;
+use fstart_smm_image::{handler_from_archive, write_image, ImageOptions};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -18,6 +17,12 @@ struct Args {
     /// Per-CPU SMM stack size. Decimal or 0x-prefixed hex.
     #[arg(long, value_parser = parse_u32)]
     stack_size: u32,
+    /// Selected-board SMM static library archive.
+    #[arg(long)]
+    handler_archive: PathBuf,
+    /// Temporary directory for linking/extracting the handler archive.
+    #[arg(long)]
+    work_dir: Option<PathBuf>,
     /// Output native SMM image path.
     #[arg(long)]
     out: PathBuf,
@@ -27,9 +32,6 @@ struct Args {
     /// Include coreboot-style module argument storage in the handler/data region.
     #[arg(long, default_value_t = false)]
     coreboot_module_args: bool,
-    /// SMM platform handler composition.
-    #[arg(long, value_parser = parse_platform, default_value = "pineview-ich7")]
-    platform: SmmPlatform,
 }
 
 fn main() {
@@ -39,10 +41,22 @@ fn main() {
         stack_size: args.stack_size,
         coreboot_module_args: args.coreboot_module_args,
         coreboot_header: args.coreboot_header.is_some(),
-        platform: args.platform,
     };
+    let work_dir = args.work_dir.unwrap_or_else(|| {
+        args.out
+            .parent()
+            .map(|path| path.join("smm-handler-link"))
+            .unwrap_or_else(|| PathBuf::from("smm-handler-link"))
+    });
 
-    match write_image(options, &args.out, args.coreboot_header.as_deref()) {
+    match handler_from_archive(&args.handler_archive, &work_dir).and_then(|handler| {
+        write_image(
+            options,
+            &handler,
+            &args.out,
+            args.coreboot_header.as_deref(),
+        )
+    }) {
         Ok(built) => {
             eprintln!(
                 "[fstart-smm-image] wrote {} ({} bytes, {} entries)",
@@ -58,15 +72,6 @@ fn main() {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
-    }
-}
-
-fn parse_platform(s: &str) -> Result<SmmPlatform, String> {
-    match s {
-        "qemu-q35" => Ok(SmmPlatform::QemuQ35),
-        "pineview-ich7" => Ok(SmmPlatform::PineviewIch7),
-        "lenovo-x61" => Ok(SmmPlatform::LenovoX61),
-        _ => Err("expected qemu-q35, pineview-ich7, or lenovo-x61".to_string()),
     }
 }
 

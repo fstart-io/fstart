@@ -47,7 +47,7 @@ pub use memory::{
 };
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
-pub use smm::{CorebootSmmCompat, SmmConfig, SmmPlatform};
+pub use smm::{CorebootSmmCompat, SmmConfig};
 pub use stage::{
     effective_stage_load_addr, BootMedium, Capability, MonolithicConfig, RunsFrom, StageConfig,
     StageLayout, TempRamBuffer,
