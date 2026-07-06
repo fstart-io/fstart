@@ -519,17 +519,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-meta"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-smbios",
- "fstart-types",
- "heapless",
- "serde",
-]
-
-[[package]]
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
@@ -911,29 +900,16 @@ dependencies = [
 name = "fstart-stage"
 version = "0.1.0"
 dependencies = [
- "fstart-acpi",
  "fstart-alloc",
  "fstart-arch",
  "fstart-capabilities",
- "fstart-cpu-intel",
  "fstart-crabefi",
- "fstart-driver-i2c-ck505",
- "fstart-driver-intel-gm965",
- "fstart-driver-intel-ich8",
- "fstart-driver-ns16550",
- "fstart-driver-nsc-pc87382",
- "fstart-driver-nsc-pc87392",
- "fstart-driver-pci-ecam",
  "fstart-ffs",
  "fstart-fit",
- "fstart-gpio-ich",
  "fstart-log",
- "fstart-mp",
- "fstart-pio",
  "fstart-platform-x86_64",
  "fstart-runtime",
  "fstart-services",
- "fstart-superio",
  "fstart-types",
  "heapless",
  "ufmt",
@@ -1685,7 +1661,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
- "fstart-board-meta",
  "fstart-crypto",
  "fstart-ffs",
  "fstart-fit",

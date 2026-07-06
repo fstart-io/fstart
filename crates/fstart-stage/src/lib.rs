@@ -6,12 +6,7 @@
 
 #![no_std]
 
-#[cfg(any(
-    feature = "acpi",
-    feature = "ffs",
-    feature = "pci-ecam",
-    feature = "crabefi"
-))]
+#[cfg(any(feature = "acpi", feature = "ffs", feature = "crabefi"))]
 extern crate fstart_alloc;
 
 extern crate fstart_runtime;

@@ -28,7 +28,19 @@ nix-shell -p binutils --run "objdump -d target/.../fstart-stage"
 
 Default `rustfmt` (no `rustfmt.toml`). 4-space indent. Edition 2021.
 
-## IMPORTANT NOTE
+## BREAKING changes
 
 This is a grassroots projects. Breaking changes are expected everywhere.
 We want no backwards compatibility or safe migrations to new architectural designs.
+
+## Scaling
+
+Where it put some code is very important.
+The goal of this project is to scale to 100's of platforms and 1000's of boards.
+Having the same boilerplate in each board dir is not an option.
+Make sure to have proper abstractions: we have driver code that implements actual hardware init parts.
+Then we have "platforms" that coordinates the driver code in both early simple flows and later ones.
+Some platform code and structure can be shared accross all for instance Intel platforms. Some is platform specific like gm965/ich8.
+Some code is board level specific.
+
+If you don't know where to put things or have some doubts on structure or reuse. ASK the user unless prompted otherwise.

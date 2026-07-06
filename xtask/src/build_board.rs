@@ -395,8 +395,8 @@ fn build_one_stage(
     }
     cmd.env("RUSTFLAGS", &rustflags);
 
-    // Pass board/stage context to build.rs. Board-aware planning already
-    // happened here; fstart-stage/build.rs only forwards link.ld to rustc.
+    // Pass board/stage context to build scripts and the selected board crate.
+    // fstart-stage/build.rs forwards the generated linker script.
     cmd.env("FSTART_RUST_BOARD", &board_manifest.board);
     cmd.env("FSTART_LINKER_SCRIPT", &link_ld);
     cmd.env("FSTART_STAGE_FEATURES", features);
@@ -491,10 +491,90 @@ fn stage_package_build(
         });
     }
 
-    // The selected board crate owns its FirmwareBoard/StageRecipe binding; the
-    // wrapper needs no recipe metadata or recipe-specific knowledge.
+    // The selected board crate owns its FirmwareBoard/StageRecipe binding.
+    // The tiny entry point is static fstart-stage source; the generated
+    // manifest only injects the selected board dependency and feature routing.
     let _ = config;
-    write_firmware_board_stage_wrapper(workspace_root, board_manifest, plan)
+    let wrapper_dir = workspace_root
+        .join("target")
+        .join("fstart-build")
+        .join(&board_manifest.board)
+        .join("selected-stage");
+    fs::create_dir_all(&wrapper_dir)
+        .map_err(|e| format!("failed to create {}: {e}", wrapper_dir.display()))?;
+    write_if_changed(
+        &wrapper_dir.join("Cargo.toml"),
+        &selected_stage_cargo_toml(workspace_root, board_manifest, plan),
+    )?;
+    if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
+        write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
+    }
+
+    Ok(StagePackageBuild {
+        package_label: format!("fstart-selected-stage-{}", board_manifest.board),
+        manifest_path: Some(wrapper_dir.join("Cargo.toml")),
+    })
+}
+
+fn selected_stage_cargo_toml(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+    plan: &crate::build_plan::BuildPlan,
+) -> String {
+    let board_path = path_for_toml(&board_manifest.dir);
+    let stage_path = path_for_toml(&workspace_root.join("crates/fstart-stage"));
+    let entry_path =
+        path_for_toml(&workspace_root.join("crates/fstart-stage/src/selected_main.rs"));
+
+    let board_features: std::collections::BTreeSet<String> =
+        board_feature_names(&board_manifest.dir.join("Cargo.toml"))
+            .into_iter()
+            .filter(|f| f != "default" && f != "stage")
+            .collect();
+    let plan_features: std::collections::BTreeSet<String> = plan
+        .stages
+        .iter()
+        .flat_map(|stage| stage.features.iter().map(str::to_owned))
+        .collect();
+
+    let mut feature_lines = String::new();
+    let mut all_features = std::collections::BTreeSet::new();
+    all_features.extend(board_features.iter().cloned());
+    all_features.extend(plan_features.iter().cloned());
+    for feature in &all_features {
+        let mut deps = Vec::new();
+        if board_features.contains(feature.as_str()) {
+            deps.push(format!("\"fstart-board-selected/{feature}\""));
+        }
+        if plan_features.contains(feature.as_str()) && selected_stage_runtime_feature(feature) {
+            deps.push(format!("\"fstart-stage/{feature}\""));
+        }
+        feature_lines.push_str(&format!("{feature} = [{}]\n", deps.join(", ")));
+    }
+
+    format!(
+        r#"[package]
+name = "fstart-selected-stage-{board}"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = []
+{feature_lines}
+[dependencies]
+fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["stage"] }}
+fstart-stage = {{ path = "{stage_path}" }}
+
+[[bin]]
+name = "fstart-stage"
+path = "{entry_path}"
+"#,
+        board = board_manifest.board,
+        board_package = board_manifest.package,
+    )
 }
 
 fn board_feature_names(manifest_path: &Path) -> Vec<String> {
@@ -522,109 +602,7 @@ fn board_feature_names(manifest_path: &Path) -> Vec<String> {
     names
 }
 
-/// Generate a selected-board stage wrapper for any `FirmwareBoard`/`StageRecipe`
-/// binding. The wrapper is pure build glue: it selects the board type and calls
-/// `fstart_stage::run_board::<Board>`. Recipe-specific sequencing lives in the
-/// board's platform crate, pulled in transitively by the board crate's `stage`
-/// feature. No recipe-specific knowledge lives here.
-fn write_firmware_board_stage_wrapper(
-    workspace_root: &Path,
-    board_manifest: &crate::board_manifest::BoardManifest,
-    plan: &crate::build_plan::BuildPlan,
-) -> Result<StagePackageBuild, String> {
-    let package_label = format!("fstart-selected-stage-{}", board_manifest.board);
-    let wrapper_dir = workspace_root
-        .join("target")
-        .join("fstart-build")
-        .join(&board_manifest.board)
-        .join("selected-stage");
-    let src_dir = wrapper_dir.join("src");
-    fs::create_dir_all(&src_dir)
-        .map_err(|e| format!("failed to create {}: {e}", src_dir.display()))?;
-
-    let cargo_toml = selected_firmware_board_cargo_toml(workspace_root, board_manifest, plan);
-    write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
-    if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
-        write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
-    }
-    write_if_changed(
-        &wrapper_dir.join("build.rs"),
-        selected_firmware_board_build_rs(),
-    )?;
-    write_if_changed(&src_dir.join("main.rs"), selected_firmware_board_main_rs())?;
-
-    Ok(StagePackageBuild {
-        package_label,
-        manifest_path: Some(wrapper_dir.join("Cargo.toml")),
-    })
-}
-
-/// Build the wrapper `Cargo.toml`. Its `[features]` table forwards board
-/// features to the board crate, and only true stage flow/backend/build features
-/// to `fstart-stage`. Platform/driver recipe feature names may still appear in
-/// the generated wrapper so Cargo accepts the build-plan feature list, but they
-/// are not routed through a central stage driver registry.
-fn selected_firmware_board_cargo_toml(
-    workspace_root: &Path,
-    board_manifest: &crate::board_manifest::BoardManifest,
-    plan: &crate::build_plan::BuildPlan,
-) -> String {
-    let board_path = path_for_toml(&board_manifest.dir);
-    let crate_path = |path: &str| path_for_toml(&workspace_root.join(path));
-
-    let board_features: std::collections::BTreeSet<String> =
-        board_feature_names(&board_manifest.dir.join("Cargo.toml"))
-            .into_iter()
-            .filter(|f| f != "default" && f != "stage")
-            .collect();
-    let plan_features: std::collections::BTreeSet<String> = plan
-        .stages
-        .iter()
-        .flat_map(|stage| stage.features.iter().map(str::to_owned))
-        .collect();
-
-    let mut feature_lines = String::new();
-    let mut all_features = std::collections::BTreeSet::new();
-    all_features.extend(board_features.iter().cloned());
-    all_features.extend(plan_features.iter().cloned());
-    for feature in &all_features {
-        let mut deps = Vec::new();
-        if board_features.contains(feature.as_str()) {
-            deps.push(format!("\"fstart-board-selected/{feature}\""));
-        }
-        if plan_features.contains(feature.as_str()) && firmware_wrapper_stage_feature(feature) {
-            deps.push(format!("\"fstart-stage/{feature}\""));
-        }
-        feature_lines.push_str(&format!("{feature} = [{}]\n", deps.join(", ")));
-    }
-
-    format!(
-        r#"[package]
-name = "{package_label}"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[workspace]
-
-[features]
-default = []
-{feature_lines}
-[dependencies]
-fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["stage"] }}
-fstart-stage = {{ path = "{stage_path}" }}
-
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
-"#,
-        package_label = format!("fstart-selected-stage-{}", board_manifest.board),
-        board_package = board_manifest.package,
-        stage_path = crate_path("crates/fstart-stage"),
-    )
-}
-
-fn firmware_wrapper_stage_feature(feature: &str) -> bool {
+fn selected_stage_runtime_feature(feature: &str) -> bool {
     matches!(
         feature,
         "ffs"
@@ -636,61 +614,12 @@ fn firmware_wrapper_stage_feature(feature: &str) -> bool {
             | "fdt"
             | "handoff"
             | "acpi"
-            | "acpi-load"
-            | "smbios"
-            | "memory-detect"
             | "crabefi"
             | "x86_64"
-            | "x86-boot"
             | "x86-1g-pages"
             | "x86-writable-page-tables"
             | "x86-static-page-tables"
-            | "ns16550"
-            | "ns16550-pio"
     )
-}
-
-/// Wrapper `main.rs`: byte-identical for every board. It aliases the selected
-/// board crate and dispatches to its recipe. All board/stage facts travel as
-/// data (board crate, stage build config, generated linker script) — never as
-/// generated source.
-fn selected_firmware_board_main_rs() -> &'static str {
-    r#"//! Generated selected-board FirmwareBoard stage wrapper.
-
-#![no_std]
-#![no_main]
-
-use fstart_board_selected::Board;
-
-#[no_mangle]
-pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
-    fstart_stage::run_board::<Board>(
-        fstart_stage::StageKind::from_option(option_env!("FSTART_STAGE_NAME")),
-        handoff_ptr,
-    )
-}
-
-#[used]
-#[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
-static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
-"#
-}
-
-/// Build script shared by all FirmwareBoard recipe wrappers: forwards the
-/// linker script, selects the bootblock cfg, and wires the optional SMM image.
-/// Wrapper `build.rs`: byte-identical for every board. Only forwards the
-/// generated linker script to the stage binary link.
-fn selected_firmware_board_build_rs() -> &'static str {
-    r#"use std::env;
-
-fn main() {
-    println!("cargo:rerun-if-env-changed=FSTART_LINKER_SCRIPT");
-    if let Ok(script) = env::var("FSTART_LINKER_SCRIPT") {
-        println!("cargo:rustc-link-arg-bin=fstart-stage=-T{script}");
-        println!("cargo:rerun-if-changed={script}");
-    }
-}
-"#
 }
 
 fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
@@ -822,49 +751,6 @@ fn workspace_root() -> Result<PathBuf, String> {
         }
         if !dir.pop() {
             return Err("could not find workspace root".to_string());
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::firmware_wrapper_stage_feature;
-
-    #[test]
-    fn build_board_firmware_wrapper_stage_feature_allowlist_excludes_recipe_drivers() {
-        for feature in [
-            "ffs",
-            "sha2-digest",
-            "crabefi",
-            "x86_64",
-            "x86-boot",
-            "x86-static-page-tables",
-            "ns16550-pio",
-        ] {
-            assert!(
-                firmware_wrapper_stage_feature(feature),
-                "{feature} should route to fstart-stage"
-            );
-        }
-
-        for feature in [
-            "intel-gm965",
-            "intel-ich8",
-            "intel-pineview",
-            "intel-ich7",
-            "i2c-ck505",
-            "ite8721f",
-            "nsc-pc87392",
-            "q35-hostbridge",
-            "qemu-fw-cfg",
-            "pci-ecam",
-            "cpu-intel-core2",
-            "mp",
-        ] {
-            assert!(
-                !firmware_wrapper_stage_feature(feature),
-                "{feature} should stay with the selected board/recipe"
-            );
         }
     }
 }

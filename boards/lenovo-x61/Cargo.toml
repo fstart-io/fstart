@@ -29,6 +29,11 @@ stage = [
   "dep:fstart-platform-x86_64",
   "fstart-platform-intel-gm965-ich8/recipe",
 ]
+intel-gm965 = []
+intel-ich8 = ["dep:fstart-driver-intel-ich8"]
+nsc-pc87382 = []
+nsc-pc87392 = []
+i2c-ck505 = []
 acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",

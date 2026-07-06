@@ -8,7 +8,6 @@ license.workspace = true
 clap = { workspace = true }
 object = { workspace = true }
 fstart-types = { workspace = true }
-fstart-board-meta = { workspace = true }
 fstart-services = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-fit = { workspace = true, features = ["std"] }

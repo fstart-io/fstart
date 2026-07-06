@@ -109,12 +109,9 @@ pub fn plan(
     validate_manifest(config, manifest, target)?;
     let base_features = base_features(config, manifest);
     let is_multi_stage = matches!(&config.stages, StageLayout::MultiStage(_));
-    let pci_root_feature = config.build.pci_root_feature.as_deref();
-    let has_pci_driver = false;
     let plan_context = PlanContext {
         base_features: &base_features,
         needs_flat_binary: target.needs_flat_binary,
-        pci_root_feature,
     };
 
     let stages = match &config.stages {
@@ -133,7 +130,6 @@ pub fn plan(
                 },
                 &plan_context,
                 config.soc_image_format,
-                false,
             )]
         }
         StageLayout::MultiStage(stages) => stages
@@ -159,7 +155,6 @@ pub fn plan(
                     },
                     &plan_context,
                     soc_format,
-                    has_pci_driver,
                 )
             })
             .collect(),
@@ -261,7 +256,6 @@ fn needs_aarch64_el2_relocate_entry(config: &BoardConfig) -> bool {
 struct PlanContext<'a> {
     base_features: &'a FeatureSet,
     needs_flat_binary: bool,
-    pci_root_feature: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -281,7 +275,6 @@ fn stage_plan(
     stage: &StageContext<'_>,
     plan_context: &PlanContext<'_>,
     soc_format: SocImageFormat,
-    _include_global_pci_alloc: bool,
 ) -> StageBuildPlan {
     let mut features = plan_context.base_features.clone();
     features.extend(capability_features(
@@ -289,16 +282,6 @@ fn stage_plan(
         &config.security,
         config,
     ));
-    if stage_uses_pci(stage.capabilities) {
-        features.insert(plan_context.pci_root_feature.unwrap_or("pci-ecam"));
-    }
-    if stage_uses_mp(stage.capabilities) {
-        if let Some(cpu_feature) = config.build.cpu_feature.as_deref() {
-            features.insert(cpu_feature);
-        } else if config.platform == Platform::X86_64 {
-            features.insert("cpu-generic-x86");
-        }
-    }
 
     if stage.page_size == PageSize::Size1GiB {
         features.insert("x86-1g-pages");
@@ -321,7 +304,7 @@ fn stage_plan(
         || stage_uses_acpi(stage.capabilities)
         || stage_has_crabefi
         || stage.heap_size.is_some()
-        || _include_global_pci_alloc;
+        || stage_uses_pci(stage.capabilities);
     let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
     StageBuildPlan {
@@ -393,25 +376,6 @@ fn capability_features(
 
     if stage_uses_mp(capabilities) {
         features.push("mp");
-    }
-
-    if capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::AcpiLoad))
-    {
-        features.push("acpi-load");
-    }
-
-    if capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::MemoryDetect))
-    {
-        features.push("memory-detect");
-    }
-
-    if config.platform == Platform::X86_64 {
-        features.push("ns16550-pio");
-        features.push("x86-boot");
     }
 
     features

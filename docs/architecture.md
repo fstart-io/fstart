@@ -210,8 +210,9 @@ defaults. Per-board crates under `crates/` (the old
 
 ```text
 boards/lenovo-x61/
-  Cargo.toml            # [package.metadata.fstart] board/platform discovery keys
+  Cargo.toml            # [package.metadata.fstart] board/platform discovery keys + [[bin]] stanza
   src/lib.rs            # BoardSpec impl + hooks impls
+  src/main.rs           # 3 fixed lines: fstart_stage::stage_bin!(...) — see below
   src/hw.rs             # static POD config
   src/acpi.rs           # board ACPI fragments (typed references)
   src/quirks.rs         # board hooks bodies
@@ -226,7 +227,63 @@ boards/lenovo-x61/
   concerns live behind `feature = "host"`.
 - Payload files and boot mode are `fbuild` inputs, never board identity.
 - Boards write no stage crate, no `StaticBoard` adapter, no registry entry,
-  and no lifecycle forwarding impls. Board porting = POD config + hook impls.
+  and no lifecycle forwarding impls. Board porting = POD config + hook impls
+  plus the fixed stage entry declaration below.
+
+### Stage entry binary
+
+Cargo needs a `[[bin]]` target to produce the firmware executable, and since
+Rust 2018 an `--extern` crate is only linked if referenced — so a shared
+"empty bin" crate cannot pull in the selected board without either naming it
+(a registry) or having its manifest generated (banned). The resolution: the
+**board package owns the bin target**, and the entry code lives in one
+`macro_rules!` macro in `fstart-stage`.
+
+Per board, two fully declarative artifacts that never change after creation:
+
+```rust
+// boards/lenovo-x61/src/main.rs — exactly this, forever
+#![no_std]
+#![no_main]
+fstart_stage::stage_bin!(fstart_board_lenovo_x61::Board);
+```
+
+```toml
+# boards/lenovo-x61/Cargo.toml
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+required-features = ["stage"]
+```
+
+`stage_bin!` expands to the `#[no_mangle] fstart_main` that dispatches into
+the board's platform recipe, plus the `.fstart.keep` static that survives
+`--gc-sections`. SMM uses the same pattern (`smm_bin!`, or the SMM entry
+emitted from `stage_bin!` under `#[cfg(feature = "smm")]`) — no generated
+SMM wrapper crate.
+
+This is not the banned per-board boilerplate: the ban is on per-board stage
+*logic* and generated wrappers. Three declarative lines naming the board type
+once are config-as-data in Rust form — the only static, greppable,
+rust-analyzer-visible edge from bin to board that needs no registry and no
+generator. `fbuild` just runs
+`cargo build -p fstart-board-lenovo-x61 --bin fstart-stage --features stage,...`.
+
+Rejected alternatives, so they do not creep back:
+
+- **Shared bin crate with per-board optional deps** — a central registry.
+- **Generated wrapper crate (manifest-only or otherwise)** — generation; a
+  phantom package rust-analyzer cannot see; already reintroduced once by
+  accident, which is evidence the design invites relapse.
+- **Platform-family stage crate** — the dependency points the wrong way;
+  platform → board edges force a registry.
+- **Building the board lib as `staticlib` + external link step** — `fbuild`
+  becomes a linker driver outside cargo; loses rustflags/LTO/incremental,
+  invisible to rust-analyzer.
+- **`[[bin]] path` into a shared file outside the package, or a uniform
+  `[lib] name = "board"` rename, or a proc macro reading a board-crate env
+  var** — each fails on linkage, name collisions at 1000 boards, or
+  rust-analyzer-hostile env magic.
 
 ### Configuration ownership
 
@@ -324,8 +381,11 @@ into runtime modules.
 `fbuild` owns, exhaustively:
 
 1. Board discovery from `boards/**/Cargo.toml` metadata.
-2. Temporary selected-board wrapper workspace under `target/`.
-3. Linker script emission and cargo invocation per stage.
+2. Temporary selected-board workspace under `target/` — a workspace manifest
+   listing the board package as a member, nothing more. No generated package
+   manifests, no generated Rust.
+3. Linker script emission and cargo invocation per stage (building the
+   board-owned `fstart-stage` bin, see "Stage entry binary").
 4. Flat-binary extraction and SoC image patching (eGON and friends).
 5. Invoking `fstart-image-build` for FFS assembly, blobs, signing.
 6. Boot mode / payload input selection (CLI overrides board host defaults).
@@ -392,15 +452,16 @@ the repo's 77 crates. Everything else leaves the workspace first.
    die here too: the family flow is payload-agnostic; boot mode and payload
    inputs are CLI selections, and mainstage calls a common payload launcher
    trait rather than being gated by CrabEFI. Also migrate SMM to the
-   selected-board wrapper flow: today `fstart-smm-image` builds
-   `fstart-smm-stage` with a
+   board-owned entry pattern (see "Stage entry binary"): today
+   `fstart-smm-image` builds `fstart-smm-stage` with a
    `FSTART_SMM_PLATFORM` env var that build.rs turns into board-name cfgs — a
    central board registry in cfg form — and binds `NoBoardSmmHandler`, leaving
-   the X61 dock SMM handler dead. The wrapper must bind the board's handler
+   the X61 dock SMM handler dead. The board's own entry must bind its handler
    and the env/cfg selection must go.
 3. **Host metadata cut.** Delete the `BoardInfo`/`BuildInfo` object model and
    the `fstart-codegen` board loader; xtask slims to the fbuild boundary
-   (Cargo.toml metadata, wrapper workspace, linker emission, image assembly).
+   (Cargo.toml metadata, selected-board workspace manifest, linker emission,
+  image assembly).
 4. **Mechanical crate consolidation** to the target layout, last, as safe
    churn: `fstart-driver-intel` ← gm965+ich8+gpio-ich+pmio-ich+smbus-intel+
    microcode+ck505; `fstart-driver-superio` ← superio+pc87382+pc87392;
