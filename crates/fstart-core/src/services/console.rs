@@ -1,6 +1,6 @@
 //! Console service — serial/UART abstraction.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// A console device for debug output and (optionally) input.
 pub trait Console: Send + Sync {

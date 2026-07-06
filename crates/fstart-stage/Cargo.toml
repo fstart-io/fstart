@@ -52,12 +52,11 @@ crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
 [dependencies]
 # Core firmware infrastructure
 fstart-arch = { workspace = true }
-fstart-services = { workspace = true }
+fstart-core = { workspace = true }
 fstart-capabilities = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
-fstart-types = { workspace = true }
 heapless = { workspace = true }
 
 # Platform crates (exactly one enabled via feature)

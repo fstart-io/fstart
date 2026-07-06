@@ -13,19 +13,19 @@ stage = [
   "dep:fstart-platform-x86_64",
   "dep:fstart-stage",
   "dep:ufmt",
-  "fstart-services/pci",
+  "fstart-core/pci",
 ]
 acpi = ["stage", "dep:fstart-acpi"]
 smbios = ["stage", "dep:fstart-smbios", "dep:fstart-arch"]
 
 [dependencies]
-fstart-types = { workspace = true }
+fstart-core = { workspace = true }
+fstart-pci = { workspace = true }
 fstart-driver-intel = { workspace = true, features = ["ffs-vbt"] }
 fstart-driver-uart = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
 fstart-smbios = { workspace = true, optional = true }
-fstart-services = { workspace = true }
 fstart-log = { workspace = true, optional = true }
 fstart-platform-x86_64 = { workspace = true, optional = true }
 fstart-stage = { workspace = true, optional = true }

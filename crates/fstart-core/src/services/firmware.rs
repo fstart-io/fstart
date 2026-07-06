@@ -5,7 +5,7 @@
 //! source of truth for flash-to-CPU address translation: board metadata should not
 //! repeat SPI/ROM decode windows that are properties of the chipset or SoC.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// One CPU-visible memory-mapped window into a logical firmware image.
 ///

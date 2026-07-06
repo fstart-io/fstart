@@ -9,11 +9,6 @@
 //! See [docs/driver-model.md](../../docs/driver-model.md) for the full
 //! driver model architecture.
 
-#![no_std]
-
-#[cfg(test)]
-extern crate std;
-
 pub mod block;
 pub mod boot;
 pub mod boot_media;
@@ -30,8 +25,6 @@ pub mod lpc;
 pub mod memory_controller;
 pub mod memory_detect;
 pub mod network;
-#[cfg(feature = "pci")]
-pub mod pci;
 pub mod service_kind;
 pub mod smbus;
 pub mod soc_boot;
@@ -56,8 +49,6 @@ pub use i2c::I2c;
 pub use lpc::LpcBus;
 pub use memory_controller::MemoryController;
 pub use network::Network;
-#[cfg(feature = "pci")]
-pub use pci::{PciBdf, PciRootBus, PciWindow, PciWindowKind};
 pub use service_kind::{ServiceKind, ServiceSet};
 pub use smbus::SmBus;
 pub use soc_boot::SocBootHeader;
@@ -84,7 +75,7 @@ pub enum ServiceError {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
+    use super::{
         ffs_context, FirmwareImage, FirmwareImageMap, FirmwareWindow, FlashMap, ServiceError,
     };
 

@@ -1,6 +1,6 @@
 //! Block device service — storage abstraction.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// A block device (flash, disk, etc.).
 pub trait BlockDevice: Send + Sync {

@@ -6,7 +6,7 @@
 //! topology passes the parent bus controller reference and typed bus address
 //! directly (compile-away approach: no runtime lookup).
 
-use fstart_types::BusAddress;
+use crate::BusAddress;
 
 /// Error type for device construction and initialisation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

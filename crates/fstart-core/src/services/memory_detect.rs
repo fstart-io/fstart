@@ -4,7 +4,7 @@
 //! at runtime, such as QEMU's fw_cfg device (which provides an e820 map)
 //! or future SPD/memory-training drivers.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// e820 memory region types.
 ///

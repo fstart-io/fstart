@@ -2,9 +2,9 @@
 
 use std::fmt::Write;
 
-use fstart_types::board::MicrocodeConfig;
-use fstart_types::memory::FlashLayout;
-use fstart_types::{
+use fstart_core::board::MicrocodeConfig;
+use fstart_core::memory::FlashLayout;
+use fstart_core::{
     effective_stage_load_addr, BoardConfig, BootMedium, Capability, Platform, RegionKind,
     SocImageFormat, StageLayout,
 };

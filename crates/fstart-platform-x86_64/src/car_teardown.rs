@@ -268,7 +268,7 @@ extern "C" fn stage_load_mmio_trampoline(
 
 #[cfg(feature = "postcar-stage-load")]
 fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) -> u64 {
-    use fstart_types::ffs::{Compression, EntryContent, SegmentKind};
+    use fstart_core::ffs::{Compression, EntryContent, SegmentKind};
 
     // SAFETY: board-owned stage code passes the effective memory-mapped FFS base/size
     // from the Rust firmware-image provider or platform mapping.

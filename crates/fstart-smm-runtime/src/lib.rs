@@ -74,7 +74,7 @@ impl<'a> SmmContext<'a> {
             return None;
         }
         let params = &mut *params;
-        let apm_command = fstart_pio::inb(APM_CNT);
+        let apm_command = fstart_core::pio::inb(APM_CNT);
         Some(Self {
             params,
             apm_command,
@@ -196,11 +196,11 @@ pub unsafe fn release_handler_lock(runtime: &mut SmmRuntime) {
 /// The caller must be running on a platform where `DEBUGCON` is decoded and
 /// writing bytes to it is safe for the current firmware phase.
 pub unsafe fn debug_trace(cpu: u32) {
-    fstart_pio::outb(DEBUGCON, b'S');
+    fstart_core::pio::outb(DEBUGCON, b'S');
     let mut digit = (cpu & 0x0f) as u8;
     if digit > 9 {
         digit = digit.wrapping_add(7);
     }
-    fstart_pio::outb(DEBUGCON, digit.wrapping_add(b'0'));
-    fstart_pio::outb(DEBUGCON, b'\n');
+    fstart_core::pio::outb(DEBUGCON, digit.wrapping_add(b'0'));
+    fstart_core::pio::outb(DEBUGCON, b'\n');
 }

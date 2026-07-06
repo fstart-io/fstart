@@ -98,42 +98,42 @@ impl EcamDevice {
     #[inline]
     pub fn read32(&self, reg: u16) -> u32 {
         // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::read32(self.addr(reg) as *const u32) }
+        unsafe { fstart_core::mmio::read32(self.addr(reg) as *const u32) }
     }
 
     /// Write a 32-bit PCI config register.
     #[inline]
     pub fn write32(&self, reg: u16, val: u32) {
         // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::write32(self.addr(reg) as *mut u32, val) }
+        unsafe { fstart_core::mmio::write32(self.addr(reg) as *mut u32, val) }
     }
 
     /// Read a 16-bit PCI config register.
     #[inline]
     pub fn read16(&self, reg: u16) -> u16 {
         // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::read16(self.addr(reg) as *const u16) }
+        unsafe { fstart_core::mmio::read16(self.addr(reg) as *const u16) }
     }
 
     /// Write a 16-bit PCI config register.
     #[inline]
     pub fn write16(&self, reg: u16, val: u16) {
         // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::write16(self.addr(reg) as *mut u16, val) }
+        unsafe { fstart_core::mmio::write16(self.addr(reg) as *mut u16, val) }
     }
 
     /// Read an 8-bit PCI config register.
     #[inline]
     pub fn read8(&self, reg: u16) -> u8 {
         // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::read8(self.addr(reg) as *const u8) }
+        unsafe { fstart_core::mmio::read8(self.addr(reg) as *const u8) }
     }
 
     /// Write an 8-bit PCI config register.
     #[inline]
     pub fn write8(&self, reg: u16, val: u8) {
         // SAFETY: ECAM region is memory-mapped PCI config space.
-        unsafe { fstart_mmio::write8(self.addr(reg) as *mut u8, val) }
+        unsafe { fstart_core::mmio::write8(self.addr(reg) as *mut u8, val) }
     }
 
     /// Read-modify-write: `reg = (reg & mask) | set`.

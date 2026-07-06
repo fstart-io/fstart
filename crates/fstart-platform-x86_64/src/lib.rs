@@ -25,7 +25,7 @@ pub mod car_teardown;
 pub mod cpuid;
 
 use fstart_arch::x86::mtrr;
-use fstart_services::memory_detect::E820Entry;
+use fstart_core::services::memory_detect::E820Entry;
 
 /// Enable the BSP-local ROM cacheability MTRR for memory-mapped boot media.
 ///
@@ -865,7 +865,7 @@ extern "Rust" {
 // ---------------------------------------------------------------------------
 
 fn x86_raw_serial_byte(byte: u8) {
-    unsafe { fstart_pio::outb(0x3F8, byte) };
+    unsafe { fstart_core::pio::outb(0x3F8, byte) };
 }
 
 fn x86_raw_serial_str(s: &str) {
@@ -1095,7 +1095,7 @@ fn log_bsp_x86_cache_state(label: &str) {
 /// All fields are used: `kernel_addr`, `rsdp_addr`, `e820_entries`,
 /// `bootargs`, `zero_page_addr`.
 /// Ignored fields: `dtb_addr`, `fw_addr`, `hart_id`.
-pub fn boot_linux(params: &fstart_services::boot::BootLinuxParams<'_>) -> ! {
+pub fn boot_linux(params: &fstart_core::services::boot::BootLinuxParams<'_>) -> ! {
     boot_linux_direct(
         params.kernel_addr,
         params.rsdp_addr,
@@ -1220,27 +1220,27 @@ pub fn boot_linux_direct(
         E820Entry::new(
             0x0000_0000,
             0x0009_f000,
-            fstart_services::memory_detect::E820Kind::Ram,
+            fstart_core::services::memory_detect::E820Kind::Ram,
         ),
         E820Entry::new(
             0x0009_f000,
             0x0000_1000,
-            fstart_services::memory_detect::E820Kind::Reserved,
+            fstart_core::services::memory_detect::E820Kind::Reserved,
         ),
         E820Entry::new(
             0x000f_0000,
             0x0001_0000,
-            fstart_services::memory_detect::E820Kind::Reserved,
+            fstart_core::services::memory_detect::E820Kind::Reserved,
         ),
         E820Entry::new(
             0x0010_0000,
             0x3e50_0000,
-            fstart_services::memory_detect::E820Kind::Ram,
+            fstart_core::services::memory_detect::E820Kind::Ram,
         ),
         E820Entry::new(
             0x3e60_0000,
             0x01a0_0000,
-            fstart_services::memory_detect::E820Kind::Reserved,
+            fstart_core::services::memory_detect::E820Kind::Reserved,
         ),
     ];
     let e820 = if e820_entries.is_empty() {

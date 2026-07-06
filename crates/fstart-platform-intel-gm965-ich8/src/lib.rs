@@ -20,6 +20,12 @@ pub use early::{
     IntelEarlyBoardHooks, IntelEarlyCtx, IntelEarlyPlatform, IntelPlatform, MainstageCtx,
     MainstagePhases,
 };
+use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
+use fstart_core::{
+    hstr, hvec, BootMedium, BusAddress, Capability, CarConfig, Compression, ConstVec, DeviceConfig,
+    DeviceRole, FlashLayout, MemoryMap, MemoryRegion, RegionKind, RunsFrom, StageConfig,
+    StageLayout, TempRamBuffer,
+};
 use fstart_driver_intel::gm965;
 pub use fstart_driver_intel::gm965::{Gm965IgdConfig, IntelGm965Config};
 use fstart_driver_intel::gpio_ich as gpio;
@@ -32,12 +38,6 @@ pub use fstart_driver_intel::ich8::{
 };
 #[cfg(feature = "stage")]
 pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageKind};
-use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
-use fstart_types::{
-    hstr, hvec, BootMedium, BusAddress, Capability, CarConfig, Compression, ConstVec, DeviceConfig,
-    DeviceRole, FlashLayout, MemoryMap, MemoryRegion, RegionKind, RunsFrom, StageConfig,
-    StageLayout, TempRamBuffer,
-};
 use serde::Serialize;
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
@@ -268,7 +268,7 @@ const fn empty_io_trap() -> IoTrapConfig {
     }
 }
 
-const fn validate_lpc_generic_io_decodes(decodes: &fstart_types::ConstVec<LpcGenericIoDecode, 4>) {
+const fn validate_lpc_generic_io_decodes(decodes: &fstart_core::ConstVec<LpcGenericIoDecode, 4>) {
     if konst::iter::eval!(
         0..decodes.len(),
         any(|idx| { !ich8::valid_lpc_generic_io(decodes.get(idx)) })
@@ -285,7 +285,7 @@ const fn validate_lpc_generic_io_decodes(decodes: &fstart_types::ConstVec<LpcGen
 }
 
 const fn lpc_generic_io_overlaps_later(
-    decodes: &fstart_types::ConstVec<LpcGenericIoDecode, 4>,
+    decodes: &fstart_core::ConstVec<LpcGenericIoDecode, 4>,
     idx: usize,
 ) -> bool {
     let decode = decodes.get(idx);
@@ -295,7 +295,7 @@ const fn lpc_generic_io_overlaps_later(
     )
 }
 
-const fn validate_io_traps(traps: &fstart_types::ConstVec<IoTrapConfig, 4>) {
+const fn validate_io_traps(traps: &fstart_core::ConstVec<IoTrapConfig, 4>) {
     if konst::iter::eval!(
         0..traps.len(),
         any(|idx| { !ich8::valid_io_trap(traps.get(idx)) })

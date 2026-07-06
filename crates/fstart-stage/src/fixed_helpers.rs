@@ -1,9 +1,9 @@
 //! Reusable pieces for board-owned handwritten stage flows.
 
-use fstart_services::boot::BootLinuxParams;
-use fstart_services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};
-use fstart_services::{BlockDevice, ServiceError};
-use fstart_types::ffs::{FileType, ANCHOR_SIZE};
+use fstart_core::ffs::{FileType, ANCHOR_SIZE};
+use fstart_core::services::boot::BootLinuxParams;
+use fstart_core::services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};
+use fstart_core::services::{BlockDevice, ServiceError};
 
 /// Firmware filesystem stored behind a block device such as MMC or SPI flash.
 pub struct BlockDeviceFfs {
@@ -263,7 +263,7 @@ impl MemoryMappedFfs {
     /// Publish this memory-mapped FFS window to stage-local services.
     pub fn mount(self) -> Result<(), ServiceError> {
         fstart_log::info!("mounting memory-mapped FFS at {:#x}", self.base);
-        fstart_services::ffs_context::set_memory_mapped(
+        fstart_core::services::ffs_context::set_memory_mapped(
             crate::fstart_anchor_bytes(),
             self.base,
             self.size as u64,

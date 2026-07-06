@@ -10,7 +10,7 @@
 //! regardless of platform, eliminating the per-platform `match` in
 //! `board_gen::platform_boot_protocol_stmts`.
 
-use crate::memory_detect::E820Entry;
+use super::memory_detect::E820Entry;
 
 /// Parameters for the Linux boot protocol.
 ///

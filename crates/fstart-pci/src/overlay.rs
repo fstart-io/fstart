@@ -4,7 +4,7 @@
 //! capability traversal, write-1-to-clear status handling, and exact-write
 //! errata sequences should continue to use raw config access helpers.
 
-use fstart_mmio::{MmioReadOnly, MmioReadWrite};
+use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use tock_registers::register_structs;
 
 use crate::config::{PCI_COMMAND_BITS, PCI_STATUS_BITS};
@@ -88,32 +88,32 @@ register_structs! {
 #[macro_export]
 macro_rules! pci_type0_config {
     ($(#[$meta:meta])* $vis:vis struct $name:ident { $($field:tt)* }) => {
-        $crate::fstart_mmio::tock_registers::register_structs! {
+        $crate::fstart_core::mmio::tock_registers::register_structs! {
             $(#[$meta])*
             $vis $name {
-                (0x00 => pub vendor_id: $crate::fstart_mmio::MmioReadOnly<u16>),
-                (0x02 => pub device_id: $crate::fstart_mmio::MmioReadOnly<u16>),
-                (0x04 => pub command: $crate::fstart_mmio::MmioReadWrite<u16, $crate::PCI_COMMAND_BITS::Register>),
-                (0x06 => pub status_raw: $crate::fstart_mmio::MmioReadWrite<u16, $crate::PCI_STATUS_BITS::Register>),
-                (0x08 => pub revision_id: $crate::fstart_mmio::MmioReadOnly<u8>),
-                (0x09 => pub prog_if: $crate::fstart_mmio::MmioReadOnly<u8>),
-                (0x0a => pub subclass: $crate::fstart_mmio::MmioReadOnly<u8>),
-                (0x0b => pub class_code: $crate::fstart_mmio::MmioReadOnly<u8>),
-                (0x0c => pub cache_line_size: $crate::fstart_mmio::MmioReadWrite<u8>),
-                (0x0d => pub latency_timer: $crate::fstart_mmio::MmioReadWrite<u8>),
-                (0x0e => pub header_type: $crate::fstart_mmio::MmioReadOnly<u8>),
-                (0x0f => pub bist: $crate::fstart_mmio::MmioReadWrite<u8>),
-                (0x10 => pub bar: [$crate::fstart_mmio::MmioReadWrite<u32>; 6]),
-                (0x28 => pub cardbus_cis_pointer: $crate::fstart_mmio::MmioReadOnly<u32>),
-                (0x2c => pub subsystem_vendor_id: $crate::fstart_mmio::MmioReadOnly<u16>),
-                (0x2e => pub subsystem_id: $crate::fstart_mmio::MmioReadOnly<u16>),
-                (0x30 => pub expansion_rom_base_raw: $crate::fstart_mmio::MmioReadWrite<u32>),
-                (0x34 => pub capabilities_ptr: $crate::fstart_mmio::MmioReadOnly<u8>),
+                (0x00 => pub vendor_id: $crate::fstart_core::mmio::MmioReadOnly<u16>),
+                (0x02 => pub device_id: $crate::fstart_core::mmio::MmioReadOnly<u16>),
+                (0x04 => pub command: $crate::fstart_core::mmio::MmioReadWrite<u16, $crate::PCI_COMMAND_BITS::Register>),
+                (0x06 => pub status_raw: $crate::fstart_core::mmio::MmioReadWrite<u16, $crate::PCI_STATUS_BITS::Register>),
+                (0x08 => pub revision_id: $crate::fstart_core::mmio::MmioReadOnly<u8>),
+                (0x09 => pub prog_if: $crate::fstart_core::mmio::MmioReadOnly<u8>),
+                (0x0a => pub subclass: $crate::fstart_core::mmio::MmioReadOnly<u8>),
+                (0x0b => pub class_code: $crate::fstart_core::mmio::MmioReadOnly<u8>),
+                (0x0c => pub cache_line_size: $crate::fstart_core::mmio::MmioReadWrite<u8>),
+                (0x0d => pub latency_timer: $crate::fstart_core::mmio::MmioReadWrite<u8>),
+                (0x0e => pub header_type: $crate::fstart_core::mmio::MmioReadOnly<u8>),
+                (0x0f => pub bist: $crate::fstart_core::mmio::MmioReadWrite<u8>),
+                (0x10 => pub bar: [$crate::fstart_core::mmio::MmioReadWrite<u32>; 6]),
+                (0x28 => pub cardbus_cis_pointer: $crate::fstart_core::mmio::MmioReadOnly<u32>),
+                (0x2c => pub subsystem_vendor_id: $crate::fstart_core::mmio::MmioReadOnly<u16>),
+                (0x2e => pub subsystem_id: $crate::fstart_core::mmio::MmioReadOnly<u16>),
+                (0x30 => pub expansion_rom_base_raw: $crate::fstart_core::mmio::MmioReadWrite<u32>),
+                (0x34 => pub capabilities_ptr: $crate::fstart_core::mmio::MmioReadOnly<u8>),
                 (0x35 => _reserved0),
-                (0x3c => pub interrupt_line: $crate::fstart_mmio::MmioReadWrite<u8>),
-                (0x3d => pub interrupt_pin: $crate::fstart_mmio::MmioReadOnly<u8>),
-                (0x3e => pub min_grant: $crate::fstart_mmio::MmioReadOnly<u8>),
-                (0x3f => pub max_latency: $crate::fstart_mmio::MmioReadOnly<u8>),
+                (0x3c => pub interrupt_line: $crate::fstart_core::mmio::MmioReadWrite<u8>),
+                (0x3d => pub interrupt_pin: $crate::fstart_core::mmio::MmioReadOnly<u8>),
+                (0x3e => pub min_grant: $crate::fstart_core::mmio::MmioReadOnly<u8>),
+                (0x3f => pub max_latency: $crate::fstart_core::mmio::MmioReadOnly<u8>),
                 $($field)*
             }
         }

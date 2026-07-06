@@ -3,12 +3,10 @@ resolver = "2"
 members = [
   "boards/lenovo-x61",
   "xtask",
-  "crates/fstart-types",
+  "crates/fstart-core",
   "crates/fstart-platform-intel-gm965-ich8",
   "crates/fstart-ffs",
   "crates/fstart-crypto",
-  "crates/fstart-mmio",
-  "crates/fstart-services",
   "crates/fstart-arch",
   "crates/fstart-capabilities",
   "crates/fstart-alloc",
@@ -22,7 +20,6 @@ members = [
   "crates/fstart-acpi",
   "crates/fstart-acpi-macros",
   "crates/fstart-smbios",
-  "crates/fstart-pio",
   "crates/fstart-platform-x86_64",
   "crates/fstart-spd",
   "crates/fstart-hda",
@@ -74,13 +71,11 @@ object = { version = "0.37", default-features = false, features = [
 clap = { version = "4", features = ["derive"] }
 
 # Internal workspace crates
-fstart-types = { path = "crates/fstart-types" }
+fstart-core = { path = "crates/fstart-core" }
 fstart-platform-intel-gm965-ich8 = { path = "crates/fstart-platform-intel-gm965-ich8" }
 fstart-pci = { path = "crates/fstart-pci" }
 fstart-ffs = { path = "crates/fstart-ffs" }
 fstart-crypto = { path = "crates/fstart-crypto" }
-fstart-mmio = { path = "crates/fstart-mmio" }
-fstart-services = { path = "crates/fstart-services" }
 fstart-capabilities = { path = "crates/fstart-capabilities" }
 fstart-alloc = { path = "crates/fstart-alloc" }
 fstart-log = { path = "crates/fstart-log" }
@@ -94,7 +89,6 @@ fstart-stage = { path = "crates/fstart-stage" }
 fstart-fit = { path = "crates/fstart-fit" }
 fstart-acpi = { path = "crates/fstart-acpi" }
 fstart-smbios = { path = "crates/fstart-smbios" }
-fstart-pio = { path = "crates/fstart-pio" }
 fstart-platform-x86_64 = { path = "crates/fstart-platform-x86_64" }
 fstart-spd = { path = "crates/fstart-spd" }
 fstart-hda = { path = "crates/fstart-hda" }

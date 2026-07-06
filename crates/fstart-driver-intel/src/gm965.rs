@@ -21,15 +21,16 @@ use alloc::vec::Vec;
 use core::{cell::UnsafeCell, ptr};
 
 use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
-use fstart_mmio::MmioReadWrite;
-use fstart_pci::ecam;
-use fstart_pci::pci_type0_config;
-use fstart_pci::{PciEcam, PciEcamConfig};
-use fstart_services::device::DeviceError;
-use fstart_services::memory_detect::{
+use fstart_core::mmio::MmioReadWrite;
+use fstart_core::services::device::DeviceError;
+use fstart_core::services::memory_detect::{
     build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
 };
-use fstart_services::{MemoryController, PciBdf, PciRootBus, PciWindow, ServiceError};
+use fstart_core::services::{MemoryController, ServiceError};
+use fstart_pci::ecam;
+use fstart_pci::pci_type0_config;
+use fstart_pci::{PciBdf, PciRootBus, PciWindow};
+use fstart_pci::{PciEcam, PciEcamConfig};
 use serde::Serialize;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -327,37 +328,37 @@ impl MchBar {
     #[inline]
     pub fn read8(&self, off: u32) -> u8 {
         // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
+        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
     }
 
     #[inline]
     pub fn write8(&self, off: u32, val: u8) {
         // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_mmio::write8((self.base + off as usize) as *mut u8, val) }
+        unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
     }
 
     #[inline]
     pub fn read16(&self, off: u32) -> u16 {
         // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_mmio::read16((self.base + off as usize) as *const u16) }
+        unsafe { fstart_core::mmio::read16((self.base + off as usize) as *const u16) }
     }
 
     #[inline]
     pub fn write16(&self, off: u32, val: u16) {
         // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_mmio::write16((self.base + off as usize) as *mut u16, val) }
+        unsafe { fstart_core::mmio::write16((self.base + off as usize) as *mut u16, val) }
     }
 
     #[inline]
     pub fn read32(&self, off: u32) -> u32 {
         // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
+        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
     }
 
     #[inline]
     pub fn write32(&self, off: u32, val: u32) {
         // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
+        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
     }
 
     #[inline]
@@ -433,37 +434,37 @@ impl DmiBar {
     #[inline]
     pub fn read8(&self, off: u32) -> u8 {
         // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
+        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
     }
 
     #[inline]
     pub fn write8(&self, off: u32, val: u8) {
         // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_mmio::write8((self.base + off as usize) as *mut u8, val) }
+        unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
     }
 
     #[inline]
     pub fn read16(&self, off: u32) -> u16 {
         // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_mmio::read16((self.base + off as usize) as *const u16) }
+        unsafe { fstart_core::mmio::read16((self.base + off as usize) as *const u16) }
     }
 
     #[inline]
     pub fn write16(&self, off: u32, val: u16) {
         // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_mmio::write16((self.base + off as usize) as *mut u16, val) }
+        unsafe { fstart_core::mmio::write16((self.base + off as usize) as *mut u16, val) }
     }
 
     #[inline]
     pub fn read32(&self, off: u32) -> u32 {
         // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
+        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
     }
 
     #[inline]
     pub fn write32(&self, off: u32, val: u32) {
         // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
+        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
     }
 
     #[inline]
@@ -531,19 +532,19 @@ impl EpBar {
     #[inline]
     pub fn read8(&self, off: u32) -> u8 {
         // SAFETY: off is a GM965 EPBAR register offset.
-        unsafe { fstart_mmio::read8((self.base + off as usize) as *const u8) }
+        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
     }
 
     #[inline]
     pub fn write32(&self, off: u32, val: u32) {
         // SAFETY: off is a GM965 EPBAR register offset.
-        unsafe { fstart_mmio::write32((self.base + off as usize) as *mut u32, val) }
+        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
     }
 
     #[inline]
     pub fn read32(&self, off: u32) -> u32 {
         // SAFETY: off is a GM965 EPBAR register offset.
-        unsafe { fstart_mmio::read32((self.base + off as usize) as *const u32) }
+        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
     }
 
     #[inline]
@@ -551,7 +552,7 @@ impl EpBar {
         // SAFETY: off is a GM965 EPBAR register offset.
         unsafe {
             let ptr = (self.base + off as usize) as *mut u8;
-            fstart_mmio::write8(ptr, fstart_mmio::read8(ptr) & !bits);
+            fstart_core::mmio::write8(ptr, fstart_core::mmio::read8(ptr) & !bits);
         }
     }
 
@@ -560,7 +561,7 @@ impl EpBar {
         // SAFETY: off is a GM965 EPBAR register offset.
         unsafe {
             let ptr = (self.base + off as usize) as *mut u8;
-            fstart_mmio::write8(ptr, (fstart_mmio::read8(ptr) & !clear) | set);
+            fstart_core::mmio::write8(ptr, (fstart_core::mmio::read8(ptr) & !clear) | set);
         }
     }
 
@@ -896,8 +897,8 @@ impl IntelGm965 {
         // SAFETY: one-time legacy PCI config write to enable ECAM before the
         // ECAM MMIO accessor can be used.
         unsafe {
-            fstart_pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR_HI, 0);
-            fstart_pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR_LO, value);
+            fstart_core::pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR_HI, 0);
+            fstart_core::pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR_LO, value);
         }
         ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("gm965: ECAM enabled at {:#x}", self.config.ecam_base);
@@ -1378,7 +1379,7 @@ impl IntelGm965 {
     #[cfg(feature = "ffs-vbt")]
     fn ffs_vbt(&self) -> Option<Vec<u8>> {
         let file_name = self.config.igd.vbt_file?;
-        let ctx = fstart_services::ffs_context::memory_mapped()?;
+        let ctx = fstart_core::services::ffs_context::memory_mapped()?;
         // SAFETY: the selected stage publishes a static anchor and a valid
         // memory-mapped boot-media window when BootMedia runs.
         let anchor_bytes = unsafe { ctx.anchor_bytes() };
@@ -1395,14 +1396,14 @@ impl IntelGm965 {
             .ok()?;
 
         for region in &manifest.regions {
-            let fstart_types::ffs::RegionContent::Container { children } = &region.content else {
+            let fstart_core::ffs::RegionContent::Container { children } = &region.content else {
                 continue;
             };
             for entry in children {
                 if entry.name.as_str() != file_name {
                     continue;
                 }
-                let fstart_types::ffs::EntryContent::File {
+                let fstart_core::ffs::EntryContent::File {
                     file_type,
                     segments,
                     digests,
@@ -1410,7 +1411,7 @@ impl IntelGm965 {
                 else {
                     return None;
                 };
-                if *file_type != fstart_types::ffs::FileType::Data || segments.len() != 1 {
+                if *file_type != fstart_core::ffs::FileType::Data || segments.len() != 1 {
                     return None;
                 }
                 let seg = segments.first()?;
@@ -1420,10 +1421,10 @@ impl IntelGm965 {
                 let stored = image.get(offset..end)?;
                 let mut out = Vec::new();
                 match seg.compression {
-                    fstart_types::ffs::Compression::None => {
+                    fstart_core::ffs::Compression::None => {
                         out.extend_from_slice(stored);
                     }
-                    fstart_types::ffs::Compression::Lz4 => {
+                    fstart_core::ffs::Compression::Lz4 => {
                         out.resize(seg.loaded_size as usize, 0);
                         let len =
                             fstart_ffs::lz4::decompress_block(stored, out.as_mut_slice()).ok()?;
@@ -1542,13 +1543,15 @@ impl IntelGm965 {
 
     fn gtt_mmio_read32(&self, off: usize) -> u32 {
         // SAFETY: GTTMMADR BAR0 has been programmed by `gma_non_display_init`.
-        unsafe { fstart_mmio::read32((self.config.igd.gtt_mmio_base as usize + off) as *const u32) }
+        unsafe {
+            fstart_core::mmio::read32((self.config.igd.gtt_mmio_base as usize + off) as *const u32)
+        }
     }
 
     fn gtt_mmio_write32(&self, off: usize, val: u32) {
         // SAFETY: GTTMMADR BAR0 has been programmed by `gma_non_display_init`.
         unsafe {
-            fstart_mmio::write32(
+            fstart_core::mmio::write32(
                 (self.config.igd.gtt_mmio_base as usize + off) as *mut u32,
                 val,
             )
@@ -1778,7 +1781,7 @@ impl IntelGm965 {
 }
 
 fn default_mmio32_window_from_e820(limit: u64) -> Option<(u64, u64)> {
-    let state = unsafe { fstart_services::memory_detect::e820_state() };
+    let state = unsafe { fstart_core::services::memory_detect::e820_state() };
     if state.count() == 0 {
         return None;
     }

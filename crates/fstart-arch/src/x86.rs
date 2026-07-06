@@ -1,7 +1,7 @@
 //! x86/x86_64 architecture helpers.
 //!
 //! This crate contains concrete x86 CPU primitives. Cross-architecture traits
-//! and generic firmware interfaces belong in `fstart-arch` / `fstart-services`;
+//! and generic firmware interfaces belong in `fstart-arch` / `fstart-core::services`;
 //! x86-only implementation details such as MSRs and MTRRs live here.
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

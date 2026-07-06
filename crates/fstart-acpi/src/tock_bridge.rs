@@ -275,7 +275,7 @@ where
 /// Trait for register field types that carry type-level register metadata.
 ///
 /// Implemented for `tock_registers::registers::ReadWrite<T, R>` and
-/// `ReadOnly<T, R>`.  Custom register wrappers (e.g., fstart-mmio's
+/// `ReadOnly<T, R>`.  Custom register wrappers (e.g., fstart-core::mmio's
 /// `MmioReadWrite`) can implement this to participate in [`tock_acpi_field!`].
 pub trait AcpiRegField {
     /// The register width type (u8, u16, u32, u64).

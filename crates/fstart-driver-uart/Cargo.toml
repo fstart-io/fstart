@@ -7,11 +7,9 @@ publish = false
 
 [features]
 default = []
-pio = ["dep:fstart-pio"]
+pio = []
 
 [dependencies]
-fstart-mmio = { workspace = true }
-fstart-pio = { workspace = true, optional = true }
-fstart-services = { workspace = true }
+fstart-core = { workspace = true }
 serde = { workspace = true }
 tock-registers = { workspace = true }

@@ -14,7 +14,7 @@
 //!
 //! ```ignore
 //! use fstart_crypto::{hash_sha256, verify_signature};
-//! use fstart_types::ffs::{Signature, VerificationKey};
+//! use fstart_core::ffs::{Signature, VerificationKey};
 //!
 //! let digest = hash_sha256(data);
 //! let ok = verify_signature(manifest_bytes, &signature, &key);

@@ -8,9 +8,7 @@ license.workspace = true
 fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-ffs = { workspace = true, optional = true }
 fstart-log = { workspace = true }
-fstart-pio = { workspace = true }
-fstart-services = { workspace = true }
-fstart-types = { workspace = true, optional = true }
+fstart-core = { workspace = true }
 ufmt = { workspace = true }
 
 [features]
@@ -27,4 +25,4 @@ x86-static-page-tables = []
 # Expose the generated FFS anchor to the pre-Rust microcode updater.
 early-ffs-anchor = []
 # Post-CAR StageLoad support for x86 bootblocks that load the next stage from FFS.
-postcar-stage-load = ["dep:fstart-ffs", "dep:fstart-types"]
+postcar-stage-load = ["dep:fstart-ffs"]

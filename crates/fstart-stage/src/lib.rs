@@ -28,8 +28,8 @@ pub mod payload;
 /// the complete firmware image.
 #[used]
 #[cfg_attr(target_os = "none", link_section = ".fstart.anchor")]
-pub static FSTART_ANCHOR: fstart_types::ffs::AnchorBlock =
-    fstart_types::ffs::AnchorBlock::placeholder();
+pub static FSTART_ANCHOR: fstart_core::ffs::AnchorBlock =
+    fstart_core::ffs::AnchorBlock::placeholder();
 
 #[must_use]
 pub fn fstart_anchor_bytes() -> &'static [u8] {
@@ -37,8 +37,8 @@ pub fn fstart_anchor_bytes() -> &'static [u8] {
     // has exactly ANCHOR_SIZE initialized bytes.
     unsafe {
         core::slice::from_raw_parts(
-            (&FSTART_ANCHOR as *const fstart_types::ffs::AnchorBlock).cast::<u8>(),
-            fstart_types::ffs::ANCHOR_SIZE,
+            (&FSTART_ANCHOR as *const fstart_core::ffs::AnchorBlock).cast::<u8>(),
+            fstart_core::ffs::ANCHOR_SIZE,
         )
     }
 }
@@ -74,7 +74,7 @@ pub trait StageBoard: Sized + 'static {
     /// Stable fstart board name.
     const NAME: &'static str;
     /// Runtime platform for this board.
-    const PLATFORM: fstart_types::Platform;
+    const PLATFORM: fstart_core::Platform;
 
     /// Run the selected stage using the board's platform-family flow.
     fn run_stage(stage: StageKind, handoff: usize) -> !;

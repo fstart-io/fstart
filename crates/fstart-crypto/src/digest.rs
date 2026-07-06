@@ -3,7 +3,7 @@
 //! Provides SHA-256 and SHA3-256 implementations via the RustCrypto crates.
 //! Each is behind a feature flag (`sha2-digest`, `sha3-digest`).
 
-use fstart_types::ffs::DigestSet;
+use fstart_core::ffs::DigestSet;
 
 /// Error returned by digest operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

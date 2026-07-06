@@ -14,8 +14,6 @@
 //! trigger side effects in hardware. Callers must ensure the port address
 //! corresponds to an actual device register.
 
-#![no_std]
-
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub use x86::io;
 
@@ -252,8 +250,8 @@ impl<T: PioValue, R: RegisterLongName> Writeable for PioRegister<T, R> {
 /// Example:
 ///
 /// ```ignore
-/// use fstart_pio::pio_register_structs;
-/// use fstart_pio::PioRegister;
+/// use fstart_core::pio_register_structs;
+/// use fstart_core::pio::PioRegister;
 /// use tock_registers::register_bitfields;
 ///
 /// register_bitfields![u8, STATUS [ INTR OFFSET(1) NUMBITS(1) [] ]];

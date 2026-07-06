@@ -1,6 +1,6 @@
 //! Common payload launch abstractions for mainstage flows.
 
-use fstart_services::memory_detect::E820Entry;
+use fstart_core::services::memory_detect::E820Entry;
 
 /// Build-selected payload launcher for a mainstage device context.
 pub trait MainstagePayload<D> {
@@ -30,7 +30,7 @@ pub type BuildSelectedPayload = X86UefiPayload;
 /// Device context needed by the common x86 CrabEFI launcher.
 pub trait X86UefiPayloadContext {
     /// Return the payload console, if one is available.
-    fn console(&self) -> Option<&dyn fstart_services::Console>;
+    fn console(&self) -> Option<&dyn fstart_core::services::Console>;
     /// Return the detected x86 memory map.
     fn e820(&self) -> &[E820Entry];
     /// Return the firmware image region to reserve for runtime services.

@@ -11,15 +11,15 @@ pub mod smm;
 use crate::gpio_ich::IchGpio;
 use crate::pmio_ich::{self as pmio, PmIo};
 use crate::smbus::I801SmBus;
-use fstart_mmio::MmioReadWrite;
-use fstart_pci::ecam;
-use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_BITS};
-use fstart_services::device::DeviceError;
-use fstart_services::{
+use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
+use fstart_core::mmio::MmioReadWrite;
+use fstart_core::services::device::DeviceError;
+use fstart_core::services::{
     FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus, Southbridge,
 };
-use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
-use fstart_types::ConstVec;
+use fstart_core::ConstVec;
+use fstart_pci::ecam;
+use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_BITS};
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
@@ -334,14 +334,14 @@ register_structs! {
     /// as read-only for normal code; ICH8 mode switching requires an explicit
     /// chipset-driver write.
     PciType0ProgIfConfig {
-        (0x00 => _vendor_id: fstart_mmio::MmioReadOnly<u16>),
-        (0x02 => _device_id: fstart_mmio::MmioReadOnly<u16>),
-        (0x04 => _command: fstart_mmio::MmioReadWrite<u16, PCI_COMMAND_BITS::Register>),
-        (0x06 => _status_raw: fstart_mmio::MmioReadWrite<u16>),
-        (0x08 => _revision_id: fstart_mmio::MmioReadOnly<u8>),
+        (0x00 => _vendor_id: fstart_core::mmio::MmioReadOnly<u16>),
+        (0x02 => _device_id: fstart_core::mmio::MmioReadOnly<u16>),
+        (0x04 => _command: fstart_core::mmio::MmioReadWrite<u16, PCI_COMMAND_BITS::Register>),
+        (0x06 => _status_raw: fstart_core::mmio::MmioReadWrite<u16>),
+        (0x08 => _revision_id: fstart_core::mmio::MmioReadOnly<u8>),
         (0x09 => pub prog_if: MmioReadWrite<u8>),
-        (0x0a => _subclass: fstart_mmio::MmioReadOnly<u8>),
-        (0x0b => _class_code: fstart_mmio::MmioReadOnly<u8>),
+        (0x0a => _subclass: fstart_core::mmio::MmioReadOnly<u8>),
+        (0x0b => _class_code: fstart_core::mmio::MmioReadOnly<u8>),
         (0x0c => @END),
     }
 }
@@ -1036,14 +1036,14 @@ impl Rcba {
     fn read32(&self, offset: usize) -> u32 {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config;
         // callers pass documented, 32-bit-aligned RCBA/SPIBAR offsets.
-        unsafe { fstart_mmio::read32((self.base + offset) as *const u32) }
+        unsafe { fstart_core::mmio::read32((self.base + offset) as *const u32) }
     }
 
     #[inline]
     fn write32(&self, offset: usize, value: u32) {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config;
         // callers pass documented, 32-bit-aligned RCBA/SPIBAR offsets.
-        unsafe { fstart_mmio::write32((self.base + offset) as *mut u32, value) }
+        unsafe { fstart_core::mmio::write32((self.base + offset) as *mut u32, value) }
     }
 }
 
@@ -1285,8 +1285,8 @@ impl IntelIch8 {
 
         // SAFETY: HPET base is fixed once enabled through HPTC.
         unsafe {
-            let cfg = fstart_mmio::read32((HPET_BASE + 0x10) as *const u32);
-            fstart_mmio::write32((HPET_BASE + 0x10) as *mut u32, cfg | 1);
+            let cfg = fstart_core::mmio::read32((HPET_BASE + 0x10) as *const u32);
+            fstart_core::mmio::write32((HPET_BASE + 0x10) as *mut u32, cfg | 1);
         }
     }
 
@@ -1420,14 +1420,14 @@ impl IntelIch8 {
         #[cfg(target_arch = "x86_64")]
         unsafe {
             // SAFETY: legacy NMI control ports on x86 PCs.
-            let mut port61 = fstart_pio::inb(0x61);
+            let mut port61 = fstart_core::pio::inb(0x61);
             port61 &= 0x0f;
             port61 &= !(1 << 3);
             port61 |= 1 << 2;
-            fstart_pio::outb(0x61, port61);
-            let mut nmi = fstart_pio::inb(0x70);
+            fstart_core::pio::outb(0x61, port61);
+            let mut nmi = fstart_core::pio::inb(0x70);
             nmi |= 1 << 7;
-            fstart_pio::outb(0x70, nmi);
+            fstart_core::pio::outb(0x70, nmi);
         }
     }
 
@@ -1555,24 +1555,24 @@ impl IntelIch8 {
         // SAFETY: `sata_init` programs BAR5 to this fixed ABAR before use.
         unsafe {
             let abar = SATA_ABAR_BASE;
-            let ghc = fstart_mmio::read32((abar + 0x04) as *const u32) | (1 << 31);
-            fstart_mmio::write32((abar + 0x04) as *mut u32, ghc);
-            let mut cap = fstart_mmio::read32(abar as *const u32);
+            let ghc = fstart_core::mmio::read32((abar + 0x04) as *const u32) | (1 << 31);
+            fstart_core::mmio::write32((abar + 0x04) as *mut u32, ghc);
+            let mut cap = fstart_core::mmio::read32(abar as *const u32);
             cap |= 0x0c00_6080;
             cap &= !0x0002_0060;
-            fstart_mmio::write32(abar as *mut u32, cap);
-            fstart_mmio::write32((abar + 0x0c) as *mut u32, port_map as u32);
-            let _ = fstart_mmio::read32((abar + 0x0c) as *const u32);
-            let _ = fstart_mmio::read32((abar + 0x0c) as *const u32);
-            let vsp = fstart_mmio::read32((abar + 0xa0) as *const u32) & !1;
-            fstart_mmio::write32((abar + 0xa0) as *mut u32, vsp);
+            fstart_core::mmio::write32(abar as *mut u32, cap);
+            fstart_core::mmio::write32((abar + 0x0c) as *mut u32, port_map as u32);
+            let _ = fstart_core::mmio::read32((abar + 0x0c) as *const u32);
+            let _ = fstart_core::mmio::read32((abar + 0x0c) as *const u32);
+            let vsp = fstart_core::mmio::read32((abar + 0xa0) as *const u32) & !1;
+            fstart_core::mmio::write32((abar + 0xa0) as *mut u32, vsp);
             for port in 0..num_ports {
                 let cmd = abar + 0x118 + port * 0x80;
-                let mut value = fstart_mmio::read32(cmd as *const u32);
+                let mut value = fstart_core::mmio::read32(cmd as *const u32);
                 if (sata.hotplug_map & (1 << port)) != 0 {
                     value |= 1 << 18;
                 }
-                fstart_mmio::write32(cmd as *mut u32, value);
+                fstart_core::mmio::write32(cmd as *mut u32, value);
             }
         }
     }
@@ -1673,7 +1673,9 @@ impl IntelIch8 {
         #[cfg(target_arch = "x86_64")]
         if config.clock_request {
             // SAFETY: GPIOBASE is programmed before SATA init; GPIO35 is in the second bank.
-            if unsafe { fstart_pio::inb(ich8::DEFAULT_GPIOBASE + 0x30) } & (1 << (35 - 32)) == 0 {
+            if unsafe { fstart_core::pio::inb(ich8::DEFAULT_GPIOBASE + 0x30) } & (1 << (35 - 32))
+                == 0
+            {
                 sclkcg |= 1 << 30;
             }
         }
@@ -1932,37 +1934,37 @@ impl IntelIch8 {
     fn isa_dma_init(&self) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            fstart_pio::outb(0x0d, 0x00);
-            fstart_pio::outb(0x0b, 0x40);
-            fstart_pio::outb(0x0b, 0x41);
-            fstart_pio::outb(0x0b, 0x42);
-            fstart_pio::outb(0x0b, 0x43);
-            fstart_pio::outb(0xda, 0x00);
-            fstart_pio::outb(0xd6, 0xc0);
-            fstart_pio::outb(0xd6, 0x41);
-            fstart_pio::outb(0xd6, 0x42);
-            fstart_pio::outb(0xd6, 0x43);
-            fstart_pio::outb(0xd4, 0x00);
-            fstart_pio::outb(0x0f, 0x0f);
-            let _ = fstart_pio::inb(0x80);
+            fstart_core::pio::outb(0x0d, 0x00);
+            fstart_core::pio::outb(0x0b, 0x40);
+            fstart_core::pio::outb(0x0b, 0x41);
+            fstart_core::pio::outb(0x0b, 0x42);
+            fstart_core::pio::outb(0x0b, 0x43);
+            fstart_core::pio::outb(0xda, 0x00);
+            fstart_core::pio::outb(0xd6, 0xc0);
+            fstart_core::pio::outb(0xd6, 0x41);
+            fstart_core::pio::outb(0xd6, 0x42);
+            fstart_core::pio::outb(0xd6, 0x43);
+            fstart_core::pio::outb(0xd4, 0x00);
+            fstart_core::pio::outb(0x0f, 0x0f);
+            let _ = fstart_core::pio::inb(0x80);
         }
     }
 
     fn i8259_init(&self) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            fstart_pio::outb(0x20, 0x11);
-            fstart_pio::outb(0xa0, 0x11);
-            fstart_pio::outb(0x21, 0x20);
-            fstart_pio::outb(0xa1, 0x28);
-            fstart_pio::outb(0x21, 0x04);
-            fstart_pio::outb(0xa1, 0x02);
-            fstart_pio::outb(0x21, 0x01);
-            fstart_pio::outb(0xa1, 0x01);
-            fstart_pio::outb(0x21, 0xff);
-            fstart_pio::outb(0xa1, 0xff);
-            let elcr2 = fstart_pio::inb(0x4d1);
-            fstart_pio::outb(0x4d1, elcr2 | (1 << 1));
+            fstart_core::pio::outb(0x20, 0x11);
+            fstart_core::pio::outb(0xa0, 0x11);
+            fstart_core::pio::outb(0x21, 0x20);
+            fstart_core::pio::outb(0xa1, 0x28);
+            fstart_core::pio::outb(0x21, 0x04);
+            fstart_core::pio::outb(0xa1, 0x02);
+            fstart_core::pio::outb(0x21, 0x01);
+            fstart_core::pio::outb(0xa1, 0x01);
+            fstart_core::pio::outb(0x21, 0xff);
+            fstart_core::pio::outb(0xa1, 0xff);
+            let elcr2 = fstart_core::pio::inb(0x4d1);
+            fstart_core::pio::outb(0x4d1, elcr2 | (1 << 1));
         }
     }
 
@@ -2225,7 +2227,7 @@ impl FirmwareImageProvider for IntelIch8 {
         // image is the BIOS region, so expose it as logical offset 0.
         let mut image = FirmwareImage::EMPTY;
         image.size = u64::from(bios_size);
-        image.windows[0] = fstart_services::FirmwareWindow::new(
+        image.windows[0] = fstart_core::services::FirmwareWindow::new(
             0,
             0x1_0000_0000u64 - u64::from(bios_size),
             u64::from(bios_size),

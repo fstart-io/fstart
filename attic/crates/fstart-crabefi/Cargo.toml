@@ -5,9 +5,9 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-fstart-services = { path = "../../../crates/fstart-services" }
+fstart-core = { path = "../../../crates/fstart-core" }
 crabefi = { git = "https://github.com/ArthurHeymans/CrabEFI.git", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 fstart-arch = { path = "../../../crates/fstart-arch", features = ["x86_64"] }
-fstart-pio = { path = "../../../crates/fstart-pio" }
+

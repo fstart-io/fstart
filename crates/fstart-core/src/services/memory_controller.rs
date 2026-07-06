@@ -5,7 +5,7 @@
 //! detection). This trait exposes detected parameters for use by later firmware
 //! stages.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// Memory controller — DRAM initialization and detection.
 ///

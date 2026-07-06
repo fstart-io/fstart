@@ -242,7 +242,7 @@ impl PciEcam {
     fn read32(&self, addr: PciBdf, reg: u16) -> u32 {
         match self.ecam_addr(addr, reg) {
             // SAFETY: ECAM region is memory-mapped PCI config space.
-            Some(a) => unsafe { fstart_mmio::read32(a as *const u32) },
+            Some(a) => unsafe { fstart_core::mmio::read32(a as *const u32) },
             None => 0xFFFF_FFFF,
         }
     }
@@ -250,7 +250,7 @@ impl PciEcam {
     fn write32(&self, addr: PciBdf, reg: u16, val: u32) {
         if let Some(a) = self.ecam_addr(addr, reg) {
             // SAFETY: ECAM region is memory-mapped PCI config space.
-            unsafe { fstart_mmio::write32(a as *mut u32, val) };
+            unsafe { fstart_core::mmio::write32(a as *mut u32, val) };
         }
     }
 

@@ -1,6 +1,6 @@
 //! QEMU launcher for testing.
 
-use fstart_types::Platform;
+use fstart_core::Platform;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

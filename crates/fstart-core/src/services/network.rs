@@ -4,7 +4,7 @@
 //! hardware MAC address for ACPI/FDT handoff and SMBIOS Type 41.
 //! Actual packet send/receive is out of scope for firmware.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// Ethernet / wireless network interface.
 pub trait Network: Send + Sync {

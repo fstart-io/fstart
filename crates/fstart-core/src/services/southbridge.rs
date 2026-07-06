@@ -6,7 +6,7 @@
 //! sequencing is not part of this trait; it lives in the fixed per-family
 //! flows that call chipset driver methods directly.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// Board-facing access to southbridge-owned GPIO pins.
 pub trait Southbridge: Send + Sync {

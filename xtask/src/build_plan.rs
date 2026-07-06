@@ -7,9 +7,9 @@
 
 use std::collections::BTreeSet;
 
-use fstart_types::acpi::AcpiExtraDevice;
-use fstart_types::stage::PageSize;
-use fstart_types::{
+use fstart_core::acpi::AcpiExtraDevice;
+use fstart_core::stage::PageSize;
+use fstart_core::{
     effective_stage_load_addr, BoardConfig, Capability, Platform, RegionKind, SecurityConfig,
     SocImageFormat, StageLayout,
 };
@@ -201,9 +201,9 @@ fn base_features(
     }
 
     let uses_fit_runtime = config.payload.as_ref().is_some_and(|p| {
-        p.kind == fstart_types::PayloadKind::FitImage
-            && p.fit_parse.unwrap_or(fstart_types::FitParseMode::Buildtime)
-                == fstart_types::FitParseMode::Runtime
+        p.kind == fstart_core::PayloadKind::FitImage
+            && p.fit_parse.unwrap_or(fstart_core::FitParseMode::Buildtime)
+                == fstart_core::FitParseMode::Runtime
     });
     if uses_fit_runtime {
         features.insert("fit");
@@ -333,24 +333,24 @@ fn capability_features(
             .iter()
             .any(|cap| matches!(cap, Capability::PayloadLoad))
             && config.payload.as_ref().is_some_and(|payload| {
-                payload.kind == fstart_types::PayloadKind::FitImage
+                payload.kind == fstart_core::PayloadKind::FitImage
                     && payload
                         .fit_parse
-                        .unwrap_or(fstart_types::FitParseMode::Buildtime)
-                        == fstart_types::FitParseMode::Runtime
+                        .unwrap_or(fstart_core::FitParseMode::Buildtime)
+                        == fstart_core::FitParseMode::Runtime
             })
         {
             features.push("fit");
         }
         features.push("lz4");
         match security.signing_algorithm {
-            fstart_types::SignatureAlgorithm::Ed25519 => features.push("ed25519"),
-            fstart_types::SignatureAlgorithm::EcdsaP256 => {}
+            fstart_core::SignatureAlgorithm::Ed25519 => features.push("ed25519"),
+            fstart_core::SignatureAlgorithm::EcdsaP256 => {}
         }
         for digest in &security.required_digests {
             match digest {
-                fstart_types::DigestAlgorithm::Sha256 => features.push("sha2-digest"),
-                fstart_types::DigestAlgorithm::Sha3_256 => features.push("sha3-digest"),
+                fstart_core::DigestAlgorithm::Sha256 => features.push("sha2-digest"),
+                fstart_core::DigestAlgorithm::Sha3_256 => features.push("sha3-digest"),
             }
         }
     }
@@ -412,7 +412,7 @@ fn stage_uses_crabefi(config: &BoardConfig) -> bool {
     config
         .payload
         .as_ref()
-        .is_some_and(|p| p.kind == fstart_types::PayloadKind::UefiPayload)
+        .is_some_and(|p| p.kind == fstart_core::PayloadKind::UefiPayload)
 }
 
 fn stage_uses_smbios(capabilities: &[Capability]) -> bool {
@@ -431,7 +431,7 @@ fn stage_uses_mp(capabilities: &[Capability]) -> bool {
 mod tests {
     use std::path::PathBuf;
 
-    use fstart_types::{
+    use fstart_core::{
         hstr, BoardBuildPolicy, Capability, DigestAlgorithm, MemoryMap, MemoryRegion,
         MonolithicConfig, Platform, RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat,
         StageLayout,
@@ -439,7 +439,7 @@ mod tests {
 
     use super::{plan, ParsedBoard};
 
-    fn minimal_config() -> fstart_types::BoardConfig {
+    fn minimal_config() -> fstart_core::BoardConfig {
         let mut regions = heapless::Vec::new();
         regions
             .push(MemoryRegion {
@@ -460,7 +460,7 @@ mod tests {
             .push(DigestAlgorithm::Sha256)
             .expect("digest capacity");
 
-        fstart_types::BoardConfig {
+        fstart_core::BoardConfig {
             name: hstr("test-board"),
             platform: Platform::Riscv64,
             memory: MemoryMap {
@@ -495,7 +495,7 @@ mod tests {
         }
     }
 
-    fn parsed(config: fstart_types::BoardConfig) -> ParsedBoard {
+    fn parsed(config: fstart_core::BoardConfig) -> ParsedBoard {
         ParsedBoard {
             config,
             acpi_only_devices: Vec::new(),

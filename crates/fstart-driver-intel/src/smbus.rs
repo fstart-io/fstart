@@ -8,9 +8,10 @@
 //!
 //! Ported from coreboot `src/southbridge/intel/common/smbus.c`.
 
+use fstart_core::pio::PioRegister;
+use fstart_core::pio_register_structs;
+use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam;
-use fstart_pio::{pio_register_structs, PioRegister};
-use fstart_services::{ServiceError, SmBus};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 

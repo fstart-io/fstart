@@ -1,7 +1,7 @@
 //! DDR2 SPD byte offsets and decoding (JEDEC SPD revision 1.2a).
 
 use crate::{ChipCapacity, ChipWidth, DimmInfo};
-use fstart_services::{ServiceError, SmBus};
+use fstart_core::services::{ServiceError, SmBus};
 
 // ===================================================================
 // DDR2 SPD byte offset constants

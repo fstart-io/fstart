@@ -86,7 +86,7 @@ pub struct GenericAcpi<'a> {
     /// ACPI `_HID` value (e.g., "ACPI0007").
     pub hid: &'a str,
     /// Hardware resources (MMIO regions, Port I/O ranges).
-    pub resources: &'a [fstart_types::acpi::AcpiResource],
+    pub resources: &'a [fstart_core::acpi::AcpiResource],
     /// Interrupt GSIV (optional).
     pub gsiv: Option<u32>,
 }
@@ -104,10 +104,10 @@ impl GenericAcpi<'_> {
 
         for res in self.resources {
             match *res {
-                fstart_types::acpi::AcpiResource::Mmio { base, size } => {
+                fstart_core::acpi::AcpiResource::Mmio { base, size } => {
                     mmio_descs.push(MmioDescriptor::new(base, size));
                 }
-                fstart_types::acpi::AcpiResource::Pio { base, size } => {
+                fstart_core::acpi::AcpiResource::Pio { base, size } => {
                     pio_descs.push(IO::new(base, base, 0, size as u8));
                 }
             }
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_generic_device_aml() {
-        use fstart_types::acpi::AcpiResource;
+        use fstart_core::acpi::AcpiResource;
 
         let resources = [AcpiResource::Mmio {
             base: 0x6001_0000,
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_generic_device_no_irq() {
-        use fstart_types::acpi::AcpiResource;
+        use fstart_core::acpi::AcpiResource;
 
         let resources = [AcpiResource::Mmio {
             base: 0x7000_0000,
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_generic_device_mixed_mmio_pio() {
-        use fstart_types::acpi::AcpiResource;
+        use fstart_core::acpi::AcpiResource;
 
         let resources = [
             AcpiResource::Mmio {

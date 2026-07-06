@@ -8,9 +8,9 @@
 //! `(new_val & mask) | (read_val & !mask)` using byte-at-a-time
 //! SMBus read-modify-writes for each register.
 
-use fstart_services::device::{BusDevice, DeviceError};
-use fstart_services::SmBus;
-use fstart_types::BusAddress;
+use fstart_core::services::device::{BusDevice, DeviceError};
+use fstart_core::services::SmBus;
+use fstart_core::BusAddress;
 use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
@@ -112,7 +112,11 @@ mod tests {
     }
 
     impl SmBus for FakeBus {
-        fn read_byte(&mut self, addr: u8, cmd: u8) -> Result<u8, fstart_services::ServiceError> {
+        fn read_byte(
+            &mut self,
+            addr: u8,
+            cmd: u8,
+        ) -> Result<u8, fstart_core::services::ServiceError> {
             let _ = addr;
             Ok(self.regs[cmd as usize])
         }
@@ -122,7 +126,7 @@ mod tests {
             addr: u8,
             cmd: u8,
             value: u8,
-        ) -> Result<(), fstart_services::ServiceError> {
+        ) -> Result<(), fstart_core::services::ServiceError> {
             self.regs[cmd as usize] = value;
             self.writes.push((addr, cmd, value)).unwrap();
             Ok(())

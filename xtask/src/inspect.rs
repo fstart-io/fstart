@@ -6,11 +6,11 @@
 use std::fs;
 use std::path::Path;
 
-use fstart_ffs::FfsReader;
-use fstart_types::ffs::{
+use fstart_core::ffs::{
     AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind,
     SignatureKind, ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
 };
+use fstart_ffs::FfsReader;
 
 /// Read an FFS image from disk, find the anchor, and print the filesystem.
 pub fn inspect(path: &str) -> Result<(), String> {

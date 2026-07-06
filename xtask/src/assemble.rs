@@ -9,16 +9,16 @@
 //! critical for XIP boards that read the anchor at its link-time VMA.
 //! ELF parsing is retained only for diagnostic logging.
 
-use fstart_ffs::builder::{
-    build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
-};
-use fstart_types::ffs::{
+use fstart_core::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_SIZE,
     FFS_MAGIC, FFS_VERSION,
 };
-use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
-use fstart_types::{
+use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
+use fstart_core::{
     BoardConfig, FdtSource, FirmwareImagePolicy, Platform, RunsFrom, SocImageFormat, StageLayout,
+};
+use fstart_ffs::builder::{
+    build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
 };
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
@@ -228,7 +228,7 @@ pub fn assemble_with_parsed(
 
     if let Some(ref payload) = config.payload {
         // Handle FIT image payloads
-        if payload.kind == fstart_types::PayloadKind::FitImage {
+        if payload.kind == fstart_core::PayloadKind::FitImage {
             assemble_fit_payload(payload, &board_dir, kernel_path, &mut ro_files)?;
         } else {
             // LinuxBoot / other payload types: add firmware + kernel blobs
@@ -641,16 +641,16 @@ fn externalize_xip_bootblock(
 
 fn firmware_image_from_policy(
     config: &BoardConfig,
-) -> Result<Option<fstart_services::FirmwareImage>, String> {
+) -> Result<Option<fstart_core::services::FirmwareImage>, String> {
     match config.build.firmware_image {
         FirmwareImagePolicy::None => Ok(None),
         FirmwareImagePolicy::MemoryMapped { cpu_base, size } => Ok(Some(
-            fstart_services::FirmwareImage::single_window(cpu_base, size),
+            fstart_core::services::FirmwareImage::single_window(cpu_base, size),
         )),
         FirmwareImagePolicy::Auto => Ok(config
             .memory
             .firmware_window()
-            .map(|(base, size)| fstart_services::FirmwareImage::single_window(base, size))),
+            .map(|(base, size)| fstart_core::services::FirmwareImage::single_window(base, size))),
     }
 }
 
@@ -789,16 +789,16 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
     // Copy the patched anchor from the FFS blob into the XIP bootblock's own
     // anchor section. The builder patches the anchor inside the FFS-stage file;
     // the CPU reads the linked XIP copy at its physical flash address.
-    let anchor_size = fstart_types::ffs::ANCHOR_SIZE;
+    let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
     if ffs_anchor_offset + anchor_size > ffs_data.len() {
         return Err(format!(
             "FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"
         ));
     }
-    let placeholder = fstart_types::ffs::AnchorBlock::placeholder();
+    let placeholder = fstart_core::ffs::AnchorBlock::placeholder();
     let placeholder_bytes = unsafe {
         core::slice::from_raw_parts(
-            &placeholder as *const fstart_types::ffs::AnchorBlock as *const u8,
+            &placeholder as *const fstart_core::ffs::AnchorBlock as *const u8,
             anchor_size,
         )
     };
@@ -810,7 +810,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         })?;
     let mut xip_anchor_block = unsafe {
         core::ptr::read_unaligned(
-            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_types::ffs::AnchorBlock
+            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_core::ffs::AnchorBlock
         )
     };
     // The FFS copy of the anchor lives near offset 0, but real hardware jumps
@@ -1005,16 +1005,16 @@ fn patch_xip_anchor(
     ffs_anchor_offset: usize,
     image_base_delta: u32,
 ) -> Result<(), String> {
-    let anchor_size = fstart_types::ffs::ANCHOR_SIZE;
+    let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
     if ffs_anchor_offset + anchor_size > ffs_data.len() {
         return Err(format!(
             "FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"
         ));
     }
-    let placeholder = fstart_types::ffs::AnchorBlock::placeholder();
+    let placeholder = fstart_core::ffs::AnchorBlock::placeholder();
     let placeholder_bytes = unsafe {
         core::slice::from_raw_parts(
-            &placeholder as *const fstart_types::ffs::AnchorBlock as *const u8,
+            &placeholder as *const fstart_core::ffs::AnchorBlock as *const u8,
             anchor_size,
         )
     };
@@ -1026,7 +1026,7 @@ fn patch_xip_anchor(
         })?;
     let mut xip_anchor_block = unsafe {
         core::ptr::read_unaligned(
-            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_types::ffs::AnchorBlock
+            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_core::ffs::AnchorBlock
         )
     };
     xip_anchor_block.anchor_offset = (xip_anchor as u32)
@@ -1219,12 +1219,12 @@ fn parse_intel_ifd(data: &[u8]) -> Result<ParsedIntelIfd, String> {
 // ============================================================================
 
 fn assemble_microcode(
-    microcode: &fstart_types::board::MicrocodeConfig,
+    microcode: &fstart_core::board::MicrocodeConfig,
     board_dir: &Path,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
     match microcode {
-        fstart_types::board::MicrocodeConfig::Intel(config) => {
+        fstart_core::board::MicrocodeConfig::Intel(config) => {
             let mut blob = Vec::new();
             for file in &config.files {
                 let path = Path::new(file.as_str());
@@ -1273,12 +1273,12 @@ fn assemble_microcode(
     Ok(())
 }
 
-fn stage_loaded_via_stage_load(stages: &[fstart_types::StageConfig], stage_name: &str) -> bool {
+fn stage_loaded_via_stage_load(stages: &[fstart_core::StageConfig], stage_name: &str) -> bool {
     stages.iter().any(|stage| {
         stage.capabilities.iter().any(|cap| {
             matches!(
                 cap,
-                fstart_types::Capability::StageLoad { next_stage } if next_stage.as_str() == stage_name
+                fstart_core::Capability::StageLoad { next_stage } if next_stage.as_str() == stage_name
             )
         })
     })
@@ -1295,14 +1295,14 @@ fn stage_loaded_via_stage_load(stages: &[fstart_types::StageConfig], stage_name:
 ///   as separate FFS entries with load addresses from the FIT metadata.
 /// - **Runtime**: Embed the whole .itb as a single `FileType::FitImage` entry.
 fn assemble_fit_payload(
-    payload: &fstart_types::PayloadConfig,
+    payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     kernel_override: Option<&str>,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
     let fit_parse = payload
         .fit_parse
-        .unwrap_or(fstart_types::FitParseMode::Buildtime);
+        .unwrap_or(fstart_core::FitParseMode::Buildtime);
 
     // Resolve the FIT file path
     let fit_path = kernel_override.map(PathBuf::from).or_else(|| {
@@ -1348,7 +1348,7 @@ fn assemble_fit_payload(
     let config_name = payload.fit_config.as_ref().map(|s| s.as_str());
 
     match fit_parse {
-        fstart_types::FitParseMode::Runtime => {
+        fstart_core::FitParseMode::Runtime => {
             // Embed the whole FIT as a single FFS entry
             eprintln!("[fstart] FIT mode: runtime (embedding whole .itb in FFS)");
 
@@ -1366,7 +1366,7 @@ fn assemble_fit_payload(
                 }],
             });
         }
-        fstart_types::FitParseMode::Buildtime => {
+        fstart_core::FitParseMode::Buildtime => {
             // Extract components from the FIT and embed as separate entries
             eprintln!("[fstart] FIT mode: buildtime (extracting components)");
 
@@ -1474,7 +1474,7 @@ fn assemble_fit_payload(
 
 /// Assemble a LinuxBoot payload into FFS entries (firmware + kernel blobs).
 fn assemble_linux_payload(
-    payload: &fstart_types::PayloadConfig,
+    payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
@@ -1532,7 +1532,7 @@ fn assemble_linux_payload(
 
 /// Add the firmware blob (SBI/ATF) to FFS entries.
 fn add_firmware_blob(
-    payload: &fstart_types::PayloadConfig,
+    payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     firmware_path: Option<&str>,
     ro_files: &mut Vec<InputFile>,
@@ -1780,7 +1780,7 @@ fn log_stage_segments(stage_name: &str, elf_path: &Path, segments: &[InputSegmen
 /// board's `keys/` directory.
 fn get_or_create_dev_keys(
     board_dir: &Path,
-    _config: &fstart_types::BoardConfig,
+    _config: &fstart_core::BoardConfig,
 ) -> Result<(ed25519_dalek::SigningKey, VerificationKey), String> {
     use ed25519_dalek::SigningKey;
     use rand_core::OsRng;

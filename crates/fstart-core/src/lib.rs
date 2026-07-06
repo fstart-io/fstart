@@ -1,4 +1,4 @@
-//! Core types for the fstart firmware framework.
+//! Core no_std types, MMIO/PIO primitives, and service traits for fstart.
 //!
 //! These types define the Rust board configuration schema, firmware filesystem
 //! structures, and security primitives.
@@ -20,6 +20,10 @@ pub mod smbios;
 pub mod smm;
 pub mod stage;
 pub mod typed;
+
+pub mod mmio;
+pub mod pio;
+pub mod services;
 
 pub use acpi::{
     AcpiAhciDevice, AcpiConfig, AcpiGenericDevice, AcpiPcieRootDevice, AcpiPlatform, AcpiResource,

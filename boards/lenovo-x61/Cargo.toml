@@ -66,7 +66,7 @@ smm = [
 ]
 
 [dependencies]
-fstart-types = { path = "../../crates/fstart-types" }
+fstart-core = { path = "../../crates/fstart-core", features = ["pci"] }
 fstart-platform-intel-gm965-ich8 = { path = "../../crates/fstart-platform-intel-gm965-ich8" }
 fstart-platform-x86_64 = { path = "../../crates/fstart-platform-x86_64", optional = true }
 fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"], optional = true }
@@ -76,8 +76,6 @@ fstart-driver-intel = { path = "../../crates/fstart-driver-intel", features = ["
 fstart-driver-superio = { path = "../../crates/fstart-driver-superio" }
 fstart-driver-uart = { path = "../../crates/fstart-driver-uart", features = ["pio"], optional = true }
 fstart-hda = { path = "../../crates/fstart-hda" }
-fstart-pio = { path = "../../crates/fstart-pio" }
-fstart-services = { path = "../../crates/fstart-services", features = ["pci"] }
 
 fstart-smbios = { path = "../../crates/fstart-smbios" }
 fstart-smm-runtime = { path = "../../crates/fstart-smm-runtime", optional = true }

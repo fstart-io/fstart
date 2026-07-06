@@ -5,7 +5,7 @@
 //! 3. Invoke cargo build on the board-owned stage binary
 //! 4. Return the path(s) to the built binary(ies)
 
-use fstart_types::{Capability, SocImageFormat, StageLayout};
+use fstart_core::{Capability, SocImageFormat, StageLayout};
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use std::fs;
@@ -114,7 +114,7 @@ fn build_smm_artifacts(
     workspace_root: &std::path::Path,
     board_manifest: &crate::board_manifest::BoardManifest,
     release: bool,
-    config: &fstart_types::BoardConfig,
+    config: &fstart_core::BoardConfig,
 ) -> Result<Option<SmmArtifacts>, String> {
     let Some(smm) = config.smm else {
         return Ok(None);
@@ -264,7 +264,7 @@ fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
 fn build_one_stage(
     workspace_root: &std::path::Path,
     board_manifest: &crate::board_manifest::BoardManifest,
-    config: &fstart_types::BoardConfig,
+    config: &fstart_core::BoardConfig,
     stage_name: Option<&str>,
     target: &str,
     features: &str,

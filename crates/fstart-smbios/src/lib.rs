@@ -531,7 +531,7 @@ impl SmbiosWriter {
     ///
     /// `processor_family` is the SMBIOS "Processor Family 2" 16-bit value
     /// (e.g., `0x0119` for AArch64, `0x28` for x86-64, `0x0135` for RISC-V).
-    /// Use [`fstart_types::smbios::ProcessorFamily::to_smbios_u16`] to
+    /// Use [`fstart_core::smbios::ProcessorFamily::to_smbios_u16`] to
     /// convert from the typed enum.
     pub fn add_processor(
         &mut self,

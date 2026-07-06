@@ -6,9 +6,9 @@
 //! this trait to compare those two sources of truth before trusting the boot
 //! medium layout.
 
-use fstart_types::memory::FlashLayout;
+use crate::memory::FlashLayout;
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// Verify that the runtime flash layout matches the build-time board config.
 pub trait FlashLayoutVerifier: Send + Sync {

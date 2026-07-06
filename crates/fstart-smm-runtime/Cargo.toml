@@ -5,5 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-fstart-pio = { workspace = true }
+fstart-core = { workspace = true }
 fstart-smm = { workspace = true }

@@ -213,7 +213,7 @@ impl PmIo {
     pub fn read32(&self, offset: u16) -> u32 {
         debug_assert!(offset + 4 <= PMSIZE);
         // SAFETY: caller constructed PmIo with a valid PMBASE.
-        unsafe { fstart_pio::inl(self.base + offset) }
+        unsafe { fstart_core::pio::inl(self.base + offset) }
     }
 
     /// Write a 32-bit PM register.
@@ -221,35 +221,35 @@ impl PmIo {
     pub fn write32(&self, offset: u16, val: u32) {
         debug_assert!(offset + 4 <= PMSIZE);
         // SAFETY: caller constructed PmIo with a valid PMBASE.
-        unsafe { fstart_pio::outl(self.base + offset, val) }
+        unsafe { fstart_core::pio::outl(self.base + offset, val) }
     }
 
     /// Read a 16-bit PM register.
     #[inline]
     pub fn read16(&self, offset: u16) -> u16 {
         debug_assert!(offset + 2 <= PMSIZE);
-        unsafe { fstart_pio::inw(self.base + offset) }
+        unsafe { fstart_core::pio::inw(self.base + offset) }
     }
 
     /// Write a 16-bit PM register.
     #[inline]
     pub fn write16(&self, offset: u16, val: u16) {
         debug_assert!(offset + 2 <= PMSIZE);
-        unsafe { fstart_pio::outw(self.base + offset, val) }
+        unsafe { fstart_core::pio::outw(self.base + offset, val) }
     }
 
     /// Read an 8-bit PM register.
     #[inline]
     pub fn read8(&self, offset: u16) -> u8 {
         debug_assert!(offset < PMSIZE);
-        unsafe { fstart_pio::inb(self.base + offset) }
+        unsafe { fstart_core::pio::inb(self.base + offset) }
     }
 
     /// Write an 8-bit PM register.
     #[inline]
     pub fn write8(&self, offset: u16, val: u8) {
         debug_assert!(offset < PMSIZE);
-        unsafe { fstart_pio::outb(self.base + offset, val) }
+        unsafe { fstart_core::pio::outb(self.base + offset, val) }
     }
 
     /// Set bits in a 32-bit PM register.
@@ -383,14 +383,14 @@ impl TcoIo {
     #[inline]
     pub fn read8(&self, offset: u16) -> u8 {
         debug_assert!(offset < 0x20);
-        unsafe { fstart_pio::inb(self.base + offset) }
+        unsafe { fstart_core::pio::inb(self.base + offset) }
     }
 
     /// Write an 8-bit TCO register.
     #[inline]
     pub fn write8(&self, offset: u16, val: u8) {
         debug_assert!(offset < 0x20);
-        unsafe { fstart_pio::outb(self.base + offset, val) }
+        unsafe { fstart_core::pio::outb(self.base + offset, val) }
     }
 
     /// Read the OS/ACPI command byte written to TCO_DAT_IN.
@@ -409,28 +409,28 @@ impl TcoIo {
     #[inline]
     pub fn read16(&self, offset: u16) -> u16 {
         debug_assert!(offset + 2 <= 0x20);
-        unsafe { fstart_pio::inw(self.base + offset) }
+        unsafe { fstart_core::pio::inw(self.base + offset) }
     }
 
     /// Write a 16-bit TCO register.
     #[inline]
     pub fn write16(&self, offset: u16, val: u16) {
         debug_assert!(offset + 2 <= 0x20);
-        unsafe { fstart_pio::outw(self.base + offset, val) }
+        unsafe { fstart_core::pio::outw(self.base + offset, val) }
     }
 
     /// Read a 32-bit TCO register (TCO1_STS + TCO2_STS combined).
     #[inline]
     pub fn read32(&self, offset: u16) -> u32 {
         debug_assert!(offset + 4 <= 0x20);
-        unsafe { fstart_pio::inl(self.base + offset) }
+        unsafe { fstart_core::pio::inl(self.base + offset) }
     }
 
     /// Write a 32-bit TCO register.
     #[inline]
     pub fn write32(&self, offset: u16, val: u32) {
         debug_assert!(offset + 4 <= 0x20);
-        unsafe { fstart_pio::outl(self.base + offset, val) }
+        unsafe { fstart_core::pio::outl(self.base + offset, val) }
     }
 
     /// Read and clear TCO status.

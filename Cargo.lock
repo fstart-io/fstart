@@ -461,8 +461,7 @@ version = "0.1.0"
 dependencies = [
  "acpi_tables",
  "fstart-acpi-macros",
- "fstart-mmio",
- "fstart-types",
+ "fstart-core",
  "tock-registers",
 ]
 
@@ -498,33 +497,42 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch",
+ "fstart-core",
  "fstart-driver-intel",
  "fstart-driver-superio",
  "fstart-driver-uart",
  "fstart-hda",
- "fstart-pio",
  "fstart-platform-intel-gm965-ich8",
  "fstart-platform-x86_64",
- "fstart-services",
  "fstart-smbios",
  "fstart-smm-runtime",
  "fstart-smm-stage",
  "fstart-stage",
- "fstart-types",
 ]
 
 [[package]]
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
+ "fstart-core",
  "fstart-crypto",
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",
- "fstart-services",
- "fstart-types",
  "postcard",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-core"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.10.0",
+ "embedded-hal",
+ "heapless",
+ "serde",
+ "tock-registers",
+ "x86",
 ]
 
 [[package]]
@@ -533,8 +541,7 @@ version = "0.1.0"
 dependencies = [
  "crabefi",
  "fstart-arch",
- "fstart-pio",
- "fstart-services",
+ "fstart-core",
 ]
 
 [[package]]
@@ -542,7 +549,7 @@ name = "fstart-crypto"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
- "fstart-types",
+ "fstart-core",
  "p256",
  "sha2",
  "sha3",
@@ -556,19 +563,16 @@ dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch",
+ "fstart-core",
  "fstart-crypto",
  "fstart-driver-superio",
  "fstart-ffs",
  "fstart-hda",
  "fstart-log",
- "fstart-mmio",
  "fstart-pci",
- "fstart-pio",
- "fstart-services",
  "fstart-smm",
  "fstart-smm-runtime",
  "fstart-spd",
- "fstart-types",
  "heapless",
  "serde",
  "tock-registers",
@@ -581,10 +585,8 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-core",
  "fstart-log",
- "fstart-pio",
- "fstart-services",
- "fstart-types",
  "heapless",
  "serde",
  "ufmt",
@@ -594,9 +596,7 @@ dependencies = [
 name = "fstart-driver-uart"
 version = "0.1.0"
 dependencies = [
- "fstart-mmio",
- "fstart-pio",
- "fstart-services",
+ "fstart-core",
  "serde",
  "tock-registers",
 ]
@@ -606,8 +606,8 @@ name = "fstart-ffs"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "fstart-core",
  "fstart-crypto",
- "fstart-types",
  "heapless",
  "lz4_flex",
  "rand_core",
@@ -619,8 +619,8 @@ name = "fstart-fit"
 version = "0.1.0"
 dependencies = [
  "dtoolkit",
+ "fstart-core",
  "fstart-crypto",
- "fstart-types",
  "heapless",
 ]
 
@@ -628,8 +628,8 @@ dependencies = [
 name = "fstart-hda"
 version = "0.1.0"
 dependencies = [
+ "fstart-core",
  "fstart-log",
- "fstart-types",
  "serde",
  "ufmt",
 ]
@@ -638,33 +638,18 @@ dependencies = [
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
- "fstart-services",
+ "fstart-core",
  "ufmt",
-]
-
-[[package]]
-name = "fstart-mmio"
-version = "0.1.0"
-dependencies = [
- "tock-registers",
 ]
 
 [[package]]
 name = "fstart-pci"
 version = "0.1.0"
 dependencies = [
- "fstart-mmio",
+ "fstart-core",
  "heapless",
  "serde",
  "tock-registers",
-]
-
-[[package]]
-name = "fstart-pio"
-version = "0.1.0"
-dependencies = [
- "tock-registers",
- "x86",
 ]
 
 [[package]]
@@ -673,14 +658,14 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-arch",
+ "fstart-core",
  "fstart-driver-intel",
  "fstart-driver-uart",
  "fstart-log",
+ "fstart-pci",
  "fstart-platform-x86_64",
- "fstart-services",
  "fstart-smbios",
  "fstart-stage",
- "fstart-types",
  "heapless",
  "konst",
  "serde",
@@ -692,11 +677,9 @@ name = "fstart-platform-x86_64"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-core",
  "fstart-ffs",
  "fstart-log",
- "fstart-pio",
- "fstart-services",
- "fstart-types",
  "ufmt",
 ]
 
@@ -705,16 +688,6 @@ name = "fstart-runtime"
 version = "0.1.0"
 dependencies = [
  "fstart-log",
-]
-
-[[package]]
-name = "fstart-services"
-version = "0.1.0"
-dependencies = [
- "embedded-hal",
- "fstart-pci",
- "fstart-types",
- "serde",
 ]
 
 [[package]]
@@ -738,7 +711,7 @@ dependencies = [
 name = "fstart-smm-runtime"
 version = "0.1.0"
 dependencies = [
- "fstart-pio",
+ "fstart-core",
  "fstart-smm",
 ]
 
@@ -754,8 +727,8 @@ dependencies = [
 name = "fstart-spd"
 version = "0.1.0"
 dependencies = [
+ "fstart-core",
  "fstart-log",
- "fstart-services",
 ]
 
 [[package]]
@@ -765,25 +738,15 @@ dependencies = [
  "fstart-alloc",
  "fstart-arch",
  "fstart-capabilities",
+ "fstart-core",
  "fstart-crabefi",
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",
  "fstart-platform-x86_64",
  "fstart-runtime",
- "fstart-services",
- "fstart-types",
  "heapless",
  "ufmt",
-]
-
-[[package]]
-name = "fstart-types"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.10.0",
- "heapless",
- "serde",
 ]
 
 [[package]]
@@ -1508,12 +1471,11 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
+ "fstart-core",
  "fstart-crypto",
  "fstart-ffs",
  "fstart-fit",
- "fstart-services",
  "fstart-smm-image",
- "fstart-types",
  "heapless",
  "object",
  "rand_core",

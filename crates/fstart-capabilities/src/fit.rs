@@ -8,7 +8,7 @@
 //! in-place (zero-copy for memory-mapped flash), and each component
 //! (kernel, ramdisk) is copied to its load address from FIT metadata.
 
-use fstart_services::BootMedia;
+use fstart_core::services::BootMedia;
 
 /// Result of loading FIT image components from FFS.
 pub struct FitBootInfo {
@@ -75,7 +75,7 @@ pub fn load_fit_components_with_scratch(
     anchor_data: &[u8],
     media: &(impl BootMedia + ?Sized),
     fit_config: Option<&str>,
-    scratch: Option<&mut fstart_services::TempRamArena>,
+    scratch: Option<&mut fstart_core::services::TempRamArena>,
 ) -> Result<FitBootInfo, FitBootError> {
     // Step 1: Load FIT blob from FFS (zero-copy for memory-mapped flash,
     // scratch copy for block media when a temp arena is available).
@@ -83,7 +83,7 @@ pub fn load_fit_components_with_scratch(
     let fit_slice = crate::find_ffs_file_data_with_scratch(
         anchor_data,
         media,
-        fstart_types::ffs::FileType::FitImage,
+        fstart_core::ffs::FileType::FitImage,
         scratch,
     )
     .ok_or(FitBootError::NotFound)?;

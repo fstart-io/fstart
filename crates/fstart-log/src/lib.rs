@@ -40,7 +40,7 @@
 #[doc(hidden)]
 pub use ufmt;
 
-use fstart_services::Console;
+use fstart_core::services::Console;
 
 // ---------------------------------------------------------------------------
 // Level

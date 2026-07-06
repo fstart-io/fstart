@@ -18,12 +18,12 @@ extern crate std;
 use std::string::String;
 use std::vec::Vec;
 
-use fstart_crypto::digest;
-use fstart_types::ffs::{
+use fstart_core::ffs::{
     AnchorBlock, Compression, EntryContent, FileType, ImageManifest, Region, RegionContent,
     RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_MAX_KEYS,
     ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
 };
+use fstart_crypto::digest;
 use heapless::String as HString;
 
 /// A file being assembled into the FFS image.

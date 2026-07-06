@@ -36,7 +36,7 @@
 
 #![allow(clippy::derivable_impls)]
 
-use fstart_types::ConstVec;
+use fstart_core::ConstVec;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -361,27 +361,27 @@ impl IchGpio {
         // and is a valid I/O port range (0x80 bytes).
         unsafe {
             // Set 1 (pins 0–31): level-first ordering.
-            fstart_pio::outl(self.base + GP_LVL, regs.lvl[0]);
-            fstart_pio::outl(self.base + GPIO_USE_SEL, regs.use_sel[0]);
-            fstart_pio::outl(self.base + GP_IO_SEL, regs.io_sel[0]);
-            fstart_pio::outl(self.base + GP_LVL, regs.lvl[0]);
-            fstart_pio::outl(self.base + GP_RST_SEL1, regs.rst_sel[0]);
-            fstart_pio::outl(self.base + GPI_INV, regs.invert);
-            fstart_pio::outl(self.base + GPO_BLINK, regs.blink);
+            fstart_core::pio::outl(self.base + GP_LVL, regs.lvl[0]);
+            fstart_core::pio::outl(self.base + GPIO_USE_SEL, regs.use_sel[0]);
+            fstart_core::pio::outl(self.base + GP_IO_SEL, regs.io_sel[0]);
+            fstart_core::pio::outl(self.base + GP_LVL, regs.lvl[0]);
+            fstart_core::pio::outl(self.base + GP_RST_SEL1, regs.rst_sel[0]);
+            fstart_core::pio::outl(self.base + GPI_INV, regs.invert);
+            fstart_core::pio::outl(self.base + GPO_BLINK, regs.blink);
 
             // Set 2 (pins 32–63).
-            fstart_pio::outl(self.base + GP_LVL2, regs.lvl[1]);
-            fstart_pio::outl(self.base + GPIO_USE_SEL2, regs.use_sel[1]);
-            fstart_pio::outl(self.base + GP_IO_SEL2, regs.io_sel[1]);
-            fstart_pio::outl(self.base + GP_LVL2, regs.lvl[1]);
-            fstart_pio::outl(self.base + GP_RST_SEL2, regs.rst_sel[1]);
+            fstart_core::pio::outl(self.base + GP_LVL2, regs.lvl[1]);
+            fstart_core::pio::outl(self.base + GPIO_USE_SEL2, regs.use_sel[1]);
+            fstart_core::pio::outl(self.base + GP_IO_SEL2, regs.io_sel[1]);
+            fstart_core::pio::outl(self.base + GP_LVL2, regs.lvl[1]);
+            fstart_core::pio::outl(self.base + GP_RST_SEL2, regs.rst_sel[1]);
 
             // Set 3 (pins 64–75).
-            fstart_pio::outl(self.base + GP_LVL3, regs.lvl[2]);
-            fstart_pio::outl(self.base + GPIO_USE_SEL3, regs.use_sel[2]);
-            fstart_pio::outl(self.base + GP_IO_SEL3, regs.io_sel[2]);
-            fstart_pio::outl(self.base + GP_LVL3, regs.lvl[2]);
-            fstart_pio::outl(self.base + GP_RST_SEL3, regs.rst_sel[2]);
+            fstart_core::pio::outl(self.base + GP_LVL3, regs.lvl[2]);
+            fstart_core::pio::outl(self.base + GPIO_USE_SEL3, regs.use_sel[2]);
+            fstart_core::pio::outl(self.base + GP_IO_SEL3, regs.io_sel[2]);
+            fstart_core::pio::outl(self.base + GP_LVL3, regs.lvl[2]);
+            fstart_core::pio::outl(self.base + GP_RST_SEL3, regs.rst_sel[2]);
         }
 
         fstart_log::info!("ich-gpio: {} pins configured", cfg.pins.len());
@@ -407,7 +407,7 @@ impl IchGpio {
         }
         let (set, bit) = (pin / 32, pin % 32);
         let reg = LVL_REGS[set as usize];
-        let val = unsafe { fstart_pio::inl(self.base + reg) };
+        let val = unsafe { fstart_core::pio::inl(self.base + reg) };
         val & (1 << bit) != 0
     }
 
@@ -428,13 +428,13 @@ impl IchGpio {
         let (set, bit) = (pin / 32, pin % 32);
         let reg = LVL_REGS[set as usize];
         unsafe {
-            let mut val = fstart_pio::inl(self.base + reg);
+            let mut val = fstart_core::pio::inl(self.base + reg);
             if high {
                 val |= 1 << bit;
             } else {
                 val &= !(1 << bit);
             }
-            fstart_pio::outl(self.base + reg, val);
+            fstart_core::pio::outl(self.base + reg, val);
         }
     }
 
@@ -451,7 +451,7 @@ impl IchGpio {
         }
         let (set, bit) = (pin / 32, pin % 32);
         let reg = USE_SEL_REGS[set as usize];
-        let val = unsafe { fstart_pio::inl(self.base + reg) };
+        let val = unsafe { fstart_core::pio::inl(self.base + reg) };
         val & (1 << bit) == 0
     }
 
@@ -471,9 +471,9 @@ impl IchGpio {
         let (set, bit) = (pin / 32, pin % 32);
         let reg = USE_SEL_REGS[set as usize];
         unsafe {
-            let val = fstart_pio::inl(self.base + reg);
+            let val = fstart_core::pio::inl(self.base + reg);
             if val & (1 << bit) == 0 {
-                fstart_pio::outl(self.base + reg, val | (1 << bit));
+                fstart_core::pio::outl(self.base + reg, val | (1 << bit));
             }
         }
     }
@@ -494,9 +494,9 @@ impl IchGpio {
         let (set, bit) = (pin / 32, pin % 32);
         let reg = IO_SEL_REGS[set as usize];
         unsafe {
-            let val = fstart_pio::inl(self.base + reg);
+            let val = fstart_core::pio::inl(self.base + reg);
             if val & (1 << bit) == 0 {
-                fstart_pio::outl(self.base + reg, val | (1 << bit));
+                fstart_core::pio::outl(self.base + reg, val | (1 << bit));
             }
         }
     }
@@ -520,9 +520,9 @@ impl IchGpio {
         let (set, bit) = (pin / 32, pin % 32);
         let reg = IO_SEL_REGS[set as usize];
         unsafe {
-            let val = fstart_pio::inl(self.base + reg);
+            let val = fstart_core::pio::inl(self.base + reg);
             if val & (1 << bit) != 0 {
-                fstart_pio::outl(self.base + reg, val & !(1 << bit));
+                fstart_core::pio::outl(self.base + reg, val & !(1 << bit));
             }
         }
         // Set level again in case output register was gated.
@@ -542,13 +542,13 @@ impl IchGpio {
             return; // GPI_INV only exists for set 1.
         }
         unsafe {
-            let mut val = fstart_pio::inl(self.base + GPI_INV);
+            let mut val = fstart_core::pio::inl(self.base + GPI_INV);
             if enable {
                 val |= 1 << pin;
             } else {
                 val &= !(1 << pin);
             }
-            fstart_pio::outl(self.base + GPI_INV, val);
+            fstart_core::pio::outl(self.base + GPI_INV, val);
         }
     }
 

@@ -1,6 +1,6 @@
 //! Toolchain policy for firmware builds.
 
-use fstart_types::Platform;
+use fstart_core::Platform;
 
 /// Build-time target information derived from a board platform.
 #[derive(Debug, Clone, Copy)]

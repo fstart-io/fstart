@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 ufmt = { workspace = true }
-fstart-services = { workspace = true }
+fstart-core = { workspace = true }

@@ -1,10 +1,11 @@
 //! Fixed GM965/ICH8 Intel early/mainstage flow.
 
+use fstart_core::services::memory_detect::{E820Entry, MemoryDetector, MAX_E820_ENTRIES};
+use fstart_core::services::{MemoryController, ServiceError};
 use fstart_driver_intel::gm965::IntelGm965;
 use fstart_driver_intel::ich8::IntelIch8;
 use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-use fstart_services::memory_detect::{E820Entry, MemoryDetector, MAX_E820_ENTRIES};
-use fstart_services::{MemoryController, PciRootBus, ServiceError};
+use fstart_pci::PciRootBus;
 use fstart_stage::fixed_helpers::MemoryMappedFfs;
 use fstart_stage::payload::{MainstagePayload, X86UefiPayloadContext};
 use fstart_stage::{StageBoard, StageKind};
@@ -109,7 +110,7 @@ pub trait Gm965Ich8Board: IntelEarlyBoard<Platform = Gm965Ich8> {
     type Payload: MainstagePayload<Gm965Ich8Mainstage<Self>>;
 
     fn config() -> &'static Gm965Ich8Config;
-    fn ifd_flash_layout() -> fstart_types::IntelIfdFlashLayout;
+    fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout;
     fn console_config() -> Ns16550Config;
     fn console_node() -> &'static str;
     fn halt() -> !;
@@ -354,7 +355,11 @@ where
         // can read it.
         // SAFETY: single-threaded firmware init, stored once per stage.
         unsafe {
-            fstart_services::memory_detect::e820_state_mut().store(&self.ctx.e820, count, total);
+            fstart_core::services::memory_detect::e820_state_mut().store(
+                &self.ctx.e820,
+                count,
+                total,
+            );
         }
         self.ctx.store_e820(count, total);
 
@@ -432,7 +437,7 @@ impl<B> X86UefiPayloadContext for Gm965Ich8Mainstage<B>
 where
     B: Gm965Ich8Board,
 {
-    fn console(&self) -> Option<&dyn fstart_services::Console> {
+    fn console(&self) -> Option<&dyn fstart_core::services::Console> {
         Some(&self.console)
     }
 

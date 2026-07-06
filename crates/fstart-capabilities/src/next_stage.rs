@@ -6,7 +6,7 @@
 //! stage reads, handoff serialization, and jump sequencing. Codegen emits
 //! only primitive descriptors and service dispatch for the executor.
 
-use fstart_services::{BlockDevice, ServiceError};
+use fstart_core::services::{BlockDevice, ServiceError};
 
 /// Read a firmware stage from a block device directly to its load address.
 ///
@@ -41,13 +41,13 @@ pub fn read_stage_to_addr(
 
 /// Serialize handoff data to a DRAM buffer for the next stage.
 ///
-/// Writes a [`StageHandoff`](fstart_types::handoff::StageHandoff) to
+/// Writes a [`StageHandoff`](fstart_core::handoff::StageHandoff) to
 /// `handoff_addr` and returns the number of bytes written.
 ///
 /// # Safety
 ///
 /// Caller must ensure `handoff_addr` points to writable RAM with at
-/// least [`HANDOFF_MAX_SIZE`](fstart_types::handoff::HANDOFF_MAX_SIZE)
+/// least [`HANDOFF_MAX_SIZE`](fstart_core::handoff::HANDOFF_MAX_SIZE)
 /// bytes. This is guaranteed by placing the handoff buffer at a known
 /// offset below the next stage's load address.
 ///
@@ -57,12 +57,12 @@ pub fn read_stage_to_addr(
 /// encoding error).
 #[cfg(feature = "handoff")]
 pub fn serialize_handoff(dram_size: u64, handoff_addr: u64) -> Result<usize, &'static str> {
-    let handoff_data = fstart_types::handoff::StageHandoff::new(dram_size);
+    let handoff_data = fstart_core::handoff::StageHandoff::new(dram_size);
     // SAFETY: handoff_addr points to writable RAM, 4K below next stage load_addr.
     let handoff_buf = unsafe {
         core::slice::from_raw_parts_mut(
             handoff_addr as *mut u8,
-            fstart_types::handoff::HANDOFF_MAX_SIZE,
+            fstart_core::handoff::HANDOFF_MAX_SIZE,
         )
     };
     let handoff_len = crate::handoff::serialize(&handoff_data, handoff_buf)?;

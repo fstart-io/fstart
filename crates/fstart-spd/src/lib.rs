@@ -6,7 +6,7 @@
 
 #![no_std]
 
-use fstart_services::{ServiceError, SmBus};
+use fstart_core::services::{ServiceError, SmBus};
 
 pub mod ddr2;
 

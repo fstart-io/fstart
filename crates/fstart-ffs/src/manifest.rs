@@ -1,12 +1,12 @@
 //! Zero-copy firmware manifest table format.
 //!
-//! The builder owns ergonomic [`ImageManifest`](fstart_types::ffs::ImageManifest)
+//! The builder owns ergonomic [`ImageManifest`](fstart_core::ffs::ImageManifest)
 //! values, but the bytes written into firmware are flat tables. Runtime code can
 //! verify the signed byte range and borrow typed record slices directly from RO
 //! flash/pflash without deserializing a heapless object graph.
 
 use crate::reader::ReaderError;
-use fstart_types::ffs::{
+use fstart_core::ffs::{
     Compression, DigestSet, EntryContent, FileType, ImageManifest, Region, RegionContent,
     RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,
 };

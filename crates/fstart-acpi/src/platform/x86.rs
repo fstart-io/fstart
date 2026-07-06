@@ -23,7 +23,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_types::acpi::AcpiSmiConfig;
+use fstart_core::acpi::AcpiSmiConfig;
 
 use super::FadtConfig;
 

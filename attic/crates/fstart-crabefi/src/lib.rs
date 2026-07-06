@@ -56,7 +56,7 @@ pub struct PlatformConfig<'a> {
 /// Common fstart-owned UEFI launch inputs.
 pub struct UefiLaunchConfig<'a> {
     /// Console selected by board policy for UEFI debug/input adapters.
-    pub console: Option<&'a dyn fstart_services::Console>,
+    pub console: Option<&'a dyn fstart_core::services::Console>,
     /// Framebuffer configuration for GOP.
     pub framebuffer: Option<FramebufferConfig>,
     /// ACPI RSDP physical address.
@@ -231,18 +231,18 @@ fn enable_payload_cpu_features() {}
 // Console → DebugOutput adapter
 // ---------------------------------------------------------------------------
 
-/// Wraps an fstart [`Console`](fstart_services::Console) as a CrabEFI
+/// Wraps an fstart [`Console`](fstart_core::services::Console) as a CrabEFI
 /// [`DebugOutput`](crabefi::DebugOutput).
 ///
 /// fstart's `Console` uses `&self` (MMIO is inherently interior-mutable)
 /// and returns `Result`. CrabEFI's `DebugOutput` uses `&mut self` and
 /// ignores errors. The adapter bridges both differences.
-pub struct ConsoleAdapter<'a, C: fstart_services::Console + ?Sized> {
+pub struct ConsoleAdapter<'a, C: fstart_core::services::Console + ?Sized> {
     console: &'a C,
     pending: Cell<Option<u8>>,
 }
 
-impl<'a, C: fstart_services::Console + ?Sized> ConsoleAdapter<'a, C> {
+impl<'a, C: fstart_core::services::Console + ?Sized> ConsoleAdapter<'a, C> {
     /// Create a new adapter around an fstart console.
     pub const fn new(console: &'a C) -> Self {
         Self {
@@ -270,7 +270,7 @@ impl<'a, C: fstart_services::Console + ?Sized> ConsoleAdapter<'a, C> {
     }
 }
 
-impl<C: fstart_services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapter<'_, C> {
+impl<C: fstart_core::services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapter<'_, C> {
     fn write_byte(&mut self, byte: u8) {
         let _ = self.console.write_byte(byte);
     }
@@ -284,7 +284,7 @@ impl<C: fstart_services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapt
     }
 }
 
-impl<C: fstart_services::Console + ?Sized> crabefi::ConsoleInput for ConsoleAdapter<'_, C> {
+impl<C: fstart_core::services::Console + ?Sized> crabefi::ConsoleInput for ConsoleAdapter<'_, C> {
     fn read_key(&mut self) -> Option<crabefi::Key> {
         self.read_pending_or_console().map(|byte| crabefi::Key {
             scancode: 0,
@@ -299,7 +299,7 @@ impl<C: fstart_services::Console + ?Sized> crabefi::ConsoleInput for ConsoleAdap
 
 // `crabefi::DebugOutput` has `core::fmt::Write` as a supertrait,
 // so this impl is required — not optional.
-impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> {
+impl<C: fstart_core::services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
             if byte == b'\n' {
@@ -313,7 +313,7 @@ impl<C: fstart_services::Console + ?Sized> fmt::Write for ConsoleAdapter<'_, C> 
 
 // SAFETY: fstart's Console is Send + Sync (required by the trait bound).
 // ConsoleAdapter holds an immutable reference to it, which is Send.
-unsafe impl<C: fstart_services::Console + ?Sized> Send for ConsoleAdapter<'_, C> {}
+unsafe impl<C: fstart_core::services::Console + ?Sized> Send for ConsoleAdapter<'_, C> {}
 
 // ---------------------------------------------------------------------------
 // EFI memory map construction
@@ -457,7 +457,7 @@ pub fn build_efi_memory_map(
 }
 
 // Re-export types for codegen convenience.
-pub use fstart_services::memory_detect::E820Entry;
+pub use fstart_core::services::memory_detect::E820Entry;
 
 /// Compute the runtime memory region from linker-provided symbols.
 ///
@@ -666,7 +666,7 @@ impl crabefi::ResetHandler for X86Reset {
                 // ACPI S5 (soft-off) via QEMU's ACPI PM1a control register.
                 // QEMU Q35: PM1a_CNT at I/O port 0x0404.
                 unsafe {
-                    fstart_pio::outw(0x0404, 0x2000); // SLP_EN (bit 13); QEMU _S5 defines SLP_TYP=0
+                    fstart_core::pio::outw(0x0404, 0x2000); // SLP_EN (bit 13); QEMU _S5 defines SLP_TYP=0
                 }
             }
             _ => {
@@ -674,12 +674,12 @@ impl crabefi::ResetHandler for X86Reset {
                 unsafe {
                     // Wait for input buffer empty
                     for _ in 0..10000 {
-                        if fstart_pio::inb(0x64) & 0x02 == 0 {
+                        if fstart_core::pio::inb(0x64) & 0x02 == 0 {
                             break;
                         }
                         core::hint::spin_loop();
                     }
-                    fstart_pio::outb(0x64, 0xFE); // reset command
+                    fstart_core::pio::outb(0x64, 0xFE); // reset command
                 }
             }
         }

@@ -4,6 +4,7 @@
 use fstart_acpi::device::AcpiDevice;
 #[cfg(feature = "acpi")]
 use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
+use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 #[cfg(feature = "acpi")]
 use fstart_platform_intel_gm965_ich8::Gm965Ich8Mainstage;
@@ -12,14 +13,13 @@ use fstart_platform_intel_gm965_ich8::ICH8_PMBASE;
 use fstart_platform_intel_gm965_ich8::{
     Gm965Ich8, Gm965Ich8Board, Gm965Ich8Config, IntelEarlyBoard,
 };
-use fstart_services::ServiceError;
 use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageKind};
 
 use crate::{Board, X61Mainboard};
 
 impl StageBoard for Board {
     const NAME: &'static str = crate::BOARD_NAME;
-    const PLATFORM: fstart_types::Platform = crate::PLATFORM;
+    const PLATFORM: fstart_core::Platform = crate::PLATFORM;
 
     fn run_stage(stage: StageKind, handoff: usize) -> ! {
         Gm965Ich8::run_stage::<Self>(stage, handoff)
@@ -42,7 +42,7 @@ impl Gm965Ich8Board for Board {
         &crate::X61_PLATFORM
     }
 
-    fn ifd_flash_layout() -> fstart_types::IntelIfdFlashLayout {
+    fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout {
         crate::x61_ifd_flash_layout()
     }
 

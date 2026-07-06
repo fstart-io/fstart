@@ -14,7 +14,7 @@ use alloc::vec;
 #[cfg(feature = "acpi")]
 use alloc::vec::Vec;
 
-use fstart_services::memory_detect::E820Kind;
+use fstart_core::services::memory_detect::E820Kind;
 
 #[cfg(feature = "smbios")]
 pub use fstart_smbios::SmbiosDesc;
@@ -40,7 +40,7 @@ const EBDA_RSDP_OFFSET: usize = 0;
 fn allocate_x86_handoff_region(size: usize, align: u64, kind: E820Kind) -> Option<u64> {
     let size = ((size as u64) + 0xfff) & !0xfff;
     let align_mask = align.saturating_sub(1);
-    let e820 = unsafe { fstart_services::memory_detect::e820_state_mut() };
+    let e820 = unsafe { fstart_core::services::memory_detect::e820_state_mut() };
     let mut selected = 0u64;
 
     for entry in e820.entries() {

@@ -6,7 +6,7 @@
 //! derived timing clocks. The actual controller/PHY programming sequence is
 //! still guarded behind [`cold_boot_train`].
 
-use fstart_services::{ServiceError, SmBus};
+use fstart_core::services::{ServiceError, SmBus};
 use fstart_spd::{ChipWidth, DimmInfo};
 
 use super::{hostbridge, mchbar, MchBar};
@@ -479,8 +479,8 @@ fn lpc() -> fstart_pci::ecam::EcamDevice {
 fn full_reset() -> ! {
     // SAFETY: I/O port 0xcf9 is the standard Intel reset control register.
     unsafe {
-        fstart_pio::outb(0xcf9, 0x06);
-        fstart_pio::outb(0xcf9, 0x0e);
+        fstart_core::pio::outb(0xcf9, 0x06);
+        fstart_core::pio::outb(0xcf9, 0x0e);
     }
     loop {
         core::hint::spin_loop();
@@ -1089,7 +1089,7 @@ fn test_dqs_level(mch: &MchBar, ch: usize, addr: usize, expect_high: bool) -> bo
         // SAFETY: `addr` targets initialized DRAM rank under calibration.
         unsafe { core::ptr::read_volatile(addr as *const u32) };
         // SAFETY: port 0x80/0x61 style IO delay is valid on x86 firmware.
-        unsafe { fstart_pio::io_delay() };
+        unsafe { fstart_core::pio::io_delay() };
         let high = (mch.read32(mchbar::rec_dqs_level(ch)) & (1 << 30)) != 0;
         if high != expect_high {
             pass = false;

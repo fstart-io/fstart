@@ -13,7 +13,7 @@ acpi = [
   "dep:fstart-acpi-macros",
   "dep:acpi_tables",
 ]
-ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-types"]
+ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs"]
 
 [dependencies]
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
@@ -28,15 +28,12 @@ fstart-ffs = { workspace = true, optional = true }
 fstart-hda = { workspace = true }
 fstart-log = { workspace = true }
 
-fstart-mmio = { workspace = true }
+fstart-core = { workspace = true, features = ["pci"] }
 
 fstart-pci = { workspace = true }
-fstart-pio = { workspace = true }
-fstart-services = { workspace = true, features = ["pci"] }
 fstart-smm = { workspace = true }
 fstart-smm-runtime = { workspace = true }
 fstart-spd = { workspace = true }
-fstart-types = { workspace = true, optional = true }
 heapless = { workspace = true }
 serde = { workspace = true }
 tock-registers = { workspace = true }

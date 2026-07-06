@@ -4,7 +4,7 @@
 //! The `verify_signature` function dispatches to the correct algorithm
 //! based on the `Signature::kind` field.
 
-use fstart_types::ffs::{Signature, SignatureKind, VerificationKey};
+use fstart_core::ffs::{Signature, SignatureKind, VerificationKey};
 
 /// Error returned by signature verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

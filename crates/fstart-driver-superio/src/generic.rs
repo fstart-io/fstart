@@ -28,8 +28,8 @@
 
 #![allow(clippy::redundant_locals)]
 
-use fstart_services::device::{BusDevice, DeviceError};
-use fstart_types::BusAddress;
+use fstart_core::services::device::{BusDevice, DeviceError};
+use fstart_core::BusAddress;
 use serde::{Deserialize, Serialize};
 
 use core::marker::PhantomData;
@@ -60,11 +60,11 @@ pub fn quiesce_i8042_for_os_at(data_port: u16, command_port: u16) {
                 return;
             }
 
-            fstart_pio::outb(command_port, 0x60);
+            fstart_core::pio::outb(command_port, 0x60);
             if !i8042_wait_input_empty(command_port) {
                 return;
             }
-            fstart_pio::outb(data_port, 0x64);
+            fstart_core::pio::outb(data_port, 0x64);
             let _ = i8042_flush(data_port, command_port);
         }
     }
@@ -78,7 +78,7 @@ pub fn quiesce_i8042_for_os_at(data_port: u16, command_port: u16) {
 #[cfg(target_arch = "x86_64")]
 unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
     for _ in 0..100_000 {
-        if fstart_pio::inb(status_port) & 0x02 == 0 {
+        if fstart_core::pio::inb(status_port) & 0x02 == 0 {
             return true;
         }
         core::hint::spin_loop();
@@ -89,11 +89,11 @@ unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
 #[cfg(target_arch = "x86_64")]
 unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
     for _ in 0..256 {
-        let status = fstart_pio::inb(status_port);
+        let status = fstart_core::pio::inb(status_port);
         if status & 0x01 == 0 {
             return true;
         }
-        let _ = fstart_pio::inb(data_port);
+        let _ = fstart_core::pio::inb(data_port);
     }
     false
 }
@@ -350,11 +350,11 @@ impl<C: SuperIoChip> SuperIo<C> {
     fn enter_config(&self) {
         for b in C::ENTER_SEQ {
             // SAFETY: base_port is from the board metadata, `b` is a chip constant.
-            unsafe { fstart_pio::outb(self.idx_port(), *b) };
+            unsafe { fstart_core::pio::outb(self.idx_port(), *b) };
         }
         // Some chips (ITE) need a port-dependent final byte.
         if let Some(last) = C::enter_last_byte(self.base_port) {
-            unsafe { fstart_pio::outb(self.idx_port(), last) };
+            unsafe { fstart_core::pio::outb(self.idx_port(), last) };
         }
     }
 
@@ -362,8 +362,8 @@ impl<C: SuperIoChip> SuperIo<C> {
     fn exit_config(&self) {
         // SAFETY: chip-provided constants; base_port validated in new_on_bus.
         unsafe {
-            fstart_pio::outb(self.idx_port(), C::EXIT_REG);
-            fstart_pio::outb(self.data_port(), C::EXIT_VAL);
+            fstart_core::pio::outb(self.idx_port(), C::EXIT_REG);
+            fstart_core::pio::outb(self.data_port(), C::EXIT_VAL);
         }
     }
 
@@ -371,8 +371,8 @@ impl<C: SuperIoChip> SuperIo<C> {
     fn write_reg(&self, reg: u8, val: u8) {
         // SAFETY: callers always bracket writes with enter_config/exit_config.
         unsafe {
-            fstart_pio::outb(self.idx_port(), reg);
-            fstart_pio::outb(self.data_port(), val);
+            fstart_core::pio::outb(self.idx_port(), reg);
+            fstart_core::pio::outb(self.data_port(), val);
         }
     }
 
@@ -380,8 +380,8 @@ impl<C: SuperIoChip> SuperIo<C> {
     fn read_reg(&self, reg: u8) -> u8 {
         // SAFETY: callers always bracket reads with enter_config/exit_config.
         unsafe {
-            fstart_pio::outb(self.idx_port(), reg);
-            fstart_pio::inb(self.data_port())
+            fstart_core::pio::outb(self.idx_port(), reg);
+            fstart_core::pio::inb(self.data_port())
         }
     }
 
@@ -446,8 +446,9 @@ impl<C: SuperIoChip> SuperIo<C> {
             if !Self::kbc_wait_input_empty(command_port) {
                 return;
             }
-            fstart_pio::outb(command_port, 0xAA); // controller self-test
-            if !Self::kbc_wait_output_full(command_port) || fstart_pio::inb(data_port) != 0x55 {
+            fstart_core::pio::outb(command_port, 0xAA); // controller self-test
+            if !Self::kbc_wait_output_full(command_port) || fstart_core::pio::inb(data_port) != 0x55
+            {
                 return;
             }
             let _ = Self::kbc_flush(data_port, command_port);
@@ -455,11 +456,11 @@ impl<C: SuperIoChip> SuperIo<C> {
             if !Self::kbc_wait_input_empty(command_port) {
                 return;
             }
-            fstart_pio::outb(command_port, 0xAB); // keyboard interface test
+            fstart_core::pio::outb(command_port, 0xAB); // keyboard interface test
             if !Self::kbc_wait_output_full(command_port) {
                 return;
             }
-            let _ = fstart_pio::inb(data_port);
+            let _ = fstart_core::pio::inb(data_port);
 
             // Enable keyboard interface and keep AUX disabled until the mouse
             // path is explicitly tested.  IRQs stay off while cleaning/programming.
@@ -472,12 +473,14 @@ impl<C: SuperIoChip> SuperIo<C> {
                 if !Self::kbc_wait_input_empty(command_port) {
                     return;
                 }
-                fstart_pio::outb(command_port, 0xA8); // enable AUX interface
+                fstart_core::pio::outb(command_port, 0xA8); // enable AUX interface
                 if !Self::kbc_wait_input_empty(command_port) {
                     return;
                 }
-                fstart_pio::outb(command_port, 0xA9); // AUX interface test
-                if !Self::kbc_wait_output_full(command_port) || fstart_pio::inb(data_port) != 0x00 {
+                fstart_core::pio::outb(command_port, 0xA9); // AUX interface test
+                if !Self::kbc_wait_output_full(command_port)
+                    || fstart_core::pio::inb(data_port) != 0x00
+                {
                     enable_aux = false;
                     let _ = Self::kbc_write_command_byte(data_port, command_port, 0x20);
                 } else {
@@ -493,7 +496,8 @@ impl<C: SuperIoChip> SuperIo<C> {
                 let _ = Self::kbc_flush(data_port, command_port);
                 return;
             }
-            if !Self::kbc_wait_output_full(command_port) || fstart_pio::inb(data_port) != 0xAA {
+            if !Self::kbc_wait_output_full(command_port) || fstart_core::pio::inb(data_port) != 0xAA
+            {
                 let _ = Self::kbc_flush(data_port, command_port);
                 return;
             }
@@ -524,7 +528,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     #[cfg(target_arch = "x86_64")]
     unsafe fn kbc_wait_input_empty(status_port: u16) -> bool {
         for _ in 0..100_000 {
-            if fstart_pio::inb(status_port) & 0x02 == 0 {
+            if fstart_core::pio::inb(status_port) & 0x02 == 0 {
                 return true;
             }
         }
@@ -534,7 +538,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     #[cfg(target_arch = "x86_64")]
     unsafe fn kbc_wait_output_full(status_port: u16) -> bool {
         for _ in 0..100_000 {
-            if fstart_pio::inb(status_port) & 0x01 != 0 {
+            if fstart_core::pio::inb(status_port) & 0x01 != 0 {
                 return true;
             }
         }
@@ -544,12 +548,12 @@ impl<C: SuperIoChip> SuperIo<C> {
     #[cfg(target_arch = "x86_64")]
     unsafe fn kbc_flush(data_port: u16, status_port: u16) -> bool {
         for _ in 0..1024 {
-            let status = fstart_pio::inb(status_port);
+            let status = fstart_core::pio::inb(status_port);
             if status & 0x03 == 0 {
                 return true;
             }
             if status & 0x01 != 0 {
-                let _ = fstart_pio::inb(data_port);
+                let _ = fstart_core::pio::inb(data_port);
             }
         }
         false
@@ -560,11 +564,11 @@ impl<C: SuperIoChip> SuperIo<C> {
         if !Self::kbc_wait_input_empty(command_port) {
             return false;
         }
-        fstart_pio::outb(command_port, 0x60);
+        fstart_core::pio::outb(command_port, 0x60);
         if !Self::kbc_wait_input_empty(command_port) {
             return false;
         }
-        fstart_pio::outb(data_port, value);
+        fstart_core::pio::outb(data_port, value);
         Self::kbc_wait_input_empty(command_port)
     }
 
@@ -573,11 +577,11 @@ impl<C: SuperIoChip> SuperIo<C> {
         if !Self::kbc_wait_input_empty(status_port) {
             return None;
         }
-        fstart_pio::outb(data_port, command);
+        fstart_core::pio::outb(data_port, command);
         if !Self::kbc_wait_output_full(status_port) {
             return None;
         }
-        Some(fstart_pio::inb(data_port))
+        Some(fstart_core::pio::inb(data_port))
     }
 
     /// Program the mouse LDN (IRQ only).
@@ -812,48 +816,48 @@ fn uart_init(io_base: u16, baud_rate: u32) {
     // SAFETY: io_base comes from the board metadata config.
     unsafe {
         // Disable interrupts.
-        fstart_pio::outb(io_base + UART_IER, 0);
+        fstart_core::pio::outb(io_base + UART_IER, 0);
         // Enable FIFO and clear both FIFOs.
-        fstart_pio::outb(io_base + UART_FCR, 0x07);
+        fstart_core::pio::outb(io_base + UART_FCR, 0x07);
         // Assert DTR + RTS + OUT2. OUT2 gates the 16550 interrupt output on
         // PC-compatible SuperIO UARTs; leaving it low can produce confused
         // legacy IRQ behaviour once Linux switches from earlycon to 8250.
-        fstart_pio::outb(io_base + UART_MCR, 0x0b);
+        fstart_core::pio::outb(io_base + UART_MCR, 0x0b);
         // Set baud via divisor latch, with 8N1 selected.
-        fstart_pio::outb(io_base + UART_LCR, LCR_DLAB | 0x03);
-        fstart_pio::outb(io_base + UART_THR, divisor as u8);
-        fstart_pio::outb(io_base + UART_IER, (divisor >> 8) as u8);
-        fstart_pio::outb(io_base + UART_LCR, 0x03);
+        fstart_core::pio::outb(io_base + UART_LCR, LCR_DLAB | 0x03);
+        fstart_core::pio::outb(io_base + UART_THR, divisor as u8);
+        fstart_core::pio::outb(io_base + UART_IER, (divisor >> 8) as u8);
+        fstart_core::pio::outb(io_base + UART_LCR, 0x03);
     }
 }
 
-impl<C: SuperIoChip> fstart_services::Console for SuperIo<C> {
-    fn write_byte(&self, byte: u8) -> Result<(), fstart_services::ServiceError> {
+impl<C: SuperIoChip> fstart_core::services::Console for SuperIo<C> {
+    fn write_byte(&self, byte: u8) -> Result<(), fstart_core::services::ServiceError> {
         let com = match self.console_com() {
             Some(c) => c,
-            None => return Err(fstart_services::ServiceError::NotSupported),
+            None => return Err(fstart_core::services::ServiceError::NotSupported),
         };
         // SAFETY: io_base from board config.
         unsafe {
             let mut timeout = UART_SINGLE_CHAR_TIMEOUT;
-            while timeout != 0 && fstart_pio::inb(com.io_base + UART_LSR) & LSR_THRE == 0 {
+            while timeout != 0 && fstart_core::pio::inb(com.io_base + UART_LSR) & LSR_THRE == 0 {
                 timeout -= 1;
                 core::hint::spin_loop();
             }
-            fstart_pio::outb(com.io_base + UART_THR, byte);
+            fstart_core::pio::outb(com.io_base + UART_THR, byte);
         }
         Ok(())
     }
 
-    fn read_byte(&self) -> Result<Option<u8>, fstart_services::ServiceError> {
+    fn read_byte(&self) -> Result<Option<u8>, fstart_core::services::ServiceError> {
         let com = match self.console_com() {
             Some(c) => c,
-            None => return Err(fstart_services::ServiceError::NotSupported),
+            None => return Err(fstart_core::services::ServiceError::NotSupported),
         };
         // SAFETY: io_base from board config.
         unsafe {
-            if fstart_pio::inb(com.io_base + UART_LSR) & LSR_DR != 0 {
-                Ok(Some(fstart_pio::inb(com.io_base + UART_THR)))
+            if fstart_core::pio::inb(com.io_base + UART_LSR) & LSR_DR != 0 {
+                Ok(Some(fstart_core::pio::inb(com.io_base + UART_THR)))
             } else {
                 Ok(None)
             }

@@ -10,9 +10,9 @@
 #![allow(clippy::result_unit_err)]
 
 #[cfg(feature = "stage")]
-use fstart_platform_intel_gm965_ich8::{Gm965Ich8, IntelEarlyBoardHooks, IntelEarlyCtx};
+use fstart_core::services::ServiceError;
 #[cfg(feature = "stage")]
-use fstart_services::ServiceError;
+use fstart_platform_intel_gm965_ich8::{Gm965Ich8, IntelEarlyBoardHooks, IntelEarlyCtx};
 
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
 #[cfg(feature = "stage")]
@@ -53,7 +53,7 @@ impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
 /// X61 dock and DLPC helpers ported from coreboot `mainboard/lenovo/x61/dock.c`.
 pub mod dock {
     #[cfg(target_arch = "x86_64")]
-    use fstart_pio::{inb, outb};
+    use fstart_core::pio::{inb, outb};
 
     const DLPC_INDEX: u16 = 0x164e;
     const DLPC_DATA: u16 = 0x164f;
@@ -174,7 +174,7 @@ pub mod dock {
     }
 
     /// Return whether an X6 UltraBase dock is attached.
-    pub fn dock_present(southbridge: &impl fstart_services::Southbridge) -> bool {
+    pub fn dock_present(southbridge: &impl fstart_core::services::Southbridge) -> bool {
         // Coreboot samples ICH GPIO13 low for dock present.  Ask the reusable
         // southbridge driver instead of duplicating its GPIOBASE in board config.
         southbridge.gpio_get(13).is_ok_and(|high| !high)
@@ -333,7 +333,7 @@ pub mod dock {
     }
 
     /// Switch the X61 SMBus mux back to the EEPROM side after SPD/raminit.
-    pub fn post_raminit_setup(southbridge: &impl fstart_services::Southbridge) {
+    pub fn post_raminit_setup(southbridge: &impl fstart_core::services::Southbridge) {
         let _ = southbridge.gpio_set(42, false);
     }
 }

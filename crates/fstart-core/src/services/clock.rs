@@ -5,7 +5,7 @@
 //! This trait provides runtime clock management for other drivers that need
 //! to enable/disable clock gates or query frequencies.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// Clock controller — manages PLL configuration and peripheral clock gates.
 ///

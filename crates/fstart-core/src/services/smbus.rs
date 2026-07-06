@@ -9,7 +9,7 @@
 //! SMBus children (SPD EEPROMs, clock generators) list their 7-bit
 //! slave address via [`crate::device::BusDevice`].
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// Provider for SMBus transactions.
 ///

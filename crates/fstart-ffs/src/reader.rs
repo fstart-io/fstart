@@ -13,7 +13,7 @@
 //! For tools (running on a host with `std`), the `scan_for_anchor` function
 //! finds the anchor by searching for `FFS_MAGIC` in an arbitrary binary.
 
-use fstart_types::ffs::{
+use fstart_core::ffs::{
     AnchorBlock, EntryContent, ImageManifest, Region, RegionContent, RegionEntry, Segment,
     Signature, ANCHOR_MAX_KEYS, ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
 };
@@ -208,7 +208,7 @@ impl<'a> FfsReader<'a> {
 
         if segments.len() == 1 {
             let seg = &segments[0];
-            if seg.compression == fstart_types::ffs::Compression::None {
+            if seg.compression == fstart_core::ffs::Compression::None {
                 let data = self.read_segment_data(seg, region, entry)?;
                 digest::verify_digest_set(data, digests)
                     .map_err(|_| ReaderError::DigestMismatch)?;
@@ -227,7 +227,7 @@ impl<'a> FfsReader<'a> {
         &self,
         offset: usize,
         size: usize,
-        keys: &[fstart_types::ffs::VerificationKey],
+        keys: &[fstart_core::ffs::VerificationKey],
     ) -> Result<ImageManifest, ReaderError> {
         let end = offset + size;
         let data = self
@@ -258,7 +258,7 @@ impl<'a> FfsReader<'a> {
 /// [`ReaderError::KeyNotFound`] if no matching key is found.
 pub fn verify_and_parse_manifest(
     data: &[u8],
-    keys: &[fstart_types::ffs::VerificationKey],
+    keys: &[fstart_core::ffs::VerificationKey],
 ) -> Result<ImageManifest, ReaderError> {
     let manifest_bytes = verify_and_borrow_manifest(data, keys)?;
     crate::manifest::ManifestView::parse(manifest_bytes)?.to_owned_manifest()
@@ -266,7 +266,7 @@ pub fn verify_and_parse_manifest(
 
 pub fn verify_and_borrow_manifest<'a>(
     data: &'a [u8],
-    keys: &[fstart_types::ffs::VerificationKey],
+    keys: &[fstart_core::ffs::VerificationKey],
 ) -> Result<&'a [u8], ReaderError> {
     let (manifest_bytes, signature) = crate::manifest::parse_signed_manifest(data)?;
     verify_manifest_signature(manifest_bytes, &signature, keys)?;
@@ -275,7 +275,7 @@ pub fn verify_and_borrow_manifest<'a>(
 
 pub fn verify_and_manifest_view<'a>(
     data: &'a [u8],
-    keys: &[fstart_types::ffs::VerificationKey],
+    keys: &[fstart_core::ffs::VerificationKey],
 ) -> Result<crate::manifest::ManifestView<'a>, ReaderError> {
     crate::manifest::ManifestView::parse(verify_and_borrow_manifest(data, keys)?)
 }
@@ -283,7 +283,7 @@ pub fn verify_and_manifest_view<'a>(
 fn verify_manifest_signature(
     manifest_bytes: &[u8],
     signature: &Signature,
-    keys: &[fstart_types::ffs::VerificationKey],
+    keys: &[fstart_core::ffs::VerificationKey],
 ) -> Result<(), ReaderError> {
     verify::verify_with_key_lookup(manifest_bytes, signature, keys).map_err(|e| match e {
         verify::VerifyError::KeyNotFound => ReaderError::KeyNotFound,

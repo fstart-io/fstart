@@ -1,6 +1,6 @@
 //! GPIO controller service — general-purpose I/O abstraction.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// A GPIO controller that manages general-purpose I/O pins.
 ///

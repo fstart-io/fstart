@@ -47,9 +47,9 @@
 //! fstart_capabilities::stage_load("main", anchor, &media, jump_to);
 //! ```
 
-use fstart_types::TempRamBuffer;
+use crate::TempRamBuffer;
 
-use crate::{BlockDevice, FirmwareImage, ServiceError};
+use super::{BlockDevice, FirmwareImage, ServiceError};
 
 /// Simple bump allocator over a caller-provided temporary RAM buffer.
 ///

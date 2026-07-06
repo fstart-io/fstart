@@ -4,7 +4,7 @@
 //! `fstart-pci`. This module owns only the service trait used by platform/root
 //! bridge drivers.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 pub use fstart_pci::*;
 

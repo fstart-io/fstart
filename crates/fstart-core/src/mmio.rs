@@ -28,7 +28,7 @@
 //! # Usage — free functions
 //!
 //! ```ignore
-//! use fstart_mmio::{read32, write32, read8, write8};
+//! use fstart_core::mmio::{read32, write32, read8, write8};
 //!
 //! let val = unsafe { read32(0x01C2_0000 as *const u32) };
 //! unsafe { write32(0x01C2_0000 as *mut u32, val | 0x01) };
@@ -38,7 +38,7 @@
 //! # Usage — register structs
 //!
 //! ```ignore
-//! use fstart_mmio::{MmioReadWrite, MmioReadOnly};
+//! use fstart_core::mmio::{MmioReadWrite, MmioReadOnly};
 //! use tock_registers::{register_structs, register_bitfields};
 //!
 //! register_bitfields![u32, CTRL [ EN OFFSET(0) NUMBITS(1) [] ]];
@@ -51,8 +51,6 @@
 //!     }
 //! }
 //! ```
-
-#![no_std]
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;

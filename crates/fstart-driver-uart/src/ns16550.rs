@@ -46,8 +46,8 @@
 //! Compatible: `"ns16550a"`, `"ns16550"`, `"snps,dw-apb-uart"`,
 //!             `"allwinner,sun7i-a20-uart"`.
 
-use fstart_services::device::DeviceError;
-use fstart_services::{Console, ServiceError};
+use fstart_core::services::device::DeviceError;
+use fstart_core::services::{Console, ServiceError};
 use tock_registers::register_bitfields;
 use tock_registers::LocalRegisterCopy;
 
@@ -218,7 +218,7 @@ impl Ns16550 {
             #[cfg(feature = "pio")]
             ResolvedRegs::Pio { base } => {
                 // SAFETY: I/O port address provided by board config.
-                unsafe { fstart_pio::inb(base + index as u16) }
+                unsafe { fstart_core::pio::inb(base + index as u16) }
             }
             ResolvedRegs::Mmio { base, shift, width } => {
                 let addr = base + (index << shift);
@@ -226,12 +226,12 @@ impl Ns16550 {
                     // SAFETY: base + offset is a valid MMIO register address
                     // provided by the board config. When width == 4, alignment is
                     // guaranteed by reg_shift >= 2 (validated in new()).
-                    (unsafe { fstart_mmio::read32(addr as *const u32) }) as u8
+                    (unsafe { fstart_core::mmio::read32(addr as *const u32) }) as u8
                 } else {
                     // SAFETY: base + offset is a valid MMIO register address
                     // provided by the board config. Byte access has no alignment
                     // requirement.
-                    unsafe { fstart_mmio::read8(addr as *const u8) }
+                    unsafe { fstart_core::mmio::read8(addr as *const u8) }
                 }
             }
         }
@@ -248,7 +248,7 @@ impl Ns16550 {
             #[cfg(feature = "pio")]
             ResolvedRegs::Pio { base } => {
                 // SAFETY: I/O port address provided by board config.
-                unsafe { fstart_pio::outb(base + index as u16, val) }
+                unsafe { fstart_core::pio::outb(base + index as u16, val) }
             }
             ResolvedRegs::Mmio { base, shift, width } => {
                 let addr = base + (index << shift);
@@ -256,12 +256,12 @@ impl Ns16550 {
                     // SAFETY: base + offset is a valid MMIO register address
                     // provided by the board config. When width == 4, alignment is
                     // guaranteed by reg_shift >= 2 (validated in new()).
-                    unsafe { fstart_mmio::write32(addr as *mut u32, val as u32) }
+                    unsafe { fstart_core::mmio::write32(addr as *mut u32, val as u32) }
                 } else {
                     // SAFETY: base + offset is a valid MMIO register address
                     // provided by the board config. Byte access has no alignment
                     // requirement.
-                    unsafe { fstart_mmio::write8(addr as *mut u8, val) }
+                    unsafe { fstart_core::mmio::write8(addr as *mut u8, val) }
                 }
             }
         }

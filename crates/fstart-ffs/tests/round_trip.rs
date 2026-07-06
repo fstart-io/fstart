@@ -1,14 +1,14 @@
 //! Integration tests: build an FFS image, then read it back and verify.
 
 use ed25519_dalek::{Signer, SigningKey};
+use fstart_core::ffs::{
+    AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind,
+    Signature, VerificationKey, ANCHOR_SIZE,
+};
 use fstart_ffs::builder::{
     build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
 };
 use fstart_ffs::reader::FfsReader;
-use fstart_types::ffs::{
-    AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind,
-    Signature, VerificationKey, ANCHOR_SIZE,
-};
 use rand_core::OsRng;
 
 /// Generate a fresh Ed25519 key pair for testing.

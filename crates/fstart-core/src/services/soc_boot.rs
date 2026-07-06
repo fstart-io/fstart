@@ -12,7 +12,7 @@
 //!   from the SRAM base address.
 //!
 //! To add a new SoC: implement this trait in a new `fstart-soc-*`
-//! crate, add a `SocImageFormat` variant in `fstart-types`, and
+//! crate, add a `SocImageFormat` variant in `fstart-core`, and
 //! teach `board_gen` to emit the qualified calls.
 
 /// Boot-source detection and next-stage metadata from the SoC BROM.

@@ -8,7 +8,7 @@
 //! [`crate::device::BusDevice`]; their driver opens the appropriate
 //! decode range by asking the southbridge via this trait.
 
-use crate::ServiceError;
+use super::ServiceError;
 
 /// Bus provider for LPC-attached peripherals.
 pub trait LpcBus: Send + Sync {

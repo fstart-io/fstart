@@ -18,12 +18,12 @@
 //! ## Boot Media Abstraction
 //!
 //! All FFS capability functions are generic over
-//! [`BootMedia`](fstart_services::BootMedia), accepting any boot medium
+//! [`BootMedia`](fstart_core::services::BootMedia), accepting any boot medium
 //! implementation. For memory-mapped flash
-//! ([`MemoryMapped`](fstart_services::MemoryMapped)), the code uses the
+//! ([`MemoryMapped`](fstart_core::services::MemoryMapped)), the code uses the
 //! existing [`FfsReader`](fstart_ffs::FfsReader) fast path — all operations
 //! inline to direct memory access with zero overhead. For block devices
-//! ([`BlockDeviceMedia`](fstart_services::BlockDeviceMedia)), metadata is
+//! ([`BlockDeviceMedia`](fstart_core::services::BlockDeviceMedia)), metadata is
 //! read into stack buffers and segments are loaded via the device I/O path.
 //!
 //! See [docs/driver-model.md](../../docs/driver-model.md) for the full
@@ -86,7 +86,7 @@ pub unsafe fn fdt_blob_from_addr(addr: u64) -> Option<&'static [u8]> {
 use fstart_log::Hex;
 
 #[cfg(feature = "ffs")]
-use fstart_services::BootMedia;
+use fstart_core::services::BootMedia;
 
 // ---------------------------------------------------------------------------
 // SigVerify
@@ -156,7 +156,7 @@ pub fn sig_verify(anchor_data: &[u8], media: &(impl BootMedia + ?Sized)) {
 
 /// Stub SigVerify when FFS feature is not enabled.
 #[cfg(not(feature = "ffs"))]
-pub fn sig_verify(_anchor_data: &[u8], _media: &(impl fstart_services::BootMedia + ?Sized)) {
+pub fn sig_verify(_anchor_data: &[u8], _media: &(impl fstart_core::services::BootMedia + ?Sized)) {
     fstart_log::info!("capability: SigVerify");
     fstart_log::info!("sig verify skipped (ffs feature not enabled)");
 }
@@ -177,7 +177,7 @@ pub enum AnchorScanError {
 
 /// Scan memory-mapped boot media for the FFS anchor block.
 ///
-/// Searches for [`FFS_MAGIC`](fstart_types::ffs::FFS_MAGIC) at 8-byte
+/// Searches for [`FFS_MAGIC`](fstart_core::ffs::FFS_MAGIC) at 8-byte
 /// aligned offsets in the media.  Returns the anchor data as a
 /// fixed-size array on success.
 ///
@@ -192,19 +192,19 @@ pub enum AnchorScanError {
 #[cfg(feature = "ffs")]
 pub fn scan_anchor_in_media(
     media: &impl BootMedia,
-) -> Result<[u8; fstart_types::ffs::ANCHOR_SIZE], AnchorScanError> {
+) -> Result<[u8; fstart_core::ffs::ANCHOR_SIZE], AnchorScanError> {
     let media_slice = media.as_slice().ok_or(AnchorScanError::NotMemoryMapped)?;
 
     // Linear scan at 8-byte alignment. The anchor is typically near
     // the end of the FFS image, but the image offset within the media
     // is unknown to non-first stages, so we scan from the start.
     // For memory-mapped flash this is cache-friendly sequential reads.
-    let magic = &fstart_types::ffs::FFS_MAGIC;
+    let magic = &fstart_core::ffs::FFS_MAGIC;
     let mut offset = 0usize;
-    while offset + fstart_types::ffs::ANCHOR_SIZE <= media_slice.len() {
+    while offset + fstart_core::ffs::ANCHOR_SIZE <= media_slice.len() {
         if &media_slice[offset..offset + magic.len()] == magic {
-            let mut buf = [0u8; fstart_types::ffs::ANCHOR_SIZE];
-            buf.copy_from_slice(&media_slice[offset..offset + fstart_types::ffs::ANCHOR_SIZE]);
+            let mut buf = [0u8; fstart_core::ffs::ANCHOR_SIZE];
+            buf.copy_from_slice(&media_slice[offset..offset + fstart_core::ffs::ANCHOR_SIZE]);
             fstart_log::info!(
                 "FFS anchor found at offset {:#x} in boot media",
                 offset as u64
@@ -232,14 +232,14 @@ pub fn scan_anchor_in_media(
 pub fn read_anchor_at_offset(
     media: &impl BootMedia,
     anchor_offset: usize,
-) -> Result<[u8; fstart_types::ffs::ANCHOR_SIZE], AnchorScanError> {
-    let mut buf = [0u8; fstart_types::ffs::ANCHOR_SIZE];
+) -> Result<[u8; fstart_core::ffs::ANCHOR_SIZE], AnchorScanError> {
+    let mut buf = [0u8; fstart_core::ffs::ANCHOR_SIZE];
     media
         .read_at(anchor_offset, &mut buf)
         .map_err(|_| AnchorScanError::NotFound)?;
 
     // Verify the magic bytes are present.
-    let magic = &fstart_types::ffs::FFS_MAGIC;
+    let magic = &fstart_core::ffs::FFS_MAGIC;
     if buf[..magic.len()] != *magic {
         return Err(AnchorScanError::NotFound);
     }
@@ -415,7 +415,7 @@ pub fn payload_load(anchor_data: &[u8], media: &(impl BootMedia + ?Sized), jump_
         }
     };
 
-    let file = match manifest.find_file_by_type(fstart_types::ffs::FileType::Payload) {
+    let file = match manifest.find_file_by_type(fstart_core::ffs::FileType::Payload) {
         Ok(file) => file,
         Err(fstart_ffs::ReaderError::FileNotFound) => {
             fstart_log::error!("payload load: no payload found in manifest");
@@ -599,14 +599,14 @@ static MANIFEST_BUF: SyncBuf = SyncBuf(core::cell::UnsafeCell::new([0u8; MAX_MAN
 /// Read and verify the FFS manifest view from any boot medium.
 ///
 /// Reads the signed manifest into a static buffer, verifies it, and returns the
-/// inner [`ImageManifest`](fstart_types::ffs::ImageManifest).
+/// inner [`ImageManifest`](fstart_core::ffs::ImageManifest).
 ///
 /// Keeping the serialized manifest off-stack and avoiding deserialization of
 /// the 8 KiB signed envelope keeps firmware stack usage predictable.
 #[cfg(feature = "ffs")]
 fn read_manifest_from_media(
     media: &(impl BootMedia + ?Sized),
-    anchor: &fstart_types::ffs::AnchorBlock,
+    anchor: &fstart_core::ffs::AnchorBlock,
 ) -> Result<fstart_ffs::ManifestView<'static>, fstart_ffs::ReaderError> {
     // Read signed manifest into the static buffer. Uses a static rather than a
     // stack allocation to keep stack usage predictable for firmware stages.
@@ -638,7 +638,7 @@ fn read_manifest_from_media(
 pub fn load_ffs_file_by_type(
     anchor_data: &[u8],
     media: &(impl BootMedia + ?Sized),
-    file_type: fstart_types::ffs::FileType,
+    file_type: fstart_core::ffs::FileType,
 ) -> bool {
     if media.size() == 0 || anchor_data.is_empty() {
         fstart_log::error!("load file: no flash image configured");
@@ -784,7 +784,7 @@ pub fn load_ffs_file_by_name(
 pub fn find_ffs_file_data<'a>(
     anchor_data: &[u8],
     media: &'a (impl BootMedia + ?Sized),
-    file_type: fstart_types::ffs::FileType,
+    file_type: fstart_core::ffs::FileType,
 ) -> Option<&'a [u8]> {
     let image = media.as_slice()?;
 
@@ -836,8 +836,8 @@ pub fn find_ffs_file_data<'a>(
 pub fn find_ffs_file_data_with_scratch<'a>(
     anchor_data: &[u8],
     media: &'a (impl BootMedia + ?Sized),
-    file_type: fstart_types::ffs::FileType,
-    scratch: Option<&'a mut fstart_services::TempRamArena>,
+    file_type: fstart_core::ffs::FileType,
+    scratch: Option<&'a mut fstart_core::services::TempRamArena>,
 ) -> Option<&'a [u8]> {
     if media.as_slice().is_some() {
         return find_ffs_file_data(anchor_data, media, file_type);
@@ -876,8 +876,13 @@ pub fn find_ffs_file_data_with_scratch<'a>(
         return None;
     }
 
-    fstart_services::boot_media::read_to_temp(media, usize::try_from(offset).ok()?, size, scratch)
-        .ok()
+    fstart_core::services::boot_media::read_to_temp(
+        media,
+        usize::try_from(offset).ok()?,
+        size,
+        scratch,
+    )
+    .ok()
 }
 
 #[cfg(feature = "ffs")]
@@ -926,7 +931,7 @@ fn load_file_segments_from_media(
             Err(_) => return None,
         };
 
-        if kind == fstart_types::ffs::SegmentKind::Bss {
+        if kind == fstart_core::ffs::SegmentKind::Bss {
             // BSS: zero-fill at load_addr
             let dest = seg.load_addr() as *mut u8;
             // SAFETY: we trust the board config; the load_addr points to writable RAM.
@@ -958,7 +963,7 @@ fn load_file_segments_from_media(
             }
 
             match compression {
-                fstart_types::ffs::Compression::None => {
+                fstart_core::ffs::Compression::None => {
                     // Read directly from boot medium to the load address.
                     // For memory-mapped media, this inlines to memmove
                     // (handles overlap when FFS image is in RAM).
@@ -979,7 +984,7 @@ fn load_file_segments_from_media(
                     );
                 }
                 #[cfg(feature = "lz4")]
-                fstart_types::ffs::Compression::Lz4 => {
+                fstart_core::ffs::Compression::Lz4 => {
                     // In-place LZ4 decompression (coreboot technique):
                     // 1. The builder verified that `in_place_size` bytes at
                     //    load_addr suffice for safe in-place decompression.
@@ -1033,7 +1038,7 @@ fn load_file_segments_from_media(
                     }
                 }
                 #[cfg(not(feature = "lz4"))]
-                fstart_types::ffs::Compression::Lz4 => {
+                fstart_core::ffs::Compression::Lz4 => {
                     fstart_log::error!("LZ4 compressed segment but lz4 feature not enabled");
                     return None;
                 }
@@ -1042,7 +1047,7 @@ fn load_file_segments_from_media(
 
         // Use the first Code segment's load_addr as the entry point,
         // or fall back to the first segment's load_addr.
-        if entry_addr.is_none() || kind == fstart_types::ffs::SegmentKind::Code {
+        if entry_addr.is_none() || kind == fstart_core::ffs::SegmentKind::Code {
             entry_addr = Some(seg.load_addr());
         }
     }
@@ -1079,7 +1084,7 @@ fn reader_error_str(err: fstart_ffs::ReaderError) -> &'static str {
 /// while the FFS image is much smaller. Using the anchor's total_image_size
 /// ensures the reader only accesses data that was actually written by the builder.
 #[cfg(feature = "ffs")]
-fn effective_image_size(media_size: usize, anchor: &fstart_types::ffs::AnchorBlock) -> usize {
+fn effective_image_size(media_size: usize, anchor: &fstart_core::ffs::AnchorBlock) -> usize {
     if anchor.total_image_size > 0 && (anchor.total_image_size as usize) < media_size {
         anchor.total_image_size as usize
     } else {

@@ -18,7 +18,7 @@
 //!
 //! ```ignore
 //! use fstart_hda::{HdaConfig, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc};
-//! use fstart_types::hvec;
+//! use fstart_core::hvec;
 //!
 //! let hda = HdaConfig {
 //!     verbs: hvec([HdaVerbTable {
@@ -50,7 +50,7 @@
 
 use core::ptr;
 
-use fstart_types::ConstVec;
+use fstart_core::ConstVec;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------

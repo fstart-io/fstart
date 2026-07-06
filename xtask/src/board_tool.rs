@@ -5,8 +5,8 @@
 //! `Cargo.toml` `[package.metadata.fstart]` table.
 
 use clap::{Parser, Subcommand};
-use fstart_types::acpi::AcpiExtraDevice;
-use fstart_types::{BoardConfig, StageLayout};
+use fstart_core::acpi::AcpiExtraDevice;
+use fstart_core::{BoardConfig, StageLayout};
 
 use crate::build_plan::ParsedBoard;
 
@@ -150,7 +150,7 @@ fn run(
         || config.payload.as_ref().is_some_and(|p| {
             p.firmware.is_some()
                 || p.kernel_file.is_some()
-                || p.kind == fstart_types::PayloadKind::FitImage
+                || p.kind == fstart_core::PayloadKind::FitImage
         });
 
     if is_multi_stage || has_payload_blobs {
