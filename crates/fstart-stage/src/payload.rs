@@ -1,6 +1,5 @@
 //! Common payload launch abstractions for mainstage flows.
 
-#[cfg(feature = "crabefi")]
 use fstart_services::memory_detect::E820Entry;
 
 /// Build-selected payload launcher for a mainstage device context.
@@ -20,8 +19,15 @@ impl<D> MainstagePayload<D> for HaltPayload {
     }
 }
 
-/// Device context needed by the common x86 CrabEFI launcher.
+/// Payload launcher selected by build features.
+#[cfg(not(feature = "crabefi"))]
+pub type BuildSelectedPayload = HaltPayload;
+
+/// Payload launcher selected by build features.
 #[cfg(feature = "crabefi")]
+pub type BuildSelectedPayload = X86UefiPayload;
+
+/// Device context needed by the common x86 CrabEFI launcher.
 pub trait X86UefiPayloadContext {
     /// Return the payload console, if one is available.
     fn console(&self) -> Option<&dyn fstart_services::Console>;

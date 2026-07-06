@@ -6,9 +6,7 @@ use fstart_driver_ns16550::{Ns16550, Ns16550Config};
 use fstart_services::memory_detect::{E820Entry, MemoryDetector, MAX_E820_ENTRIES};
 use fstart_services::{MemoryController, PciRootBus, ServiceError};
 use fstart_stage::fixed_helpers::MemoryMappedFfs;
-use fstart_stage::payload::MainstagePayload;
-#[cfg(feature = "crabefi")]
-use fstart_stage::payload::X86UefiPayloadContext;
+use fstart_stage::payload::{MainstagePayload, X86UefiPayloadContext};
 use fstart_stage::{StageBoard, StageKind};
 
 use crate::{
@@ -127,6 +125,68 @@ pub trait Gm965Ich8Board: IntelEarlyBoard<Platform = Gm965Ich8> {
     fn prepare_smbios() {}
 }
 
+/// Shared mainstage state owned by the flow, not by board hooks or drivers.
+pub struct MainstageCtx {
+    e820: [E820Entry; MAX_E820_ENTRIES],
+    e820_count: usize,
+    total_ram: u64,
+    acpi_rsdp: Option<u64>,
+    firmware_base: u64,
+    firmware_size: usize,
+}
+
+impl MainstageCtx {
+    fn new(firmware_base: u64, firmware_size: usize) -> Self {
+        Self {
+            e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
+            e820_count: 0,
+            total_ram: 0,
+            acpi_rsdp: None,
+            firmware_base,
+            firmware_size,
+        }
+    }
+
+    #[must_use]
+    pub fn e820(&self) -> &[E820Entry] {
+        &self.e820[..self.e820_count]
+    }
+
+    #[must_use]
+    pub const fn total_ram(&self) -> u64 {
+        self.total_ram
+    }
+
+    #[must_use]
+    pub const fn acpi_rsdp(&self) -> Option<u64> {
+        self.acpi_rsdp
+    }
+
+    #[must_use]
+    pub const fn firmware_region(&self) -> (u64, usize) {
+        (self.firmware_base, self.firmware_size)
+    }
+
+    fn store_e820(&mut self, count: usize, total: u64) {
+        self.e820_count = count;
+        self.total_ram = total;
+    }
+
+    fn set_acpi_rsdp(&mut self, rsdp: Option<u64>) {
+        self.acpi_rsdp = rsdp;
+    }
+}
+
+/// Phase-oriented contract for DRAM-backed mainstage flows.
+pub trait MainstagePhases: Sized {
+    fn bind() -> Result<Self, ServiceError>;
+    fn pre_bus_scan(&mut self) -> Result<(), ServiceError>;
+    fn bus_scan(&mut self) -> Result<(), ServiceError>;
+    fn init_devices(&mut self) -> Result<(), ServiceError>;
+    fn emit_tables(&mut self) -> Result<(), ServiceError>;
+    fn finalize(&mut self) -> Result<(), ServiceError>;
+}
+
 fn firmware_window<B>() -> Result<(u64, usize), ServiceError>
 where
     B: Gm965Ich8Board,
@@ -202,15 +262,45 @@ pub struct Gm965Ich8Mainstage<B: Gm965Ich8Board> {
     southbridge: IntelIch8,
     hooks: B::Hooks,
     console: Ns16550,
-    e820: [E820Entry; MAX_E820_ENTRIES],
-    e820_count: usize,
-    total_ram: u64,
-    acpi_rsdp: Option<u64>,
-    firmware_base: u64,
-    firmware_size: usize,
+    ctx: MainstageCtx,
 }
 
 impl<B> Gm965Ich8Mainstage<B>
+where
+    B: Gm965Ich8Board,
+{
+    #[must_use]
+    pub const fn northbridge(&self) -> &IntelGm965 {
+        &self.northbridge
+    }
+
+    #[must_use]
+    pub const fn southbridge(&self) -> &IntelIch8 {
+        &self.southbridge
+    }
+
+    #[must_use]
+    pub const fn ctx(&self) -> &MainstageCtx {
+        &self.ctx
+    }
+
+    #[must_use]
+    pub const fn acpi_context(&self) -> Gm965Ich8AcpiContext {
+        Gm965Ich8AcpiContext
+    }
+
+    #[must_use]
+    pub fn e820(&self) -> &[E820Entry] {
+        self.ctx.e820()
+    }
+
+    #[must_use]
+    pub const fn acpi_rsdp(&self) -> Option<u64> {
+        self.ctx.acpi_rsdp()
+    }
+}
+
+impl<B> MainstagePhases for Gm965Ich8Mainstage<B>
 where
     B: Gm965Ich8Board,
 {
@@ -226,38 +316,8 @@ where
                 .map_err(|_| ServiceError::HardwareError)?,
             hooks: B::hooks()?,
             console: Ns16550::new(B::console_config()).map_err(|_| ServiceError::HardwareError)?,
-            e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
-            e820_count: 0,
-            total_ram: 0,
-            acpi_rsdp: None,
-            firmware_base,
-            firmware_size,
+            ctx: MainstageCtx::new(firmware_base, firmware_size),
         })
-    }
-
-    #[must_use]
-    pub const fn northbridge(&self) -> &IntelGm965 {
-        &self.northbridge
-    }
-
-    #[must_use]
-    pub const fn southbridge(&self) -> &IntelIch8 {
-        &self.southbridge
-    }
-
-    #[must_use]
-    pub const fn acpi_context(&self) -> Gm965Ich8AcpiContext {
-        Gm965Ich8AcpiContext
-    }
-
-    #[must_use]
-    pub fn e820(&self) -> &[E820Entry] {
-        &self.e820[..self.e820_count]
-    }
-
-    #[must_use]
-    pub const fn acpi_rsdp(&self) -> Option<u64> {
-        self.acpi_rsdp
     }
 
     /// Enable bridges/decode, bring up the console, and get DRAM usable —
@@ -282,7 +342,7 @@ where
 
         self.hooks
             .before_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
-        let count = self.northbridge.detect_memory(&mut self.e820)?;
+        let count = self.northbridge.detect_memory(&mut self.ctx.e820)?;
         let total = self.northbridge.total_ram_bytes()?;
         fstart_log::info!(
             "Detected {} MiB RAM, {} e820 entries from {}",
@@ -294,10 +354,9 @@ where
         // can read it.
         // SAFETY: single-threaded firmware init, stored once per stage.
         unsafe {
-            fstart_services::memory_detect::e820_state_mut().store(&self.e820, count, total);
+            fstart_services::memory_detect::e820_state_mut().store(&self.ctx.e820, count, total);
         }
-        self.e820_count = count;
-        self.total_ram = total;
+        self.ctx.store_e820(count, total);
 
         self.northbridge.dram_init()
     }
@@ -319,7 +378,8 @@ where
 
     /// Emit ACPI/SMBIOS tables from the existing board + platform code.
     fn emit_tables(&mut self) -> Result<(), ServiceError> {
-        self.acpi_rsdp = B::prepare_acpi(self);
+        let rsdp = B::prepare_acpi(self);
+        self.ctx.set_acpi_rsdp(rsdp);
         B::prepare_smbios();
         Ok(())
     }
@@ -340,7 +400,8 @@ where
     let Ok(mut mainstage) = Gm965Ich8Mainstage::<B>::bind() else {
         B::halt();
     };
-    let boot_media = MemoryMappedFfs::new(mainstage.firmware_base, mainstage.firmware_size);
+    let (firmware_base, firmware_size) = mainstage.ctx.firmware_region();
+    let boot_media = MemoryMappedFfs::new(firmware_base, firmware_size);
     run_mainstage_phase::<B>("pre_bus_scan", || mainstage.pre_bus_scan());
     run_mainstage_phase::<B>("bus_scan", || mainstage.bus_scan());
     run_mainstage_phase::<B>("init_devices", || mainstage.init_devices());
@@ -367,7 +428,6 @@ where
     }
 }
 
-#[cfg(feature = "crabefi")]
 impl<B> X86UefiPayloadContext for Gm965Ich8Mainstage<B>
 where
     B: Gm965Ich8Board,
@@ -381,7 +441,8 @@ where
     }
 
     fn firmware_region(&self) -> (u64, u64) {
-        (self.firmware_base, self.firmware_size as u64)
+        let (base, size) = self.ctx.firmware_region();
+        (base, size as u64)
     }
 
     fn acpi_rsdp(&self) -> Option<u64> {

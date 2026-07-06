@@ -17,7 +17,8 @@ pub mod tables;
 #[cfg(feature = "stage")]
 pub use early::{
     run_gm965_ich8_mainstage, Gm965Ich8, Gm965Ich8Board, Gm965Ich8Mainstage, IntelEarlyBoard,
-    IntelEarlyBoardHooks, IntelEarlyCtx, IntelEarlyPlatform, IntelPlatform,
+    IntelEarlyBoardHooks, IntelEarlyCtx, IntelEarlyPlatform, IntelPlatform, MainstageCtx,
+    MainstagePhases,
 };
 use fstart_driver_intel_gm965 as gm965;
 pub use fstart_driver_intel_gm965::{Gm965IgdConfig, IntelGm965Config};
@@ -29,13 +30,8 @@ pub use fstart_driver_intel_ich8::{
     SataConfig, SataMode, UsbConfig,
 };
 use fstart_gpio_ich as gpio;
-#[cfg(all(feature = "stage", feature = "crabefi"))]
-pub use fstart_stage::payload::X86UefiPayload;
 #[cfg(feature = "stage")]
-pub use fstart_stage::{
-    payload::{HaltPayload, MainstagePayload},
-    StageBoard, StageKind,
-};
+pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageKind};
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
     hstr, hvec, BootMedium, BusAddress, Capability, CarConfig, Compression, ConstVec, DeviceConfig,

@@ -7,16 +7,13 @@ use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
 use fstart_driver_ns16550::{AccessMode, Ns16550Config};
 #[cfg(feature = "acpi")]
 use fstart_platform_intel_gm965_ich8::Gm965Ich8Mainstage;
-#[cfg(not(feature = "crabefi"))]
-use fstart_platform_intel_gm965_ich8::HaltPayload;
-#[cfg(feature = "crabefi")]
-use fstart_platform_intel_gm965_ich8::X86UefiPayload;
 #[cfg(feature = "mp")]
 use fstart_platform_intel_gm965_ich8::ICH8_PMBASE;
 use fstart_platform_intel_gm965_ich8::{
-    Gm965Ich8, Gm965Ich8Board, Gm965Ich8Config, IntelEarlyBoard, StageBoard, StageKind,
+    Gm965Ich8, Gm965Ich8Board, Gm965Ich8Config, IntelEarlyBoard,
 };
 use fstart_services::ServiceError;
+use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageKind};
 
 use crate::{Board, X61Mainboard};
 
@@ -39,10 +36,7 @@ impl IntelEarlyBoard for Board {
 }
 
 impl Gm965Ich8Board for Board {
-    #[cfg(not(feature = "crabefi"))]
-    type Payload = HaltPayload;
-    #[cfg(feature = "crabefi")]
-    type Payload = X86UefiPayload;
+    type Payload = BuildSelectedPayload;
 
     fn config() -> &'static Gm965Ich8Config {
         &crate::X61_PLATFORM

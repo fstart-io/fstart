@@ -15,7 +15,6 @@ stage = [
   "dep:ufmt",
   "fstart-services/pci",
 ]
-crabefi = ["fstart-stage/crabefi"]
 acpi = ["stage", "dep:fstart-acpi"]
 smbios = ["stage", "dep:fstart-smbios", "dep:fstart-arch-x86"]
 

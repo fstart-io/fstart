@@ -24,7 +24,7 @@ features = [
 [features]
 default = []
 runtime = []
-crabefi = ["fstart-platform-intel-gm965-ich8/crabefi", "fstart-stage?/crabefi"]
+crabefi = ["fstart-stage?/crabefi"]
 stage = [
   "runtime",
   "dep:fstart-driver-intel-ich8",
