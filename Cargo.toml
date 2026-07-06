@@ -15,8 +15,10 @@ members = [
   "crates/fstart-alloc",
   "crates/fstart-log",
   "crates/fstart-runtime",
-  "crates/fstart-driver-ns16550",
+  "crates/fstart-driver-uart",
   "crates/fstart-driver-pci-ecam",
+  "crates/fstart-driver-intel",
+  "crates/fstart-driver-superio",
   "crates/fstart-pci",
   "crates/fstart-ecam",
   "crates/fstart-stage",
@@ -24,21 +26,11 @@ members = [
   "crates/fstart-acpi-macros",
   "crates/fstart-smbios",
   "crates/fstart-pio",
-  "crates/fstart-pmio-ich",
   "crates/fstart-platform-x86_64",
-  "crates/fstart-superio",
-  "crates/fstart-driver-nsc-pc87382",
-  "crates/fstart-driver-nsc-pc87392",
-  "crates/fstart-driver-intel-gm965",
-  "crates/fstart-driver-intel-ich8",
-  "crates/fstart-driver-i2c-ck505",
-  "crates/fstart-smbus-intel",
   "crates/fstart-spd",
-  "crates/fstart-gpio-ich",
   "crates/fstart-hda",
   "crates/fstart-lapic",
   "crates/fstart-mp",
-  "crates/fstart-microcode-intel",
   "crates/fstart-smm",
   "crates/fstart-smm-runtime",
   "crates/fstart-smm-stage",
@@ -101,7 +93,9 @@ fstart-log = { path = "crates/fstart-log" }
 fstart-runtime = { path = "crates/fstart-runtime" }
 fstart-arch = { path = "crates/fstart-arch" }
 fstart-arch-x86 = { path = "crates/fstart-arch-x86" }
-fstart-driver-ns16550 = { path = "crates/fstart-driver-ns16550" }
+fstart-driver-intel = { path = "crates/fstart-driver-intel" }
+fstart-driver-superio = { path = "crates/fstart-driver-superio" }
+fstart-driver-uart = { path = "crates/fstart-driver-uart" }
 fstart-driver-pci-ecam = { path = "crates/fstart-driver-pci-ecam" }
 fstart-ecam = { path = "crates/fstart-ecam" }
 fstart-crabefi = { path = "attic/crates/fstart-crabefi" }
@@ -110,21 +104,11 @@ fstart-fit = { path = "crates/fstart-fit" }
 fstart-acpi = { path = "crates/fstart-acpi" }
 fstart-smbios = { path = "crates/fstart-smbios" }
 fstart-pio = { path = "crates/fstart-pio" }
-fstart-pmio-ich = { path = "crates/fstart-pmio-ich" }
 fstart-platform-x86_64 = { path = "crates/fstart-platform-x86_64" }
-fstart-superio = { path = "crates/fstart-superio" }
-fstart-driver-nsc-pc87382 = { path = "crates/fstart-driver-nsc-pc87382" }
-fstart-driver-nsc-pc87392 = { path = "crates/fstart-driver-nsc-pc87392" }
-fstart-driver-intel-gm965 = { path = "crates/fstart-driver-intel-gm965" }
-fstart-driver-intel-ich8 = { path = "crates/fstart-driver-intel-ich8" }
-fstart-driver-i2c-ck505 = { path = "crates/fstart-driver-i2c-ck505" }
-fstart-smbus-intel = { path = "crates/fstart-smbus-intel" }
 fstart-spd = { path = "crates/fstart-spd" }
-fstart-gpio-ich = { path = "crates/fstart-gpio-ich" }
 fstart-hda = { path = "crates/fstart-hda" }
 fstart-lapic = { path = "crates/fstart-lapic" }
 fstart-mp = { path = "crates/fstart-mp" }
-fstart-microcode-intel = { path = "crates/fstart-microcode-intel" }
 fstart-smm = { path = "crates/fstart-smm" }
 fstart-smm-runtime = { path = "crates/fstart-smm-runtime" }
 fstart-smm-stage = { path = "crates/fstart-smm-stage" }

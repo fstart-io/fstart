@@ -1,9 +1,9 @@
 //! Lenovo ThinkPad X61 board metadata and build policy.
 
-use fstart_driver_i2c_ck505::I2cCk505Config;
-use fstart_driver_nsc_pc87382 as pc87382;
-use fstart_driver_nsc_pc87392 as pc87392;
-use fstart_gpio_ich as gpio;
+use fstart_driver_intel::ck505::I2cCk505Config;
+use fstart_driver_intel::gpio_ich as gpio;
+use fstart_driver_superio::pc87382;
+use fstart_driver_superio::pc87392;
 use fstart_hda as hda;
 use fstart_platform_intel_gm965_ich8::{
     gm965_ich8_memory, gm965_ich8_microcode, gm965_ich8_stages, gm965_ich8_topology,

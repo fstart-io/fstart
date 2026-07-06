@@ -186,12 +186,12 @@ impl CpuDriver for PineviewCpuDriver {
     fn update_microcode(&self) {
         if let Some(blob) = self.microcode {
             let cpu = fstart_mp::current_cpu_index();
-            let before = fstart_microcode_intel::current_revision();
+            let before = fstart_driver_intel::microcode::current_revision();
             fstart_log::info!("microcode: cpu{} before rev={:#x}", cpu, before);
             // SAFETY: board code supplies a firmware-image-backed Intel
             // microcode blob that remains reachable throughout MP init.
-            unsafe { fstart_microcode_intel::update_current_cpu_logged(blob) };
-            let after = fstart_microcode_intel::current_revision();
+            unsafe { fstart_driver_intel::microcode::update_current_cpu_logged(blob) };
+            let after = fstart_driver_intel::microcode::current_revision();
             fstart_log::info!("microcode: cpu{} after rev={:#x}", cpu, after);
         }
     }

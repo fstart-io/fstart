@@ -45,7 +45,7 @@ impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
     }
 
     fn before_handoff(&mut self, _ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
-        fstart_superio::quiesce_i8042_for_os();
+        fstart_driver_superio::quiesce_i8042_for_os();
         Ok(())
     }
 }

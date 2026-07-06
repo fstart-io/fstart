@@ -1,0 +1,43 @@
+[package]
+name = "fstart-driver-intel"
+description = "Intel chipset and support drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+acpi = [
+  "dep:fstart-acpi",
+  "dep:fstart-acpi-macros",
+  "dep:acpi_tables",
+]
+ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-types"]
+
+[dependencies]
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../fstart-acpi-macros", optional = true }
+acpi_tables = { version = "0.2", optional = true }
+fstart-arch-x86 = { workspace = true }
+fstart-crypto = { workspace = true, optional = true }
+fstart-driver-pci-ecam = { workspace = true }
+fstart-driver-superio = { workspace = true }
+fstart-ecam = { workspace = true }
+fstart-ffs = { workspace = true, optional = true }
+fstart-hda = { workspace = true }
+fstart-log = { workspace = true }
+fstart-lapic = { workspace = true }
+fstart-mmio = { workspace = true }
+fstart-mp = { workspace = true }
+fstart-pci = { workspace = true }
+fstart-pio = { workspace = true }
+fstart-services = { workspace = true, features = ["pci"] }
+fstart-smm = { workspace = true }
+fstart-smm-runtime = { workspace = true }
+fstart-spd = { workspace = true }
+fstart-types = { workspace = true, optional = true }
+heapless = { workspace = true }
+serde = { workspace = true }
+tock-registers = { workspace = true }
+ufmt = { workspace = true }

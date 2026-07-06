@@ -27,8 +27,7 @@ runtime = []
 crabefi = ["fstart-stage?/crabefi"]
 stage = [
   "runtime",
-  "dep:fstart-driver-intel-ich8",
-  "dep:fstart-driver-ns16550",
+  "dep:fstart-driver-uart",
   "dep:fstart-platform-x86_64",
   "dep:fstart-stage",
   "fstart-platform-intel-gm965-ich8/stage",
@@ -46,7 +45,7 @@ fit = ["fstart-stage?/fit"]
 fdt = ["fstart-stage?/fdt"]
 handoff = ["fstart-stage?/handoff"]
 intel-gm965 = []
-intel-ich8 = ["dep:fstart-driver-intel-ich8"]
+intel-ich8 = []
 nsc-pc87382 = []
 nsc-pc87392 = []
 i2c-ck505 = []
@@ -56,14 +55,12 @@ acpi = [
   "fstart-stage?/acpi",
   "fstart-platform-intel-gm965-ich8/acpi",
   "dep:fstart-mp",
-  "fstart-driver-intel-gm965/acpi",
-  "fstart-driver-intel-gm965/ffs-vbt",
-  "fstart-driver-intel-ich8?/acpi",
+  "fstart-driver-intel/acpi",
+  "fstart-driver-intel/ffs-vbt",
 ]
 mp = ["stage", "dep:fstart-cpu-intel", "dep:fstart-mp"]
 smbios = ["fstart-platform-intel-gm965-ich8/smbios"]
 smm = [
-  "dep:fstart-driver-intel-ich8",
   "dep:fstart-smm-runtime",
   "dep:fstart-smm-stage",
 ]
@@ -75,17 +72,12 @@ fstart-platform-x86_64 = { path = "../../crates/fstart-platform-x86_64", optiona
 fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../../crates/fstart-acpi-macros", optional = true }
 fstart-arch-x86 = { path = "../../crates/fstart-arch-x86" }
-fstart-driver-i2c-ck505 = { path = "../../crates/fstart-driver-i2c-ck505" }
-fstart-driver-intel-gm965 = { path = "../../crates/fstart-driver-intel-gm965", features = ["ffs-vbt"] }
-fstart-driver-intel-ich8 = { path = "../../crates/fstart-driver-intel-ich8", optional = true }
-fstart-driver-ns16550 = { path = "../../crates/fstart-driver-ns16550", features = ["pio"], optional = true }
-fstart-driver-nsc-pc87382 = { path = "../../crates/fstart-driver-nsc-pc87382" }
-fstart-driver-nsc-pc87392 = { path = "../../crates/fstart-driver-nsc-pc87392" }
-fstart-gpio-ich = { path = "../../crates/fstart-gpio-ich" }
+fstart-driver-intel = { path = "../../crates/fstart-driver-intel", features = ["ffs-vbt"] }
+fstart-driver-superio = { path = "../../crates/fstart-driver-superio" }
+fstart-driver-uart = { path = "../../crates/fstart-driver-uart", features = ["pio"], optional = true }
 fstart-hda = { path = "../../crates/fstart-hda" }
 fstart-pio = { path = "../../crates/fstart-pio" }
 fstart-services = { path = "../../crates/fstart-services", features = ["pci"] }
-fstart-superio = { path = "../../crates/fstart-superio" }
 fstart-cpu-intel = { path = "../../crates/fstart-cpu-intel", optional = true }
 fstart-mp = { path = "../../crates/fstart-mp", optional = true }
 fstart-smbios = { path = "../../crates/fstart-smbios" }

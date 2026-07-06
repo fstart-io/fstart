@@ -8,7 +8,7 @@ publish = false
 [features]
 default = []
 stage = [
-  "dep:fstart-driver-ns16550",
+  "dep:fstart-driver-uart",
   "dep:fstart-log",
   "dep:fstart-platform-x86_64",
   "dep:fstart-stage",
@@ -20,13 +20,11 @@ smbios = ["stage", "dep:fstart-smbios", "dep:fstart-arch-x86"]
 
 [dependencies]
 fstart-types = { workspace = true }
-fstart-driver-intel-gm965 = { workspace = true, features = ["ffs-vbt"] }
-fstart-driver-intel-ich8 = { workspace = true }
-fstart-driver-ns16550 = { workspace = true, optional = true }
+fstart-driver-intel = { workspace = true, features = ["ffs-vbt"] }
+fstart-driver-uart = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-arch-x86 = { workspace = true, optional = true }
 fstart-smbios = { workspace = true, optional = true }
-fstart-gpio-ich = { workspace = true }
 fstart-services = { workspace = true }
 fstart-log = { workspace = true, optional = true }
 fstart-platform-x86_64 = { workspace = true, optional = true }

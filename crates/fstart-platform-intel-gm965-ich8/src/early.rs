@@ -1,8 +1,8 @@
 //! Fixed GM965/ICH8 Intel early/mainstage flow.
 
-use fstart_driver_intel_gm965::IntelGm965;
-use fstart_driver_intel_ich8::IntelIch8;
-use fstart_driver_ns16550::{Ns16550, Ns16550Config};
+use fstart_driver_intel::gm965::IntelGm965;
+use fstart_driver_intel::ich8::IntelIch8;
+use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
 use fstart_services::memory_detect::{E820Entry, MemoryDetector, MAX_E820_ENTRIES};
 use fstart_services::{MemoryController, PciRootBus, ServiceError};
 use fstart_stage::fixed_helpers::MemoryMappedFfs;

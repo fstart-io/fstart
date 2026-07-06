@@ -4,7 +4,7 @@
 use fstart_acpi::device::AcpiDevice;
 #[cfg(feature = "acpi")]
 use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
-use fstart_driver_ns16550::{AccessMode, Ns16550Config};
+use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 #[cfg(feature = "acpi")]
 use fstart_platform_intel_gm965_ich8::Gm965Ich8Mainstage;
 #[cfg(feature = "mp")]

@@ -20,16 +20,16 @@ pub use early::{
     IntelEarlyBoardHooks, IntelEarlyCtx, IntelEarlyPlatform, IntelPlatform, MainstageCtx,
     MainstagePhases,
 };
-use fstart_driver_intel_gm965 as gm965;
-pub use fstart_driver_intel_gm965::{Gm965IgdConfig, IntelGm965Config};
-use fstart_driver_intel_ich8 as ich8;
-pub use fstart_driver_intel_ich8::{
+use fstart_driver_intel::gm965;
+pub use fstart_driver_intel::gm965::{Gm965IgdConfig, IntelGm965Config};
+use fstart_driver_intel::gpio_ich as gpio;
+use fstart_driver_intel::ich8;
+pub use fstart_driver_intel::ich8::{
     HdaConfig, HdaVerbTable, IdeConfig, IntelIch8Config, IoTrapAccess, IoTrapConfig,
     LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode,
     LpcSerialDecode, PinColor, PinConfig, PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc,
     SataConfig, SataMode, UsbConfig,
 };
-use fstart_gpio_ich as gpio;
 #[cfg(feature = "stage")]
 pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageKind};
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};

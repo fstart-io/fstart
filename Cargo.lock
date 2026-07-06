@@ -498,13 +498,9 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch-x86",
  "fstart-cpu-intel",
- "fstart-driver-i2c-ck505",
- "fstart-driver-intel-gm965",
- "fstart-driver-intel-ich8",
- "fstart-driver-ns16550",
- "fstart-driver-nsc-pc87382",
- "fstart-driver-nsc-pc87392",
- "fstart-gpio-ich",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
  "fstart-hda",
  "fstart-mp",
  "fstart-pio",
@@ -515,7 +511,6 @@ dependencies = [
  "fstart-smm-runtime",
  "fstart-smm-stage",
  "fstart-stage",
- "fstart-superio",
  "fstart-types",
 ]
 
@@ -539,8 +534,8 @@ version = "0.1.0"
 dependencies = [
  "acpi_tables",
  "fstart-arch-x86",
+ "fstart-driver-intel",
  "fstart-log",
- "fstart-microcode-intel",
  "fstart-mp",
  "ufmt",
 ]
@@ -567,98 +562,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-driver-i2c-ck505"
+name = "fstart-driver-intel"
 version = "0.1.0"
 dependencies = [
- "fstart-log",
- "fstart-services",
- "fstart-types",
- "heapless",
- "serde",
- "ufmt",
-]
-
-[[package]]
-name = "fstart-driver-intel-gm965"
-version = "0.1.0"
-dependencies = [
+ "acpi_tables",
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch-x86",
- "fstart-cpu-intel",
  "fstart-crypto",
  "fstart-driver-pci-ecam",
+ "fstart-driver-superio",
  "fstart-ecam",
  "fstart-ffs",
+ "fstart-hda",
  "fstart-lapic",
  "fstart-log",
  "fstart-mmio",
  "fstart-mp",
  "fstart-pci",
  "fstart-pio",
- "fstart-pmio-ich",
  "fstart-services",
- "fstart-smbus-intel",
  "fstart-smm",
+ "fstart-smm-runtime",
  "fstart-spd",
  "fstart-types",
  "heapless",
  "serde",
  "tock-registers",
  "ufmt",
-]
-
-[[package]]
-name = "fstart-driver-intel-ich8"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-acpi-macros",
- "fstart-arch-x86",
- "fstart-ecam",
- "fstart-gpio-ich",
- "fstart-hda",
- "fstart-log",
- "fstart-mmio",
- "fstart-pci",
- "fstart-pio",
- "fstart-pmio-ich",
- "fstart-services",
- "fstart-smbus-intel",
- "fstart-smm-runtime",
- "fstart-superio",
- "fstart-types",
- "heapless",
- "serde",
- "tock-registers",
- "ufmt",
-]
-
-[[package]]
-name = "fstart-driver-ns16550"
-version = "0.1.0"
-dependencies = [
- "fstart-mmio",
- "fstart-pio",
- "fstart-services",
- "serde",
- "tock-registers",
-]
-
-[[package]]
-name = "fstart-driver-nsc-pc87382"
-version = "0.1.0"
-dependencies = [
- "fstart-superio",
- "serde",
-]
-
-[[package]]
-name = "fstart-driver-nsc-pc87392"
-version = "0.1.0"
-dependencies = [
- "fstart-superio",
- "serde",
 ]
 
 [[package]]
@@ -671,6 +602,32 @@ dependencies = [
  "heapless",
  "serde",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-superio"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-log",
+ "fstart-pio",
+ "fstart-services",
+ "fstart-types",
+ "heapless",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-uart"
+version = "0.1.0"
+dependencies = [
+ "fstart-mmio",
+ "fstart-pio",
+ "fstart-services",
+ "serde",
+ "tock-registers",
 ]
 
 [[package]]
@@ -705,17 +662,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-gpio-ich"
-version = "0.1.0"
-dependencies = [
- "fstart-log",
- "fstart-pio",
- "fstart-types",
- "serde",
- "ufmt",
-]
-
-[[package]]
 name = "fstart-hda"
 version = "0.1.0"
 dependencies = [
@@ -739,15 +685,6 @@ name = "fstart-log"
 version = "0.1.0"
 dependencies = [
  "fstart-services",
- "ufmt",
-]
-
-[[package]]
-name = "fstart-microcode-intel"
-version = "0.1.0"
-dependencies = [
- "fstart-arch-x86",
- "fstart-log",
  "ufmt",
 ]
 
@@ -792,10 +729,8 @@ version = "0.1.0"
 dependencies = [
  "fstart-acpi",
  "fstart-arch-x86",
- "fstart-driver-intel-gm965",
- "fstart-driver-intel-ich8",
- "fstart-driver-ns16550",
- "fstart-gpio-ich",
+ "fstart-driver-intel",
+ "fstart-driver-uart",
  "fstart-log",
  "fstart-platform-x86_64",
  "fstart-services",
@@ -822,13 +757,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-pmio-ich"
-version = "0.1.0"
-dependencies = [
- "fstart-pio",
-]
-
-[[package]]
 name = "fstart-runtime"
 version = "0.1.0"
 dependencies = [
@@ -848,18 +776,6 @@ dependencies = [
 [[package]]
 name = "fstart-smbios"
 version = "0.1.0"
-
-[[package]]
-name = "fstart-smbus-intel"
-version = "0.1.0"
-dependencies = [
- "fstart-ecam",
- "fstart-log",
- "fstart-pio",
- "fstart-services",
- "tock-registers",
- "ufmt",
-]
 
 [[package]]
 name = "fstart-smm"
@@ -914,21 +830,6 @@ dependencies = [
  "fstart-services",
  "fstart-types",
  "heapless",
- "ufmt",
-]
-
-[[package]]
-name = "fstart-superio"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-acpi-macros",
- "fstart-log",
- "fstart-pio",
- "fstart-services",
- "fstart-types",
- "heapless",
- "serde",
  "ufmt",
 ]
 
