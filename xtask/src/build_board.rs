@@ -14,10 +14,9 @@ use std::process::Command;
 
 struct StagePackageBuild {
     package_label: String,
-    manifest_path: Option<PathBuf>,
 }
 
-struct SelectedSmmStageBuild {
+struct SmmStageBuild {
     archive_path: PathBuf,
     link_dir: PathBuf,
 }
@@ -156,7 +155,7 @@ fn build_smm_artifacts(
         coreboot_module_args: smm.coreboot.module_args,
         coreboot_header: smm.coreboot.emit_header,
     };
-    let smm_stage = build_selected_smm_stage(workspace_root, board_manifest)?;
+    let smm_stage = build_board_smm_stage(workspace_root, board_manifest)?;
     let handler =
         fstart_smm_image::handler_from_archive(&smm_stage.archive_path, &smm_stage.link_dir)
             .map_err(|e| format!("failed to link SMM handler: {e}"))?;
@@ -180,39 +179,29 @@ fn build_smm_artifacts(
     }))
 }
 
-fn build_selected_smm_stage(
+fn build_board_smm_stage(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
-) -> Result<SelectedSmmStageBuild, String> {
-    let package_label = format!("fstart-selected-smm-{}", board_manifest.board);
-    let wrapper_dir = workspace_root
+) -> Result<SmmStageBuild, String> {
+    let target_dir = workspace_root
         .join("target")
-        .join("fstart-build")
+        .join("smm")
         .join(&board_manifest.board)
-        .join("selected-smm");
-    let src_dir = wrapper_dir.join("src");
-    fs::create_dir_all(&src_dir)
-        .map_err(|e| format!("failed to create {}: {e}", src_dir.display()))?;
+        .join("cargo");
 
-    write_if_changed(
-        &wrapper_dir.join("Cargo.toml"),
-        &selected_smm_cargo_toml(workspace_root, board_manifest, &package_label),
-    )?;
-    if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
-        write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
-    }
-    write_if_changed(&src_dir.join("lib.rs"), selected_smm_lib_rs())?;
-
-    let target_dir = wrapper_dir.join("target");
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root)
         .arg("rustc")
-        .arg("--manifest-path")
-        .arg(wrapper_dir.join("Cargo.toml"))
+        .arg("--package")
+        .arg(&board_manifest.package)
+        .arg("--lib")
         .arg("--target")
         .arg("x86_64-unknown-none")
         .arg("--target-dir")
         .arg(&target_dir)
+        .arg("--no-default-features")
+        .arg("--features")
+        .arg("smm")
         .arg("--release")
         .arg("--")
         .arg("-C")
@@ -224,72 +213,28 @@ fn build_selected_smm_stage(
         .arg("-C")
         .arg("no-redzone=yes");
 
-    eprintln!("[fstart] building selected SMM stage: {package_label}...");
+    eprintln!(
+        "[fstart] building board SMM stage: {}...",
+        board_manifest.package
+    );
     let status = cmd
         .status()
         .map_err(|e| format!("failed to run cargo for SMM stage: {e}"))?;
     if !status.success() {
-        return Err("selected SMM stage build failed".to_string());
+        return Err("board SMM stage build failed".to_string());
     }
 
-    Ok(SelectedSmmStageBuild {
+    Ok(SmmStageBuild {
         archive_path: target_dir
             .join("x86_64-unknown-none")
             .join("release")
-            .join(format!("lib{}.a", package_label.replace('-', "_"))),
-        link_dir: wrapper_dir.join("link"),
+            .join(format!("lib{}.a", board_manifest.package.replace('-', "_"))),
+        link_dir: workspace_root
+            .join("target")
+            .join("smm")
+            .join(&board_manifest.board)
+            .join("link"),
     })
-}
-
-fn selected_smm_cargo_toml(
-    workspace_root: &Path,
-    board_manifest: &crate::board_manifest::BoardManifest,
-    package_label: &str,
-) -> String {
-    let board_path = path_for_toml(&board_manifest.dir);
-    let smm_stage_path = path_for_toml(&workspace_root.join("crates/fstart-smm-stage"));
-
-    format!(
-        r#"[package]
-name = "{package_label}"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[workspace]
-
-[dependencies]
-fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["smm"] }}
-fstart-smm-stage = {{ path = "{smm_stage_path}" }}
-
-[lib]
-crate-type = ["staticlib"]
-test = false
-path = "src/lib.rs"
-"#,
-        board_package = board_manifest.package,
-    )
-}
-
-fn selected_smm_lib_rs() -> &'static str {
-    r#"//! Generated selected-board SMM wrapper.
-
-#![no_std]
-#![no_main]
-
-use fstart_board_selected::Board;
-
-#[no_mangle]
-pub unsafe extern "C" fn fstart_smm_handler(params: *mut fstart_smm_stage::SmmEntryParams) {
-    // SAFETY: the SMM image trampoline provides the raw entry params.
-    unsafe { fstart_smm_stage::handle::<Board>(params) }
-}
-
-#[used]
-#[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
-static FSTART_SMM_KEEP: unsafe extern "C" fn(*mut fstart_smm_stage::SmmEntryParams) =
-    fstart_smm_handler;
-"#
 }
 
 fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
@@ -363,22 +308,23 @@ fn build_one_stage(
     std::fs::write(artifact_dir.join("metadata.txt"), metadata)
         .map_err(|e| format!("failed to write stage metadata: {e}"))?;
 
+    let features = if features.is_empty() {
+        "stage".to_string()
+    } else {
+        format!("stage,{features}")
+    };
+
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root);
     cmd.arg("build");
-    if let Some(manifest_path) = &stage_package.manifest_path {
-        cmd.arg("--manifest-path").arg(manifest_path);
-        cmd.env("CARGO_TARGET_DIR", workspace_root.join("target"));
-    } else {
-        cmd.arg("--package").arg(&stage_package.package_label);
-    }
+    cmd.arg("--package").arg(&stage_package.package_label);
     cmd.arg("--bin")
         .arg(stage_bin)
         .arg("--target")
         .arg(target)
         .arg("--no-default-features")
         .arg("--features")
-        .arg(features)
+        .arg(&features)
         .arg("-Z")
         .arg(format!("build-std={build_std}"));
 
@@ -387,6 +333,8 @@ fn build_one_stage(
     }
 
     let mut rustflags = crate::toolchain::rustflags_for_triple(target);
+    rustflags.push_str(" -Clink-arg=-T");
+    rustflags.push_str(&link_ld.display().to_string());
     // FSTART_EXTRA_RUSTFLAGS (if set) is appended — CI uses this for
     // -Dwarnings to catch generated-code regressions.
     if let Ok(extra) = std::env::var("FSTART_EXTRA_RUSTFLAGS") {
@@ -479,158 +427,17 @@ fn build_one_stage(
 }
 
 fn stage_package_build(
-    workspace_root: &Path,
+    _workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
-    config: &fstart_types::BoardConfig,
-    plan: &crate::build_plan::BuildPlan,
+    _config: &fstart_types::BoardConfig,
+    _plan: &crate::build_plan::BuildPlan,
 ) -> Result<StagePackageBuild, String> {
-    if let Some(stage_package) = &board_manifest.stage_package {
-        return Ok(StagePackageBuild {
-            package_label: stage_package.clone(),
-            manifest_path: None,
-        });
-    }
-
-    // The selected board crate owns its FirmwareBoard/StageRecipe binding.
-    // The tiny entry point is static fstart-stage source; the generated
-    // manifest only injects the selected board dependency and feature routing.
-    let _ = config;
-    let wrapper_dir = workspace_root
-        .join("target")
-        .join("fstart-build")
-        .join(&board_manifest.board)
-        .join("selected-stage");
-    fs::create_dir_all(&wrapper_dir)
-        .map_err(|e| format!("failed to create {}: {e}", wrapper_dir.display()))?;
-    write_if_changed(
-        &wrapper_dir.join("Cargo.toml"),
-        &selected_stage_cargo_toml(workspace_root, board_manifest, plan),
-    )?;
-    if let Ok(lockfile) = fs::read_to_string(workspace_root.join("Cargo.lock")) {
-        write_if_changed(&wrapper_dir.join("Cargo.lock"), &lockfile)?;
-    }
-
     Ok(StagePackageBuild {
-        package_label: format!("fstart-selected-stage-{}", board_manifest.board),
-        manifest_path: Some(wrapper_dir.join("Cargo.toml")),
+        package_label: board_manifest
+            .stage_package
+            .clone()
+            .unwrap_or_else(|| board_manifest.package.clone()),
     })
-}
-
-fn selected_stage_cargo_toml(
-    workspace_root: &Path,
-    board_manifest: &crate::board_manifest::BoardManifest,
-    plan: &crate::build_plan::BuildPlan,
-) -> String {
-    let board_path = path_for_toml(&board_manifest.dir);
-    let stage_path = path_for_toml(&workspace_root.join("crates/fstart-stage"));
-    let entry_path =
-        path_for_toml(&workspace_root.join("crates/fstart-stage/src/selected_main.rs"));
-
-    let board_features: std::collections::BTreeSet<String> =
-        board_feature_names(&board_manifest.dir.join("Cargo.toml"))
-            .into_iter()
-            .filter(|f| f != "default" && f != "stage")
-            .collect();
-    let plan_features: std::collections::BTreeSet<String> = plan
-        .stages
-        .iter()
-        .flat_map(|stage| stage.features.iter().map(str::to_owned))
-        .collect();
-
-    let mut feature_lines = String::new();
-    let mut all_features = std::collections::BTreeSet::new();
-    all_features.extend(board_features.iter().cloned());
-    all_features.extend(plan_features.iter().cloned());
-    for feature in &all_features {
-        let mut deps = Vec::new();
-        if board_features.contains(feature.as_str()) {
-            deps.push(format!("\"fstart-board-selected/{feature}\""));
-        }
-        if plan_features.contains(feature.as_str()) && selected_stage_runtime_feature(feature) {
-            deps.push(format!("\"fstart-stage/{feature}\""));
-        }
-        feature_lines.push_str(&format!("{feature} = [{}]\n", deps.join(", ")));
-    }
-
-    format!(
-        r#"[package]
-name = "fstart-selected-stage-{board}"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[workspace]
-
-[features]
-default = []
-{feature_lines}
-[dependencies]
-fstart-board-selected = {{ package = "{board_package}", path = "{board_path}", default-features = false, features = ["stage"] }}
-fstart-stage = {{ path = "{stage_path}" }}
-
-[[bin]]
-name = "fstart-stage"
-path = "{entry_path}"
-"#,
-        board = board_manifest.board,
-        board_package = board_manifest.package,
-    )
-}
-
-fn board_feature_names(manifest_path: &Path) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(manifest_path) else {
-        return Vec::new();
-    };
-    let mut names = Vec::new();
-    let mut in_features = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[features]" {
-            in_features = true;
-            continue;
-        }
-        if in_features && trimmed.starts_with('[') {
-            break;
-        }
-        if !in_features || trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((name, _)) = trimmed.split_once('=') {
-            names.push(name.trim().to_string());
-        }
-    }
-    names
-}
-
-fn selected_stage_runtime_feature(feature: &str) -> bool {
-    matches!(
-        feature,
-        "ffs"
-            | "ed25519"
-            | "sha2-digest"
-            | "sha3-digest"
-            | "lz4"
-            | "fit"
-            | "fdt"
-            | "handoff"
-            | "acpi"
-            | "crabefi"
-            | "x86_64"
-            | "x86-1g-pages"
-            | "x86-writable-page-tables"
-            | "x86-static-page-tables"
-    )
-}
-
-fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
-    if fs::read_to_string(path).is_ok_and(|existing| existing == content) {
-        return Ok(());
-    }
-    fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))
-}
-
-fn path_for_toml(path: &Path) -> String {
-    path.display().to_string().replace('\\', "\\\\")
 }
 
 /// Public wrapper for workspace root (used by other xtask modules).

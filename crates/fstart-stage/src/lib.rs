@@ -2,7 +2,7 @@
 //!
 //! Board crates expose a [`FirmwareBoard`] type whose [`StageRecipe`] owns the
 //! handwritten stage sequence. This crate provides shared anchor/allocation
-//! linkage and selected-board dispatch.
+//! linkage and board-owned entry dispatch.
 
 #![no_std]
 
@@ -89,4 +89,22 @@ pub trait StageRecipe<B: FirmwareBoard> {
 /// Dispatch to the selected board's recipe.
 pub fn run_board<B: FirmwareBoard>(stage: StageKind, handoff: usize) -> ! {
     <B::Recipe as StageRecipe<B>>::run(stage, handoff)
+}
+
+/// Declare a board-owned stage entry binary.
+#[macro_export]
+macro_rules! stage_bin {
+    ($board:ty) => {
+        #[no_mangle]
+        pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
+            $crate::run_board::<$board>(
+                $crate::StageKind::from_option(option_env!("FSTART_STAGE_NAME")),
+                handoff_ptr,
+            )
+        }
+
+        #[used]
+        #[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+        static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+    };
 }

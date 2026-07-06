@@ -514,6 +514,7 @@ dependencies = [
  "fstart-smbios",
  "fstart-smm-runtime",
  "fstart-smm-stage",
+ "fstart-stage",
  "fstart-superio",
  "fstart-types",
 ]

@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [package.metadata.fstart]
 board = "lenovo-x61"
 platform = "x86_64"
@@ -21,14 +24,27 @@ features = [
 [features]
 default = []
 runtime = []
-crabefi = ["fstart-platform-intel-gm965-ich8/crabefi"]
+crabefi = ["fstart-platform-intel-gm965-ich8/crabefi", "fstart-stage?/crabefi"]
 stage = [
   "runtime",
   "dep:fstart-driver-intel-ich8",
   "dep:fstart-driver-ns16550",
   "dep:fstart-platform-x86_64",
+  "dep:fstart-stage",
   "fstart-platform-intel-gm965-ich8/recipe",
 ]
+x86_64 = ["fstart-stage?/x86_64"]
+x86-static-page-tables = ["fstart-stage?/x86-static-page-tables"]
+x86-writable-page-tables = ["fstart-stage?/x86-writable-page-tables"]
+x86-1g-pages = ["fstart-stage?/x86-1g-pages"]
+ffs = ["fstart-stage?/ffs"]
+ed25519 = ["fstart-stage?/ed25519"]
+sha2-digest = ["fstart-stage?/sha2-digest"]
+sha3-digest = ["fstart-stage?/sha3-digest"]
+lz4 = ["fstart-stage?/lz4"]
+fit = ["fstart-stage?/fit"]
+fdt = ["fstart-stage?/fdt"]
+handoff = ["fstart-stage?/handoff"]
 intel-gm965 = []
 intel-ich8 = ["dep:fstart-driver-intel-ich8"]
 nsc-pc87382 = []
@@ -37,6 +53,7 @@ i2c-ck505 = []
 acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
+  "fstart-stage?/acpi",
   "fstart-platform-intel-gm965-ich8/acpi",
   "dep:fstart-mp",
   "fstart-driver-intel-gm965/acpi",
@@ -74,3 +91,9 @@ fstart-mp = { workspace = true, optional = true }
 fstart-smbios = { workspace = true }
 fstart-smm-runtime = { workspace = true, optional = true }
 fstart-smm-stage = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+required-features = ["stage"]
