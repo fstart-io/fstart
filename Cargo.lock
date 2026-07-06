@@ -804,6 +804,7 @@ dependencies = [
  "fstart-types",
  "heapless",
  "konst",
+ "serde",
  "ufmt",
 ]
 

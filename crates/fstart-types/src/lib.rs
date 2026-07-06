@@ -29,11 +29,7 @@ pub use board::{
     BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FirmwareKind,
     FitParseMode, PayloadConfig, PayloadKind, Platform, SocImageFormat,
 };
-pub use builder::{
-    dev_security_config, hstr, hvec, x86_linuxboot_payload, x86_uefi_payload, BusChild,
-    DeviceBranch, DeviceTopology, I2cChild, LpcChild, PciChild, SmbusChild, SpiChild,
-    TopologyChild,
-};
+pub use builder::{dev_security_config, hstr, hvec, x86_linuxboot_payload, x86_uefi_payload};
 pub use const_vec::ConstVec;
 pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode, DeviceRole};
 pub use ffs::{
@@ -53,7 +49,5 @@ pub use stage::{
     StageLayout, TempRamBuffer,
 };
 pub use typed::{
-    i2c_child, io16, lpc_child, mmio32, pci_child, spi_child, BusKind, BusPortId, ChildAttachment,
-    DeviceEdge, I2cBus, Io16, Io8, IoAddr, Irq, LpcBus, Mmio16, Mmio32, Mmio64, Mmio8, MmioAddr,
-    PciBdf, PciBus, PnpBus, SimpleBus, SmbusBus, SpiBus, TypedBus,
+    io16, mmio32, Io16, Io8, IoAddr, Irq, Mmio16, Mmio32, Mmio64, Mmio8, MmioAddr, PciBdf,
 };

@@ -34,4 +34,5 @@ fstart-platform-x86_64 = { workspace = true, optional = true }
 fstart-stage = { workspace = true, optional = true }
 heapless = { workspace = true }
 konst = { workspace = true }
+serde = { workspace = true }
 ufmt = { workspace = true, optional = true }

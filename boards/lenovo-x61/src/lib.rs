@@ -9,7 +9,7 @@ pub mod smm;
 #[cfg(feature = "stage")]
 mod stage;
 
-/// Lenovo ThinkPad X61 board marker selected by generated stage wrappers.
+/// Lenovo ThinkPad X61 board marker selected by the board-owned stage entry.
 pub struct Board;
 
 pub use config::*;

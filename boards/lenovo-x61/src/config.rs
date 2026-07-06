@@ -15,8 +15,8 @@ use fstart_types::smbios::{
 };
 use fstart_types::{
     dev_security_config, hstr, hvec, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig,
-    FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform, SmbiosConfig,
-    SmmConfig,
+    DeviceConfig, DeviceRole, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion,
+    IntelIfdRegionConfig, Platform, SmbiosConfig, SmmConfig,
 };
 
 pub const BOARD_NAME: &str = "lenovo-x61";
@@ -87,13 +87,22 @@ pub static X61_PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
 #[must_use]
 pub fn board_config() -> BoardConfig {
     let flash_layout = x61_flash_layout();
+    let mut devices = gm965_ich8_topology(&X61_PLATFORM);
+    devices
+        .push(DeviceConfig {
+            name: hstr(MAINBOARD_NODE),
+            parent: None,
+            bus: None,
+            role: DeviceRole::Runtime,
+            enabled: true,
+        })
+        .expect("X61 device table capacity");
+
     BoardConfig {
         name: hstr(BOARD_NAME),
         platform: PLATFORM,
         memory: gm965_ich8_memory(Some(flash_layout)),
-        devices: gm965_ich8_topology(&X61_PLATFORM)
-            .runtime_root(MAINBOARD_NODE, true)
-            .build(),
+        devices,
         stages: gm965_ich8_stages(),
         security: dev_security_config("keys/dev-signing.pub"),
         payload: None,

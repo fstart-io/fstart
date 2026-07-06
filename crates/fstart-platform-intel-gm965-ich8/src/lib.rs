@@ -33,12 +33,13 @@ pub use fstart_stage::{
 };
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
-    hstr, hvec, BootMedium, Capability, CarConfig, Compression, DeviceRole, DeviceTopology,
-    FlashLayout, MemoryMap, MemoryRegion, RegionKind, RunsFrom, StageConfig, StageLayout,
-    TempRamBuffer,
+    hstr, hvec, BootMedium, BusAddress, Capability, CarConfig, Compression, ConstVec, DeviceConfig,
+    DeviceRole, FlashLayout, MemoryMap, MemoryRegion, RegionKind, RunsFrom, StageConfig,
+    StageLayout, TempRamBuffer,
 };
 #[cfg(feature = "recipe")]
 pub use recipe::{Gm965Ich8Hooks, Gm965Ich8Mainstage, Gm965Ich8Recipe, Gm965Ich8StageBoard};
+use serde::Serialize;
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const ICH8_SOUTHBRIDGE_NODE: &str = "southbridge";
@@ -48,47 +49,106 @@ pub const GM965_BOOTBLOCK_LOAD_ADDR: u64 = 0xffff_ffff;
 pub const GM965_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
 pub const GM965_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
 pub const GM965_NEXT_STAGE_NAME: &str = "ramstage";
+pub const GM965_MCHBAR: u64 = 0xFED1_4000;
+pub const GM965_DMIBAR: u64 = 0xFED1_8000;
+pub const GM965_EPBAR: u64 = 0xFED1_9000;
+pub const GM965_ECAM_BASE: u64 = 0xE000_0000;
+pub const GM965_ECAM_BUSES: u16 = 64;
+pub const ICH8_RCBA: u64 = 0xFED1_C000;
 pub const ICH8_PMBASE: u32 = 0x0500;
+pub const ICH8_SMBUS_BASE: u16 = 0x0400;
 
 /// Closed GM965/ICH8 chipset policy consumed by fixed stage code.
 ///
-/// Board-attached devices stay in board hooks/code; this only carries fields
-/// the GM965/ICH8 drivers program directly.
-#[derive(Debug, Clone, Copy)]
+/// Board-attached devices stay in board hooks/code; fixed chipset windows
+/// (MCHBAR/DMIBAR/EPBAR/RCBA/SMBus base) are platform constants.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Gm965Ich8Config {
-    pub northbridge: gm965::IntelGm965Config,
-    pub southbridge: ich8::IntelIch8Config,
+    pub igd: gm965::Gm965IgdConfig,
+    pub enable_peg: bool,
+    pub pcie_ports: [bool; 6],
+    pub lpc_decode: LpcDecodeConfig,
+    pub gpe0_en: u32,
+    pub gpi_routing: [u8; 16],
+    pub ide: Option<IdeConfig>,
+    pub sata: Option<SataConfig>,
+    pub usb: Option<UsbConfig>,
+    pub hda: Option<HdaConfig>,
+    pub io_traps: ConstVec<IoTrapConfig, 4>,
+    pub gpio: gpio::GpioConfig,
 }
 
 impl Gm965Ich8Config {
     #[must_use]
     pub const fn new() -> Self {
-        let mut southbridge = ich8::IntelIch8Config::new();
-        southbridge.pcie_ports = [false; 6];
         Self {
-            northbridge: gm965::IntelGm965Config::new(),
-            southbridge,
+            igd: gm965::Gm965IgdConfig::new(),
+            enable_peg: false,
+            pcie_ports: [false; 6],
+            lpc_decode: LpcDecodeConfig::new(),
+            gpe0_en: 0,
+            gpi_routing: [0; 16],
+            ide: None,
+            sata: None,
+            usb: None,
+            hda: None,
+            io_traps: ConstVec::new(empty_io_trap()),
+            gpio: gpio::GpioConfig::new(),
         }
     }
 
     #[must_use]
+    pub const fn northbridge_config(self) -> gm965::IntelGm965Config {
+        let mut config = gm965::IntelGm965Config::new();
+        config.mchbar = GM965_MCHBAR;
+        config.dmibar = GM965_DMIBAR;
+        config.epbar = GM965_EPBAR;
+        config.ecam_base = GM965_ECAM_BASE;
+        config.ecam_buses = GM965_ECAM_BUSES;
+        config.enable_peg = self.enable_peg;
+        config.igd = self.igd;
+        config.smbus_base = ICH8_SMBUS_BASE;
+        config
+    }
+
+    #[must_use]
+    pub const fn southbridge_config(self) -> ich8::IntelIch8Config {
+        let mut config = ich8::IntelIch8Config::new();
+        config.rcba = ICH8_RCBA;
+        config.dmibar = GM965_DMIBAR;
+        config.gpe0_en = self.gpe0_en;
+        config.gpi_routing = self.gpi_routing;
+        config.lpc_decode = self.lpc_decode;
+        config.hda = self.hda;
+        config.ide = self.ide;
+        config.sata = self.sata;
+        config.usb = self.usb;
+        config.pcie_ports = self.pcie_ports;
+        config.io_traps = self.io_traps;
+        config.smbus_base = ICH8_SMBUS_BASE;
+        config.gpio = self.gpio;
+        config
+    }
+
+    #[must_use]
     pub const fn igd(mut self, igd: gm965::Gm965IgdConfig) -> Self {
-        self.northbridge.igd = igd;
+        self.igd = igd;
         self
     }
 
     #[must_use]
     pub const fn pcie_port(mut self, port_index: usize, enabled: bool) -> Self {
-        if port_index >= self.southbridge.pcie_ports.len() {
+        if port_index >= self.pcie_ports.len() {
             panic!("ICH8 PCIe port index out of range");
         }
-        self.southbridge.pcie_ports[port_index] = enabled;
+        self.pcie_ports[port_index] = enabled;
         self
     }
 
     #[must_use]
     pub const fn lpc_fixed_io(mut self, fixed_io: LpcFixedIoDecode) -> Self {
-        self.southbridge.lpc_decode.fixed_io = fixed_io;
+        self.lpc_decode.fixed_io = fixed_io;
         self
     }
 
@@ -96,8 +156,7 @@ impl Gm965Ich8Config {
     pub const fn lpc_generic_io<const N: usize>(mut self, ranges: [LpcGenericIoDecode; N]) -> Self {
         let mut idx = 0;
         while idx < N {
-            self.southbridge.lpc_decode.generic_io =
-                self.southbridge.lpc_decode.generic_io.push(ranges[idx]);
+            self.lpc_decode.generic_io = self.lpc_decode.generic_io.push(ranges[idx]);
             idx += 1;
         }
         self
@@ -105,31 +164,31 @@ impl Gm965Ich8Config {
 
     #[must_use]
     pub const fn gpe0_en(mut self, value: u32) -> Self {
-        self.southbridge.gpe0_en = value;
+        self.gpe0_en = value;
         self
     }
 
     #[must_use]
     pub const fn gpi_routing(mut self, routing: [u8; 16]) -> Self {
-        self.southbridge.gpi_routing = routing;
+        self.gpi_routing = routing;
         self
     }
 
     #[must_use]
     pub const fn ide(mut self, ide: IdeConfig) -> Self {
-        self.southbridge.ide = Some(ide);
+        self.ide = Some(ide);
         self
     }
 
     #[must_use]
     pub const fn sata(mut self, sata: SataConfig) -> Self {
-        self.southbridge.sata = Some(sata);
+        self.sata = Some(sata);
         self
     }
 
     #[must_use]
     pub const fn usb(mut self, usb: UsbConfig) -> Self {
-        self.southbridge.usb = Some(usb);
+        self.usb = Some(usb);
         self
     }
 
@@ -137,7 +196,7 @@ impl Gm965Ich8Config {
     pub const fn io_traps<const N: usize>(mut self, traps: [IoTrapConfig; N]) -> Self {
         let mut idx = 0;
         while idx < N {
-            self.southbridge.io_traps = self.southbridge.io_traps.push(traps[idx]);
+            self.io_traps = self.io_traps.push(traps[idx]);
             idx += 1;
         }
         self
@@ -147,7 +206,7 @@ impl Gm965Ich8Config {
     pub const fn gpio_pins<const N: usize>(mut self, pins: [gpio::GpioPin; N]) -> Self {
         let mut idx = 0;
         while idx < N {
-            self.southbridge.gpio.pins = self.southbridge.gpio.pins.push(pins[idx]);
+            self.gpio.pins = self.gpio.pins.push(pins[idx]);
             idx += 1;
         }
         self
@@ -174,32 +233,39 @@ impl Gm965Ich8Config {
             idx += 1;
         }
 
-        let mut hda = match self.southbridge.hda {
+        let mut hda = match self.hda {
             Some(hda) => hda,
             None => HdaConfig::new(),
         };
         hda = hda.verb(table);
-        self.southbridge.hda = Some(hda);
+        self.hda = Some(hda);
         self
     }
 
     #[must_use]
     pub const fn build(self) -> Self {
-        if self.southbridge.lpc_decode.fixed_io.com_a as u8
-            == self.southbridge.lpc_decode.fixed_io.com_b as u8
-        {
+        if self.lpc_decode.fixed_io.com_a as u8 == self.lpc_decode.fixed_io.com_b as u8 {
             panic!("ICH8 COMA and COMB decode the same port");
         }
-        if let Some(sata) = self.southbridge.sata {
+        if let Some(sata) = self.sata {
             if sata.ports == 0 {
                 panic!("ICH8 SATA enabled with no ports");
             }
         }
 
-        validate_lpc_generic_io_decodes(&self.southbridge.lpc_decode.generic_io);
-        validate_io_traps(&self.southbridge.io_traps);
+        validate_lpc_generic_io_decodes(&self.lpc_decode.generic_io);
+        validate_io_traps(&self.io_traps);
 
         self
+    }
+}
+
+const fn empty_io_trap() -> IoTrapConfig {
+    IoTrapConfig {
+        index: 0,
+        base: 0,
+        size: 0,
+        access: IoTrapAccess::Any,
     }
 }
 
@@ -265,24 +331,55 @@ impl Gm965Ich8AcpiContext {
     }
 }
 
-pub fn gm965_ich8_topology(config: &Gm965Ich8Config) -> DeviceTopology {
-    let mut topology = DeviceTopology::new()
-        .root(GM965_NORTHBRIDGE_NODE)
-        .root(ICH8_SOUTHBRIDGE_NODE);
+pub fn gm965_ich8_topology(config: &Gm965Ich8Config) -> heapless::Vec<DeviceConfig, 32> {
+    let mut devices = hvec([
+        DeviceConfig {
+            name: hstr(GM965_NORTHBRIDGE_NODE),
+            parent: None,
+            bus: None,
+            role: DeviceRole::Runtime,
+            enabled: true,
+        },
+        DeviceConfig {
+            name: hstr(ICH8_SOUTHBRIDGE_NODE),
+            parent: None,
+            bus: None,
+            role: DeviceRole::Runtime,
+            enabled: true,
+        },
+    ]);
 
-    for (idx, enabled) in config.southbridge.pcie_ports.iter().copied().enumerate() {
-        topology = topology.pci_bridge(
-            ICH8_SOUTHBRIDGE_NODE,
-            PCIE_ROOT_PORTS[idx],
-            0x1c,
-            idx as u8,
-            enabled,
-        );
+    for (idx, enabled) in config.pcie_ports.iter().copied().enumerate() {
+        devices
+            .push(DeviceConfig {
+                name: hstr(PCIE_ROOT_PORTS[idx]),
+                parent: Some(hstr(ICH8_SOUTHBRIDGE_NODE)),
+                bus: Some(BusAddress::Pci(0x1c, idx as u8)),
+                role: DeviceRole::PciBridge,
+                enabled,
+            })
+            .expect("GM965/ICH8 device table capacity");
     }
 
-    topology
-        .child_bus(ICH8_SOUTHBRIDGE_NODE, ICH8_LPC_BUS_NODE, DeviceRole::LpcBus)
-        .child_bus(ICH8_SOUTHBRIDGE_NODE, ICH8_SMBUS_NODE, DeviceRole::SmBus)
+    devices
+        .push(DeviceConfig {
+            name: hstr(ICH8_LPC_BUS_NODE),
+            parent: Some(hstr(ICH8_SOUTHBRIDGE_NODE)),
+            bus: None,
+            role: DeviceRole::LpcBus,
+            enabled: true,
+        })
+        .expect("GM965/ICH8 device table capacity");
+    devices
+        .push(DeviceConfig {
+            name: hstr(ICH8_SMBUS_NODE),
+            parent: Some(hstr(ICH8_SOUTHBRIDGE_NODE)),
+            bus: None,
+            role: DeviceRole::SmBus,
+            enabled: true,
+        })
+        .expect("GM965/ICH8 device table capacity");
+    devices
 }
 
 const PCIE_ROOT_PORTS: [&str; 6] = ["pcie1", "pcie2", "pcie3", "pcie4", "pcie5", "pcie6"];

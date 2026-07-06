@@ -110,10 +110,10 @@ where
     let Ok((firmware_base, firmware_size)) = firmware_window::<B>() else {
         B::halt();
     };
-    let Ok(mut northbridge) = IntelGm965::new(config.northbridge) else {
+    let Ok(mut northbridge) = IntelGm965::new(config.northbridge_config()) else {
         B::halt();
     };
-    let Ok(mut southbridge) = IntelIch8::new(config.southbridge) else {
+    let Ok(mut southbridge) = IntelIch8::new(config.southbridge_config()) else {
         B::halt();
     };
     let Ok(mut hooks) = B::hooks() else {
@@ -178,9 +178,9 @@ where
         let config = B::config();
         let (firmware_base, firmware_size) = firmware_window::<B>()?;
         Ok(Self {
-            northbridge: IntelGm965::new(config.northbridge)
+            northbridge: IntelGm965::new(config.northbridge_config())
                 .map_err(|_| ServiceError::HardwareError)?,
-            southbridge: IntelIch8::new(config.southbridge)
+            southbridge: IntelIch8::new(config.southbridge_config())
                 .map_err(|_| ServiceError::HardwareError)?,
             hooks: B::hooks()?,
             console: Ns16550::new(B::console_config()).map_err(|_| ServiceError::HardwareError)?,
