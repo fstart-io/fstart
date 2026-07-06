@@ -120,7 +120,11 @@ pub const fn board_name() -> &'static str {
 }
 
 pub fn x61_flash_layout() -> FlashLayout {
-    FlashLayout::IntelIfd(IntelIfdFlashLayout {
+    FlashLayout::IntelIfd(x61_ifd_flash_layout())
+}
+
+pub fn x61_ifd_flash_layout() -> IntelIfdFlashLayout {
+    IntelIfdFlashLayout {
         base: 0xFFC0_0000,
         size: 0x0040_0000,
         regions: hvec([
@@ -149,7 +153,7 @@ pub fn x61_flash_layout() -> FlashLayout {
                 file: None,
             },
         ]),
-    })
+    }
 }
 
 pub fn x61_smbios() -> SmbiosConfig {

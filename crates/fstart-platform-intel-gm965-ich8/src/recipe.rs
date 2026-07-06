@@ -7,11 +7,10 @@ use fstart_driver_intel_ich8::IntelIch8;
 use fstart_driver_ns16550::{Ns16550, Ns16550Config};
 use fstart_services::memory_detect::{E820Entry, MemoryDetector, MAX_E820_ENTRIES};
 use fstart_services::{MemoryController, PciRootBus, ServiceError};
-#[cfg(feature = "crabefi")]
-use fstart_stage::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 use fstart_stage::fixed_helpers::MemoryMappedFfs;
+use fstart_stage::payload::MainstagePayload;
 #[cfg(feature = "crabefi")]
-use fstart_stage::fixed_helpers::MemoryMappedUefiBoot;
+use fstart_stage::payload::X86UefiPayloadContext;
 use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
 
 use crate::{
@@ -30,14 +29,7 @@ where
         if stage.is_named("bootblock") {
             run_gm965_ich8_bootblock::<B>()
         } else if stage.is_named(GM965_NEXT_STAGE_NAME) {
-            #[cfg(feature = "crabefi")]
-            {
-                run_gm965_ich8_mainstage::<B>()
-            }
-            #[cfg(not(feature = "crabefi"))]
-            {
-                B::halt()
-            }
+            run_gm965_ich8_mainstage::<B>()
         } else {
             B::halt()
         }
@@ -47,8 +39,10 @@ where
 /// Board facts and hooks required by the GM965/ICH8 recipe.
 pub trait Gm965Ich8StageBoard: FirmwareBoard<Recipe = Gm965Ich8Recipe<Self>> {
     type Hooks: Gm965Ich8Hooks;
+    type Payload: MainstagePayload<Gm965Ich8Mainstage<Self>>;
 
     fn config() -> &'static Gm965Ich8Config;
+    fn ifd_flash_layout() -> fstart_types::IntelIfdFlashLayout;
     fn hooks() -> Result<Self::Hooks, ServiceError>;
     fn console_config() -> Ns16550Config;
     fn console_node() -> &'static str;
@@ -63,6 +57,23 @@ pub trait Gm965Ich8StageBoard: FirmwareBoard<Recipe = Gm965Ich8Recipe<Self>> {
     }
 
     fn prepare_smbios() {}
+}
+
+fn firmware_window<B>() -> Result<(u64, usize), ServiceError>
+where
+    B: Gm965Ich8StageBoard,
+{
+    let layout = B::ifd_flash_layout();
+    let Some(bios) = layout.bios_region() else {
+        return Err(ServiceError::NotInitialized);
+    };
+    if bios.size == 0 {
+        return Err(ServiceError::NotInitialized);
+    }
+    let Some(base) = layout.base.checked_add(u64::from(bios.offset)) else {
+        return Err(ServiceError::NotInitialized);
+    };
+    Ok((base, bios.size as usize))
 }
 
 /// Board hooks at the fixed GM965/ICH8 flow seams. All methods default to
@@ -96,6 +107,9 @@ where
     B: Gm965Ich8StageBoard,
 {
     let config = B::config();
+    let Ok((firmware_base, firmware_size)) = firmware_window::<B>() else {
+        B::halt();
+    };
     let Ok(mut northbridge) = IntelGm965::new(config.northbridge) else {
         B::halt();
     };
@@ -105,7 +119,7 @@ where
     let Ok(mut hooks) = B::hooks() else {
         B::halt();
     };
-    let ffs = MemoryMappedFfs::new(config.firmware_base, config.firmware_size);
+    let ffs = MemoryMappedFfs::new(firmware_base, firmware_size);
 
     if northbridge.pre_console_init().is_err()
         || southbridge.pre_console_init().is_err()
@@ -150,9 +164,10 @@ pub struct Gm965Ich8Mainstage<B: Gm965Ich8StageBoard> {
     e820_count: usize,
     total_ram: u64,
     acpi_rsdp: Option<u64>,
+    firmware_base: u64,
+    firmware_size: usize,
 }
 
-#[cfg_attr(not(feature = "crabefi"), allow(dead_code))]
 impl<B> Gm965Ich8Mainstage<B>
 where
     B: Gm965Ich8StageBoard,
@@ -161,6 +176,7 @@ where
     /// is touched; construction failures are config errors.
     fn bind() -> Result<Self, ServiceError> {
         let config = B::config();
+        let (firmware_base, firmware_size) = firmware_window::<B>()?;
         Ok(Self {
             northbridge: IntelGm965::new(config.northbridge)
                 .map_err(|_| ServiceError::HardwareError)?,
@@ -172,6 +188,8 @@ where
             e820_count: 0,
             total_ram: 0,
             acpi_rsdp: None,
+            firmware_base,
+            firmware_size,
         })
     }
 
@@ -190,11 +208,13 @@ where
         Gm965Ich8AcpiContext
     }
 
-    fn e820(&self) -> &[E820Entry] {
+    #[must_use]
+    pub fn e820(&self) -> &[E820Entry] {
         &self.e820[..self.e820_count]
     }
 
-    fn acpi_rsdp(&self) -> Option<u64> {
+    #[must_use]
+    pub const fn acpi_rsdp(&self) -> Option<u64> {
         self.acpi_rsdp
     }
 
@@ -267,7 +287,6 @@ where
 }
 
 /// Handwritten fixed GM965/ICH8 mainstage flow. Ordering is this function.
-#[cfg(feature = "crabefi")]
 fn run_gm965_ich8_mainstage<B>() -> !
 where
     B: Gm965Ich8StageBoard,
@@ -275,24 +294,22 @@ where
     let Ok(mut mainstage) = Gm965Ich8Mainstage::<B>::bind() else {
         B::halt();
     };
-    let config = B::config();
-    let boot = MemoryMappedUefiBoot::new(config.firmware_base, config.firmware_size, 0);
+    let boot_media = MemoryMappedFfs::new(mainstage.firmware_base, mainstage.firmware_size);
     run_mainstage_phase::<B>("pre_bus_scan", || mainstage.pre_bus_scan());
     run_mainstage_phase::<B>("bus_scan", || mainstage.bus_scan());
     run_mainstage_phase::<B>("init_devices", || mainstage.init_devices());
     run_mainstage_phase::<B>("mount_boot_media", || {
         fstart_platform_x86_64::enable_boot_media_rom_cache();
-        boot.mount()?;
+        boot_media.mount()?;
         mainstage.northbridge.stage_local_init()
     });
-    run_mainstage_phase::<B>("verify_boot_media", || boot.verify());
+    run_mainstage_phase::<B>("verify_boot_media", || boot_media.verify());
     run_mainstage_phase::<B>("emit_tables", || mainstage.emit_tables());
     run_mainstage_phase::<B>("finalize", || mainstage.finalize());
 
-    boot_gm965_ich8_payload::<B>(mainstage)
+    B::Payload::boot(mainstage)
 }
 
-#[cfg(feature = "crabefi")]
 fn run_mainstage_phase<B>(name: &str, phase: impl FnOnce() -> Result<(), ServiceError>)
 where
     B: Gm965Ich8StageBoard,
@@ -304,46 +321,28 @@ where
     }
 }
 
-/// Boot: launch the build-selected payload (CrabEFI via the `crabefi`
-/// feature). Payload choice is a build input, never board identity.
 #[cfg(feature = "crabefi")]
-fn boot_gm965_ich8_payload<B>(devices: Gm965Ich8Mainstage<B>) -> !
+impl<B> X86UefiPayloadContext for Gm965Ich8Mainstage<B>
 where
     B: Gm965Ich8StageBoard,
 {
-    let console = &devices.console;
-    let acpi_base = devices.acpi_rsdp().unwrap_or(0) & !0xfff;
-    let config = B::config();
-    let platform_entries = [
-        MemoryRegion {
-            base: config.firmware_base,
-            size: config.firmware_size as u64,
-            region_type: MemoryType::RuntimeServicesCode,
-        },
-        MemoryRegion {
-            base: acpi_base,
-            size: 0x10000,
-            region_type: MemoryType::AcpiReclaimable,
-        },
-    ];
+    fn console(&self) -> Option<&dyn fstart_services::Console> {
+        Some(&self.console)
+    }
 
-    fstart_log::info!(
-        "launching CrabEFI: ram={} MiB, rsdp={:#x}, ecam={:#x}",
-        (devices.total_ram >> 20) as u32,
-        devices.acpi_rsdp().unwrap_or(0),
-        devices.northbridge.config().ecam_base,
-    );
-    fstart_stage::crabefi::launch_x86_uefi(
-        UefiLaunchConfig {
-            console: Some(console),
-            framebuffer: None,
-            acpi_rsdp: devices.acpi_rsdp(),
-            smbios: None,
-            fdt: None,
-            ecam_base: Some(devices.northbridge.config().ecam_base),
-            runtime_region: Some(fstart_stage::crabefi::compute_runtime_region()),
-        },
-        devices.e820(),
-        &platform_entries,
-    )
+    fn e820(&self) -> &[E820Entry] {
+        self.e820()
+    }
+
+    fn firmware_region(&self) -> (u64, u64) {
+        (self.firmware_base, self.firmware_size as u64)
+    }
+
+    fn acpi_rsdp(&self) -> Option<u64> {
+        self.acpi_rsdp()
+    }
+
+    fn ecam_base(&self) -> Option<u64> {
+        Some(self.northbridge.config().ecam_base)
+    }
 }

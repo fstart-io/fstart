@@ -12,6 +12,10 @@ use fstart_platform_intel_gm965_ich8::ICH8_PMBASE;
 use fstart_platform_intel_gm965_ich8::{
     FirmwareBoard, Gm965Ich8Config, Gm965Ich8Recipe, Gm965Ich8StageBoard,
 };
+#[cfg(not(feature = "crabefi"))]
+use fstart_platform_intel_gm965_ich8::HaltPayload;
+#[cfg(feature = "crabefi")]
+use fstart_platform_intel_gm965_ich8::X86UefiPayload;
 use fstart_services::ServiceError;
 
 use crate::{Board, X61Mainboard};
@@ -25,9 +29,17 @@ impl FirmwareBoard for Board {
 
 impl Gm965Ich8StageBoard for Board {
     type Hooks = X61Mainboard;
+    #[cfg(not(feature = "crabefi"))]
+    type Payload = HaltPayload;
+    #[cfg(feature = "crabefi")]
+    type Payload = X86UefiPayload;
 
     fn config() -> &'static Gm965Ich8Config {
         &crate::X61_PLATFORM
+    }
+
+    fn ifd_flash_layout() -> fstart_types::IntelIfdFlashLayout {
+        crate::x61_ifd_flash_layout()
     }
 
     fn hooks() -> Result<Self::Hooks, ServiceError> {

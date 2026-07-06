@@ -25,6 +25,7 @@ extern crate fstart_platform_x86_64;
 pub extern crate fstart_crabefi as crabefi;
 
 pub mod fixed_helpers;
+pub mod payload;
 
 /// Fixed FFS anchor placeholder for handwritten stage flow.
 ///

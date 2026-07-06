@@ -25,7 +25,12 @@ pub use fstart_driver_intel_ich8::{
 };
 use fstart_gpio_ich as gpio;
 #[cfg(feature = "recipe")]
-pub use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
+pub use fstart_stage::{
+    payload::{HaltPayload, MainstagePayload},
+    FirmwareBoard, StageKind, StageRecipe,
+};
+#[cfg(all(feature = "recipe", feature = "crabefi"))]
+pub use fstart_stage::payload::X86UefiPayload;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
     hstr, hvec, BootMedium, Capability, CarConfig, Compression, DeviceRole, DeviceTopology,
@@ -39,8 +44,6 @@ pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const ICH8_SOUTHBRIDGE_NODE: &str = "southbridge";
 pub const ICH8_LPC_BUS_NODE: &str = "lpc";
 pub const ICH8_SMBUS_NODE: &str = "smbus";
-pub const GM965_DEFAULT_FIRMWARE_BASE: u64 = 0xFFE8_0000;
-pub const GM965_DEFAULT_FIRMWARE_SIZE: usize = 0x0018_0000;
 pub const GM965_BOOTBLOCK_LOAD_ADDR: u64 = 0xffff_ffff;
 pub const GM965_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
 pub const GM965_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
@@ -55,8 +58,6 @@ pub const ICH8_PMBASE: u32 = 0x0500;
 pub struct Gm965Ich8Config {
     pub northbridge: gm965::IntelGm965Config,
     pub southbridge: ich8::IntelIch8Config,
-    pub firmware_base: u64,
-    pub firmware_size: usize,
 }
 
 impl Gm965Ich8Config {
@@ -67,16 +68,7 @@ impl Gm965Ich8Config {
         Self {
             northbridge: gm965::IntelGm965Config::new(),
             southbridge,
-            firmware_base: GM965_DEFAULT_FIRMWARE_BASE,
-            firmware_size: GM965_DEFAULT_FIRMWARE_SIZE,
         }
-    }
-
-    #[must_use]
-    pub const fn firmware_window(mut self, base: u64, size: usize) -> Self {
-        self.firmware_base = base;
-        self.firmware_size = size;
-        self
     }
 
     #[must_use]
@@ -193,14 +185,6 @@ impl Gm965Ich8Config {
 
     #[must_use]
     pub const fn build(self) -> Self {
-        if self.firmware_size == 0
-            || self
-                .firmware_base
-                .checked_add(self.firmware_size as u64)
-                .is_none()
-        {
-            panic!("GM965/ICH8 firmware window is invalid");
-        }
         if self.southbridge.lpc_decode.fixed_io.com_a as u8
             == self.southbridge.lpc_decode.fixed_io.com_b as u8
         {

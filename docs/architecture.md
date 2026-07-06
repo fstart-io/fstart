@@ -169,16 +169,21 @@ assign_resources               # BARs, windows, IRQ routing
 init_devices                   # what the selected boot mode needs
 emit_tables                    # ACPI/FDT/SMBIOS, mostly from drivers
 finalize                       # lock/quiesce
-boot                           # selected by fbuild: CrabEFI, FIT/Linux, direct
+boot                           # calls the build-selected payload launcher
 ```
 
 The trait is small and phase-oriented (`bind`, `pre_bus_scan`, `init`,
 `emit_tables`, `finalize`). `MainstageCtx` owns real shared state (memory map,
-resource allocator, PCI state, firmware volume, table builders, payload
-state), not an event log and not a service locator. Fixed platform devices are
-driven by typed config: the ICH SATA function uses the ICH SATA driver because
-the platform config says so; PCI scan confirms presence and fills in BARs.
-Dynamic driver matching is reserved for plug-in devices.
+resource allocator, PCI state, firmware volume, table builders), not an event
+log and not a service locator. Fixed platform devices are driven by typed
+config: the ICH SATA function uses the ICH SATA driver because the platform
+config says so; PCI scan confirms presence and fills in BARs. Dynamic driver
+matching is reserved for plug-in devices.
+
+Payload launch is a separate abstraction selected by the build, not by the
+platform recipe. The same mainstage flow can end in CrabEFI, FIT/Linux, direct
+ELF, or a halt/test launcher; payload code consumes a small context exported by
+mainstage instead of being `cfg(feature = "crabefi")` around mainstage itself.
 
 Table generation lives close to driver code: a driver emits the standard
 ACPI/FDT fragments for its own hardware; board-specific fragments stay in
@@ -385,8 +390,10 @@ the repo's 77 crates. Everything else leaves the workspace first.
    models. This proves config-as-data on real chipset code. Payload-flavored
    recipe names (`Gm965Ich8UefiRecipe`, `stage-recipe = "gm965-ich8-uefi"`)
    die here too: the family flow is payload-agnostic; boot mode and payload
-   inputs are CLI selections. Also migrate SMM to the selected-board wrapper
-   flow: today `fstart-smm-image` builds `fstart-smm-stage` with a
+   inputs are CLI selections, and mainstage calls a common payload launcher
+   trait rather than being gated by CrabEFI. Also migrate SMM to the
+   selected-board wrapper flow: today `fstart-smm-image` builds
+   `fstart-smm-stage` with a
    `FSTART_SMM_PLATFORM` env var that build.rs turns into board-name cfgs — a
    central board registry in cfg form — and binds `NoBoardSmmHandler`, leaving
    the X61 dock SMM handler dead. The wrapper must bind the board's handler
