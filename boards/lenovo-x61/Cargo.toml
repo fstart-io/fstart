@@ -1,8 +1,8 @@
 [package]
 name = "fstart-board-lenovo-x61"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [lib]
@@ -69,29 +69,29 @@ smm = [
 ]
 
 [dependencies]
-fstart-types = { workspace = true }
-fstart-platform-intel-gm965-ich8 = { workspace = true }
-fstart-platform-x86_64 = { workspace = true, optional = true }
-fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-types = { path = "../../crates/fstart-types" }
+fstart-platform-intel-gm965-ich8 = { path = "../../crates/fstart-platform-intel-gm965-ich8" }
+fstart-platform-x86_64 = { path = "../../crates/fstart-platform-x86_64", optional = true }
+fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../../crates/fstart-acpi-macros", optional = true }
-fstart-arch-x86 = { workspace = true }
-fstart-driver-i2c-ck505 = { workspace = true }
-fstart-driver-intel-gm965 = { workspace = true, features = ["ffs-vbt"] }
-fstart-driver-intel-ich8 = { workspace = true, optional = true }
-fstart-driver-ns16550 = { workspace = true, features = ["pio"], optional = true }
-fstart-driver-nsc-pc87382 = { workspace = true }
-fstart-driver-nsc-pc87392 = { workspace = true }
-fstart-gpio-ich = { workspace = true }
-fstart-hda = { workspace = true }
-fstart-pio = { workspace = true }
-fstart-services = { workspace = true, features = ["pci"] }
-fstart-superio = { workspace = true }
-fstart-cpu-intel = { workspace = true, optional = true }
-fstart-mp = { workspace = true, optional = true }
-fstart-smbios = { workspace = true }
-fstart-smm-runtime = { workspace = true, optional = true }
-fstart-smm-stage = { workspace = true, optional = true }
-fstart-stage = { workspace = true, optional = true }
+fstart-arch-x86 = { path = "../../crates/fstart-arch-x86" }
+fstart-driver-i2c-ck505 = { path = "../../crates/fstart-driver-i2c-ck505" }
+fstart-driver-intel-gm965 = { path = "../../crates/fstart-driver-intel-gm965", features = ["ffs-vbt"] }
+fstart-driver-intel-ich8 = { path = "../../crates/fstart-driver-intel-ich8", optional = true }
+fstart-driver-ns16550 = { path = "../../crates/fstart-driver-ns16550", features = ["pio"], optional = true }
+fstart-driver-nsc-pc87382 = { path = "../../crates/fstart-driver-nsc-pc87382" }
+fstart-driver-nsc-pc87392 = { path = "../../crates/fstart-driver-nsc-pc87392" }
+fstart-gpio-ich = { path = "../../crates/fstart-gpio-ich" }
+fstart-hda = { path = "../../crates/fstart-hda" }
+fstart-pio = { path = "../../crates/fstart-pio" }
+fstart-services = { path = "../../crates/fstart-services", features = ["pci"] }
+fstart-superio = { path = "../../crates/fstart-superio" }
+fstart-cpu-intel = { path = "../../crates/fstart-cpu-intel", optional = true }
+fstart-mp = { path = "../../crates/fstart-mp", optional = true }
+fstart-smbios = { path = "../../crates/fstart-smbios" }
+fstart-smm-runtime = { path = "../../crates/fstart-smm-runtime", optional = true }
+fstart-smm-stage = { path = "../../crates/fstart-smm-stage", optional = true }
+fstart-stage = { path = "../../crates/fstart-stage", optional = true }
 
 [[bin]]
 name = "fstart-stage"

@@ -1,9 +1,8 @@
 //! Board discovery from per-board Cargo metadata.
 //!
 //! Boards are normal crates under `boards/` with a small
-//! `[package.metadata.fstart]` table. `xtask` discovers those packages and runs a
-//! temporary host tool crate that aliases the selected board crate as
-//! `fstart_board`.
+//! `[package.metadata.fstart]` table. `xtask` discovers those packages from
+//! Cargo metadata; stage builds use the board-owned package manifest directly.
 
 use std::fs;
 use std::io::Write;
@@ -31,10 +30,6 @@ pub struct BoardManifest {
     pub host_feature: bool,
     /// Optional Cargo binary that owns this board's static stage adapter.
     pub stage_bin: Option<String>,
-    /// Optional Cargo package that owns this board's static stage adapter.
-    ///
-    /// Defaults to `package` for legacy single-package boards.
-    pub stage_package: Option<String>,
 }
 
 /// Discover every board crate below `boards/`.
@@ -120,7 +115,6 @@ fn read(manifest: &Path) -> Result<BoardManifest, String> {
         acpi_only_devices: metadata_bool(&text, "acpi-only-devices").unwrap_or(false),
         host_feature: has_feature(&text, "host"),
         stage_bin: metadata_value(&text, "stage-bin"),
-        stage_package: metadata_value(&text, "stage-package"),
     })
 }
 
@@ -383,39 +377,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_split_stage_package_metadata() {
-        let dir =
-            std::env::temp_dir().join(format!("fstart-board-manifest-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let manifest = dir.join("Cargo.toml");
-        fs::write(
-            &manifest,
-            r#"
-            [package]
-            name = "fstart-board-qemu-sbsa"
-
-            [package.metadata.fstart]
-            board = "qemu-sbsa"
-            target = "aarch64-unknown-none"
-            stage-package = "fstart-board-qemu-sbsa-stage"
-            stage-bin = "fstart-stage"
-            "#,
-        )
-        .unwrap();
-
-        let parsed = read(&manifest).unwrap();
-        assert_eq!(parsed.board, "qemu-sbsa");
-        assert_eq!(parsed.package, "fstart-board-qemu-sbsa");
-        assert_eq!(
-            parsed.stage_package.as_deref(),
-            Some("fstart-board-qemu-sbsa-stage")
-        );
-        assert_eq!(parsed.stage_bin.as_deref(), Some("fstart-stage"));
-
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn reads_board_owned_stage_metadata() {
         let dir = std::env::temp_dir().join(format!(
             "fstart-board-stage-manifest-test-{}",
@@ -440,7 +401,6 @@ mod tests {
         let parsed = read(&manifest).unwrap();
         assert_eq!(parsed.board, "lenovo-x61");
         assert_eq!(parsed.package, "fstart-board-lenovo-x61");
-        assert_eq!(parsed.stage_package, None);
         assert_eq!(parsed.stage_bin.as_deref(), Some("fstart-stage"));
 
         fs::remove_dir_all(dir).unwrap();

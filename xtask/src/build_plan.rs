@@ -513,7 +513,6 @@ mod tests {
             acpi_only_devices: false,
             host_feature: false,
             stage_bin: Some("fstart-stage".to_string()),
-            stage_package: None,
         }
     }
 

@@ -12,10 +12,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-struct StagePackageBuild {
-    package_label: String,
-}
-
 struct SmmStageBuild {
     archive_path: PathBuf,
     link_dir: PathBuf,
@@ -83,7 +79,6 @@ pub fn build_with_parsed(
     eprintln!("[fstart] target: {}", plan.target.triple);
 
     let mut result = Vec::new();
-    let stage_package = stage_package_build(workspace_root, board_manifest, config, &plan)?;
     for stage in &plan.stages {
         if stage.stage_name.is_some() {
             eprintln!("[fstart] building stage: {}", stage.display_name);
@@ -95,7 +90,6 @@ pub fn build_with_parsed(
             workspace_root,
             board_manifest,
             config,
-            &stage_package,
             stage.stage_name.as_deref(),
             plan.target.triple,
             &features,
@@ -192,6 +186,8 @@ fn build_board_smm_stage(
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root)
         .arg("rustc")
+        .arg("--manifest-path")
+        .arg(board_manifest.dir.join("Cargo.toml"))
         .arg("--package")
         .arg(&board_manifest.package)
         .arg("--lib")
@@ -269,7 +265,6 @@ fn build_one_stage(
     workspace_root: &std::path::Path,
     board_manifest: &crate::board_manifest::BoardManifest,
     config: &fstart_types::BoardConfig,
-    stage_package: &StagePackageBuild,
     stage_name: Option<&str>,
     target: &str,
     features: &str,
@@ -317,7 +312,11 @@ fn build_one_stage(
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root);
     cmd.arg("build");
-    cmd.arg("--package").arg(&stage_package.package_label);
+    cmd.arg("--manifest-path")
+        .arg(board_manifest.dir.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(workspace_root.join("target"));
+    cmd.arg("--package").arg(&board_manifest.package);
     cmd.arg("--bin")
         .arg(stage_bin)
         .arg("--target")
@@ -361,7 +360,7 @@ fn build_one_stage(
     eprintln!("[fstart] build artifacts: {}", artifact_dir.display());
     eprintln!(
         "[fstart] building {}:{}...",
-        stage_package.package_label, stage_bin
+        board_manifest.package, stage_bin
     );
     let status = cmd
         .status()
@@ -424,20 +423,6 @@ fn build_one_stage(
 
     eprintln!("[fstart] built: {}", run_path.display());
     Ok((final_elf, run_path))
-}
-
-fn stage_package_build(
-    _workspace_root: &Path,
-    board_manifest: &crate::board_manifest::BoardManifest,
-    _config: &fstart_types::BoardConfig,
-    _plan: &crate::build_plan::BuildPlan,
-) -> Result<StagePackageBuild, String> {
-    Ok(StagePackageBuild {
-        package_label: board_manifest
-            .stage_package
-            .clone()
-            .unwrap_or_else(|| board_manifest.package.clone()),
-    })
 }
 
 /// Public wrapper for workspace root (used by other xtask modules).
