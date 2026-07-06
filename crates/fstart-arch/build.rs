@@ -8,6 +8,11 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(rust_analyzer)");
     println!("cargo:rerun-if-changed=asm/sipi_trampoline.S");
 
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if target_arch != "x86" && target_arch != "x86_64" {
+        return;
+    }
+
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR set by Cargo"));
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let source = manifest_dir.join("asm/sipi_trampoline.S");

@@ -317,14 +317,14 @@ fn add_runtime_cache_info(w: &mut fstart_smbios::SmbiosWriter) -> (u16, u16, u16
 #[cfg(feature = "smbios")]
 fn runtime_x86_caches<const N: usize>() -> [Option<RuntimeCacheDesc>; N] {
     let mut out = [None; N];
-    let (max_leaf, _, _, _) = fstart_arch_x86::cpuid(0);
+    let (max_leaf, _, _, _) = fstart_arch::x86::cpuid(0);
     if max_leaf < 4 {
         return out;
     }
 
     let mut count = 0usize;
     for idx in 0..N as u32 {
-        let (eax, ebx, ecx, _) = fstart_arch_x86::cpuid_count(4, idx);
+        let (eax, ebx, ecx, _) = fstart_arch::x86::cpuid_count(4, idx);
         let cache_type = (eax & 0x1f) as u8;
         if cache_type == 0 {
             break;

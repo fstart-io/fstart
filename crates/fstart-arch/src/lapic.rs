@@ -15,9 +15,7 @@
 //!
 //! This crate is intentionally minimal — it exposes the LAPIC as a
 //! thin register interface, not a full interrupt framework.  Higher-level
-//! MP orchestration lives in `fstart-mp`.
-
-#![no_std]
+//! MP orchestration lives in [`crate::mp`].
 
 use core::ptr;
 
@@ -128,7 +126,7 @@ const SVR_ENABLE: u32 = 0x100;
 /// Default LAPIC MMIO base address.
 pub const DEFAULT_BASE: usize = 0xFEE0_0000;
 
-use fstart_arch_x86::x86::msr::{rdmsr, wrmsr};
+use crate::x86::msr::{rdmsr, wrmsr};
 
 // ---------------------------------------------------------------------------
 // Lapic struct

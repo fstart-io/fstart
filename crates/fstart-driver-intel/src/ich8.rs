@@ -11,8 +11,8 @@ pub mod smm;
 use crate::gpio_ich::IchGpio;
 use crate::pmio_ich::{self as pmio, PmIo};
 use crate::smbus::I801SmBus;
-use fstart_ecam as ecam;
 use fstart_mmio::MmioReadWrite;
+use fstart_pci::ecam;
 use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_BITS};
 use fstart_services::device::DeviceError;
 use fstart_services::{

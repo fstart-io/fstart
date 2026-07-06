@@ -66,9 +66,9 @@ impl Gm965Ich8Board for Board {
 
     #[cfg(feature = "mp")]
     fn init_mp() -> Result<(), ServiceError> {
-        let cpu = fstart_cpu_intel::core2_cpu::Core2CpuDriver::new(ICH8_PMBASE, None);
-        let drivers: [&dyn fstart_mp::CpuDriver; 1] = [&cpu];
-        fstart_mp::mp_init(&fstart_mp::MpConfig {
+        let cpu = fstart_arch::cpu_intel::core2_cpu::Core2CpuDriver::new(ICH8_PMBASE, None);
+        let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
+        fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
             cpu_drivers: &drivers,
             smm: None,
             smm_image: None,
@@ -81,8 +81,9 @@ impl Gm965Ich8Board for Board {
     #[cfg(feature = "acpi")]
     fn prepare_acpi(devices: &mut Gm965Ich8Mainstage<Self>) -> Option<u64> {
         let southbridge = devices.southbridge();
-        let platform =
-            PlatformConfig::X86(southbridge.x86_platform_config(fstart_mp::online_cpus() as u32));
+        let platform = PlatformConfig::X86(
+            southbridge.x86_platform_config(fstart_arch::mp::online_cpus() as u32),
+        );
         let rsdp =
             fstart_platform_intel_gm965_ich8::tables::prepare_acpi(&platform, |dsdt, extra| {
                 dsdt.extend(

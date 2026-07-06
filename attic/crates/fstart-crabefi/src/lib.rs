@@ -598,7 +598,7 @@ impl crabefi::ResetHandler for PsciReset {
 
 /// CrabEFI [`Timer`](crabefi::Timer) backed by the x86 TSC.
 ///
-/// Obtains the TSC frequency from [`fstart_arch_x86::tsc_frequency_hz()`]
+/// Obtains the TSC frequency from [`fstart_arch::x86::tsc_frequency_hz()`]
 /// and uses that value for TSC-to-time conversion.
 #[cfg(target_arch = "x86_64")]
 pub struct TscTimer {
@@ -617,7 +617,7 @@ impl TscTimer {
     /// Create a new timer from the platform TSC frequency hint.
     pub fn new() -> Self {
         Self {
-            tsc_freq: fstart_arch_x86::tsc_frequency_hz(),
+            tsc_freq: fstart_arch::x86::tsc_frequency_hz(),
         }
     }
 
@@ -720,7 +720,7 @@ impl Default for X86Rng {
 impl X86Rng {
     /// Check CPUID for RDRAND support (ECX bit 30 of leaf 1).
     pub fn new() -> Self {
-        let (_, _, ecx, _) = fstart_arch_x86::cpuid(1);
+        let (_, _, ecx, _) = fstart_arch::x86::cpuid(1);
         Self {
             has_rdrand: ecx & (1 << 30) != 0,
         }

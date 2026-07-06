@@ -3,12 +3,10 @@
 //! Call [`init`] once after programming PCIEXBAR, then create [`EcamDevice`]
 //! handles to access individual devices.
 
-#![no_std]
-
 use core::convert::Infallible;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use fstart_pci::{PciBdf, PciConfigAccess};
+use crate::{PciBdf, PciConfigAccess};
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
 

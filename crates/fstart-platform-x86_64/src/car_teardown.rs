@@ -10,7 +10,7 @@
 
 use core::arch::{asm, global_asm};
 
-use fstart_arch_x86::{mtrr, x86::msr};
+use fstart_arch::x86::{msr, mtrr};
 
 global_asm!(
     ".text",

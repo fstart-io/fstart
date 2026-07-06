@@ -4,10 +4,8 @@
 //! and generic firmware interfaces belong in `fstart-arch` / `fstart-services`;
 //! x86-only implementation details such as MSRs and MTRRs live here.
 
-#![no_std]
-
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub use x86;
+pub use crate::x86_crate::*;
 
 /// Read the x86 Time Stamp Counter.
 #[cfg(target_arch = "x86_64")]
@@ -232,7 +230,7 @@ pub mod mtrr {
     /// MTRR changes affect cacheability for physical memory. Caller must only
     /// use valid ranges and must arrange for all CPUs to use coherent MTRRs.
     pub unsafe fn set_variable(index: u32, base: u64, size: u64, ty: u64) {
-        let phys_mask = crate::physical_address_mask();
+        let phys_mask = crate::x86::physical_address_mask();
         let base_msr = IA32_MTRR_PHYSBASE0 + index * 2;
         let mask_msr = IA32_MTRR_PHYSMASK0 + index * 2;
         let base_val = (base & phys_mask) | ty;
@@ -273,7 +271,7 @@ pub mod mtrr {
 
     /// Decode the range base from a variable MTRR base value.
     pub fn decode_base(base: u64) -> u64 {
-        base & crate::physical_address_mask()
+        base & crate::x86::physical_address_mask()
     }
 
     /// Decode the type from a variable MTRR base value.
@@ -283,7 +281,7 @@ pub mod mtrr {
 
     /// Decode the range size from a variable MTRR mask value.
     pub fn decode_size(mask: u64) -> u64 {
-        let phys_mask = crate::physical_address_mask();
+        let phys_mask = crate::x86::physical_address_mask();
         (!(mask & phys_mask) & phys_mask).wrapping_add(0x1000)
     }
 
@@ -310,7 +308,7 @@ pub mod mtrr {
             // memory detection before MP CPU MTRR setup reads it.
             unsafe {
                 WB_RANGES[out] = WbRange {
-                    base: base & crate::physical_address_mask(),
+                    base: base & crate::x86::physical_address_mask(),
                     size,
                 };
             }
@@ -481,7 +479,7 @@ pub mod mtrr {
                 let end = range
                     .base
                     .saturating_add(range.size)
-                    .min(crate::physical_address_limit());
+                    .min(crate::x86::physical_address_limit());
                 if end <= RANGE_1M || end <= base {
                     continue;
                 }

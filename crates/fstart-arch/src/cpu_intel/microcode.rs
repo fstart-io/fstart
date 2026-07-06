@@ -6,8 +6,8 @@
 //! data pointer to `IA32_BIOS_UPDT_TRIG`; this crate only selects the update
 //! that matches the current processor signature/platform flags.
 
-use fstart_arch_x86::cpuid;
-use fstart_arch_x86::x86::msr::{rdmsr, wrmsr};
+use crate::x86::cpuid;
+use crate::x86::msr::{rdmsr, wrmsr};
 
 const IA32_PLATFORM_ID: u32 = 0x17;
 const IA32_BIOS_UPDT_TRIG: u32 = 0x79;

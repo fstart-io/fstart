@@ -17,21 +17,17 @@
 //!
 //! Compatible: `"pci-host-ecam-generic"`.
 
-#![no_std]
 extern crate alloc;
 
 use heapless::Vec as HVec;
 
-use fstart_services::device::DeviceError;
-use fstart_services::memory_detect::E820Kind;
-use fstart_services::pci::{
-    PciBdf, PciRootBus, PciWindow, PciWindowKind, PCI_BAR0, PCI_CLASS_REVISION, PCI_CMD_BUS_MASTER,
-    PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND, PCI_HEADER_TYPE, PCI_HEADER_TYPE_BRIDGE,
-    PCI_HEADER_TYPE_CARDBUS, PCI_HEADER_TYPE_MULTI_FUNC, PCI_IO_BASE, PCI_MEMORY_BASE,
-    PCI_PREF_BASE_UPPER32, PCI_PREF_LIMIT_UPPER32, PCI_PREF_MEMORY_BASE, PCI_PRIMARY_BUS,
-    PCI_VENDOR_ID, PCI_VENDOR_INVALID,
+use crate::{
+    PciBdf, PciWindow, PciWindowKind, PCI_BAR0, PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY,
+    PCI_COMMAND, PCI_HEADER_TYPE, PCI_HEADER_TYPE_BRIDGE, PCI_HEADER_TYPE_CARDBUS,
+    PCI_HEADER_TYPE_MULTI_FUNC, PCI_IO_BASE, PCI_MEMORY_BASE, PCI_PREF_BASE_UPPER32,
+    PCI_PREF_LIMIT_UPPER32, PCI_PREF_MEMORY_BASE, PCI_PRIMARY_BUS, PCI_VENDOR_ID,
+    PCI_VENDOR_INVALID,
 };
-use fstart_services::ServiceError;
 use serde::{Deserialize, Serialize};
 
 // -----------------------------------------------------------------------
@@ -70,6 +66,11 @@ pub struct PciEcamConfig {
 // -----------------------------------------------------------------------
 // Internal types
 // -----------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PciEcamError {
+    ConfigError,
+}
 
 /// BAR type after sizing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,7 +466,6 @@ impl PciEcam {
                     }
 
                     if self.devices.push(pci_dev).is_err() {
-                        fstart_log::error!("PCI: device table full; remaining devices skipped");
                         return;
                     }
                 }
@@ -556,15 +556,6 @@ impl PciEcam {
                 }
                 BarType::None => {}
             }
-        } else {
-            fstart_log::error!(
-                "PCI: failed to allocate BAR{} for {:02x}:{:02x}.{} size={:#x}",
-                (bar.reg - PCI_BAR0) / 4,
-                addr.bus,
-                addr.dev,
-                addr.func,
-                bar.size,
-            );
         }
 
         // Mark the BAR as handled even on allocation failure. Otherwise the
@@ -697,143 +688,19 @@ impl PciEcam {
             self.write32(baddr, PCI_COMMAND, new_cmd as u32);
         }
     }
-
-    /// Log discovered devices and their allocated BARs.
-    fn log_resource_result(&self) {
-        fstart_log::info!(
-            "PCI: allocation result mmio32 next={:#x} limit={:#x}, mmio64 next={:#x} limit={:#x}, io next={:#x} limit={:#x}",
-            self.mmio32.next,
-            self.mmio32.limit,
-            self.mmio64.next,
-            self.mmio64.limit,
-            self.io_pool.next,
-            self.io_pool.limit,
-        );
-        for window in self.windows.iter().take(self.window_count) {
-            let kind = match window.kind {
-                PciWindowKind::Mmio => "MMIO",
-                PciWindowKind::Io => "IO",
-                _ => "UNKNOWN",
-            };
-            fstart_log::info!(
-                "PCI: window {} base={:#x} size={:#x} prefetchable={}",
-                kind,
-                window.base,
-                window.size,
-                window.prefetchable,
-            );
-        }
-    }
-
-    fn log_devices(&self) {
-        for dev in &self.devices {
-            let kind = if dev.header_type == PCI_HEADER_TYPE_BRIDGE {
-                " [bridge]"
-            } else {
-                ""
-            };
-            let vendor_device = self.read32(dev.addr, PCI_VENDOR_ID);
-            let class_rev = self.read32(dev.addr, PCI_CLASS_REVISION);
-            fstart_log::info!(
-                "  PCI {:02x}:{:02x}.{} {:04x}:{:04x} class {:02x}{:02x}{}",
-                dev.addr.bus,
-                dev.addr.dev,
-                dev.addr.func,
-                vendor_device as u16,
-                (vendor_device >> 16) as u16,
-                (class_rev >> 24) as u8,
-                (class_rev >> 16) as u8,
-                kind,
-            );
-
-            for bar in &dev.bars {
-                if bar.bar_type == BarType::None {
-                    continue;
-                }
-                let base_lo = self.read32(dev.addr, bar.reg);
-                let base = match bar.bar_type {
-                    BarType::Memory64 => {
-                        let hi = self.read32(dev.addr, bar.reg + 4);
-                        ((hi as u64) << 32) | ((base_lo & 0xFFFF_FFF0) as u64)
-                    }
-                    BarType::Io => (base_lo & 0xFFFF_FFFC) as u64,
-                    _ => (base_lo & 0xFFFF_FFF0) as u64,
-                };
-
-                let type_str = match bar.bar_type {
-                    BarType::Memory32 => "MEM32",
-                    BarType::Memory64 => "MEM64",
-                    BarType::Io => "IO   ",
-                    BarType::None => unreachable!(),
-                };
-                fstart_log::info!(
-                    "    BAR{}: {} base={:#010x} size={:#x}",
-                    (bar.reg - PCI_BAR0) / 4,
-                    type_str,
-                    base,
-                    bar.size,
-                );
-            }
-        }
-    }
 }
 
 // -----------------------------------------------------------------------
 // Device trait
 // -----------------------------------------------------------------------
 
-fn default_mmio32_window_from_e820(limit: u64) -> Option<(u64, u64)> {
-    let state = unsafe { fstart_services::memory_detect::e820_state() };
-    if state.count() == 0 {
-        return None;
-    }
-
-    let mut low_ram_top = 0x0010_0000u64;
-    let mut reserved_after_ram_top = 0u64;
-    for entry in state.entries() {
-        let addr = entry.addr;
-        let size = entry.size;
-        let kind = entry.kind;
-        let end = addr.saturating_add(size).min(0x1_0000_0000);
-        if kind == E820Kind::Ram as u32 && addr < 0x1_0000_0000 {
-            low_ram_top = low_ram_top.max(end);
-        }
-    }
-    for entry in state.entries() {
-        let addr = entry.addr;
-        let size = entry.size;
-        let kind = entry.kind;
-        let end = addr.saturating_add(size).min(0x1_0000_0000);
-        if kind != E820Kind::Ram as u32 && addr >= low_ram_top && addr < 0x1_0000_0000 {
-            reserved_after_ram_top = reserved_after_ram_top.max(end);
-        }
-    }
-
-    let low_mmio_base = reserved_after_ram_top.max(low_ram_top);
-    let base = (low_mmio_base + 0x000f_ffff) & !0x000f_ffff;
-    let limit = limit.min(0x1_0000_0000);
-    if base >= limit {
-        return None;
-    }
-    Some((base, limit - base))
-}
-
 impl PciEcam {
     /// Enumerate the PCI hierarchy, allocate BAR resources, and enable decode.
-    pub fn enumerate_and_allocate(&mut self) -> Result<(), DeviceError> {
-        fstart_log::info!(
-            "PCI: enumerating buses {}..{}",
-            self.bus_start,
-            self.bus_end
-        );
+    pub fn enumerate_and_allocate(&mut self) -> Result<(), PciEcamError> {
         self.enumerate_bus(self.bus_start);
 
-        fstart_log::info!("PCI: {} device(s) found", self.devices.len());
         if !self.devices.is_empty() {
-            fstart_log::info!("PCI: allocating resources...");
             self.allocate_resources();
-            self.log_resource_result();
-            self.log_devices();
         }
 
         Ok(())
@@ -844,9 +711,9 @@ impl PciEcam {
     /// `PciEcam` copies only scalar window values into runtime pools and does
     /// not retain a reference to the config, so composed host bridges can build
     /// this from hardware-derived local values without cloning a board config.
-    pub fn from_config(config: &PciEcamConfig) -> Result<Self, DeviceError> {
+    pub fn from_config(config: &PciEcamConfig) -> Result<Self, PciEcamError> {
         if config.bus_end < config.bus_start {
-            return Err(DeviceError::ConfigError);
+            return Err(PciEcamError::ConfigError);
         }
 
         // Build the window list from the config.  Only add windows that
@@ -860,11 +727,7 @@ impl PciEcam {
         let mut windows = [dummy; MAX_WINDOWS];
         let mut wc = 0;
 
-        let (mmio32_base, mmio32_size) = if config.mmio32_size == 0 {
-            default_mmio32_window_from_e820(config.ecam_base).unwrap_or((config.mmio32_base, 0))
-        } else {
-            (config.mmio32_base, config.mmio32_size)
-        };
+        let (mmio32_base, mmio32_size) = (config.mmio32_base, config.mmio32_size);
 
         if mmio32_size > 0 {
             windows[wc] = PciWindow {
@@ -913,46 +776,36 @@ impl PciEcam {
     }
 }
 
-// -----------------------------------------------------------------------
-// PciRootBus service trait
-// -----------------------------------------------------------------------
-
-impl PciRootBus for PciEcam {
-    fn init_bus(&mut self) -> Result<(), ServiceError> {
-        self.enumerate_and_allocate()
-            .map_err(|_| ServiceError::HardwareError)
+impl PciEcam {
+    pub fn config_read32(&self, addr: PciBdf, reg: u16) -> u32 {
+        self.read32(addr, reg)
     }
 
-    fn config_read32(&self, addr: PciBdf, reg: u16) -> Result<u32, ServiceError> {
-        Ok(self.read32(addr, reg))
-    }
-
-    fn config_write32(&self, addr: PciBdf, reg: u16, val: u32) -> Result<(), ServiceError> {
+    pub fn config_write32(&self, addr: PciBdf, reg: u16, val: u32) {
         self.write32(addr, reg, val);
-        Ok(())
     }
 
-    fn ecam_base(&self) -> u64 {
+    pub fn ecam_base(&self) -> u64 {
         self.ecam_base as u64
     }
 
-    fn ecam_size(&self) -> u64 {
+    pub fn ecam_size(&self) -> u64 {
         self.ecam_size as u64
     }
 
-    fn bus_start(&self) -> u8 {
+    pub fn bus_start(&self) -> u8 {
         self.bus_start
     }
 
-    fn bus_end(&self) -> u8 {
+    pub fn bus_end(&self) -> u8 {
         self.bus_end
     }
 
-    fn device_count(&self) -> usize {
+    pub fn device_count(&self) -> usize {
         self.devices.len()
     }
 
-    fn windows(&self) -> &[PciWindow] {
+    pub fn windows(&self) -> &[PciWindow] {
         &self.windows[..self.window_count]
     }
 }

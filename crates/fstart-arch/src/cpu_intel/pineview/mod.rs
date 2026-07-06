@@ -12,9 +12,9 @@
 #[cfg(feature = "acpi")]
 pub mod acpi;
 
-use fstart_arch_x86::mtrr;
-use fstart_arch_x86::x86::msr::{rdmsr, wrmsr};
-use fstart_mp::{CpuDriver, CpuIdMatch, CpuVendor};
+use crate::mp::{CpuDriver, CpuIdMatch, CpuVendor};
+use crate::x86::msr::{rdmsr, wrmsr};
+use crate::x86::mtrr;
 
 // ---------------------------------------------------------------------------
 // MSR indices
@@ -185,13 +185,13 @@ impl CpuDriver for PineviewCpuDriver {
 
     fn update_microcode(&self) {
         if let Some(blob) = self.microcode {
-            let cpu = fstart_mp::current_cpu_index();
-            let before = fstart_driver_intel::microcode::current_revision();
+            let cpu = crate::mp::current_cpu_index();
+            let before = crate::cpu_intel::microcode::current_revision();
             fstart_log::info!("microcode: cpu{} before rev={:#x}", cpu, before);
             // SAFETY: board code supplies a firmware-image-backed Intel
             // microcode blob that remains reachable throughout MP init.
-            unsafe { fstart_driver_intel::microcode::update_current_cpu_logged(blob) };
-            let after = fstart_driver_intel::microcode::current_revision();
+            unsafe { crate::cpu_intel::microcode::update_current_cpu_logged(blob) };
+            let after = crate::cpu_intel::microcode::current_revision();
             fstart_log::info!("microcode: cpu{} after rev={:#x}", cpu, after);
         }
     }

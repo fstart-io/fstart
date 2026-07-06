@@ -9,12 +9,16 @@
 pub mod addr;
 pub mod capability;
 pub mod config;
+pub mod ecam;
+pub mod ecam_host;
 pub mod overlay;
 pub mod window;
 
 pub use addr::{PciBdf, PciSbdf};
 pub use capability::find_capability;
 pub use config::*;
+pub use ecam::EcamDevice;
+pub use ecam_host::{PciEcam, PciEcamConfig};
 pub use overlay::{PciType0Config, PciType1Config};
 pub use window::{PciWindow, PciWindowKind};
 

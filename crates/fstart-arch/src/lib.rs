@@ -5,6 +5,9 @@
 
 #![no_std]
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+extern crate x86 as x86_crate;
+
 // ---------------------------------------------------------------------------
 // udelay — microsecond delay (generic spin loop)
 // ---------------------------------------------------------------------------
@@ -19,7 +22,17 @@ pub fn udelay(us: u32) {
     }
 }
 
-// x86-specific TSC delay helpers live in `fstart-arch-x86`.
+#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+pub use x86::udelay;
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod cpu_intel;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod lapic;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod mp;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod x86;
 // ---------------------------------------------------------------------------
 // mdelay — millisecond delay
 // ---------------------------------------------------------------------------

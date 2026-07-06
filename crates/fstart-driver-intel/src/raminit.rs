@@ -468,11 +468,11 @@ fn calculate_timings(info: &mut RaminitInfo) -> Result<(), ServiceError> {
 }
 
 fn stepping() -> u8 {
-    fstart_ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC).read8(0x08)
+    fstart_pci::ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC).read8(0x08)
 }
 
-fn lpc() -> fstart_ecam::EcamDevice {
-    fstart_ecam::EcamDevice::new(0, LPC_DEV, LPC_FUNC)
+fn lpc() -> fstart_pci::ecam::EcamDevice {
+    fstart_pci::ecam::EcamDevice::new(0, LPC_DEV, LPC_FUNC)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -538,7 +538,7 @@ fn channel_dual_rank(info: &RaminitInfo, ch: usize) -> bool {
     info.dimms[first].dual_rank || info.dimms[first + 1].dual_rank
 }
 
-fn set_pci8(dev: &fstart_ecam::EcamDevice, reg: u16, clear: u8, set: u8) {
+fn set_pci8(dev: &fstart_pci::ecam::EcamDevice, reg: u16, clear: u8, set: u8) {
     dev.write8(reg, (dev.read8(reg) & !clear) | set);
 }
 
@@ -568,7 +568,7 @@ fn program_clkcfg_lock(info: &RaminitInfo, mch: &MchBar) {
 }
 
 fn program_gcfgc(info: &RaminitInfo, mch: &MchBar) {
-    let hb = fstart_ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+    let hb = fstart_pci::ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
     let vco = (hb.read8(0xe5) >> 2) & 7;
     if vco == 7 {
         if stepping() == 0 {
@@ -590,7 +590,7 @@ fn program_gcfgc(info: &RaminitInfo, mch: &MchBar) {
         render = 4;
     }
 
-    let igd = fstart_ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC);
+    let igd = fstart_pci::ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC);
     if igd.read16(0) != 0xffff {
         set_pci8(&igd, hostbridge::GCFGC, 0xd0, render);
         set_pci8(&igd, hostbridge::GCFGC + 1, 0xe0, 2);
@@ -679,7 +679,7 @@ fn program_map(info: &mut RaminitInfo, mch: &MchBar, pre_jedec: bool, ggc: u16) 
     }
 
     mch.write16(mchbar::DCC2, 0);
-    let hb = fstart_ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+    let hb = fstart_pci::ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
     if pre_jedec {
         let total = (global_boundary as u32) * 32;
         hb.write16(hostbridge::TOM, ((total >> 7) & 0x1ff) as u16);
@@ -1317,7 +1317,7 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result
     reset_on_stale_rcomp(mch);
     init_pmcon();
 
-    let hb = fstart_ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+    let hb = fstart_pci::ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
     let fsb_clock = read_fsb_clock(mch);
     let capid0 = hb.read32(hostbridge::CAPID0);
 

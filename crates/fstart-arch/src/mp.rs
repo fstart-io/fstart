@@ -53,18 +53,16 @@
 //! // timing still valid, all CPUs configured
 //! ```
 
-#![allow(
+#[allow(
     clippy::declare_interior_mutable_const,
     clippy::doc_lazy_continuation,
     clippy::missing_transmute_annotations,
     clippy::needless_range_loop
 )]
-#![no_std]
-
 use core::marker::PhantomData;
 use core::sync::atomic::{fence, AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-use fstart_lapic::Lapic;
+use crate::lapic::Lapic;
 
 #[cfg(not(rust_analyzer))]
 mod sipi_blob {
@@ -108,7 +106,7 @@ pub struct CpuIdentity {
 impl CpuIdentity {
     /// Identify the currently running x86 CPU.
     pub fn current() -> Self {
-        let (_, ebx, ecx, edx) = fstart_arch_x86::cpuid(0);
+        let (_, ebx, ecx, edx) = crate::x86::cpuid(0);
         let vendor = if ebx == 0x756e_6547 && edx == 0x4965_6e69 && ecx == 0x6c65_746e {
             CpuVendor::Intel
         } else if ebx == 0x6874_7541 && edx == 0x6974_6e65 && ecx == 0x444d_4163 {
@@ -116,7 +114,7 @@ impl CpuIdentity {
         } else {
             CpuVendor::Other
         };
-        let (signature, _, _, _) = fstart_arch_x86::cpuid(1);
+        let (signature, _, _, _) = crate::x86::cpuid(1);
         Self { vendor, signature }
     }
 
@@ -211,7 +209,7 @@ impl CpuDriver for GenericX86CpuDriver {
     fn init_cpu(&self) {
         // SAFETY: MP init runs this on every active CPU after memory detection
         // has published the WB RAM ranges.
-        unsafe { fstart_arch_x86::mtrr::setup_ram_wb() };
+        unsafe { crate::x86::mtrr::setup_ram_wb() };
         fstart_log::info!("cpu: generic x86 MTRR setup complete");
     }
 }
@@ -1119,7 +1117,7 @@ unsafe fn patch_u64(base: *mut u8, offset: usize, value: u64) {
 fn read_cr3() -> u64 {
     // SAFETY: reading CR3 is side-effect-free and needed to let APs enter the
     // same identity-mapped long-mode address space as the BSP.
-    unsafe { fstart_arch_x86::x86::controlregs::cr3() }
+    unsafe { crate::x86::controlregs::cr3() }
 }
 
 // ---------------------------------------------------------------------------
@@ -1370,5 +1368,5 @@ fn trampoline_indexed<F: Fn(u32)>(data: *const (), cpu: u32) {
 
 /// Spin-delay for approximately `us` microseconds.
 fn delay_us(us: u64) {
-    fstart_arch_x86::udelay(us.min(u32::MAX as u64) as u32);
+    crate::x86::udelay(us.min(u32::MAX as u64) as u32);
 }

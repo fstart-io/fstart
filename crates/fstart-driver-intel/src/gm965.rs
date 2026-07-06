@@ -20,11 +20,11 @@ pub mod raminit;
 use alloc::vec::Vec;
 use core::{cell::UnsafeCell, ptr};
 
-use fstart_driver_pci_ecam::{PciEcam, PciEcamConfig};
-use fstart_ecam as ecam;
+use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_mmio::MmioReadWrite;
-use fstart_mp::{SmmError, SmmInfo, SmmOps};
+use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
+use fstart_pci::{PciEcam, PciEcamConfig};
 use fstart_services::device::DeviceError;
 use fstart_services::memory_detect::{
     build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
@@ -1215,7 +1215,7 @@ impl IntelGm965 {
     fn cpu_supports_slfm(&self) -> bool {
         // SAFETY: MSR 0xee is the Intel Core/Core2 extended config MSR used by
         // coreboot to detect SLFM support on this platform.
-        unsafe { (fstart_arch_x86::x86::msr::rdmsr(0x00ee) & (1 << 27)) != 0 }
+        unsafe { (fstart_arch::x86::msr::rdmsr(0x00ee) & (1 << 27)) != 0 }
     }
 
     #[cfg(not(target_arch = "x86_64"))]
@@ -1705,7 +1705,7 @@ impl IntelGm965 {
         igd.and8_or8(hostbridge::IGD_MSAC, !0x3, 0x2);
         self.init_igd_opregion();
         igd.write8(hostbridge::IGD_GDRST, 1);
-        fstart_arch_x86::udelay(50);
+        fstart_arch::x86::udelay(50);
         igd.write8(hostbridge::IGD_GDRST, 0);
         let mut timeout = 1_000_000u32;
         while (igd.read8(hostbridge::IGD_GDRST) & 1) != 0 && timeout != 0 {
@@ -1777,17 +1777,44 @@ impl IntelGm965 {
     }
 }
 
+fn default_mmio32_window_from_e820(limit: u64) -> Option<(u64, u64)> {
+    let state = unsafe { fstart_services::memory_detect::e820_state() };
+    if state.count() == 0 {
+        return None;
+    }
+
+    let mut low_ram_top = 0x0010_0000u64;
+    let mut reserved_after_ram_top = 0u64;
+    for entry in state.entries() {
+        let end = entry.addr.saturating_add(entry.size).min(0x1_0000_0000);
+        if entry.kind == E820Kind::Ram as u32 && entry.addr < 0x1_0000_0000 {
+            low_ram_top = low_ram_top.max(end);
+        }
+    }
+    for entry in state.entries() {
+        let end = entry.addr.saturating_add(entry.size).min(0x1_0000_0000);
+        if entry.kind != E820Kind::Ram as u32
+            && entry.addr >= low_ram_top
+            && entry.addr < 0x1_0000_0000
+        {
+            reserved_after_ram_top = reserved_after_ram_top.max(end);
+        }
+    }
+
+    let base = (reserved_after_ram_top.max(low_ram_top) + 0x000f_ffff) & !0x000f_ffff;
+    let limit = limit.min(0x1_0000_0000);
+    (base < limit).then_some((base, limit - base))
+}
+
 impl IntelGm965 {
     fn pci_ecam_config(&self) -> PciEcamConfig {
+        let (mmio32_base, mmio32_size) = default_mmio32_window_from_e820(self.config.ecam_base)
+            .unwrap_or((PCI_MMIO32_FALLBACK_BASE, 0));
         PciEcamConfig {
             ecam_base: self.config.ecam_base,
             ecam_size: self.ecam_size(),
-            // Size 0 asks PciEcam to derive the 32-bit aperture from the
-            // runtime e820 map published by GM965 MemoryDetect. The upper
-            // limit is PCIEXBAR, because GM965 decodes ECAM at 0xe000_0000
-            // on X61 and chipset fixed MMIO lives above that.
-            mmio32_base: PCI_MMIO32_FALLBACK_BASE,
-            mmio32_size: 0,
+            mmio32_base,
+            mmio32_size,
             mmio64_base: 0,
             mmio64_size: 0,
             // Reserve legacy/LPC fixed decodes below 0x1000.
@@ -1814,15 +1841,18 @@ impl IntelGm965 {
 
 impl PciRootBus for IntelGm965 {
     fn init_bus(&mut self) -> Result<(), ServiceError> {
-        self.ensure_pci_ecam()?.init_bus()
+        self.ensure_pci_ecam()?
+            .enumerate_and_allocate()
+            .map_err(|_| ServiceError::HardwareError)
     }
 
     fn config_read32(&self, addr: PciBdf, reg: u16) -> Result<u32, ServiceError> {
-        self.pci_ecam()?.config_read32(addr, reg)
+        Ok(self.pci_ecam()?.config_read32(addr, reg))
     }
 
     fn config_write32(&self, addr: PciBdf, reg: u16, val: u32) -> Result<(), ServiceError> {
-        self.pci_ecam()?.config_write32(addr, reg, val)
+        self.pci_ecam()?.config_write32(addr, reg, val);
+        Ok(())
     }
 
     fn ecam_base(&self) -> u64 {
@@ -1842,11 +1872,11 @@ impl PciRootBus for IntelGm965 {
     }
 
     fn device_count(&self) -> usize {
-        self.pci.as_ref().map_or(0, PciRootBus::device_count)
+        self.pci.as_ref().map_or(0, PciEcam::device_count)
     }
 
     fn windows(&self) -> &[PciWindow] {
-        self.pci.as_ref().map_or(&[], PciRootBus::windows)
+        self.pci.as_ref().map_or(&[], PciEcam::windows)
     }
 }
 
@@ -1943,7 +1973,7 @@ impl MemoryDetector for IntelGm965 {
         }
 
         let count = build_pc_compatible_e820(entries, usable_top, touud, tolud)?;
-        fstart_arch_x86::mtrr::set_ram_wb_ranges_from(
+        fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
             entries[..count]
                 .iter()
                 .filter(|entry| entry.kind == E820Kind::Ram as u32)
@@ -1999,7 +2029,7 @@ impl SmmOps for IntelGm965 {
                     num_cpus,
                     save_state_size: info.save_state_size as u32,
                     page_table_size: 0,
-                    cr3: fstart_arch_x86::x86::controlregs::cr3(),
+                    cr3: fstart_arch::x86::controlregs::cr3(),
                     platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
                     platform_flags: fstart_smm::SMM_PLATFORM_FLAG_ICH_GPE0_64BIT,
                     platform_data: [ICH8_PMBASE as u64, 0x20, 0, 0],
@@ -2011,16 +2041,16 @@ impl SmmOps for IntelGm965 {
         match result {
             Ok(installed) => {
                 let targets = &installed.cpus[..num_cpus as usize];
-                fstart_mp::prepare_default_smm_relocation(targets);
+                fstart_arch::mp::prepare_default_smm_relocation(targets);
                 let default_handler = unsafe {
                     fstart_smm::install_default_relocation_callback_stub(
                         image,
                         fstart_smm::DefaultRelocationCallbackConfig {
-                            default_smbase: fstart_mp::SMM_DEFAULT_SMBASE,
-                            cr3: fstart_arch_x86::x86::controlregs::cr3(),
-                            callback: fstart_mp::default_smm_relocation_handler as *const ()
+                            default_smbase: fstart_arch::mp::SMM_DEFAULT_SMBASE,
+                            cr3: fstart_arch::x86::controlregs::cr3(),
+                            callback: fstart_arch::mp::default_smm_relocation_handler as *const ()
                                 as usize as u64,
-                            stack_top: fstart_mp::SMM_DEFAULT_ENTRY_STACK_TOP,
+                            stack_top: fstart_arch::mp::SMM_DEFAULT_ENTRY_STACK_TOP,
                         },
                     )
                 };
@@ -2048,8 +2078,8 @@ impl SmmOps for IntelGm965 {
 
     fn smm_relocate(&self) {
         Self::smi_enable_for_relocation();
-        let lapic = fstart_lapic::Lapic::from_msr();
-        lapic.send_ipi_self(fstart_lapic::INT_ASSERT | fstart_lapic::MT_SMI);
+        let lapic = fstart_arch::lapic::Lapic::from_msr();
+        lapic.send_ipi_self(fstart_arch::lapic::INT_ASSERT | fstart_arch::lapic::MT_SMI);
         lapic.wait_ready();
     }
 
@@ -2116,7 +2146,7 @@ impl MemoryController for IntelGm965 {
 
         let mut entries = [E820Entry::zeroed(); 8];
         let count = build_pc_compatible_e820(&mut entries, usable_top, touud, tolud)?;
-        fstart_arch_x86::mtrr::set_ram_wb_ranges_from(
+        fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
             entries[..count]
                 .iter()
                 .filter(|entry| entry.kind == E820Kind::Ram as u32)

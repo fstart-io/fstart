@@ -24,7 +24,7 @@ pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
 
-use fstart_arch_x86::mtrr;
+use fstart_arch::x86::mtrr;
 use fstart_services::memory_detect::E820Entry;
 
 /// Enable the BSP-local ROM cacheability MTRR for memory-mapped boot media.
@@ -991,19 +991,19 @@ pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
 #[inline]
 fn read_cr0() -> u64 {
     // SAFETY: reading CR0 is side-effect free in firmware context.
-    unsafe { fstart_arch_x86::x86::controlregs::cr0().bits() as u64 }
+    unsafe { fstart_arch::x86::controlregs::cr0().bits() as u64 }
 }
 
 #[inline]
 fn read_cr3() -> u64 {
     // SAFETY: reading CR3 is side-effect free in firmware context.
-    unsafe { fstart_arch_x86::x86::controlregs::cr3() }
+    unsafe { fstart_arch::x86::controlregs::cr3() }
 }
 
 #[inline]
 fn read_cr4() -> u64 {
     // SAFETY: reading CR4 is side-effect free in firmware context.
-    unsafe { fstart_arch_x86::x86::controlregs::cr4().bits() as u64 }
+    unsafe { fstart_arch::x86::controlregs::cr4().bits() as u64 }
 }
 
 fn log_bsp_x86_cache_state(label: &str) {
@@ -1017,8 +1017,8 @@ fn log_bsp_x86_cache_state(label: &str) {
 
     // SAFETY: called on x86_64 BSP immediately before payload handoff.
     unsafe {
-        let cap = fstart_arch_x86::x86::msr::rdmsr(mtrr::IA32_MTRR_CAP);
-        let def_type = fstart_arch_x86::x86::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
+        let cap = fstart_arch::x86::msr::rdmsr(mtrr::IA32_MTRR_CAP);
+        let def_type = fstart_arch::x86::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
         fstart_log::info!("  IA32_MTRR_CAP={:#x}", cap);
         fstart_log::info!("  IA32_MTRR_DEF_TYPE={:#x}", def_type);
 
@@ -1040,7 +1040,7 @@ fn log_bsp_x86_cache_state(label: &str) {
                 fstart_log::info!(
                     "  fixed MTRR {:#x}={:#x}",
                     msr,
-                    fstart_arch_x86::x86::msr::rdmsr(msr)
+                    fstart_arch::x86::msr::rdmsr(msr)
                 );
             }
         } else {

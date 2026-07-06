@@ -11,6 +11,6 @@ pub mod ck505;
 pub mod gm965;
 pub mod gpio_ich;
 pub mod ich8;
-pub mod microcode;
+pub use fstart_arch::cpu_intel::microcode;
 pub mod pmio_ich;
 pub mod smbus;

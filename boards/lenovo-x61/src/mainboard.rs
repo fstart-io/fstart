@@ -71,7 +71,7 @@ pub mod dock {
 
     #[cfg(target_arch = "x86_64")]
     fn delay_us(us: u32) {
-        fstart_arch_x86::udelay(us);
+        fstart_arch::x86::udelay(us);
     }
 
     #[cfg(target_arch = "x86_64")]

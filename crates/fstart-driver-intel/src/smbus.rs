@@ -8,7 +8,7 @@
 //!
 //! Ported from coreboot `src/southbridge/intel/common/smbus.c`.
 
-use fstart_ecam as ecam;
+use fstart_pci::ecam;
 use fstart_pio::{pio_register_structs, PioRegister};
 use fstart_services::{ServiceError, SmBus};
 use tock_registers::interfaces::{Readable, Writeable};

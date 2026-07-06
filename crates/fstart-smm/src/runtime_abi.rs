@@ -1,6 +1,6 @@
 /// Maximum number of CPUs represented in the fixed runtime block.
 ///
-/// This mirrors the current `fstart-mp` static mailbox limit. Boards may
+/// This mirrors the current `fstart_arch::mp` static mailbox limit. Boards may
 /// request fewer precompiled entry points, but they may not exceed this ABI cap
 /// without changing the SMM image format version.
 pub const MAX_SMM_CPUS: usize = 64;

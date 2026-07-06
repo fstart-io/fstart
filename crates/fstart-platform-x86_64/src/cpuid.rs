@@ -18,7 +18,7 @@ pub struct CpuidResult {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn cpuid(leaf: u32, subleaf: u32) -> CpuidResult {
-    let (eax, ebx, ecx, edx) = fstart_arch_x86::cpuid_count(leaf, subleaf);
+    let (eax, ebx, ecx, edx) = fstart_arch::x86::cpuid_count(leaf, subleaf);
     CpuidResult { eax, ebx, ecx, edx }
 }
 

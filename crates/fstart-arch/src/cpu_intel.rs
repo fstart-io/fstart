@@ -3,9 +3,8 @@
 //! Groups per-family CPU initialization and ACPI power-management helpers for
 //! Intel x86 platforms.
 
-#![no_std]
-
 pub mod core2_cpu;
+pub mod microcode;
 pub mod pineview;
 
 #[cfg(feature = "acpi")]
