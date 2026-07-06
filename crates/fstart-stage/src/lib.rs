@@ -1,8 +1,8 @@
 //! Common fixed-flow stage glue.
 //!
-//! Board crates expose a [`FirmwareBoard`] type whose [`StageRecipe`] owns the
-//! handwritten stage sequence. This crate provides shared anchor/allocation
-//! linkage and board-owned entry dispatch.
+//! Board crates expose a stage entry implementation owned by their platform
+//! family flow. This crate provides shared anchor/allocation linkage and the
+//! board-owned entry macro.
 
 #![no_std]
 
@@ -70,25 +70,14 @@ impl StageKind {
 }
 
 /// Static typed firmware board selected by build glue.
-pub trait FirmwareBoard: Sized + 'static {
-    /// Recipe that owns this board family's handwritten stage flow.
-    type Recipe: StageRecipe<Self>;
-
+pub trait StageBoard: Sized + 'static {
     /// Stable fstart board name.
     const NAME: &'static str;
     /// Runtime platform for this board.
     const PLATFORM: fstart_types::Platform;
-}
 
-/// Handwritten stage flow selected by a [`FirmwareBoard`].
-pub trait StageRecipe<B: FirmwareBoard> {
-    /// Run the selected stage.
-    fn run(stage: StageKind, handoff: usize) -> !;
-}
-
-/// Dispatch to the selected board's recipe.
-pub fn run_board<B: FirmwareBoard>(stage: StageKind, handoff: usize) -> ! {
-    <B::Recipe as StageRecipe<B>>::run(stage, handoff)
+    /// Run the selected stage using the board's platform-family flow.
+    fn run_stage(stage: StageKind, handoff: usize) -> !;
 }
 
 /// Declare a board-owned stage entry binary.
@@ -97,7 +86,7 @@ macro_rules! stage_bin {
     ($board:ty) => {
         #[no_mangle]
         pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
-            $crate::run_board::<$board>(
+            <$board as $crate::StageBoard>::run_stage(
                 $crate::StageKind::from_option(option_env!("FSTART_STAGE_NAME")),
                 handoff_ptr,
             )

@@ -1,19 +1,24 @@
-//! GM965/ICH8 platform defaults and recipe traits.
+//! GM965/ICH8 platform defaults and fixed Intel early-flow traits.
 //!
 //! Board crates provide board facts. This crate owns chipset defaults, topology,
-//! stage layout, and the reusable GM965/ICH8 fixed-flow recipe.
+//! stage layout, and the reusable GM965/ICH8 handwritten flow.
 
 #![no_std]
 
-#[cfg(feature = "recipe")]
+#[cfg(feature = "stage")]
 extern crate ufmt;
 
-#[cfg(feature = "recipe")]
-pub mod recipe;
+#[cfg(feature = "stage")]
+pub mod early;
 
 #[cfg(any(feature = "acpi", feature = "smbios"))]
 pub mod tables;
 
+#[cfg(feature = "stage")]
+pub use early::{
+    run_gm965_ich8_mainstage, Gm965Ich8, Gm965Ich8Board, Gm965Ich8Mainstage, IntelEarlyBoard,
+    IntelEarlyBoardHooks, IntelEarlyCtx, IntelEarlyPlatform, IntelPlatform,
+};
 use fstart_driver_intel_gm965 as gm965;
 pub use fstart_driver_intel_gm965::{Gm965IgdConfig, IntelGm965Config};
 use fstart_driver_intel_ich8 as ich8;
@@ -24,12 +29,12 @@ pub use fstart_driver_intel_ich8::{
     SataConfig, SataMode, UsbConfig,
 };
 use fstart_gpio_ich as gpio;
-#[cfg(all(feature = "recipe", feature = "crabefi"))]
+#[cfg(all(feature = "stage", feature = "crabefi"))]
 pub use fstart_stage::payload::X86UefiPayload;
-#[cfg(feature = "recipe")]
+#[cfg(feature = "stage")]
 pub use fstart_stage::{
     payload::{HaltPayload, MainstagePayload},
-    FirmwareBoard, StageKind, StageRecipe,
+    StageBoard, StageKind,
 };
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
@@ -37,8 +42,6 @@ use fstart_types::{
     DeviceRole, FlashLayout, MemoryMap, MemoryRegion, RegionKind, RunsFrom, StageConfig,
     StageLayout, TempRamBuffer,
 };
-#[cfg(feature = "recipe")]
-pub use recipe::{Gm965Ich8Hooks, Gm965Ich8Mainstage, Gm965Ich8Recipe, Gm965Ich8StageBoard};
 use serde::Serialize;
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
@@ -310,7 +313,7 @@ impl Default for Gm965Ich8Config {
         Self::new()
     }
 }
-/// Platform-owned ACPI namespace context for GM965/ICH8 recipes.
+/// Platform-owned ACPI namespace context for GM965/ICH8 flows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gm965Ich8AcpiContext;
 

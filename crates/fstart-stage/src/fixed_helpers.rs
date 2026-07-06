@@ -1,4 +1,4 @@
-//! Reusable pieces for board-owned handwritten stage recipes.
+//! Reusable pieces for board-owned handwritten stage flows.
 
 use fstart_services::boot::BootLinuxParams;
 use fstart_services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};

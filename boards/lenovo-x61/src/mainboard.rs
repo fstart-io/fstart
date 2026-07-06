@@ -10,13 +10,11 @@
 #![allow(clippy::result_unit_err)]
 
 #[cfg(feature = "stage")]
-use fstart_driver_intel_ich8::IntelIch8;
-#[cfg(feature = "stage")]
-use fstart_platform_intel_gm965_ich8::Gm965Ich8Hooks;
+use fstart_platform_intel_gm965_ich8::{Gm965Ich8, IntelEarlyBoardHooks, IntelEarlyCtx};
 #[cfg(feature = "stage")]
 use fstart_services::ServiceError;
 
-/// Board-specific X61 hooks for the GM965/ICH8 recipe.
+/// Board-specific X61 hooks for the GM965/ICH8 flow.
 #[cfg(feature = "stage")]
 pub struct X61Mainboard;
 
@@ -29,24 +27,24 @@ impl X61Mainboard {
 }
 
 #[cfg(feature = "stage")]
-impl Gm965Ich8Hooks for X61Mainboard {
-    fn before_console(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
+    fn before_console(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
         // dock connection failures are non-fatal before the console exists.
         let _ = dock::dlpc_init();
-        if dock::dock_present(ich8) {
+        if dock::dock_present(ctx.southbridge()) {
             let _ = dock::dock_connect();
             dock::early_superio_config();
         }
         Ok(())
     }
 
-    fn after_memory(&mut self, ich8: &mut IntelIch8) -> Result<(), ServiceError> {
-        dock::post_raminit_setup(ich8);
+    fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
+        dock::post_raminit_setup(ctx.southbridge());
         Ok(())
     }
 
-    fn before_handoff(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
+    fn before_handoff(&mut self, _ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
         fstart_superio::quiesce_i8042_for_os();
         Ok(())
     }

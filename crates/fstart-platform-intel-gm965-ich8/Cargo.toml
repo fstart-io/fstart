@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-recipe = [
+stage = [
   "dep:fstart-driver-ns16550",
   "dep:fstart-log",
   "dep:fstart-platform-x86_64",
@@ -16,8 +16,8 @@ recipe = [
   "fstart-services/pci",
 ]
 crabefi = ["fstart-stage/crabefi"]
-acpi = ["recipe", "dep:fstart-acpi"]
-smbios = ["recipe", "dep:fstart-smbios", "dep:fstart-arch-x86"]
+acpi = ["stage", "dep:fstart-acpi"]
+smbios = ["stage", "dep:fstart-smbios", "dep:fstart-arch-x86"]
 
 [dependencies]
 fstart-types = { workspace = true }

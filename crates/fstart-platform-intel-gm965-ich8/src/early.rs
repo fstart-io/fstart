@@ -1,6 +1,4 @@
-//! Reusable GM965/ICH8 fixed-flow stage recipe.
-
-use core::marker::PhantomData;
+//! Fixed GM965/ICH8 Intel early/mainstage flow.
 
 use fstart_driver_intel_gm965::IntelGm965;
 use fstart_driver_intel_ich8::IntelIch8;
@@ -11,23 +9,95 @@ use fstart_stage::fixed_helpers::MemoryMappedFfs;
 use fstart_stage::payload::MainstagePayload;
 #[cfg(feature = "crabefi")]
 use fstart_stage::payload::X86UefiPayloadContext;
-use fstart_stage::{FirmwareBoard, StageKind, StageRecipe};
+use fstart_stage::{StageBoard, StageKind};
 
 use crate::{
     Gm965Ich8AcpiContext, Gm965Ich8Config, GM965_NEXT_STAGE_NAME, GM965_NORTHBRIDGE_NODE,
     GM965_RAMSTAGE_LOAD_ADDR,
 };
 
-/// Platform recipe selected by GM965/ICH8 fixed-flow board crates.
-pub struct Gm965Ich8Recipe<B>(PhantomData<B>);
+/// Marker for Intel platform families with handwritten early flows.
+pub trait IntelPlatform {}
 
-impl<B> StageRecipe<B> for Gm965Ich8Recipe<B>
-where
-    B: Gm965Ich8StageBoard,
-{
-    fn run(stage: StageKind, _handoff: usize) -> ! {
+/// Board contract common to Intel handwritten early flows.
+pub trait IntelEarlyBoard: StageBoard {
+    type Platform: IntelEarlyPlatform;
+    type Hooks: IntelEarlyBoardHooks<Self::Platform>;
+
+    fn hooks() -> Result<Self::Hooks, ServiceError>;
+}
+
+/// Fixed Intel early-flow platform contract.
+pub trait IntelEarlyPlatform: IntelPlatform {
+    type Southbridge;
+    type State: Default;
+}
+
+/// Mutable context passed to board hooks.
+pub struct IntelEarlyCtx<'a, P: IntelEarlyPlatform> {
+    southbridge: &'a mut P::Southbridge,
+}
+
+impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
+    fn new(southbridge: &'a mut P::Southbridge) -> Self {
+        Self { southbridge }
+    }
+
+    #[must_use]
+    pub fn southbridge(&mut self) -> &mut P::Southbridge {
+        self.southbridge
+    }
+}
+
+/// Board hooks at the fixed Intel early-flow seams.
+pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform> {
+    fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn before_memory(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn after_memory(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn before_handoff(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+/// GM965 northbridge + ICH8 southbridge Intel early-flow platform.
+pub struct Gm965Ich8;
+
+impl IntelPlatform for Gm965Ich8 {}
+
+impl IntelEarlyPlatform for Gm965Ich8 {
+    type Southbridge = IntelIch8;
+    type State = ();
+}
+
+impl Gm965Ich8 {
+    pub fn run_early<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
+    where
+        B: Gm965Ich8Board,
+    {
+        run_gm965_ich8_bootblock::<B>(hooks)
+    }
+
+    pub fn run_stage<B>(stage: StageKind, _handoff: usize) -> !
+    where
+        B: Gm965Ich8Board,
+    {
         if stage.is_named("bootblock") {
-            run_gm965_ich8_bootblock::<B>()
+            let Ok(mut hooks) = B::hooks() else {
+                B::halt();
+            };
+            if Self::run_early::<B>(&mut hooks).is_err() {
+                B::halt();
+            }
+            B::halt()
         } else if stage.is_named(GM965_NEXT_STAGE_NAME) {
             run_gm965_ich8_mainstage::<B>()
         } else {
@@ -36,14 +106,12 @@ where
     }
 }
 
-/// Board facts and hooks required by the GM965/ICH8 recipe.
-pub trait Gm965Ich8StageBoard: FirmwareBoard<Recipe = Gm965Ich8Recipe<Self>> {
-    type Hooks: Gm965Ich8Hooks;
+/// Board facts required by the GM965/ICH8 flow.
+pub trait Gm965Ich8Board: IntelEarlyBoard<Platform = Gm965Ich8> {
     type Payload: MainstagePayload<Gm965Ich8Mainstage<Self>>;
 
     fn config() -> &'static Gm965Ich8Config;
     fn ifd_flash_layout() -> fstart_types::IntelIfdFlashLayout;
-    fn hooks() -> Result<Self::Hooks, ServiceError>;
     fn console_config() -> Ns16550Config;
     fn console_node() -> &'static str;
     fn halt() -> !;
@@ -61,7 +129,7 @@ pub trait Gm965Ich8StageBoard: FirmwareBoard<Recipe = Gm965Ich8Recipe<Self>> {
 
 fn firmware_window<B>() -> Result<(u64, usize), ServiceError>
 where
-    B: Gm965Ich8StageBoard,
+    B: Gm965Ich8Board,
 {
     let layout = B::ifd_flash_layout();
     let Some(bios) = layout.bios_region() else {
@@ -76,63 +144,37 @@ where
     Ok((base, bios.size as usize))
 }
 
-/// Board hooks at the fixed GM965/ICH8 flow seams. All methods default to
-/// no-ops that compile away; boards implement only what their hardware needs.
-pub trait Gm965Ich8Hooks {
-    /// Board work needed before the console UART is reachable (Super I/O,
-    /// dock LPC switches).
-    fn before_console(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    /// Board work before memory discovery/training.
-    fn before_memory(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    /// Board work after memory is usable (mux switches, board devices).
-    fn after_memory(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    /// Board lockdown/quiesce before payload handoff.
-    fn before_handoff(&mut self, _ich8: &mut IntelIch8) -> Result<(), ServiceError> {
-        Ok(())
-    }
-}
-
 /// Handwritten fixed GM965/ICH8 bootblock flow. Ordering is this function.
-fn run_gm965_ich8_bootblock<B>() -> !
+fn run_gm965_ich8_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
 where
-    B: Gm965Ich8StageBoard,
+    B: Gm965Ich8Board,
 {
     let config = B::config();
     let Ok((firmware_base, firmware_size)) = firmware_window::<B>() else {
-        B::halt();
+        return Err(ServiceError::NotInitialized);
     };
     let Ok(mut northbridge) = IntelGm965::new(config.northbridge_config()) else {
-        B::halt();
+        return Err(ServiceError::HardwareError);
     };
     let Ok(mut southbridge) = IntelIch8::new(config.southbridge_config()) else {
-        B::halt();
-    };
-    let Ok(mut hooks) = B::hooks() else {
-        B::halt();
+        return Err(ServiceError::HardwareError);
     };
     let ffs = MemoryMappedFfs::new(firmware_base, firmware_size);
 
     if northbridge.pre_console_init().is_err()
         || southbridge.pre_console_init().is_err()
-        || hooks.before_console(&mut southbridge).is_err()
+        || hooks
+            .before_console(&mut IntelEarlyCtx::new(&mut southbridge))
+            .is_err()
     {
-        B::halt();
+        return Err(ServiceError::HardwareError);
     }
 
     let Ok(mut console) = Ns16550::new(B::console_config()) else {
-        B::halt();
+        return Err(ServiceError::HardwareError);
     };
     if console.init().is_err() {
-        B::halt();
+        return Err(ServiceError::HardwareError);
     }
     // SAFETY: this function never returns after installing the stack-owned console.
     let console_ref = &console;
@@ -146,7 +188,7 @@ where
         || ffs.load_file_by_name(GM965_NEXT_STAGE_NAME).is_err()
     {
         fstart_log::error!("gm965/ich8 bootblock failed");
-        B::halt();
+        return Err(ServiceError::HardwareError);
     }
 
     fstart_log::info!("jumping to ramstage at {:#x}", GM965_RAMSTAGE_LOAD_ADDR);
@@ -155,7 +197,7 @@ where
 
 /// GM965/ICH8 mainstage: fixed platform devices bound from typed config and
 /// driven through explicit handwritten phases.
-pub struct Gm965Ich8Mainstage<B: Gm965Ich8StageBoard> {
+pub struct Gm965Ich8Mainstage<B: Gm965Ich8Board> {
     northbridge: IntelGm965,
     southbridge: IntelIch8,
     hooks: B::Hooks,
@@ -170,7 +212,7 @@ pub struct Gm965Ich8Mainstage<B: Gm965Ich8StageBoard> {
 
 impl<B> Gm965Ich8Mainstage<B>
 where
-    B: Gm965Ich8StageBoard,
+    B: Gm965Ich8Board,
 {
     /// Bind fixed platform devices from the board's typed config. No hardware
     /// is touched; construction failures are config errors.
@@ -223,7 +265,8 @@ where
     fn pre_bus_scan(&mut self) -> Result<(), ServiceError> {
         self.northbridge.pre_console_init()?;
         self.southbridge.pre_console_init()?;
-        self.hooks.before_console(&mut self.southbridge)?;
+        self.hooks
+            .before_console(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
 
         self.console
             .init()
@@ -237,7 +280,8 @@ where
         self.northbridge.early_init()?;
         self.southbridge.early_init()?;
 
-        self.hooks.before_memory(&mut self.southbridge)?;
+        self.hooks
+            .before_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
         let count = self.northbridge.detect_memory(&mut self.e820)?;
         let total = self.northbridge.total_ram_bytes()?;
         fstart_log::info!(
@@ -268,7 +312,8 @@ where
     /// post-DRAM functions, board-attached devices, and APs.
     fn init_devices(&mut self) -> Result<(), ServiceError> {
         self.southbridge.post_dram_init()?;
-        self.hooks.after_memory(&mut self.southbridge)?;
+        self.hooks
+            .after_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
         B::init_mp()
     }
 
@@ -281,15 +326,16 @@ where
 
     /// Board lockdown and southbridge quiesce before payload handoff.
     fn finalize(&mut self) -> Result<(), ServiceError> {
-        self.hooks.before_handoff(&mut self.southbridge)?;
+        self.hooks
+            .before_handoff(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
         self.southbridge.finalize_init()
     }
 }
 
 /// Handwritten fixed GM965/ICH8 mainstage flow. Ordering is this function.
-fn run_gm965_ich8_mainstage<B>() -> !
+pub fn run_gm965_ich8_mainstage<B>() -> !
 where
-    B: Gm965Ich8StageBoard,
+    B: Gm965Ich8Board,
 {
     let Ok(mut mainstage) = Gm965Ich8Mainstage::<B>::bind() else {
         B::halt();
@@ -312,7 +358,7 @@ where
 
 fn run_mainstage_phase<B>(name: &str, phase: impl FnOnce() -> Result<(), ServiceError>)
 where
-    B: Gm965Ich8StageBoard,
+    B: Gm965Ich8Board,
 {
     fstart_log::info!("gm965/ich8 mainstage: {}", name);
     if phase().is_err() {
@@ -324,7 +370,7 @@ where
 #[cfg(feature = "crabefi")]
 impl<B> X86UefiPayloadContext for Gm965Ich8Mainstage<B>
 where
-    B: Gm965Ich8StageBoard,
+    B: Gm965Ich8Board,
 {
     fn console(&self) -> Option<&dyn fstart_services::Console> {
         Some(&self.console)

@@ -1,4 +1,4 @@
-//! Lenovo ThinkPad X61 binding for the GM965/ICH8 recipe.
+//! Lenovo ThinkPad X61 binding for the GM965/ICH8 Intel early flow.
 
 #[cfg(feature = "acpi")]
 use fstart_acpi::device::AcpiDevice;
@@ -14,21 +14,31 @@ use fstart_platform_intel_gm965_ich8::X86UefiPayload;
 #[cfg(feature = "mp")]
 use fstart_platform_intel_gm965_ich8::ICH8_PMBASE;
 use fstart_platform_intel_gm965_ich8::{
-    FirmwareBoard, Gm965Ich8Config, Gm965Ich8Recipe, Gm965Ich8StageBoard,
+    Gm965Ich8, Gm965Ich8Board, Gm965Ich8Config, IntelEarlyBoard, StageBoard, StageKind,
 };
 use fstart_services::ServiceError;
 
 use crate::{Board, X61Mainboard};
 
-impl FirmwareBoard for Board {
-    type Recipe = Gm965Ich8Recipe<Self>;
-
+impl StageBoard for Board {
     const NAME: &'static str = crate::BOARD_NAME;
     const PLATFORM: fstart_types::Platform = crate::PLATFORM;
+
+    fn run_stage(stage: StageKind, handoff: usize) -> ! {
+        Gm965Ich8::run_stage::<Self>(stage, handoff)
+    }
 }
 
-impl Gm965Ich8StageBoard for Board {
+impl IntelEarlyBoard for Board {
+    type Platform = Gm965Ich8;
     type Hooks = X61Mainboard;
+
+    fn hooks() -> Result<Self::Hooks, ServiceError> {
+        Ok(X61Mainboard::new())
+    }
+}
+
+impl Gm965Ich8Board for Board {
     #[cfg(not(feature = "crabefi"))]
     type Payload = HaltPayload;
     #[cfg(feature = "crabefi")]
@@ -40,10 +50,6 @@ impl Gm965Ich8StageBoard for Board {
 
     fn ifd_flash_layout() -> fstart_types::IntelIfdFlashLayout {
         crate::x61_ifd_flash_layout()
-    }
-
-    fn hooks() -> Result<Self::Hooks, ServiceError> {
-        Ok(X61Mainboard::new())
     }
 
     fn console_config() -> Ns16550Config {

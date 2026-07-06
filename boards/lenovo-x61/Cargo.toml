@@ -31,7 +31,7 @@ stage = [
   "dep:fstart-driver-ns16550",
   "dep:fstart-platform-x86_64",
   "dep:fstart-stage",
-  "fstart-platform-intel-gm965-ich8/recipe",
+  "fstart-platform-intel-gm965-ich8/stage",
 ]
 x86_64 = ["fstart-stage?/x86_64"]
 x86-static-page-tables = ["fstart-stage?/x86-static-page-tables"]
