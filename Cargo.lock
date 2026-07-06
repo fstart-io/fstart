@@ -711,7 +711,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-log",
  "fstart-pio",
- "heapless",
+ "fstart-types",
  "serde",
  "ufmt",
 ]
@@ -721,7 +721,7 @@ name = "fstart-hda"
 version = "0.1.0"
 dependencies = [
  "fstart-log",
- "heapless",
+ "fstart-types",
  "serde",
  "ufmt",
 ]

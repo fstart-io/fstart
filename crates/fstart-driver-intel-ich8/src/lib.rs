@@ -22,7 +22,7 @@ use fstart_services::{
 };
 use fstart_smbus_intel::I801SmBus;
 use fstart_types::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
-use heapless::Vec as HVec;
+use fstart_types::ConstVec;
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
@@ -826,7 +826,7 @@ impl LpcGenericIoDecode {
 }
 
 /// Board-level LPC decode policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LpcDecodeConfig {
     /// Fixed COM/LPT/FDC decode selector register.
@@ -834,11 +834,32 @@ pub struct LpcDecodeConfig {
     pub fixed_io: LpcFixedIoDecode,
     /// Up to four generic I/O decode windows, programmed to GEN1..GEN4.
     #[serde(default)]
-    pub generic_io: HVec<LpcGenericIoDecode, 4>,
+    pub generic_io: ConstVec<LpcGenericIoDecode, 4>,
+}
+
+impl LpcDecodeConfig {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            fixed_io: LpcFixedIoDecode {
+                com_a: LpcSerialDecode::Com1,
+                com_b: LpcSerialDecode::Com2,
+                lpt: None,
+                fdd: None,
+            },
+            generic_io: ConstVec::new(empty_lpc_generic_io()),
+        }
+    }
+}
+
+impl Default for LpcDecodeConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// ICH8 southbridge configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntelIch8Config {
     /// Root Complex Base Address register value.
@@ -890,7 +911,7 @@ pub struct IntelIch8Config {
     pub pcie_power_limits: [PciePowerLimit; 6],
     /// I/O trap registers to program.
     #[serde(default)]
-    pub io_traps: HVec<IoTrapConfig, 4>,
+    pub io_traps: ConstVec<IoTrapConfig, 4>,
     /// SMBus I/O base.
     #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
@@ -899,7 +920,7 @@ pub struct IntelIch8Config {
     pub gpio: GpioConfig,
     /// ACPI device name (reserved for future ACPI device generation).
     #[serde(default)]
-    pub acpi_name: Option<heapless::String<8>>,
+    pub acpi_name: Option<&'static str>,
     /// C3 latency in microseconds.
     #[serde(default = "default_c3_latency")]
     pub c3_latency: u16,
@@ -920,20 +941,81 @@ pub struct IntelIch8Config {
     pub disable_thermal: bool,
 }
 
-fn default_pcie_ports() -> [bool; 6] {
-    [true, true, true, true, true, true]
+impl IntelIch8Config {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            rcba: 0xFED1_C000,
+            dmibar: 0xFED1_8000,
+            pirq_routing: [0x0b; 8],
+            gpe0_en: 0,
+            gpi_routing: [0; 16],
+            alt_gp_smi_en: 0,
+            c4_on_c3: true,
+            c5_enable: false,
+            c6_enable: false,
+            lpc_decode: LpcDecodeConfig::new(),
+            hda: None,
+            ide: None,
+            sata: None,
+            usb: None,
+            pcie_ports: [true, true, true, true, true, true],
+            pcie_slots: [false; 6],
+            pcie_power_limits: [PciePowerLimit { value: 0, scale: 0 }; 6],
+            io_traps: ConstVec::new(empty_io_trap()),
+            smbus_base: ich8::DEFAULT_SMBUS_BASE,
+            gpio: GpioConfig::new(),
+            acpi_name: Some("LPCB"),
+            c3_latency: 85,
+            power_on_after_fail: 0,
+            throttle_duty: 0,
+            disable_lan: false,
+            disable_sata2: true,
+            disable_thermal: true,
+        }
+    }
 }
 
-fn default_true() -> bool {
-    true
+impl Default for IntelIch8Config {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-fn default_smbus_base() -> u16 {
-    ich8::DEFAULT_SMBUS_BASE
+#[must_use]
+pub const fn valid_lpc_generic_io(range: LpcGenericIoDecode) -> bool {
+    range.base & 0x0003 == 0 && range.size != 0 && range.size <= 0x0100 && range.size & 0x0003 == 0
 }
 
-fn default_c3_latency() -> u16 {
-    85
+#[must_use]
+pub const fn valid_io_trap(trap: IoTrapConfig) -> bool {
+    trap.index <= 3
+        && trap.base & 0x3 == 0
+        && trap.size != 0
+        && trap.size <= 0x100
+        && trap.size & 0x3 == 0
+        && trap.size.is_power_of_two()
+        && trap.base & (trap.size - 1) == 0
+}
+
+#[must_use]
+pub const fn lpc_generic_io_overlaps(a: LpcGenericIoDecode, b: LpcGenericIoDecode) -> bool {
+    let a_end = a.base as u32 + a.size as u32;
+    let b_end = b.base as u32 + b.size as u32;
+    (a.base as u32) < b_end && (b.base as u32) < a_end
+}
+
+const fn empty_lpc_generic_io() -> LpcGenericIoDecode {
+    LpcGenericIoDecode { base: 0, size: 0 }
+}
+
+const fn empty_io_trap() -> IoTrapConfig {
+    IoTrapConfig {
+        index: 0,
+        base: 0,
+        size: 4,
+        access: IoTrapAccess::Any,
+    }
 }
 
 /// Sparse RCBA accessor.
@@ -1134,6 +1216,7 @@ impl IntelIch8 {
             .config
             .lpc_decode
             .generic_io
+            .as_slice()
             .iter()
             .copied()
             .enumerate()
@@ -2026,7 +2109,7 @@ impl IntelIch8 {
 
     fn configure_io_traps(&self) {
         let rcba = self.rcba();
-        for trap in self.config.io_traps.iter().copied() {
+        for trap in self.config.io_traps.as_slice().iter().copied() {
             let Some((low, high)) = trap.encode() else {
                 continue;
             };
@@ -2080,6 +2163,7 @@ impl IntelIch8 {
         if config
             .lpc_decode
             .generic_io
+            .as_slice()
             .iter()
             .copied()
             .any(|range| range.encode().is_none())
@@ -2088,6 +2172,7 @@ impl IntelIch8 {
         }
         if config
             .io_traps
+            .as_slice()
             .iter()
             .copied()
             .any(|trap| trap.encode().is_none())

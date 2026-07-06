@@ -96,10 +96,10 @@ where
     B: Gm965Ich8StageBoard,
 {
     let config = B::config();
-    let Ok(mut northbridge) = IntelGm965::new(config.gm965_driver_config()) else {
+    let Ok(mut northbridge) = IntelGm965::new(config.northbridge) else {
         B::halt();
     };
-    let Ok(mut southbridge) = IntelIch8::new(config.ich8_driver_config()) else {
+    let Ok(mut southbridge) = IntelIch8::new(config.southbridge) else {
         B::halt();
     };
     let Ok(mut hooks) = B::hooks() else {
@@ -162,9 +162,9 @@ where
     fn bind() -> Result<Self, ServiceError> {
         let config = B::config();
         Ok(Self {
-            northbridge: IntelGm965::new(config.gm965_driver_config())
+            northbridge: IntelGm965::new(config.northbridge)
                 .map_err(|_| ServiceError::HardwareError)?,
-            southbridge: IntelIch8::new(config.ich8_driver_config())
+            southbridge: IntelIch8::new(config.southbridge)
                 .map_err(|_| ServiceError::HardwareError)?,
             hooks: B::hooks()?,
             console: Ns16550::new(B::console_config()).map_err(|_| ServiceError::HardwareError)?,

@@ -31,7 +31,7 @@ use fstart_services::memory_detect::{
     build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
 };
 use fstart_services::{MemoryController, PciBdf, PciRootBus, PciWindow, ServiceError};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use tock_registers::{register_bitfields, register_structs};
@@ -577,7 +577,7 @@ impl EpBar {
 }
 
 /// Integrated graphics configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Gm965IgdConfig {
     /// Enable the integrated VGA function (D2:F0).
@@ -594,7 +594,7 @@ pub struct Gm965IgdConfig {
     pub stolen_memory_mb: u16,
     /// Board-relative VBT file path stored as a compressed FFS data file.
     #[serde(default)]
-    pub vbt_file: Option<heapless::String<128>>,
+    pub vbt_file: Option<&'static str>,
     /// Raw VBT physical address, if firmware has staged a `vbt.bin` blob.
     #[serde(default)]
     pub vbt_addr: Option<u64>,
@@ -627,8 +627,9 @@ pub struct Gm965IgdConfig {
     pub duty_cycle: u8,
 }
 
-impl Default for Gm965IgdConfig {
-    fn default() -> Self {
+impl Gm965IgdConfig {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             enable_vga: true,
             enable_pipe_b: true,
@@ -649,43 +650,45 @@ impl Default for Gm965IgdConfig {
     }
 }
 
-fn default_true() -> bool {
-    true
+impl Default for Gm965IgdConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-fn default_gtt_mmio_base() -> u64 {
+const fn default_gtt_mmio_base() -> u64 {
     0xfeb0_0000
 }
 
-fn default_igd_stolen_memory_mb() -> u16 {
+const fn default_igd_stolen_memory_mb() -> u16 {
     32
 }
 
-fn default_legacy_vbt_probe() -> Option<u64> {
+const fn default_legacy_vbt_probe() -> Option<u64> {
     Some(0x000c_0000)
 }
 
-fn default_panel_power_up_delay() -> u16 {
+const fn default_panel_power_up_delay() -> u16 {
     2000
 }
 
-fn default_panel_power_down_delay() -> u16 {
+const fn default_panel_power_down_delay() -> u16 {
     2000
 }
 
-fn default_panel_backlight_on_delay() -> u16 {
+const fn default_panel_backlight_on_delay() -> u16 {
     2000
 }
 
-fn default_panel_backlight_off_delay() -> u16 {
+const fn default_panel_backlight_off_delay() -> u16 {
     2000
 }
 
-fn default_panel_power_cycle_delay() -> u8 {
+const fn default_panel_power_cycle_delay() -> u8 {
     6
 }
 
-fn default_backlight_duty_cycle() -> u8 {
+const fn default_backlight_duty_cycle() -> u8 {
     100
 }
 
@@ -759,7 +762,7 @@ static GM965_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
 ));
 
 /// GM965 northbridge configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntelGm965Config {
     /// MCHBAR base address. X61 uses `0xfed14000`.
@@ -788,23 +791,31 @@ pub struct IntelGm965Config {
     pub spd_addresses: [u8; 4],
     /// ACPI device name (reserved for future ACPI device generation).
     #[serde(default)]
-    pub acpi_name: Option<heapless::String<8>>,
+    pub acpi_name: Option<&'static str>,
 }
 
-fn default_ecam_base() -> u64 {
-    hostbridge::DEFAULT_ECAM_BASE as u64
+impl IntelGm965Config {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            mchbar: 0xFED1_4000,
+            dmibar: 0xFED1_8000,
+            epbar: 0xFED1_9000,
+            ecam_base: hostbridge::DEFAULT_ECAM_BASE as u64,
+            ecam_buses: 64,
+            enable_peg: false,
+            igd: Gm965IgdConfig::new(),
+            smbus_base: 0x0400,
+            spd_addresses: [0x50, 0, 0x51, 0],
+            acpi_name: Some("PCI0"),
+        }
+    }
 }
 
-fn default_ecam_buses() -> u16 {
-    64
-}
-
-fn default_smbus_base() -> u16 {
-    0x0400
-}
-
-fn default_spd_addresses() -> [u8; 4] {
-    [0x50, 0, 0x51, 0]
+impl Default for IntelGm965Config {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Intel GM965 northbridge driver.
@@ -1367,7 +1378,7 @@ impl IntelGm965 {
 
     #[cfg(feature = "ffs-vbt")]
     fn ffs_vbt(&self) -> Option<Vec<u8>> {
-        let file_name = self.config.igd.vbt_file.as_ref()?;
+        let file_name = self.config.igd.vbt_file?;
         let ctx = fstart_services::ffs_context::memory_mapped()?;
         // SAFETY: the selected stage publishes a static anchor and a valid
         // memory-mapped boot-media window when BootMedia runs.
@@ -1389,7 +1400,7 @@ impl IntelGm965 {
                 continue;
             };
             for entry in children {
-                if entry.name.as_str() != file_name.as_str() {
+                if entry.name.as_str() != file_name {
                     continue;
                 }
                 let fstart_types::ffs::EntryContent::File {

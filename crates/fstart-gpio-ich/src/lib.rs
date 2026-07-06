@@ -24,11 +24,11 @@
 //! ```rust
 //! use fstart_gpio_ich::{input, output, GpioConfig, GpioLevel};
 //!
-//! let mut gpio = GpioConfig::default();
-//! gpio.pins.push(output(0, GpioLevel::Low)).ok();
-//! gpio.pins.push(output(6, GpioLevel::Low)).ok();
-//! gpio.pins.push(input(33)).ok();
-//! gpio.pins.push(output(24, GpioLevel::High)).ok();
+//! let gpio = GpioConfig::default()
+//!     .pin(output(0, GpioLevel::Low))
+//!     .pin(output(6, GpioLevel::Low))
+//!     .pin(input(33))
+//!     .pin(output(24, GpioLevel::High));
 //! ```
 //!
 //! Since you only list pins that are GPIO (not Native), the default for
@@ -37,7 +37,7 @@
 #![allow(clippy::derivable_impls)]
 #![no_std]
 
-use heapless::Vec as HVec;
+use fstart_types::ConstVec;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -188,20 +188,41 @@ pub struct GpioPin {
 ///
 /// ```rust
 /// # use fstart_gpio_ich::*;
-/// let mut gpio = GpioConfig::default();
-/// gpio.pins.push(output(0, GpioLevel::Low)).ok();
-/// gpio.pins.push(output(6, GpioLevel::Low)).ok();
-/// gpio.pins.push(output(7, GpioLevel::Low)).ok();
-/// gpio.pins.push(output(8, GpioLevel::Low)).ok();
-/// gpio.pins.push(input(33)).ok();
-/// gpio.pins.push(input(34)).ok();
+/// let gpio = GpioConfig::default()
+///     .pin(output(0, GpioLevel::Low))
+///     .pin(output(6, GpioLevel::Low))
+///     .pin(output(7, GpioLevel::Low))
+///     .pin(output(8, GpioLevel::Low))
+///     .pin(input(33))
+///     .pin(input(34));
 /// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GpioConfig {
     /// Per-pin configurations. Only list pins that differ from defaults.
     #[serde(default)]
-    pub pins: HVec<GpioPin, 76>,
+    pub pins: ConstVec<GpioPin, 76>,
+}
+
+impl GpioConfig {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            pins: ConstVec::new(input(0)),
+        }
+    }
+
+    #[must_use]
+    pub const fn pin(mut self, pin: GpioPin) -> Self {
+        self.pins = self.pins.push(pin);
+        self
+    }
+}
+
+impl Default for GpioConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Construct a GPIO output pad configuration.
@@ -258,7 +279,7 @@ impl GpioRegisters {
             rst_sel: [0; 3],
         };
 
-        for p in &cfg.pins {
+        for p in cfg.pins.as_slice() {
             if p.pin > MAX_GPIO {
                 continue;
             }
@@ -560,18 +581,15 @@ mod tests {
 
     #[test]
     fn single_gpio_output_low() {
-        let mut cfg = GpioConfig::default();
-        cfg.pins
-            .push(GpioPin {
-                pin: 6,
-                mode: GpioMode::Gpio,
-                dir: GpioDir::Output,
-                level: GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: GpioReset::Pwrok,
-            })
-            .ok();
+        let cfg = GpioConfig::default().pin(GpioPin {
+            pin: 6,
+            mode: GpioMode::Gpio,
+            dir: GpioDir::Output,
+            level: GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: GpioReset::Pwrok,
+        });
         let regs = GpioRegisters::from_config(&cfg);
         assert_eq!(regs.use_sel[0], 1 << 6); // GPIO mode
         assert_eq!(regs.io_sel[0], 0); // output
@@ -580,18 +598,15 @@ mod tests {
 
     #[test]
     fn gpio_input_pin_33() {
-        let mut cfg = GpioConfig::default();
-        cfg.pins
-            .push(GpioPin {
-                pin: 33,
-                mode: GpioMode::Gpio,
-                dir: GpioDir::Input,
-                level: GpioLevel::Low,
-                blink: false,
-                invert: false,
-                reset: GpioReset::Pwrok,
-            })
-            .ok();
+        let cfg = GpioConfig::default().pin(GpioPin {
+            pin: 33,
+            mode: GpioMode::Gpio,
+            dir: GpioDir::Input,
+            level: GpioLevel::Low,
+            blink: false,
+            invert: false,
+            reset: GpioReset::Pwrok,
+        });
         let regs = GpioRegisters::from_config(&cfg);
         // Pin 33 → set 1 (index 1), bit 1.
         assert_eq!(regs.use_sel[1], 1 << 1);
@@ -608,31 +623,27 @@ mod tests {
 
         // Set 1: GPIO outputs, low.
         for pin in [0, 6, 7, 8, 9, 10, 12, 13, 14, 15, 24, 25, 26, 27, 28] {
-            cfg.pins
-                .push(GpioPin {
-                    pin,
-                    mode: GpioMode::Gpio,
-                    dir: GpioDir::Output,
-                    level: GpioLevel::Low,
-                    blink: false,
-                    invert: false,
-                    reset: GpioReset::Pwrok,
-                })
-                .ok();
+            cfg = cfg.pin(GpioPin {
+                pin,
+                mode: GpioMode::Gpio,
+                dir: GpioDir::Output,
+                level: GpioLevel::Low,
+                blink: false,
+                invert: false,
+                reset: GpioReset::Pwrok,
+            });
         }
         // Set 2: GPIO inputs.
         for pin in [33, 34, 38, 39] {
-            cfg.pins
-                .push(GpioPin {
-                    pin,
-                    mode: GpioMode::Gpio,
-                    dir: GpioDir::Input,
-                    level: GpioLevel::Low,
-                    blink: false,
-                    invert: false,
-                    reset: GpioReset::Pwrok,
-                })
-                .ok();
+            cfg = cfg.pin(GpioPin {
+                pin,
+                mode: GpioMode::Gpio,
+                dir: GpioDir::Input,
+                level: GpioLevel::Low,
+                blink: false,
+                invert: false,
+                reset: GpioReset::Pwrok,
+            });
         }
 
         let regs = GpioRegisters::from_config(&cfg);
@@ -652,10 +663,9 @@ mod tests {
 
     #[test]
     fn blink_and_invert_only_set1() {
-        let mut cfg = GpioConfig::default();
-        // Pin 3 with blink.
-        cfg.pins
-            .push(GpioPin {
+        let cfg = GpioConfig::default()
+            // Pin 3 with blink.
+            .pin(GpioPin {
                 pin: 3,
                 mode: GpioMode::Gpio,
                 dir: GpioDir::Output,
@@ -664,10 +674,8 @@ mod tests {
                 invert: false,
                 reset: GpioReset::Pwrok,
             })
-            .ok();
-        // Pin 40 with blink — should be ignored (set 2).
-        cfg.pins
-            .push(GpioPin {
+            // Pin 40 with blink — should be ignored (set 2).
+            .pin(GpioPin {
                 pin: 40,
                 mode: GpioMode::Gpio,
                 dir: GpioDir::Output,
@@ -675,8 +683,7 @@ mod tests {
                 blink: true,
                 invert: true,
                 reset: GpioReset::Pwrok,
-            })
-            .ok();
+            });
 
         let regs = GpioRegisters::from_config(&cfg);
         assert_eq!(regs.blink, 1 << 3); // only set 1 pin
@@ -685,18 +692,15 @@ mod tests {
 
     #[test]
     fn rsmrst_reset_type() {
-        let mut cfg = GpioConfig::default();
-        cfg.pins
-            .push(GpioPin {
-                pin: 10,
-                mode: GpioMode::Gpio,
-                dir: GpioDir::Output,
-                level: GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: GpioReset::Rsmrst,
-            })
-            .ok();
+        let cfg = GpioConfig::default().pin(GpioPin {
+            pin: 10,
+            mode: GpioMode::Gpio,
+            dir: GpioDir::Output,
+            level: GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: GpioReset::Rsmrst,
+        });
         let regs = GpioRegisters::from_config(&cfg);
         assert_eq!(regs.use_sel[0], 1 << 10);
         assert_eq!(regs.lvl[0], 1 << 10); // high
@@ -705,18 +709,15 @@ mod tests {
 
     #[test]
     fn pin_out_of_range_ignored() {
-        let mut cfg = GpioConfig::default();
-        cfg.pins
-            .push(GpioPin {
-                pin: 80, // invalid
-                mode: GpioMode::Gpio,
-                dir: GpioDir::Output,
-                level: GpioLevel::High,
-                blink: false,
-                invert: false,
-                reset: GpioReset::Pwrok,
-            })
-            .ok();
+        let cfg = GpioConfig::default().pin(GpioPin {
+            pin: 80, // invalid
+            mode: GpioMode::Gpio,
+            dir: GpioDir::Output,
+            level: GpioLevel::High,
+            blink: false,
+            invert: false,
+            reset: GpioReset::Pwrok,
+        });
         let regs = GpioRegisters::from_config(&cfg);
         for i in 0..3 {
             assert_eq!(regs.use_sel[i], 0);

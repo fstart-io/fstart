@@ -50,7 +50,7 @@
 
 use core::ptr;
 
-use heapless::Vec as HVec;
+use fstart_types::ConstVec;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -500,7 +500,7 @@ pub const fn hda_get_param(codec: u32, nid: u32, param: u32) -> u32 {
 ///     0x00c3b027,  // NID 0x0C: amp gain
 /// ])
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HdaVerbTable {
     /// Codec vendor/device ID (e.g. `0x10ec0662` for Realtek ALC662).
@@ -510,23 +510,68 @@ pub struct HdaVerbTable {
     /// Per-pin configurations. Expanded into SET_CONFIGURATION_DEFAULT
     /// verbs at setup time.
     #[serde(default)]
-    pub pins: HVec<PinConfig, 16>,
+    pub pins: ConstVec<PinConfig, 16>,
     /// Additional raw 32-bit verbs (amp gains, power states, EAPD, etc.)
     /// sent after pin configs.
     #[serde(default)]
-    pub extra_verbs: HVec<u32, 32>,
+    pub extra_verbs: ConstVec<u32, 32>,
 }
 
 /// HD Audio configuration block for a board.
 ///
 /// Contains verb tables for all codecs present on the board.
 /// Placed in the southbridge/chipset driver config in Rust board metadata.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HdaConfig {
     /// Codec verb tables.  Up to 4 codecs on one HDA link.
     #[serde(default)]
-    pub verbs: HVec<HdaVerbTable, 4>,
+    pub verbs: ConstVec<HdaVerbTable, 4>,
+}
+
+impl HdaConfig {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            verbs: ConstVec::new(HdaVerbTable::new(0, 0)),
+        }
+    }
+
+    #[must_use]
+    pub const fn verb(mut self, verb: HdaVerbTable) -> Self {
+        self.verbs = self.verbs.push(verb);
+        self
+    }
+}
+
+impl Default for HdaConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HdaVerbTable {
+    #[must_use]
+    pub const fn new(vendor_id: u32, subsystem_id: u32) -> Self {
+        Self {
+            vendor_id,
+            subsystem_id,
+            pins: ConstVec::new(pin_not_connected(0, 0)),
+            extra_verbs: ConstVec::new(0),
+        }
+    }
+
+    #[must_use]
+    pub const fn pin(mut self, pin: PinConfig) -> Self {
+        self.pins = self.pins.push(pin);
+        self
+    }
+
+    #[must_use]
+    pub const fn extra_verb(mut self, verb: u32) -> Self {
+        self.extra_verbs = self.extra_verbs.push(verb);
+        self
+    }
 }
 
 /// Construct a typed HDA pin configuration for board metadata.
@@ -749,7 +794,7 @@ impl HdaController {
             };
 
             let mut found = false;
-            for table in &config.verbs {
+            for table in config.verbs.as_slice() {
                 if table.vendor_id == viddid {
                     fstart_log::info!(
                         "hda: codec {} = {:#010x}, {} pins + {} extra verbs",
@@ -766,7 +811,7 @@ impl HdaController {
                     }
 
                     // 2. Program pin configs from typed descriptors.
-                    for pin in &table.pins {
+                    for pin in table.pins.as_slice() {
                         let verbs = hda_pin_cfg(addr as u32, pin.nid as u32, pin.encode());
                         for &v in &verbs {
                             if self.send_verb(v).is_none() {
@@ -776,7 +821,7 @@ impl HdaController {
                     }
 
                     // 3. Send extra raw verbs (amp gains, power states, etc.)
-                    for &verb in &table.extra_verbs {
+                    for &verb in table.extra_verbs.as_slice() {
                         if self.send_verb(verb).is_none() {
                             fstart_log::error!("hda: extra verb {:#010x} timeout", verb);
                         }

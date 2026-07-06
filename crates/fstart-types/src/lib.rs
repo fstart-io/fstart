@@ -10,6 +10,7 @@
 pub mod acpi;
 pub mod board;
 pub mod builder;
+pub mod const_vec;
 pub mod device;
 pub mod ffs;
 pub mod handoff;
@@ -33,6 +34,7 @@ pub use builder::{
     DeviceBranch, DeviceTopology, I2cChild, LpcChild, PciChild, SmbusChild, SpiChild,
     TopologyChild,
 };
+pub use const_vec::ConstVec;
 pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode, DeviceRole};
 pub use ffs::{
     AnchorBlock, Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, Region,

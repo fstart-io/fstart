@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 fstart-log = { workspace = true }
-heapless = { workspace = true }
+fstart-types = { workspace = true }
 serde = { workspace = true }
 ufmt = { workspace = true }
 
