@@ -24,13 +24,13 @@ pub use fstart_driver_intel_ich8::{
     SataConfig, SataMode, UsbConfig,
 };
 use fstart_gpio_ich as gpio;
+#[cfg(all(feature = "recipe", feature = "crabefi"))]
+pub use fstart_stage::payload::X86UefiPayload;
 #[cfg(feature = "recipe")]
 pub use fstart_stage::{
     payload::{HaltPayload, MainstagePayload},
     FirmwareBoard, StageKind, StageRecipe,
 };
-#[cfg(all(feature = "recipe", feature = "crabefi"))]
-pub use fstart_stage::payload::X86UefiPayload;
 use fstart_types::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_types::{
     hstr, hvec, BootMedium, Capability, CarConfig, Compression, DeviceRole, DeviceTopology,
@@ -196,33 +196,46 @@ impl Gm965Ich8Config {
             }
         }
 
-        let generic_io = &self.southbridge.lpc_decode.generic_io;
-        let mut idx = 0;
-        while idx < generic_io.len() {
-            let range = generic_io.get(idx);
-            if !ich8::valid_lpc_generic_io(range) {
-                panic!("ICH8 LPC generic I/O decode is invalid");
-            }
-
-            let mut next = idx + 1;
-            while next < generic_io.len() {
-                if ich8::lpc_generic_io_overlaps(range, generic_io.get(next)) {
-                    panic!("ICH8 LPC generic I/O decodes overlap");
-                }
-                next += 1;
-            }
-            idx += 1;
-        }
-
-        idx = 0;
-        while idx < self.southbridge.io_traps.len() {
-            if !ich8::valid_io_trap(self.southbridge.io_traps.get(idx)) {
-                panic!("ICH8 I/O trap is invalid");
-            }
-            idx += 1;
-        }
+        validate_lpc_generic_io_decodes(&self.southbridge.lpc_decode.generic_io);
+        validate_io_traps(&self.southbridge.io_traps);
 
         self
+    }
+}
+
+const fn validate_lpc_generic_io_decodes(decodes: &fstart_types::ConstVec<LpcGenericIoDecode, 4>) {
+    if konst::iter::eval!(
+        0..decodes.len(),
+        any(|idx| { !ich8::valid_lpc_generic_io(decodes.get(idx)) })
+    ) {
+        panic!("ICH8 LPC generic I/O decode is invalid");
+    }
+
+    if konst::iter::eval!(
+        0..decodes.len(),
+        any(|idx| { lpc_generic_io_overlaps_later(decodes, idx) })
+    ) {
+        panic!("ICH8 LPC generic I/O decodes overlap");
+    }
+}
+
+const fn lpc_generic_io_overlaps_later(
+    decodes: &fstart_types::ConstVec<LpcGenericIoDecode, 4>,
+    idx: usize,
+) -> bool {
+    let decode = decodes.get(idx);
+    konst::iter::eval!(
+        idx + 1..decodes.len(),
+        any(|next_idx| { ich8::lpc_generic_io_overlaps(decode, decodes.get(next_idx)) })
+    )
+}
+
+const fn validate_io_traps(traps: &fstart_types::ConstVec<IoTrapConfig, 4>) {
+    if konst::iter::eval!(
+        0..traps.len(),
+        any(|idx| { !ich8::valid_io_trap(traps.get(idx)) })
+    ) {
+        panic!("ICH8 I/O trap is invalid");
     }
 }
 

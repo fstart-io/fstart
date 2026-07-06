@@ -69,6 +69,7 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 # Embedded / no_std utilities
 embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", default-features = false, features = ["serde"] }
+konst = { version = "0.4", default-features = false, features = ["iter"] }
 ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
