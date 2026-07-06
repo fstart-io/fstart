@@ -2,7 +2,6 @@
 
 use fstart_driver_intel_ich8::smm::Ich8SmmHandler;
 use fstart_smm_runtime::{SmmBoardHandler, SmmContext, SMM_PLATFORM_INTEL_ICH};
-use fstart_smm_stage::SmmStageBoard;
 
 use crate::{mainboard::dock, Board};
 
@@ -31,18 +30,8 @@ impl SmmBoardHandler for LenovoX61SmmHandler {
     }
 }
 
-impl SmmStageBoard for Board {
-    const PLATFORM_KIND: u32 = SMM_PLATFORM_INTEL_ICH;
-    type Handler = Ich8SmmHandler<LenovoX61SmmHandler>;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn fstart_smm_handler(params: *mut fstart_smm_stage::SmmEntryParams) {
-    // SAFETY: the SMM image trampoline provides the raw entry params.
-    unsafe { fstart_smm_stage::handle::<Board>(params) }
-}
-
-#[used]
-#[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
-static FSTART_SMM_KEEP: unsafe extern "C" fn(*mut fstart_smm_stage::SmmEntryParams) =
-    fstart_smm_handler;
+fstart_smm_stage::smm_bin!(
+    Board,
+    SMM_PLATFORM_INTEL_ICH,
+    Ich8SmmHandler<LenovoX61SmmHandler>
+);

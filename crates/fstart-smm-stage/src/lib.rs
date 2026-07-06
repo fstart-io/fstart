@@ -30,6 +30,28 @@ pub trait SmmStageBoard {
     type Handler: SmmHandler;
 }
 
+/// Declare a board-owned SMM handler entry.
+#[macro_export]
+macro_rules! smm_bin {
+    ($board:ty, $platform_kind:expr, $handler:ty) => {
+        impl $crate::SmmStageBoard for $board {
+            const PLATFORM_KIND: u32 = $platform_kind;
+            type Handler = $handler;
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn fstart_smm_handler(params: *mut $crate::SmmEntryParams) {
+            // SAFETY: the SMM image trampoline provides the raw entry params.
+            unsafe { $crate::handle::<$board>(params) }
+        }
+
+        #[used]
+        #[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+        static FSTART_SMM_KEEP: unsafe extern "C" fn(*mut $crate::SmmEntryParams) =
+            fstart_smm_handler;
+    };
+}
+
 /// Dispatch one SMM entry through the selected board's handler.
 ///
 /// # Safety
