@@ -11,8 +11,8 @@ extern crate fstart_alloc;
 
 extern crate fstart_runtime;
 
-// Link the platform crate so its entry-point/global asm reaches the stage
-// binary; the generated wrapper must not name platforms.
+// Link the platform crate so its entry-point/global asm reaches the board-owned
+// stage_bin! binary.
 #[cfg(feature = "x86_64")]
 extern crate fstart_platform_x86_64;
 
@@ -53,7 +53,7 @@ pub enum StageKind {
 }
 
 impl StageKind {
-    /// Convert the optional `FSTART_STAGE_NAME` value passed by generated wrappers.
+    /// Convert the optional `FSTART_STAGE_NAME` value passed by build glue.
     #[must_use]
     pub const fn from_option(name: Option<&'static str>) -> Self {
         match name {

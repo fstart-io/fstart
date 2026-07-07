@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-  "boards/lenovo-x61",
   "xtask",
   "crates/fstart-core",
   "crates/fstart-platform-intel-gm965-ich8",
@@ -26,8 +25,9 @@ members = [
   "crates/fstart-smm",
   "crates/fstart-smm-runtime",
   "crates/fstart-smm-stage",
+  "crates/fstart-crabefi",
 ]
-exclude = ["attic"]
+exclude = ["attic", "boards/lenovo-x61"]
 
 [workspace.package]
 version = "0.1.0"
@@ -84,7 +84,7 @@ fstart-arch = { path = "crates/fstart-arch" }
 fstart-driver-intel = { path = "crates/fstart-driver-intel" }
 fstart-driver-superio = { path = "crates/fstart-driver-superio" }
 fstart-driver-uart = { path = "crates/fstart-driver-uart" }
-fstart-crabefi = { path = "attic/crates/fstart-crabefi" }
+fstart-crabefi = { path = "crates/fstart-crabefi" }
 fstart-stage = { path = "crates/fstart-stage" }
 fstart-fit = { path = "crates/fstart-fit" }
 fstart-acpi = { path = "crates/fstart-acpi" }

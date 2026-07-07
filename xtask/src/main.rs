@@ -235,12 +235,18 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
 fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
     let workspace_root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&workspace_root, board)?;
+    let selected_workspace =
+        build_board::prepare_selected_board_workspace(&workspace_root, &manifest)?;
     let status = std::process::Command::new("cargo")
         .current_dir(&workspace_root)
         .arg("run")
         .arg("--quiet")
         .arg("--manifest-path")
-        .arg(manifest.dir.join("Cargo.toml"))
+        .arg(selected_workspace.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(workspace_root.join("target"))
+        .arg("--package")
+        .arg(&manifest.package)
         .arg("--bin")
         .arg("fstart-host")
         .arg("--features")

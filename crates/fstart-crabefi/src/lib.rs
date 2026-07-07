@@ -18,7 +18,7 @@ pub type RuntimeRegion = crabefi::RuntimeRegion;
 
 /// fstart-owned UEFI payload configuration.
 ///
-/// This keeps generated fstart code independent of CrabEFI internals and only
+/// This keeps fstart stage code independent of CrabEFI internals and only
 /// exposes the fields fstart boards currently support.
 pub struct PlatformConfig<'a> {
     /// Physical memory map describing RAM, MMIO, and reserved regions.

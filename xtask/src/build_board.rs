@@ -183,11 +183,13 @@ fn build_board_smm_stage(
         .join(&board_manifest.board)
         .join("cargo");
 
+    let selected_workspace = prepare_selected_board_workspace(workspace_root, board_manifest)?;
+
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root)
         .arg("rustc")
         .arg("--manifest-path")
-        .arg(board_manifest.dir.join("Cargo.toml"))
+        .arg(selected_workspace.join("Cargo.toml"))
         .arg("--package")
         .arg(&board_manifest.package)
         .arg("--lib")
@@ -231,6 +233,73 @@ fn build_board_smm_stage(
             .join(&board_manifest.board)
             .join("link"),
     })
+}
+
+pub fn prepare_selected_board_workspace(
+    workspace_root: &Path,
+    board_manifest: &crate::board_manifest::BoardManifest,
+) -> Result<PathBuf, String> {
+    let selected = workspace_root
+        .join("target")
+        .join("fstart-workspaces")
+        .join(&board_manifest.board);
+    fs::create_dir_all(selected.join("boards"))
+        .map_err(|e| format!("failed to create selected board workspace: {e}"))?;
+
+    replace_with_symlink(workspace_root.join("crates"), selected.join("crates"))?;
+    replace_with_symlink(workspace_root.join("xtask"), selected.join("xtask"))?;
+    replace_with_symlink(
+        workspace_root.join("Cargo.lock"),
+        selected.join("Cargo.lock"),
+    )?;
+    replace_with_symlink(
+        board_manifest.dir.clone(),
+        selected.join("boards").join(&board_manifest.board),
+    )?;
+
+    let root_manifest = fs::read_to_string(workspace_root.join("Cargo.toml"))
+        .map_err(|e| format!("failed to read root Cargo.toml: {e}"))?;
+    let manifest = selected_workspace_manifest(&root_manifest, &board_manifest.board)?;
+    fs::write(selected.join("Cargo.toml"), manifest)
+        .map_err(|e| format!("failed to write selected board workspace manifest: {e}"))?;
+    Ok(selected)
+}
+
+fn replace_with_symlink(target: PathBuf, link: PathBuf) -> Result<(), String> {
+    if link.exists() || link.is_symlink() {
+        fs::remove_file(&link)
+            .or_else(|_| fs::remove_dir(&link))
+            .map_err(|e| format!("failed to replace {}: {e}", link.display()))?;
+    }
+    std::os::unix::fs::symlink(&target, &link).map_err(|e| {
+        format!(
+            "failed to symlink {} -> {}: {e}",
+            link.display(),
+            target.display()
+        )
+    })
+}
+
+fn selected_workspace_manifest(root_manifest: &str, board: &str) -> Result<String, String> {
+    let members_start = root_manifest
+        .find("members = [")
+        .ok_or_else(|| "root Cargo.toml has no workspace members list".to_string())?;
+    let members_end = root_manifest[members_start..]
+        .find("]\n")
+        .map(|offset| members_start + offset + 2)
+        .ok_or_else(|| "root Cargo.toml workspace members list is unterminated".to_string())?;
+
+    let mut manifest = String::new();
+    manifest.push_str(&root_manifest[..members_start]);
+    manifest.push_str(&format!("members = [\n  \"boards/{board}\",\n]\n"));
+    manifest.push_str(&root_manifest[members_end..]);
+    manifest = manifest
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("exclude = "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    manifest.push('\n');
+    Ok(manifest)
 }
 
 fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
@@ -309,11 +378,13 @@ fn build_one_stage(
         format!("stage,{features}")
     };
 
+    let selected_workspace = prepare_selected_board_workspace(workspace_root, board_manifest)?;
+
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root);
     cmd.arg("build");
     cmd.arg("--manifest-path")
-        .arg(board_manifest.dir.join("Cargo.toml"))
+        .arg(selected_workspace.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(workspace_root.join("target"));
     cmd.arg("--package").arg(&board_manifest.package);

@@ -491,27 +491,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-lenovo-x61"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-acpi-macros",
- "fstart-arch",
- "fstart-core",
- "fstart-driver-intel",
- "fstart-driver-superio",
- "fstart-driver-uart",
- "fstart-hda",
- "fstart-platform-intel-gm965-ich8",
- "fstart-platform-x86_64",
- "fstart-smbios",
- "fstart-smm-runtime",
- "fstart-smm-stage",
- "fstart-stage",
- "xtask",
-]
-
-[[package]]
 name = "fstart-capabilities"
 version = "0.1.0"
 dependencies = [
