@@ -2,8 +2,8 @@
 
 use fstart_core::services::memory_detect::{E820Entry, MemoryDetector, MAX_E820_ENTRIES};
 use fstart_core::services::{MemoryController, ServiceError};
-use fstart_driver_intel::gm965::IntelGm965;
-use fstart_driver_intel::ich8::IntelIch8;
+use fstart_driver_intel::gm965::{IntelGm965, IntelGm965Config};
+use fstart_driver_intel::ich8::{IntelIch8, IntelIch8Config};
 use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
 use fstart_pci::PciRootBus;
 use fstart_stage::fixed_helpers::MemoryMappedFfs;
@@ -135,7 +135,15 @@ impl Gm965Ich8 {
 pub trait Gm965Ich8Board: IntelEarlyBoard<Platform = Gm965Ich8> {
     type Payload: MainstagePayload<Gm965Ich8Mainstage<Self>>;
 
-    fn config() -> &'static Gm965Ich8Config;
+    /// Board platform policy. Points at a board `static` so the config lives
+    /// in `.rodata`, never on the early-stage stack.
+    const CONFIG: &'static Gm965Ich8Config;
+
+    /// Derived driver configs, const-evaluated into `.rodata`. Boards do not
+    /// override these.
+    const NB_CONFIG: &'static IntelGm965Config = &Self::CONFIG.northbridge_config();
+    const SB_CONFIG: &'static IntelIch8Config = &Self::CONFIG.southbridge_config();
+
     fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout;
     fn console_config() -> Ns16550Config;
     fn console_node() -> &'static str;
@@ -246,14 +254,13 @@ fn run_gm965_ich8_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
 where
     B: Gm965Ich8Board,
 {
-    let config = B::config();
     let Ok((firmware_base, firmware_size)) = firmware_window::<B>() else {
         return Err(ServiceError::NotInitialized);
     };
-    let Ok(mut northbridge) = IntelGm965::new(config.northbridge_config()) else {
+    let Ok(mut northbridge) = IntelGm965::new(B::NB_CONFIG) else {
         return Err(ServiceError::HardwareError);
     };
-    let Ok(mut southbridge) = IntelIch8::new(config.southbridge_config()) else {
+    let Ok(mut southbridge) = IntelIch8::new(B::SB_CONFIG) else {
         return Err(ServiceError::HardwareError);
     };
     let ffs = MemoryMappedFfs::new(firmware_base, firmware_size);
@@ -368,13 +375,10 @@ where
     /// Bind fixed platform devices from the board's typed config. No hardware
     /// is touched; construction failures are config errors.
     fn bind() -> Result<Self, ServiceError> {
-        let config = B::config();
         let (firmware_base, firmware_size) = firmware_window::<B>()?;
         Ok(Self {
-            northbridge: IntelGm965::new(config.northbridge_config())
-                .map_err(|_| ServiceError::HardwareError)?,
-            southbridge: IntelIch8::new(config.southbridge_config())
-                .map_err(|_| ServiceError::HardwareError)?,
+            northbridge: IntelGm965::new(B::NB_CONFIG).map_err(|_| ServiceError::HardwareError)?,
+            southbridge: IntelIch8::new(B::SB_CONFIG).map_err(|_| ServiceError::HardwareError)?,
             hooks: B::hooks()?,
             console: Ns16550::new(B::console_config()).map_err(|_| ServiceError::HardwareError)?,
             ctx: MainstageCtx::new(firmware_base, firmware_size),
@@ -439,7 +443,7 @@ where
         self.hooks
             .after_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
         #[cfg(feature = "mp")]
-        init_mp(B::config())?;
+        init_mp(B::CONFIG)?;
         Ok(())
     }
 

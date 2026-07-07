@@ -94,6 +94,15 @@ mainboard code), and both existing repos already validated it: old fstart's
 X61 `platform_config()` and fstart-new's hooks traits are each half of this
 shape.
 
+**Config lives in `.rodata`, never on the early-stage stack.** Early stages
+run on tiny CAR/SRAM stacks. Board config is a `static`; the flow trait
+exposes it as `const CONFIG: &'static Config`, derived per-driver configs are
+const-evaluated associated consts (`const NB_CONFIG: &'static _ =
+&Self::CONFIG.northbridge_config()`), and drivers hold `&'static Config` —
+not by-value copies. No config transform functions may run at runtime in the
+pre-DRAM path; if `objdump` shows a `*_config` function in the bootblock
+`.text`, that is a regression.
+
 ## No generic device graph
 
 `fstart-core` does not own a universal hardware graph, stringly properties,

@@ -819,8 +819,11 @@ impl Default for IntelGm965Config {
 }
 
 /// Intel GM965 northbridge driver.
+///
+/// Holds its config by `&'static` reference so early stages keep the config
+/// in `.rodata` instead of copying it onto the tiny CAR stack.
 pub struct IntelGm965 {
-    config: IntelGm965Config,
+    config: &'static IntelGm965Config,
     detected_size: u64,
     pci: Option<PciEcam>,
 }
@@ -1745,7 +1748,10 @@ impl IntelGm965 {
 
 impl IntelGm965 {
     /// Construct from typed config. Does NOT touch hardware.
-    pub fn new(config: IntelGm965Config) -> Result<Self, DeviceError> {
+    ///
+    /// Takes `&'static` config so early stages keep it in `.rodata` instead
+    /// of copying it onto the tiny CAR stack.
+    pub fn new(config: &'static IntelGm965Config) -> Result<Self, DeviceError> {
         Ok(Self {
             config,
             detected_size: 0,
@@ -1755,8 +1761,8 @@ impl IntelGm965 {
 
     /// Runtime config used by this driver instance.
     #[must_use]
-    pub const fn config(&self) -> &IntelGm965Config {
-        &self.config
+    pub const fn config(&self) -> &'static IntelGm965Config {
+        self.config
     }
 
     /// Bootblock pre-console setup: enable ECAM so PCI config is reachable.

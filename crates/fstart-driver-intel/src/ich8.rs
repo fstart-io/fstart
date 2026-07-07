@@ -1049,7 +1049,7 @@ impl Rcba {
 
 /// Intel ICH8 southbridge driver.
 pub struct IntelIch8 {
-    config: IntelIch8Config,
+    config: &'static IntelIch8Config,
     smbus: Option<I801SmBus>,
     pm: PmIo,
 }
@@ -2158,7 +2158,10 @@ impl IntelIch8 {
 
 impl IntelIch8 {
     /// Construct from typed config. Does NOT touch hardware.
-    pub fn new(config: IntelIch8Config) -> Result<Self, DeviceError> {
+    ///
+    /// Takes `&'static` config so early stages keep it in `.rodata` instead
+    /// of copying it onto the tiny CAR stack.
+    pub fn new(config: &'static IntelIch8Config) -> Result<Self, DeviceError> {
         if config
             .lpc_decode
             .generic_io
@@ -2188,8 +2191,8 @@ impl IntelIch8 {
 
     /// Runtime config used by this driver instance.
     #[must_use]
-    pub const fn config(&self) -> &IntelIch8Config {
-        &self.config
+    pub const fn config(&self) -> &'static IntelIch8Config {
+        self.config
     }
 
     /// Bootblock pre-console setup: SPI prefetch, fixed BARs, watchdog/CMOS,
