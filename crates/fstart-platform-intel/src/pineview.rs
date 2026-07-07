@@ -480,7 +480,7 @@ mod stage {
     use fstart_driver_intel::pineview::IntelPineview;
     use fstart_driver_uart::ns16550::Ns16550Config;
     use fstart_stage::payload::MainstagePayload;
-    use fstart_stage::StageKind;
+    use fstart_stage::StageEnvironment;
 
     /// PINEVIEW northbridge + ICH7 southbridge Intel early-flow platform.
     pub struct PineviewIch7;
@@ -502,11 +502,14 @@ mod stage {
             run_pineview_ich7_bootblock::<B>(hooks)
         }
 
-        pub fn run_stage<B>(stage: StageKind, _handoff: usize) -> !
+        pub fn run_stage<B>(env: StageEnvironment, _handoff: usize) -> !
         where
             B: PineviewIch7Board,
         {
-            if stage.is_named("bootblock") {
+            let _ = env;
+
+            #[cfg(fstart_stage_env = "car")]
+            {
                 let Ok(mut hooks) = B::hooks() else {
                     B::halt();
                 };
@@ -514,10 +517,28 @@ mod stage {
                     B::halt();
                 }
                 B::halt()
-            } else if stage.is_named(PINEVIEW_NEXT_STAGE_NAME) {
+            }
+
+            #[cfg(fstart_stage_env = "ram")]
+            {
                 run_pineview_ich7_mainstage::<B>()
-            } else {
-                B::halt()
+            }
+
+            #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
+            {
+                match env {
+                    StageEnvironment::Car => {
+                        let Ok(mut hooks) = B::hooks() else {
+                            B::halt();
+                        };
+                        if Self::run_early::<B>(&mut hooks).is_err() {
+                            B::halt();
+                        }
+                        B::halt()
+                    }
+                    StageEnvironment::Ram => run_pineview_ich7_mainstage::<B>(),
+                    StageEnvironment::Monolithic => B::halt(),
+                }
             }
         }
     }

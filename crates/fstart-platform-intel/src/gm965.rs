@@ -540,7 +540,7 @@ mod stage {
     use fstart_driver_intel::ich8::IntelIch8;
     use fstart_driver_uart::ns16550::Ns16550Config;
     use fstart_stage::payload::MainstagePayload;
-    use fstart_stage::StageKind;
+    use fstart_stage::StageEnvironment;
 
     /// GM965 northbridge + ICH8 southbridge Intel early-flow platform.
     pub struct Gm965Ich8;
@@ -562,11 +562,14 @@ mod stage {
             run_gm965_ich8_bootblock::<B>(hooks)
         }
 
-        pub fn run_stage<B>(stage: StageKind, _handoff: usize) -> !
+        pub fn run_stage<B>(env: StageEnvironment, _handoff: usize) -> !
         where
             B: Gm965Ich8Board,
         {
-            if stage.is_named("bootblock") {
+            let _ = env;
+
+            #[cfg(fstart_stage_env = "car")]
+            {
                 let Ok(mut hooks) = B::hooks() else {
                     B::halt();
                 };
@@ -574,10 +577,28 @@ mod stage {
                     B::halt();
                 }
                 B::halt()
-            } else if stage.is_named(GM965_NEXT_STAGE_NAME) {
+            }
+
+            #[cfg(fstart_stage_env = "ram")]
+            {
                 run_gm965_ich8_mainstage::<B>()
-            } else {
-                B::halt()
+            }
+
+            #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
+            {
+                match env {
+                    StageEnvironment::Car => {
+                        let Ok(mut hooks) = B::hooks() else {
+                            B::halt();
+                        };
+                        if Self::run_early::<B>(&mut hooks).is_err() {
+                            B::halt();
+                        }
+                        B::halt()
+                    }
+                    StageEnvironment::Ram => run_gm965_ich8_mainstage::<B>(),
+                    StageEnvironment::Monolithic => B::halt(),
+                }
             }
         }
     }

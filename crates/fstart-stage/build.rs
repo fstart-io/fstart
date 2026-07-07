@@ -7,6 +7,7 @@ use std::env;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_NAME");
+    println!("cargo:rerun-if-env-changed=FSTART_STAGE_ENV");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_COREBOOT_HEADER");
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_FEATURES");

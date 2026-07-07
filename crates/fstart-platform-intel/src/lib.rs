@@ -17,11 +17,11 @@ pub mod pineview;
 #[cfg(feature = "stage")]
 use core::marker::PhantomData;
 #[cfg(feature = "stage")]
-use fstart_core::services::memory_detect::{E820Entry, MemoryDetector, MAX_E820_ENTRIES};
+use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};
 #[cfg(feature = "stage")]
 use fstart_core::services::{MemoryController, ServiceError};
 #[cfg(feature = "stage")]
-pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageKind};
+pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
 
 #[cfg(feature = "stage")]
 pub(crate) fn firmware_window(

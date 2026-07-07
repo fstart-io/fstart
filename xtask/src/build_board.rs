@@ -91,6 +91,7 @@ pub fn build_with_parsed(
             board_manifest,
             config,
             stage.stage_name.as_deref(),
+            stage.stage_env,
             plan.target.triple,
             &features,
             release,
@@ -314,15 +315,16 @@ fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
 
 /// Build a single board-owned stage binary.
 ///
-/// `stage_name` is `None` for monolithic, `Some("bootblock")` etc. for multi-stage.
-#[allow(clippy::too_many_arguments)]
+/// `stage_name` is `None` for monolithic; `stage_env` is `car`, `ram`, or `monolithic`.
 /// Returns (elf_path, run_path). For AArch64 and RISC-V these differ
 /// (ELF vs flat binary for QEMU); for other platforms they are the same.
+#[allow(clippy::too_many_arguments)]
 fn build_one_stage(
     workspace_root: &std::path::Path,
     board_manifest: &crate::board_manifest::BoardManifest,
     config: &fstart_core::BoardConfig,
     stage_name: Option<&str>,
+    stage_env: &str,
     target: &str,
     features: &str,
     release: bool,
@@ -391,6 +393,9 @@ fn build_one_stage(
     }
 
     let mut rustflags = crate::toolchain::rustflags_for_triple(target);
+    rustflags.push_str(" --cfg fstart_stage_env=\"");
+    rustflags.push_str(stage_env);
+    rustflags.push('"');
     rustflags.push_str(" -Clink-arg=-T");
     rustflags.push_str(&link_ld.display().to_string());
     // FSTART_EXTRA_RUSTFLAGS (if set) is appended — CI uses this for
@@ -406,6 +411,7 @@ fn build_one_stage(
     cmd.env("FSTART_RUST_BOARD", &board_manifest.board);
     cmd.env("FSTART_LINKER_SCRIPT", &link_ld);
     cmd.env("FSTART_STAGE_FEATURES", features);
+    cmd.env("FSTART_STAGE_ENV", stage_env);
     if let Some(name) = stage_name {
         cmd.env("FSTART_STAGE_NAME", name);
     }

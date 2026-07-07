@@ -588,10 +588,7 @@ fn externalize_xip_bootblock(
             .is_some_and(|stage| stage.runs_from == RunsFrom::Rom),
         _ => false,
     };
-    if config.platform != Platform::X86_64
-        || !first_stage_is_xip
-        || files.first().is_none_or(|file| file.name != "bootblock")
-    {
+    if config.platform != Platform::X86_64 || !first_stage_is_xip || files.is_empty() {
         return Ok((files, Vec::new()));
     }
 

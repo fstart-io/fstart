@@ -4,7 +4,7 @@ use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_intel::gm965::{Gm965Ich8, Gm965Ich8Board, Gm965Ich8Config};
 use fstart_platform_intel::IntelEarlyBoard;
-use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageKind};
+use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageEnvironment};
 
 use crate::{Board, X61Mainboard};
 
@@ -12,8 +12,8 @@ impl StageBoard for Board {
     const NAME: &'static str = crate::BOARD_NAME;
     const PLATFORM: fstart_core::Platform = crate::PLATFORM;
 
-    fn run_stage(stage: StageKind, handoff: usize) -> ! {
-        Gm965Ich8::run_stage::<Self>(stage, handoff)
+    fn run_stage(env: StageEnvironment, handoff: usize) -> ! {
+        Gm965Ich8::run_stage::<Self>(env, handoff)
     }
 }
 

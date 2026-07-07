@@ -78,6 +78,8 @@ pub struct BuildPlan {
 pub struct StageBuildPlan {
     /// Stage name passed to build.rs. `None` means monolithic.
     pub stage_name: Option<String>,
+    /// Build-time execution environment: `car`, `ram`, or `monolithic`.
+    pub stage_env: &'static str,
     /// Human-readable label for logging/artifact names.
     pub display_name: String,
     /// Cargo feature set.
@@ -124,6 +126,7 @@ pub fn plan(
                     page_size: stage.page_size,
                     page_table_addr: stage.page_table_addr,
                     stage_name: None,
+                    stage_env: "monolithic",
                     display_name: "stage".to_string(),
                     stage_idx: 0,
                     load_addr: stage.load_addr,
@@ -149,6 +152,7 @@ pub fn plan(
                         page_size: stage.page_size,
                         page_table_addr: stage.page_table_addr,
                         stage_name: Some(stage.name.to_string()),
+                        stage_env: if idx == 0 { "car" } else { "ram" },
                         display_name: stage.name.to_string(),
                         stage_idx: idx,
                         load_addr: effective_stage_load_addr(config, idx, stage),
@@ -265,6 +269,7 @@ struct StageContext<'a> {
     page_size: PageSize,
     page_table_addr: Option<(u64, u64)>,
     stage_name: Option<String>,
+    stage_env: &'static str,
     display_name: String,
     stage_idx: usize,
     load_addr: u64,
@@ -301,6 +306,7 @@ fn stage_plan(
 
     StageBuildPlan {
         stage_name: stage.stage_name.clone(),
+        stage_env: stage.stage_env,
         display_name: stage.display_name.clone(),
         features,
         needs_flat_binary: plan_context.needs_flat_binary,

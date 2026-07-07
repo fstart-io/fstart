@@ -1078,29 +1078,26 @@ pub fn fstart_anchor_bytes() -> &'static [u8] {
     }
 }
 
-/// Stage selected by build glue for a firmware entry point.
+/// Runtime environment selected by build glue for a firmware entry point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StageKind {
+pub enum StageEnvironment {
     /// Single-stage/monolithic firmware image.
     Monolithic,
-    /// Named stage in a multi-stage image.
-    Named(&'static str),
+    /// Cache-as-RAM/SRAM-only environment: no DRAM assumptions.
+    Car,
+    /// DRAM-backed environment: allocation, tables, and payload handoff allowed.
+    Ram,
 }
 
-impl StageKind {
-    /// Convert the optional `FSTART_STAGE_NAME` value passed by build glue.
+impl StageEnvironment {
+    /// Convert the optional `FSTART_STAGE_ENV` value passed by build glue.
     #[must_use]
-    pub const fn from_option(name: Option<&'static str>) -> Self {
-        match name {
-            Some(name) => Self::Named(name),
-            None => Self::Monolithic,
+    pub fn from_option(env: Option<&'static str>) -> Self {
+        match env {
+            Some("car") => Self::Car,
+            Some("ram") => Self::Ram,
+            _ => Self::Monolithic,
         }
-    }
-
-    /// Return whether this is the named stage.
-    #[must_use]
-    pub fn is_named(self, expected: &str) -> bool {
-        matches!(self, Self::Named(name) if name == expected)
     }
 }
 
@@ -1111,8 +1108,8 @@ pub trait StageBoard: Sized + 'static {
     /// Runtime platform for this board.
     const PLATFORM: fstart_core::Platform;
 
-    /// Run the selected stage using the board's platform-family flow.
-    fn run_stage(stage: StageKind, handoff: usize) -> !;
+    /// Run the selected environment using the board's platform-family flow.
+    fn run_stage(env: StageEnvironment, handoff: usize) -> !;
 }
 
 /// Declare a board-owned stage entry binary.
@@ -1122,7 +1119,7 @@ macro_rules! stage_bin {
         #[no_mangle]
         pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
             <$board as $crate::StageBoard>::run_stage(
-                $crate::StageKind::from_option(option_env!("FSTART_STAGE_NAME")),
+                $crate::StageEnvironment::from_option(option_env!("FSTART_STAGE_ENV")),
                 handoff_ptr,
             )
         }
