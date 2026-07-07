@@ -167,9 +167,9 @@ impl SysInfo {
 /// * `smbus` — SMBus controller for SPD reads
 /// * `boot_path` — 0 = normal, 1 = reset, 2 = S3 resume
 /// * `spd_addresses` — SMBus addresses of DIMM SPD EEPROMs (e.g., [0x50, 0x51, 0, 0])
-pub fn sdram_initialize(
+pub fn sdram_initialize<B: fstart_core::services::SmBus>(
     mch: &MchBar,
-    smbus: &mut dyn fstart_core::services::SmBus,
+    smbus: &mut B,
     boot_path: u8,
     platform_type: u8,
     spd_addresses: &[u8; 4],

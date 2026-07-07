@@ -97,7 +97,7 @@ pub trait BusDevice: Send + Sync + Sized {
         Self::new_on_bus(config, bus)
     }
 
-    /// Initialise hardware. Called after construction, in capability order.
+    /// Initialise hardware. Called after construction by the fixed platform flow.
     fn init(&mut self) -> Result<(), DeviceError>;
 
     /// Initialise hardware with access to the parent bus.

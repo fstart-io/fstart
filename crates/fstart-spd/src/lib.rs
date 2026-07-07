@@ -142,7 +142,11 @@ pub struct DimmInfo {
 // ===================================================================
 
 /// Read 256 bytes of SPD data from a DIMM at `addr` over SMBus.
-pub fn read_spd(smbus: &mut dyn SmBus, addr: u8, buf: &mut [u8; 256]) -> Result<(), ServiceError> {
+pub fn read_spd<B: SmBus>(
+    smbus: &mut B,
+    addr: u8,
+    buf: &mut [u8; 256],
+) -> Result<(), ServiceError> {
     for i in 0..=255u8 {
         buf[i as usize] = smbus.read_byte(addr, i)?;
     }

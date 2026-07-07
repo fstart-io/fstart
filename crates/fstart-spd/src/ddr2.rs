@@ -70,7 +70,7 @@ pub const DDR2: u8 = 0x08;
 /// DDR2 SPD data is 128 bytes. The returned buffer is zero-filled above byte
 /// 127 so callers can keep using the project-wide [`DimmInfo::spd_data`] shape.
 /// A failure on byte 0 is treated as an unpopulated slot.
-pub fn read_spd(smbus: &mut dyn SmBus, addr: u8) -> Result<Option<[u8; 256]>, ServiceError> {
+pub fn read_spd<B: SmBus>(smbus: &mut B, addr: u8) -> Result<Option<[u8; 256]>, ServiceError> {
     let mut spd = [0u8; 256];
     for byte in 0..SPD_SIZE_MAX_DDR2 as u8 {
         match smbus.read_byte(addr, byte) {

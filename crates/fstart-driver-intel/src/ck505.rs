@@ -8,9 +8,8 @@
 //! `(new_val & mask) | (read_val & !mask)` using byte-at-a-time
 //! SMBus read-modify-writes for each register.
 
-use fstart_core::services::device::{BusDevice, DeviceError};
+use fstart_core::services::device::DeviceError;
 use fstart_core::services::SmBus;
-use fstart_core::BusAddress;
 use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
@@ -39,40 +38,19 @@ pub struct I2cCk505 {
 unsafe impl Send for I2cCk505 {}
 unsafe impl Sync for I2cCk505 {}
 
-impl BusDevice for I2cCk505 {
-    const NAME: &'static str = "i2c-ck505";
-    const COMPATIBLE: &'static [&'static str] = &["idt,ck505", "idt,clock-generator"];
-    type Config = I2cCk505Config;
-    type Bus = dyn SmBus;
-
-    fn new_on_bus(config: Self::Config, _bus: &Self::Bus) -> Result<Self, DeviceError> {
-        Self::new_on_bus_at(config, _bus, None)
-    }
-
-    fn new_on_bus_at(
-        config: Self::Config,
-        _bus: &Self::Bus,
-        address: Option<BusAddress>,
-    ) -> Result<Self, DeviceError> {
+impl I2cCk505 {
+    /// Construct a CK505 at a fixed SMBus address.
+    pub fn new_at_address(config: I2cCk505Config, addr: u8) -> Result<Self, DeviceError> {
         if config.mask.len() != config.regs.len() {
             return Err(DeviceError::MissingResource(
                 "ck505: mask/regs length mismatch",
             ));
         }
-        let Some(BusAddress::I2c(addr)) = address else {
-            return Err(DeviceError::MissingResource(
-                "ck505: missing SMBus/I2C address",
-            ));
-        };
         Ok(Self { addr, config })
     }
 
-    fn init(&mut self) -> Result<(), DeviceError> {
-        fstart_log::warn!("i2c-ck505: init requires parent SMBus access; use init_on_bus");
-        Err(DeviceError::InitFailed)
-    }
-
-    fn init_on_bus(&mut self, bus: &mut Self::Bus) -> Result<(), DeviceError> {
+    /// Initialize through a concrete SMBus provider.
+    pub fn init_on_smbus<B: SmBus + ?Sized>(&mut self, bus: &mut B) -> Result<(), DeviceError> {
         fstart_log::info!(
             "i2c-ck505: programming {} registers at addr={:#x}",
             self.config.regs.len(),
@@ -143,10 +121,10 @@ mod tests {
             regs: [0xf0, 0x0f, 0, 0, 0, 0, 0, 0],
             writes: heapless::Vec::new(),
         };
-        let mut ck505 = I2cCk505::new_on_bus_at(cfg, &bus, Some(BusAddress::I2c(0x69)))
-            .expect("CK505 should accept I2C/SMBus address");
+        let mut ck505 =
+            I2cCk505::new_at_address(cfg, 0x69).expect("CK505 should accept I2C/SMBus address");
 
-        ck505.init_on_bus(&mut bus).unwrap();
+        ck505.init_on_smbus(&mut bus).unwrap();
 
         assert_eq!(bus.regs[0], 0xf5);
         assert_eq!(bus.regs[1], 0xaf);
@@ -154,17 +132,12 @@ mod tests {
     }
 
     #[test]
-    fn construction_requires_topology_i2c_address() {
+    fn construction_rejects_mask_reg_len_mismatch() {
         let cfg = I2cCk505Config {
             mask: heapless::Vec::from_slice(&[0xff]).unwrap(),
-            regs: heapless::Vec::from_slice(&[0x00]).unwrap(),
-        };
-        let bus = FakeBus {
-            regs: [0; 8],
-            writes: heapless::Vec::new(),
+            regs: heapless::Vec::new(),
         };
 
-        assert!(I2cCk505::new_on_bus_at(cfg.clone(), &bus, None).is_err());
-        assert!(I2cCk505::new_on_bus_at(cfg, &bus, Some(BusAddress::Lpc(0x2e))).is_err());
+        assert!(I2cCk505::new_at_address(cfg, 0x69).is_err());
     }
 }

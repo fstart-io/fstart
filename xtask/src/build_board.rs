@@ -5,7 +5,7 @@
 //! 3. Invoke cargo build on the board-owned stage binary
 //! 4. Return the path(s) to the built binary(ies)
 
-use fstart_core::{Capability, SocImageFormat, StageLayout};
+use fstart_core::{SocImageFormat, StageLayout};
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use std::fs;
@@ -125,7 +125,7 @@ fn build_smm_artifacts(
     if let Some(max_cpus) = smm_max_cpus {
         if entry_count < max_cpus {
             return Err(
-                "board.smm.entry_points must be greater than or equal to MpInit.max_cpus"
+                "board.smm.entry_points must be greater than or equal to stage MP max_cpus"
                     .to_string(),
             );
         }
@@ -303,23 +303,11 @@ fn selected_workspace_manifest(root_manifest: &str, board: &str) -> Result<Strin
 }
 
 fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
-    fn max_in_caps(caps: &[Capability]) -> Option<u16> {
-        caps.iter()
-            .filter_map(|cap| match cap {
-                Capability::MpInit {
-                    max_cpus,
-                    smm: true,
-                } => Some(*max_cpus),
-                _ => None,
-            })
-            .max()
-    }
-
     match stages {
-        StageLayout::Monolithic(stage) => max_in_caps(&stage.capabilities),
+        StageLayout::Monolithic(stage) => stage.build.mp.filter(|mp| mp.smm).map(|mp| mp.max_cpus),
         StageLayout::MultiStage(stages) => stages
             .iter()
-            .filter_map(|stage| max_in_caps(&stage.capabilities))
+            .filter_map(|stage| stage.build.mp.filter(|mp| mp.smm).map(|mp| mp.max_cpus))
             .max(),
     }
 }

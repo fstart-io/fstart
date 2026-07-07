@@ -1257,8 +1257,8 @@ fn dram_power_mgmt(mch: &MchBar) {
 /// `spd_addresses` follows coreboot's GM965 slot mapping: index 0/1 are
 /// channel 0, index 2/3 are channel 1. A zero address means the slot is not
 /// wired. Lenovo X61 uses `[0x50, 0, 0x51, 0]`.
-pub fn probe_dimms(
-    bus: &mut dyn SmBus,
+pub fn probe_dimms<B: SmBus>(
+    bus: &mut B,
     spd_addresses: &[u8; 4],
 ) -> Result<RaminitInfo, ServiceError> {
     let mut info = RaminitInfo::default();

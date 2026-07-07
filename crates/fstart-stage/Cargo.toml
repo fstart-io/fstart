@@ -15,33 +15,33 @@ x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
 x86-writable-page-tables = ["fstart-platform-x86_64?/x86-writable-page-tables"]
 # x86_64: emit static ROM page tables for first-stage real XIP boards.
 x86-static-page-tables = ["fstart-platform-x86_64?/x86-static-page-tables"]
-# FFS / crypto features (forwarded to fstart-capabilities)
+# FFS / crypto features
 ffs = [
   "dep:fstart-alloc",
-  "fstart-capabilities/ffs",
+  "dep:fstart-crypto",
   "dep:fstart-ffs",
   "fstart-platform-x86_64?/early-ffs-anchor",
   "fstart-platform-x86_64?/postcar-stage-load",
 ]
-ed25519 = ["ffs", "fstart-capabilities/ed25519", "fstart-ffs/ed25519"]
+ed25519 = ["ffs", "fstart-ffs/ed25519"]
 sha2-digest = [
   "ffs",
-  "fstart-capabilities/sha2-digest",
+  "fstart-crypto/sha2-digest",
   "fstart-ffs/sha2-digest",
 ]
 sha3-digest = [
   "ffs",
-  "fstart-capabilities/sha3-digest",
+  "fstart-crypto/sha3-digest",
   "fstart-ffs/sha3-digest",
 ]
 # LZ4 decompression for compressed stage/payload segments
-lz4 = ["ffs", "fstart-capabilities/lz4"]
+lz4 = ["ffs"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
-fdt = ["fstart-capabilities/fdt"]
+fdt = []
 # FIT image parsing at runtime
-fit = ["ffs", "fstart-capabilities/fit", "dep:fstart-fit"]
+fit = ["ffs", "dep:fstart-fit"]
 # Inter-stage handoff serialization (postcard, for multi-stage boards)
-handoff = ["fstart-capabilities/handoff"]
+handoff = ["dep:postcard"]
 # ACPI table generation lives in the selected board/platform crate; fstart-stage
 # only provides the allocator needed by ACPI-capable flows.
 acpi = ["dep:fstart-alloc"]
@@ -53,7 +53,6 @@ crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
 # Core firmware infrastructure
 fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
-fstart-capabilities = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 fstart-runtime = { workspace = true }
@@ -64,7 +63,9 @@ fstart-platform-x86_64 = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
+fstart-crypto = { workspace = true, optional = true }
 fstart-fit = { workspace = true, optional = true }
+postcard = { workspace = true, optional = true }
 
 # Allocator (optional — provides #[global_allocator])
 fstart-alloc = { workspace = true, optional = true }

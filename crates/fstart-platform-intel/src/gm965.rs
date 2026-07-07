@@ -5,9 +5,9 @@ pub use stage::{run_gm965_ich8_mainstage, Gm965Ich8, Gm965Ich8Board, Gm965Ich8Ma
 
 use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_core::{
-    hstr, hvec, BootMedium, BusAddress, Capability, CarConfig, Compression, ConstVec, DeviceConfig,
-    DeviceRole, FlashLayout, MemoryMap, MemoryRegion, RegionKind, RunsFrom, StageConfig,
-    StageLayout, TempRamBuffer,
+    hstr, hvec, BusAddress, CarConfig, Compression, ConstVec, DeviceConfig, DeviceRole,
+    FirmwareImageConfig, FlashLayout, MemoryMap, MemoryRegion, MpBuildConfig, RegionKind, RunsFrom,
+    StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
 };
 use fstart_driver_intel::gm965;
 pub use fstart_driver_intel::gm965::{Gm965IgdConfig, IntelGm965Config};
@@ -20,6 +20,73 @@ pub use fstart_driver_intel::ich8::{
     SataConfig, SataMode, UsbConfig,
 };
 use serde::Serialize;
+
+#[cfg(feature = "stage")]
+impl crate::IntelEcamConfig for gm965::IntelGm965Config {
+    fn ecam_base(&self) -> u64 {
+        self.ecam_base
+    }
+}
+
+#[cfg(feature = "stage")]
+impl crate::IntelNorthbridgeDriver for gm965::IntelGm965 {
+    type Config = gm965::IntelGm965Config;
+
+    fn new_from_config(
+        config: &'static Self::Config,
+    ) -> Result<Self, fstart_core::services::ServiceError> {
+        gm965::IntelGm965::new(config)
+            .map_err(|_| fstart_core::services::ServiceError::HardwareError)
+    }
+
+    fn config(&self) -> &'static Self::Config {
+        gm965::IntelGm965::config(self)
+    }
+
+    fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        gm965::IntelGm965::pre_console_init(self)
+    }
+
+    fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        gm965::IntelGm965::early_init(self)
+    }
+
+    fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        gm965::IntelGm965::stage_local_init(self)
+    }
+}
+
+#[cfg(feature = "stage")]
+impl crate::IntelSouthbridgeDriver for ich8::IntelIch8 {
+    type Config = ich8::IntelIch8Config;
+
+    fn new_from_config(
+        config: &'static Self::Config,
+    ) -> Result<Self, fstart_core::services::ServiceError> {
+        ich8::IntelIch8::new(config).map_err(|_| fstart_core::services::ServiceError::HardwareError)
+    }
+
+    #[cfg(feature = "acpi")]
+    fn config(&self) -> &'static Self::Config {
+        ich8::IntelIch8::config(self)
+    }
+
+    fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        ich8::IntelIch8::pre_console_init(self)
+    }
+
+    fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        ich8::IntelIch8::early_init(self)
+    }
+
+    fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        ich8::IntelIch8::post_dram_init(self)
+    }
+
+    fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        ich8::IntelIch8::finalize_init(self)
+    }
+}
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const ICH8_SOUTHBRIDGE_NODE: &str = "southbridge";
@@ -393,16 +460,13 @@ pub fn gm965_ich8_stages(config: &Gm965Ich8Config) -> StageLayout {
     StageLayout::MultiStage(hvec([
         StageConfig {
             name: hstr("bootblock"),
-            capabilities: hvec([
-                Capability::ConsoleInit,
-                Capability::DramInit,
-                Capability::BootMedia(BootMedium::FirmwareImage {
+            build: StageBuildConfig {
+                firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: None,
                 }),
-                Capability::StageLoad {
-                    next_stage: hstr(GM965_NEXT_STAGE_NAME),
-                },
-            ]),
+                load_next_stage: Some(hstr(GM965_NEXT_STAGE_NAME)),
+                ..StageBuildConfig::default()
+            },
             load_addr: GM965_BOOTBLOCK_LOAD_ADDR,
             stack_size: 0x2000,
             // Small CAR heap for FFS/LZ4 scratch allocations.
@@ -415,26 +479,24 @@ pub fn gm965_ich8_stages(config: &Gm965Ich8Config) -> StageLayout {
         },
         StageConfig {
             name: hstr(GM965_NEXT_STAGE_NAME),
-            capabilities: hvec([
-                Capability::ConsoleInit,
-                Capability::BootMedia(BootMedium::FirmwareImage {
+            build: StageBuildConfig {
+                firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: Some(TempRamBuffer {
                         base: 0x0200_0000,
                         size: 0x0100_0000,
                     }),
                 }),
-                Capability::SigVerify,
-                Capability::DriverInit,
-                Capability::MemoryDetect,
-                Capability::PciInit,
-                Capability::MpInit {
+                verify_firmware: true,
+                payload: true,
+                pci: true,
+                acpi: true,
+                smbios: true,
+                mp: Some(MpBuildConfig {
                     max_cpus: config.max_cpus,
                     smm: false,
-                },
-                Capability::AcpiPrepare,
-                Capability::SmBiosPrepare,
-                Capability::PayloadLoad,
-            ]),
+                }),
+                ..StageBuildConfig::default()
+            },
             load_addr: GM965_RAMSTAGE_LOAD_ADDR,
             stack_size: 0x400000,
             heap_size: Some(GM965_RAMSTAGE_HEAP_SIZE as u32),

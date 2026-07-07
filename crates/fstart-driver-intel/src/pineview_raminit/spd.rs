@@ -11,9 +11,9 @@ use crate::pineview::raminit::{DIMM_TYPE_SODIMM, DIMM_TYPE_UBDIMM};
 /// Ported from coreboot `sdram_read_spds()` + `decode_spd()` +
 /// `find_ramconfig()`, with common DDR2 SPD parsing delegated to
 /// `fstart-spd` so Pineview and GM965 share the same geometry/timing decode.
-pub fn read_spds(
+pub fn read_spds<B: fstart_core::services::SmBus>(
     si: &mut SysInfo,
-    smbus: &mut dyn fstart_core::services::SmBus,
+    smbus: &mut B,
 ) -> Result<(), ServiceError> {
     si.dt0mode = 0;
 

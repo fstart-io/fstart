@@ -121,30 +121,28 @@ pub struct BoardConfig {
 
     /// ACPI table generation configuration.
     ///
-    /// Required when any stage has the `AcpiPrepare` capability. Contains
-    /// the target address for tables, platform parameters (MADT, GTDT,
-    /// FADT), and declarations for ACPI-only devices (hardware without
-    /// fstart driver crates).
+    /// Used by fixed platform flows that emit ACPI tables. Contains the target
+    /// address for tables, platform parameters (MADT, GTDT, FADT), and
+    /// declarations for ACPI-only devices (hardware without fstart driver crates).
     ///
-    /// Per-driver ACPI fields (e.g., `acpi_name`, `acpi_gsiv`) live in
-    /// each driver's own `Config` struct, not here.
+    /// Per-driver ACPI fields (e.g., `acpi_name`, `acpi_gsiv`) live in each
+    /// driver's own `Config` struct, not here.
     #[serde(default)]
     pub acpi: Option<crate::acpi::AcpiConfig>,
 
     /// SMBIOS table generation configuration.
     ///
-    /// Required when any stage has the `SmBiosPrepare` capability.
-    /// Contains system identity strings, processor descriptions, and
-    /// memory device declarations for SMBIOS Type 0/1/2/3/4/16/17/19.
+    /// Used by fixed platform flows that emit SMBIOS tables. Contains system
+    /// identity strings, processor descriptions, and memory device declarations
+    /// for SMBIOS Type 0/1/2/3/4/16/17/19.
     #[serde(default)]
     pub smbios: Option<crate::smbios::SmbiosConfig>,
 
     /// System Management Mode handler/image configuration.
     ///
-    /// Required when an x86 stage declares `MpInit(..., smm: true)`.  The
-    /// normal stage embeds the separately built SMM image and asks the
-    /// platform adapter selected here to copy its precompiled PIC entry
-    /// stubs into SMRAM.
+    /// Required when an x86 stage build enables SMM. The normal stage embeds
+    /// the separately built SMM image and asks the platform adapter selected
+    /// here to copy its precompiled PIC entry stubs into SMRAM.
     #[serde(default)]
     pub smm: Option<crate::smm::SmmConfig>,
 

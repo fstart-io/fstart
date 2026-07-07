@@ -7,9 +7,9 @@ pub use stage::{
 
 use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_core::{
-    hstr, hvec, BootMedium, BusAddress, Capability, CarConfig, Compression, DeviceConfig,
-    DeviceRole, FlashLayout, MemoryMap, MemoryRegion, RegionKind, RunsFrom, StageConfig,
-    StageLayout, TempRamBuffer,
+    hstr, hvec, BusAddress, CarConfig, Compression, DeviceConfig, DeviceRole, FirmwareImageConfig,
+    FlashLayout, MemoryMap, MemoryRegion, MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig,
+    StageConfig, StageLayout, TempRamBuffer,
 };
 use fstart_driver_intel::gpio_ich as gpio;
 use fstart_driver_intel::ich7;
@@ -21,6 +21,73 @@ pub use fstart_driver_intel::ich7::{
 use fstart_driver_intel::pineview;
 pub use fstart_driver_intel::pineview::{IntelPineviewConfig, PineviewIgdConfig};
 use serde::Serialize;
+
+#[cfg(feature = "stage")]
+impl crate::IntelEcamConfig for pineview::IntelPineviewConfig {
+    fn ecam_base(&self) -> u64 {
+        self.ecam_base
+    }
+}
+
+#[cfg(feature = "stage")]
+impl crate::IntelNorthbridgeDriver for pineview::IntelPineview {
+    type Config = pineview::IntelPineviewConfig;
+
+    fn new_from_config(
+        config: &'static Self::Config,
+    ) -> Result<Self, fstart_core::services::ServiceError> {
+        pineview::IntelPineview::new(config)
+            .map_err(|_| fstart_core::services::ServiceError::HardwareError)
+    }
+
+    fn config(&self) -> &'static Self::Config {
+        pineview::IntelPineview::config(self)
+    }
+
+    fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        pineview::IntelPineview::pre_console_init(self)
+    }
+
+    fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        pineview::IntelPineview::early_init(self)
+    }
+
+    fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        pineview::IntelPineview::stage_local_init(self)
+    }
+}
+
+#[cfg(feature = "stage")]
+impl crate::IntelSouthbridgeDriver for ich7::IntelIch7 {
+    type Config = ich7::IntelIch7Config;
+
+    fn new_from_config(
+        config: &'static Self::Config,
+    ) -> Result<Self, fstart_core::services::ServiceError> {
+        ich7::IntelIch7::new(config).map_err(|_| fstart_core::services::ServiceError::HardwareError)
+    }
+
+    #[cfg(feature = "acpi")]
+    fn config(&self) -> &'static Self::Config {
+        ich7::IntelIch7::config(self)
+    }
+
+    fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        ich7::IntelIch7::pre_console_init(self)
+    }
+
+    fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        ich7::IntelIch7::early_init(self)
+    }
+
+    fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        ich7::IntelIch7::post_dram_init(self)
+    }
+
+    fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        ich7::IntelIch7::finalize_init(self)
+    }
+}
 
 pub const PINEVIEW_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const ICH7_SOUTHBRIDGE_NODE: &str = "southbridge";
@@ -178,7 +245,59 @@ impl PineviewIch7Config {
     }
     #[must_use]
     pub const fn build(self) -> Self {
+        if self.lpc_decode.fixed_io.com_a as u8 == self.lpc_decode.fixed_io.com_b as u8 {
+            panic!("ICH7 COMA and COMB decode the same port");
+        }
+        if let Some(sata) = self.sata {
+            if !ich7::valid_sata_ports(sata.ports) {
+                panic!("ICH7 SATA enabled with invalid ports");
+            }
+        }
+        validate_lpc_generic_io_decodes(&self.lpc_decode.generic_io);
+        validate_pirq_routing(&self.pirq_routing);
+        if !ich7::valid_gpe0_en(self.gpe0_en) {
+            panic!("ICH7 GPE0 enable has reserved bits set");
+        }
+        if self.max_cpus == 0 {
+            panic!("Pineview max_cpus must be non-zero");
+        }
         self
+    }
+}
+
+const fn validate_lpc_generic_io_decodes(decodes: &fstart_core::ConstVec<LpcGenericIoDecode, 4>) {
+    if konst::iter::eval!(
+        0..decodes.len(),
+        any(|idx| { !ich7::valid_lpc_generic_io(decodes.get(idx)) })
+    ) {
+        panic!("ICH7 LPC generic I/O decode is invalid");
+    }
+
+    if konst::iter::eval!(
+        0..decodes.len(),
+        any(|idx| { lpc_generic_io_overlaps_later(decodes, idx) })
+    ) {
+        panic!("ICH7 LPC generic I/O decodes overlap");
+    }
+}
+
+const fn lpc_generic_io_overlaps_later(
+    decodes: &fstart_core::ConstVec<LpcGenericIoDecode, 4>,
+    idx: usize,
+) -> bool {
+    let decode = decodes.get(idx);
+    konst::iter::eval!(
+        idx + 1..decodes.len(),
+        any(|next_idx| { ich7::lpc_generic_io_overlaps(decode, decodes.get(next_idx)) })
+    )
+}
+
+const fn validate_pirq_routing(routing: &[u8; 8]) {
+    if konst::iter::eval!(
+        0..routing.len(),
+        any(|idx| { !ich7::valid_pirq_route(routing[idx]) })
+    ) {
+        panic!("ICH7 PIRQ route is invalid");
     }
 }
 
@@ -271,8 +390,12 @@ pub fn pineview_ich7_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
         }]),
         flash_layout,
         car: Some(CarConfig {
+            // Hardware constraint: 32 KiB CAR window. The bootblock's
+            // writable footprint (.data/.bss + stack + heap) must fit; do
+            // NOT grow this to make an oversized bootblock fit — shrink the
+            // bootblock instead (no mainstage-sized statics in drivers).
             base: 0xFEFC_0000,
-            size: 0x10000,
+            size: 0x8000,
         }),
     }
 }
@@ -281,16 +404,13 @@ pub fn pineview_ich7_stages(config: &PineviewIch7Config) -> StageLayout {
     StageLayout::MultiStage(hvec([
         StageConfig {
             name: hstr("bootblock"),
-            capabilities: hvec([
-                Capability::ConsoleInit,
-                Capability::DramInit,
-                Capability::BootMedia(BootMedium::FirmwareImage {
+            build: StageBuildConfig {
+                firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: None,
                 }),
-                Capability::StageLoad {
-                    next_stage: hstr(PINEVIEW_NEXT_STAGE_NAME),
-                },
-            ]),
+                load_next_stage: Some(hstr(PINEVIEW_NEXT_STAGE_NAME)),
+                ..StageBuildConfig::default()
+            },
             load_addr: PINEVIEW_BOOTBLOCK_LOAD_ADDR,
             stack_size: 0x2000,
             // Small CAR heap for FFS/LZ4 scratch allocations.
@@ -303,26 +423,24 @@ pub fn pineview_ich7_stages(config: &PineviewIch7Config) -> StageLayout {
         },
         StageConfig {
             name: hstr(PINEVIEW_NEXT_STAGE_NAME),
-            capabilities: hvec([
-                Capability::ConsoleInit,
-                Capability::BootMedia(BootMedium::FirmwareImage {
+            build: StageBuildConfig {
+                firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: Some(TempRamBuffer {
                         base: 0x0200_0000,
                         size: 0x0100_0000,
                     }),
                 }),
-                Capability::SigVerify,
-                Capability::DriverInit,
-                Capability::MemoryDetect,
-                Capability::PciInit,
-                Capability::MpInit {
+                verify_firmware: true,
+                payload: true,
+                pci: true,
+                acpi: true,
+                smbios: true,
+                mp: Some(MpBuildConfig {
                     max_cpus: config.max_cpus,
                     smm: false,
-                },
-                Capability::AcpiPrepare,
-                Capability::SmBiosPrepare,
-                Capability::PayloadLoad,
-            ]),
+                }),
+                ..StageBuildConfig::default()
+            },
             load_addr: PINEVIEW_RAMSTAGE_LOAD_ADDR,
             stack_size: 0x400000,
             heap_size: Some(PINEVIEW_RAMSTAGE_HEAP_SIZE as u32),

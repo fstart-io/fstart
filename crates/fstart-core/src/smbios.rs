@@ -1,9 +1,9 @@
 //! SMBIOS configuration types for board metadata.
 //!
 //! Defines the board-level SMBIOS configuration: system identity, processor
-//! descriptions, and memory device declarations.  These types are deserialized
-//! from the `smbios` field in the board metadata and drive table construction for the
-//! `SmBiosPrepare` capability.
+//! descriptions, and memory device declarations. These types are deserialized
+//! from the `smbios` field in the board metadata and consumed by fixed platform
+//! table-emission flows.
 //!
 //! The actual table generation lives in the `fstart-smbios` crate.
 

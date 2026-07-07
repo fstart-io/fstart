@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use fstart_core::acpi::AcpiExtraDevice;
 use fstart_core::stage::PageSize;
 use fstart_core::{
-    effective_stage_load_addr, BoardConfig, Capability, Platform, RegionKind, SecurityConfig,
-    SocImageFormat, StageLayout,
+    effective_stage_load_addr, BoardConfig, Platform, RegionKind, SecurityConfig, SocImageFormat,
+    StageBuildConfig, StageLayout,
 };
 
 use crate::toolchain::TargetSpec;
@@ -119,7 +119,7 @@ pub fn plan(
             vec![stage_plan(
                 config,
                 &StageContext {
-                    capabilities: &stage.capabilities,
+                    build: &stage.build,
                     heap_size: stage.heap_size,
                     page_size: stage.page_size,
                     page_table_addr: stage.page_table_addr,
@@ -144,7 +144,7 @@ pub fn plan(
                 stage_plan(
                     config,
                     &StageContext {
-                        capabilities: &stage.capabilities,
+                        build: &stage.build,
                         heap_size: stage.heap_size,
                         page_size: stage.page_size,
                         page_table_addr: stage.page_table_addr,
@@ -260,7 +260,7 @@ struct PlanContext<'a> {
 
 #[derive(Debug)]
 struct StageContext<'a> {
-    capabilities: &'a [Capability],
+    build: &'a StageBuildConfig,
     heap_size: Option<u32>,
     page_size: PageSize,
     page_table_addr: Option<(u64, u64)>,
@@ -277,11 +277,7 @@ fn stage_plan(
     soc_format: SocImageFormat,
 ) -> StageBuildPlan {
     let mut features = plan_context.base_features.clone();
-    features.extend(capability_features(
-        stage.capabilities,
-        &config.security,
-        config,
-    ));
+    features.extend(stage_features(stage.build, &config.security, config));
 
     if stage.page_size == PageSize::Size1GiB {
         features.insert("x86-1g-pages");
@@ -294,17 +290,13 @@ fn stage_plan(
         }
     }
 
-    let stage_has_crabefi = stage
-        .capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::PayloadLoad))
-        && stage_uses_crabefi(config);
-    let needs_alloc = stage_uses_ffs(stage.capabilities)
-        || stage_uses_fdt(stage.capabilities)
-        || stage_uses_acpi(stage.capabilities)
+    let stage_has_crabefi = stage.build.payload && stage_uses_crabefi(config);
+    let needs_alloc = stage_uses_ffs(stage.build)
+        || stage.build.fdt
+        || stage.build.acpi
         || stage_has_crabefi
         || stage.heap_size.is_some()
-        || stage_uses_pci(stage.capabilities);
+        || stage.build.pci;
     let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
     StageBuildPlan {
@@ -319,19 +311,16 @@ fn stage_plan(
 }
 
 /// Compute backend feature flags for a single stage.
-fn capability_features(
-    capabilities: &[Capability],
+fn stage_features(
+    build: &StageBuildConfig,
     security: &SecurityConfig,
     config: &BoardConfig,
 ) -> Vec<&'static str> {
     let mut features = Vec::new();
 
-    let uses_ffs = stage_uses_ffs(capabilities);
-    if uses_ffs {
+    if stage_uses_ffs(build) {
         features.push("ffs");
-        if capabilities
-            .iter()
-            .any(|cap| matches!(cap, Capability::PayloadLoad))
+        if build.payload
             && config.payload.as_ref().is_some_and(|payload| {
                 payload.kind == fstart_core::PayloadKind::FitImage
                     && payload
@@ -355,57 +344,30 @@ fn capability_features(
         }
     }
 
-    if stage_uses_fdt(capabilities) {
+    if build.fdt {
         features.push("fdt");
     }
-
-    let has_payload_load = capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::PayloadLoad));
-    if has_payload_load && stage_uses_crabefi(config) {
+    if build.payload && stage_uses_crabefi(config) {
         features.push("crabefi");
     }
-
-    if stage_uses_acpi(capabilities) {
+    if build.acpi {
         features.push("acpi");
     }
-
-    if stage_uses_smbios(capabilities) {
+    if build.smbios {
         features.push("smbios");
     }
-
-    if stage_uses_mp(capabilities) {
+    if build.mp.is_some() {
         features.push("mp");
     }
 
     features
 }
 
-fn stage_uses_fdt(capabilities: &[Capability]) -> bool {
-    capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::FdtPrepare))
-}
-
-fn stage_uses_ffs(capabilities: &[Capability]) -> bool {
-    capabilities.iter().any(|c| {
-        matches!(
-            c,
-            Capability::SigVerify | Capability::StageLoad { .. } | Capability::PayloadLoad
-        )
-    })
-}
-
-fn stage_uses_pci(capabilities: &[Capability]) -> bool {
-    capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::PciInit))
-}
-
-fn stage_uses_acpi(capabilities: &[Capability]) -> bool {
-    capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::AcpiPrepare | Capability::AcpiLoad))
+fn stage_uses_ffs(build: &StageBuildConfig) -> bool {
+    build.firmware_image.is_some()
+        || build.verify_firmware
+        || build.load_next_stage.is_some()
+        || build.payload
 }
 
 fn stage_uses_crabefi(config: &BoardConfig) -> bool {
@@ -415,25 +377,13 @@ fn stage_uses_crabefi(config: &BoardConfig) -> bool {
         .is_some_and(|p| p.kind == fstart_core::PayloadKind::UefiPayload)
 }
 
-fn stage_uses_smbios(capabilities: &[Capability]) -> bool {
-    capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::SmBiosPrepare))
-}
-
-fn stage_uses_mp(capabilities: &[Capability]) -> bool {
-    capabilities
-        .iter()
-        .any(|c| matches!(c, Capability::MpInit { .. }))
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use fstart_core::{
-        hstr, BoardBuildPolicy, Capability, DigestAlgorithm, MemoryMap, MemoryRegion,
-        MonolithicConfig, Platform, RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat,
+        hstr, BoardBuildPolicy, DigestAlgorithm, MemoryMap, MemoryRegion, MonolithicConfig,
+        Platform, RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat, StageBuildConfig,
         StageLayout,
     };
 
@@ -450,11 +400,6 @@ mod tests {
             })
             .expect("memory region capacity");
 
-        let mut capabilities = heapless::Vec::new();
-        capabilities
-            .push(Capability::ConsoleInit)
-            .expect("capability capacity");
-
         let mut digests = heapless::Vec::new();
         digests
             .push(DigestAlgorithm::Sha256)
@@ -470,7 +415,7 @@ mod tests {
             },
             devices: heapless::Vec::new(),
             stages: StageLayout::Monolithic(MonolithicConfig {
-                capabilities,
+                build: StageBuildConfig::default(),
                 load_addr: 0x1000,
                 stack_size: 0x4000,
                 heap_size: None,
@@ -531,10 +476,7 @@ mod tests {
     fn plan_selects_security_flow_for_sigverify() {
         let mut config = minimal_config();
         match &mut config.stages {
-            StageLayout::Monolithic(stage) => stage
-                .capabilities
-                .push(Capability::SigVerify)
-                .expect("capability capacity"),
+            StageLayout::Monolithic(stage) => stage.build.verify_firmware = true,
             StageLayout::MultiStage(_) => unreachable!("minimal config is monolithic"),
         }
         let parsed = parsed(config);

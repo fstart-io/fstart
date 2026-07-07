@@ -491,19 +491,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-capabilities"
-version = "0.1.0"
-dependencies = [
- "fstart-core",
- "fstart-crypto",
- "fstart-ffs",
- "fstart-fit",
- "fstart-log",
- "postcard",
- "ufmt",
-]
-
-[[package]]
 name = "fstart-core"
 version = "0.1.0"
 dependencies = [
@@ -717,15 +704,16 @@ version = "0.1.0"
 dependencies = [
  "fstart-alloc",
  "fstart-arch",
- "fstart-capabilities",
  "fstart-core",
  "fstart-crabefi",
+ "fstart-crypto",
  "fstart-ffs",
  "fstart-fit",
  "fstart-log",
  "fstart-platform-x86_64",
  "fstart-runtime",
  "heapless",
+ "postcard",
  "ufmt",
 ]
 

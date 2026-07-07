@@ -166,12 +166,12 @@ pub fn assemble_with_parsed(
                     });
                 } else {
                     // Subsequent stages are stored as flat binaries (the
-                    // ELF-derived .bin). The StageLoad path loads the FFS segment
-                    // to load_addr and supports LZ4 in-place decompression, so
-                    // ramstages loaded via StageLoad can be stored compressed.
-                    // LoadNextStage users (e.g. tiny SoC bootblocks) copy raw
-                    // bytes and jump directly, so those stages must remain
-                    // uncompressed.
+                    // ELF-derived .bin). The stage-load helper loads the FFS
+                    // segment to load_addr and supports LZ4 in-place
+                    // decompression, so ramstages loaded that way can be stored
+                    // compressed. Direct next-stage users (e.g. tiny SoC
+                    // bootblocks) copy raw bytes and jump directly, so those
+                    // stages must remain uncompressed.
                     let stage_cfg = stages
                         .iter()
                         .find(|stage| stage.name.as_str() == stage_bin.name)
@@ -183,7 +183,7 @@ pub fn assemble_with_parsed(
                         && !stage_loaded_via_stage_load(stages, &stage_bin.name)
                     {
                         return Err(format!(
-                            "stage '{}' requests {:?} compression but is not loaded via StageLoad",
+                            "stage '{}' requests {:?} compression but is not loaded by the stage-load helper",
                             stage_bin.name, compression
                         ));
                     };
@@ -720,7 +720,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
     let mut image = vec![0xffu8; flash_size];
 
     // Keep the FFS blob at flash offset 0. Anchor offsets are defined from the
-    // firmware image base, and board BootMedia scans the firmware ROM window.
+    // firmware image base, and board boot media scans the firmware ROM window.
     image[..ffs_data.len()].copy_from_slice(ffs_data);
 
     let elf_data = fs::read(bootblock_elf).map_err(|e| {
@@ -1275,12 +1275,11 @@ fn assemble_microcode(
 
 fn stage_loaded_via_stage_load(stages: &[fstart_core::StageConfig], stage_name: &str) -> bool {
     stages.iter().any(|stage| {
-        stage.capabilities.iter().any(|cap| {
-            matches!(
-                cap,
-                fstart_core::Capability::StageLoad { next_stage } if next_stage.as_str() == stage_name
-            )
-        })
+        stage
+            .build
+            .load_next_stage
+            .as_ref()
+            .is_some_and(|next_stage| next_stage.as_str() == stage_name)
     })
 }
 

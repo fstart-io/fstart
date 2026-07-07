@@ -3,15 +3,11 @@
 #[cfg(feature = "stage")]
 use fstart_core::services::device::{BusDevice, DeviceError};
 #[cfg(feature = "stage")]
-use fstart_core::services::{ServiceError, SmBus};
-#[cfg(feature = "stage")]
-use fstart_core::BusAddress;
+use fstart_core::services::ServiceError;
 #[cfg(feature = "stage")]
 use fstart_driver_intel::ck505::I2cCk505;
 #[cfg(feature = "stage")]
 use fstart_driver_superio::ite8721f::Ite8721f;
-#[cfg(feature = "stage")]
-use fstart_driver_superio::LpcBaseProvider;
 #[cfg(feature = "stage")]
 use fstart_platform_intel::pineview::PineviewIch7;
 #[cfg(feature = "stage")]
@@ -50,14 +46,11 @@ impl D41SMainboard {
 impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
     fn before_console(
         &mut self,
-        ctx: &mut IntelEarlyCtx<PineviewIch7>,
+        _ctx: &mut IntelEarlyCtx<PineviewIch7>,
     ) -> Result<(), ServiceError> {
-        let southbridge = ctx.southbridge();
-        let bus: &dyn LpcBaseProvider = southbridge;
-        let mut superio = Ite8721f::new_on_bus_at(
+        let mut superio = Ite8721f::new_at_base(
             crate::d41s_superio_config().0,
-            bus,
-            Some(BusAddress::Lpc(crate::SUPERIO_PNP_BASE)),
+            crate::SUPERIO_PNP_BASE,
         )
         .map_err(device_error_to_service_error)?;
         superio.init().map_err(device_error_to_service_error)?;
@@ -67,16 +60,10 @@ impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
 
     fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<PineviewIch7>) -> Result<(), ServiceError> {
         let southbridge = ctx.southbridge();
-        let bus: &dyn SmBus = southbridge;
-        let mut ck505 = I2cCk505::new_on_bus_at(
-            crate::d41s_ck505_config(),
-            bus,
-            Some(BusAddress::I2c(crate::CK505_ADDR)),
-        )
-        .map_err(device_error_to_service_error)?;
-        let bus: &mut dyn SmBus = southbridge;
+        let mut ck505 = I2cCk505::new_at_address(crate::d41s_ck505_config(), crate::CK505_ADDR)
+            .map_err(device_error_to_service_error)?;
         ck505
-            .init_on_bus(bus)
+            .init_on_smbus(southbridge)
             .map_err(device_error_to_service_error)
     }
 

@@ -676,6 +676,38 @@ impl Default for IntelIch7Config {
     }
 }
 
+#[must_use]
+pub const fn valid_lpc_generic_io(range: LpcGenericIoDecode) -> bool {
+    range.base & 0x0003 == 0 && range.size != 0 && range.size <= 0x0100 && range.size & 0x0003 == 0
+}
+
+#[must_use]
+pub const fn lpc_generic_io_overlaps(a: LpcGenericIoDecode, b: LpcGenericIoDecode) -> bool {
+    let a_end = a.base as u32 + a.size as u32;
+    let b_end = b.base as u32 + b.size as u32;
+    (a.base as u32) < b_end && (b.base as u32) < a_end
+}
+
+#[must_use]
+pub const fn valid_pirq_route(route: u8) -> bool {
+    route == 0
+        || route == 0x80
+        || (route >= 3 && route <= 7)
+        || (route >= 9 && route <= 12)
+        || route == 14
+        || route == 15
+}
+
+#[must_use]
+pub const fn valid_gpe0_en(gpe0_en: u32) -> bool {
+    gpe0_en & !0x0000_ffff == 0
+}
+
+#[must_use]
+pub const fn valid_sata_ports(ports: u8) -> bool {
+    ports != 0 && ports & !0x0f == 0
+}
+
 // ---------------------------------------------------------------------------
 // Driver state
 // ---------------------------------------------------------------------------

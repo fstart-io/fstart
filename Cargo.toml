@@ -7,7 +7,6 @@ members = [
   "crates/fstart-ffs",
   "crates/fstart-crypto",
   "crates/fstart-arch",
-  "crates/fstart-capabilities",
   "crates/fstart-alloc",
   "crates/fstart-log",
   "crates/fstart-runtime",
@@ -76,7 +75,6 @@ fstart-platform-intel = { path = "crates/fstart-platform-intel" }
 fstart-pci = { path = "crates/fstart-pci" }
 fstart-ffs = { path = "crates/fstart-ffs" }
 fstart-crypto = { path = "crates/fstart-crypto" }
-fstart-capabilities = { path = "crates/fstart-capabilities" }
 fstart-alloc = { path = "crates/fstart-alloc" }
 fstart-log = { path = "crates/fstart-log" }
 fstart-runtime = { path = "crates/fstart-runtime" }

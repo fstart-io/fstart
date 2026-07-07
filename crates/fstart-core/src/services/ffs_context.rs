@@ -1,9 +1,9 @@
 //! Runtime context for firmware filesystem consumers.
 //!
-//! The generated board adapter records the current memory-mapped FFS window
-//! after the `BootMedia` capability runs.  Drivers that need board assets from
-//! FFS during later RAM-backed initialization can query this scalar context
-//! without stage code knowing about those assets.
+//! Fixed platform flows record the current memory-mapped FFS window after boot
+//! media is mounted. Drivers that need board assets from FFS during later
+//! RAM-backed initialization can query this scalar context without stage code
+//! knowing about those assets.
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -68,7 +68,7 @@ impl MemoryMappedFfsContext {
     /// which lives for the entire stage execution.
     #[inline]
     pub unsafe fn anchor_bytes(&self) -> &'static [u8] {
-        core::slice::from_raw_parts(self.anchor_addr as *const u8, self.anchor_len)
+        unsafe { core::slice::from_raw_parts(self.anchor_addr as *const u8, self.anchor_len) }
     }
 
     /// Return the memory-mapped FFS image window.
@@ -79,6 +79,8 @@ impl MemoryMappedFfsContext {
     /// window covering the FFS image.
     #[inline]
     pub unsafe fn image_bytes(&self) -> &'static [u8] {
-        core::slice::from_raw_parts(self.image_base as *const u8, self.image_size as usize)
+        unsafe {
+            core::slice::from_raw_parts(self.image_base as *const u8, self.image_size as usize)
+        }
     }
 }

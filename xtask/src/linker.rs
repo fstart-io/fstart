@@ -5,8 +5,8 @@ use std::fmt::Write;
 use fstart_core::board::MicrocodeConfig;
 use fstart_core::memory::FlashLayout;
 use fstart_core::{
-    effective_stage_load_addr, BoardConfig, BootMedium, Capability, Platform, RegionKind,
-    SocImageFormat, StageLayout,
+    effective_stage_load_addr, BoardConfig, Platform, RegionKind, SocImageFormat, StageBuildConfig,
+    StageLayout,
 };
 
 /// Generate a linker script for the given board and (optional) stage.
@@ -120,7 +120,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         is_first_stage && matches!(config.soc_image_format, SocImageFormat::AllwinnerEgon);
 
     // x86 CAR/postcar symbols. The first stage uses `_has_car` to decide
-    // whether to enter CAR setup. StageLoad tears CAR down in the bootblock
+    // whether to enter CAR setup. The stage-load helper tears CAR down in the bootblock
     // trampoline before loading/jumping to the RAM stage, so non-first stages
     // must not run `_car_teardown` again.
     let has_x86_car =
@@ -216,7 +216,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
                 let bss_addr = base.checked_add(size)?;
                 if bss_addr < effective_origin || bss_addr >= effective_origin + effective_length {
                     panic!(
-                        "BootMedia(FirmwareImage) window ({base:#x}, {size:#x}) ends at {bss_addr:#x}, \
+                        "firmware image window ({base:#x}, {size:#x}) ends at {bss_addr:#x}, \
                          outside RAM region [{effective_origin:#x}..{:#x}]",
                         effective_origin + effective_length
                     );
@@ -243,27 +243,23 @@ fn stage_memory_mapped_boot_media(
     config: &BoardConfig,
     stage_name: Option<&str>,
 ) -> Option<(u64, u64)> {
-    let capabilities = stage_capabilities(config, stage_name)?;
-
-    capabilities.iter().find_map(|capability| match capability {
-        Capability::BootMedia(BootMedium::FirmwareImage { .. }) => config.memory.firmware_window(),
-        _ => None,
-    })
+    stage_build(config, stage_name)?
+        .firmware_image
+        .as_ref()
+        .and_then(|_| config.memory.firmware_window())
 }
 
-fn stage_capabilities<'a>(
+fn stage_build<'a>(
     config: &'a BoardConfig,
     stage_name: Option<&str>,
-) -> Option<&'a [Capability]> {
+) -> Option<&'a StageBuildConfig> {
     match (&config.stages, stage_name) {
-        (StageLayout::Monolithic(mono), _) => Some(&mono.capabilities),
+        (StageLayout::Monolithic(mono), _) => Some(&mono.build),
         (StageLayout::MultiStage(stages), Some(name)) => stages
             .iter()
             .find(|stage| stage.name.as_str() == name)
-            .map(|stage| stage.capabilities.as_slice()),
-        (StageLayout::MultiStage(stages), None) => {
-            stages.first().map(|stage| stage.capabilities.as_slice())
-        }
+            .map(|stage| &stage.build),
+        (StageLayout::MultiStage(stages), None) => stages.first().map(|stage| &stage.build),
     }
 }
 

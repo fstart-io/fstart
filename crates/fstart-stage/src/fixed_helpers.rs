@@ -52,7 +52,7 @@ impl BlockDeviceFfs {
             self.ffs_size = ffs_size;
             let media = self.media(block)?;
             let anchor_offset = ffs_size - ANCHOR_SIZE;
-            let anchor = fstart_capabilities::read_anchor_at_offset(&media, anchor_offset)
+            let anchor = crate::read_anchor_at_offset(&media, anchor_offset)
                 .map_err(|_| ServiceError::NotInitialized)?;
             fstart_log::info!(
                 "mounted block FFS: media_offset={:#x}, size={:#x}",
@@ -77,7 +77,7 @@ impl BlockDeviceFfs {
     {
         let anchor = self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?;
         let media = self.media(block)?;
-        fstart_capabilities::sig_verify(anchor, &media);
+        crate::sig_verify(anchor, &media);
         Ok(())
     }
 
@@ -90,7 +90,7 @@ impl BlockDeviceFfs {
         {
             let anchor = self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?;
             let media = self.media(block)?;
-            if fstart_capabilities::load_ffs_file_by_type(anchor, &media, file_type) {
+            if crate::load_ffs_file_by_type(anchor, &media, file_type) {
                 Ok(())
             } else {
                 Err(ServiceError::NotInitialized)
@@ -181,13 +181,7 @@ impl BlockDeviceLinuxBoot {
     ) -> Result<(), ServiceError> {
         #[cfg(feature = "fdt")]
         {
-            fstart_capabilities::fdt_prepare_platform(
-                self.dtb_addr,
-                dst_dtb_addr,
-                bootargs,
-                ram_base,
-                ram_size,
-            );
+            crate::fdt_prepare_platform(self.dtb_addr, dst_dtb_addr, bootargs, ram_base, ram_size);
             self.dtb_addr = dst_dtb_addr;
         }
 
@@ -274,7 +268,7 @@ impl MemoryMappedFfs {
     /// Verify the FFS manifest/signature policy when the backend is enabled.
     pub fn verify(self) -> Result<(), ServiceError> {
         let media = self.media();
-        fstart_capabilities::sig_verify(crate::fstart_anchor_bytes(), &media);
+        crate::sig_verify(crate::fstart_anchor_bytes(), &media);
         Ok(())
     }
 
@@ -283,11 +277,7 @@ impl MemoryMappedFfs {
         #[cfg(feature = "ffs")]
         {
             let media = self.media();
-            if fstart_capabilities::load_ffs_file_by_type(
-                crate::fstart_anchor_bytes(),
-                &media,
-                file_type,
-            ) {
+            if crate::load_ffs_file_by_type(crate::fstart_anchor_bytes(), &media, file_type) {
                 Ok(())
             } else {
                 Err(ServiceError::NotInitialized)
@@ -306,11 +296,7 @@ impl MemoryMappedFfs {
         #[cfg(feature = "ffs")]
         {
             let media = self.media();
-            if fstart_capabilities::load_ffs_file_by_name(
-                crate::fstart_anchor_bytes(),
-                &media,
-                name,
-            ) {
+            if crate::load_ffs_file_by_name(crate::fstart_anchor_bytes(), &media, name) {
                 Ok(())
             } else {
                 Err(ServiceError::NotInitialized)
@@ -467,13 +453,7 @@ impl MemoryMappedLinuxBoot {
     ) -> Result<(), ServiceError> {
         #[cfg(feature = "fdt")]
         {
-            fstart_capabilities::fdt_prepare_platform(
-                self.dtb_addr,
-                dst_dtb_addr,
-                bootargs,
-                ram_base,
-                ram_size,
-            );
+            crate::fdt_prepare_platform(self.dtb_addr, dst_dtb_addr, bootargs, ram_base, ram_size);
             self.dtb_addr = dst_dtb_addr;
         }
 

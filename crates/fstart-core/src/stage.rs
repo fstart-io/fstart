@@ -1,8 +1,7 @@
-//! Stage composition types for transitional capability/profile metadata.
+//! Board-owned stage build metadata for fixed handwritten flows.
 //!
-//! Rust-authored boards provide these values directly. The long-term fixed
-//! stage flow consumes coarse build profiles rather than board-authored device
-//! routing or generated flow code.
+//! These structs describe how the build tool links and packages each stage.
+//! Runtime ordering lives in platform flow code, not in this metadata.
 
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
@@ -11,10 +10,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)] // no_std: can't Box heapless containers
 pub enum StageLayout {
-    /// Single binary with all capabilities linked in.
+    /// Single binary firmware image.
     Monolithic(MonolithicConfig),
-    /// Multiple stage binaries, each with a subset of capabilities.
-    /// Each stage is generated separately and packed into the FFS.
+    /// Multiple stage binaries packed into the firmware image.
     MultiStage(heapless::Vec<StageConfig, 8>),
 }
 
@@ -22,16 +20,17 @@ pub enum StageLayout {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MonolithicConfig {
-    /// Ordered list of capabilities to execute
-    pub capabilities: heapless::Vec<Capability, 16>,
+    /// Build-time features and packaging inputs this stage needs.
+    #[serde(default)]
+    pub build: StageBuildConfig,
     /// Load/run address
     pub load_addr: u64,
     /// Stack size in bytes
     pub stack_size: u32,
     /// Heap size in bytes for the bump allocator.
     ///
-    /// Required when the stage uses capabilities that need dynamic
-    /// allocation (e.g., `FdtPrepare`). Codegen emits a sized static
+    /// Required when the stage links code that needs dynamic
+    /// allocation. The build emits a sized static
     /// (`_FSTART_HEAP`) and a size constant (`_FSTART_HEAP_SIZE`) that
     /// `fstart-alloc` references via `extern "C"` at link time.
     #[serde(default)]
@@ -68,8 +67,9 @@ pub struct MonolithicConfig {
 pub struct StageConfig {
     /// Stage name (e.g., "bootblock", "main")
     pub name: HString<32>,
-    /// Ordered list of capabilities for this stage
-    pub capabilities: heapless::Vec<Capability, 16>,
+    /// Build-time features and packaging inputs this stage needs.
+    #[serde(default)]
+    pub build: StageBuildConfig,
     /// Where this stage is loaded in memory.
     ///
     /// For the first x86_64 ROM/XIP stage this may be omitted/zero; tooling
@@ -90,8 +90,9 @@ pub struct StageConfig {
     ///
     /// The first stage is always stored uncompressed because it executes
     /// directly and contains the patchable FFS anchor. Later stages may use
-    /// `Lz4` when loaded via `StageLoad`; stages loaded by `LoadNextStage`
-    /// must remain `None` because that path copies raw bytes and jumps.
+    /// `Lz4` when loaded by the stage-load helper; stages copied directly by
+    /// platform boot-source code must remain `None` because that path copies raw
+    /// bytes and jumps.
     #[serde(default = "default_stage_compression")]
     pub compression: crate::ffs::Compression,
     /// Explicit address for data/BSS/stack in RAM (XIP stages only).
@@ -112,6 +113,64 @@ pub struct StageConfig {
     /// Same semantics as [`MonolithicConfig::page_size`].
     #[serde(default)]
     pub page_size: PageSize,
+}
+
+/// Build-time feature and packaging requirements for a stage.
+///
+/// This is deliberately not an execution plan. Fixed platform flows decide
+/// runtime ordering; this only tells the build tool which optional code and
+/// image entries a board-owned stage needs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct StageBuildConfig {
+    /// Whether this stage reads the firmware image/FFS from the board's
+    /// configured firmware window.
+    #[serde(default)]
+    pub firmware_image: Option<FirmwareImageConfig>,
+    /// Whether this stage verifies the FFS manifest signature.
+    #[serde(default)]
+    pub verify_firmware: bool,
+    /// Name of the next stage this stage packages/loads from FFS, if any.
+    #[serde(default)]
+    pub load_next_stage: Option<HString<32>>,
+    /// Whether this stage hands off to the selected payload.
+    #[serde(default)]
+    pub payload: bool,
+    /// Whether this stage prepares an FDT.
+    #[serde(default)]
+    pub fdt: bool,
+    /// Whether this stage scans/initializes PCI.
+    #[serde(default)]
+    pub pci: bool,
+    /// Whether this stage emits or loads ACPI tables.
+    #[serde(default)]
+    pub acpi: bool,
+    /// Whether this stage emits SMBIOS tables.
+    #[serde(default)]
+    pub smbios: bool,
+    /// Whether this stage initializes APs/SMM.
+    #[serde(default)]
+    pub mp: Option<MpBuildConfig>,
+}
+
+/// Firmware-image access needed by a stage.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FirmwareImageConfig {
+    /// Optional temporary RAM arena available to FFS/payload code.
+    #[serde(default)]
+    pub temp_ram_buffer: Option<TempRamBuffer>,
+}
+
+/// MP/SMM build metadata for a stage.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MpBuildConfig {
+    /// Maximum logical CPU count to attempt (BSP + APs).
+    pub max_cpus: u16,
+    /// Enable SMM setup.
+    #[serde(default)]
+    pub smm: bool,
 }
 
 /// Where a stage executes from.
@@ -140,8 +199,7 @@ pub enum RunsFrom {
     /// Execute from RAM after being loaded.
     ///
     /// Load address must lie inside a RAM region. Code is copied from
-    /// flash into RAM by a prior stage's `StageLoad` capability and
-    /// jumped to.
+    /// flash into RAM by a prior stage and jumped to.
     Ram,
 }
 
@@ -201,67 +259,6 @@ pub enum PageSize {
     Size1GiB,
 }
 
-/// A semantic firmware capability/flow marker.
-///
-/// Transitional code still uses this enum to select stage feature families and
-/// to emit legacy `StagePlan` facts, but board metadata must not route runtime
-/// work by device name. Device participation is selected from service metadata
-/// and platform/driver policy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum Capability {
-    /// Initialize the clock tree / PLL configuration.
-    ClockInit,
-    /// Initialize an early console for debug output.
-    ConsoleInit,
-    /// Declare the boot medium for FFS operations.
-    BootMedia(BootMedium),
-    /// Verify the firmware filesystem manifest signature.
-    SigVerify,
-    /// Mark DRAM as available without a memory-controller service.
-    MemoryInit,
-    /// Initialize DRAM through the stage-selected memory controller service.
-    DramInit,
-    /// Initialize all logical CPUs (BSP + APs).
-    MpInit {
-        /// Maximum logical CPU count to attempt (BSP + APs).
-        max_cpus: u16,
-        /// Enable SMM setup. When true, exactly one compiled runtime device must
-        /// provide `SmmOps`; selecting among multiple providers belongs in typed
-        /// board/build policy, not a capability string.
-        #[serde(default)]
-        smm: bool,
-    },
-    /// Enumerate and initialize all declared devices/drivers.
-    DriverInit,
-    /// Enumerate a PCI root bus, allocate BAR resources, and enable devices.
-    PciInit,
-    /// Prepare a Flattened Device Tree for OS handoff.
-    FdtPrepare,
-    /// Load and jump to the payload (OS kernel, shell, etc.).
-    PayloadLoad,
-    /// Load the next stage from FFS into RAM and jump to it.
-    StageLoad {
-        /// Name of the next stage to load.
-        next_stage: HString<32>,
-    },
-    /// Generate ACPI tables and write them to the configured address.
-    AcpiPrepare,
-    /// Generate SMBIOS tables and write them to the configured address.
-    SmBiosPrepare,
-    /// Load ACPI tables from the selected external provider service.
-    AcpiLoad,
-    /// Detect system memory layout through the selected memory detector service.
-    MemoryDetect,
-    /// Return to the BROM's FEL (USB recovery) mode.
-    ReturnToFel,
-    /// Load the next stage directly from platform boot-source metadata.
-    LoadNextStage {
-        /// Name of the next stage to jump to after loading.
-        next_stage: HString<32>,
-    },
-}
-
 /// Temporary RAM scratch buffer for firmware-image/FFS operations.
 ///
 /// This is a bounded arena, not a firmware-image mapping. Runtime code may use
@@ -275,22 +272,4 @@ pub struct TempRamBuffer {
     pub base: u64,
     /// Size of the scratch arena in bytes.
     pub size: u64,
-}
-
-/// Boot medium — how the firmware image is accessed at runtime.
-///
-/// Declared via the `BootMedia(...)` capability for transitional stage metadata.
-/// Firmware image mapping and boot-source candidate tables are supplied by
-/// Rust platform/chipset/provider code, not by board-local device strings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum BootMedium {
-    /// Firmware image exposed by the selected provider service or by platform
-    /// firmware-image/boot-source metadata. The capability does not name a
-    /// provider device.
-    FirmwareImage {
-        /// Optional scratch RAM arena available to FFS/payload code.
-        #[serde(default)]
-        temp_ram_buffer: Option<TempRamBuffer>,
-    },
 }

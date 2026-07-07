@@ -1,8 +1,8 @@
 //! Service trait definitions.
 //!
 //! Services are the abstraction layer between firmware stage flows and
-//! hardware drivers. Drivers implement these traits. Fixed stage flows and
-//! capability helpers consume them.
+//! hardware drivers. Drivers implement these traits; fixed stage flows consume
+//! them directly.
 //!
 //! This crate defines traits only — no implementations.
 //!

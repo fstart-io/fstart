@@ -628,6 +628,20 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 }
 
+impl<C: SuperIoChip> SuperIo<C> {
+    /// Construct a SuperIO at a fixed LPC PnP config port.
+    pub fn new_at_base(config: SuperIoConfig, base_port: u16) -> Result<Self, DeviceError> {
+        if base_port == 0 {
+            return Err(DeviceError::MissingResource("lpc_base"));
+        }
+        Ok(Self {
+            base_port,
+            config,
+            _phantom: PhantomData,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BusDevice impl — constructed by the parent LPC bus
 // ---------------------------------------------------------------------------
@@ -665,14 +679,7 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
             Some(_) => return Err(DeviceError::MissingResource("lpc_address")),
             None => bus.lpc_base(),
         };
-        if base_port == 0 {
-            return Err(DeviceError::MissingResource("lpc_base"));
-        }
-        Ok(Self {
-            base_port,
-            config,
-            _phantom: PhantomData,
-        })
+        Self::new_at_base(config, base_port)
     }
 
     fn init_on_bus(&mut self, _bus: &mut Self::Bus) -> Result<(), DeviceError> {

@@ -115,71 +115,6 @@ pub trait IntelEcamConfig {
 }
 
 #[cfg(feature = "stage")]
-impl IntelEcamConfig for fstart_driver_intel::gm965::IntelGm965Config {
-    fn ecam_base(&self) -> u64 {
-        self.ecam_base
-    }
-}
-
-#[cfg(feature = "stage")]
-impl IntelEcamConfig for fstart_driver_intel::pineview::IntelPineviewConfig {
-    fn ecam_base(&self) -> u64 {
-        self.ecam_base
-    }
-}
-
-#[cfg(feature = "stage")]
-impl IntelNorthbridgeDriver for fstart_driver_intel::gm965::IntelGm965 {
-    type Config = fstart_driver_intel::gm965::IntelGm965Config;
-
-    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
-        fstart_driver_intel::gm965::IntelGm965::new(config).map_err(|_| ServiceError::HardwareError)
-    }
-
-    fn config(&self) -> &'static Self::Config {
-        fstart_driver_intel::gm965::IntelGm965::config(self)
-    }
-
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::gm965::IntelGm965::pre_console_init(self)
-    }
-
-    fn early_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::gm965::IntelGm965::early_init(self)
-    }
-
-    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::gm965::IntelGm965::stage_local_init(self)
-    }
-}
-
-#[cfg(feature = "stage")]
-impl IntelNorthbridgeDriver for fstart_driver_intel::pineview::IntelPineview {
-    type Config = fstart_driver_intel::pineview::IntelPineviewConfig;
-
-    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
-        fstart_driver_intel::pineview::IntelPineview::new(config)
-            .map_err(|_| ServiceError::HardwareError)
-    }
-
-    fn config(&self) -> &'static Self::Config {
-        fstart_driver_intel::pineview::IntelPineview::config(self)
-    }
-
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::pineview::IntelPineview::pre_console_init(self)
-    }
-
-    fn early_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::pineview::IntelPineview::early_init(self)
-    }
-
-    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::pineview::IntelPineview::stage_local_init(self)
-    }
-}
-
-#[cfg(feature = "stage")]
 pub trait IntelSouthbridgeDriver: Sized {
     type Config: 'static;
 
@@ -190,66 +125,6 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn early_init(&mut self) -> Result<(), ServiceError>;
     fn post_dram_init(&mut self) -> Result<(), ServiceError>;
     fn finalize_init(&mut self) -> Result<(), ServiceError>;
-}
-
-#[cfg(feature = "stage")]
-impl IntelSouthbridgeDriver for fstart_driver_intel::ich8::IntelIch8 {
-    type Config = fstart_driver_intel::ich8::IntelIch8Config;
-
-    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
-        fstart_driver_intel::ich8::IntelIch8::new(config).map_err(|_| ServiceError::HardwareError)
-    }
-
-    #[cfg(feature = "acpi")]
-    fn config(&self) -> &'static Self::Config {
-        fstart_driver_intel::ich8::IntelIch8::config(self)
-    }
-
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::ich8::IntelIch8::pre_console_init(self)
-    }
-
-    fn early_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::ich8::IntelIch8::early_init(self)
-    }
-
-    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::ich8::IntelIch8::post_dram_init(self)
-    }
-
-    fn finalize_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::ich8::IntelIch8::finalize_init(self)
-    }
-}
-
-#[cfg(feature = "stage")]
-impl IntelSouthbridgeDriver for fstart_driver_intel::ich7::IntelIch7 {
-    type Config = fstart_driver_intel::ich7::IntelIch7Config;
-
-    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
-        fstart_driver_intel::ich7::IntelIch7::new(config).map_err(|_| ServiceError::HardwareError)
-    }
-
-    #[cfg(feature = "acpi")]
-    fn config(&self) -> &'static Self::Config {
-        fstart_driver_intel::ich7::IntelIch7::config(self)
-    }
-
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::ich7::IntelIch7::pre_console_init(self)
-    }
-
-    fn early_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::ich7::IntelIch7::early_init(self)
-    }
-
-    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::ich7::IntelIch7::post_dram_init(self)
-    }
-
-    fn finalize_init(&mut self) -> Result<(), ServiceError> {
-        fstart_driver_intel::ich7::IntelIch7::finalize_init(self)
-    }
 }
 
 #[cfg(feature = "stage")]

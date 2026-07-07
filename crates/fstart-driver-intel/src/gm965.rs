@@ -721,16 +721,6 @@ impl VbtBytes<'_> {
     }
 }
 
-#[repr(align(4096))]
-struct IgdOpRegionStore(UnsafeCell<[u8; IGD_OPREGION_TOTAL_SIZE]>);
-
-// SAFETY: The opregion is initialized once during BSP chipset init, then shared
-// read-mostly with ACPI/OS graphics drivers through ASLS.
-unsafe impl Sync for IgdOpRegionStore {}
-
-static IGD_OPREGION: IgdOpRegionStore =
-    IgdOpRegionStore(UnsafeCell::new([0; IGD_OPREGION_TOTAL_SIZE]));
-
 // GM965/ICH8 SMM constants. SMRAM bit definitions match coreboot's
 // `cpu/intel/smm/gen1/smmrelocate.c`; PM I/O offsets live in
 // `pmio_ich`.
@@ -1492,8 +1482,7 @@ impl IntelGm965 {
         };
         let vbt = vbt.as_slice();
 
-        // SAFETY: BSP-only initialization before handing ASLS to the OS.
-        let opregion = unsafe { &mut *IGD_OPREGION.0.get() };
+        let opregion = crate::igd_opregion_buf(IGD_OPREGION_TOTAL_SIZE);
         opregion.fill(0);
         opregion[0..16].copy_from_slice(b"IntelGraphicsMem");
         Self::opregion_write_u32(opregion, 16, (IGD_OPREGION_BASE_SIZE / 1024) as u32);

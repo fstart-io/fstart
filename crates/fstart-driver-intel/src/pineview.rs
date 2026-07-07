@@ -86,19 +86,6 @@ impl VbtBytes<'_> {
     }
 }
 
-#[cfg(feature = "ffs-vbt")]
-#[repr(align(4096))]
-struct IgdOpRegionStore(UnsafeCell<[u8; IGD_OPREGION_TOTAL_SIZE]>);
-
-// SAFETY: The opregion is initialized once during ramstage before OS handoff,
-// then shared read-only with ACPI/OS graphics drivers through IGD ASLS.
-#[cfg(feature = "ffs-vbt")]
-unsafe impl Sync for IgdOpRegionStore {}
-
-#[cfg(feature = "ffs-vbt")]
-static IGD_OPREGION: IgdOpRegionStore =
-    IgdOpRegionStore(UnsafeCell::new([0; IGD_OPREGION_TOTAL_SIZE]));
-
 /// Intel integrated graphics configuration.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -572,7 +559,7 @@ impl IntelPineview {
     }
 }
 
-fn pineview_ck505_pre_raminit(smbus: &mut dyn SmBus) {
+fn pineview_ck505_pre_raminit<B: SmBus>(smbus: &mut B) {
     const CLOCKGEN_ADDR: u8 = 0x69;
     const REGS: [u8; 5] = [0x00, 0x80, 0xfe, 0xff, 0xfc];
 
@@ -964,8 +951,7 @@ impl IntelPineview {
         };
         let vbt = vbt.as_slice();
 
-        // SAFETY: BSP-only initialization before handing ASLS to the OS.
-        let opregion = unsafe { &mut *IGD_OPREGION.0.get() };
+        let opregion = crate::igd_opregion_buf(IGD_OPREGION_TOTAL_SIZE);
         opregion.fill(0);
         opregion[0..16].copy_from_slice(b"IntelGraphicsMem");
         Self::opregion_write_u32(opregion, 16, (IGD_OPREGION_BASE_SIZE / 1024) as u32);
