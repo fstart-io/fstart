@@ -40,15 +40,6 @@ pub(crate) fn firmware_window(
 }
 
 #[cfg(feature = "stage")]
-pub(crate) fn publish_e820(ctx: &mut MainstageCtx, count: usize, total: u64) {
-    // SAFETY: single-threaded firmware init, stored once per stage.
-    unsafe {
-        fstart_core::services::memory_detect::e820_state_mut().store(ctx.e820(), count, total);
-    }
-    ctx.store_e820(count, total);
-}
-
-#[cfg(feature = "stage")]
 pub(crate) fn run_mainstage_phase(
     platform: &str,
     name: &str,
@@ -107,6 +98,11 @@ pub trait IntelNorthbridgeDriver:
     fn pre_console_init(&mut self) -> Result<(), ServiceError>;
     fn early_init(&mut self) -> Result<(), ServiceError>;
     fn stage_local_init(&mut self) -> Result<(), ServiceError>;
+
+    /// Called once after memory detection with the authoritative e820 map.
+    /// Chipsets that derive policy from it (e.g. GM965's PCI mmio32 window)
+    /// cache what they need; the default does nothing.
+    fn memory_detected(&mut self, _e820: &fstart_core::services::memory_detect::E820State) {}
 }
 
 #[cfg(feature = "stage")]
@@ -212,7 +208,7 @@ where
     }
 
     #[cfg(feature = "acpi")]
-    fn emit_acpi(&self) -> u64
+    fn emit_acpi(&mut self) -> u64
     where
         P: IntelEarlyPlatform<Southbridge = SB, AcpiContext = AcpiContext>,
         AcpiContext: Default,
@@ -223,6 +219,7 @@ where
     {
         let acpi_ctx = AcpiContext::default();
         emit_x86_acpi_tables(
+            self.ctx.e820_state_mut(),
             &self.northbridge,
             self.northbridge.config(),
             &self.southbridge,
@@ -365,7 +362,7 @@ where
         let rsdp = self.emit_acpi();
         self.ctx.set_acpi_rsdp(Some(rsdp));
         #[cfg(feature = "smbios")]
-        crate::tables::prepare_smbios(B::smbios_desc());
+        crate::tables::prepare_smbios(self.ctx.e820_state_mut(), B::smbios_desc());
         Ok(())
     }
 
@@ -400,7 +397,7 @@ where
 
     fn emit_tables(&mut self) -> Result<(), ServiceError> {
         #[cfg(feature = "smbios")]
-        crate::tables::prepare_smbios(B::smbios_desc());
+        crate::tables::prepare_smbios(self.ctx.e820_state_mut(), B::smbios_desc());
         Ok(())
     }
 
@@ -512,7 +509,7 @@ where
     southbridge.early_init()?;
 
     hooks.before_memory(&mut IntelEarlyCtx::new(southbridge))?;
-    let count = northbridge.detect_memory(ctx.e820_mut())?;
+    let count = northbridge.detect_memory(ctx.e820_state_mut().entries_mut())?;
     let total = northbridge.total_ram_bytes()?;
     fstart_log::info!(
         "Detected {} MiB RAM, {} e820 entries from {}",
@@ -520,7 +517,8 @@ where
         count,
         platform_node,
     );
-    publish_e820(ctx, count, total);
+    ctx.e820_state_mut().set_detected(count, total);
+    northbridge.memory_detected(ctx.e820_state());
 
     northbridge.dram_init()
 }
@@ -565,6 +563,7 @@ where
 
 #[cfg(all(feature = "stage", feature = "acpi"))]
 pub(crate) fn emit_acpi_tables<Northbridge, Southbridge, Hooks>(
+    e820: &mut fstart_core::services::memory_detect::E820State,
     platform: &fstart_acpi::platform::PlatformConfig,
     northbridge: &Northbridge,
     northbridge_config: &Northbridge::Config,
@@ -578,7 +577,7 @@ where
     Southbridge: fstart_acpi::device::AcpiDevice,
     Hooks: fstart_acpi::device::AcpiDevice,
 {
-    crate::tables::prepare_acpi(platform, |dsdt, extra| {
+    crate::tables::prepare_acpi(e820, platform, |dsdt, extra| {
         dsdt.extend(northbridge.dsdt_aml(northbridge_config));
         dsdt.extend(southbridge.dsdt_aml(southbridge_config));
         dsdt.extend(hooks.dsdt_aml(hooks_config));
@@ -590,6 +589,7 @@ where
 
 #[cfg(all(feature = "stage", feature = "acpi"))]
 pub(crate) fn emit_x86_acpi_tables<Northbridge, Southbridge, Hooks>(
+    e820: &mut fstart_core::services::memory_detect::E820State,
     northbridge: &Northbridge,
     northbridge_config: &Northbridge::Config,
     southbridge: &Southbridge,
@@ -606,6 +606,7 @@ where
         southbridge.x86_platform_config(u32::from(fstart_arch::mp::online_cpus())),
     );
     emit_acpi_tables(
+        e820,
         &platform,
         northbridge,
         northbridge_config,
@@ -699,11 +700,13 @@ pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: MainboardAcpi<P> {
 }
 
 /// Shared mainstage state owned by the flow, not by board hooks or drivers.
+///
+/// Owns the authoritative [`E820State`]: memory detection populates it and
+/// table emission carves reservations from it, so the payload hands the OS
+/// a map that includes ACPI/SMBIOS regions. There is no global copy.
 #[cfg(feature = "stage")]
 pub struct MainstageCtx {
-    e820: [E820Entry; MAX_E820_ENTRIES],
-    e820_count: usize,
-    total_ram: u64,
+    e820: fstart_core::services::memory_detect::E820State,
     acpi_rsdp: Option<u64>,
     firmware_base: u64,
     firmware_size: usize,
@@ -713,9 +716,7 @@ pub struct MainstageCtx {
 impl MainstageCtx {
     pub(crate) fn new(firmware_base: u64, firmware_size: usize) -> Self {
         Self {
-            e820: [E820Entry::zeroed(); MAX_E820_ENTRIES],
-            e820_count: 0,
-            total_ram: 0,
+            e820: fstart_core::services::memory_detect::E820State::new(),
             acpi_rsdp: None,
             firmware_base,
             firmware_size,
@@ -724,12 +725,23 @@ impl MainstageCtx {
 
     #[must_use]
     pub fn e820(&self) -> &[E820Entry] {
-        &self.e820[..self.e820_count]
+        self.e820.entries()
     }
 
     #[must_use]
-    pub const fn total_ram(&self) -> u64 {
-        self.total_ram
+    pub fn total_ram(&self) -> u64 {
+        self.e820.total_ram()
+    }
+
+    #[must_use]
+    pub fn e820_state(&self) -> &fstart_core::services::memory_detect::E820State {
+        &self.e820
+    }
+
+    pub(crate) fn e820_state_mut(
+        &mut self,
+    ) -> &mut fstart_core::services::memory_detect::E820State {
+        &mut self.e820
     }
 
     #[must_use]
@@ -740,15 +752,6 @@ impl MainstageCtx {
     #[must_use]
     pub const fn firmware_region(&self) -> (u64, usize) {
         (self.firmware_base, self.firmware_size)
-    }
-
-    pub(crate) fn e820_mut(&mut self) -> &mut [E820Entry; MAX_E820_ENTRIES] {
-        &mut self.e820
-    }
-
-    pub(crate) fn store_e820(&mut self, count: usize, total: u64) {
-        self.e820_count = count;
-        self.total_ram = total;
     }
 
     #[cfg(feature = "acpi")]

@@ -54,6 +54,10 @@ impl crate::IntelNorthbridgeDriver for gm965::IntelGm965 {
     fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         gm965::IntelGm965::stage_local_init(self)
     }
+
+    fn memory_detected(&mut self, e820: &fstart_core::services::memory_detect::E820State) {
+        gm965::IntelGm965::memory_detected(self, e820);
+    }
 }
 
 #[cfg(feature = "stage")]

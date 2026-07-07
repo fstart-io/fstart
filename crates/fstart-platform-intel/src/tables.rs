@@ -38,10 +38,14 @@ const EBDA_SIZE: usize = 0x1000;
 const EBDA_RSDP_OFFSET: usize = 0;
 
 /// Carve a page-aligned handoff region out of the top of e820 RAM.
-fn allocate_x86_handoff_region(size: usize, align: u64, kind: E820Kind) -> Option<u64> {
+fn allocate_x86_handoff_region(
+    e820: &mut fstart_core::services::memory_detect::E820State,
+    size: usize,
+    align: u64,
+    kind: E820Kind,
+) -> Option<u64> {
     let size = ((size as u64) + 0xfff) & !0xfff;
     let align_mask = align.saturating_sub(1);
-    let e820 = unsafe { fstart_core::services::memory_detect::e820_state_mut() };
     let mut selected = 0u64;
 
     for entry in e820.entries() {
@@ -221,6 +225,7 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
 /// copy in the EBDA, and hex-dumps the tables. Returns the RSDP address.
 #[cfg(feature = "acpi")]
 pub fn prepare_acpi(
+    e820: &mut fstart_core::services::memory_detect::E820State,
     platform: &fstart_acpi::platform::PlatformConfig,
     collect_devices: impl FnOnce(&mut Vec<u8>, &mut Vec<Vec<u8>>),
 ) -> u64 {
@@ -238,7 +243,7 @@ pub fn prepare_acpi(
     // (dozens of devices, IORT with many ID mappings). Increase if a
     // board exceeds this limit.
     const BUF_SIZE: usize = 128 * 1024;
-    let acpi_addr = allocate_x86_handoff_region(BUF_SIZE, 0x1000, E820Kind::Acpi)
+    let acpi_addr = allocate_x86_handoff_region(e820, BUF_SIZE, 0x1000, E820Kind::Acpi)
         .inspect(|addr| unsafe {
             core::ptr::write_bytes(*addr as *mut u8, 0, BUF_SIZE);
         })
@@ -409,12 +414,15 @@ fn smbios_associativity(ways: u32) -> u8 {
 /// - Type 16 (Physical Memory Array), Type 17 (Memory Device), Type 19 (Mapped Address)
 /// - Type 32 (System Boot) and Type 127 (End of Table)
 #[cfg(feature = "smbios")]
-pub fn prepare_smbios(desc: &SmbiosDesc) {
+pub fn prepare_smbios(
+    e820: &mut fstart_core::services::memory_detect::E820State,
+    desc: &SmbiosDesc,
+) {
     // 64 KiB table area + 32 bytes entry point header.
     // `assemble_and_write` writes ENTRY_POINT_SIZE bytes at `table_addr`
     // then up to MAX_TABLE_AREA bytes starting at `table_addr + 24`.
     const BUF_SIZE: usize = 64 * 1024 + 32;
-    let smbios_addr = allocate_x86_handoff_region(BUF_SIZE, 0x1000, E820Kind::Reserved)
+    let smbios_addr = allocate_x86_handoff_region(e820, BUF_SIZE, 0x1000, E820Kind::Reserved)
         .inspect(|addr| unsafe {
             core::ptr::write_bytes(*addr as *mut u8, 0, BUF_SIZE);
         })

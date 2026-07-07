@@ -491,6 +491,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-foxconn-d41s"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-hda",
+ "fstart-platform-intel",
+ "fstart-platform-x86_64",
+ "fstart-smbios",
+ "fstart-stage",
+ "xtask",
+]
+
+[[package]]
 name = "fstart-core"
 version = "0.1.0"
 dependencies = [
@@ -680,14 +698,6 @@ version = "0.1.0"
 dependencies = [
  "fstart-core",
  "fstart-smm",
-]
-
-[[package]]
-name = "fstart-smm-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-alloc",
- "fstart-smm-runtime",
 ]
 
 [[package]]

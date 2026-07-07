@@ -133,8 +133,14 @@ pub struct E820State {
     total_ram: u64,
 }
 
+impl Default for E820State {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl E820State {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             entries: [E820Entry::zeroed(); MAX_E820_ENTRIES],
             count: 0,
@@ -142,11 +148,15 @@ impl E820State {
         }
     }
 
-    /// Store e820 entries and total RAM. Called once by fixed memory init.
-    pub fn store(&mut self, entries: &[E820Entry], count: usize, total_ram: u64) {
-        let n = count.min(MAX_E820_ENTRIES);
-        self.entries[..n].copy_from_slice(&entries[..n]);
-        self.count = n;
+    /// Raw entry storage for in-place population by a `MemoryDetector`.
+    pub fn entries_mut(&mut self) -> &mut [E820Entry; MAX_E820_ENTRIES] {
+        &mut self.entries
+    }
+
+    /// Record the detected entry count and total RAM after in-place
+    /// population via [`entries_mut`](Self::entries_mut).
+    pub fn set_detected(&mut self, count: usize, total_ram: u64) {
+        self.count = count.min(MAX_E820_ENTRIES);
         self.total_ram = total_ram;
     }
 
@@ -246,33 +256,10 @@ impl E820State {
     }
 }
 
-/// Global e820 state instance.
-///
-/// # Safety
-///
-/// Access is safe in single-threaded firmware init. The `store()` method
-/// is called once during fixed memory init; subsequent reads via `e820_state()`
-/// are safe because no concurrent mutation occurs.
-static mut E820_GLOBAL: E820State = E820State::new();
-
-/// Get a shared reference to the global e820 state.
-///
-/// # Safety
-///
-/// Safe to call after fixed memory init has completed (which populates the
-/// state). Must not be called concurrently with `store()`.
-pub unsafe fn e820_state() -> &'static E820State {
-    unsafe { &*core::ptr::addr_of!(E820_GLOBAL) }
-}
-
-/// Get a mutable reference to the global e820 state for initial population.
-///
-/// # Safety
-///
-/// Must only be called once from single-threaded fixed memory init context.
-pub unsafe fn e820_state_mut() -> &'static mut E820State {
-    unsafe { &mut *core::ptr::addr_of_mut!(E820_GLOBAL) }
-}
+// No global e820 state: the mainstage context owns the authoritative
+// E820State and passes references to consumers. A global static would sit
+// in every stage's .bss — including bootblocks with tiny CAR windows — and
+// invited divergence between the global and per-stage copies.
 
 /// A device that can detect the system memory layout at runtime.
 pub trait MemoryDetector {

@@ -815,6 +815,8 @@ pub struct IntelGm965 {
     config: &'static IntelGm965Config,
     detected_size: u64,
     pci: Option<PciEcam>,
+    /// PCI mmio32 window derived from the e820 map after memory detection.
+    mmio32_window: Option<(u64, u64)>,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -1744,6 +1746,7 @@ impl IntelGm965 {
             config,
             detected_size: 0,
             pci: None,
+            mmio32_window: None,
         })
     }
 
@@ -1774,8 +1777,10 @@ impl IntelGm965 {
     }
 }
 
-fn default_mmio32_window_from_e820(limit: u64) -> Option<(u64, u64)> {
-    let state = unsafe { fstart_core::services::memory_detect::e820_state() };
+fn default_mmio32_window_from_e820(
+    state: &fstart_core::services::memory_detect::E820State,
+    limit: u64,
+) -> Option<(u64, u64)> {
     if state.count() == 0 {
         return None;
     }
@@ -1804,9 +1809,14 @@ fn default_mmio32_window_from_e820(limit: u64) -> Option<(u64, u64)> {
 }
 
 impl IntelGm965 {
+    /// Cache the mmio32 window policy derived from the detected memory map.
+    pub fn memory_detected(&mut self, e820: &fstart_core::services::memory_detect::E820State) {
+        self.mmio32_window = default_mmio32_window_from_e820(e820, self.config.ecam_base);
+    }
+
     fn pci_ecam_config(&self) -> PciEcamConfig {
-        let (mmio32_base, mmio32_size) = default_mmio32_window_from_e820(self.config.ecam_base)
-            .unwrap_or((PCI_MMIO32_FALLBACK_BASE, 0));
+        let (mmio32_base, mmio32_size) =
+            self.mmio32_window.unwrap_or((PCI_MMIO32_FALLBACK_BASE, 0));
         PciEcamConfig {
             ecam_base: self.config.ecam_base,
             ecam_size: self.ecam_size(),
