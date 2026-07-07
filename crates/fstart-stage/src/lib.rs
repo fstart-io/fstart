@@ -557,68 +557,40 @@ pub fn stage_load_stub(next_stage: &str) {
 // FFS Helpers (behind `ffs` feature)
 // ---------------------------------------------------------------------------
 
-/// Maximum signed manifest size for buffered reads from block devices.
+/// Read and verify the FFS manifest view directly from mapped boot media.
 ///
-/// Signed manifest envelopes are usually 1-4 KiB. 8 KiB provides generous
-/// headroom for boards with many files and regions.
-#[cfg(all(feature = "ffs", target_arch = "x86_64"))]
-const MAX_MANIFEST_SIZE: usize = 4096;
-#[cfg(all(feature = "ffs", not(target_arch = "x86_64")))]
-const MAX_MANIFEST_SIZE: usize = 8192;
-
-/// Wrapper that implements `Sync` for `UnsafeCell`, allowing it to live
-/// in a `static`.
+/// Zero-copy: the signed envelope is verified in place over the memory-mapped
+/// flash window (coreboot's `rdev_mmap` fast path). TOCTOU between verify and
+/// parse is acceptable because boot flash is mapped read-only/cached — the
+/// same trust XIP code already relies on.
 ///
-/// This is exactly what `core::cell::SyncUnsafeCell` does, but that API
-/// is still gated behind `#![feature(sync_unsafe_cell)]`.  A two-line
-/// wrapper avoids the nightly dependency entirely.
+/// ponytail: non-memory-mapped media (SPI-controller-only, eMMC) need a
+/// bounce buffer owned by that media's driver — add when a block-boot board
+/// returns from the attic; a global static here would cost every mapped
+/// board 8 KiB of CAR.
 #[cfg(feature = "ffs")]
-#[repr(transparent)]
-struct SyncBuf(core::cell::UnsafeCell<[u8; MAX_MANIFEST_SIZE]>);
-
-// SAFETY: firmware boot is single-threaded.  The buffer is only accessed
-// inside `read_manifest_from_media`, which is never called concurrently.
-#[cfg(feature = "ffs")]
-unsafe impl Sync for SyncBuf {}
-
-/// Static buffer for manifest reads from non-memory-mapped media.
-///
-/// Placed in BSS (zero-initialized at startup) rather than on the stack
-/// to avoid consuming 8 KiB of stack space per call.  Firmware boot is
-/// single-threaded so concurrent access is not a concern.
-#[cfg(feature = "ffs")]
-static MANIFEST_BUF: SyncBuf = SyncBuf(core::cell::UnsafeCell::new([0u8; MAX_MANIFEST_SIZE]));
-
-/// Read and verify the FFS manifest view from any boot medium.
-///
-/// Reads the signed manifest into a static buffer, verifies it, and returns the
-/// inner [`ImageManifest`](fstart_core::ffs::ImageManifest).
-///
-/// Keeping the serialized manifest off-stack and avoiding deserialization of
-/// the 8 KiB signed envelope keeps firmware stack usage predictable.
-#[cfg(feature = "ffs")]
-fn read_manifest_from_media(
-    media: &(impl BootMedia + ?Sized),
+fn read_manifest_from_media<'a>(
+    media: &'a (impl BootMedia + ?Sized),
     anchor: &fstart_core::ffs::AnchorBlock,
-) -> Result<fstart_ffs::ManifestView<'static>, fstart_ffs::ReaderError> {
-    // Read signed manifest into the static buffer. Uses a static rather than a
-    // stack allocation to keep stack usage predictable for firmware stages.
+) -> Result<fstart_ffs::ManifestView<'a>, fstart_ffs::ReaderError> {
     let manifest_offset = anchor.manifest_offset as usize;
     let manifest_size = anchor.manifest_size as usize;
-
-    if manifest_size == 0 || manifest_size > MAX_MANIFEST_SIZE {
+    if manifest_size == 0 {
         return Err(fstart_ffs::ReaderError::OutOfBounds);
     }
 
-    // SAFETY: firmware boot is single-threaded; no concurrent access to
-    // MANIFEST_BUF. The parsed manifest is returned by value after signature
-    // verification.
-    let buf = unsafe { &mut *MANIFEST_BUF.0.get() };
-    media
-        .read_at(manifest_offset, &mut buf[..manifest_size])
-        .map_err(|_| fstart_ffs::ReaderError::OutOfBounds)?;
+    let Some(image) = media.as_slice() else {
+        fstart_log::error!(
+            "manifest read: non-memory-mapped boot media not supported (needs driver-owned buffer)"
+        );
+        return Err(fstart_ffs::ReaderError::OutOfBounds);
+    };
+    let bytes = manifest_offset
+        .checked_add(manifest_size)
+        .and_then(|end| image.get(manifest_offset..end))
+        .ok_or(fstart_ffs::ReaderError::OutOfBounds)?;
 
-    fstart_ffs::reader::verify_and_manifest_view(&buf[..manifest_size], anchor.valid_keys())
+    fstart_ffs::reader::verify_and_manifest_view(bytes, anchor.valid_keys())
 }
 
 /// Load a file from FFS by its `FileType`, placing segments at their load addresses.
