@@ -1,0 +1,82 @@
+[package]
+name = "fstart-board-foxconn-d41s"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+board = "foxconn-d41s"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+features = [
+  "intel-pineview",
+  "intel-ich7",
+  "ite8721f",
+  "i2c-ck505",
+]
+
+[features]
+default = []
+host = ["dep:xtask"]
+runtime = []
+crabefi = ["fstart-stage?/crabefi"]
+stage = [
+  "runtime",
+  "dep:fstart-driver-uart",
+  "dep:fstart-platform-x86_64",
+  "dep:fstart-stage",
+  "fstart-platform-intel/stage",
+]
+x86_64 = ["fstart-stage?/x86_64"]
+x86-static-page-tables = ["fstart-stage?/x86-static-page-tables"]
+x86-writable-page-tables = ["fstart-stage?/x86-writable-page-tables"]
+x86-1g-pages = ["fstart-stage?/x86-1g-pages"]
+ffs = ["fstart-stage?/ffs"]
+ed25519 = ["fstart-stage?/ed25519"]
+sha2-digest = ["fstart-stage?/sha2-digest"]
+sha3-digest = ["fstart-stage?/sha3-digest"]
+lz4 = ["fstart-stage?/lz4"]
+fit = ["fstart-stage?/fit"]
+fdt = ["fstart-stage?/fdt"]
+handoff = ["fstart-stage?/handoff"]
+intel-pineview = []
+intel-ich7 = []
+ite8721f = []
+i2c-ck505 = []
+acpi = [
+  "dep:fstart-acpi",
+  "fstart-stage?/acpi",
+  "fstart-platform-intel/acpi",
+  "fstart-arch/acpi",
+  "fstart-driver-intel/acpi",
+  "fstart-driver-intel/ffs-vbt",
+  "fstart-driver-superio/acpi",
+]
+mp = ["stage", "fstart-platform-intel/mp"]
+smbios = ["fstart-platform-intel/smbios"]
+
+[dependencies]
+fstart-core = { path = "../../crates/fstart-core", features = ["pci"] }
+fstart-platform-intel = { path = "../../crates/fstart-platform-intel" }
+fstart-platform-x86_64 = { path = "../../crates/fstart-platform-x86_64", optional = true }
+fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"], optional = true }
+fstart-arch = { path = "../../crates/fstart-arch", features = ["x86_64"] }
+fstart-driver-intel = { path = "../../crates/fstart-driver-intel", features = ["ffs-vbt"] }
+fstart-driver-superio = { path = "../../crates/fstart-driver-superio" }
+fstart-driver-uart = { path = "../../crates/fstart-driver-uart", features = ["pio"], optional = true }
+fstart-hda = { path = "../../crates/fstart-hda" }
+fstart-smbios = { path = "../../crates/fstart-smbios" }
+fstart-stage = { path = "../../crates/fstart-stage", optional = true }
+xtask = { path = "../../xtask", optional = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+required-features = ["stage"]
+
+[[bin]]
+name = "fstart-host"
+path = "src/host_main.rs"
+required-features = ["host"]

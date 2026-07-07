@@ -48,6 +48,7 @@ pub const ICH7_SMBUS_BASE: u16 = 0x0400;
 pub struct PineviewIch7Config {
     pub igd: pineview::PineviewIgdConfig,
     pub pcie_ports: [bool; 4],
+    pub pirq_routing: [u8; 8],
     pub lpc_decode: LpcDecodeConfig,
     pub gpe0_en: u32,
     pub sata: Option<SataConfig>,
@@ -65,6 +66,7 @@ impl PineviewIch7Config {
         Self {
             igd: pineview::PineviewIgdConfig::new(),
             pcie_ports: [false; 4],
+            pirq_routing: [0; 8],
             lpc_decode: LpcDecodeConfig::new(),
             gpe0_en: 0,
             sata: None,
@@ -92,6 +94,7 @@ impl PineviewIch7Config {
     pub const fn southbridge_config(self) -> ich7::IntelIch7Config {
         let mut config = ich7::IntelIch7Config::new();
         config.rcba = ICH7_RCBA;
+        config.pirq_routing = self.pirq_routing;
         config.gpe0_en = self.gpe0_en;
         config.lpc_decode = self.lpc_decode;
         config.hda = self.hda;
@@ -121,6 +124,11 @@ impl PineviewIch7Config {
         self
     }
     #[must_use]
+    pub const fn pirq_routing(mut self, routing: [u8; 8]) -> Self {
+        self.pirq_routing = routing;
+        self
+    }
+    #[must_use]
     pub const fn lpc_fixed_io(mut self, fixed_io: LpcFixedIoDecode) -> Self {
         self.lpc_decode.fixed_io = fixed_io;
         self
@@ -147,6 +155,11 @@ impl PineviewIch7Config {
     #[must_use]
     pub const fn usb(mut self, usb: UsbConfig) -> Self {
         self.usb = Some(usb);
+        self
+    }
+    #[must_use]
+    pub const fn hda(mut self, hda: HdaConfig) -> Self {
+        self.hda = Some(hda);
         self
     }
     #[must_use]
@@ -259,7 +272,7 @@ pub fn pineview_ich7_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
         flash_layout,
         car: Some(CarConfig {
             base: 0xFEFC_0000,
-            size: 0x8000,
+            size: 0x10000,
         }),
     }
 }

@@ -27,7 +27,7 @@ members = [
   "crates/fstart-smm-stage",
   "crates/fstart-crabefi",
 ]
-exclude = ["attic", "boards/lenovo-x61"]
+exclude = ["attic", "boards/lenovo-x61", "boards/foxconn-d41s"]
 
 [workspace.package]
 version = "0.1.0"

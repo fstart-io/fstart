@@ -78,7 +78,8 @@ pub fn quiesce_i8042_for_os_at(data_port: u16, command_port: u16) {
 #[cfg(target_arch = "x86_64")]
 unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
     for _ in 0..100_000 {
-        if fstart_core::pio::inb(status_port) & 0x02 == 0 {
+        // SAFETY: caller selected a decoded i8042 status port.
+        if unsafe { fstart_core::pio::inb(status_port) } & 0x02 == 0 {
             return true;
         }
         core::hint::spin_loop();
@@ -89,11 +90,13 @@ unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
 #[cfg(target_arch = "x86_64")]
 unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
     for _ in 0..256 {
-        let status = fstart_core::pio::inb(status_port);
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        let status = unsafe { fstart_core::pio::inb(status_port) };
         if status & 0x01 == 0 {
             return true;
         }
-        let _ = fstart_core::pio::inb(data_port);
+        // SAFETY: output buffer is full; reading drains one byte.
+        let _ = unsafe { fstart_core::pio::inb(data_port) };
     }
     false
 }
@@ -528,7 +531,8 @@ impl<C: SuperIoChip> SuperIo<C> {
     #[cfg(target_arch = "x86_64")]
     unsafe fn kbc_wait_input_empty(status_port: u16) -> bool {
         for _ in 0..100_000 {
-            if fstart_core::pio::inb(status_port) & 0x02 == 0 {
+            // SAFETY: caller selected a decoded i8042 status port.
+            if unsafe { fstart_core::pio::inb(status_port) } & 0x02 == 0 {
                 return true;
             }
         }
@@ -538,7 +542,8 @@ impl<C: SuperIoChip> SuperIo<C> {
     #[cfg(target_arch = "x86_64")]
     unsafe fn kbc_wait_output_full(status_port: u16) -> bool {
         for _ in 0..100_000 {
-            if fstart_core::pio::inb(status_port) & 0x01 != 0 {
+            // SAFETY: caller selected a decoded i8042 status port.
+            if unsafe { fstart_core::pio::inb(status_port) } & 0x01 != 0 {
                 return true;
             }
         }
@@ -548,12 +553,14 @@ impl<C: SuperIoChip> SuperIo<C> {
     #[cfg(target_arch = "x86_64")]
     unsafe fn kbc_flush(data_port: u16, status_port: u16) -> bool {
         for _ in 0..1024 {
-            let status = fstart_core::pio::inb(status_port);
+            // SAFETY: caller selected decoded i8042 data/status ports.
+            let status = unsafe { fstart_core::pio::inb(status_port) };
             if status & 0x03 == 0 {
                 return true;
             }
             if status & 0x01 != 0 {
-                let _ = fstart_core::pio::inb(data_port);
+                // SAFETY: output buffer is full; reading drains one byte.
+                let _ = unsafe { fstart_core::pio::inb(data_port) };
             }
         }
         false
@@ -561,27 +568,36 @@ impl<C: SuperIoChip> SuperIo<C> {
 
     #[cfg(target_arch = "x86_64")]
     unsafe fn kbc_write_command_byte(data_port: u16, command_port: u16, value: u8) -> bool {
-        if !Self::kbc_wait_input_empty(command_port) {
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        if !unsafe { Self::kbc_wait_input_empty(command_port) } {
             return false;
         }
-        fstart_core::pio::outb(command_port, 0x60);
-        if !Self::kbc_wait_input_empty(command_port) {
+        // SAFETY: caller selected decoded i8042 command/data ports.
+        unsafe { fstart_core::pio::outb(command_port, 0x60) };
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        if !unsafe { Self::kbc_wait_input_empty(command_port) } {
             return false;
         }
-        fstart_core::pio::outb(data_port, value);
-        Self::kbc_wait_input_empty(command_port)
+        // SAFETY: caller selected decoded i8042 command/data ports.
+        unsafe { fstart_core::pio::outb(data_port, value) };
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        unsafe { Self::kbc_wait_input_empty(command_port) }
     }
 
     #[cfg(target_arch = "x86_64")]
     unsafe fn kbc_send_keyboard(data_port: u16, status_port: u16, command: u8) -> Option<u8> {
-        if !Self::kbc_wait_input_empty(status_port) {
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        if !unsafe { Self::kbc_wait_input_empty(status_port) } {
             return None;
         }
-        fstart_core::pio::outb(data_port, command);
-        if !Self::kbc_wait_output_full(status_port) {
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        unsafe { fstart_core::pio::outb(data_port, command) };
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        if !unsafe { Self::kbc_wait_output_full(status_port) } {
             return None;
         }
-        Some(fstart_core::pio::inb(data_port))
+        // SAFETY: output buffer is full; reading consumes the keyboard response.
+        Some(unsafe { fstart_core::pio::inb(data_port) })
     }
 
     /// Program the mouse LDN (IRQ only).
@@ -1115,75 +1131,65 @@ mod acpi_impl {
         }
     }
 
+    /// Produce unscoped DSDT AML for all enabled SuperIO logical devices.
+    pub fn superio_dsdt_aml(config: &SuperIoConfig) -> Vec<u8> {
+        let mut aml = Vec::new();
+
+        if let Some(ref com) = config.com1 {
+            aml.extend(ldn_device(
+                "COM1",
+                HID_COM,
+                0,
+                com.io_base,
+                8,
+                Some(com.irq),
+            ));
+        }
+        if let Some(ref com) = config.com2 {
+            aml.extend(ldn_device(
+                "COM2",
+                HID_COM,
+                1,
+                com.io_base,
+                8,
+                Some(com.irq),
+            ));
+        }
+        if let Some(ref kbc) = config.keyboard {
+            aml.extend(kbc_device(kbc));
+        }
+        if let (Some(ref kbc), Some(ref mouse)) = (&config.keyboard, &config.mouse) {
+            aml.extend(mouse_device(kbc, mouse));
+        }
+        if let Some(ref pp) = config.parallel {
+            aml.extend(ldn_device("LPT0", HID_LPT, 0, pp.io_base, 8, Some(pp.irq)));
+        }
+        if let Some(ref ec) = config.env_controller {
+            aml.extend(ec_device(ec));
+        }
+        if let Some(ref cir) = config.cir {
+            aml.extend(ldn_device(
+                "CIR0",
+                "PNP0510",
+                0,
+                cir.io_base,
+                8,
+                Some(cir.irq),
+            ));
+        }
+
+        aml
+    }
+
     impl<C: SuperIoChip> AcpiDevice for SuperIo<C> {
         type Config = SuperIoConfig;
 
         /// Produce DSDT AML for all enabled SuperIO logical devices.
-        ///
-        /// Each enabled function gets its own Device node with the
-        /// appropriate PNP HID, `_UID`, and `_CRS` (IO + IRQ resources).
-        /// Nodes are nested inside the parent LPC bridge scope by the
-        /// ACPI assembler.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            let mut aml = Vec::new();
-
-            // COM1
-            if let Some(ref com) = config.com1 {
-                aml.extend(ldn_device(
-                    "COM1",
-                    HID_COM,
-                    0,
-                    com.io_base,
-                    8,
-                    Some(com.irq),
-                ));
-            }
-
-            // COM2
-            if let Some(ref com) = config.com2 {
-                aml.extend(ldn_device(
-                    "COM2",
-                    HID_COM,
-                    1,
-                    com.io_base,
-                    8,
-                    Some(com.irq),
-                ));
-            }
-
-            // PS/2 Keyboard
-            if let Some(ref kbc) = config.keyboard {
-                aml.extend(kbc_device(kbc));
-            }
-
-            // PS/2 Mouse (needs KBC ports for shared I/O)
-            if let (Some(ref kbc), Some(ref mouse)) = (&config.keyboard, &config.mouse) {
-                aml.extend(mouse_device(kbc, mouse));
-            }
-
-            // Parallel port
-            if let Some(ref pp) = config.parallel {
-                aml.extend(ldn_device("LPT0", HID_LPT, 0, pp.io_base, 8, Some(pp.irq)));
-            }
-
-            // Environment controller
-            if let Some(ref ec) = config.env_controller {
-                aml.extend(ec_device(ec));
-            }
-
-            // Consumer IR
-            if let Some(ref cir) = config.cir {
-                aml.extend(ldn_device(
-                    "CIR0",
-                    "PNP0510",
-                    0,
-                    cir.io_base,
-                    8,
-                    Some(cir.irq),
-                ));
-            }
-
-            aml
+            superio_dsdt_aml(config)
         }
     }
 }
+
+#[cfg(feature = "acpi")]
+pub use acpi_impl::superio_dsdt_aml;
