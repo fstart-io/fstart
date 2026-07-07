@@ -67,8 +67,8 @@ impl core::fmt::Display for Platform {
 /// Top-level board configuration produced by board crates.
 ///
 /// This is the single source of truth for board wiring, stage policy, and
-/// security settings. Rust driver crates and the host registry are the source
-/// of truth for services each driver provides.
+/// security settings. Rust driver crates are the source of truth for the
+/// services each driver provides.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardConfig {
