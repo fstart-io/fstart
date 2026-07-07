@@ -12,8 +12,13 @@ acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
   "dep:acpi_tables",
+  "fstart-arch/acpi",
 ]
 ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs"]
+gm965 = []
+ich8 = []
+pineview = []
+ich7 = []
 
 [dependencies]
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }

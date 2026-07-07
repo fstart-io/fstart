@@ -300,7 +300,7 @@ impl Default for Gm965Ich8Config {
     }
 }
 /// Platform-owned ACPI namespace context for GM965/ICH8 flows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Gm965Ich8AcpiContext;
 
 impl Gm965Ich8AcpiContext {
@@ -467,17 +467,13 @@ pub fn gm965_ich8_microcode() -> MicrocodeConfig {
 mod stage {
     use super::*;
     use crate::{
-        IntelEarlyBoard, IntelEarlyBoardHooks, IntelEarlyCtx, IntelEarlyPlatform, IntelPlatform,
-        MainstageCtx, MainstagePhases,
+        BootblockSpec, IntelEarlyBoard, IntelEarlyPlatform, IntelPlatform, MainstagePhases,
     };
-    use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};
-    use fstart_core::services::{MemoryController, ServiceError};
+    use fstart_core::services::ServiceError;
     use fstart_driver_intel::gm965::IntelGm965;
     use fstart_driver_intel::ich8::IntelIch8;
-    use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_pci::PciRootBus;
-    use fstart_stage::fixed_helpers::MemoryMappedFfs;
-    use fstart_stage::payload::{MainstagePayload, X86UefiPayloadContext};
+    use fstart_driver_uart::ns16550::Ns16550Config;
+    use fstart_stage::payload::MainstagePayload;
     use fstart_stage::StageKind;
 
     /// GM965 northbridge + ICH8 southbridge Intel early-flow platform.
@@ -559,242 +555,64 @@ mod stage {
         .map_err(|_| ServiceError::HardwareError)
     }
 
-    fn firmware_window<B>() -> Result<(u64, usize), ServiceError>
-    where
-        B: Gm965Ich8Board,
-    {
-        let layout = B::ifd_flash_layout();
-        let Some(bios) = layout.bios_region() else {
-            return Err(ServiceError::NotInitialized);
-        };
-        if bios.size == 0 {
-            return Err(ServiceError::NotInitialized);
-        }
-        let Some(base) = layout.base.checked_add(u64::from(bios.offset)) else {
-            return Err(ServiceError::NotInitialized);
-        };
-        Ok((base, bios.size as usize))
-    }
-
     /// Handwritten fixed GM965/ICH8 bootblock flow. Ordering is this function.
     fn run_gm965_ich8_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
     where
         B: Gm965Ich8Board,
     {
-        let Ok((firmware_base, firmware_size)) = firmware_window::<B>() else {
-            return Err(ServiceError::NotInitialized);
-        };
-        let Ok(mut northbridge) = IntelGm965::new(B::NB_CONFIG) else {
-            return Err(ServiceError::HardwareError);
-        };
-        let Ok(mut southbridge) = IntelIch8::new(B::SB_CONFIG) else {
-            return Err(ServiceError::HardwareError);
-        };
-        let ffs = MemoryMappedFfs::new(firmware_base, firmware_size);
-
-        if northbridge.pre_console_init().is_err()
-            || southbridge.pre_console_init().is_err()
-            || hooks
-                .before_console(&mut IntelEarlyCtx::new(&mut southbridge))
-                .is_err()
-        {
-            return Err(ServiceError::HardwareError);
-        }
-
-        let Ok(mut console) = Ns16550::new(B::console_config()) else {
-            return Err(ServiceError::HardwareError);
-        };
-        if console.init().is_err() {
-            return Err(ServiceError::HardwareError);
-        }
-        // SAFETY: this function never returns after installing the stack-owned console.
-        let console_ref = &console;
-        unsafe { fstart_log::init(console_ref) };
-        fstart_log::info!("{}: ns16550 console ready", B::console_node());
-        fstart_log::info!("gm965/ich8 bootblock console ready");
-
-        fstart_platform_x86_64::enable_boot_media_rom_cache();
-        if ffs.mount().is_err()
-            || ffs.verify().is_err()
-            || ffs.load_file_by_name(GM965_NEXT_STAGE_NAME).is_err()
-        {
-            fstart_log::error!("gm965/ich8 bootblock failed");
-            return Err(ServiceError::HardwareError);
-        }
-
-        fstart_log::info!("jumping to ramstage at {:#x}", GM965_RAMSTAGE_LOAD_ADDR);
-        fstart_platform_x86_64::jump_to(GM965_RAMSTAGE_LOAD_ADDR)
+        let northbridge = IntelGm965::new(B::NB_CONFIG).map_err(|_| ServiceError::HardwareError)?;
+        let southbridge = IntelIch8::new(B::SB_CONFIG).map_err(|_| ServiceError::HardwareError)?;
+        crate::run_intel_bootblock::<Gm965Ich8, _, _, _>(
+            BootblockSpec {
+                platform: "gm965/ich8",
+                next_stage: GM965_NEXT_STAGE_NAME,
+                ramstage_load_addr: GM965_RAMSTAGE_LOAD_ADDR,
+                flash_layout: B::ifd_flash_layout(),
+                console_config: B::console_config(),
+                console_node: B::console_node(),
+            },
+            hooks,
+            northbridge,
+            southbridge,
+        )
     }
 
     /// GM965/ICH8 mainstage: fixed platform devices bound from typed config and
-    /// driven through explicit handwritten phases.
-    pub struct Gm965Ich8Mainstage<B: Gm965Ich8Board> {
-        northbridge: IntelGm965,
-        southbridge: IntelIch8,
-        hooks: B::Hooks,
-        console: Ns16550,
-        ctx: MainstageCtx,
-    }
+    /// driven through the shared Intel mainstage phases.
+    pub type Gm965Ich8Mainstage<B> =
+        crate::IntelMainstage<Gm965Ich8, B, IntelGm965, IntelIch8, Gm965Ich8AcpiContext>;
 
-    impl<B> Gm965Ich8Mainstage<B>
+    impl<B> crate::IntelMainstageBoard<Gm965Ich8, IntelGm965, IntelIch8> for B
     where
         B: Gm965Ich8Board,
     {
-        #[must_use]
-        pub const fn northbridge(&self) -> &IntelGm965 {
-            &self.northbridge
+        const NB_CONFIG: &'static IntelGm965Config = <B as Gm965Ich8Board>::NB_CONFIG;
+        const SB_CONFIG: &'static IntelIch8Config = <B as Gm965Ich8Board>::SB_CONFIG;
+
+        fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout {
+            <B as Gm965Ich8Board>::ifd_flash_layout()
         }
 
-        #[must_use]
-        pub const fn southbridge(&self) -> &IntelIch8 {
-            &self.southbridge
+        fn console_config() -> Ns16550Config {
+            <B as Gm965Ich8Board>::console_config()
         }
 
-        #[must_use]
-        pub const fn ctx(&self) -> &MainstageCtx {
-            &self.ctx
+        fn console_node() -> &'static str {
+            <B as Gm965Ich8Board>::console_node()
         }
 
-        #[must_use]
-        pub const fn acpi_context(&self) -> Gm965Ich8AcpiContext {
-            Gm965Ich8AcpiContext
+        fn platform_node() -> &'static str {
+            GM965_NORTHBRIDGE_NODE
         }
 
-        /// Assemble ACPI tables from the platform config, the fixed devices'
-        /// `AcpiDevice` fragments, and the mainboard's `AcpiDevice` fragments.
-        #[cfg(feature = "acpi")]
-        fn emit_acpi(&self) -> u64 {
-            use fstart_acpi::device::AcpiDevice;
-            use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
-
-            let northbridge = &self.northbridge;
-            let southbridge = &self.southbridge;
-            let hooks = &self.hooks;
-            let acpi_ctx = self.acpi_context();
-            let platform = PlatformConfig::X86(
-                southbridge.x86_platform_config(u32::from(fstart_arch::mp::online_cpus())),
-            );
-            crate::tables::prepare_acpi(&platform, |dsdt, extra| {
-                dsdt.extend(northbridge.dsdt_aml(northbridge.config()));
-                dsdt.extend(southbridge.dsdt_aml(southbridge.config()));
-                dsdt.extend(hooks.dsdt_aml(&acpi_ctx));
-                extra.extend(northbridge.extra_tables(northbridge.config()));
-                extra.extend(southbridge.extra_tables(southbridge.config()));
-                extra.extend(hooks.extra_tables(&acpi_ctx));
-            })
+        #[cfg(feature = "mp")]
+        fn init_mp() -> Result<(), ServiceError> {
+            init_mp(<B as Gm965Ich8Board>::CONFIG)
         }
 
-        #[must_use]
-        pub fn e820(&self) -> &[E820Entry] {
-            self.ctx.e820()
-        }
-
-        #[must_use]
-        pub const fn acpi_rsdp(&self) -> Option<u64> {
-            self.ctx.acpi_rsdp()
-        }
-    }
-
-    impl<B> MainstagePhases for Gm965Ich8Mainstage<B>
-    where
-        B: Gm965Ich8Board,
-    {
-        /// Bind fixed platform devices from the board's typed config. No hardware
-        /// is touched; construction failures are config errors.
-        fn bind() -> Result<Self, ServiceError> {
-            let (firmware_base, firmware_size) = firmware_window::<B>()?;
-            Ok(Self {
-                northbridge: IntelGm965::new(B::NB_CONFIG)
-                    .map_err(|_| ServiceError::HardwareError)?,
-                southbridge: IntelIch8::new(B::SB_CONFIG)
-                    .map_err(|_| ServiceError::HardwareError)?,
-                hooks: B::hooks()?,
-                console: Ns16550::new(B::console_config())
-                    .map_err(|_| ServiceError::HardwareError)?,
-                ctx: MainstageCtx::new(firmware_base, firmware_size),
-            })
-        }
-
-        /// Enable bridges/decode, bring up the console, and get DRAM usable —
-        /// everything that must happen before PCI enumeration.
-        fn pre_bus_scan(&mut self) -> Result<(), ServiceError> {
-            self.northbridge.pre_console_init()?;
-            self.southbridge.pre_console_init()?;
-            self.hooks
-                .before_console(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
-
-            self.console
-                .init()
-                .map_err(|_| ServiceError::HardwareError)?;
-            // SAFETY: the mainstage owns the console until it hands control to
-            // the payload.
-            unsafe { fstart_log::init(&self.console) };
-            fstart_log::info!("fstart ramstage console ready");
-            fstart_log::info!("{}: ns16550 console ready", B::console_node());
-
-            self.northbridge.early_init()?;
-            self.southbridge.early_init()?;
-
-            self.hooks
-                .before_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
-            let count = self.northbridge.detect_memory(self.ctx.e820_mut())?;
-            let total = self.northbridge.total_ram_bytes()?;
-            fstart_log::info!(
-                "Detected {} MiB RAM, {} e820 entries from {}",
-                total >> 20,
-                count,
-                GM965_NORTHBRIDGE_NODE,
-            );
-            // Publish the e820 map so PCI window allocation and table emission
-            // can read it.
-            // SAFETY: single-threaded firmware init, stored once per stage.
-            unsafe {
-                fstart_core::services::memory_detect::e820_state_mut().store(
-                    self.ctx.e820(),
-                    count,
-                    total,
-                );
-            }
-            self.ctx.store_e820(count, total);
-
-            self.northbridge.dram_init()
-        }
-
-        /// Enumerate PCI. BAR assignment and window confirmation happen in the
-        /// same ECAM pass as the scan.
-        fn bus_scan(&mut self) -> Result<(), ServiceError> {
-            self.northbridge.init_bus()
-        }
-
-        /// Initialize the devices the selected boot mode needs: southbridge
-        /// post-DRAM functions, board-attached devices, and APs.
-        fn init_devices(&mut self) -> Result<(), ServiceError> {
-            self.southbridge.post_dram_init()?;
-            self.hooks
-                .after_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
-            #[cfg(feature = "mp")]
-            init_mp(B::CONFIG)?;
-            Ok(())
-        }
-
-        /// Emit ACPI/SMBIOS tables: platform config plus fragments from the
-        /// fixed devices and the mainboard, all through `AcpiDevice`.
-        fn emit_tables(&mut self) -> Result<(), ServiceError> {
-            #[cfg(feature = "acpi")]
-            {
-                let rsdp = self.emit_acpi();
-                self.ctx.set_acpi_rsdp(Some(rsdp));
-            }
-            #[cfg(feature = "smbios")]
-            crate::tables::prepare_smbios(B::smbios_desc());
-            Ok(())
-        }
-
-        /// Board lockdown and southbridge quiesce before payload handoff.
-        fn finalize(&mut self) -> Result<(), ServiceError> {
-            self.hooks
-                .before_handoff(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
-            self.southbridge.finalize_init()
+        #[cfg(feature = "smbios")]
+        fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static> {
+            <B as Gm965Ich8Board>::smbios_desc()
         }
     }
 
@@ -803,60 +621,9 @@ mod stage {
     where
         B: Gm965Ich8Board,
     {
-        let Ok(mut mainstage) = Gm965Ich8Mainstage::<B>::bind() else {
+        let Ok(mainstage) = Gm965Ich8Mainstage::<B>::bind() else {
             B::halt();
         };
-        let (firmware_base, firmware_size) = mainstage.ctx.firmware_region();
-        let boot_media = MemoryMappedFfs::new(firmware_base, firmware_size);
-        run_mainstage_phase::<B>("pre_bus_scan", || mainstage.pre_bus_scan());
-        run_mainstage_phase::<B>("bus_scan", || mainstage.bus_scan());
-        run_mainstage_phase::<B>("init_devices", || mainstage.init_devices());
-        run_mainstage_phase::<B>("mount_boot_media", || {
-            fstart_platform_x86_64::enable_boot_media_rom_cache();
-            boot_media.mount()?;
-            mainstage.northbridge.stage_local_init()
-        });
-        run_mainstage_phase::<B>("verify_boot_media", || boot_media.verify());
-        run_mainstage_phase::<B>("emit_tables", || mainstage.emit_tables());
-        run_mainstage_phase::<B>("finalize", || mainstage.finalize());
-
-        B::Payload::boot(mainstage)
-    }
-
-    fn run_mainstage_phase<B>(name: &str, phase: impl FnOnce() -> Result<(), ServiceError>)
-    where
-        B: Gm965Ich8Board,
-    {
-        fstart_log::info!("gm965/ich8 mainstage: {}", name);
-        if phase().is_err() {
-            fstart_log::error!("gm965/ich8 mainstage: {} failed", name);
-            B::halt();
-        }
-    }
-
-    impl<B> X86UefiPayloadContext for Gm965Ich8Mainstage<B>
-    where
-        B: Gm965Ich8Board,
-    {
-        fn console(&self) -> Option<&dyn fstart_core::services::Console> {
-            Some(&self.console)
-        }
-
-        fn e820(&self) -> &[E820Entry] {
-            self.e820()
-        }
-
-        fn firmware_region(&self) -> (u64, u64) {
-            let (base, size) = self.ctx.firmware_region();
-            (base, size as u64)
-        }
-
-        fn acpi_rsdp(&self) -> Option<u64> {
-            self.acpi_rsdp()
-        }
-
-        fn ecam_base(&self) -> Option<u64> {
-            Some(self.northbridge.config().ecam_base)
-        }
+        crate::run_intel_mainstage::<_, B::Payload>("gm965/ich8", B::halt, mainstage)
     }
 }

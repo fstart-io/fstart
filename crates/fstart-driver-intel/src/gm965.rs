@@ -12,7 +12,6 @@
 
 #![allow(clippy::modulo_one)]
 
-#[cfg(feature = "ffs-vbt")]
 #[path = "raminit.rs"]
 pub mod raminit;
 
