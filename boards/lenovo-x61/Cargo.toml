@@ -59,7 +59,7 @@ acpi = [
   "fstart-driver-intel/acpi",
   "fstart-driver-intel/ffs-vbt",
 ]
-mp = ["stage"]
+mp = ["stage", "fstart-platform-intel-gm965-ich8/mp"]
 smbios = ["fstart-platform-intel-gm965-ich8/smbios"]
 smm = [
   "dep:fstart-smm-runtime",

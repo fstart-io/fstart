@@ -30,7 +30,31 @@ pub trait IntelEarlyBoard: StageBoard {
 pub trait IntelEarlyPlatform: IntelPlatform {
     type Southbridge;
     type State: Default;
+    /// Platform-owned ACPI namespace context handed to `AcpiDevice` emitters.
+    #[cfg(feature = "acpi")]
+    type AcpiContext;
 }
+
+/// Mainboard hooks contribute ACPI fragments through the same [`AcpiDevice`]
+/// abstraction chipset drivers use. Vacuous when ACPI is disabled.
+///
+/// [`AcpiDevice`]: fstart_acpi::device::AcpiDevice
+#[cfg(feature = "acpi")]
+pub trait MainboardAcpi<P: IntelEarlyPlatform>:
+    fstart_acpi::device::AcpiDevice<Config = P::AcpiContext>
+{
+}
+#[cfg(feature = "acpi")]
+impl<P, T> MainboardAcpi<P> for T
+where
+    P: IntelEarlyPlatform,
+    T: fstart_acpi::device::AcpiDevice<Config = P::AcpiContext>,
+{
+}
+#[cfg(not(feature = "acpi"))]
+pub trait MainboardAcpi<P> {}
+#[cfg(not(feature = "acpi"))]
+impl<P, T> MainboardAcpi<P> for T {}
 
 /// Mutable context passed to board hooks.
 pub struct IntelEarlyCtx<'a, P: IntelEarlyPlatform> {
@@ -49,7 +73,7 @@ impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
 }
 
 /// Board hooks at the fixed Intel early-flow seams.
-pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform> {
+pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: MainboardAcpi<P> {
     fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }
@@ -75,6 +99,8 @@ impl IntelPlatform for Gm965Ich8 {}
 impl IntelEarlyPlatform for Gm965Ich8 {
     type Southbridge = IntelIch8;
     type State = ();
+    #[cfg(feature = "acpi")]
+    type AcpiContext = Gm965Ich8AcpiContext;
 }
 
 impl Gm965Ich8 {
@@ -115,15 +141,8 @@ pub trait Gm965Ich8Board: IntelEarlyBoard<Platform = Gm965Ich8> {
     fn console_node() -> &'static str;
     fn halt() -> !;
 
-    fn init_mp() -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn prepare_acpi(_mainstage: &mut Gm965Ich8Mainstage<Self>) -> Option<u64> {
-        None
-    }
-
-    fn prepare_smbios() {}
+    #[cfg(feature = "smbios")]
+    fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
 }
 
 /// Shared mainstage state owned by the flow, not by board hooks or drivers.
@@ -186,6 +205,23 @@ pub trait MainstagePhases: Sized {
     fn init_devices(&mut self) -> Result<(), ServiceError>;
     fn emit_tables(&mut self) -> Result<(), ServiceError>;
     fn finalize(&mut self) -> Result<(), ServiceError>;
+}
+
+/// Bring up BSP + APs with the platform's CPU driver. The CPU model and
+/// PMBASE are platform knowledge; the board only states `max_cpus` in its
+/// config.
+#[cfg(feature = "mp")]
+fn init_mp(config: &Gm965Ich8Config) -> Result<(), ServiceError> {
+    let cpu = fstart_arch::cpu_intel::core2_cpu::Core2CpuDriver::new(crate::ICH8_PMBASE, None);
+    let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
+    fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
+        cpu_drivers: &drivers,
+        smm: None,
+        smm_image: None,
+        max_cpus: config.max_cpus,
+    })
+    .map(|_| ())
+    .map_err(|_| ServiceError::HardwareError)
 }
 
 fn firmware_window<B>() -> Result<(u64, usize), ServiceError>
@@ -290,6 +326,30 @@ where
         Gm965Ich8AcpiContext
     }
 
+    /// Assemble ACPI tables from the platform config, the fixed devices'
+    /// `AcpiDevice` fragments, and the mainboard's `AcpiDevice` fragments.
+    #[cfg(feature = "acpi")]
+    fn emit_acpi(&self) -> u64 {
+        use fstart_acpi::device::AcpiDevice;
+        use fstart_acpi::platform::{PlatformConfig, X86PlatformProvider};
+
+        let northbridge = &self.northbridge;
+        let southbridge = &self.southbridge;
+        let hooks = &self.hooks;
+        let acpi_ctx = self.acpi_context();
+        let platform = PlatformConfig::X86(
+            southbridge.x86_platform_config(u32::from(fstart_arch::mp::online_cpus())),
+        );
+        crate::tables::prepare_acpi(&platform, |dsdt, extra| {
+            dsdt.extend(northbridge.dsdt_aml(northbridge.config()));
+            dsdt.extend(southbridge.dsdt_aml(southbridge.config()));
+            dsdt.extend(hooks.dsdt_aml(&acpi_ctx));
+            extra.extend(northbridge.extra_tables(northbridge.config()));
+            extra.extend(southbridge.extra_tables(southbridge.config()));
+            extra.extend(hooks.extra_tables(&acpi_ctx));
+        })
+    }
+
     #[must_use]
     pub fn e820(&self) -> &[E820Entry] {
         self.ctx.e820()
@@ -378,14 +438,21 @@ where
         self.southbridge.post_dram_init()?;
         self.hooks
             .after_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
-        B::init_mp()
+        #[cfg(feature = "mp")]
+        init_mp(B::config())?;
+        Ok(())
     }
 
-    /// Emit ACPI/SMBIOS tables from the existing board + platform code.
+    /// Emit ACPI/SMBIOS tables: platform config plus fragments from the
+    /// fixed devices and the mainboard, all through `AcpiDevice`.
     fn emit_tables(&mut self) -> Result<(), ServiceError> {
-        let rsdp = B::prepare_acpi(self);
-        self.ctx.set_acpi_rsdp(rsdp);
-        B::prepare_smbios();
+        #[cfg(feature = "acpi")]
+        {
+            let rsdp = self.emit_acpi();
+            self.ctx.set_acpi_rsdp(Some(rsdp));
+        }
+        #[cfg(feature = "smbios")]
+        crate::tables::prepare_smbios(B::smbios_desc());
         Ok(())
     }
 

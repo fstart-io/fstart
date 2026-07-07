@@ -2,8 +2,9 @@
 //!
 //! Direct helpers over `fstart-acpi`/`fstart-smbios`: heap/e820 buffer
 //! allocation, table assembly, RSDP EBDA install, and the acpixtract
-//! hex dump. Boards call these from their `prepare_acpi`/`prepare_smbios`
-//! hooks; there is no capability layer in between.
+//! hex dump. The fixed mainstage flow calls these in `emit_tables`; drivers
+//! and the mainboard contribute fragments through the shared `AcpiDevice`
+//! abstraction. There is no capability layer in between.
 
 extern crate alloc;
 

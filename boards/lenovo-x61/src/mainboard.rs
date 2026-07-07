@@ -18,6 +18,23 @@ use fstart_platform_intel_gm965_ich8::{Gm965Ich8, IntelEarlyBoardHooks, IntelEar
 #[cfg(feature = "stage")]
 pub struct X61Mainboard;
 
+/// The mainboard contributes ACPI fragments through the same `AcpiDevice`
+/// abstraction the chipset drivers use.
+#[cfg(feature = "acpi")]
+mod mainboard_acpi_device {
+    extern crate alloc;
+
+    use super::{x61_mainboard_dsdt_aml, X61Mainboard};
+
+    impl fstart_acpi::device::AcpiDevice for X61Mainboard {
+        type Config = fstart_platform_intel_gm965_ich8::Gm965Ich8AcpiContext;
+
+        fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
+            x61_mainboard_dsdt_aml(*config)
+        }
+    }
+}
+
 #[cfg(feature = "stage")]
 impl X61Mainboard {
     #[must_use]

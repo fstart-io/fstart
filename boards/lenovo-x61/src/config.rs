@@ -29,6 +29,7 @@ pub const UART0_BAUD_RATE: u32 = 115_200;
 const MAINBOARD_NODE: &str = "mainboard";
 
 pub static X61_PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
+    .max_cpus(2)
     .igd(x61_igd_config())
     .pcie_port(0, true)
     .pcie_port(1, true)
@@ -103,7 +104,7 @@ pub fn board_config() -> BoardConfig {
         platform: PLATFORM,
         memory: gm965_ich8_memory(Some(flash_layout)),
         devices,
-        stages: gm965_ich8_stages(),
+        stages: gm965_ich8_stages(&X61_PLATFORM),
         security: dev_security_config("keys/dev-signing.pub"),
         payload: None,
         microcode: Some(gm965_ich8_microcode()),

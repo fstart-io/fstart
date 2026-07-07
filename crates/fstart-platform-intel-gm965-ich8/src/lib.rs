@@ -76,6 +76,8 @@ pub struct Gm965Ich8Config {
     pub hda: Option<HdaConfig>,
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     pub gpio: gpio::GpioConfig,
+    /// Maximum logical CPU count (BSP + APs) the board populates.
+    pub max_cpus: u16,
 }
 
 impl Gm965Ich8Config {
@@ -94,6 +96,7 @@ impl Gm965Ich8Config {
             hda: None,
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
+            max_cpus: 1,
         }
     }
 
@@ -128,6 +131,12 @@ impl Gm965Ich8Config {
         config.smbus_base = ICH8_SMBUS_BASE;
         config.gpio = self.gpio;
         config
+    }
+
+    #[must_use]
+    pub const fn max_cpus(mut self, max_cpus: u16) -> Self {
+        self.max_cpus = max_cpus;
+        self
     }
 
     #[must_use]
@@ -399,7 +408,7 @@ pub fn gm965_ich8_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
     }
 }
 
-pub fn gm965_ich8_stages() -> StageLayout {
+pub fn gm965_ich8_stages(config: &Gm965Ich8Config) -> StageLayout {
     StageLayout::MultiStage(hvec([
         StageConfig {
             name: hstr("bootblock"),
@@ -438,7 +447,7 @@ pub fn gm965_ich8_stages() -> StageLayout {
                 Capability::MemoryDetect,
                 Capability::PciInit,
                 Capability::MpInit {
-                    max_cpus: 2,
+                    max_cpus: config.max_cpus,
                     smm: false,
                 },
                 Capability::AcpiPrepare,

@@ -15,7 +15,8 @@ stage = [
   "dep:ufmt",
   "fstart-core/pci",
 ]
-acpi = ["stage", "dep:fstart-acpi"]
+acpi = ["stage", "dep:fstart-acpi", "dep:fstart-arch"]
+mp = ["stage", "dep:fstart-arch"]
 smbios = ["stage", "dep:fstart-smbios", "dep:fstart-arch"]
 
 [dependencies]
