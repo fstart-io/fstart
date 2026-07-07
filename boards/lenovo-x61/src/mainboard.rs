@@ -12,7 +12,9 @@
 #[cfg(feature = "stage")]
 use fstart_core::services::ServiceError;
 #[cfg(feature = "stage")]
-use fstart_platform_intel_gm965_ich8::{Gm965Ich8, IntelEarlyBoardHooks, IntelEarlyCtx};
+use fstart_platform_intel::gm965::Gm965Ich8;
+#[cfg(feature = "stage")]
+use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
 #[cfg(feature = "stage")]
@@ -27,7 +29,7 @@ mod mainboard_acpi_device {
     use super::{x61_mainboard_dsdt_aml, X61Mainboard};
 
     impl fstart_acpi::device::AcpiDevice for X61Mainboard {
-        type Config = fstart_platform_intel_gm965_ich8::Gm965Ich8AcpiContext;
+        type Config = fstart_platform_intel::gm965::Gm965Ich8AcpiContext;
 
         fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
             x61_mainboard_dsdt_aml(*config)
@@ -411,7 +413,7 @@ mod acpi_impl {
     use alloc::string::String;
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
-    use fstart_platform_intel_gm965_ich8::Gm965Ich8AcpiContext;
+    use fstart_platform_intel::gm965::Gm965Ich8AcpiContext;
 
     struct X61AcpiPaths {
         sb_scope: &'static str,

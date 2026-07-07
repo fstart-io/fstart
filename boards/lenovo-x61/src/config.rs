@@ -13,7 +13,7 @@ use fstart_driver_intel::gpio_ich as gpio;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
 use fstart_hda as hda;
-use fstart_platform_intel_gm965_ich8::{
+use fstart_platform_intel::gm965::{
     gm965_ich8_memory, gm965_ich8_microcode, gm965_ich8_stages, gm965_ich8_topology,
     Gm965Ich8Config, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode,
     LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,

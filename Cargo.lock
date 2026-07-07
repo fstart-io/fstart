@@ -633,7 +633,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-platform-intel-gm965-ich8"
+name = "fstart-platform-intel"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",

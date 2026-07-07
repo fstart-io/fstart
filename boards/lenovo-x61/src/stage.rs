@@ -2,9 +2,8 @@
 
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_platform_intel_gm965_ich8::{
-    Gm965Ich8, Gm965Ich8Board, Gm965Ich8Config, IntelEarlyBoard,
-};
+use fstart_platform_intel::gm965::{Gm965Ich8, Gm965Ich8Board, Gm965Ich8Config};
+use fstart_platform_intel::IntelEarlyBoard;
 use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageKind};
 
 use crate::{Board, X61Mainboard};
@@ -55,7 +54,7 @@ impl Gm965Ich8Board for Board {
     }
 
     #[cfg(feature = "smbios")]
-    fn smbios_desc() -> &'static fstart_platform_intel_gm965_ich8::tables::SmbiosDesc<'static> {
+    fn smbios_desc() -> &'static fstart_platform_intel::tables::SmbiosDesc<'static> {
         &crate::X61_SMBIOS_DESC
     }
 }

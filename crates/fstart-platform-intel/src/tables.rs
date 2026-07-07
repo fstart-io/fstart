@@ -1,9 +1,9 @@
-//! ACPI/SMBIOS table emission for the GM965/ICH8 mainstage.
+//! Shared Intel/x86 ACPI and SMBIOS table handoff helpers.
 //!
 //! Direct helpers over `fstart-acpi`/`fstart-smbios`: heap/e820 buffer
 //! allocation, table assembly, RSDP EBDA install, and the acpixtract
-//! hex dump. The fixed mainstage flow calls these in `emit_tables`; drivers
-//! and the mainboard contribute fragments through the shared `AcpiDevice`
+//! hex dump. Chipset flows call these in `emit_tables`; drivers and the
+//! mainboard contribute fragments through the shared `AcpiDevice`
 //! abstraction. There is no capability layer in between.
 
 extern crate alloc;

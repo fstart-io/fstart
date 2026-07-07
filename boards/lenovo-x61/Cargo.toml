@@ -31,7 +31,7 @@ stage = [
   "dep:fstart-driver-uart",
   "dep:fstart-platform-x86_64",
   "dep:fstart-stage",
-  "fstart-platform-intel-gm965-ich8/stage",
+  "fstart-platform-intel/stage",
 ]
 x86_64 = ["fstart-stage?/x86_64"]
 x86-static-page-tables = ["fstart-stage?/x86-static-page-tables"]
@@ -54,13 +54,13 @@ acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
   "fstart-stage?/acpi",
-  "fstart-platform-intel-gm965-ich8/acpi",
+  "fstart-platform-intel/acpi",
   "fstart-arch/acpi",
   "fstart-driver-intel/acpi",
   "fstart-driver-intel/ffs-vbt",
 ]
-mp = ["stage", "fstart-platform-intel-gm965-ich8/mp"]
-smbios = ["fstart-platform-intel-gm965-ich8/smbios"]
+mp = ["stage", "fstart-platform-intel/mp"]
+smbios = ["fstart-platform-intel/smbios"]
 smm = [
   "dep:fstart-smm-runtime",
   "dep:fstart-smm-stage",
@@ -68,7 +68,7 @@ smm = [
 
 [dependencies]
 fstart-core = { path = "../../crates/fstart-core", features = ["pci"] }
-fstart-platform-intel-gm965-ich8 = { path = "../../crates/fstart-platform-intel-gm965-ich8" }
+fstart-platform-intel = { path = "../../crates/fstart-platform-intel" }
 fstart-platform-x86_64 = { path = "../../crates/fstart-platform-x86_64", optional = true }
 fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../../crates/fstart-acpi-macros", optional = true }
