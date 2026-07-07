@@ -511,7 +511,6 @@ mod tests {
             target: Some(Platform::Riscv64.target_triple().to_string()),
             features: vec!["custom-driver".to_string()],
             acpi_only_devices: false,
-            host_feature: false,
             stage_bin: Some("fstart-stage".to_string()),
         }
     }

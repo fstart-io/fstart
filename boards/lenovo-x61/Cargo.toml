@@ -23,6 +23,7 @@ features = [
 
 [features]
 default = []
+host = ["dep:xtask"]
 runtime = []
 crabefi = ["fstart-stage?/crabefi"]
 stage = [
@@ -81,8 +82,14 @@ fstart-smbios = { path = "../../crates/fstart-smbios" }
 fstart-smm-runtime = { path = "../../crates/fstart-smm-runtime", optional = true }
 fstart-smm-stage = { path = "../../crates/fstart-smm-stage", optional = true }
 fstart-stage = { path = "../../crates/fstart-stage", optional = true }
+xtask = { path = "../../xtask", optional = true }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
 required-features = ["stage"]
+
+[[bin]]
+name = "fstart-host"
+path = "src/host_main.rs"
+required-features = ["host"]

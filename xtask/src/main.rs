@@ -232,9 +232,33 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-fn dispatch_board_tool(board: &str, args: &[String]) -> Result<(), String> {
+fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
     let workspace_root = build_board::workspace_root_pub()?;
-    board_manifest::run_board_tool(&workspace_root, board, args)
+    let manifest = board_manifest::find(&workspace_root, board)?;
+    let status = std::process::Command::new("cargo")
+        .current_dir(&workspace_root)
+        .arg("run")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(manifest.dir.join("Cargo.toml"))
+        .arg("--bin")
+        .arg("fstart-host")
+        .arg("--features")
+        .arg("host")
+        .arg("--")
+        .args(args)
+        .env("FSTART_WORKSPACE_ROOT", &workspace_root)
+        .status()
+        .map_err(|e| format!("failed to run host tool for {}: {e}", manifest.board))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "host tool for '{}' failed with {status}",
+            manifest.board
+        ))
+    }
 }
 
 fn board_tool_assemble_args(
@@ -282,7 +306,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result: Result<(), String> = match cli.command {
-        Command::Build { board, release } => dispatch_board_tool(
+        Command::Build { board, release } => dispatch_board_host(
             &board,
             vec!["build".into()]
                 .into_iter()
@@ -297,17 +321,17 @@ fn main() {
             firmware,
             disk,
             memory,
-        } => dispatch_board_tool(
+        } => dispatch_board_host(
             &board,
             &board_tool_run_args("run", release, kernel, firmware, disk, memory),
         ),
-        Command::Test { board } => dispatch_board_tool(&board, &["test".into()]),
+        Command::Test { board } => dispatch_board_host(&board, &["test".into()]),
         Command::Assemble {
             board,
             release,
             kernel,
             firmware,
-        } => dispatch_board_tool(
+        } => dispatch_board_host(
             &board,
             &board_tool_assemble_args("assemble", release, kernel, firmware),
         ),

@@ -1,7 +1,7 @@
 //! Board-owned host tool entry points.
 //!
-//! The generated host-tool crate calls this module with the selected board
-//! crate's Rust config function. Host build facts come from the board
+//! A board-owned `fstart-host` binary calls this module with the selected
+//! board crate's Rust config function. Host build facts come from the board
 //! `Cargo.toml` `[package.metadata.fstart]` table.
 
 use clap::{Parser, Subcommand};
@@ -50,6 +50,27 @@ enum Command {
         #[arg(short, long)]
         firmware: Option<String>,
     },
+}
+
+/// Declare a board-owned host tool entry point.
+#[macro_export]
+macro_rules! board_host_tool {
+    ($board_config:path) => {
+        fn main() {
+            xtask::board_tool::main(xtask::board_tool::BoardCallbacks {
+                board_config: $board_config,
+                acpi_only_devices: None,
+            });
+        }
+    };
+    ($board_config:path, acpi_only_devices = $acpi_only_devices:path) => {
+        fn main() {
+            xtask::board_tool::main(xtask::board_tool::BoardCallbacks {
+                board_config: $board_config,
+                acpi_only_devices: Some($acpi_only_devices),
+            });
+        }
+    };
 }
 
 /// Run a board-owned host tool using typed Rust config and Cargo metadata.

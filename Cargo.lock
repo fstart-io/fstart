@@ -508,6 +508,7 @@ dependencies = [
  "fstart-smm-runtime",
  "fstart-smm-stage",
  "fstart-stage",
+ "xtask",
 ]
 
 [[package]]
