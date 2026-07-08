@@ -48,11 +48,9 @@ impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
         &mut self,
         _ctx: &mut IntelEarlyCtx<PineviewIch7>,
     ) -> Result<(), ServiceError> {
-        let mut superio = Ite8721f::new_at_base(
-            crate::d41s_superio_config().0,
-            crate::SUPERIO_PNP_BASE,
-        )
-        .map_err(device_error_to_service_error)?;
+        let mut superio =
+            Ite8721f::new_at_base(crate::d41s_superio_config().0, crate::SUPERIO_PNP_BASE)
+                .map_err(device_error_to_service_error)?;
         superio.init().map_err(device_error_to_service_error)?;
         self.superio = Some(superio);
         Ok(())

@@ -219,7 +219,7 @@ pub struct MemoryRegion {
 
 /// Type of memory region.
 ///
-/// Device MMIO ranges do not belong here — they go in `DeviceConfig::resources`.
+/// Device MMIO ranges do not belong here — keep them in typed driver/platform config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RegionKind {
     /// Read-only memory (flash, ROM)

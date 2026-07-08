@@ -22,7 +22,7 @@
 //! native/reset state.
 //!
 //! ```rust
-//! use crate::gpio_ich::{input, output, GpioConfig, GpioLevel};
+//! use fstart_driver_intel::gpio_ich::{input, output, GpioConfig, GpioLevel};
 //!
 //! let gpio = GpioConfig::default()
 //!     .pin(output(0, GpioLevel::Low))
@@ -145,7 +145,7 @@ impl Default for GpioReset {
 /// # Rust examples
 ///
 /// ```rust
-/// # use crate::gpio_ich::*;
+/// # use fstart_driver_intel::gpio_ich::*;
 /// output(0, GpioLevel::Low);                  // GPIO output, low
 /// input(33);                                  // GPIO input
 /// output(24, GpioLevel::High);                // output high
@@ -186,7 +186,7 @@ pub struct GpioPin {
 /// # Rust example
 ///
 /// ```rust
-/// # use crate::gpio_ich::*;
+/// # use fstart_driver_intel::gpio_ich::*;
 /// let gpio = GpioConfig::default()
 ///     .pin(output(0, GpioLevel::Low))
 ///     .pin(output(6, GpioLevel::Low))

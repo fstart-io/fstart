@@ -1,19 +1,23 @@
 //! Foxconn D41S board metadata and build policy.
 
 use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
+#[cfg(feature = "host")]
+use fstart_core::{dev_security_config, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig};
 use fstart_core::{
-    dev_security_config, hstr, hvec, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig,
-    BusAddress, DeviceConfig, DeviceRole, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion,
-    IntelIfdRegionConfig, Platform, SmbiosConfig,
+    hstr, hvec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform,
+    SmbiosConfig,
 };
 use fstart_driver_intel::ck505::I2cCk505Config;
 use fstart_driver_intel::gpio_ich as gpio;
 use fstart_driver_superio::ite8721f;
 use fstart_hda as hda;
+#[cfg(feature = "host")]
 use fstart_platform_intel::pineview::{
-    pineview_ich7_memory, pineview_ich7_microcode, pineview_ich7_stages, pineview_ich7_topology,
+    pineview_ich7_memory, pineview_ich7_microcode, pineview_ich7_stages,
+};
+use fstart_platform_intel::pineview::{
     LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PineviewIch7Config,
-    PineviewIgdConfig, SataConfig, SataMode, UsbConfig, ICH7_LPC_BUS_NODE, ICH7_SMBUS_NODE,
+    PineviewIgdConfig, SataConfig, SataMode, UsbConfig,
 };
 
 pub const BOARD_NAME: &str = "foxconn-d41s";
@@ -27,8 +31,6 @@ pub const SUPERIO_NODE: &str = "superio";
 pub const SUPERIO_PNP_BASE: u16 = 0x2e;
 pub const CK505_NODE: &str = "ck505";
 pub const CK505_ADDR: u8 = 0x69;
-const MAINBOARD_NODE: &str = "mainboard";
-
 pub static D41S_PLATFORM: PineviewIch7Config = PineviewIch7Config::new()
     .max_cpus(4)
     .igd(d41s_igd_config())
@@ -59,43 +61,15 @@ pub static D41S_PLATFORM: PineviewIch7Config = PineviewIch7Config::new()
     .gpe0_en(0x0441)
     .build();
 
+#[cfg(feature = "host")]
 #[must_use]
 pub fn board_config() -> BoardConfig {
     let flash_layout = d41s_flash_layout();
-    let mut devices = pineview_ich7_topology(&D41S_PLATFORM);
-    devices
-        .push(DeviceConfig {
-            name: hstr(MAINBOARD_NODE),
-            parent: None,
-            bus: None,
-            role: DeviceRole::Runtime,
-            enabled: true,
-        })
-        .expect("D41S device table capacity");
-    devices
-        .push(DeviceConfig {
-            name: hstr(SUPERIO_NODE),
-            parent: Some(hstr(ICH7_LPC_BUS_NODE)),
-            bus: Some(BusAddress::Lpc(SUPERIO_PNP_BASE)),
-            role: DeviceRole::Runtime,
-            enabled: true,
-        })
-        .expect("D41S device table capacity");
-    devices
-        .push(DeviceConfig {
-            name: hstr(CK505_NODE),
-            parent: Some(hstr(ICH7_SMBUS_NODE)),
-            bus: Some(BusAddress::I2c(CK505_ADDR)),
-            role: DeviceRole::Runtime,
-            enabled: true,
-        })
-        .expect("D41S device table capacity");
 
     BoardConfig {
         name: hstr(BOARD_NAME),
         platform: PLATFORM,
         memory: pineview_ich7_memory(Some(flash_layout)),
-        devices,
         stages: pineview_ich7_stages(&D41S_PLATFORM),
         security: dev_security_config("keys/dev-signing.pub"),
         payload: None,
@@ -366,18 +340,3 @@ pub static D41S_SMBIOS_DESC: fstart_smbios::SmbiosDesc<'static> = fstart_smbios:
     ram_base: 0x0010_0000,
     ram_end: 0x3fff_ffff,
 };
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn d41s_board_config_keeps_board_devices() {
-        let config = board_config();
-        assert!(config
-            .devices
-            .iter()
-            .any(|d| d.name.as_str() == SUPERIO_NODE));
-        assert!(config.devices.iter().any(|d| d.name.as_str() == CK505_NODE));
-    }
-}

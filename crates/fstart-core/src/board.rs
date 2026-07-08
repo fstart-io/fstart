@@ -3,7 +3,6 @@
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
-use crate::device::DeviceConfig;
 use crate::memory::MemoryMap;
 use crate::security::SecurityConfig;
 use crate::stage::StageLayout;
@@ -78,8 +77,6 @@ pub struct BoardConfig {
     pub platform: Platform,
     /// Memory map: ROM, RAM, MMIO regions
     pub memory: MemoryMap,
-    /// Device declarations with board wiring.
-    pub devices: heapless::Vec<DeviceConfig, 32>,
     /// Stage composition: monolithic or multi-stage
     pub stages: StageLayout,
     /// Security: signing algorithm, pubkey, digest requirements

@@ -19,7 +19,7 @@ features = [
 
 [features]
 default = []
-host = ["dep:xtask"]
+host = ["dep:xtask", "fstart-platform-intel/host"]
 runtime = []
 crabefi = ["fstart-stage?/crabefi"]
 stage = [

@@ -17,6 +17,47 @@ pub use fstart_arch::cpu_intel::microcode;
 pub mod pmio_ich;
 pub mod smbus;
 
+/// Intel northbridge contract consumed by Intel platform flows.
+pub trait IntelNorthbridgeDriver:
+    fstart_core::services::memory_detect::MemoryDetector
+    + fstart_core::services::MemoryController
+    + fstart_pci::PciRootBus
+    + Sized
+{
+    type Config: 'static;
+
+    fn new_from_config(
+        config: &'static Self::Config,
+    ) -> Result<Self, fstart_core::services::ServiceError>;
+    fn config(&self) -> &'static Self::Config;
+    fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+
+    /// Caches policy derived from the detected memory map.
+    fn memory_detected(&mut self, _e820: &fstart_core::services::memory_detect::E820State) {}
+}
+
+/// ECAM base exposed by northbridge config.
+pub trait IntelEcamConfig {
+    fn ecam_base(&self) -> u64;
+}
+
+/// Intel southbridge contract consumed by Intel platform flows.
+pub trait IntelSouthbridgeDriver: Sized {
+    type Config: 'static;
+
+    fn new_from_config(
+        config: &'static Self::Config,
+    ) -> Result<Self, fstart_core::services::ServiceError>;
+    #[cfg(feature = "acpi")]
+    fn config(&self) -> &'static Self::Config;
+    fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+}
+
 /// Lazily heap-allocate the IGD opregion buffer at mainstage.
 ///
 /// A `static` buffer would land in every stage's `.bss` — including the

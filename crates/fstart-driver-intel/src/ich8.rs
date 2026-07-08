@@ -13,7 +13,6 @@ use crate::pmio_ich::{self as pmio, PmIo};
 use crate::smbus::I801SmBus;
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_core::mmio::MmioReadWrite;
-use fstart_core::services::device::DeviceError;
 use fstart_core::services::{
     FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus, Southbridge,
 };
@@ -2156,12 +2155,10 @@ impl IntelIch8 {
     }
 }
 
-impl IntelIch8 {
-    /// Construct from typed config. Does NOT touch hardware.
-    ///
-    /// Takes `&'static` config so early stages keep it in `.rodata` instead
-    /// of copying it onto the tiny CAR stack.
-    pub fn new(config: &'static IntelIch8Config) -> Result<Self, DeviceError> {
+impl crate::IntelSouthbridgeDriver for IntelIch8 {
+    type Config = IntelIch8Config;
+
+    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         if config
             .lpc_decode
             .generic_io
@@ -2170,7 +2167,7 @@ impl IntelIch8 {
             .copied()
             .any(|range| range.encode().is_none())
         {
-            return Err(DeviceError::ConfigError);
+            return Err(ServiceError::InvalidParam);
         }
         if config
             .io_traps
@@ -2179,7 +2176,7 @@ impl IntelIch8 {
             .copied()
             .any(|trap| trap.encode().is_none())
         {
-            return Err(DeviceError::ConfigError);
+            return Err(ServiceError::InvalidParam);
         }
 
         Ok(Self {
@@ -2189,20 +2186,74 @@ impl IntelIch8 {
         })
     }
 
-    /// Runtime config used by this driver instance.
-    #[must_use]
-    pub const fn config(&self) -> &'static IntelIch8Config {
+    #[cfg(feature = "acpi")]
+    fn config(&self) -> &'static Self::Config {
         self.config
     }
 
-    /// Bootblock pre-console setup: SPI prefetch, fixed BARs, watchdog/CMOS,
-    /// LPC decode windows, and GPIO so LPC-attached consoles are reachable.
-    pub fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         self.enable_spi_prefetching_and_caching();
         self.program_fixed_bars();
         self.reset_watchdog_and_cmos();
         self.program_lpc_decode();
         self.setup_gpios();
+        Ok(())
+    }
+
+    /// Raminit-era southbridge init: SMBus, PIRQ routes, function disable,
+    /// early chipset settings, HPET, and DMI.
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        // Bootblock-level SPI, fixed BAR, CMOS/watchdog, LPC decode, and GPIO
+        // setup was already done by pre_console_init(). Avoid replaying those
+        // writes here; early_init is the raminit-era southbridge path.
+        self.enable_smbus();
+        self.write_pirq_routes();
+        self.clear_disabled_device_commands();
+        let rcba = self.rcba();
+        let fd = self.function_disable_mask();
+        rcba.regs().fd.set(fd);
+        if self.config.disable_lan {
+            rcba.regs().fdsw.modify(FDSW::LAN_DISABLE::SET);
+        }
+        self.early_chipset_settings();
+        self.pm().write32(GPE0_STS_ICH8, 0xffff_ffff);
+        self.pm().write32(GPE0_EN_ICH8, self.config.gpe0_en);
+        self.enable_hpet();
+        self.setup_dmi();
+        let _ = self.detect_s3_resume();
+        fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd);
+        Ok(())
+    }
+
+    /// DRAM-backed ramstage device init: PCIe/PCI bridge, USB, IDE/HDA/SATA,
+    /// LPC ramstage setup, interrupt routing, and I/O traps.
+    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
+        self.poll_vc1();
+        self.early_chipset_settings();
+        self.pcie_init();
+        self.pci_bridge_init();
+        self.usb_init();
+        if let Some(ide) = self.config.ide.as_ref() {
+            self.ide_init(ide);
+        }
+        if let Some(hda) = self.config.hda.as_ref() {
+            self.hda_init(hda);
+        }
+        if let Some(sata) = self.config.sata.as_ref() {
+            self.sata_init(sata);
+        }
+        self.ramstage_lpc_init();
+        self.configure_default_intmap();
+        self.configure_io_traps();
+        fstart_log::info!("intel-ich8: ramstage init complete");
+        Ok(())
+    }
+
+    /// Lock down write-once southbridge state before payload handoff.
+    fn finalize_init(&mut self) -> Result<(), ServiceError> {
+        let rcba = self.rcba();
+        rcba.regs().fdsw.modify(FDSW::FUNCTION_DISABLE_LOCK::SET);
+        rcba.regs().map.set(rcba.regs().map.get());
         Ok(())
     }
 }
@@ -2245,69 +2296,6 @@ impl FlashLayoutVerifier for IntelIch8 {
         match expected {
             FlashLayout::IntelIfd(layout) => self.verify_ifd_flash_layout(layout),
         }
-    }
-}
-
-impl IntelIch8 {
-    /// Raminit-era southbridge init: SMBus, PIRQ routes, function disable,
-    /// early chipset settings, HPET, and DMI.
-    pub fn early_init(&mut self) -> Result<(), ServiceError> {
-        // Bootblock-level SPI, fixed BAR, CMOS/watchdog, LPC decode, and GPIO
-        // setup was already done by pre_console_init(). Avoid replaying those
-        // writes here; early_init is the raminit-era southbridge path.
-        self.enable_smbus();
-        self.write_pirq_routes();
-        self.clear_disabled_device_commands();
-        let rcba = self.rcba();
-        let fd = self.function_disable_mask();
-        rcba.regs().fd.set(fd);
-        if self.config.disable_lan {
-            rcba.regs().fdsw.modify(FDSW::LAN_DISABLE::SET);
-        }
-        self.early_chipset_settings();
-        self.pm().write32(GPE0_STS_ICH8, 0xffff_ffff);
-        self.pm().write32(GPE0_EN_ICH8, self.config.gpe0_en);
-        self.enable_hpet();
-        self.setup_dmi();
-        let _ = self.detect_s3_resume();
-        fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd);
-        Ok(())
-    }
-}
-
-impl IntelIch8 {
-    /// DRAM-backed ramstage device init: PCIe/PCI bridge, USB, IDE/HDA/SATA,
-    /// LPC ramstage setup, interrupt routing, and I/O traps.
-    pub fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        self.poll_vc1();
-        self.early_chipset_settings();
-        self.pcie_init();
-        self.pci_bridge_init();
-        self.usb_init();
-        if let Some(ide) = self.config.ide.as_ref() {
-            self.ide_init(ide);
-        }
-        if let Some(hda) = self.config.hda.as_ref() {
-            self.hda_init(hda);
-        }
-        if let Some(sata) = self.config.sata.as_ref() {
-            self.sata_init(sata);
-        }
-        self.ramstage_lpc_init();
-        self.configure_default_intmap();
-        self.configure_io_traps();
-        fstart_log::info!("intel-ich8: ramstage init complete");
-        Ok(())
-    }
-}
-
-impl IntelIch8 {
-    /// Lock down write-once southbridge state before payload handoff.
-    pub fn finalize_init(&mut self) -> Result<(), ServiceError> {
-        let rcba = self.rcba();
-        rcba.regs().fdsw.modify(FDSW::FUNCTION_DISABLE_LOCK::SET);
-        rcba.regs().map.set(rcba.regs().map.get());
-        Ok(())
     }
 }
 

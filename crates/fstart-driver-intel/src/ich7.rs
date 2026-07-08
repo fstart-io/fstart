@@ -966,25 +966,6 @@ impl IntelIch7 {
 }
 
 impl IntelIch7 {
-    pub fn new(config: &'static IntelIch7Config) -> Result<Self, DeviceError> {
-        if config
-            .lpc_decode
-            .generic_io
-            .as_slice()
-            .iter()
-            .copied()
-            .any(|range| range.encode().is_none())
-        {
-            return Err(DeviceError::ConfigError);
-        }
-
-        Ok(Self {
-            config,
-            smbus: None,
-            pm: PmIo::new(DEFAULT_PMBASE as u16),
-        })
-    }
-
     pub fn init(&mut self) -> Result<(), DeviceError> {
         // Keep construction side-effect free. `ChipsetPreConsole` runs before
         // the logger is installed; pre-console BAR/LPC setup is done in the
@@ -999,8 +980,34 @@ impl FirmwareImageProvider for IntelIch7 {
     }
 }
 
-impl IntelIch7 {
-    pub fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+impl crate::IntelSouthbridgeDriver for IntelIch7 {
+    type Config = IntelIch7Config;
+
+    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
+        if config
+            .lpc_decode
+            .generic_io
+            .as_slice()
+            .iter()
+            .copied()
+            .any(|range| range.encode().is_none())
+        {
+            return Err(ServiceError::InvalidParam);
+        }
+
+        Ok(Self {
+            config,
+            smbus: None,
+            pm: PmIo::new(DEFAULT_PMBASE as u16),
+        })
+    }
+
+    #[cfg(feature = "acpi")]
+    fn config(&self) -> &'static Self::Config {
+        self.config
+    }
+
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         let lpc = self.lpc_regs();
 
         // Coreboot's bootblock_early_southbridge_init() order:
@@ -1049,10 +1056,8 @@ impl IntelIch7 {
 
         Ok(())
     }
-}
 
-impl IntelIch7 {
-    pub fn early_init(&mut self) -> Result<(), ServiceError> {
+    fn early_init(&mut self) -> Result<(), ServiceError> {
         let lpc = self.lpc_regs();
 
         // Bootblock-level SPI, fixed BAR, CMOS/watchdog, and LPC decode setup
@@ -1123,16 +1128,12 @@ impl IntelIch7 {
         fstart_log::info!("intel-ich7: early init complete (fd_mask={:#x})", fd);
         Ok(())
     }
-}
 
-impl IntelIch7 {
-    pub fn post_dram_init(&mut self) -> Result<(), ServiceError> {
+    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
         IntelIch7::ramstage_init(self)
     }
-}
 
-impl IntelIch7 {
-    pub fn finalize_init(&mut self) -> Result<(), ServiceError> {
+    fn finalize_init(&mut self) -> Result<(), ServiceError> {
         IntelIch7::finalize(self);
         Ok(())
     }

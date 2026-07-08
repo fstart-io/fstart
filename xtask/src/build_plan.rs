@@ -419,7 +419,6 @@ mod tests {
                 flash_layout: None,
                 car: None,
             },
-            devices: heapless::Vec::new(),
             stages: StageLayout::Monolithic(MonolithicConfig {
                 build: StageBuildConfig::default(),
                 load_addr: 0x1000,

@@ -21,7 +21,6 @@ use core::{cell::UnsafeCell, ptr};
 
 use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_core::mmio::MmioReadWrite;
-use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{
     build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
 };
@@ -1736,12 +1735,16 @@ impl IntelGm965 {
     }
 }
 
-impl IntelGm965 {
-    /// Construct from typed config. Does NOT touch hardware.
-    ///
-    /// Takes `&'static` config so early stages keep it in `.rodata` instead
-    /// of copying it onto the tiny CAR stack.
-    pub fn new(config: &'static IntelGm965Config) -> Result<Self, DeviceError> {
+impl crate::IntelEcamConfig for IntelGm965Config {
+    fn ecam_base(&self) -> u64 {
+        self.ecam_base
+    }
+}
+
+impl crate::IntelNorthbridgeDriver for IntelGm965 {
+    type Config = IntelGm965Config;
+
+    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
             config,
             detected_size: 0,
@@ -1750,30 +1753,29 @@ impl IntelGm965 {
         })
     }
 
-    /// Runtime config used by this driver instance.
-    #[must_use]
-    pub const fn config(&self) -> &'static IntelGm965Config {
+    fn config(&self) -> &'static Self::Config {
         self.config
     }
 
-    /// Bootblock pre-console setup: enable ECAM so PCI config is reachable.
-    pub fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         Ok(())
     }
 
-    /// Post-console early init: fixed BARs, PAM shadowing, MCH/DMI tweaks.
-    pub fn early_init(&mut self) -> Result<(), ServiceError> {
+    fn early_init(&mut self) -> Result<(), ServiceError> {
         self.setup_bars_and_pam();
         self.early_mch_dmi_tweaks();
         fstart_log::info!("intel-gm965: early init complete");
         Ok(())
     }
 
-    /// Rebind stage-local ECAM state after a stage transition.
-    pub fn stage_local_init(&mut self) -> Result<(), ServiceError> {
+    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         Ok(())
+    }
+
+    fn memory_detected(&mut self, e820: &fstart_core::services::memory_detect::E820State) {
+        self.mmio32_window = default_mmio32_window_from_e820(e820, self.config.ecam_base);
     }
 }
 
@@ -1809,11 +1811,6 @@ fn default_mmio32_window_from_e820(
 }
 
 impl IntelGm965 {
-    /// Cache the mmio32 window policy derived from the detected memory map.
-    pub fn memory_detected(&mut self, e820: &fstart_core::services::memory_detect::E820State) {
-        self.mmio32_window = default_mmio32_window_from_e820(e820, self.config.ecam_base);
-    }
-
     fn pci_ecam_config(&self) -> PciEcamConfig {
         let (mmio32_base, mmio32_size) =
             self.mmio32_window.unwrap_or((PCI_MMIO32_FALLBACK_BASE, 0));

@@ -3,18 +3,22 @@
 use fstart_core::smbios::{
     ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
 };
+#[cfg(feature = "host")]
 use fstart_core::{
-    dev_security_config, hstr, hvec, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig,
-    DeviceConfig, DeviceRole, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion,
-    IntelIfdRegionConfig, Platform, SmbiosConfig, SmmConfig,
+    dev_security_config, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig, SmmConfig,
+};
+use fstart_core::{
+    hstr, hvec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform,
+    SmbiosConfig,
 };
 use fstart_driver_intel::ck505::I2cCk505Config;
 use fstart_driver_intel::gpio_ich as gpio;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
 use fstart_hda as hda;
+#[cfg(feature = "host")]
+use fstart_platform_intel::gm965::{gm965_ich8_memory, gm965_ich8_microcode, gm965_ich8_stages};
 use fstart_platform_intel::gm965::{
-    gm965_ich8_memory, gm965_ich8_microcode, gm965_ich8_stages, gm965_ich8_topology,
     Gm965Ich8Config, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode,
     LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
 };
@@ -26,8 +30,6 @@ pub const UART0_NODE: &str = "dock_superio/com1";
 pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
-const MAINBOARD_NODE: &str = "mainboard";
-
 pub static X61_PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
     .max_cpus(2)
     .igd(x61_igd_config())
@@ -85,25 +87,15 @@ pub static X61_PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
     }])
     .build();
 
+#[cfg(feature = "host")]
 #[must_use]
 pub fn board_config() -> BoardConfig {
     let flash_layout = x61_flash_layout();
-    let mut devices = gm965_ich8_topology(&X61_PLATFORM);
-    devices
-        .push(DeviceConfig {
-            name: hstr(MAINBOARD_NODE),
-            parent: None,
-            bus: None,
-            role: DeviceRole::Runtime,
-            enabled: true,
-        })
-        .expect("X61 device table capacity");
 
     BoardConfig {
         name: hstr(BOARD_NAME),
         platform: PLATFORM,
         memory: gm965_ich8_memory(Some(flash_layout)),
-        devices,
         stages: gm965_ich8_stages(&X61_PLATFORM),
         security: dev_security_config("keys/dev-signing.pub"),
         payload: None,
@@ -677,21 +669,5 @@ pub fn x61_ck505_config() -> I2cCk505Config {
     I2cCk505Config {
         mask: hvec([0xff, 0, 0, 0, 0]),
         regs: hvec([0x11, 0, 0, 0, 0]),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn x61_board_config_keeps_board_owned_mainboard_hook() {
-        let config = board_config();
-        let mainboard = config
-            .devices
-            .iter()
-            .find(|device| device.name.as_str() == "mainboard")
-            .expect("X61 board hook device is declared");
-        assert!(mainboard.enabled);
     }
 }

@@ -5,9 +5,6 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
 
-[lib]
-crate-type = ["rlib", "staticlib"]
-
 [package.metadata.fstart]
 board = "lenovo-x61"
 platform = "x86_64"
@@ -23,7 +20,7 @@ features = [
 
 [features]
 default = []
-host = ["dep:xtask"]
+host = ["dep:xtask", "fstart-platform-intel/host"]
 runtime = []
 crabefi = ["fstart-stage?/crabefi"]
 stage = [

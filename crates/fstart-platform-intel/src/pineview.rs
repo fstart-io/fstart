@@ -5,11 +5,11 @@ pub use stage::{
     run_pineview_ich7_mainstage, PineviewIch7, PineviewIch7Board, PineviewIch7Mainstage,
 };
 
+#[cfg(feature = "host")]
 use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_core::{
-    hstr, hvec, BusAddress, CarConfig, Compression, DeviceConfig, DeviceRole, FirmwareImageConfig,
-    FlashLayout, MemoryMap, MemoryRegion, MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig,
-    StageConfig, StageLayout, TempRamBuffer,
+    hstr, hvec, CarConfig, Compression, FirmwareImageConfig, FlashLayout, MemoryMap, MemoryRegion,
+    MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
 };
 use fstart_driver_intel::gpio_ich as gpio;
 use fstart_driver_intel::ich7;
@@ -22,77 +22,7 @@ use fstart_driver_intel::pineview;
 pub use fstart_driver_intel::pineview::{IntelPineviewConfig, PineviewIgdConfig};
 use serde::Serialize;
 
-#[cfg(feature = "stage")]
-impl crate::IntelEcamConfig for pineview::IntelPineviewConfig {
-    fn ecam_base(&self) -> u64 {
-        self.ecam_base
-    }
-}
-
-#[cfg(feature = "stage")]
-impl crate::IntelNorthbridgeDriver for pineview::IntelPineview {
-    type Config = pineview::IntelPineviewConfig;
-
-    fn new_from_config(
-        config: &'static Self::Config,
-    ) -> Result<Self, fstart_core::services::ServiceError> {
-        pineview::IntelPineview::new(config)
-            .map_err(|_| fstart_core::services::ServiceError::HardwareError)
-    }
-
-    fn config(&self) -> &'static Self::Config {
-        pineview::IntelPineview::config(self)
-    }
-
-    fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
-        pineview::IntelPineview::pre_console_init(self)
-    }
-
-    fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
-        pineview::IntelPineview::early_init(self)
-    }
-
-    fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
-        pineview::IntelPineview::stage_local_init(self)
-    }
-}
-
-#[cfg(feature = "stage")]
-impl crate::IntelSouthbridgeDriver for ich7::IntelIch7 {
-    type Config = ich7::IntelIch7Config;
-
-    fn new_from_config(
-        config: &'static Self::Config,
-    ) -> Result<Self, fstart_core::services::ServiceError> {
-        ich7::IntelIch7::new(config).map_err(|_| fstart_core::services::ServiceError::HardwareError)
-    }
-
-    #[cfg(feature = "acpi")]
-    fn config(&self) -> &'static Self::Config {
-        ich7::IntelIch7::config(self)
-    }
-
-    fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
-        ich7::IntelIch7::pre_console_init(self)
-    }
-
-    fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
-        ich7::IntelIch7::early_init(self)
-    }
-
-    fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
-        ich7::IntelIch7::post_dram_init(self)
-    }
-
-    fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
-        ich7::IntelIch7::finalize_init(self)
-    }
-}
-
 pub const PINEVIEW_NORTHBRIDGE_NODE: &str = "northbridge";
-pub const ICH7_SOUTHBRIDGE_NODE: &str = "southbridge";
-pub const ICH7_LPC_BUS_NODE: &str = "lpc";
-pub const ICH7_SMBUS_NODE: &str = "smbus";
 pub const PINEVIEW_BOOTBLOCK_LOAD_ADDR: u64 = 0xffff_ffff;
 pub const PINEVIEW_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
 pub const PINEVIEW_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
@@ -327,58 +257,22 @@ impl PineviewIch7AcpiContext {
     }
 }
 
-pub fn pineview_ich7_topology(config: &PineviewIch7Config) -> heapless::Vec<DeviceConfig, 32> {
-    let mut devices = hvec([
-        DeviceConfig {
-            name: hstr(PINEVIEW_NORTHBRIDGE_NODE),
-            parent: None,
-            bus: None,
-            role: DeviceRole::Runtime,
-            enabled: true,
-        },
-        DeviceConfig {
-            name: hstr(ICH7_SOUTHBRIDGE_NODE),
-            parent: None,
-            bus: None,
-            role: DeviceRole::Runtime,
-            enabled: true,
-        },
-    ]);
-
-    for (idx, enabled) in config.pcie_ports.iter().copied().enumerate() {
-        devices
-            .push(DeviceConfig {
-                name: hstr(PCIE_ROOT_PORTS[idx]),
-                parent: Some(hstr(ICH7_SOUTHBRIDGE_NODE)),
-                bus: Some(BusAddress::Pci(0x1c, idx as u8)),
-                role: DeviceRole::PciBridge,
-                enabled,
-            })
-            .expect("Pineview/ICH7 device table capacity");
-    }
-
-    devices
-        .push(DeviceConfig {
-            name: hstr(ICH7_LPC_BUS_NODE),
-            parent: Some(hstr(ICH7_SOUTHBRIDGE_NODE)),
-            bus: None,
-            role: DeviceRole::LpcBus,
-            enabled: true,
-        })
-        .expect("Pineview/ICH7 device table capacity");
-    devices
-        .push(DeviceConfig {
-            name: hstr(ICH7_SMBUS_NODE),
-            parent: Some(hstr(ICH7_SOUTHBRIDGE_NODE)),
-            bus: None,
-            role: DeviceRole::SmBus,
-            enabled: true,
-        })
-        .expect("Pineview/ICH7 device table capacity");
-    devices
+#[cfg(feature = "host")]
+pub fn pineview_ich7_microcode() -> MicrocodeConfig {
+    MicrocodeConfig::Intel(IntelMicrocodeConfig {
+        files: hvec([
+            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
+            hstr("../../intel-microcode/intel-ucode/06-1c-0a"),
+            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
+            hstr("../../intel-microcode/intel-ucode/06-1c-0a"),
+            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
+            hstr("../../intel-microcode/intel-ucode/06-1c-0a"),
+            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
+        ]),
+        early: true,
+        mp: true,
+    })
 }
-
-const PCIE_ROOT_PORTS: [&str; 4] = ["pcie1", "pcie2", "pcie3", "pcie4"];
 
 pub fn pineview_ich7_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
     MemoryMap {
@@ -453,27 +347,12 @@ pub fn pineview_ich7_stages(config: &PineviewIch7Config) -> StageLayout {
     ]))
 }
 
-pub fn pineview_ich7_microcode() -> MicrocodeConfig {
-    MicrocodeConfig::Intel(IntelMicrocodeConfig {
-        files: hvec([
-            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
-            hstr("../../intel-microcode/intel-ucode/06-1c-0a"),
-            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
-            hstr("../../intel-microcode/intel-ucode/06-1c-0a"),
-            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
-            hstr("../../intel-microcode/intel-ucode/06-1c-0a"),
-            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
-        ]),
-        early: true,
-        mp: true,
-    })
-}
-
 #[cfg(feature = "stage")]
 mod stage {
     use super::*;
     use crate::{
-        BootblockSpec, IntelEarlyBoard, IntelEarlyPlatform, IntelPlatform, MainstagePhases,
+        BootblockSpec, IntelEarlyBoard, IntelEarlyPlatform, IntelNorthbridgeDriver, IntelPlatform,
+        IntelSouthbridgeDriver, MainstageSpec,
     };
     use fstart_core::services::ServiceError;
     use fstart_driver_intel::ich7::IntelIch7;
@@ -511,12 +390,12 @@ mod stage {
             #[cfg(fstart_stage_env = "car")]
             {
                 let Ok(mut hooks) = B::hooks() else {
-                    B::halt();
+                    fstart_platform_x86_64::halt();
                 };
                 if Self::run_early::<B>(&mut hooks).is_err() {
-                    B::halt();
+                    fstart_platform_x86_64::halt();
                 }
-                B::halt()
+                fstart_platform_x86_64::halt()
             }
 
             #[cfg(fstart_stage_env = "ram")]
@@ -529,15 +408,15 @@ mod stage {
                 match env {
                     StageEnvironment::Car => {
                         let Ok(mut hooks) = B::hooks() else {
-                            B::halt();
+                            fstart_platform_x86_64::halt();
                         };
                         if Self::run_early::<B>(&mut hooks).is_err() {
-                            B::halt();
+                            fstart_platform_x86_64::halt();
                         }
-                        B::halt()
+                        fstart_platform_x86_64::halt()
                     }
                     StageEnvironment::Ram => run_pineview_ich7_mainstage::<B>(),
-                    StageEnvironment::Monolithic => B::halt(),
+                    StageEnvironment::Monolithic => fstart_platform_x86_64::halt(),
                 }
             }
         }
@@ -559,8 +438,6 @@ mod stage {
         fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout;
         fn console_config() -> Ns16550Config;
         fn console_node() -> &'static str;
-        fn halt() -> !;
-
         #[cfg(feature = "smbios")]
         fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
     }
@@ -587,9 +464,8 @@ mod stage {
     where
         B: PineviewIch7Board,
     {
-        let northbridge =
-            IntelPineview::new(B::NB_CONFIG).map_err(|_| ServiceError::HardwareError)?;
-        let southbridge = IntelIch7::new(B::SB_CONFIG).map_err(|_| ServiceError::HardwareError)?;
+        let northbridge = IntelPineview::new_from_config(B::NB_CONFIG)?;
+        let southbridge = IntelIch7::new_from_config(B::SB_CONFIG)?;
         crate::run_intel_bootblock::<PineviewIch7, _, _, _>(
             BootblockSpec {
                 platform: "pineview/ich7",
@@ -607,41 +483,17 @@ mod stage {
 
     /// Pineview/ICH7 mainstage: fixed platform devices bound from typed config and
     /// driven through the shared Intel mainstage phases.
-    pub type PineviewIch7Mainstage<B> =
-        crate::IntelMainstage<PineviewIch7, B, IntelPineview, IntelIch7, PineviewIch7AcpiContext>;
+    pub type PineviewIch7Mainstage<B> = crate::IntelMainstage<
+        PineviewIch7,
+        IntelPineview,
+        IntelIch7,
+        <B as IntelEarlyBoard>::Hooks,
+        PineviewIch7AcpiContext,
+    >;
 
-    impl<B> crate::IntelMainstageBoard<PineviewIch7, IntelPineview, IntelIch7> for B
-    where
-        B: PineviewIch7Board,
-    {
-        const NB_CONFIG: &'static IntelPineviewConfig = <B as PineviewIch7Board>::NB_CONFIG;
-        const SB_CONFIG: &'static IntelIch7Config = <B as PineviewIch7Board>::SB_CONFIG;
-
-        fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout {
-            <B as PineviewIch7Board>::ifd_flash_layout()
-        }
-
-        fn console_config() -> Ns16550Config {
-            <B as PineviewIch7Board>::console_config()
-        }
-
-        fn console_node() -> &'static str {
-            <B as PineviewIch7Board>::console_node()
-        }
-
-        fn platform_node() -> &'static str {
-            PINEVIEW_NORTHBRIDGE_NODE
-        }
-
-        #[cfg(feature = "mp")]
-        fn init_mp() -> Result<(), ServiceError> {
-            init_mp(<B as PineviewIch7Board>::CONFIG)
-        }
-
-        #[cfg(feature = "smbios")]
-        fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static> {
-            <B as PineviewIch7Board>::smbios_desc()
-        }
+    #[cfg(feature = "mp")]
+    fn init_mp_for_board<B: PineviewIch7Board>() -> Result<(), ServiceError> {
+        init_mp(B::CONFIG)
     }
 
     /// Handwritten fixed Pineview/ICH7 mainstage flow. Ordering is this function.
@@ -649,9 +501,36 @@ mod stage {
     where
         B: PineviewIch7Board,
     {
-        let Ok(mainstage) = PineviewIch7Mainstage::<B>::bind() else {
-            B::halt();
+        let Ok(hooks) = B::hooks() else {
+            fstart_platform_x86_64::halt();
         };
-        crate::run_intel_mainstage::<_, B::Payload>("pineview/ich7", B::halt, mainstage)
+        let Ok(mainstage) = crate::bind_intel_mainstage::<
+            PineviewIch7,
+            IntelPineview,
+            IntelIch7,
+            B::Hooks,
+            PineviewIch7AcpiContext,
+        >(
+            MainstageSpec {
+                flash_layout: B::ifd_flash_layout(),
+                nb_config: B::NB_CONFIG,
+                sb_config: B::SB_CONFIG,
+                console_config: B::console_config(),
+                console_node: B::console_node(),
+                platform_node: PINEVIEW_NORTHBRIDGE_NODE,
+                #[cfg(feature = "mp")]
+                init_mp: init_mp_for_board::<B>,
+                #[cfg(feature = "smbios")]
+                smbios_desc: B::smbios_desc(),
+            },
+            hooks,
+        ) else {
+            fstart_platform_x86_64::halt();
+        };
+        crate::run_intel_mainstage::<_, B::Payload>(
+            "pineview/ich7",
+            fstart_platform_x86_64::halt,
+            mainstage,
+        )
     }
 }

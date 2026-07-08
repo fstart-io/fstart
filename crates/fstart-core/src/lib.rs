@@ -35,7 +35,7 @@ pub use board::{
 };
 pub use builder::{dev_security_config, hstr, hvec, x86_linuxboot_payload, x86_uefi_payload};
 pub use const_vec::ConstVec;
-pub use device::{BusAddress, DeviceConfig, DeviceId, DeviceNode, DeviceRole};
+pub use device::BusAddress;
 pub use ffs::{
     AnchorBlock, Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, Region,
     RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,

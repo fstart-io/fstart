@@ -263,12 +263,6 @@ pci_type0_config! {
 }
 
 impl IntelPineview {
-    /// Runtime config used by this driver instance.
-    #[must_use]
-    pub const fn config(&self) -> &'static IntelPineviewConfig {
-        self.config
-    }
-
     fn hostbridge_regs(&self) -> &'static PineviewHostBridgePciConfig {
         let hb = ecam::EcamDevice::new(0, 0, 0);
         // SAFETY: Pineview host bridge is fixed at 00:00.0 and ECAM is live
@@ -487,14 +481,6 @@ impl IntelPineview {
 }
 
 impl IntelPineview {
-    pub fn new(config: &'static IntelPineviewConfig) -> Result<Self, DeviceError> {
-        Ok(Self {
-            config,
-            detected_size: 0,
-            pci: None,
-        })
-    }
-
     pub fn init(&mut self) -> Result<(), DeviceError> {
         // Keep construction side-effect free.  `ChipsetPreConsole` calls
         // `init_device()` before the console exists, and before MCHBAR is
@@ -543,16 +529,36 @@ impl IntelPineview {
     }
 }
 
-impl IntelPineview {
-    pub fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+impl crate::IntelEcamConfig for IntelPineviewConfig {
+    fn ecam_base(&self) -> u64 {
+        self.ecam_base
+    }
+}
+
+impl crate::IntelNorthbridgeDriver for IntelPineview {
+    type Config = IntelPineviewConfig;
+
+    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
+        Ok(Self {
+            config,
+            detected_size: 0,
+            pci: None,
+        })
+    }
+
+    fn config(&self) -> &'static Self::Config {
+        self.config
+    }
+
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
         self.pre_console_phase()
     }
 
-    pub fn early_init(&mut self) -> Result<(), ServiceError> {
+    fn early_init(&mut self) -> Result<(), ServiceError> {
         self.early_phase()
     }
 
-    pub fn stage_local_init(&mut self) -> Result<(), ServiceError> {
+    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         self.init_igd_opregion();
         Ok(())

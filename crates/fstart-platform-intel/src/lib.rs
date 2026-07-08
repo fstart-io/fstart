@@ -17,9 +17,11 @@ pub mod pineview;
 #[cfg(feature = "stage")]
 use core::marker::PhantomData;
 #[cfg(feature = "stage")]
-use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};
+use fstart_core::services::memory_detect::E820Entry;
 #[cfg(feature = "stage")]
-use fstart_core::services::{MemoryController, ServiceError};
+use fstart_core::services::ServiceError;
+#[cfg(feature = "stage")]
+pub use fstart_driver_intel::{IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver};
 #[cfg(feature = "stage")]
 pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
 
@@ -88,42 +90,6 @@ where
 }
 
 #[cfg(feature = "stage")]
-pub trait IntelNorthbridgeDriver:
-    MemoryDetector + MemoryController + fstart_pci::PciRootBus + Sized
-{
-    type Config: 'static;
-
-    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError>;
-    fn config(&self) -> &'static Self::Config;
-    fn pre_console_init(&mut self) -> Result<(), ServiceError>;
-    fn early_init(&mut self) -> Result<(), ServiceError>;
-    fn stage_local_init(&mut self) -> Result<(), ServiceError>;
-
-    /// Called once after memory detection with the authoritative e820 map.
-    /// Chipsets that derive policy from it (e.g. GM965's PCI mmio32 window)
-    /// cache what they need; the default does nothing.
-    fn memory_detected(&mut self, _e820: &fstart_core::services::memory_detect::E820State) {}
-}
-
-#[cfg(feature = "stage")]
-pub trait IntelEcamConfig {
-    fn ecam_base(&self) -> u64;
-}
-
-#[cfg(feature = "stage")]
-pub trait IntelSouthbridgeDriver: Sized {
-    type Config: 'static;
-
-    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError>;
-    #[cfg(feature = "acpi")]
-    fn config(&self) -> &'static Self::Config;
-    fn pre_console_init(&mut self) -> Result<(), ServiceError>;
-    fn early_init(&mut self) -> Result<(), ServiceError>;
-    fn post_dram_init(&mut self) -> Result<(), ServiceError>;
-    fn finalize_init(&mut self) -> Result<(), ServiceError>;
-}
-
-#[cfg(feature = "stage")]
 pub(crate) struct BootblockSpec {
     pub platform: &'static str,
     pub next_stage: &'static str,
@@ -133,54 +99,38 @@ pub(crate) struct BootblockSpec {
     pub console_node: &'static str,
 }
 
+/// Shared Intel mainstage machinery. Chipset modules bind board facts once,
+/// then the common phase code owns the rest.
 #[cfg(feature = "stage")]
-pub trait IntelMainstageBoard<P, NB, SB>: IntelEarlyBoard<Platform = P>
+pub struct IntelMainstage<P, NB, SB, Hooks, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
-{
-    const NB_CONFIG: &'static NB::Config;
-    const SB_CONFIG: &'static SB::Config;
-
-    fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout;
-    fn console_config() -> fstart_driver_uart::ns16550::Ns16550Config;
-    fn console_node() -> &'static str;
-    fn platform_node() -> &'static str;
-
-    #[cfg(feature = "mp")]
-    fn init_mp() -> Result<(), ServiceError>;
-
-    #[cfg(feature = "smbios")]
-    fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
-}
-
-/// Shared Intel mainstage machinery. Chipset modules supply only their driver
-/// types, platform node names, and MP policy.
-#[cfg(feature = "stage")]
-pub struct IntelMainstage<P, B, NB, SB, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    B: IntelMainstageBoard<P, NB, SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
+    Hooks: IntelEarlyBoardHooks<P>,
 {
     northbridge: NB,
     southbridge: SB,
-    hooks: B::Hooks,
+    hooks: Hooks,
     console: fstart_driver_uart::ns16550::Ns16550,
     ctx: MainstageCtx,
+    platform_node: &'static str,
+    console_node: &'static str,
+    #[cfg(feature = "mp")]
+    init_mp: fn() -> Result<(), ServiceError>,
+    #[cfg(feature = "smbios")]
+    smbios_desc: &'static crate::tables::SmbiosDesc<'static>,
     _platform: PhantomData<P>,
     _acpi: PhantomData<AcpiContext>,
 }
 
 #[cfg(feature = "stage")]
-impl<P, B, NB, SB, AcpiContext> IntelMainstage<P, B, NB, SB, AcpiContext>
+impl<P, NB, SB, Hooks, AcpiContext> IntelMainstage<P, NB, SB, Hooks, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
-    B: IntelMainstageBoard<P, NB, SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
+    Hooks: IntelEarlyBoardHooks<P>,
 {
     #[must_use]
     pub const fn northbridge(&self) -> &NB {
@@ -206,19 +156,29 @@ where
     pub const fn acpi_rsdp(&self) -> Option<u64> {
         self.ctx.acpi_rsdp()
     }
+}
 
-    #[cfg(feature = "acpi")]
-    fn emit_acpi(&mut self) -> u64
-    where
-        P: IntelEarlyPlatform<Southbridge = SB, AcpiContext = AcpiContext>,
-        AcpiContext: Default,
-        NB: fstart_acpi::device::AcpiDevice<Config = <NB as IntelNorthbridgeDriver>::Config>,
-        SB: fstart_acpi::device::AcpiDevice<Config = <SB as IntelSouthbridgeDriver>::Config>
-            + fstart_acpi::platform::X86PlatformProvider,
-        B::Hooks: fstart_acpi::device::AcpiDevice<Config = AcpiContext>,
-    {
+#[cfg(all(feature = "stage", feature = "acpi"))]
+trait MainstageAcpi {
+    fn emit_acpi(&mut self) -> Result<(), ServiceError>;
+}
+
+#[cfg(all(feature = "stage", feature = "acpi"))]
+impl<P, NB, SB, Hooks, AcpiContext> MainstageAcpi for IntelMainstage<P, NB, SB, Hooks, AcpiContext>
+where
+    P: IntelEarlyPlatform<Southbridge = SB, AcpiContext = AcpiContext>,
+    Hooks: IntelEarlyBoardHooks<P>,
+    NB: IntelNorthbridgeDriver
+        + fstart_acpi::device::AcpiDevice<Config = <NB as IntelNorthbridgeDriver>::Config>,
+    SB: IntelSouthbridgeDriver
+        + fstart_acpi::device::AcpiDevice<Config = <SB as IntelSouthbridgeDriver>::Config>
+        + fstart_acpi::platform::X86PlatformProvider,
+    Hooks: fstart_acpi::device::AcpiDevice<Config = AcpiContext>,
+    AcpiContext: Default,
+{
+    fn emit_acpi(&mut self) -> Result<(), ServiceError> {
         let acpi_ctx = AcpiContext::default();
-        emit_x86_acpi_tables(
+        let rsdp = emit_x86_acpi_tables(
             self.ctx.e820_state_mut(),
             &self.northbridge,
             self.northbridge.config(),
@@ -226,39 +186,33 @@ where
             self.southbridge.config(),
             &self.hooks,
             &acpi_ctx,
-        )
-    }
-}
-
-#[cfg(all(feature = "stage", feature = "acpi"))]
-impl<P, B, NB, SB, AcpiContext> IntelMainstageFlow for IntelMainstage<P, B, NB, SB, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB, AcpiContext = AcpiContext>,
-    B: IntelMainstageBoard<P, NB, SB>,
-    NB: IntelNorthbridgeDriver
-        + fstart_acpi::device::AcpiDevice<Config = <NB as IntelNorthbridgeDriver>::Config>,
-    SB: IntelSouthbridgeDriver
-        + fstart_acpi::device::AcpiDevice<Config = <SB as IntelSouthbridgeDriver>::Config>
-        + fstart_acpi::platform::X86PlatformProvider,
-    B::Hooks: fstart_acpi::device::AcpiDevice<Config = AcpiContext>,
-    AcpiContext: Default,
-{
-    fn firmware_region(&self) -> (u64, usize) {
-        self.ctx.firmware_region()
-    }
-
-    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
-        self.northbridge.stage_local_init()
+        );
+        self.ctx.set_acpi_rsdp(Some(rsdp));
+        Ok(())
     }
 }
 
 #[cfg(all(feature = "stage", not(feature = "acpi")))]
-impl<P, B, NB, SB, AcpiContext> IntelMainstageFlow for IntelMainstage<P, B, NB, SB, AcpiContext>
+trait MainstageAcpi {
+    fn emit_acpi(&mut self) -> Result<(), ServiceError>;
+}
+
+#[cfg(all(feature = "stage", not(feature = "acpi")))]
+impl<T> MainstageAcpi for T {
+    fn emit_acpi(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "stage")]
+impl<P, NB, SB, Hooks, AcpiContext> IntelMainstageFlow
+    for IntelMainstage<P, NB, SB, Hooks, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
-    B: IntelMainstageBoard<P, NB, SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
+    Hooks: IntelEarlyBoardHooks<P>,
+    IntelMainstage<P, NB, SB, Hooks, AcpiContext>: MainstageAcpi,
 {
     fn firmware_region(&self) -> (u64, usize) {
         self.ctx.firmware_region()
@@ -270,84 +224,73 @@ where
 }
 
 #[cfg(feature = "stage")]
-fn bind_intel_mainstage<P, B, NB, SB, AcpiContext>(
-) -> Result<IntelMainstage<P, B, NB, SB, AcpiContext>, ServiceError>
+pub(crate) struct MainstageSpec<NB, SB>
 where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    B: IntelMainstageBoard<P, NB, SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
 {
-    let (firmware_base, firmware_size) = firmware_window(B::ifd_flash_layout())?;
+    pub flash_layout: fstart_core::IntelIfdFlashLayout,
+    pub nb_config: &'static NB::Config,
+    pub sb_config: &'static SB::Config,
+    pub console_config: fstart_driver_uart::ns16550::Ns16550Config,
+    pub console_node: &'static str,
+    pub platform_node: &'static str,
+    #[cfg(feature = "mp")]
+    pub init_mp: fn() -> Result<(), ServiceError>,
+    #[cfg(feature = "smbios")]
+    pub smbios_desc: &'static crate::tables::SmbiosDesc<'static>,
+}
+
+#[cfg(feature = "stage")]
+pub(crate) fn bind_intel_mainstage<P, NB, SB, Hooks, AcpiContext>(
+    spec: MainstageSpec<NB, SB>,
+    hooks: Hooks,
+) -> Result<IntelMainstage<P, NB, SB, Hooks, AcpiContext>, ServiceError>
+where
+    P: IntelEarlyPlatform<Southbridge = SB>,
+    NB: IntelNorthbridgeDriver,
+    SB: IntelSouthbridgeDriver,
+    Hooks: IntelEarlyBoardHooks<P>,
+{
+    let (firmware_base, firmware_size) = firmware_window(spec.flash_layout)?;
     Ok(IntelMainstage {
-        northbridge: NB::new_from_config(B::NB_CONFIG)?,
-        southbridge: SB::new_from_config(B::SB_CONFIG)?,
-        hooks: B::hooks()?,
-        console: fstart_driver_uart::ns16550::Ns16550::new(B::console_config())
+        northbridge: NB::new_from_config(spec.nb_config)?,
+        southbridge: SB::new_from_config(spec.sb_config)?,
+        hooks,
+        console: fstart_driver_uart::ns16550::Ns16550::new(spec.console_config)
             .map_err(|_| ServiceError::HardwareError)?,
         ctx: MainstageCtx::new(firmware_base, firmware_size),
+        platform_node: spec.platform_node,
+        console_node: spec.console_node,
+        #[cfg(feature = "mp")]
+        init_mp: spec.init_mp,
+        #[cfg(feature = "smbios")]
+        smbios_desc: spec.smbios_desc,
         _platform: PhantomData,
         _acpi: PhantomData,
     })
 }
 
 #[cfg(feature = "stage")]
-fn pre_bus_scan_intel_mainstage<P, B, NB, SB, AcpiContext>(
-    mainstage: &mut IntelMainstage<P, B, NB, SB, AcpiContext>,
-) -> Result<(), ServiceError>
+impl<P, NB, SB, Hooks, AcpiContext> MainstagePhases
+    for IntelMainstage<P, NB, SB, Hooks, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
-    B: IntelMainstageBoard<P, NB, SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
+    Hooks: IntelEarlyBoardHooks<P>,
+    IntelMainstage<P, NB, SB, Hooks, AcpiContext>: MainstageAcpi,
 {
-    intel_pre_bus_scan::<P, _, _, _>(
-        B::platform_node(),
-        B::console_node(),
-        &mut mainstage.northbridge,
-        &mut mainstage.southbridge,
-        &mut mainstage.hooks,
-        &mut mainstage.console,
-        &mut mainstage.ctx,
-    )
-}
-
-#[cfg(feature = "stage")]
-fn init_intel_mainstage_devices<P, B, NB, SB, AcpiContext>(
-    mainstage: &mut IntelMainstage<P, B, NB, SB, AcpiContext>,
-) -> Result<(), ServiceError>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    B: IntelMainstageBoard<P, NB, SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-{
-    intel_init_devices::<P, _, _>(&mut mainstage.southbridge, &mut mainstage.hooks, || {
-        #[cfg(feature = "mp")]
-        B::init_mp()?;
-        Ok(())
-    })
-}
-
-#[cfg(all(feature = "stage", feature = "acpi"))]
-impl<P, B, NB, SB, AcpiContext> MainstagePhases for IntelMainstage<P, B, NB, SB, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB, AcpiContext = AcpiContext>,
-    B: IntelMainstageBoard<P, NB, SB>,
-    NB: IntelNorthbridgeDriver
-        + fstart_acpi::device::AcpiDevice<Config = <NB as IntelNorthbridgeDriver>::Config>,
-    SB: IntelSouthbridgeDriver
-        + fstart_acpi::device::AcpiDevice<Config = <SB as IntelSouthbridgeDriver>::Config>
-        + fstart_acpi::platform::X86PlatformProvider,
-    B::Hooks: fstart_acpi::device::AcpiDevice<Config = AcpiContext>,
-    AcpiContext: Default,
-{
-    fn bind() -> Result<Self, ServiceError> {
-        bind_intel_mainstage::<P, B, NB, SB, AcpiContext>()
-    }
-
     fn pre_bus_scan(&mut self) -> Result<(), ServiceError> {
-        pre_bus_scan_intel_mainstage::<P, B, NB, SB, AcpiContext>(self)
+        intel_pre_bus_scan::<P, _, _, _>(
+            self.platform_node,
+            self.console_node,
+            &mut self.northbridge,
+            &mut self.southbridge,
+            &mut self.hooks,
+            &mut self.console,
+            &mut self.ctx,
+        )
     }
 
     fn bus_scan(&mut self) -> Result<(), ServiceError> {
@@ -355,49 +298,17 @@ where
     }
 
     fn init_devices(&mut self) -> Result<(), ServiceError> {
-        init_intel_mainstage_devices::<P, B, NB, SB, AcpiContext>(self)
+        intel_init_devices::<P, _, _>(&mut self.southbridge, &mut self.hooks, || {
+            #[cfg(feature = "mp")]
+            (self.init_mp)()?;
+            Ok(())
+        })
     }
 
     fn emit_tables(&mut self) -> Result<(), ServiceError> {
-        let rsdp = self.emit_acpi();
-        self.ctx.set_acpi_rsdp(Some(rsdp));
+        self.emit_acpi()?;
         #[cfg(feature = "smbios")]
-        crate::tables::prepare_smbios(self.ctx.e820_state_mut(), B::smbios_desc());
-        Ok(())
-    }
-
-    fn finalize(&mut self) -> Result<(), ServiceError> {
-        intel_finalize::<P, _, _>(&mut self.southbridge, &mut self.hooks)
-    }
-}
-
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
-impl<P, B, NB, SB, AcpiContext> MainstagePhases for IntelMainstage<P, B, NB, SB, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    B: IntelMainstageBoard<P, NB, SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-{
-    fn bind() -> Result<Self, ServiceError> {
-        bind_intel_mainstage::<P, B, NB, SB, AcpiContext>()
-    }
-
-    fn pre_bus_scan(&mut self) -> Result<(), ServiceError> {
-        pre_bus_scan_intel_mainstage::<P, B, NB, SB, AcpiContext>(self)
-    }
-
-    fn bus_scan(&mut self) -> Result<(), ServiceError> {
-        intel_bus_scan(&mut self.northbridge)
-    }
-
-    fn init_devices(&mut self) -> Result<(), ServiceError> {
-        init_intel_mainstage_devices::<P, B, NB, SB, AcpiContext>(self)
-    }
-
-    fn emit_tables(&mut self) -> Result<(), ServiceError> {
-        #[cfg(feature = "smbios")]
-        crate::tables::prepare_smbios(self.ctx.e820_state_mut(), B::smbios_desc());
+        crate::tables::prepare_smbios(self.ctx.e820_state_mut(), self.smbios_desc);
         Ok(())
     }
 
@@ -407,14 +318,14 @@ where
 }
 
 #[cfg(feature = "stage")]
-impl<P, B, NB, SB, AcpiContext> fstart_stage::payload::X86UefiPayloadContext
-    for IntelMainstage<P, B, NB, SB, AcpiContext>
+impl<P, NB, SB, Hooks, AcpiContext> fstart_stage::payload::X86UefiPayloadContext
+    for IntelMainstage<P, NB, SB, Hooks, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
-    B: IntelMainstageBoard<P, NB, SB>,
     NB: IntelNorthbridgeDriver,
     NB::Config: IntelEcamConfig,
     SB: IntelSouthbridgeDriver,
+    Hooks: IntelEarlyBoardHooks<P>,
 {
     fn console(&self) -> Option<&dyn fstart_core::services::Console> {
         Some(&self.console)
@@ -763,7 +674,6 @@ impl MainstageCtx {
 /// Phase-oriented contract for DRAM-backed mainstage flows.
 #[cfg(feature = "stage")]
 pub trait MainstagePhases: Sized {
-    fn bind() -> Result<Self, ServiceError>;
     fn pre_bus_scan(&mut self) -> Result<(), ServiceError>;
     fn bus_scan(&mut self) -> Result<(), ServiceError>;
     fn init_devices(&mut self) -> Result<(), ServiceError>;

@@ -304,6 +304,15 @@ bases). If changing the value is a meaningful board choice, it is board config
 parts, payload policy). Platform defaults are normal Rust constructors a board
 starts from and overrides, never hidden global state.
 
+Microcode is the canonical example: which microcode updates a chipset family
+needs follows from the CPUs that family can carry, so the file list is a
+platform fact — every Pineview board wants the same `06-1c-*` updates.
+Boards do not restate it per port. Because file paths are host data, the
+platform's microcode list is host-side platform code (behind
+`feature = "host"` or consumed only by `fbuild`), never compiled into
+runtime stage modules and never copied into board `host.rs`. A board
+overrides the platform list only when its CPU population genuinely differs.
+
 ### Typed resources
 
 Config fields use typed newtypes so misuse fails at compile time:

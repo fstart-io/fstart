@@ -49,10 +49,6 @@ impl Gm965Ich8Board for Board {
         crate::UART0_NODE
     }
 
-    fn halt() -> ! {
-        fstart_platform_x86_64::halt()
-    }
-
     #[cfg(feature = "smbios")]
     fn smbios_desc() -> &'static fstart_platform_intel::tables::SmbiosDesc<'static> {
         &crate::X61_SMBIOS_DESC

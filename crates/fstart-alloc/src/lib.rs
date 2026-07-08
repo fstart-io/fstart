@@ -19,6 +19,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 // statics in special stages). We declare `_FSTART_HEAP` as `u8` because only
 // its *address* is used — the type mismatch is intentional and harmless (same
 // pattern as C linker symbols declared as `extern char`).
+#[cfg(not(test))]
 extern "C" {
     /// Heap backing store (stage-provided, 16-byte aligned).
     static _FSTART_HEAP: u8;
@@ -26,20 +27,44 @@ extern "C" {
     static _FSTART_HEAP_SIZE: usize;
 }
 
+#[cfg(test)]
+#[repr(align(4096))]
+struct TestHeap(core::cell::UnsafeCell<[u8; 16 * 1024 * 1024]>);
+
+#[cfg(test)]
+unsafe impl Sync for TestHeap {}
+
+#[cfg(test)]
+static TEST_HEAP: TestHeap = TestHeap(core::cell::UnsafeCell::new([0; 16 * 1024 * 1024]));
+
 /// Get the heap base address from the stage-provided symbol.
 #[inline]
 pub fn heap_start() -> usize {
-    // SAFETY: `_FSTART_HEAP` is defined by the stage link; we only use its
-    // address.
-    unsafe { &_FSTART_HEAP as *const u8 as usize }
+    #[cfg(test)]
+    {
+        TEST_HEAP.0.get() as *mut u8 as usize
+    }
+    #[cfg(not(test))]
+    {
+        // SAFETY: `_FSTART_HEAP` is defined by the stage link; we only use its
+        // address.
+        unsafe { &_FSTART_HEAP as *const u8 as usize }
+    }
 }
 
 /// Get the heap size from the stage-provided symbol.
 #[inline]
 pub fn heap_size() -> usize {
-    // SAFETY: `_FSTART_HEAP_SIZE` is pointer-sized data defined by the
-    // stage link.
-    unsafe { _FSTART_HEAP_SIZE }
+    #[cfg(test)]
+    {
+        16 * 1024 * 1024
+    }
+    #[cfg(not(test))]
+    {
+        // SAFETY: `_FSTART_HEAP_SIZE` is pointer-sized data defined by the
+        // stage link.
+        unsafe { _FSTART_HEAP_SIZE }
+    }
 }
 
 /// Monotonically advancing allocation cursor (offset from heap start).
@@ -80,7 +105,9 @@ unsafe impl GlobalAlloc for BumpAllocator {
         }
     }
 
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         // Bump allocator never frees.
+        // SAFETY: `GlobalAlloc::dealloc` requires `ptr` to be non-null and allocated by this allocator.
+        let _ = unsafe { core::ptr::NonNull::new_unchecked(ptr) };
     }
 }
