@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use object::{Object, ObjectSection};
@@ -223,7 +223,6 @@ pub fn handler_from_archive(
 ) -> Result<SmmHandlerImage, BuildError> {
     std::fs::create_dir_all(work_dir)?;
     let elf = work_dir.join("smm_handler.elf");
-    let bin = work_dir.join("smm_handler.bin");
 
     run_tool(
         Command::new("ld")
@@ -236,12 +235,95 @@ pub fn handler_from_archive(
             .arg(archive)
             .arg("--no-whole-archive"),
     )?;
-    write_text_section(&elf, &bin)?;
+    handler_from_elf(&elf, work_dir)
+}
+
+pub fn handler_from_elf(elf: &Path, work_dir: &Path) -> Result<SmmHandlerImage, BuildError> {
+    std::fs::create_dir_all(work_dir)?;
+    let bin = work_dir.join("smm_handler.bin");
+    write_text_section(elf, &bin)?;
 
     Ok(SmmHandlerImage {
         code: std::fs::read(&bin)?,
-        entry_offset: find_symbol_offset(&elf, "fstart_smm_handler")?,
+        entry_offset: find_symbol_offset(elf, "fstart_smm_handler")?,
     })
+}
+
+pub fn handler_from_rlibs(
+    deps_dir: &Path,
+    work_dir: &Path,
+) -> Result<SmmHandlerImage, BuildError> {
+    std::fs::create_dir_all(work_dir)?;
+    let elf = work_dir.join("smm_handler.elf");
+    let mut inputs = rlibs_in(deps_dir)?;
+    inputs.extend(sysroot_rlibs()?);
+    if inputs.is_empty() {
+        return Err(BuildError::Tool(format!(
+            "no rlibs found in {}",
+            deps_dir.display()
+        )));
+    }
+
+    let mut cmd = Command::new("ld");
+    cmd.arg("-nostdlib")
+        .arg("-Ttext=0")
+        .arg("--oformat=elf64-x86-64")
+        .arg("--unresolved-symbols=ignore-all")
+        .arg("-o")
+        .arg(&elf)
+        .arg("-u")
+        .arg("fstart_smm_handler")
+        .arg("--start-group");
+    for input in &inputs {
+        cmd.arg(input);
+    }
+    cmd.arg("--end-group");
+    run_tool(&mut cmd)?;
+    handler_from_elf(&elf, work_dir)
+}
+
+fn rlibs_in(dir: &Path) -> Result<Vec<PathBuf>, BuildError> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "rlib") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn sysroot_rlibs() -> Result<Vec<PathBuf>, BuildError> {
+    let output = Command::new("rustc")
+        .arg("--print")
+        .arg("sysroot")
+        .output()?;
+    if !output.status.success() {
+        return Err(BuildError::Tool(format!(
+            "rustc --print sysroot failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    let sysroot = String::from_utf8_lossy(&output.stdout);
+    let lib_dir = Path::new(sysroot.trim())
+        .join("lib/rustlib/x86_64-unknown-none/lib");
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(&lib_dir)? {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if path.extension().is_some_and(|ext| ext == "rlib")
+            && (name.starts_with("libcore-")
+                || name.starts_with("liballoc-")
+                || name.starts_with("libcompiler_builtins-"))
+        {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 fn write_text_section(elf: &Path, bin: &Path) -> Result<(), BuildError> {

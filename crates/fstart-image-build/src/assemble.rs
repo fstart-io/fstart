@@ -128,16 +128,16 @@ pub fn assemble(
     }
 
     if let Some(ref microcode) = config.microcode {
-        assemble_microcode(microcode, &board_dir, &mut ro_files)?;
+        assemble_microcode(microcode, board_dir, &mut ro_files)?;
     }
 
     if let Some(ref payload) = config.payload {
         if payload.kind == fstart_core::PayloadKind::FitImage {
-            assemble_fit_payload(payload, &board_dir, fit_path.or(kernel_path), &mut ro_files)?;
+            assemble_fit_payload(payload, board_dir, fit_path.or(kernel_path), &mut ro_files)?;
         } else {
             assemble_linux_payload(
                 payload,
-                &board_dir,
+                board_dir,
                 kernel_path,
                 firmware_path,
                 &mut ro_files,
@@ -177,11 +177,11 @@ pub fn assemble(
         }
     }
 
-    validate_flash_layout(&config, &board_dir)?;
+    validate_flash_layout(config, board_dir)?;
 
     let mut image_config = FfsImageConfig {
         keys: vec![verification_key],
-        regions: ffs_input_regions(&config, ro_files)?,
+        regions: ffs_input_regions(config, ro_files)?,
     };
 
     let compressed_anchor_slots = compressed_anchor_slots(&image_config.regions)?;
@@ -261,8 +261,8 @@ pub fn assemble(
     };
     if config.full_flash_image || flash_layout_files {
         let full_flash = FullFlashInput {
-            config: &config,
-            board_dir: &board_dir,
+            config,
+            board_dir,
             bootblock_elf: &stage_binaries[0].path,
             bootblock_bin: &stage_binaries[0].run_path,
             ffs_data: &image_bytes,

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 struct SmmStageBuild {
-    archive_path: PathBuf,
+    deps_dir: PathBuf,
     link_dir: PathBuf,
 }
 
@@ -115,8 +115,8 @@ fn build_smm_artifacts(
         coreboot_header: smm.coreboot.emit_header,
     };
     let smm_stage = build_board_smm_stage(workspace_root, board_manifest)?;
-    let handler = fstart_image_build::smm_image::handler_from_archive(
-        &smm_stage.archive_path,
+    let handler = fstart_image_build::smm_image::handler_from_rlibs(
+        &smm_stage.deps_dir,
         &smm_stage.link_dir,
     )
     .map_err(|e| format!("failed to link SMM handler: {e}"))?;
@@ -158,7 +158,7 @@ fn build_board_smm_stage(
 
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root)
-        .arg("rustc")
+        .arg("build")
         .arg("--manifest-path")
         .arg(selected_workspace.join("Cargo.toml"))
         .arg("--package")
@@ -171,16 +171,11 @@ fn build_board_smm_stage(
         .arg("--no-default-features")
         .arg("--features")
         .arg("smm")
-        .arg("--release")
-        .arg("--")
-        .arg("-C")
-        .arg("panic=abort")
-        .arg("-C")
-        .arg("opt-level=s")
-        .arg("-C")
-        .arg("relocation-model=pic")
-        .arg("-C")
-        .arg("no-redzone=yes");
+        .arg("--release");
+    cmd.env(
+        "RUSTFLAGS",
+        "-C panic=abort -C opt-level=s -C relocation-model=pic -C no-redzone=yes -C linker-plugin-lto=no -C embed-bitcode=no",
+    );
 
     eprintln!(
         "[fstart] building board SMM stage: {}...",
@@ -194,10 +189,10 @@ fn build_board_smm_stage(
     }
 
     Ok(SmmStageBuild {
-        archive_path: target_dir
+        deps_dir: target_dir
             .join("x86_64-unknown-none")
             .join("release")
-            .join(format!("lib{}.a", board_manifest.package.replace('-', "_"))),
+            .join("deps"),
         link_dir: workspace_root
             .join("target")
             .join("smm")
