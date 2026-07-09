@@ -447,12 +447,12 @@ mod stage {
             #[cfg(fstart_stage_env = "car")]
             {
                 let Ok(mut hooks) = B::hooks() else {
-                    fstart_platform_x86_64::halt();
+                    fstart_arch::x86_64::halt();
                 };
                 if Self::run_early::<B>(&mut hooks).is_err() {
-                    fstart_platform_x86_64::halt();
+                    fstart_arch::x86_64::halt();
                 }
-                fstart_platform_x86_64::halt()
+                fstart_arch::x86_64::halt()
             }
 
             #[cfg(fstart_stage_env = "ram")]
@@ -465,15 +465,15 @@ mod stage {
                 match env {
                     StageEnvironment::Car => {
                         let Ok(mut hooks) = B::hooks() else {
-                            fstart_platform_x86_64::halt();
+                            fstart_arch::x86_64::halt();
                         };
                         if Self::run_early::<B>(&mut hooks).is_err() {
-                            fstart_platform_x86_64::halt();
+                            fstart_arch::x86_64::halt();
                         }
-                        fstart_platform_x86_64::halt()
+                        fstart_arch::x86_64::halt()
                     }
                     StageEnvironment::Ram => run_gm965_ich8_mainstage::<B>(),
-                    StageEnvironment::Monolithic => fstart_platform_x86_64::halt(),
+                    StageEnvironment::Monolithic => fstart_arch::x86_64::halt(),
                 }
             }
         }
@@ -560,7 +560,7 @@ mod stage {
         B: Gm965Ich8Board,
     {
         let Ok(hooks) = B::hooks() else {
-            fstart_platform_x86_64::halt();
+            fstart_arch::x86_64::halt();
         };
         let Ok(mainstage) = crate::bind_intel_mainstage::<
             Gm965Ich8,
@@ -583,11 +583,11 @@ mod stage {
             },
             hooks,
         ) else {
-            fstart_platform_x86_64::halt();
+            fstart_arch::x86_64::halt();
         };
         crate::run_intel_mainstage::<_, B::Payload>(
             "gm965/ich8",
-            fstart_platform_x86_64::halt,
+            fstart_arch::x86_64::halt,
             mainstage,
         )
     }

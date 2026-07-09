@@ -10,12 +10,14 @@ mod core2_aml;
 pub mod ck505;
 pub mod gm965;
 pub mod gpio_ich;
+pub mod hda;
 pub mod ich7;
 pub mod ich8;
 pub mod pineview;
 pub use fstart_arch::cpu_intel::microcode;
 pub mod pmio_ich;
 pub mod smbus;
+pub mod spd;
 
 /// Intel northbridge contract consumed by Intel platform flows.
 pub trait IntelNorthbridgeDriver:

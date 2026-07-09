@@ -26,7 +26,6 @@ crabefi = ["fstart-stage?/crabefi"]
 stage = [
   "runtime",
   "dep:fstart-driver-uart",
-  "dep:fstart-platform-x86_64",
   "dep:fstart-stage",
   "fstart-platform-intel/stage",
 ]
@@ -48,7 +47,6 @@ nsc-pc87382 = []
 nsc-pc87392 = []
 i2c-ck505 = []
 acpi = [
-  "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
   "fstart-stage?/acpi",
   "fstart-platform-intel/acpi",
@@ -59,25 +57,20 @@ acpi = [
 mp = ["stage", "fstart-platform-intel/mp"]
 smbios = ["fstart-platform-intel/smbios"]
 smm = [
-  "dep:fstart-smm-runtime",
-  "dep:fstart-smm-stage",
+  "dep:fstart-smm",
+  "fstart-smm/stage-bin",
 ]
 
 [dependencies]
 fstart-core = { path = "../../crates/fstart-core", features = ["pci"] }
 fstart-platform-intel = { path = "../../crates/fstart-platform-intel" }
-fstart-platform-x86_64 = { path = "../../crates/fstart-platform-x86_64", optional = true }
-fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"], optional = true }
+fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"] }
 fstart-acpi-macros = { path = "../../crates/fstart-acpi-macros", optional = true }
 fstart-arch = { path = "../../crates/fstart-arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../crates/fstart-driver-intel", features = ["ffs-vbt"] }
 fstart-driver-superio = { path = "../../crates/fstart-driver-superio" }
 fstart-driver-uart = { path = "../../crates/fstart-driver-uart", features = ["pio"], optional = true }
-fstart-hda = { path = "../../crates/fstart-hda" }
-
-fstart-smbios = { path = "../../crates/fstart-smbios" }
-fstart-smm-runtime = { path = "../../crates/fstart-smm-runtime", optional = true }
-fstart-smm-stage = { path = "../../crates/fstart-smm-stage", optional = true }
+fstart-smm = { path = "../../crates/fstart-smm", optional = true }
 fstart-stage = { path = "../../crates/fstart-stage", optional = true }
 fbuild = { path = "../../tools/fbuild", optional = true }
 

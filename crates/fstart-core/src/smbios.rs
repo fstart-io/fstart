@@ -5,7 +5,7 @@
 //! from the `smbios` field in the board metadata and consumed by fixed platform
 //! table-emission flows.
 //!
-//! The actual table generation lives in the `fstart-smbios` crate.
+//! The actual table generation lives in `fstart-acpi::smbios`.
 
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};

@@ -10,7 +10,7 @@
 
 use core::arch::{asm, global_asm};
 
-use fstart_arch::x86::{msr, mtrr};
+use crate::x86::{msr, mtrr};
 
 global_asm!(
     ".text",
@@ -263,7 +263,7 @@ extern "C" fn stage_load_mmio_trampoline(
     // This x86 post-CAR loader does not serialize a StageHandoff payload, so
     // enter the RAM-stage handoff-aware entry point with an explicit null
     // handoff rather than leaking a scratch register value into `%rdi`.
-    crate::jump_to_with_handoff(entry, 0)
+    super::jump_to_with_handoff(entry, 0)
 }
 
 #[cfg(feature = "postcar-stage-load")]

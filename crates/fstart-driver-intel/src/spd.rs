@@ -4,14 +4,12 @@
 //! [`DimmInfo`] structs.  Per-DDR-generation decoding lives in
 //! submodules (`ddr2`, future `ddr3`, `ddr4`, `ddr5`).
 
-#![no_std]
-
 use fstart_core::services::{ServiceError, SmBus};
 
 pub mod ddr2;
 
 // Re-export DDR2 for backward compatibility — existing callers use
-// `fstart_spd::decode_dimm`, `fstart_spd::SPD_NUM_ROWS`, etc.
+// `crate::spd::decode_dimm`, `crate::spd::SPD_NUM_ROWS`, etc.
 pub use ddr2::*;
 
 // ===================================================================

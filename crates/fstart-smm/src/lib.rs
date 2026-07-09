@@ -8,11 +8,15 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod handler;
 pub mod header;
 pub mod installer;
 pub mod layout;
 pub mod runtime;
+#[cfg(feature = "stage-bin")]
+pub mod stage;
 
+pub use handler::*;
 pub use header::{CorebootOffsets, EntryDescriptor, HeaderError, SmmImageHeader};
 pub use installer::{
     install_default_relocation_callback_stub, install_default_relocation_handler,
@@ -26,3 +30,5 @@ pub use runtime::{
     SMM_PLATFORM_DATA_ICH_PM_BASE, SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH,
     SMM_PLATFORM_NONE,
 };
+#[cfg(feature = "stage-bin")]
+pub use stage::{handle, SmmStageBoard};

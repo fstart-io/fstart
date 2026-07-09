@@ -8,10 +8,6 @@
 //! This crate references them via `extern "C"` at link time.
 //! Deallocation is a no-op — memory is never reclaimed.
 
-#![no_std]
-
-extern crate alloc;
-
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
 

@@ -1190,7 +1190,7 @@ fn assemble_fit_payload(
         fit_data.len(),
     );
 
-    let fit = fstart_fit::FitImage::parse(&fit_data)
+    let fit = fstart_boot::fit::FitImage::parse(&fit_data)
         .map_err(|e| format!("failed to parse FIT image: {e:?}"))?;
 
     if let Some(desc) = fit.description() {

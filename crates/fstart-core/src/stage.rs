@@ -32,7 +32,7 @@ pub struct MonolithicConfig {
     /// Required when the stage links code that needs dynamic
     /// allocation. The build emits a sized static
     /// (`_FSTART_HEAP`) and a size constant (`_FSTART_HEAP_SIZE`) that
-    /// `fstart-alloc` references via `extern "C"` at link time.
+    /// the stage allocator references via `extern "C"` at link time.
     #[serde(default)]
     pub heap_size: Option<u32>,
     /// Explicit address for data/BSS/stack in RAM (XIP builds only).

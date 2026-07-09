@@ -8,5 +8,7 @@ license.workspace = true
 default = []
 std = []
 coreboot = []
+stage-bin = []
 
 [dependencies]
+fstart-core = { workspace = true }

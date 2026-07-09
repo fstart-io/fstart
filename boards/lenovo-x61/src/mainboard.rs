@@ -362,8 +362,8 @@ const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
     None => "05/08/2026",
 };
 
-static X61_SMBIOS_PROCESSORS: [fstart_smbios::ProcessorDesc<'static>; 1] =
-    [fstart_smbios::ProcessorDesc {
+static X61_SMBIOS_PROCESSORS: [fstart_acpi::smbios::ProcessorDesc<'static>; 1] =
+    [fstart_acpi::smbios::ProcessorDesc {
         socket: "Socket M",
         manufacturer: "Intel",
         family: 0x28,
@@ -373,14 +373,14 @@ static X61_SMBIOS_PROCESSORS: [fstart_smbios::ProcessorDesc<'static>; 1] =
         caches: &[],
     }];
 
-static X61_SMBIOS_MEMORY_DEVICES: [fstart_smbios::MemoryDeviceDesc<'static>; 2] = [
-    fstart_smbios::MemoryDeviceDesc {
+static X61_SMBIOS_MEMORY_DEVICES: [fstart_acpi::smbios::MemoryDeviceDesc<'static>; 2] = [
+    fstart_acpi::smbios::MemoryDeviceDesc {
         locator: "DIMM0",
         size_mb: 0,
         speed_mhz: 0,
         memory_type: 0x02,
     },
-    fstart_smbios::MemoryDeviceDesc {
+    fstart_acpi::smbios::MemoryDeviceDesc {
         locator: "DIMM1",
         size_mb: 0,
         speed_mhz: 0,
@@ -388,7 +388,7 @@ static X61_SMBIOS_MEMORY_DEVICES: [fstart_smbios::MemoryDeviceDesc<'static>; 2] 
     },
 ];
 
-pub static X61_SMBIOS_DESC: fstart_smbios::SmbiosDesc<'static> = fstart_smbios::SmbiosDesc {
+pub static X61_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> = fstart_acpi::smbios::SmbiosDesc {
     bios_vendor: "fstart",
     bios_version: "0.1.0",
     bios_release_date: BIOS_RELEASE_DATE,

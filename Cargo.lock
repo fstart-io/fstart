@@ -486,14 +486,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-alloc"
-version = "0.1.0"
-
-[[package]]
 name = "fstart-arch"
 version = "0.1.0"
 dependencies = [
  "acpi_tables",
+ "fstart-core",
+ "fstart-ffs",
  "fstart-log",
  "fstart-smm",
  "object",
@@ -513,13 +511,21 @@ dependencies = [
  "fstart-driver-intel",
  "fstart-driver-superio",
  "fstart-driver-uart",
- "fstart-hda",
  "fstart-platform-intel",
- "fstart-platform-x86_64",
- "fstart-smbios",
- "fstart-smm-runtime",
- "fstart-smm-stage",
+ "fstart-smm",
  "fstart-stage",
+]
+
+[[package]]
+name = "fstart-boot"
+version = "0.1.0"
+dependencies = [
+ "crabefi",
+ "dtoolkit",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-crypto",
+ "heapless",
 ]
 
 [[package]]
@@ -532,15 +538,6 @@ dependencies = [
  "serde",
  "tock-registers",
  "x86",
-]
-
-[[package]]
-name = "fstart-crabefi"
-version = "0.1.0"
-dependencies = [
- "crabefi",
- "fstart-arch",
- "fstart-core",
 ]
 
 [[package]]
@@ -566,12 +563,9 @@ dependencies = [
  "fstart-crypto",
  "fstart-driver-superio",
  "fstart-ffs",
- "fstart-hda",
  "fstart-log",
  "fstart-pci",
  "fstart-smm",
- "fstart-smm-runtime",
- "fstart-spd",
  "heapless",
  "serde",
  "tock-registers",
@@ -614,34 +608,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-fit"
-version = "0.1.0"
-dependencies = [
- "dtoolkit",
- "fstart-core",
- "fstart-crypto",
- "heapless",
-]
-
-[[package]]
-name = "fstart-hda"
-version = "0.1.0"
-dependencies = [
- "fstart-core",
- "fstart-log",
- "serde",
- "ufmt",
-]
-
-[[package]]
 name = "fstart-image-build"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "fstart-boot",
  "fstart-core",
  "fstart-crypto",
  "fstart-ffs",
- "fstart-fit",
  "fstart-smm",
  "object",
  "rand_core",
@@ -676,8 +650,6 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-log",
  "fstart-pci",
- "fstart-platform-x86_64",
- "fstart-smbios",
  "fstart-stage",
  "heapless",
  "konst",
@@ -686,69 +658,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-platform-x86_64"
-version = "0.1.0"
-dependencies = [
- "fstart-arch",
- "fstart-core",
- "fstart-ffs",
- "fstart-log",
- "ufmt",
-]
-
-[[package]]
-name = "fstart-runtime"
-version = "0.1.0"
-dependencies = [
- "fstart-log",
-]
-
-[[package]]
-name = "fstart-smbios"
-version = "0.1.0"
-
-[[package]]
 name = "fstart-smm"
 version = "0.1.0"
-
-[[package]]
-name = "fstart-smm-runtime"
-version = "0.1.0"
 dependencies = [
  "fstart-core",
- "fstart-smm",
-]
-
-[[package]]
-name = "fstart-smm-stage"
-version = "0.1.0"
-dependencies = [
- "fstart-alloc",
- "fstart-smm-runtime",
-]
-
-[[package]]
-name = "fstart-spd"
-version = "0.1.0"
-dependencies = [
- "fstart-core",
- "fstart-log",
 ]
 
 [[package]]
 name = "fstart-stage"
 version = "0.1.0"
 dependencies = [
- "fstart-alloc",
  "fstart-arch",
+ "fstart-boot",
  "fstart-core",
- "fstart-crabefi",
  "fstart-crypto",
  "fstart-ffs",
- "fstart-fit",
  "fstart-log",
- "fstart-platform-x86_64",
- "fstart-runtime",
  "heapless",
  "postcard",
  "ufmt",

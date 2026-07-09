@@ -11,14 +11,14 @@ host = []
 stage = [
   "dep:fstart-driver-uart",
   "dep:fstart-log",
-  "dep:fstart-platform-x86_64",
   "dep:fstart-stage",
+  "dep:fstart-arch",
   "dep:ufmt",
   "fstart-core/pci",
 ]
 acpi = ["stage", "dep:fstart-acpi", "dep:fstart-arch", "fstart-driver-intel/acpi"]
 mp = ["stage", "dep:fstart-arch"]
-smbios = ["stage", "dep:fstart-smbios", "dep:fstart-arch"]
+smbios = ["stage", "dep:fstart-acpi", "dep:fstart-arch"]
 
 [dependencies]
 fstart-core = { workspace = true }
@@ -27,9 +27,7 @@ fstart-driver-intel = { workspace = true, features = ["ffs-vbt"] }
 fstart-driver-uart = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
-fstart-smbios = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }
-fstart-platform-x86_64 = { workspace = true, optional = true }
 fstart-stage = { workspace = true, optional = true }
 heapless = { workspace = true }
 konst = { workspace = true }

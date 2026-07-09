@@ -21,14 +21,12 @@
 //! # Usage
 //!
 //! ```ignore
-//! let total = fstart_smbios::assemble_and_write(0x10000090000, |w| {
+//! let total = fstart_acpi::smbios::assemble_and_write(0x10000090000, |w| {
 //!     w.add_bios_info("fstart", "0.1.0", "03/10/2026");
 //!     w.add_system_info("QEMU", "SBSA Reference", "1.0", None);
 //!     w.add_end_of_table();
 //! });
 //! ```
-
-#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 /// SMBIOS 3.0 64-bit entry point signature.
 const SM3_MAGIC: [u8; 5] = *b"_SM3_";
@@ -876,6 +874,7 @@ pub fn assemble_and_write(table_addr: u64, f: impl FnOnce(&mut SmbiosWriter)) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{vec, vec::Vec};
 
     /// Allocate a buffer on the heap and run assemble_and_write into it.
     fn write_to_buffer(f: impl FnOnce(&mut SmbiosWriter)) -> (Vec<u8>, usize) {

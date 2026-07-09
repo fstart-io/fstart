@@ -7,17 +7,12 @@
 #![no_std]
 
 #[cfg(any(feature = "acpi", feature = "ffs", feature = "crabefi"))]
-extern crate fstart_alloc;
+mod alloc;
 
-extern crate fstart_runtime;
-
-// Link the platform crate so its entry-point/global asm reaches the board-owned
-// stage_bin! binary.
-#[cfg(feature = "x86_64")]
-extern crate fstart_platform_x86_64;
+mod runtime;
 
 #[cfg(feature = "crabefi")]
-pub extern crate fstart_crabefi as crabefi;
+pub use fstart_boot::crabefi;
 
 pub mod fixed_helpers;
 pub mod payload;

@@ -6,22 +6,21 @@ license.workspace = true
 [features]
 default = []
 # Platform selection (exactly one must be enabled)
-x86_64 = ["dep:fstart-platform-x86_64"]
+x86_64 = ["fstart-arch/x86_64"]
 
 # x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
-x86-1g-pages = ["fstart-platform-x86_64?/x86-1g-pages"]
+x86-1g-pages = ["fstart-arch/x86-1g-pages"]
 # x86_64: build page tables at runtime in writable RAM. Enabled only for
 # boards with page_table_addr (QEMU); real XIP boards use ROM tables.
-x86-writable-page-tables = ["fstart-platform-x86_64?/x86-writable-page-tables"]
+x86-writable-page-tables = ["fstart-arch/x86-writable-page-tables"]
 # x86_64: emit static ROM page tables for first-stage real XIP boards.
-x86-static-page-tables = ["fstart-platform-x86_64?/x86-static-page-tables"]
+x86-static-page-tables = ["fstart-arch/x86-static-page-tables"]
 # FFS / crypto features
 ffs = [
-  "dep:fstart-alloc",
   "dep:fstart-crypto",
   "dep:fstart-ffs",
-  "fstart-platform-x86_64?/early-ffs-anchor",
-  "fstart-platform-x86_64?/postcar-stage-load",
+  "fstart-arch/early-ffs-anchor",
+  "fstart-arch/postcar-stage-load",
 ]
 ed25519 = ["ffs", "fstart-ffs/ed25519"]
 sha2-digest = [
@@ -39,15 +38,15 @@ lz4 = ["ffs"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
 fdt = []
 # FIT image parsing at runtime
-fit = ["ffs", "dep:fstart-fit"]
+fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
 # Inter-stage handoff serialization (postcard, for multi-stage boards)
 handoff = ["dep:postcard"]
 # ACPI table generation lives in the selected board/platform crate; fstart-stage
 # only provides the allocator needed by ACPI-capable flows.
-acpi = ["dep:fstart-alloc"]
+acpi = []
 # CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
-# Requires alloc (fstart-alloc provides #[global_allocator]).
-crabefi = ["dep:fstart-crabefi", "dep:fstart-alloc"]
+# Requires the local stage allocator.
+crabefi = ["dep:fstart-boot", "fstart-boot/crabefi"]
 
 [dependencies]
 # Core firmware infrastructure
@@ -55,20 +54,12 @@ fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
-fstart-runtime = { workspace = true }
 heapless = { workspace = true }
-
-# Platform crates (exactly one enabled via feature)
-fstart-platform-x86_64 = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
-fstart-fit = { workspace = true, optional = true }
+fstart-boot = { workspace = true, optional = true }
 postcard = { workspace = true, optional = true }
 
-# Allocator (optional — provides #[global_allocator])
-fstart-alloc = { workspace = true, optional = true }
-
-# CrabEFI adapter (optional, behind crabefi feature)
-fstart-crabefi = { workspace = true, optional = true }
+# CrabEFI adapter lives in fstart-boot behind the crabefi feature.

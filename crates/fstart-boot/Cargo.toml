@@ -1,0 +1,27 @@
+[package]
+name = "fstart-boot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+fit = ["dep:dtoolkit", "dep:heapless", "dep:fstart-crypto"]
+crabefi = ["dep:crabefi"]
+std = ["fit", "fstart-crypto?/all"]
+sha2-digest = ["fit", "fstart-crypto?/sha2-digest"]
+sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-crypto = { workspace = true, optional = true }
+dtoolkit = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }
+crabefi = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "658ea1ef7e8f4195f5414ad1bb56b82fd22ff057", default-features = false, optional = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+fstart-arch = { workspace = true, features = ["x86_64"] }
+
+[dev-dependencies]
+fstart-core = { workspace = true, features = ["std"] }
+dtoolkit = { workspace = true, features = ["write"] }

@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::pmio_ich::{self as pmio, PmIo};
-use fstart_smm_runtime::{
+use fstart_smm::{
     NoBoardSmmHandler, SmmBoardHandler, SmmContext, SmmHandler, SMM_RUNTIME_FLAG_FINALIZED,
 };
 
@@ -17,8 +17,7 @@ pub struct Ich8SmmHandler<B = NoBoardSmmHandler>(PhantomData<B>);
 
 impl<B: SmmBoardHandler> SmmHandler for Ich8SmmHandler<B> {
     unsafe fn handle(ctx: &mut SmmContext<'_>) {
-        let pm_base =
-            ctx.params.platform_data[fstart_smm_runtime::SMM_PLATFORM_DATA_ICH_PM_BASE] as u16;
+        let pm_base = ctx.params.platform_data[fstart_smm::SMM_PLATFORM_DATA_ICH_PM_BASE] as u16;
         if pm_base == 0 {
             return;
         }

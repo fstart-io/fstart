@@ -1,6 +1,6 @@
 //! Shared Intel/x86 ACPI and SMBIOS table handoff helpers.
 //!
-//! Direct helpers over `fstart-acpi`/`fstart-smbios`: heap/e820 buffer
+//! Direct helpers over `fstart-acpi`/`fstart-acpi::smbios`: heap/e820 buffer
 //! allocation, table assembly, RSDP EBDA install, and the acpixtract
 //! hex dump. Chipset flows call these in `emit_tables`; drivers and the
 //! mainboard contribute fragments through the shared `AcpiDevice`
@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use fstart_core::services::memory_detect::E820Kind;
 
 #[cfg(feature = "smbios")]
-pub use fstart_smbios::SmbiosDesc;
+pub use fstart_acpi::smbios::SmbiosDesc;
 
 #[cfg(feature = "acpi")]
 const RSDP_LEN: usize = 36;
@@ -297,7 +297,7 @@ struct RuntimeCacheDesc {
 }
 
 #[cfg(feature = "smbios")]
-fn add_runtime_cache_info(w: &mut fstart_smbios::SmbiosWriter) -> (u16, u16, u16) {
+fn add_runtime_cache_info(w: &mut fstart_acpi::smbios::SmbiosWriter) -> (u16, u16, u16) {
     let caches = runtime_x86_caches::<8>();
     let mut l1 = 0xFFFFu16;
     let mut l2 = 0xFFFFu16;
@@ -434,7 +434,7 @@ pub fn prepare_smbios(
             smbios_addr
         });
 
-    let smbios_len = fstart_smbios::assemble_and_write(smbios_addr, |w| {
+    let smbios_len = fstart_acpi::smbios::assemble_and_write(smbios_addr, |w| {
         // Type 0: BIOS Information
         w.add_bios_info(desc.bios_vendor, desc.bios_version, desc.bios_release_date);
 

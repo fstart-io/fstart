@@ -29,6 +29,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 // Self-alias so that `fstart_acpi::` paths emitted by the acpi_dsl!
 // proc-macro resolve correctly when the macro is used inside this crate.
@@ -47,6 +49,7 @@ pub mod iort;
 pub mod platform;
 pub mod sbsa;
 pub mod sink;
+pub mod smbios;
 pub mod spcr;
 pub mod tock_bridge;
 

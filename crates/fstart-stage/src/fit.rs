@@ -90,7 +90,8 @@ pub fn load_fit_components_with_scratch(
 
     // Step 2: Parse FIT image.
     fstart_log::info!("parsing FIT image ({} bytes)...", fit_slice.len());
-    let fit = fstart_fit::FitImage::parse(fit_slice).map_err(|_| FitBootError::ParseFailed)?;
+    let fit =
+        fstart_boot::fit::FitImage::parse(fit_slice).map_err(|_| FitBootError::ParseFailed)?;
 
     // Step 3: Resolve boot configuration (default or named).
     let boot = fit

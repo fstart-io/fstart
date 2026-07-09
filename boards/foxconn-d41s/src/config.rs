@@ -10,7 +10,7 @@ use fstart_core::{
 use fstart_driver_intel::ck505::I2cCk505Config;
 use fstart_driver_intel::gpio_ich as gpio;
 use fstart_driver_superio::ite8721f;
-use fstart_hda as hda;
+use fstart_driver_intel::hda;
 #[cfg(feature = "host")]
 use fstart_platform_intel::pineview::{
     pineview_ich7_memory, pineview_ich7_microcode, pineview_ich7_stages,
@@ -307,8 +307,8 @@ pub fn d41s_ck505_config() -> I2cCk505Config {
     }
 }
 
-static D41S_SMBIOS_PROCESSORS: [fstart_smbios::ProcessorDesc<'static>; 1] =
-    [fstart_smbios::ProcessorDesc {
+static D41S_SMBIOS_PROCESSORS: [fstart_acpi::smbios::ProcessorDesc<'static>; 1] =
+    [fstart_acpi::smbios::ProcessorDesc {
         socket: "FCBGA559",
         manufacturer: "Intel",
         family: 0x28,
@@ -323,7 +323,7 @@ const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
     None => "04/15/2026",
 };
 
-pub static D41S_SMBIOS_DESC: fstart_smbios::SmbiosDesc<'static> = fstart_smbios::SmbiosDesc {
+pub static D41S_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> = fstart_acpi::smbios::SmbiosDesc {
     bios_vendor: "fstart",
     bios_version: "0.1.0",
     bios_release_date: BIOS_RELEASE_DATE,

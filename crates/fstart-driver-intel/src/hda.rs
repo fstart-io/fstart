@@ -17,7 +17,7 @@
 //! # Rust pin configuration
 //!
 //! ```ignore
-//! use fstart_hda::{HdaConfig, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc};
+//! use crate::hda::{HdaConfig, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc};
 //! use fstart_core::hvec;
 //!
 //! let hda = HdaConfig {
@@ -46,7 +46,6 @@
 //! ```
 
 #![allow(clippy::derivable_impls, clippy::identity_op)]
-#![no_std]
 
 use core::ptr;
 

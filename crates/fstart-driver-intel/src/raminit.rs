@@ -1,13 +1,13 @@
 //! GM965 DDR2 raminit scaffolding.
 //!
 //! The coreboot GM965 raminit is a large cold-boot training flow. This module
-//! now shares DDR2 SPD decoding with Pineview through `fstart-spd`, then builds
+//! now shares DDR2 SPD decoding with Pineview through `crate::spd`, then builds
 //! the GM965-specific sysinfo shape: DIMM topology, common frequency/CAS, and
 //! derived timing clocks. The actual controller/PHY programming sequence is
 //! still guarded behind [`cold_boot_train`].
 
+use crate::spd::{ChipWidth, DimmInfo};
 use fstart_core::services::{ServiceError, SmBus};
-use fstart_spd::{ChipWidth, DimmInfo};
 
 use super::{hostbridge, mchbar, MchBar};
 
@@ -349,7 +349,7 @@ fn select_frequency_and_cas(
 
     for dimm in populated_dimms(info) {
         cas_mask &= dimm.cas_supported;
-        let Some(max_cas) = fstart_spd::ddr2::msb_index(dimm.cas_supported) else {
+        let Some(max_cas) = crate::spd::ddr2::msb_index(dimm.cas_supported) else {
             return Err(ServiceError::HardwareError);
         };
         let tck = dimm.cycle_time_256ns[max_cas as usize];
@@ -1269,12 +1269,12 @@ pub fn probe_dimms<B: SmBus>(
             continue;
         }
 
-        let Some(spd) = fstart_spd::ddr2::read_spd(bus, addr)? else {
+        let Some(spd) = crate::spd::ddr2::read_spd(bus, addr)? else {
             fstart_log::info!("gm965 raminit: no DIMM SPD at {:#x}", addr);
             continue;
         };
 
-        let Some(dimm) = fstart_spd::ddr2::decode_dimm(&spd) else {
+        let Some(dimm) = crate::spd::ddr2::decode_dimm(&spd) else {
             fstart_log::error!("gm965 raminit: invalid/non-DDR2 SPD at {:#x}", addr);
             return Err(ServiceError::HardwareError);
         };

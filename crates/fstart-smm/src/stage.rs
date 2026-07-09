@@ -1,16 +1,12 @@
-#![no_std]
-
-extern crate fstart_alloc;
-
 #[cfg(target_os = "none")]
 use core::panic::PanicInfo;
 
-use fstart_smm_runtime::{
+use crate::{
     debug_trace, obtain_handler_lock, release_handler_lock, wait_for_handler_unlock, SmmContext,
     SmmHandler, SMM_PLATFORM_NONE,
 };
 
-pub use fstart_smm_runtime::SmmEntryParams;
+pub use crate::SmmEntryParams;
 
 #[repr(align(16))]
 #[allow(dead_code)]

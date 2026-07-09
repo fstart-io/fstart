@@ -18,13 +18,12 @@
 //! top of the 4 GiB address space.
 
 #![allow(clippy::doc_lazy_continuation)]
-#![no_std]
 
 pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
 
-use fstart_arch::x86::mtrr;
+use crate::x86::mtrr;
 use fstart_core::services::memory_detect::E820Entry;
 
 /// Enable the BSP-local ROM cacheability MTRR for memory-mapped boot media.
@@ -63,7 +62,7 @@ pub fn disable_boot_media_rom_cache_for_handoff() {
 //
 // Page tables: identity-mapped 2 MiB pages covering 4 GiB.
 // PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is
     // the natural syntax for 16-bit / mixed-mode x86 assembly.
@@ -251,6 +250,7 @@ core::arch::global_asm!(
 // Entry/return convention matches coreboot's no-stack helpers: `%esp` contains
 // the absolute return address. The routine may clobber all general registers.
 #[cfg(feature = "early-ffs-anchor")]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -328,6 +328,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(not(feature = "early-ffs-anchor"))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -341,6 +342,7 @@ core::arch::global_asm!(
 // 1 GiB pages: PDPT[0..511] = 512 x 1 GiB identity-mapped pages.
 // Requires PDPE1GB. Covers 512 GiB. Compact: only 2 pages total.
 #[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -377,6 +379,7 @@ core::arch::global_asm!(
 // Writable page-table setup for QEMU-style low-RAM page tables.
 // 2 MiB pages (default): PDPT[0..3] -> PD0..PD3, each PD 512 x 2 MiB.
 #[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -429,6 +432,7 @@ core::arch::global_asm!(
 // - QEMU/writable-PT boards reserve BSS storage here; `_setup_page_tables`
 //   fills it at runtime.
 #[cfg(not(feature = "x86-writable-page-tables"))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -439,6 +443,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(feature = "x86-static-page-tables", feature = "x86-1g-pages"))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .rodata, \"a\"",
     ".balign 4096",
@@ -460,6 +465,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .bss, \"aw\", @nobits",
     ".balign 4096",
@@ -474,6 +480,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .bss, \"aw\", @nobits",
     ".balign 4096",
@@ -491,6 +498,7 @@ core::arch::global_asm!(
     feature = "x86-static-page-tables",
     feature = "x86-writable-page-tables"
 )))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .bss, \"aw\", @nobits",
     ".balign 4096",
@@ -504,6 +512,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(feature = "x86-static-page-tables", not(feature = "x86-1g-pages")))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .rodata, \"a\"",
     ".balign 4096",
@@ -533,6 +542,7 @@ core::arch::global_asm!(
 );
 
 // Continue the entry sequence after page table setup.
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -775,6 +785,7 @@ core::arch::global_asm!(
 // place it in CAR-backed BSS, and RAM stages place it in DRAM-backed BSS.
 // The assembly labels are sufficient; the linker script does not need a
 // dedicated IDT output section or linker-provided IDT symbols.
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .bss, \"aw\", @nobits",
     ".align 4096",
@@ -797,6 +808,7 @@ core::arch::global_asm!(
 // Placed in `.text.entry` so `KEEP(*(.text.entry))` in the linker script
 // ensures it's at the start of the binary (= the load address that the
 // bootblock's `jump_to()` targets).
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
     ".section .text.entry, \"ax\"",
     ".code64",
@@ -851,7 +863,7 @@ core::arch::global_asm!(
 
 // Make sure the linker pulls in the entry code. This symbol is called from
 // `global_asm!`, which Rust's dead-code analysis cannot see.
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 #[allow(dead_code)]
 extern "Rust" {
     fn fstart_main(handoff_ptr: usize) -> !;
@@ -991,19 +1003,19 @@ pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
 #[inline]
 fn read_cr0() -> u64 {
     // SAFETY: reading CR0 is side-effect free in firmware context.
-    unsafe { fstart_arch::x86::controlregs::cr0().bits() as u64 }
+    unsafe { crate::x86::controlregs::cr0().bits() as u64 }
 }
 
 #[inline]
 fn read_cr3() -> u64 {
     // SAFETY: reading CR3 is side-effect free in firmware context.
-    unsafe { fstart_arch::x86::controlregs::cr3() }
+    unsafe { crate::x86::controlregs::cr3() }
 }
 
 #[inline]
 fn read_cr4() -> u64 {
     // SAFETY: reading CR4 is side-effect free in firmware context.
-    unsafe { fstart_arch::x86::controlregs::cr4().bits() as u64 }
+    unsafe { crate::x86::controlregs::cr4().bits() as u64 }
 }
 
 fn log_bsp_x86_cache_state(label: &str) {
@@ -1017,8 +1029,8 @@ fn log_bsp_x86_cache_state(label: &str) {
 
     // SAFETY: called on x86_64 BSP immediately before payload handoff.
     unsafe {
-        let cap = fstart_arch::x86::msr::rdmsr(mtrr::IA32_MTRR_CAP);
-        let def_type = fstart_arch::x86::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
+        let cap = crate::x86::msr::rdmsr(mtrr::IA32_MTRR_CAP);
+        let def_type = crate::x86::msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
         fstart_log::info!("  IA32_MTRR_CAP={:#x}", cap);
         fstart_log::info!("  IA32_MTRR_DEF_TYPE={:#x}", def_type);
 
@@ -1037,11 +1049,7 @@ fn log_bsp_x86_cache_state(label: &str) {
                 0x26f,
             ];
             for msr in fixed_msrs {
-                fstart_log::info!(
-                    "  fixed MTRR {:#x}={:#x}",
-                    msr,
-                    fstart_arch::x86::msr::rdmsr(msr)
-                );
+                fstart_log::info!("  fixed MTRR {:#x}={:#x}", msr, crate::x86::msr::rdmsr(msr));
             }
         } else {
             fstart_log::info!("  fixed MTRRs unsupported");

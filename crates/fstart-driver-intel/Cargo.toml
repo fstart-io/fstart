@@ -30,15 +30,12 @@ fstart-crypto = { workspace = true, optional = true }
 fstart-driver-superio = { workspace = true }
 
 fstart-ffs = { workspace = true, optional = true }
-fstart-hda = { workspace = true }
 fstart-log = { workspace = true }
 
 fstart-core = { workspace = true, features = ["pci"] }
 
 fstart-pci = { workspace = true }
 fstart-smm = { workspace = true }
-fstart-smm-runtime = { workspace = true }
-fstart-spd = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }
 tock-registers = { workspace = true }

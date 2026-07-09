@@ -78,7 +78,7 @@ where
     run_mainstage_phase(platform, "bus_scan", halt, || mainstage.bus_scan());
     run_mainstage_phase(platform, "init_devices", halt, || mainstage.init_devices());
     run_mainstage_phase(platform, "mount_boot_media", halt, || {
-        fstart_platform_x86_64::enable_boot_media_rom_cache();
+        fstart_arch::x86_64::enable_boot_media_rom_cache();
         boot_media.mount()?;
         mainstage.stage_local_init()
     });
@@ -377,7 +377,7 @@ where
     fstart_log::info!("{}: ns16550 console ready", spec.console_node);
     fstart_log::info!("{} bootblock console ready", spec.platform);
 
-    fstart_platform_x86_64::enable_boot_media_rom_cache();
+    fstart_arch::x86_64::enable_boot_media_rom_cache();
     if ffs.mount().is_err()
         || ffs.verify().is_err()
         || ffs.load_file_by_name(spec.next_stage).is_err()
@@ -387,7 +387,7 @@ where
     }
 
     fstart_log::info!("jumping to ramstage at {:#x}", spec.ramstage_load_addr);
-    fstart_platform_x86_64::jump_to(spec.ramstage_load_addr)
+    fstart_arch::x86_64::jump_to(spec.ramstage_load_addr)
 }
 
 #[cfg(feature = "stage")]

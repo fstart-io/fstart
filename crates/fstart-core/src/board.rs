@@ -336,7 +336,7 @@ pub enum PayloadKind {
 
 /// When to parse a FIT image.
 ///
-/// Both modes use the same parser code (`fstart-fit`); this controls
+/// Both modes use the same parser code (`fstart-boot::fit`); this controls
 /// whether extraction happens at buildtime (fbuild) or runtime (firmware).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FitParseMode {

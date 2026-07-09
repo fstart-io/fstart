@@ -1,8 +1,6 @@
-#![no_std]
-
 use core::arch::asm;
 
-pub use fstart_smm::runtime::{
+pub use crate::runtime::{
     SmmEntryParams, SmmRuntime, MAX_SMM_CPUS, SMM_PLATFORM_DATA_ICH_GPE0_STS_OFFSET,
     SMM_PLATFORM_DATA_ICH_PM_BASE, SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH,
     SMM_PLATFORM_NONE,

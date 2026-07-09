@@ -241,7 +241,7 @@ use serde::Serialize;
 
 // Re-export HDA types from the shared crate so board configs
 // can reference them via the ICH7 driver path.
-pub use fstart_hda::{
+pub use crate::hda::{
     HdaConfig, HdaController, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice,
     PinGeoLoc, PinLoc,
 };
@@ -413,8 +413,8 @@ pub struct UsbConfig {
     pub uhci: [bool; 4],
 }
 
-// HDA verb table types are defined in the shared fstart-hda crate.
-// See fstart_hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
+// HDA verb table types are defined in the Intel HDA module.
+// See crate::hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
 
 /// Legacy serial-port decode selector in the LPC I/O decode register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

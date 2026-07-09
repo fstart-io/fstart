@@ -2,8 +2,6 @@
 //!
 //! Provides panic handler and other essential lang items for `no_std` binaries.
 
-#![cfg_attr(all(not(test), target_os = "none"), no_std)]
-
 #[cfg(all(not(test), target_os = "none"))]
 use core::panic::PanicInfo;
 

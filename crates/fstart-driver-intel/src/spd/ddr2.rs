@@ -1,6 +1,6 @@
 //! DDR2 SPD byte offsets and decoding (JEDEC SPD revision 1.2a).
 
-use crate::{ChipCapacity, ChipWidth, DimmInfo};
+use super::{ChipCapacity, ChipWidth, DimmInfo};
 use fstart_core::services::{ServiceError, SmBus};
 
 // ===================================================================
@@ -164,7 +164,7 @@ fn rank_density_mb(spd_data: &[u8; 256]) -> u32 {
 /// unpopulated/invalid. Timing fields are decoded in the same 1/256 ns units
 /// as coreboot's common DDR2 SPD library.
 pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
-    let mem_type = spd_data[crate::SPD_MEMORY_TYPE as usize];
+    let mem_type = spd_data[super::SPD_MEMORY_TYPE as usize];
     if mem_type != DDR2 {
         return None;
     }
