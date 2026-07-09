@@ -2,9 +2,9 @@
 //!
 //! Usage:
 //!   cargo xtask build --board qemu-riscv64
-//!   cargo xtask build --board qemu-riscv64 --release
-//!   cargo xtask run --board qemu-riscv64
-//!   cargo xtask assemble --board qemu-riscv64
+//!   cargo xtask build --board qemu-riscv64 --release --payload uefi
+//!   cargo xtask run --board qemu-riscv64 --payload linux --kernel bzImage
+//!   cargo xtask assemble --board qemu-riscv64 --payload fit --fit image.itb
 //!   cargo xtask inspect --image target/ffs/qemu-riscv64.ffs
 //!   cargo xtask test --board qemu-riscv64
 //!   cargo xtask flash --board sifive-unmatched-hw
@@ -12,7 +12,7 @@
 
 use clap::{Parser, Subcommand};
 use std::process;
-use xtask::{assemble, board_manifest, build_board, inspect};
+use xtask::{assemble, board_manifest, build_board, inspect, payload::PayloadChoice};
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "fstart firmware build orchestrator")]
@@ -31,6 +31,9 @@ enum Command {
         /// Build in release mode
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        /// Payload backend: uefi, linux, fit, shell, elf, or halt
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
     },
     /// Build and run in QEMU
     Run {
@@ -40,12 +43,18 @@ enum Command {
         /// Build in release mode
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        /// Payload backend: uefi, linux, fit, shell, elf, or halt
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
         /// Path to kernel binary (for LinuxBoot payloads)
         #[arg(short, long)]
         kernel: Option<String>,
         /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
         #[arg(short, long)]
         firmware: Option<String>,
+        /// Path to FIT image (for FIT payloads)
+        #[arg(long)]
+        fit: Option<String>,
         /// Path to disk image (qcow2/raw) — attached as NVMe
         #[arg(short, long)]
         disk: Option<String>,
@@ -67,12 +76,18 @@ enum Command {
         /// Build in release mode
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        /// Payload backend: uefi, linux, fit, shell, elf, or halt
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
         /// Path to kernel binary (for LinuxBoot payloads)
         #[arg(short, long)]
         kernel: Option<String>,
         /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
         #[arg(short, long)]
         firmware: Option<String>,
+        /// Path to FIT image (for FIT payloads)
+        #[arg(long)]
+        fit: Option<String>,
     },
     /// Inspect an FFS firmware image (find anchor, display filesystem)
     Inspect {
@@ -267,16 +282,31 @@ fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
-fn board_tool_assemble_args(
+fn board_tool_build_args(
     subcommand: &str,
     release: bool,
-    kernel: Option<String>,
-    firmware: Option<String>,
+    payload: Option<PayloadChoice>,
 ) -> Vec<String> {
     let mut args = vec![subcommand.to_string()];
     if release {
         args.push("--release".to_string());
     }
+    if let Some(payload) = payload {
+        args.push("--payload".to_string());
+        args.push(payload.as_str().to_string());
+    }
+    args
+}
+
+fn board_tool_assemble_args(
+    subcommand: &str,
+    release: bool,
+    payload: Option<PayloadChoice>,
+    kernel: Option<String>,
+    firmware: Option<String>,
+    fit: Option<String>,
+) -> Vec<String> {
+    let mut args = board_tool_build_args(subcommand, release, payload);
     if let Some(kernel) = kernel {
         args.push("--kernel".to_string());
         args.push(kernel);
@@ -285,18 +315,24 @@ fn board_tool_assemble_args(
         args.push("--firmware".to_string());
         args.push(firmware);
     }
+    if let Some(fit) = fit {
+        args.push("--fit".to_string());
+        args.push(fit);
+    }
     args
 }
 
 fn board_tool_run_args(
     subcommand: &str,
     release: bool,
+    payload: Option<PayloadChoice>,
     kernel: Option<String>,
     firmware: Option<String>,
+    fit: Option<String>,
     disk: Option<String>,
     memory: Option<String>,
 ) -> Vec<String> {
-    let mut args = board_tool_assemble_args(subcommand, release, kernel, firmware);
+    let mut args = board_tool_assemble_args(subcommand, release, payload, kernel, firmware, fit);
     if let Some(disk) = disk {
         args.push("--disk".to_string());
         args.push(disk);
@@ -312,34 +348,35 @@ fn main() {
     let cli = Cli::parse();
 
     let result: Result<(), String> = match cli.command {
-        Command::Build { board, release } => dispatch_board_host(
-            &board,
-            vec!["build".into()]
-                .into_iter()
-                .chain(release.then_some("--release".into()))
-                .collect::<Vec<_>>()
-                .as_slice(),
-        ),
+        Command::Build {
+            board,
+            release,
+            payload,
+        } => dispatch_board_host(&board, &board_tool_build_args("build", release, payload)),
         Command::Run {
             board,
             release,
+            payload,
             kernel,
             firmware,
+            fit,
             disk,
             memory,
         } => dispatch_board_host(
             &board,
-            &board_tool_run_args("run", release, kernel, firmware, disk, memory),
+            &board_tool_run_args("run", release, payload, kernel, firmware, fit, disk, memory),
         ),
         Command::Test { board } => dispatch_board_host(&board, &["test".into()]),
         Command::Assemble {
             board,
             release,
+            payload,
             kernel,
             firmware,
+            fit,
         } => dispatch_board_host(
             &board,
-            &board_tool_assemble_args("assemble", release, kernel, firmware),
+            &board_tool_assemble_args("assemble", release, payload, kernel, firmware, fit),
         ),
         Command::Inspect { image } => inspect::inspect(&image),
         Command::Flash {

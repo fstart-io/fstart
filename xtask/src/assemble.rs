@@ -42,8 +42,8 @@ pub fn assemble_release(board_name: &str, release: bool) -> Result<PathBuf, Stri
 /// Assemble with full options: release flag and optional kernel/firmware paths.
 ///
 /// If `kernel`/`firmware` are `None`, falls back to paths from the Rust board
-/// `payload` metadata (resolved relative to the board directory). If neither
-/// is available, no external blobs are added to the image.
+/// payload metadata resolved relative to the board directory. If neither is
+/// available, no external blobs are added to the image.
 pub fn assemble_with_opts(
     board_name: &str,
     release: bool,
@@ -73,6 +73,7 @@ pub fn assemble_with_parsed(
     release: bool,
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
+    fit_path: Option<&str>,
 ) -> Result<PathBuf, String> {
     let board_dir = board_manifest.dir.clone();
     let config = parsed.config.clone();
@@ -218,7 +219,7 @@ pub fn assemble_with_parsed(
     // Add payload blobs to the FFS image.
     //
     // Resolution order for paths:
-    //   1. CLI flags (--kernel, --firmware)
+    //   1. CLI flags (--kernel, --firmware, --fit)
     //   2. Rust board payload metadata (payload.firmware.file,
     //      payload.kernel_file, payload.fit_file) resolved relative to the board directory
     //   3. Skip — no external blob added
@@ -229,7 +230,7 @@ pub fn assemble_with_parsed(
     if let Some(ref payload) = config.payload {
         // Handle FIT image payloads
         if payload.kind == fstart_core::PayloadKind::FitImage {
-            assemble_fit_payload(payload, &board_dir, kernel_path, &mut ro_files)?;
+            assemble_fit_payload(payload, &board_dir, fit_path.or(kernel_path), &mut ro_files)?;
         } else {
             // LinuxBoot / other payload types: add firmware + kernel blobs
             assemble_linux_payload(

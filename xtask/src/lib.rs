@@ -8,5 +8,6 @@ pub mod build_plan;
 pub mod image;
 pub mod inspect;
 pub mod linker;
+pub mod payload;
 pub mod qemu;
 pub mod toolchain;

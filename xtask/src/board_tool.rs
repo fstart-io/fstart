@@ -9,8 +9,10 @@ use fstart_core::acpi::AcpiExtraDevice;
 use fstart_core::{BoardConfig, StageLayout};
 
 use crate::build_plan::ParsedBoard;
+use crate::payload::{apply_payload_override, PayloadChoice};
 
 /// Rust callbacks exported by a board crate for host tooling.
+#[derive(Clone, Copy)]
 pub struct BoardCallbacks {
     pub board_config: fn() -> BoardConfig,
     pub acpi_only_devices: Option<fn() -> Vec<AcpiExtraDevice>>,
@@ -28,14 +30,20 @@ enum Command {
     Build {
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
     },
     Run {
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
         #[arg(short, long)]
         kernel: Option<String>,
         #[arg(short, long)]
         firmware: Option<String>,
+        #[arg(long)]
+        fit: Option<String>,
         #[arg(short, long)]
         disk: Option<String>,
         #[arg(short, long)]
@@ -45,10 +53,14 @@ enum Command {
     Assemble {
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
         #[arg(short, long)]
         kernel: Option<String>,
         #[arg(short, long)]
         firmware: Option<String>,
+        #[arg(long)]
+        fit: Option<String>,
     },
 }
 
@@ -77,27 +89,41 @@ macro_rules! board_host_tool {
 pub fn main(callbacks: BoardCallbacks) {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Build { release } => build(callbacks, release).map(|_| ()),
+        Command::Build { release, payload } => build(callbacks, release, payload).map(|_| ()),
         Command::Run {
             release,
+            payload,
             kernel,
             firmware,
+            fit,
             disk,
             memory,
         } => run(
             callbacks,
             release,
+            payload,
             kernel.as_deref(),
             firmware.as_deref(),
+            fit.as_deref(),
             disk.as_deref(),
             memory.as_deref(),
         ),
-        Command::Test => run(callbacks, true, None, None, None, None),
+        Command::Test => run(callbacks, true, None, None, None, None, None, None),
         Command::Assemble {
             release,
+            payload,
             kernel,
             firmware,
-        } => assemble(callbacks, release, kernel.as_deref(), firmware.as_deref()).map(|_| ()),
+            fit,
+        } => assemble(
+            callbacks,
+            release,
+            payload,
+            kernel.as_deref(),
+            firmware.as_deref(),
+            fit.as_deref(),
+        )
+        .map(|_| ()),
     };
 
     if let Err(err) = result {
@@ -108,8 +134,10 @@ pub fn main(callbacks: BoardCallbacks) {
 
 fn load(
     callbacks: BoardCallbacks,
+    payload: Option<PayloadChoice>,
 ) -> Result<(crate::board_manifest::BoardManifest, ParsedBoard), String> {
     let mut config = (callbacks.board_config)();
+    apply_payload_override(&mut config, payload);
     config
         .memory
         .normalize_derived_flash()
@@ -132,62 +160,97 @@ fn load(
 fn build(
     callbacks: BoardCallbacks,
     release: bool,
+    payload: Option<PayloadChoice>,
 ) -> Result<crate::build_board::BuildResult, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(callbacks)?;
+    let (manifest, parsed) = load(callbacks, payload)?;
     crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)
 }
 
 fn assemble(
     callbacks: BoardCallbacks,
     release: bool,
+    payload: Option<PayloadChoice>,
     kernel: Option<&str>,
     firmware: Option<&str>,
+    fit: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(callbacks)?;
-    crate::assemble::assemble_with_parsed(
+    let (manifest, parsed) = load(callbacks, payload)?;
+    assemble_loaded(
         &workspace_root,
         manifest,
         parsed,
         release,
         kernel,
         firmware,
+        fit,
+    )
+}
+
+fn assemble_loaded(
+    workspace_root: &std::path::Path,
+    manifest: crate::board_manifest::BoardManifest,
+    parsed: ParsedBoard,
+    release: bool,
+    kernel: Option<&str>,
+    firmware: Option<&str>,
+    fit: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    crate::assemble::assemble_with_parsed(
+        workspace_root,
+        manifest,
+        parsed,
+        release,
+        kernel,
+        firmware,
+        fit,
     )
 }
 
 fn run(
     callbacks: BoardCallbacks,
     release: bool,
+    payload: Option<PayloadChoice>,
     kernel: Option<&str>,
     firmware: Option<&str>,
+    fit: Option<&str>,
     disk: Option<&str>,
     memory: Option<&str>,
 ) -> Result<(), String> {
-    let config = (callbacks.board_config)();
+    let workspace_root = crate::build_board::workspace_root_pub()?;
+    let (manifest, parsed) = load(callbacks, payload)?;
+    let config = &parsed.config;
+    let board_name = config.name.clone();
+    let platform = config.platform;
     let is_multi_stage = matches!(config.stages, StageLayout::MultiStage(_));
     let has_payload_blobs = kernel.is_some()
         || firmware.is_some()
+        || fit.is_some()
         || config.payload.as_ref().is_some_and(|p| {
             p.firmware.is_some()
                 || p.kernel_file.is_some()
+                || p.fit_file.is_some()
                 || p.kind == fstart_core::PayloadKind::FitImage
         });
 
     if is_multi_stage || has_payload_blobs {
-        let image_path = assemble(callbacks, release, kernel, firmware)?;
-        crate::qemu::run(
-            config.name.as_str(),
-            config.platform,
-            &image_path,
-            disk,
-            memory,
-        )
+        let image_path = assemble_loaded(
+            &workspace_root,
+            manifest,
+            parsed,
+            release,
+            kernel,
+            firmware,
+            fit,
+        )?;
+        crate::qemu::run(board_name.as_str(), platform, &image_path, disk, memory)
     } else {
-        let res = build(callbacks, release)?;
+        let res =
+            crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
         crate::qemu::run(
-            config.name.as_str(),
-            config.platform,
+            board_name.as_str(),
+            platform,
             &res.primary_binary().run_path,
             disk,
             memory,
