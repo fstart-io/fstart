@@ -356,6 +356,7 @@ fn run(
     let board_name = config.name.clone();
     let platform = config.platform;
     let is_multi_stage = matches!(config.stages, StageLayout::MultiStage(_));
+    let needs_x86_pflash = matches!(config.platform, fstart_core::Platform::X86_64);
     let has_payload_blobs = kernel.is_some()
         || firmware.is_some()
         || fit.is_some()
@@ -366,7 +367,7 @@ fn run(
                 || p.kind == fstart_core::PayloadKind::FitImage
         });
 
-    if is_multi_stage || has_payload_blobs {
+    if is_multi_stage || has_payload_blobs || needs_x86_pflash {
         let image_path = assemble_loaded(
             &workspace_root,
             manifest,

@@ -1,0 +1,26 @@
+[package]
+name = "fstart-platform-qemu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+host = []
+stage = [
+  "dep:fstart-stage",
+  "dep:fstart-driver-uart",
+  "fstart-arch/x86_64",
+  "fstart-driver-uart/pio",
+]
+x86_64 = ["fstart-arch/x86_64"]
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-arch = { workspace = true }
+fstart-log = { workspace = true }
+fstart-pci = { workspace = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-driver-uart = { workspace = true, optional = true }
+serde = { workspace = true }
+ufmt = { workspace = true }

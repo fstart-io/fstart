@@ -6,8 +6,6 @@
 //!
 //! The adapter types are safe wrappers — no `unsafe` at the call site.
 
-#![no_std]
-
 use core::{cell::Cell, fmt};
 
 // Type aliases used by board-owned UEFI payload configuration.
@@ -465,15 +463,16 @@ pub use fstart_core::services::memory_detect::E820Entry;
 /// (RuntimeServicesData) so the OS kernel can mark them with the
 /// correct page protections after ExitBootServices.
 ///
-/// Uses `_text_start`, `_text_end`, and `_writable_end` linker symbols.
-/// All boundaries are page-aligned (4 KiB). `_writable_end` is emitted after
-/// the linker-allocated firmware stack, so the complete stage-owned writable
-/// footprint remains reserved while CrabEFI is running.
+/// Uses `_text_start`, `_text_end`, `_data_start`, and `_writable_end` linker symbols.
+/// All boundaries are page-aligned (4 KiB). `_data_start.._writable_end`
+/// covers the stage-owned writable footprint, including XIP layouts where
+/// writable data lives in RAM.
 #[cfg(target_arch = "x86_64")]
 pub fn compute_runtime_region() -> RuntimeRegion {
     extern "C" {
         static _text_start: u8;
         static _text_end: u8;
+        static _data_start: u8;
         static _writable_end: u8;
     }
     const PAGE: u64 = 0x1000;
@@ -481,7 +480,7 @@ pub fn compute_runtime_region() -> RuntimeRegion {
     // values) delimit the stage's text and writable image regions.
     let code_base = unsafe { &_text_start as *const u8 as u64 } & !(PAGE - 1);
     let code_end = (unsafe { &_text_end as *const u8 as u64 } + PAGE - 1) & !(PAGE - 1);
-    let data_base = code_end;
+    let data_base = unsafe { &_data_start as *const u8 as u64 } & !(PAGE - 1);
     let data_end = (unsafe { &_writable_end as *const u8 as u64 } + PAGE - 1) & !(PAGE - 1);
     RuntimeRegion {
         code_base,

@@ -4,6 +4,7 @@ members = [
   "tools/fbuild",
   "crates/fstart-core",
   "crates/fstart-platform-intel",
+  "crates/fstart-platform-qemu",
   "crates/fstart-ffs",
   "crates/fstart-image-build",
   "crates/fstart-crypto",
@@ -19,7 +20,7 @@ members = [
   "crates/fstart-smm",
   "crates/fstart-boot",
 ]
-exclude = ["attic", "boards/lenovo-x61", "boards/foxconn-d41s"]
+exclude = ["attic", "boards/lenovo-x61", "boards/foxconn-d41s", "boards/qemu-q35"]
 
 [workspace.package]
 version = "0.1.0"
@@ -65,6 +66,7 @@ clap = { version = "4", features = ["derive"] }
 # Internal workspace crates
 fstart-core = { path = "crates/fstart-core" }
 fstart-platform-intel = { path = "crates/fstart-platform-intel" }
+fstart-platform-qemu = { path = "crates/fstart-platform-qemu" }
 fstart-pci = { path = "crates/fstart-pci" }
 fstart-ffs = { path = "crates/fstart-ffs" }
 fstart-crypto = { path = "crates/fstart-crypto" }

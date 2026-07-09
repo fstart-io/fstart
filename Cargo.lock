@@ -500,23 +500,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-board-lenovo-x61"
-version = "0.1.0"
-dependencies = [
- "fbuild",
- "fstart-acpi",
- "fstart-acpi-macros",
- "fstart-arch",
- "fstart-core",
- "fstart-driver-intel",
- "fstart-driver-superio",
- "fstart-driver-uart",
- "fstart-platform-intel",
- "fstart-smm",
- "fstart-stage",
-]
-
-[[package]]
 name = "fstart-boot"
 version = "0.1.0"
 dependencies = [
@@ -653,6 +636,20 @@ dependencies = [
  "fstart-stage",
  "heapless",
  "konst",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-platform-qemu"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-stage",
  "serde",
  "ufmt",
 ]

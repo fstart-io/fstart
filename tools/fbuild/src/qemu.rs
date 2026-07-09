@@ -71,7 +71,7 @@ pub fn run(
             (find_qemu("qemu-system-arm"), args)
         }
         Platform::X86_64 => {
-            let pflash_size = 8 * 1024 * 1024;
+            let pflash_size = 16 * 1024 * 1024;
             let workspace = binary.parent().unwrap().parent().unwrap();
             let profile = if binary.to_str().unwrap_or("").contains("release")
                 || std::env::args().any(|a| a == "--release")
@@ -102,7 +102,7 @@ pub fn run(
                 _ => std::fs::File::open("/dev/kvm").is_ok(),
             };
             let args = vec![
-                "-machine".to_string(),
+                "-M".to_string(),
                 "q35".to_string(),
                 "-accel".to_string(),
                 if use_kvm { "kvm" } else { "tcg" }.to_string(),
@@ -121,16 +121,8 @@ pub fn run(
                 "chardev:char0".to_string(),
                 "-mon".to_string(),
                 "chardev=char0,mode=readline".to_string(),
-                if use_kvm { "-bios" } else { "-drive" }.to_string(),
-                if use_kvm {
-                    pflash_path.display().to_string()
-                } else {
-                    format!("if=pflash,format=raw,file={}", pflash_path.display())
-                },
-                "-device".to_string(),
-                "isa-debugcon,iobase=0x402,chardev=debugout".to_string(),
-                "-chardev".to_string(),
-                "file,id=debugout,path=/dev/stderr".to_string(),
+                "-bios".to_string(),
+                pflash_path.display().to_string(),
                 "-vga".to_string(),
                 "none".to_string(),
                 "-device".to_string(),
