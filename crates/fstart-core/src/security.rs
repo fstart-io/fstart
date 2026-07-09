@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Declares which signature algorithm and digest algorithms are used,
 /// and where to find the key material. The public key is embedded in
-/// the anchor block at build time; the private key is used by `xtask
+/// the anchor block at build time; the private key is used by `fbuild
 /// assemble` to sign manifests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

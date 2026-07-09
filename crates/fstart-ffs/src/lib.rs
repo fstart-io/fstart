@@ -11,7 +11,7 @@
 //! - Look up files by name
 //! - Read segment data from the image
 //!
-//! ## Builder (std, xtask)
+//! ## Builder (std, fbuild)
 //!
 //! The builder module (behind `std` feature) constructs FFS images:
 //! assemble files + segments, compute digests, build manifests, sign,

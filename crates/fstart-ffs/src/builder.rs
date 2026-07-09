@@ -1,4 +1,4 @@
-//! FFS builder — constructs firmware images (std only, used by xtask).
+//! FFS builder — constructs firmware images (std only, used by fbuild).
 //!
 //! The builder produces a complete firmware image:
 //!
@@ -11,7 +11,7 @@
 //! 7. Produces the final image as a `Vec<u8>`.
 //!
 //! Signing is done by accepting a closure — the builder doesn't know
-//! about private keys directly (the xtask caller provides the signer).
+//! about private keys directly (the fstart-image-build caller provides the signer).
 
 extern crate std;
 

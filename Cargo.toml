@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-  "xtask",
+  "tools/fbuild",
   "crates/fstart-core",
   "crates/fstart-platform-intel",
   "crates/fstart-ffs",
+  "crates/fstart-image-build",
   "crates/fstart-crypto",
   "crates/fstart-arch",
   "crates/fstart-alloc",
@@ -66,7 +67,7 @@ object = { version = "0.37", default-features = false, features = [
   "read",
 ] }
 
-# xtask / host-side
+# fbuild / host-side
 clap = { version = "4", features = ["derive"] }
 
 # Internal workspace crates
@@ -93,7 +94,7 @@ fstart-hda = { path = "crates/fstart-hda" }
 fstart-smm = { path = "crates/fstart-smm" }
 fstart-smm-runtime = { path = "crates/fstart-smm-runtime" }
 fstart-smm-stage = { path = "crates/fstart-smm-stage" }
-fstart-smm-image = { path = "crates/fstart-smm-image" }
+fstart-image-build = { path = "crates/fstart-image-build" }
 
 [profile.dev]
 panic = "abort"

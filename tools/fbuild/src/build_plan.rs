@@ -1,10 +1,3 @@
-//! Build planning for board firmware images.
-//!
-//! This module turns a parsed board description into stage build plans: target
-//! triple, cargo features, build-std selection, and stage image post-processing
-//! requirements. Driver features come from board-owned metadata rather than a
-//! central device registry.
-
 use std::collections::BTreeSet;
 
 use fstart_core::acpi::AcpiExtraDevice;
@@ -16,28 +9,22 @@ use fstart_core::{
 
 use crate::toolchain::TargetSpec;
 
-/// Board config plus host-only side tables loaded from the selected board crate.
 #[derive(Debug, Clone)]
 pub struct ParsedBoard {
-    /// Board metadata (name, platform, memory, stages, security, etc.).
     pub config: BoardConfig,
-    /// ACPI-only descriptors collected separately from runtime devices.
     pub acpi_only_devices: Vec<AcpiExtraDevice>,
 }
 
-/// Deterministic cargo feature collection.
 #[derive(Debug, Clone, Default)]
 pub struct FeatureSet {
     features: BTreeSet<String>,
 }
 
 impl FeatureSet {
-    /// Insert a feature name.
     pub fn insert(&mut self, feature: impl Into<String>) {
         self.features.insert(feature.into());
     }
 
-    /// Insert all features from an iterator.
     pub fn extend<I, S>(&mut self, features: I)
     where
         I: IntoIterator<Item = S>,
@@ -48,60 +35,43 @@ impl FeatureSet {
         }
     }
 
-    /// Whether the set contains a feature.
     pub fn contains(&self, feature: &str) -> bool {
         self.features.contains(feature)
     }
 
-    /// Iterate over feature names in sorted order.
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.features.iter().map(String::as_str)
     }
 
-    /// Return a comma-separated feature list for Cargo.
     pub fn to_cargo_arg(&self) -> String {
         self.features.iter().cloned().collect::<Vec<_>>().join(",")
     }
 }
 
-/// Complete build plan for a board.
 #[derive(Debug, Clone)]
 pub struct BuildPlan {
-    /// Target/toolchain policy.
     pub target: TargetSpec,
-    /// Per-stage builds to execute.
     pub stages: Vec<StageBuildPlan>,
 }
 
-/// Build plan for one `fstart-stage` invocation.
 #[derive(Debug, Clone)]
 pub struct StageBuildPlan {
-    /// Stage name passed to build.rs. `None` means monolithic.
     pub stage_name: Option<String>,
-    /// Build-time execution environment: `car`, `ram`, or `monolithic`.
     pub stage_env: &'static str,
-    /// Human-readable label for logging/artifact names.
     pub display_name: String,
-    /// Cargo feature set.
     pub features: FeatureSet,
-    /// Whether this stage needs a flat `.bin` extracted from ELF PT_LOAD data.
     pub needs_flat_binary: bool,
-    /// `-Z build-std=...` value.
     pub build_std: &'static str,
-    /// SoC image format to post-process for this stage.
     pub soc_format: SocImageFormat,
-    /// Effective load address for packaging.
     pub load_addr: u64,
 }
 
 impl StageBuildPlan {
-    /// Comma-separated Cargo feature argument.
     pub fn features_arg(&self) -> String {
         self.features.to_cargo_arg()
     }
 }
 
-/// Produce a complete build plan for a parsed board using Cargo metadata.
 pub fn plan(
     parsed: &ParsedBoard,
     manifest: &crate::board_manifest::BoardManifest,
@@ -225,9 +195,6 @@ fn base_features(
 }
 
 fn needs_aarch64_el2_relocate_entry(config: &BoardConfig) -> bool {
-    // Current AArch64 ROM-to-RAM boards use the EL2/TF-A entry protocol.
-    // If a future board needs ROM-to-RAM relocation without that protocol,
-    // add explicit boot-protocol schema instead of widening this predicate.
     if config.platform != Platform::Aarch64
         || config.soc_image_format == SocImageFormat::AllwinnerEgon
     {
@@ -316,7 +283,6 @@ fn stage_plan(
     }
 }
 
-/// Compute backend feature flags for a single stage.
 fn stage_features(
     build: &StageBuildConfig,
     security: &SecurityConfig,

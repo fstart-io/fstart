@@ -1,9 +1,3 @@
-//! Host-side builder for standalone fstart PIC SMM images.
-//!
-//! The produced blob is consumed by fstart platform SMM installers and by the
-//! optional coreboot loader integration.  Entry stubs are part of the image:
-//! loaders only copy bytes into SMRAM and patch data parameter blocks.
-
 use std::path::Path;
 use std::process::Command;
 
@@ -28,20 +22,13 @@ mod asm {
     pub const ENTRY_PARAMS_OFFSET: usize = 0;
 }
 
-/// Errors returned while building or writing an SMM image.
 #[derive(Debug)]
 pub enum BuildError {
-    /// The requested entry count is zero.
     NoEntries,
-    /// The requested entry count exceeds the fixed ABI cap.
     TooManyEntries,
-    /// The requested stack size is zero.
     BadStackSize,
-    /// Integer arithmetic overflowed while laying out the image.
     Overflow,
-    /// Filesystem I/O failed.
     Io(std::io::Error),
-    /// A tool used to build the generated SMM stage failed.
     Tool(String),
 }
 
@@ -69,35 +56,20 @@ impl From<std::io::Error> for BuildError {
     }
 }
 
-/// Build options for a standalone SMM image.
 #[derive(Debug, Clone, Copy)]
 pub struct ImageOptions {
-    /// Number of precompiled PIC entry stubs to include.
     pub entry_count: u16,
-    /// Per-CPU SMM stack size.
     pub stack_size: u32,
-    /// Include a coreboot-compatible module-args block in the handler/data region.
     pub coreboot_module_args: bool,
-    /// Mark the image as having been built with a generated coreboot header.
     pub coreboot_header: bool,
 }
 
-/// A generated SMM image and its optional coreboot offset header text.
 #[derive(Debug, Clone)]
 pub struct BuiltImage {
-    /// Native image bytes.
     pub image: Vec<u8>,
-    /// C header text for the coreboot loader, when requested.
     pub coreboot_header: Option<String>,
 }
 
-/// Build a standalone native SMM image.
-///
-/// Each entry stub is self-contained PIC code.  It starts at the architectural
-/// SMM entry point in 16-bit mode, builds a flat GDT from its current SMBASE,
-/// enters protected mode, enables long mode using the patched CR3, sets the
-/// per-CPU stack from [`fstart_smm::runtime::SmmEntryParams`], calls the copied
-/// Rust SMM handler, and finally exits SMM with `rsm`.
 pub fn build_image(
     options: ImageOptions,
     handler: &SmmHandlerImage,
@@ -216,7 +188,6 @@ pub fn build_image(
     })
 }
 
-/// Build and write an SMM image, plus an optional generated coreboot header.
 pub fn write_image(
     options: ImageOptions,
     handler: &SmmHandlerImage,
@@ -240,16 +211,12 @@ pub fn write_image(
     Ok(built)
 }
 
-/// Linked SMM handler code and entry offset.
 #[derive(Debug, Clone)]
 pub struct SmmHandlerImage {
-    /// PIC handler .text bytes copied into the common SMM image region.
     pub code: Vec<u8>,
-    /// Offset of `fstart_smm_handler` inside `code`.
     pub entry_offset: usize,
 }
 
-/// Link a selected-board SMM staticlib and extract its handler text.
 pub fn handler_from_archive(
     archive: &Path,
     work_dir: &Path,

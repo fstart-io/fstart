@@ -1,5 +1,3 @@
-//! Allwinner eGON image post-processing.
-
 use std::path::Path;
 
 const EGON_MAGIC: &[u8; 8] = b"eGON.BT0";
@@ -7,7 +5,6 @@ const CHECKSUM_STAMP: u32 = 0x5F0A6C39;
 const HEADER_LEN: usize = 96;
 const SPL_SIGNATURE: &[u8; 4] = b"SPL\x02";
 
-/// Patch an Allwinner eGON binary: compute size, pad, write length + checksum.
 pub fn patch_file(bin_path: &Path) -> Result<(), String> {
     let mut data = std::fs::read(bin_path).map_err(|e| format!("failed to read binary: {e}"))?;
 
@@ -25,8 +22,6 @@ pub fn patch_file(bin_path: &Path) -> Result<(), String> {
         ));
     }
 
-    // U-Boot's sunxi_egon.c uses PAD_SIZE = 8192; the BROM reads this many
-    // bytes from the boot medium.
     let raw_size = data.len();
     let image_size = ((raw_size + 0x1FFF) & !0x1FFF) as u32;
     data.resize(image_size as usize, 0);
@@ -46,7 +41,6 @@ pub fn patch_file(bin_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Verify an Allwinner eGON binary using U-Boot's `egon_verify_header()` algorithm.
 pub fn verify(data: &[u8]) -> Result<(), String> {
     if data.len() < HEADER_LEN {
         return Err("verify: binary too small".to_string());
@@ -101,7 +95,6 @@ pub fn verify(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Patch the Allwinner eGON header at the start of an FFS image.
 pub fn patch_ffs(ffs_image: &mut [u8], bootblock_size: u32) -> Result<(), String> {
     if (ffs_image.len() as u32) < bootblock_size {
         return Err(format!(

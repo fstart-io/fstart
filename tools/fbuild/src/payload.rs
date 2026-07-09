@@ -1,27 +1,17 @@
-//! CLI payload selection for board-owned host tools.
-
 use clap::ValueEnum;
 use fstart_core::{BoardConfig, Compression, FdtSource, PayloadConfig, PayloadKind};
 
-/// Payload backend selected by the fbuild/xtask CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PayloadChoice {
-    /// UEFI payload via CrabEFI.
     Uefi,
-    /// LinuxBoot-style kernel payload.
     Linux,
-    /// Flattened Image Tree payload.
     Fit,
-    /// Interactive firmware shell payload.
     Shell,
-    /// Custom ELF payload.
     Elf,
-    /// No payload; halt after firmware init.
     Halt,
 }
 
 impl PayloadChoice {
-    /// Return the CLI spelling for forwarding to the board-owned host tool.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -46,7 +36,6 @@ impl PayloadChoice {
     }
 }
 
-/// Apply a CLI payload override to board metadata.
 pub fn apply_payload_override(config: &mut BoardConfig, choice: Option<PayloadChoice>) {
     apply_to_payload(&mut config.payload, choice);
 }

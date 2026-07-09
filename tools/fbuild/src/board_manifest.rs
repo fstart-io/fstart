@@ -1,34 +1,18 @@
-//! Board discovery from per-board Cargo metadata.
-//!
-//! Boards are normal crates under `boards/` with a small
-//! `[package.metadata.fstart]` table. `xtask` discovers those packages from
-//! Cargo metadata; stage builds use the board-owned package manifest directly.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Discovery metadata for one board crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardManifest {
-    /// Stable fstart board name.
     pub board: String,
-    /// Cargo package name for the board crate.
     pub package: String,
-    /// Board crate directory.
     pub dir: PathBuf,
-    /// Platform metadata string from the board crate.
     pub platform: Option<String>,
-    /// Rust target triple metadata string from the board crate.
     pub target: Option<String>,
-    /// Board-selected Cargo/backend features.
     pub features: Vec<String>,
-    /// Whether this board exports ACPI-only device metadata.
     pub acpi_only_devices: bool,
-    /// Optional Cargo binary that owns this board's static stage adapter.
     pub stage_bin: Option<String>,
 }
 
-/// Discover every board crate below `boards/`.
 #[allow(dead_code)]
 pub fn discover(workspace_root: &Path) -> Result<Vec<BoardManifest>, String> {
     let boards_dir = workspace_root.join("boards");
@@ -52,7 +36,6 @@ pub fn discover(workspace_root: &Path) -> Result<Vec<BoardManifest>, String> {
     Ok(boards)
 }
 
-/// Find one board by its stable fstart name.
 pub fn find(workspace_root: &Path, board_name: &str) -> Result<BoardManifest, String> {
     let dir = workspace_root.join("boards").join(board_name);
     let manifest = dir.join("Cargo.toml");

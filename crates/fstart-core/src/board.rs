@@ -95,7 +95,7 @@ pub struct BoardConfig {
     /// Each SoC family has its own boot ROM that expects a particular
     /// binary layout on the boot medium (SD card, SPI flash, eMMC).
     /// When set, codegen emits the required header/structure in dedicated
-    /// linker sections and xtask patches length/checksum fields post-build.
+    /// linker sections and fbuild patches length/checksum fields post-build.
     ///
     /// This is intentionally NOT a generic abstraction — each variant
     /// carries the exact semantics of one SoC family's boot ROM.
@@ -107,7 +107,7 @@ pub struct BoardConfig {
     /// The normal `.ffs` output is a firmware filesystem blob. Hardware flash
     /// programmers usually need the entire NOR image, with XIP stages overlaid
     /// at their linked physical flash addresses and unused bytes filled with
-    /// `0xff`. When true, `xtask assemble` writes
+    /// `0xff`. When true, `fbuild assemble` writes
     /// `target/ffs/<board>-<size>m.pflash` in addition to `<board>.ffs`.
     #[serde(default)]
     pub full_flash_image: bool,
@@ -337,10 +337,10 @@ pub enum PayloadKind {
 /// When to parse a FIT image.
 ///
 /// Both modes use the same parser code (`fstart-fit`); this controls
-/// whether extraction happens at buildtime (xtask) or runtime (firmware).
+/// whether extraction happens at buildtime (fbuild) or runtime (firmware).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FitParseMode {
-    /// Parse at buildtime: xtask reads the .itb, extracts kernel/ramdisk/fdt
+    /// Parse at buildtime: fbuild reads the .itb, extracts kernel/ramdisk/fdt
     /// components, and embeds them as separate FFS entries. The firmware
     /// loads them as individual blobs (like LinuxBoot).
     Buildtime,

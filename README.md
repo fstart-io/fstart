@@ -17,14 +17,14 @@ file format may change drastically without notice.
 
 ```bash
 # Run a pre-defined board in QEMU
-cargo xtask run --board qemu-riscv64
-cargo xtask run --board qemu-aarch64
+cargo fbuild run --board qemu-riscv64
+cargo fbuild run --board qemu-aarch64
 
 # Build without running
-cargo xtask build --board qemu-riscv64
+cargo fbuild build --board qemu-riscv64
 
 # Build a signed firmware image (FFS)
-cargo xtask assemble --board qemu-riscv64
+cargo fbuild assemble --board qemu-riscv64
 ```
 
 ## Documentation

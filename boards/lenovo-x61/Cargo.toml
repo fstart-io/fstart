@@ -20,7 +20,7 @@ features = [
 
 [features]
 default = []
-host = ["dep:xtask", "fstart-platform-intel/host"]
+host = ["dep:fbuild", "fstart-platform-intel/host"]
 runtime = []
 crabefi = ["fstart-stage?/crabefi"]
 stage = [
@@ -79,7 +79,7 @@ fstart-smbios = { path = "../../crates/fstart-smbios" }
 fstart-smm-runtime = { path = "../../crates/fstart-smm-runtime", optional = true }
 fstart-smm-stage = { path = "../../crates/fstart-smm-stage", optional = true }
 fstart-stage = { path = "../../crates/fstart-stage", optional = true }
-xtask = { path = "../../xtask", optional = true }
+fbuild = { path = "../../tools/fbuild", optional = true }
 
 [[bin]]
 name = "fstart-stage"

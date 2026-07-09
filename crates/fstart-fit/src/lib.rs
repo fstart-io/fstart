@@ -10,7 +10,7 @@
 //! operates on `&[u8]` slices via zero-copy FDT parsing (dtoolkit). The
 //! same parsing code runs at:
 //!
-//! - **Buildtime** (xtask, `std` feature): read `.itb` file from disk,
+//! - **Buildtime** (fbuild, `std` feature): read `.itb` file from disk,
 //!   extract components, embed in FFS as separate entries.
 //! - **Runtime** (firmware, `no_std`): parse FIT blob from flash, extract
 //!   and load components to their specified addresses.

@@ -78,7 +78,7 @@
             nativeBuildInputs = [
               rust
 
-              # QEMU, all system emulators used by xtask and CI smoke tests.
+              # QEMU, all system emulators used by fbuild and CI smoke tests.
               pkgs.qemu
 
               # CI payload build resources. Keep this in sync with

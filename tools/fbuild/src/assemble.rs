@@ -1,0 +1,35 @@
+use std::path::{Path, PathBuf};
+
+pub fn assemble_with_opts(
+    board_name: &str,
+    release: bool,
+    kernel: Option<&str>,
+    firmware: Option<&str>,
+) -> Result<PathBuf, String> {
+    let _ = (release, kernel, firmware);
+    Err(format!(
+        "board '{board_name}' must be assembled through its board-owned host tool"
+    ))
+}
+
+pub fn assemble_with_parsed(
+    workspace_root: &Path,
+    board_manifest: crate::board_manifest::BoardManifest,
+    parsed: crate::build_plan::ParsedBoard,
+    release: bool,
+    kernel_path: Option<&str>,
+    firmware_path: Option<&str>,
+    fit_path: Option<&str>,
+) -> Result<PathBuf, String> {
+    let build_result =
+        crate::build_board::build_with_parsed(workspace_root, &board_manifest, &parsed, release)?;
+    fstart_image_build::assemble::assemble(
+        workspace_root,
+        &board_manifest.dir,
+        &parsed.config,
+        &build_result.stages,
+        kernel_path,
+        firmware_path,
+        fit_path,
+    )
+}

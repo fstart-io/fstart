@@ -19,7 +19,7 @@ features = [
 
 [features]
 default = []
-host = ["dep:xtask", "fstart-platform-intel/host"]
+host = ["dep:fbuild", "fstart-platform-intel/host"]
 runtime = []
 crabefi = ["fstart-stage?/crabefi"]
 stage = [
@@ -69,7 +69,7 @@ fstart-driver-uart = { path = "../../crates/fstart-driver-uart", features = ["pi
 fstart-hda = { path = "../../crates/fstart-hda" }
 fstart-smbios = { path = "../../crates/fstart-smbios" }
 fstart-stage = { path = "../../crates/fstart-stage", optional = true }
-xtask = { path = "../../xtask", optional = true }
+fbuild = { path = "../../tools/fbuild", optional = true }
 
 [[bin]]
 name = "fstart-stage"

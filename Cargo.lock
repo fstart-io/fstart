@@ -428,6 +428,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "fbuild"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fstart-core",
+ "fstart-image-build",
+ "heapless",
+ "object",
+]
+
+[[package]]
 name = "fdt"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -488,6 +499,27 @@ dependencies = [
  "object",
  "ufmt",
  "x86",
+]
+
+[[package]]
+name = "fstart-board-lenovo-x61"
+version = "0.1.0"
+dependencies = [
+ "fbuild",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-hda",
+ "fstart-platform-intel",
+ "fstart-platform-x86_64",
+ "fstart-smbios",
+ "fstart-smm-runtime",
+ "fstart-smm-stage",
+ "fstart-stage",
 ]
 
 [[package]]
@@ -602,6 +634,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-image-build"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "fstart-core",
+ "fstart-crypto",
+ "fstart-ffs",
+ "fstart-fit",
+ "fstart-smm",
+ "object",
+ "rand_core",
+]
+
+[[package]]
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
@@ -664,15 +710,6 @@ version = "0.1.0"
 [[package]]
 name = "fstart-smm"
 version = "0.1.0"
-
-[[package]]
-name = "fstart-smm-image"
-version = "0.1.0"
-dependencies = [
- "clap",
- "fstart-smm",
- "object",
-]
 
 [[package]]
 name = "fstart-smm-runtime"
@@ -1431,22 +1468,6 @@ dependencies = [
  "const_fn",
  "rustversion",
  "volatile",
-]
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
-dependencies = [
- "clap",
- "ed25519-dalek",
- "fstart-core",
- "fstart-crypto",
- "fstart-ffs",
- "fstart-fit",
- "fstart-smm-image",
- "heapless",
- "object",
- "rand_core",
 ]
 
 [[package]]

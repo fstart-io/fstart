@@ -1,17 +1,18 @@
 [package]
-name = "xtask"
+name = "fstart-image-build"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-clap = { workspace = true }
 object = { workspace = true }
 fstart-core = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-fit = { workspace = true, features = ["std"] }
-heapless = { workspace = true }
 fstart-crypto = { workspace = true, features = ["all"] }
-fstart-smm-image = { workspace = true }
+fstart-smm = { workspace = true, features = ["std", "coreboot"] }
 ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+
+[build-dependencies]
+object = { workspace = true }

@@ -1,9 +1,3 @@
-//! Board-owned host tool entry points.
-//!
-//! A board-owned `fstart-host` binary calls this module with the selected
-//! board crate's Rust config function. Host build facts come from the board
-//! `Cargo.toml` `[package.metadata.fstart]` table.
-
 use clap::{Parser, Subcommand};
 use fstart_core::acpi::AcpiExtraDevice;
 use fstart_core::{BoardConfig, StageLayout};
@@ -11,7 +5,6 @@ use fstart_core::{BoardConfig, StageLayout};
 use crate::build_plan::ParsedBoard;
 use crate::payload::{apply_payload_override, PayloadChoice};
 
-/// Rust callbacks exported by a board crate for host tooling.
 #[derive(Clone, Copy)]
 pub struct BoardCallbacks {
     pub board_config: fn() -> BoardConfig,
@@ -64,12 +57,11 @@ enum Command {
     },
 }
 
-/// Declare a board-owned host tool entry point.
 #[macro_export]
 macro_rules! board_host_tool {
     ($board_config:path) => {
         fn main() {
-            xtask::board_tool::main(xtask::board_tool::BoardCallbacks {
+            fbuild::board_tool::main(fbuild::board_tool::BoardCallbacks {
                 board_config: $board_config,
                 acpi_only_devices: None,
             });
@@ -77,7 +69,7 @@ macro_rules! board_host_tool {
     };
     ($board_config:path, acpi_only_devices = $acpi_only_devices:path) => {
         fn main() {
-            xtask::board_tool::main(xtask::board_tool::BoardCallbacks {
+            fbuild::board_tool::main(fbuild::board_tool::BoardCallbacks {
                 board_config: $board_config,
                 acpi_only_devices: Some($acpi_only_devices),
             });
@@ -85,7 +77,6 @@ macro_rules! board_host_tool {
     };
 }
 
-/// Run a board-owned host tool using typed Rust config and Cargo metadata.
 pub fn main(callbacks: BoardCallbacks) {
     let cli = Cli::parse();
     let result = match cli.command {

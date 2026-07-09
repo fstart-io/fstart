@@ -1,21 +1,9 @@
-//! xtask — fstart firmware build orchestrator.
-//!
-//! Usage:
-//!   cargo xtask build --board qemu-riscv64
-//!   cargo xtask build --board qemu-riscv64 --release --payload uefi
-//!   cargo xtask run --board qemu-riscv64 --payload linux --kernel bzImage
-//!   cargo xtask assemble --board qemu-riscv64 --payload fit --fit image.itb
-//!   cargo xtask inspect --image target/ffs/qemu-riscv64.ffs
-//!   cargo xtask test --board qemu-riscv64
-//!   cargo xtask flash --board sifive-unmatched-hw
-//!   cargo xtask flash --board sifive-unmatched-hw --probe-run
-
 use clap::{Parser, Subcommand};
+use fbuild::{assemble, board_manifest, build_board, payload::PayloadChoice};
 use std::process;
-use xtask::{assemble, board_manifest, build_board, inspect, payload::PayloadChoice};
 
 #[derive(Parser)]
-#[command(name = "xtask", about = "fstart firmware build orchestrator")]
+#[command(name = "fbuild", about = "fstart firmware build orchestrator")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -23,107 +11,68 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Build firmware image for a board
     Build {
-        /// Board name (directory under boards/)
         #[arg(short, long)]
         board: String,
-        /// Build in release mode
         #[arg(short, long, default_value_t = false)]
         release: bool,
-        /// Payload backend: uefi, linux, fit, shell, elf, or halt
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
     },
-    /// Build and run in QEMU
     Run {
-        /// Board name
         #[arg(short, long)]
         board: String,
-        /// Build in release mode
         #[arg(short, long, default_value_t = false)]
         release: bool,
-        /// Payload backend: uefi, linux, fit, shell, elf, or halt
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
-        /// Path to kernel binary (for LinuxBoot payloads)
         #[arg(short, long)]
         kernel: Option<String>,
-        /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
         #[arg(short, long)]
         firmware: Option<String>,
-        /// Path to FIT image (for FIT payloads)
         #[arg(long)]
         fit: Option<String>,
-        /// Path to disk image (qcow2/raw) — attached as NVMe
         #[arg(short, long)]
         disk: Option<String>,
-        /// Amount of RAM (e.g., "1G", "512M"). Default: QEMU default.
         #[arg(short, long)]
         memory: Option<String>,
     },
-    /// Build and run tests in QEMU
     Test {
-        /// Board name
         #[arg(short, long)]
         board: String,
     },
-    /// Assemble an FFS firmware image (build first, then package)
     Assemble {
-        /// Board name
         #[arg(short, long)]
         board: String,
-        /// Build in release mode
         #[arg(short, long, default_value_t = false)]
         release: bool,
-        /// Payload backend: uefi, linux, fit, shell, elf, or halt
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
-        /// Path to kernel binary (for LinuxBoot payloads)
         #[arg(short, long)]
         kernel: Option<String>,
-        /// Path to firmware binary (OpenSBI/ATF, for LinuxBoot payloads)
         #[arg(short, long)]
         firmware: Option<String>,
-        /// Path to FIT image (for FIT payloads)
         #[arg(long)]
         fit: Option<String>,
     },
-    /// Inspect an FFS firmware image (find anchor, display filesystem)
     Inspect {
-        /// Path to FFS image file
         #[arg(short, long)]
         image: String,
     },
-    /// Flash firmware to real hardware via probe-rs JTAG
     Flash {
-        /// Board name
         #[arg(short, long)]
         board: String,
-        /// Build in release mode
         #[arg(short, long, default_value_t = false)]
         release: bool,
-        /// Use `probe-rs run` (load to RAM + execute) instead of `probe-rs download` (flash to SPI NOR)
         #[arg(long, default_value_t = false)]
         probe_run: bool,
-        /// probe-rs chip name (default: auto-detect from board config)
         #[arg(long)]
         chip: Option<String>,
-        /// probe-rs probe selector (e.g., "0403:6010")
         #[arg(long)]
         probe: Option<String>,
     },
 }
 
-/// Build and flash firmware to real hardware via probe-rs.
-///
-/// Two-step process:
-/// 1. Assemble FFS (stage + LZ4-compressed payloads) and flash to SPI NOR
-///    via `probe-rs download --binary-format bin --base-address 0x20000000`
-/// 2. Load stage ELF to L2 LIM via `probe-rs run` (JTAG RAM load + execute)
-///
-/// If `--probe-run` is set, skips the SPI NOR flash step and only loads
-/// the stage ELF to LIM (assumes FFS was previously flashed).
 fn flash_board(
     board_name: &str,
     release: bool,
@@ -131,7 +80,6 @@ fn flash_board(
     chip: Option<&str>,
     probe_selector: Option<&str>,
 ) -> Result<(), String> {
-    // Determine chip name — default to FU740-C000 for sifive-unmatched boards.
     let chip_name = chip.unwrap_or_else(|| {
         if board_name.contains("sifive-unmatched") || board_name.contains("fu740") {
             "FU740-C000"
@@ -140,12 +88,10 @@ fn flash_board(
         }
     });
 
-    // Find probe-rs binary.
     let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
     eprintln!("[fstart] using probe-rs: {}", probe_rs.display());
     eprintln!("[fstart] chip: {chip_name}");
 
-    // Helper to build a probe-rs command with common args.
     let mk_cmd = |subcmd: &str| -> std::process::Command {
         let mut cmd = std::process::Command::new(&probe_rs);
         cmd.arg(subcmd)
@@ -160,7 +106,6 @@ fn flash_board(
     };
 
     if !probe_run {
-        // Step 1: Assemble FFS with LZ4-compressed payloads and flash to SPI NOR.
         eprintln!("[fstart] step 1/2: assembling FFS and flashing to SPI NOR...");
         let ffs_path = assemble::assemble_with_opts(board_name, release, None, None)?;
         let ffs_size = std::fs::metadata(&ffs_path).map(|m| m.len()).unwrap_or(0);
@@ -196,7 +141,6 @@ fn flash_board(
         eprintln!("[fstart] --probe-run: skipping SPI NOR flash (using existing FFS)");
     }
 
-    // Step 2: Build stage and load to L2 LIM via probe-rs run.
     eprintln!("[fstart] step 2/2: loading stage to L2 LIM via JTAG...");
     let res = build_board::build(board_name, release)?;
     let elf_path = &res.primary_binary().path;
@@ -216,9 +160,7 @@ fn flash_board(
     Ok(())
 }
 
-/// Find probe-rs binary: check ~/src/probe-rs/target first, then PATH.
 fn find_probe_rs() -> Result<std::path::PathBuf, String> {
-    // Check the local fork build first.
     let home = std::env::var("HOME").unwrap_or_default();
     let local_paths = [
         format!("{home}/src/probe-rs/target/release/probe-rs"),
@@ -231,11 +173,9 @@ fn find_probe_rs() -> Result<std::path::PathBuf, String> {
         }
     }
 
-    // Fall back to PATH.
     which_in_path("probe-rs").ok_or_else(|| "not in PATH or ~/src/probe-rs/target".to_string())
 }
 
-/// Simple which(1) implementation: find an executable on PATH.
 fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
     let path_var = std::env::var("PATH").ok()?;
     for dir in path_var.split(':') {
@@ -378,7 +318,7 @@ fn main() {
             &board,
             &board_tool_assemble_args("assemble", release, payload, kernel, firmware, fit),
         ),
-        Command::Inspect { image } => inspect::inspect(&image),
+        Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
         Command::Flash {
             board,
             release,

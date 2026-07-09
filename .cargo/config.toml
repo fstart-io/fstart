@@ -1,2 +1,2 @@
 [alias]
-xtask = "run --package xtask --"
+fbuild = "run --package fbuild --"

@@ -1,13 +1,12 @@
 [package]
-name = "fstart-smm-image"
+name = "fbuild"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 clap = { workspace = true }
-fstart-smm = { workspace = true, features = ["std", "coreboot"] }
 object = { workspace = true }
-
-[build-dependencies]
-object = { workspace = true }
+fstart-core = { workspace = true }
+fstart-image-build = { workspace = true }
+heapless = { workspace = true }

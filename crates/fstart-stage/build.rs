@@ -1,6 +1,6 @@
 //! Build-script shim for fstart-stage.
 //!
-//! Board-aware build planning lives in xtask and board crates. This script only
+//! Board-aware build planning lives in fbuild and board crates. This script only
 //! forwards optional target environment variables for shared stage support code.
 
 use std::env;

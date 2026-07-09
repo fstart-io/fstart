@@ -1,8 +1,3 @@
-//! FFS image inspection — scan for the anchor and display the filesystem.
-//!
-//! Usage:
-//!   cargo xtask inspect path/to/image.ffs
-
 use std::fs;
 use std::path::Path;
 
@@ -12,7 +7,6 @@ use fstart_core::ffs::{
 };
 use fstart_ffs::FfsReader;
 
-/// Read an FFS image from disk, find the anchor, and print the filesystem.
 pub fn inspect(path: &str) -> Result<(), String> {
     let path = Path::new(path);
     let data = fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
@@ -22,15 +16,10 @@ pub fn inspect(path: &str) -> Result<(), String> {
 
     let _full_reader = FfsReader::new(&data);
 
-    // --- Anchor ---
     let anchors = find_anchors(&data);
     let (anchor_offset, anchor) = choose_display_anchor(&anchors)
         .ok_or_else(|| "no FFS anchor found (FSTART01 magic not present)".to_string())?;
 
-    // Anchors store offsets relative to the FFS/BIOS image base.  Full-flash
-    // images (e.g. Intel IFD pflash) embed that image at a non-zero offset, so
-    // inspect the slice whose base makes the scanned anchor line up with the
-    // anchor's own image-relative offset.
     let image_base = anchor_offset
         .checked_sub(anchor.anchor_offset as usize)
         .ok_or_else(|| {
@@ -86,7 +75,6 @@ pub fn inspect(path: &str) -> Result<(), String> {
     }
     println!();
 
-    // --- Manifest ---
     let manifest = reader
         .read_manifest(&anchor)
         .map_err(|e| format!("failed to read/verify manifest: {e:?}"))?;
@@ -148,7 +136,6 @@ pub fn inspect(path: &str) -> Result<(), String> {
         None
     };
 
-    // --- Regions ---
     for region in &manifest.regions {
         let kind_label = match &region.content {
             RegionContent::Container { children } => {
@@ -256,7 +243,6 @@ pub fn inspect(path: &str) -> Result<(), String> {
                             bootblock_note,
                         );
 
-                        // Digests
                         if let Some(h) = &digests.sha256 {
                             println!("  {cont}    sha256:  {}", hex_full(h));
                         }
@@ -264,7 +250,6 @@ pub fn inspect(path: &str) -> Result<(), String> {
                             println!("  {cont}    sha3:    {}", hex_full(h));
                         }
 
-                        // Segments
                         for (j, seg) in segments.iter().enumerate() {
                             let is_last_seg = j == segments.len() - 1;
                             let seg_branch = if is_last_seg {
@@ -350,10 +335,6 @@ fn find_anchors(data: &[u8]) -> Vec<(usize, AnchorBlock)> {
 }
 
 fn choose_display_anchor(anchors: &[(usize, AnchorBlock)]) -> Option<(usize, AnchorBlock)> {
-    // Full-flash x86 images contain both the FFS copy of the anchor and the
-    // XIP bootblock's top-of-flash anchor. Prefer the XIP anchor when present;
-    // it has the same image base but an image-relative offset beyond the FFS
-    // blob's signed total_image_size.
     anchors
         .iter()
         .copied()
@@ -393,13 +374,11 @@ fn flags_str(f: SegmentFlags) -> String {
     s
 }
 
-/// First 8 bytes as hex with trailing ellipsis.
 fn hex_short(bytes: &[u8; 32]) -> String {
     let prefix: String = bytes[..8].iter().map(|b| format!("{b:02x}")).collect();
     format!("{prefix}...")
 }
 
-/// Full 32-byte digest as hex string.
 fn hex_full(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

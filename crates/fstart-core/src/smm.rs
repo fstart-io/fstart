@@ -27,7 +27,7 @@ pub struct CorebootSmmCompat {
 pub struct SmmConfig {
     /// Number of PIC entry stubs to precompile into the SMM image.
     ///
-    /// If omitted, xtask uses the stage build's MP CPU count. When present,
+    /// If omitted, fbuild uses the stage build's MP CPU count. When present,
     /// it must be greater than or equal to that count.
     #[serde(default)]
     pub entry_points: Option<u16>,

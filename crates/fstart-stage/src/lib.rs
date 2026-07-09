@@ -1059,7 +1059,7 @@ fn effective_image_size(media_size: usize, anchor: &fstart_core::ffs::AnchorBloc
 
 /// Fixed FFS anchor placeholder for handwritten stage flow.
 ///
-/// `xtask assemble` patches this block in the flat stage binary after laying out
+/// `fbuild assemble` patches this block in the flat stage binary after laying out
 /// the complete firmware image.
 #[used]
 #[cfg_attr(target_os = "none", link_section = ".fstart.anchor")]

@@ -1,10 +1,3 @@
-//! Board build orchestration.
-//!
-//! 1. Ask the Rust board crate for metadata
-//! 2. Determine target triple, cargo features, and environment
-//! 3. Invoke cargo build on the board-owned stage binary
-//! 4. Return the path(s) to the built binary(ies)
-
 use fstart_core::{SocImageFormat, StageLayout};
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
@@ -17,42 +10,22 @@ struct SmmStageBuild {
     link_dir: PathBuf,
 }
 
-/// Result of building a board — one or more stage binaries.
 pub struct BuildResult {
-    /// Built stage binaries, in order. For monolithic boards this has one entry
-    /// with name "stage". For multi-stage boards it has one entry per stage.
-    pub stages: Vec<StageBinary>,
+    pub stages: Vec<fstart_image_build::StageBinary>,
 }
 
-/// A built stage binary.
-pub struct StageBinary {
-    /// Stage name (e.g., "bootblock", "main", or "stage" for monolithic).
-    pub name: String,
-    /// Path to the ELF binary on disk (used by assembler diagnostics/packaging).
-    pub path: PathBuf,
-    /// Path to run in QEMU (flat binary for AArch64, same as `path` otherwise).
-    pub run_path: PathBuf,
-    /// Load address from the board config.
-    pub load_addr: u64,
-}
-
-/// Generated standalone SMM artifacts for a board build.
 #[derive(Debug, Clone)]
 struct SmmArtifacts {
-    /// Native PIC SMM image consumed by fstart/coreboot loaders.
     image_path: PathBuf,
-    /// Optional coreboot-compatible generated offsets header.
     header_path: Option<PathBuf>,
 }
 
 impl BuildResult {
-    /// Get the first (or only) binary — used for QEMU boot.
-    pub fn primary_binary(&self) -> &StageBinary {
+    pub fn primary_binary(&self) -> &fstart_image_build::StageBinary {
         &self.stages[0]
     }
 }
 
-/// Build firmware for the given board. Returns all stage binaries.
 pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     let _ = release;
     Err(format!(
@@ -60,7 +33,6 @@ pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
     ))
 }
 
-/// Build firmware from already-loaded Rust board metadata.
 pub fn build_with_parsed(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
@@ -100,7 +72,7 @@ pub fn build_with_parsed(
             stage.soc_format,
             smm_artifacts.as_ref(),
         )?;
-        result.push(StageBinary {
+        result.push(fstart_image_build::StageBinary {
             name: stage.display_name.clone(),
             path: elf_path,
             run_path,
@@ -110,7 +82,6 @@ pub fn build_with_parsed(
 
     Ok(BuildResult { stages: result })
 }
-/// Build the standalone SMM image artifacts requested by the board.
 fn build_smm_artifacts(
     workspace_root: &std::path::Path,
     board_manifest: &crate::board_manifest::BoardManifest,
@@ -144,19 +115,25 @@ fn build_smm_artifacts(
         .emit_header
         .then(|| out_dir.join("fstart_smm_offsets.h"));
 
-    let options = fstart_smm_image::ImageOptions {
+    let options = fstart_image_build::smm_image::ImageOptions {
         entry_count,
         stack_size: smm.stack_size,
         coreboot_module_args: smm.coreboot.module_args,
         coreboot_header: smm.coreboot.emit_header,
     };
     let smm_stage = build_board_smm_stage(workspace_root, board_manifest)?;
-    let handler =
-        fstart_smm_image::handler_from_archive(&smm_stage.archive_path, &smm_stage.link_dir)
-            .map_err(|e| format!("failed to link SMM handler: {e}"))?;
-    let built =
-        fstart_smm_image::write_image(options, &handler, &image_path, header_path.as_deref())
-            .map_err(|e| format!("failed to build SMM image: {e}"))?;
+    let handler = fstart_image_build::smm_image::handler_from_archive(
+        &smm_stage.archive_path,
+        &smm_stage.link_dir,
+    )
+    .map_err(|e| format!("failed to link SMM handler: {e}"))?;
+    let built = fstart_image_build::smm_image::write_image(
+        options,
+        &handler,
+        &image_path,
+        header_path.as_deref(),
+    )
+    .map_err(|e| format!("failed to build SMM image: {e}"))?;
 
     eprintln!(
         "[fstart] SMM image: {} ({} bytes, {} entries)",
@@ -246,9 +223,14 @@ pub fn prepare_selected_board_workspace(
         .join(&board_manifest.board);
     fs::create_dir_all(selected.join("boards"))
         .map_err(|e| format!("failed to create selected board workspace: {e}"))?;
+    fs::create_dir_all(selected.join("tools"))
+        .map_err(|e| format!("failed to create selected tools dir: {e}"))?;
 
     replace_with_symlink(workspace_root.join("crates"), selected.join("crates"))?;
-    replace_with_symlink(workspace_root.join("xtask"), selected.join("xtask"))?;
+    replace_with_symlink(
+        workspace_root.join("tools").join("fbuild"),
+        selected.join("tools").join("fbuild"),
+    )?;
     replace_with_symlink(
         workspace_root.join("Cargo.lock"),
         selected.join("Cargo.lock"),
@@ -313,11 +295,6 @@ fn max_smm_cpus(stages: &StageLayout) -> Option<u16> {
     }
 }
 
-/// Build a single board-owned stage binary.
-///
-/// `stage_name` is `None` for monolithic; `stage_env` is `car`, `ram`, or `monolithic`.
-/// Returns (elf_path, run_path). For AArch64 and RISC-V these differ
-/// (ELF vs flat binary for QEMU); for other platforms they are the same.
 #[allow(clippy::too_many_arguments)]
 fn build_one_stage(
     workspace_root: &std::path::Path,
@@ -398,16 +375,12 @@ fn build_one_stage(
     rustflags.push('"');
     rustflags.push_str(" -Clink-arg=-T");
     rustflags.push_str(&link_ld.display().to_string());
-    // FSTART_EXTRA_RUSTFLAGS (if set) is appended — CI uses this for
-    // -Dwarnings to catch generated-code regressions.
     if let Ok(extra) = std::env::var("FSTART_EXTRA_RUSTFLAGS") {
         rustflags.push(' ');
         rustflags.push_str(&extra);
     }
     cmd.env("RUSTFLAGS", &rustflags);
 
-    // Pass board/stage context to build scripts and the selected board crate.
-    // fstart-stage/build.rs forwards the generated linker script.
     cmd.env("FSTART_RUST_BOARD", &board_manifest.board);
     cmd.env("FSTART_LINKER_SCRIPT", &link_ld);
     cmd.env("FSTART_STAGE_FEATURES", features);
@@ -439,15 +412,12 @@ fn build_one_stage(
         ));
     }
 
-    // Determine output binary path.
     let elf_path = workspace_root
         .join("target")
         .join(target)
         .join(profile)
         .join(stage_bin);
 
-    // For multi-stage: copy the binary to a stage-specific name so subsequent
-    // builds don't overwrite it (cargo always outputs to the selected stage-bin name).
     let final_elf = if let Some(name) = stage_name {
         let dest = elf_path.with_file_name(format!("fstart-{name}"));
         std::fs::copy(&elf_path, &dest).map_err(|e| format!("failed to copy stage binary: {e}"))?;
@@ -456,16 +426,6 @@ fn build_one_stage(
         elf_path.clone()
     };
 
-    // Produce a flat binary for QEMU. AArch64 uses -bios which needs a raw
-    // binary; RISC-V uses pflash which also needs raw binary data.
-    //
-    // Both platforms use XIP (code in ROM, data in RAM). The .data
-    // section's LMA is in ROM (via `AT > ROM` in the linker script) so it
-    // is contiguous with .text/.rodata and must NOT be removed — the _start
-    // assembly copies those initializers to RAM. Only .bss is removed: it
-    // is NOLOAD and its VMA is in RAM, which would cause naive flat extraction to span
-    // the ROM→RAM gap (producing a multi-GiB file of mostly zeros). The
-    // entry code clears BSS at runtime.
     let run_path = if needs_flat_binary {
         let bin_path = final_elf.with_extension("bin");
         eprintln!(
@@ -475,10 +435,8 @@ fn build_one_stage(
         );
         write_flat_binary(&final_elf, &bin_path)?;
 
-        // Allwinner eGON: compute the actual binary size, pad to
-        // 512-byte alignment, and patch both length and checksum.
         if let SocImageFormat::AllwinnerEgon = soc_format {
-            crate::image::egon::patch_file(&bin_path)?;
+            fstart_image_build::image::egon::patch_file(&bin_path)?;
         }
 
         bin_path
@@ -490,7 +448,6 @@ fn build_one_stage(
     Ok((final_elf, run_path))
 }
 
-/// Public wrapper for workspace root (used by other xtask modules).
 pub fn workspace_root_pub() -> Result<PathBuf, String> {
     workspace_root()
 }
@@ -595,7 +552,6 @@ fn workspace_root() -> Result<PathBuf, String> {
         return Ok(PathBuf::from(root));
     }
 
-    // Walk up from current dir looking for the workspace Cargo.toml
     let mut dir = std::env::current_dir().map_err(|e| format!("no cwd: {e}"))?;
     loop {
         let cargo_toml = dir.join("Cargo.toml");

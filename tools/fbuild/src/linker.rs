@@ -1,5 +1,3 @@
-//! Generate linker scripts from board memory map.
-
 use std::fmt::Write;
 
 use fstart_core::board::MicrocodeConfig;
@@ -9,15 +7,11 @@ use fstart_core::{
     StageLayout,
 };
 
-/// Generate a linker script for the given board and (optional) stage.
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
     let mut out = String::new();
 
     let arch = config.platform.linker_arch();
 
-    // Load address, stack size, and optional data / page-table
-    // reservations — pulled from either the monolithic stage or the
-    // named multi-stage entry.
     let (load_addr, stack_size, heap_size, data_addr, _page_table_addr) =
         match (&config.stages, stage_name) {
             (StageLayout::Monolithic(mono), _) => (
@@ -47,39 +41,23 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             _ => (0x8000_0000, 0x10000, 0, None, None),
         };
 
-    // Check if load_addr falls within a ROM region (XIP) or RAM region.
     let rom_region =
         config.memory.regions.iter().find(|r| {
             r.kind == RegionKind::Rom && load_addr >= r.base && load_addr < r.base + r.size
         });
 
-    // Cache-as-RAM landing decision.
-    //
-    // An XIP stage (load_addr inside a ROM region) automatically uses
-    // `memory.car` for writable sections if the board declares it.
-    // This captures the x86 pre-DRAM pattern — bootblock / romstage
-    // use CAR because DRAM isn't trained yet — without any per-stage
-    // flag: the distinction between "writable in RAM" (ARM, RISC-V,
-    // post-DRAM x86) and "writable in CAR" (pre-DRAM x86) is fully
-    // determined by whether the board declares `memory.car`.
     let car_config = if rom_region.is_some() {
         config.memory.car.as_ref().map(|c| (c.base, c.size))
     } else {
         None
     };
 
-    // Find the appropriate RAM region. For XIP builds (load_addr in ROM),
-    // the first RAM region is used for writable sections. For RAM builds
-    // (load_addr in RAM), use the RAM region containing load_addr — this
-    // matters for multi-stage boards with SRAM + DRAM where different
-    // stages run from different RAM regions.
     let ram_region = config
         .memory
         .regions
         .iter()
         .find(|r| r.kind == RegionKind::Ram && load_addr >= r.base && load_addr < r.base + r.size)
         .or_else(|| {
-            // load_addr not in any RAM region (XIP) — use first RAM region
             config
                 .memory
                 .regions
@@ -87,7 +65,6 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
                 .find(|r| r.kind == RegionKind::Ram)
         })
         .or_else(|| {
-            // No RAM region at all — find any region containing load_addr
             config
                 .memory
                 .regions
@@ -95,9 +72,6 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
                 .find(|r| load_addr >= r.base && load_addr < r.base + r.size)
         });
 
-    // In CAR mode, writable sections land in the CAR region instead
-    // of the board's RAM region. This decouples pre-DRAM stages from
-    // DRAM being available.
     let (ram_origin, ram_length) = if let Some((car_base, car_size)) = car_config {
         (car_base, car_size)
     } else {
@@ -106,9 +80,6 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             .unwrap_or((0x8000_0000, 0x0800_0000))
     };
 
-    // eGON header is only needed for the first stage (or monolithic). The
-    // BROM loads the first-stage binary with the eGON.BT0 header at offset 0.
-    // Later stages are loaded by fstart and don't need the header.
     let is_first_stage = match (&config.stages, stage_name) {
         (StageLayout::Monolithic(_), _) => true,
         (StageLayout::MultiStage(stages), Some(name)) => {
@@ -119,10 +90,6 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     let needs_egon_header =
         is_first_stage && matches!(config.soc_image_format, SocImageFormat::AllwinnerEgon);
 
-    // x86 CAR/postcar symbols. The first stage uses `_has_car` to decide
-    // whether to enter CAR setup. The stage-load helper tears CAR down in the bootblock
-    // trampoline before loading/jumping to the RAM stage, so non-first stages
-    // must not run `_car_teardown` again.
     let has_x86_car =
         config.platform == Platform::X86_64 && config.memory.car.is_some() && is_first_stage;
 
@@ -134,37 +101,17 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     .unwrap();
     writeln!(out, "OUTPUT_ARCH({arch})").unwrap();
 
-    // Allwinner eGON: the entry point is the eGON header's branch
-    // instruction (_head_jump) at offset 0, not the platform _start.
-    // Only for the first stage (which has the eGON header).
     if needs_egon_header {
         writeln!(out, "ENTRY(_head_jump)\n").unwrap();
     } else if config.platform == Platform::X86_64 && !is_first_stage {
-        // Non-first x86_64 stages use a 64-bit-only entry point.
-        // The bootblock already transitioned to long mode; the RAM stage
-        // just needs to set up stack, zero BSS, and call fstart_main.
         writeln!(out, "ENTRY(_start_ram)\n").unwrap();
     } else {
         writeln!(out, "ENTRY(_start)\n").unwrap();
     }
 
-    // Boot hart ID for multi-hart parking. On multi-hart SoCs, all harts
-    // start executing _start simultaneously. Only the hart matching this
-    // value continues; all others enter WFI. Default 0 is correct for
-    // single-hart platforms and QEMU virt.
     writeln!(out, "_boot_hart_id = {};", config.boot_hart_id).unwrap();
 
     if let Some(rom) = rom_region {
-        // XIP layout: code in ROM, data/bss/stack in RAM.
-        // When data_addr is set, place writable sections at that address
-        // instead of ram_origin (e.g., to avoid QEMU's DTB at RAM base).
-        //
-        // x86 boards may split the flash into a storage window and an
-        // executable bootblock window in the memory map.  The CPU/chipset
-        // still sees one SPI flash decode window, so the early ROM MTRR
-        // must cover the full flash aperture, not just the linker-selected
-        // bootblock subregion.  This matches coreboot's `_rom_mtrr_base`
-        // / `_rom_mtrr_mask` for foxconn/d41s: 0xff000000 / 0xff000000.
         let (x86_rom_mtrr_base, x86_rom_mtrr_size) = if config.platform == Platform::X86_64 {
             match &config.memory.flash_layout {
                 Some(FlashLayout::IntelIfd(layout)) => (layout.base, u64::from(layout.size)),
@@ -194,20 +141,10 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             x86_early_microcode_enabled(config),
         );
     } else {
-        // RAM-only layout: everything in RAM at load_addr.
-        //
-        // Use load_addr as the linker origin so the entry point is
-        // placed at the correct address. Available length extends to
-        // the end of the containing RAM region.
         let region_end = ram_origin + ram_length;
         let effective_origin = load_addr;
         let effective_length = region_end - effective_origin;
 
-        // For RAM-loaded firmware images whose boot medium starts at the load
-        // address, BSS and stack must be placed beyond the image area.
-        // Otherwise the entry-point BSS clearing and stack writes would corrupt
-        // the manifest and other embedded files before fstart_main can read
-        // them.
         let bss_origin =
             stage_memory_mapped_boot_media(config, stage_name).and_then(|(base, size)| {
                 if base != load_addr || size == 0 {
@@ -277,9 +214,6 @@ fn write_x86_car_symbols(out: &mut String, platform: Platform, has_x86_car: bool
     writeln!(out).unwrap();
     writeln!(out, "    /* x86 CAR/postcar symbols */").unwrap();
     writeln!(out, "    _has_car = {};", if has_x86_car { 1 } else { 0 }).unwrap();
-    // The platform crate always links the CAR setup object. Non-first
-    // RAM stages never execute `_car_setup`, but the labels it references
-    // still need absolute definitions so the object can link.
     writeln!(out, "    _car_base = 0;").unwrap();
     writeln!(out, "    _car_size = 0;").unwrap();
     writeln!(out, "    _ecar_stack = _stack_top;").unwrap();
@@ -287,12 +221,6 @@ fn write_x86_car_symbols(out: &mut String, platform: Platform, has_x86_car: bool
     writeln!(out, "    _rom_mtrr_mask = 0;").unwrap();
 }
 
-/// Generate linker script for XIP from ROM with data/bss/stack in RAM.
-///
-/// When `data_addr` is `Some(addr)`, writable sections (`.data`, `.bss`,
-/// stack) are placed at `addr` instead of the start of the RAM region.
-/// This is used on AArch64 QEMU where the platform places the DTB at the
-/// base of RAM (0x40000000) — BSS clearing would destroy it if placed there.
 #[allow(clippy::too_many_arguments)]
 fn generate_xip_layout(
     out: &mut String,
@@ -311,18 +239,9 @@ fn generate_xip_layout(
     x86_rom_mtrr_size: u64,
     x86_early_microcode_enabled: bool,
 ) {
-    // When data_addr is set, split RAM into two memory regions:
-    // RAMRO for read-only data (unused currently, but reserved),
-    // and RAMRW for writable sections starting at data_addr.
     let rw_origin = data_addr.unwrap_or(ram_origin);
     let rw_length = ram_length - (rw_origin - ram_origin);
 
-    // CAR/XIP stages need an explicit stack in the CAR window, but placing it
-    // immediately after BSS broke early x86 boot on real hardware. Keep CAR
-    // stack storage as a separate linker-owned region at the top of CAR (the
-    // traditional/coreboot-style CAR stack location) while still reserving it
-    // explicitly in the linker script. Post-DRAM RAM stages use the normal
-    // contiguous .bss + .stack layout below.
     let xip_stack_region = if car_config.is_some() {
         if stack_size >= rw_length {
             panic!(
@@ -375,11 +294,6 @@ fn generate_xip_layout(
         writeln!(out, "    _bootblock_base = ((_bootblock_top - _bootblock_program_size) & ~0xfff) - 0x1000;\n").unwrap();
     }
 
-    // Allwinner eGON header — placed before code, contains a branch
-    // instruction at offset 0 that jumps over the header to _start.
-    // KEEP() ensures --gc-sections doesn't strip these; the raw
-    // machine-code branch from .head.text to .text.entry is opaque
-    // to the linker.
     if needs_egon_header {
         writeln!(out, "    .head : {{").unwrap();
         writeln!(out, "        KEEP(*(.head.text))").unwrap();
@@ -387,7 +301,6 @@ fn generate_xip_layout(
         writeln!(out, "    }} > ROM\n").unwrap();
     }
 
-    // Code in ROM.
     if x86_top_aligned_bootblock {
         writeln!(out, "    .text _bootblock_base : {{").unwrap();
         writeln!(out, "        _bootblock = .;").unwrap();
@@ -400,17 +313,12 @@ fn generate_xip_layout(
     writeln!(out, "        _text_end = .;").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
-    // FFS anchor block (embedded in bootblock, 8-byte aligned for scanning),
-    // plus link-time stage constants read as data by asm/Rust.
     writeln!(out, "    .fstart.anchor : ALIGN(16) {{").unwrap();
     if platform == Platform::X86_64 {
         writeln!(out, "        _fstart_anchor_early = .;").unwrap();
     }
     writeln!(out, "        *(.fstart.anchor)").unwrap();
     if platform == Platform::X86_64 {
-        // Real dword: the early-microcode asm reads it as a memory operand
-        // (`cmpl $0, sym`). An absolute assignment would make the asm read
-        // from address 0/1 instead.
         writeln!(out, "        _fstart_early_microcode_enabled = .;").unwrap();
         writeln!(
             out,
@@ -422,20 +330,12 @@ fn generate_xip_layout(
     write_heap_size_constant(out, platform, heap_size);
     writeln!(out, "    }} > ROM\n").unwrap();
 
-    // Read-only data in ROM.
-    // .lrodata: large code model (x86_64) puts read-only data in .lrodata.
     writeln!(out, "    .rodata : ALIGN(16) {{").unwrap();
     writeln!(out, "        _rodata_start = .;").unwrap();
     writeln!(out, "        *(.eh_frame_hdr .eh_frame)").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
-    // Initialized data: stored in ROM (AT > ROM), copied to RAM at startup.
-    // _data_load is the ROM address of the initializers (load-memory address).
-    // _data_start / _data_end are the RAM addresses (virtual-memory addresses).
-    // The _start assembly copies [_data_load .. _data_load + size) to
-    // [_data_start .. _data_end) before entering Rust code.
-    // .ldata: large code model (x86_64) puts initialized data in .ldata.
     writeln!(out, "    .data : ALIGN(16) {{").unwrap();
     writeln!(out, "        _data_start = .;").unwrap();
     writeln!(out, "        *(.data .data.* .ldata .ldata.*)").unwrap();
@@ -443,8 +343,6 @@ fn generate_xip_layout(
     writeln!(out, "    }} > RAM AT > ROM").unwrap();
     writeln!(out, "    _data_load = LOADADDR(.data);\n").unwrap();
 
-    // BSS in RAM.
-    // .lbss: large code model (x86_64) puts uninitialized data in .lbss.
     writeln!(out, "    .bss (NOLOAD) : ALIGN(16) {{").unwrap();
     writeln!(out, "        _bss_start = .;").unwrap();
     writeln!(out, "        *(.bss .bss.* .lbss .lbss.*)").unwrap();
@@ -452,14 +350,10 @@ fn generate_xip_layout(
     writeln!(out, "        _bss_end = .;").unwrap();
     writeln!(out, "    }} > RAM\n").unwrap();
 
-    // AArch64 page tables are cleared explicitly by entry code.
     write_page_tables_section(out, "RAM", platform);
 
-    // Heap storage from the stage build config, consumed by fstart-alloc.
     write_heap(out, heap_size, "RAM");
 
-    // Stack: CAR/XIP stages use a dedicated CAR stack region; other XIP
-    // stages allocate stack after BSS in RAM.
     let stack_region = if xip_stack_region.is_some() {
         "STACK"
     } else {
@@ -467,31 +361,20 @@ fn generate_xip_layout(
     };
     write_stack(out, stack_size, stack_region);
 
-    // CAR symbols — consumed by car.rs global_asm.
-    // Only emitted when the board declares memory.car.
     if let Some((car_base, car_size)) = car_config {
         writeln!(out).unwrap();
         writeln!(out, "    /* Cache-as-RAM symbols for car.rs */").unwrap();
         writeln!(out, "    _car_base = {car_base:#x};").unwrap();
         writeln!(out, "    _car_size = {car_size:#x};").unwrap();
-        // Stack top inside CAR (same as _stack_top for CAR boards).
         writeln!(out, "    _ecar_stack = _stack_top;").unwrap();
-        // ROM MTRR: cover the full x86 SPI flash aperture as write-protect.
-        // This can be wider than the linker-selected ROM region when the
-        // board splits FFS/storage and bootblock windows.
         writeln!(out, "    _rom_mtrr_base = {x86_rom_mtrr_base:#x};").unwrap();
-        // MTRR mask for ROM size (power-of-2 size → negate for mask).
         let rom_mask = !(x86_rom_mtrr_size - 1) & 0xFFFF_FFFF;
         writeln!(out, "    _rom_mtrr_mask = {rom_mask:#x};").unwrap();
-        // Flag consumed by entry asm to decide whether to jmp _car_setup.
         writeln!(out, "    _has_car = 1;").unwrap();
     } else {
         writeln!(out).unwrap();
         writeln!(out, "    /* x86 CAR/postcar symbols (CAR disabled) */").unwrap();
         writeln!(out, "    _has_car = 0;").unwrap();
-        // The platform crate always links the CAR setup object.  XIP boards
-        // without a CAR region (for example qemu-q35) never execute it, but
-        // the assembly labels it references still need definitions.
         writeln!(out, "    _car_base = 0;").unwrap();
         writeln!(out, "    _car_size = 0;").unwrap();
         writeln!(out, "    _ecar_stack = _stack_top;").unwrap();
@@ -499,14 +382,6 @@ fn generate_xip_layout(
         writeln!(out, "    _rom_mtrr_mask = 0;").unwrap();
     }
 
-    // x86 bootblock entry code: only the first stage (bootblock) has the
-    // 16-bit reset vector and mode transition code. Later stages in a
-    // multi-stage build start in 64-bit long mode (jumped to by the
-    // bootblock or previous stage) and don't need .x86boot or .reset.
-    //
-    // The CPU starts at 0xFFFFFFF0 (reset vector). The .x86boot section
-    // (16-bit GDT load, mode transitions) must be within 64KB of the
-    // reset vector (CS base = 0xFFFF0000 at reset).
     if platform == Platform::X86_64 && is_first_stage {
         let boot_block_addr = rom_origin + rom_length - 0x1000; // last 4K
         let reset_addr = rom_origin + rom_length - 16;
@@ -541,11 +416,6 @@ fn generate_xip_layout(
     writeln!(out, "}}").unwrap();
 }
 
-/// Generate linker script with everything in RAM (load_addr is in a RAM region).
-///
-/// `bss_origin` optionally specifies a fixed starting address for BSS and stack.
-/// When the bootblock shares its address space with the FFS image, BSS/stack
-/// must be placed after the entire image area to avoid corruption.
 #[allow(clippy::too_many_arguments)]
 fn generate_ram_layout(
     out: &mut String,
@@ -615,13 +485,7 @@ fn generate_ram_layout(
     }
 }
 
-// Shared section helpers to avoid duplicating the identical section
-// definitions between the split-RAM and single-RAM layout branches.
-
 fn write_text_section(out: &mut String, region: &str) {
-    // .ltext: large code model (x86_64) puts function bodies in .ltext
-    // sections — capture them alongside normal .text so all executable
-    // code is contiguous and _text_start/_text_end span everything.
     writeln!(out, "    .text : {{").unwrap();
     writeln!(out, "        _text_start = .;").unwrap();
     writeln!(out, "        KEEP(*(.text.entry))").unwrap();
@@ -637,8 +501,6 @@ fn write_anchor_section(out: &mut String, region: &str, platform: Platform, heap
     }
     writeln!(out, "        *(.fstart.anchor)").unwrap();
     if platform == Platform::X86_64 {
-        // The early-microcode asm links these symbols in every stage;
-        // RAM-loaded stages never run the early path, so the flag is 0.
         writeln!(out, "        _fstart_early_microcode_enabled = .;").unwrap();
         writeln!(out, "        LONG(0)").unwrap();
     }
@@ -646,7 +508,6 @@ fn write_anchor_section(out: &mut String, region: &str, platform: Platform, heap
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
-/// Emit `_FSTART_HEAP_SIZE` as pointer-sized data read by fstart-alloc.
 fn write_heap_size_constant(out: &mut String, platform: Platform, heap_size: u64) {
     let word = match platform {
         Platform::Armv7 => "LONG",
@@ -657,9 +518,6 @@ fn write_heap_size_constant(out: &mut String, platform: Platform, heap_size: u64
     writeln!(out, "        {word}({heap_size:#x})").unwrap();
 }
 
-/// Reserve heap storage sized by the stage build config (`heap_size`).
-/// fstart-alloc finds it through `_FSTART_HEAP`; stages that declare no
-/// heap get an empty region and any allocation fails cleanly.
 fn write_heap(out: &mut String, heap_size: u64, region: &str) {
     writeln!(out, "    .fstart.heap (NOLOAD) : ALIGN(16) {{").unwrap();
     writeln!(out, "        _FSTART_HEAP = .;").unwrap();
@@ -668,8 +526,6 @@ fn write_heap(out: &mut String, heap_size: u64, region: &str) {
 }
 
 fn write_rodata_section(out: &mut String, region: &str) {
-    // .lrodata: large code model (x86_64) puts read-only data in separate
-    // .lrodata sections — capture them here alongside normal .rodata.
     writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
     writeln!(out, "        _rodata_start = .;").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
@@ -677,16 +533,11 @@ fn write_rodata_section(out: &mut String, region: &str) {
 }
 
 fn write_data_section(out: &mut String, region: &str) {
-    // .ldata: large code model (x86_64) puts initialized data in .ldata
-    // sections — capture them with .data so LMA is set correctly via
-    // AT > ROM on XIP layouts.
     writeln!(out, "    .data : ALIGN(8) {{").unwrap();
     writeln!(out, "        _data_start = .;").unwrap();
     writeln!(out, "        *(.data .data.* .ldata .ldata.*)").unwrap();
     writeln!(out, "        _data_end = .;").unwrap();
     writeln!(out, "    }} > {region}").unwrap();
-    // For RAM-only layouts, _data_load == _data_start (no ROM-to-RAM copy
-    // needed). The _start assembly's copy loop will skip when src == dst.
     writeln!(out, "    _data_load = LOADADDR(.data);\n").unwrap();
 }
 
@@ -702,8 +553,6 @@ fn write_page_tables_section(out: &mut String, region: &str, platform: Platform)
 }
 
 fn write_bss_section(out: &mut String, region: &str) {
-    // .lbss: large code model (x86_64) puts uninitialized data in .lbss
-    // sections — capture them with .bss so they are NOLOAD.
     writeln!(out, "    .bss (NOLOAD) : ALIGN(8) {{").unwrap();
     writeln!(out, "        _bss_start = .;").unwrap();
     writeln!(out, "        *(.bss .bss.* .lbss .lbss.*)").unwrap();
@@ -712,12 +561,6 @@ fn write_bss_section(out: &mut String, region: &str) {
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 
-/// Allwinner eGON .head section: branch instruction + eGON.BT0 struct.
-///
-/// `KEEP()` ensures these sections survive `--gc-sections` even when the
-/// entry point symbol (`_head_jump`) is the only reference — the raw
-/// machine-code branch from `.head.text` to `.text.entry` is opaque to
-/// the linker and wouldn't count as a reference without `KEEP`.
 fn write_allwinner_egon_section(out: &mut String, region: &str) {
     writeln!(out, "    .head : {{").unwrap();
     writeln!(out, "        KEEP(*(.head.text))").unwrap();
@@ -726,13 +569,6 @@ fn write_allwinner_egon_section(out: &mut String, region: &str) {
 }
 
 fn write_stack(out: &mut String, stack_size: u64, region: &str) {
-    // Allocate the stack immediately after the stage's writable sections,
-    // matching coreboot's model where stack storage is part of the stage
-    // allocation rather than an implicit carve-out at the top of RAM.
-    //
-    // The stack still grows downward from `_stack_top`; `_stack_bottom` and
-    // `_writable_end` delimit the complete writable stage footprint that must
-    // remain reserved while firmware is running.
     writeln!(out, "    .stack (NOLOAD) : ALIGN(16) {{").unwrap();
     writeln!(out, "        _stack_bottom = .;").unwrap();
     writeln!(out, "        . = . + {stack_size:#x};").unwrap();
@@ -746,9 +582,5 @@ fn write_stack(out: &mut String, stack_size: u64, region: &str) {
     )
     .unwrap();
 
-    // _binary_end marks the end of all loadable content. Used by entry
-    // stubs that need to copy the entire binary (e.g., SBSA flash→DRAM).
-    // For XIP layouts this is the end of .rodata in ROM; for RAM layouts
-    // it's the end of .data (BSS and stack are not stored).
     writeln!(out, "    _binary_end = _data_end;").unwrap();
 }

@@ -1,14 +1,3 @@
-//! FFS image assembly — `cargo xtask assemble`.
-//!
-//! Reads a board config, collects built binaries, and assembles them into
-//! a signed FFS firmware image using the fstart-ffs builder.
-//!
-//! Stage flat binaries (`.bin` files produced from ELF PT_LOAD data) are
-//! embedded as single FFS segments. This preserves alignment gaps between
-//! sections (e.g., `.text` → `.fstart.anchor` → `.rodata`) which is
-//! critical for XIP boards that read the anchor at its link-time VMA.
-//! ELF parsing is retained only for diagnostic logging.
-
 use fstart_core::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_SIZE,
     FFS_MAGIC, FFS_VERSION,
@@ -25,89 +14,31 @@ use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Assemble an FFS image for the given board.
-///
-/// 1. Builds all stages (via `cargo xtask build`).
-/// 2. Packages stage binaries into an FFS image.
-/// 3. Signs the manifest with the board's dev key pair.
-pub fn assemble(board_name: &str) -> Result<PathBuf, String> {
-    assemble_impl(board_name, false, None, None)
-}
+use crate::StageBinary;
 
-/// Assemble with explicit release flag (used by `run` for multi-stage boards).
-pub fn assemble_release(board_name: &str, release: bool) -> Result<PathBuf, String> {
-    assemble_impl(board_name, release, None, None)
-}
-
-/// Assemble with full options: release flag and optional kernel/firmware paths.
-///
-/// If `kernel`/`firmware` are `None`, falls back to paths from the Rust board
-/// payload metadata resolved relative to the board directory. If neither is
-/// available, no external blobs are added to the image.
-pub fn assemble_with_opts(
-    board_name: &str,
-    release: bool,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-) -> Result<PathBuf, String> {
-    assemble_impl(board_name, release, kernel, firmware)
-}
-
-fn assemble_impl(
-    board_name: &str,
-    release: bool,
-    kernel_path: Option<&str>,
-    firmware_path: Option<&str>,
-) -> Result<PathBuf, String> {
-    let _ = (release, kernel_path, firmware_path);
-    Err(format!(
-        "board '{board_name}' must be assembled through its board-owned host tool"
-    ))
-}
-
-/// Assemble an FFS image from already-loaded Rust board metadata.
-pub fn assemble_with_parsed(
+pub fn assemble(
     workspace_root: &Path,
-    board_manifest: crate::board_manifest::BoardManifest,
-    parsed: crate::build_plan::ParsedBoard,
-    release: bool,
+    board_dir: &Path,
+    config: &BoardConfig,
+    stage_binaries: &[StageBinary],
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
     fit_path: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let board_dir = board_manifest.dir.clone();
-    let config = parsed.config.clone();
-
     eprintln!("[fstart] assembling FFS image for: {}", config.name);
 
-    // Build all stages first
-    let build_result =
-        crate::build_board::build_with_parsed(workspace_root, &board_manifest, &parsed, release)?;
+    let (signing_key, verification_key) = get_or_create_dev_keys(board_dir, config)?;
 
-    // Read the public key (or generate a dev key pair if not present)
-    let (signing_key, verification_key) = get_or_create_dev_keys(&board_dir, &config)?;
-
-    // Build the list of input files from the built stages.
-    //
-    // Each stage is packaged as a flat binary (.bin extracted from ELF PT_LOAD data) to
-    // preserve alignment gaps between sections.  ELF parsing is
-    // retained only for diagnostic logging.
     let mut ro_files = Vec::new();
 
     match &config.stages {
         StageLayout::Monolithic(mono) => {
-            let stage = &build_result.stages[0];
+            let stage = &stage_binaries[0];
 
-            // Log the ELF segment breakdown for diagnostics.
             if let Ok(segs) = parse_elf_segments(&stage.path, Compression::None) {
                 log_stage_segments("stage", &stage.path, &segs);
             }
 
-            // Use the flat binary (.bin) to preserve alignment gaps
-            // between sections (e.g., .text -> .fstart.anchor -> .rodata).
-            // ELF segment parsing packs segments contiguously, shifting the
-            // anchor relative to its link-time VMA — fatal for XIP boards
-            // that read the anchor via volatile at the linked address.
             let bin_data = fs::read(&stage.run_path)
                 .map_err(|e| format!("failed to read {}: {e}", stage.run_path.display()))?;
 
@@ -126,24 +57,11 @@ pub fn assemble_with_parsed(
             });
         }
         StageLayout::MultiStage(stages) => {
-            for (i, stage_bin) in build_result.stages.iter().enumerate() {
+            for (i, stage_bin) in stage_binaries.iter().enumerate() {
                 if i == 0 {
-                    // The bootblock must be uncompressed — it executes
-                    // directly from flash/SRAM and contains the anchor
-                    // placeholder that gets patched in-place.
-                    //
-                    // Use the flat binary (.bin) rather than ELF segment
-                    // parsing. The flat binary preserves alignment gaps
-                    // between sections (e.g., .text -> .fstart.anchor ->
-                    // .rodata), which is critical for XIP boards where
-                    // the firmware reads the anchor at its link-time VMA.
-                    // ELF segment parsing packs segments contiguously,
-                    // losing alignment padding and causing the anchor to
-                    // shift relative to its link address.
                     let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
-                    // Still parse ELF for the log message (segment breakdown)
                     match parse_elf_segments(&stage_bin.path, Compression::None) {
                         Ok(segs) => log_stage_segments(&stage_bin.name, &stage_bin.path, &segs),
                         Err(err) => eprintln!(
@@ -166,13 +84,6 @@ pub fn assemble_with_parsed(
                         }],
                     });
                 } else {
-                    // Subsequent stages are stored as flat binaries (the
-                    // ELF-derived .bin). The stage-load helper loads the FFS
-                    // segment to load_addr and supports LZ4 in-place
-                    // decompression, so ramstages loaded that way can be stored
-                    // compressed. Direct next-stage users (e.g. tiny SoC
-                    // bootblocks) copy raw bytes and jump directly, so those
-                    // stages must remain uncompressed.
                     let stage_cfg = stages
                         .iter()
                         .find(|stage| stage.name.as_str() == stage_bin.name)
@@ -216,23 +127,14 @@ pub fn assemble_with_parsed(
         }
     }
 
-    // Add payload blobs to the FFS image.
-    //
-    // Resolution order for paths:
-    //   1. CLI flags (--kernel, --firmware, --fit)
-    //   2. Rust board payload metadata (payload.firmware.file,
-    //      payload.kernel_file, payload.fit_file) resolved relative to the board directory
-    //   3. Skip — no external blob added
     if let Some(ref microcode) = config.microcode {
         assemble_microcode(microcode, &board_dir, &mut ro_files)?;
     }
 
     if let Some(ref payload) = config.payload {
-        // Handle FIT image payloads
         if payload.kind == fstart_core::PayloadKind::FitImage {
             assemble_fit_payload(payload, &board_dir, fit_path.or(kernel_path), &mut ro_files)?;
         } else {
-            // LinuxBoot / other payload types: add firmware + kernel blobs
             assemble_linux_payload(
                 payload,
                 &board_dir,
@@ -242,7 +144,6 @@ pub fn assemble_with_parsed(
             )?;
         }
 
-        // Resolve DTB blob path from FdtSource::Override
         if let FdtSource::Override(ref dtb_name) = payload.fdt {
             let dtb_path = board_dir.join(dtb_name.as_str());
             if dtb_path.exists() {
@@ -283,10 +184,6 @@ pub fn assemble_with_parsed(
         regions: ffs_input_regions(&config, ro_files)?,
     };
 
-    // Build the image with signing. Compressed stages that use FFS contain a
-    // linked FSTART_ANCHOR static inside their uncompressed bytes; patch those
-    // source bytes before the final compression pass so runtime anchor reads
-    // remain static and do not require scanning flash.
     let compressed_anchor_slots = compressed_anchor_slots(&image_config.regions)?;
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
     let ffs_image = build_image_with_static_compressed_anchors(
@@ -297,12 +194,8 @@ pub fn assemble_with_parsed(
 
     let mut image_bytes = ffs_image.image;
 
-    // Allwinner eGON: the FFS assembler reads stage ELFs, so the eGON
-    // header (length, checksum, SPL signature) is unpatched. Read the
-    // bootblock size from the standalone .bin (which was already patched
-    // by `build_board`) and apply the same eGON patching to the FFS.
     if config.soc_image_format == SocImageFormat::AllwinnerEgon {
-        let bb_bin_path = &build_result.stages[0].run_path;
+        let bb_bin_path = &stage_binaries[0].run_path;
         let bb_bin =
             fs::read(bb_bin_path).map_err(|e| format!("failed to read bootblock .bin: {e}"))?;
         if bb_bin.len() < 0x14 {
@@ -314,23 +207,16 @@ pub fn assemble_with_parsed(
             return Err("bootblock .bin has zero eGON length — was it patched?".to_string());
         }
 
-        // Patch next-stage offset/size into the eGON header BEFORE the
-        // checksum is computed. The bootblock reads these at runtime via
-        // volatile reads from SRAM to find and copy the next stage.
-        if build_result.stages.len() > 1 {
-            let next_name = &build_result.stages[1].name;
+        if stage_binaries.len() > 1 {
+            let next_name = &stage_binaries[1].name;
             let loc = ffs_image
                 .file_data
                 .iter()
                 .find(|f| f.name == *next_name)
                 .ok_or_else(|| format!("next stage '{next_name}' not found in FFS file_data"))?;
 
-            // Offset 0x2C: next_stage_offset (from FFS image start).
             image_bytes[0x2C..0x30].copy_from_slice(&loc.data_offset.to_le_bytes());
-            // Offset 0x30: next_stage_size.
             image_bytes[0x30..0x34].copy_from_slice(&loc.data_size.to_le_bytes());
-            // Offset 0x34: ffs_total_size — used by subsequent stages to
-            // locate the FFS anchor at ffs_total_size - ANCHOR_SIZE.
             let ffs_total = image_bytes.len() as u32;
             image_bytes[0x34..0x38].copy_from_slice(&ffs_total.to_le_bytes());
 
@@ -343,7 +229,6 @@ pub fn assemble_with_parsed(
         crate::image::egon::patch_ffs(&mut image_bytes, bootblock_size)?;
     }
 
-    // Write the FFS image
     let output_dir = workspace_root.join("target").join("ffs");
     fs::create_dir_all(&output_dir).map_err(|e| format!("failed to create output dir: {e}"))?;
 
@@ -361,8 +246,7 @@ pub fn assemble_with_parsed(
         ffs_image.anchor_bytes.len(),
     );
 
-    // Log the stage files in the image
-    let stage_count = build_result.stages.len();
+    let stage_count = stage_binaries.len();
     eprintln!(
         "[fstart] {} stage{} packaged into FFS",
         stage_count,
@@ -379,8 +263,8 @@ pub fn assemble_with_parsed(
         let full_flash = FullFlashInput {
             config: &config,
             board_dir: &board_dir,
-            bootblock_elf: &build_result.stages[0].path,
-            bootblock_bin: &build_result.stages[0].run_path,
+            bootblock_elf: &stage_binaries[0].path,
+            bootblock_bin: &stage_binaries[0].run_path,
             ffs_data: &image_bytes,
             ffs_anchor_offset: ffs_image.anchor_offset,
             ffs_path: &image_path,
@@ -717,8 +601,6 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
 
     let mut image = vec![0xffu8; flash_size];
 
-    // Keep the FFS blob at flash offset 0. Anchor offsets are defined from the
-    // firmware image base, and board boot media scans the firmware ROM window.
     image[..ffs_data.len()].copy_from_slice(ffs_data);
 
     let elf_data = fs::read(bootblock_elf).map_err(|e| {
@@ -784,9 +666,6 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         bootblock_data.len()
     );
 
-    // Copy the patched anchor from the FFS blob into the XIP bootblock's own
-    // anchor section. The builder patches the anchor inside the FFS-stage file;
-    // the CPU reads the linked XIP copy at its physical flash address.
     let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
     if ffs_anchor_offset + anchor_size > ffs_data.len() {
         return Err(format!(
@@ -811,10 +690,6 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
             ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_core::ffs::AnchorBlock
         )
     };
-    // The FFS copy of the anchor lives near offset 0, but real hardware jumps
-    // into the top-aligned XIP bootblock copy. Pre-Rust x86 code has only the
-    // linked anchor address, so the XIP anchor must describe its full-flash
-    // offset to reconstruct the firmware image base correctly.
     xip_anchor_block.anchor_offset = xip_anchor as u32;
     let mut anchor = vec![0u8; anchor_size];
     xip_anchor_block.write_to(&mut anchor);
@@ -1208,14 +1083,6 @@ fn parse_intel_ifd(data: &[u8]) -> Result<ParsedIntelIfd, String> {
     })
 }
 
-// ============================================================================
-// Board asset assembly helpers
-// ============================================================================
-
-// ============================================================================
-// Microcode assembly helpers
-// ============================================================================
-
 fn assemble_microcode(
     microcode: &fstart_core::board::MicrocodeConfig,
     board_dir: &Path,
@@ -1281,16 +1148,6 @@ fn stage_loaded_via_stage_load(stages: &[fstart_core::StageConfig], stage_name: 
     })
 }
 
-// ============================================================================
-// Payload assembly helpers
-// ============================================================================
-
-/// Assemble a FIT image payload into FFS entries.
-///
-/// Depending on `fit_parse` mode:
-/// - **Buildtime**: Parse the FIT, extract kernel (and ramdisk), embed them
-///   as separate FFS entries with load addresses from the FIT metadata.
-/// - **Runtime**: Embed the whole .itb as a single `FileType::FitImage` entry.
 fn assemble_fit_payload(
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
@@ -1301,7 +1158,6 @@ fn assemble_fit_payload(
         .fit_parse
         .unwrap_or(fstart_core::FitParseMode::Buildtime);
 
-    // Resolve the FIT file path
     let fit_path = kernel_override.map(PathBuf::from).or_else(|| {
         payload
             .fit_file
@@ -1334,7 +1190,6 @@ fn assemble_fit_payload(
         fit_data.len(),
     );
 
-    // Parse the FIT with the same parser used at runtime
     let fit = fstart_fit::FitImage::parse(&fit_data)
         .map_err(|e| format!("failed to parse FIT image: {e:?}"))?;
 
@@ -1346,7 +1201,6 @@ fn assemble_fit_payload(
 
     match fit_parse {
         fstart_core::FitParseMode::Runtime => {
-            // Embed the whole FIT as a single FFS entry
             eprintln!("[fstart] FIT mode: runtime (embedding whole .itb in FFS)");
 
             ro_files.push(InputFile {
@@ -1364,7 +1218,6 @@ fn assemble_fit_payload(
             });
         }
         fstart_core::FitParseMode::Buildtime => {
-            // Extract components from the FIT and embed as separate entries
             eprintln!("[fstart] FIT mode: buildtime (extracting components)");
 
             let boot = fit
@@ -1376,7 +1229,6 @@ fn assemble_fit_payload(
                 boot.config.description().unwrap_or(boot.config.name())
             );
 
-            // Extract kernel
             let kernel_data = boot
                 .kernel
                 .data()
@@ -1407,7 +1259,6 @@ fn assemble_fit_payload(
                 }],
             });
 
-            // Extract ramdisk if present
             if let Some(ref rd) = boot.ramdisk {
                 if let Ok(rd_data) = rd.data() {
                     let rd_load = rd.load_addr().unwrap_or(0);
@@ -1434,7 +1285,6 @@ fn assemble_fit_payload(
                 }
             }
 
-            // Extract FDT if present in FIT
             if let Some(ref fdt_img) = boot.fdt {
                 if let Ok(fdt_data) = fdt_img.data() {
                     let fdt_load = fdt_img.load_addr().unwrap_or(payload.dtb_addr.unwrap_or(0));
@@ -1463,13 +1313,11 @@ fn assemble_fit_payload(
         }
     }
 
-    // Add firmware blob (SBI/ATF) — always separate from FIT
     add_firmware_blob(payload, board_dir, None, ro_files)?;
 
     Ok(())
 }
 
-/// Assemble a LinuxBoot payload into FFS entries (firmware + kernel blobs).
 fn assemble_linux_payload(
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
@@ -1477,10 +1325,8 @@ fn assemble_linux_payload(
     firmware_path: Option<&str>,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
-    // Add firmware blob
     add_firmware_blob(payload, board_dir, firmware_path, ro_files)?;
 
-    // Resolve kernel blob path
     let kernel_file = kernel_path.map(PathBuf::from).or_else(|| {
         payload
             .kernel_file
@@ -1527,7 +1373,6 @@ fn assemble_linux_payload(
     Ok(())
 }
 
-/// Add the firmware blob (SBI/ATF) to FFS entries.
 fn add_firmware_blob(
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
@@ -1587,10 +1432,6 @@ fn add_firmware_blob(
     Ok(())
 }
 
-// ============================================================================
-// ELF parsing via the object crate
-// ============================================================================
-
 #[derive(Debug, Clone, Copy)]
 struct ElfLoadSegment {
     offset: u64,
@@ -1638,17 +1479,6 @@ where
         .collect())
 }
 
-/// Parse an ELF file into FFS input segments, one per PT_LOAD.
-///
-/// Follows the coreboot cbfstool payload model: each PT_LOAD program header
-/// becomes a separate segment with its own load address and type. This
-/// avoids the ROM→RAM address gap that makes flat binaries enormous.
-///
-/// - `p_paddr` is used as the load address (like coreboot and u-boot).
-/// - `p_filesz` bytes of data are extracted from the ELF.
-/// - `p_memsz > p_filesz` produces a BSS tail (the loader zero-fills it).
-/// - Pure BSS segments (`p_filesz == 0`) become `SegmentKind::Bss`.
-/// - Segment kind and flags are derived from `p_flags` (PF_X, PF_W, PF_R).
 fn parse_elf_segments(
     elf_path: &Path,
     compression: Compression,
@@ -1659,7 +1489,6 @@ fn parse_elf_segments(
     let mut segments = Vec::new();
 
     for phdr in elf_load_segments(&elf_data, elf_path)? {
-        // Only process PT_LOAD segments with nonzero memory footprint
         if phdr.memsz == 0 {
             continue;
         }
@@ -1668,10 +1497,7 @@ fn parse_elf_segments(
         let is_exec = p_flags & elf::PF_X != 0;
         let is_write = p_flags & elf::PF_W != 0;
 
-        // Determine segment kind and name from ELF flags, matching
-        // the coreboot PAYLOAD_SEGMENT_CODE / DATA / BSS classification.
         let (kind, name, flags) = if phdr.filesz == 0 {
-            // Pure BSS — no file content, just zero-fill
             (SegmentKind::Bss, ".bss", SegmentFlags::DATA)
         } else if is_exec {
             (SegmentKind::Code, ".text", SegmentFlags::CODE)
@@ -1681,7 +1507,6 @@ fn parse_elf_segments(
             (SegmentKind::ReadOnlyData, ".rodata", SegmentFlags::RODATA)
         };
 
-        // Extract file data (p_filesz bytes at p_offset)
         let data = if phdr.filesz > 0 {
             let start = phdr.offset as usize;
             let end = start + phdr.filesz as usize;
@@ -1697,16 +1522,12 @@ fn parse_elf_segments(
             Vec::new()
         };
 
-        // mem_size tracks the BSS tail: when p_memsz > p_filesz the
-        // loader must zero-fill the remaining bytes after the file data.
         let mem_size = if phdr.memsz != phdr.filesz {
             Some(phdr.memsz)
         } else {
             None
         };
 
-        // BSS segments have no stored content — never compress them.
-        // Other segments use the caller's requested compression.
         let seg_compression = if phdr.filesz == 0 {
             Compression::None
         } else {
@@ -1734,7 +1555,6 @@ fn parse_elf_segments(
     Ok(segments)
 }
 
-/// Log the parsed segments for a stage.
 fn log_stage_segments(stage_name: &str, elf_path: &Path, segments: &[InputSegment]) {
     let total_file: usize = segments.iter().map(|s| s.data.len()).sum();
     let total_mem: u64 = segments
@@ -1765,16 +1585,6 @@ fn log_stage_segments(stage_name: &str, elf_path: &Path, segments: &[InputSegmen
     }
 }
 
-// ============================================================================
-// Crypto helpers
-// ============================================================================
-
-/// Get or create a dev Ed25519 key pair for signing.
-///
-/// In a real production setup, the private key would be stored securely
-/// (HSM, etc.) and only the public key would be distributed. For
-/// development, we generate an ephemeral key pair and store it in the
-/// board's `keys/` directory.
 fn get_or_create_dev_keys(
     board_dir: &Path,
     _config: &fstart_core::BoardConfig,
@@ -1787,7 +1597,6 @@ fn get_or_create_dev_keys(
     let pubkey_path = keys_dir.join("dev-signing.pub");
 
     if privkey_path.exists() && pubkey_path.exists() {
-        // Load existing keys
         let privkey_bytes =
             fs::read(&privkey_path).map_err(|e| format!("failed to read private key: {e}"))?;
         if privkey_bytes.len() != 32 {
@@ -1809,18 +1618,15 @@ fn get_or_create_dev_keys(
         return Ok((signing_key, vk));
     }
 
-    // Generate new dev key pair
     eprintln!("[fstart] generating new dev Ed25519 key pair...");
     fs::create_dir_all(&keys_dir).map_err(|e| format!("failed to create keys dir: {e}"))?;
 
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
 
-    // Save private key (32 bytes raw)
     fs::write(&privkey_path, signing_key.as_bytes())
         .map_err(|e| format!("failed to write private key: {e}"))?;
 
-    // Save public key (32 bytes raw)
     fs::write(&pubkey_path, verifying_key.as_bytes())
         .map_err(|e| format!("failed to write public key: {e}"))?;
 
@@ -1830,7 +1636,6 @@ fn get_or_create_dev_keys(
     Ok((signing_key, vk))
 }
 
-/// Sign manifest bytes with Ed25519.
 fn sign_with_ed25519(
     signing_key: &ed25519_dalek::SigningKey,
     message: &[u8],

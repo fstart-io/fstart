@@ -87,7 +87,7 @@ pub const ANCHOR_SIZE: usize = core::mem::size_of::<AnchorBlock>();
 /// reads, just a pointer dereference from the bootblock's own address space.
 ///
 /// **How it gets there**: codegen emits the anchor as a `#[link_section]`
-/// static in the bootblock. The linker places it. The `xtask assemble`
+/// static in the bootblock. The linker places it. The `fbuild assemble`
 /// step patches the fields after the full image is laid out.
 ///
 /// **How tools find it**: scan the firmware binary for `FFS_MAGIC` at
@@ -138,7 +138,7 @@ pub struct AnchorBlock {
 impl AnchorBlock {
     /// Create a zeroed anchor with just the magic and version set.
     ///
-    /// Used by codegen to emit the placeholder static; `xtask assemble`
+    /// Used by codegen to emit the placeholder static; `fbuild assemble`
     /// patches the remaining fields.
     pub const fn placeholder() -> Self {
         Self {
@@ -191,7 +191,7 @@ impl AnchorBlock {
     /// Volatile-read an `AnchorBlock` from a byte slice into an owned copy.
     ///
     /// Uses `read_volatile` to defeat compiler assumptions about the
-    /// static's contents (it gets patched post-build by `xtask assemble`).
+    /// static's contents (it gets patched post-build by `fbuild assemble`).
     ///
     /// # Safety
     ///
