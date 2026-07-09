@@ -65,7 +65,7 @@ pub trait IntelSouthbridgeDriver: Sized {
 /// A `static` buffer would land in every stage's `.bss` — including the
 /// bootblock, whose CAR is as small as 32 KiB on Pineview. The opregion is
 /// only initialized post-DRAM, so it lives on the mainstage heap instead.
-#[cfg(feature = "ffs-vbt")]
+#[cfg(any(feature = "ffs-vbt", test))]
 pub(crate) fn igd_opregion_buf(size: usize) -> &'static mut [u8] {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
