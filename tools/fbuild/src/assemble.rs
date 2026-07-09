@@ -1,17 +1,5 @@
 use std::path::{Path, PathBuf};
 
-pub fn assemble_with_opts(
-    board_name: &str,
-    release: bool,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-) -> Result<PathBuf, String> {
-    let _ = (release, kernel, firmware);
-    Err(format!(
-        "board '{board_name}' must be assembled through its board-owned host tool"
-    ))
-}
-
 pub fn assemble_with_parsed(
     workspace_root: &Path,
     board_manifest: crate::board_manifest::BoardManifest,

@@ -25,179 +25,118 @@ fn find_qemu(name: &str) -> String {
 }
 
 pub fn run(
-    board_name: &str,
+    _board_name: &str,
     platform: Platform,
     binary: &Path,
     disk: Option<&str>,
     memory: Option<&str>,
 ) -> Result<(), String> {
-    let (qemu_bin, mut args) = if board_name == "qemu-sbsa" {
-        let pflash_size = 256 * 1024 * 1024; // 256 MiB
+    let (qemu_bin, mut args) = match platform {
+        Platform::Riscv64 => {
+            let pflash_size = 32 * 1024 * 1024;
+            let pflash_path = create_pflash_image(binary, pflash_size)?;
+            let args = vec![
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-nographic".to_string(),
+                "-bios".to_string(),
+                "none".to_string(),
+                "-drive".to_string(),
+                format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
+            ];
+            (find_qemu("qemu-system-riscv64"), args)
+        }
+        Platform::Aarch64 => {
+            let args = vec![
+                "-machine".to_string(),
+                "virt,secure=on,virtualization=on,gic-version=3".to_string(),
+                "-cpu".to_string(),
+                "cortex-a72".to_string(),
+                "-nographic".to_string(),
+                "-bios".to_string(),
+                binary.display().to_string(),
+            ];
+            (find_qemu("qemu-system-aarch64"), args)
+        }
+        Platform::Armv7 => {
+            let args = vec![
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-cpu".to_string(),
+                "cortex-a15".to_string(),
+                "-nographic".to_string(),
+                "-bios".to_string(),
+                binary.display().to_string(),
+            ];
+            (find_qemu("qemu-system-arm"), args)
+        }
+        Platform::X86_64 => {
+            let pflash_size = 8 * 1024 * 1024;
+            let workspace = binary.parent().unwrap().parent().unwrap();
+            let profile = if binary.to_str().unwrap_or("").contains("release")
+                || std::env::args().any(|a| a == "--release")
+            {
+                "release"
+            } else {
+                "debug"
+            };
 
-        let tfa_path = find_tfa_flash(binary, board_name, pflash_size)?;
+            let stage_bin = workspace
+                .join("x86_64-unknown-none")
+                .join(profile)
+                .join("fstart-stage.bin");
+            let pflash_path = if stage_bin.exists() {
+                create_x86_pflash(binary, &stage_bin, pflash_size)?
+            } else {
+                eprintln!(
+                    "[fstart] warning: stage .bin not found at {}, using FFS directly",
+                    stage_bin.display()
+                );
+                create_pflash_image_aligned(binary, pflash_size, true)?
+            };
 
-        let fstart_pflash = create_pflash_image(binary, pflash_size)?;
-
-        let args = vec![
-            "-machine".to_string(),
-            "sbsa-ref".to_string(),
-            "-m".to_string(),
-            "1G".to_string(),
-            "-nographic".to_string(),
-            "-pflash".to_string(),
-            tfa_path.display().to_string(),
-            "-pflash".to_string(),
-            fstart_pflash.display().to_string(),
-        ];
-        (find_qemu("qemu-system-aarch64"), args)
-    } else {
-        match platform {
-            Platform::Riscv64 => {
-                if board_name == "sifive-unmatched" {
-                    let args = vec![
-                        "-machine".to_string(),
-                        "sifive_u".to_string(),
-                        "-m".to_string(),
-                        "1G".to_string(),
-                        "-nographic".to_string(),
-                        "-bios".to_string(),
-                        binary.display().to_string(),
-                    ];
-                    (find_qemu("qemu-system-riscv64"), args)
+            let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
+            let use_kvm = match accel.as_deref() {
+                Some("kvm") => true,
+                Some("tcg") => false,
+                _ => std::fs::File::open("/dev/kvm").is_ok(),
+            };
+            let args = vec![
+                "-machine".to_string(),
+                "q35".to_string(),
+                "-accel".to_string(),
+                if use_kvm { "kvm" } else { "tcg" }.to_string(),
+                "-cpu".to_string(),
+                if use_kvm { "host" } else { "max" }.to_string(),
+                "-m".to_string(),
+                "1G".to_string(),
+                "-smp".to_string(),
+                "1".to_string(),
+                "-no-reboot".to_string(),
+                "-display".to_string(),
+                "none".to_string(),
+                "-chardev".to_string(),
+                "stdio,id=char0,mux=on,signal=off".to_string(),
+                "-serial".to_string(),
+                "chardev:char0".to_string(),
+                "-mon".to_string(),
+                "chardev=char0,mode=readline".to_string(),
+                if use_kvm { "-bios" } else { "-drive" }.to_string(),
+                if use_kvm {
+                    pflash_path.display().to_string()
                 } else {
-                    let pflash_size = 32 * 1024 * 1024; // 32 MiB — VIRT_FLASH / 2
-                    let pflash_path = create_pflash_image(binary, pflash_size)?;
-
-                    let args = vec![
-                        "-machine".to_string(),
-                        "virt".to_string(),
-                        "-nographic".to_string(),
-                        "-bios".to_string(),
-                        "none".to_string(),
-                        "-drive".to_string(),
-                        format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
-                    ];
-                    (find_qemu("qemu-system-riscv64"), args)
-                }
-            }
-            Platform::Aarch64 => {
-                let mut args = vec![
-                    "-machine".to_string(),
-                    "virt,secure=on,virtualization=on,gic-version=3".to_string(),
-                    "-cpu".to_string(),
-                    "cortex-a72".to_string(),
-                    "-nographic".to_string(),
-                ];
-                args.extend(["-bios".to_string(), binary.display().to_string()]);
-                if board_name.contains("uefi") {
-                    args.extend(["-device".to_string(), "bochs-display".to_string()]);
-                }
-                (find_qemu("qemu-system-aarch64"), args)
-            }
-            Platform::Armv7 => {
-                let args = vec![
-                    "-machine".to_string(),
-                    "virt".to_string(),
-                    "-cpu".to_string(),
-                    "cortex-a15".to_string(),
-                    "-nographic".to_string(),
-                    "-bios".to_string(),
-                    binary.display().to_string(),
-                ];
-                (find_qemu("qemu-system-arm"), args)
-            }
-            Platform::X86_64 => {
-                let pflash_size = 8 * 1024 * 1024; // 8 MiB flash
-                let is_uefi = board_name.contains("uefi");
-
-                let workspace = binary.parent().unwrap().parent().unwrap();
-                let profile = if binary.to_str().unwrap_or("").contains("release")
-                    || std::env::args().any(|a| a == "--release")
-                {
-                    "release"
-                } else {
-                    "debug"
-                };
-
-                let stage_bin_name = if is_uefi {
-                    "fstart-bootblock.bin"
-                } else {
-                    "fstart-stage.bin"
-                };
-                let stage_bin = workspace
-                    .join("x86_64-unknown-none")
-                    .join(profile)
-                    .join(stage_bin_name);
-                let pflash_path = if stage_bin.exists() {
-                    create_x86_pflash(binary, &stage_bin, pflash_size)?
-                } else {
-                    eprintln!(
-                        "[fstart] warning: stage .bin not found at {}, using FFS directly",
-                        stage_bin.display()
-                    );
-                    create_pflash_image_aligned(binary, pflash_size, true)?
-                };
-
-                let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
-                let use_kvm = match accel.as_deref() {
-                    Some("kvm") => true,
-                    Some("tcg") => false,
-                    _ => std::fs::File::open("/dev/kvm").is_ok(),
-                };
-                let default_mem = if is_uefi { "4G" } else { "1G" };
-                let mut args = vec![
-                    "-machine".to_string(),
-                    "q35".to_string(),
-                    "-accel".to_string(),
-                    if use_kvm { "kvm" } else { "tcg" }.to_string(),
-                    "-cpu".to_string(),
-                    if use_kvm { "host" } else { "max" }.to_string(),
-                    "-m".to_string(),
-                    default_mem.to_string(),
-                    "-smp".to_string(),
-                    if board_name == "qemu-q35" { "4" } else { "1" }.to_string(),
-                    "-no-reboot".to_string(),
-                    "-display".to_string(),
-                    "none".to_string(),
-                    "-chardev".to_string(),
-                    "stdio,id=char0,mux=on,signal=off".to_string(),
-                    "-serial".to_string(),
-                    "chardev:char0".to_string(),
-                    "-mon".to_string(),
-                    "chardev=char0,mode=readline".to_string(),
-                    if use_kvm { "-bios" } else { "-drive" }.to_string(),
-                    if use_kvm {
-                        pflash_path.display().to_string()
-                    } else {
-                        format!("if=pflash,format=raw,file={}", pflash_path.display())
-                    },
-                    "-device".to_string(),
-                    "isa-debugcon,iobase=0x402,chardev=debugout".to_string(),
-                    "-chardev".to_string(),
-                    "file,id=debugout,path=/dev/stderr".to_string(),
-                    "-vga".to_string(),
-                    "none".to_string(),
-                    "-device".to_string(),
-                    "bochs-display".to_string(),
-                ];
-
-                if is_uefi && disk.is_none() {
-                    let board_dir = find_board_dir_by_name(binary, board_name)?;
-                    let default_disk = board_dir.join("disk.img");
-                    if default_disk.exists() {
-                        let disk_str = default_disk.display().to_string();
-                        args.extend([
-                            "-drive".to_string(),
-                            format!("file={disk_str},id=hd0,if=none,format=raw"),
-                            "-device".to_string(),
-                            "ide-hd,drive=hd0".to_string(),
-                        ]);
-                        eprintln!("[fstart] disk: {disk_str} (AHCI/SATA, default)");
-                    }
-                }
-
-                (find_qemu("qemu-system-x86_64"), args)
-            }
+                    format!("if=pflash,format=raw,file={}", pflash_path.display())
+                },
+                "-device".to_string(),
+                "isa-debugcon,iobase=0x402,chardev=debugout".to_string(),
+                "-chardev".to_string(),
+                "file,id=debugout,path=/dev/stderr".to_string(),
+                "-vga".to_string(),
+                "none".to_string(),
+                "-device".to_string(),
+                "bochs-display".to_string(),
+            ];
+            (find_qemu("qemu-system-x86_64"), args)
         }
     };
 
@@ -217,29 +156,17 @@ pub fn run(
         };
         if platform == Platform::X86_64 {
             let is_iso = disk_path.ends_with(".iso");
-            if board_name.contains("uefi") && !is_iso {
-                args.extend([
-                    "-device".to_string(),
-                    "qemu-xhci,id=xhci".to_string(),
-                    "-drive".to_string(),
-                    format!("file={disk_path},id=hd0,if=none,format={fmt},readonly=off"),
-                    "-device".to_string(),
-                    "usb-storage,drive=hd0,bus=xhci.0".to_string(),
-                ]);
-                eprintln!("[fstart] disk: {disk_path} (USB mass storage, format={fmt})");
-            } else {
-                let device_type = if is_iso { "ide-cd" } else { "ide-hd" };
-                args.extend([
-                    "-drive".to_string(),
-                    format!(
-                        "file={disk_path},id=hd0,if=none,format={fmt},readonly={}",
-                        if is_iso { "on" } else { "off" }
-                    ),
-                    "-device".to_string(),
-                    format!("{device_type},drive=hd0"),
-                ]);
-                eprintln!("[fstart] disk: {disk_path} (AHCI/{device_type}, format={fmt})");
-            }
+            let device_type = if is_iso { "ide-cd" } else { "ide-hd" };
+            args.extend([
+                "-drive".to_string(),
+                format!(
+                    "file={disk_path},id=hd0,if=none,format={fmt},readonly={}",
+                    if is_iso { "on" } else { "off" }
+                ),
+                "-device".to_string(),
+                format!("{device_type},drive=hd0"),
+            ]);
+            eprintln!("[fstart] disk: {disk_path} (AHCI/{device_type}, format={fmt})");
         } else {
             args.extend([
                 "-drive".to_string(),
@@ -263,105 +190,6 @@ pub fn run(
     }
 
     Ok(())
-}
-
-fn find_tfa_flash(
-    fstart_binary: &Path,
-    board_name: &str,
-    flash_size: usize,
-) -> Result<PathBuf, String> {
-    let board_dir = find_board_dir_by_name(fstart_binary, board_name)?;
-
-    let tfa_bin = board_dir.join("tfa.bin");
-    if tfa_bin.exists() {
-        let data = std::fs::read(&tfa_bin)
-            .map_err(|e| format!("failed to read {}: {e}", tfa_bin.display()))?;
-        if data.len() == flash_size {
-            eprintln!("[fstart] TF-A flash: {} (pre-assembled)", tfa_bin.display());
-            return Ok(tfa_bin);
-        }
-        return create_pflash_image(&tfa_bin, flash_size);
-    }
-
-    let bl1_path = board_dir.join("bl1.bin");
-    let fip_path = board_dir.join("fip.bin");
-
-    if !bl1_path.exists() || !fip_path.exists() {
-        return Err(format!(
-            "TF-A binaries not found for SBSA board.\n\
-             Expected one of:\n  \
-               {}\n  \
-               {} + {}\n\n\
-             Build TF-A with:\n  \
-               cd <trusted-firmware-a>\n  \
-               make PLAT=qemu_sbsa all fip ARM_LINUX_KERNEL_AS_BL33=1\n  \
-               cp build/qemu_sbsa/release/bl1.bin {}\n  \
-               cp build/qemu_sbsa/release/fip.bin {}",
-            tfa_bin.display(),
-            bl1_path.display(),
-            fip_path.display(),
-            board_dir.display(),
-            board_dir.display(),
-        ));
-    }
-
-    let bl1 = std::fs::read(&bl1_path)
-        .map_err(|e| format!("failed to read {}: {e}", bl1_path.display()))?;
-    let fip = std::fs::read(&fip_path)
-        .map_err(|e| format!("failed to read {}: {e}", fip_path.display()))?;
-
-    let fip_offset = 0x12000usize;
-    if bl1.len() > fip_offset {
-        return Err(format!(
-            "bl1.bin ({} bytes) is too large for FIP offset {:#x}",
-            bl1.len(),
-            fip_offset,
-        ));
-    }
-    if fip_offset + fip.len() > flash_size {
-        return Err(format!(
-            "bl1.bin + fip.bin exceeds flash size ({:#x})",
-            flash_size,
-        ));
-    }
-
-    let mut pflash = vec![0xFFu8; flash_size];
-    pflash[..bl1.len()].copy_from_slice(&bl1);
-    pflash[fip_offset..fip_offset + fip.len()].copy_from_slice(&fip);
-
-    let out_path = board_dir.join("tfa.pflash");
-    std::fs::write(&out_path, &pflash).map_err(|e| format!("failed to write TF-A pflash: {e}"))?;
-
-    eprintln!(
-        "[fstart] TF-A pflash: {} (bl1={} bytes, fip={} bytes at {:#x})",
-        out_path.display(),
-        bl1.len(),
-        fip.len(),
-        fip_offset,
-    );
-
-    Ok(out_path)
-}
-
-fn find_board_dir_by_name(binary: &Path, board_name: &str) -> Result<PathBuf, String> {
-    let mut dir = binary
-        .parent()
-        .ok_or_else(|| "no parent directory for binary".to_string())?
-        .to_path_buf();
-
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let contents =
-                std::fs::read_to_string(&cargo_toml).map_err(|e| format!("read error: {e}"))?;
-            if contents.contains("[workspace]") {
-                return crate::board_manifest::find(&dir, board_name).map(|manifest| manifest.dir);
-            }
-        }
-        if !dir.pop() {
-            return Err("could not find workspace root from binary path".to_string());
-        }
-    }
 }
 
 fn create_pflash_image_aligned(

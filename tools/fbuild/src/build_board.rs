@@ -26,13 +26,6 @@ impl BuildResult {
     }
 }
 
-pub fn build(board_name: &str, release: bool) -> Result<BuildResult, String> {
-    let _ = release;
-    Err(format!(
-        "board '{board_name}' must be built through its board-owned host tool"
-    ))
-}
-
 pub fn build_with_parsed(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,

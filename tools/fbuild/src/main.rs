@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use fbuild::{assemble, board_manifest, build_board, payload::PayloadChoice};
+use fbuild::{board_manifest, build_board, payload::PayloadChoice};
 use std::process;
 
 #[derive(Parser)]
@@ -70,121 +70,9 @@ enum Command {
         chip: Option<String>,
         #[arg(long)]
         probe: Option<String>,
+        #[arg(long)]
+        base_address: Option<String>,
     },
-}
-
-fn flash_board(
-    board_name: &str,
-    release: bool,
-    probe_run: bool,
-    chip: Option<&str>,
-    probe_selector: Option<&str>,
-) -> Result<(), String> {
-    let chip_name = chip.unwrap_or_else(|| {
-        if board_name.contains("sifive-unmatched") || board_name.contains("fu740") {
-            "FU740-C000"
-        } else {
-            "auto"
-        }
-    });
-
-    let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
-    eprintln!("[fstart] using probe-rs: {}", probe_rs.display());
-    eprintln!("[fstart] chip: {chip_name}");
-
-    let mk_cmd = |subcmd: &str| -> std::process::Command {
-        let mut cmd = std::process::Command::new(&probe_rs);
-        cmd.arg(subcmd)
-            .arg("--chip")
-            .arg(chip_name)
-            .arg("--protocol")
-            .arg("jtag");
-        if let Some(sel) = probe_selector {
-            cmd.arg("--probe").arg(sel);
-        }
-        cmd
-    };
-
-    if !probe_run {
-        eprintln!("[fstart] step 1/2: assembling FFS and flashing to SPI NOR...");
-        let ffs_path = assemble::assemble_with_opts(board_name, release, None, None)?;
-        let ffs_size = std::fs::metadata(&ffs_path).map(|m| m.len()).unwrap_or(0);
-
-        if ffs_size > 32 * 1024 * 1024 {
-            return Err(format!(
-                "FFS image ({} bytes) exceeds 32 MiB SPI NOR capacity",
-                ffs_size
-            ));
-        }
-
-        eprintln!(
-            "[fstart] flashing FFS ({:.1} MiB) to SPI NOR at 0x20000000...",
-            ffs_size as f64 / (1024.0 * 1024.0)
-        );
-
-        let mut cmd = mk_cmd("download");
-        cmd.arg("--binary-format")
-            .arg("bin")
-            .arg("--base-address")
-            .arg("0x20000000")
-            .arg(&ffs_path);
-
-        eprintln!("[fstart] running: {:?}", cmd);
-        let status = cmd
-            .status()
-            .map_err(|e| format!("failed to run probe-rs download: {e}"))?;
-        if !status.success() {
-            return Err(format!("probe-rs download (SPI NOR) failed with {status}"));
-        }
-        eprintln!("[fstart] SPI NOR flash complete.");
-    } else {
-        eprintln!("[fstart] --probe-run: skipping SPI NOR flash (using existing FFS)");
-    }
-
-    eprintln!("[fstart] step 2/2: loading stage to L2 LIM via JTAG...");
-    let res = build_board::build(board_name, release)?;
-    let elf_path = &res.primary_binary().path;
-    eprintln!("[fstart] ELF: {}", elf_path.display());
-
-    let mut cmd = mk_cmd("run");
-    cmd.arg(elf_path);
-
-    eprintln!("[fstart] running: {:?}", cmd);
-    eprintln!("[fstart] === UART output should appear on /dev/ttyUSB1 (115200 baud) ===");
-    let status = cmd
-        .status()
-        .map_err(|e| format!("failed to run probe-rs run: {e}"))?;
-    if !status.success() {
-        return Err(format!("probe-rs run failed with {status}"));
-    }
-    Ok(())
-}
-
-fn find_probe_rs() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let local_paths = [
-        format!("{home}/src/probe-rs/target/release/probe-rs"),
-        format!("{home}/src/probe-rs/target/debug/probe-rs"),
-    ];
-    for p in &local_paths {
-        let path = std::path::PathBuf::from(p);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    which_in_path("probe-rs").ok_or_else(|| "not in PATH or ~/src/probe-rs/target".to_string())
-}
-
-fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
-    let path_var = std::env::var("PATH").ok()?;
-    for dir in path_var.split(':') {
-        let candidate = std::path::PathBuf::from(dir).join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
@@ -284,6 +172,32 @@ fn board_tool_run_args(
     args
 }
 
+fn board_tool_flash_args(
+    release: bool,
+    probe_run: bool,
+    chip: Option<String>,
+    probe: Option<String>,
+    base_address: Option<String>,
+) -> Vec<String> {
+    let mut args = board_tool_build_args("flash", release, None);
+    if probe_run {
+        args.push("--probe-run".to_string());
+    }
+    if let Some(chip) = chip {
+        args.push("--chip".to_string());
+        args.push(chip);
+    }
+    if let Some(probe) = probe {
+        args.push("--probe".to_string());
+        args.push(probe);
+    }
+    if let Some(base_address) = base_address {
+        args.push("--base-address".to_string());
+        args.push(base_address);
+    }
+    args
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -325,12 +239,10 @@ fn main() {
             probe_run,
             chip,
             probe,
-        } => flash_board(
+            base_address,
+        } => dispatch_board_host(
             &board,
-            release,
-            probe_run,
-            chip.as_deref(),
-            probe.as_deref(),
+            &board_tool_flash_args(release, probe_run, chip, probe, base_address),
         ),
     };
 

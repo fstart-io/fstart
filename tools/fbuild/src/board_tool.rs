@@ -55,6 +55,18 @@ enum Command {
         #[arg(long)]
         fit: Option<String>,
     },
+    Flash {
+        #[arg(short, long, default_value_t = false)]
+        release: bool,
+        #[arg(long, default_value_t = false)]
+        probe_run: bool,
+        #[arg(long)]
+        chip: Option<String>,
+        #[arg(long)]
+        probe: Option<String>,
+        #[arg(long)]
+        base_address: Option<String>,
+    },
 }
 
 #[macro_export]
@@ -115,6 +127,20 @@ pub fn main(callbacks: BoardCallbacks) {
             fit.as_deref(),
         )
         .map(|_| ()),
+        Command::Flash {
+            release,
+            probe_run,
+            chip,
+            probe,
+            base_address,
+        } => flash(
+            callbacks,
+            release,
+            probe_run,
+            chip.as_deref(),
+            probe.as_deref(),
+            base_address.as_deref(),
+        ),
     };
 
     if let Err(err) = result {
@@ -197,6 +223,121 @@ fn assemble_loaded(
         firmware,
         fit,
     )
+}
+
+fn flash(
+    callbacks: BoardCallbacks,
+    release: bool,
+    probe_run: bool,
+    chip: Option<&str>,
+    probe_selector: Option<&str>,
+    base_address: Option<&str>,
+) -> Result<(), String> {
+    let workspace_root = crate::build_board::workspace_root_pub()?;
+    let (manifest, parsed) = load(callbacks, None)?;
+    let chip_name = chip.unwrap_or("auto");
+    let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
+
+    eprintln!("[fstart] using probe-rs: {}", probe_rs.display());
+    eprintln!("[fstart] chip: {chip_name}");
+
+    let mk_cmd = |subcmd: &str| -> std::process::Command {
+        let mut cmd = std::process::Command::new(&probe_rs);
+        cmd.arg(subcmd)
+            .arg("--chip")
+            .arg(chip_name)
+            .arg("--protocol")
+            .arg("jtag");
+        if let Some(sel) = probe_selector {
+            cmd.arg("--probe").arg(sel);
+        }
+        cmd
+    };
+
+    if !probe_run {
+        let base_address = base_address.ok_or_else(|| {
+            "flash requires --base-address because fbuild has no board flash programmer defaults"
+                .to_string()
+        })?;
+        eprintln!("[fstart] step 1/2: assembling FFS and flashing target memory...");
+        let ffs_path = assemble_loaded(
+            &workspace_root,
+            manifest.clone(),
+            parsed.clone(),
+            release,
+            None,
+            None,
+            None,
+        )?;
+
+        let ffs_size = std::fs::metadata(&ffs_path).map(|m| m.len()).unwrap_or(0);
+        eprintln!(
+            "[fstart] flashing FFS ({:.1} MiB) to {base_address}...",
+            ffs_size as f64 / (1024.0 * 1024.0)
+        );
+
+        let mut cmd = mk_cmd("download");
+        cmd.arg("--binary-format")
+            .arg("bin")
+            .arg("--base-address")
+            .arg(base_address)
+            .arg(&ffs_path);
+
+        eprintln!("[fstart] running: {:?}", cmd);
+        let status = cmd
+            .status()
+            .map_err(|e| format!("failed to run probe-rs download: {e}"))?;
+        if !status.success() {
+            return Err(format!("probe-rs download failed with {status}"));
+        }
+        eprintln!("[fstart] target flash complete.");
+    } else {
+        eprintln!("[fstart] --probe-run: skipping image download");
+    }
+
+    eprintln!("[fstart] step 2/2: loading stage via probe-rs...");
+    let res = crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
+    let elf_path = &res.primary_binary().path;
+    eprintln!("[fstart] ELF: {}", elf_path.display());
+
+    let mut cmd = mk_cmd("run");
+    cmd.arg(elf_path);
+
+    eprintln!("[fstart] running: {:?}", cmd);
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to run probe-rs run: {e}"))?;
+    if !status.success() {
+        return Err(format!("probe-rs run failed with {status}"));
+    }
+    Ok(())
+}
+
+fn find_probe_rs() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let local_paths = [
+        format!("{home}/src/probe-rs/target/release/probe-rs"),
+        format!("{home}/src/probe-rs/target/debug/probe-rs"),
+    ];
+    for p in &local_paths {
+        let path = std::path::PathBuf::from(p);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    which_in_path("probe-rs").ok_or_else(|| "not in PATH or ~/src/probe-rs/target".to_string())
+}
+
+fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
+    let path_var = std::env::var("PATH").ok()?;
+    for dir in path_var.split(':') {
+        let candidate = std::path::PathBuf::from(dir).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn run(
