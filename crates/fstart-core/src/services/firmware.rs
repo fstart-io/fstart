@@ -149,8 +149,8 @@ impl FirmwareImage {
 ///
 /// Implemented by chipset/SoC drivers whose hardware defines how the firmware
 /// image is exposed to the CPU.  Build tooling uses matching driver-side static
-/// metadata where available; runtime code calls this trait so the generated
-/// stage does not bake board-local copies of hardware decode windows.
+/// metadata where available; runtime code calls this trait so stages do not
+/// bake board-local copies of hardware decode windows.
 pub trait FirmwareImageProvider: Send + Sync {
     /// Return the logical firmware-image mapping currently exposed by hardware.
     fn firmware_image(&self) -> Result<FirmwareImage, ServiceError>;

@@ -1,9 +1,9 @@
 //! National Semiconductor PC87392 SuperIO driver descriptor.
 //!
 //! The ThinkPad X61 dock exposes a PC87392 at LPC PnP config port `0x2e`.
-//! This descriptor maps the logical devices used by coreboot's X61
-//! devicetree, including the dock WDT LDN so board code can explicitly keep it
-//! disabled.
+//! This descriptor maps the logical devices used by coreboot's X61 dock
+//! configuration, including the dock WDT LDN so board code can explicitly keep
+//! it disabled.
 
 use crate::{SuperIo, SuperIoChip};
 
@@ -60,7 +60,7 @@ impl From<SuperIoConfig> for Pc87392Config {
     }
 }
 
-/// PC87392 floppy-controller logical-device number from coreboot's X61 dock devicetree.
+/// PC87392 floppy-controller logical-device number from coreboot's X61 dock config.
 pub const PC87392_FDC_LDN: u8 = 0x00;
 
 /// PC87392 watchdog logical-device number from coreboot's `pc87392.h`.

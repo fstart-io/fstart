@@ -100,7 +100,7 @@ impl ChassisType {
 /// Processor family for SMBIOS Type 4 "Processor Family 2" field.
 ///
 /// Maps to the SMBIOS specification processor family identifiers.
-/// Used by codegen to emit the correct value for each platform.
+/// Used by table builders to emit the correct value for each platform.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessorFamily {
     /// Unknown processor family (0x02).

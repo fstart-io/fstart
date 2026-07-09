@@ -5,7 +5,8 @@
 //! `sdram_clkmode`, `sdram_timings`, `sdram_checkreset`.
 
 use super::SysInfo;
-use crate::pineview::regs::{ich7, mchbar, MchBar};
+use crate::ich7::ich7;
+use crate::pineview::regs::{mchbar, MchBar};
 use fstart_pci::ecam;
 
 // ===================================================================

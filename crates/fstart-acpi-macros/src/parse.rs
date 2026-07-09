@@ -1013,7 +1013,7 @@ impl Parser {
     }
 
     // -------------------------------------------------------------------
-    // Legacy ASL 1.0 operation parsers (kept for backward compat)
+    // ASL 1.0 operation parsers accepted by the DSL.
     // -------------------------------------------------------------------
 
     fn parse_op_region(&mut self) -> Result<DslItem> {

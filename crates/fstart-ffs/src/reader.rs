@@ -67,8 +67,8 @@ impl<'a> FfsReader<'a> {
 
     /// Read an `AnchorBlock` from a known offset in the image.
     ///
-    /// This is used when the bootblock knows the anchor's offset (because
-    /// codegen placed it at a link-time-known address). The caller passes
+    /// This is used when the bootblock knows the anchor's link-time address.
+    /// The caller passes
     /// the offset relative to the start of `image`.
     ///
     /// The anchor is `#[repr(C)]` — read via pointer cast, no deserialization.

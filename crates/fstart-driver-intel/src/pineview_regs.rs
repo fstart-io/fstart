@@ -276,24 +276,6 @@ pub mod igd {
     pub const BSM: u16 = 0x5c;
 }
 
-// ICH7 southbridge constants have moved to `fstart-driver-intel-ich7::ich7`.
-// Re-export for backward compatibility during transition.
-// Downstream code should migrate to `fstart_driver_intel_ich7::ich7::*`.
-pub mod ich7 {
-    pub const LPC_DEV: u8 = 0x1f;
-    pub const LPC_FUNC: u8 = 0;
-    pub const RCBA_REG: u16 = 0xF0;
-    pub const SMBUS_DEV: u8 = 0x1f;
-    pub const SMBUS_FUNC: u8 = 3;
-    pub const SMB_BASE: u16 = 0x20;
-    pub const HOSTC: u16 = 0x40;
-    pub const HST_EN: u8 = 1;
-    pub const PCI_COMMAND: u16 = 0x04;
-    pub const PCI_CMD_IO: u16 = 0x0001;
-    pub const DEFAULT_SMBUS_BASE: u16 = 0x0400;
-    pub const GCS: u32 = 0x3410;
-}
-
 /// MCHBAR-relative MMIO register offsets.
 ///
 /// Added to the MCHBAR base (typically `0xFED1_0000`) for MMIO access.

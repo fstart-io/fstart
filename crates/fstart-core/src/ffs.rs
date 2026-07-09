@@ -73,7 +73,7 @@ pub const ANCHOR_MAX_KEYS: usize = 4;
 
 /// Size of an `AnchorBlock` in bytes (`core::mem::size_of::<AnchorBlock>()`).
 ///
-/// Codegen uses this to size the `FSTART_ANCHOR` placeholder static.
+/// Stage code uses this to size the `FSTART_ANCHOR` placeholder static.
 /// The builder uses this to locate and patch the anchor in the binary.
 pub const ANCHOR_SIZE: usize = core::mem::size_of::<AnchorBlock>();
 
@@ -86,7 +86,7 @@ pub const ANCHOR_SIZE: usize = core::mem::size_of::<AnchorBlock>();
 /// the anchor is accessible as plain memory — no SPI driver, no flash
 /// reads, just a pointer dereference from the bootblock's own address space.
 ///
-/// **How it gets there**: codegen emits the anchor as a `#[link_section]`
+/// **How it gets there**: `fstart-stage` emits the anchor as a `#[link_section]`
 /// static in the bootblock. The linker places it. The `fbuild assemble`
 /// step patches the fields after the full image is laid out.
 ///
@@ -138,7 +138,7 @@ pub struct AnchorBlock {
 impl AnchorBlock {
     /// Create a zeroed anchor with just the magic and version set.
     ///
-    /// Used by codegen to emit the placeholder static; `fbuild assemble`
+    /// Used by stage code to emit the placeholder static; `fbuild assemble`
     /// patches the remaining fields.
     pub const fn placeholder() -> Self {
         Self {

@@ -1,8 +1,8 @@
 //! Security configuration types.
 //!
 //! These types are used in the board metadata to declare the signing/verification
-//! setup. At build time, codegen reads the public key file and embeds the
-//! key material into the anchor block inside the bootblock binary.
+//! setup. At build time, `fbuild assemble` reads the public key file and
+//! embeds the key material into the anchor block inside the bootblock binary.
 
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};

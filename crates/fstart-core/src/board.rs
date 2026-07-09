@@ -94,8 +94,8 @@ pub struct BoardConfig {
     ///
     /// Each SoC family has its own boot ROM that expects a particular
     /// binary layout on the boot medium (SD card, SPI flash, eMMC).
-    /// When set, codegen emits the required header/structure in dedicated
-    /// linker sections and fbuild patches length/checksum fields post-build.
+    /// When set, the stage/linker emits the required header/structure in
+    /// dedicated sections and fbuild patches length/checksum fields post-build.
     ///
     /// This is intentionally NOT a generic abstraction — each variant
     /// carries the exact semantics of one SoC family's boot ROM.
@@ -275,7 +275,7 @@ pub struct PayloadConfig {
     /// `x0` is 0, not a DTB pointer. Set this to the known DTB address
     /// (e.g., `0x40000000` for QEMU AArch64 virt).
     ///
-    /// When `None`, codegen uses `boot_dtb_addr()` from the platform crate.
+    /// When `None`, platform payload code uses its default DTB address.
     #[serde(default)]
     pub src_dtb_addr: Option<u64>,
     /// Kernel command line (set in /chosen/bootargs)

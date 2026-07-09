@@ -8,10 +8,6 @@ use fstart_core::services::{ServiceError, SmBus};
 
 pub mod ddr2;
 
-// Re-export DDR2 for backward compatibility — existing callers use
-// `crate::spd::decode_dimm`, `crate::spd::SPD_NUM_ROWS`, etc.
-pub use ddr2::*;
-
 // ===================================================================
 // Shared SPD constants
 // ===================================================================

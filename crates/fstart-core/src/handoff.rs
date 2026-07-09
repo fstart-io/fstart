@@ -35,9 +35,9 @@ pub const HANDOFF_MAX_SIZE: usize = 256;
 /// Inter-stage handoff data.
 ///
 /// Carries runtime-discovered parameters from one stage to the next.
-/// Device init state is determined at compile time by the codegen
-/// (which can see all stage build metadata), so it
-/// is NOT included here — only truly dynamic data belongs in the handoff.
+/// Device init state is determined by the fixed platform flow and stage
+/// build metadata, so it is NOT included here — only truly dynamic data
+/// belongs in the handoff.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageHandoff {

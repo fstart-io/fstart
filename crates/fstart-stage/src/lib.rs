@@ -104,7 +104,7 @@ pub fn sig_verify(anchor_data: &[u8], media: &(impl BootMedia + ?Sized)) {
     }
 
     // Volatile-read the anchor to see the post-build patched values
-    // SAFETY: FSTART_ANCHOR is emitted by codegen with proper alignment
+    // SAFETY: FSTART_ANCHOR is emitted by this crate with proper alignment
     // and size (>= ANCHOR_SIZE) in the .fstart.anchor linker section.
     let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
         Ok(a) => a,
@@ -169,8 +169,7 @@ pub enum AnchorScanError {
 /// aligned offsets in the media.  Returns the anchor data as a
 /// fixed-size array on success.
 ///
-/// This replaces the inline scanning code that codegen previously
-/// generated for non-first stages in memory-mapped multi-stage builds.
+/// Shared helper for non-first stages in memory-mapped multi-stage builds.
 ///
 /// # Errors
 ///

@@ -53,7 +53,7 @@ pub fn read_spds<B: fstart_core::services::SmBus>(
             return Err(ServiceError::HardwareError);
         };
 
-        si.spd_type = crate::spd::DDR2;
+        si.spd_type = crate::spd::ddr2::DDR2;
 
         // Preserve Pineview's coreboot CAS mask policy: only CAS3..CAS6 are
         // considered, with a conservative CAS0..2 fallback if the advertised

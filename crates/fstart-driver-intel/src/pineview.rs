@@ -8,8 +8,7 @@
 //!   MCHBAR/DMIBAR/EPBAR setup, PAM unlock, graphics clocks, and
 //!   miscellaneous chipset init.
 //! - **DRAM training**: full DDR2 raminit ported from coreboot’s ~2600-line
-//!   `raminit.c`. Called via the generated board adapter's `dram_init()`
-//!   trampoline.
+//!   `raminit.c`. Called by the fixed Pineview platform flow.
 //!
 //! Register definitions live in the crate-local [`regs`] module.
 
@@ -25,7 +24,8 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ptr;
 
-use self::regs::{hostbridge, ich7, mchbar, DmiBar, MchBar, Rcba};
+use self::regs::{hostbridge, mchbar, DmiBar, MchBar, Rcba};
+use crate::ich7::ich7;
 use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_arch::x86::mtrr;
 use fstart_core::mmio::MmioReadWrite;

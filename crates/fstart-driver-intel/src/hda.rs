@@ -488,16 +488,15 @@ pub const fn hda_get_param(codec: u32, nid: u32, param: u32) -> u32 {
 ///
 /// # Example
 ///
-/// ```ron
-/// ( vendor_id: 0x10ec0662, subsystem_id: 0x105b0d55, pins: [
-///     ( nid: 0x14, device: LineOut, conn: Jack, color: Green,
-///       loc: External, geo: Rear, connector: StereoMono18, group: 1, seq: 0 ),
-///     ( nid: 0x15, nc: 0 ),
-///     ( nid: 0x18, device: MicIn, conn: Jack, color: Pink,
-///       loc: External, geo: Rear, connector: StereoMono18, group: 3, seq: 0 ),
-/// ], extra_verbs: [
-///     0x00c3b027,  // NID 0x0C: amp gain
-/// ])
+/// ```rust,ignore
+/// HdaVerbTable::new(0x10ec_0662, 0x105b_0d55)
+///     .pin(pin_config(
+///         0x14, PinDevice::LineOut, PinConn::Jack, PinLoc::External,
+///         PinGeoLoc::Rear, PinConnector::StereoMono18, PinColor::Green,
+///         0x0c, 1, 0,
+///     ))
+///     .pin(pin_not_connected(0x15, 0))
+///     .verb(0x00c3_b027)
 /// ```
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]

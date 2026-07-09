@@ -603,7 +603,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     /// Program the mouse LDN (IRQ only).
     ///
     /// IT8721F exposes PS/2 mouse as its own LDN 0x06, and coreboot's
-    /// D41S devicetree programs IRQ register 0x70 on that LDN.
+    /// D41S config programs IRQ register 0x70 on that LDN.
     fn program_mouse(&self, ldn: u8, cfg: &MouseConfig) {
         self.select_ldn(ldn);
         self.write_reg(SIO_REG_IRQ, cfg.irq);

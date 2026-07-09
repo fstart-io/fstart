@@ -454,7 +454,7 @@ pub fn build_efi_memory_map(
     idx
 }
 
-// Re-export types for codegen convenience.
+// Re-export types used by the CrabEFI adapter.
 pub use fstart_core::services::memory_detect::E820Entry;
 
 /// Compute the runtime memory region from linker-provided symbols.
