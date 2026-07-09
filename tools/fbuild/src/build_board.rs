@@ -224,7 +224,7 @@ pub fn prepare_selected_board_workspace(
         workspace_root.join("tools").join("fbuild"),
         selected.join("tools").join("fbuild"),
     )?;
-    replace_with_symlink(
+    replace_with_file_copy(
         workspace_root.join("Cargo.lock"),
         selected.join("Cargo.lock"),
     )?;
@@ -242,11 +242,7 @@ pub fn prepare_selected_board_workspace(
 }
 
 fn replace_with_symlink(target: PathBuf, link: PathBuf) -> Result<(), String> {
-    if link.exists() || link.is_symlink() {
-        fs::remove_file(&link)
-            .or_else(|_| fs::remove_dir(&link))
-            .map_err(|e| format!("failed to replace {}: {e}", link.display()))?;
-    }
+    remove_path_if_present(&link)?;
     std::os::unix::fs::symlink(&target, &link).map_err(|e| {
         format!(
             "failed to symlink {} -> {}: {e}",
@@ -254,6 +250,26 @@ fn replace_with_symlink(target: PathBuf, link: PathBuf) -> Result<(), String> {
             target.display()
         )
     })
+}
+
+fn replace_with_file_copy(source: PathBuf, destination: PathBuf) -> Result<(), String> {
+    remove_path_if_present(&destination)?;
+    fs::copy(&source, &destination).map(|_| ()).map_err(|e| {
+        format!(
+            "failed to copy {} -> {}: {e}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+fn remove_path_if_present(path: &Path) -> Result<(), String> {
+    if path.exists() || path.is_symlink() {
+        fs::remove_file(path)
+            .or_else(|_| fs::remove_dir(path))
+            .map_err(|e| format!("failed to replace {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn selected_workspace_manifest(root_manifest: &str, board: &str) -> Result<String, String> {
