@@ -257,16 +257,42 @@ fn overlay_x86_elf_segments(
 ) -> Result<(), String> {
     let elf_data = std::fs::read(elf_path)
         .map_err(|e| format!("failed to read stage ELF {}: {e}", elf_path.display()))?;
-    let elf = object::File::parse(&*elf_data)
-        .map_err(|e| format!("failed to parse stage ELF {}: {e}", elf_path.display()))?;
     let flash_end = flash_base + pflash.len() as u64;
 
-    for segment in object::Object::segments(&elf) {
-        let (file_offset, file_size) = object::ObjectSegment::file_range(&segment);
+    if elf_data.get(0..4) != Some(b"\x7fELF") || elf_data.get(4) != Some(&2) {
+        return Err(format!("{} is not an ELF64 file", elf_path.display()));
+    }
+    if elf_data.get(5) != Some(&1) {
+        return Err(format!("{} is not little-endian ELF", elf_path.display()));
+    }
+
+    let phoff = read_elf_u64(&elf_data, 32, "e_phoff")? as usize;
+    let phentsize = read_elf_u16(&elf_data, 54, "e_phentsize")? as usize;
+    let phnum = read_elf_u16(&elf_data, 56, "e_phnum")? as usize;
+
+    for idx in 0..phnum {
+        let ph = phoff
+            .checked_add(idx * phentsize)
+            .ok_or_else(|| "ELF program header offset overflow".to_string())?;
+        if ph
+            .checked_add(phentsize)
+            .is_none_or(|end| end > elf_data.len())
+        {
+            return Err(format!("ELF program header {idx} is out of bounds"));
+        }
+        let p_type = read_elf_u32(&elf_data, ph, "p_type")?;
+        const PT_LOAD: u32 = 1;
+        if p_type != PT_LOAD {
+            continue;
+        }
+
+        let file_offset = read_elf_u64(&elf_data, ph + 8, "p_offset")?;
+        // XIP .data has a RAM virtual address but a flash load address.
+        let start = read_elf_u64(&elf_data, ph + 24, "p_paddr")?;
+        let file_size = read_elf_u64(&elf_data, ph + 32, "p_filesz")?;
         if file_size == 0 {
             continue;
         }
-        let start = object::ObjectSegment::address(&segment);
         let end = start
             .checked_add(file_size)
             .ok_or_else(|| "stage ELF segment address overflow".to_string())?;
@@ -295,6 +321,33 @@ fn overlay_x86_elf_segments(
         elf_path.display(),
     );
     Ok(())
+}
+
+fn read_elf_u16(data: &[u8], offset: usize, field: &str) -> Result<u16, String> {
+    let bytes: [u8; 2] = data
+        .get(offset..offset + 2)
+        .ok_or_else(|| format!("ELF field {field} is out of bounds"))?
+        .try_into()
+        .expect("slice length checked");
+    Ok(u16::from_le_bytes(bytes))
+}
+
+fn read_elf_u32(data: &[u8], offset: usize, field: &str) -> Result<u32, String> {
+    let bytes: [u8; 4] = data
+        .get(offset..offset + 4)
+        .ok_or_else(|| format!("ELF field {field} is out of bounds"))?
+        .try_into()
+        .expect("slice length checked");
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_elf_u64(data: &[u8], offset: usize, field: &str) -> Result<u64, String> {
+    let bytes: [u8; 8] = data
+        .get(offset..offset + 8)
+        .ok_or_else(|| format!("ELF field {field} is out of bounds"))?
+        .try_into()
+        .expect("slice length checked");
+    Ok(u64::from_le_bytes(bytes))
 }
 
 fn create_x86_pflash(
@@ -425,4 +478,41 @@ fn create_x86_pflash(
     );
 
     Ok(pflash_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x86_pflash_overlay_uses_physical_load_address() {
+        let flash_base = 0xff00_0000u64;
+        let mut elf = vec![0u8; 0x104];
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2; // ELF64
+        elf[5] = 1; // little-endian
+        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+
+        let ph = 64;
+        elf[ph..ph + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        elf[ph + 8..ph + 16].copy_from_slice(&0x100u64.to_le_bytes());
+        elf[ph + 16..ph + 24].copy_from_slice(&0x0100_0000u64.to_le_bytes());
+        elf[ph + 24..ph + 32].copy_from_slice(&(flash_base + 0x20).to_le_bytes());
+        elf[ph + 32..ph + 40].copy_from_slice(&4u64.to_le_bytes());
+        elf[0x100..0x104].copy_from_slice(b"data");
+
+        let path = std::env::temp_dir().join(format!(
+            "fstart-qemu-overlay-test-{}.elf",
+            std::process::id()
+        ));
+        std::fs::write(&path, elf).unwrap();
+
+        let mut pflash = vec![0xff; 0x100];
+        overlay_x86_elf_segments(&path, &mut pflash, flash_base).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(&pflash[0x20..0x24], b"data");
+    }
 }
