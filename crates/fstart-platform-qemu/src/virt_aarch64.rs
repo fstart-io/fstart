@@ -60,6 +60,20 @@ impl QemuAarch64VirtMainstage {
     }
 }
 
+/// DTB location for pflash/`-bios` boots.
+///
+/// QEMU only passes the DTB pointer in `x0` for direct `-kernel` boots; for
+/// firmware boots it copies the DTB to the base of RAM instead. Fall back to
+/// the configured RAM-base source when `x0` carried nothing.
+fn source_dtb_addr(config: &super::virt::QemuAarch64VirtConfig) -> u64 {
+    let boot = fstart_arch::aarch64::boot_dtb_addr();
+    if boot != 0 {
+        boot
+    } else {
+        config.source_dtb_addr
+    }
+}
+
 #[cfg(feature = "linux")]
 impl fstart_stage::payload::LinuxPayloadContext for QemuAarch64VirtMainstage {
     fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
@@ -67,7 +81,7 @@ impl fstart_stage::payload::LinuxPayloadContext for QemuAarch64VirtMainstage {
         fstart_stage::payload::LinuxPayloadConfig::new(
             config.firmware_base,
             config.firmware_size,
-            fstart_arch::aarch64::boot_dtb_addr(),
+            source_dtb_addr(&self.config),
             config.dtb_addr,
             config.kernel_addr,
             config.firmware_addr,
@@ -88,7 +102,7 @@ impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainsta
             self.config.flash_size,
             config.firmware_base,
             config.firmware_size,
-            fstart_arch::aarch64::boot_dtb_addr(),
+            source_dtb_addr(&self.config),
             config.firmware_addr,
             config.ram_base,
             config.ram_size,

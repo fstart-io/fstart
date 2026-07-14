@@ -119,6 +119,8 @@ pub struct QemuAarch64VirtConfig {
     pub flash_base: u64,
     pub flash_size: u64,
     pub ecam_base: u64,
+    /// Where QEMU copies the DTB for pflash/`-bios` boots (base of RAM).
+    pub source_dtb_addr: u64,
 }
 
 impl QemuAarch64VirtConfig {
@@ -138,6 +140,7 @@ impl QemuAarch64VirtConfig {
             flash_base: 0,
             flash_size: QEMU_AARCH64_FLASH_BANK_SIZE * 2,
             ecam_base: 0x0040_1000_0000,
+            source_dtb_addr: 0x4000_0000,
         }
     }
 

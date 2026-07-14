@@ -47,27 +47,25 @@ pub fn run(
             (find_qemu("qemu-system-riscv64"), args)
         }
         Platform::Aarch64 => {
-            let args = vec![
+            let mut args = vec![
                 "-machine".to_string(),
                 "virt,secure=on,virtualization=on,gic-version=3".to_string(),
                 "-cpu".to_string(),
                 "cortex-a72".to_string(),
                 "-nographic".to_string(),
-                "-bios".to_string(),
-                binary.display().to_string(),
             ];
+            args.extend(virt_flash_args(binary)?);
             (find_qemu("qemu-system-aarch64"), args)
         }
         Platform::Armv7 => {
-            let args = vec![
+            let mut args = vec![
                 "-machine".to_string(),
                 "virt".to_string(),
                 "-cpu".to_string(),
                 "cortex-a15".to_string(),
                 "-nographic".to_string(),
-                "-bios".to_string(),
-                binary.display().to_string(),
             ];
+            args.extend(virt_flash_args(binary)?);
             (find_qemu("qemu-system-arm"), args)
         }
         Platform::X86_64 => {
@@ -182,6 +180,49 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// ARM `virt` machines have two 64 MiB pflash banks (0x0 and 0x0400_0000).
+/// `-bios` only fills bank 0, so images that place the FFS in bank 1 (XIP
+/// assemble output) must be split into two pflash drives.
+const VIRT_FLASH_BANK_SIZE: usize = 64 * 1024 * 1024;
+
+fn virt_flash_args(binary: &Path) -> Result<Vec<String>, String> {
+    let data = std::fs::read(binary).map_err(|e| format!("failed to read firmware image: {e}"))?;
+    if data.len() <= VIRT_FLASH_BANK_SIZE {
+        return Ok(vec!["-bios".to_string(), binary.display().to_string()]);
+    }
+    if data.len() > 2 * VIRT_FLASH_BANK_SIZE {
+        return Err(format!(
+            "firmware image ({} bytes) exceeds both virt pflash banks ({} bytes)",
+            data.len(),
+            2 * VIRT_FLASH_BANK_SIZE
+        ));
+    }
+
+    let mut bank0 = vec![0xFFu8; VIRT_FLASH_BANK_SIZE];
+    bank0.copy_from_slice(&data[..VIRT_FLASH_BANK_SIZE]);
+    let mut bank1 = vec![0xFFu8; VIRT_FLASH_BANK_SIZE];
+    bank1[..data.len() - VIRT_FLASH_BANK_SIZE].copy_from_slice(&data[VIRT_FLASH_BANK_SIZE..]);
+
+    let bank0_path = binary.with_extension("bank0.pflash");
+    let bank1_path = binary.with_extension("bank1.pflash");
+    std::fs::write(&bank0_path, &bank0)
+        .map_err(|e| format!("failed to write pflash bank 0: {e}"))?;
+    std::fs::write(&bank1_path, &bank1)
+        .map_err(|e| format!("failed to write pflash bank 1: {e}"))?;
+
+    eprintln!(
+        "[fstart] virt pflash banks: {} + {}",
+        bank0_path.display(),
+        bank1_path.display()
+    );
+    Ok(vec![
+        "-drive".to_string(),
+        format!("if=pflash,file={},format=raw,unit=0", bank0_path.display()),
+        "-drive".to_string(),
+        format!("if=pflash,file={},format=raw,unit=1", bank1_path.display()),
+    ])
 }
 
 fn create_pflash_image_aligned(

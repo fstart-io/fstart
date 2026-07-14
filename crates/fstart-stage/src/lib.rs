@@ -300,16 +300,33 @@ pub fn fdt_prepare_platform(
         u32::from_be(raw) as usize
     };
 
+    // QEMU's arm_load_dtb() inflates totalsize to the whole DTB reservation
+    // (fdt_open_into over 1 MiB) so guests can edit in place. Copying that
+    // much tramples whatever the board packed above the DTB window (e.g. the
+    // kernel 1 MiB up on armv7 virt). Copy only the used bytes and shrink
+    // the destination header to match.
+    let used = fdt_used_size(src_ptr, totalsize);
+
     // Copy source to destination if they differ.
     let dst_ptr = dst_dtb_addr as *mut u8;
-    if src_dtb_addr != dst_dtb_addr {
-        fstart_log::info!("FDT: copying {} bytes to {}", totalsize, Hex(dst_dtb_addr));
+    let totalsize = if src_dtb_addr != dst_dtb_addr {
+        fstart_log::info!(
+            "FDT: copying {} of {} bytes to {}",
+            used,
+            totalsize,
+            Hex(dst_dtb_addr)
+        );
         // SAFETY: both regions are in DRAM, non-overlapping (board config
-        // must ensure this), and totalsize bytes are readable/writable.
+        // must ensure this), and `used <= totalsize` bytes are
+        // readable/writable.
         unsafe {
-            core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, totalsize);
+            core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, used);
+            core::ptr::write_volatile(dst_ptr.add(4) as *mut u32, u32::to_be(used as u32));
         }
-    }
+        used
+    } else {
+        totalsize
+    };
 
     // Allow 4 KiB headroom beyond the current DTB for property insertion,
     // node creation, and strings growth. The DTB sits in DRAM with plenty
@@ -360,6 +377,41 @@ pub fn fdt_prepare_platform(
     }
 
     fstart_log::info!("FDT: ready at {}", Hex(dst_dtb_addr));
+}
+
+/// Actually used byte count of an FDT whose `totalsize` may be inflated.
+///
+/// Takes the maximum end offset of the three header-described sections
+/// (memory reservation map walked entry-by-entry, structure block, strings
+/// block), clamped to the claimed `totalsize`.
+#[cfg(feature = "fdt")]
+fn fdt_used_size(fdt: *const u8, totalsize: usize) -> usize {
+    let be32 = |off: usize| -> usize {
+        // SAFETY: caller guarantees `totalsize` readable bytes; header
+        // offsets are within the mandatory 40-byte FDT header.
+        let raw = unsafe { core::ptr::read_volatile(fdt.add(off) as *const u32) };
+        u32::from_be(raw) as usize
+    };
+    let off_dt_struct = be32(8);
+    let off_dt_strings = be32(12);
+    let off_mem_rsvmap = be32(16);
+    let size_dt_strings = be32(32);
+    let size_dt_struct = be32(36);
+
+    // Walk the reservation map: 16-byte (addr, size) entries, (0, 0) ends.
+    let mut rsvmap_end = off_mem_rsvmap;
+    while rsvmap_end + 16 <= totalsize {
+        let raw = unsafe { core::ptr::read_volatile(fdt.add(rsvmap_end) as *const [u64; 2]) };
+        rsvmap_end += 16;
+        if raw[0] == 0 && raw[1] == 0 {
+            break;
+        }
+    }
+
+    let used = (off_dt_struct + size_dt_struct)
+        .max(off_dt_strings + size_dt_strings)
+        .max(rsvmap_end);
+    used.clamp(40, totalsize)
 }
 
 // ---------------------------------------------------------------------------
