@@ -7,37 +7,90 @@ extern crate alloc;
 extern crate ufmt;
 
 pub mod fw_cfg;
+
+pub mod virt;
+
+pub use virt::qemu_virt_security_config;
+#[cfg(feature = "host")]
+pub use virt::{
+    qemu_aarch64_virt_linux_payload, qemu_aarch64_virt_memory, qemu_aarch64_virt_stages,
+    qemu_arm_virt_build_policy, qemu_armv7_virt_linux_payload, qemu_armv7_virt_memory,
+    qemu_armv7_virt_stages, qemu_riscv64_virt_build_policy, qemu_riscv64_virt_linux_payload,
+    qemu_riscv64_virt_memory, qemu_riscv64_virt_stages,
+};
+pub use virt::{QemuAarch64VirtConfig, QemuArmv7VirtConfig, QemuRiscv64VirtConfig, QemuVirtConfig};
+#[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
+pub mod virt_aarch64;
+#[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
+pub mod virt_armv7;
+#[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
+pub mod virt_riscv64;
+
+#[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
+pub use virt_aarch64::{
+    QemuAarch64Virt, QemuAarch64VirtBoard, QemuAarch64VirtHooks, QemuAarch64VirtMainstage,
+};
+#[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
+pub use virt_armv7::{
+    QemuArmv7Virt, QemuArmv7VirtBoard, QemuArmv7VirtHooks, QemuArmv7VirtMainstage,
+};
+#[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
+pub use virt_riscv64::{
+    QemuRiscv64Virt, QemuRiscv64VirtBoard, QemuRiscv64VirtHooks, QemuRiscv64VirtMainstage,
+};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod q35;
 
-#[cfg(feature = "stage")]
+#[cfg(all(feature = "stage", any(target_arch = "x86", target_arch = "x86_64")))]
 pub use stage::{run_qemu_q35_mainstage, QemuQ35, QemuQ35Board, QemuQ35Mainstage};
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use fstart_core::{
     hstr, hvec, BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryMap,
     MemoryRegion, MonolithicConfig, RegionKind, StageBuildConfig, StageLayout,
 };
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use serde::Serialize;
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_PLATFORM_NODE: &str = "q35";
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_FLASH_BASE: u64 = 0xff00_0000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_FLASH_SIZE: u64 = 0x0100_0000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_FFS_BASE: u64 = 0xff10_0000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_FFS_SIZE: u64 = 0x00ef_f000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_RAM_BASE: u64 = 0x0010_0000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_RAM_SIZE: u64 = 0x3ff0_0000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_DATA_ADDR: u64 = 0x0100_0000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_STACK_SIZE: u32 = 0x0040_0000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_HEAP_SIZE: u32 = 0x0020_0000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_PAGE_TABLE_ADDR: u64 = 0x1000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_PAGE_TABLE_SIZE: u64 = 0x4000;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_ACPI_BUFFER_SIZE: usize = 512 * 1024;
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_UART_NODE: &str = "uart0";
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_UART_PIO_BASE: u64 = 0x3f8;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_UART_CLOCK_FREQ: u32 = 1_843_200;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_UART_BAUD_RATE: u32 = 115_200;
 
 /// Closed QEMU q35 platform facts consumed by the handwritten QEMU flow.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QemuQ35Config {
@@ -47,6 +100,7 @@ pub struct QemuQ35Config {
     pub firmware_size: u64,
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 impl QemuQ35Config {
     #[must_use]
     pub const fn new() -> Self {
@@ -72,12 +126,14 @@ impl QemuQ35Config {
     }
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 impl Default for QemuQ35Config {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[must_use]
 pub fn qemu_q35_memory() -> MemoryMap {
     MemoryMap {
@@ -102,6 +158,7 @@ pub fn qemu_q35_memory() -> MemoryMap {
 
 /// QEMU q35 uses one monolithic XIP stage: QEMU RAM is usable at reset, so a
 /// bootblock/ramstage split would only add CI latency.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[must_use]
 pub fn qemu_q35_stages() -> StageLayout {
     StageLayout::Monolithic(MonolithicConfig {
@@ -123,16 +180,18 @@ pub fn qemu_q35_stages() -> StageLayout {
     })
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[must_use]
 pub const fn qemu_q35_build_policy() -> BoardBuildPolicy {
     BoardBuildPolicy {
         firmware_image: FirmwareImagePolicy::memory_mapped(QEMU_Q35_FFS_BASE, QEMU_Q35_FFS_SIZE),
+        flash_image: None,
         pci_root_feature: None,
         cpu_feature: None,
     }
 }
 
-#[cfg(feature = "stage")]
+#[cfg(all(feature = "stage", any(target_arch = "x86", target_arch = "x86_64")))]
 mod stage {
     use fstart_core::services::memory_detect::{E820Entry, E820State};
     use fstart_core::services::{Console, ServiceError};

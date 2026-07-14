@@ -568,9 +568,7 @@ fn clear_dram_init_in_progress() {
 }
 
 fn check_warm_boot(mch: &MchBar) -> Result<bool, ServiceError> {
-    if mch.read16(mchbar::SSKPD) == 0xcafe
-        || (mch.read32(mchbar::PMSTS) & PMSTS_SELFREFRESH) != 0
-    {
+    if mch.read16(mchbar::SSKPD) == 0xcafe || (mch.read32(mchbar::PMSTS) & PMSTS_SELFREFRESH) != 0 {
         fstart_log::error!("gm965 raminit: warm/S3 resume needs MRC cache plumbing");
         return Err(ServiceError::NotSupported);
     }
@@ -1400,7 +1398,10 @@ fn program_epd(info: &RaminitInfo, mch: &MchBar) {
     mch.clrsetbits32(EPD_22, 0x1ff, (EPD_TRTP_ALT[mc] + t.trfc as u32) & 0x1ff);
 
     reg = mch.read32(EPD_24);
-    mch.write32(EPD_24, (reg & 0xff8f_cfe7) | 0xe20 | (EPD_RTP_PCHG[mc] << 20));
+    mch.write32(
+        EPD_24,
+        (reg & 0xff8f_cfe7) | 0xe20 | (EPD_RTP_PCHG[mc] << 20),
+    );
 
     let rank_mode = if !channel_populated(info, 0) {
         3
@@ -1411,7 +1412,10 @@ fn program_epd(info: &RaminitInfo, mch: &MchBar) {
     };
     mch.clrbits32(EPD_28, 1);
     reg = mch.read32(EPD_28);
-    mch.write32(EPD_28, (reg & 0xfb07_fd90) | 0x60190 | (rank_mode << 20) | 0x0300_0000);
+    mch.write32(
+        EPD_28,
+        (reg & 0xfb07_fd90) | 0x60190 | (rank_mode << 20) | 0x0300_0000,
+    );
 
     mch.clrsetbits32(EPD_2C, 0x05, 0x02);
     mch.clrsetbits32(EPD_2C, 0xe8, 0x10);
@@ -1429,7 +1433,11 @@ fn program_epd(info: &RaminitInfo, mch: &MchBar) {
     mch.clrsetbits32(EPD_99, 0x0600, cas_enc << 9);
     mch.clrbits32(EPD_99, 0x000f_0000);
     let rank_adj = if channel_populated(info, 0) {
-        if channel_has_dual_rank(info, 0) { 10 } else { 9 }
+        if channel_has_dual_rank(info, 0) {
+            10
+        } else {
+            9
+        }
     } else {
         0
     };
@@ -1452,12 +1460,20 @@ fn program_epd(info: &RaminitInfo, mch: &MchBar) {
         let ch0_dual = channel_has_dual_rank(info, 0);
         let ch1_dual = channel_has_dual_rank(info, 1);
         let ch0_cfg = if channel_populated(info, 0) {
-            if ch0_dual || force_cfg { 0x07 } else { 0x03 }
+            if ch0_dual || force_cfg {
+                0x07
+            } else {
+                0x03
+            }
         } else {
             0
         };
         let ch1_cfg = if channel_populated(info, 1) {
-            if ch1_dual || force_cfg { 0x07 } else { 0x03 }
+            if ch1_dual || force_cfg {
+                0x07
+            } else {
+                0x03
+            }
         } else {
             0
         };

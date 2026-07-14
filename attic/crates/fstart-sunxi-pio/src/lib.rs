@@ -2,8 +2,7 @@
 //!
 //! Provides pin function selection, pull-up/down configuration, and drive
 //! strength control for all sunxi SoC generations. The register layout
-//! within each port bank is identical across A10/A20 (sun4i/sun7i),
-//! H3/H5 (sun8i/sun50i), and D1/T113 (sun20i/NCAT2), with two
+//! within each port bank is identical across H3/H5 (sun8i/sun50i), and D1/T113 (sun20i/NCAT2), with two
 //! generations differing only in bank stride and pull register offset.
 //!
 //! Modeled directly on U-Boot's `drivers/gpio/sunxi_gpio.c` primitives.
@@ -36,7 +35,7 @@
 /// PIO pin controller generation — determines bank stride and pull offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PioGen {
-    /// A10, A20, H3, H5, A64, H6, H616, … — bank stride 0x24.
+    /// H3, H5, A64, H6, H616, … — bank stride 0x24.
     Legacy,
     /// D1, T113, R528 (NCAT2) — bank stride 0x30.
     Ncat2,

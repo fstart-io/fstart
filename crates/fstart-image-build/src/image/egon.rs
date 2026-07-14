@@ -131,3 +131,50 @@ fn word_sum(data: &[u8]) -> u32 {
         checksum.wrapping_add(word)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TEST_FILE: AtomicUsize = AtomicUsize::new(0);
+
+    fn egon_image(len: usize) -> Vec<u8> {
+        let mut image = vec![0; len];
+        image[3] = 0xea;
+        image[4..12].copy_from_slice(EGON_MAGIC);
+        image[0x0c..0x10].copy_from_slice(&CHECKSUM_STAMP.to_le_bytes());
+        image
+    }
+
+    #[test]
+    fn patch_file_pads_and_verifies_egon_image() {
+        let id = NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("fstart-egon-{id}-{}.bin", std::process::id()));
+        std::fs::write(&path, egon_image(0x123)).expect("write eGON fixture");
+
+        patch_file(&path).expect("patch eGON image");
+        let image = std::fs::read(&path).expect("read patched eGON image");
+        std::fs::remove_file(&path).expect("remove eGON fixture");
+
+        assert_eq!(image.len(), 0x2000);
+        assert_eq!(
+            u32::from_le_bytes(image[0x10..0x14].try_into().unwrap()),
+            0x2000
+        );
+        verify(&image).expect("patched image validates");
+    }
+
+    #[test]
+    fn patch_ffs_updates_header_and_checksum() {
+        let mut image = egon_image(0x4000);
+        patch_ffs(&mut image, 0x2000).expect("patch eGON FFS");
+
+        assert_eq!(
+            u32::from_le_bytes(image[0x10..0x14].try_into().unwrap()),
+            0x2000
+        );
+        verify(&image[..0x2000]).expect("patched FFS header validates");
+    }
+}

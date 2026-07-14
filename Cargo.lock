@@ -556,6 +556,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-sunxi"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-core",
+ "fstart-log",
+ "serde",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-driver-superio"
 version = "0.1.0"
 dependencies = [
@@ -649,6 +661,20 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-log",
  "fstart-pci",
+ "fstart-stage",
+ "serde",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-platform-sunxi"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-sunxi",
+ "fstart-driver-uart",
+ "fstart-log",
  "fstart-stage",
  "serde",
  "ufmt",

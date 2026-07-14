@@ -115,11 +115,9 @@ fn build_smm_artifacts(
         coreboot_header: smm.coreboot.emit_header,
     };
     let smm_stage = build_board_smm_stage(workspace_root, board_manifest)?;
-    let handler = fstart_image_build::smm_image::handler_from_rlibs(
-        &smm_stage.deps_dir,
-        &smm_stage.link_dir,
-    )
-    .map_err(|e| format!("failed to link SMM handler: {e}"))?;
+    let handler =
+        fstart_image_build::smm_image::handler_from_rlibs(&smm_stage.deps_dir, &smm_stage.link_dir)
+            .map_err(|e| format!("failed to link SMM handler: {e}"))?;
     let built = fstart_image_build::smm_image::write_image(
         options,
         &handler,

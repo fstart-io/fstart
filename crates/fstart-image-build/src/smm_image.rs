@@ -249,10 +249,7 @@ pub fn handler_from_elf(elf: &Path, work_dir: &Path) -> Result<SmmHandlerImage, 
     })
 }
 
-pub fn handler_from_rlibs(
-    deps_dir: &Path,
-    work_dir: &Path,
-) -> Result<SmmHandlerImage, BuildError> {
+pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandlerImage, BuildError> {
     std::fs::create_dir_all(work_dir)?;
     let elf = work_dir.join("smm_handler.elf");
     let mut inputs = rlibs_in(deps_dir)?;
@@ -306,8 +303,7 @@ fn sysroot_rlibs() -> Result<Vec<PathBuf>, BuildError> {
         )));
     }
     let sysroot = String::from_utf8_lossy(&output.stdout);
-    let lib_dir = Path::new(sysroot.trim())
-        .join("lib/rustlib/x86_64-unknown-none/lib");
+    let lib_dir = Path::new(sysroot.trim()).join("lib/rustlib/x86_64-unknown-none/lib");
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(&lib_dir)? {
         let path = entry?.path();

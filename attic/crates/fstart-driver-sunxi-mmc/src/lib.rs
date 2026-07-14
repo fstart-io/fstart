@@ -1,4 +1,4 @@
-//! Allwinner sunxi SD/MMC host controller driver (unified A20/H3/D1).
+//! Unported Allwinner sunxi H3/H5/D1 SD/MMC host controller driver.
 //!
 //! Minimal read-only driver for booting from SD card. Implements
 //! `Device` + `BlockDevice` traits. Supports SD v2.0 cards (SDHC)
@@ -6,7 +6,6 @@
 //!
 //! Supports three SoC generations:
 //!
-//! - **sun4i** (A10, A20): FIFO at 0x100, AHB gate only
 //! - **sun6i** (H3, H2+, A64): FIFO at 0x200, AHB gate + separate bus-reset
 //! - **NCAT2** (D1, T113): FIFO at 0x200, combined gate+reset BGR register
 //!
@@ -38,17 +37,6 @@ use fstart_arch::udelay;
 /// FIFO offset, clock gating, and reset behaviour.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum SunxiMmcConfig {
-    /// A20 (sun7i) — sun4i-generation: AHB gate only, FIFO at 0x100.
-    Sun7iA20 {
-        /// MMC controller base address (e.g., 0x01C0F000 for MMC0).
-        base_addr: u64,
-        /// CCU base address (0x01C20000) for clock gating.
-        ccu_base: u64,
-        /// PIO base address (0x01C20800) for GPIO pin mux.
-        pio_base: u64,
-        /// MMC controller index (0-3) for clock register selection.
-        mmc_index: u8,
-    },
     /// H3/H2+ (sun8i) — sun6i-generation: AHB gate + bus-reset, FIFO at 0x200.
     Sun8iH3 {
         /// MMC controller base address (e.g., 0x01C0F000 for MMC0).
@@ -92,8 +80,7 @@ impl SunxiMmcConfig {
     /// Extract the `mmc_index` from any variant.
     pub fn mmc_index(&self) -> u8 {
         match self {
-            Self::Sun7iA20 { mmc_index, .. }
-            | Self::Sun8iH3 { mmc_index, .. }
+            Self::Sun8iH3 { mmc_index, .. }
             | Self::Sun50iH5 { mmc_index, .. }
             | Self::Sun20iD1 { mmc_index, .. } => *mmc_index,
         }
@@ -107,8 +94,6 @@ impl SunxiMmcConfig {
 /// SoC generation — drives the hardware differences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SunxiGen {
-    /// sun4i-generation (A10, A20): FIFO at 0x100, AHB gate only.
-    Sun4i,
     /// sun6i-generation (H3, H2+, A64): FIFO at 0x200, gate + reset.
     Sun6i,
     /// NCAT2-generation (D1/T113): FIFO at 0x200, combined gate+reset at 0x84C.
@@ -279,7 +264,6 @@ unsafe impl Sync for SunxiMmc {}
 impl Device for SunxiMmc {
     const NAME: &'static str = "sunxi-mmc";
     const COMPATIBLE: &'static [&'static str] = &[
-        "allwinner,sun7i-a20-mmc",
         "allwinner,sun8i-h3-mmc",
         "allwinner,sun50i-h5-mmc",
         "allwinner,sun20i-d1-mmc",
@@ -288,12 +272,6 @@ impl Device for SunxiMmc {
 
     fn new(config: SunxiMmcConfig) -> Result<Self, DeviceError> {
         let (base_addr, ccu_base, pio_base, mmc_index, gen) = match config {
-            SunxiMmcConfig::Sun7iA20 {
-                base_addr,
-                ccu_base,
-                pio_base,
-                mmc_index,
-            } => (base_addr, ccu_base, pio_base, mmc_index, SunxiGen::Sun4i),
             SunxiMmcConfig::Sun8iH3 {
                 base_addr,
                 ccu_base,
@@ -315,10 +293,7 @@ impl Device for SunxiMmc {
         };
 
         let base = base_addr as usize;
-        let fifo_offset = match gen {
-            SunxiGen::Sun4i => 0x100,
-            SunxiGen::Sun6i | SunxiGen::Ncat2 => 0x200,
-        };
+        let fifo_offset = 0x200;
 
         // SAFETY: base_addr points to the MMC controller MMIO region.
         let regs = unsafe { &*(base as *const SunxiMmcRegs) };
@@ -463,7 +438,7 @@ impl SunxiMmc {
     /// drive strength, and pull-up settings).
     fn setup_gpio(&self) {
         let gen = match self.gen {
-            SunxiGen::Sun4i | SunxiGen::Sun6i => fstart_sunxi_pio::PioGen::Legacy,
+            SunxiGen::Sun6i => fstart_sunxi_pio::PioGen::Legacy,
             SunxiGen::Ncat2 => fstart_sunxi_pio::PioGen::Ncat2,
         };
         let pio = fstart_sunxi_pio::SunxiPio::new(self.pio_base, gen);
@@ -486,15 +461,6 @@ impl SunxiMmc {
     ///   reset bits [18:16])
     fn setup_clocks(&self) {
         match self.gen {
-            SunxiGen::Sun4i => {
-                let gate_addr = (self.ccu_base + CCU_AHB_GATE0_OFF) as *mut u32;
-                let bit = 1u32 << (8 + self.mmc_index);
-                // SAFETY: AHB gate register at known CCU MMIO address.
-                unsafe {
-                    let gate = core::ptr::read_volatile(gate_addr);
-                    core::ptr::write_volatile(gate_addr, gate | bit);
-                }
-            }
             SunxiGen::Sun6i => {
                 let gate_addr = (self.ccu_base + CCU_AHB_GATE0_OFF) as *mut u32;
                 let bit = 1u32 << (8 + self.mmc_index);
@@ -526,7 +492,7 @@ impl SunxiMmc {
 
         // Set module clock: OSC24M, N=0, M=0 -> 24 MHz.
         match self.gen {
-            SunxiGen::Sun4i | SunxiGen::Sun6i => {
+            SunxiGen::Sun6i => {
                 self.mmc_clk_reg()
                     .write(MMC_CLK::ENABLE::SET + MMC_CLK::CLK_SRC::Osc24M);
             }
@@ -582,7 +548,7 @@ impl SunxiMmc {
     /// Set the module clock to a target frequency.
     fn set_mod_clk(&self, target_hz: u32) {
         match self.gen {
-            SunxiGen::Sun4i | SunxiGen::Sun6i => self.set_mod_clk_legacy(target_hz),
+            SunxiGen::Sun6i => self.set_mod_clk_legacy(target_hz),
             SunxiGen::Ncat2 => self.set_mod_clk_d1(target_hz),
         }
     }

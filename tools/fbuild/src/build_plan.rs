@@ -183,10 +183,6 @@ fn base_features(
         features.insert("fit");
     }
 
-    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
-        features.insert("sunxi");
-    }
-
     if needs_aarch64_el2_relocate_entry(config) {
         features.insert("aarch64-el2-relocate-entry");
     }
@@ -319,6 +315,14 @@ fn stage_features(
     if build.fdt {
         features.push("fdt");
     }
+    if build.payload
+        && config
+            .payload
+            .as_ref()
+            .is_some_and(|payload| payload.kind == fstart_core::PayloadKind::LinuxBoot)
+    {
+        features.push("linux");
+    }
     if build.payload && stage_uses_crabefi(config) {
         features.push("crabefi");
     }
@@ -354,9 +358,9 @@ mod tests {
     use std::path::PathBuf;
 
     use fstart_core::{
-        hstr, BoardBuildPolicy, DigestAlgorithm, MemoryMap, MemoryRegion, MonolithicConfig,
-        Platform, RegionKind, SecurityConfig, SignatureAlgorithm, SocImageFormat, StageBuildConfig,
-        StageLayout,
+        hstr, hvec, BoardBuildPolicy, Compression, DigestAlgorithm, MemoryMap, MemoryRegion,
+        MonolithicConfig, Platform, RegionKind, RunsFrom, SecurityConfig, SignatureAlgorithm,
+        SocImageFormat, StageBuildConfig, StageConfig, StageLayout,
     };
 
     use super::{plan, ParsedBoard};
@@ -459,6 +463,63 @@ mod tests {
         assert!(features.contains("ffs"));
         assert!(features.contains("ed25519"));
         assert!(features.contains("sha2-digest"));
+    }
+
+    #[test]
+    fn plan_armv7_egon_uses_board_features_without_stale_sunxi_feature() {
+        let mut config = minimal_config();
+        config.platform = Platform::Armv7;
+        config.memory.regions[0] = MemoryRegion {
+            name: hstr("sram"),
+            base: 0,
+            size: 0x8000,
+            kind: RegionKind::Ram,
+        };
+        config.stages = StageLayout::MultiStage(hvec([
+            StageConfig {
+                name: hstr("bootblock"),
+                build: StageBuildConfig {
+                    load_next_stage: Some(hstr("main")),
+                    ..StageBuildConfig::default()
+                },
+                load_addr: 0,
+                stack_size: 0x1000,
+                heap_size: None,
+                runs_from: RunsFrom::Ram,
+                compression: Compression::None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            },
+            StageConfig {
+                name: hstr("main"),
+                build: StageBuildConfig::default(),
+                load_addr: 0x4100_0000,
+                stack_size: 0x10000,
+                heap_size: None,
+                runs_from: RunsFrom::Ram,
+                compression: Compression::None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            },
+        ]));
+        config.soc_image_format = SocImageFormat::AllwinnerEgon;
+        let mut manifest = manifest();
+        manifest.platform = Some("armv7".to_string());
+        manifest.target = Some(Platform::Armv7.target_triple().to_string());
+        manifest.features = vec!["allwinner-a20".to_string()];
+
+        let plan = plan(&parsed(config), &manifest).expect("eGON board should plan");
+        assert_eq!(plan.target.triple, Platform::Armv7.target_triple());
+        assert_eq!(plan.stages.len(), 2);
+        assert!(plan.stages[0].features.contains("armv7"));
+        assert!(plan.stages[0].features.contains("allwinner-a20"));
+        assert!(plan.stages[0].features.contains("handoff"));
+        assert!(plan.stages[0].features.contains("ffs"));
+        assert!(!plan.stages[0].features.contains("sunxi"));
+        assert_eq!(plan.stages[0].soc_format, SocImageFormat::AllwinnerEgon);
+        assert_eq!(plan.stages[1].soc_format, SocImageFormat::None);
     }
 
     #[test]

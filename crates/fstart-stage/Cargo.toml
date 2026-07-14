@@ -6,6 +6,9 @@ license.workspace = true
 [features]
 default = []
 # Platform selection (exactly one must be enabled)
+armv7 = ["fstart-arch/armv7"]
+aarch64 = ["fstart-arch/aarch64"]
+riscv64 = ["fstart-arch/riscv64"]
 x86_64 = ["fstart-arch/x86_64"]
 
 # x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
@@ -37,6 +40,8 @@ sha3-digest = [
 lz4 = ["ffs"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
 fdt = []
+# ARM Linux payload selected by fbuild's payload choice.
+linux = []
 # FIT image parsing at runtime
 fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
 # Inter-stage handoff serialization (postcard, for multi-stage boards)

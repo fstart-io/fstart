@@ -269,7 +269,7 @@ pub fn assemble(
             ffs_anchor_offset: ffs_image.anchor_offset,
             ffs_path: &image_path,
         };
-        create_full_flash_image(full_flash)?;
+        return create_full_flash_image(full_flash);
     }
 
     Ok(image_path)
@@ -559,6 +559,143 @@ struct FullFlashInput<'a> {
     ffs_path: &'a Path,
 }
 
+/// Compose a non-x86 XIP image from the linked stage and its separate FFS
+/// window. The two windows are board data: no board-name dispatch is needed.
+fn create_xip_flash_image(
+    config: &BoardConfig,
+    bootblock_elf: &Path,
+    ffs_data: &[u8],
+    ffs_anchor_offset: usize,
+    ffs_path: &Path,
+) -> Result<PathBuf, String> {
+    let flash_image = config
+        .build
+        .flash_image
+        .and_then(policy_window)
+        .and_then(|image| image.contiguous_window())
+        .ok_or_else(|| "XIP flash image requires a contiguous flash_image policy".to_string())?;
+    let ffs_image = firmware_image_from_policy(config)?
+        .and_then(|image| image.contiguous_window())
+        .ok_or_else(|| "XIP flash image requires a contiguous firmware image policy".to_string())?;
+    let flash_end = flash_image
+        .cpu_base
+        .checked_add(flash_image.size)
+        .ok_or_else(|| "XIP flash image window overflows".to_string())?;
+    let ffs_end = ffs_image
+        .cpu_base
+        .checked_add(ffs_image.size)
+        .ok_or_else(|| "FFS window overflows".to_string())?;
+    if ffs_image.cpu_base < flash_image.cpu_base || ffs_end > flash_end {
+        return Err("FFS window lies outside the composite flash image".to_string());
+    }
+    if ffs_data.len() > ffs_image.size as usize {
+        return Err(format!(
+            "FFS image ({} bytes) exceeds its firmware window ({} bytes)",
+            ffs_data.len(),
+            ffs_image.size
+        ));
+    }
+
+    let elf_data = fs::read(bootblock_elf).map_err(|e| {
+        format!(
+            "failed to read bootblock ELF {}: {e}",
+            bootblock_elf.display()
+        )
+    })?;
+    let segments = elf_load_segments(&elf_data, bootblock_elf)?;
+    let mut image = vec![0xff; flash_image.size as usize];
+    let mut stage_segment_count = 0;
+    for segment in segments.into_iter().filter(|segment| segment.filesz != 0) {
+        let segment_end = segment
+            .paddr
+            .checked_add(segment.filesz)
+            .ok_or_else(|| "stage ELF segment address overflows".to_string())?;
+        if segment.paddr < flash_image.cpu_base || segment_end > flash_end {
+            continue;
+        }
+        let dst_start = usize::try_from(segment.paddr - flash_image.cpu_base)
+            .map_err(|_| "stage ELF segment offset is too large".to_string())?;
+        let size = usize::try_from(segment.filesz)
+            .map_err(|_| "stage ELF segment size is too large".to_string())?;
+        let src_start = usize::try_from(segment.offset)
+            .map_err(|_| "stage ELF segment file offset is too large".to_string())?;
+        let src_end = src_start
+            .checked_add(size)
+            .ok_or_else(|| "stage ELF segment file range overflows".to_string())?;
+        if src_end > elf_data.len() {
+            return Err("stage ELF segment extends past end of file".to_string());
+        }
+        image[dst_start..dst_start + size].copy_from_slice(&elf_data[src_start..src_end]);
+        stage_segment_count += 1;
+    }
+    if stage_segment_count == 0 {
+        return Err("stage ELF has no PT_LOAD segment in the flash window".to_string());
+    }
+
+    let ffs_start = usize::try_from(ffs_image.cpu_base - flash_image.cpu_base)
+        .map_err(|_| "FFS offset is too large".to_string())?;
+    let ffs_end = ffs_start
+        .checked_add(ffs_data.len())
+        .ok_or_else(|| "FFS range overflows composite flash image".to_string())?;
+    image[ffs_start..ffs_end].copy_from_slice(ffs_data);
+    patch_stage_anchor(&mut image, ffs_data, ffs_anchor_offset)?;
+
+    let mib = image.len() / (1024 * 1024);
+    let out_path = ffs_path.with_file_name(format!("{}-{mib}m.pflash", config.name));
+    fs::write(&out_path, &image).map_err(|e| {
+        format!(
+            "failed to write XIP flash image {}: {e}",
+            out_path.display()
+        )
+    })?;
+    eprintln!(
+        "[fstart] XIP flash image: {} ({} bytes, FFS {} bytes at offset {ffs_start:#x})",
+        out_path.display(),
+        image.len(),
+        ffs_data.len(),
+    );
+    Ok(out_path)
+}
+
+fn patch_stage_anchor(
+    image: &mut [u8],
+    ffs_data: &[u8],
+    ffs_anchor_offset: usize,
+) -> Result<(), String> {
+    let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
+    let anchor_end = ffs_anchor_offset
+        .checked_add(anchor_size)
+        .ok_or_else(|| "FFS anchor range overflows".to_string())?;
+    let anchor = ffs_data
+        .get(ffs_anchor_offset..anchor_end)
+        .ok_or_else(|| "FFS anchor lies outside the FFS image".to_string())?;
+    let placeholder = fstart_core::ffs::AnchorBlock::placeholder();
+    let placeholder = unsafe {
+        core::slice::from_raw_parts(
+            &placeholder as *const fstart_core::ffs::AnchorBlock as *const u8,
+            anchor_size,
+        )
+    };
+    let offset = image
+        .windows(anchor_size)
+        .position(|window| window == placeholder)
+        .ok_or_else(|| "stage anchor placeholder not found in composite flash image".to_string())?;
+    image[offset..offset + anchor_size].copy_from_slice(anchor);
+    eprintln!("[fstart] XIP flash: patched stage anchor at offset {offset:#x}");
+    Ok(())
+}
+
+fn policy_window(
+    policy: fstart_core::FirmwareImagePolicy,
+) -> Option<fstart_core::services::FirmwareImage> {
+    match policy {
+        fstart_core::FirmwareImagePolicy::MemoryMapped { cpu_base, size } => Some(
+            fstart_core::services::FirmwareImage::single_window(cpu_base, size),
+        ),
+        fstart_core::FirmwareImagePolicy::Auto | fstart_core::FirmwareImagePolicy::None => None,
+    }
+}
+
 fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String> {
     let FullFlashInput {
         config,
@@ -577,6 +714,16 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
             layout,
             bootblock_elf,
             bootblock_bin,
+            ffs_data,
+            ffs_anchor_offset,
+            ffs_path,
+        );
+    }
+
+    if config.build.flash_image.is_some() {
+        return create_xip_flash_image(
+            config,
+            bootblock_elf,
             ffs_data,
             ffs_anchor_offset,
             ffs_path,

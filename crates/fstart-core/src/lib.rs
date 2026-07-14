@@ -22,6 +22,7 @@ pub mod stage;
 pub mod typed;
 
 pub mod mmio;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod pio;
 pub mod services;
 

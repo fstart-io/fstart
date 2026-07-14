@@ -10,10 +10,13 @@ host = []
 stage = [
   "dep:fstart-stage",
   "dep:fstart-driver-uart",
-  "fstart-arch/x86_64",
-  "fstart-driver-uart/pio",
 ]
-x86_64 = ["fstart-arch/x86_64"]
+x86_64 = ["fstart-arch/x86_64", "fstart-stage?/x86_64"]
+riscv64 = ["fstart-arch/riscv64", "fstart-stage?/riscv64"]
+aarch64 = ["fstart-arch/aarch64", "fstart-stage?/aarch64"]
+armv7 = ["fstart-arch/armv7", "fstart-stage?/armv7"]
+linux = ["fstart-stage?/linux"]
+crabefi = ["fstart-stage?/crabefi"]
 
 [dependencies]
 fstart-core = { workspace = true }

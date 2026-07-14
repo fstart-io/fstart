@@ -162,9 +162,15 @@ pub struct BoardConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardBuildPolicy {
-    /// How host tooling should map the firmware image at build/package time.
+    /// How host tooling should map the runtime firmware filesystem.
     #[serde(default)]
     pub firmware_image: FirmwareImagePolicy,
+    /// Complete flash aperture for composite XIP firmware images.
+    ///
+    /// This is distinct from `firmware_image` when the reset stage and FFS
+    /// occupy separate windows, as on QEMU virt.
+    #[serde(default)]
+    pub flash_image: Option<FirmwareImagePolicy>,
     /// Optional stage feature for the board/platform PCI root implementation.
     ///
     /// When absent, `PciInit` uses the generic ECAM implementation.

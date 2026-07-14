@@ -154,7 +154,7 @@ fn load(
     payload: Option<PayloadChoice>,
 ) -> Result<(crate::board_manifest::BoardManifest, ParsedBoard), String> {
     let mut config = (callbacks.board_config)();
-    apply_payload_override(&mut config, payload);
+    apply_payload_override(&mut config, payload)?;
     config
         .memory
         .normalize_derived_flash()

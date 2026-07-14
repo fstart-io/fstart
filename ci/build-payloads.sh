@@ -103,7 +103,7 @@ make -C "$TFA_DIR" \
 	CPP="${AARCH64_CROSS}gcc" \
 	AS="${AARCH64_CROSS}gcc" \
 	LD="${AARCH64_CROSS}gcc" \
-	AR="${AARCH64_CROSS}gcc-ar" \
+	AR="$(command -v "${AARCH64_CROSS}gcc-ar" >/dev/null 2>&1 && echo "${AARCH64_CROSS}gcc-ar" || echo "${AARCH64_CROSS}ar")" \
 	OC="${AARCH64_CROSS}objcopy" \
 	OD="${AARCH64_CROSS}objdump" \
 	PLAT=qemu \

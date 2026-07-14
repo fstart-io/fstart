@@ -14,14 +14,21 @@ const COMMAND_ALLOCATE: u32 = 1;
 const COMMAND_ADD_POINTER: u32 = 2;
 const COMMAND_ADD_CHECKSUM: u32 = 3;
 
+/// Stateless fw_cfg transport selected at compile time.
+pub trait FwCfgTransport: Copy {
+    fn select(self, selector: u16);
+    fn read_byte(self) -> u8;
+}
+
+/// q35's legacy port-I/O fw_cfg window.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct QemuFwCfgConfig {
+pub struct QemuFwCfgIoConfig {
     pub ctl_port: u16,
     pub data_port: u16,
 }
 
-impl QemuFwCfgConfig {
+impl QemuFwCfgIoConfig {
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -31,35 +38,74 @@ impl QemuFwCfgConfig {
     }
 }
 
-impl Default for QemuFwCfgConfig {
+impl Default for QemuFwCfgIoConfig {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub struct QemuFwCfg {
-    ctl_port: u16,
-    data_port: u16,
+/// Compatibility name for the q35 config. New virt flows use
+/// [`QemuFwCfgMmioConfig`] explicitly.
+pub type QemuFwCfgConfig = QemuFwCfgIoConfig;
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl FwCfgTransport for QemuFwCfgIoConfig {
+    fn select(self, selector: u16) {
+        // SAFETY: ports originate in the q35 platform config.
+        unsafe { fstart_core::pio::outw(self.ctl_port, selector) };
+    }
+
+    fn read_byte(self) -> u8 {
+        // SAFETY: port originates in the q35 platform config.
+        unsafe { fstart_core::pio::inb(self.data_port) }
+    }
 }
 
-impl QemuFwCfg {
+/// QEMU virt's MMIO fw_cfg window.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QemuFwCfgMmioConfig {
+    pub base: u64,
+}
+
+impl QemuFwCfgMmioConfig {
     #[must_use]
-    pub const fn new(config: QemuFwCfgConfig) -> Self {
-        Self {
-            ctl_port: config.ctl_port,
-            data_port: config.data_port,
-        }
+    pub const fn new(base: u64) -> Self {
+        Self { base }
+    }
+}
+
+impl FwCfgTransport for QemuFwCfgMmioConfig {
+    fn select(self, selector: u16) {
+        // SAFETY: the board-validated base is QEMU's fw_cfg selector register.
+        unsafe { fstart_core::mmio::write16(self.base as *mut u16, selector) };
+    }
+
+    fn read_byte(self) -> u8 {
+        // SAFETY: the board-validated base + 8 is QEMU's fw_cfg data register.
+        unsafe { fstart_core::mmio::read8((self.base + 8) as *const u8) }
+    }
+}
+
+/// Typed QEMU fw_cfg client. The transport is static: q35 uses port I/O and
+/// virt uses MMIO without pulling x86 PIO into ARM/RISC-V builds.
+pub struct QemuFwCfg<T = QemuFwCfgIoConfig> {
+    transport: T,
+}
+
+impl<T: FwCfgTransport> QemuFwCfg<T> {
+    #[must_use]
+    pub const fn new(transport: T) -> Self {
+        Self { transport }
     }
 
     fn select(&self, selector: u16) {
-        // SAFETY: the ports come from QEMU q35 platform config.
-        unsafe { fstart_core::pio::outw(self.ctl_port, selector) };
+        self.transport.select(selector);
     }
 
     fn read_bytes(&self, buf: &mut [u8]) {
         for byte in buf {
-            // SAFETY: the port comes from QEMU q35 platform config.
-            *byte = unsafe { fstart_core::pio::inb(self.data_port) };
+            *byte = self.transport.read_byte();
         }
     }
 
@@ -197,14 +243,20 @@ impl QemuFwCfg {
 
         for cmd_idx in 0..cmd_count {
             let base = cmd_idx * 128;
-            let command = u32::from_le_bytes(loader_buf[base..base + 4].try_into().unwrap());
+            let command = u32::from_le_bytes(
+                loader_buf[base..base + 4]
+                    .try_into()
+                    .map_err(|_| ServiceError::InvalidParam)?,
+            );
             match command {
                 COMMAND_ALLOCATE => {
                     let mut name = [0u8; 56];
                     name.copy_from_slice(&loader_buf[base + 4..base + 60]);
-                    let align =
-                        u32::from_le_bytes(loader_buf[base + 60..base + 64].try_into().unwrap())
-                            as usize;
+                    let align = u32::from_le_bytes(
+                        loader_buf[base + 60..base + 64]
+                            .try_into()
+                            .map_err(|_| ServiceError::InvalidParam)?,
+                    ) as usize;
                     let name_len = name.iter().position(|&b| b == 0).unwrap_or(56);
                     let name_str = core::str::from_utf8(&name[..name_len]).unwrap_or("?");
                     fstart_log::info!("fw_cfg: ALLOCATE '{}'", name_str);
@@ -228,9 +280,11 @@ impl QemuFwCfg {
                 COMMAND_ADD_POINTER => {
                     let dest_name = &loader_buf[base + 4..base + 60];
                     let src_name = &loader_buf[base + 60..base + 116];
-                    let ptr_offset =
-                        u32::from_le_bytes(loader_buf[base + 116..base + 120].try_into().unwrap())
-                            as usize;
+                    let ptr_offset = u32::from_le_bytes(
+                        loader_buf[base + 116..base + 120]
+                            .try_into()
+                            .map_err(|_| ServiceError::InvalidParam)?,
+                    ) as usize;
                     let ptr_size = loader_buf[base + 120];
                     let dest_off = find_alloc(allocs, dest_name).ok_or(ServiceError::IoError)?;
                     let src_off = find_alloc(allocs, src_name).ok_or(ServiceError::IoError)?;
@@ -239,14 +293,18 @@ impl QemuFwCfg {
                     match ptr_size {
                         4 => {
                             let mut val = u32::from_le_bytes(
-                                buffer[patch_off..patch_off + 4].try_into().unwrap(),
+                                buffer[patch_off..patch_off + 4]
+                                    .try_into()
+                                    .map_err(|_| ServiceError::InvalidParam)?,
                             );
                             val = val.wrapping_add(src_phys as u32);
                             buffer[patch_off..patch_off + 4].copy_from_slice(&val.to_le_bytes());
                         }
                         8 => {
                             let mut val = u64::from_le_bytes(
-                                buffer[patch_off..patch_off + 8].try_into().unwrap(),
+                                buffer[patch_off..patch_off + 8]
+                                    .try_into()
+                                    .map_err(|_| ServiceError::InvalidParam)?,
                             );
                             val = val.wrapping_add(src_phys);
                             buffer[patch_off..patch_off + 8].copy_from_slice(&val.to_le_bytes());
@@ -256,15 +314,21 @@ impl QemuFwCfg {
                 }
                 COMMAND_ADD_CHECKSUM => {
                     let name = &loader_buf[base + 4..base + 60];
-                    let checksum_offset =
-                        u32::from_le_bytes(loader_buf[base + 60..base + 64].try_into().unwrap())
-                            as usize;
-                    let start =
-                        u32::from_le_bytes(loader_buf[base + 64..base + 68].try_into().unwrap())
-                            as usize;
-                    let length =
-                        u32::from_le_bytes(loader_buf[base + 68..base + 72].try_into().unwrap())
-                            as usize;
+                    let checksum_offset = u32::from_le_bytes(
+                        loader_buf[base + 60..base + 64]
+                            .try_into()
+                            .map_err(|_| ServiceError::InvalidParam)?,
+                    ) as usize;
+                    let start = u32::from_le_bytes(
+                        loader_buf[base + 64..base + 68]
+                            .try_into()
+                            .map_err(|_| ServiceError::InvalidParam)?,
+                    ) as usize;
+                    let length = u32::from_le_bytes(
+                        loader_buf[base + 68..base + 72]
+                            .try_into()
+                            .map_err(|_| ServiceError::InvalidParam)?,
+                    ) as usize;
                     let off = find_alloc(allocs, name).ok_or(ServiceError::IoError)?;
                     buffer[off + checksum_offset] = 0;
                     let sum = buffer[off + start..off + start + length]
@@ -294,7 +358,7 @@ fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
             count += 1;
         }
     }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "x86_64"))]
     fstart_arch::x86::mtrr::set_ram_wb_ranges(&ranges[..count]);
 }
 
@@ -340,7 +404,10 @@ fn patch_q35_fadt_pm_timer(buffer: &mut [u8], allocs: &[Option<AllocEntry>; 32])
             cursor += 1;
             continue;
         }
-        let len = u32::from_le_bytes(buffer[cursor + 4..cursor + 8].try_into().unwrap()) as usize;
+        let Ok(len_bytes) = buffer[cursor + 4..cursor + 8].try_into() else {
+            return;
+        };
+        let len = u32::from_le_bytes(len_bytes) as usize;
         if len < 220 || cursor + len > tables_end {
             cursor += 1;
             continue;
@@ -379,7 +446,10 @@ fn log_loaded_acpi_tables(buffer: &[u8], allocs: &[Option<AllocEntry>; 32]) {
             fstart_log::info!("fw_cfg: ACPI {} RSDP", name);
         } else {
             let sig = core::str::from_utf8(&buffer[off..off + 4]).unwrap_or("????");
-            let len = u32::from_le_bytes(buffer[off + 4..off + 8].try_into().unwrap()) as usize;
+            let Ok(len_bytes) = buffer[off + 4..off + 8].try_into() else {
+                continue;
+            };
+            let len = u32::from_le_bytes(len_bytes) as usize;
             fstart_log::info!("fw_cfg: ACPI {} sig={} len={}", name, sig, len as u32);
         }
     }

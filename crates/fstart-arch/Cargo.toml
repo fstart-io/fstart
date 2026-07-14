@@ -7,9 +7,10 @@ license.workspace = true
 [features]
 default = []
 armv7 = []
+sunxi-fel = ["armv7"]
 aarch64 = []
 riscv64 = []
-x86_64 = []
+x86_64 = ["dep:fstart-smm"]
 x86-1g-pages = []
 x86-writable-page-tables = []
 x86-static-page-tables = []
@@ -20,7 +21,7 @@ acpi = ["dep:acpi_tables"]
 [dependencies]
 acpi_tables = { version = "0.2", optional = true }
 fstart-log = { workspace = true }
-fstart-smm = { workspace = true }
+fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 ufmt = { workspace = true }

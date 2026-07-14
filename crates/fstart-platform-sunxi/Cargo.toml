@@ -1,0 +1,40 @@
+[package]
+name = "fstart-platform-sunxi"
+description = "Allwinner sunxi platform flows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+host = []
+linux = ["fstart-stage?/linux"]
+stage = [
+  "armv7",
+  "dep:fstart-arch",
+  "dep:fstart-driver-uart",
+  "dep:fstart-log",
+  "dep:fstart-stage",
+  "dep:ufmt",
+  "fstart-stage/handoff",
+]
+armv7 = [
+  "fstart-arch?/armv7",
+  "fstart-arch?/sunxi-fel",
+  "fstart-driver-sunxi/armv7",
+  "fstart-stage?/armv7",
+]
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-driver-sunxi = { workspace = true }
+fstart-arch = { workspace = true, optional = true }
+fstart-driver-uart = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
+serde = { workspace = true }
+ufmt = { workspace = true, optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("car", "ram"))'] }

@@ -2,16 +2,24 @@
 
 use fstart_core::ffs::{FileType, ANCHOR_SIZE};
 use fstart_core::services::boot::BootLinuxParams;
+#[cfg(feature = "ffs")]
+use fstart_core::services::boot_media::BootMedia;
 use fstart_core::services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};
 use fstart_core::services::{BlockDevice, ServiceError};
 
 /// Firmware filesystem stored behind a block device such as MMC or SPI flash.
+const BLOCK_FFS_MANIFEST_MAX_SIZE: usize = 16 * 1024;
+
+#[cfg_attr(not(feature = "ffs"), allow(dead_code))]
 pub struct BlockDeviceFfs {
     media_offset: u64,
     anchor: Option<[u8; ANCHOR_SIZE]>,
     ffs_size: usize,
+    // ponytail: bounded mainstage-owned manifest buffer; grow only if an image exceeds 16 KiB.
+    manifest: [u8; BLOCK_FFS_MANIFEST_MAX_SIZE],
 }
 
+#[cfg_attr(not(feature = "ffs"), allow(dead_code))]
 impl BlockDeviceFfs {
     /// Construct a block-backed FFS helper.
     #[must_use]
@@ -20,6 +28,7 @@ impl BlockDeviceFfs {
             media_offset,
             anchor: None,
             ffs_size: 0,
+            manifest: [0; BLOCK_FFS_MANIFEST_MAX_SIZE],
         }
     }
 
@@ -71,27 +80,40 @@ impl BlockDeviceFfs {
     }
 
     /// Verify the mounted FFS image policy.
-    pub fn verify<B>(&self, block: &B) -> Result<(), ServiceError>
-    where
-        B: BlockDevice,
-    {
-        let anchor = self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?;
-        let media = self.media(block)?;
-        crate::sig_verify(anchor, &media);
-        Ok(())
-    }
-
-    /// Load one file by FFS type into its packaged load address.
-    pub fn load_file<B>(&self, block: &B, file_type: FileType) -> Result<(), ServiceError>
+    pub fn verify<B>(&mut self, block: &B) -> Result<(), ServiceError>
     where
         B: BlockDevice,
     {
         #[cfg(feature = "ffs")]
         {
-            let anchor = self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?;
+            let _ = self.manifest_view(block)?;
+            Ok(())
+        }
+
+        #[cfg(not(feature = "ffs"))]
+        {
+            let _ = block;
+            Err(ServiceError::NotSupported)
+        }
+    }
+
+    /// Load one file by FFS type into its packaged load address.
+    pub fn load_file<B>(&mut self, block: &B, file_type: FileType) -> Result<u64, ServiceError>
+    where
+        B: BlockDevice,
+    {
+        #[cfg(feature = "ffs")]
+        {
             let media = self.media(block)?;
-            if crate::load_ffs_file_by_type(anchor, &media, file_type) {
-                Ok(())
+            let image_size = self.ffs_size;
+            let manifest = self.manifest_view(block)?;
+            let file = manifest
+                .find_file_by_type(file_type)
+                .map_err(|_| ServiceError::NotInitialized)?;
+            let entry = crate::load_file_segments_from_media(&media, &file, image_size)
+                .ok_or(ServiceError::NotInitialized)?;
+            if crate::verify_loaded_file_digests(&file) {
+                Ok(entry)
             } else {
                 Err(ServiceError::NotInitialized)
             }
@@ -103,6 +125,41 @@ impl BlockDeviceFfs {
             Err(ServiceError::NotSupported)
         }
     }
+
+    #[cfg(feature = "ffs")]
+    fn manifest_view<B>(&mut self, block: &B) -> Result<fstart_ffs::ManifestView<'_>, ServiceError>
+    where
+        B: BlockDevice,
+    {
+        let anchor_bytes = self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?;
+        // SAFETY: mount() filled all ANCHOR_SIZE bytes. `read_unaligned` is
+        // required because the block-read buffer has byte alignment.
+        let anchor = unsafe {
+            core::ptr::read_unaligned(
+                anchor_bytes
+                    .as_ptr()
+                    .cast::<fstart_core::ffs::AnchorBlock>(),
+            )
+        };
+        if anchor.magic != fstart_core::ffs::FFS_MAGIC
+            || anchor.version != fstart_core::ffs::FFS_VERSION
+        {
+            return Err(ServiceError::NotInitialized);
+        }
+        let size = anchor.manifest_size as usize;
+        if size == 0 || size > self.manifest.len() {
+            return Err(ServiceError::InvalidParam);
+        }
+        let media = self.media(block)?;
+        let read = media
+            .read_at(anchor.manifest_offset as usize, &mut self.manifest[..size])
+            .map_err(|_| ServiceError::IoError)?;
+        if read != size {
+            return Err(ServiceError::IoError);
+        }
+        fstart_ffs::reader::verify_and_manifest_view(&self.manifest[..size], anchor.valid_keys())
+            .map_err(|_| ServiceError::NotInitialized)
+    }
 }
 
 /// LinuxBoot payload state backed by a block-device FFS image.
@@ -110,6 +167,7 @@ pub struct BlockDeviceLinuxBoot {
     ffs: BlockDeviceFfs,
     firmware_loaded: bool,
     kernel_loaded: bool,
+    kernel_addr: u64,
     dtb_addr: u64,
 }
 
@@ -121,6 +179,7 @@ impl BlockDeviceLinuxBoot {
             ffs: BlockDeviceFfs::new(media_offset),
             firmware_loaded: false,
             kernel_loaded: false,
+            kernel_addr: 0,
             dtb_addr,
         }
     }
@@ -134,7 +193,7 @@ impl BlockDeviceLinuxBoot {
     }
 
     /// Verify the mounted FFS image policy.
-    pub fn verify<B>(&self, block: &B) -> Result<(), ServiceError>
+    pub fn verify<B>(&mut self, block: &B) -> Result<(), ServiceError>
     where
         B: BlockDevice,
     {
@@ -146,18 +205,17 @@ impl BlockDeviceLinuxBoot {
     where
         B: BlockDevice,
     {
-        self.ffs.load_file(block, FileType::Firmware)?;
+        let _ = self.ffs.load_file(block, FileType::Firmware)?;
         self.firmware_loaded = true;
         Ok(())
     }
 
     /// Load an override FDT from FFS and make it the current DTB.
-    pub fn load_fdt<B>(&mut self, block: &B, dtb_addr: u64) -> Result<(), ServiceError>
+    pub fn load_fdt<B>(&mut self, block: &B) -> Result<(), ServiceError>
     where
         B: BlockDevice,
     {
-        self.ffs.load_file(block, FileType::Fdt)?;
-        self.dtb_addr = dtb_addr;
+        self.dtb_addr = self.ffs.load_file(block, FileType::Fdt)?;
         Ok(())
     }
 
@@ -166,7 +224,7 @@ impl BlockDeviceLinuxBoot {
     where
         B: BlockDevice,
     {
-        self.ffs.load_file(block, FileType::Payload)?;
+        self.kernel_addr = self.ffs.load_file(block, FileType::Payload)?;
         self.kernel_loaded = true;
         Ok(())
     }
@@ -205,24 +263,18 @@ impl BlockDeviceLinuxBoot {
         self.firmware_loaded
     }
 
-    /// Build common Linux boot params from board/platform constants.
+    /// Build common Linux boot params from loaded FFS entries.
     #[must_use]
-    pub const fn boot_params<'a>(
-        &self,
-        kernel_addr: u64,
-        firmware_addr: u64,
-        hart_id: u64,
-        bootargs: &'a str,
-    ) -> BootLinuxParams<'a> {
+    pub const fn boot_params<'a>(&self, bootargs: &'a str) -> BootLinuxParams<'a> {
         BootLinuxParams {
-            kernel_addr,
+            kernel_addr: self.kernel_addr,
             dtb_addr: self.dtb_addr,
-            fw_addr: firmware_addr,
+            fw_addr: 0,
             rsdp_addr: 0,
             bootargs,
             e820_entries: &[],
             zero_page_addr: 0,
-            hart_id,
+            hart_id: 0,
             print_x86_mtrrs: false,
         }
     }

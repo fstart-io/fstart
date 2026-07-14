@@ -24,7 +24,7 @@ impl PayloadChoice {
         }
     }
 
-    fn kind(self) -> Option<PayloadKind> {
+    pub const fn kind(self) -> Option<PayloadKind> {
         match self {
             Self::Uefi => Some(PayloadKind::UefiPayload),
             Self::Linux => Some(PayloadKind::LinuxBoot),
@@ -36,8 +36,46 @@ impl PayloadChoice {
     }
 }
 
-pub fn apply_payload_override(config: &mut BoardConfig, choice: Option<PayloadChoice>) {
+pub fn apply_payload_override(
+    config: &mut BoardConfig,
+    choice: Option<PayloadChoice>,
+) -> Result<(), String> {
+    validate_choice(config, choice)?;
     apply_to_payload(&mut config.payload, choice);
+    Ok(())
+}
+
+fn validate_choice(config: &BoardConfig, choice: Option<PayloadChoice>) -> Result<(), String> {
+    let Some(choice) = choice else {
+        return Ok(());
+    };
+    let has_payload_stage = match &config.stages {
+        fstart_core::StageLayout::Monolithic(stage) => stage.build.payload,
+        fstart_core::StageLayout::MultiStage(stages) => {
+            stages.iter().any(|stage| stage.build.payload)
+        }
+    };
+    let supported = match choice {
+        PayloadChoice::Halt => true,
+        PayloadChoice::Linux => config
+            .payload
+            .as_ref()
+            .is_some_and(|payload| payload.kind == PayloadKind::LinuxBoot),
+        PayloadChoice::Uefi => matches!(
+            config.platform,
+            fstart_core::Platform::X86_64 | fstart_core::Platform::Aarch64
+        ),
+        PayloadChoice::Fit | PayloadChoice::Shell | PayloadChoice::Elf => false,
+    };
+    if has_payload_stage && supported {
+        Ok(())
+    } else {
+        Err(format!(
+            "payload '{}' is not supported by {}'s build plan",
+            choice.as_str(),
+            config.name
+        ))
+    }
 }
 
 fn apply_to_payload(payload: &mut Option<PayloadConfig>, choice: Option<PayloadChoice>) {
@@ -50,7 +88,11 @@ fn apply_to_payload(payload: &mut Option<PayloadConfig>, choice: Option<PayloadC
             config.kind = kind;
             config
         }
-        _ => empty_payload_config(kind),
+        Some(config) => PayloadConfig {
+            firmware: config.firmware,
+            ..empty_payload_config(kind)
+        },
+        None => empty_payload_config(kind),
     });
 }
 
@@ -74,16 +116,24 @@ fn empty_payload_config(kind: PayloadKind) -> PayloadConfig {
 
 #[cfg(test)]
 mod tests {
+    use fstart_core::{hstr, FirmwareConfig, FirmwareKind};
+
     use super::*;
 
     #[test]
     fn cli_payload_overrides_board_default() {
         let mut payload = Some(empty_payload_config(PayloadKind::LinuxBoot));
+        payload.as_mut().expect("linux payload").firmware = Some(FirmwareConfig {
+            kind: FirmwareKind::ArmTrustedFirmware,
+            file: hstr("bl31.bin"),
+            load_addr: 0x0e09_0000,
+        });
 
         apply_to_payload(&mut payload, Some(PayloadChoice::Uefi));
         let payload_config = payload.as_ref().expect("uefi payload");
         assert_eq!(payload_config.kind, PayloadKind::UefiPayload);
         assert!(payload_config.kernel_file.is_none());
+        assert!(payload_config.firmware.is_some());
 
         apply_to_payload(&mut payload, Some(PayloadChoice::Halt));
         assert!(payload.is_none());

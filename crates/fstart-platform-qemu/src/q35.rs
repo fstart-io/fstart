@@ -69,7 +69,7 @@ impl Q35HostBridge {
         let mmio32_base = tolud.max(ecam_end);
         let mmio32_size = MMIO32_LIMIT.saturating_sub(mmio32_base);
         let mmio64_base = touud;
-        let mmio64_size = fstart_arch::x86::physical_address_limit().saturating_sub(mmio64_base);
+        let mmio64_size = 0x0010_0000_0000_0000u64.saturating_sub(mmio64_base);
 
         fstart_log::info!("Q35: TOLUD={:#x} TOUUD={:#x}", tolud, touud);
         fstart_log::info!("Q35: MMIO32={:#x}..{:#x}", mmio32_base, MMIO32_LIMIT);
