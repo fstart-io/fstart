@@ -227,6 +227,7 @@ impl<D: Aarch64UefiPayloadContext> MainstagePayload<D> for Aarch64UefiPayload {
         // SAFETY: QEMU supplied the FDT header at the same stable address.
         let fdt_reservation = unsafe { boot.fdt_reservation() };
         fstart_arch::aarch64::boot_bl31_and_resume(config.firmware_addr, boot.fdt_addr());
+        fstart_log::info!("aarch64 uefi: BL31 returned, launching CrabEFI");
 
         let reserved_flash = [MemoryRegion {
             base: config.flash_base,
