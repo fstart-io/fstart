@@ -8,8 +8,6 @@ use fstart_stage::payload::MainstagePayload;
 use fstart_stage::{StageBoard, StageEnvironment};
 
 use crate::virt::{phase, QemuAarch64VirtConfig};
-#[cfg(feature = "crabefi")]
-use crate::virt::{QEMU_AARCH64_STAGE_DATA_ADDR, QEMU_AARCH64_STAGE_STACK_SIZE};
 
 pub const QEMU_AARCH64_UART_BASE: u64 = 0x0900_0000;
 
@@ -106,8 +104,6 @@ impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainsta
             config.firmware_addr,
             config.ram_base,
             config.ram_size,
-            QEMU_AARCH64_STAGE_DATA_ADDR,
-            u64::from(QEMU_AARCH64_STAGE_STACK_SIZE),
             self.config.ecam_base,
         )
     }

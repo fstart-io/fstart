@@ -1156,6 +1156,13 @@ pub trait StageBoard: Sized + 'static {
 
     /// Run the selected environment using the board's platform-family flow.
     fn run_stage(env: StageEnvironment, handoff: usize) -> !;
+
+    /// Resume after OpenSBI enters the selected RISC-V payload in S-mode.
+    fn resume_sbi(_hart_id: u64, _dtb_addr: u64) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
 }
 
 /// Declare a board-owned stage entry binary.
@@ -1173,5 +1180,11 @@ macro_rules! stage_bin {
         #[used]
         #[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
         static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+
+        #[cfg(all(feature = "crabefi", feature = "riscv64"))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn fstart_sbi_resume(hart_id: u64, dtb_addr: u64) -> ! {
+            <$board as $crate::StageBoard>::resume_sbi(hart_id, dtb_addr)
+        }
     };
 }

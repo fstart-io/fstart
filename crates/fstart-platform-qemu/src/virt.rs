@@ -14,6 +14,9 @@ pub const QEMU_RISCV64_FLASH_SIZE: u64 = 0x0200_0000;
 pub const QEMU_RISCV64_STAGE_STACK_SIZE: u32 = 0x10_0000;
 pub const QEMU_RISCV64_STAGE_HEAP_SIZE: u32 = 0x40_000;
 pub const QEMU_RISCV64_STAGE_DATA_ADDR: u64 = 0x8100_0000;
+pub const QEMU_RISCV64_ECAM_BASE: u64 = 0x3000_0000;
+pub const QEMU_RISCV64_OPENSBI_RESERVE_SIZE: u64 = 0x0020_0000;
+pub const QEMU_RISCV64_UEFI_DTB_ADDR: u64 = 0x80f0_0000;
 pub const QEMU_AARCH64_FLASH_BANK_SIZE: u64 = 0x0400_0000;
 pub const QEMU_AARCH64_STAGE_STACK_SIZE: u32 = 0x30_0000;
 pub const QEMU_AARCH64_STAGE_HEAP_SIZE: u32 = 0x10_0000;
@@ -362,8 +365,12 @@ pub fn qemu_riscv64_virt_stages() -> StageLayout {
 #[cfg(feature = "host")]
 #[must_use]
 pub fn qemu_aarch64_virt_stages() -> StageLayout {
+    // Leave 0x4000_0000..0x4040_0000 for QEMU's source/final DTBs and
+    // CrabEFI's 0x4020_0000 data area; keep the stage below the 0x4100_0000
+    // kernel load address. The reset stub remains at flash offset zero and
+    // relocates this RAM-linked image before the shared AArch64 entry runs.
     qemu_virt_stages(
-        0,
+        0x4040_0000,
         QEMU_AARCH64_STAGE_STACK_SIZE,
         QEMU_AARCH64_STAGE_HEAP_SIZE,
         QEMU_AARCH64_STAGE_DATA_ADDR,

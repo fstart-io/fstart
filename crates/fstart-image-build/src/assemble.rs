@@ -564,6 +564,7 @@ struct FullFlashInput<'a> {
 fn create_xip_flash_image(
     config: &BoardConfig,
     bootblock_elf: &Path,
+    bootblock_bin: &Path,
     ffs_data: &[u8],
     ffs_anchor_offset: usize,
     ffs_path: &Path,
@@ -628,12 +629,28 @@ fn create_xip_flash_image(
         image[dst_start..dst_start + size].copy_from_slice(&elf_data[src_start..src_end]);
         stage_segment_count += 1;
     }
-    if stage_segment_count == 0 {
-        return Err("stage ELF has no PT_LOAD segment in the flash window".to_string());
-    }
-
     let ffs_start = usize::try_from(ffs_image.cpu_base - flash_image.cpu_base)
         .map_err(|_| "FFS offset is too large".to_string())?;
+    if stage_segment_count == 0 {
+        // A RAM-linked stage is still flashed at offset zero for its reset
+        // stub to relocate. Its flat binary is already contiguous by PT_LOAD
+        // address, unlike an ELF whose addresses intentionally lie in RAM.
+        let stage = fs::read(bootblock_bin).map_err(|e| {
+            format!(
+                "failed to read RAM-linked bootblock binary {}: {e}",
+                bootblock_bin.display()
+            )
+        })?;
+        if stage.len() > ffs_start {
+            return Err(format!(
+                "RAM-linked stage ({} bytes) overlaps the FFS window at {ffs_start:#x}",
+                stage.len()
+            ));
+        }
+        image[..stage.len()].copy_from_slice(&stage);
+        eprintln!("[fstart] XIP flash: placed RAM-linked stage at flash offset zero");
+    }
+
     let ffs_end = ffs_start
         .checked_add(ffs_data.len())
         .ok_or_else(|| "FFS range overflows composite flash image".to_string())?;
@@ -724,6 +741,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         return create_xip_flash_image(
             config,
             bootblock_elf,
+            bootblock_bin,
             ffs_data,
             ffs_anchor_offset,
             ffs_path,

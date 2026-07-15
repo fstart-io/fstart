@@ -1,11 +1,17 @@
 //! Handwritten QEMU RISC-V virt flow.
 
+#[cfg(feature = "crabefi")]
+use fstart_core::services::Console;
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
 use fstart_stage::payload::MainstagePayload;
 use fstart_stage::{StageBoard, StageEnvironment};
 
 use crate::virt::{phase, QemuRiscv64VirtConfig};
+#[cfg(feature = "crabefi")]
+use crate::virt::{
+    QEMU_RISCV64_ECAM_BASE, QEMU_RISCV64_OPENSBI_RESERVE_SIZE, QEMU_RISCV64_UEFI_DTB_ADDR,
+};
 
 pub const QEMU_RISCV64_UART_BASE: u64 = 0x1000_0000;
 
@@ -34,7 +40,7 @@ pub trait QemuRiscv64VirtBoard: StageBoard {
 pub struct QemuRiscv64Virt;
 
 pub struct QemuRiscv64VirtMainstage {
-    #[cfg(feature = "linux")]
+    #[cfg(any(feature = "linux", feature = "crabefi"))]
     config: &'static QemuRiscv64VirtConfig,
     console: Ns16550,
 }
@@ -42,7 +48,7 @@ pub struct QemuRiscv64VirtMainstage {
 impl QemuRiscv64VirtMainstage {
     fn new<B: QemuRiscv64VirtBoard>() -> Result<Self, ServiceError> {
         Ok(Self {
-            #[cfg(feature = "linux")]
+            #[cfg(any(feature = "linux", feature = "crabefi"))]
             config: B::CONFIG,
             console: Ns16550::new(B::console_config()).map_err(|_| ServiceError::HardwareError)?,
         })
@@ -78,7 +84,51 @@ impl fstart_stage::payload::LinuxPayloadContext for QemuRiscv64VirtMainstage {
     }
 }
 
+#[cfg(feature = "crabefi")]
+impl fstart_stage::payload::Riscv64UefiPayloadContext for QemuRiscv64VirtMainstage {
+    fn riscv64_uefi_payload_context(&self) -> fstart_stage::payload::Riscv64UefiPayloadConfig {
+        let config = self.config.common;
+        fstart_stage::payload::Riscv64UefiPayloadConfig::new(
+            config.firmware_base,
+            config.firmware_size,
+            config.firmware_addr,
+            QEMU_RISCV64_OPENSBI_RESERVE_SIZE,
+            QEMU_RISCV64_UEFI_DTB_ADDR,
+            config.ram_base,
+            config.ram_size,
+            QEMU_RISCV64_ECAM_BASE,
+        )
+    }
+
+    fn console(&self) -> &dyn Console {
+        &self.console
+    }
+}
+
 impl QemuRiscv64Virt {
+    /// Recreate the minimal mainstage state after OpenSBI enters S-mode.
+    #[cfg(feature = "crabefi")]
+    pub fn resume_sbi<B>(hart_id: u64, dtb_addr: u64) -> !
+    where
+        B: QemuRiscv64VirtBoard,
+    {
+        let Ok(mut mainstage) = QemuRiscv64VirtMainstage::new::<B>() else {
+            fstart_arch::riscv64::halt();
+        };
+        if mainstage.console.init().is_err() {
+            fstart_arch::riscv64::halt();
+        }
+        // SAFETY: this resumed mainstage never returns, so its console outlives
+        // CrabEFI. Replace the M-mode stack's stale logging backend.
+        unsafe {
+            fstart_log::replace_console(
+                core::mem::transmute::<&dyn Console, &'static dyn Console>(&mainstage.console),
+            );
+        }
+        fstart_log::info!("riscv64 uefi: OpenSBI returned, launching CrabEFI");
+        fstart_stage::payload::Riscv64UefiPayload::resume_sbi(mainstage, hart_id, dtb_addr)
+    }
+
     pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
     where
         B: QemuRiscv64VirtBoard,

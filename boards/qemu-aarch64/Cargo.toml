@@ -23,6 +23,7 @@ stage = [
   "fstart-platform-qemu/stage",
 ]
 aarch64 = ["fstart-stage?/aarch64", "fstart-platform-qemu/aarch64"]
+aarch64-el2-relocate-entry = ["fstart-stage?/aarch64-el2-relocate-entry"]
 ffs = ["fstart-stage?/ffs"]
 ed25519 = ["fstart-stage?/ed25519"]
 sha2-digest = ["fstart-stage?/sha2-digest"]

@@ -6,11 +6,111 @@
 
 use core::arch::global_asm;
 
+// Keep the reset stub separate from the common AArch64 entry.  RAM-linked
+// firmware boots at flash offset zero, copies itself to its link address, then
+// branches into the same EL setup used by normal XIP firmware.
+#[cfg(not(feature = "aarch64-el2-relocate-entry"))]
 global_asm!(
     r#"
     .section .text.entry
     .global _start
 _start:
+    b fstart_aarch64_entry
+    "#
+);
+
+#[cfg(feature = "aarch64-el2-relocate-entry")]
+global_asm!(
+    r#"
+    .section .text.entry
+    .global _start
+_start:
+    // Preserve QEMU's x0 = DTB pointer while relocating.
+    mov x20, x0
+    msr daifset, #0xf
+
+    // QEMU virt starts at secure EL3; TF-A-first boards enter at EL2.
+    // Disable translation using the register valid at the current EL before
+    // treating the flash PC and RAM link address as physical addresses.
+    mrs x6, CurrentEL
+    lsr x6, x6, #2
+    cmp x6, #3
+    b.eq .Lrelocate_el3
+    cmp x6, #2
+    b.eq .Lrelocate_el2
+
+    mrs x6, sctlr_el1
+    bic x6, x6, #1
+    bic x6, x6, #4
+    msr sctlr_el1, x6
+    isb
+    tlbi vmalle1
+    b .Lrelocate_cache
+
+.Lrelocate_el2:
+    mrs x6, sctlr_el2
+    bic x6, x6, #1
+    bic x6, x6, #4
+    msr sctlr_el2, x6
+    isb
+    tlbi alle2
+    b .Lrelocate_cache
+
+.Lrelocate_el3:
+    mrs x6, sctlr_el3
+    bic x6, x6, #1
+    bic x6, x6, #4
+    msr sctlr_el3, x6
+    isb
+    tlbi alle3
+
+.Lrelocate_cache:
+    dsb sy
+    isb
+    ic iallu
+    dsb sy
+    isb
+
+    // ADR gives the executing flash address; the literal is the RAM link
+    // address. Both remain valid even when they are more than 4 GiB apart.
+    adr x0, _start
+    ldr x1, =_start
+    cmp x0, x1
+    b.eq .Lrelocate_done
+
+    ldr x2, =_binary_end
+    sub x3, x2, x1
+    mov x4, x1
+.Lrelocate_words:
+    cmp x3, #8
+    b.lo .Lrelocate_bytes
+    ldr x5, [x0], #8
+    str x5, [x4], #8
+    sub x3, x3, #8
+    b .Lrelocate_words
+.Lrelocate_bytes:
+    cbz x3, .Lrelocate_copied
+    ldrb w5, [x0], #1
+    strb w5, [x4], #1
+    sub x3, x3, #1
+    b .Lrelocate_bytes
+.Lrelocate_copied:
+    dsb sy
+    ic iallu
+    dsb sy
+    isb
+.Lrelocate_done:
+    mov x0, x20
+    ldr x1, =fstart_aarch64_entry
+    br x1
+    "#
+);
+
+global_asm!(
+    r#"
+    .section .text.entry
+    .global fstart_aarch64_entry
+fstart_aarch64_entry:
     // Save boot argument from QEMU before any register is clobbered.
     // QEMU AArch64 virt passes: x0 = DTB address.
     mov x19, x0
@@ -477,10 +577,10 @@ static mut MMU_L1_HIGH_TABLE: PageTable = PageTable([0u64; 512]);
 //   Implements the ARMv8 RMR warm-reset sequence to switch into AArch64,
 //   with FEL state saving for USB debug mode return.
 //
-// - **EL2 relocate** (`entry_relocate.rs`, behind `aarch64-el2-relocate-entry`):
-//   Entry for TF-A/EL2-style boards entered from ROM/flash but linked to
-//   execute from DRAM. This path expects an FDT pointer in `x0` and uses EL2
-//   system registers during early relocation.
+// - **EL-aware relocate** (`aarch64-el2-relocate-entry`): Entry for boards
+//   entered from flash but linked to DRAM. It preserves the FDT pointer in
+//   `x0`, detects EL3/EL2/EL1 before touching system registers, relocates, and
+//   then branches to the shared entry flow above.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

@@ -16,6 +16,11 @@ impl StageBoard for Board {
     fn run_stage(env: StageEnvironment, handoff: usize) -> ! {
         QemuRiscv64Virt::run_stage::<Self>(env, handoff)
     }
+
+    #[cfg(feature = "crabefi")]
+    fn resume_sbi(hart_id: u64, dtb_addr: u64) -> ! {
+        QemuRiscv64Virt::resume_sbi::<Self>(hart_id, dtb_addr)
+    }
 }
 
 /// Board-specific seams for the fixed RISC-V virt flow.

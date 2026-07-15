@@ -63,7 +63,9 @@ fn validate_choice(config: &BoardConfig, choice: Option<PayloadChoice>) -> Resul
             .is_some_and(|payload| payload.kind == PayloadKind::LinuxBoot),
         PayloadChoice::Uefi => matches!(
             config.platform,
-            fstart_core::Platform::X86_64 | fstart_core::Platform::Aarch64
+            fstart_core::Platform::X86_64
+                | fstart_core::Platform::Aarch64
+                | fstart_core::Platform::Riscv64
         ),
         PayloadChoice::Fit | PayloadChoice::Shell | PayloadChoice::Elf => false,
     };

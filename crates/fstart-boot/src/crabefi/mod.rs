@@ -103,6 +103,12 @@ pub fn init_platform(config: PlatformConfig<'_>) -> ! {
     init_platform_raw(config)
 }
 
+/// Record the OpenSBI boot hart before CrabEFI installs its RISC-V EFI protocol.
+#[cfg(target_arch = "riscv64")]
+pub fn set_riscv_boot_hartid(hart_id: u64) {
+    crabefi::efi::set_boot_hartid(hart_id);
+}
+
 /// Launch CrabEFI on x86 using fstart runtime state.
 #[cfg(target_arch = "x86_64")]
 pub fn launch_x86_uefi(
@@ -130,28 +136,39 @@ pub fn launch_flat_uefi(
     static_entries: &[MemoryRegion],
     ram_base: u64,
     ram_size: u64,
-    fw_data_addr: u64,
-    fw_stack_size: u64,
+    runtime_region: RuntimeRegion,
     fdt_reservation: Option<(u64, u64)>,
 ) -> ! {
+    #[cfg(not(target_arch = "riscv64"))]
     let timer = ArmGenericTimer::new();
+    #[cfg(not(target_arch = "riscv64"))]
     let reset = PsciReset;
-    let mut memory_map_buf: [MemoryRegion; 12] = [MemoryRegion {
+    let mut memory_map_buf: [MemoryRegion; 16] = [MemoryRegion {
         base: 0,
         size: 0,
         region_type: MemoryType::Reserved,
-    }; 12];
+    }; 16];
     let memory_map_len = build_efi_memory_map(
         static_entries,
         ram_base,
         ram_size,
-        fw_data_addr,
-        fw_stack_size,
-        fw_stack_size,
+        runtime_region,
         fdt_reservation,
         &mut memory_map_buf,
     );
     let memory_map = &memory_map_buf[..memory_map_len];
+
+    #[cfg(target_arch = "aarch64")]
+    launch_with_adapters(launch, memory_map, &timer, &reset, None);
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        let timer = RiscvTimer;
+        let reset = RiscvSbiReset;
+        launch_with_adapters(launch, memory_map, &timer, &reset, None)
+    }
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
     launch_with_adapters(launch, memory_map, &timer, &reset, None)
 }
 
@@ -345,118 +362,88 @@ pub unsafe fn fdt_page_aligned_size(fdt_addr: u64) -> u64 {
     (total + 0xFFF) & !0xFFF // page-align up
 }
 
-/// Build the EFI memory map with firmware regions carved out of RAM.
-///
-/// Takes static entries (ROM, Reserved from board config), the RAM
-/// region, firmware data/stack locations, and an optional FDT
-/// reservation. Splits the RAM region into:
-///
-/// ```text
-/// [FDT reserved] [free RAM] [BSS/data reserved] [free RAM] [stack reserved]
-/// ```
-///
-/// - ROM is `RuntimeServicesCode` (kernel maps it after ExitBootServices
-///   for runtime service calls).
-/// - BSS/data/heap is `RuntimeServicesData` (contains CrabEFI's statics,
-///   heap backing store, RUNTIME_SERVICES table).
-/// - Stack is `RuntimeServicesData` (contains FirmwareState on the stack
-///   since `init_platform()` is `-> !`).
-/// - FDT (if present) is `Reserved` (GRUB/kernel reads it as a
-///   configuration table).
-///
-/// Returns the number of entries written to `buf`.
-///
-/// # Panics
-///
-/// Panics if `buf` is too small to hold all entries (12 should suffice).
-#[allow(clippy::too_many_arguments)]
+/// Build the EFI memory map with linker-defined runtime regions carved out.
 pub fn build_efi_memory_map(
     static_entries: &[MemoryRegion],
     ram_base: u64,
     ram_size: u64,
-    fw_data_addr: u64,
-    fw_bss_reserve: u64,
-    fw_stack_size: u64,
+    runtime_region: RuntimeRegion,
     fdt_reservation: Option<(u64, u64)>,
     buf: &mut [MemoryRegion],
 ) -> usize {
     let mut idx = 0;
+    let ram_end = ram_base + ram_size;
+    let mut holes = [(0, 0); 16];
+    let mut hole_count = 0;
 
-    // 1. Copy static entries (ROM, Reserved from board config).
     for entry in static_entries {
         buf[idx] = *entry;
         idx += 1;
-    }
-
-    let ram_end = ram_base + ram_size;
-    let fw_bss_end = fw_data_addr + fw_bss_reserve;
-    let fw_stack_bottom = ram_end - fw_stack_size;
-
-    // 2. RAM below firmware BSS, with optional FDT carved out.
-    if fw_data_addr > ram_base {
-        match fdt_reservation {
-            Some((fdt_addr, fdt_size)) if fdt_size > 0 => {
-                // FDT region: Reserved so allocator won't hand it out.
-                buf[idx] = MemoryRegion {
-                    base: fdt_addr,
-                    size: fdt_size,
-                    region_type: MemoryType::Reserved,
-                };
-                idx += 1;
-
-                // Free RAM between FDT end and firmware BSS start.
-                let post_fdt = fdt_addr + fdt_size;
-                if fw_data_addr > post_fdt {
-                    buf[idx] = MemoryRegion {
-                        base: post_fdt,
-                        size: fw_data_addr - post_fdt,
-                        region_type: MemoryType::Ram,
-                    };
-                    idx += 1;
-                }
-            }
-            _ => {
-                // No FDT reservation -- entire pre-BSS RAM is free.
-                buf[idx] = MemoryRegion {
-                    base: ram_base,
-                    size: fw_data_addr - ram_base,
-                    region_type: MemoryType::Ram,
-                };
-                idx += 1;
-            }
+        if entry.region_type != MemoryType::Ram
+            && entry.base < ram_end
+            && entry.base + entry.size > ram_base
+        {
+            holes[hole_count] = (entry.base, entry.base + entry.size);
+            hole_count += 1;
         }
     }
 
-    // 3. Firmware BSS/data/heap -- RuntimeServicesData.
-    //    CrabEFI's EFI system table, runtime services, and ACPI pointers
-    //    live in fstart's BSS/stack and must survive ExitBootServices.
-    //    The caller must 2 MiB-align data_addr and stack regions to avoid
-    //    NX page-table conflicts (STRICT_KERNEL_RWX marks whole 2 MiB
-    //    pages containing RuntimeServicesData as NX).
+    if let Some((base, size)) = fdt_reservation.filter(|(_, size)| *size > 0) {
+        buf[idx] = MemoryRegion {
+            base,
+            size,
+            region_type: MemoryType::Reserved,
+        };
+        idx += 1;
+        holes[hole_count] = (base, base + size);
+        hole_count += 1;
+    }
+
     buf[idx] = MemoryRegion {
-        base: fw_data_addr,
-        size: fw_bss_reserve,
+        base: runtime_region.data_base,
+        size: runtime_region.data_size,
         region_type: MemoryType::RuntimeServicesData,
     };
     idx += 1;
+    holes[hole_count] = (
+        runtime_region.data_base,
+        runtime_region.data_base + runtime_region.data_size,
+    );
+    hole_count += 1;
 
-    // 4. Free RAM between BSS end and stack bottom.
-    if fw_stack_bottom > fw_bss_end {
+    // A tiny insertion sort keeps free ranges ordered without allocation.
+    for i in 1..hole_count {
+        let hole = holes[i];
+        let mut j = i;
+        while j > 0 && holes[j - 1].0 > hole.0 {
+            holes[j] = holes[j - 1];
+            j -= 1;
+        }
+        holes[j] = hole;
+    }
+
+    let mut cursor = ram_base;
+    for &(start, end) in holes.iter().take(hole_count) {
+        let start = start.max(ram_base).max(cursor);
+        let end = end.min(ram_end);
+        if cursor < start {
+            buf[idx] = MemoryRegion {
+                base: cursor,
+                size: start - cursor,
+                region_type: MemoryType::Ram,
+            };
+            idx += 1;
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < ram_end {
         buf[idx] = MemoryRegion {
-            base: fw_bss_end,
-            size: fw_stack_bottom - fw_bss_end,
+            base: cursor,
+            size: ram_end - cursor,
             region_type: MemoryType::Ram,
         };
         idx += 1;
     }
-
-    // 5. Firmware stack -- RuntimeServicesData.
-    buf[idx] = MemoryRegion {
-        base: fw_stack_bottom,
-        size: fw_stack_size,
-        region_type: MemoryType::RuntimeServicesData,
-    };
-    idx += 1;
 
     idx
 }
@@ -474,7 +461,11 @@ pub use fstart_core::services::memory_detect::E820Entry;
 /// All boundaries are page-aligned (4 KiB). `_data_start.._writable_end`
 /// covers the stage-owned writable footprint, including XIP layouts where
 /// writable data lives in RAM.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 pub fn compute_runtime_region() -> RuntimeRegion {
     extern "C" {
         static _text_start: u8;
@@ -595,6 +586,51 @@ impl crabefi::ResetHandler for PsciReset {
                 core::hint::spin_loop();
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RISC-V time/SBI reset adapters
+// ---------------------------------------------------------------------------
+
+/// CrabEFI [`Timer`](crabefi::Timer) backed by QEMU virt's 10 MHz `time` CSR.
+#[cfg(target_arch = "riscv64")]
+pub struct RiscvTimer;
+
+#[cfg(target_arch = "riscv64")]
+impl crabefi::Timer for RiscvTimer {
+    fn current_ticks(&self) -> u64 {
+        let ticks: u64;
+        // SAFETY: `rdtime` reads the supervisor-visible monotonic counter.
+        unsafe {
+            core::arch::asm!(
+                "rdtime {}",
+                out(reg) ticks,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        ticks
+    }
+
+    fn ticks_per_second(&self) -> u64 {
+        10_000_000
+    }
+}
+
+/// CrabEFI [`ResetHandler`](crabefi::ResetHandler) using OpenSBI SRST.
+#[cfg(target_arch = "riscv64")]
+pub struct RiscvSbiReset;
+
+#[cfg(target_arch = "riscv64")]
+impl crabefi::ResetHandler for RiscvSbiReset {
+    fn reset(&self, reset_type: crabefi::ResetType) -> ! {
+        let reset_type = match reset_type {
+            crabefi::ResetType::Shutdown => 0,
+            crabefi::ResetType::Cold => 1,
+            crabefi::ResetType::Warm => 2,
+            _ => 1,
+        };
+        fstart_arch::riscv64::sbi_system_reset(reset_type)
     }
 }
 

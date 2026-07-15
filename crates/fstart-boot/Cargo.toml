@@ -23,6 +23,9 @@ crabefi = { package = "crabefi-core", git = "https://github.com/ArthurHeymans/Cr
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 fstart-arch = { workspace = true, features = ["x86_64"] }
 
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+fstart-arch = { workspace = true, features = ["riscv64"] }
+
 [dev-dependencies]
 fstart-core = { workspace = true, features = ["std"] }
 dtoolkit = { workspace = true, features = ["write"] }

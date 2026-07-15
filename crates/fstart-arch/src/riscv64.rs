@@ -133,6 +133,36 @@ pub fn boot_hart_id() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// OpenSBI handoff and copy trampolines
+// ---------------------------------------------------------------------------
+
+// OpenSBI enters its next stage in S-mode with a0 = hart ID and a1 = FDT.
+// Reuse the stage-owned stack before calling the board-selected continuation.
+#[cfg(feature = "riscv64-sbi-resume")]
+core::arch::global_asm!(
+    r#"
+    .section .text
+    .balign 4
+    .global _sbi_resume_trampoline
+_sbi_resume_trampoline:
+    la sp, _stack_top
+    call fstart_sbi_resume
+1:
+    wfi
+    j 1b
+"#
+);
+
+/// Address OpenSBI should enter after its M-mode initialization.
+#[cfg(feature = "riscv64-sbi-resume")]
+pub fn sbi_resume_trampoline() -> u64 {
+    unsafe extern "C" {
+        fn _sbi_resume_trampoline();
+    }
+    _sbi_resume_trampoline as *const () as usize as u64
+}
+
+// ---------------------------------------------------------------------------
 // SBI copy trampoline (position-independent)
 // ---------------------------------------------------------------------------
 //
@@ -229,7 +259,7 @@ impl FwDynamicInfo {
 }
 
 /// Jump to an SBI firmware (OpenSBI / RustSBI) using the fw_dynamic
-/// protocol, which then boots Linux in S-mode.
+/// protocol, which then enters the configured next stage in S-mode.
 ///
 /// Register convention on entry to SBI firmware:
 /// - `a0` = boot hart ID
@@ -240,7 +270,7 @@ impl FwDynamicInfo {
 ///
 /// The caller must ensure all addresses are valid and the SBI binary
 /// is loaded at `sbi_addr`.
-pub fn boot_linux_sbi(sbi_addr: u64, hart_id: u64, dtb_addr: u64, info: &FwDynamicInfo) -> ! {
+pub fn boot_sbi(sbi_addr: u64, hart_id: u64, dtb_addr: u64, info: &FwDynamicInfo) -> ! {
     // SAFETY: caller guarantees all addresses are valid mapped memory and firmware is
     // at sbi_addr; this is a non-returning M-mode to S-mode transition.
     unsafe {
@@ -273,7 +303,29 @@ pub fn boot_linux_sbi(sbi_addr: u64, hart_id: u64, dtb_addr: u64, info: &FwDynam
 /// Ignored fields: `rsdp_addr`, `bootargs`, `e820_entries`, `zero_page_addr`.
 pub fn boot_linux(params: &fstart_core::services::BootLinuxParams<'_>) -> ! {
     let info = FwDynamicInfo::new(params.kernel_addr, params.hart_id);
-    boot_linux_sbi(params.fw_addr, params.hart_id, params.dtb_addr, &info)
+    boot_sbi(params.fw_addr, params.hart_id, params.dtb_addr, &info)
+}
+
+/// Request a system reset from S-mode through OpenSBI's SRST extension.
+///
+/// The caller must already be executing under SBI firmware. If OpenSBI
+/// returns instead of resetting, wait forever rather than returning to UEFI.
+pub fn sbi_system_reset(reset_type: u64) -> ! {
+    const SBI_EXT_SRST: u64 = 0x5352_5354;
+    let error: i64;
+    // SAFETY: `ecall` is the RISC-V SBI calling convention in S-mode.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            inlateout("a0") reset_type as i64 => error,
+            in("a1") 0_u64,
+            in("a6") 0_u64,
+            in("a7") SBI_EXT_SRST,
+            options(nostack),
+        );
+    }
+    let _ = error;
+    halt()
 }
 
 /// Copy an SBI firmware blob to its load address, then jump to it

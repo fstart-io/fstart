@@ -8,6 +8,7 @@ default = []
 # Platform selection (exactly one must be enabled)
 armv7 = ["fstart-arch/armv7"]
 aarch64 = ["fstart-arch/aarch64"]
+aarch64-el2-relocate-entry = ["fstart-arch/aarch64-el2-relocate-entry"]
 riscv64 = ["fstart-arch/riscv64"]
 x86_64 = ["fstart-arch/x86_64"]
 
@@ -51,7 +52,7 @@ handoff = ["dep:postcard"]
 acpi = []
 # CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
 # Requires the local stage allocator.
-crabefi = ["dep:fstart-boot", "fstart-boot/crabefi"]
+crabefi = ["dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi"]
 
 [dependencies]
 # Core firmware infrastructure

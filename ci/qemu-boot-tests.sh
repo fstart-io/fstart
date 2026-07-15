@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# QEMU boot matrix. Run inside the CI/development shell; this script does not
+# invoke nix develop itself.
+#
+# Usage: ci/qemu-boot-tests.sh [asset-dir] [--board BOARD] [--payload PAYLOAD]
+#
+# QEMU_BOOT_TIMEOUT sets the timeout for each boot (default: 120s). Filters may
+# be repeated and are useful when diagnosing one matrix entry.
+
+set -euo pipefail
+
+ASSET_DIR="boot-assets/payloads"
+if [[ $# -gt 0 && $1 != --* ]]; then
+	ASSET_DIR="$1"
+	shift
+fi
+
+BOOT_TIMEOUT="${QEMU_BOOT_TIMEOUT:-120s}"
+LOG_DIR="${QEMU_BOOT_LOG_DIR:-target/qemu-boot-tests}"
+board_filters=()
+payload_filters=()
+
+usage() {
+	echo "Usage: $0 [asset-dir] [--board BOARD] [--payload PAYLOAD]" >&2
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	--board)
+		board_filters+=("${2:?--board requires a board}")
+		shift 2
+		;;
+	--payload)
+		payload_filters+=("${2:?--payload requires a payload}")
+		shift 2
+		;;
+	-h|--help)
+		usage
+		exit 0
+		;;
+	*)
+		usage
+		exit 2
+		;;
+	esac
+done
+
+matches_filter() {
+	local value="$1"
+	shift
+	[[ $# -eq 0 ]] && return 0
+	local filter
+	for filter; do
+		[[ $value == "$filter" ]] && return 0
+	done
+	return 1
+}
+
+mkdir -p "$LOG_DIR"
+failures=0
+selected=0
+
+run_boot() {
+	local board="$1"
+	local payload="$2"
+	local marker="$3"
+	shift 3
+
+	matches_filter "$board" "${board_filters[@]}" || return 0
+	matches_filter "$payload" "${payload_filters[@]}" || return 0
+	selected=$((selected + 1))
+
+	local log="$LOG_DIR/${board}-${payload}.log"
+	local -a command=(
+		timeout --kill-after=10s "$BOOT_TIMEOUT"
+		cargo run -q -p fbuild -- run --board "$board" --release --payload "$payload"
+	)
+	command+=("$@")
+
+	set +e
+	"${command[@]}" >"$log" 2>&1
+	local status=$?
+	set -e
+
+	if grep -Fq "$marker" "$log" && { [[ $status -eq 0 || $status -eq 124 ]]; }; then
+		printf 'PASS %-14s %-6s %s\n' "$board" "$payload" "$marker"
+	else
+		printf 'FAIL %-14s %-6s %s (exit %d; %s)\n' \
+			"$board" "$payload" "$marker" "$status" "$log"
+		tail -n 40 "$log" >&2
+		failures=$((failures + 1))
+	fi
+}
+
+run_boot qemu-q35 halt 'ramstage: ready for payload'
+run_boot qemu-q35 uefi 'Boot manager finished'
+
+run_boot qemu-riscv64 halt 'ramstage: ready for payload'
+run_boot qemu-riscv64 linux FSTART_CI_BOOT_SUCCESS \
+	--kernel "$ASSET_DIR/Image-riscv64" --firmware "$ASSET_DIR/fw_dynamic.bin"
+run_boot qemu-riscv64 uefi 'Boot manager finished' \
+	--firmware "$ASSET_DIR/fw_dynamic.bin"
+
+run_boot qemu-aarch64 halt 'ramstage: ready for payload'
+run_boot qemu-aarch64 linux FSTART_CI_BOOT_SUCCESS \
+	--kernel "$ASSET_DIR/Image-aarch64" --firmware "$ASSET_DIR/bl31.bin"
+run_boot qemu-aarch64 uefi 'Boot manager finished' \
+	--firmware "$ASSET_DIR/bl31.bin"
+
+run_boot qemu-armv7 halt 'ramstage: ready for payload'
+run_boot qemu-armv7 linux FSTART_CI_BOOT_SUCCESS \
+	--kernel "$ASSET_DIR/zImage-armv7"
+
+if [[ $selected -eq 0 ]]; then
+	echo 'No boot tests selected.' >&2
+	exit 2
+fi
+
+printf '\nQEMU boot matrix: %d passed, %d failed\n' \
+	"$((selected - failures))" "$failures"
+(( failures == 0 ))

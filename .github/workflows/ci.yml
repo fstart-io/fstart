@@ -42,6 +42,38 @@ jobs:
           cargo fbuild build --board lenovo-x61 --release
           cargo fbuild build --board foxconn-d41s --release
 
+  qemu-boot-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2026-02-26
+          components: rust-src, rustfmt, clippy, llvm-tools
+          targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi, x86_64-unknown-none
+
+      - name: Install QEMU and payload build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bison bc build-essential cpio curl flex libelf-dev libssl-dev \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-riscv64-linux-gnu \
+            qemu-system-arm qemu-system-misc qemu-system-x86
+
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        id: payload-cache
+        with:
+          path: boot-assets/payloads
+          key: ${{ runner.os }}-qemu-payloads-${{ hashFiles('ci/build-payloads.sh', 'ci/kernel-*.config') }}
+
+      - name: Build QEMU payload assets
+        if: steps.payload-cache.outputs.cache-hit != 'true'
+        run: ci/build-payloads.sh boot-assets/payloads
+
+      - name: Run QEMU boot matrix
+        run: ci/qemu-boot-tests.sh boot-assets/payloads
+
   assemble-boards:
     runs-on: ubuntu-latest
     strategy:
