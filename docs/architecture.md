@@ -2,15 +2,11 @@
 
 <!-- markdownlint-disable MD013 -->
 
-This is the plan of record. It supersedes:
-
-- [`rust-board-builder-stage-flow-plan.md`](rust-board-builder-stage-flow-plan.md)
-- [`board-support-package-platform-recipe-plan.md`](board-support-package-platform-recipe-plan.md)
-- `fstart-new/docs/reboot-architecture.md` (consolidated and revised here)
-
-Still-valid pieces of those documents are folded in below. Everything else in
-them is dropped, not deferred-by-silence; see
-[Deliberately dropped](#deliberately-dropped).
+This is the plan of record. It superseded (and absorbed the still-valid
+pieces of) the earlier board-builder/stage-flow plan, the BSP/platform-recipe
+plan, and the fstart-new reboot sketch; those documents are deleted.
+Everything from them not folded in below is dropped, not
+deferred-by-silence; see [Deliberately dropped](#deliberately-dropped).
 
 ## Goals
 
@@ -490,6 +486,33 @@ the repo's 77 crates. Everything else leaves the workspace first.
    QEMU board for CI speed, then Sunxi. A board returns only by implementing
    the new contracts; no attic code is re-added unported.
 
-Known gap, accepted: GM965 cold-boot DDR2 training is scaffolding. The
-architecture cutover does not depend on it; do not measure the cutover by
-X61 cold boot until raminit is finished.
+## Status
+
+Steps 1–5 above are **done**. GM965 cold-boot DDR2 training is implemented
+(no longer scaffolding) but still awaits validation on X61 hardware; do not
+call the X61 port finished until a cold boot is observed on the machine.
+
+Boards live so far: lenovo-x61, foxconn-d41s, qemu-q35, qemu-riscv64,
+qemu-aarch64, qemu-armv7, bananapi-m1 (A20). The QEMU boards are covered by
+the CI boot matrix (`ci/qemu-boot-tests.sh`): halt, Linux-to-userspace, and
+CrabEFI UEFI payloads, including the full q35
+fstart → CrabEFI → GRUB → Linux disk chain.
+
+### Board-return queue (remaining attic capital)
+
+In suggested order; each returns only by implementing the current contracts:
+
+1. **sifive-unmatched** (+`-hw`): FU740 DDR/PRCI + SiFive UART — the only
+   real riscv64 hardware capital.
+2. **orangepi-r1** (Sunxi H3): H3 CCU/DRAMC + the H3/D1 remainders already
+   trimmed into attic mmc/pio/ccu-regs files.
+3. **qemu-sbsa**: exercises the TF-A-first EL2 relocating entry.
+4. **orangepi-pc2** (H5, aarch64 `entry_sunxi` RMR entry) and
+   **licheerv-dock** (D1, riscv64 `entry_sunxi`).
+5. `sunxi-spi`, `bochs-display`, `designware-i2c` return with the first
+   board that needs them.
+
+Attic content already superseded by live code (stale intel-ich7/pineview
+crates, old foxconn-d41s/qemu-q35 boards, codegen/board-meta/stage-runtime,
+payload-flavored board variants) is to be deleted, not ported — keeping it
+violates the no-parallel-models rule.

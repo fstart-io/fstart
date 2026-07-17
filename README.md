@@ -29,4 +29,4 @@ cargo fbuild assemble --board qemu-riscv64
 
 ## Documentation
 
-- **[Rust Board Builder and Fixed Stage Flow Plan](docs/rust-board-builder-stage-flow-plan.md)** — current architecture direction.
+- **[fstart Architecture: Config as Data, Fixed Family Flows, Few Crates](docs/architecture.md)** — the plan of record.
