@@ -420,6 +420,7 @@ fn qemu_virt_stages(
 #[must_use]
 pub fn qemu_riscv64_virt_build_policy() -> BoardBuildPolicy {
     BoardBuildPolicy {
+        qemu_machine: None,
         firmware_image: FirmwareImagePolicy::memory_mapped(0x2100_0000, 0x0100_0000),
         flash_image: Some(FirmwareImagePolicy::memory_mapped(
             QEMU_RISCV64_FLASH_BASE,
@@ -435,6 +436,7 @@ pub fn qemu_riscv64_virt_build_policy() -> BoardBuildPolicy {
 #[must_use]
 pub fn qemu_arm_virt_build_policy() -> BoardBuildPolicy {
     BoardBuildPolicy {
+        qemu_machine: None,
         firmware_image: FirmwareImagePolicy::memory_mapped(
             QEMU_AARCH64_FLASH_BANK_SIZE,
             QEMU_AARCH64_FLASH_BANK_SIZE,

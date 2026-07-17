@@ -493,7 +493,8 @@ Steps 1–5 above are **done**. GM965 cold-boot DDR2 training is implemented
 call the X61 port finished until a cold boot is observed on the machine.
 
 Boards live so far: lenovo-x61, foxconn-d41s, qemu-q35, qemu-riscv64,
-qemu-aarch64, qemu-armv7, bananapi-m1 (A20). The QEMU boards are covered by
+qemu-aarch64, qemu-armv7, bananapi-m1 (A20), sifive-unmatched (FU740
+hardware), qemu-sifive-u (FU540 CI board). The QEMU boards are covered by
 the CI boot matrix (`ci/qemu-boot-tests.sh`): halt, Linux-to-userspace, and
 CrabEFI UEFI payloads, including the full q35
 fstart → CrabEFI → GRUB → Linux disk chain.
@@ -502,8 +503,7 @@ fstart → CrabEFI → GRUB → Linux disk chain.
 
 In suggested order; each returns only by implementing the current contracts:
 
-1. **sifive-unmatched** (+`-hw`): FU740 DDR/PRCI + SiFive UART — the only
-   real riscv64 hardware capital.
+1. ~~sifive-unmatched~~ — done (with qemu-sifive-u as the CI board).
 2. **orangepi-r1** (Sunxi H3): H3 CCU/DRAMC + the H3/D1 remainders already
    trimmed into attic mmc/pio/ccu-regs files.
 3. **qemu-sbsa**: exercises the TF-A-first EL2 relocating entry.

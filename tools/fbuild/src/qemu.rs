@@ -1,4 +1,4 @@
-use fstart_core::Platform;
+use fstart_core::{BoardBuildPolicy, Platform, QemuMachine};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -25,117 +25,138 @@ fn find_qemu(name: &str) -> String {
 }
 
 pub fn run(
-    _board_name: &str,
+    build_policy: &BoardBuildPolicy,
     platform: Platform,
     binary: &Path,
     disk: Option<&str>,
     memory: Option<&str>,
 ) -> Result<(), String> {
-    let (qemu_bin, mut args) = match platform {
-        Platform::Riscv64 => {
-            let pflash_size = 32 * 1024 * 1024;
-            let pflash_path = create_pflash_image(binary, pflash_size)?;
-            let args = vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-nographic".to_string(),
-                "-bios".to_string(),
-                "none".to_string(),
-                "-drive".to_string(),
-                format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
-            ];
-            (find_qemu("qemu-system-riscv64"), args)
+    let use_sifive_u = build_policy.qemu_machine == Some(QemuMachine::SifiveU);
+    let (qemu_bin, mut args) = if use_sifive_u {
+        if platform != Platform::Riscv64 {
+            return Err("QEMU sifive_u requires the riscv64 platform".to_string());
         }
-        Platform::Aarch64 => {
-            let mut args = vec![
-                "-machine".to_string(),
-                "virt,secure=on,virtualization=on,gic-version=3".to_string(),
-                "-cpu".to_string(),
-                "cortex-a72".to_string(),
-                "-nographic".to_string(),
-            ];
-            args.extend(virt_flash_args(binary)?);
-            (find_qemu("qemu-system-aarch64"), args)
-        }
-        Platform::Armv7 => {
-            let mut args = vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-cpu".to_string(),
-                "cortex-a15".to_string(),
-                "-nographic".to_string(),
-            ];
-            args.extend(virt_flash_args(binary)?);
-            (find_qemu("qemu-system-arm"), args)
-        }
-        Platform::X86_64 => {
-            let pflash_size = 16 * 1024 * 1024;
-            let workspace = binary.parent().unwrap().parent().unwrap();
-            let profile = if binary.to_str().unwrap_or("").contains("release")
-                || std::env::args().any(|a| a == "--release")
-            {
-                "release"
-            } else {
-                "debug"
-            };
-
-            let stage_bin = workspace
-                .join("x86_64-unknown-none")
-                .join(profile)
-                .join("fstart-stage.bin");
-            let pflash_path = if stage_bin.exists() {
-                create_x86_pflash(binary, &stage_bin, pflash_size)?
-            } else {
-                eprintln!(
-                    "[fstart] warning: stage .bin not found at {}, using FFS directly",
-                    stage_bin.display()
-                );
-                create_pflash_image_aligned(binary, pflash_size, true)?
-            };
-
-            let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
-            let use_kvm = match accel.as_deref() {
-                Some("kvm") => true,
-                Some("tcg") => false,
-                _ => std::fs::File::open("/dev/kvm").is_ok(),
-            };
-            let args = vec![
+        (
+            find_qemu("qemu-system-riscv64"),
+            vec![
                 "-M".to_string(),
-                "q35".to_string(),
-                "-accel".to_string(),
-                if use_kvm { "kvm" } else { "tcg" }.to_string(),
-                "-cpu".to_string(),
-                if use_kvm { "host" } else { "max" }.to_string(),
+                "sifive_u".to_string(),
                 "-m".to_string(),
                 "1G".to_string(),
-                "-smp".to_string(),
-                "1".to_string(),
-                "-no-reboot".to_string(),
-                "-display".to_string(),
-                "none".to_string(),
-                "-chardev".to_string(),
-                "stdio,id=char0,mux=on,signal=off".to_string(),
-                "-serial".to_string(),
-                "chardev:char0".to_string(),
-                "-mon".to_string(),
-                "chardev=char0,mode=readline".to_string(),
+                "-nographic".to_string(),
                 "-bios".to_string(),
-                pflash_path.display().to_string(),
-                "-vga".to_string(),
-                "none".to_string(),
-                "-device".to_string(),
-                "bochs-display".to_string(),
-            ];
-            (find_qemu("qemu-system-x86_64"), args)
+                binary.display().to_string(),
+            ],
+        )
+    } else {
+        match platform {
+            Platform::Riscv64 => {
+                let pflash_size = 32 * 1024 * 1024;
+                let pflash_path = create_pflash_image(binary, pflash_size)?;
+                let args = vec![
+                    "-machine".to_string(),
+                    "virt".to_string(),
+                    "-nographic".to_string(),
+                    "-bios".to_string(),
+                    "none".to_string(),
+                    "-drive".to_string(),
+                    format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
+                ];
+                (find_qemu("qemu-system-riscv64"), args)
+            }
+            Platform::Aarch64 => {
+                let mut args = vec![
+                    "-machine".to_string(),
+                    "virt,secure=on,virtualization=on,gic-version=3".to_string(),
+                    "-cpu".to_string(),
+                    "cortex-a72".to_string(),
+                    "-nographic".to_string(),
+                ];
+                args.extend(virt_flash_args(binary)?);
+                (find_qemu("qemu-system-aarch64"), args)
+            }
+            Platform::Armv7 => {
+                let mut args = vec![
+                    "-machine".to_string(),
+                    "virt".to_string(),
+                    "-cpu".to_string(),
+                    "cortex-a15".to_string(),
+                    "-nographic".to_string(),
+                ];
+                args.extend(virt_flash_args(binary)?);
+                (find_qemu("qemu-system-arm"), args)
+            }
+            Platform::X86_64 => {
+                let pflash_size = 16 * 1024 * 1024;
+                let workspace = binary.parent().unwrap().parent().unwrap();
+                let profile = if binary.to_str().unwrap_or("").contains("release")
+                    || std::env::args().any(|a| a == "--release")
+                {
+                    "release"
+                } else {
+                    "debug"
+                };
+
+                let stage_bin = workspace
+                    .join("x86_64-unknown-none")
+                    .join(profile)
+                    .join("fstart-stage.bin");
+                let pflash_path = if stage_bin.exists() {
+                    create_x86_pflash(binary, &stage_bin, pflash_size)?
+                } else {
+                    eprintln!(
+                        "[fstart] warning: stage .bin not found at {}, using FFS directly",
+                        stage_bin.display()
+                    );
+                    create_pflash_image_aligned(binary, pflash_size, true)?
+                };
+
+                let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
+                let use_kvm = match accel.as_deref() {
+                    Some("kvm") => true,
+                    Some("tcg") => false,
+                    _ => std::fs::File::open("/dev/kvm").is_ok(),
+                };
+                let args = vec![
+                    "-M".to_string(),
+                    "q35".to_string(),
+                    "-accel".to_string(),
+                    if use_kvm { "kvm" } else { "tcg" }.to_string(),
+                    "-cpu".to_string(),
+                    if use_kvm { "host" } else { "max" }.to_string(),
+                    "-m".to_string(),
+                    "1G".to_string(),
+                    "-smp".to_string(),
+                    "1".to_string(),
+                    "-no-reboot".to_string(),
+                    "-display".to_string(),
+                    "none".to_string(),
+                    "-chardev".to_string(),
+                    "stdio,id=char0,mux=on,signal=off".to_string(),
+                    "-serial".to_string(),
+                    "chardev:char0".to_string(),
+                    "-mon".to_string(),
+                    "chardev=char0,mode=readline".to_string(),
+                    "-bios".to_string(),
+                    pflash_path.display().to_string(),
+                    "-vga".to_string(),
+                    "none".to_string(),
+                    "-device".to_string(),
+                    "bochs-display".to_string(),
+                ];
+                (find_qemu("qemu-system-x86_64"), args)
+            }
         }
     };
 
-    if !args.iter().any(|arg| arg == "-no-reboot") {
+    if !use_sifive_u && !args.iter().any(|arg| arg == "-no-reboot") {
         args.push("-no-reboot".to_string());
     }
 
-    if let Some(mem) = memory {
-        args.extend(["-m".to_string(), mem.to_string()]);
+    if !use_sifive_u {
+        if let Some(mem) = memory {
+            args.extend(["-m".to_string(), mem.to_string()]);
+        }
     }
 
     if let Some(disk_path) = disk {

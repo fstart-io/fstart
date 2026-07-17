@@ -116,6 +116,10 @@ run_boot qemu-riscv64 linux FSTART_CI_BOOT_SUCCESS \
 run_boot qemu-riscv64 uefi 'Boot manager finished' \
 	--firmware "$ASSET_DIR/fw_dynamic.bin"
 
+run_boot qemu-sifive-u halt 'sifive-u ramstage: ready for payload'
+run_boot qemu-sifive-u linux FSTART_CI_BOOT_SUCCESS \
+	--kernel "$ASSET_DIR/Image-riscv64" --firmware "$ASSET_DIR/fw_dynamic.bin"
+
 run_boot qemu-aarch64 halt 'ramstage: ready for payload'
 run_boot qemu-aarch64 linux FSTART_CI_BOOT_SUCCESS \
 	--kernel "$ASSET_DIR/Image-aarch64" --firmware "$ASSET_DIR/bl31.bin"

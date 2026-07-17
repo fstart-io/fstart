@@ -3,8 +3,8 @@ use std::fmt::Write;
 use fstart_core::board::MicrocodeConfig;
 use fstart_core::memory::FlashLayout;
 use fstart_core::{
-    effective_stage_load_addr, BoardConfig, Platform, RegionKind, SocImageFormat, StageBuildConfig,
-    StageLayout,
+    effective_stage_load_addr, BoardConfig, FirmwareImagePolicy, Platform, RegionKind,
+    SocImageFormat, StageBuildConfig, StageLayout,
 };
 
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
@@ -180,10 +180,14 @@ fn stage_memory_mapped_boot_media(
     config: &BoardConfig,
     stage_name: Option<&str>,
 ) -> Option<(u64, u64)> {
-    stage_build(config, stage_name)?
-        .firmware_image
-        .as_ref()
-        .and_then(|_| config.memory.firmware_window())
+    stage_build(config, stage_name)?.firmware_image.as_ref()?;
+    config
+        .memory
+        .firmware_window()
+        .or(match config.build.firmware_image {
+            FirmwareImagePolicy::MemoryMapped { cpu_base, size } => Some((cpu_base, size)),
+            FirmwareImagePolicy::Auto | FirmwareImagePolicy::None => None,
+        })
 }
 
 fn stage_build<'a>(
@@ -583,4 +587,71 @@ fn write_stack(out: &mut String, stack_size: u64, region: &str) {
     .unwrap();
 
     writeln!(out, "    _binary_end = _data_end;").unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use fstart_core::{
+        hstr, hvec, BoardBuildPolicy, FirmwareImageConfig, MemoryMap, MemoryRegion,
+        MonolithicConfig, Platform, RegionKind, SecurityConfig, SignatureAlgorithm,
+        StageBuildConfig, StageLayout,
+    };
+
+    use super::generate_linker_script;
+
+    #[test]
+    fn ram_loaded_ffs_reserves_its_build_policy_window() {
+        let config = fstart_core::BoardConfig {
+            name: hstr("qemu-sifive-u"),
+            platform: Platform::Riscv64,
+            memory: MemoryMap {
+                regions: hvec([MemoryRegion {
+                    name: hstr("dram"),
+                    base: 0x8000_0000,
+                    size: 0x4000_0000,
+                    kind: RegionKind::Ram,
+                }]),
+                flash_layout: None,
+                car: None,
+            },
+            stages: StageLayout::Monolithic(MonolithicConfig {
+                build: StageBuildConfig {
+                    firmware_image: Some(FirmwareImageConfig {
+                        temp_ram_buffer: None,
+                    }),
+                    ..StageBuildConfig::default()
+                },
+                load_addr: 0x8000_0000,
+                stack_size: 0x4000,
+                heap_size: None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            }),
+            security: SecurityConfig {
+                signing_algorithm: SignatureAlgorithm::Ed25519,
+                pubkey_file: hstr("keys/dev-signing.pub"),
+                required_digests: hvec([]),
+            },
+            payload: None,
+            microcode: None,
+            soc_image_format: Default::default(),
+            full_flash_image: false,
+            build: BoardBuildPolicy {
+                firmware_image: fstart_core::FirmwareImagePolicy::memory_mapped(
+                    0x8000_0000,
+                    0x1000_0000,
+                ),
+                ..BoardBuildPolicy::default()
+            },
+            acpi: None,
+            smbios: None,
+            smm: None,
+            boot_hart_id: 0,
+        };
+
+        let script = generate_linker_script(&config, None);
+        assert!(script.contains("RWDATA (rwx) : ORIGIN = 0x90000000"));
+        assert!(script.contains(".bss (NOLOAD) : ALIGN(8) {"));
+    }
 }

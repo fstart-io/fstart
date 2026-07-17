@@ -162,6 +162,9 @@ pub struct BoardConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardBuildPolicy {
+    /// QEMU machine selection for boards with non-default emulation.
+    #[serde(default)]
+    pub qemu_machine: Option<QemuMachine>,
     /// How host tooling should map the runtime firmware filesystem.
     #[serde(default)]
     pub firmware_image: FirmwareImagePolicy,
@@ -179,6 +182,13 @@ pub struct BoardBuildPolicy {
     /// Optional stage feature for board/platform CPU initialization.
     #[serde(default)]
     pub cpu_feature: Option<HString<32>>,
+}
+
+/// QEMU machine selected by a board's host build policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QemuMachine {
+    /// SiFive FU740-compatible `sifive_u` machine, booted through `-bios`.
+    SifiveU,
 }
 
 /// Board/platform-owned firmware-image mapping policy for host tooling.

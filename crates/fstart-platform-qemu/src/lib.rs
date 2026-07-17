@@ -2,14 +2,20 @@
 
 #![no_std]
 
-#[cfg(feature = "stage")]
+#[cfg(any(feature = "host", feature = "stage"))]
 extern crate alloc;
 extern crate ufmt;
 
 pub mod fw_cfg;
-
+pub mod sifive_u;
 pub mod virt;
 
+pub use sifive_u::QemuSifiveUConfig;
+#[cfg(feature = "host")]
+pub use sifive_u::{
+    qemu_sifive_u_build_policy, qemu_sifive_u_linux_payload, qemu_sifive_u_memory,
+    qemu_sifive_u_stages,
+};
 pub use virt::qemu_virt_security_config;
 #[cfg(feature = "host")]
 pub use virt::{
@@ -26,6 +32,11 @@ pub mod virt_armv7;
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 pub mod virt_riscv64;
 
+#[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
+pub use sifive_u::{
+    QemuSifiveU, QemuSifiveUBoard, QemuSifiveUBuildSelectedPayload, QemuSifiveUHooks,
+    QemuSifiveUMainstage,
+};
 #[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
 pub use virt_aarch64::{
     QemuAarch64Virt, QemuAarch64VirtBoard, QemuAarch64VirtHooks, QemuAarch64VirtMainstage,
@@ -184,6 +195,7 @@ pub fn qemu_q35_stages() -> StageLayout {
 #[must_use]
 pub const fn qemu_q35_build_policy() -> BoardBuildPolicy {
     BoardBuildPolicy {
+        qemu_machine: None,
         firmware_image: FirmwareImagePolicy::memory_mapped(QEMU_Q35_FFS_BASE, QEMU_Q35_FFS_SIZE),
         flash_image: None,
         pci_root_feature: None,

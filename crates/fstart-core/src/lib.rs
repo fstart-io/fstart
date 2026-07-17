@@ -32,7 +32,7 @@ pub use acpi::{
 };
 pub use board::{
     BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FirmwareKind,
-    FitParseMode, PayloadConfig, PayloadKind, Platform, SocImageFormat,
+    FitParseMode, PayloadConfig, PayloadKind, Platform, QemuMachine, SocImageFormat,
 };
 pub use builder::{dev_security_config, hstr, hvec, x86_linuxboot_payload, x86_uefi_payload};
 pub use const_vec::ConstVec;

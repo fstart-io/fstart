@@ -353,10 +353,11 @@ fn run(
     let workspace_root = crate::build_board::workspace_root_pub()?;
     let (manifest, parsed) = load(callbacks, payload)?;
     let config = &parsed.config;
-    let board_name = config.name.clone();
+    let build_policy = config.build.clone();
     let platform = config.platform;
     let is_multi_stage = matches!(config.stages, StageLayout::MultiStage(_));
     let needs_x86_pflash = matches!(config.platform, fstart_core::Platform::X86_64);
+    let needs_firmware_image = config.build.qemu_machine.is_some();
     let has_payload_blobs = kernel.is_some()
         || firmware.is_some()
         || fit.is_some()
@@ -367,7 +368,7 @@ fn run(
                 || p.kind == fstart_core::PayloadKind::FitImage
         });
 
-    if is_multi_stage || has_payload_blobs || needs_x86_pflash {
+    if is_multi_stage || has_payload_blobs || needs_x86_pflash || needs_firmware_image {
         let image_path = assemble_loaded(
             &workspace_root,
             manifest,
@@ -377,12 +378,12 @@ fn run(
             firmware,
             fit,
         )?;
-        crate::qemu::run(board_name.as_str(), platform, &image_path, disk, memory)
+        crate::qemu::run(&build_policy, platform, &image_path, disk, memory)
     } else {
         let res =
             crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
         crate::qemu::run(
-            board_name.as_str(),
+            &build_policy,
             platform,
             &res.primary_binary().run_path,
             disk,
