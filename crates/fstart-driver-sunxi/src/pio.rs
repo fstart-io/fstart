@@ -18,6 +18,8 @@ pub enum Pull {
     Down = 2,
 }
 
+/// Port A index.
+pub const PORT_A: u8 = 0;
 /// Port B index.
 pub const PORT_B: u8 = 1;
 /// Port F index.

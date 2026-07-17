@@ -6,7 +6,12 @@
 
 #![no_std]
 
-#[cfg(any(feature = "acpi", feature = "ffs", feature = "crabefi"))]
+#[cfg(any(
+    feature = "acpi",
+    feature = "ffs",
+    feature = "crabefi",
+    feature = "smbios"
+))]
 mod alloc;
 
 mod runtime;

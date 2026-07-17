@@ -46,8 +46,17 @@ impl BlockDeviceFfs {
         ))
     }
 
-    /// Mount the FFS image and cache its anchor.
-    pub fn mount<B>(&mut self, block: &B, ffs_size: usize) -> Result<(), ServiceError>
+    /// Mount the FFS image and cache the stage's embedded anchor.
+    ///
+    /// The anchor is not stored at a fixed media offset — the image builder
+    /// patches it into each stage's embedded `FSTART_ANCHOR` static — so the
+    /// caller passes its own patched copy (`fstart_stage::fstart_anchor_bytes()`).
+    pub fn mount<B>(
+        &mut self,
+        block: &B,
+        ffs_size: usize,
+        anchor_bytes: &[u8],
+    ) -> Result<(), ServiceError>
     where
         B: BlockDevice,
     {
@@ -57,12 +66,16 @@ impl BlockDeviceFfs {
                 fstart_log::error!("invalid block FFS size: {:#x}", ffs_size);
                 return Err(ServiceError::InvalidParam);
             }
+            let magic = &fstart_core::ffs::FFS_MAGIC;
+            if anchor_bytes.len() < ANCHOR_SIZE || anchor_bytes[..magic.len()] != *magic {
+                fstart_log::error!("embedded FFS anchor invalid");
+                return Err(ServiceError::NotInitialized);
+            }
 
             self.ffs_size = ffs_size;
-            let media = self.media(block)?;
-            let anchor_offset = ffs_size - ANCHOR_SIZE;
-            let anchor = crate::read_anchor_at_offset(&media, anchor_offset)
-                .map_err(|_| ServiceError::NotInitialized)?;
+            let _ = self.media(block)?;
+            let mut anchor = [0u8; ANCHOR_SIZE];
+            anchor.copy_from_slice(&anchor_bytes[..ANCHOR_SIZE]);
             fstart_log::info!(
                 "mounted block FFS: media_offset={:#x}, size={:#x}",
                 self.media_offset,
@@ -74,7 +87,7 @@ impl BlockDeviceFfs {
 
         #[cfg(not(feature = "ffs"))]
         {
-            let _ = (block, ffs_size);
+            let _ = (block, ffs_size, anchor_bytes);
             Err(ServiceError::NotSupported)
         }
     }
@@ -184,12 +197,17 @@ impl BlockDeviceLinuxBoot {
         }
     }
 
-    /// Mount the FFS image and cache its anchor.
-    pub fn mount<B>(&mut self, block: &B, ffs_size: usize) -> Result<(), ServiceError>
+    /// Mount the FFS image and cache the stage's embedded anchor.
+    pub fn mount<B>(
+        &mut self,
+        block: &B,
+        ffs_size: usize,
+        anchor_bytes: &[u8],
+    ) -> Result<(), ServiceError>
     where
         B: BlockDevice,
     {
-        self.ffs.mount(block, ffs_size)
+        self.ffs.mount(block, ffs_size, anchor_bytes)
     }
 
     /// Verify the mounted FFS image policy.

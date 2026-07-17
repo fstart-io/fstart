@@ -50,6 +50,8 @@ handoff = ["dep:postcard"]
 # ACPI table generation lives in the selected board/platform crate; fstart-stage
 # only provides the allocator needed by ACPI-capable flows.
 acpi = []
+# SMBIOS-capable fixed flows use the same stage-local allocator.
+smbios = []
 # CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
 # Requires the local stage allocator.
 crabefi = ["dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi"]

@@ -12,7 +12,6 @@
 //! CCU (for PLL5/MBUS/gates): `0x01C2_0000`
 //! DRAM physical base: `0x4000_0000`
 
-#![no_std]
 #![allow(clippy::modulo_one)] // tock-registers alignment test
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
 #![allow(clippy::too_many_arguments)] // mbus_configure_port mirrors U-Boot signature
@@ -26,12 +25,11 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
 
-use fstart_mmio::MmioReadWrite;
+use fstart_core::mmio::MmioReadWrite;
 
-use fstart_services::device::{Device, DeviceError};
-use fstart_services::{MemoryController, ServiceError};
+use fstart_core::services::ServiceError;
 
-use fstart_sunxi_ccu_regs::{SunxiH3CcuRegs, H3_DRAM_CLK, H3_PLL5_CFG};
+use crate::ccu_regs::{SunxiH3CcuRegs, H3_DRAM_CLK, H3_PLL5_CFG};
 
 use fstart_arch::udelay;
 
@@ -627,7 +625,7 @@ pub enum SunxiDramcVariant {
 ///
 /// For Orange Pi R1 (256 MB DDR3 at 624 MHz, H3):
 /// ```ron
-/// SunxiH3Dramc((
+/// H3Dramc((
 ///     dramc_base: 0x01C62000,
 ///     ccu_base:   0x01C20000,
 ///     clock:      624,
@@ -638,7 +636,7 @@ pub enum SunxiDramcVariant {
 ///
 /// For Orange Pi PC2 (1024 MB DDR3 at 672 MHz, H5):
 /// ```ron
-/// SunxiH3Dramc((
+/// H3Dramc((
 ///     dramc_base: 0x01C62000,
 ///     ccu_base:   0x01C20000,
 ///     clock:      672,
@@ -649,20 +647,22 @@ pub enum SunxiDramcVariant {
 /// ```
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SunxiH3DramcConfig {
-    /// DRAMC COM register base address (`0x01C6_2000`).
-    pub dramc_base: u64,
-    /// CCU register base address (`0x01C2_0000`).
-    pub ccu_base: u64,
-    /// DRAM clock frequency in MHz (e.g., 624 for H3, 672 for H5).
+pub struct H3DramcConfig {
     pub clock: u32,
-    /// ZQ calibration value (e.g., 3881979 for H3, 3881977 for H5).
     pub zq: u32,
-    /// On-Die Termination enable.
     pub odt_en: bool,
-    /// SoC variant. Defaults to `H3` for backward compatibility.
-    #[serde(default)]
     pub variant: SunxiDramcVariant,
+}
+impl H3DramcConfig {
+    #[must_use]
+    pub const fn new(clock: u32, zq: u32, odt_en: bool) -> Self {
+        Self {
+            clock,
+            zq,
+            odt_en,
+            variant: SunxiDramcVariant::H3,
+        }
+    }
 }
 
 // ===================================================================
@@ -670,7 +670,7 @@ pub struct SunxiH3DramcConfig {
 // ===================================================================
 
 /// Allwinner H3/H5 DesignWare DRAM controller driver.
-pub struct SunxiH3Dramc {
+pub struct H3Dramc {
     com: &'static SunxiH3DramComRegs,
     ctl: &'static SunxiH3DramCtlRegs,
     ccu: &'static SunxiH3CcuRegs,
@@ -689,26 +689,22 @@ pub struct SunxiH3Dramc {
 }
 
 // SAFETY: MMIO registers at fixed hardware addresses. Single-threaded boot.
-unsafe impl Send for SunxiH3Dramc {}
-unsafe impl Sync for SunxiH3Dramc {}
+unsafe impl Send for H3Dramc {}
+unsafe impl Sync for H3Dramc {}
 
 // ===================================================================
 // Device trait
 // ===================================================================
 
-impl Device for SunxiH3Dramc {
-    const NAME: &'static str = "sunxi-h3-dramc";
-    const COMPATIBLE: &'static [&'static str] =
-        &["allwinner,sun8i-h3-dramc", "allwinner,sun50i-h5-dramc"];
-    type Config = SunxiH3DramcConfig;
-
-    fn new(config: SunxiH3DramcConfig) -> Result<Self, DeviceError> {
-        let base = config.dramc_base as usize;
-        Ok(Self {
-            // SAFETY: addresses from board metadata.
-            com: unsafe { &*(base as *const SunxiH3DramComRegs) },
-            ctl: unsafe { &*((base + 0x1000) as *const SunxiH3DramCtlRegs) },
-            ccu: unsafe { &*(config.ccu_base as *const SunxiH3CcuRegs) },
+impl H3Dramc {
+    #[must_use]
+    pub fn new_from_config(config: &'static H3DramcConfig) -> Self {
+        const H3_DRAMC_BASE: usize = 0x01c6_2000;
+        const H3_CCU_BASE: usize = 0x01c2_0000;
+        Self {
+            com: unsafe { &*(H3_DRAMC_BASE as *const SunxiH3DramComRegs) },
+            ctl: unsafe { &*((H3_DRAMC_BASE + 0x1000) as *const SunxiH3DramCtlRegs) },
+            ccu: unsafe { &*(H3_CCU_BASE as *const SunxiH3CcuRegs) },
             clock: config.clock,
             zq: config.zq,
             odt_en: config.odt_en,
@@ -719,49 +715,19 @@ impl Device for SunxiH3Dramc {
             page_size: Cell::new(0),
             row_bits: Cell::new(0),
             bank_bits: Cell::new(0),
-        })
+        }
     }
-
-    fn init(&mut self) -> Result<(), DeviceError> {
-        let variant_name = match self.variant {
-            SunxiDramcVariant::H3 => "H3",
-            SunxiDramcVariant::H5 => "H5",
-        };
-        fstart_log::info!("DRAM: starting {} DesignWare init", variant_name);
-
+    pub fn dram_init(&mut self) -> Result<u64, ServiceError> {
         let size = self.sunxi_dram_init();
         if size == 0 {
-            fstart_log::error!("DRAM: init failed");
-            return Err(DeviceError::InitFailed);
+            return Err(ServiceError::HardwareError);
         }
-
-        fstart_log::info!("DRAM: {}MB", (size >> 20) as u32);
         self.detected_size.set(size);
-        Ok(())
+        Ok(size)
     }
-}
-
-// ===================================================================
-// MemoryController trait
-// ===================================================================
-
-impl MemoryController for SunxiH3Dramc {
-    fn detected_size_bytes(&self) -> u64 {
+    #[must_use]
+    pub fn detected_size_bytes(&self) -> u64 {
         self.detected_size.get()
-    }
-
-    fn memory_test(&self) -> Result<(), ServiceError> {
-        let base = DRAM_BASE as *mut u32;
-        let patterns: [u32; 4] = [0xAAAA_AAAA, 0x5555_5555, 0x0000_0000, 0xFFFF_FFFF];
-        for (i, &pat) in patterns.iter().enumerate() {
-            let addr = unsafe { base.add(i * 1024) };
-            unsafe { core::ptr::write_volatile(addr, pat) };
-            let read = unsafe { core::ptr::read_volatile(addr) };
-            if read != pat {
-                return Err(ServiceError::HardwareError);
-            }
-        }
-        Ok(())
     }
 }
 
@@ -769,7 +735,7 @@ impl MemoryController for SunxiH3Dramc {
 // Top-level init — faithful port of U-Boot sunxi_dram_init()
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// Top-level DRAM init. Returns detected size in bytes, or 0 on failure.
     ///
     /// Faithful port of U-Boot `sunxi_dram_init()` (H3 path).
@@ -834,7 +800,7 @@ impl SunxiH3Dramc {
 // mctl_sys_init — exact U-Boot sequence
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// System init: configure clocks and release DRAM controller from reset.
     ///
     /// Exact port of U-Boot `mctl_sys_init()` (H3 path).
@@ -933,7 +899,7 @@ impl SunxiH3Dramc {
 // mctl_channel_init — exact U-Boot sequence
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// Channel init: PHY configuration, timing, training, ZQ calibration.
     ///
     /// Returns 0 on success, 1 on failure.
@@ -1148,7 +1114,7 @@ impl SunxiH3Dramc {
 // Timing parameters — exact port of U-Boot ddr3_1333.c
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// Set DDR3-1333 timing parameters.
     ///
     /// Exact port of U-Boot `mctl_set_timing_params()` for DDR3-1333.
@@ -1279,7 +1245,7 @@ impl SunxiH3Dramc {
 // PHY init
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// Trigger PHY initialization and wait for completion.
     ///
     /// U-Boot: writel(val | PIR_INIT, &mctl_ctl->pir);
@@ -1301,7 +1267,7 @@ impl SunxiH3Dramc {
 // ZQ calibration quirk — exact U-Boot port
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// H3-specific ZQ calibration quirk.
     ///
     /// Exact port of U-Boot `mctl_h3_zq_calibration_quirk()`.
@@ -1382,7 +1348,7 @@ impl SunxiH3Dramc {
 // Bit delays — exact U-Boot port
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// Set per-byte-lane DQ bit delays and AC delays.
     ///
     /// Exact port of U-Boot `mctl_set_bit_delays()`.
@@ -1424,7 +1390,7 @@ impl SunxiH3Dramc {
 // MBUS master priority — exact U-Boot port
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// Configure a single MBUS port.
     ///
     /// Exact port of U-Boot `mbus_configure_port()`.
@@ -1517,7 +1483,7 @@ impl SunxiH3Dramc {
 // CR (control register) helpers
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// Set DRAM control register (CR) with given parameters.
     ///
     /// Exact port of U-Boot `mctl_set_cr()` (H3 DDR3 path).
@@ -1611,7 +1577,7 @@ fn fls(mut x: u32) -> u32 {
 // Auto-detect DRAM size — exact U-Boot port
 // ===================================================================
 
-impl SunxiH3Dramc {
+impl H3Dramc {
     /// Check if memory at `offset` aliases to base address.
     ///
     /// Exact port of U-Boot `mctl_mem_matches_base()`.

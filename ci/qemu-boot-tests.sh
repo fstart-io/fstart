@@ -130,6 +130,26 @@ run_boot qemu-armv7 halt 'ramstage: ready for payload'
 run_boot qemu-armv7 linux FSTART_CI_BOOT_SUCCESS \
 	--kernel "$ASSET_DIR/zImage-armv7"
 
+# TF-A-first SBSA: fstart is BL33 in pflash1, entered NS from BL31.
+if [[ -f "$ASSET_DIR/sbsa-secure.pflash" ]]; then
+	run_boot qemu-sbsa halt 'qemu-sbsa ramstage: ready for payload' \
+		--secure-firmware "$ASSET_DIR/sbsa-secure.pflash"
+else
+	printf 'SKIP %-14s %-6s %s (no %s)\n' qemu-sbsa halt \
+		'qemu-sbsa ramstage: ready for payload' "$ASSET_DIR/sbsa-secure.pflash"
+fi
+
+# Orange Pi R1 (H2+) eGON SD boot on the QEMU orangepi-pc H3 machine.
+run_boot orangepi-r1 halt 'h3 mainstage: 1024 MiB DRAM'
+if [[ -f "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" ]]; then
+	cp "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" boards/orangepi-r1/
+	run_boot orangepi-r1 linux FSTART_CI_BOOT_SUCCESS \
+		--kernel "$ASSET_DIR/zImage-armv7"
+else
+	printf 'SKIP %-14s %-6s %s (no %s)\n' orangepi-r1 linux \
+		FSTART_CI_BOOT_SUCCESS "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb"
+fi
+
 if [[ $selected -eq 0 ]]; then
 	echo 'No boot tests selected.' >&2
 	exit 2

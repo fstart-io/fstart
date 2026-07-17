@@ -30,9 +30,59 @@ pub fn run(
     binary: &Path,
     disk: Option<&str>,
     memory: Option<&str>,
+    secure_firmware: Option<&str>,
 ) -> Result<(), String> {
+    let use_sbsa_ref = build_policy.qemu_machine == Some(QemuMachine::SbsaRef);
     let use_sifive_u = build_policy.qemu_machine == Some(QemuMachine::SifiveU);
-    let (qemu_bin, mut args) = if use_sifive_u {
+    let use_orangepi_pc = build_policy.qemu_machine == Some(QemuMachine::OrangePiPc);
+    let (qemu_bin, mut args) = if use_sbsa_ref {
+        if platform != Platform::Aarch64 {
+            return Err("QEMU sbsa-ref requires the aarch64 platform".to_string());
+        }
+        let secure = secure_firmware.ok_or_else(|| {
+            "QEMU sbsa-ref requires --secure-firmware (a complete 256 MiB TF-A pflash image)"
+                .to_string()
+        })?;
+        let secure_size = std::fs::metadata(secure)
+            .map_err(|e| format!("failed to read SBSA secure firmware: {e}"))?
+            .len();
+        const SBSA_PFLASH_SIZE: u64 = 256 * 1024 * 1024;
+        if secure_size != SBSA_PFLASH_SIZE {
+            return Err(format!(
+                "SBSA secure firmware is {secure_size} bytes; expected {SBSA_PFLASH_SIZE}"
+            ));
+        }
+        let non_secure = create_pflash_image(binary, SBSA_PFLASH_SIZE as usize)?;
+        (
+            find_qemu("qemu-system-aarch64"),
+            vec![
+                "-M".to_string(),
+                "sbsa-ref".to_string(),
+                "-cpu".to_string(),
+                "max".to_string(),
+                "-nographic".to_string(),
+                "-drive".to_string(),
+                format!("if=pflash,file={secure},format=raw,unit=0,readonly=on"),
+                "-drive".to_string(),
+                format!("if=pflash,file={},format=raw,unit=1", non_secure.display()),
+            ],
+        )
+    } else if use_orangepi_pc {
+        if platform != Platform::Armv7 {
+            return Err("QEMU orangepi-pc requires armv7".to_string());
+        }
+        let sd = create_sunxi_sd_image(binary)?;
+        (
+            find_qemu("qemu-system-arm"),
+            vec![
+                "-M".to_string(),
+                "orangepi-pc".to_string(),
+                "-nographic".to_string(),
+                "-sd".to_string(),
+                sd.display().to_string(),
+            ],
+        )
+    } else if use_sifive_u {
         if platform != Platform::Riscv64 {
             return Err("QEMU sifive_u requires the riscv64 platform".to_string());
         }
@@ -149,11 +199,15 @@ pub fn run(
         }
     };
 
-    if !use_sifive_u && !args.iter().any(|arg| arg == "-no-reboot") {
+    if !use_sbsa_ref
+        && !use_sifive_u
+        && !use_orangepi_pc
+        && !args.iter().any(|arg| arg == "-no-reboot")
+    {
         args.push("-no-reboot".to_string());
     }
 
-    if !use_sifive_u {
+    if !use_sbsa_ref && !use_sifive_u && !use_orangepi_pc {
         if let Some(mem) = memory {
             args.extend(["-m".to_string(), mem.to_string()]);
         }
@@ -577,4 +631,19 @@ mod tests {
 
         assert_eq!(&pflash[0x20..0x24], b"data");
     }
+}
+
+/// QEMU's H3 BROM reads eGON from SD byte 0x2000; provide a real-sized SD image.
+fn create_sunxi_sd_image(binary: &Path) -> Result<PathBuf, String> {
+    const SIZE: usize = 32 * 1024 * 1024;
+    const EGON_OFFSET: usize = 8 * 1024;
+    let image = std::fs::read(binary).map_err(|e| format!("failed to read eGON image: {e}"))?;
+    if image.len() > SIZE - EGON_OFFSET {
+        return Err("eGON image exceeds QEMU SD image".to_string());
+    }
+    let path = binary.with_extension("sunxi-sd.img");
+    let mut sd = vec![0u8; SIZE];
+    sd[EGON_OFFSET..EGON_OFFSET + image.len()].copy_from_slice(&image);
+    std::fs::write(&path, sd).map_err(|e| format!("failed to create Sunxi SD image: {e}"))?;
+    Ok(path)
 }

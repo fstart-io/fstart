@@ -7,9 +7,13 @@ extern crate alloc;
 extern crate ufmt;
 
 pub mod fw_cfg;
+pub mod sbsa;
 pub mod sifive_u;
 pub mod virt;
 
+pub use sbsa::QemuSbsaConfig;
+#[cfg(feature = "host")]
+pub use sbsa::{qemu_sbsa_build_policy, qemu_sbsa_memory, qemu_sbsa_stages};
 pub use sifive_u::QemuSifiveUConfig;
 #[cfg(feature = "host")]
 pub use sifive_u::{
@@ -32,6 +36,8 @@ pub mod virt_armv7;
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 pub mod virt_riscv64;
 
+#[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
+pub use sbsa::{QemuSbsa, QemuSbsaBoard, QemuSbsaMainstage};
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 pub use sifive_u::{
     QemuSifiveU, QemuSifiveUBoard, QemuSifiveUBuildSelectedPayload, QemuSifiveUHooks,

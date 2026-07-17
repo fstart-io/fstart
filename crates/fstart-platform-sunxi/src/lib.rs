@@ -10,3 +10,4 @@ extern crate ufmt;
 
 pub mod a20;
 pub mod egon;
+pub mod h3;

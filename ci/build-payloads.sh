@@ -114,6 +114,22 @@ make -C "$TFA_DIR" \
 cp "$TFA_DIR/build/qemu/release/bl31.bin" "$OUTPUT_DIR/bl31.bin"
 echo "  -> $OUTPUT_DIR/bl31.bin"
 
+# TF-A for QEMU sbsa-ref: BL1 + FIP in a 256 MiB secure pflash image.
+# PRELOADED_BL33_BASE defaults to 0x10000000 (pflash1 base) on qemu_sbsa,
+# which is where fbuild places the fstart XIP stage.
+make -C "$TFA_DIR" \
+	CROSS_COMPILE="$AARCH64_CROSS" \
+	OD="${AARCH64_CROSS}objdump" \
+	PLAT=qemu_sbsa \
+	all fip \
+	-j"$NPROC"
+
+SBSA_PFLASH="$OUTPUT_DIR/sbsa-secure.pflash"
+truncate -s 256M "$SBSA_PFLASH"
+dd if="$TFA_DIR/build/qemu_sbsa/release/bl1.bin" of="$SBSA_PFLASH" conv=notrunc status=none
+dd if="$TFA_DIR/build/qemu_sbsa/release/fip.bin" of="$SBSA_PFLASH" bs=4096 seek=$((0x12000 / 4096)) conv=notrunc status=none
+echo "  -> $SBSA_PFLASH"
+
 # ---------------------------------------------------------------------------
 # Tiny built-in initramfs used by QEMU boot tests
 # ---------------------------------------------------------------------------
@@ -318,9 +334,12 @@ build_kernel riscv "$RISCV64_CROSS" kernel-riscv64.config "$RISCV64_INITRAMFS" \
 build_kernel arm64 "$AARCH64_CROSS" kernel-aarch64.config "$AARCH64_INITRAMFS" \
 	"arch/arm64/boot/Image:Image-aarch64"
 
-# ARMv7 — zImage (compressed)
+# ARMv7 — zImage (compressed) + the Orange Pi R1 DTB for the sunxi boot test
 build_kernel arm "$ARM_CROSS" kernel-armv7.config "$ARM_INITRAMFS" \
 	"arch/arm/boot/zImage:zImage-armv7"
+make -C "$LINUX_DIR" ARCH=arm CROSS_COMPILE="$ARM_CROSS" dtbs
+cp "${LINUX_DIR}/arch/arm/boot/dts/allwinner/sun8i-h2-plus-orangepi-r1.dtb" "$OUTPUT_DIR/"
+echo "  -> ${OUTPUT_DIR}/sun8i-h2-plus-orangepi-r1.dtb"
 
 # ---------------------------------------------------------------------------
 echo ""

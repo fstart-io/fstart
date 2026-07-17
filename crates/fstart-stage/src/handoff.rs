@@ -50,17 +50,14 @@ pub fn try_deserialize(handoff_ptr: usize) -> Option<StageHandoff> {
     // the magic won't match and we return None.
     let buf = unsafe { core::slice::from_raw_parts(handoff_ptr as *const u8, HANDOFF_MAX_SIZE) };
 
-    // Quick magic check before attempting deserialization.
-    if buf.len() < 4 {
-        return None;
-    }
-    let magic = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-    if magic != HANDOFF_MAGIC {
-        return None;
-    }
-
+    // The struct is postcard-encoded, so the magic is a varint — it cannot
+    // be validated with a raw word read. Parse first (safe on garbage: the
+    // decode is bounded by the buffer), then check the decoded fields.
     let handoff: StageHandoff = postcard::from_bytes(buf).ok()?;
 
+    if handoff.magic != HANDOFF_MAGIC {
+        return None;
+    }
     if handoff.version != HANDOFF_VERSION {
         fstart_log::warn!(
             "handoff: version mismatch (got {}, expected {})",
@@ -71,4 +68,25 @@ pub fn try_deserialize(handoff_ptr: usize) -> Option<StageHandoff> {
     }
 
     Some(handoff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialize_round_trips_through_try_deserialize() {
+        let mut buf = [0u8; HANDOFF_MAX_SIZE];
+        let len = serialize(&StageHandoff::new(0x1000_0000), &mut buf).unwrap();
+        assert!(len > 0);
+        let got = try_deserialize(buf.as_ptr() as usize).expect("round trip");
+        assert_eq!(got.magic, HANDOFF_MAGIC);
+        assert_eq!(got.dram_size, 0x1000_0000);
+    }
+
+    #[test]
+    fn garbage_is_rejected() {
+        let buf = [0xc8u8; HANDOFF_MAX_SIZE];
+        assert!(try_deserialize(buf.as_ptr() as usize).is_none());
+    }
 }

@@ -1,17 +1,17 @@
 [package]
-name = "fstart-board-bananapi-m1"
+name = "fstart-board-orangepi-r1"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
 
 [package.metadata.fstart]
-board = "bananapi-m1"
+board = "orangepi-r1"
 platform = "armv7"
 target = "armv7a-none-eabi"
 stage-bin = "fstart-stage"
 features = [
-  "allwinner-a20",
+  "allwinner-h3",
 ]
 
 [features]
@@ -33,7 +33,7 @@ lz4 = ["fstart-stage?/lz4"]
 fdt = ["fstart-stage?/fdt"]
 linux = ["fstart-stage?/linux", "fstart-platform-sunxi/linux"]
 handoff = ["fstart-stage?/handoff"]
-allwinner-a20 = ["fstart-platform-sunxi/a20"]
+allwinner-h3 = ["fstart-platform-sunxi/h3"]
 
 [dependencies]
 fstart-core = { path = "../../crates/fstart-core" }

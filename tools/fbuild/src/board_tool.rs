@@ -41,6 +41,9 @@ enum Command {
         disk: Option<String>,
         #[arg(short, long)]
         memory: Option<String>,
+        /// Complete secure pflash image used only by QEMU SBSA-ref.
+        #[arg(long)]
+        secure_firmware: Option<String>,
     },
     Test,
     Assemble {
@@ -101,6 +104,7 @@ pub fn main(callbacks: BoardCallbacks) {
             fit,
             disk,
             memory,
+            secure_firmware,
         } => run(
             callbacks,
             release,
@@ -110,8 +114,9 @@ pub fn main(callbacks: BoardCallbacks) {
             fit.as_deref(),
             disk.as_deref(),
             memory.as_deref(),
+            secure_firmware.as_deref(),
         ),
-        Command::Test => run(callbacks, true, None, None, None, None, None, None),
+        Command::Test => run(callbacks, true, None, None, None, None, None, None, None),
         Command::Assemble {
             release,
             payload,
@@ -349,6 +354,7 @@ fn run(
     fit: Option<&str>,
     disk: Option<&str>,
     memory: Option<&str>,
+    secure_firmware: Option<&str>,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
     let (manifest, parsed) = load(callbacks, payload)?;
@@ -378,7 +384,14 @@ fn run(
             firmware,
             fit,
         )?;
-        crate::qemu::run(&build_policy, platform, &image_path, disk, memory)
+        crate::qemu::run(
+            &build_policy,
+            platform,
+            &image_path,
+            disk,
+            memory,
+            secure_firmware,
+        )
     } else {
         let res =
             crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
@@ -388,6 +401,7 @@ fn run(
             &res.primary_binary().run_path,
             disk,
             memory,
+            secure_firmware,
         )
     }
 }

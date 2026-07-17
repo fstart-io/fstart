@@ -189,6 +189,10 @@ pub struct BoardBuildPolicy {
 pub enum QemuMachine {
     /// SiFive FU740-compatible `sifive_u` machine, booted through `-bios`.
     SifiveU,
+    /// Allwinner H3 `orangepi-pc` machine, booted from SD eGON at 8 KiB.
+    OrangePiPc,
+    /// Arm SBSA reference platform, booted TF-A-first from two pflash banks.
+    SbsaRef,
 }
 
 /// Board/platform-owned firmware-image mapping policy for host tooling.

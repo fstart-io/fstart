@@ -8,6 +8,8 @@ publish = false
 
 [features]
 default = []
+a20 = []
+h3 = []
 host = []
 linux = ["fstart-stage?/linux"]
 stage = [

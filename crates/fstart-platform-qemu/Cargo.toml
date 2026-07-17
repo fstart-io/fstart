@@ -17,6 +17,7 @@ aarch64 = ["fstart-arch/aarch64", "fstart-stage?/aarch64"]
 armv7 = ["fstart-arch/armv7", "fstart-stage?/armv7"]
 linux = ["fstart-stage?/linux"]
 crabefi = ["fstart-stage?/crabefi"]
+smbios = ["fstart-stage?/smbios"]
 
 [dependencies]
 fstart-core = { workspace = true }

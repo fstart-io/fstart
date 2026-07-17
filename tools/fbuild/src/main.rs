@@ -36,6 +36,9 @@ enum Command {
         disk: Option<String>,
         #[arg(short, long)]
         memory: Option<String>,
+        /// Complete secure pflash image used only by QEMU SBSA-ref.
+        #[arg(long)]
+        secure_firmware: Option<String>,
     },
     Test {
         #[arg(short, long)]
@@ -159,6 +162,7 @@ fn board_tool_run_args(
     fit: Option<String>,
     disk: Option<String>,
     memory: Option<String>,
+    secure_firmware: Option<String>,
 ) -> Vec<String> {
     let mut args = board_tool_assemble_args(subcommand, release, payload, kernel, firmware, fit);
     if let Some(disk) = disk {
@@ -168,6 +172,10 @@ fn board_tool_run_args(
     if let Some(memory) = memory {
         args.push("--memory".to_string());
         args.push(memory);
+    }
+    if let Some(secure_firmware) = secure_firmware {
+        args.push("--secure-firmware".to_string());
+        args.push(secure_firmware);
     }
     args
 }
@@ -216,9 +224,20 @@ fn main() {
             fit,
             disk,
             memory,
+            secure_firmware,
         } => dispatch_board_host(
             &board,
-            &board_tool_run_args("run", release, payload, kernel, firmware, fit, disk, memory),
+            &board_tool_run_args(
+                "run",
+                release,
+                payload,
+                kernel,
+                firmware,
+                fit,
+                disk,
+                memory,
+                secure_firmware,
+            ),
         ),
         Command::Test { board } => dispatch_board_host(&board, &["test".into()]),
         Command::Assemble {

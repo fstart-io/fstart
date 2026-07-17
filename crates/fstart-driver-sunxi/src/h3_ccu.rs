@@ -14,17 +14,13 @@
 //! The H3 CCU register block is at `0x01C2_0000`.
 //! The PIO (GPIO) register block is at `0x01C2_0800`.
 
-#![no_std]
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
 
+use crate::ccu_regs::{SunxiH3CcuRegs, H3_CCU_SEC_SWITCH};
+use fstart_arch::{sdelay, set_cntfrq};
+use fstart_core::services::ServiceError;
+use fstart_core::{mmio, mmio32, Mmio32, MmioAddr};
 use tock_registers::interfaces::{Readable, Writeable};
-
-use fstart_services::device::{Device, DeviceError};
-use fstart_services::{ClockController, ServiceError};
-
-use fstart_sunxi_ccu_regs::{SunxiH3CcuRegs, H3_CCU_SEC_SWITCH};
-
-use fstart_arch::sdelay;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -116,46 +112,44 @@ const UART0_RX_FUNC: u8 = 2;
 /// Typed configuration for the H3/H2+ CCU driver.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SunxiH3CcuConfig {
-    /// CCU register base address (typically `0x01C2_0000`).
-    pub ccu_base: u64,
-    /// PIO (GPIO) register base address (typically `0x01C2_0800`).
-    pub pio_base: u64,
-    /// UART index to configure (0-based).
+pub struct H3CcuConfig {
     pub uart_index: u8,
 }
+impl H3CcuConfig {
+    #[must_use]
+    pub const fn new(uart_index: u8) -> Self {
+        Self { uart_index }
+    }
+}
+pub const H3_SRAM_BASE: u64 = 0x0000_0000;
+pub const H3_EGON_MMC_OFFSET: u64 = 8192;
+pub const H3_CCU_BASE: u64 = 0x01c2_0000;
+pub const H3_PIO_BASE: u64 = 0x01c2_0800;
+pub const H3_UART0_BASE: u64 = 0x01c2_8000;
 
 /// Allwinner H3/H2+ Clock Control Unit + GPIO pin mux driver.
-pub struct SunxiH3Ccu {
+pub struct H3Ccu {
     ccu: &'static SunxiH3CcuRegs,
-    ccu_base: usize,
-    pio_base: usize,
+
     uart_index: u8,
 }
 
 // SAFETY: MMIO registers are at fixed hardware addresses from the board metadata.
-unsafe impl Send for SunxiH3Ccu {}
-unsafe impl Sync for SunxiH3Ccu {}
+unsafe impl Send for H3Ccu {}
+unsafe impl Sync for H3Ccu {}
 
-impl SunxiH3Ccu {
+impl H3Ccu {
     /// Write to a timer register (at CCU base + offset).
     #[inline(always)]
     fn timer_write(&self, offset: usize, val: u32) {
-        unsafe { fstart_mmio::write32((self.ccu_base + offset) as *mut u32, val) }
+        unsafe { mmio::write32((H3_CCU_BASE as usize + offset) as *mut u32, val) }
     }
 
     /// Read-modify-write: set bits in a raw u32 register.
     #[inline(always)]
-    fn set_bits_raw(&self, reg: &fstart_mmio::MmioReadWrite<u32>, bits: u32) {
+    fn set_bits_raw(&self, reg: &fstart_core::mmio::MmioReadWrite<u32>, bits: u32) {
         let val = reg.get();
         reg.set(val | bits);
-    }
-
-    /// Read-modify-write: clear bits in a raw u32 register.
-    #[inline(always)]
-    fn clear_bits_raw(&self, reg: &fstart_mmio::MmioReadWrite<u32>, bits: u32) {
-        let val = reg.get();
-        reg.set(val & !bits);
     }
 
     /// Step 0: Start hardware timer 0 — matches U-Boot `timer_init()`.
@@ -274,63 +268,33 @@ impl SunxiH3Ccu {
             return;
         }
 
-        let pio = fstart_sunxi_pio::SunxiPio::new(self.pio_base, fstart_sunxi_pio::PioGen::Legacy);
-        pio.set_function(fstart_sunxi_pio::PORT_A, 4, UART0_TX_FUNC);
-        pio.set_function(fstart_sunxi_pio::PORT_A, 5, UART0_RX_FUNC);
-        pio.set_pull(fstart_sunxi_pio::PORT_A, 5, fstart_sunxi_pio::Pull::Up);
+        let pio = crate::pio::SunxiPio::new(mmio32(H3_PIO_BASE), crate::pio::PioGen::Legacy);
+        pio.set_function(crate::pio::PORT_A, 4, UART0_TX_FUNC);
+        pio.set_function(crate::pio::PORT_A, 5, UART0_RX_FUNC);
+        pio.set_pull(crate::pio::PORT_A, 5, crate::pio::Pull::Up);
     }
 }
 
-impl Device for SunxiH3Ccu {
-    const NAME: &'static str = "sunxi-h3-ccu";
-    const COMPATIBLE: &'static [&'static str] = &["allwinner,sun8i-h3-ccu"];
-    type Config = SunxiH3CcuConfig;
-
-    fn new(config: SunxiH3CcuConfig) -> Result<Self, DeviceError> {
-        Ok(Self {
-            // SAFETY: addresses come from the board metadata, validated by board construction.
-            ccu: unsafe { &*(config.ccu_base as *const SunxiH3CcuRegs) },
-            ccu_base: config.ccu_base as usize,
-            pio_base: config.pio_base as usize,
+impl H3Ccu {
+    #[must_use]
+    pub fn new_from_config(config: &'static H3CcuConfig) -> Self {
+        Self {
+            ccu: unsafe { &*(H3_CCU_BASE as *const SunxiH3CcuRegs) },
             uart_index: config.uart_index,
-        })
+        }
     }
-
-    fn init(&mut self) -> Result<(), DeviceError> {
+    #[must_use]
+    pub const fn uart0_addr() -> MmioAddr<Mmio32> {
+        mmio32(H3_UART0_BASE)
+    }
+    pub fn init_early(&self) -> Result<(), ServiceError> {
         self.timer_init();
         self.clock_init_safe();
         self.clock_init_sec();
-
-        // Program the ARM Generic Timer frequency register (CNTFRQ).
-        // The H3's Generic Timer is clocked from OSC24M. The BROM
-        // leaves CNTFRQ at 0. Must be done from secure mode (we are).
-        fstart_arch::set_cntfrq(OSC24M_FREQ);
-
+        set_cntfrq(OSC24M_FREQ);
         self.clock_init_uart();
         self.gpio_init_uart();
-
         sdelay(10_000);
-
         Ok(())
-    }
-}
-
-impl ClockController for SunxiH3Ccu {
-    fn enable_clock(&self, gate_id: u32) -> Result<(), ServiceError> {
-        self.set_bits_raw(&self.ccu.bus_gate3, 1 << gate_id);
-        Ok(())
-    }
-
-    fn disable_clock(&self, gate_id: u32) -> Result<(), ServiceError> {
-        self.clear_bits_raw(&self.ccu.bus_gate3, 1 << gate_id);
-        Ok(())
-    }
-
-    fn get_frequency(&self, clock_id: u32) -> Result<u32, ServiceError> {
-        match clock_id {
-            0 => Ok(24_000_000),  // OSC24M
-            1 => Ok(600_000_000), // PLL6 (PERIPH0)
-            _ => Err(ServiceError::NotSupported),
-        }
     }
 }

@@ -427,7 +427,12 @@ fstart_aarch64_entry:
     orr x2, x2, #3            // valid=1, table=1
     str x2, [x1, #8]
 
-    // L0[2] and L0[3] stay zero (invalid) — not needed
+    // L0[2] → L1_TB (covers 1TB - 1.5TB — QEMU sbsa-ref DRAM base)
+    ldr x2, =MMU_L1_TB_TABLE
+    orr x2, x2, #3            // valid=1, table=1
+    str x2, [x1, #16]
+
+    // L0[3] stays zero (invalid) — not needed
 
     // === L1_LOW: covers 0 - 512GB (entries 0-511, 1GB each) ===
     ldr x1, =MMU_L1_TABLE
@@ -486,6 +491,22 @@ fstart_aarch64_entry:
     add x4, x4, #1
     cmp x4, #256               // first 256GB of this L0 entry
     b.lt 7b
+
+    // === L1_TB: covers 1TB - 1.5TB (QEMU sbsa-ref DRAM at 0x100_0000_0000) ===
+    // Map the first 8 GiB as Normal WB RAM; sbsa-ref has 1 GiB by default.
+    ldr x1, =MMU_L1_TB_TABLE
+    ldr x6, =(1 | (4 << 2) | (3 << 8) | (1 << 10))   // Normal WB block low bits
+    mov x4, #0
+8:
+    mov x2, #0x400            // 0x400 << 30 = 0x10000000000 (1 TiB)
+    add x2, x2, x4
+    lsl x2, x2, #30
+    orr x2, x2, x6
+    lsl x3, x4, #3
+    str x2, [x1, x3]
+    add x4, x4, #1
+    cmp x4, #8
+    b.lt 8b
 
     // TTBR0_EL1 = L0 table base (not L1!)
     ldr x0, =MMU_L0_TABLE
@@ -560,6 +581,11 @@ static mut MMU_L1_TABLE: PageTable = PageTable([0u64; 512]);
 #[no_mangle]
 #[link_section = ".page_tables"]
 static mut MMU_L1_HIGH_TABLE: PageTable = PageTable([0u64; 512]);
+
+/// L1 table for 1 TiB–1.5 TiB — QEMU sbsa-ref DRAM lives at 1 TiB.
+#[no_mangle]
+#[link_section = ".page_tables"]
+static mut MMU_L1_TB_TABLE: PageTable = PageTable([0u64; 512]);
 
 // AArch64 platform support.
 //

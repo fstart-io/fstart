@@ -71,7 +71,10 @@ impl SifiveUart {
     fn write(&self, offset: usize, value: u32) {
         // SAFETY: board-owned typed MMIO configuration names this UART block.
         unsafe {
-            fstart_core::mmio::write32((self.config.base.raw() as usize + offset) as *mut u32, value)
+            fstart_core::mmio::write32(
+                (self.config.base.raw() as usize + offset) as *mut u32,
+                value,
+            )
         }
     }
 
