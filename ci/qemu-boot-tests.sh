@@ -15,6 +15,10 @@ if [[ $# -gt 0 && $1 != --* ]]; then
 	shift
 fi
 
+# x86_64 GRUB/Linux disk assets (ci/build-boot-assets.sh + create-grub-linux-disk.sh).
+# The uefi-disk entry is skipped when the disk image is absent.
+X86_ASSET_DIR="${QEMU_BOOT_X86_ASSETS:-boot-assets/x86_64}"
+
 BOOT_TIMEOUT="${QEMU_BOOT_TIMEOUT:-120s}"
 LOG_DIR="${QEMU_BOOT_LOG_DIR:-target/qemu-boot-tests}"
 board_filters=()
@@ -70,10 +74,13 @@ run_boot() {
 	matches_filter "$payload" "${payload_filters[@]}" || return 0
 	selected=$((selected + 1))
 
+	# The matrix label may carry a variant suffix (uefi-disk); fbuild only
+	# sees the payload kind before the first dash.
+	local payload_arg="${payload%%-*}"
 	local log="$LOG_DIR/${board}-${payload}.log"
 	local -a command=(
 		timeout --kill-after=10s "$BOOT_TIMEOUT"
-		cargo run -q -p fbuild -- run --board "$board" --release --payload "$payload"
+		cargo run -q -p fbuild -- run --board "$board" --release --payload "$payload_arg"
 	)
 	command+=("$@")
 
@@ -94,6 +101,14 @@ run_boot() {
 
 run_boot qemu-q35 halt 'ramstage: ready for payload'
 run_boot qemu-q35 uefi 'Boot manager finished'
+# Full boot chain: fstart -> CrabEFI -> GRUB (ESP) -> Linux -> u-root init.
+if [[ -f "$X86_ASSET_DIR/disk.img" ]]; then
+	run_boot qemu-q35 uefi-disk UROOT_BOOT_SUCCESS \
+		--disk "$X86_ASSET_DIR/disk.img"
+else
+	printf 'SKIP %-14s %-6s %s (no %s)\n' qemu-q35 uefi-disk \
+		UROOT_BOOT_SUCCESS "$X86_ASSET_DIR/disk.img"
+fi
 
 run_boot qemu-riscv64 halt 'ramstage: ready for payload'
 run_boot qemu-riscv64 linux FSTART_CI_BOOT_SUCCESS \

@@ -78,10 +78,13 @@ if [[ ! -f "$OUTPUT_DIR/initramfs.cpio" ]]; then
 		rm -rf "$UROOT_DIR"
 	}
 	trap uroot_cleanup EXIT
-	git clone --depth 1 -q https://github.com/u-root/u-root.git "$UROOT_DIR/src"
+	# Fetch the pinned commit directly; a depth-1 clone of HEAD drifts as
+	# upstream moves and used to fail the ref check silently under set -e.
+	git init -q "$UROOT_DIR/src"
+	git -C "$UROOT_DIR/src" remote add origin https://github.com/u-root/u-root.git
+	git -C "$UROOT_DIR/src" fetch -q --depth 1 origin "$UROOT_REF"
+	git -C "$UROOT_DIR/src" checkout -q FETCH_HEAD
 	(cd "$UROOT_DIR/src" &&
-		actual_ref="$(git rev-parse HEAD)" &&
-		[[ "$actual_ref" == "$UROOT_REF" ]] &&
 		go build -o "$UROOT_DIR/bin/u-root" .)
 	(cd "$UROOT_DIR/src" &&
 		GOARCH=amd64 "$UROOT_DIR/bin/u-root" \

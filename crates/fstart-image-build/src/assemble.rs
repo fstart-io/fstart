@@ -1503,6 +1503,19 @@ fn assemble_linux_payload(
         if k_path.exists() {
             let kernel_data =
                 fs::read(k_path).map_err(|e| format!("failed to read kernel blob: {e}"))?;
+            // Kernel blobs are stored verbatim and the platform jumps to the
+            // configured kernel_addr, so an ELF (vmlinux) would have its ELF
+            // header executed — a silent hang at boot. Require flat images.
+            if payload.kind == fstart_core::PayloadKind::LinuxBoot
+                && kernel_data.starts_with(b"\x7fELF")
+            {
+                return Err(format!(
+                    "kernel blob {} is an ELF (vmlinux); Linux payloads are loaded \
+                     verbatim at kernel_addr, so pass a flat kernel image instead \
+                     (Image / zImage / bzImage), or use a FIT payload",
+                    k_path.display()
+                ));
+            }
             let kernel_load_addr = payload.kernel_load_addr.unwrap_or(0);
             let kernel_name = payload
                 .kernel_file
