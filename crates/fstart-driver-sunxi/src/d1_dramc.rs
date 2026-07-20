@@ -1,3 +1,6 @@
+#![allow(clippy::identity_op)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_range_loop)]
 //! Allwinner D1/T113 (sun20i) DRAM controller driver.
 //!
 //! Performs full DDR3 DRAM initialization: PLL_DDR0 setup, PHY training,
@@ -13,14 +16,6 @@
 //! - SYS_CFG:   `0x0300_0150` (DRAM LDO voltage)
 //! - SID:       `0x0300_6000` (eFuse for AC remapping / LDO cal)
 //! - DRAM physical base: `0x4000_0000`
-
-#![no_std]
-#![allow(clippy::identity_op)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::needless_range_loop)]
-
-use fstart_services::device::{Device, DeviceError};
-use fstart_services::MemoryController;
 
 use fstart_arch::udelay;
 use fstart_log::{info, warn};
@@ -211,14 +206,14 @@ fn ns_to_t(ns: u32, dram_clk: u32) -> u32 {
 fn read32(addr: usize) -> u32 {
     // SAFETY: addr is a valid MMIO register at a fixed hardware address
     // within the D1's memory-mapped register space.
-    unsafe { fstart_mmio::read32(addr as *const u32) }
+    unsafe { fstart_core::mmio::read32(addr as *const u32) }
 }
 
 #[inline(always)]
 fn write32(addr: usize, val: u32) {
     // SAFETY: addr is a valid MMIO register at a fixed hardware address
     // within the D1's memory-mapped register space.
-    unsafe { fstart_mmio::write32(addr as *mut u32, val) }
+    unsafe { fstart_core::mmio::write32(addr as *mut u32, val) }
 }
 
 /// Set bits in an MMIO register (read-modify-write).
@@ -285,7 +280,7 @@ fn poll_reg(addr: usize, mask: u32, expected: u32) -> bool {
 /// Parameters from U-Boot defconfig (MangoPi MQ-R / Lichee RV defaults).
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SunxiD1DramcConfig {
+pub struct D1DramcConfig {
     /// DRAM clock frequency in MHz (e.g., 792).
     pub dram_clk: u32,
     /// DRAM type: 2=DDR2, 3=DDR3, 6=LPDDR2, 7=LPDDR3.
@@ -316,19 +311,19 @@ struct DramConfig {
 }
 
 /// Allwinner D1/T113 DRAM controller driver.
-pub struct SunxiD1Dramc {
-    config: SunxiD1DramcConfig,
+pub struct D1Dramc {
+    config: D1DramcConfig,
 }
 
 // SAFETY: no mutable state after init; MMIO is at fixed hardware addresses.
-unsafe impl Send for SunxiD1Dramc {}
-unsafe impl Sync for SunxiD1Dramc {}
+unsafe impl Send for D1Dramc {}
+unsafe impl Sync for D1Dramc {}
 
 // ---------------------------------------------------------------------------
 // DRAM initialization implementation
 // ---------------------------------------------------------------------------
 
-impl SunxiD1Dramc {
+impl D1Dramc {
     /// Set DRAM LDO voltage.
     fn dram_voltage_set(&self) {
         let vol: u32 = match self.config.dram_type {
@@ -1205,31 +1200,23 @@ impl SunxiD1Dramc {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Device trait implementation
-// ---------------------------------------------------------------------------
-
-impl Device for SunxiD1Dramc {
-    const NAME: &'static str = "sunxi-d1-dramc";
-    const COMPATIBLE: &'static [&'static str] = &["allwinner,sun20i-d1-mbus"];
-    type Config = SunxiD1DramcConfig;
-
-    fn new(config: SunxiD1DramcConfig) -> Result<Self, DeviceError> {
-        Ok(Self { config })
+impl D1Dramc {
+    /// Construct the DRAM controller driver from its board policy.
+    #[must_use]
+    pub const fn new_from_config(config: &D1DramcConfig) -> Self {
+        Self { config: *config }
     }
 
-    fn init(&mut self) -> Result<(), DeviceError> {
+    /// Run full DDR3 init; returns the detected DRAM size in bytes.
+    ///
+    /// # Errors
+    /// Returns `Err` when training fails or no memory is detected.
+    pub fn dram_init(&mut self) -> Result<u64, fstart_core::services::ServiceError> {
         let mem_mb = self.init_dram();
         if mem_mb == 0 {
-            return Err(DeviceError::InitFailed);
+            return Err(fstart_core::services::ServiceError::HardwareError);
         }
         info!("DRAM: {} MB (DDR3, {} MHz)", mem_mb, self.config.dram_clk);
-        Ok(())
-    }
-}
-
-impl MemoryController for SunxiD1Dramc {
-    fn detected_size_bytes(&self) -> u64 {
-        self.dramc_get_dram_size() as u64 * 1024 * 1024
+        Ok(u64::from(mem_mb) * 1024 * 1024)
     }
 }

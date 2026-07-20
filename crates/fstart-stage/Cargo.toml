@@ -9,6 +9,8 @@ default = []
 armv7 = ["fstart-arch/armv7"]
 aarch64 = ["fstart-arch/aarch64"]
 aarch64-el2-relocate-entry = ["fstart-arch/aarch64-el2-relocate-entry"]
+aarch64-sunxi-rmr-entry = ["fstart-arch/aarch64-sunxi-rmr-entry"]
+riscv64-sunxi-entry = ["fstart-arch/riscv64-sunxi-entry"]
 riscv64 = ["fstart-arch/riscv64"]
 x86_64 = ["fstart-arch/x86_64"]
 

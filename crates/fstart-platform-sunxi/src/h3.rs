@@ -19,6 +19,8 @@ pub struct H3Config {
     pub mmc0: H3MmcConfig,
     pub mainstage_load_addr: u64,
     pub handoff_addr: u64,
+    /// SRAM base the BROM loads the eGON image to (0x0 on H3, 0x10000 on H5).
+    pub sram_base: u64,
     /// Kernel command line patched into the FDT chosen node for Linux boot.
     pub bootargs: &'static str,
     /// DRAM scratch address the patched FDT is written to (0 = no patching).
@@ -35,9 +37,17 @@ impl H3Config {
             mmc0: H3MmcConfig::new(H3MmcController::Mmc0),
             mainstage_load_addr,
             handoff_addr,
+            sram_base: 0,
             bootargs: "",
             fdt_dst_addr: 0,
         }
+    }
+
+    /// Set the SRAM base the BROM loads the eGON image to (H5: 0x10000).
+    #[must_use]
+    pub const fn sram_base(mut self, sram_base: u64) -> Self {
+        self.sram_base = sram_base;
+        self
     }
 
     /// Set the Linux kernel command line.
@@ -100,7 +110,9 @@ impl H3Config {
         match self.mmc0.controller {
             H3MmcController::Mmc0 => {}
         }
-        if self.dram.clock < 24 || self.dram.clock > 600 {
+        // H3 boards train up to ~600 MHz; the H5 variant's known-good
+        // policy is 672 MHz (Orange Pi PC2).
+        if self.dram.clock < 24 || self.dram.clock > 768 {
             panic!("H3 DRAM clock is unusable");
         }
         if self.dram.zq == 0 {
@@ -121,21 +133,26 @@ const fn in_h3_dram_end(addr: u64, size: u64) -> bool {
     }
 }
 
-#[cfg(all(feature = "stage", feature = "h3", target_arch = "arm"))]
+#[cfg(all(
+    feature = "stage",
+    feature = "h3",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 mod stage {
     use super::*;
     use fstart_core::services::ServiceError;
-    use fstart_driver_sunxi::h3_ccu::{H3Ccu, H3_EGON_MMC_OFFSET, H3_SRAM_BASE};
+    use fstart_driver_sunxi::h3_ccu::{H3Ccu, H3_EGON_MMC_OFFSET};
     use fstart_driver_sunxi::h3_dramc::H3Dramc;
     use fstart_driver_sunxi::h3_mmc::H3Mmc;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
 
-    #[cfg(feature = "linux")]
+    #[cfg(all(feature = "linux", target_arch = "arm"))]
     use crate::egon::ffs_total_size_at;
     use crate::egon::{boot_device_at, next_stage_offset_at, next_stage_size_at, BootDevice};
 
     /// BROM state retained so a Sunxi stage can return to FEL.
+    #[cfg(target_arch = "arm")]
     #[repr(C)]
     pub struct FelStash {
         pub sp: u32,
@@ -145,6 +162,7 @@ mod stage {
         pub vbar: u32,
     }
 
+    #[cfg(target_arch = "arm")]
     core::arch::global_asm!(
         r#"
         .section .text.entry
@@ -182,6 +200,7 @@ fstart_sunxi_fel_stash:
         "#
     );
 
+    #[cfg(target_arch = "arm")]
     unsafe extern "C" {
         #[link_name = "fstart_sunxi_fel_stash"]
         static FEL_STASH: FelStash;
@@ -190,8 +209,12 @@ fstart_sunxi_fel_stash:
 
     /// Return to the BROM FEL handler saved by the pre-stack entry hook.
     ///
+    /// AArch64 sunxi FEL return (RMR switch back to AArch32) is not
+    /// implemented; the stash is saved by the RMR entry but unused.
+    ///
     /// # Safety
     /// Must be called only after the Sunxi entry hook saved valid BROM state.
+    #[cfg(target_arch = "arm")]
     pub unsafe fn return_to_fel() -> ! {
         // SAFETY: the pre-stack hook initializes this before Rust is entered.
         unsafe { fstart_return_to_fel(FEL_STASH.sp, FEL_STASH.lr) }
@@ -315,13 +338,13 @@ fstart_sunxi_fel_stash:
     /// The common `LinuxPayload` launcher boots from memory-mapped firmware;
     /// H3 boards load the FFS from MMC, so the platform owns this launcher
     /// behind the same `MainstagePayload` contract.
-    #[cfg(feature = "linux")]
+    #[cfg(all(feature = "linux", target_arch = "arm"))]
     pub struct H3LinuxPayload;
 
-    #[cfg(feature = "linux")]
+    #[cfg(all(feature = "linux", target_arch = "arm"))]
     impl fstart_stage::payload::MainstagePayload<H3Mainstage> for H3LinuxPayload {
         fn boot(devices: H3Mainstage) -> ! {
-            let ffs_size = ffs_total_size_at(H3_SRAM_BASE as usize) as usize;
+            let ffs_size = ffs_total_size_at(devices.config.sram_base as usize) as usize;
             let mut boot =
                 fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(H3_EGON_MMC_OFFSET, 0);
             let anchor = fstart_stage::fstart_anchor_bytes();
@@ -369,8 +392,13 @@ fstart_sunxi_fel_stash:
     }
 
     /// Payload launcher selected by fbuild features for H3 boards.
-    #[cfg(feature = "linux")]
+    #[cfg(all(feature = "linux", target_arch = "arm"))]
     pub type H3BuildSelectedPayload = H3LinuxPayload;
+
+    /// AArch64 sunxi (H5) Linux boot needs BL31 staging before the kernel
+    /// jump; halt until a hardware-validated board needs it.
+    #[cfg(all(feature = "linux", target_arch = "aarch64"))]
+    pub type H3BuildSelectedPayload = fstart_stage::payload::HaltPayload;
 
     /// Payload launcher used when fbuild selected no payload backend.
     #[cfg(not(feature = "linux"))]
@@ -457,13 +485,14 @@ fstart_sunxi_fel_stash:
 
         let mut mmc0 = H3Mmc::new_from_config(&config.mmc0);
         mmc0.init()?;
-        if boot_device_at(H3_SRAM_BASE as usize) != BootDevice::Mmc0 {
+        let sram_base = config.sram_base as usize;
+        if boot_device_at(sram_base) != BootDevice::Mmc0 {
             fstart_log::error!("h3: only eGON MMC0 boot is supported");
             return Err(ServiceError::NotSupported);
         }
 
-        let next_stage_offset = u64::from(next_stage_offset_at(H3_SRAM_BASE as usize));
-        let next_stage_size = next_stage_size_at(H3_SRAM_BASE as usize) as usize;
+        let next_stage_offset = u64::from(next_stage_offset_at(sram_base));
+        let next_stage_size = next_stage_size_at(sram_base) as usize;
         validate_next_stage(config.mainstage_load_addr, next_stage_size, dram_size)?;
         let offset = H3_EGON_MMC_OFFSET
             .checked_add(next_stage_offset)
@@ -487,7 +516,13 @@ fstart_sunxi_fel_stash:
         }
         fstart_stage::next_stage::serialize_handoff(dram_size, config.handoff_addr)
             .map_err(|_| ServiceError::HardwareError)?;
+        #[cfg(target_arch = "arm")]
         fstart_arch::armv7::jump_to_with_handoff(
+            config.mainstage_load_addr,
+            config.handoff_addr as usize,
+        );
+        #[cfg(target_arch = "aarch64")]
+        fstart_arch::aarch64::jump_to_with_handoff(
             config.mainstage_load_addr,
             config.handoff_addr as usize,
         )
@@ -553,10 +588,16 @@ fstart_sunxi_fel_stash:
 }
 
 #[cfg(all(feature = "stage", feature = "h3", target_arch = "arm"))]
+pub use stage::{return_to_fel, FelStash};
+
+#[cfg(all(
+    feature = "stage",
+    feature = "h3",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 pub use stage::{
-    return_to_fel, run_h3_bootblock, run_h3_mainstage, FelStash, H3Board, H3BuildSelectedPayload,
-    H3Mainstage, SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx, SunxiEarlyPlatform,
-    SunxiPlatform, H3,
+    run_h3_bootblock, run_h3_mainstage, H3Board, H3BuildSelectedPayload, H3Mainstage,
+    SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, H3,
 };
 
 #[cfg(test)]

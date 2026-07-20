@@ -9,13 +9,135 @@ use core::arch::global_asm;
 // Keep the reset stub separate from the common AArch64 entry.  RAM-linked
 // firmware boots at flash offset zero, copies itself to its link address, then
 // branches into the same EL setup used by normal XIP firmware.
-#[cfg(not(feature = "aarch64-el2-relocate-entry"))]
+#[cfg(not(any(
+    feature = "aarch64-el2-relocate-entry",
+    feature = "aarch64-sunxi-rmr-entry"
+)))]
 global_asm!(
     r#"
     .section .text.entry
     .global _start
 _start:
     b fstart_aarch64_entry
+    "#
+);
+
+// AArch64 entry for Allwinner sun50i SoCs (H5, A64).
+//
+// All 64-bit Allwinner SoCs boot in AArch32 from the BROM. This entry
+// implements the ARMv8 RMR (Reset Management Register) warm-reset sequence
+// to switch into AArch64: the first word is a dual-mode instruction (ARM32
+// `b .+0x84` to the embedded ARM32 RMR switch code / AArch64 `ands xzr,x0,x0`
+// NOP), the ARM32 code saves BROM state for FEL return, writes `_start` to
+// the writable RVBAR alias at 0x017000A0 and triggers an AArch64 warm reset,
+// after which execution falls through to `aa64_entry`.
+//
+// Later stages entered directly in AArch64 (bootblock -> mainstage jump)
+// execute the dual-mode word as a NOP and take the same path, preserving the
+// handoff pointer in x0.
+//
+// Ported from U-Boot arch/arm/mach-sunxi/rmr_switch.S and
+// arch/arm/include/asm/arch-sunxi/boot0.h.
+#[cfg(feature = "aarch64-sunxi-rmr-entry")]
+global_asm!(
+    r#"
+    .section .text.entry
+    .global _start
+    .global fstart_sunxi_fel_stash
+_start:
+    // Dual-mode instruction: ARM32 "b .+0x84" / AArch64 "ands xzr, x0, x0".
+    .word 0xEA00001F
+
+    // AArch64-only: branch past the ARM32 RMR switch data to the real entry.
+    b aa64_entry
+
+    // Padding — the ARM32 branch at _start targets _start + 0x84:
+    // 4 (dual) + 4 (b) + 0x78 (space) + 4 (fel_stash offset) = 0x84.
+    .space 0x78
+
+    // Relative pointer to the fel_stash buffer (position-independent).
+    .word fstart_sunxi_fel_stash - .
+
+    // ARM32 RMR switch code, pre-assembled as .word directives.
+    // Saves BROM state (SP, LR, CPSR, SCTLR, VBAR, SP_irq) to fel_stash,
+    // writes _start to the RVBAR alias, and requests an AArch64 warm reset.
+    .word 0xe24f000c   // sub  r0, pc, #12        (r0 = fel_stash offset word)
+    .word 0xe51f1010   // ldr  r1, [pc, #-16]     (r1 = fel_stash - .)
+    .word 0xe0800001   // add  r0, r0, r1         (r0 = &fel_stash)
+    .word 0xe580d000   // str  sp, [r0]
+    .word 0xe580e004   // str  lr, [r0, #4]
+    .word 0xe10fe000   // mrs  lr, CPSR
+    .word 0xe580e008   // str  lr, [r0, #8]
+    .word 0xe101e300   // mrs  lr, SP_irq
+    .word 0xe580e014   // str  lr, [r0, #20]
+    .word 0xee11ef10   // mrc  p15, 0, lr, c1, c0, 0   (SCTLR)
+    .word 0xe580e00c   // str  lr, [r0, #12]
+    .word 0xee1cef10   // mrc  p15, 0, lr, c12, c0, 0  (VBAR)
+    .word 0xe580e010   // str  lr, [r0, #16]
+    .word 0xe59f1034   // ldr  r1, [pc, #52]      (RVBAR alias address)
+    .word 0xe59f0034   // ldr  r0, [pc, #52]      (SRAMC base)
+    .word 0xe5900024   // ldr  r0, [r0, #36]      (SRAM_VER_REG die check)
+    .word 0xe21000ff   // ands r0, r0, #0xFF
+    .word 0x159f102c   // ldrne r1, [pc, #44]     (RVBAR alternative)
+    .word 0xe59f002c   // ldr  r0, [pc, #44]      (_start)
+    .word 0xe5810000   // str  r0, [r1]           (write RVBAR)
+    .word 0xf57ff04f   // dsb  sy
+    .word 0xf57ff06f   // isb  sy
+    .word 0xee1c0f50   // mrc  p15, 0, r0, cr12, cr0, 2  (RMR)
+    .word 0xe3800003   // orr  r0, r0, #3         (AA64 + reset request)
+    .word 0xee0c0f50   // mcr  p15, 0, r0, cr12, cr0, 2  (trigger warm reset)
+    .word 0xf57ff06f   // isb  sy
+    .word 0xe320f003   // wfi
+    .word 0xeafffffd   // b    .-4                (reset occurs before waking)
+
+    // Configuration data loaded by the ldr instructions above.
+    .word 0x017000A0   // writable RVBAR alias (Allwinner sun50i)
+    .word 0x01C00000   // SUNXI_SRAMC_BASE (die-variant check)
+    .word 0x017000A0   // RVBAR alternative (same on H5)
+    .word _start       // RVBAR target
+
+    .balign 8
+aa64_entry:
+    // Preserve the incoming handoff pointer (0/garbage from BROM; a real
+    // StageHandoff address when a previous stage jumped here in AArch64).
+    mov x19, x0
+    msr daifset, #0xf
+
+    ldr x0, =_stack_top
+    mov sp, x0
+
+    // Copy .data initializers from LMA to VMA (no-op when LMA == VMA).
+    ldr x0, =_data_load
+    ldr x1, =_data_start
+    ldr x2, =_data_end
+1:
+    cmp x1, x2
+    b.ge 2f
+    ldr x3, [x0], #8
+    str x3, [x1], #8
+    b 1b
+2:
+    ldr x0, =_bss_start
+    ldr x1, =_bss_end
+3:
+    cmp x0, x1
+    b.ge 4f
+    str xzr, [x0], #8
+    b 3b
+4:
+    mov x0, x19
+    bl fstart_main
+5:
+    wfe
+    b 5b
+
+    // fel_stash — BROM state saved by the ARM32 RMR code BEFORE the mode
+    // switch (and before BSS clear); must live in .data, not .bss.
+    // Layout: SP, LR, CPSR, SCTLR, VBAR, SP_irq, +2 reserved words.
+    .section .data
+    .balign 4
+fstart_sunxi_fel_stash:
+    .space 32
     "#
 );
 
@@ -106,6 +228,10 @@ _start:
     "#
 );
 
+// The common EL/MMU init entry is unused by the sunxi RMR entry (SRAM
+// bootblocks run MMU-less); compiling it there would drag the 16 KiB MMU
+// tables into a 32 KiB SRAM link.
+#[cfg(not(feature = "aarch64-sunxi-rmr-entry"))]
 global_asm!(
     r#"
     .section .text.entry
@@ -567,22 +693,27 @@ extern "Rust" {
 /// - L1_HIGH: 512 entries for 512GB-1TB (PCI MMIO64)
 ///
 /// Each L1 entry maps a 1 GiB block. Must be 4 KiB aligned.
+#[cfg(not(feature = "aarch64-sunxi-rmr-entry"))]
 #[repr(C, align(4096))]
 struct PageTable([u64; 512]);
 
+#[cfg(not(feature = "aarch64-sunxi-rmr-entry"))]
 #[no_mangle]
 #[link_section = ".page_tables"]
 static mut MMU_L0_TABLE: PageTable = PageTable([0u64; 512]);
 
+#[cfg(not(feature = "aarch64-sunxi-rmr-entry"))]
 #[no_mangle]
 #[link_section = ".page_tables"]
 static mut MMU_L1_TABLE: PageTable = PageTable([0u64; 512]);
 
+#[cfg(not(feature = "aarch64-sunxi-rmr-entry"))]
 #[no_mangle]
 #[link_section = ".page_tables"]
 static mut MMU_L1_HIGH_TABLE: PageTable = PageTable([0u64; 512]);
 
 /// L1 table for 1 TiB–1.5 TiB — QEMU sbsa-ref DRAM lives at 1 TiB.
+#[cfg(not(feature = "aarch64-sunxi-rmr-entry"))]
 #[no_mangle]
 #[link_section = ".page_tables"]
 static mut MMU_L1_TB_TABLE: PageTable = PageTable([0u64; 512]);

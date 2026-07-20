@@ -17,6 +17,7 @@
 
 use core::arch::global_asm;
 
+#[cfg(not(feature = "riscv64-sunxi-entry"))]
 global_asm!(
     r#"
     .section .text.entry
@@ -459,3 +460,88 @@ pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
         );
     }
 }
+// RISC-V entry for Allwinner D1 (sun20i, T-Head C906).
+//
+// The D1 BROM loads the eGON image into SRAM at 0x0002_0000 and jumps to
+// offset 0x00 directly in M-mode — no mode switch is needed, but the C906's
+// vendor CSRs MUST be configured before any MMIO access, otherwise the
+// D-cache may swallow device-register writes (default memory attributes
+// after BROM can treat all memory as cacheable). Both oreboot and U-Boot set
+// these CSRs as the very first instructions after entry.
+//
+// | CSR      | Addr  | Purpose                                       |
+// |----------|-------|-----------------------------------------------|
+// | MXSTATUS | 0x7C0 | T-Head ISA extensions, MAEE, unaligned access |
+// | MCOR     | 0x7C2 | Invalidate I-cache, D-cache, BTB, BHT         |
+//
+// MHCR (0x7C1) and MHINT (0x7C5) are intentionally not written: oreboot
+// omits them and works; the BROM leaves them in a usable default state.
+//
+// Later stages entered via `jump_to_with_handoff` re-run the (idempotent)
+// CSR setup; the handoff pointer arrives in a0 and is passed through.
+#[cfg(feature = "riscv64-sunxi-entry")]
+global_asm!(
+    r#"
+    .equ CSR_MXSTATUS, 0x7C0
+    .equ CSR_MCOR, 0x7C2
+
+    .section .text.entry
+    .global _start
+_start:
+    // Disable interrupts (MIE, SIE).
+    csrw mie, zero
+
+    // MXSTATUS (0x7C0): Enable T-Head ISA extensions + MAEE.
+    //   bit 22 = TheadISAEE — enable T-Head custom instructions.
+    //   bit 21 = MAEE (Memory Attribute Extension Enable) — required
+    //            so PMA/page attributes control cacheability; without
+    //            this the core may use default (cacheable) for MMIO.
+    // Read-modify-write: preserve bits the BROM may have set.
+    // Matches oreboot start() exactly.
+    li t1, 0x1 << 22 | 0x1 << 21
+    csrs CSR_MXSTATUS, t1
+
+    // MCOR (0x7C2): Invalidate I-cache, D-cache, BTB, BHT.
+    //   0x30013 = IC + DC + BHT + BTB invalidate.
+    // Matches oreboot start() exactly.
+    li t2, 0x30013
+    csrw CSR_MCOR, t2
+
+    // Preserve the incoming handoff pointer (garbage from BROM; a real
+    // StageHandoff address when a previous stage jumped here).
+    mv s1, a0
+    csrw mscratch, a1
+
+    // Set up stack pointer (grows downward).
+    la sp, _stack_top
+
+    // Copy .data initializers from ROM to RAM (no-op when LMA == VMA).
+    la t0, _data_load
+    la t1, _data_start
+    la t2, _data_end
+1:
+    bgeu t1, t2, 2f
+    ld t3, 0(t0)
+    sd t3, 0(t1)
+    addi t0, t0, 8
+    addi t1, t1, 8
+    j 1b
+2:
+    // Clear BSS section.
+    la t0, _bss_start
+    la t1, _bss_end
+3:
+    bgeu t0, t1, 4f
+    sd zero, 0(t0)
+    addi t0, t0, 8
+    j 3b
+4:
+    // Jump to Rust entry point with the preserved handoff pointer.
+    mv a0, s1
+    call fstart_main
+    // Should never return; spin if it does.
+5:
+    wfi
+    j 5b
+    "#
+);

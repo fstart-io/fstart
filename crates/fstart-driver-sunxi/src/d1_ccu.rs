@@ -13,26 +13,27 @@
 //! Reference: U-Boot `arch/arm/mach-sunxi/clock_sun50i_h6.c` (NCAT2 path)
 //! Register defs: U-Boot `arch/arm/include/asm/arch-sunxi/clock_sun50i_h6.h`
 //! Clock driver: U-Boot `drivers/clk/sunxi/clk_d1.c`
-//!
-//! CCU register block: `0x0200_1000`
-//! PIO (GPIO) register block: `0x0200_0000`
 
-#![no_std]
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
 
+use crate::ccu_regs::{SunxiD1CcuRegs, D1_CPUX_AXI_CFG, D1_PLL_CPUX, D1_PLL_PERIPH0};
+use crate::pio::{PioGen, Pull, SunxiPio, PORT_B};
+use fstart_arch::udelay;
+use fstart_core::{mmio, mmio32};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
-use fstart_services::device::{Device, DeviceError};
-use fstart_services::{ClockController, ServiceError};
-
-use fstart_sunxi_ccu_regs::{SunxiD1CcuRegs, D1_CPUX_AXI_CFG, D1_PLL_CPUX, D1_PLL_PERIPH0};
-use fstart_sunxi_pio::{PioGen, Pull, SunxiPio, PORT_B};
-
-use fstart_arch::udelay;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+/// D1 CCU register block base.
+pub const D1_CCU_BASE: u64 = 0x0200_1000;
+/// D1 PIO (GPIO) register block base.
+pub const D1_PIO_BASE: u64 = 0x0200_0000;
+/// D1 UART0 register base.
+pub const D1_UART0_BASE: u64 = 0x0250_0000;
+/// D1 MMC0 register base.
+pub const D1_MMC0_BASE: u64 = 0x0402_0000;
+/// D1 BROM loads the eGON image into SRAM at this base.
+pub const D1_SRAM_BASE: u64 = 0x0002_0000;
+/// eGON firmware image offset on SD/MMC (8 KiB).
+pub const D1_EGON_MMC_OFFSET: u64 = 8 * 1024;
 
 /// OSC24M frequency (Hz) — the D1's 24 MHz DCXO.
 const OSC24M_FREQ: u32 = 24_000_000;
@@ -43,46 +44,61 @@ const UART0_TX_FUNC: u8 = 6;
 const UART0_RX_FUNC: u8 = 6;
 
 /// Typed configuration for the D1/T113 CCU driver.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SunxiD1CcuConfig {
-    /// CCU register base address (typically `0x0200_1000`).
-    pub ccu_base: u64,
-    /// PIO (GPIO) register base address (typically `0x0200_0000`).
-    pub pio_base: u64,
+pub struct D1CcuConfig {
     /// UART index to configure (0-based, 0-5).
     pub uart_index: u8,
 }
 
+impl D1CcuConfig {
+    #[must_use]
+    pub const fn new(uart_index: u8) -> Self {
+        Self { uart_index }
+    }
+}
+
 /// Allwinner D1/T113 Clock Control Unit + GPIO pin mux driver.
-pub struct SunxiD1Ccu {
+pub struct D1Ccu {
     ccu: &'static SunxiD1CcuRegs,
-    /// Raw base address for registers not covered by the typed struct
-    /// (e.g. DRAM_CLK at offset 0x800, DMA_BGR at 0x70C).
-    ccu_base: usize,
-    pio_base: usize,
     uart_index: u8,
 }
 
-// SAFETY: MMIO registers are at fixed hardware addresses from the board metadata.
-unsafe impl Send for SunxiD1Ccu {}
-unsafe impl Sync for SunxiD1Ccu {}
+impl D1Ccu {
+    /// Construct the CCU driver over its fixed MMIO block.
+    #[must_use]
+    pub fn new_from_config(config: &D1CcuConfig) -> Self {
+        Self {
+            // SAFETY: the CCU register block is at its fixed hardware address.
+            ccu: unsafe { &*(D1_CCU_BASE as usize as *const SunxiD1CcuRegs) },
+            uart_index: config.uart_index,
+        }
+    }
 
-impl SunxiD1Ccu {
-    /// Read a raw CCU register by offset.
+    /// Read a raw CCU register by offset (for registers outside the typed
+    /// struct, e.g. DMA_BGR at 0x70C, RISCV_CFG_BGR at 0xD0C).
     #[inline(always)]
     fn ccu_read(&self, offset: usize) -> u32 {
-        // SAFETY: address is a valid MMIO register within the CCU block at a
-        // fixed hardware address (ccu_base from board metadata).
-        unsafe { fstart_mmio::read32((self.ccu_base + offset) as *const u32) }
+        // SAFETY: address is a valid MMIO register within the CCU block.
+        unsafe { mmio::read32((D1_CCU_BASE as usize + offset) as *const u32) }
     }
 
     /// Write a raw CCU register by offset.
     #[inline(always)]
     fn ccu_write(&self, offset: usize, val: u32) {
-        // SAFETY: address is a valid MMIO register within the CCU block at a
-        // fixed hardware address (ccu_base from board metadata).
-        unsafe { fstart_mmio::write32((self.ccu_base + offset) as *mut u32, val) }
+        // SAFETY: address is a valid MMIO register within the CCU block.
+        unsafe { mmio::write32((D1_CCU_BASE as usize + offset) as *mut u32, val) }
+    }
+
+    /// Full early clock init: pre-DRAM clocks, UART clock, UART pins.
+    pub fn init(&self) {
+        // The D1 BROM programs basic PLLs before loading the eGON image.
+        // However, oreboot's main() programs several additional clocks
+        // before DRAM init that the BROM may not fully configure.
+        self.clock_init_pre_dram();
+        self.clock_init_uart();
+        self.gpio_init_uart();
+        udelay(100);
     }
 
     /// Pre-DRAM clock setup — matches oreboot main() before mctl::init().
@@ -145,12 +161,12 @@ impl SunxiD1Ccu {
             // SAFETY: address is a valid MMIO register within the RISCV_CFG
             // block at a fixed hardware address (0x0601_0000 + 0x24..0x34).
             unsafe {
-                fstart_mmio::write32((RISCV_CFG_BASE + 0x24 + 4 * i) as *mut u32, 0xFFFF_FFFF);
+                mmio::write32((RISCV_CFG_BASE + 0x24 + 4 * i) as *mut u32, 0xFFFF_FFFF);
             }
         }
     }
 
-    /// Step 2: Configure UART clock (APB1 source = OSC24M, gate + reset).
+    /// Configure UART clock (APB1 source = OSC24M, gate + reset).
     ///
     /// On the D1, UART gate+reset are combined in a single register at
     /// CCU + 0x90C. Bits [5:0] = gate, bits [21:16] = reset.
@@ -181,7 +197,7 @@ impl SunxiD1Ccu {
         self.ccu.uart_bgr.set(val | uart_gate_bit);
     }
 
-    /// Step 3: Mux GPIO pins for UART0 (PB8=TX, PB9=RX).
+    /// Mux GPIO pins for UART0 (PB8=TX, PB9=RX).
     ///
     /// On the D1, UART0 uses port B pins 8 and 9 (function 6).
     fn gpio_init_uart(&self) {
@@ -189,59 +205,21 @@ impl SunxiD1Ccu {
             return;
         }
 
-        let pio = SunxiPio::new(self.pio_base, PioGen::Ncat2);
+        let pio = SunxiPio::new(mmio32(D1_PIO_BASE), PioGen::Ncat2);
         pio.set_function(PORT_B, 8, UART0_TX_FUNC);
         pio.set_function(PORT_B, 9, UART0_RX_FUNC);
         pio.set_pull(PORT_B, 9, Pull::Up);
     }
-}
 
-impl Device for SunxiD1Ccu {
-    const NAME: &'static str = "sunxi-d1-ccu";
-    const COMPATIBLE: &'static [&'static str] = &["allwinner,sun20i-d1-ccu"];
-    type Config = SunxiD1CcuConfig;
-
-    fn new(config: SunxiD1CcuConfig) -> Result<Self, DeviceError> {
-        Ok(Self {
-            // SAFETY: addresses come from the board metadata, validated by board construction.
-            ccu: unsafe { &*(config.ccu_base as *const SunxiD1CcuRegs) },
-            ccu_base: config.ccu_base as usize,
-            pio_base: config.pio_base as usize,
-            uart_index: config.uart_index,
-        })
+    /// OSC24M frequency (UART clock source after `clock_init_uart`).
+    #[must_use]
+    pub const fn osc24m_freq(&self) -> u32 {
+        OSC24M_FREQ
     }
 
-    fn init(&mut self) -> Result<(), DeviceError> {
-        // The D1 BROM programs basic PLLs before loading the eGON image.
-        // However, oreboot's main() programs several additional clocks
-        // before DRAM init that the BROM may not fully configure.
-        self.clock_init_pre_dram();
-        self.clock_init_uart();
-        self.gpio_init_uart();
-        udelay(100);
-        Ok(())
-    }
-}
-
-impl ClockController for SunxiD1Ccu {
-    fn enable_clock(&self, gate_id: u32) -> Result<(), ServiceError> {
-        // Generic clock gate enable via the UART BGR register (for UART gates).
-        let val = self.ccu.uart_bgr.get();
-        self.ccu.uart_bgr.set(val | (1 << gate_id));
-        Ok(())
-    }
-
-    fn disable_clock(&self, gate_id: u32) -> Result<(), ServiceError> {
-        let val = self.ccu.uart_bgr.get();
-        self.ccu.uart_bgr.set(val & !(1 << gate_id));
-        Ok(())
-    }
-
-    fn get_frequency(&self, clock_id: u32) -> Result<u32, ServiceError> {
-        match clock_id {
-            0 => Ok(OSC24M_FREQ),                 // OSC24M
-            1 => Ok(self.ccu.pll_periph0_freq()), // PLL_PERIPH0
-            _ => Err(ServiceError::NotSupported),
-        }
+    /// Read PLL_PERIPH0 frequency in Hz (MMC clock source).
+    #[must_use]
+    pub fn pll_periph0_freq(&self) -> u32 {
+        self.ccu.pll_periph0_freq()
     }
 }

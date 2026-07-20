@@ -186,6 +186,19 @@ fn base_features(
     if needs_aarch64_el2_relocate_entry(config) {
         features.insert("aarch64-el2-relocate-entry");
     }
+    // 64-bit Allwinner SoCs boot in AArch32 from the BROM; the eGON image
+    // needs the RMR AArch32->AArch64 warm-reset entry.
+    if config.platform == Platform::Aarch64
+        && config.soc_image_format == SocImageFormat::AllwinnerEgon
+    {
+        features.insert("aarch64-sunxi-rmr-entry");
+    }
+    // The D1's T-Head C906 needs its vendor cache CSRs configured at entry.
+    if config.platform == Platform::Riscv64
+        && config.soc_image_format == SocImageFormat::AllwinnerEgon
+    {
+        features.insert("riscv64-sunxi-entry");
+    }
 
     features
 }

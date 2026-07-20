@@ -119,8 +119,36 @@ _head_jump:
     "#
 );
 
+// 64-bit sunxi BROMs still enter the eGON image in AArch32; the head word is
+// the pre-assembled ARM32 branch to `_start` at offset 0x60 (the aarch64
+// assembler cannot emit ARM32 instructions).
+// 0xEA000016 = ARM32 `b .+0x60` from offset 0 (offset = (0x60 - 8) / 4).
+#[cfg(all(feature = "stage", target_arch = "aarch64", fstart_stage_env = "car"))]
+core::arch::global_asm!(
+    r#"
+    .section .head.text, "ax"
+    .global _head_jump
+_head_jump:
+    .word 0xEA000016
+    "#
+);
+
+// The D1 BROM enters the eGON image directly in RISC-V M-mode.
+#[cfg(all(feature = "stage", target_arch = "riscv64", fstart_stage_env = "car"))]
+core::arch::global_asm!(
+    r#"
+    .section .head.text, "ax"
+    .global _head_jump
+_head_jump:
+    j _start
+    "#
+);
+
 /// The header immediately following the eGON branch instruction.
 #[cfg(all(feature = "stage", fstart_stage_env = "car"))]
 #[used]
-#[cfg_attr(target_arch = "arm", link_section = ".head.egon")]
+#[cfg_attr(
+    any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64"),
+    link_section = ".head.egon"
+)]
 pub static EGON_HEAD: EgonHead = EgonHead::new();

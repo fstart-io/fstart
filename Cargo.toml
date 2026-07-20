@@ -22,7 +22,7 @@ members = [
   "crates/fstart-smm",
   "crates/fstart-boot",
 ]
-exclude = ["attic", "boards/bananapi-m1", "boards/lenovo-x61", "boards/foxconn-d41s", "boards/qemu-q35", "boards/qemu-riscv64", "boards/qemu-sifive-u", "boards/qemu-aarch64", "boards/qemu-armv7", "boards/sifive-unmatched", "boards/orangepi-r1", "boards/qemu-sbsa"]
+exclude = ["attic", "boards/bananapi-m1", "boards/lenovo-x61", "boards/foxconn-d41s", "boards/qemu-q35", "boards/qemu-riscv64", "boards/qemu-sifive-u", "boards/qemu-aarch64", "boards/qemu-armv7", "boards/sifive-unmatched", "boards/orangepi-r1", "boards/orangepi-pc2", "boards/licheerv-dock", "boards/qemu-sbsa"]
 
 [workspace.package]
 version = "0.1.0"

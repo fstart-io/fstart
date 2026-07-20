@@ -9,5 +9,6 @@
 extern crate ufmt;
 
 pub mod a20;
+pub mod d1;
 pub mod egon;
 pub mod h3;

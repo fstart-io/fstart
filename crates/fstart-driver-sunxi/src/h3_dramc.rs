@@ -663,6 +663,13 @@ impl H3DramcConfig {
             variant: SunxiDramcVariant::H3,
         }
     }
+
+    /// Select the SoC variant (H5 differs in PHY delay/training values).
+    #[must_use]
+    pub const fn variant(mut self, variant: SunxiDramcVariant) -> Self {
+        self.variant = variant;
+        self
+    }
 }
 
 // ===================================================================

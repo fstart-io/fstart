@@ -9,11 +9,11 @@ publish = false
 [features]
 default = []
 a20 = []
+d1 = []
 h3 = []
 host = []
 linux = ["fstart-stage?/linux"]
 stage = [
-  "armv7",
   "dep:fstart-arch",
   "dep:fstart-driver-uart",
   "dep:fstart-log",
@@ -26,6 +26,14 @@ armv7 = [
   "fstart-arch?/sunxi-fel",
   "fstart-driver-sunxi/armv7",
   "fstart-stage?/armv7",
+]
+aarch64 = [
+  "fstart-arch?/aarch64",
+  "fstart-stage?/aarch64",
+]
+riscv64 = [
+  "fstart-arch?/riscv64",
+  "fstart-stage?/riscv64",
 ]
 
 [dependencies]
