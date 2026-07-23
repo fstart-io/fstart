@@ -752,8 +752,9 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         Some(FlashLayout::Legacy(layout)) => (layout.base, layout.size as usize),
         Some(FlashLayout::IntelIfd(_)) => unreachable!("IFD layout handled above"),
         None => {
-            let flash_image = firmware_image_from_policy(config)?
-                .ok_or_else(|| "full_flash_image requires a firmware image build policy".to_string())?;
+            let flash_image = firmware_image_from_policy(config)?.ok_or_else(|| {
+                "full_flash_image requires a firmware image build policy".to_string()
+            })?;
             let flash_window = flash_image.contiguous_window().ok_or_else(|| {
                 "full_flash_image requires a contiguous firmware image window".to_string()
             })?;

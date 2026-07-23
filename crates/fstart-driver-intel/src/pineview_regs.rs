@@ -130,6 +130,26 @@ impl MchBar {
     pub fn write8(&self, off: u32, val: u8) {
         unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
     }
+    #[inline]
+    pub fn setbits8(&self, off: u32, bits: u8) {
+        let v = self.read8(off);
+        self.write8(off, v | bits);
+    }
+    #[inline]
+    pub fn clrbits8(&self, off: u32, bits: u8) {
+        let v = self.read8(off);
+        self.write8(off, v & !bits);
+    }
+    #[inline]
+    pub fn setbits16(&self, off: u32, bits: u16) {
+        let v = self.read16(off);
+        self.write16(off, v | bits);
+    }
+    #[inline]
+    pub fn clrbits16(&self, off: u32, bits: u16) {
+        let v = self.read16(off);
+        self.write16(off, v & !bits);
+    }
     /// `reg = (reg & mask) | set`.
     #[inline]
     pub fn modify32(&self, off: u32, mask: u32, set: u32) {

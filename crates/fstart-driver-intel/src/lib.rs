@@ -34,6 +34,19 @@ pub trait IntelNorthbridgeDriver:
     fn config(&self) -> &'static Self::Config;
     fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    fn detect_warm_reset(&self) -> bool {
+        false
+    }
+    fn set_boot_path(&mut self, _boot_path: u8) {}
+    fn dram_init_with_smbus(
+        &mut self,
+        _smbus: Option<&mut dyn fstart_core::services::SmBus>,
+    ) -> Result<(), fstart_core::services::ServiceError> {
+        self.dram_init()
+    }
+    fn early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
 
     /// Caches policy derived from the detected memory map.
@@ -56,6 +69,15 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn config(&self) -> &'static Self::Config;
     fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    fn detect_s3_resume(&self) -> bool {
+        false
+    }
+    fn smbus_mut(&mut self) -> Option<&mut dyn fstart_core::services::SmBus> {
+        None
+    }
+    fn early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
 }

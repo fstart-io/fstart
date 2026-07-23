@@ -341,6 +341,14 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
     }
 
     fstart_log::info!(
+        "raminit: DRA/DRB readback DRA={} DRB={}/{}/{}/{}",
+        mch.read32(mchbar::C0DRA01),
+        mch.read16(mchbar::C0DRB0),
+        mch.read16(mchbar::C0DRB0 + 2),
+        mch.read16(mchbar::C0DRB0 + 4),
+        mch.read16(mchbar::C0DRB0 + 6)
+    );
+    fstart_log::info!(
         "raminit: DRA/DRB done, total = {} MiB",
         si.channel_capacity[0]
     );

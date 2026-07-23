@@ -46,7 +46,7 @@ pub const PLATFORM_MOBILE: u8 = 1;
 #[allow(dead_code)]
 const BOOT_PATH_NORMAL: u8 = 0;
 const BOOT_PATH_RESET: u8 = 1;
-const BOOT_PATH_RESUME: u8 = 2;
+pub(crate) const BOOT_PATH_RESUME: u8 = 2;
 
 // ===================================================================
 // Sysinfo — raminit state
@@ -115,6 +115,7 @@ pub struct SysInfo {
     pub r#async: u8,
     pub dt0mode: u8,
     pub ggc: u16,
+    pub vref_value: u8,
 }
 
 impl SysInfo {
@@ -140,6 +141,7 @@ impl SysInfo {
             r#async: 0,
             dt0mode: 0,
             ggc: 0,
+            vref_value: 0,
         }
     }
 
@@ -167,7 +169,7 @@ impl SysInfo {
 /// * `smbus` — SMBus controller for SPD reads
 /// * `boot_path` — 0 = normal, 1 = reset, 2 = S3 resume
 /// * `spd_addresses` — SMBus addresses of DIMM SPD EEPROMs (e.g., [0x50, 0x51, 0, 0])
-pub fn sdram_initialize<B: fstart_core::services::SmBus>(
+pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     mch: &MchBar,
     smbus: &mut B,
     boot_path: u8,
@@ -185,7 +187,7 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus>(
     timing::detect_ram_speed(&mut si, mch);
 
     // 3. Detect smallest common timings.
-    timing::detect_smallest_params(&mut si);
+    timing::detect_smallest_params(&mut si)?;
 
     // 4. Enable HPET.
     // (Handled by platform code, not raminit.)
@@ -265,11 +267,16 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus>(
     mmap::sdram_dradrb(&mut si, mch);
 
     // 21. Receive enable calibration.
-    phy::sdram_rcven(&mut si, mch);
+    phy::sdram_rcven(&mut si, mch)?;
 
-    // Coreboot now runs additional Vref margining here for desktop
-    // DDR2 UDIMMs. fstart intentionally skips it until the temporary
-    // cache/MTRR dance used by that routine is ported safely.
+    // Desktop UDIMMs require the Vref margining pass used by coreboot.
+    // SO-DIMMs use their existing fixed Vref setup instead.
+    if !si.is_sodimm() {
+        if si.boot_path != BOOT_PATH_RESUME {
+            phy::sdram_vref_margining(&mut si, mch)?;
+        }
+        phy::update_vref_value(si.vref_value, mch);
+    }
 
     // 22. New tRD.
     phy::sdram_new_trd(&si, mch);

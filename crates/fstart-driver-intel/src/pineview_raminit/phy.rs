@@ -9,18 +9,15 @@
 #![allow(clippy::needless_range_loop)]
 use super::{PllParam, SysInfo};
 use crate::pineview::regs::{mchbar, MchBar};
+use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
-
-const PINEVIEW_TSC_HZ: u64 = 1_666_666_667;
 
 /// Microsecond delay for raminit sequences.
 ///
-/// Pineview boards supported here use Atom D410/D510-class parts with a
-/// constant 1.66 GHz TSC.  Use TSC-based delays instead of raw spin-loop
-/// guesses so the JEDEC/RCVEN waits match coreboot's `udelay()` much more
-/// closely once HPET is enabled.
+/// Use the calibrated x86 delay rather than a CPU-frequency-dependent
+/// spin-loop guess.
 fn hpet_udelay(us: u32) {
-    fstart_arch::x86::udelay_tsc(us, PINEVIEW_TSC_HZ);
+    fstart_arch::x86::hpet_udelay(us);
 }
 
 // ===================================================================
@@ -499,6 +496,10 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
             // dimm_config is the 0..15 vendor-MRC matrix and must not index
             // these 0..6 SO-DIMM tables.
             let dc = si.dimm_config[0] as usize;
+            if dc == 0 {
+                let v = mch.read16(base);
+                mch.write16(base, v & !(0x0F << 12));
+            }
             mch.write8(base + 0x04, RCOMPSTR2[dc]);
             mch.write16(base + 0x0E, RCOMPSCOMP2[dc]);
             let v = mch.read8(base + 0x14);
@@ -508,10 +509,10 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
         // Clear slew base / LUTs.
         let v = mch.read16(base + 0x16);
         mch.write16(base + 0x16, v & !0x7F7F);
-        mch.write16(base + 0x18, 0);
-        mch.write16(base + 0x18 + 2, 0);
-        mch.write16(base + 0x1C, 0);
-        mch.write16(base + 0x1C + 2, 0);
+        for off in [0x18, 0x1A, 0x1C, 0x1E] {
+            let v = mch.read16(base + off);
+            mch.write16(base + off, v & !0x3F3F);
+        }
     }
 
     // ODT record.
@@ -823,7 +824,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_rcven()`. Trains the DQS receive enable
 /// timing for each byte lane by sweeping coarse + medium + PI delay.
-pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
+pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     let v = mch.read8(mchbar::C0RSTCTL);
     mch.write8(mchbar::C0RSTCTL, v & !(3 << 2));
     let v = mch.read8(mchbar::CMNDQFIFORST);
@@ -862,7 +863,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
         while !sample_dqs(mch, dqshighaddr, 0, 3) {
             if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
                 fstart_log::error!("raminit: RCVEN lane {} failed before DQS-low search", lane);
-                break;
+                return Err(ServiceError::HardwareError);
             }
         }
 
@@ -870,6 +871,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
         savemedium = medium;
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
             fstart_log::error!("raminit: RCVEN lane {} failed before DQS-high search", lane);
+            return Err(ServiceError::HardwareError);
         }
 
         // Phase 2: continue until DQS stays high.
@@ -878,7 +880,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
             savemedium = medium;
             if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
                 fstart_log::error!("raminit: RCVEN lane {} failed before PI search", lane);
-                break;
+                return Err(ServiceError::HardwareError);
             }
         }
 
@@ -905,8 +907,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
                     break;
                 }
                 fstart_log::error!("raminit: RCVEN lane {} PI search failed", lane);
-                savepi = si.maxpi;
-                break;
+                return Err(ServiceError::HardwareError);
             }
             let v = mch.read8(mchbar::ly(0x560, lane as u32));
             mch.write8(
@@ -923,12 +924,21 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
         );
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
             fstart_log::error!("raminit: RCVEN lane {} failed after PI search", lane);
+            return Err(ServiceError::HardwareError);
+        }
+        if !sample_dqs(mch, dqshighaddr, 1, 3) {
+            fstart_log::error!("raminit: RCVEN lane {} failed after centering", lane);
+            return Err(ServiceError::HardwareError);
         }
 
         // Phase 4: back off until DQS goes low.
         while !sample_dqs(mch, dqshighaddr, 0, 3) {
             if coarse == 0 {
-                break;
+                fstart_log::error!(
+                    "raminit: RCVEN lane {} failed finding final DQS-low edge",
+                    lane
+                );
+                return Err(ServiceError::HardwareError);
             }
             coarse -= 1;
             let v = mch.read32(mchbar::C0STATRDCTRL);
@@ -940,6 +950,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
 
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
             fstart_log::error!("raminit: RCVEN lane {} failed at final clock step", lane);
+            return Err(ServiceError::HardwareError);
         }
         si.pi[lane as usize] = pi;
         lanecoarse[lane as usize] = coarse;
@@ -955,6 +966,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
         let offset = lanecoarse[lane].saturating_sub(minlanecoarse);
         if offset > 3 {
             fstart_log::error!("raminit: RCVEN lane {} coarse offset too large", lane);
+            return Err(ServiceError::HardwareError);
         }
         let v = mch.read16(mchbar::C0COARSEDLY0);
         mch.write16(
@@ -976,24 +988,198 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) {
     // Reset sequence.
     let v = mch.read8(mchbar::C0RSTCTL);
     mch.write8(mchbar::C0RSTCTL, v & !(7 << 1));
-    mch.setbits32(mchbar::C0RSTCTL, 1 << 1);
-    mch.setbits32(mchbar::C0RSTCTL, 1 << 2);
-    mch.setbits32(mchbar::C0RSTCTL, 1 << 3);
+    mch.setbits8(mchbar::C0RSTCTL, 1 << 1);
+    mch.setbits8(mchbar::C0RSTCTL, 1 << 2);
+    mch.setbits8(mchbar::C0RSTCTL, 1 << 3);
 
-    mch.setbits32(mchbar::CMNDQFIFORST, 1 << 7);
-    mch.clrbits32(mchbar::CMNDQFIFORST, 1 << 7);
-    mch.setbits32(mchbar::CMNDQFIFORST, 1 << 7);
+    mch.setbits8(mchbar::CMNDQFIFORST, 1 << 7);
+    mch.clrbits8(mchbar::CMNDQFIFORST, 1 << 7);
+    mch.setbits8(mchbar::CMNDQFIFORST, 1 << 7);
 
     fstart_log::info!("raminit: receive enable calibration done");
+    Ok(())
+}
+
+const VREF_PATTERN_SIZE: usize = 1024;
+const VREF_TEST_RANGE_SIZE: u64 = 0x2000;
+const VREF_MTRR_INDEX: u32 = 3;
+
+fn vref_pattern(addr: usize, inverse: bool) -> u8 {
+    let mut pattern_a = 0xffu8;
+    pattern_a &= !(((1u16 << ((addr >> 13) & 0xf)) >> 1) as u8);
+    if addr & 0x100 != 0 {
+        pattern_a = !pattern_a;
+    }
+    let pattern_b = !pattern_a;
+    let isi_left = ((addr >> 11) & 0x3) + 1;
+    let isi_total = isi_left + ((addr >> 9) & 0x3) + 1;
+    let pattern = if (((addr & 0xff) >> 3) % isi_total) >= isi_left {
+        pattern_b
+    } else {
+        pattern_a
+    };
+    if inverse {
+        !pattern
+    } else {
+        pattern
+    }
+}
+
+fn vref_write_pattern(addr: usize) {
+    for offset in 0..VREF_PATTERN_SIZE {
+        let value = vref_pattern(addr + offset, true);
+        // Coreboot deliberately tests physical address zero. Use an explicit
+        // machine access because constructing a null Rust pointer would be UB.
+        unsafe {
+            core::arch::asm!(
+                "mov byte ptr [{addr}], {value}",
+                addr = in(reg) addr + offset,
+                value = in(reg_byte) value,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+}
+
+fn vref_flush(addr: usize) {
+    for offset in (0..0x2000usize).step_by(64) {
+        // SAFETY: the address is in the temporary 8 KiB Vref test range.
+        unsafe {
+            core::arch::asm!("clflush [{}]", in(reg) (addr + offset), options(nostack, preserves_flags));
+        }
+    }
+}
+
+fn vref_read_aligned(addr: usize, vref: u8, mch: &MchBar) -> bool {
+    mch.write8(
+        mchbar::CSHRMISCCTL1,
+        (mch.read8(mchbar::CSHRMISCCTL1) & !0x3f) | vref,
+    );
+
+    for _ in 0..3 {
+        // Match coreboot's temporary write-protect mapping. Save and restore
+        // the CAR-era MTRR pair verbatim around each read pass.
+        let saved = unsafe { fstart_arch::x86::mtrr::read_variable(VREF_MTRR_INDEX) };
+        unsafe {
+            fstart_arch::x86::mtrr::set_variable(
+                VREF_MTRR_INDEX,
+                addr as u64,
+                VREF_TEST_RANGE_SIZE,
+                fstart_arch::x86::mtrr::MTRR_TYPE_WRITE_PROTECT,
+            );
+        }
+        vref_flush(addr);
+
+        for offset in 0..VREF_PATTERN_SIZE {
+            let expected = vref_pattern(addr + offset, true);
+            let actual: u8;
+            // See vref_write_pattern(): physical address zero is intentional.
+            unsafe {
+                core::arch::asm!(
+                    "mov {value}, byte ptr [{addr}]",
+                    addr = in(reg) addr + offset,
+                    value = out(reg_byte) actual,
+                    options(nostack, readonly, preserves_flags)
+                );
+            }
+            if actual != expected {
+                unsafe {
+                    fstart_arch::x86::msr::wrmsr(
+                        fstart_arch::x86::mtrr::IA32_MTRR_PHYSBASE0 + VREF_MTRR_INDEX * 2,
+                        saved.0,
+                    );
+                    fstart_arch::x86::msr::wrmsr(
+                        fstart_arch::x86::mtrr::IA32_MTRR_PHYSMASK0 + VREF_MTRR_INDEX * 2,
+                        saved.1,
+                    );
+                }
+                fstart_log::debug!(
+                    "raminit: Vref {} failed at {} expected {} read {}",
+                    vref,
+                    (addr + offset) as u32,
+                    expected,
+                    actual
+                );
+                return false;
+            }
+        }
+
+        unsafe {
+            fstart_arch::x86::msr::wrmsr(
+                fstart_arch::x86::mtrr::IA32_MTRR_PHYSBASE0 + VREF_MTRR_INDEX * 2,
+                saved.0,
+            );
+            fstart_arch::x86::msr::wrmsr(
+                fstart_arch::x86::mtrr::IA32_MTRR_PHYSMASK0 + VREF_MTRR_INDEX * 2,
+                saved.1,
+            );
+        }
+    }
+    true
+}
+
+pub fn update_vref_value(vref_value: u8, mch: &MchBar) {
+    mch.write8(
+        mchbar::CSHRMISCCTL1,
+        (mch.read8(mchbar::CSHRMISCCTL1) & !0x3f) | vref_value,
+    );
+}
+
+pub fn sdram_vref_margining(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
+    const POSITIVE: [u8; 4] = [0x07, 0x0e, 0x15, 0x1c];
+    const NEGATIVE: [u8; 4] = [0x27, 0x2e, 0x35, 0x3c];
+    const LOOKUP: [[u8; 5]; 5] = [
+        [0x00, 0x03, 0x04, 0x05, 0x05],
+        [0x23, 0x00, 0x03, 0x04, 0x05],
+        [0x24, 0x23, 0x00, 0x03, 0x04],
+        [0x25, 0x24, 0x23, 0x00, 0x03],
+        [0x25, 0x25, 0x24, 0x23, 0x00],
+    ];
+
+    mch.write16(
+        mchbar::CSHRMISCCTL1,
+        mch.read16(mchbar::CSHRMISCCTL1) & !(1 << 8),
+    );
+    vref_write_pattern(0);
+
+    let mut pos_pass = 0usize;
+    for vref in POSITIVE {
+        if !vref_read_aligned(0, vref, mch) {
+            break;
+        }
+        pos_pass += 1;
+    }
+
+    let mut neg_pass = 0usize;
+    for vref in NEGATIVE {
+        if !vref_read_aligned(0, vref, mch) {
+            break;
+        }
+        neg_pass += 1;
+    }
+
+    if pos_pass == 0 && neg_pass == 0 {
+        fstart_log::error!("raminit: Vref margining failed");
+        return Err(ServiceError::HardwareError);
+    }
+
+    si.vref_value = LOOKUP[neg_pass][pos_pass];
+    fstart_log::info!(
+        "raminit: Vref margining pos={} neg={} value={}",
+        pos_pass,
+        neg_pass,
+        si.vref_value
+    );
+    Ok(())
 }
 
 /// Sample DQS for the given lane.
 fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
     let mut matches = true;
     for _ in 0..count {
-        mch.clrbits32(mchbar::C0RSTCTL, 1 << 1);
+        mch.clrbits8(mchbar::C0RSTCTL, 1 << 1);
         hpet_udelay(1);
-        mch.setbits32(mchbar::C0RSTCTL, 1 << 1);
+        mch.setbits8(mchbar::C0RSTCTL, 1 << 1);
         hpet_udelay(1);
 
         // SAFETY: Intentionally reads from physical address 0 to trigger
@@ -1001,9 +1187,9 @@ fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
         // training.  This is valid only after the memory controller has
         // been partially initialized and DRAM is mapped at address 0.
         // A read fault here indicates raminit failed earlier.
-        unsafe {
-            core::ptr::read_volatile(core::ptr::null::<u32>());
-        }
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        unsafe { fstart_arch::x86::read_phys32(0) };
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         hpet_udelay(1);
 
         if ((mch.read8(dqshighaddr) & (1 << 6)) >> 6) != highlow {
@@ -1045,18 +1231,19 @@ fn rcven_clock(mch: &MchBar, coarse: &mut u8, medium: &mut u8, lane: u8) -> bool
 ///
 /// Ported from coreboot `sdram_new_trd()`.
 pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
-    let tmclk: u32 = if si.selected_timings.mem_clock == 0 {
+    let raw_tmclk: u32 = if si.selected_timings.mem_clock == 0 {
         3000
     } else {
         2500
     };
-    let thclk: u32 = if si.selected_timings.fsb_clock == 0 {
+    let raw_thclk: u32 = if si.selected_timings.fsb_clock == 0 {
         6000
     } else {
         5000
     };
     let freqgb: u32 = 110;
-    let tmclk_adj = tmclk * 100 / freqgb;
+    let tmclk = raw_tmclk * 100 / freqgb;
+    let thclk = raw_thclk * 100 / freqgb;
     let buffertocore: u32 = if si.platform_type == super::PLATFORM_MOBILE {
         5500
     } else {
@@ -1081,9 +1268,9 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
     // Compute max rcven delay across lanes.
     let mut maxrcvendelay: u32 = 0;
     for i in 0..8 {
-        let mut delay = ((si.coarsedelay >> (i * 2)) & 3) as u32 * tmclk_adj;
-        delay += ((si.readptrdelay >> (i * 2)) & 3) as u32 * tmclk_adj / 2;
-        delay += ((si.mediumphase >> (i * 2)) & 3) as u32 * tmclk_adj / 4;
+        let mut delay = ((si.coarsedelay >> (i * 2)) & 3) as u32 * tmclk;
+        delay += ((si.readptrdelay >> (i * 2)) & 3) as u32 * tmclk / 2;
+        delay += ((si.mediumphase >> (i * 2)) & 3) as u32 * tmclk / 4;
         delay += pidelay * si.pi[i] as u32;
         maxrcvendelay = maxrcvendelay.max(delay);
     }
@@ -1099,7 +1286,7 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
     let fifo_reg = (mch.read8(mchbar::CSHRFIFOCTL) & 0x0E) >> 1;
     let txfifo = TXFIFO_LUT[fifo_reg as usize] as u32;
 
-    let datadelay_signed = tmclk_adj as i64
+    let datadelay_signed = tmclk as i64
         * (2 * txfifo as i64 + 4 * si.coarsectrl as i64 + 4 * (bypass as i64 - 1) + 13)
         / 4
         + tio as i64
@@ -1108,14 +1295,29 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
         + buffertocore as i64
         + postcalib as i64
         + if si.r#async != 0 {
-            (tmclk_adj / 2) as i64
+            (raw_tmclk / 2) as i64
         } else {
             0
         };
-    let datadelay = datadelay_signed.max(0) as u32;
+    let mut datadelay = datadelay_signed.max(0) as u32;
 
     let j = si.selected_timings.mem_clock as usize;
     let k = si.selected_timings.fsb_clock as usize;
+
+    if si.selected_timings.cas == 5 {
+        let correction = if si.platform_type == super::PLATFORM_MOBILE {
+            (j == 0 && k == 0).then_some(3084)
+        } else if j == 1 && k == 1 {
+            Some(2750)
+        } else if j == 0 && k == 0 {
+            Some(1848)
+        } else {
+            None
+        };
+        if let Some(correction) = correction {
+            datadelay = datadelay.saturating_sub(correction);
+        }
+    }
 
     static TRD_ADJUST: [[[u32; 5]; 2]; 2] = [
         [[3000, 3000, 0, 0, 0], [1000, 2000, 3000, 1500, 2500]],
@@ -1141,15 +1343,6 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
         trd = trd.max(phase_trd);
     }
 
-    if j == 0 && k == 0 {
-        let corrected = datadelay.saturating_sub(3084);
-        let mut phase_trd = (corrected / thclk) as u8;
-        if phase_trd >= 2 {
-            phase_trd -= 2;
-        }
-        trd = trd.max(phase_trd + 1);
-    }
-
     let v = mch.read16(mchbar::C0STATRDCTRL);
     mch.write16(
         mchbar::C0STATRDCTRL,
@@ -1167,8 +1360,8 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_enhancedmode()`.
 pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
-    mch.setbits32(mchbar::C0ADDCSCTRL, 1 << 0);
-    mch.setbits32(mchbar::C0REFRCTRL + 3, 1 << 0);
+    mch.setbits8(mchbar::C0ADDCSCTRL, 1 << 0);
+    mch.setbits8(mchbar::C0REFRCTRL + 3, 1 << 0);
 
     let mask: u32 = (0x1F << 15) | (0x1F << 10) | (0x1F << 5) | 0x1F;
     let val: u32 = (0x1E << 15) | (0x10 << 10) | (0x1E << 5) | 0x10;
@@ -1182,9 +1375,9 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     mch.write16(mchbar::C0DITCTRL + 8, 0x091C);
     mch.write8(mchbar::C0DITCTRL + 10, 0xF2);
 
-    mch.setbits32(mchbar::C0BYPCTRL, 1 << 0);
-    mch.setbits32(mchbar::C0CWBCTRL, 1 << 0);
-    mch.setbits32(mchbar::C0ARBSPL, 1 << 8);
+    mch.setbits8(mchbar::C0BYPCTRL, 1 << 0);
+    mch.setbits8(mchbar::C0CWBCTRL, 1 << 0);
+    mch.setbits16(mchbar::C0ARBSPL, 1 << 8);
 
     let hb = ecam::EcamDevice::new(0, 0, 0);
     hb.or8(0xF0, 1);
@@ -1253,7 +1446,7 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
         mch.write32(mchbar::HTBONUS0, 0x0C);
     } else {
         mch.write32(mchbar::HTBONUS0, 0x0F);
-        mch.setbits32(mchbar::C0COREBONUS + 4, 1 << 0);
+        mch.setbits8(mchbar::C0COREBONUS + 4, 1 << 0);
     }
     mch.clrbits32(mchbar::HIT3, 7 << 25);
     let v = mch.read32(mchbar::HIT4);
@@ -1327,7 +1520,7 @@ pub fn sdram_power_settings(si: &SysInfo, mch: &MchBar) {
     let v = mch.read16(mchbar::CICGDIS);
     mch.write16(mchbar::CICGDIS, v & !0x0FFF);
     let v = mch.read32(mchbar::SBCLKGATECTRL);
-    mch.write32(mchbar::SBCLKGATECTRL, v & !0x0000_FFFF);
+    mch.write32(mchbar::SBCLKGATECTRL, v & !0x0001_FFFF);
     let v = mch.read16(mchbar::HICLKGTCTL);
     mch.write16(mchbar::HICLKGTCTL, (v & !0x03FF) | 0x06);
     mch.write32(mchbar::HTCLKGTCTL, 0x20);
@@ -1367,13 +1560,22 @@ pub fn sdram_power_settings(si: &SysInfo, mch: &MchBar) {
     };
     mch.write32(mchbar::PMDSLFRC, (v & !0x0001_BFF7) | pmdslfrc);
 
+    let pmmspmres = if si.platform_type == super::PLATFORM_MOBILE {
+        if si.selected_timings.fsb_clock == 0 {
+            0x00C8
+        } else {
+            0x0100
+        }
+    } else {
+        0
+    };
     let v = mch.read16(mchbar::PMMSPMRES);
-    mch.write16(mchbar::PMMSPMRES, v & !0x03FF);
+    mch.write16(mchbar::PMMSPMRES, (v & !0x03FF) | pmmspmres);
 
     let j = si.selected_timings.mem_clock as usize;
 
     let v = mch.read32(mchbar::PMCLKRC);
-    mch.write32(mchbar::PMCLKRC, (v & !0x1FFF_37FF) | 0x1081_0700);
+    mch.write32(mchbar::PMCLKRC, (v & !0x01FF_F37F) | 0x1081_0700);
     let v = mch.read8(mchbar::PMPXPRC);
     mch.write8(mchbar::PMPXPRC, (v & !7) | 1);
     let v = mch.read8(mchbar::PMBAK);
@@ -1466,7 +1668,7 @@ pub fn sdram_program_ddr(mch: &MchBar) {
     let v = mch.read8(mchbar::CSHRWRIOMLNS);
     mch.write8(mchbar::CSHRWRIOMLNS, v & !(1 << 1));
 
-    mch.clrbits32(mchbar::CSHRMISCCTL, 1 << 10);
+    mch.clrbits16(mchbar::CSHRMISCCTL, 1 << 10);
     let v = mch.read16(mchbar::CLOCKGATINGIII);
     mch.write16(mchbar::CLOCKGATINGIII, v & !0x0DC0);
     let v = mch.read8(mchbar::C0WRDPYN);
@@ -1487,28 +1689,28 @@ pub fn sdram_program_ddr(mch: &MchBar) {
     let v = mch.read32(mchbar::C0STATRDCTRL);
     mch.write32(mchbar::C0STATRDCTRL, (v & !(7 << 20)) | (3 << 20));
     mch.clrbits32(mchbar::C0COREBONUS, 1 << 20);
-    mch.setbits32(mchbar::C0DYNSLVDLLEN, 0x1E);
-    mch.setbits32(mchbar::C0DYNSLVDLLEN2, 0x03);
+    mch.setbits8(mchbar::C0DYNSLVDLLEN, 0x1E);
+    mch.setbits8(mchbar::C0DYNSLVDLLEN2, 0x03);
     let v = mch.read32(mchbar::SHCYCTRKCKEL);
     mch.write32(mchbar::SHCYCTRKCKEL, (v & !(3 << 26)) | (1 << 26));
-    mch.setbits32(mchbar::C0STATRDCTRL, 3 << 13);
+    mch.setbits16(mchbar::C0STATRDCTRL, 3 << 13);
     mch.setbits32(mchbar::C0CKECTRL, 1 << 16);
-    mch.setbits32(mchbar::C0COREBONUS, 1 << 4);
+    mch.setbits8(mchbar::C0COREBONUS, 1 << 4);
     mch.setbits32(mchbar::CLOCKGATINGI - 1, 0x0Fu32 << 24);
-    mch.setbits32(mchbar::CSHWRIOBONUS, 7);
-    mch.setbits32(mchbar::C0DYNSLVDLLEN, 3 << 6);
-    mch.setbits32(mchbar::SHC2REGIII, 7);
-    mch.write16(mchbar::SHC2MINTM, 1 << 7);
+    mch.setbits8(mchbar::CSHWRIOBONUS, 7);
+    mch.setbits8(mchbar::C0DYNSLVDLLEN, 3 << 6);
+    mch.setbits8(mchbar::SHC2REGIII, 7);
+    mch.setbits16(mchbar::SHC2MINTM, 1 << 7);
     mch.write8(mchbar::SHC2IDLETM, 0x10);
-    mch.setbits32(mchbar::C0COREBONUS, 0x0F << 5);
-    mch.setbits32(mchbar::CSHWRIOBONUS, 3 << 3);
-    mch.setbits32(mchbar::CSHRMSTDYNDLLENB, 0x0D);
-    mch.setbits32(mchbar::SHC3C4REG1, 0x0A3F);
-    mch.setbits32(mchbar::C0STATRDCTRL, 3);
+    mch.setbits16(mchbar::C0COREBONUS, 0x0F << 5);
+    mch.setbits8(mchbar::CSHWRIOBONUS, 3 << 3);
+    mch.setbits8(mchbar::CSHRMSTDYNDLLENB, 0x0D);
+    mch.setbits16(mchbar::SHC3C4REG1, 0x0A3F);
+    mch.setbits8(mchbar::C0STATRDCTRL, 3);
     mch.write8(mchbar::C0REFRCTRL2, 0x4A);
     let v = mch.read8(mchbar::C0COREBONUS + 4);
     mch.write8(mchbar::C0COREBONUS + 4, v & !(3 << 5));
-    mch.setbits32(mchbar::C0DYNSLVDLLEN, 0x0321);
+    mch.setbits16(mchbar::C0DYNSLVDLLEN, 0x0321);
 
     fstart_log::info!("raminit: DDR mode programmed");
 }
@@ -1539,7 +1741,7 @@ pub fn sdram_program_dqdqs(si: &SysInfo, mch: &MchBar) {
     let mut final_tmaxunmask = 0u32;
 
     while repeat > 0 {
-        let txdelay = mdclk
+        let mut txdelay = mdclk
             * (((mch.read16(mchbar::C0GNT2LNCH1) >> 8) & 0x07) as u32
                 + (mch.read8(mchbar::C0WRDATACTRL) & 0x0F) as u32
                 + (mch.read8(mchbar::C0WRDATACTRL + 1) & 0x01) as u32)
@@ -1550,6 +1752,7 @@ pub fn sdram_program_dqdqs(si: &SysInfo, mch: &MchBar) {
 
         let halfclk = (mch.read8(mchbar::C0MISCCTL) >> 1) & 1;
         let reg32 = if halfclk != 0 {
+            txdelay = txdelay.saturating_sub(mdclk / 2);
             5083 + core_to_mcp - mdclk / 2
         } else {
             5083 + core_to_mcp
@@ -1629,11 +1832,11 @@ pub fn sdram_periodic_rcomp(si: &SysInfo, mch: &MchBar) {
         let v = mch.read16(mchbar::CSHRMISCCTL);
         mch.write16(mchbar::CSHRMISCCTL, v & !(3 << 12));
     }
-    mch.setbits32(mchbar::CMNDQFIFORST, 1 << 7);
+    mch.setbits8(mchbar::CMNDQFIFORST, 1 << 7);
     let v = mch.read16(mchbar::XCOMPDFCTRL);
     mch.write16(mchbar::XCOMPDFCTRL, (v & !0x0F) | 0x09);
 
-    mch.setbits32(mchbar::COMPCTRL1, (1 << 7) | (1 << 1));
+    mch.setbits8(mchbar::COMPCTRL1, (1 << 7) | (1 << 1));
 
     fstart_log::info!("raminit: periodic RCOMP enabled");
 }

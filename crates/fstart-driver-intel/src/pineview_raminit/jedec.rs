@@ -10,9 +10,10 @@ use crate::pineview::regs::{mchbar, MchBar};
 const NOP_CMD: u8 = 1 << 1;
 const PRE_CHARGE_CMD: u8 = 1 << 2;
 const MRS_CMD: u8 = (1 << 2) | (1 << 1);
-const EMRS1_CMD: u8 = 1 << 3;
-const EMRS2_CMD: u8 = (1 << 3) | (1 << 2);
-const EMRS3_CMD: u8 = (1 << 3) | (1 << 2) | (1 << 1);
+const EMRS_CMD: u8 = 1 << 3;
+const EMRS1_CMD: u8 = EMRS_CMD | (1 << 4);
+const EMRS2_CMD: u8 = EMRS_CMD | (1 << 5);
+const EMRS3_CMD: u8 = EMRS_CMD | (1 << 5) | (1 << 4);
 const CBR_CMD: u8 = (1 << 3) | (1 << 2);
 const NORMAL_OP_CMD: u8 = (1 << 3) | (1 << 2) | (1 << 1);
 
@@ -27,19 +28,16 @@ fn send_jedec_cmd(mch: &MchBar, rank: u8, jmode: u8, jval: u16) {
     let v = mch.read8(mchbar::C0JEDEC);
     mch.write8(mchbar::C0JEDEC, (v & !0x3E) | jmode);
 
-    // Issue the command by reading from the computed address.
-    // On real hardware this triggers the DRAM command via the MC.
-    // SAFETY: This is a memory-mapped DRAM strobe — the address is
-    // computed from the JEDEC spec and rank geometry.
-    unsafe {
-        core::ptr::read_volatile(addr as *const u32);
-    }
+    // Issue the command by reading from the computed address. On real
+    // hardware this triggers the DRAM command via the MC. This is an
+    // intentional physical DRAM strobe; use inline assembly
+    // rather than constructing a Rust pointer to an arbitrary physical
+    // address, which would be undefined behavior even with volatile access.
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    unsafe { fstart_arch::x86::read_phys32(addr as usize) };
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 
-    // 1 µs delay for command execution.
-    for _ in 0..200 {
-        core::hint::spin_loop();
-    }
+    fstart_arch::x86::hpet_udelay(2);
 }
 
 /// JEDEC DDR2 initialization sequence.
@@ -61,10 +59,10 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
     let cas = si.selected_timings.cas;
     let twr = si.selected_timings.twr;
 
-    // MRS value: CAS[6:4] | WR[11:9] | DLL reset[8] | BL=4 interleaved[1:0]=3 | BT[3]=1
+    // MRS value: CAS[6:4] | WR[11:9] | BL=4 interleaved[1:0]=3 | BT[3]=1.
+    // The first MRS adds DLL reset bit 8; the later MRS intentionally clears it.
     let mrs: u16 = ((cas as u16) << 4)
         | (((twr.wrapping_sub(1)) as u16) << 9)
-        | (1 << 8) // DLL reset
         | (1 << 3) // BT = interleaved
         | 0x03; // BL = 4 (interleaved) + trailing 1
 
@@ -82,9 +80,7 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
     }
 
     // 200 µs settling time.
-    for _ in 0..40_000 {
-        core::hint::spin_loop();
-    }
+    fstart_arch::x86::hpet_udelay(200);
 
     // Execute JEDEC sequence for each populated rank.  The controller's
     // JEDEC command rank field is packed over populated ranks, not physical
@@ -114,14 +110,14 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
         // 5. EMRS1 — DLL enable, RTT_NOM
         send_jedec_cmd(mch, rank, EMRS1_CMD, rttnom);
         // 6. MRS — CAS, BL, WR, DLL reset
-        send_jedec_cmd(mch, rank, MRS_CMD, mrs);
+        send_jedec_cmd(mch, rank, MRS_CMD, mrs | (1 << 8));
         // 7. Precharge all
         send_jedec_cmd(mch, rank, PRE_CHARGE_CMD, 0);
         // 8. Two auto-refresh
         send_jedec_cmd(mch, rank, CBR_CMD, 0);
         send_jedec_cmd(mch, rank, CBR_CMD, 0);
-        // 9. MRS — clear DLL reset (remove bit 8)
-        send_jedec_cmd(mch, rank, MRS_CMD, mrs & !(1 << 8));
+        // 9. MRS — initialise with DLL reset cleared.
+        send_jedec_cmd(mch, rank, MRS_CMD, mrs);
         // 10. EMRS1 — OCD calibration default (bits 9:7 = 111), then exit
         send_jedec_cmd(mch, rank, EMRS1_CMD, rttnom | (7 << 7));
         send_jedec_cmd(mch, rank, EMRS1_CMD, rttnom);

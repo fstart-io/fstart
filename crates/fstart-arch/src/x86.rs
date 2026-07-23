@@ -25,6 +25,46 @@ pub fn udelay_tsc(us: u32, tsc_hz: u64) {
     }
 }
 
+/// Issue a 32-bit physical memory read without constructing a fabricated
+/// Rust pointer. Pineview uses this as a DRAM command/read-training strobe
+/// while memory is only partially initialized.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub unsafe fn read_phys32(addr: usize) {
+    let value: u32;
+    core::arch::asm!(
+        "mov {value:e}, dword ptr [{addr}]",
+        value = out(reg) value,
+        addr = in(reg) addr,
+        options(nostack, preserves_flags, readonly),
+    );
+    core::hint::black_box(value);
+}
+
+/// Delay using the Intel-compatible HPET main counter.
+///
+/// The Pineview/ICH7 platform enables HPET before entering raminit. The
+/// chipset's coreboot implementation uses 15 counter ticks per microsecond;
+/// retain its wraparound-safe comparison here.
+#[cfg(target_arch = "x86_64")]
+pub fn hpet_udelay(us: u32) {
+    const HPET_BASE: usize = 0xFED0_0000;
+    const MAIN_COUNTER: usize = 0xF0;
+    let delay = us.saturating_mul(15);
+    let start = unsafe { fstart_core::mmio::read32((HPET_BASE + MAIN_COUNTER) as *const u32) };
+    let finish = start.wrapping_add(delay);
+    loop {
+        let now = unsafe { fstart_core::mmio::read32((HPET_BASE + MAIN_COUNTER) as *const u32) };
+        if if finish > start {
+            now >= finish
+        } else {
+            now < start && now >= finish
+        } {
+            break;
+        }
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 pub fn timestamp_us() -> u64 {
     rdtsc() / (tsc_frequency_hz() / 1_000_000).max(1)

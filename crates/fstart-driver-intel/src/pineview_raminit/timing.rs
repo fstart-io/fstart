@@ -7,6 +7,7 @@
 use super::SysInfo;
 use crate::ich7::ich7;
 use crate::pineview::regs::{mchbar, MchBar};
+use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
 
 // ===================================================================
@@ -44,26 +45,32 @@ fn div_round_up(a: u32, b: u32) -> u32 {
 ///
 /// Ported from coreboot `sdram_detect_ram_speed()`.
 pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
-    // --- Read FSB frequency from host bridge register 0xE3 ---
-    let hb = ecam::EcamDevice::new(0, 0, 0);
-    let e3 = hb.read8(0xE3);
-    let fsb_raw = (e3 & 0x70) >> 4;
-    let fsb: u8 = if fsb_raw != 0 {
-        // 5 - fsb_raw: 4→1(800), 3→2(invalid), 2→3(invalid), 1→4(invalid)
-        // In practice only 4 (=800MHz) and 0 (=800MHz default) appear on Pineview.
-        (5u8.saturating_sub(fsb_raw)).min(1)
-    } else {
-        1 // FSB_CLOCK_800MHz
+    // CLKCFG bits 2:0 report the active core/FSB frequency. CAPID only
+    // describes capabilities and must not be used as the current strap.
+    let fsb = match mch.read8(mchbar::CLKCFG) & 0x07 {
+        0x02 => 1, // FSB 800 MHz
+        0x03 => 0, // FSB 667 MHz
+        raw => {
+            fstart_log::error!("raminit: unsupported CLKCFG FSB encoding {}", raw);
+            0
+        }
     };
 
-    // --- Read DDR frequency from host bridge registers 0xE3/0xE4 ---
+    // CAPID reports the maximum supported DDR frequency.
+    let hb = ecam::EcamDevice::new(0, 0, 0);
+    let e3 = hb.read8(0xE3);
     let freq_raw = ((e3 & 0x80) >> 7) | ((hb.read8(0xE4) & 0x03) << 1);
-    let mut freq: u8 = if freq_raw != 0 {
-        // 6 - freq_raw: 5→1(800), 4→2(invalid), ... Only 5 (=800) and 0 used.
-        (6u8.saturating_sub(freq_raw)).min(1)
-    } else {
-        1 // MEM_CLOCK_800MHz
+    let mut freq: u8 = match freq_raw {
+        0 | 5 => 1, // DDR 800 MHz
+        6 => 0,     // DDR 667 MHz
+        raw => {
+            fstart_log::error!("raminit: unsupported CAPID DDR encoding {}", raw);
+            0
+        }
     };
+    if si.is_sodimm() {
+        freq = 0;
+    }
 
     si.selected_timings.fsb_clock = fsb;
     fstart_log::info!(
@@ -202,7 +209,7 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
 /// Detect the smallest common timing parameters across all DIMMs.
 ///
 /// Ported from coreboot `sdram_detect_smallest_params()`.
-pub fn detect_smallest_params(si: &mut SysInfo) {
+pub fn detect_smallest_params(si: &mut SysInfo) -> Result<(), ServiceError> {
     // Cycle time in ps for DDR667 and DDR800.
     let mult: [u32; 2] = [3000, 2500];
     let m = mult[si.selected_timings.mem_clock as usize];
@@ -226,7 +233,17 @@ pub fn detect_smallest_params(si: &mut SysInfo) {
         max_trp = max_trp.max(((spd[27] as u32) * 1000) >> 2);
         max_trcd = max_trcd.max(((spd[29] as u32) * 1000) >> 2);
         max_twr = max_twr.max(((spd[36] as u32) * 1000) >> 2);
-        max_trfc = max_trfc.max((spd[42] as u32) * 1000 + (spd[40] as u32 & 0xF));
+        const TRFC_EXTENSION_PS: [u32; 6] = [0, 250, 333, 500, 667, 750];
+        let trfc_ext = spd[40];
+        let trfc_idx = usize::from((trfc_ext >> 1) & 0x07);
+        let Some(mut add_trfc) = TRFC_EXTENSION_PS.get(trfc_idx).copied() else {
+            fstart_log::error!("raminit: unsupported DDR2 tRFC extension {}", trfc_idx);
+            return Err(ServiceError::HardwareError);
+        };
+        if trfc_ext & 1 != 0 {
+            add_trfc += 256_000;
+        }
+        max_trfc = max_trfc.max((spd[42] as u32) * 1000 + add_trfc);
         max_twtr = max_twtr.max(((spd[37] as u32) * 1000) >> 2);
         max_trrd = max_trrd.max(((spd[28] as u32) * 1000) >> 2);
         max_trtp = max_trtp.max(((spd[38] as u32) * 1000) >> 2);
@@ -237,7 +254,7 @@ pub fn detect_smallest_params(si: &mut SysInfo) {
     si.selected_timings.trcd = 10u8.min(div_round_up(max_trcd, m) as u8);
     si.selected_timings.twr = 15u8.min(div_round_up(max_twr, m) as u8);
     // tRFC must be even.
-    let trfc = 78u8.min(div_round_up(max_trfc, m) as u8).wrapping_add(1) & 0xFE;
+    let trfc = ((78u32.min(div_round_up(max_trfc, m)) + 1) as u8) & 0xFE;
     si.selected_timings.trfc = trfc;
     si.selected_timings.twtr = 15u8.min(div_round_up(max_twtr, m) as u8);
     si.selected_timings.trrd = 15u8.min(div_round_up(max_trrd, m) as u8);
@@ -254,6 +271,7 @@ pub fn detect_smallest_params(si: &mut SysInfo) {
         si.selected_timings.trrd,
         si.selected_timings.trtp
     );
+    Ok(())
 }
 
 // ===================================================================
@@ -489,9 +507,11 @@ pub fn check_reset(_si: &SysInfo) {
 
     if reset {
         fstart_log::info!("raminit: triggering full reset (PMCON2 bit 7 set)");
-        // Write 0x0E to CF9 to trigger full reset.
+        // Match coreboot full_reset(): arm the reset controller before
+        // requesting CPU + system + full reset.
         #[cfg(target_arch = "x86_64")]
         unsafe {
+            fstart_core::pio::outb(0xCF9, 0x0A);
             fstart_core::pio::outb(0xCF9, 0x0E);
         }
         // Should not reach here after reset.

@@ -383,6 +383,28 @@ where
     fstart_log::info!("{}: ns16550 console ready", spec.console_node);
     fstart_log::info!("{} bootblock console ready", spec.platform);
 
+    // Complete the pre-RAM chipset flow before touching the ramstage load
+    // address. The bootblock itself executes from ROM with its writable state
+    // in CAR, but the next stage is loaded into ordinary DRAM.
+    northbridge.early_init()?;
+    southbridge.early_init()?;
+    hooks.before_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
+
+    fstart_log::info!("{}: initializing DRAM", spec.platform);
+    let boot_path = if southbridge.detect_s3_resume() {
+        2
+    } else if northbridge.detect_warm_reset() {
+        1
+    } else {
+        0
+    };
+    northbridge.set_boot_path(boot_path);
+    northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
+    northbridge.early_post_dram_init()?;
+    southbridge.early_post_dram_init()?;
+    hooks.after_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
+    fstart_log::info!("{}: DRAM ready", spec.platform);
+
     fstart_arch::x86_64::enable_boot_media_rom_cache();
     if ffs.mount().is_err()
         || ffs.verify().is_err()
@@ -392,6 +414,7 @@ where
         return Err(ServiceError::HardwareError);
     }
 
+    hooks.before_handoff(&mut IntelEarlyCtx::new(&mut southbridge))?;
     fstart_log::info!("jumping to ramstage at {:#x}", spec.ramstage_load_addr);
     fstart_arch::x86_64::jump_to(spec.ramstage_load_addr)
 }
@@ -437,7 +460,9 @@ where
     ctx.e820_state_mut().set_detected(count, total);
     northbridge.memory_detected(ctx.e820_state());
 
-    northbridge.dram_init()
+    // DRAM was initialized by the bootblock. Mainstage only reconstructs the
+    // memory map and must not retrain or issue JEDEC commands again.
+    Ok(())
 }
 
 #[cfg(feature = "stage")]

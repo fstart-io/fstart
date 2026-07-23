@@ -220,6 +220,7 @@ pub struct IntelPineview {
     config: &'static IntelPineviewConfig,
     /// Detected DRAM size (bytes), populated by `init()`.
     detected_size: u64,
+    boot_path: u8,
     pci: Option<PciEcam>,
 }
 
@@ -451,30 +452,12 @@ impl IntelPineview {
         lpc.write8(0x08, 0x1D);
         lpc.write8(0x08, 0x00);
 
-        // RCBA routing registers. Read RCBA from ICH7 LPC config.
+        // Read RCBA from ICH7 LPC config for the remaining shared chipset
+        // control register. IRQ and USB routing are owned by the southbridge.
         let rcba_val = lpc.read32(ich7::RCBA_REG);
         let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
 
         rcba.write32(0x3410, 0x0002_0465);
-
-        // USB transient disconnect (1D:0..3 reg 0xCA). Coreboot uses
-        // pci_write_config32() at the unaligned offset; the effective
-        // change is bit 0 of byte 0xCA.
-        for func in 0..4u8 {
-            ecam::EcamDevice::new(0, 0x1d, func).or8(0xCA, 0x1);
-        }
-
-        // RCBA routing table setup.
-        rcba.write32(0x3100, 0x0004_2210);
-        rcba.write32(0x3108, 0x1000_4321);
-        rcba.write32(0x310C, 0x0021_4321);
-        rcba.write32(0x3110, 1);
-        // Coreboot emits overlapping unaligned RCBA32 writes at 0x3142
-        // and 0x3146.  Their final byte pattern is exactly represented
-        // by these aligned writes, avoiding unaligned volatile u32 access.
-        rcba.write32(0x3140, 0x0146_0132);
-        rcba.write32(0x3144, 0x3201_0237);
-        rcba.write32(0x3148, 0x0000_0146);
 
         fstart_log::info!("pineview: early misc setup complete");
     }
@@ -520,10 +503,6 @@ impl IntelPineview {
         rcba.write32(ich7::GCS, gcs & !0x04);
         rcba.write32(0x2010, rcba.read32(0x2010) | (1 << 10));
 
-        // 5. Virtual Channel 0 setup (from romstage rcba_config()).
-        rcba.write32(0x0014, 0x8000_0001);
-        rcba.write32(0x001C, 0x0312_8010);
-
         fstart_log::info!("intel-pineview: early init complete");
         Ok(())
     }
@@ -542,6 +521,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         Ok(Self {
             config,
             detected_size: 0,
+            boot_path: 0,
             pci: None,
         })
     }
@@ -558,6 +538,28 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         self.early_phase()
     }
 
+    fn detect_warm_reset(&self) -> bool {
+        IntelPineview::detect_warm_reset(self)
+    }
+
+    fn set_boot_path(&mut self, boot_path: u8) {
+        self.boot_path = boot_path;
+    }
+
+    fn dram_init_with_smbus(&mut self, smbus: Option<&mut dyn SmBus>) -> Result<(), ServiceError> {
+        let smbus = smbus.ok_or(ServiceError::NotInitialized)?;
+        self.dram_init_with_smbus(smbus)
+    }
+
+    fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let rcba = Rcba::new((lpc.read32(ich7::RCBA_REG) & 0xFFFF_C000) as usize);
+        rcba.write32(0x0014, 0x8000_0001);
+        rcba.write32(0x001C, 0x0312_8010);
+        fstart_log::info!("pineview: VC0 configured after DRAM init");
+        Ok(())
+    }
+
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         self.init_igd_opregion();
@@ -565,7 +567,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
     }
 }
 
-fn pineview_ck505_pre_raminit<B: SmBus>(smbus: &mut B) {
+fn pineview_ck505_pre_raminit<B: SmBus + ?Sized>(smbus: &mut B) {
     const CLOCKGEN_ADDR: u8 = 0x69;
     const REGS: [u8; 5] = [0x00, 0x80, 0xfe, 0xff, 0xfc];
 
@@ -675,22 +677,9 @@ impl MemoryDetector for IntelPineview {
 
 impl MemoryController for IntelPineview {
     fn dram_init(&mut self) -> Result<(), ServiceError> {
-        let mut smbus = crate::smbus::I801SmBus::new(0x0400);
-        if self.config.ck505_pre_raminit {
-            pineview_ck505_pre_raminit(&mut smbus);
-        }
-        let boot_path = if self.detect_warm_reset() { 1 } else { 0 };
-        let platform_type = self.platform_type();
-        let size = raminit::sdram_initialize(
-            &self.mchbar(),
-            &mut smbus,
-            boot_path,
-            platform_type,
-            &self.config.spd_addresses,
-        )?;
-        self.detected_size = size;
-        self.memory_test()?;
-        Ok(())
+        // Pineview SPD access belongs to the initialized ICH7 SMBus. The Intel
+        // early flow must call IntelNorthbridgeDriver::dram_init_with_smbus().
+        Err(ServiceError::NotInitialized)
     }
 
     fn detected_size_bytes(&self) -> u64 {
@@ -710,6 +699,30 @@ impl MemoryController for IntelPineview {
             usable_top
         );
         pineview_lower_memory_test(usable_top)
+    }
+}
+
+impl IntelPineview {
+    fn dram_init_with_smbus(
+        &mut self,
+        smbus: &mut (impl SmBus + ?Sized),
+    ) -> Result<(), ServiceError> {
+        if self.config.ck505_pre_raminit {
+            pineview_ck505_pre_raminit(smbus);
+        }
+        let platform_type = self.platform_type();
+        let size = raminit::sdram_initialize(
+            &self.mchbar(),
+            smbus,
+            self.boot_path,
+            platform_type,
+            &self.config.spd_addresses,
+        )?;
+        self.detected_size = size;
+        if self.boot_path != raminit::BOOT_PATH_RESUME {
+            self.memory_test()?;
+        }
+        Ok(())
     }
 }
 

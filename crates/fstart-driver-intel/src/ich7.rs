@@ -1070,24 +1070,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
             I801SmBus::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, self.config.smbus_base);
         self.smbus = Some(smbus);
 
-        // ---- 5. PIRQ routing ----
-        let pirq_low = u32::from_le_bytes([
-            self.config.pirq_routing[0],
-            self.config.pirq_routing[1],
-            self.config.pirq_routing[2],
-            self.config.pirq_routing[3],
-        ]);
-        let pirq_high = u32::from_le_bytes([
-            self.config.pirq_routing[4],
-            self.config.pirq_routing[5],
-            self.config.pirq_routing[6],
-            self.config.pirq_routing[7],
-        ]);
-        lpc.pirqa_rout.set(pirq_low);
-        lpc.pirqe_rout.set(pirq_high);
-
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
-        self.setup_interrupt_routing(&rcba);
 
         // ---- 7. PCI bridge secondary MLT ----
         Self::type1_regs(ecam::EcamDevice::new(0, 0x1e, 0))
@@ -1105,6 +1088,9 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         // addition to setting bits 17 and 29. Preserve all unrelated bits.
         ehci.modify32(0xFC, !(3 << 2), (2 << 2) | (1 << 29) | (1 << 17));
         ehci.or32(0xDC, (1 << 31) | (1 << 27));
+        for func in 0..4u8 {
+            ecam::EcamDevice::new(0, 0x1d, func).or8(0xCA, 0x1);
+        }
 
         // ---- 10. Enable IOAPIC ----
         rcba.regs().oic.set(0x03);
@@ -1131,6 +1117,36 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
 
     fn post_dram_init(&mut self) -> Result<(), ServiceError> {
         IntelIch7::ramstage_init(self)
+    }
+
+    fn detect_s3_resume(&self) -> bool {
+        IntelIch7::detect_s3_resume(self)
+    }
+
+    fn smbus_mut(&mut self) -> Option<&mut dyn SmBus> {
+        Some(IntelIch7::smbus_mut(self))
+    }
+
+    fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        let lpc = self.lpc_regs();
+        let pirq_low = u32::from_le_bytes([
+            self.config.pirq_routing[0],
+            self.config.pirq_routing[1],
+            self.config.pirq_routing[2],
+            self.config.pirq_routing[3],
+        ]);
+        let pirq_high = u32::from_le_bytes([
+            self.config.pirq_routing[4],
+            self.config.pirq_routing[5],
+            self.config.pirq_routing[6],
+            self.config.pirq_routing[7],
+        ]);
+        lpc.pirqa_rout.set(pirq_low);
+        lpc.pirqe_rout.set(pirq_high);
+        let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
+        self.setup_interrupt_routing(&rcba);
+        fstart_log::info!("intel-ich7: PIRQ routing configured after DRAM init");
+        Ok(())
     }
 
     fn finalize_init(&mut self) -> Result<(), ServiceError> {

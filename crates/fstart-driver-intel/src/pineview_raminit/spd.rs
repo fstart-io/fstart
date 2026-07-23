@@ -11,7 +11,7 @@ use crate::pineview::raminit::{DIMM_TYPE_SODIMM, DIMM_TYPE_UBDIMM};
 /// Ported from coreboot `sdram_read_spds()` + `decode_spd()` +
 /// `find_ramconfig()`, with common DDR2 SPD parsing delegated to
 /// `crate::spd` so Pineview and GM965 share the same geometry/timing decode.
-pub fn read_spds<B: fstart_core::services::SmBus>(
+pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
     si: &mut SysInfo,
     smbus: &mut B,
 ) -> Result<(), ServiceError> {
@@ -144,38 +144,32 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
         return a_cfg | (b_cfg << 2);
     }
 
-    let a_sides = a.as_ref().map_or(0, |d| d.sides);
-    let b_sides = b.as_ref().map_or(0, |d| d.sides);
-    let a_x8 = a.as_ref().is_some_and(|d| d.width == ChipWidth::X8);
-    let b_x8 = b.as_ref().is_some_and(|d| d.width == ChipWidth::X8);
-
-    match (a_sides, b_sides) {
-        (0, 0) => 0,
-        (0, 1) => 1,
-        (0, s) if s > 1 => {
-            if b_x8 {
-                5
-            } else {
-                2
+    // Match coreboot's mobile/SO-DIMM vendor-MRC encoding exactly. A
+    // single populated socket is encoded as NC_xxx regardless of whether
+    // it is DIMMA or DIMMB; for two populated sockets DIMMA determines the
+    // dual-rank/x8 special case.
+    match (a.as_ref(), b.as_ref()) {
+        (None, None) => 0,
+        (Some(a), Some(_b)) => {
+            let mut cfg = 3;
+            if a.sides > 1 {
+                cfg += 1;
+                if a.width == ChipWidth::X8 {
+                    cfg = 6;
+                }
             }
+            cfg
         }
-        (1, 0) => 1,
-        (1, 1) => 3,
-        (s, 0) if s > 1 => {
-            if a_x8 {
-                5
-            } else {
-                4
+        (Some(a), None) | (None, Some(a)) => {
+            let mut cfg = 1;
+            if a.sides > 1 {
+                cfg += 1;
+                if a.width == ChipWidth::X8 {
+                    cfg = 5;
+                }
             }
+            cfg
         }
-        (s1, s2) if s1 > 1 && s2 > 1 => {
-            if a_x8 && b_x8 {
-                6
-            } else {
-                4
-            }
-        }
-        _ => 0,
     }
 }
 
