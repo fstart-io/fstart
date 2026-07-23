@@ -83,6 +83,11 @@ fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
     let manifest = board_manifest::find(&workspace_root, board)?;
     let selected_workspace =
         build_board::prepare_selected_board_workspace(&workspace_root, &manifest)?;
+    let mut host_features = String::from("host");
+    for feature in &manifest.variant_features {
+        host_features.push(',');
+        host_features.push_str(feature);
+    }
     let status = std::process::Command::new("cargo")
         .current_dir(&workspace_root)
         .arg("run")
@@ -95,8 +100,9 @@ fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
         .arg(&manifest.package)
         .arg("--bin")
         .arg("fstart-host")
+        .arg("--no-default-features")
         .arg("--features")
-        .arg("host")
+        .arg(&host_features)
         .arg("--")
         .args(args)
         .env("FSTART_WORKSPACE_ROOT", &workspace_root)

@@ -1,0 +1,54 @@
+[package]
+name = "fstart-board-orangepi-r1"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+board = "orangepi-r1"
+platform = "armv7"
+target = "armv7a-none-eabi"
+stage-bin = "fstart-stage"
+features = [
+  "allwinner-h3",
+]
+
+[features]
+default = []
+host = ["dep:fbuild", "fstart-platform-sunxi/host"]
+runtime = []
+stage = [
+  "runtime",
+  "dep:fstart-driver-uart",
+  "dep:fstart-stage",
+  "fstart-platform-sunxi/stage",
+]
+armv7 = ["fstart-stage?/armv7", "fstart-platform-sunxi/armv7"]
+ffs = ["fstart-stage?/ffs"]
+ed25519 = ["fstart-stage?/ed25519"]
+sha2-digest = ["fstart-stage?/sha2-digest"]
+sha3-digest = ["fstart-stage?/sha3-digest"]
+lz4 = ["fstart-stage?/lz4"]
+fdt = ["fstart-stage?/fdt"]
+linux = ["fstart-stage?/linux", "fstart-platform-sunxi/linux"]
+handoff = ["fstart-stage?/handoff"]
+allwinner-h3 = ["fstart-platform-sunxi/h3"]
+
+[dependencies]
+fstart-core = { path = "../../../crates/core" }
+fstart-driver-sunxi = { path = "../../../crates/driver-sunxi" }
+fstart-platform-sunxi = { path = "../../../crates/platform-sunxi" }
+fstart-driver-uart = { path = "../../../crates/driver-uart", optional = true }
+fstart-stage = { path = "../../../crates/stage", optional = true }
+fbuild = { path = "../../../tools/fbuild", optional = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+required-features = ["stage"]
+
+[[bin]]
+name = "fstart-host"
+path = "src/host_main.rs"
+required-features = ["host"]

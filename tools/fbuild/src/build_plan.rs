@@ -440,9 +440,12 @@ mod tests {
             board: "test-board".to_string(),
             package: "fstart-board-test".to_string(),
             dir: PathBuf::new(),
+            rel_dir: PathBuf::new(),
             platform: Some("riscv64".to_string()),
             target: Some(Platform::Riscv64.target_triple().to_string()),
             features: vec!["custom-driver".to_string()],
+            variant_features: Vec::new(),
+            variants: Vec::new(),
             acpi_only_devices: false,
             stage_bin: Some("fstart-stage".to_string()),
         }

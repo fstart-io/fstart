@@ -154,6 +154,11 @@ fn build_board_smm_stage(
 
     let selected_workspace = prepare_selected_board_workspace(workspace_root, board_manifest)?;
 
+    let mut smm_features = String::from("smm");
+    for feature in &board_manifest.variant_features {
+        smm_features.push(',');
+        smm_features.push_str(feature);
+    }
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root)
         .arg("build")
@@ -168,7 +173,7 @@ fn build_board_smm_stage(
         .arg(&target_dir)
         .arg("--no-default-features")
         .arg("--features")
-        .arg("smm")
+        .arg(&smm_features)
         .arg("--release");
     cmd.env(
         "RUSTFLAGS",
@@ -207,7 +212,11 @@ pub fn prepare_selected_board_workspace(
         .join("target")
         .join("fstart-workspaces")
         .join(&board_manifest.board);
-    fs::create_dir_all(selected.join("boards"))
+    let board_link = selected.join("boards").join(&board_manifest.rel_dir);
+    let board_link_parent = board_link
+        .parent()
+        .ok_or_else(|| "board workspace link has no parent".to_string())?;
+    fs::create_dir_all(board_link_parent)
         .map_err(|e| format!("failed to create selected board workspace: {e}"))?;
     fs::create_dir_all(selected.join("tools"))
         .map_err(|e| format!("failed to create selected tools dir: {e}"))?;
@@ -221,14 +230,17 @@ pub fn prepare_selected_board_workspace(
         workspace_root.join("Cargo.lock"),
         selected.join("Cargo.lock"),
     )?;
-    replace_with_symlink(
-        board_manifest.dir.clone(),
-        selected.join("boards").join(&board_manifest.board),
-    )?;
+    replace_with_symlink(board_manifest.dir.clone(), board_link)?;
 
+    let rel_dir = board_manifest.rel_dir.to_str().ok_or_else(|| {
+        format!(
+            "board directory is not valid UTF-8: {}",
+            board_manifest.rel_dir.display()
+        )
+    })?;
     let root_manifest = fs::read_to_string(workspace_root.join("Cargo.toml"))
         .map_err(|e| format!("failed to read root Cargo.toml: {e}"))?;
-    let manifest = selected_workspace_manifest(&root_manifest, &board_manifest.board)?;
+    let manifest = selected_workspace_manifest(&root_manifest, rel_dir)?;
     fs::write(selected.join("Cargo.toml"), manifest)
         .map_err(|e| format!("failed to write selected board workspace manifest: {e}"))?;
     Ok(selected)
@@ -265,7 +277,7 @@ fn remove_path_if_present(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn selected_workspace_manifest(root_manifest: &str, board: &str) -> Result<String, String> {
+fn selected_workspace_manifest(root_manifest: &str, board_rel_dir: &str) -> Result<String, String> {
     let members_start = root_manifest
         .find("members = [")
         .ok_or_else(|| "root Cargo.toml has no workspace members list".to_string())?;
@@ -276,7 +288,7 @@ fn selected_workspace_manifest(root_manifest: &str, board: &str) -> Result<Strin
 
     let mut manifest = String::new();
     manifest.push_str(&root_manifest[..members_start]);
-    manifest.push_str(&format!("members = [\n  \"boards/{board}\",\n]\n"));
+    manifest.push_str(&format!("members = [\n  \"boards/{board_rel_dir}\",\n]\n"));
     manifest.push_str(&root_manifest[members_end..]);
     manifest = manifest
         .lines()

@@ -39,4 +39,4 @@ boot-assets/
 
 # Board crates are not workspace members; their lockfiles are rust-analyzer/cargo-check artifacts.
 # Real builds lock inside the fbuild temp workspace under target/.
-boards/*/Cargo.lock
+boards/*/*/Cargo.lock

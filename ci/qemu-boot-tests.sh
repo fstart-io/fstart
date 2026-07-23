@@ -164,7 +164,7 @@ fi
 # Orange Pi R1 (H2+) eGON SD boot on the QEMU orangepi-pc H3 machine.
 run_boot orangepi-r1 halt 'h3 mainstage: 1024 MiB DRAM'
 if [[ -f "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" ]]; then
-	cp "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" boards/orangepi-r1/
+	cp "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" boards/xunlong/orangepi-r1/
 	run_boot orangepi-r1 linux FSTART_CI_BOOT_SUCCESS \
 		--kernel "$ASSET_DIR/zImage-armv7"
 else

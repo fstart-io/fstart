@@ -213,8 +213,12 @@ quirks, board ACPI fragments, SMM handlers, SMBIOS strings, flash layout
 defaults. Per-board crates under `crates/` (the old
 `fstart-mainboard-lenovo-x61` pattern) must not exist.
 
+Boards live at `boards/<vendor>/<board>/` (coreboot's mainboard layout);
+the board id in `[package.metadata.fstart]` stays globally unique
+(`lenovo-x61`), the directory carries the vendor grouping.
+
 ```text
-boards/lenovo-x61/
+boards/lenovo/x61/
   Cargo.toml            # [package.metadata.fstart] board/platform discovery keys + [[bin]] stanza
   src/lib.rs            # BoardSpec impl + hooks impls
   src/main.rs           # 3 fixed lines: fstart_stage::stage_bin!(...) — see below
@@ -226,7 +230,8 @@ boards/lenovo-x61/
 ```
 
 - Boards are real Cargo crates (rust-analyzer works) but excluded from the
-  root workspace. `fbuild` discovers them via `boards/**/Cargo.toml` metadata
+  root workspace (a single `exclude = ["boards"]`, never a per-board list).
+  `fbuild` discovers them via `boards/<vendor>/<board>/Cargo.toml` metadata
   and creates a temporary selected-board workspace under `target/`.
 - Runtime modules contain no host paths, signing keys, or output names. Host
   concerns live behind `feature = "host"`.
@@ -247,14 +252,14 @@ Rust 2018 an `--extern` crate is only linked if referenced — so a shared
 Per board, two fully declarative artifacts that never change after creation:
 
 ```rust
-// boards/lenovo-x61/src/main.rs — exactly this, forever
+// boards/lenovo/x61/src/main.rs — exactly this, forever
 #![no_std]
 #![no_main]
 fstart_stage::stage_bin!(fstart_board_lenovo_x61::Board);
 ```
 
 ```toml
-# boards/lenovo-x61/Cargo.toml
+# boards/lenovo/x61/Cargo.toml
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
@@ -273,6 +278,47 @@ once are config-as-data in Rust form — the only static, greppable,
 rust-analyzer-visible edge from bin to board that needs no registry and no
 generator. `fbuild` just runs
 `cargo build -p fstart-board-lenovo-x61 --bin fstart-stage --features stage,...`.
+
+### Variants
+
+Near-identical boards (X61/X61s/X61t, the sunxi clone farms) are **one board
+crate with one cargo feature per variant** — coreboot's `variants/`
+mechanism. This works precisely because a board is a leaf bin crate built in
+an isolated selected-board workspace: cargo feature unification can never
+merge two variants, so mutually exclusive variant features are safe here.
+
+```toml
+# boards/lenovo/x61/Cargo.toml
+[features]
+default = ["variant-x61"]        # rust-analyzer/cargo-check convenience only
+variant-x61 = []
+variant-x61s = []
+
+[package.metadata.fstart]
+board = "lenovo-x61"
+
+[package.metadata.fstart.variants.lenovo-x61s]
+features = ["variant-x61s"]
+```
+
+```rust
+// lib.rs — exactly one variant, enforced at compile time
+#[cfg(not(any(feature = "variant-x61", feature = "variant-x61s")))]
+compile_error!("select exactly one variant-* feature");
+```
+
+Rules:
+
+- `fbuild --board lenovo-x61s` resolves the variant id to the board package
+  plus the variant's features; every build (`stage`, `smm`, host tool) runs
+  `--no-default-features` with those features. The variant id is the build
+  label, so variant artifacts never collide.
+- A variant's `BoardConfig::name` must equal its variant id.
+- Variant modules are data-dominant: config deltas, SMBIOS strings, GPIO/HDA
+  table diffs, the occasional hook override. When two "variants" need
+  different platform flows, they are two boards.
+- CI builds every variant declared in metadata; the `default` feature exists
+  only so rust-analyzer sees one coherent cfg world.
 
 Rejected alternatives, so they do not creep back:
 
@@ -375,8 +421,8 @@ crates/
   driver-superio/             # pc87392.rs pc87382.rs ite8721f.rs
 tools/
   fbuild/
-boards/
-  lenovo-x61/  foxconn-d41s/  qemu-riscv64/  ...
+boards/                       # boards/<vendor>/<board>/, one crate per board family
+  lenovo/x61/  foxconn/d41s/  qemu/riscv64/  qemu/q35/  ...
 ```
 
 Vendor drivers group by vendor (`fstart-driver-intel`), small generic drivers
@@ -394,7 +440,8 @@ into runtime modules.
 
 `fbuild` owns, exhaustively:
 
-1. Board discovery from `boards/**/Cargo.toml` metadata.
+1. Board discovery from `boards/<vendor>/<board>/Cargo.toml` metadata,
+   including variant-id resolution to package + variant features.
 2. Temporary selected-board workspace under `target/` — a workspace manifest
    listing the board package as a member, nothing more. No generated package
    manifests, no generated Rust.
