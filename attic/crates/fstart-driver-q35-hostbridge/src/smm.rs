@@ -1,6 +1,6 @@
 //! Unported Q35 TSEG/SMI sequence.
 //!
-//! This is archival source, not a crate. `crates/fstart-platform-qemu/src/q35.rs`
+//! This is archival source, not a crate. `crates/platform-qemu/src/q35.rs`
 //! owns the live Q35 host-bridge flow; port these blocks into that module only
 //! when `qemu-q35` enables SMM. The legacy API names below are retained as the
 //! hardware-sequence reference.

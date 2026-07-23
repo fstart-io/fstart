@@ -10,13 +10,6 @@ board = "lenovo-x61"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
-features = [
-  "intel-gm965",
-  "intel-ich8",
-  "nsc-pc87382",
-  "nsc-pc87392",
-  "i2c-ck505",
-]
 
 [features]
 default = []
@@ -41,11 +34,6 @@ lz4 = ["fstart-stage?/lz4"]
 fit = ["fstart-stage?/fit"]
 fdt = ["fstart-stage?/fdt"]
 handoff = ["fstart-stage?/handoff"]
-intel-gm965 = []
-intel-ich8 = []
-nsc-pc87382 = []
-nsc-pc87392 = []
-i2c-ck505 = []
 acpi = [
   "dep:fstart-acpi-macros",
   "fstart-stage?/acpi",
@@ -62,16 +50,16 @@ smm = [
 ]
 
 [dependencies]
-fstart-core = { path = "../../crates/fstart-core", features = ["pci"] }
-fstart-platform-intel = { path = "../../crates/fstart-platform-intel" }
-fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"] }
-fstart-acpi-macros = { path = "../../crates/fstart-acpi-macros", optional = true }
-fstart-arch = { path = "../../crates/fstart-arch", features = ["x86_64"] }
-fstart-driver-intel = { path = "../../crates/fstart-driver-intel", features = ["ffs-vbt"] }
-fstart-driver-superio = { path = "../../crates/fstart-driver-superio" }
-fstart-driver-uart = { path = "../../crates/fstart-driver-uart", features = ["pio"], optional = true }
-fstart-smm = { path = "../../crates/fstart-smm", optional = true }
-fstart-stage = { path = "../../crates/fstart-stage", optional = true }
+fstart-core = { path = "../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../crates/platform-intel" }
+fstart-acpi = { path = "../../crates/acpi", features = ["x86"] }
+fstart-acpi-macros = { path = "../../crates/acpi-macros", optional = true }
+fstart-arch = { path = "../../crates/arch", features = ["x86_64"] }
+fstart-driver-intel = { path = "../../crates/driver-intel", features = ["ffs-vbt"] }
+fstart-driver-superio = { path = "../../crates/driver-superio" }
+fstart-driver-uart = { path = "../../crates/driver-uart", features = ["pio"], optional = true }
+fstart-smm = { path = "../../crates/smm", optional = true }
+fstart-stage = { path = "../../crates/stage", optional = true }
 fbuild = { path = "../../tools/fbuild", optional = true }
 
 [[bin]]

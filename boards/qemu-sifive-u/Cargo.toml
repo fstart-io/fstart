@@ -34,10 +34,10 @@ crabefi = ["fstart-stage?/crabefi", "fstart-platform-qemu/crabefi"]
 qemu-sifive-u = []
 
 [dependencies]
-fstart-core = { path = "../../crates/fstart-core" }
-fstart-platform-qemu = { path = "../../crates/fstart-platform-qemu" }
-fstart-driver-uart = { path = "../../crates/fstart-driver-uart", optional = true }
-fstart-stage = { path = "../../crates/fstart-stage", optional = true }
+fstart-core = { path = "../../crates/core" }
+fstart-platform-qemu = { path = "../../crates/platform-qemu" }
+fstart-driver-uart = { path = "../../crates/driver-uart", optional = true }
+fstart-stage = { path = "../../crates/stage", optional = true }
 fbuild = { path = "../../tools/fbuild", optional = true }
 
 [[bin]]

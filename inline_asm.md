@@ -437,7 +437,7 @@ and verify tables match expectations.
 
 ```
 crates/
-  fstart-acpi/                  # no_std + alloc, target + host
+  acpi/                         # no_std + alloc, target + host
     Cargo.toml                  # dep: acpi_tables
     src/
       lib.rs                    # re-exports acpi_tables + extensions
@@ -451,7 +451,7 @@ crates/
         sleep.rs                # Sleep / Stall
         cond_ref_of.rs          # CondRefOf / RefOf
 
-  fstart-acpi-macros/           # proc-macro crate (host only)
+  acpi-macros/                  # proc-macro crate (host only)
     Cargo.toml                  # dep: syn, quote, proc-macro2
     src/
       lib.rs                    # #[proc_macro] acpi_dsl, resource_template

@@ -17,7 +17,7 @@ const increments = [
     scope: [
       'crates/fstart-platform-intel-gm965-ich8/src/recipe.rs',
       'crates/fstart-stage-runtime/src/fixed_flow.rs',
-      'crates/fstart-stage/src/lib.rs',
+      'crates/stage/src/lib.rs',
       'boards/lenovo-x61/src/stage.rs'
     ],
     forbidden: ['parallel recipe and fixed-flow models', 'HardwareInit in early flow', 'ordering DSL', 'payload-flavored flow names']
@@ -27,7 +27,7 @@ const increments = [
     goal: 'Move ramstage to the phase-oriented mainstage shape and remove payload-flavored recipe naming. Boot mode and payload remain build inputs, not board identity.',
     scope: [
       'crates/fstart-platform-intel-gm965-ich8/src/recipe.rs',
-      'crates/fstart-stage/src/lib.rs',
+      'crates/stage/src/lib.rs',
       'boards/lenovo-x61/Cargo.toml',
       'xtask/src/build_plan.rs',
       'xtask/src/build_board.rs'

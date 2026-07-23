@@ -12,10 +12,10 @@ use fstart_core::{
     SmbiosConfig,
 };
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
-use fstart_driver_intel::gpio_ich as gpio;
+use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
-use fstart_driver_intel::hda;
+use fstart_driver_intel::southbridge::hda;
 #[cfg(feature = "host")]
 use fstart_platform_intel::gm965::{gm965_ich8_memory, gm965_ich8_microcode, gm965_ich8_stages};
 use fstart_platform_intel::gm965::{

@@ -37,11 +37,11 @@ crabefi = ["fstart-arch?/riscv64-sbi-resume", "fstart-stage?/crabefi"]
 sifive-unmatched = []
 
 [dependencies]
-fstart-core = { path = "../../crates/fstart-core" }
-fstart-arch = { path = "../../crates/fstart-arch", optional = true }
-fstart-driver-uart = { path = "../../crates/fstart-driver-uart", optional = true }
-fstart-log = { path = "../../crates/fstart-log", optional = true }
-fstart-stage = { path = "../../crates/fstart-stage", optional = true }
+fstart-core = { path = "../../crates/core" }
+fstart-arch = { path = "../../crates/arch", optional = true }
+fstart-driver-uart = { path = "../../crates/driver-uart", optional = true }
+fstart-log = { path = "../../crates/log", optional = true }
+fstart-stage = { path = "../../crates/stage", optional = true }
 fbuild = { path = "../../tools/fbuild", optional = true }
 serde = { version = "1", default-features = false, features = ["derive"], optional = true }
 ufmt = { version = "0.2", optional = true }

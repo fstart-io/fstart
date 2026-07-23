@@ -2,25 +2,25 @@
 resolver = "2"
 members = [
   "tools/fbuild",
-  "crates/fstart-core",
-  "crates/fstart-platform-intel",
-  "crates/fstart-platform-sunxi",
-  "crates/fstart-platform-qemu",
-  "crates/fstart-ffs",
-  "crates/fstart-image-build",
-  "crates/fstart-crypto",
-  "crates/fstart-arch",
-  "crates/fstart-log",
-  "crates/fstart-driver-uart",
-  "crates/fstart-driver-intel",
-  "crates/fstart-driver-sunxi",
-  "crates/fstart-driver-superio",
-  "crates/fstart-pci",
-  "crates/fstart-stage",
-  "crates/fstart-acpi",
-  "crates/fstart-acpi-macros",
-  "crates/fstart-smm",
-  "crates/fstart-boot",
+  "crates/core",
+  "crates/platform-intel",
+  "crates/platform-sunxi",
+  "crates/platform-qemu",
+  "crates/ffs",
+  "crates/image-build",
+  "crates/crypto",
+  "crates/arch",
+  "crates/log",
+  "crates/driver-uart",
+  "crates/driver-intel",
+  "crates/driver-sunxi",
+  "crates/driver-superio",
+  "crates/pci",
+  "crates/stage",
+  "crates/acpi",
+  "crates/acpi-macros",
+  "crates/smm",
+  "crates/boot",
 ]
 exclude = ["attic", "boards/bananapi-m1", "boards/lenovo-x61", "boards/foxconn-d41s", "boards/qemu-q35", "boards/qemu-riscv64", "boards/qemu-sifive-u", "boards/qemu-aarch64", "boards/qemu-armv7", "boards/sifive-unmatched", "boards/orangepi-r1", "boards/orangepi-pc2", "boards/licheerv-dock", "boards/qemu-sbsa"]
 
@@ -67,24 +67,24 @@ object = { version = "0.37", default-features = false, features = [
 clap = { version = "4", features = ["derive"] }
 
 # Internal workspace crates
-fstart-core = { path = "crates/fstart-core" }
-fstart-platform-intel = { path = "crates/fstart-platform-intel" }
-fstart-platform-sunxi = { path = "crates/fstart-platform-sunxi" }
-fstart-platform-qemu = { path = "crates/fstart-platform-qemu" }
-fstart-pci = { path = "crates/fstart-pci" }
-fstart-ffs = { path = "crates/fstart-ffs" }
-fstart-crypto = { path = "crates/fstart-crypto" }
-fstart-log = { path = "crates/fstart-log" }
-fstart-arch = { path = "crates/fstart-arch" }
-fstart-driver-intel = { path = "crates/fstart-driver-intel" }
-fstart-driver-sunxi = { path = "crates/fstart-driver-sunxi" }
-fstart-driver-superio = { path = "crates/fstart-driver-superio" }
-fstart-driver-uart = { path = "crates/fstart-driver-uart" }
-fstart-stage = { path = "crates/fstart-stage" }
-fstart-acpi = { path = "crates/fstart-acpi" }
-fstart-smm = { path = "crates/fstart-smm" }
-fstart-image-build = { path = "crates/fstart-image-build" }
-fstart-boot = { path = "crates/fstart-boot" }
+fstart-core = { path = "crates/core" }
+fstart-platform-intel = { path = "crates/platform-intel" }
+fstart-platform-sunxi = { path = "crates/platform-sunxi" }
+fstart-platform-qemu = { path = "crates/platform-qemu" }
+fstart-pci = { path = "crates/pci" }
+fstart-ffs = { path = "crates/ffs" }
+fstart-crypto = { path = "crates/crypto" }
+fstart-log = { path = "crates/log" }
+fstart-arch = { path = "crates/arch" }
+fstart-driver-intel = { path = "crates/driver-intel" }
+fstart-driver-sunxi = { path = "crates/driver-sunxi" }
+fstart-driver-superio = { path = "crates/driver-superio" }
+fstart-driver-uart = { path = "crates/driver-uart" }
+fstart-stage = { path = "crates/stage" }
+fstart-acpi = { path = "crates/acpi" }
+fstart-smm = { path = "crates/smm" }
+fstart-image-build = { path = "crates/image-build" }
+fstart-boot = { path = "crates/boot" }
 
 [profile.dev]
 panic = "abort"

@@ -357,22 +357,22 @@ Target layout (~16 crates, from the fstart-new consolidation):
 ```text
 Cargo.toml                    # workspace: crates/* and tools only; boards excluded
 crates/
-  fstart-core/                # BoardSpec/PlatformSpec, typed resources, errors (no_std)
-  fstart-arch/                # per-ISA entry/asm/paging as modules: x86, arm, riscv
-  fstart-stage/               # stage entry/runtime helpers, console install
-  fstart-pci/                 # pci_types integration, ECAM access, scan/resource allocation (no_std)
-  fstart-image/               # no_std FFS reader/hash verification
-  fstart-image-build/         # host image assembly/signing (std)
-  fstart-boot/                # payload launch: direct, FIT/Linux, CrabEFI
-  fstart-acpi/
-  fstart-fdt/
-  fstart-platform-intel/      # Intel traits, config builders, early-flow entry
-  fstart-driver-intel/        # gm965.rs ich8.rs pineview.rs ich7.rs q35.rs ...
-  fstart-platform-sunxi/
-  fstart-driver-sunxi/        # a20.rs h3.rs d1.rs ccu.rs dramc.rs mmc.rs spi.rs
-  fstart-platform-qemu-virt/  # includes fw_cfg
-  fstart-driver-uart/         # ns16550.rs pl011.rs sifive.rs
-  fstart-driver-superio/      # pc87392.rs pc87382.rs ite8721f.rs
+  core/                       # BoardSpec/PlatformSpec, typed resources, errors (no_std)
+  arch/                       # per-ISA entry/asm/paging as modules: x86, arm, riscv
+  stage/                      # stage entry/runtime helpers, console install
+  pci/                        # pci_types integration, ECAM access, scan/resource allocation (no_std)
+  image/                      # no_std FFS reader/hash verification
+  image-build/                # host image assembly/signing (std)
+  boot/                       # payload launch: direct, FIT/Linux, CrabEFI
+  acpi/
+  fdt/
+  platform-intel/             # Intel traits, config builders, early-flow entry
+  driver-intel/               # gm965.rs ich8.rs pineview.rs ich7.rs q35.rs ...
+  platform-sunxi/
+  driver-sunxi/               # a20.rs h3.rs d1.rs ccu.rs dramc.rs mmc.rs spi.rs
+  platform-qemu-virt/         # includes fw_cfg
+  driver-uart/                # ns16550.rs pl011.rs sifive.rs
+  driver-superio/             # pc87392.rs pc87382.rs ite8721f.rs
 tools/
   fbuild/
 boards/

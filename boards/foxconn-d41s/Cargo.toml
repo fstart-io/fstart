@@ -56,14 +56,14 @@ mp = ["stage", "fstart-platform-intel/mp"]
 smbios = ["fstart-platform-intel/smbios"]
 
 [dependencies]
-fstart-core = { path = "../../crates/fstart-core", features = ["pci"] }
-fstart-platform-intel = { path = "../../crates/fstart-platform-intel" }
-fstart-acpi = { path = "../../crates/fstart-acpi", features = ["x86"] }
-fstart-arch = { path = "../../crates/fstart-arch", features = ["x86_64"] }
-fstart-driver-intel = { path = "../../crates/fstart-driver-intel", features = ["ffs-vbt"] }
-fstart-driver-superio = { path = "../../crates/fstart-driver-superio" }
-fstart-driver-uart = { path = "../../crates/fstart-driver-uart", features = ["pio"], optional = true }
-fstart-stage = { path = "../../crates/fstart-stage", optional = true }
+fstart-core = { path = "../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../crates/platform-intel" }
+fstart-acpi = { path = "../../crates/acpi", features = ["x86"] }
+fstart-arch = { path = "../../crates/arch", features = ["x86_64"] }
+fstart-driver-intel = { path = "../../crates/driver-intel", features = ["ffs-vbt"] }
+fstart-driver-superio = { path = "../../crates/driver-superio" }
+fstart-driver-uart = { path = "../../crates/driver-uart", features = ["pio"], optional = true }
+fstart-stage = { path = "../../crates/stage", optional = true }
 fbuild = { path = "../../tools/fbuild", optional = true }
 
 [[bin]]

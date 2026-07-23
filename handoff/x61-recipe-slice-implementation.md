@@ -12,9 +12,9 @@ Changed files:
 - `crates/fstart-platform-intel-gm965-ich8/Cargo.toml`
 - `crates/fstart-platform-intel-gm965-ich8/src/lib.rs`
 - `crates/fstart-platform-intel-gm965-ich8/src/recipe.rs`
-- `crates/fstart-stage/Cargo.toml`
-- `crates/fstart-stage/src/fixed_helpers.rs`
-- `crates/fstart-stage/src/lib.rs`
+- `crates/stage/Cargo.toml`
+- `crates/stage/src/fixed_helpers.rs`
+- `crates/stage/src/lib.rs`
 - `crates/fstart-stage-runtime/src/fixed_flow.rs`
 - `crates/fstart-stage-runtime/src/lib.rs`
 - `xtask/src/build_board.rs`
@@ -82,9 +82,9 @@ Residual risks:
     "crates/fstart-platform-intel-gm965-ich8/Cargo.toml",
     "crates/fstart-platform-intel-gm965-ich8/src/lib.rs",
     "crates/fstart-platform-intel-gm965-ich8/src/recipe.rs",
-    "crates/fstart-stage/Cargo.toml",
-    "crates/fstart-stage/src/fixed_helpers.rs",
-    "crates/fstart-stage/src/lib.rs",
+    "crates/stage/Cargo.toml",
+    "crates/stage/src/fixed_helpers.rs",
+    "crates/stage/src/lib.rs",
     "crates/fstart-stage-runtime/src/fixed_flow.rs",
     "crates/fstart-stage-runtime/src/lib.rs",
     "xtask/src/build_board.rs",

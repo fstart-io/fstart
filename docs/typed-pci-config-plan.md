@@ -68,7 +68,7 @@ It should own:
 Example modules:
 
 ```text
-crates/fstart-pci/
+crates/pci/
   src/lib.rs
   src/addr.rs
   src/window.rs

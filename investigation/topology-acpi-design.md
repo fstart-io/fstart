@@ -24,10 +24,10 @@ Clean direction: make the nested board topology the only parent relation, give A
 
 ### ACPI assembly currently assumes unscoped device AML goes under `\_SB_`
 
-- `fstart-acpi::device::AcpiDevice` says `dsdt_aml()` returns serialized AML and “the caller places the returned bytes inside a `\_SB` scope” (`crates/fstart-acpi/src/device.rs:27-41`). This is too weak for nested bus scopes.
-- `fstart-acpi::platform::build_dsdt()` always splits root fragments and wraps all normal AML in `\_SB_` (`crates/fstart-acpi/src/platform/mod.rs:393-428`).
-- `RootScope` is already the right mechanism for true DSDT-root objects: it marks `Scope("\\")` content so the assembler can strip it and place it at DSDT root (`crates/fstart-acpi/src/lib.rs:65-95`, platform split at `crates/fstart-acpi/src/platform/mod.rs:436-464`).
-- The new `scoped_aml_with_root_fragments()` helper (`crates/fstart-acpi/src/lib.rs:121-135`) can be kept as an implementation primitive, but the scope path must come from topology, not board string overrides.
+- `fstart-acpi::device::AcpiDevice` says `dsdt_aml()` returns serialized AML and “the caller places the returned bytes inside a `\_SB` scope” (`crates/acpi/src/device.rs:27-41`). This is too weak for nested bus scopes.
+- `fstart-acpi::platform::build_dsdt()` always splits root fragments and wraps all normal AML in `\_SB_` (`crates/acpi/src/platform/mod.rs:393-428`).
+- `RootScope` is already the right mechanism for true DSDT-root objects: it marks `Scope("\\")` content so the assembler can strip it and place it at DSDT root (`crates/acpi/src/lib.rs:65-95`, platform split at `crates/acpi/src/platform/mod.rs:436-464`).
+- The new `scoped_aml_with_root_fragments()` helper (`crates/acpi/src/lib.rs:121-135`) can be kept as an implementation primitive, but the scope path must come from topology, not board string overrides.
 
 ### Driver AML is inconsistent today
 

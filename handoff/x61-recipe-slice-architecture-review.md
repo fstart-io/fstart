@@ -10,7 +10,7 @@ However, the diff is not merge-clean as-is: the shared `StaticBoard` -> `StageFl
 
 ### Blocker
 
-- **Unrelated legacy board stage builds are broken by the shared API rename.** The diff removes `fstart_stage_runtime::StaticBoard` and `fstart_stage::run_static_board` in favor of `StageFlow`/`run_stage_flow` (`crates/fstart-stage-runtime/src/lib.rs:11`, `crates/fstart-stage-runtime/src/fixed_flow.rs:12`, `crates/fstart-stage/src/lib.rs:94-101`), but existing board-local stage adapters still import/call the removed names (`boards/foxconn-d41s/src/stage/bootblock.rs:9`, `boards/foxconn-d41s/src/stage/mod.rs:39`). Verified with `cargo check -p fstart-board-foxconn-d41s --features stage --target x86_64-unknown-none`: it fails with `no StaticBoard in the root` and `run_static_board not found`. This is hidden broad-diff fallout, not an X61-only slice.
+- **Unrelated legacy board stage builds are broken by the shared API rename.** The diff removes `fstart_stage_runtime::StaticBoard` and `fstart_stage::run_static_board` in favor of `StageFlow`/`run_stage_flow` (`crates/fstart-stage-runtime/src/lib.rs:11`, `crates/fstart-stage-runtime/src/fixed_flow.rs:12`, `crates/stage/src/lib.rs:94-101`), but existing board-local stage adapters still import/call the removed names (`boards/foxconn-d41s/src/stage/bootblock.rs:9`, `boards/foxconn-d41s/src/stage/mod.rs:39`). Verified with `cargo check -p fstart-board-foxconn-d41s --features stage --target x86_64-unknown-none`: it fails with `no StaticBoard in the root` and `run_static_board not found`. This is hidden broad-diff fallout, not an X61-only slice.
 
 ### High
 
@@ -79,7 +79,7 @@ Do **not** fresh-start the whole repo. The current reduced diff is salvageable a
       "summary": "No backup dirs or crates/fstart-mainboard-lenovo-x61 found."
     },
     {
-      "command": "rg -n \"run_static_board|StaticBoard\" xtask/src/build_board.rs crates/fstart-stage crates/fstart-stage-runtime boards --glob '*.rs' --glob '!target/**'",
+      "command": "rg -n \"run_static_board|StaticBoard\" xtask/src/build_board.rs crates/stage crates/fstart-stage-runtime boards --glob '*.rs' --glob '!target/**'",
       "result": "passed",
       "summary": "Found legacy board references to removed StaticBoard/run_static_board names."
     },
@@ -111,7 +111,7 @@ Do **not** fresh-start the whole repo. The current reduced diff is salvageable a
   "noStagedFiles": true,
   "diffSummary": "Reduced X61/GM965 recipe slice plus shared stage/runtime/xtask plumbing and sha2 force-soft workaround; no broad unrelated board source migrations, but shared API rename breaks legacy board stage builds.",
   "reviewFindings": [
-    "blocker: crates/fstart-stage-runtime/src/lib.rs:11 and crates/fstart-stage/src/lib.rs:94-101 remove StaticBoard/run_static_board while boards/foxconn-d41s/src/stage/bootblock.rs:9 and boards/foxconn-d41s/src/stage/mod.rs:39 still require them; verified cargo check failure.",
+    "blocker: crates/fstart-stage-runtime/src/lib.rs:11 and crates/stage/src/lib.rs:94-101 remove StaticBoard/run_static_board while boards/foxconn-d41s/src/stage/bootblock.rs:9 and boards/foxconn-d41s/src/stage/mod.rs:39 still require them; verified cargo check failure.",
     "high: boards/lenovo-x61/src/smm.rs:12-29 SMM handler is board-owned but unused; crates/fstart-smm-stage/src/lib.rs:80-82 still uses NoBoardSmmHandler for lenovo-x61.",
     "medium: crates/fstart-platform-intel-gm965-ich8/src/lib.rs:52-115 hard-codes ACPI namespace paths instead of deriving them from topology.",
     "medium: xtask/src/build_board.rs:955-959 and 1017 hard-code x86_64 in the supposedly generic FirmwareBoard wrapper.",

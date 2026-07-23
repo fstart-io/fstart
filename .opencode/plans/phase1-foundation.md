@@ -4,7 +4,7 @@
 
 The original plan had `stages/stage-monolithic/`, `stages/stage-bootblock/`, `stages/stage-main/` as separate hand-written crates. **This was wrong.**
 
-Since the RON file defines which capabilities run in which order, the stage binary should be entirely **generated** from the RON. There is a single `crates/fstart-stage/` crate whose `build.rs` reads the board RON (via `FSTART_BOARD_RON` env var) and generates:
+Since the RON file defines which capabilities run in which order, the stage binary should be entirely **generated** from the RON. There is a single `crates/stage/` crate whose `build.rs` reads the board RON (via `FSTART_BOARD_RON` env var) and generates:
 
 1. **`generated_stage.rs`** — The `fstart_main()` entry point with driver init and capability calls
 2. **`link.ld`** — Linker script generated from the memory map in the RON

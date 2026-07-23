@@ -23,7 +23,7 @@
 19. `crates/fstart-codegen/src/stage_gen/board_gen/model.rs` (lines 212-296) - fstart ACPI path derivation from topology names and `acpi_parent`.
 20. `crates/fstart-codegen/src/stage_gen/board_gen/caps_tables.rs` (lines 118-182) - fstart wraps driver AML under derived ACPI parent path.
 21. `crates/fstart-types/src/device.rs` (lines 77-101) - `DeviceConfig.acpi_name` and `acpi_parent` semantics.
-22. `crates/fstart-acpi/src/lib.rs` (lines 121-153) and `crates/fstart-acpi/src/platform/mod.rs` (lines 392-434) - root-fragment splitting and final wrapping in `\_SB_`.
+22. `crates/acpi/src/lib.rs` (lines 121-153) and `crates/acpi/src/platform/mod.rs` (lines 392-434) - root-fragment splitting and final wrapping in `\_SB_`.
 
 ## Key Code
 

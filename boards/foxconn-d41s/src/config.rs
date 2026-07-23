@@ -7,9 +7,9 @@ use fstart_core::{
     hstr, hvec, FlashLayout, X86LegacyFlashLayout, Platform, SmbiosConfig,
 };
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
-use fstart_driver_intel::gpio_ich as gpio;
+use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_superio::ite8721f;
-use fstart_driver_intel::hda;
+use fstart_driver_intel::southbridge::hda;
 #[cfg(feature = "host")]
 use fstart_platform_intel::pineview::{
     pineview_ich7_memory, pineview_ich7_microcode, pineview_ich7_stages,
