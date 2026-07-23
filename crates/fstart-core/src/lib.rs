@@ -43,7 +43,8 @@ pub use ffs::{
     VerificationKey, FFS_MAGIC, FFS_VERSION,
 };
 pub use memory::{
-    CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,
+    CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig,
+    LegacyFlashLayout, MemoryMap,
     MemoryMapError, MemoryRegion, RegionKind,
 };
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};

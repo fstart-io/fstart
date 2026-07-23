@@ -492,7 +492,7 @@ mod stage {
         const NB_CONFIG: &'static IntelGm965Config = &Self::CONFIG.northbridge_config();
         const SB_CONFIG: &'static IntelIch8Config = &Self::CONFIG.southbridge_config();
 
-        fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout;
+        fn flash_layout() -> fstart_core::FlashLayout;
         fn console_config() -> Ns16550Config;
         fn console_node() -> &'static str;
 
@@ -529,7 +529,7 @@ mod stage {
                 platform: "gm965/ich8",
                 next_stage: GM965_NEXT_STAGE_NAME,
                 ramstage_load_addr: GM965_RAMSTAGE_LOAD_ADDR,
-                flash_layout: B::ifd_flash_layout(),
+                flash_layout: B::flash_layout(),
                 console_config: B::console_config(),
                 console_node: B::console_node(),
             },
@@ -570,7 +570,7 @@ mod stage {
             Gm965Ich8AcpiContext,
         >(
             MainstageSpec {
-                flash_layout: B::ifd_flash_layout(),
+                flash_layout: B::flash_layout(),
                 nb_config: B::NB_CONFIG,
                 sb_config: B::SB_CONFIG,
                 console_config: B::console_config(),

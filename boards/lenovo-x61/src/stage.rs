@@ -31,8 +31,8 @@ impl Gm965Ich8Board for Board {
 
     const CONFIG: &'static Gm965Ich8Config = &crate::X61_PLATFORM;
 
-    fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout {
-        crate::x61_ifd_flash_layout()
+    fn flash_layout() -> fstart_core::FlashLayout {
+        crate::x61_flash_layout()
     }
 
     fn console_config() -> Ns16550Config {

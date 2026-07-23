@@ -2295,6 +2295,7 @@ impl FlashLayoutVerifier for IntelIch8 {
     fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
         match expected {
             FlashLayout::IntelIfd(layout) => self.verify_ifd_flash_layout(layout),
+            FlashLayout::Legacy(_) => Err(ServiceError::NotSupported),
         }
     }
 }

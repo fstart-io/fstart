@@ -257,7 +257,7 @@ pub fn assemble(
         Some(FlashLayout::IntelIfd(layout)) => {
             layout.regions.iter().any(|region| region.file.is_some())
         }
-        None => false,
+        Some(FlashLayout::Legacy(_)) | None => false,
     };
     if config.full_flash_image || flash_layout_files {
         let full_flash = FullFlashInput {
@@ -748,13 +748,18 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         );
     }
 
-    let flash_image = firmware_image_from_policy(config)?
-        .ok_or_else(|| "full_flash_image requires a firmware image build policy".to_string())?;
-    let flash_window = flash_image.contiguous_window().ok_or_else(|| {
-        "full_flash_image requires a contiguous firmware image window".to_string()
-    })?;
-    let flash_base = flash_window.cpu_base;
-    let flash_size = flash_image.size as usize;
+    let (flash_base, flash_size) = match &config.memory.flash_layout {
+        Some(FlashLayout::Legacy(layout)) => (layout.base, layout.size as usize),
+        Some(FlashLayout::IntelIfd(_)) => unreachable!("IFD layout handled above"),
+        None => {
+            let flash_image = firmware_image_from_policy(config)?
+                .ok_or_else(|| "full_flash_image requires a firmware image build policy".to_string())?;
+            let flash_window = flash_image.contiguous_window().ok_or_else(|| {
+                "full_flash_image requires a contiguous firmware image window".to_string()
+            })?;
+            (flash_window.cpu_base, flash_image.size as usize)
+        }
+    };
 
     if ffs_data.len() > flash_size {
         return Err(format!(

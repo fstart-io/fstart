@@ -27,18 +27,24 @@ pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
 
 #[cfg(feature = "stage")]
 pub(crate) fn firmware_window(
-    layout: fstart_core::IntelIfdFlashLayout,
+    layout: fstart_core::FlashLayout,
 ) -> Result<(u64, usize), ServiceError> {
-    let Some(bios) = layout.bios_region() else {
-        return Err(ServiceError::NotInitialized);
+    let (base, size) = match layout {
+        fstart_core::FlashLayout::IntelIfd(layout) => {
+            let Some(bios) = layout.bios_region() else {
+                return Err(ServiceError::NotInitialized);
+            };
+            let Some(base) = layout.base.checked_add(u64::from(bios.offset)) else {
+                return Err(ServiceError::NotInitialized);
+            };
+            (base, bios.size)
+        }
+        fstart_core::FlashLayout::Legacy(layout) => (layout.base, layout.size),
     };
-    if bios.size == 0 {
+    if size == 0 {
         return Err(ServiceError::NotInitialized);
     }
-    let Some(base) = layout.base.checked_add(u64::from(bios.offset)) else {
-        return Err(ServiceError::NotInitialized);
-    };
-    Ok((base, bios.size as usize))
+    Ok((base, size as usize))
 }
 
 #[cfg(feature = "stage")]
@@ -94,7 +100,7 @@ pub(crate) struct BootblockSpec {
     pub platform: &'static str,
     pub next_stage: &'static str,
     pub ramstage_load_addr: u64,
-    pub flash_layout: fstart_core::IntelIfdFlashLayout,
+    pub flash_layout: fstart_core::FlashLayout,
     pub console_config: fstart_driver_uart::ns16550::Ns16550Config,
     pub console_node: &'static str,
 }
@@ -229,7 +235,7 @@ where
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
 {
-    pub flash_layout: fstart_core::IntelIfdFlashLayout,
+    pub flash_layout: fstart_core::FlashLayout,
     pub nb_config: &'static NB::Config,
     pub sb_config: &'static SB::Config,
     pub console_config: fstart_driver_uart::ns16550::Ns16550Config,

@@ -115,6 +115,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
         let (x86_rom_mtrr_base, x86_rom_mtrr_size) = if config.platform == Platform::X86_64 {
             match &config.memory.flash_layout {
                 Some(FlashLayout::IntelIfd(layout)) => (layout.base, u64::from(layout.size)),
+                Some(FlashLayout::Legacy(layout)) => (layout.base, u64::from(layout.size)),
                 None => config
                     .memory
                     .firmware_window()

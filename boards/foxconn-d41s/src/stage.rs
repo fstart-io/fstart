@@ -31,8 +31,8 @@ impl PineviewIch7Board for Board {
 
     const CONFIG: &'static PineviewIch7Config = &crate::D41S_PLATFORM;
 
-    fn ifd_flash_layout() -> fstart_core::IntelIfdFlashLayout {
-        crate::d41s_ifd_flash_layout()
+    fn flash_layout() -> fstart_core::FlashLayout {
+        crate::d41s_flash_layout()
     }
 
     fn console_config() -> Ns16550Config {

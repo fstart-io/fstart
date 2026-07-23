@@ -4,8 +4,7 @@ use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
 #[cfg(feature = "host")]
 use fstart_core::{dev_security_config, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig};
 use fstart_core::{
-    hstr, hvec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform,
-    SmbiosConfig,
+    hstr, hvec, FlashLayout, LegacyFlashLayout, Platform, SmbiosConfig,
 };
 use fstart_driver_intel::ck505::I2cCk505Config;
 use fstart_driver_intel::gpio_ich as gpio;
@@ -96,20 +95,10 @@ pub const fn board_name() -> &'static str {
 }
 
 pub fn d41s_flash_layout() -> FlashLayout {
-    FlashLayout::IntelIfd(d41s_ifd_flash_layout())
-}
-
-pub fn d41s_ifd_flash_layout() -> IntelIfdFlashLayout {
-    IntelIfdFlashLayout {
+    FlashLayout::Legacy(LegacyFlashLayout {
         base: 0xFF00_0000,
         size: 0x0100_0000,
-        regions: hvec([IntelIfdRegionConfig {
-            kind: IntelIfdRegion::Bios,
-            offset: 0x000000,
-            size: 0x0100_0000,
-            file: None,
-        }]),
-    }
+    })
 }
 
 pub fn d41s_smbios() -> SmbiosConfig {

@@ -13,10 +13,9 @@ pub struct MemoryMap {
     pub regions: heapless::Vec<MemoryRegion, 16>,
     /// Optional physical flash partition map.
     ///
-    /// Intel descriptor based systems split the SPI flash into descriptor,
-    /// GbE, ME, BIOS, and other regions.  fstart executes from and reads only
-    /// the BIOS region, but host-side image assembly can still describe and
-    /// optionally populate the non-BIOS regions.
+    /// Descriptor-based systems can split SPI flash into descriptor, GbE, ME,
+    /// BIOS, and other regions. Host-side image assembly can describe and
+    /// optionally populate non-firmware regions.
     #[serde(default)]
     pub flash_layout: Option<FlashLayout>,
     /// Cache-as-RAM (CAR) region for pre-DRAM x86 stages.
@@ -39,27 +38,26 @@ pub struct MemoryMap {
 }
 
 impl MemoryMap {
-    /// Return the contiguous ROM/IFD firmware aperture, when the memory map
-    /// declares one.
+    /// Return the firmware aperture declared by the memory map.
     ///
     /// Boot media does not consume this directly; firmware-image mappings come
     /// from Rust providers. Linker/setup code still uses the ROM aperture for
     /// placement and x86 cache/MTRR setup.
     pub fn firmware_window(&self) -> Option<(u64, u64)> {
-        if let Some(FlashLayout::IntelIfd(layout)) = &self.flash_layout {
-            let bios = layout.bios_region()?;
-            return Some((layout.base + u64::from(bios.offset), u64::from(bios.size)));
+        match &self.flash_layout {
+            Some(FlashLayout::IntelIfd(layout)) => {
+                let bios = layout.bios_region()?;
+                Some((layout.base + u64::from(bios.offset), u64::from(bios.size)))
+            }
+            Some(FlashLayout::Legacy(layout)) => Some((layout.base, u64::from(layout.size))),
+            None => self.contiguous_rom_window(),
         }
-
-        self.contiguous_rom_window()
     }
 
     /// Derive redundant firmware-image facts.
     ///
-    /// Intel IFD boards describe the host-visible BIOS window in
-    /// `flash_layout`; this helper ensures the linker-visible ROM region exists
-    /// for that window. Non-descriptor boards describe the flash aperture as one
-    /// or more contiguous ROM regions and need no mutation.
+    /// A declared flash layout provides the linker-visible firmware window;
+    /// this helper ensures the corresponding ROM region exists.
     pub fn normalize_derived_flash(&mut self) -> Result<(), MemoryMapError> {
         if let Some((base, size)) = self.ifd_bios_window()? {
             return self.ensure_rom_region(base, size);
@@ -69,16 +67,21 @@ impl MemoryMap {
     }
 
     fn ifd_bios_window(&self) -> Result<Option<(u64, u64)>, MemoryMapError> {
-        let Some(FlashLayout::IntelIfd(layout)) = &self.flash_layout else {
+        let Some(layout) = &self.flash_layout else {
             return Ok(None);
         };
-        let bios = layout
-            .bios_region()
-            .ok_or(MemoryMapError::MissingBiosRegion)?;
-        Ok(Some((
-            layout.base + u64::from(bios.offset),
-            u64::from(bios.size),
-        )))
+        match layout {
+            FlashLayout::IntelIfd(layout) => {
+                let bios = layout
+                    .bios_region()
+                    .ok_or(MemoryMapError::MissingBiosRegion)?;
+                Ok(Some((
+                    layout.base + u64::from(bios.offset),
+                    u64::from(bios.size),
+                )))
+            }
+            FlashLayout::Legacy(layout) => Ok(Some((layout.base, u64::from(layout.size)))),
+        }
     }
 
     fn contiguous_rom_window(&self) -> Option<(u64, u64)> {
@@ -144,7 +147,7 @@ impl MemoryMap {
 /// Error while deriving redundant memory-map facts from a flash layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryMapError {
-    /// Intel IFD layout lacks a BIOS region entry.
+    /// A descriptor-based layout lacks a BIOS region entry.
     MissingBiosRegion,
     /// A ROM memory region overlaps the derived firmware window without matching it.
     RomRegionOverlap {
@@ -164,7 +167,7 @@ pub enum MemoryMapError {
 impl fmt::Display for MemoryMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::MissingBiosRegion => f.write_str("Intel IFD flash_layout requires a BIOS region"),
+            Self::MissingBiosRegion => f.write_str("descriptor flash_layout requires a BIOS region"),
             Self::RomRegionOverlap {
                 expected_base,
                 expected_size,
@@ -235,6 +238,18 @@ pub enum RegionKind {
 pub enum FlashLayout {
     /// Intel Firmware Descriptor controlled SPI flash.
     IntelIfd(IntelIfdFlashLayout),
+    /// Legacy contiguous flash without an Intel Firmware Descriptor.
+    Legacy(LegacyFlashLayout),
+}
+
+/// Legacy contiguous flash layout without an Intel Firmware Descriptor.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyFlashLayout {
+    /// Physical address where the flash is memory-mapped.
+    pub base: u64,
+    /// Total flash size in bytes.
+    pub size: u32,
 }
 
 /// Intel Firmware Descriptor flash layout.
