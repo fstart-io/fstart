@@ -128,7 +128,7 @@ pub fn run(
             Platform::Armv7 => {
                 let mut args = vec![
                     "-machine".to_string(),
-                    "virt".to_string(),
+                    "virt,highmem-ecam=off".to_string(),
                     "-cpu".to_string(),
                     "cortex-a15".to_string(),
                     "-nographic".to_string(),
@@ -211,6 +211,15 @@ pub fn run(
         if let Some(mem) = memory {
             args.extend(["-m".to_string(), mem.to_string()]);
         }
+    }
+
+    // Keep one backend-free PCI function present on architecture QEMU machines
+    // so every normal boot exercises ECAM enumeration and BAR assignment.
+    if platform != Platform::X86_64 && !use_sifive_u && !use_orangepi_pc {
+        args.extend([
+            "-device".to_string(),
+            "virtio-scsi-pci,id=fstart-pci-test".to_string(),
+        ]);
     }
 
     if let Some(disk_path) = disk {

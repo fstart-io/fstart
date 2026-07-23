@@ -96,27 +96,3 @@ pub const fn io16(raw: u16) -> IoAddr<Io16> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Irq(pub u8);
-
-/// PCI bus/device/function address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PciBdf {
-    /// PCI bus number.
-    pub bus: u8,
-    /// PCI device number.
-    pub device: u8,
-    /// PCI function number.
-    pub function: u8,
-}
-
-impl PciBdf {
-    /// Construct a PCI BDF address.
-    #[must_use]
-    pub const fn new(bus: u8, device: u8, function: u8) -> Self {
-        Self {
-            bus,
-            device,
-            function,
-        }
-    }
-}

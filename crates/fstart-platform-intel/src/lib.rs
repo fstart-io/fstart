@@ -19,9 +19,11 @@ use core::marker::PhantomData;
 #[cfg(feature = "stage")]
 use fstart_core::services::memory_detect::E820Entry;
 #[cfg(feature = "stage")]
-use fstart_core::services::ServiceError;
+use fstart_core::services::{ConsoleDevice, ServiceError};
 #[cfg(feature = "stage")]
-pub use fstart_driver_intel::{IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver};
+pub use fstart_driver_intel::{
+    BootPath, IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver,
+};
 #[cfg(feature = "stage")]
 pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
 
@@ -34,12 +36,12 @@ pub(crate) fn firmware_window(
             let Some(bios) = layout.bios_region() else {
                 return Err(ServiceError::NotInitialized);
             };
-            let Some(base) = layout.base.checked_add(u64::from(bios.offset)) else {
+            let Some(base) = layout.base().checked_add(u64::from(bios.offset)) else {
                 return Err(ServiceError::NotInitialized);
             };
             (base, bios.size)
         }
-        fstart_core::FlashLayout::Legacy(layout) => (layout.base, layout.size),
+        fstart_core::FlashLayout::X86Legacy(layout) => (layout.base(), layout.size()),
     };
     if size == 0 {
         return Err(ServiceError::NotInitialized);
@@ -92,33 +94,41 @@ where
     run_mainstage_phase(platform, "emit_tables", halt, || mainstage.emit_tables());
     run_mainstage_phase(platform, "finalize", halt, || mainstage.finalize());
 
+    // Leave the legacy keyboard controller quiet before the payload/OS probes it.
+    fstart_driver_superio::quiesce_i8042_for_os();
+
     Payload::boot(mainstage)
 }
 
 #[cfg(feature = "stage")]
-pub(crate) struct BootblockSpec {
+pub(crate) struct BootblockSpec<C: ConsoleDevice> {
     pub platform: &'static str,
     pub next_stage: &'static str,
     pub ramstage_load_addr: u64,
     pub flash_layout: fstart_core::FlashLayout,
-    pub console_config: fstart_driver_uart::ns16550::Ns16550Config,
+    pub console_config: C::Config,
     pub console_node: &'static str,
 }
 
 /// Shared Intel mainstage machinery. Chipset modules bind board facts once,
 /// then the common phase code owns the rest.
 #[cfg(feature = "stage")]
-pub struct IntelMainstage<P, NB, SB, Hooks, AcpiContext>
+pub struct IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
 {
     northbridge: NB,
     southbridge: SB,
+    /// Constructed only when the mainstage reaches bus scanning. The
+    /// bootblock owns no PCI allocator state.
+    #[cfg(not(fstart_stage_env = "car"))]
+    pci: Option<fstart_pci::PciEcam>,
     hooks: Hooks,
-    console: fstart_driver_uart::ns16550::Ns16550,
+    console: C,
     ctx: MainstageCtx,
     platform_node: &'static str,
     console_node: &'static str,
@@ -131,12 +141,13 @@ where
 }
 
 #[cfg(feature = "stage")]
-impl<P, NB, SB, Hooks, AcpiContext> IntelMainstage<P, NB, SB, Hooks, AcpiContext>
+impl<P, NB, SB, Hooks, C, AcpiContext> IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
 {
     #[must_use]
     pub const fn northbridge(&self) -> &NB {
@@ -170,10 +181,12 @@ trait MainstageAcpi {
 }
 
 #[cfg(all(feature = "stage", feature = "acpi"))]
-impl<P, NB, SB, Hooks, AcpiContext> MainstageAcpi for IntelMainstage<P, NB, SB, Hooks, AcpiContext>
+impl<P, NB, SB, Hooks, C, AcpiContext> MainstageAcpi
+    for IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB, AcpiContext = AcpiContext>,
     Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
     NB: IntelNorthbridgeDriver
         + fstart_acpi::device::AcpiDevice<Config = <NB as IntelNorthbridgeDriver>::Config>,
     SB: IntelSouthbridgeDriver
@@ -211,14 +224,15 @@ impl<T> MainstageAcpi for T {
 }
 
 #[cfg(feature = "stage")]
-impl<P, NB, SB, Hooks, AcpiContext> IntelMainstageFlow
-    for IntelMainstage<P, NB, SB, Hooks, AcpiContext>
+impl<P, NB, SB, Hooks, C, AcpiContext> IntelMainstageFlow
+    for IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
-    IntelMainstage<P, NB, SB, Hooks, AcpiContext>: MainstageAcpi,
+    C: ConsoleDevice,
+    IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>: MainstageAcpi,
 {
     fn firmware_region(&self) -> (u64, usize) {
         self.ctx.firmware_region()
@@ -230,15 +244,16 @@ where
 }
 
 #[cfg(feature = "stage")]
-pub(crate) struct MainstageSpec<NB, SB>
+pub(crate) struct MainstageSpec<NB, SB, C>
 where
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
+    C: ConsoleDevice,
 {
     pub flash_layout: fstart_core::FlashLayout,
     pub nb_config: &'static NB::Config,
     pub sb_config: &'static SB::Config,
-    pub console_config: fstart_driver_uart::ns16550::Ns16550Config,
+    pub console_config: C::Config,
     pub console_node: &'static str,
     pub platform_node: &'static str,
     #[cfg(feature = "mp")]
@@ -248,23 +263,25 @@ where
 }
 
 #[cfg(feature = "stage")]
-pub(crate) fn bind_intel_mainstage<P, NB, SB, Hooks, AcpiContext>(
-    spec: MainstageSpec<NB, SB>,
+pub(crate) fn bind_intel_mainstage<P, NB, SB, Hooks, C, AcpiContext>(
+    spec: MainstageSpec<NB, SB, C>,
     hooks: Hooks,
-) -> Result<IntelMainstage<P, NB, SB, Hooks, AcpiContext>, ServiceError>
+) -> Result<IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>, ServiceError>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
 {
     let (firmware_base, firmware_size) = firmware_window(spec.flash_layout)?;
     Ok(IntelMainstage {
         northbridge: NB::new_from_config(spec.nb_config)?,
         southbridge: SB::new_from_config(spec.sb_config)?,
+        #[cfg(not(fstart_stage_env = "car"))]
+        pci: None,
         hooks,
-        console: fstart_driver_uart::ns16550::Ns16550::new(spec.console_config)
-            .map_err(|_| ServiceError::HardwareError)?,
+        console: C::new(spec.console_config)?,
         ctx: MainstageCtx::new(firmware_base, firmware_size),
         platform_node: spec.platform_node,
         console_node: spec.console_node,
@@ -278,17 +295,18 @@ where
 }
 
 #[cfg(feature = "stage")]
-impl<P, NB, SB, Hooks, AcpiContext> MainstagePhases
-    for IntelMainstage<P, NB, SB, Hooks, AcpiContext>
+impl<P, NB, SB, Hooks, C, AcpiContext> MainstagePhases
+    for IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
-    IntelMainstage<P, NB, SB, Hooks, AcpiContext>: MainstageAcpi,
+    C: ConsoleDevice,
+    IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>: MainstageAcpi,
 {
     fn pre_bus_scan(&mut self) -> Result<(), ServiceError> {
-        intel_pre_bus_scan::<P, _, _, _>(
+        intel_pre_bus_scan::<P, _, _, _, C>(
             self.platform_node,
             self.console_node,
             &mut self.northbridge,
@@ -300,7 +318,20 @@ where
     }
 
     fn bus_scan(&mut self) -> Result<(), ServiceError> {
-        intel_bus_scan(&mut self.northbridge)
+        #[cfg(not(fstart_stage_env = "car"))]
+        {
+            if self.pci.is_none() {
+                self.pci = Some(
+                    fstart_pci::PciEcam::from_provider(&self.northbridge)
+                        .map_err(|_| ServiceError::HardwareError)?,
+                );
+            }
+            let pci = self.pci.as_mut().ok_or(ServiceError::NotInitialized)?;
+            return intel_bus_scan(pci);
+        }
+
+        #[cfg(fstart_stage_env = "car")]
+        Err(ServiceError::NotSupported)
     }
 
     fn init_devices(&mut self) -> Result<(), ServiceError> {
@@ -324,14 +355,15 @@ where
 }
 
 #[cfg(feature = "stage")]
-impl<P, NB, SB, Hooks, AcpiContext> fstart_stage::payload::X86UefiPayloadContext
-    for IntelMainstage<P, NB, SB, Hooks, AcpiContext>
+impl<P, NB, SB, Hooks, C, AcpiContext> fstart_stage::payload::X86UefiPayloadContext
+    for IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
     NB: IntelNorthbridgeDriver,
     NB::Config: IntelEcamConfig,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
 {
     fn console(&self) -> Option<&dyn fstart_core::services::Console> {
         Some(&self.console)
@@ -356,8 +388,8 @@ where
 }
 
 #[cfg(feature = "stage")]
-pub(crate) fn run_intel_bootblock<P, NB, SB, Hooks>(
-    spec: BootblockSpec,
+pub(crate) fn run_intel_bootblock<P, NB, SB, Hooks, C>(
+    spec: BootblockSpec<C>,
     hooks: &mut Hooks,
     mut northbridge: NB,
     mut southbridge: SB,
@@ -367,6 +399,7 @@ where
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
 {
     let (firmware_base, firmware_size) = firmware_window(spec.flash_layout)?;
     let ffs = fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
@@ -375,12 +408,11 @@ where
     southbridge.pre_console_init()?;
     hooks.before_console(&mut IntelEarlyCtx::new(&mut southbridge))?;
 
-    let mut console = fstart_driver_uart::ns16550::Ns16550::new(spec.console_config)
-        .map_err(|_| ServiceError::HardwareError)?;
-    console.init().map_err(|_| ServiceError::HardwareError)?;
+    let mut console = C::new(spec.console_config)?;
+    console.init()?;
     // SAFETY: this function never returns after installing the stack-owned console.
     unsafe { fstart_log::init(&console) };
-    fstart_log::info!("{}: ns16550 console ready", spec.console_node);
+    fstart_log::info!("{}: {} console ready", spec.console_node, C::NAME);
     fstart_log::info!("{} bootblock console ready", spec.platform);
 
     // Complete the pre-RAM chipset flow before touching the ramstage load
@@ -392,11 +424,11 @@ where
 
     fstart_log::info!("{}: initializing DRAM", spec.platform);
     let boot_path = if southbridge.detect_s3_resume() {
-        2
+        BootPath::S3Resume
     } else if northbridge.detect_warm_reset() {
-        1
+        BootPath::WarmReset
     } else {
-        0
+        BootPath::Normal
     };
     northbridge.set_boot_path(boot_path);
     northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
@@ -420,13 +452,13 @@ where
 }
 
 #[cfg(feature = "stage")]
-pub(crate) fn intel_pre_bus_scan<P, NB, SB, Hooks>(
+pub(crate) fn intel_pre_bus_scan<P, NB, SB, Hooks, C>(
     platform_node: &str,
     console_node: &str,
     northbridge: &mut NB,
     southbridge: &mut SB,
     hooks: &mut Hooks,
-    console: &mut fstart_driver_uart::ns16550::Ns16550,
+    console: &mut C,
     ctx: &mut MainstageCtx,
 ) -> Result<(), ServiceError>
 where
@@ -434,16 +466,17 @@ where
     NB: IntelNorthbridgeDriver,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
 {
     northbridge.pre_console_init()?;
     southbridge.pre_console_init()?;
     hooks.before_console(&mut IntelEarlyCtx::new(southbridge))?;
 
-    console.init().map_err(|_| ServiceError::HardwareError)?;
+    console.init()?;
     // SAFETY: the mainstage owns the console until it hands control to the payload.
     unsafe { fstart_log::init(console) };
     fstart_log::info!("fstart ramstage console ready");
-    fstart_log::info!("{}: ns16550 console ready", console_node);
+    fstart_log::info!("{}: {} console ready", console_node, C::NAME);
 
     northbridge.early_init()?;
     southbridge.early_init()?;
@@ -465,12 +498,10 @@ where
     Ok(())
 }
 
-#[cfg(feature = "stage")]
-pub(crate) fn intel_bus_scan<NB>(northbridge: &mut NB) -> Result<(), ServiceError>
-where
-    NB: fstart_pci::PciRootBus,
-{
-    northbridge.init_bus()
+#[cfg(all(feature = "stage", not(fstart_stage_env = "car")))]
+pub(crate) fn intel_bus_scan(pci: &mut fstart_pci::PciEcam) -> Result<(), ServiceError> {
+    pci.enumerate_and_allocate()
+        .map_err(|_| ServiceError::HardwareError)
 }
 
 #[cfg(feature = "stage")]

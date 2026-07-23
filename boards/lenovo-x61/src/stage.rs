@@ -27,6 +27,7 @@ impl IntelEarlyBoard for Board {
 }
 
 impl Gm965Ich8Board for Board {
+    type Console = fstart_driver_uart::ns16550::Ns16550;
     type Payload = BuildSelectedPayload;
 
     const CONFIG: &'static Gm965Ich8Config = &crate::X61_PLATFORM;

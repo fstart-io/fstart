@@ -5,7 +5,6 @@
 //! board hooks. X61-specific DLPC/dock SuperIO setup lives in the
 //! Board-specific dock/DLPC sequencing lives in `boards/lenovo-x61`.
 
-#[path = "smm.rs"]
 pub mod smm;
 
 use crate::gpio_ich::IchGpio;
@@ -1138,10 +1137,10 @@ impl IntelIch8 {
         }
 
         let runtime_size = self.spi_flash_component_size();
-        if runtime_size != expected.size {
+        if runtime_size != expected.size() {
             fstart_log::error!(
                 "intel-ich8: SPI flash size mismatch: configured={:#x} runtime={:#x}",
-                expected.size,
+                expected.size(),
                 runtime_size
             );
             return Err(ServiceError::HardwareError);
@@ -1166,7 +1165,7 @@ impl IntelIch8 {
         }
 
         if let Some(bios) = expected.bios_region() {
-            let expected_host_base = expected.base + u64::from(bios.offset);
+            let expected_host_base = expected.base() + u64::from(bios.offset);
             let runtime_host_base = 0x1_0000_0000u64 - u64::from(bios.size);
             if expected_host_base != runtime_host_base {
                 fstart_log::error!(
@@ -2295,7 +2294,7 @@ impl FlashLayoutVerifier for IntelIch8 {
     fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
         match expected {
             FlashLayout::IntelIfd(layout) => self.verify_ifd_flash_layout(layout),
-            FlashLayout::Legacy(_) => Err(ServiceError::NotSupported),
+            FlashLayout::X86Legacy(_) => Err(ServiceError::NotSupported),
         }
     }
 }
@@ -2346,29 +2345,18 @@ mod acpi_impl {
     extern crate alloc;
 
     use alloc::vec::Vec;
-    use fstart_acpi::aml::{Name, PackageBuilder, Path, Scope};
+    use fstart_acpi::aml::{Name, PackageBuilder, Path};
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi::platform::{IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
-    use fstart_acpi::{Aml, AmlSink};
+    use fstart_acpi::Aml;
+
     use fstart_acpi_macros::acpi_dsl;
 
     use super::*;
 
-    struct RawAml<'a>(&'a [u8]);
-
-    impl Aml for RawAml<'_> {
-        fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-            sink.vec(self.0);
-        }
-    }
-
     fn root_prt_scope_aml() -> Vec<u8> {
         let prt = root_prt_aml();
-        let raw = RawAml(&prt);
-        let scope = Scope::new(Path::new("\\_SB_.PCI0"), alloc::vec![&raw as &dyn Aml]);
-        let mut bytes = Vec::new();
-        scope.to_aml_bytes(&mut bytes);
-        bytes
+        fstart_acpi::scope_aml("\\_SB_.PCI0", &prt)
     }
 
     fn root_prt_aml() -> Vec<u8> {

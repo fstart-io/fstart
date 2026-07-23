@@ -360,7 +360,7 @@ crates/
   fstart-core/                # BoardSpec/PlatformSpec, typed resources, errors (no_std)
   fstart-arch/                # per-ISA entry/asm/paging as modules: x86, arm, riscv
   fstart-stage/               # stage entry/runtime helpers, console install
-  fstart-pci/                 # ECAM/CF8 access, BDF, scan, resource allocation (no_std)
+  fstart-pci/                 # pci_types integration, ECAM access, scan/resource allocation (no_std)
   fstart-image/               # no_std FFS reader/hash verification
   fstart-image-build/         # host image assembly/signing (std)
   fstart-boot/                # payload launch: direct, FIT/Linux, CrabEFI

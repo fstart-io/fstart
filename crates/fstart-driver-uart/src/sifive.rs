@@ -34,7 +34,7 @@ impl SifiveUartConfig {
         if clock_freq == 0 || baud_rate == 0 {
             panic!("SiFive UART clock and baud rate must not be zero");
         }
-        let divisor = (clock_freq as u64 + baud_rate as u64 - 1) / baud_rate as u64;
+        let divisor = (clock_freq as u64).div_ceil(baud_rate as u64);
         if divisor == 0 || divisor > u32::MAX as u64 + 1 {
             panic!("SiFive UART divisor is invalid");
         }

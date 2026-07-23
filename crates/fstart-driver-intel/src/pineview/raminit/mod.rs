@@ -23,8 +23,8 @@ mod rcomplut;
 mod spd;
 mod timing;
 
+use crate::generic::spd::DimmInfo;
 use crate::pineview::regs::{mchbar, MchBar};
-use crate::spd::DimmInfo;
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
 
@@ -42,11 +42,6 @@ pub const DIMM_TYPE_SODIMM: u8 = 2;
 
 pub const PLATFORM_DESKTOP: u8 = 0;
 pub const PLATFORM_MOBILE: u8 = 1;
-
-#[allow(dead_code)]
-const BOOT_PATH_NORMAL: u8 = 0;
-const BOOT_PATH_RESET: u8 = 1;
-pub(crate) const BOOT_PATH_RESUME: u8 = 2;
 
 // ===================================================================
 // Sysinfo — raminit state
@@ -93,7 +88,7 @@ impl Default for PllParam {
 /// Complete raminit state, analogous to coreboot's `struct sysinfo`.
 #[derive(Debug)]
 pub struct SysInfo {
-    pub boot_path: u8,
+    pub boot_path: crate::BootPath,
     pub platform_type: u8,
     pub dimm_type: u8,
     pub spd_map: [u8; 4],
@@ -119,7 +114,7 @@ pub struct SysInfo {
 }
 
 impl SysInfo {
-    pub fn new(boot_path: u8, platform_type: u8, spd_map: [u8; 4]) -> Self {
+    pub fn new(boot_path: crate::BootPath, platform_type: u8, spd_map: [u8; 4]) -> Self {
         Self {
             boot_path,
             platform_type,
@@ -167,12 +162,12 @@ impl SysInfo {
 /// # Arguments
 /// * `mch` — MCHBAR MMIO accessor
 /// * `smbus` — SMBus controller for SPD reads
-/// * `boot_path` — 0 = normal, 1 = reset, 2 = S3 resume
+/// * `boot_path` — selected cold, warm-reset, or S3-resume path
 /// * `spd_addresses` — SMBus addresses of DIMM SPD EEPROMs (e.g., [0x50, 0x51, 0, 0])
 pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     mch: &MchBar,
     smbus: &mut B,
-    boot_path: u8,
+    boot_path: crate::BootPath,
     platform_type: u8,
     spd_addresses: &[u8; 4],
 ) -> Result<u64, ServiceError> {
@@ -206,12 +201,12 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     timing::sdram_timings(&si, mch);
 
     // 9. DLL timing (skip on reset path).
-    if si.boot_path != BOOT_PATH_RESET {
+    if si.boot_path != crate::BootPath::WarmReset {
         phy::dll_timing(&mut si, mch);
     }
 
     // 10. RCOMP (skip on reset path).
-    if si.boot_path != BOOT_PATH_RESET {
+    if si.boot_path != crate::BootPath::WarmReset {
         phy::rcomp(&si, mch);
     }
 
@@ -219,7 +214,7 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     phy::odt(&si, mch);
 
     // 12. Wait for RCOMP completion (skip on reset path).
-    if si.boot_path != BOOT_PATH_RESET {
+    if si.boot_path != crate::BootPath::WarmReset {
         let mut timeout = 1_000_000u32;
         while (mch.read8(mchbar::COMPCTRL1) & 1) != 0 {
             timeout -= 1;
@@ -240,14 +235,14 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     mch.setbits32(mchbar::C0RSTCTL, 1 << 0);
 
     // 15. RCOMP update (skip on warm-reset path, matching coreboot).
-    if si.boot_path != BOOT_PATH_RESET {
+    if si.boot_path != crate::BootPath::WarmReset {
         phy::rcomp_update(&si, mch);
     }
 
     mch.setbits32(mchbar::HIT4, 1 << 1);
 
     // 16. JEDEC init (skip on S3 resume).
-    if si.boot_path != BOOT_PATH_RESUME {
+    if si.boot_path != crate::BootPath::S3Resume {
         mch.setbits32(mchbar::C0CKECTRL, 1 << 27);
         jedec::jedec_init(&si, mch);
     }
@@ -259,7 +254,7 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     jedec::sdram_zqcl(&si, mch);
 
     // 19. Refresh control (skip on resume).
-    if si.boot_path != BOOT_PATH_RESUME {
+    if si.boot_path != crate::BootPath::S3Resume {
         mch.setbits32(mchbar::C0REFRCTRL2, 3 << 30);
     }
 
@@ -272,7 +267,7 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     // Desktop UDIMMs require the Vref margining pass used by coreboot.
     // SO-DIMMs use their existing fixed Vref setup instead.
     if !si.is_sodimm() {
-        if si.boot_path != BOOT_PATH_RESUME {
+        if si.boot_path != crate::BootPath::S3Resume {
             phy::sdram_vref_margining(&mut si, mch)?;
         }
         phy::update_vref_value(si.vref_value, mch);

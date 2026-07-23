@@ -651,6 +651,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-core",
  "heapless",
+ "pci_types",
  "serde",
  "tock-registers",
 ]
@@ -663,6 +664,7 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-intel",
+ "fstart-driver-superio",
  "fstart-driver-uart",
  "fstart-log",
  "fstart-pci",

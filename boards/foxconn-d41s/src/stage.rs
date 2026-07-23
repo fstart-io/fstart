@@ -27,6 +27,7 @@ impl IntelEarlyBoard for Board {
 }
 
 impl PineviewIch7Board for Board {
+    type Console = fstart_driver_uart::ns16550::Ns16550;
     type Payload = BuildSelectedPayload;
 
     const CONFIG: &'static PineviewIch7Config = &crate::D41S_PLATFORM;

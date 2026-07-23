@@ -8,7 +8,7 @@
 //! `raminit_receive_enable_calibration.c`; register constants and ordering are
 //! checked against coreboot's `gm965.h` and `raminit.c`.
 
-use crate::spd::{ChipWidth, DimmInfo};
+use crate::generic::spd::{ChipWidth, DimmInfo};
 use fstart_core::services::{ServiceError, SmBus};
 
 use super::{hostbridge, mchbar, MchBar};
@@ -388,7 +388,7 @@ fn select_frequency_and_cas(
 
     for dimm in populated_dimms(info) {
         cas_mask &= dimm.cas_supported;
-        let Some(max_cas) = crate::spd::ddr2::msb_index(dimm.cas_supported) else {
+        let Some(max_cas) = crate::generic::spd::ddr2::msb_index(dimm.cas_supported) else {
             return Err(ServiceError::HardwareError);
         };
         let tck = dimm.cycle_time_256ns[max_cas as usize];
@@ -1545,12 +1545,12 @@ pub fn probe_dimms<B: SmBus>(
             continue;
         }
 
-        let Some(spd) = crate::spd::ddr2::read_spd(bus, addr)? else {
+        let Some(spd) = crate::generic::spd::ddr2::read_spd(bus, addr)? else {
             fstart_log::info!("gm965 raminit: no DIMM SPD at {:#x}", addr);
             continue;
         };
 
-        let Some(dimm) = crate::spd::ddr2::decode_dimm(&spd) else {
+        let Some(dimm) = crate::generic::spd::ddr2::decode_dimm(&spd) else {
             fstart_log::error!("gm965 raminit: invalid/non-DDR2 SPD at {:#x}", addr);
             return Err(ServiceError::HardwareError);
         };

@@ -1,5 +1,11 @@
 # Typed PCI Configuration Access Plan
 
+> **Status:** the address, header, capability, and config-access vocabulary is
+> provided by the upstream `pci_types` crate. References below to defining
+> fstart-specific `PciBdf`, `PciSbdf`, or config-access traits are superseded;
+> fstart retains only resource-window/allocation types and chipset-specific
+> register overlays.
+
 ## Motivation
 
 The ICH7/ICH8 RCBA work replaced raw offset helpers and manual read-modify-write

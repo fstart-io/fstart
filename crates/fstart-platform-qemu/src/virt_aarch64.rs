@@ -7,7 +7,7 @@ use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
 use fstart_stage::{StageBoard, StageEnvironment};
 
-use crate::virt::{phase, QemuAarch64VirtConfig};
+use crate::virt::{enumerate_pci, phase, QemuAarch64VirtConfig};
 
 pub const QEMU_AARCH64_UART_BASE: u64 = 0x0900_0000;
 
@@ -35,17 +35,17 @@ pub trait QemuAarch64VirtBoard: StageBoard {
 pub struct QemuAarch64Virt;
 
 pub struct QemuAarch64VirtMainstage {
-    #[cfg(any(feature = "linux", feature = "crabefi"))]
     config: &'static QemuAarch64VirtConfig,
     console: Pl011,
+    pci: Option<fstart_pci::PciEcam>,
 }
 
 impl QemuAarch64VirtMainstage {
     fn new<B: QemuAarch64VirtBoard>() -> Result<Self, ServiceError> {
         Ok(Self {
-            #[cfg(any(feature = "linux", feature = "crabefi"))]
             config: B::CONFIG,
             console: Pl011::new(B::console_config())?,
+            pci: None,
         })
     }
 
@@ -56,6 +56,16 @@ impl QemuAarch64VirtMainstage {
         fstart_log::info!("qemu-aarch64: pl011 console ready");
         Ok(())
     }
+
+    fn init_pci(&mut self) -> Result<(), ServiceError> {
+        let pci = enumerate_pci(&self.config.pci)?;
+        fstart_log::info!(
+            "qemu-aarch64: PCI root ready ({} devices)",
+            pci.device_count(),
+        );
+        self.pci = Some(pci);
+        Ok(())
+    }
 }
 
 /// DTB location for pflash/`-bios` boots.
@@ -63,6 +73,7 @@ impl QemuAarch64VirtMainstage {
 /// QEMU only passes the DTB pointer in `x0` for direct `-kernel` boots; for
 /// firmware boots it copies the DTB to the base of RAM instead. Fall back to
 /// the configured RAM-base source when `x0` carried nothing.
+#[cfg(any(feature = "linux", feature = "crabefi"))]
 fn source_dtb_addr(config: &super::virt::QemuAarch64VirtConfig) -> u64 {
     let boot = fstart_arch::aarch64::boot_dtb_addr();
     if boot != 0 {
@@ -104,7 +115,7 @@ impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainsta
             config.firmware_addr,
             config.ram_base,
             config.ram_size,
-            self.config.ecam_base,
+            self.config.pci.ecam_base,
         )
     }
 
@@ -126,6 +137,7 @@ impl QemuAarch64Virt {
         if !phase("qemu-aarch64", "before_console", hooks.before_console())
             || !phase("qemu-aarch64", "console", mainstage.init_console())
             || !phase("qemu-aarch64", "after_console", hooks.after_console())
+            || !phase("qemu-aarch64", "bus_scan", mainstage.init_pci())
             || !phase("qemu-aarch64", "before_payload", hooks.before_payload())
         {
             fstart_arch::aarch64::halt();

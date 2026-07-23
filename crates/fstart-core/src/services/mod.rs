@@ -39,7 +39,7 @@ pub use boot_media::{
     TempRamArena,
 };
 pub use clock::ClockController;
-pub use console::Console;
+pub use console::{Console, ConsoleDevice};
 pub use device::{BusDevice, DeviceError};
 pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow};
 pub use flash_layout::FlashLayoutVerifier;
@@ -71,6 +71,16 @@ pub enum ServiceError {
     NotInitialized,
     /// Generic I/O error
     IoError,
+}
+
+impl From<DeviceError> for ServiceError {
+    fn from(error: DeviceError) -> Self {
+        match error {
+            DeviceError::MissingResource(_) | DeviceError::ConfigError => Self::InvalidParam,
+            DeviceError::InitFailed => Self::HardwareError,
+            DeviceError::BusError => Self::IoError,
+        }
+    }
 }
 
 #[cfg(test)]

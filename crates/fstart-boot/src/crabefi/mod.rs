@@ -1,6 +1,6 @@
 //! Adapter layer between fstart drivers and CrabEFI platform traits.
 //!
-//! Bridges fstart's service traits (`Console`, `Timer`, `PciRootBus`) to the
+//! Bridges fstart's runtime services (`Console`, `Timer`, PCI config access) to the
 //! trait objects that [`crabefi::PlatformConfig`] expects (`DebugOutput`,
 //! `Timer`, `ResetHandler`).
 //!

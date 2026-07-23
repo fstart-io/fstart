@@ -5,7 +5,7 @@ use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
 use fstart_stage::{StageBoard, StageEnvironment};
 
-use crate::virt::{phase, QemuArmv7VirtConfig};
+use crate::virt::{enumerate_pci, phase, QemuArmv7VirtConfig};
 
 pub const QEMU_ARMV7_UART_BASE: u64 = 0x0900_0000;
 
@@ -33,17 +33,17 @@ pub trait QemuArmv7VirtBoard: StageBoard {
 pub struct QemuArmv7Virt;
 
 pub struct QemuArmv7VirtMainstage {
-    #[cfg(feature = "linux")]
     config: &'static QemuArmv7VirtConfig,
     console: Pl011,
+    pci: Option<fstart_pci::PciEcam>,
 }
 
 impl QemuArmv7VirtMainstage {
     fn new<B: QemuArmv7VirtBoard>() -> Result<Self, ServiceError> {
         Ok(Self {
-            #[cfg(feature = "linux")]
             config: B::CONFIG,
             console: Pl011::new(B::console_config())?,
+            pci: None,
         })
     }
 
@@ -52,6 +52,16 @@ impl QemuArmv7VirtMainstage {
         // SAFETY: the monolithic flow owns the console through payload handoff.
         unsafe { fstart_log::init(&self.console) };
         fstart_log::info!("qemu-armv7: pl011 console ready");
+        Ok(())
+    }
+
+    fn init_pci(&mut self) -> Result<(), ServiceError> {
+        let pci = enumerate_pci(&self.config.pci)?;
+        fstart_log::info!(
+            "qemu-armv7: PCI root ready ({} devices)",
+            pci.device_count(),
+        );
+        self.pci = Some(pci);
         Ok(())
     }
 }
@@ -88,6 +98,7 @@ impl QemuArmv7Virt {
         if !phase("qemu-armv7", "before_console", hooks.before_console())
             || !phase("qemu-armv7", "console", mainstage.init_console())
             || !phase("qemu-armv7", "after_console", hooks.after_console())
+            || !phase("qemu-armv7", "bus_scan", mainstage.init_pci())
             || !phase("qemu-armv7", "before_payload", hooks.before_payload())
         {
             fstart_arch::halt();

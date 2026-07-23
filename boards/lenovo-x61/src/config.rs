@@ -11,7 +11,7 @@ use fstart_core::{
     hstr, hvec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform,
     SmbiosConfig,
 };
-use fstart_driver_intel::ck505::I2cCk505Config;
+use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::gpio_ich as gpio;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
@@ -127,8 +127,6 @@ pub fn x61_flash_layout() -> FlashLayout {
 
 pub fn x61_ifd_flash_layout() -> IntelIfdFlashLayout {
     IntelIfdFlashLayout {
-        base: 0xFFC0_0000,
-        size: 0x0040_0000,
         regions: hvec([
             IntelIfdRegionConfig {
                 kind: IntelIfdRegion::Descriptor,

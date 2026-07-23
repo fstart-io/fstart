@@ -12,7 +12,6 @@
 
 #![allow(clippy::modulo_one)]
 
-#[path = "raminit.rs"]
 pub mod raminit;
 
 #[cfg(feature = "ffs-vbt")]
@@ -27,8 +26,9 @@ use fstart_core::services::memory_detect::{
 use fstart_core::services::{MemoryController, ServiceError};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
-use fstart_pci::{PciBdf, PciRootBus, PciWindow};
-use fstart_pci::{PciEcam, PciEcamConfig};
+use fstart_pci::{
+    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
+};
 use serde::Serialize;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -813,7 +813,6 @@ impl Default for IntelGm965Config {
 pub struct IntelGm965 {
     config: &'static IntelGm965Config,
     detected_size: u64,
-    pci: Option<PciEcam>,
     /// PCI mmio32 window derived from the e820 map after memory detection.
     mmio32_window: Option<(u64, u64)>,
 }
@@ -1748,7 +1747,6 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         Ok(Self {
             config,
             detected_size: 0,
-            pci: None,
             mmio32_window: None,
         })
     }
@@ -1810,77 +1808,41 @@ fn default_mmio32_window_from_e820(
     (base < limit).then_some((base, limit - base))
 }
 
-impl IntelGm965 {
-    fn pci_ecam_config(&self) -> PciEcamConfig {
+impl PciRootProvider for IntelGm965 {
+    fn root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: 0,
+            bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
+        }
+    }
+
+    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
+        let mut windows = PciRootWindows::new();
         let (mmio32_base, mmio32_size) =
             self.mmio32_window.unwrap_or((PCI_MMIO32_FALLBACK_BASE, 0));
-        PciEcamConfig {
-            ecam_base: self.config.ecam_base,
-            ecam_size: self.ecam_size(),
-            mmio32_base,
-            mmio32_size,
-            mmio64_base: 0,
-            mmio64_size: 0,
-            // Reserve legacy/LPC fixed decodes below 0x1000.
-            pio_base: PCI_PIO_BASE,
-            pio_size: PCI_PIO_SIZE,
-            bus_start: self.bus_start(),
-            bus_end: self.bus_end(),
+
+        if mmio32_size != 0 {
+            windows
+                .push(PciWindow {
+                    kind: PciWindowKind::Mmio,
+                    base: mmio32_base,
+                    size: mmio32_size,
+                    prefetchable: false,
+                })
+                .map_err(|_| PciRootError::TooManyWindows)?;
         }
-    }
+        windows
+            .push(PciWindow {
+                kind: PciWindowKind::Io,
+                base: PCI_PIO_BASE,
+                size: PCI_PIO_SIZE,
+                prefetchable: false,
+            })
+            .map_err(|_| PciRootError::TooManyWindows)?;
 
-    fn ensure_pci_ecam(&mut self) -> Result<&mut PciEcam, ServiceError> {
-        if self.pci.is_none() {
-            let config = self.pci_ecam_config();
-            self.pci =
-                Some(PciEcam::from_config(&config).map_err(|_| ServiceError::HardwareError)?);
-        }
-        self.pci.as_mut().ok_or(ServiceError::NotInitialized)
-    }
-
-    fn pci_ecam(&self) -> Result<&PciEcam, ServiceError> {
-        self.pci.as_ref().ok_or(ServiceError::NotInitialized)
-    }
-}
-
-impl PciRootBus for IntelGm965 {
-    fn init_bus(&mut self) -> Result<(), ServiceError> {
-        self.ensure_pci_ecam()?
-            .enumerate_and_allocate()
-            .map_err(|_| ServiceError::HardwareError)
-    }
-
-    fn config_read32(&self, addr: PciBdf, reg: u16) -> Result<u32, ServiceError> {
-        Ok(self.pci_ecam()?.config_read32(addr, reg))
-    }
-
-    fn config_write32(&self, addr: PciBdf, reg: u16, val: u32) -> Result<(), ServiceError> {
-        self.pci_ecam()?.config_write32(addr, reg, val);
-        Ok(())
-    }
-
-    fn ecam_base(&self) -> u64 {
-        self.config.ecam_base
-    }
-
-    fn ecam_size(&self) -> u64 {
-        u64::from(self.config.ecam_buses) * 1024 * 1024
-    }
-
-    fn bus_start(&self) -> u8 {
-        0
-    }
-
-    fn bus_end(&self) -> u8 {
-        self.config.ecam_buses.saturating_sub(1).min(255) as u8
-    }
-
-    fn device_count(&self) -> usize {
-        self.pci.as_ref().map_or(0, PciEcam::device_count)
-    }
-
-    fn windows(&self) -> &[PciWindow] {
-        self.pci.as_ref().map_or(&[], PciEcam::windows)
+        Ok(windows)
     }
 }
 

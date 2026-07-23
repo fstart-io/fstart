@@ -2,6 +2,24 @@
 
 use super::ServiceError;
 
+/// Statically constructed console used by fixed platform flows.
+///
+/// The associated configuration remains plain serializable board data while
+/// the concrete console type is selected at compile time.
+pub trait ConsoleDevice: Console + Sized {
+    /// Plain configuration used to construct this console.
+    type Config;
+
+    /// Human-readable implementation name for diagnostics.
+    const NAME: &'static str;
+
+    /// Construct a console without initializing hardware.
+    fn new(config: Self::Config) -> Result<Self, ServiceError>;
+
+    /// Initialize the console hardware.
+    fn init(&mut self) -> Result<(), ServiceError>;
+}
+
 /// A console device for debug output and (optionally) input.
 pub trait Console: Send + Sync {
     /// Write a single byte.

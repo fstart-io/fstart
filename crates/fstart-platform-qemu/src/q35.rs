@@ -3,8 +3,8 @@
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_core::services::ServiceError;
 use fstart_pci::{
-    PciBdf, PciEcam, PciEcamConfig, PciRootBus, PciWindow, PCI_HEADER_TYPE,
-    PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PCI_VENDOR_ID,
+    PciAddress, PciEcam, PciEcamConfig, PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC,
+    PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PCI_VENDOR_ID,
 };
 use serde::{Deserialize, Serialize};
 
@@ -122,7 +122,7 @@ impl Q35HostBridge {
     }
 
     fn program_pam(&self) {
-        let mch = PciBdf::new(0, 0, 0);
+        let mch = PciAddress::new(0, 0, 0, 0);
         let pam0 = self.ecam_read8(mch, PAM0);
         self.ecam_write8(mch, PAM0, pam0 | 0x30);
         for idx in 1u16..=6 {
@@ -167,19 +167,19 @@ impl Q35HostBridge {
         (tolud, touud)
     }
 
-    fn ecam_read8(&self, addr: PciBdf, reg: u16) -> u8 {
+    fn ecam_read8(&self, addr: PciAddress, reg: u16) -> u8 {
         let val = self.ecam.config_read32(addr, reg & !0x3);
         let shift = ((reg & 0x3) * 8) as u32;
         ((val >> shift) & 0xff) as u8
     }
 
-    fn ecam_read16(&self, addr: PciBdf, reg: u16) -> u16 {
+    fn ecam_read16(&self, addr: PciAddress, reg: u16) -> u16 {
         let val = self.ecam.config_read32(addr, reg & !0x3);
         let shift = ((reg & 0x2) * 8) as u32;
         ((val >> shift) & 0xffff) as u16
     }
 
-    fn ecam_write8(&self, addr: PciBdf, reg: u16, val: u8) {
+    fn ecam_write8(&self, addr: PciAddress, reg: u16, val: u8) {
         let aligned = reg & !0x3;
         let shift = ((reg & 0x3) * 8) as u32;
         let mut dword = self.ecam.config_read32(addr, aligned);
@@ -191,7 +191,7 @@ impl Q35HostBridge {
     fn assign_irqs(&self) {
         let bus = self.ecam.bus_start();
         for slot in 0u8..32 {
-            let addr = PciBdf::new(bus, slot, 0);
+            let addr = PciAddress::new(0, bus, slot, 0);
             let vendor = self.ecam_read16(addr, PCI_VENDOR_ID);
             if vendor == 0xffff {
                 continue;
@@ -199,7 +199,7 @@ impl Q35HostBridge {
             let offset = if slot < 25 { slot as usize % 4 } else { 0 };
             let max_func = if self.is_multifunction(addr) { 8 } else { 1 };
             for func in 0..max_func {
-                let faddr = PciBdf::new(bus, slot, func);
+                let faddr = PciAddress::new(0, bus, slot, func);
                 if func > 0 && self.ecam_read16(faddr, PCI_VENDOR_ID) == 0xffff {
                     continue;
                 }
@@ -214,7 +214,7 @@ impl Q35HostBridge {
         fstart_log::info!("Q35: PCI IRQ routing assigned");
     }
 
-    fn is_multifunction(&self, addr: PciBdf) -> bool {
+    fn is_multifunction(&self, addr: PciAddress) -> bool {
         self.ecam_read8(addr, PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC != 0
     }
 
@@ -272,44 +272,5 @@ impl Q35HostBridge {
             fstart_core::pio::outb(0x70, nmi);
         }
         fstart_log::info!("Q35: legacy 8259 PIC and 8254 PIT initialized");
-    }
-}
-
-impl PciRootBus for Q35HostBridge {
-    fn init_bus(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn config_read32(&self, addr: PciBdf, reg: u16) -> Result<u32, ServiceError> {
-        Ok(self.ecam.config_read32(addr, reg))
-    }
-
-    fn config_write32(&self, addr: PciBdf, reg: u16, val: u32) -> Result<(), ServiceError> {
-        self.ecam.config_write32(addr, reg, val);
-        Ok(())
-    }
-
-    fn ecam_base(&self) -> u64 {
-        self.ecam.ecam_base()
-    }
-
-    fn ecam_size(&self) -> u64 {
-        self.ecam.ecam_size()
-    }
-
-    fn bus_start(&self) -> u8 {
-        self.ecam.bus_start()
-    }
-
-    fn bus_end(&self) -> u8 {
-        self.ecam.bus_end()
-    }
-
-    fn device_count(&self) -> usize {
-        self.ecam.device_count()
-    }
-
-    fn windows(&self) -> &[PciWindow] {
-        self.ecam.windows()
     }
 }

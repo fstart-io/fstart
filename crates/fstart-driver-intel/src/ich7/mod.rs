@@ -18,7 +18,6 @@
     dead_code
 )]
 
-#[path = "ich7_smm.rs"]
 pub mod smm;
 
 use fstart_core::mmio::MmioReadWrite;
@@ -1176,9 +1175,9 @@ impl IntelIch7 {
     ///
     /// Call this after `early_init()` but before raminit to determine
     /// which raminit steps to skip.
-    pub fn detect_boot_path(&self) -> u8 {
+    pub fn detect_boot_path(&self) -> crate::BootPath {
         if self.detect_s3_resume() {
-            return 2; // BOOT_PATH_RESUME
+            return crate::BootPath::S3Resume;
         }
         // Warm-reset detection (BOOT_PATH_RESET = 1) requires reading
         // MCHBAR PMSTS bit 8, which is a northbridge register.  The
@@ -1188,7 +1187,7 @@ impl IntelIch7 {
         // `sdram_checkreset()` which reads PMCON2/PMCON3 directly and
         // triggers a CF9 reset when needed, so not returning
         // BOOT_PATH_RESET here is safe for initial bring-up.
-        0 // BOOT_PATH_NORMAL
+        crate::BootPath::Normal
     }
 }
 
@@ -2080,28 +2079,14 @@ impl IntelIch7 {
 mod acpi_impl {
     extern crate alloc;
     use alloc::vec::Vec;
-    use fstart_acpi::aml::{Path, Scope};
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi::platform::{IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
-    use fstart_acpi::{Aml, AmlSink};
     use fstart_acpi_macros::acpi_dsl;
 
     use super::*;
 
-    struct RawAml<'a>(&'a [u8]);
-
-    impl Aml for RawAml<'_> {
-        fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-            sink.vec(self.0);
-        }
-    }
-
     fn pci0_scope_aml(children: &[u8]) -> Vec<u8> {
-        let raw = RawAml(children);
-        let scope = Scope::new(Path::new("\\_SB_.PCI0"), alloc::vec![&raw as &dyn Aml]);
-        let mut bytes = Vec::new();
-        scope.to_aml_bytes(&mut bytes);
-        bytes
+        fstart_acpi::scope_aml("\\_SB_.PCI0", children)
     }
 
     /// ICH7 PCI device IDs (LPC bridge variants).

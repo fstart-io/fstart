@@ -7,11 +7,9 @@ use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
 use fstart_stage::payload::MainstagePayload;
 use fstart_stage::{StageBoard, StageEnvironment};
 
-use crate::virt::{phase, QemuRiscv64VirtConfig};
+use crate::virt::{enumerate_pci, phase, QemuRiscv64VirtConfig};
 #[cfg(feature = "crabefi")]
-use crate::virt::{
-    QEMU_RISCV64_ECAM_BASE, QEMU_RISCV64_OPENSBI_RESERVE_SIZE, QEMU_RISCV64_UEFI_DTB_ADDR,
-};
+use crate::virt::{QEMU_RISCV64_OPENSBI_RESERVE_SIZE, QEMU_RISCV64_UEFI_DTB_ADDR};
 
 pub const QEMU_RISCV64_UART_BASE: u64 = 0x1000_0000;
 
@@ -40,17 +38,17 @@ pub trait QemuRiscv64VirtBoard: StageBoard {
 pub struct QemuRiscv64Virt;
 
 pub struct QemuRiscv64VirtMainstage {
-    #[cfg(any(feature = "linux", feature = "crabefi"))]
     config: &'static QemuRiscv64VirtConfig,
     console: Ns16550,
+    pci: Option<fstart_pci::PciEcam>,
 }
 
 impl QemuRiscv64VirtMainstage {
     fn new<B: QemuRiscv64VirtBoard>() -> Result<Self, ServiceError> {
         Ok(Self {
-            #[cfg(any(feature = "linux", feature = "crabefi"))]
             config: B::CONFIG,
             console: Ns16550::new(B::console_config()).map_err(|_| ServiceError::HardwareError)?,
+            pci: None,
         })
     }
 
@@ -61,6 +59,16 @@ impl QemuRiscv64VirtMainstage {
         // SAFETY: the monolithic flow owns the console through payload handoff.
         unsafe { fstart_log::init(&self.console) };
         fstart_log::info!("qemu-riscv64: ns16550 console ready");
+        Ok(())
+    }
+
+    fn init_pci(&mut self) -> Result<(), ServiceError> {
+        let pci = enumerate_pci(&self.config.pci)?;
+        fstart_log::info!(
+            "qemu-riscv64: PCI root ready ({} devices)",
+            pci.device_count(),
+        );
+        self.pci = Some(pci);
         Ok(())
     }
 }
@@ -96,7 +104,7 @@ impl fstart_stage::payload::Riscv64UefiPayloadContext for QemuRiscv64VirtMainsta
             QEMU_RISCV64_UEFI_DTB_ADDR,
             config.ram_base,
             config.ram_size,
-            QEMU_RISCV64_ECAM_BASE,
+            self.config.pci.ecam_base,
         )
     }
 
@@ -141,6 +149,7 @@ impl QemuRiscv64Virt {
         if !phase("qemu-riscv64", "before_console", hooks.before_console())
             || !phase("qemu-riscv64", "console", mainstage.init_console())
             || !phase("qemu-riscv64", "after_console", hooks.after_console())
+            || !phase("qemu-riscv64", "bus_scan", mainstage.init_pci())
             || !phase("qemu-riscv64", "before_payload", hooks.before_payload())
         {
             fstart_arch::riscv64::halt();

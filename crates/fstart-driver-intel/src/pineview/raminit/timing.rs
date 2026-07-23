@@ -166,7 +166,7 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
     si.selected_timings.fsb_clock = fsb;
 
     // --- Program the selected frequency into MCHBAR CLKCFG ---
-    if si.boot_path != super::BOOT_PATH_RESET {
+    if si.boot_path != crate::BootPath::WarmReset {
         mch.setbits32(mchbar::PMSTS, 1 << 0);
 
         let clkcfg = mch.read32(mchbar::CLKCFG) & !0x70;
@@ -444,7 +444,7 @@ pub fn clkmode(si: &SysInfo, mch: &MchBar) {
         (1 << 8) | (1 << 5) // 800 MHz
     };
 
-    if si.boot_path != super::BOOT_PATH_RESET {
+    if si.boot_path != crate::BootPath::WarmReset {
         let v = mch.read16(mchbar::MPLLCTL);
         mch.write16(mchbar::MPLLCTL, (v & !0x033F) | mpll_ctl);
     }

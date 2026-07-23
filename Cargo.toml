@@ -48,6 +48,7 @@ ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 tock-registers = "0.10"
+pci_types = "0.10.1"
 x86 = { version = "0.52", default-features = false }
 
 # Device tree

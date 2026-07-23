@@ -139,7 +139,7 @@ pub fn sdram_misc(si: &SysInfo, mch: &MchBar) {
     let v = mch.read8(mchbar::C0REFRCTRL + 3);
     mch.write8(mchbar::C0REFRCTRL + 3, v | (1 << 0));
 
-    if si.boot_path != super::BOOT_PATH_RESUME {
+    if si.boot_path != crate::BootPath::S3Resume {
         // Normal/Reset path: set NORMAL_OP command.
         let v = mch.read8(mchbar::C0JEDEC);
         mch.write8(mchbar::C0JEDEC, (v & !0x0E) | NORMAL_OP_CMD);
@@ -157,7 +157,7 @@ pub fn sdram_misc(si: &SysInfo, mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_zqcl()`.
 pub fn sdram_zqcl(si: &SysInfo, mch: &MchBar) {
-    if si.boot_path == super::BOOT_PATH_RESUME {
+    if si.boot_path == crate::BootPath::S3Resume {
         mch.setbits32(mchbar::C0CKECTRL, 1 << 27);
         let v = mch.read8(mchbar::C0JEDEC);
         mch.write8(mchbar::C0JEDEC, (v & !0x0E) | NORMAL_OP_CMD);

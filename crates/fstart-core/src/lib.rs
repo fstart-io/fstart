@@ -43,8 +43,8 @@ pub use ffs::{
     VerificationKey, FFS_MAGIC, FFS_VERSION,
 };
 pub use memory::{
-    CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig,
-    LegacyFlashLayout, MemoryMap, MemoryMapError, MemoryRegion, RegionKind,
+    CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,
+    MemoryMapError, MemoryRegion, RegionKind, X86LegacyFlashLayout,
 };
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
@@ -53,6 +53,4 @@ pub use stage::{
     effective_stage_load_addr, FirmwareImageConfig, MonolithicConfig, MpBuildConfig, RunsFrom,
     StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
 };
-pub use typed::{
-    io16, mmio32, Io16, Io8, IoAddr, Irq, Mmio16, Mmio32, Mmio64, Mmio8, MmioAddr, PciBdf,
-};
+pub use typed::{io16, mmio32, Io16, Io8, IoAddr, Irq, Mmio16, Mmio32, Mmio64, Mmio8, MmioAddr};

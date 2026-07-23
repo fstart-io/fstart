@@ -1,7 +1,7 @@
 //! SPD reading and DIMM configuration detection.
 
 use super::{SysInfo, TOTAL_DIMMS};
-use crate::spd::ChipWidth;
+use crate::generic::spd::ChipWidth;
 use fstart_core::services::ServiceError;
 
 use crate::pineview::raminit::{DIMM_TYPE_SODIMM, DIMM_TYPE_UBDIMM};
@@ -25,7 +25,7 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
         }
 
         fstart_log::info!("raminit: probing DIMM {} SPD at {:#x}", i, addr);
-        let Some(spd_buf) = crate::spd::ddr2::read_spd(smbus, addr)? else {
+        let Some(spd_buf) = crate::generic::spd::ddr2::read_spd(smbus, addr)? else {
             fstart_log::info!("raminit: DIMM {} (addr {:#x}) not present", i, addr);
             si.dimms[i] = None;
             continue;
@@ -39,7 +39,7 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
             spd_buf[3] as u32,
         );
 
-        let Some(mut info) = crate::spd::ddr2::decode_dimm(&spd_buf) else {
+        let Some(mut info) = crate::generic::spd::ddr2::decode_dimm(&spd_buf) else {
             fstart_log::error!(
                 "raminit: DIMM {} is not valid DDR2 (bytes: [{:#x}, {:#x}, {:#x}, {:#x}], type={:#x}, rev={:#x})",
                 i,
@@ -53,7 +53,7 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
             return Err(ServiceError::HardwareError);
         };
 
-        si.spd_type = crate::spd::ddr2::DDR2;
+        si.spd_type = crate::generic::spd::ddr2::DDR2;
 
         // Preserve Pineview's coreboot CAS mask policy: only CAS3..CAS6 are
         // considered, with a conservative CAS0..2 fallback if the advertised
@@ -173,7 +173,7 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
     }
 }
 
-fn dimm_config_desktop(d: &crate::spd::DimmInfo) -> u8 {
+fn dimm_config_desktop(d: &crate::generic::spd::DimmInfo) -> u8 {
     if d.card_type == 0 {
         return 0;
     }

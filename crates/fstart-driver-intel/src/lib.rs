@@ -7,7 +7,7 @@ extern crate alloc;
 #[cfg(feature = "acpi")]
 mod core2_aml;
 
-pub mod ck505;
+pub mod generic;
 pub mod gm965;
 pub mod gpio_ich;
 pub mod hda;
@@ -17,13 +17,24 @@ pub mod pineview;
 pub use fstart_arch::cpu_intel::microcode;
 pub mod pmio_ich;
 pub mod smbus;
-pub mod spd;
+
+/// Boot condition selected before DRAM initialization.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BootPath {
+    /// Ordinary power-on initialization.
+    #[default]
+    Normal,
+    /// Warm-reset recovery path.
+    WarmReset,
+    /// ACPI S3 resume path.
+    S3Resume,
+}
 
 /// Intel northbridge contract consumed by Intel platform flows.
 pub trait IntelNorthbridgeDriver:
     fstart_core::services::memory_detect::MemoryDetector
     + fstart_core::services::MemoryController
-    + fstart_pci::PciRootBus
+    + fstart_pci::PciRootProvider
     + Sized
 {
     type Config: 'static;
@@ -37,7 +48,7 @@ pub trait IntelNorthbridgeDriver:
     fn detect_warm_reset(&self) -> bool {
         false
     }
-    fn set_boot_path(&mut self, _boot_path: u8) {}
+    fn set_boot_path(&mut self, _boot_path: BootPath) {}
     fn dram_init_with_smbus(
         &mut self,
         _smbus: Option<&mut dyn fstart_core::services::SmBus>,

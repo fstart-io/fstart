@@ -63,6 +63,25 @@ pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 
+/// Already-encoded AML that can be embedded in another AML object.
+pub struct RawAml<'a>(pub &'a [u8]);
+
+impl Aml for RawAml<'_> {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        sink.vec(self.0);
+    }
+}
+
+/// Wrap already-encoded AML children in an AML scope.
+#[must_use]
+pub fn scope_aml(path: &str, children: &[u8]) -> Vec<u8> {
+    let raw = RawAml(children);
+    let scope = aml::Scope::new(aml::Path::new(path), vec![&raw as &dyn Aml]);
+    let mut bytes = Vec::new();
+    scope.to_aml_bytes(&mut bytes);
+    bytes
+}
+
 /// Internal marker emitted by [`RootScope`] and consumed by the platform DSDT
 /// assembler before final AML is written.
 pub(crate) const ROOT_SCOPE_MARKER: &[u8; 8] = b"FSTROOT\0";

@@ -9,6 +9,7 @@ publish = false
 default = []
 host = []
 stage = [
+  "dep:fstart-driver-superio",
   "dep:fstart-driver-uart",
   "dep:fstart-log",
   "dep:fstart-stage",
@@ -24,6 +25,7 @@ smbios = ["stage", "dep:fstart-acpi", "dep:fstart-arch"]
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-driver-intel = { workspace = true, features = ["ffs-vbt"] }
+fstart-driver-superio = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }

@@ -381,6 +381,20 @@ impl Ns16550 {
     }
 }
 
+impl fstart_core::services::ConsoleDevice for Ns16550 {
+    type Config = Ns16550Config;
+
+    const NAME: &'static str = "ns16550";
+
+    fn new(config: Self::Config) -> Result<Self, ServiceError> {
+        Self::new(config).map_err(Into::into)
+    }
+
+    fn init(&mut self) -> Result<(), ServiceError> {
+        Self::init(self).map_err(Into::into)
+    }
+}
+
 impl Console for Ns16550 {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
         // Wait for THR empty, but keep this bounded like coreboot's 8250

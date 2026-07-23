@@ -63,10 +63,6 @@ impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
         Ok(())
     }
 
-    fn before_handoff(&mut self, _ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
-        fstart_driver_superio::quiesce_i8042_for_os();
-        Ok(())
-    }
 }
 
 /// X61 dock and DLPC helpers ported from coreboot `mainboard/lenovo/x61/dock.c`.

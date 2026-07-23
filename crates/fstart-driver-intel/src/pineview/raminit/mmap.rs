@@ -285,7 +285,7 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
             if d.card_type != 0 && rank_in_dimm < d.ranks {
                 let banks = usize::from(d.banks >= 8);
                 let width = match d.width {
-                    crate::spd::ChipWidth::X16 | crate::spd::ChipWidth::X32 => 1,
+                    crate::generic::spd::ChipWidth::X16 | crate::generic::spd::ChipWidth::X32 => 1,
                     _ => 0,
                 };
                 let cols = (d.cols as usize).saturating_sub(9).min(1);

@@ -307,8 +307,7 @@ pub fn pineview_ich7_stages(config: &PineviewIch7Config) -> StageLayout {
             },
             load_addr: PINEVIEW_BOOTBLOCK_LOAD_ADDR,
             stack_size: 0x2000,
-            // Small CAR heap for FFS/LZ4 scratch allocations.
-            heap_size: Some(0x100),
+            heap_size: None,
             runs_from: RunsFrom::Rom,
             compression: Compression::None,
             data_addr: None,
@@ -357,7 +356,6 @@ mod stage {
     use fstart_core::services::ServiceError;
     use fstart_driver_intel::ich7::IntelIch7;
     use fstart_driver_intel::pineview::IntelPineview;
-    use fstart_driver_uart::ns16550::Ns16550Config;
     use fstart_stage::payload::MainstagePayload;
     use fstart_stage::StageEnvironment;
 
@@ -436,7 +434,9 @@ mod stage {
         const SB_CONFIG: &'static IntelIch7Config = &Self::CONFIG.southbridge_config();
 
         fn flash_layout() -> fstart_core::FlashLayout;
-        fn console_config() -> Ns16550Config;
+        type Console: fstart_core::services::ConsoleDevice;
+
+        fn console_config() -> <Self::Console as fstart_core::services::ConsoleDevice>::Config;
         fn console_node() -> &'static str;
         #[cfg(feature = "smbios")]
         fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
@@ -466,7 +466,7 @@ mod stage {
     {
         let northbridge = IntelPineview::new_from_config(B::NB_CONFIG)?;
         let southbridge = IntelIch7::new_from_config(B::SB_CONFIG)?;
-        crate::run_intel_bootblock::<PineviewIch7, _, _, _>(
+        crate::run_intel_bootblock::<PineviewIch7, _, _, _, B::Console>(
             BootblockSpec {
                 platform: "pineview/ich7",
                 next_stage: PINEVIEW_NEXT_STAGE_NAME,
@@ -488,6 +488,7 @@ mod stage {
         IntelPineview,
         IntelIch7,
         <B as IntelEarlyBoard>::Hooks,
+        <B as PineviewIch7Board>::Console,
         PineviewIch7AcpiContext,
     >;
 
@@ -509,6 +510,7 @@ mod stage {
             IntelPineview,
             IntelIch7,
             B::Hooks,
+            B::Console,
             PineviewIch7AcpiContext,
         >(
             MainstageSpec {

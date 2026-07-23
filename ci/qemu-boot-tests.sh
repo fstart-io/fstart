@@ -64,6 +64,23 @@ mkdir -p "$LOG_DIR"
 failures=0
 selected=0
 
+require_boot_marker() {
+	local board="$1"
+	local payload="$2"
+	local marker="$3"
+
+	matches_filter "$board" "${board_filters[@]}" || return 0
+	matches_filter "$payload" "${payload_filters[@]}" || return 0
+
+	local log="$LOG_DIR/${board}-${payload}.log"
+	if grep -Fq "$marker" "$log"; then
+		printf 'PASS %-14s %-6s %s\n' "$board" "$payload" "$marker"
+	else
+		printf 'FAIL %-14s %-6s %s (%s)\n' "$board" "$payload" "$marker" "$log"
+		failures=$((failures + 1))
+	fi
+}
+
 run_boot() {
 	local board="$1"
 	local payload="$2"
@@ -100,6 +117,7 @@ run_boot() {
 }
 
 run_boot qemu-q35 halt 'ramstage: ready for payload'
+require_boot_marker qemu-q35 halt 'PCI root ready ('
 run_boot qemu-q35 uefi 'Boot manager finished'
 # Full boot chain: fstart -> CrabEFI -> GRUB (ESP) -> Linux -> u-root init.
 if [[ -f "$X86_ASSET_DIR/disk.img" ]]; then
@@ -111,6 +129,7 @@ else
 fi
 
 run_boot qemu-riscv64 halt 'ramstage: ready for payload'
+require_boot_marker qemu-riscv64 halt 'PCI root ready ('
 run_boot qemu-riscv64 linux FSTART_CI_BOOT_SUCCESS \
 	--kernel "$ASSET_DIR/Image-riscv64" --firmware "$ASSET_DIR/fw_dynamic.bin"
 run_boot qemu-riscv64 uefi 'Boot manager finished' \
@@ -121,12 +140,14 @@ run_boot qemu-sifive-u linux FSTART_CI_BOOT_SUCCESS \
 	--kernel "$ASSET_DIR/Image-riscv64" --firmware "$ASSET_DIR/fw_dynamic.bin"
 
 run_boot qemu-aarch64 halt 'ramstage: ready for payload'
+require_boot_marker qemu-aarch64 halt 'PCI root ready ('
 run_boot qemu-aarch64 linux FSTART_CI_BOOT_SUCCESS \
 	--kernel "$ASSET_DIR/Image-aarch64" --firmware "$ASSET_DIR/bl31.bin"
 run_boot qemu-aarch64 uefi 'Boot manager finished' \
 	--firmware "$ASSET_DIR/bl31.bin"
 
 run_boot qemu-armv7 halt 'ramstage: ready for payload'
+require_boot_marker qemu-armv7 halt 'PCI root ready ('
 run_boot qemu-armv7 linux FSTART_CI_BOOT_SUCCESS \
 	--kernel "$ASSET_DIR/zImage-armv7"
 
@@ -134,6 +155,7 @@ run_boot qemu-armv7 linux FSTART_CI_BOOT_SUCCESS \
 if [[ -f "$ASSET_DIR/sbsa-secure.pflash" ]]; then
 	run_boot qemu-sbsa halt 'qemu-sbsa ramstage: ready for payload' \
 		--secure-firmware "$ASSET_DIR/sbsa-secure.pflash"
+	require_boot_marker qemu-sbsa halt 'PCI root ready ('
 else
 	printf 'SKIP %-14s %-6s %s (no %s)\n' qemu-sbsa halt \
 		'qemu-sbsa ramstage: ready for payload' "$ASSET_DIR/sbsa-secure.pflash"

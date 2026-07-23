@@ -47,9 +47,9 @@ impl MemoryMap {
         match &self.flash_layout {
             Some(FlashLayout::IntelIfd(layout)) => {
                 let bios = layout.bios_region()?;
-                Some((layout.base + u64::from(bios.offset), u64::from(bios.size)))
+                Some((layout.base() + u64::from(bios.offset), u64::from(bios.size)))
             }
-            Some(FlashLayout::Legacy(layout)) => Some((layout.base, u64::from(layout.size))),
+            Some(FlashLayout::X86Legacy(layout)) => Some((layout.base(), u64::from(layout.size()))),
             None => self.contiguous_rom_window(),
         }
     }
@@ -76,11 +76,11 @@ impl MemoryMap {
                     .bios_region()
                     .ok_or(MemoryMapError::MissingBiosRegion)?;
                 Ok(Some((
-                    layout.base + u64::from(bios.offset),
+                    layout.base() + u64::from(bios.offset),
                     u64::from(bios.size),
                 )))
             }
-            FlashLayout::Legacy(layout) => Ok(Some((layout.base, u64::from(layout.size)))),
+            FlashLayout::X86Legacy(layout) => Ok(Some((layout.base(), u64::from(layout.size())))),
         }
     }
 
@@ -238,28 +238,36 @@ pub enum RegionKind {
 pub enum FlashLayout {
     /// Intel Firmware Descriptor controlled SPI flash.
     IntelIfd(IntelIfdFlashLayout),
-    /// Legacy contiguous flash without an Intel Firmware Descriptor.
-    Legacy(LegacyFlashLayout),
+    /// Contiguous x86 flash mapped immediately below the 4-GiB boundary.
+    X86Legacy(X86LegacyFlashLayout),
 }
 
-/// Legacy contiguous flash layout without an Intel Firmware Descriptor.
+/// Contiguous x86 flash mapped immediately below the 4-GiB boundary.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LegacyFlashLayout {
-    /// Physical address where the flash is memory-mapped.
-    pub base: u64,
+pub struct X86LegacyFlashLayout {
     /// Total flash size in bytes.
     pub size: u32,
+}
+
+impl X86LegacyFlashLayout {
+    /// Total flash size.
+    #[must_use]
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Physical base of the top-of-4-GiB legacy flash mapping.
+    #[must_use]
+    pub const fn base(&self) -> u64 {
+        0x1_0000_0000u64 - self.size as u64
+    }
 }
 
 /// Intel Firmware Descriptor flash layout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntelIfdFlashLayout {
-    /// Physical address where the entire SPI flash aperture is memory-mapped.
-    pub base: u64,
-    /// Total flash size in bytes.
-    pub size: u32,
     /// Regions described by the descriptor.
     pub regions: heapless::Vec<IntelIfdRegionConfig, 8>,
 }
@@ -275,12 +283,29 @@ impl IntelIfdFlashLayout {
     /// Memory-mapped BIOS base address.
     pub fn bios_base(&self) -> Option<u64> {
         self.bios_region()
-            .map(|region| self.base + u64::from(region.offset))
+            .map(|region| self.base() + u64::from(region.offset))
+    }
+
+    /// Total flash size derived from the furthest configured region end.
+    #[must_use]
+    pub fn size(&self) -> u32 {
+        self.regions
+            .iter()
+            .filter(|region| region.size != 0)
+            .map(|region| region.offset.saturating_add(region.size))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Physical base of the top-of-4-GiB SPI flash mapping.
+    #[must_use]
+    pub fn base(&self) -> u64 {
+        0x1_0000_0000u64 - u64::from(self.size())
     }
 
     /// Memory-mapped end of the whole flash aperture.
     pub fn end(&self) -> u64 {
-        self.base + u64::from(self.size)
+        self.base() + u64::from(self.size())
     }
 }
 

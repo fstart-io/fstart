@@ -257,7 +257,7 @@ pub fn assemble(
         Some(FlashLayout::IntelIfd(layout)) => {
             layout.regions.iter().any(|region| region.file.is_some())
         }
-        Some(FlashLayout::Legacy(_)) | None => false,
+        Some(FlashLayout::X86Legacy(_)) | None => false,
     };
     if config.full_flash_image || flash_layout_files {
         let full_flash = FullFlashInput {
@@ -481,7 +481,7 @@ fn externalize_xip_bootblock(
         let bios = layout
             .bios_region()
             .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
-        layout.base + u64::from(bios.offset)
+        layout.base() + u64::from(bios.offset)
     } else {
         firmware_image_from_policy(config)?
             .and_then(|image| image.contiguous_window())
@@ -749,7 +749,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
     }
 
     let (flash_base, flash_size) = match &config.memory.flash_layout {
-        Some(FlashLayout::Legacy(layout)) => (layout.base, layout.size as usize),
+        Some(FlashLayout::X86Legacy(layout)) => (layout.base(), layout.size() as usize),
         Some(FlashLayout::IntelIfd(_)) => unreachable!("IFD layout handled above"),
         None => {
             let flash_image = firmware_image_from_policy(config)?.ok_or_else(|| {
@@ -904,10 +904,12 @@ fn create_intel_ifd_flash_image(
         .offset
         .checked_add(bios.size)
         .ok_or_else(|| "Intel IFD BIOS region overflows u32".to_string())?;
-    if bios_end > layout.size {
+    if bios_end > layout.size() {
         return Err(format!(
             "Intel IFD BIOS region [{:#x}..{:#x}) exceeds flash size {:#x}",
-            bios.offset, bios_end, layout.size
+            bios.offset,
+            bios_end,
+            layout.size()
         ));
     }
     if ffs_data.len() > bios.size as usize {
@@ -918,7 +920,7 @@ fn create_intel_ifd_flash_image(
         ));
     }
 
-    let mut image = vec![0xffu8; layout.size as usize];
+    let mut image = vec![0xffu8; layout.size() as usize];
 
     for region in &layout.regions {
         let Some(file) = &region.file else {
@@ -944,7 +946,7 @@ fn create_intel_ifd_flash_image(
                 region.kind.as_str(),
                 region.offset,
                 region.offset + region.size,
-                layout.size
+                layout.size()
             ));
         }
         image[start..start + data.len()].copy_from_slice(&data);
@@ -974,10 +976,10 @@ fn create_intel_ifd_flash_image(
             continue;
         }
         let paddr = segment.paddr;
-        if paddr < layout.base || paddr >= layout.end() {
+        if paddr < layout.base() || paddr >= layout.end() {
             continue;
         }
-        let off = (paddr - layout.base) as usize;
+        let off = (paddr - layout.base()) as usize;
         let size = segment.filesz as usize;
         if off + size > image.len() {
             return Err(format!(
@@ -1025,7 +1027,7 @@ fn create_intel_ifd_flash_image(
 
     patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
 
-    let mib = layout.size as usize / (1024 * 1024);
+    let mib = layout.size() as usize / (1024 * 1024);
     let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
     fs::write(&out_path, &image).map_err(|e| {
         format!(
@@ -1097,26 +1099,26 @@ fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), S
         .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
 
     let aperture_end = layout
-        .base
-        .checked_add(u64::from(layout.size))
+        .base()
+        .checked_add(u64::from(layout.size()))
         .ok_or_else(|| "Intel IFD flash aperture overflows u64".to_string())?;
     for region in &layout.regions {
         let region_end = region
             .offset
             .checked_add(region.size)
             .ok_or_else(|| format!("Intel IFD region {} overflows u32", region.kind.as_str()))?;
-        if region_end > layout.size {
+        if region_end > layout.size() {
             return Err(format!(
                 "Intel IFD region {} [{:#x}..{:#x}) exceeds flash size {:#x}",
                 region.kind.as_str(),
                 region.offset,
                 region_end,
-                layout.size
+                layout.size()
             ));
         }
-        let mapped_start = layout.base + u64::from(region.offset);
-        let mapped_end = layout.base + u64::from(region_end);
-        if mapped_start < layout.base || mapped_end > aperture_end {
+        let mapped_start = layout.base() + u64::from(region.offset);
+        let mapped_end = layout.base() + u64::from(region_end);
+        if mapped_start < layout.base() || mapped_end > aperture_end {
             return Err(format!(
                 "Intel IFD region {} maps outside flash aperture",
                 region.kind.as_str()
@@ -1134,12 +1136,12 @@ fn validate_flash_layout(config: &BoardConfig, board_dir: &Path) -> Result<(), S
         let data = fs::read(&path)
             .map_err(|e| format!("failed to read Intel descriptor {}: {e}", path.display()))?;
         let parsed = parse_intel_ifd(&data)?;
-        if parsed.flash_size != layout.size {
+        if parsed.flash_size != layout.size() {
             return Err(format!(
                 "Intel descriptor {} flash size is {:#x}, but board metadata declares {:#x}",
                 path.display(),
                 parsed.flash_size,
-                layout.size
+                layout.size()
             ));
         }
         for region in &layout.regions {

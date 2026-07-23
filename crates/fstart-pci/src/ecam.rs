@@ -3,10 +3,9 @@
 //! Call [`init`] once after programming PCIEXBAR, then create [`EcamDevice`]
 //! handles to access individual devices.
 
-use core::convert::Infallible;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{PciBdf, PciConfigAccess};
+use crate::{ConfigRegionAccess, PciAddress};
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
 
@@ -27,54 +26,52 @@ pub fn base() -> usize {
 /// A PCI device handle bound to the global ECAM region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EcamDevice {
-    bdf: PciBdf,
+    address: PciAddress,
 }
 
 impl EcamDevice {
-    /// Create a new ECAM device handle for a segment-local BDF.
+    /// Create a new ECAM device handle for a PCI function address.
     #[inline]
-    pub const fn new_bdf(bdf: PciBdf) -> Self {
-        Self { bdf }
+    pub fn new_address(address: PciAddress) -> Self {
+        Self { address }
     }
 
-    /// Create a new ECAM device handle for the given bus/device/function.
+    /// Create a new segment-zero ECAM device handle.
     #[inline]
-    pub const fn new(bus: u8, dev: u8, func: u8) -> Self {
-        Self {
-            bdf: PciBdf::new(bus, dev, func),
-        }
+    pub fn new(bus: u8, device: u8, function: u8) -> Self {
+        Self::new_address(PciAddress::new(0, bus, device, function))
     }
 
-    /// Return the segment-local BDF.
+    /// Return the PCI function address.
     #[inline]
-    pub const fn bdf(&self) -> PciBdf {
-        self.bdf
+    pub fn address(&self) -> PciAddress {
+        self.address
     }
 
     /// Return the bus number.
     #[inline]
-    pub const fn bus(&self) -> u8 {
-        self.bdf.bus
+    pub fn bus(&self) -> u8 {
+        self.address.bus()
     }
 
     /// Return the device number.
     #[inline]
-    pub const fn dev(&self) -> u8 {
-        self.bdf.dev
+    pub fn dev(&self) -> u8 {
+        self.address.device()
     }
 
     /// Return the function number.
     #[inline]
-    pub const fn func(&self) -> u8 {
-        self.bdf.func
+    pub fn func(&self) -> u8 {
+        self.address.function()
     }
 
     #[inline]
     fn addr(&self, reg: u16) -> usize {
         BASE.load(Ordering::Acquire)
-            | ((self.bdf.bus as usize) << 20)
-            | ((self.bdf.dev as usize) << 15)
-            | ((self.bdf.func as usize) << 12)
+            | ((self.address.bus() as usize) << 20)
+            | ((self.address.device() as usize) << 15)
+            | ((self.address.function() as usize) << 12)
             | ((reg as usize) & 0xFFF)
     }
 
@@ -192,33 +189,15 @@ impl EcamDevice {
     }
 }
 
-impl PciConfigAccess for EcamDevice {
-    type Error = Infallible;
-
-    fn read8(&self, bdf: PciBdf, reg: u16) -> Result<u8, Self::Error> {
-        Ok(Self::new_bdf(bdf).read8(reg))
+#[allow(unused_unsafe)]
+impl ConfigRegionAccess for EcamDevice {
+    unsafe fn read(&self, address: PciAddress, offset: u16) -> u32 {
+        // SAFETY: the caller guarantees that the PCI address and offset are valid.
+        unsafe { Self::new_address(address).read32(offset) }
     }
 
-    fn read16(&self, bdf: PciBdf, reg: u16) -> Result<u16, Self::Error> {
-        Ok(Self::new_bdf(bdf).read16(reg))
-    }
-
-    fn read32(&self, bdf: PciBdf, reg: u16) -> Result<u32, Self::Error> {
-        Ok(Self::new_bdf(bdf).read32(reg))
-    }
-
-    fn write8(&self, bdf: PciBdf, reg: u16, val: u8) -> Result<(), Self::Error> {
-        Self::new_bdf(bdf).write8(reg, val);
-        Ok(())
-    }
-
-    fn write16(&self, bdf: PciBdf, reg: u16, val: u16) -> Result<(), Self::Error> {
-        Self::new_bdf(bdf).write16(reg, val);
-        Ok(())
-    }
-
-    fn write32(&self, bdf: PciBdf, reg: u16, val: u32) -> Result<(), Self::Error> {
-        Self::new_bdf(bdf).write32(reg, val);
-        Ok(())
+    unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
+        // SAFETY: the caller guarantees that the PCI address and offset are valid.
+        unsafe { Self::new_address(address).write32(offset, value) }
     }
 }

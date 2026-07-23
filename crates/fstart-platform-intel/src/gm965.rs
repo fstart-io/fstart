@@ -364,8 +364,7 @@ pub fn gm965_ich8_stages(config: &Gm965Ich8Config) -> StageLayout {
             },
             load_addr: GM965_BOOTBLOCK_LOAD_ADDR,
             stack_size: 0x2000,
-            // Small CAR heap for FFS/LZ4 scratch allocations.
-            heap_size: Some(0x100),
+            heap_size: None,
             runs_from: RunsFrom::Rom,
             compression: Compression::None,
             data_addr: None,
@@ -414,7 +413,6 @@ mod stage {
     use fstart_core::services::ServiceError;
     use fstart_driver_intel::gm965::IntelGm965;
     use fstart_driver_intel::ich8::IntelIch8;
-    use fstart_driver_uart::ns16550::Ns16550Config;
     use fstart_stage::payload::MainstagePayload;
     use fstart_stage::StageEnvironment;
 
@@ -493,7 +491,9 @@ mod stage {
         const SB_CONFIG: &'static IntelIch8Config = &Self::CONFIG.southbridge_config();
 
         fn flash_layout() -> fstart_core::FlashLayout;
-        fn console_config() -> Ns16550Config;
+        type Console: fstart_core::services::ConsoleDevice;
+
+        fn console_config() -> <Self::Console as fstart_core::services::ConsoleDevice>::Config;
         fn console_node() -> &'static str;
 
         #[cfg(feature = "smbios")]
@@ -524,7 +524,7 @@ mod stage {
     {
         let northbridge = IntelGm965::new_from_config(B::NB_CONFIG)?;
         let southbridge = IntelIch8::new_from_config(B::SB_CONFIG)?;
-        crate::run_intel_bootblock::<Gm965Ich8, _, _, _>(
+        crate::run_intel_bootblock::<Gm965Ich8, _, _, _, B::Console>(
             BootblockSpec {
                 platform: "gm965/ich8",
                 next_stage: GM965_NEXT_STAGE_NAME,
@@ -546,6 +546,7 @@ mod stage {
         IntelGm965,
         IntelIch8,
         <B as IntelEarlyBoard>::Hooks,
+        <B as Gm965Ich8Board>::Console,
         Gm965Ich8AcpiContext,
     >;
 
@@ -567,6 +568,7 @@ mod stage {
             IntelGm965,
             IntelIch8,
             B::Hooks,
+            B::Console,
             Gm965Ich8AcpiContext,
         >(
             MainstageSpec {

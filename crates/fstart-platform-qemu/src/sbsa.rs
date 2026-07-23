@@ -1,5 +1,6 @@
 //! Handwritten QEMU SBSA-ref flow.
 
+use crate::virt::QemuPciRootConfig;
 #[cfg(feature = "host")]
 use fstart_core::{
     hstr, hvec, BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryMap,
@@ -13,6 +14,7 @@ pub const QEMU_SBSA_RAM_BASE: u64 = 0x100_0000_0000;
 pub const QEMU_SBSA_RAM_SIZE: u64 = 0x4000_0000;
 pub const QEMU_SBSA_STAGE_LOAD_ADDR: u64 = 0x100_0010_0000;
 pub const QEMU_SBSA_UART_BASE: u64 = 0x6000_0000;
+#[cfg(feature = "host")]
 const QEMU_SBSA_FFS_OFFSET: u64 = 0x10_0000;
 
 /// Closed SBSA-ref facts consumed by the fixed flow.
@@ -22,6 +24,7 @@ pub struct QemuSbsaConfig {
     pub ram_base: u64,
     pub ram_size: u64,
     pub uart_base: u64,
+    pub pci: QemuPciRootConfig,
 }
 
 impl QemuSbsaConfig {
@@ -31,6 +34,14 @@ impl QemuSbsaConfig {
             ram_base: QEMU_SBSA_RAM_BASE,
             ram_size: QEMU_SBSA_RAM_SIZE,
             uart_base: QEMU_SBSA_UART_BASE,
+            pci: QemuPciRootConfig::new(
+                0xf000_0000,
+                0xff,
+                0x8000_0000,
+                0x7000_0000,
+                0x0000_0001_0000_0000,
+                0x0000_00ff_0000_0000,
+            ),
         }
     }
 
@@ -39,6 +50,7 @@ impl QemuSbsaConfig {
         if self.ram_size == 0 {
             panic!("SBSA RAM must not be empty");
         }
+        let _ = self.pci.build();
         self
     }
 }
@@ -82,6 +94,7 @@ pub fn qemu_sbsa_stages() -> StageLayout {
             }),
             verify_firmware: true,
             payload: true,
+            pci: true,
             ..StageBuildConfig::default()
         },
         load_addr: QEMU_SBSA_STAGE_LOAD_ADDR,
@@ -115,6 +128,7 @@ pub fn qemu_sbsa_build_policy() -> BoardBuildPolicy {
 #[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
 mod stage {
     use super::QemuSbsaConfig;
+    use crate::virt::enumerate_pci;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::pl011::{Pl011, Pl011Config};
     use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
@@ -126,18 +140,31 @@ mod stage {
 
     pub struct QemuSbsa;
     pub struct QemuSbsaMainstage {
+        config: &'static QemuSbsaConfig,
         console: Pl011,
+        pci: Option<fstart_pci::PciEcam>,
     }
 
     impl QemuSbsaMainstage {
         fn new<B: QemuSbsaBoard>() -> Result<Self, ServiceError> {
             Ok(Self {
+                config: B::CONFIG,
                 console: Pl011::new(Pl011Config {
                     base_addr: B::CONFIG.uart_base,
                     clock_freq: 1_843_200,
                     baud_rate: 115_200,
                 })?,
+                pci: None,
             })
+        }
+    }
+
+    impl QemuSbsaMainstage {
+        fn init_pci(&mut self) -> Result<(), ServiceError> {
+            let pci = enumerate_pci(&self.config.pci)?;
+            fstart_log::info!("qemu-sbsa: PCI root ready ({} devices)", pci.device_count(),);
+            self.pci = Some(pci);
+            Ok(())
         }
     }
 
@@ -152,6 +179,10 @@ mod stage {
             }
             unsafe { fstart_log::init(&mainstage.console) };
             fstart_log::info!("qemu-sbsa: pl011 console ready");
+            if mainstage.init_pci().is_err() {
+                fstart_log::error!("qemu-sbsa ramstage: bus_scan failed");
+                fstart_arch::aarch64::halt()
+            }
             fstart_log::info!("qemu-sbsa ramstage: ready for payload");
             B::Payload::boot(mainstage)
         }

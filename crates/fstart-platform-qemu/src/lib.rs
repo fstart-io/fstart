@@ -28,7 +28,10 @@ pub use virt::{
     qemu_armv7_virt_stages, qemu_riscv64_virt_build_policy, qemu_riscv64_virt_linux_payload,
     qemu_riscv64_virt_memory, qemu_riscv64_virt_stages,
 };
-pub use virt::{QemuAarch64VirtConfig, QemuArmv7VirtConfig, QemuRiscv64VirtConfig, QemuVirtConfig};
+pub use virt::{
+    QemuAarch64VirtConfig, QemuArmv7VirtConfig, QemuPciRootConfig, QemuRiscv64VirtConfig,
+    QemuVirtConfig,
+};
 #[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
 pub mod virt_aarch64;
 #[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]

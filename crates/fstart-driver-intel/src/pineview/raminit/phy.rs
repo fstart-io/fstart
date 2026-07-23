@@ -1822,7 +1822,7 @@ pub fn sdram_program_dqdqs(si: &SysInfo, mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_periodic_rcomp()`.
 pub fn sdram_periodic_rcomp(si: &SysInfo, mch: &MchBar) {
-    if si.boot_path != super::BOOT_PATH_RESET {
+    if si.boot_path != crate::BootPath::WarmReset {
         let v = mch.read8(mchbar::COMPCTRL1);
         mch.write8(mchbar::COMPCTRL1, v & !(1 << 1));
         while mch.read32(mchbar::COMPCTRL1) & (1 << 31) != 0 {
