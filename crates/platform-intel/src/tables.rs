@@ -9,7 +9,7 @@
 extern crate alloc;
 
 #[cfg(feature = "acpi")]
-use alloc::alloc::{alloc_zeroed, Layout};
+use alloc::alloc::{Layout, alloc_zeroed};
 #[cfg(feature = "smbios")]
 use alloc::vec;
 #[cfg(feature = "acpi")]

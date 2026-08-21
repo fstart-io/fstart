@@ -111,6 +111,21 @@ impl<'a> FfsReader<'a> {
         Err(ReaderError::BadMagic)
     }
 
+    /// Borrowed concatenated Intel microcode blob recorded in `anchor`.
+    ///
+    /// The blob deliberately lives outside the signed manifest so pre-Rust
+    /// entry code can apply it without an FFS parser; the anchor duplicates
+    /// its offset and size for later consumers (e.g. per-AP microcode update
+    /// during MP init).
+    pub fn intel_microcode(&self, anchor: &AnchorBlock) -> Option<&'a [u8]> {
+        let start = anchor.microcode_offset as usize;
+        if start == 0 || anchor.microcode_size == 0 {
+            return None;
+        }
+        let end = start.checked_add(anchor.microcode_size as usize)?;
+        self.image.get(start..end)
+    }
+
     fn anchor_header_is_plausible(&self, offset: usize) -> bool {
         let Some(header) = self.image.get(offset..offset + 40) else {
             return false;

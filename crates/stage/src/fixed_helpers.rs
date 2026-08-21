@@ -180,6 +180,7 @@ pub struct BlockDeviceLinuxBoot {
     ffs: BlockDeviceFfs,
     firmware_loaded: bool,
     kernel_loaded: bool,
+    firmware_addr: u64,
     kernel_addr: u64,
     dtb_addr: u64,
 }
@@ -192,6 +193,7 @@ impl BlockDeviceLinuxBoot {
             ffs: BlockDeviceFfs::new(media_offset),
             firmware_loaded: false,
             kernel_loaded: false,
+            firmware_addr: 0,
             kernel_addr: 0,
             dtb_addr,
         }
@@ -223,7 +225,7 @@ impl BlockDeviceLinuxBoot {
     where
         B: BlockDevice,
     {
-        let _ = self.ffs.load_file(block, FileType::Firmware)?;
+        self.firmware_addr = self.ffs.load_file(block, FileType::Firmware)?;
         self.firmware_loaded = true;
         Ok(())
     }
@@ -287,7 +289,7 @@ impl BlockDeviceLinuxBoot {
         BootLinuxParams {
             kernel_addr: self.kernel_addr,
             dtb_addr: self.dtb_addr,
-            fw_addr: 0,
+            fw_addr: self.firmware_addr,
             rsdp_addr: 0,
             bootargs,
             e820_entries: &[],

@@ -21,7 +21,7 @@ use core::{cell::UnsafeCell, ptr};
 use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::memory_detect::{
-    build_pc_compatible_e820, E820Entry, E820Kind, MemoryDetector,
+    E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_core::services::{MemoryController, ServiceError};
 use fstart_pci::ecam;
@@ -1199,11 +1199,7 @@ impl IntelGm965 {
 
     fn fsb_clock_index(&self) -> usize {
         let raw = (self.mchbar().read32(mchbar::CLKCFG) & 0x7) as usize;
-        if raw <= 3 && raw != 0 {
-            raw
-        } else {
-            2
-        }
+        if raw <= 3 && raw != 0 { raw } else { 2 }
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -1453,11 +1449,9 @@ impl IntelGm965 {
         while off + 4 < rom.len() {
             if u32::from_le_bytes([rom[off], rom[off + 1], rom[off + 2], rom[off + 3]])
                 == VBT_SIGNATURE
-            {
-                if let Some(size) = Self::vbt_size(&rom[off..]) {
+                && let Some(size) = Self::vbt_size(&rom[off..]) {
                     return Some(&rom[off..off + size]);
                 }
-            }
             off += 16;
         }
         None
@@ -1722,11 +1716,52 @@ impl IntelGm965 {
     /// DRAM-backed chipset init: DMI/egress link, PM tuning, and IGD setup.
     pub fn post_dram_init(&self) -> Result<(), ServiceError> {
         self.gm965_dmi_init()?;
+        self.init_dma_remap_bars();
         self.gm965_pm_init();
         self.gm965_igd_init();
         self.gma_non_display_init();
         self.write_coreboot_scratchpad_marker();
         Ok(())
+    }
+
+    /// Program the MCHBAR DMA-remap bars (coreboot `init_iommu()`).
+    ///
+    /// Without these, DMA from the ME, IGD, and other VC0 sources aborts on
+    /// the remap registers' power-on state. The "IOMMU" bases are fixed
+    /// scratch windows below the TOLUD area, not a real VT-d engine — this
+    /// chipset has none.
+    fn init_dma_remap_bars(&self) {
+        const IOMMU_BASE_VC1: u32 = 0xfed9_0000; // HDA @ 0:1b.0
+        const IOMMU_BASE_GFX: u32 = 0xfed9_1000; // IGD @ 0:2.0-1
+        const IOMMU_BASE_ME: u32 = 0xfed9_2000; // ME @ 0:3.0-3
+        const IOMMU_BASE_VC0: u32 = 0xfed9_3000; // all other DMA sources
+
+        let mch = self.mchbar();
+        // VC1 remap always points at the fixed IOMMU window.
+        mch.write32(0x28, IOMMU_BASE_VC1 | 1);
+        // The official B2-stepping workaround is an SMI every 64 ms; locking
+        // the GFX remap off is the saner choice, like coreboot.
+        if self.stepping() == 6 {
+            mch.write32(0x18, 0);
+        } else {
+            mch.write32(0x18, IOMMU_BASE_GFX | 1);
+        }
+        // ME remap on only when the ME device is present.
+        let me_active = ecam::EcamDevice::new(0, 3, 0).read8(0x0a) != 0xff;
+        mch.write32(0x10, if me_active { IOMMU_BASE_ME | 1 } else { 0 });
+        mch.write32(0x20, IOMMU_BASE_VC0 | 1);
+
+        if self.stepping() == 7 {
+            mch.setbits8(0xffc, 1 << 4);
+            let peg = ecam::EcamDevice::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
+            if peg.read8(0) != 0xff {
+                peg.or32(0xfc, 1 << 15);
+            }
+        }
+
+        // Final enable.
+        mch.setbits8(0x94, 1 << 3);
+        fstart_log::info!("intel-gm965: DMA remap bars initialized");
     }
 
     /// Mark the northbridge scratchpad the same way coreboot does after
@@ -2140,8 +2175,8 @@ mod acpi_impl {
     extern crate alloc;
 
     use alloc::vec::Vec;
-    use fstart_acpi::device::AcpiDevice;
     use fstart_acpi::Aml;
+    use fstart_acpi::device::AcpiDevice;
     use fstart_acpi_macros::acpi_dsl;
 
     use super::*;

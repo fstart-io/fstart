@@ -147,7 +147,7 @@ mod stage {
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
-    #[cfg(all(feature = "linux", target_arch = "arm"))]
+    #[cfg(feature = "linux")]
     use crate::egon::ffs_total_size_at;
     use crate::egon::{BootDevice, boot_device_at, next_stage_offset_at, next_stage_size_at};
 
@@ -391,14 +391,75 @@ fstart_sunxi_fel_stash:
         }
     }
 
-    /// Payload launcher selected by fbuild features for H3 boards.
+    /// Block-backed BL31/Linux payload launcher for the H5 mainstage.
+    #[cfg(all(feature = "linux", target_arch = "aarch64"))]
+    pub struct H5LinuxPayload;
+
+    #[cfg(all(feature = "linux", target_arch = "aarch64"))]
+    impl fstart_stage::payload::MainstagePayload<H3Mainstage> for H5LinuxPayload {
+        fn boot(devices: H3Mainstage) -> ! {
+            let ffs_size = ffs_total_size_at(devices.config.sram_base as usize) as usize;
+            let mut boot =
+                fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(H3_EGON_MMC_OFFSET, 0);
+            let anchor = fstart_stage::fstart_anchor_bytes();
+            let step = if boot.mount(&devices.mmc0, ffs_size, anchor).is_err() {
+                "mount"
+            } else if {
+                fstart_log::info!("h5 mainstage: verifying FFS");
+                boot.verify(&devices.mmc0).is_err()
+            } {
+                "verify"
+            } else if {
+                fstart_log::info!("h5 mainstage: loading BL31");
+                boot.load_firmware(&devices.mmc0).is_err()
+            } {
+                "BL31"
+            } else if {
+                fstart_log::info!("h5 mainstage: loading kernel");
+                boot.load_kernel(&devices.mmc0).is_err()
+            } {
+                "kernel"
+            } else if {
+                fstart_log::info!("h5 mainstage: loading FDT");
+                boot.load_fdt(&devices.mmc0).is_err()
+            } {
+                "fdt"
+            } else {
+                ""
+            };
+            if !step.is_empty() {
+                fstart_log::error!("h5 mainstage: FFS payload {} failed", step);
+                fstart_arch::halt();
+            }
+            let config = devices.config;
+            if config.fdt_dst_addr != 0
+                && boot
+                    .prepare_fdt(
+                        config.fdt_dst_addr,
+                        config.bootargs,
+                        super::H3_DRAM_BASE,
+                        devices.dram_size,
+                    )
+                    .is_err()
+            {
+                fstart_log::error!("h5 mainstage: FDT preparation failed");
+                fstart_arch::halt();
+            }
+            let params = boot.boot_params(config.bootargs);
+            fstart_log::info!(
+                "h5 mainstage: booting BL31 at {:#x}, Linux at {:#x}",
+                params.fw_addr,
+                params.kernel_addr,
+            );
+            fstart_arch::aarch64::boot_linux(&params)
+        }
+    }
+
+    /// Payload launcher selected by fbuild features for H3/H5 boards.
     #[cfg(all(feature = "linux", target_arch = "arm"))]
     pub type H3BuildSelectedPayload = H3LinuxPayload;
-
-    /// AArch64 sunxi (H5) Linux boot needs BL31 staging before the kernel
-    /// jump; halt until a hardware-validated board needs it.
     #[cfg(all(feature = "linux", target_arch = "aarch64"))]
-    pub type H3BuildSelectedPayload = fstart_stage::payload::HaltPayload;
+    pub type H3BuildSelectedPayload = H5LinuxPayload;
 
     /// Payload launcher used when fbuild selected no payload backend.
     #[cfg(not(feature = "linux"))]

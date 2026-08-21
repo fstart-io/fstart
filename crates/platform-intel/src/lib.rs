@@ -25,7 +25,39 @@ pub use fstart_driver_intel::{
     BootPath, IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver,
 };
 #[cfg(feature = "stage")]
-pub use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
+pub use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
+
+/// Native SMM handler image built by fbuild, embedded into stages whose build
+/// had `FSTART_SMM_IMAGE` set (the DRAM mainstage of SMM-capable boards).
+///
+/// `None` in stages built without an SMM image (bootblocks, non-SMM boards);
+/// MP setup then skips SMM relocation and SMRAM stays unlocked.
+#[cfg(all(feature = "stage", fstart_intel_has_smm_image))]
+pub const SMM_IMAGE: Option<&'static [u8]> = Some(include_bytes!(env!("FSTART_SMM_IMAGE")));
+#[cfg(all(feature = "stage", not(fstart_intel_has_smm_image)))]
+pub const SMM_IMAGE: Option<&'static [u8]> = None;
+
+/// Locate the concatenated Intel microcode blob in the mounted memory-mapped
+/// FFS window.
+///
+/// The bootblock applies BSP microcode before CAR setup; MP init calls this
+/// so every AP gets the same update. The blob's location is recorded in the
+/// image anchor, so this goes through the published FFS context and the FFS
+/// reader rather than open-coded flash mappings. Returns `None` when no
+/// window is mounted or the anchor records no blob.
+#[cfg(all(feature = "stage", feature = "mp", target_arch = "x86_64"))]
+#[must_use]
+pub fn intel_microcode_blob() -> Option<&'static [u8]> {
+    use fstart_ffs::FfsReader;
+
+    let ctx = fstart_core::services::ffs_context::memory_mapped()?;
+    // SAFETY: both accessors are documented as valid for the whole stage
+    // execution once the boot-media provider published them.
+    let (image, anchor_bytes) = unsafe { (ctx.image_bytes(), ctx.anchor_bytes()) };
+    // SAFETY: the anchor bytes are the stage's aligned `.fstart.anchor` static.
+    let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }.ok()?;
+    FfsReader::new(image).intel_microcode(&anchor)
+}
 
 #[cfg(feature = "stage")]
 pub(crate) fn firmware_window(
@@ -82,12 +114,15 @@ where
     let (firmware_base, firmware_size) = mainstage.firmware_region();
     let boot_media =
         fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
+    // Publish the window before device init: drivers brought up during
+    // init_devices (per-AP microcode, SMM install) read board assets through
+    // the FFS services rather than open-coded flash mappings.
+    run_mainstage_phase(platform, "publish_boot_media", halt, || boot_media.mount());
     run_mainstage_phase(platform, "pre_bus_scan", halt, || mainstage.pre_bus_scan());
     run_mainstage_phase(platform, "bus_scan", halt, || mainstage.bus_scan());
     run_mainstage_phase(platform, "init_devices", halt, || mainstage.init_devices());
     run_mainstage_phase(platform, "mount_boot_media", halt, || {
         fstart_arch::x86_64::enable_boot_media_rom_cache();
-        boot_media.mount()?;
         mainstage.stage_local_init()
     });
     run_mainstage_phase(platform, "verify_boot_media", halt, || boot_media.verify());
@@ -495,6 +530,16 @@ where
 
     // DRAM was initialized by the bootblock. Mainstage only reconstructs the
     // memory map and must not retrain or issue JEDEC commands again.
+    //
+    // Cache is still off at this point: the RAM-stage entry tore down CAR
+    // (CR0.CD=1, MTRRs disabled) and nothing re-enabled it yet. The ranges
+    // the northbridge just published are enough to restore caching now,
+    // instead of leaving the whole mainstage uncached until MP init repeats
+    // the same MTRR program per CPU.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        fstart_arch::x86::mtrr::setup_ram_wb();
+    }
     Ok(())
 }
 

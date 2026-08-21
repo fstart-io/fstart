@@ -26,7 +26,7 @@ pub struct X61Mainboard;
 mod mainboard_acpi_device {
     extern crate alloc;
 
-    use super::{x61_mainboard_dsdt_aml, X61Mainboard};
+    use super::{X61Mainboard, x61_mainboard_dsdt_aml};
 
     impl fstart_acpi::device::AcpiDevice for X61Mainboard {
         type Config = fstart_platform_intel::gm965::Gm965Ich8AcpiContext;
@@ -60,9 +60,11 @@ impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
 
     fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
         dock::post_raminit_setup(ctx.southbridge());
+        // The ACPI-enabled mainstage owns EC/PMH7 runtime bring-up.
+        #[cfg(feature = "acpi")]
+        x61_ec_init();
         Ok(())
     }
-
 }
 
 /// X61 dock and DLPC helpers ported from coreboot `mainboard/lenovo/x61/dock.c`.
@@ -384,23 +386,24 @@ static X61_SMBIOS_MEMORY_DEVICES: [fstart_acpi::smbios::MemoryDeviceDesc<'static
     },
 ];
 
-pub static X61_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> = fstart_acpi::smbios::SmbiosDesc {
-    bios_vendor: "fstart",
-    bios_version: "0.1.0",
-    bios_release_date: BIOS_RELEASE_DATE,
-    sys_manufacturer: "LENOVO",
-    sys_product: "ThinkPad X61",
-    sys_version: "1.0",
-    sys_serial: None,
-    bb_manufacturer: "LENOVO",
-    bb_product: "ThinkPad X61",
-    chassis_type: 0x01,
-    chassis_manufacturer: "LENOVO",
-    processors: &X61_SMBIOS_PROCESSORS,
-    memory_devices: &X61_SMBIOS_MEMORY_DEVICES,
-    ram_base: 0x0010_0000,
-    ram_end: 0x3fff_ffff,
-};
+pub static X61_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> =
+    fstart_acpi::smbios::SmbiosDesc {
+        bios_vendor: "fstart",
+        bios_version: "0.1.0",
+        bios_release_date: BIOS_RELEASE_DATE,
+        sys_manufacturer: "LENOVO",
+        sys_product: "ThinkPad X61",
+        sys_version: "1.0",
+        sys_serial: None,
+        bb_manufacturer: "LENOVO",
+        bb_product: "ThinkPad X61",
+        chassis_type: 0x01,
+        chassis_manufacturer: "LENOVO",
+        processors: &X61_SMBIOS_PROCESSORS,
+        memory_devices: &X61_SMBIOS_MEMORY_DEVICES,
+        ram_base: 0x0010_0000,
+        ram_end: 0x3fff_ffff,
+    };
 
 #[cfg(feature = "acpi")]
 mod acpi_impl {
@@ -409,11 +412,17 @@ mod acpi_impl {
     use alloc::string::String;
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
+    use fstart_driver_lenovo::h8::{H8, H8_CONFIG0_EVENTS_ENABLE, H8Config};
+    use fstart_driver_lenovo::pmh7::Pmh7;
     use fstart_platform_intel::gm965::Gm965Ich8AcpiContext;
+
+    const X61_H8_EVENT_MASKS: [u8; 16] = [
+        0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
+        0x00,
+    ];
 
     struct X61AcpiPaths {
         sb_scope: &'static str,
-        lpc_scope: &'static str,
         gpe_scope: &'static str,
         dock: String,
         ec_mute: String,
@@ -433,7 +442,6 @@ mod acpi_impl {
 
             Self {
                 sb_scope: context.sb_scope(),
-                lpc_scope: context.lpc_scope(),
                 gpe_scope: context.gpe_scope(),
                 dock: child_path(context.sb_scope(), "DOCK"),
                 ec_mute: child_path(&ec, "MUTE"),
@@ -445,54 +453,6 @@ mod acpi_impl {
                 ec_lid: child_path(&ec, "LID_"),
                 ec_slpb: child_path(&ec, "SLPB"),
             }
-        }
-
-        fn sb_scope(&self) -> &str {
-            self.sb_scope
-        }
-
-        fn lpc_scope(&self) -> &str {
-            self.lpc_scope
-        }
-
-        fn gpe_scope(&self) -> &str {
-            self.gpe_scope
-        }
-
-        fn dock(&self) -> &str {
-            &self.dock
-        }
-
-        fn ec_mute(&self) -> &str {
-            &self.ec_mute
-        }
-
-        fn ec_usbp(&self) -> &str {
-            &self.ec_usbp
-        }
-
-        fn ec_radi(&self) -> &str {
-            &self.ec_radi
-        }
-
-        fn ec_hkey_mhkc(&self) -> &str {
-            &self.ec_hkey_mhkc
-        }
-
-        fn ec_hkey_wake(&self) -> &str {
-            &self.ec_hkey_wake
-        }
-
-        fn ec_wake(&self) -> &str {
-            &self.ec_wake
-        }
-
-        fn ec_lid(&self) -> &str {
-            &self.ec_lid
-        }
-
-        fn ec_slpb(&self) -> &str {
-            &self.ec_slpb
         }
     }
 
@@ -506,10 +466,16 @@ mod acpi_impl {
         path
     }
 
+    /// Assemble the X61 DSDT: board glue (TRAP mechanism, sleep/wake hooks,
+    /// dock, GPE routing) plus the complete H8 EC surface from the Lenovo
+    /// driver.
     pub fn x61_mainboard_dsdt_aml(context: Gm965Ich8AcpiContext) -> Vec<u8> {
         let paths = X61AcpiPaths::new(context);
         let p = |s: &str| fstart_acpi::aml::Path::new(s);
-        acpi_dsl! {
+        let mut out = Vec::new();
+
+        // Root scope: ICH8 SMI trap + sleep/wake glue into the EC.
+        out.extend(acpi_dsl! {
             Scope("\\") {
                 Name("SMIF", 0u32);
                 OperationRegion("IOT_", SystemIO, 0x0800u32, 0x10u32);
@@ -524,204 +490,22 @@ mod acpi_impl {
                 }
 
                 Method("_PTS", 1, NotSerialized) {
-                    #{p(paths.ec_mute())}(1u32);
-                    #{p(paths.ec_usbp())}(0u32);
-                    #{p(paths.ec_radi())}(0u32);
-                    #{p(paths.ec_hkey_mhkc())}(0u32);
+                    #{p(&paths.ec_mute)}(1u32);
+                    #{p(&paths.ec_usbp)}(0u32);
+                    #{p(&paths.ec_radi)}(0u32);
+                    #{p(&paths.ec_hkey_mhkc)}(0u32);
                 }
                 Method("_WAK", 1, NotSerialized) {
-                    #{p(paths.ec_hkey_mhkc())}(1u32);
-                    #{p(paths.ec_hkey_wake())}(Arg0);
+                    #{p(&paths.ec_hkey_mhkc)}(1u32);
+                    #{p(&paths.ec_hkey_wake)}(Arg0);
                     Return(Package(0u32, 0u32));
                 }
             }
+        });
 
-            Scope(#{paths.lpc_scope()}) {
-                    Device("EC__") {
-                        Name("_HID", EisaId("PNP0C09"));
-                        Name("_UID", 0u32);
-                        // Coreboot X61 uses THINKPAD_EC_GPE = 0x12 for
-                        // the EC query GPE.  The board-level _L18 method
-                        // below handles the level-triggered GPIO8 wake
-                        // event; using 0x18 here makes ACPICA install an
-                        // EC edge handler on the same GPE and produces a
-                        // level/edge type mismatch.
-                        Name("_GPE", 0x12u32);
-                        Name("_CRS", ResourceTemplate {
-                            IO(0x0062u16, 0x0062u16, 0x01u8, 0x01u8);
-                            IO(0x0066u16, 0x0066u16, 0x01u8, 0x01u8);
-                        });
-                        OperationRegion("ECOR", EmbeddedControl, 0x00u32, 0x100u32);
-                        Field("ECOR", ByteAcc, Lock, Preserve) {
-                            Offset(0x02),
-                            DKR1, 1,
-                            Offset(0x0F),
-                            , 7,
-                            TBSW, 1,
-                            Offset(0x2F),
-                            , 6,
-                            FAND, 1,
-                            FANA, 1,
-                            Offset(0x30),
-                            , 6,
-                            ALMT, 1,
-                            Offset(0x38),
-                            B0ST, 4,
-                            , 1,
-                            B0CH, 1,
-                            B0DI, 1,
-                            B0PR, 1,
-                            B1ST, 4,
-                            , 1,
-                            B1CH, 1,
-                            B1DI, 1,
-                            B1PR, 1,
-                            Offset(0x3A),
-                            AMUT, 1,
-                            , 3,
-                            BTEB, 1,
-                            WLEB, 1,
-                            WWEB, 1,
-                            Offset(0x3B),
-                            , 1,
-                            KBLT, 1,
-                            , 2,
-                            USPW, 1,
-                            Offset(0x46),
-                            , 4,
-                            HPAC, 1,
-                            Offset(0x48),
-                            HPPI, 1,
-                            GSTS, 1,
-                            Offset(0x4E),
-                            WAKE, 16,
-                            Offset(0x78),
-                            TMP0, 8,
-                            TMP1, 8,
-                            Offset(0x81),
-                            PAGE, 8,
-                            Offset(0xA0),
-                            BARC, 16,
-                            BAFC, 16,
-                            Offset(0xA8),
-                            BAPR, 16,
-                            BAVO, 16,
-                        }
-                        Method("MUTE", 1, NotSerialized) { AMUT = Arg0; }
-                        Method("RADI", 1, NotSerialized) { WLEB = Arg0; WWEB = Arg0; BTEB = Arg0; }
-                        Method("USBP", 1, NotSerialized) { USPW = Arg0; }
-                        Method("LGHT", 1, NotSerialized) { KBLT = Arg0; }
-                        Method("FANE", 1, NotSerialized) {
-                            If (Arg0) {
-                                FAND = 1u32;
-                                FANA = 0u32;
-                            } Else {
-                                FAND = 0u32;
-                                FANA = 1u32;
-                            }
-                        }
-
-                        Device("AC__") {
-                            Name("_HID", "ACPI0003");
-                            Name("_UID", 0u32);
-                            Name("_PCL", Package(#{p(paths.sb_scope())}));
-                            Method("_PSR", 0, NotSerialized) { Return(HPAC); }
-                            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                        }
-                        Device("LID_") { Name("_HID", EisaId("PNP0C0D")); Method("_LID", 0, NotSerialized) { Return(1u32); } }
-                        Device("SLPB") { Name("_HID", EisaId("PNP0C0E")); }
-                        Device("HKEY") {
-                            Name("_HID", EisaId("IBM0068"));
-                            Name("BTN_", 0u32);
-                            Name("BTAB", 0u32);
-                            Name("DHKN", 0x080Cu32);
-                            Name("EMSK", 0u32);
-                            Name("ETAB", 0u32);
-                            Name("EN__", 0u32);
-                            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                            Method("MHKP", 0, NotSerialized) {
-                                Local0 = BTN_;
-                                If (Local0 != 0u32) {
-                                    BTN_ = 0u32;
-                                    Local0 = Local0 + 0x1000u32;
-                                    Return(Local0);
-                                }
-                                Local0 = BTAB;
-                                If (Local0 != 0u32) {
-                                    BTAB = 0u32;
-                                    Local0 = Local0 + 0x5000u32;
-                                    Return(Local0);
-                                }
-                                Return(0u32);
-                            }
-                            Method("RHK_", 1, NotSerialized) {
-                                BTN_ = Arg0;
-                                Notify(HKEY, 0x80u32);
-                            }
-                            Method("RTAB", 1, NotSerialized) {
-                                BTAB = Arg0;
-                                Notify(HKEY, 0x80u32);
-                            }
-                            Method("MHKC", 1, NotSerialized) {
-                                If (Arg0) {
-                                    EMSK = DHKN;
-                                    ETAB = 0xFFFFFFFFu32;
-                                } Else {
-                                    EMSK = 0u32;
-                                    ETAB = 0u32;
-                                }
-                                EN__ = Arg0;
-                            }
-                            Method("MHKV", 0, NotSerialized) { Return(0x0100u32); }
-                            Method("WLSW", 0, NotSerialized) { Return(GSTS); }
-                            Method("MHKG", 0, NotSerialized) { Return(TBSW << 3u32); }
-                            Method("WAKE", 1, NotSerialized) { Return(0u32); }
-                        }
-                        Device("BAT0") {
-                            Name("_HID", EisaId("PNP0C0A"));
-                            Name("_UID", 0u32);
-                            Name("_PCL", Package(#{p(paths.sb_scope())}));
-                            Method("_BIF", 0, NotSerialized) { Return(Package(0u32, 0xFFFFFFFFu32, 0xFFFFFFFFu32, 1u32, 10800u32, 0u32, 200u32, 1u32, 1u32, "", "", "", "")); }
-                            Method("_BST", 0, NotSerialized) {
-                                If (B0PR) {
-                                    If (B0CH) { Return(Package(2u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
-                                    If (B0DI) { Return(Package(1u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
-                                }
-                                Return(Package(0u32, 0u32, 0u32, 0u32));
-                            }
-                            Method("_STA", 0, NotSerialized) { If (B0PR) { Return(0x1Fu32); } Else { Return(0x0Fu32); } }
-                        }
-                        Device("BAT1") {
-                            Name("_HID", EisaId("PNP0C0A"));
-                            Name("_UID", 1u32);
-                            Name("_PCL", Package(#{p(paths.sb_scope())}));
-                            Method("_BIF", 0, NotSerialized) { Return(Package(0u32, 0xFFFFFFFFu32, 0xFFFFFFFFu32, 1u32, 10800u32, 0u32, 200u32, 1u32, 1u32, "", "", "", "")); }
-                            Method("_BST", 0, NotSerialized) {
-                                If (B1PR) {
-                                    If (B1CH) { Return(Package(2u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
-                                    If (B1DI) { Return(Package(1u32, 0u32, #{p("BARC")}, #{p("BAVO")})); }
-                                }
-                                Return(Package(0u32, 0u32, 0u32, 0u32));
-                            }
-                            Method("_STA", 0, NotSerialized) { If (B1PR) { Return(0x1Fu32); } Else { Return(0x0Fu32); } }
-                        }
-                        Method("_Q13", 0, NotSerialized) { Notify(SLPB, 0x80u32); }
-                        Method("_Q26", 0, NotSerialized) { Notify(AC__, 0x80u32); }
-                        Method("_Q27", 0, NotSerialized) { Notify(AC__, 0x80u32); }
-                        Method("_Q2A", 0, NotSerialized) { Notify(LID_, 0x80u32); }
-                        Method("_Q2B", 0, NotSerialized) { Notify(LID_, 0x80u32); }
-                        Method("_Q24", 0, NotSerialized) { Notify(BAT0, 0x80u32); }
-                        Method("_Q25", 0, NotSerialized) { Notify(BAT1, 0x80u32); }
-                        Method("_Q4A", 0, NotSerialized) { Notify(BAT0, 0x81u32); }
-                        Method("_Q4B", 0, NotSerialized) { Notify(BAT0, 0x80u32); }
-                        Method("_Q4C", 0, NotSerialized) { Notify(BAT1, 0x81u32); }
-                        Method("_Q4D", 0, NotSerialized) { Notify(BAT1, 0x80u32); }
-                        Method("_Q50", 0, NotSerialized) { Notify(#{p(paths.dock())}, 3u32); }
-                        Method("_Q58", 0, NotSerialized) { Notify(#{p(paths.dock())}, 0u32); }
-                    }
-            }
-
-            Scope(#{paths.sb_scope()}) {
+        // Dock: DLPC presence + Toshiba dock registers under \_SB.
+        out.extend(acpi_dsl! {
+            Scope(#{&paths.sb_scope}) {
                 OperationRegion("DLPC", SystemIO, 0x164Cu32, 0x01u32);
                 Field("DLPC", ByteAcc, NoLock, Preserve) {
                     , 3,
@@ -736,7 +520,7 @@ mod acpi_impl {
                 Device("DOCK") {
                     Name("_HID", "ACPI0003");
                     Name("_UID", 0u32);
-                    Name("_PCL", Package(#{p(paths.sb_scope())}));
+                    Name("_PCL", Package(#{p(&paths.sb_scope)}));
                     Method("_DCK", 1, Serialized) {
                         If (Arg0) {
                             TDIN = 1u32;
@@ -753,28 +537,80 @@ mod acpi_impl {
                     }
                 }
             }
+        });
 
-            Scope(#{paths.gpe_scope()}) {
+        // GPE routing: EC wake events (level-triggered GPIO8 wake path).
+        out.extend(acpi_dsl! {
+            Scope(#{&paths.gpe_scope}) {
                 Method("_L18", 0, NotSerialized) {
-                    Local0 = #{p(paths.ec_wake())};
+                    Local0 = #{p(&paths.ec_wake)};
                     If (Local0 & 0x04u32) {
-                        Notify(#{p(paths.ec_lid())}, 0x02u32);
+                        Notify(#{p(&paths.ec_lid)}, 0x02u32);
                     }
                     If (Local0 & 0x08u32) {
-                        Notify(#{p(paths.dock())}, 0x03u32);
-                        Notify(#{p(paths.ec_slpb())}, 0x02u32);
+                        Notify(#{p(&paths.dock)}, 0x03u32);
+                        Notify(#{p(&paths.ec_slpb)}, 0x02u32);
                     }
                     If (Local0 & 0x10u32) {
-                        Notify(#{p(paths.ec_slpb())}, 0x02u32);
+                        Notify(#{p(&paths.ec_slpb)}, 0x02u32);
                     }
                     If (Local0 & 0x80u32) {
-                        Notify(#{p(paths.ec_slpb())}, 0x02u32);
+                        Notify(#{p(&paths.ec_slpb)}, 0x02u32);
                     }
                 }
             }
+        });
+
+        // The complete H8 EC surface (EC device, batteries, thermal zones
+        // with fan power resource, lid, AC, sleep button, HKEY hub, and the
+        // PMH7/ECMM/ECGS/TWRI resource devices).
+        let h8 = H8Config::x61();
+        out.extend(fstart_driver_lenovo::h8_acpi::dsdt_aml(
+            &h8,
+            context.lpc_scope(),
+        ));
+
+        out
+    }
+
+    /// Runtime EC/PMH7 bring-up, mirroring coreboot's `h8_enable()` and
+    /// `pmh7` device init: thermal management + event/hotkey reporting on,
+    /// trackpoint and USB power on, WLAN/BT radios per board presence, and
+    /// the PMH7 backlight + dock-event sources the board declares.
+    pub fn x61_ec_init() {
+        let pmh7 = Pmh7::new(0x15e0);
+        pmh7.log_identity();
+        pmh7.backlight_enable(true);
+        pmh7.dock_event_enable(true);
+
+        let h8 = H8;
+        h8.clear_out_queue();
+        // CONFIG0: events + hotkey enable (SMM H8 + thermal management are
+        // set by init_config0 itself, matching coreboot).
+        let config_ok = h8.init_config0(H8_CONFIG0_EVENTS_ENABLE);
+        let events_ok = h8.program_event_masks(&X61_H8_EVENT_MASKS);
+        let trackpoint_ok = h8.trackpoint_enable(true);
+        let usb_ok = h8.usb_power_enable(true);
+        let wlan_ok = h8.wlan_enable(true);
+        let bluetooth_ok = h8.bluetooth_enable(true);
+        if ![
+            config_ok,
+            events_ok,
+            trackpoint_ok,
+            usb_ok,
+            wlan_ok,
+            bluetooth_ok,
+        ]
+        .into_iter()
+        .all(core::convert::identity)
+        {
+            fstart_log::error!("lenovo-x61: H8 EC initialization incomplete");
         }
     }
 }
 
 #[cfg(feature = "acpi")]
 pub use acpi_impl::x61_mainboard_dsdt_aml;
+
+#[cfg(all(feature = "acpi", feature = "stage"))]
+pub use acpi_impl::x61_ec_init;

@@ -11,6 +11,7 @@ members = [
   "crates/crypto",
   "crates/arch",
   "crates/log",
+  "crates/driver-lenovo",
   "crates/driver-uart",
   "crates/driver-intel",
   "crates/driver-sunxi",

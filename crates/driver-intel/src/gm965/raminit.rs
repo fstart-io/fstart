@@ -11,7 +11,7 @@
 use crate::generic::spd::{ChipWidth, DimmInfo};
 use fstart_core::services::{ServiceError, SmBus};
 
-use super::{hostbridge, mchbar, MchBar};
+use super::{MchBar, hostbridge, mchbar};
 
 const TCK_266MHZ_256NS: u32 = 960; // 3.75 ns
 const TCK_333MHZ_256NS: u32 = 768; // 3.00 ns
@@ -569,10 +569,67 @@ fn clear_dram_init_in_progress() {
 
 fn check_warm_boot(mch: &MchBar) -> Result<bool, ServiceError> {
     if mch.read16(mchbar::SSKPD) == 0xcafe || (mch.read32(mchbar::PMSTS) & PMSTS_SELFREFRESH) != 0 {
-        fstart_log::error!("gm965 raminit: warm/S3 resume needs MRC cache plumbing");
-        return Err(ServiceError::NotSupported);
+        // Same condition as coreboot's romstage soft-reset check: the
+        // scratchpad survives warm resets while power stays on, and training
+        // on top of self-refresh state is unsafe. Without MRC-cache plumbing
+        // fstart cannot resume, so perform coreboot's clean full reset; the
+        // hard reset clears MCHBAR, so this cannot loop.
+        fstart_log::info!("gm965 raminit: warm boot state detected, rebooting properly");
+        early_reset(mch);
     }
     Ok(false)
+}
+
+/// Prepare the DRAM controller for a clean full reset, then reset.
+///
+/// Ported from coreboot GM965 `gm45_early_reset()`. Without these steps a
+/// reset while DRAM is in power-down/self-refresh state powers the machine
+/// off instead of rebooting. Never returns.
+fn early_reset(mch: &MchBar) -> ! {
+    const CX_DRC0_RANKEN_MASK: u32 = 0xf << 24;
+    const CX_DRC1_NOTPOP_MASK: u32 = 0xf << 16;
+    const CX_DRC2_NOTPOP_MASK: u32 = 0xf << 24;
+    const RANKS_PER_CHANNEL: usize = 4;
+    const RESET_BOUNDARY_MB: u32 = 128;
+
+    // Reset DRAM power-up settings in CLKCFG (not affected by system reset,
+    // but they may disrupt the next raminit).
+    mch.clrsetbits32(mchbar::CLKCFG, 3 << 21, 1 << 3);
+
+    for ch in 0..2usize {
+        // Configure one populated rank (rank 0 of channel 0 only).
+        let ranken = if ch == 0 { 1 << 24 } else { 0 };
+        mch.clrsetbits32(mchbar::cx_drc0(ch), CX_DRC0_RANKEN_MASK, ranken);
+        let drc1 = mch.read32(mchbar::cx_drc1(ch));
+        mch.write32(
+            mchbar::cx_drc1(ch),
+            (drc1 | CX_DRC1_NOTPOP_MASK) & !(if ch == 0 { 1 << 16 } else { 0 }),
+        );
+        let drc2 = mch.read32(mchbar::cx_drc2(ch));
+        mch.write32(
+            mchbar::cx_drc2(ch),
+            (drc2 | CX_DRC2_NOTPOP_MASK) & !(if ch == 0 { 1 << 24 } else { 0 }),
+        );
+        // Program rank boundaries to one 128 MiB rank.
+        for r in (0..RANKS_PER_CHANNEL).step_by(2) {
+            let bound = |rank: usize| -> u32 {
+                let shift = (rank % 2) * 16;
+                ((RESET_BOUNDARY_MB >> 5) << shift) & (0x1fc << shift)
+            };
+            mch.write32(mchbar::cx_drby(ch, r), bound(r) | bound(r + 1));
+        }
+    }
+
+    // Set DCC mode to no operation and do the magic 0xf0 toggle.
+    mch.clrsetbits32(mchbar::DCC, DCC_CMD_MASK, DCC_CMD_NOP);
+    let hb = fstart_pci::ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
+    hb.write8(0xf0, hb.read8(0xf0) & !(1 << 2));
+    hb.write8(0xf0, hb.read8(0xf0) | (1 << 2));
+
+    // Normally we would set this after successful raminit.
+    mch.setbits32(mchbar::DCC, 1 << 19);
+
+    full_reset();
 }
 
 fn ddr2_spd_has_ecc(spd: &[u8; 256]) -> bool {
@@ -1460,20 +1517,12 @@ fn program_epd(info: &RaminitInfo, mch: &MchBar) {
         let ch0_dual = channel_has_dual_rank(info, 0);
         let ch1_dual = channel_has_dual_rank(info, 1);
         let ch0_cfg = if channel_populated(info, 0) {
-            if ch0_dual || force_cfg {
-                0x07
-            } else {
-                0x03
-            }
+            if ch0_dual || force_cfg { 0x07 } else { 0x03 }
         } else {
             0
         };
         let ch1_cfg = if channel_populated(info, 1) {
-            if ch1_dual || force_cfg {
-                0x07
-            } else {
-                0x03
-            }
+            if ch1_dual || force_cfg { 0x07 } else { 0x03 }
         } else {
             0
         };

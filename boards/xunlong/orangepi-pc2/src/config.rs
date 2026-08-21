@@ -4,8 +4,8 @@ use fstart_core::Platform;
 #[cfg(feature = "host")]
 use fstart_core::{
     dev_security_config, hstr, hvec, BoardBuildPolicy, BoardConfig, Compression, FdtSource,
-    MemoryMap, MemoryRegion, PayloadConfig, PayloadKind, RegionKind, RunsFrom, SocImageFormat,
-    StageBuildConfig, StageConfig, StageLayout,
+    FirmwareConfig, FirmwareKind, MemoryMap, MemoryRegion, PayloadConfig, PayloadKind, RegionKind,
+    RunsFrom, SocImageFormat, StageBuildConfig, StageConfig, StageLayout,
 };
 use fstart_driver_sunxi::h3_ccu::H3CcuConfig;
 use fstart_driver_sunxi::h3_dramc::{H3DramcConfig, SunxiDramcVariant};
@@ -103,7 +103,11 @@ pub fn board_config() -> BoardConfig {
             // pathologically slow (byte-granular reads); store flat until the
             // block reader grows a buffered window.
             compression: Compression::None,
-            firmware: None,
+            firmware: Some(FirmwareConfig {
+                kind: FirmwareKind::ArmTrustedFirmware,
+                file: hstr("bl31-sun50i-a64.bin"),
+                load_addr: 0x0004_4000,
+            }),
             fit_file: None,
             fit_config: None,
             fit_parse: None,

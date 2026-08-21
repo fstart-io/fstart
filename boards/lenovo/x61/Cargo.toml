@@ -41,6 +41,8 @@ acpi = [
   "fstart-arch/acpi",
   "fstart-driver-intel/acpi",
   "fstart-driver-intel/ffs-vbt",
+  "dep:fstart-driver-lenovo",
+  "fstart-driver-lenovo/acpi",
 ]
 mp = ["stage", "fstart-platform-intel/mp"]
 smbios = ["fstart-platform-intel/smbios"]
@@ -56,6 +58,7 @@ fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-acpi-macros = { path = "../../../crates/acpi-macros", optional = true }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["ffs-vbt"] }
+fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", optional = true }
 fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"], optional = true }
 fstart-smm = { path = "../../../crates/smm", optional = true }

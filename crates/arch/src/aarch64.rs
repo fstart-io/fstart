@@ -960,11 +960,11 @@ pub fn boot_linux_atf_prepared(kernel_addr: u64, dtb_addr: u64, fw_addr: u64) ->
 /// Convention: x0 = function ID, x1 = BL31 address, x2 = &BlParams.
 const FSTART_BOOT_BL31: u64 = 0xC200_0002;
 
-/// Jump to ATF BL31 via SMC, which then boots the BL33 payload at EL2.
+/// Jump to ATF BL31, which then boots the BL33 payload at EL2.
 ///
-/// This function issues an SMC to the EL3 handler, which branches to
-/// BL31 at EL3. BL31 initialises the secure world (GIC, PSCI, etc.)
-/// then `eret`s to the BL33 entry specified in `params` at EL2.
+/// Sunxi's RMR entry leaves fstart at EL3, so it can branch directly to
+/// BL31. Platforms whose entry flow has already dropped to a lower EL use
+/// the installed `FSTART_BOOT_BL31` SMC handler to regain EL3 first.
 ///
 /// # Safety
 ///
@@ -972,11 +972,17 @@ const FSTART_BOOT_BL31: u64 = 0xC200_0002;
 /// `params` is valid and will remain so until BL31 reads it.
 pub fn boot_linux_atf(bl31_addr: u64, params: &BlParams) -> ! {
     unsafe {
-        // Flush all pending stores before handing off to BL31.
-        // SMC traps to EL3 where the handler branches to BL31.
+        // Flush loaded firmware, kernel, FDT, and parameter writes before
+        // handing control to the secure monitor.
         core::arch::asm!(
             "dsb sy",
             "isb",
+            "mrs x3, CurrentEL",
+            "cmp x3, #0xc",
+            "b.ne 1f",
+            "mov x0, x2",
+            "br x1",
+            "1:",
             "smc #0",
             in("x0") FSTART_BOOT_BL31,
             in("x1") bl31_addr,

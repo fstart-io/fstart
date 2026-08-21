@@ -281,8 +281,8 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
     for r in 0..super::RANKS_PER_CHANNEL {
         let dimm_idx = r / 2;
         let rank_in_dimm = (r % 2) as u8;
-        if let Some(ref d) = si.dimms[dimm_idx] {
-            if d.card_type != 0 && rank_in_dimm < d.ranks {
+        if let Some(ref d) = si.dimms[dimm_idx]
+            && d.card_type != 0 && rank_in_dimm < d.ranks {
                 let banks = usize::from(d.banks >= 8);
                 let width = match d.width {
                     crate::generic::spd::ChipWidth::X16 | crate::generic::spd::ChipWidth::X32 => 1,
@@ -296,7 +296,6 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
                 }
                 c0dra |= (dra as u32) << (r * 8);
             }
-        }
     }
     mch.write32(mchbar::C0DRA01, c0dra);
 
@@ -305,11 +304,10 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
     for r in 0..super::RANKS_PER_CHANNEL {
         let dimm_idx = r / 2;
         let rank_in_dimm = (r % 2) as u8;
-        if let Some(ref d) = si.dimms[dimm_idx] {
-            if d.card_type != 0 && rank_in_dimm < d.ranks {
+        if let Some(ref d) = si.dimms[dimm_idx]
+            && d.card_type != 0 && rank_in_dimm < d.ranks {
                 rank_bits |= 1 << r;
             }
-        }
     }
     let v = mch.read8(mchbar::C0CKECTRL + 2);
     mch.write8(mchbar::C0CKECTRL + 2, (v & !0xF0) | (rank_bits << 4));
@@ -327,15 +325,14 @@ pub fn sdram_dradrb(si: &mut SysInfo, mch: &MchBar) {
     for r in 0..super::RANKS_PER_CHANNEL {
         let dimm_idx = r / 2;
         let rank_in_dimm = (r % 2) as u8;
-        if let Some(ref d) = si.dimms[dimm_idx] {
-            if d.card_type != 0 && rank_in_dimm < d.ranks {
+        if let Some(ref d) = si.dimms[dimm_idx]
+            && d.card_type != 0 && rank_in_dimm < d.ranks {
                 let ind = ((c0dra >> (8 * r)) & 0x7F) as usize;
                 if ind < 10 {
                     c0drb += DRADRB[ind][5] as u16;
                     si.channel_capacity[0] += (DRADRB[ind][5] as u32) << 6;
                 }
             }
-        }
         let addr = mchbar::C0DRB0 + (r as u32) * 2;
         mch.write16(addr, c0drb);
     }

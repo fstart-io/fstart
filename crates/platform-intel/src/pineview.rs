@@ -2,14 +2,15 @@
 
 #[cfg(feature = "stage")]
 pub use stage::{
-    run_pineview_ich7_mainstage, PineviewIch7, PineviewIch7Board, PineviewIch7Mainstage,
+    PineviewIch7, PineviewIch7Board, PineviewIch7Mainstage, run_pineview_ich7_mainstage,
 };
 
 #[cfg(feature = "host")]
 use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_core::{
-    hstr, hvec, CarConfig, Compression, FirmwareImageConfig, FlashLayout, MemoryMap, MemoryRegion,
+    CarConfig, Compression, FirmwareImageConfig, FlashLayout, MemoryMap, MemoryRegion,
     MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
+    hstr, hvec,
 };
 use fstart_driver_intel::ich7;
 pub use fstart_driver_intel::ich7::{
@@ -306,6 +307,14 @@ pub fn pineview_ich7_stages(config: &PineviewIch7Config) -> StageLayout {
                 ..StageBuildConfig::default()
             },
             load_addr: PINEVIEW_BOOTBLOCK_LOAD_ADDR,
+            // 8 KiB of the 32 KiB CAR window; the rest holds .data/.bss
+            // (the x86-64 IDT dominates) plus heap. This is enough only
+            // because dependency crates compile with opt-level "s" even in
+            // dev builds (see [profile.dev.package."*"] in the root Cargo.toml):
+            // at opt-level 0 the FFS manifest-verification chain alone needs
+            // ~9 KiB of stack (ManifestView::parse peaked at a 3.7 KiB frame).
+            // If a bootblock stack overflows again, measure frames with
+            // objdump before growing this: the CAR window cannot grow.
             stack_size: 0x2000,
             heap_size: None,
             runs_from: RunsFrom::Rom,
@@ -356,8 +365,8 @@ mod stage {
     use fstart_core::services::ServiceError;
     use fstart_driver_intel::ich7::IntelIch7;
     use fstart_driver_intel::pineview::IntelPineview;
-    use fstart_stage::payload::MainstagePayload;
     use fstart_stage::StageEnvironment;
+    use fstart_stage::payload::MainstagePayload;
 
     /// PINEVIEW northbridge + ICH7 southbridge Intel early-flow platform.
     pub struct PineviewIch7;

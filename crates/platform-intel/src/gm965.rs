@@ -1,14 +1,14 @@
 //! GM965/ICH8 platform defaults and fixed handwritten flow.
 
 #[cfg(feature = "stage")]
-pub use stage::{run_gm965_ich8_mainstage, Gm965Ich8, Gm965Ich8Board, Gm965Ich8Mainstage};
+pub use stage::{Gm965Ich8, Gm965Ich8Board, Gm965Ich8Mainstage, run_gm965_ich8_mainstage};
 
 #[cfg(feature = "host")]
 use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_core::{
-    hstr, hvec, CarConfig, Compression, ConstVec, FirmwareImageConfig, FlashLayout, MemoryMap,
-    MemoryRegion, MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig, StageConfig, StageLayout,
-    TempRamBuffer,
+    CarConfig, Compression, ConstVec, FirmwareImageConfig, FlashLayout, MemoryMap, MemoryRegion,
+    MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
+    hstr, hvec,
 };
 use fstart_driver_intel::gm965;
 pub use fstart_driver_intel::gm965::{Gm965IgdConfig, IntelGm965Config};
@@ -387,7 +387,7 @@ pub fn gm965_ich8_stages(config: &Gm965Ich8Config) -> StageLayout {
                 smbios: true,
                 mp: Some(MpBuildConfig {
                     max_cpus: config.max_cpus,
-                    smm: false,
+                    smm: true,
                 }),
                 ..StageBuildConfig::default()
             },
@@ -413,8 +413,8 @@ mod stage {
     use fstart_core::services::ServiceError;
     use fstart_driver_intel::gm965::IntelGm965;
     use fstart_driver_intel::ich8::IntelIch8;
-    use fstart_stage::payload::MainstagePayload;
     use fstart_stage::StageEnvironment;
+    use fstart_stage::payload::MainstagePayload;
 
     /// GM965 northbridge + ICH8 southbridge Intel early-flow platform.
     pub struct Gm965Ich8;
@@ -503,15 +503,24 @@ mod stage {
     /// Bring up BSP + APs with the platform's CPU driver. The CPU model and
     /// PMBASE are platform knowledge; the board only states `max_cpus` in its
     /// config.
+    ///
+    /// When fbuild embedded an SMM image into this stage (`SMM_IMAGE`), MP
+    /// setup also performs SMM relocation, installs the handler in TSEG, and
+    /// locks SMRAM via [`fstart_arch::mp::SmmOps`].
     #[cfg(feature = "mp")]
-    fn init_mp(config: &Gm965Ich8Config) -> Result<(), ServiceError> {
-        let cpu = fstart_arch::cpu_intel::core2_cpu::Core2CpuDriver::new(ICH8_PMBASE, None);
+    fn init_mp(nb_config: &'static IntelGm965Config, max_cpus: u16) -> Result<(), ServiceError> {
+        // APs must run the same updated microcode as the BSP, whose update
+        // happens in pre-CAR assembly; the blob sits in boot flash.
+        let microcode = crate::intel_microcode_blob();
+        let cpu = fstart_arch::cpu_intel::core2_cpu::Core2CpuDriver::new(ICH8_PMBASE, microcode);
         let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
+        let northbridge = IntelGm965::new_from_config(nb_config)?;
+        let smm = crate::SMM_IMAGE.map(|_| &northbridge as &dyn fstart_arch::mp::SmmOps);
         fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
             cpu_drivers: &drivers,
-            smm: None,
-            smm_image: None,
-            max_cpus: config.max_cpus,
+            smm,
+            smm_image: crate::SMM_IMAGE,
+            max_cpus,
         })
         .map(|_| ())
         .map_err(|_| ServiceError::HardwareError)
@@ -552,7 +561,7 @@ mod stage {
 
     #[cfg(feature = "mp")]
     fn init_mp_for_board<B: Gm965Ich8Board>() -> Result<(), ServiceError> {
-        init_mp(B::CONFIG)
+        init_mp(B::NB_CONFIG, B::CONFIG.max_cpus)
     }
 
     /// Handwritten fixed GM965/ICH8 mainstage flow. Ordering is this function.

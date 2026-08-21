@@ -577,6 +577,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-lenovo"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-log",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-driver-sunxi"
 version = "0.1.0"
 dependencies = [
@@ -666,6 +678,7 @@ dependencies = [
  "fstart-driver-intel",
  "fstart-driver-superio",
  "fstart-driver-uart",
+ "fstart-ffs",
  "fstart-log",
  "fstart-pci",
  "fstart-stage",

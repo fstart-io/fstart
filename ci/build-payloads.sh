@@ -114,6 +114,25 @@ make -C "$TFA_DIR" \
 cp "$TFA_DIR/build/qemu/release/bl31.bin" "$OUTPUT_DIR/bl31.bin"
 echo "  -> $OUTPUT_DIR/bl31.bin"
 
+# TF-A BL31 for Allwinner H5. TF-A shares the sun50i_a64 platform between
+# A64 and H5; fstart supplies the BL33 parameters at runtime.
+echo ""
+echo "=== TF-A v${TFA_VERSION} (PLAT=sun50i_a64, Orange Pi PC2/H5) ==="
+make -C "$TFA_DIR" \
+	CROSS_COMPILE="$AARCH64_CROSS" \
+	CC="${AARCH64_CROSS}gcc" \
+	CPP="${AARCH64_CROSS}gcc" \
+	AS="${AARCH64_CROSS}gcc" \
+	LD="${AARCH64_CROSS}gcc" \
+	AR="$(command -v "${AARCH64_CROSS}gcc-ar" >/dev/null 2>&1 && echo "${AARCH64_CROSS}gcc-ar" || echo "${AARCH64_CROSS}ar")" \
+	OC="${AARCH64_CROSS}objcopy" \
+	OD="${AARCH64_CROSS}objdump" \
+	PLAT=sun50i_a64 \
+	bl31 \
+	-j"$NPROC"
+cp "$TFA_DIR/build/sun50i_a64/release/bl31.bin" "$OUTPUT_DIR/bl31-sun50i-a64.bin"
+echo "  -> $OUTPUT_DIR/bl31-sun50i-a64.bin"
+
 # TF-A for QEMU sbsa-ref: BL1 + FIP in a 256 MiB secure pflash image.
 # PRELOADED_BL33_BASE defaults to 0x10000000 (pflash1 base) on qemu_sbsa,
 # which is where fbuild places the fstart XIP stage.
@@ -330,9 +349,12 @@ build_kernel riscv "$RISCV64_CROSS" kernel-riscv64.config "$RISCV64_INITRAMFS" \
 	"vmlinux:vmlinux-riscv64" \
 	"arch/riscv/boot/Image:Image-riscv64"
 
-# AArch64 — Image (flat binary)
+# AArch64 — Image (flat binary) + Orange Pi PC2 DTB.
 build_kernel arm64 "$AARCH64_CROSS" kernel-aarch64.config "$AARCH64_INITRAMFS" \
 	"arch/arm64/boot/Image:Image-aarch64"
+make -C "$LINUX_DIR" ARCH=arm64 CROSS_COMPILE="$AARCH64_CROSS" dtbs
+cp "${LINUX_DIR}/arch/arm64/boot/dts/allwinner/sun50i-h5-orangepi-pc2.dtb" "$OUTPUT_DIR/"
+echo "  -> $OUTPUT_DIR/sun50i-h5-orangepi-pc2.dtb"
 
 # ARMv7 — zImage (compressed) + the Orange Pi R1 DTB for the sunxi boot test
 build_kernel arm "$ARM_CROSS" kernel-armv7.config "$ARM_INITRAMFS" \
