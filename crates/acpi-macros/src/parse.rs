@@ -56,7 +56,7 @@ pub enum BinaryOp {
 }
 
 /// A parsed expression (ASL 2.0).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DslExpr {
     /// Integer literal (`0u32`, `0x1000u64`)
     IntLit(TokenStream),
@@ -86,6 +86,8 @@ pub enum DslExpr {
     CondRefOf(Box<DslExpr>, Box<DslExpr>),
     /// `Index(source, index)`
     Index(Box<DslExpr>, Box<DslExpr>),
+    /// Method invocation used as an expression: `NAME(arg0, ...)`.
+    Call(String, Vec<DslExpr>),
     /// Binary operation: `a + b`, `a == b`, etc.
     Binary(BinaryOp, Box<DslExpr>, Box<DslExpr>),
     /// Logical NOT: `!expr`
@@ -246,6 +248,47 @@ pub enum DslItem {
         #[allow(dead_code)]
         span: Span,
     },
+    /// `target /= value;` -- in-place AML Divide (quotient into target).
+    DivideAssign {
+        target: DslExpr,
+        value: DslExpr,
+        #[allow(dead_code)]
+        span: Span,
+    },
+    /// `Mutex("NAME", sync_level);`
+    Mutex {
+        name: String,
+        sync_level: TokenStream,
+        #[allow(dead_code)]
+        span: Span,
+    },
+    /// `Acquire(NAME, timeout);` -- bare statement form.
+    Acquire {
+        mutex: String,
+        timeout: TokenStream,
+        #[allow(dead_code)]
+        span: Span,
+    },
+    /// `Release(NAME);`
+    Release {
+        mutex: String,
+        #[allow(dead_code)]
+        span: Span,
+    },
+    /// `ThermalZone("NAME") { ... }` container.
+    ThermalZone {
+        name: String,
+        children: Vec<DslItem>,
+        span: Span,
+    },
+    /// `PowerResource("NAME", level, order) { ... }` container.
+    PowerResource {
+        name: String,
+        level: TokenStream,
+        order: TokenStream,
+        children: Vec<DslItem>,
+        span: Span,
+    },
 }
 
 /// Return value can be either a legacy DslValue or a new-style DslExpr.
@@ -316,6 +359,10 @@ pub enum DslValue {
     ResourceTemplate(Vec<ResourceDesc>),
     /// Rust expression interpolation: `#{expr}`
     Interpolation(TokenStream),
+    /// `Buffer(#{expr})` -- buffer term whose data expression must evaluate
+    /// to something implementing `Aml` (typically
+    /// `fstart_acpi::aml::BufferData`).
+    Buffer(TokenStream),
 }
 
 /// A resource descriptor within a resource_template.
@@ -394,12 +441,12 @@ pub fn parse_dsl(input: TokenStream) -> Result<Vec<DslItem>> {
 
 /// Check if an identifier is a Local variable (Local0..Local7).
 fn parse_local(name: &str) -> Option<u8> {
-    if let Some(rest) = name.strip_prefix("Local") {
-        if rest.len() == 1 {
-            let n = rest.as_bytes()[0];
-            if (b'0'..=b'7').contains(&n) {
-                return Some(n - b'0');
-            }
+    if let Some(rest) = name.strip_prefix("Local")
+        && rest.len() == 1
+    {
+        let n = rest.as_bytes()[0];
+        if (b'0'..=b'7').contains(&n) {
+            return Some(n - b'0');
         }
     }
     None
@@ -407,12 +454,12 @@ fn parse_local(name: &str) -> Option<u8> {
 
 /// Check if an identifier is an Arg variable (Arg0..Arg6).
 fn parse_arg(name: &str) -> Option<u8> {
-    if let Some(rest) = name.strip_prefix("Arg") {
-        if rest.len() == 1 {
-            let n = rest.as_bytes()[0];
-            if (b'0'..=b'6').contains(&n) {
-                return Some(n - b'0');
-            }
+    if let Some(rest) = name.strip_prefix("Arg")
+        && rest.len() == 1
+    {
+        let n = rest.as_bytes()[0];
+        if (b'0'..=b'6').contains(&n) {
+            return Some(n - b'0');
         }
     }
     None
@@ -440,6 +487,11 @@ fn is_statement_keyword(name: &str) -> bool {
             | "While"
             | "Break"
             | "Notify"
+            | "Mutex"
+            | "Acquire"
+            | "Release"
+            | "ThermalZone"
+            | "PowerResource"
             | "Sleep"
             | "Stall"
             | "Increment"
@@ -533,6 +585,40 @@ impl Parser {
         }
     }
 
+    /// Parse `(arg0, arg1, ...)` following a method name and build a
+    /// [`DslExpr::Call`].
+    fn parse_call_tail(&mut self, name: &str) -> Result<DslExpr> {
+        let (args_tts, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args_tts);
+        let mut args = Vec::new();
+        while !p.at_end() {
+            args.push(p.parse_expr(0)?);
+            if !p.at_end() {
+                p.expect_punct(',')?;
+            }
+        }
+        Ok(DslExpr::Call(name.to_string(), args))
+    }
+
+    /// Expect a bare identifier used as an ACPI object reference (e.g. the
+    /// mutex name in `Acquire(ECLK, ...)`).
+    fn expect_bare_name(&mut self) -> Result<String> {
+        match self.advance() {
+            Some(TokenTree::Ident(ident)) => Ok(ident.to_string()),
+            Some(other) => Err(Error::new(other.span(), "expected ACPI object name")),
+            None => Err(Error::new(self.span(), "expected ACPI object name")),
+        }
+    }
+
+    /// Capture a literal integer expression as raw tokens (e.g. `0xffffu16`).
+    fn parse_int_literal_tokens(&mut self) -> Result<TokenStream> {
+        match self.advance() {
+            Some(TokenTree::Literal(lit)) => Ok(TokenStream::from(TokenTree::Literal(lit))),
+            Some(other) => Err(Error::new(other.span(), "expected integer literal")),
+            None => Err(Error::new(self.span(), "expected integer literal")),
+        }
+    }
+
     fn at_end(&self) -> bool {
         self.pos >= self.tokens.len()
     }
@@ -583,6 +669,12 @@ impl Parser {
                     "Stall" => self.parse_stall_stmt(),
                     "Increment" => self.parse_increment_call(),
                     "Decrement" => self.parse_decrement_call(),
+                    // Synchronization and thermal containers
+                    "Mutex" => self.parse_mutex(),
+                    "Acquire" => self.parse_acquire(),
+                    "Release" => self.parse_release(),
+                    "ThermalZone" => self.parse_thermal_zone(),
+                    "PowerResource" => self.parse_power_resource(),
                     _ => {
                         // Could be an assignment, increment/decrement, or
                         // ASL method invocation:
@@ -630,30 +722,42 @@ impl Parser {
             // Look at the token after the identifier
             if let Some(next) = self.peek_at(1) {
                 match next {
-                    // `IDENT = ...` (single `=`, not `==`)
-                    TokenTree::Punct(p) if p.as_char() == '=' => {
-                        // Make sure it's not `==` (comparison)
-                        if p.spacing() == Spacing::Joint {
-                            // Could be `==`, check next
-                            if let Some(TokenTree::Punct(p2)) = self.peek_at(2) {
-                                if p2.as_char() == '=' {
-                                    return false; // it's `==`
-                                }
-                            }
-                        }
+                    // `IDENT /= expr` -- in-place AML Divide.
+                    // NOTE: the two-char operator arms must be checked before
+                    // the single-char postfix arm: both match on leading
+                    // char + Joint spacing, and a failed guard does not fall
+                    // through differently per arm.
+                    TokenTree::Punct(p)
+                        if p.as_char() == '/'
+                            && matches!(self.peek_at(2), Some(TokenTree::Punct(p2)) if p2.as_char() == '=') =>
+                    {
                         true
                     }
-                    // `IDENT++` or `IDENT--`
+                    // `IDENT++` / `IDENT--`
                     TokenTree::Punct(p)
                         if (p.as_char() == '+' || p.as_char() == '-')
-                            && p.spacing() == Spacing::Joint =>
+                            && p.spacing() == Spacing::Joint
+                            && matches!(self.peek_at(2), Some(TokenTree::Punct(p2)) if p2.as_char() == p.as_char()) =>
                     {
-                        if let Some(TokenTree::Punct(p2)) = self.peek_at(2) {
-                            p2.as_char() == p.as_char()
-                        } else {
-                            false
-                        }
+                        true
                     }
+                    // `IDENT += expr` / `IDENT -= expr` / `IDENT *= expr`.
+                    // Checked after `++`/`--`: both share the leading char,
+                    // so this arm requires `=` as the second character.
+                    TokenTree::Punct(p)
+                        if matches!(p.as_char(), '+' | '-' | '*')
+                            && p.spacing() == Spacing::Joint
+                            && matches!(self.peek_at(2), Some(TokenTree::Punct(p2)) if p2.as_char() == '=') =>
+                    {
+                        true
+                    }
+                    // `IDENT[expr] = ...` -- index store
+                    TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => true,
+                    // `IDENT = ...` (single `=`, not `==`)
+                    TokenTree::Punct(p) if p.as_char() == '=' => !matches!(
+                        self.peek_at(2),
+                        Some(TokenTree::Punct(p2)) if p2.as_char() == '='
+                    ),
                     _ => false,
                 }
             } else {
@@ -668,10 +772,68 @@ impl Parser {
     fn parse_assign_or_postfix(&mut self) -> Result<DslItem> {
         let span = self.span();
         // Parse the target as an expression atom (just the identifier/Local/Arg)
-        let target = self.parse_expr_atom()?;
+        let mut target = self.parse_expr_atom()?;
+
+        // `IDENT[expr]` postfix -- an index store target
+        if let Some(TokenTree::Group(g)) = self.peek()
+            && g.delimiter() == Delimiter::Bracket
+        {
+            let (inner, _) = self.expect_group(Delimiter::Bracket)?;
+            let mut sub = Parser::new(inner);
+            let index = sub.parse_expr(0)?;
+            target = DslExpr::Index(Box::new(target), Box::new(index));
+        }
 
         // Check what follows
         match self.peek() {
+            // `IDENT /= expr` -- in-place AML Divide
+            Some(TokenTree::Punct(p)) if p.as_char() == '/' => {
+                self.advance(); // consume '/'
+                self.expect_punct('=')?;
+                let value = self.parse_expr(0)?;
+                self.expect_punct(';')?;
+                Ok(DslItem::DivideAssign {
+                    target,
+                    value,
+                    span,
+                })
+            }
+            Some(TokenTree::Punct(p))
+                if (p.as_char() == '+' || p.as_char() == '-')
+                    && p.spacing() == Spacing::Joint
+                    && matches!(self.peek_at(1), Some(TokenTree::Punct(p2)) if p2.as_char() == p.as_char()) =>
+            {
+                let dec = p.as_char() == '-';
+                self.advance();
+                self.advance();
+                self.expect_punct(';')?;
+                Ok(if dec {
+                    DslItem::Decrement { target, span }
+                } else {
+                    DslItem::Increment { target, span }
+                })
+            }
+            // `IDENT += expr` / `IDENT -= expr` / `IDENT *= expr` --
+            // desugar to `IDENT = IDENT <op> expr`.
+            Some(TokenTree::Punct(p))
+                if matches!(p.as_char(), '+' | '-' | '*') && p.spacing() == Spacing::Joint =>
+            {
+                let op_char = p.as_char();
+                self.advance(); // consume op char
+                self.expect_punct('=')?;
+                let value = self.parse_expr(0)?;
+                self.expect_punct(';')?;
+                let binop = match op_char {
+                    '+' => BinaryOp::Add,
+                    '-' => BinaryOp::Subtract,
+                    _ => BinaryOp::Multiply,
+                };
+                Ok(DslItem::Assign {
+                    target: target.clone(),
+                    value: DslExpr::Binary(binop, Box::new(target), Box::new(value)),
+                    span,
+                })
+            }
             Some(TokenTree::Punct(p)) if p.as_char() == '=' => {
                 self.advance(); // consume '='
                 let value = self.parse_expr(0)?;
@@ -681,18 +843,6 @@ impl Parser {
                     value,
                     span,
                 })
-            }
-            Some(TokenTree::Punct(p)) if p.as_char() == '+' && p.spacing() == Spacing::Joint => {
-                self.advance(); // consume first '+'
-                self.advance(); // consume second '+'
-                self.expect_punct(';')?;
-                Ok(DslItem::Increment { target, span })
-            }
-            Some(TokenTree::Punct(p)) if p.as_char() == '-' && p.spacing() == Spacing::Joint => {
-                self.advance(); // consume first '-'
-                self.advance(); // consume second '-'
-                self.expect_punct(';')?;
-                Ok(DslItem::Decrement { target, span })
             }
             _ => Err(Error::new(span, "expected `=`, `++`, or `--` after target")),
         }
@@ -905,6 +1055,12 @@ impl Parser {
 
     fn parse_if(&mut self) -> Result<DslItem> {
         let span = self.expect_ident("If")?;
+        self.parse_if_chain(span)
+    }
+
+    /// Parse `(condition) { body } [Else ...]` -- the `If` keyword must
+    /// already be consumed.
+    fn parse_if_chain(&mut self, span: Span) -> Result<DslItem> {
         let (cond_tokens, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut cond_parser = Parser::new(cond_tokens);
         let condition = cond_parser.parse_expr(0)?;
@@ -914,12 +1070,19 @@ impl Parser {
         let body = body_parser.parse_items()?;
 
         // Check for Else / ElseIf
-        let else_body = if self.peek_ident_eq("Else") {
-            self.advance(); // consume "Else"
-            // Check for ElseIf: `Else If (...) { ... }`
-            if self.peek_ident_eq("If") {
-                // Parse as a nested If inside the else body
-                let nested_if = self.parse_if()?;
+        let else_body = if self.peek_ident_eq("Else") || self.peek_ident_eq("ElseIf") {
+            let was_else_if = self.peek_ident_eq("ElseIf");
+            self.advance(); // consume "Else" / "ElseIf"
+            // `ElseIf (...) { ... }`: the chain continues with a nested If.
+            // Plain `Else { ... }`: a statement list.
+            if was_else_if {
+                let span = self.span();
+                let nested_if = self.parse_if_chain(span)?;
+                Some(vec![nested_if])
+            } else if self.peek_ident_eq("If") {
+                self.advance(); // consume "If"
+                let span = self.span();
+                let nested_if = self.parse_if_chain(span)?;
                 Some(vec![nested_if])
             } else {
                 let (else_tokens, _) = self.expect_group(Delimiter::Brace)?;
@@ -1010,6 +1173,101 @@ impl Parser {
         let target = p.parse_expr(0)?;
         self.expect_punct(';')?;
         Ok(DslItem::Decrement { target, span })
+    }
+
+    fn parse_mutex(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("Mutex")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let name = p.expect_string_lit()?;
+        p.expect_punct(',')?;
+        let sync_level = p.parse_int_literal_tokens()?;
+        self.expect_punct(';')?;
+        Ok(DslItem::Mutex {
+            name,
+            sync_level,
+            span,
+        })
+    }
+
+    fn parse_acquire(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("Acquire")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let mutex = p.expect_bare_name()?;
+        p.expect_punct(',')?;
+        let timeout = p.parse_int_literal_tokens()?;
+        self.expect_punct(';')?;
+        Ok(DslItem::Acquire {
+            mutex,
+            timeout,
+            span,
+        })
+    }
+
+    fn parse_release(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("Release")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        let mutex = p.expect_bare_name()?;
+        self.expect_punct(';')?;
+        Ok(DslItem::Release { mutex, span })
+    }
+
+    fn parse_thermal_zone(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("ThermalZone")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut args_parser = Parser::new(args);
+        let name = match args_parser.parse_name_or_interp()? {
+            NameOrInterp::Literal(s) => s,
+            NameOrInterp::Interpolation(_) => {
+                return Err(Error::new(
+                    span,
+                    "interpolated ThermalZone names are not supported",
+                ));
+            }
+        };
+
+        let (body, _) = self.expect_group(Delimiter::Brace)?;
+        let mut body_parser = Parser::new(body);
+        let children = body_parser.parse_items()?;
+
+        Ok(DslItem::ThermalZone {
+            name,
+            children,
+            span,
+        })
+    }
+
+    fn parse_power_resource(&mut self) -> Result<DslItem> {
+        let span = self.expect_ident("PowerResource")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut args_parser = Parser::new(args);
+        let name = match args_parser.parse_name_or_interp()? {
+            NameOrInterp::Literal(s) => s,
+            NameOrInterp::Interpolation(_) => {
+                return Err(Error::new(
+                    span,
+                    "interpolated PowerResource names are not supported",
+                ));
+            }
+        };
+        args_parser.expect_punct(',')?;
+        let level = args_parser.parse_int_literal_tokens()?;
+        args_parser.expect_punct(',')?;
+        let order = args_parser.parse_int_literal_tokens()?;
+
+        let (body, _) = self.expect_group(Delimiter::Brace)?;
+        let mut body_parser = Parser::new(body);
+        let children = body_parser.parse_items()?;
+
+        Ok(DslItem::PowerResource {
+            name,
+            level,
+            order,
+            children,
+            span,
+        })
     }
 
     // -------------------------------------------------------------------
@@ -1284,6 +1542,11 @@ impl Parser {
                 .parse_resource_template()
                 .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
         }
+        if self.peek_ident_eq("Buffer") {
+            return self
+                .parse_buffer_value()
+                .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
+        }
         if matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '#') {
             return self
                 .parse_interpolation()
@@ -1337,6 +1600,17 @@ impl Parser {
         let mut args_parser = Parser::new(args);
         let id = args_parser.expect_string_lit()?;
         Ok(DslValue::EisaId(id))
+    }
+
+    /// `Buffer(#{expr})` -- data expression must implement `Aml`
+    /// (typically `fstart_acpi::aml::BufferData`).
+    fn parse_buffer_value(&mut self) -> Result<DslValue> {
+        self.expect_ident("Buffer")?;
+        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+        let mut p = Parser::new(args);
+        p.expect_punct('#')?;
+        let (expr, _) = p.expect_group(Delimiter::Brace)?;
+        Ok(DslValue::Buffer(expr))
     }
 
     fn parse_resource_template(&mut self) -> Result<DslValue> {
@@ -1687,12 +1961,11 @@ impl Parser {
             // Unary `!` (logical NOT)
             TokenTree::Punct(p) if p.as_char() == '!' => {
                 // Make sure it's not `!=`
-                if p.spacing() == Spacing::Joint {
-                    if let Some(TokenTree::Punct(p2)) = self.peek_at(1) {
-                        if p2.as_char() == '=' {
-                            return Err(Error::new(p.span(), "unexpected `!=` in atom position"));
-                        }
-                    }
+                if p.spacing() == Spacing::Joint
+                    && let Some(TokenTree::Punct(p2)) = self.peek_at(1)
+                    && p2.as_char() == '='
+                {
+                    return Err(Error::new(p.span(), "unexpected `!=` in atom position"));
                 }
                 self.advance(); // consume '!'
                 let inner = self.parse_expr_atom()?;
@@ -1793,8 +2066,22 @@ impl Parser {
                         let b = p.parse_expr(0)?;
                         Ok(DslExpr::Index(Box::new(a), Box::new(b)))
                     }
+                    "PPKG" | "C2K" | "GCRT" | "GPSV" | "TLED" | "BEEP" | "FANE" | "BPAG"
+                    | "BSTA" | "BINF" | "BINX" => {
+                        // Known helper methods invoked as expressions.
+                        self.advance();
+                        Ok(self.parse_call_tail(&name)?)
+                    }
                     _ => {
-                        // Treat as an ACPI path name (e.g., CDW1, TLUD, _OSC)
+                        // A method invocation `IDENT(...)` or a plain ACPI
+                        // path name (e.g., CDW1, TLUD).
+                        if let Some(TokenTree::Group(g)) = self.peek_at(1)
+                            && g.delimiter() == Delimiter::Parenthesis
+                        {
+                            self.advance();
+                            let call = self.parse_call_tail(&name)?;
+                            return Ok(call);
+                        }
                         self.advance();
                         Ok(DslExpr::Path(name))
                     }
@@ -1815,20 +2102,18 @@ impl Parser {
                 let joint = p.spacing() == Spacing::Joint;
 
                 // Check two-character operators first
-                if joint {
-                    if let Some(TokenTree::Punct(p2)) = self.peek_at(1) {
-                        let ch2 = p2.as_char();
-                        match (ch, ch2) {
-                            ('|', '|') => return Some((BinaryOp::LOr, 1)),
-                            ('&', '&') => return Some((BinaryOp::LAnd, 2)),
-                            ('=', '=') => return Some((BinaryOp::Equal, 6)),
-                            ('!', '=') => return Some((BinaryOp::NotEqual, 6)),
-                            ('<', '=') => return Some((BinaryOp::LessEqual, 7)),
-                            ('>', '=') => return Some((BinaryOp::GreaterEqual, 7)),
-                            ('<', '<') => return Some((BinaryOp::ShiftLeft, 8)),
-                            ('>', '>') => return Some((BinaryOp::ShiftRight, 8)),
-                            _ => {}
-                        }
+                if joint && let Some(TokenTree::Punct(p2)) = self.peek_at(1) {
+                    let ch2 = p2.as_char();
+                    match (ch, ch2) {
+                        ('|', '|') => return Some((BinaryOp::LOr, 1)),
+                        ('&', '&') => return Some((BinaryOp::LAnd, 2)),
+                        ('=', '=') => return Some((BinaryOp::Equal, 6)),
+                        ('!', '=') => return Some((BinaryOp::NotEqual, 6)),
+                        ('<', '=') => return Some((BinaryOp::LessEqual, 7)),
+                        ('>', '=') => return Some((BinaryOp::GreaterEqual, 7)),
+                        ('<', '<') => return Some((BinaryOp::ShiftLeft, 8)),
+                        ('>', '>') => return Some((BinaryOp::ShiftRight, 8)),
+                        _ => {}
                     }
                 }
 

@@ -19,6 +19,29 @@ pub fn validate_items(items: &[DslItem]) -> Result<()> {
 
 fn validate_item(item: &DslItem) -> Result<()> {
     match item {
+        DslItem::Mutex { name, span, .. } => {
+            validate_acpi_name(name, *span)?;
+        }
+        DslItem::Acquire { mutex, span, .. } | DslItem::Release { mutex, span, .. } => {
+            validate_acpi_name(mutex, *span)?;
+        }
+        DslItem::ThermalZone {
+            name,
+            children,
+            span,
+        } => {
+            validate_acpi_name(name, *span)?;
+            validate_items(children)?;
+        }
+        DslItem::PowerResource {
+            name,
+            children,
+            span,
+            ..
+        } => {
+            validate_acpi_name(name, *span)?;
+            validate_items(children)?;
+        }
         DslItem::Scope {
             path,
             children,
@@ -92,7 +115,8 @@ fn validate_item(item: &DslItem) -> Result<()> {
         | DslItem::Stall { .. }
         | DslItem::Break { .. }
         | DslItem::Increment { .. }
-        | DslItem::Decrement { .. } => {}
+        | DslItem::Decrement { .. }
+        | DslItem::DivideAssign { .. } => {}
     }
     Ok(())
 }

@@ -56,6 +56,30 @@ pub fn emit_items(items: &[DslItem]) -> TokenStream {
                 use alloc::vec::Vec;
                 use fstart_acpi::Aml;
 
+                // Pad NameSegs shorter than 4 characters with trailing
+                // underscores, matching iasl behaviour for ASL source names
+                // (e.g. `_ON` -> `_ON_`). acpi_tables requires exact 4-char
+                // segments.
+                #[allow(unused)]
+                fn __pad_path(path: &str) -> alloc::string::String {
+                    let root_len = if path.starts_with('\\') { 1 } else { 0 };
+                    let core = &path[root_len..];
+                    if core.is_empty() {
+                        return alloc::string::String::from(path);
+                    }
+                    let parts: alloc::vec::Vec<alloc::string::String> = core
+                        .split('.')
+                        .map(|seg| {
+                            let mut t = alloc::string::String::from(seg);
+                            while t.len() < 4 {
+                                t.push('_');
+                            }
+                            t
+                        })
+                        .collect();
+                    alloc::format!("{}{}", &path[..root_len], parts.join("."))
+                }
+
                 #bindings
 
                 let mut __acpi_out = Vec::new();
@@ -69,6 +93,30 @@ pub fn emit_items(items: &[DslItem]) -> TokenStream {
                 extern crate alloc;
                 use alloc::vec::Vec;
                 use fstart_acpi::Aml;
+
+                // Pad NameSegs shorter than 4 characters with trailing
+                // underscores, matching iasl behaviour for ASL source names
+                // (e.g. `_ON` -> `_ON_`). acpi_tables requires exact 4-char
+                // segments.
+                #[allow(unused)]
+                fn __pad_path(path: &str) -> alloc::string::String {
+                    let root_len = if path.starts_with('\\') { 1 } else { 0 };
+                    let core = &path[root_len..];
+                    if core.is_empty() {
+                        return alloc::string::String::from(path);
+                    }
+                    let parts: alloc::vec::Vec<alloc::string::String> = core
+                        .split('.')
+                        .map(|seg| {
+                            let mut t = alloc::string::String::from(seg);
+                            while t.len() < 4 {
+                                t.push('_');
+                            }
+                            t
+                        })
+                        .collect();
+                    alloc::format!("{}{}", &path[..root_len], parts.join("."))
+                }
 
                 #bindings
 
@@ -152,6 +200,20 @@ fn emit_item(item: &DslItem, generator: &mut VarGen) -> (TokenStream, proc_macro
         DslItem::Increment { target, .. } => emit_increment(target, generator),
         DslItem::Decrement { target, .. } => emit_decrement(target, generator),
         DslItem::MethodCall { name, args, .. } => emit_method_call(name, args, generator),
+        DslItem::DivideAssign { target, value, .. } => emit_divide_assign(target, value, generator),
+        DslItem::Mutex {
+            name, sync_level, ..
+        } => emit_mutex(name, sync_level.clone(), generator),
+        DslItem::Acquire { mutex, timeout, .. } => emit_acquire(mutex, timeout.clone(), generator),
+        DslItem::Release { mutex, .. } => emit_release(mutex, generator),
+        DslItem::ThermalZone { name, children, .. } => emit_thermal_zone(name, children, generator),
+        DslItem::PowerResource {
+            name,
+            level,
+            order,
+            children,
+            ..
+        } => emit_power_resource(name, level.clone(), order.clone(), children, generator),
     }
 }
 
@@ -161,14 +223,28 @@ fn emit_item(item: &DslItem, generator: &mut VarGen) -> (TokenStream, proc_macro
 
 fn emit_name_or_interp(name: &NameOrInterp) -> TokenStream {
     match name {
-        NameOrInterp::Literal(s) => quote! { #s },
+        // Pad short NameSegs (`_ON` -> `_ON_`) to match acpi_tables' exact
+        // 4-character segment requirement.
+        NameOrInterp::Literal(s) => {
+            let mut padded = s.to_string();
+            while padded.len() < 4 {
+                padded.push('_');
+            }
+            quote! { #padded }
+        }
         NameOrInterp::Interpolation(expr) => quote! { #expr },
     }
 }
 
 fn emit_path_from_name_or_interp(name: &NameOrInterp) -> TokenStream {
     match name {
-        NameOrInterp::Literal(s) => quote! { fstart_acpi::aml::Path::new(#s) },
+        NameOrInterp::Literal(s) => {
+            let mut padded = s.to_string();
+            while padded.len() < 4 {
+                padded.push('_');
+            }
+            quote! { fstart_acpi::aml::Path::new(#padded) }
+        }
         NameOrInterp::Interpolation(expr) => quote! { #expr },
     }
 }
@@ -203,12 +279,137 @@ fn emit_scope(
             let path_expr = emit_name_or_interp(path);
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::Scope::new(
-                    fstart_acpi::aml::Path::new(#path_expr),
+                    fstart_acpi::aml::Path::new(&__pad_path(#path_expr)),
                     alloc::vec![#(#refs),*],
                 );
             });
         }
     }
+
+    (bindings, var)
+}
+
+fn emit_mutex(
+    name: &str,
+    sync_level: proc_macro2::TokenStream,
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let var = generator.next("mutex");
+    let bindings = quote! {
+        let #var =
+            fstart_acpi::aml::Mutex::new(fstart_acpi::aml::Path::new(&__pad_path(#name)), #sync_level);
+    };
+    (bindings, var)
+}
+
+/// Emit `target /= value` as an AML Divide whose remainder is discarded and
+/// whose quotient lands back in `target`.
+fn emit_divide_assign(
+    target: &DslExpr,
+    value: &DslExpr,
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let (tgt_bind, tgt_var) = emit_expr(target, generator);
+    let (val_bind, val_var) = emit_expr(value, generator);
+    bindings.extend(tgt_bind);
+    bindings.extend(val_bind);
+
+    let nt_var = generator.next("divrem");
+    let var = generator.next("divide");
+    bindings.extend(quote! {
+        let #nt_var = fstart_acpi::aml::Zero {};
+        let #var = fstart_acpi::ext::divide::Divide::new(
+            &#tgt_var,
+            &#val_var,
+            &#nt_var,
+            &#tgt_var,
+        );
+    });
+    (bindings, var)
+}
+
+fn emit_acquire(
+    mutex: &str,
+    timeout: proc_macro2::TokenStream,
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let var = generator.next("acquire");
+    let bindings = quote! {
+        let #var =
+            fstart_acpi::aml::Acquire::new(fstart_acpi::aml::Path::new(&__pad_path(#mutex)), #timeout);
+    };
+    (bindings, var)
+}
+
+fn emit_release(mutex: &str, generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+    let var = generator.next("release");
+    let bindings = quote! {
+        let #var = fstart_acpi::aml::Release::new(fstart_acpi::aml::Path::new(&__pad_path(#mutex)));
+    };
+    (bindings, var)
+}
+
+fn emit_thermal_zone(
+    name: &str,
+    children: &[DslItem],
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let mut child_vars: Vec<proc_macro2::Ident> = Vec::new();
+
+    for child in children {
+        let (binding, var) = emit_item(child, generator);
+        bindings.extend(binding);
+        child_vars.push(var);
+    }
+
+    let var = generator.next("thermal");
+    let refs: Vec<_> = child_vars
+        .iter()
+        .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
+        .collect();
+
+    bindings.extend(quote! {
+        let #var = fstart_acpi::ext::thermal_zone::ThermalZone::new(
+            fstart_acpi::aml::Path::new(&__pad_path(#name)),
+            alloc::vec![#(#refs),*],
+        );
+    });
+
+    (bindings, var)
+}
+
+fn emit_power_resource(
+    name: &str,
+    level: proc_macro2::TokenStream,
+    order: proc_macro2::TokenStream,
+    children: &[DslItem],
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
+    let mut bindings = TokenStream::new();
+    let mut child_vars: Vec<proc_macro2::Ident> = Vec::new();
+
+    for child in children {
+        let (binding, var) = emit_item(child, generator);
+        bindings.extend(binding);
+        child_vars.push(var);
+    }
+
+    let var = generator.next("pwres");
+    let refs: Vec<_> = child_vars
+        .iter()
+        .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
+        .collect();
+
+    bindings.extend(quote! {
+        let #var = fstart_acpi::ext::power_resource::PowerResource::new(
+            fstart_acpi::aml::Path::new(&__pad_path(#name)),
+            #level,
+            #order,
+            alloc::vec![#(#refs),*],
+        );
+    });
 
     (bindings, var)
 }
@@ -283,9 +484,16 @@ fn emit_method(
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
         .collect();
 
+    let padded_name = {
+        let mut t = name.to_string();
+        while t.len() < 4 && !t.starts_with('_') || (t.starts_with('_') && t.len() < 4) {
+            t.push('_');
+        }
+        t
+    };
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::Method::new(
-            #name.into(),
+            #padded_name.into(),
             #argc,
             #serialized,
             alloc::vec![#(#refs),*],
@@ -350,6 +558,15 @@ fn emit_value(value: &DslValue, generator: &mut VarGen) -> (TokenStream, proc_ma
         }
         DslValue::Package(elements) => emit_package(elements, generator),
         DslValue::ResourceTemplate(descs) => emit_resource_template(descs, generator),
+        DslValue::Buffer(data_expr) => {
+            let data_var = generator.next("bufdata");
+            let var = generator.next("buffer");
+            let binding = quote! {
+                let #data_var = #data_expr;
+                let #var = fstart_acpi::aml::BufferTerm::new(&#data_var);
+            };
+            (binding, var)
+        }
         DslValue::Interpolation(expr) => {
             let var = generator.next("expr");
             let binding = quote! {
@@ -409,7 +626,7 @@ fn emit_op_region(
     let var = generator.next("opreg");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::OpRegion::new(
-            fstart_acpi::aml::Path::new(#name),
+            fstart_acpi::aml::Path::new(&__pad_path(#name)),
             #space_tok,
             &#off_var,
             &#len_var,
@@ -480,7 +697,7 @@ fn emit_field(
     let var = generator.next("field");
     let bindings = quote! {
         let #var = fstart_acpi::aml::Field::new(
-            fstart_acpi::aml::Path::new(#region),
+            fstart_acpi::aml::Path::new(&__pad_path(#region)),
             #access_tok,
             #lock_tok,
             #update_tok,
@@ -505,7 +722,7 @@ fn emit_create_dword_field(
     let name_path = generator.next("cdwn");
     let var = generator.next("cdwf");
     bindings.extend(quote! {
-        let #name_path = fstart_acpi::aml::Path::new(#name);
+        let #name_path = fstart_acpi::aml::Path::new(&__pad_path(#name));
         let #var = fstart_acpi::aml::CreateDWordField::new(
             &#name_path,
             &#buf_var,
@@ -803,16 +1020,52 @@ fn emit_expr(expr: &DslExpr, generator: &mut VarGen) -> (TokenStream, proc_macro
     match expr {
         DslExpr::IntLit(tokens) => {
             let var = generator.next("int");
-            (quote! { let #var = #tokens; }, var)
+            // Unsuffixed integer literals must not be left to inference:
+            // `i32` (Rust's default) does not implement `Aml`. Bare literals
+            // are pinned to `u32`; suffixed ones keep their width.
+            let has_suffix = {
+                let s = tokens.to_string();
+                s.contains('u') || s.contains('i')
+            };
+            if has_suffix {
+                (quote! { let #var = #tokens; }, var)
+            } else {
+                (quote! { let #var: u32 = #tokens; }, var)
+            }
         }
         DslExpr::StringLit(s) => {
             let var = generator.next("str");
             (quote! { let #var: &str = #s; }, var)
         }
+        DslExpr::Call(name, args) => {
+            let mut bindings = TokenStream::new();
+            let mut arg_vars = Vec::new();
+            for arg in args {
+                let (arg_bind, arg_var) = emit_expr(arg, generator);
+                bindings.extend(arg_bind);
+                arg_vars.push(arg_var);
+            }
+            let arg_refs: Vec<_> = arg_vars
+                .iter()
+                .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
+                .collect();
+            let var = generator.next("callexpr");
+            bindings.extend(quote! {
+                let #var = fstart_acpi::aml::MethodCall::new(
+                    fstart_acpi::aml::Path::new(&__pad_path(#name)),
+                    alloc::vec![#(#arg_refs),*],
+                );
+            });
+            (bindings, var)
+        }
         DslExpr::Path(name) => {
+            let pad_var = generator.next("padpath");
             let var = generator.next("path");
             (
-                quote! { let #var = fstart_acpi::aml::Path::new(#name); },
+                quote! {
+                    let #pad_var = __pad_path(#name);
+                    let #var = fstart_acpi::aml::Path::new(&#pad_var);
+                },
                 var,
             )
         }
@@ -1002,13 +1255,16 @@ fn emit_binary_expr(
                 BinaryOp::Subtract => format_ident!("Subtract"),
                 BinaryOp::Multiply => format_ident!("Multiply"),
                 BinaryOp::Divide => {
-                    // AML Divide has 4 args: Divide(dividend, divisor, remainder, result)
-                    // In acpi_tables it might not exist. Let's use Mod-like approach.
-                    // Actually, Divide is not in acpi_tables binary_op!. Skip for now.
-                    // We'll emit a compile_error for unsupported ops.
+                    // Bare `/` is rejected: AML Divide stores its results
+                    // into targets and there is no expression form. Use the
+                    // in-place `target /= value` statement instead, which
+                    // emits `Divide(target, value, Zero, target)`.
                     let var = generator.next("err");
                     bindings.extend(quote! {
-                        compile_error!("Divide operator not supported in acpi_dsl! (AML Divide has 4 operands)");
+                        compile_error!(
+                            "acpi_dsl!: `/` is not supported as an expression; \
+                             use `target /= value` (AML Divide writes into targets)"
+                        );
                         let #var = ();
                     });
                     return (bindings, var);

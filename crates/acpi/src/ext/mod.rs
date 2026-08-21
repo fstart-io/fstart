@@ -7,7 +7,9 @@
 
 pub mod break_op;
 pub mod cond_ref_of;
+pub mod divide;
 pub mod inc_dec;
 pub mod logical;
+pub mod power_resource;
 pub mod sleep;
 pub mod thermal_zone;
