@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use fstart_core::acpi::AcpiExtraDevice;
 use fstart_core::stage::PageSize;
 use fstart_core::{
-    effective_stage_load_addr, BoardConfig, Platform, RegionKind, SecurityConfig, SocImageFormat,
-    StageBuildConfig, StageLayout,
+    BoardConfig, Platform, RegionKind, SecurityConfig, SocImageFormat, StageBuildConfig,
+    StageLayout, effective_stage_load_addr,
 };
 
 use crate::toolchain::TargetSpec;
@@ -299,6 +299,11 @@ fn stage_features(
 ) -> Vec<&'static str> {
     let mut features = Vec::new();
 
+    // Stages that read FFS (firmware-image stages, verification, payloads)
+    // pull in manifest parsing plus the signature/digest and lz4 stacks.
+    // Raw next-stage loading (e.g. sunxi SRAM bootblocks reading eGON images
+    // from MMC with read_stage_to_addr) needs none of that; dragging it into
+    // BROM-loaded SRAM windows tens of KiB in size overflows .text.
     if stage_uses_ffs(build) {
         features.push("ffs");
         if build.payload
@@ -353,10 +358,7 @@ fn stage_features(
 }
 
 fn stage_uses_ffs(build: &StageBuildConfig) -> bool {
-    build.firmware_image.is_some()
-        || build.verify_firmware
-        || build.load_next_stage.is_some()
-        || build.payload
+    build.firmware_image.is_some() || build.verify_firmware || build.payload
 }
 
 fn stage_uses_crabefi(config: &BoardConfig) -> bool {
@@ -371,12 +373,12 @@ mod tests {
     use std::path::PathBuf;
 
     use fstart_core::{
-        hstr, hvec, BoardBuildPolicy, Compression, DigestAlgorithm, MemoryMap, MemoryRegion,
-        MonolithicConfig, Platform, RegionKind, RunsFrom, SecurityConfig, SignatureAlgorithm,
-        SocImageFormat, StageBuildConfig, StageConfig, StageLayout,
+        BoardBuildPolicy, Compression, DigestAlgorithm, FirmwareImageConfig, MemoryMap,
+        MemoryRegion, MonolithicConfig, Platform, RegionKind, RunsFrom, SecurityConfig,
+        SignatureAlgorithm, SocImageFormat, StageBuildConfig, StageConfig, StageLayout, hstr, hvec,
     };
 
-    use super::{plan, ParsedBoard};
+    use super::{ParsedBoard, plan};
 
     fn minimal_config() -> fstart_core::BoardConfig {
         let mut regions = heapless::Vec::new();
@@ -532,10 +534,64 @@ mod tests {
         assert!(plan.stages[0].features.contains("armv7"));
         assert!(plan.stages[0].features.contains("allwinner-a20"));
         assert!(plan.stages[0].features.contains("handoff"));
-        assert!(plan.stages[0].features.contains("ffs"));
+        // A raw next-stage loader reads eGON images straight from MMC; it
+        // must not drag the FFS/manifest/crypto stack into the tiny BROM
+        // loaded SRAM window.
+        assert!(!plan.stages[0].features.contains("ffs"));
+        assert!(!plan.stages[0].features.contains("ed25519"));
+        assert!(!plan.stages[0].features.contains("lz4"));
+        // The DRAM mainstage in real boards verifies firmware and thus keeps
+        // the full set; covered by plan_firmware_image_stage_keeps_ffs_features.
         assert!(!plan.stages[0].features.contains("sunxi"));
         assert_eq!(plan.stages[0].soc_format, SocImageFormat::AllwinnerEgon);
         assert_eq!(plan.stages[1].soc_format, SocImageFormat::None);
+    }
+
+    #[test]
+    fn plan_firmware_image_stage_keeps_ffs_features() {
+        let mut config = minimal_config();
+        config.stages = StageLayout::MultiStage(hvec([
+            StageConfig {
+                name: hstr("bootblock"),
+                build: StageBuildConfig {
+                    firmware_image: Some(FirmwareImageConfig {
+                        temp_ram_buffer: None,
+                    }),
+                    load_next_stage: Some(hstr("main")),
+                    ..StageBuildConfig::default()
+                },
+                load_addr: 0xfff0_0000,
+                stack_size: 0x2000,
+                heap_size: None,
+                runs_from: RunsFrom::Rom,
+                compression: Compression::None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            },
+            StageConfig {
+                name: hstr("main"),
+                build: StageBuildConfig {
+                    verify_firmware: true,
+                    ..StageBuildConfig::default()
+                },
+                load_addr: 0x0010_0000,
+                stack_size: 0x10000,
+                heap_size: None,
+                runs_from: RunsFrom::Ram,
+                compression: Compression::None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            },
+        ]));
+
+        let plan = plan(&parsed(config), &manifest()).expect("firmware stage should plan");
+        assert!(plan.stages[0].features.contains("ffs"));
+        assert!(plan.stages[0].features.contains("ed25519"));
+        assert!(plan.stages[0].features.contains("lz4"));
+        assert!(plan.stages[0].features.contains("sha2-digest"));
+        assert!(plan.stages[1].features.contains("ffs"));
     }
 
     #[test]
