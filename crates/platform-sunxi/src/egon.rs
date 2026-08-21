@@ -149,6 +149,6 @@ _head_jump:
 #[used]
 #[cfg_attr(
     any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64"),
-    link_section = ".head.egon"
+    unsafe(link_section = ".head.egon")
 )]
 pub static EGON_HEAD: EgonHead = EgonHead::new();

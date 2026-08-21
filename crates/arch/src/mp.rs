@@ -60,7 +60,7 @@
     clippy::needless_range_loop
 )]
 use core::marker::PhantomData;
-use core::sync::atomic::{fence, AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
 
 use crate::lapic::Lapic;
 
@@ -694,7 +694,7 @@ pub fn current_cpu_index() -> u32 {
 /// # Safety
 ///
 /// Called from assembly with a valid stack and identity-mapped page tables.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
     // Enable the local APIC and set up virtual wire.
     let lapic = Lapic::from_msr();

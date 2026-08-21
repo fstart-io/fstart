@@ -113,17 +113,18 @@ static MAX_LEVEL: SyncCell<Level> = SyncCell::new(Level::Info);
 /// Must be called exactly once, before any log macro is used. A second
 /// call is silently ignored (the first console wins).
 pub unsafe fn init(console: &dyn Console) {
-    // SAFETY: single-threaded boot — no concurrent access.
-    let slot = &mut *CONSOLE.0.get();
-    if slot.is_some() {
-        // Already initialised — silently ignore (guard against double init).
-        return;
-    }
-    // SAFETY: Extend the borrow lifetime to `'static`. The caller
+    // SAFETY: single-threaded boot — no concurrent access; the caller
     // guarantees the pointee lives for the rest of execution.
-    *slot = Some(core::mem::transmute::<&dyn Console, &'static dyn Console>(
-        console,
-    ));
+    unsafe {
+        let slot = &mut *CONSOLE.0.get();
+        if slot.is_some() {
+            // Already initialised — silently ignore (guard against double init).
+            return;
+        }
+        *slot = Some(core::mem::transmute::<&dyn Console, &'static dyn Console>(
+            console,
+        ));
+    }
 }
 
 /// Replace the global console backend.
@@ -135,8 +136,7 @@ pub unsafe fn init(console: &dyn Console) {
 /// object lived in Cache-as-RAM that is about to be torn down.
 pub unsafe fn replace_console(console: &'static dyn Console) {
     // SAFETY: single-threaded boot — no concurrent access.
-    let slot = &mut *CONSOLE.0.get();
-    *slot = Some(console);
+    unsafe { *CONSOLE.0.get() = Some(console) };
 }
 
 /// Set the maximum log level. Messages above this level are discarded.
@@ -147,7 +147,7 @@ pub unsafe fn replace_console(console: &'static dyn Console) {
 /// this immediately after [`init`] during single-threaded boot.
 pub unsafe fn set_max_level(level: Level) {
     // SAFETY: single-threaded boot — no concurrent access.
-    *MAX_LEVEL.0.get() = level;
+    unsafe { *MAX_LEVEL.0.get() = level };
 }
 
 /// Return the current maximum log level.

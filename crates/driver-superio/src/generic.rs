@@ -28,8 +28,8 @@
 
 #![allow(clippy::redundant_locals)]
 
-use fstart_core::services::device::{BusDevice, DeviceError};
 use fstart_core::BusAddress;
+use fstart_core::services::device::{BusDevice, DeviceError};
 use serde::{Deserialize, Serialize};
 
 use core::marker::PhantomData;
@@ -1165,7 +1165,7 @@ mod acpi_impl {
         if let Some(ref kbc) = config.keyboard {
             aml.extend(kbc_device(kbc));
         }
-        if let (Some(ref kbc), Some(ref mouse)) = (&config.keyboard, &config.mouse) {
+        if let (Some(kbc), Some(mouse)) = (&config.keyboard, &config.mouse) {
             aml.extend(mouse_device(kbc, mouse));
         }
         if let Some(ref pp) = config.parallel {

@@ -118,7 +118,7 @@ fn empty_payload_config(kind: PayloadKind) -> PayloadConfig {
 
 #[cfg(test)]
 mod tests {
-    use fstart_core::{hstr, FirmwareConfig, FirmwareKind};
+    use fstart_core::{FirmwareConfig, FirmwareKind, hstr};
 
     use super::*;
 

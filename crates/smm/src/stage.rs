@@ -2,8 +2,8 @@
 use core::panic::PanicInfo;
 
 use crate::{
-    debug_trace, obtain_handler_lock, release_handler_lock, wait_for_handler_unlock, SmmContext,
-    SmmHandler, SMM_PLATFORM_NONE,
+    SMM_PLATFORM_NONE, SmmContext, SmmHandler, debug_trace, obtain_handler_lock,
+    release_handler_lock, wait_for_handler_unlock,
 };
 
 pub use crate::SmmEntryParams;
@@ -12,10 +12,10 @@ pub use crate::SmmEntryParams;
 #[allow(dead_code)]
 struct HeapStore([u8; 4096]);
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 static _FSTART_HEAP: HeapStore = HeapStore([0; 4096]);
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 static _FSTART_HEAP_SIZE: usize = 4096;
 
 /// Selected-board SMM binding supplied by the board crate.
@@ -35,14 +35,14 @@ macro_rules! smm_bin {
             type Handler = $handler;
         }
 
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn fstart_smm_handler(params: *mut $crate::SmmEntryParams) {
             // SAFETY: the SMM image trampoline provides the raw entry params.
             unsafe { $crate::handle::<$board>(params) }
         }
 
         #[used]
-        #[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
         static FSTART_SMM_KEEP: unsafe extern "C" fn(*mut $crate::SmmEntryParams) =
             fstart_smm_handler;
     };

@@ -467,7 +467,7 @@ pub use fstart_core::services::memory_detect::E820Entry;
     target_arch = "riscv64"
 ))]
 pub fn compute_runtime_region() -> RuntimeRegion {
-    extern "C" {
+    unsafe extern "C" {
         static _text_start: u8;
         static _text_end: u8;
         static _data_start: u8;

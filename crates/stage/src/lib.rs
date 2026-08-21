@@ -1113,7 +1113,7 @@ fn effective_image_size(media_size: usize, anchor: &fstart_core::ffs::AnchorBloc
 /// `fbuild assemble` patches this block in the flat stage binary after laying out
 /// the complete firmware image.
 #[used]
-#[cfg_attr(target_os = "none", link_section = ".fstart.anchor")]
+#[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.anchor"))]
 pub static FSTART_ANCHOR: fstart_core::ffs::AnchorBlock =
     fstart_core::ffs::AnchorBlock::placeholder();
 
@@ -1174,7 +1174,7 @@ pub trait StageBoard: Sized + 'static {
 #[macro_export]
 macro_rules! stage_bin {
     ($board:ty) => {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {
             <$board as $crate::StageBoard>::run_stage(
                 $crate::StageEnvironment::from_option(option_env!("FSTART_STAGE_ENV")),
@@ -1183,7 +1183,7 @@ macro_rules! stage_bin {
         }
 
         #[used]
-        #[cfg_attr(target_os = "none", link_section = ".fstart.keep")]
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
         static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
 
         #[cfg(all(feature = "crabefi", target_arch = "riscv64"))]

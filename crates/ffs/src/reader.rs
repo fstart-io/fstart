@@ -14,8 +14,8 @@
 //! finds the anchor by searching for `FFS_MAGIC` in an arbitrary binary.
 
 use fstart_core::ffs::{
-    AnchorBlock, EntryContent, ImageManifest, Region, RegionContent, RegionEntry, Segment,
-    Signature, ANCHOR_MAX_KEYS, ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
+    ANCHOR_MAX_KEYS, ANCHOR_SIZE, AnchorBlock, EntryContent, FFS_MAGIC, FFS_VERSION, ImageManifest,
+    Region, RegionContent, RegionEntry, Segment, Signature,
 };
 
 use fstart_crypto::digest;
@@ -89,7 +89,8 @@ impl<'a> FfsReader<'a> {
     ///
     /// The data must be at least `ANCHOR_SIZE` bytes and properly aligned.
     pub unsafe fn read_anchor_volatile(data: &[u8]) -> Result<AnchorBlock, ReaderError> {
-        AnchorBlock::read_volatile(data).ok_or(ReaderError::BadMagic)
+        // SAFETY: caller guarantees alignment and size of `data`.
+        unsafe { AnchorBlock::read_volatile(data) }.ok_or(ReaderError::BadMagic)
     }
 
     /// Scan the image for `FFS_MAGIC` at 8-byte-aligned offsets.

@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 // its *address* is used — the type mismatch is intentional and harmless (same
 // pattern as C linker symbols declared as `extern char`).
 #[cfg(not(test))]
-extern "C" {
+unsafe extern "C" {
     /// Heap backing store (stage-provided, 16-byte aligned).
     static _FSTART_HEAP: u8;
     /// Heap size in bytes (stage-provided).

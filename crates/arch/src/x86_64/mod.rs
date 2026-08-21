@@ -865,7 +865,7 @@ core::arch::global_asm!(
 // `global_asm!`, which Rust's dead-code analysis cannot see.
 #[cfg(all(not(test), target_os = "none"))]
 #[allow(dead_code)]
-extern "Rust" {
+unsafe extern "Rust" {
     fn fstart_main(handoff_ptr: usize) -> !;
 }
 
@@ -919,7 +919,7 @@ fn x86_raw_serial_hex(mut value: u64) {
 /// - `rflags`: flags at the time of the exception
 /// - `rsp`: approximate stack pointer at the time of the exception
 /// - `cr2`: CR2 register (faulting address for page faults)
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn x86_exception_handler(
     vector: u64,
     error_code: u64,

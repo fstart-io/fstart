@@ -32,12 +32,15 @@ pub fn udelay_tsc(us: u32, tsc_hz: u64) {
 #[inline(always)]
 pub unsafe fn read_phys32(addr: usize) {
     let value: u32;
-    core::arch::asm!(
-        "mov {value:e}, dword ptr [{addr}]",
-        value = out(reg) value,
-        addr = in(reg) addr,
-        options(nostack, preserves_flags, readonly),
-    );
+    // SAFETY: caller guarantees `addr` is readable physical memory.
+    unsafe {
+        core::arch::asm!(
+            "mov {value:e}, dword ptr [{addr}]",
+            value = out(reg) value,
+            addr = in(reg) addr,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
     core::hint::black_box(value);
 }
 
@@ -178,11 +181,7 @@ pub fn physical_address_bits() -> u32 {
     }
     let (eax, _, _, _) = cpuid(0x8000_0008);
     let bits = eax & 0xff;
-    if bits == 0 {
-        36
-    } else {
-        bits.min(52)
-    }
+    if bits == 0 { 36 } else { bits.min(52) }
 }
 
 /// Return the architectural MTRR physical address mask for this CPU.

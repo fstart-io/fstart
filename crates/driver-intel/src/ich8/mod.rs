@@ -10,14 +10,14 @@ pub mod smm;
 use crate::southbridge::gpio_ich::IchGpio;
 use crate::southbridge::pmio_ich::{self as pmio, PmIo};
 use crate::southbridge::smbus::I801SmBus;
+use fstart_core::ConstVec;
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::{
     FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus, Southbridge,
 };
-use fstart_core::ConstVec;
 use fstart_pci::ecam;
-use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_BITS};
+use fstart_pci::{PCI_COMMAND_BITS, PciType0Config, PciType1Config, pci_type0_config};
 use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
@@ -2347,10 +2347,10 @@ mod acpi_impl {
     extern crate alloc;
 
     use alloc::vec::Vec;
+    use fstart_acpi::Aml;
     use fstart_acpi::aml::{Name, PackageBuilder, Path};
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi::platform::{IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
-    use fstart_acpi::Aml;
 
     use fstart_acpi_macros::acpi_dsl;
 

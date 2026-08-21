@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
   "tools/fbuild",
   "crates/core",
@@ -26,7 +26,7 @@ exclude = ["attic", "boards"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
@@ -88,6 +88,50 @@ fstart-boot = { path = "crates/boot" }
 
 [profile.dev]
 panic = "abort"
+# Boot-time code runs against tiny CAR/SRAM stack windows, and opt-level-0
+# codegen inflates stack frames several-fold: at opt 0 the FFS manifest-
+# verification chain alone needed ~9 KiB of stack (ManifestView::parse peaked
+# at a 3.7 KiB frame), overflowing 8 KiB boot stacks. Compile every firmware
+# dependency for size even in dev builds. Note: profile package globs ("*")
+# do NOT match path dependencies, so the fstart crates are listed explicitly.
+# Specific overrides below still win where present; the board crate itself
+# stays unoptimized for fast iteration; debug assertions are unaffected.
+[profile.dev.package.fstart-core]
+opt-level = "s"
+[profile.dev.package.fstart-arch]
+opt-level = "s"
+[profile.dev.package.fstart-log]
+opt-level = "s"
+[profile.dev.package.fstart-pci]
+opt-level = "s"
+[profile.dev.package.fstart-acpi]
+opt-level = "s"
+[profile.dev.package.fstart-acpi-macros]
+opt-level = "s"
+[profile.dev.package.fstart-ffs]
+opt-level = "s"
+[profile.dev.package.fstart-boot]
+opt-level = "s"
+[profile.dev.package.fstart-smm]
+opt-level = "s"
+[profile.dev.package.fstart-image-build]
+opt-level = "s"
+[profile.dev.package.fstart-platform-intel]
+opt-level = "s"
+[profile.dev.package.fstart-platform-sunxi]
+opt-level = "s"
+[profile.dev.package.fstart-platform-qemu]
+opt-level = "s"
+[profile.dev.package.fstart-driver-intel]
+opt-level = "s"
+[profile.dev.package.fstart-driver-sunxi]
+opt-level = "s"
+[profile.dev.package.fstart-driver-superio]
+opt-level = "s"
+[profile.dev.package.fstart-driver-uart]
+opt-level = "s"
+[profile.dev.package.lz4_flex]
+opt-level = 2
 # Optimise fstart-stage for size even in dev builds.  SRAM/CAR-constrained
 # bootblocks overflow at opt-level 0; "s" keeps debug info while fitting.
 [profile.dev.package.fstart-stage]
@@ -126,3 +170,4 @@ opt-level = 2
 opt-level = 2
 [profile.release.package.p256]
 opt-level = 2
+

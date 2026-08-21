@@ -38,12 +38,12 @@ impl VarGen {
 /// Returns a block expression that evaluates to `Vec<u8>` containing
 /// the serialized AML.
 pub fn emit_items(items: &[DslItem]) -> TokenStream {
-    let mut gen = VarGen::new();
+    let mut generator = VarGen::new();
     let mut bindings = TokenStream::new();
     let mut child_refs: Vec<proc_macro2::Ident> = Vec::new();
 
     for item in items {
-        let (binding, var) = emit_item(item, &mut gen);
+        let (binding, var) = emit_item(item, &mut generator);
         bindings.extend(binding);
         child_refs.push(var);
     }
@@ -82,26 +82,26 @@ pub fn emit_items(items: &[DslItem]) -> TokenStream {
 
 /// Emit bindings for a single DSL item, returning the binding code
 /// and the variable name holding the built AML object.
-fn emit_item(item: &DslItem, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_item(item: &DslItem, generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
     match item {
-        DslItem::Scope { path, children, .. } => emit_scope(path, children, gen),
-        DslItem::Device { name, children, .. } => emit_device(name, children, gen),
-        DslItem::Name { name, value, .. } => emit_name(name, value, gen),
+        DslItem::Scope { path, children, .. } => emit_scope(path, children, generator),
+        DslItem::Device { name, children, .. } => emit_device(name, children, generator),
+        DslItem::Name { name, value, .. } => emit_name(name, value, generator),
         DslItem::Method {
             name,
             argc,
             serialized,
             body,
             ..
-        } => emit_method(name, *argc, *serialized, body, gen),
-        DslItem::Return { value, .. } => emit_return(value, gen),
+        } => emit_method(name, *argc, *serialized, body, generator),
+        DslItem::Return { value, .. } => emit_return(value, generator),
         DslItem::OpRegion {
             name,
             space,
             offset,
             length,
             ..
-        } => emit_op_region(name, *space, offset, length, gen),
+        } => emit_op_region(name, *space, offset, length, generator),
         DslItem::Field {
             region,
             access,
@@ -109,24 +109,26 @@ fn emit_item(item: &DslItem, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
             update,
             entries,
             ..
-        } => emit_field(region, *access, *lock, *update, entries, gen),
+        } => emit_field(region, *access, *lock, *update, entries, generator),
         DslItem::CreateDwordField {
             buffer,
             index,
             name,
             ..
-        } => emit_create_dword_field(buffer, index, name, gen),
-        DslItem::Store { value, target, .. } => emit_store(value, target, gen),
+        } => emit_create_dword_field(buffer, index, name, generator),
+        DslItem::Store { value, target, .. } => emit_store(value, target, generator),
         DslItem::ShiftLeft {
             target,
             value,
             count,
             ..
-        } => emit_binary_op("ShiftLeft", target, value, count, gen),
-        DslItem::Subtract { target, a, b, .. } => emit_binary_op("Subtract", target, a, b, gen),
-        DslItem::Add { target, a, b, .. } => emit_binary_op("Add", target, a, b, gen),
+        } => emit_binary_op("ShiftLeft", target, value, count, generator),
+        DslItem::Subtract { target, a, b, .. } => {
+            emit_binary_op("Subtract", target, a, b, generator)
+        }
+        DslItem::Add { target, a, b, .. } => emit_binary_op("Add", target, a, b, generator),
         DslItem::RawExpr { expr } => {
-            let var = gen.next("raw");
+            let var = generator.next("raw");
             let bindings = quote! {
                 let #var = #expr;
             };
@@ -138,18 +140,18 @@ fn emit_item(item: &DslItem, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
             body,
             else_body,
             ..
-        } => emit_if(condition, body, else_body.as_deref(), gen),
+        } => emit_if(condition, body, else_body.as_deref(), generator),
         DslItem::While {
             condition, body, ..
-        } => emit_while(condition, body, gen),
-        DslItem::Assign { target, value, .. } => emit_assign(target, value, gen),
-        DslItem::Notify { object, value, .. } => emit_notify_expr(object, value, gen),
-        DslItem::Sleep { msec, .. } => emit_sleep_expr(msec, gen),
-        DslItem::Stall { usec, .. } => emit_stall_expr(usec, gen),
-        DslItem::Break { .. } => emit_break(gen),
-        DslItem::Increment { target, .. } => emit_increment(target, gen),
-        DslItem::Decrement { target, .. } => emit_decrement(target, gen),
-        DslItem::MethodCall { name, args, .. } => emit_method_call(name, args, gen),
+        } => emit_while(condition, body, generator),
+        DslItem::Assign { target, value, .. } => emit_assign(target, value, generator),
+        DslItem::Notify { object, value, .. } => emit_notify_expr(object, value, generator),
+        DslItem::Sleep { msec, .. } => emit_sleep_expr(msec, generator),
+        DslItem::Stall { usec, .. } => emit_stall_expr(usec, generator),
+        DslItem::Break { .. } => emit_break(generator),
+        DslItem::Increment { target, .. } => emit_increment(target, generator),
+        DslItem::Decrement { target, .. } => emit_decrement(target, generator),
+        DslItem::MethodCall { name, args, .. } => emit_method_call(name, args, generator),
     }
 }
 
@@ -174,18 +176,18 @@ fn emit_path_from_name_or_interp(name: &NameOrInterp) -> TokenStream {
 fn emit_scope(
     path: &NameOrInterp,
     children: &[DslItem],
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
     let mut child_vars: Vec<proc_macro2::Ident> = Vec::new();
 
     for child in children {
-        let (binding, var) = emit_item(child, gen);
+        let (binding, var) = emit_item(child, generator);
         bindings.extend(binding);
         child_vars.push(var);
     }
 
-    let var = gen.next("scope");
+    let var = generator.next("scope");
     let refs: Vec<_> = child_vars
         .iter()
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
@@ -214,18 +216,18 @@ fn emit_scope(
 fn emit_device(
     name: &NameOrInterp,
     children: &[DslItem],
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
     let mut child_vars: Vec<proc_macro2::Ident> = Vec::new();
 
     for child in children {
-        let (binding, var) = emit_item(child, gen);
+        let (binding, var) = emit_item(child, generator);
         bindings.extend(binding);
         child_vars.push(var);
     }
 
-    let var = gen.next("dev");
+    let var = generator.next("dev");
     let refs: Vec<_> = child_vars
         .iter()
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
@@ -242,12 +244,16 @@ fn emit_device(
     (bindings, var)
 }
 
-fn emit_name(name: &str, value: &DslValue, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_name(
+    name: &str,
+    value: &DslValue,
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (val_binding, val_var) = emit_value(value, gen);
+    let (val_binding, val_var) = emit_value(value, generator);
     bindings.extend(val_binding);
 
-    let var = gen.next("name");
+    let var = generator.next("name");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::Name::new(#name.into(), &#val_var);
     });
@@ -260,18 +266,18 @@ fn emit_method(
     argc: u8,
     serialized: bool,
     body: &[DslItem],
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
     let mut body_vars: Vec<proc_macro2::Ident> = Vec::new();
 
     for item in body {
-        let (binding, var) = emit_item(item, gen);
+        let (binding, var) = emit_item(item, generator);
         bindings.extend(binding);
         body_vars.push(var);
     }
 
-    let var = gen.next("method");
+    let var = generator.next("method");
     let refs: Vec<_> = body_vars
         .iter()
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
@@ -289,14 +295,17 @@ fn emit_method(
     (bindings, var)
 }
 
-fn emit_return(value: &DslReturnValue, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_return(
+    value: &DslReturnValue,
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
     match value {
         DslReturnValue::Legacy(dsl_value) => {
             let mut bindings = TokenStream::new();
-            let (val_binding, val_var) = emit_value(dsl_value, gen);
+            let (val_binding, val_var) = emit_value(dsl_value, generator);
             bindings.extend(val_binding);
 
-            let var = gen.next("ret");
+            let var = generator.next("ret");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::Return::new(&#val_var);
             });
@@ -304,10 +313,10 @@ fn emit_return(value: &DslReturnValue, gen: &mut VarGen) -> (TokenStream, proc_m
         }
         DslReturnValue::Expr(expr) => {
             let mut bindings = TokenStream::new();
-            let (expr_binding, expr_var) = emit_expr(expr, gen);
+            let (expr_binding, expr_var) = emit_expr(expr, generator);
             bindings.extend(expr_binding);
 
-            let var = gen.next("ret");
+            let var = generator.next("ret");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::Return::new(&#expr_var);
             });
@@ -316,33 +325,33 @@ fn emit_return(value: &DslReturnValue, gen: &mut VarGen) -> (TokenStream, proc_m
     }
 }
 
-fn emit_value(value: &DslValue, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_value(value: &DslValue, generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
     match value {
         DslValue::StringLit(s) => {
-            let var = gen.next("str");
+            let var = generator.next("str");
             let binding = quote! {
                 let #var: &str = #s;
             };
             (binding, var)
         }
         DslValue::IntLit(tokens) => {
-            let var = gen.next("int");
+            let var = generator.next("int");
             let binding = quote! {
                 let #var = #tokens;
             };
             (binding, var)
         }
         DslValue::EisaId(id) => {
-            let var = gen.next("eisa");
+            let var = generator.next("eisa");
             let binding = quote! {
                 let #var = fstart_acpi::aml::EISAName::new(#id);
             };
             (binding, var)
         }
-        DslValue::Package(elements) => emit_package(elements, gen),
-        DslValue::ResourceTemplate(descs) => emit_resource_template(descs, gen),
+        DslValue::Package(elements) => emit_package(elements, generator),
+        DslValue::ResourceTemplate(descs) => emit_resource_template(descs, generator),
         DslValue::Interpolation(expr) => {
-            let var = gen.next("expr");
+            let var = generator.next("expr");
             let binding = quote! {
                 let #var = #expr;
             };
@@ -351,17 +360,20 @@ fn emit_value(value: &DslValue, gen: &mut VarGen) -> (TokenStream, proc_macro2::
     }
 }
 
-fn emit_package(elements: &[DslValue], gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_package(
+    elements: &[DslValue],
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
     let mut elem_vars: Vec<proc_macro2::Ident> = Vec::new();
 
     for elem in elements {
-        let (binding, var) = emit_value(elem, gen);
+        let (binding, var) = emit_value(elem, generator);
         bindings.extend(binding);
         elem_vars.push(var);
     }
 
-    let var = gen.next("pkg");
+    let var = generator.next("pkg");
     let refs: Vec<_> = elem_vars
         .iter()
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
@@ -379,11 +391,11 @@ fn emit_op_region(
     space: RegionSpace,
     offset: &DslValue,
     length: &DslValue,
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (off_bind, off_var) = emit_value(offset, gen);
-    let (len_bind, len_var) = emit_value(length, gen);
+    let (off_bind, off_var) = emit_value(offset, generator);
+    let (len_bind, len_var) = emit_value(length, generator);
     bindings.extend(off_bind);
     bindings.extend(len_bind);
 
@@ -394,7 +406,7 @@ fn emit_op_region(
         RegionSpace::EmbeddedControl => quote! { fstart_acpi::aml::OpRegionSpace::EmbeddedControl },
     };
 
-    let var = gen.next("opreg");
+    let var = generator.next("opreg");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::OpRegion::new(
             fstart_acpi::aml::Path::new(#name),
@@ -412,7 +424,7 @@ fn emit_field(
     lock: FieldLock,
     update: FieldUpdate,
     entries: &[FieldEntryDsl],
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let access_tok = match access {
         FieldAccess::AnyAcc => quote! { fstart_acpi::aml::FieldAccessType::Any },
@@ -465,7 +477,7 @@ fn emit_field(
         }
     }
 
-    let var = gen.next("field");
+    let var = generator.next("field");
     let bindings = quote! {
         let #var = fstart_acpi::aml::Field::new(
             fstart_acpi::aml::Path::new(#region),
@@ -482,16 +494,16 @@ fn emit_create_dword_field(
     buffer: &DslValue,
     index: &DslValue,
     name: &str,
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (buf_bind, buf_var) = emit_value(buffer, gen);
-    let (idx_bind, idx_var) = emit_value(index, gen);
+    let (buf_bind, buf_var) = emit_value(buffer, generator);
+    let (idx_bind, idx_var) = emit_value(index, generator);
     bindings.extend(buf_bind);
     bindings.extend(idx_bind);
 
-    let name_path = gen.next("cdwn");
-    let var = gen.next("cdwf");
+    let name_path = generator.next("cdwn");
+    let var = generator.next("cdwf");
     bindings.extend(quote! {
         let #name_path = fstart_acpi::aml::Path::new(#name);
         let #var = fstart_acpi::aml::CreateDWordField::new(
@@ -506,15 +518,15 @@ fn emit_create_dword_field(
 fn emit_store(
     value: &DslValue,
     target: &DslValue,
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (val_bind, val_var) = emit_value(value, gen);
-    let (tgt_bind, tgt_var) = emit_value(target, gen);
+    let (val_bind, val_var) = emit_value(value, generator);
+    let (tgt_bind, tgt_var) = emit_value(target, generator);
     bindings.extend(val_bind);
     bindings.extend(tgt_bind);
 
-    let var = gen.next("store");
+    let var = generator.next("store");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::Store::new(&#tgt_var, &#val_var);
     });
@@ -526,18 +538,18 @@ fn emit_binary_op(
     target: &DslValue,
     a: &DslValue,
     b: &DslValue,
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (tgt_bind, tgt_var) = emit_value(target, gen);
-    let (a_bind, a_var) = emit_value(a, gen);
-    let (b_bind, b_var) = emit_value(b, gen);
+    let (tgt_bind, tgt_var) = emit_value(target, generator);
+    let (a_bind, a_var) = emit_value(a, generator);
+    let (b_bind, b_var) = emit_value(b, generator);
     bindings.extend(tgt_bind);
     bindings.extend(a_bind);
     bindings.extend(b_bind);
 
     let op_ident = format_ident!("{}", op_name);
-    let var = gen.next("binop");
+    let var = generator.next("binop");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::#op_ident::new(&#tgt_var, &#a_var, &#b_var);
     });
@@ -546,18 +558,18 @@ fn emit_binary_op(
 
 fn emit_resource_template(
     descs: &[ResourceDesc],
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
     let mut desc_vars: Vec<proc_macro2::Ident> = Vec::new();
 
     for desc in descs {
-        let (binding, var) = emit_resource_desc(desc, gen);
+        let (binding, var) = emit_resource_desc(desc, generator);
         bindings.extend(binding);
         desc_vars.push(var);
     }
 
-    let var = gen.next("rt");
+    let var = generator.next("rt");
     let refs: Vec<_> = desc_vars
         .iter()
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
@@ -570,7 +582,10 @@ fn emit_resource_template(
     (bindings, var)
 }
 
-fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_resource_desc(
+    desc: &ResourceDesc,
+    generator: &mut VarGen,
+) -> (TokenStream, proc_macro2::Ident) {
     match desc {
         ResourceDesc::Memory32Fixed {
             read_write,
@@ -578,12 +593,12 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
             size,
         } => {
             let mut bindings = TokenStream::new();
-            let (base_binding, base_var) = emit_value(base, gen);
-            let (size_binding, size_var) = emit_value(size, gen);
+            let (base_binding, base_var) = emit_value(base, generator);
+            let (size_binding, size_var) = emit_value(size, generator);
             bindings.extend(base_binding);
             bindings.extend(size_binding);
 
-            let var = gen.next("mem");
+            let var = generator.next("mem");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::Memory32Fixed::new(
                     #read_write,
@@ -601,12 +616,12 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
             irq,
         } => {
             let mut bindings = TokenStream::new();
-            let (irq_binding, irq_var) = emit_value(irq, gen);
+            let (irq_binding, irq_var) = emit_value(irq, generator);
             bindings.extend(irq_binding);
 
             let shared = !exclusive;
 
-            let var = gen.next("irq");
+            let var = generator.next("irq");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::Interrupt::new(
                     #consumer,
@@ -625,10 +640,10 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
             irq,
         } => {
             let mut bindings = TokenStream::new();
-            let (irq_binding, irq_var) = emit_value(irq, gen);
+            let (irq_binding, irq_var) = emit_value(irq, generator);
             bindings.extend(irq_binding);
 
-            let var = gen.next("isa_irq");
+            let var = generator.next("isa_irq");
             bindings.extend(quote! {
                 let #var = fstart_acpi::IsaIrq::new(
                     #edge,
@@ -641,10 +656,10 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
         }
         ResourceDesc::IrqNoFlags { irq } => {
             let mut bindings = TokenStream::new();
-            let (irq_binding, irq_var) = emit_value(irq, gen);
+            let (irq_binding, irq_var) = emit_value(irq, generator);
             bindings.extend(irq_binding);
 
-            let var = gen.next("isa_irq");
+            let var = generator.next("isa_irq");
             bindings.extend(quote! {
                 let #var = fstart_acpi::IsaIrq::no_flags(#irq_var as u8);
             });
@@ -652,12 +667,12 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
         }
         ResourceDesc::WordBusNumber { start, end } => {
             let mut bindings = TokenStream::new();
-            let (s_bind, s_var) = emit_value(start, gen);
-            let (e_bind, e_var) = emit_value(end, gen);
+            let (s_bind, s_var) = emit_value(start, generator);
+            let (e_bind, e_var) = emit_value(end, generator);
             bindings.extend(s_bind);
             bindings.extend(e_bind);
 
-            let var = gen.next("bus");
+            let var = generator.next("bus");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::AddressSpace::<u16>::new_bus_number(
                     #s_var as u16,
@@ -673,13 +688,13 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
             end,
         } => {
             let mut bindings = TokenStream::new();
-            let (b_bind, b_var) = emit_value(base, gen);
-            let (e_bind, e_var) = emit_value(end, gen);
+            let (b_bind, b_var) = emit_value(base, generator);
+            let (e_bind, e_var) = emit_value(end, generator);
             bindings.extend(b_bind);
             bindings.extend(e_bind);
 
             let cache_tok = emit_cacheable(*cacheable);
-            let var = gen.next("dw");
+            let var = generator.next("dw");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::AddressSpace::<u32>::new_memory(
                     #cache_tok,
@@ -698,13 +713,13 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
             end,
         } => {
             let mut bindings = TokenStream::new();
-            let (b_bind, b_var) = emit_value(base, gen);
-            let (e_bind, e_var) = emit_value(end, gen);
+            let (b_bind, b_var) = emit_value(base, generator);
+            let (e_bind, e_var) = emit_value(end, generator);
             bindings.extend(b_bind);
             bindings.extend(e_bind);
 
             let cache_tok = emit_cacheable(*cacheable);
-            let var = gen.next("qw");
+            let var = generator.next("qw");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::AddressSpace::<u64>::new_memory(
                     #cache_tok,
@@ -723,16 +738,16 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
             len,
         } => {
             let mut bindings = TokenStream::new();
-            let (b_bind, b_var) = emit_value(base, gen);
-            let (e_bind, e_var) = emit_value(end, gen);
-            let (a_bind, a_var) = emit_value(align, gen);
-            let (l_bind, l_var) = emit_value(len, gen);
+            let (b_bind, b_var) = emit_value(base, generator);
+            let (e_bind, e_var) = emit_value(end, generator);
+            let (a_bind, a_var) = emit_value(align, generator);
+            let (l_bind, l_var) = emit_value(len, generator);
             bindings.extend(b_bind);
             bindings.extend(e_bind);
             bindings.extend(a_bind);
             bindings.extend(l_bind);
 
-            let var = gen.next("iop");
+            let var = generator.next("iop");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::IO::new(
                     #b_var as u16,
@@ -745,12 +760,12 @@ fn emit_resource_desc(desc: &ResourceDesc, gen: &mut VarGen) -> (TokenStream, pr
         }
         ResourceDesc::DWordIO { base, end } => {
             let mut bindings = TokenStream::new();
-            let (b_bind, b_var) = emit_value(base, gen);
-            let (e_bind, e_var) = emit_value(end, gen);
+            let (b_bind, b_var) = emit_value(base, generator);
+            let (e_bind, e_var) = emit_value(end, generator);
             bindings.extend(b_bind);
             bindings.extend(e_bind);
 
-            let var = gen.next("dio");
+            let var = generator.next("dio");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::AddressSpace::<u32>::new_io(
                     #b_var as u32,
@@ -784,56 +799,56 @@ fn emit_cacheable(kind: CacheableKind) -> TokenStream {
 
 /// Emit code for a `DslExpr`, returning binding code and the variable
 /// name holding the resulting AML object.
-fn emit_expr(expr: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_expr(expr: &DslExpr, generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
     match expr {
         DslExpr::IntLit(tokens) => {
-            let var = gen.next("int");
+            let var = generator.next("int");
             (quote! { let #var = #tokens; }, var)
         }
         DslExpr::StringLit(s) => {
-            let var = gen.next("str");
+            let var = generator.next("str");
             (quote! { let #var: &str = #s; }, var)
         }
         DslExpr::Path(name) => {
-            let var = gen.next("path");
+            let var = generator.next("path");
             (
                 quote! { let #var = fstart_acpi::aml::Path::new(#name); },
                 var,
             )
         }
         DslExpr::Local(n) => {
-            let var = gen.next("loc");
+            let var = generator.next("loc");
             (quote! { let #var = fstart_acpi::aml::Local(#n); }, var)
         }
         DslExpr::Arg(n) => {
-            let var = gen.next("arg");
+            let var = generator.next("arg");
             (quote! { let #var = fstart_acpi::aml::Arg(#n); }, var)
         }
         DslExpr::Zero => {
-            let var = gen.next("zero");
+            let var = generator.next("zero");
             (quote! { let #var = fstart_acpi::aml::Zero {}; }, var)
         }
         DslExpr::One => {
-            let var = gen.next("one");
+            let var = generator.next("one");
             (quote! { let #var = fstart_acpi::aml::One {}; }, var)
         }
         DslExpr::Ones => {
-            let var = gen.next("ones");
+            let var = generator.next("ones");
             (quote! { let #var = fstart_acpi::aml::Ones {}; }, var)
         }
         DslExpr::Interpolation(tokens) => {
-            let var = gen.next("itp");
+            let var = generator.next("itp");
             (quote! { let #var = #tokens; }, var)
         }
         DslExpr::ToUUID(s) => {
-            let var = gen.next("uuid");
+            let var = generator.next("uuid");
             (quote! { let #var = fstart_acpi::aml::Uuid::new(#s); }, var)
         }
         DslExpr::SizeOf(inner) => {
             let mut bindings = TokenStream::new();
-            let (inner_bind, inner_var) = emit_expr(inner, gen);
+            let (inner_bind, inner_var) = emit_expr(inner, generator);
             bindings.extend(inner_bind);
-            let var = gen.next("szo");
+            let var = generator.next("szo");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::SizeOf::new(&#inner_var);
             });
@@ -841,9 +856,9 @@ fn emit_expr(expr: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
         }
         DslExpr::DeRefOf(inner) => {
             let mut bindings = TokenStream::new();
-            let (inner_bind, inner_var) = emit_expr(inner, gen);
+            let (inner_bind, inner_var) = emit_expr(inner, generator);
             bindings.extend(inner_bind);
-            let var = gen.next("drf");
+            let var = generator.next("drf");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::DeRefOf::new(&#inner_var);
             });
@@ -851,11 +866,11 @@ fn emit_expr(expr: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
         }
         DslExpr::CondRefOf(source, target) => {
             let mut bindings = TokenStream::new();
-            let (src_bind, src_var) = emit_expr(source, gen);
-            let (tgt_bind, tgt_var) = emit_expr(target, gen);
+            let (src_bind, src_var) = emit_expr(source, generator);
+            let (tgt_bind, tgt_var) = emit_expr(target, generator);
             bindings.extend(src_bind);
             bindings.extend(tgt_bind);
-            let var = gen.next("crf");
+            let var = generator.next("crf");
             bindings.extend(quote! {
                 let #var = fstart_acpi::ext::cond_ref_of::CondRefOf::new(&#src_var, &#tgt_var);
             });
@@ -863,26 +878,26 @@ fn emit_expr(expr: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
         }
         DslExpr::Index(source, index) => {
             let mut bindings = TokenStream::new();
-            let (src_bind, src_var) = emit_expr(source, gen);
-            let (idx_bind, idx_var) = emit_expr(index, gen);
+            let (src_bind, src_var) = emit_expr(source, generator);
+            let (idx_bind, idx_var) = emit_expr(index, generator);
             bindings.extend(src_bind);
             bindings.extend(idx_bind);
             // acpi_tables Index uses the binary_op pattern: Index::new(target, source, index)
             // With NullTarget to discard the store.
-            let nt_var = gen.next("nt");
-            let var = gen.next("idx");
+            let nt_var = generator.next("nt");
+            let var = generator.next("idx");
             bindings.extend(quote! {
                 let #nt_var = fstart_acpi::NullTarget;
                 let #var = fstart_acpi::aml::Index::new(&#nt_var, &#src_var, &#idx_var);
             });
             (bindings, var)
         }
-        DslExpr::Binary(op, lhs, rhs) => emit_binary_expr(*op, lhs, rhs, gen),
+        DslExpr::Binary(op, lhs, rhs) => emit_binary_expr(*op, lhs, rhs, generator),
         DslExpr::LNot(inner) => {
             let mut bindings = TokenStream::new();
-            let (inner_bind, inner_var) = emit_expr(inner, gen);
+            let (inner_bind, inner_var) = emit_expr(inner, generator);
             bindings.extend(inner_bind);
-            let var = gen.next("lnt");
+            let var = generator.next("lnt");
             bindings.extend(quote! {
                 let #var = fstart_acpi::ext::logical::LNot::new(&#inner_var);
             });
@@ -893,11 +908,11 @@ fn emit_expr(expr: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ide
             // We don't have Not in acpi_tables, so we use ~x == x XOR Ones pattern:
             // Xor(NullTarget, x, Ones)
             let mut bindings = TokenStream::new();
-            let (inner_bind, inner_var) = emit_expr(inner, gen);
+            let (inner_bind, inner_var) = emit_expr(inner, generator);
             bindings.extend(inner_bind);
-            let nt_var = gen.next("nt");
-            let ones_var = gen.next("ones");
-            let var = gen.next("bnot");
+            let nt_var = generator.next("nt");
+            let ones_var = generator.next("ones");
+            let var = generator.next("bnot");
             bindings.extend(quote! {
                 let #nt_var = fstart_acpi::NullTarget;
                 let #ones_var = fstart_acpi::aml::Ones {};
@@ -913,53 +928,53 @@ fn emit_binary_expr(
     op: BinaryOp,
     lhs: &DslExpr,
     rhs: &DslExpr,
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (lhs_bind, lhs_var) = emit_expr(lhs, gen);
-    let (rhs_bind, rhs_var) = emit_expr(rhs, gen);
+    let (lhs_bind, lhs_var) = emit_expr(lhs, generator);
+    let (rhs_bind, rhs_var) = emit_expr(rhs, generator);
     bindings.extend(lhs_bind);
     bindings.extend(rhs_bind);
 
     match op {
         // Comparison operators: `Op::new(left, right)` -- 2 args
         BinaryOp::Equal => {
-            let var = gen.next("eq");
+            let var = generator.next("eq");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::Equal::new(&#lhs_var, &#rhs_var);
             });
             (bindings, var)
         }
         BinaryOp::NotEqual => {
-            let var = gen.next("ne");
+            let var = generator.next("ne");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::NotEqual::new(&#lhs_var, &#rhs_var);
             });
             (bindings, var)
         }
         BinaryOp::Less => {
-            let var = gen.next("lt");
+            let var = generator.next("lt");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::LessThan::new(&#lhs_var, &#rhs_var);
             });
             (bindings, var)
         }
         BinaryOp::Greater => {
-            let var = gen.next("gt");
+            let var = generator.next("gt");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::GreaterThan::new(&#lhs_var, &#rhs_var);
             });
             (bindings, var)
         }
         BinaryOp::LessEqual => {
-            let var = gen.next("le");
+            let var = generator.next("le");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::LessEqual::new(&#lhs_var, &#rhs_var);
             });
             (bindings, var)
         }
         BinaryOp::GreaterEqual => {
-            let var = gen.next("ge");
+            let var = generator.next("ge");
             bindings.extend(quote! {
                 let #var = fstart_acpi::aml::GreaterEqual::new(&#lhs_var, &#rhs_var);
             });
@@ -967,14 +982,14 @@ fn emit_binary_expr(
         }
         // Logical operators: ext types with 2 args
         BinaryOp::LAnd => {
-            let var = gen.next("land");
+            let var = generator.next("land");
             bindings.extend(quote! {
                 let #var = fstart_acpi::ext::logical::LAnd::new(&#lhs_var, &#rhs_var);
             });
             (bindings, var)
         }
         BinaryOp::LOr => {
-            let var = gen.next("lor");
+            let var = generator.next("lor");
             bindings.extend(quote! {
                 let #var = fstart_acpi::ext::logical::LOr::new(&#lhs_var, &#rhs_var);
             });
@@ -991,7 +1006,7 @@ fn emit_binary_expr(
                     // In acpi_tables it might not exist. Let's use Mod-like approach.
                     // Actually, Divide is not in acpi_tables binary_op!. Skip for now.
                     // We'll emit a compile_error for unsupported ops.
-                    let var = gen.next("err");
+                    let var = generator.next("err");
                     bindings.extend(quote! {
                         compile_error!("Divide operator not supported in acpi_dsl! (AML Divide has 4 operands)");
                         let #var = ();
@@ -1006,8 +1021,8 @@ fn emit_binary_expr(
                 BinaryOp::Xor => format_ident!("Xor"),
                 _ => unreachable!(),
             };
-            let nt_var = gen.next("nt");
-            let var = gen.next("bop");
+            let nt_var = generator.next("nt");
+            let var = generator.next("bop");
             bindings.extend(quote! {
                 let #nt_var = fstart_acpi::NullTarget;
                 let #var = fstart_acpi::aml::#op_ident::new(&#nt_var, &#lhs_var, &#rhs_var);
@@ -1022,18 +1037,18 @@ fn emit_if(
     condition: &DslExpr,
     body: &[DslItem],
     else_body: Option<&[DslItem]>,
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
 
     // Emit condition
-    let (cond_bind, cond_var) = emit_expr(condition, gen);
+    let (cond_bind, cond_var) = emit_expr(condition, generator);
     bindings.extend(cond_bind);
 
     // Emit body items
     let mut body_vars: Vec<proc_macro2::Ident> = Vec::new();
     for item in body {
-        let (bind, var) = emit_item(item, gen);
+        let (bind, var) = emit_item(item, generator);
         bindings.extend(bind);
         body_vars.push(var);
     }
@@ -1047,7 +1062,7 @@ fn emit_if(
         // Emit else body items
         let mut else_vars: Vec<proc_macro2::Ident> = Vec::new();
         for item in else_items {
-            let (bind, var) = emit_item(item, gen);
+            let (bind, var) = emit_item(item, generator);
             bindings.extend(bind);
             else_vars.push(var);
         }
@@ -1057,8 +1072,8 @@ fn emit_if(
             .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
             .collect();
 
-        let else_var = gen.next("else");
-        let var = gen.next("if");
+        let else_var = generator.next("else");
+        let var = generator.next("if");
 
         // The Else object goes as the last child of the If
         bindings.extend(quote! {
@@ -1072,7 +1087,7 @@ fn emit_if(
         });
         (bindings, var)
     } else {
-        let var = gen.next("if");
+        let var = generator.next("if");
         bindings.extend(quote! {
             let #var = fstart_acpi::aml::If::new(
                 &#cond_var,
@@ -1087,16 +1102,16 @@ fn emit_if(
 fn emit_while(
     condition: &DslExpr,
     body: &[DslItem],
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
 
-    let (cond_bind, cond_var) = emit_expr(condition, gen);
+    let (cond_bind, cond_var) = emit_expr(condition, generator);
     bindings.extend(cond_bind);
 
     let mut body_vars: Vec<proc_macro2::Ident> = Vec::new();
     for item in body {
-        let (bind, var) = emit_item(item, gen);
+        let (bind, var) = emit_item(item, generator);
         bindings.extend(bind);
         body_vars.push(var);
     }
@@ -1106,7 +1121,7 @@ fn emit_while(
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
         .collect();
 
-    let var = gen.next("while");
+    let var = generator.next("while");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::While::new(
             &#cond_var,
@@ -1122,15 +1137,15 @@ fn emit_while(
 fn emit_assign(
     target: &DslExpr,
     value: &DslExpr,
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (val_bind, val_var) = emit_expr(value, gen);
-    let (tgt_bind, tgt_var) = emit_expr(target, gen);
+    let (val_bind, val_var) = emit_expr(value, generator);
+    let (tgt_bind, tgt_var) = emit_expr(target, generator);
     bindings.extend(val_bind);
     bindings.extend(tgt_bind);
 
-    let var = gen.next("store");
+    let var = generator.next("store");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::Store::new(&#tgt_var, &#val_var);
     });
@@ -1141,15 +1156,15 @@ fn emit_assign(
 fn emit_notify_expr(
     object: &DslExpr,
     value: &DslExpr,
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (obj_bind, obj_var) = emit_expr(object, gen);
-    let (val_bind, val_var) = emit_expr(value, gen);
+    let (obj_bind, obj_var) = emit_expr(object, generator);
+    let (val_bind, val_var) = emit_expr(value, generator);
     bindings.extend(obj_bind);
     bindings.extend(val_bind);
 
-    let var = gen.next("ntfy");
+    let var = generator.next("ntfy");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::Notify::new(&#obj_var, &#val_var);
     });
@@ -1157,12 +1172,12 @@ fn emit_notify_expr(
 }
 
 /// Emit `Sleep(msec);`
-fn emit_sleep_expr(msec: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_sleep_expr(msec: &DslExpr, generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (msec_bind, msec_var) = emit_expr(msec, gen);
+    let (msec_bind, msec_var) = emit_expr(msec, generator);
     bindings.extend(msec_bind);
 
-    let var = gen.next("slp");
+    let var = generator.next("slp");
     bindings.extend(quote! {
         let #var = fstart_acpi::ext::sleep::Sleep::new(&#msec_var);
     });
@@ -1170,12 +1185,12 @@ fn emit_sleep_expr(msec: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro
 }
 
 /// Emit `Stall(usec);`
-fn emit_stall_expr(usec: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_stall_expr(usec: &DslExpr, generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (usec_bind, usec_var) = emit_expr(usec, gen);
+    let (usec_bind, usec_var) = emit_expr(usec, generator);
     bindings.extend(usec_bind);
 
-    let var = gen.next("stl");
+    let var = generator.next("stl");
     bindings.extend(quote! {
         let #var = fstart_acpi::ext::sleep::Stall::new(&#usec_var);
     });
@@ -1183,8 +1198,8 @@ fn emit_stall_expr(usec: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro
 }
 
 /// Emit `Break;`
-fn emit_break(gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
-    let var = gen.next("brk");
+fn emit_break(generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+    let var = generator.next("brk");
     let bindings = quote! {
         let #var = fstart_acpi::ext::break_op::Break;
     };
@@ -1192,12 +1207,12 @@ fn emit_break(gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
 }
 
 /// Emit `Increment(target);` or `target++`
-fn emit_increment(target: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_increment(target: &DslExpr, generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (tgt_bind, tgt_var) = emit_expr(target, gen);
+    let (tgt_bind, tgt_var) = emit_expr(target, generator);
     bindings.extend(tgt_bind);
 
-    let var = gen.next("inc");
+    let var = generator.next("inc");
     bindings.extend(quote! {
         let #var = fstart_acpi::ext::inc_dec::Increment::new(&#tgt_var);
     });
@@ -1205,12 +1220,12 @@ fn emit_increment(target: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macr
 }
 
 /// Emit `Decrement(target);` or `target--`
-fn emit_decrement(target: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
+fn emit_decrement(target: &DslExpr, generator: &mut VarGen) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
-    let (tgt_bind, tgt_var) = emit_expr(target, gen);
+    let (tgt_bind, tgt_var) = emit_expr(target, generator);
     bindings.extend(tgt_bind);
 
-    let var = gen.next("dec");
+    let var = generator.next("dec");
     bindings.extend(quote! {
         let #var = fstart_acpi::ext::inc_dec::Decrement::new(&#tgt_var);
     });
@@ -1221,12 +1236,12 @@ fn emit_decrement(target: &DslExpr, gen: &mut VarGen) -> (TokenStream, proc_macr
 fn emit_method_call(
     name: &NameOrInterp,
     args: &[DslExpr],
-    gen: &mut VarGen,
+    generator: &mut VarGen,
 ) -> (TokenStream, proc_macro2::Ident) {
     let mut bindings = TokenStream::new();
     let mut arg_vars = Vec::new();
     for arg in args {
-        let (arg_bind, arg_var) = emit_expr(arg, gen);
+        let (arg_bind, arg_var) = emit_expr(arg, generator);
         bindings.extend(arg_bind);
         arg_vars.push(arg_var);
     }
@@ -1236,7 +1251,7 @@ fn emit_method_call(
         .map(|v| quote! { &#v as &dyn fstart_acpi::Aml })
         .collect();
     let path_expr = emit_path_from_name_or_interp(name);
-    let var = gen.next("call");
+    let var = generator.next("call");
     bindings.extend(quote! {
         let #var = fstart_acpi::aml::MethodCall::new(
             #path_expr,

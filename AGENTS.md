@@ -1,5 +1,9 @@
 # AGENTS.md — fstart firmware framework
 
+## Build profiles
+
+Release builds (`fbuild --release`) are the reference configuration; all boards must link there, and boot-time stack budgets assume dependency crates compiled at opt-level "s" even in dev (see `[profile.dev.package.*]` in the root Cargo.toml).
+
 ## Project Overview
 
 fstart is a next-generation firmware framework in Rust. The current architecture

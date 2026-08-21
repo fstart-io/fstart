@@ -178,7 +178,7 @@ impl AnchorBlock {
         }
         let ptr = data.as_ptr() as *const Self;
         // SAFETY: caller guarantees alignment and validity
-        let anchor = &*ptr;
+        let anchor = unsafe { &*ptr };
         if anchor.magic != FFS_MAGIC {
             return None;
         }
@@ -204,7 +204,7 @@ impl AnchorBlock {
         let ptr = data.as_ptr() as *const Self;
         // SAFETY: caller guarantees alignment and size. Volatile read
         // ensures we see the patched bytes, not the build-time placeholder.
-        let anchor = core::ptr::read_volatile(ptr);
+        let anchor = unsafe { core::ptr::read_volatile(ptr) };
         if anchor.magic != FFS_MAGIC {
             return None;
         }

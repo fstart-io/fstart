@@ -11,8 +11,8 @@ use core::ptr;
 
 use crate::header::{EntryDescriptor, HeaderError, SmmImageHeader};
 use crate::layout::{
-    compute_common_base, compute_cpu_layout, CpuSmmLayout, LayoutError, SmramLayout,
-    SMM_ENTRY_OFFSET,
+    CpuSmmLayout, LayoutError, SMM_ENTRY_OFFSET, SmramLayout, compute_common_base,
+    compute_cpu_layout,
 };
 use crate::runtime::{CorebootModuleArgs, SmmEntryParams, SmmRuntime};
 
@@ -162,11 +162,15 @@ pub unsafe fn install_pic_image<'a>(
     let common_base = compute_common_base(&layout)?;
     let cpus = compute_cpu_layout(&layout, cpu_layouts)?;
 
-    ptr::copy_nonoverlapping(
-        image.as_ptr().add(header.common_offset as usize),
-        common_base as *mut u8,
-        header.common_size as usize,
-    );
+    // SAFETY: caller guarantees SMRAM is mapped, writable, and exclusively
+    // owned here.
+    unsafe {
+        ptr::copy_nonoverlapping(
+            image.as_ptr().add(header.common_offset as usize),
+            common_base as *mut u8,
+            header.common_size as usize,
+        );
+    }
 
     let runtime_addr = if header.runtime_offset != 0 {
         let mut runtime = SmmRuntime::new(
@@ -184,7 +188,9 @@ pub unsafe fn install_pic_image<'a>(
         let addr = common_base
             .checked_add(header.runtime_offset as u64)
             .ok_or(InstallError::Overflow)?;
-        ptr::write_unaligned(addr as *mut SmmRuntime, runtime);
+        // SAFETY: `addr` is inside the SMRAM block copied above and aligned
+        // well enough for an unaligned SmmRuntime store.
+        unsafe { ptr::write_unaligned(addr as *mut SmmRuntime, runtime) };
         addr
     } else {
         0
@@ -212,24 +218,32 @@ pub unsafe fn install_pic_image<'a>(
 
     for (i, cpu) in cpus.iter().enumerate() {
         let entry = header.entry(image, i as u16)?;
-        ptr::copy_nonoverlapping(
-            image.as_ptr().add(entry.stub_offset as usize),
-            cpu.entry_addr as *mut u8,
-            entry.stub_size as usize,
-        );
+        // SAFETY: entry stub bytes are validated against the image by
+        // `header.entry`/`check_entry_range`; targets live in owned SMRAM.
+        unsafe {
+            ptr::copy_nonoverlapping(
+                image.as_ptr().add(entry.stub_offset as usize),
+                cpu.entry_addr as *mut u8,
+                entry.stub_size as usize,
+            );
+        }
 
         let coreboot_module_args = if let Some(base) = module_args_base {
             let addr = base
                 .checked_add((i * size_of::<CorebootModuleArgs>()) as u64)
                 .ok_or(InstallError::Overflow)?;
-            ptr::write_unaligned(
-                addr as *mut CorebootModuleArgs,
-                CorebootModuleArgs {
-                    cpu: i as u64,
-                    canary: cpu.stack_bottom,
-                },
-            );
-            ptr::write_unaligned(cpu.stack_bottom as *mut u64, cpu.stack_bottom);
+            // SAFETY: `addr` points into the module-args area reserved inside
+            // the copied common block; stores are unaligned by design.
+            unsafe {
+                ptr::write_unaligned(
+                    addr as *mut CorebootModuleArgs,
+                    CorebootModuleArgs {
+                        cpu: i as u64,
+                        canary: cpu.stack_bottom,
+                    },
+                );
+                ptr::write_unaligned(cpu.stack_bottom as *mut u64, cpu.stack_bottom);
+            }
             addr
         } else {
             0
@@ -247,22 +261,26 @@ pub unsafe fn install_pic_image<'a>(
                 .entry_addr
                 .checked_add(entry.params_offset as u64)
                 .ok_or(InstallError::Overflow)?;
-            ptr::write_unaligned(
-                params_addr as *mut SmmEntryParams,
-                SmmEntryParams {
-                    cpu: i as u32,
-                    stack_size: header.stack_size,
-                    stack_top: cpu.stack_top,
-                    common_entry,
-                    runtime: runtime_addr,
-                    coreboot_module_args,
-                    cr3: config.cr3,
-                    entry_base: cpu.entry_addr,
-                    platform_kind: config.platform_kind,
-                    platform_flags: config.platform_flags,
-                    platform_data: config.platform_data,
-                },
-            );
+            // SAFETY: `params_addr` lies inside the copied stub whose layout
+            // was validated above; the store is unaligned by design.
+            unsafe {
+                ptr::write_unaligned(
+                    params_addr as *mut SmmEntryParams,
+                    SmmEntryParams {
+                        cpu: i as u32,
+                        stack_size: header.stack_size,
+                        stack_top: cpu.stack_top,
+                        common_entry,
+                        runtime: runtime_addr,
+                        coreboot_module_args,
+                        cr3: config.cr3,
+                        entry_base: cpu.entry_addr,
+                        platform_kind: config.platform_kind,
+                        platform_flags: config.platform_flags,
+                        platform_data: config.platform_data,
+                    },
+                );
+            }
         }
     }
 
@@ -287,11 +305,15 @@ pub unsafe fn install_pic_image<'a>(
 pub unsafe fn install_default_relocation_handler(
     config: DefaultRelocationConfig,
 ) -> Result<(), InstallError> {
-    install_default_relocation_table_handler(DefaultRelocationTableConfig {
-        default_smbase: config.default_smbase,
-        target_smbases: core::slice::from_ref(&config.target_smbase),
-        save_state_smbase_offset: config.save_state_smbase_offset,
-    })
+    // SAFETY: same caller contract as the table handler; SMRAM window is open
+    // and the target SMBASE is writable.
+    unsafe {
+        install_default_relocation_table_handler(DefaultRelocationTableConfig {
+            default_smbase: config.default_smbase,
+            target_smbases: core::slice::from_ref(&config.target_smbase),
+            save_state_smbase_offset: config.save_state_smbase_offset,
+        })
+    }
 }
 
 /// Install a default-SMRAM entry stub that enters long mode and calls a normal
@@ -332,31 +354,34 @@ pub unsafe fn install_default_relocation_callback_stub(
         .default_smbase
         .checked_add(SMM_ENTRY_OFFSET)
         .ok_or(InstallError::Overflow)?;
-    ptr::copy_nonoverlapping(
-        image.as_ptr().add(stub.stub_offset as usize),
-        entry_addr as *mut u8,
-        stub.stub_size as usize,
-    );
+    // SAFETY: caller guarantees the default-SMRAM window is open and writable.
+    unsafe {
+        ptr::copy_nonoverlapping(
+            image.as_ptr().add(stub.stub_offset as usize),
+            entry_addr as *mut u8,
+            stub.stub_size as usize,
+        );
 
-    let params_addr = entry_addr
-        .checked_add(stub.params_offset as u64)
-        .ok_or(InstallError::Overflow)?;
-    ptr::write_unaligned(
-        params_addr as *mut SmmEntryParams,
-        SmmEntryParams {
-            cpu: 0,
-            stack_size: 0,
-            stack_top: config.stack_top,
-            common_entry: config.callback,
-            runtime: 0,
-            coreboot_module_args: 0,
-            cr3: config.cr3,
-            entry_base: entry_addr,
-            platform_kind: crate::runtime::SMM_PLATFORM_NONE,
-            platform_flags: 0,
-            platform_data: [0; 4],
-        },
-    );
+        let params_addr = entry_addr
+            .checked_add(stub.params_offset as u64)
+            .ok_or(InstallError::Overflow)?;
+        ptr::write_unaligned(
+            params_addr as *mut SmmEntryParams,
+            SmmEntryParams {
+                cpu: 0,
+                stack_size: 0,
+                stack_top: config.stack_top,
+                common_entry: config.callback,
+                runtime: 0,
+                coreboot_module_args: 0,
+                cr3: config.cr3,
+                entry_base: entry_addr,
+                platform_kind: crate::runtime::SMM_PLATFORM_NONE,
+                platform_flags: 0,
+                platform_data: [0; 4],
+            },
+        );
+    }
 
     Ok(())
 }
@@ -410,13 +435,16 @@ pub unsafe fn install_default_relocation_table_handler(
     code[DEFAULT_RELOCATION_SAVE_STATE_PATCH..DEFAULT_RELOCATION_SAVE_STATE_PATCH + 2]
         .copy_from_slice(&config.save_state_smbase_offset.to_le_bytes());
 
-    ptr::copy_nonoverlapping(code.as_ptr(), entry, code.len());
-    for i in code.len()..table_offset {
-        ptr::write(entry.add(i), 0x90);
-    }
-    for (i, smbase) in config.target_smbases.iter().enumerate() {
-        let target = u32::try_from(*smbase).map_err(|_| InstallError::SmbaseOutOfRange)?;
-        ptr::write_unaligned(entry.add(table_offset + i * 4) as *mut u32, target);
+    // SAFETY: caller guarantees the default-SMRAM window is open and writable.
+    unsafe {
+        ptr::copy_nonoverlapping(code.as_ptr(), entry, code.len());
+        for i in code.len()..table_offset {
+            ptr::write(entry.add(i), 0x90);
+        }
+        for (i, smbase) in config.target_smbases.iter().enumerate() {
+            let target = u32::try_from(*smbase).map_err(|_| InstallError::SmbaseOutOfRange)?;
+            ptr::write_unaligned(entry.add(table_offset + i * 4) as *mut u32, target);
+        }
     }
     Ok(())
 }

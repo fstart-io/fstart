@@ -106,9 +106,12 @@ fn iomb() {
 /// `addr` must point to a valid, mapped MMIO register.
 #[inline(always)]
 pub unsafe fn read8(addr: *const u8) -> u8 {
-    let val = ptr::read_volatile(addr);
-    iomb();
-    val
+    // SAFETY: caller guarantees a valid, mapped MMIO register.
+    unsafe {
+        let val = ptr::read_volatile(addr);
+        iomb();
+        val
+    }
 }
 
 /// Write a `u8` to an MMIO register with leading and trailing barriers.
@@ -117,9 +120,12 @@ pub unsafe fn read8(addr: *const u8) -> u8 {
 /// `addr` must point to a valid, mapped MMIO register.
 #[inline(always)]
 pub unsafe fn write8(addr: *mut u8, val: u8) {
-    iomb();
-    ptr::write_volatile(addr, val);
-    iomb();
+    // SAFETY: caller guarantees a valid, mapped MMIO register.
+    unsafe {
+        iomb();
+        ptr::write_volatile(addr, val);
+        iomb();
+    }
 }
 
 /// Read a `u16` from an MMIO register with a trailing barrier.
@@ -128,9 +134,12 @@ pub unsafe fn write8(addr: *mut u8, val: u8) {
 /// `addr` must point to a valid, mapped, 2-byte-aligned MMIO register.
 #[inline(always)]
 pub unsafe fn read16(addr: *const u16) -> u16 {
-    let val = ptr::read_volatile(addr);
-    iomb();
-    val
+    // SAFETY: caller guarantees a valid, mapped, aligned MMIO register.
+    unsafe {
+        let val = ptr::read_volatile(addr);
+        iomb();
+        val
+    }
 }
 
 /// Write a `u16` to an MMIO register with leading and trailing barriers.
@@ -139,9 +148,12 @@ pub unsafe fn read16(addr: *const u16) -> u16 {
 /// `addr` must point to a valid, mapped, 2-byte-aligned MMIO register.
 #[inline(always)]
 pub unsafe fn write16(addr: *mut u16, val: u16) {
-    iomb();
-    ptr::write_volatile(addr, val);
-    iomb();
+    // SAFETY: caller guarantees a valid, mapped, aligned MMIO register.
+    unsafe {
+        iomb();
+        ptr::write_volatile(addr, val);
+        iomb();
+    }
 }
 
 /// Read a `u32` from an MMIO register with a trailing barrier.
@@ -150,9 +162,12 @@ pub unsafe fn write16(addr: *mut u16, val: u16) {
 /// `addr` must point to a valid, mapped, 4-byte-aligned MMIO register.
 #[inline(always)]
 pub unsafe fn read32(addr: *const u32) -> u32 {
-    let val = ptr::read_volatile(addr);
-    iomb();
-    val
+    // SAFETY: caller guarantees a valid, mapped, aligned MMIO register.
+    unsafe {
+        let val = ptr::read_volatile(addr);
+        iomb();
+        val
+    }
 }
 
 /// Write a `u32` to an MMIO register with leading and trailing barriers.
@@ -161,9 +176,12 @@ pub unsafe fn read32(addr: *const u32) -> u32 {
 /// `addr` must point to a valid, mapped, 4-byte-aligned MMIO register.
 #[inline(always)]
 pub unsafe fn write32(addr: *mut u32, val: u32) {
-    iomb();
-    ptr::write_volatile(addr, val);
-    iomb();
+    // SAFETY: caller guarantees a valid, mapped, aligned MMIO register.
+    unsafe {
+        iomb();
+        ptr::write_volatile(addr, val);
+        iomb();
+    }
 }
 
 /// Read a `u64` from an MMIO register with a trailing barrier.
@@ -172,9 +190,12 @@ pub unsafe fn write32(addr: *mut u32, val: u32) {
 /// `addr` must point to a valid, mapped, 8-byte-aligned MMIO register.
 #[inline(always)]
 pub unsafe fn read64(addr: *const u64) -> u64 {
-    let val = ptr::read_volatile(addr);
-    iomb();
-    val
+    // SAFETY: caller guarantees a valid, mapped, aligned MMIO register.
+    unsafe {
+        let val = ptr::read_volatile(addr);
+        iomb();
+        val
+    }
 }
 
 /// Write a `u64` to an MMIO register with leading and trailing barriers.
@@ -183,9 +204,12 @@ pub unsafe fn read64(addr: *const u64) -> u64 {
 /// `addr` must point to a valid, mapped, 8-byte-aligned MMIO register.
 #[inline(always)]
 pub unsafe fn write64(addr: *mut u64, val: u64) {
-    iomb();
-    ptr::write_volatile(addr, val);
-    iomb();
+    // SAFETY: caller guarantees a valid, mapped, aligned MMIO register.
+    unsafe {
+        iomb();
+        ptr::write_volatile(addr, val);
+        iomb();
+    }
 }
 
 // ---------------------------------------------------------------------------
