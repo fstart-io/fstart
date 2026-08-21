@@ -1148,7 +1148,7 @@ impl IntelIch8 {
             return Err(ServiceError::HardwareError);
         }
 
-        for region in &expected.regions {
+        for region in expected.regions.as_slice() {
             let Some(index) = region.kind.flreg_index() else {
                 continue;
             };

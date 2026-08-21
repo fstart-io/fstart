@@ -8,8 +8,8 @@ use fstart_core::{
     dev_security_config, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig, SmmConfig,
 };
 use fstart_core::{
-    hstr, hvec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, Platform,
-    SmbiosConfig,
+    hstr, hvec, ConstVec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig,
+    Platform, SmbiosConfig,
 };
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
@@ -121,40 +121,45 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
-pub fn x61_flash_layout() -> FlashLayout {
+#[must_use]
+pub const fn x61_flash_layout() -> FlashLayout {
     FlashLayout::IntelIfd(x61_ifd_flash_layout())
 }
 
-pub fn x61_ifd_flash_layout() -> IntelIfdFlashLayout {
-    IntelIfdFlashLayout {
-        regions: hvec([
-            IntelIfdRegionConfig {
-                kind: IntelIfdRegion::Descriptor,
-                offset: 0x000000,
-                size: 0x001000,
-                file: None,
-            },
-            IntelIfdRegionConfig {
-                kind: IntelIfdRegion::Gbe,
-                offset: 0x001000,
-                size: 0x002000,
-                file: None,
-            },
-            IntelIfdRegionConfig {
-                kind: IntelIfdRegion::Me,
-                offset: 0x003000,
-                size: 0x27D000,
-                file: None,
-            },
-            IntelIfdRegionConfig {
-                kind: IntelIfdRegion::Bios,
-                offset: 0x280000,
-                size: 0x180000,
-                file: None,
-            },
-        ]),
-    }
+/// X61 Intel IFD flash layout: descriptor, GbE, ME, and BIOS regions.
+///
+/// `IntelIfdFlashLayout::new` validates region fit and overlap; the `const`
+/// assertion below turns any invariant violation into a compile error.
+#[must_use]
+pub const fn x61_ifd_flash_layout() -> IntelIfdFlashLayout {
+    IntelIfdFlashLayout::new(
+        ConstVec::new(IntelIfdRegionConfig {
+            kind: IntelIfdRegion::Descriptor,
+            offset: 0x000000,
+            size: 0x001000,
+        })
+        .push(IntelIfdRegionConfig {
+            kind: IntelIfdRegion::Gbe,
+            offset: 0x001000,
+            size: 0x002000,
+        })
+        .push(IntelIfdRegionConfig {
+            kind: IntelIfdRegion::Me,
+            offset: 0x003000,
+            size: 0x27D000,
+        })
+        .push(IntelIfdRegionConfig {
+            kind: IntelIfdRegion::Bios,
+            offset: 0x280000,
+            size: 0x180000,
+        }),
+    )
 }
+
+const _: () = {
+    let layout = x61_ifd_flash_layout();
+    layout.validate();
+};
 
 pub fn x61_smbios() -> SmbiosConfig {
     SmbiosConfig {

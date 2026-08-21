@@ -68,8 +68,7 @@ impl core::fmt::Display for Platform {
 /// This is the single source of truth for board wiring, stage policy, and
 /// security settings. Rust driver crates are the source of truth for the
 /// services each driver provides.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BoardConfig {
     /// Human-readable board name (e.g., "qemu-riscv64")
     pub name: HString<64>,

@@ -18,6 +18,14 @@ impl<T: Copy, const N: usize> ConstVec<T, N> {
     }
 
     #[must_use]
+    pub const fn get_ref(&self, index: usize) -> &T {
+        if index >= self.len {
+            panic!("ConstVec index out of bounds");
+        }
+        &self.items[index]
+    }
+
+    #[must_use]
     pub const fn push(mut self, item: T) -> Self {
         if self.len >= N {
             panic!("ConstVec capacity exceeded");
