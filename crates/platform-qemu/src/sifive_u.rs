@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "host")]
 use fstart_core::{
-    hstr, hvec, BoardBuildPolicy, Compression, FdtSource, FirmwareConfig, FirmwareImageConfig,
+    BoardBuildPolicy, Compression, FdtSource, FirmwareConfig, FirmwareImageConfig,
     FirmwareImagePolicy, FirmwareKind, MemoryMap, MemoryRegion, MonolithicConfig, PayloadConfig,
-    PayloadKind, QemuMachine, RegionKind, StageBuildConfig, StageLayout,
+    PayloadKind, QemuMachine, RegionKind, StageBuildConfig, StageLayout, hstr, hvec,
 };
 
 pub const QEMU_SIFIVE_U_FFS_BASE: u64 = 0x8000_0000;
@@ -153,7 +153,7 @@ mod stage {
     use fstart_core::services::Console;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
-    use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
+    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
     /// Board seams in the direct QEMU `sifive_u` flow.
     pub trait QemuSifiveUHooks {

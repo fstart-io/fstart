@@ -48,8 +48,8 @@
 
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::{Console, ServiceError};
-use tock_registers::register_bitfields;
 use tock_registers::LocalRegisterCopy;
+use tock_registers::register_bitfields;
 
 // ---------------------------------------------------------------------------
 // Register indices (not byte offsets — multiply by `1 << reg_shift` for

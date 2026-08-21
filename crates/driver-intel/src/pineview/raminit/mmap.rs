@@ -4,7 +4,7 @@
 //! `sdram_mmap_regs()`.
 
 use super::SysInfo;
-use crate::pineview::regs::{hostbridge, mchbar, MchBar};
+use crate::pineview::regs::{MchBar, hostbridge, mchbar};
 use fstart_pci::ecam;
 
 /// Initial memory map setup before JEDEC init.

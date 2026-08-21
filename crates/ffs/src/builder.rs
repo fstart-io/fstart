@@ -19,9 +19,9 @@ use std::string::String;
 use std::vec::Vec;
 
 use fstart_core::ffs::{
-    AnchorBlock, Compression, EntryContent, FileType, ImageManifest, Region, RegionContent,
-    RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, VerificationKey, ANCHOR_MAX_KEYS,
-    ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
+    ANCHOR_MAX_KEYS, ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FFS_MAGIC, FFS_VERSION,
+    FileType, ImageManifest, Region, RegionContent, RegionEntry, Segment, SegmentFlags,
+    SegmentKind, Signature, VerificationKey,
 };
 use fstart_crypto::digest;
 use heapless::String as HString;

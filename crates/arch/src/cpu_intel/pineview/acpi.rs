@@ -12,8 +12,8 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use acpi_tables::aml::{Name, PackageBuilder, Path};
 use acpi_tables::Aml;
+use acpi_tables::aml::{Name, PackageBuilder, Path};
 
 const MSR_THERM2_CTL: u32 = 0x19d;
 const MSR_FSB_FREQ: u32 = 0xcd;
@@ -105,11 +105,7 @@ fn cpu_name(cpu: usize) -> [u8; 4] {
 }
 
 fn hex_digit(n: u8) -> u8 {
-    if n < 10 {
-        b'0' + n
-    } else {
-        b'A' + (n - 10)
-    }
+    if n < 10 { b'0' + n } else { b'A' + (n - 10) }
 }
 
 fn append_device(out: &mut Vec<u8>, name: [u8; 4], body: &[u8]) {

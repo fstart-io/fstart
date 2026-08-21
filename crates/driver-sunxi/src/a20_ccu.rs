@@ -3,10 +3,10 @@
 use fstart_arch::{sdelay, set_cntfrq};
 use fstart_core::mmio;
 use fstart_core::services::ServiceError;
-use fstart_core::{mmio32, Mmio32, MmioAddr};
+use fstart_core::{Mmio32, MmioAddr, mmio32};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
-use crate::ccu_regs::{SunxiA20CcuRegs, PLL6_CFG};
+use crate::ccu_regs::{PLL6_CFG, SunxiA20CcuRegs};
 
 /// A20 SRAM base address.
 pub const A20_SRAM_BASE: u64 = 0x0000_0000;

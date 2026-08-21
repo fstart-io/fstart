@@ -7,9 +7,9 @@ use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
 use fstart_stage::payload::MainstagePayload;
 use fstart_stage::{StageBoard, StageEnvironment};
 
-use crate::virt::{enumerate_pci, phase, QemuRiscv64VirtConfig};
 #[cfg(feature = "crabefi")]
 use crate::virt::{QEMU_RISCV64_OPENSBI_RESERVE_SIZE, QEMU_RISCV64_UEFI_DTB_ADDR};
+use crate::virt::{QemuRiscv64VirtConfig, enumerate_pci, phase};
 
 pub const QEMU_RISCV64_UART_BASE: u64 = 0x1000_0000;
 

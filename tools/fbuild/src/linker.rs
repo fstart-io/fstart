@@ -3,8 +3,8 @@ use std::fmt::Write;
 use fstart_core::board::MicrocodeConfig;
 use fstart_core::memory::FlashLayout;
 use fstart_core::{
-    effective_stage_load_addr, BoardConfig, FirmwareImagePolicy, Platform, RegionKind,
-    SocImageFormat, StageBuildConfig, StageLayout,
+    BoardConfig, FirmwareImagePolicy, Platform, RegionKind, SocImageFormat, StageBuildConfig,
+    StageLayout, effective_stage_load_addr,
 };
 
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
@@ -593,9 +593,8 @@ fn write_stack(out: &mut String, stack_size: u64, region: &str) {
 #[cfg(test)]
 mod tests {
     use fstart_core::{
-        hstr, hvec, BoardBuildPolicy, FirmwareImageConfig, MemoryMap, MemoryRegion,
-        MonolithicConfig, Platform, RegionKind, SecurityConfig, SignatureAlgorithm,
-        StageBuildConfig, StageLayout,
+        BoardBuildPolicy, FirmwareImageConfig, MemoryMap, MemoryRegion, MonolithicConfig, Platform,
+        RegionKind, SecurityConfig, SignatureAlgorithm, StageBuildConfig, StageLayout, hstr, hvec,
     };
 
     use super::generate_linker_script;

@@ -141,15 +141,15 @@ const fn in_h3_dram_end(addr: u64, size: u64) -> bool {
 mod stage {
     use super::*;
     use fstart_core::services::ServiceError;
-    use fstart_driver_sunxi::h3_ccu::{H3Ccu, H3_EGON_MMC_OFFSET};
+    use fstart_driver_sunxi::h3_ccu::{H3_EGON_MMC_OFFSET, H3Ccu};
     use fstart_driver_sunxi::h3_dramc::H3Dramc;
     use fstart_driver_sunxi::h3_mmc::H3Mmc;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
+    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
     #[cfg(all(feature = "linux", target_arch = "arm"))]
     use crate::egon::ffs_total_size_at;
-    use crate::egon::{boot_device_at, next_stage_offset_at, next_stage_size_at, BootDevice};
+    use crate::egon::{BootDevice, boot_device_at, next_stage_offset_at, next_stage_size_at};
 
     /// BROM state retained so a Sunxi stage can return to FEL.
     #[cfg(target_arch = "arm")]
@@ -588,7 +588,7 @@ fstart_sunxi_fel_stash:
 }
 
 #[cfg(all(feature = "stage", feature = "h3", target_arch = "arm"))]
-pub use stage::{return_to_fel, FelStash};
+pub use stage::{FelStash, return_to_fel};
 
 #[cfg(all(
     feature = "stage",
@@ -596,8 +596,8 @@ pub use stage::{return_to_fel, FelStash};
     any(target_arch = "arm", target_arch = "aarch64")
 ))]
 pub use stage::{
-    run_h3_bootblock, run_h3_mainstage, H3Board, H3BuildSelectedPayload, H3Mainstage,
-    SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, H3,
+    H3, H3Board, H3BuildSelectedPayload, H3Mainstage, SunxiEarlyBoard, SunxiEarlyBoardHooks,
+    SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, run_h3_bootblock, run_h3_mainstage,
 };
 
 #[cfg(test)]

@@ -38,9 +38,9 @@ pub use builder::{dev_security_config, hstr, hvec, x86_linuxboot_payload, x86_ue
 pub use const_vec::ConstVec;
 pub use device::BusAddress;
 pub use ffs::{
-    AnchorBlock, Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, Region,
-    RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,
-    VerificationKey, FFS_MAGIC, FFS_VERSION,
+    AnchorBlock, Compression, DigestSet, EntryContent, FFS_MAGIC, FFS_VERSION, FileType,
+    ImageManifest, KeyBytes, Region, RegionContent, RegionEntry, Segment, SegmentFlags,
+    SegmentKind, Signature, SignatureKind, VerificationKey,
 };
 pub use memory::{
     CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,
@@ -50,7 +50,7 @@ pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
 pub use smm::{CorebootSmmCompat, SmmConfig};
 pub use stage::{
-    effective_stage_load_addr, FirmwareImageConfig, MonolithicConfig, MpBuildConfig, RunsFrom,
-    StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
+    FirmwareImageConfig, MonolithicConfig, MpBuildConfig, RunsFrom, StageBuildConfig, StageConfig,
+    StageLayout, TempRamBuffer, effective_stage_load_addr,
 };
-pub use typed::{io16, mmio32, Io16, Io8, IoAddr, Irq, Mmio16, Mmio32, Mmio64, Mmio8, MmioAddr};
+pub use typed::{Io8, Io16, IoAddr, Irq, Mmio8, Mmio16, Mmio32, Mmio64, MmioAddr, io16, mmio32};

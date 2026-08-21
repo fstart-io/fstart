@@ -106,8 +106,8 @@ fn verify_ecdsa_p256(
     signature: &Signature,
     key: &VerificationKey,
 ) -> Result<(), VerifyError> {
-    use p256::ecdsa::{signature::Verifier, Signature as P256Sig, VerifyingKey};
     use p256::EncodedPoint;
+    use p256::ecdsa::{Signature as P256Sig, VerifyingKey, signature::Verifier};
 
     // Reconstruct 64-byte uncompressed public key (x || y)
     let mut pubkey_uncompressed = [0u8; 65]; // 0x04 prefix + 64 bytes

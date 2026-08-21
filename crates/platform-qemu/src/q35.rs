@@ -1,10 +1,10 @@
 //! QEMU q35 host bridge setup.
 
-use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_core::services::ServiceError;
+use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_pci::{
-    PciAddress, PciEcam, PciEcamConfig, PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC,
-    PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PCI_VENDOR_ID,
+    PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN,
+    PCI_VENDOR_ID, PciAddress, PciEcam, PciEcamConfig,
 };
 use serde::{Deserialize, Serialize};
 

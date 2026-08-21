@@ -19,16 +19,16 @@ pub mod stage;
 pub use handler::*;
 pub use header::{CorebootOffsets, EntryDescriptor, HeaderError, SmmImageHeader};
 pub use installer::{
-    install_default_relocation_callback_stub, install_default_relocation_handler,
-    install_default_relocation_table_handler, install_pic_image, DefaultRelocationCallbackConfig,
-    DefaultRelocationConfig, DefaultRelocationTableConfig, InstallConfig, InstallError,
-    InstalledSmmImage,
+    DefaultRelocationCallbackConfig, DefaultRelocationConfig, DefaultRelocationTableConfig,
+    InstallConfig, InstallError, InstalledSmmImage, install_default_relocation_callback_stub,
+    install_default_relocation_handler, install_default_relocation_table_handler,
+    install_pic_image,
 };
-pub use layout::{compute_common_base, compute_cpu_layout, CpuSmmLayout, LayoutError, SmramLayout};
+pub use layout::{CpuSmmLayout, LayoutError, SmramLayout, compute_common_base, compute_cpu_layout};
 pub use runtime::{
-    CorebootModuleArgs, SmmEntryParams, SmmRuntime, SMM_PLATFORM_DATA_ICH_GPE0_STS_OFFSET,
-    SMM_PLATFORM_DATA_ICH_PM_BASE, SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH,
-    SMM_PLATFORM_NONE,
+    CorebootModuleArgs, SMM_PLATFORM_DATA_ICH_GPE0_STS_OFFSET, SMM_PLATFORM_DATA_ICH_PM_BASE,
+    SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH, SMM_PLATFORM_NONE, SmmEntryParams,
+    SmmRuntime,
 };
 #[cfg(feature = "stage-bin")]
-pub use stage::{handle, SmmStageBoard};
+pub use stage::{SmmStageBoard, handle};

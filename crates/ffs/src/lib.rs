@@ -30,4 +30,4 @@ pub mod reader;
 pub mod builder;
 
 pub use manifest::{FileView, ManifestSummary, ManifestView};
-pub use reader::{verify_and_parse_manifest, FfsReader, ReaderError};
+pub use reader::{FfsReader, ReaderError, verify_and_parse_manifest};

@@ -2,11 +2,11 @@
 
 #[cfg(feature = "host")]
 use fstart_core::{
-    hstr, hvec, BoardBuildPolicy, Compression, FdtSource, FirmwareConfig, FirmwareImageConfig,
+    BoardBuildPolicy, Compression, FdtSource, FirmwareConfig, FirmwareImageConfig,
     FirmwareImagePolicy, FirmwareKind, MemoryMap, MemoryRegion, MonolithicConfig, PayloadConfig,
-    PayloadKind, RegionKind, StageBuildConfig, StageLayout,
+    PayloadKind, RegionKind, StageBuildConfig, StageLayout, hstr, hvec,
 };
-use fstart_core::{services::ServiceError, DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
+use fstart_core::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm, services::ServiceError};
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
 };

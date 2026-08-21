@@ -21,16 +21,16 @@ pub use sifive_u::{
     qemu_sifive_u_stages,
 };
 pub use virt::qemu_virt_security_config;
+pub use virt::{
+    QemuAarch64VirtConfig, QemuArmv7VirtConfig, QemuPciRootConfig, QemuRiscv64VirtConfig,
+    QemuVirtConfig,
+};
 #[cfg(feature = "host")]
 pub use virt::{
     qemu_aarch64_virt_linux_payload, qemu_aarch64_virt_memory, qemu_aarch64_virt_stages,
     qemu_arm_virt_build_policy, qemu_armv7_virt_linux_payload, qemu_armv7_virt_memory,
     qemu_armv7_virt_stages, qemu_riscv64_virt_build_policy, qemu_riscv64_virt_linux_payload,
     qemu_riscv64_virt_memory, qemu_riscv64_virt_stages,
-};
-pub use virt::{
-    QemuAarch64VirtConfig, QemuArmv7VirtConfig, QemuPciRootConfig, QemuRiscv64VirtConfig,
-    QemuVirtConfig,
 };
 #[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
 pub mod virt_aarch64;
@@ -62,12 +62,12 @@ pub use virt_riscv64::{
 pub mod q35;
 
 #[cfg(all(feature = "stage", any(target_arch = "x86", target_arch = "x86_64")))]
-pub use stage::{run_qemu_q35_mainstage, QemuQ35, QemuQ35Board, QemuQ35Mainstage};
+pub use stage::{QemuQ35, QemuQ35Board, QemuQ35Mainstage, run_qemu_q35_mainstage};
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use fstart_core::{
-    hstr, hvec, BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryMap,
-    MemoryRegion, MonolithicConfig, RegionKind, StageBuildConfig, StageLayout,
+    BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryMap, MemoryRegion,
+    MonolithicConfig, RegionKind, StageBuildConfig, StageLayout, hstr, hvec,
 };
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use serde::Serialize;
@@ -223,7 +223,7 @@ mod stage {
 
     use crate::fw_cfg::QemuFwCfg;
     use crate::q35::Q35HostBridge;
-    use crate::{QemuQ35Config, QEMU_Q35_ACPI_BUFFER_SIZE, QEMU_Q35_PLATFORM_NODE};
+    use crate::{QEMU_Q35_ACPI_BUFFER_SIZE, QEMU_Q35_PLATFORM_NODE, QemuQ35Config};
 
     pub struct QemuQ35;
 

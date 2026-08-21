@@ -18,9 +18,9 @@ use fstart_core::{
     services::{BlockDevice, ServiceError},
 };
 
-use crate::ccu_regs::{SunxiH3CcuRegs, MMC_CLK};
+use crate::ccu_regs::{MMC_CLK, SunxiH3CcuRegs};
 use crate::h3_ccu::{H3_CCU_BASE, H3_PIO_BASE};
-use crate::pio::{PioGen, SunxiPio, PORT_F};
+use crate::pio::{PORT_F, PioGen, SunxiPio};
 
 use fstart_arch::udelay;
 

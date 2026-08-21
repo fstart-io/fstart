@@ -22,13 +22,13 @@ pub mod x86;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use acpi_tables::Aml;
 use acpi_tables::aml::{Path, Scope};
 use acpi_tables::facs::FACS;
-use acpi_tables::fadt::{FADTBuilder, Flags, PmProfile, FADT};
+use acpi_tables::fadt::{FADT, FADTBuilder, Flags, PmProfile};
 use acpi_tables::rsdp::Rsdp;
 use acpi_tables::sdt::Sdt;
 use acpi_tables::xsdt::XSDT;
-use acpi_tables::Aml;
 
 use crate::{copy_at, serialize};
 
@@ -331,9 +331,9 @@ fn build_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8> {
 /// for ICH7: PM1a event/control blocks, PM timer, GPE0, SCI interrupt,
 /// IAPC boot arch flags, and the standard ACPI flags.
 fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8> {
+    use acpi_tables::Aml;
     use acpi_tables::fadt::{FADTBuilder, Flags};
     use acpi_tables::gas::{AccessSize, AddressSpace, GAS};
-    use acpi_tables::Aml;
 
     /// Helper: build a GAS for a System I/O port.
     fn gas_io(port: u32, bit_width: u8) -> GAS {

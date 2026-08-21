@@ -166,8 +166,8 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
 /// Includes Local APIC entries for each CPU, I/O APIC entries,
 /// Interrupt Source Overrides, and NMI Source entries.
 fn build_madt(config: &X86Config) -> Vec<u8> {
-    use acpi_tables::sdt::Sdt;
     use acpi_tables::Aml;
+    use acpi_tables::sdt::Sdt;
 
     // MADT header: 36 (SDT header) + 8 (MADT-specific: LAPIC addr + flags)
     let mut madt = Sdt::new(
@@ -224,8 +224,8 @@ fn build_madt(config: &X86Config) -> Vec<u8> {
 
 /// Build an HPET (High Precision Event Timer) table.
 fn build_hpet(config: &HpetConfig) -> Vec<u8> {
-    use acpi_tables::sdt::Sdt;
     use acpi_tables::Aml;
+    use acpi_tables::sdt::Sdt;
 
     // HPET table: 36 (SDT header) + 20 (HPET-specific fields)
     let mut hpet = Sdt::new(
@@ -246,7 +246,7 @@ fn build_hpet(config: &HpetConfig) -> Vec<u8> {
     hpet.write_u8(41, 64); // Register Bit Width
     hpet.write_u8(42, 0); // Register Bit Offset
     hpet.write_u8(43, 0); // Access Size (undefined)
-                          // Address (64-bit)
+    // Address (64-bit)
     let addr_bytes = config.base.to_le_bytes();
     for (i, &b) in addr_bytes.iter().enumerate() {
         hpet.write_u8(44 + i, b);

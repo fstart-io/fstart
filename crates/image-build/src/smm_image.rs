@@ -4,12 +4,12 @@ use std::process::Command;
 use object::{Object, ObjectSection};
 
 use fstart_smm::header::{
-    render_coreboot_header, CorebootOffsets, EntryDescriptor, SmmImageHeader, FLAG_COREBOOT_HEADER,
-    FLAG_COREBOOT_MODULE_ARGS,
+    CorebootOffsets, EntryDescriptor, FLAG_COREBOOT_HEADER, FLAG_COREBOOT_MODULE_ARGS,
+    SmmImageHeader, render_coreboot_header,
 };
 #[cfg(test)]
 use fstart_smm::runtime::SmmEntryParams;
-use fstart_smm::runtime::{CorebootModuleArgs, SmmRuntime, MAX_SMM_CPUS};
+use fstart_smm::runtime::{CorebootModuleArgs, MAX_SMM_CPUS, SmmRuntime};
 
 #[cfg(not(rust_analyzer))]
 mod asm {

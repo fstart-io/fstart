@@ -29,7 +29,7 @@ use fstart_core::mmio::MmioReadWrite;
 
 use fstart_core::services::ServiceError;
 
-use crate::ccu_regs::{SunxiH3CcuRegs, H3_DRAM_CLK, H3_PLL5_CFG};
+use crate::ccu_regs::{H3_DRAM_CLK, H3_PLL5_CFG, SunxiH3CcuRegs};
 
 use fstart_arch::udelay;
 
@@ -523,11 +523,7 @@ fn ns_to_t(ns: u32, clk_mhz: u32) -> u32 {
 /// Maximum of two values (const-compatible).
 #[inline]
 fn max2(a: u32, b: u32) -> u32 {
-    if a > b {
-        a
-    } else {
-        b
-    }
+    if a > b { a } else { b }
 }
 
 // ===================================================================

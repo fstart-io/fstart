@@ -16,7 +16,7 @@ pub use config::*;
 pub use ecam::EcamDevice;
 pub use ecam_host::{PciEcam, PciEcamConfig, PciEcamError};
 pub use overlay::{PciType0Config, PciType1Config};
-pub use pci_types::{capability, ConfigRegionAccess, HeaderType, PciAddress, PciHeader};
+pub use pci_types::{ConfigRegionAccess, HeaderType, PciAddress, PciHeader, capability};
 pub use window::{PciWindow, PciWindowKind};
 
 #[doc(hidden)]

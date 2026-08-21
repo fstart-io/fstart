@@ -23,7 +23,7 @@ use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use fstart_core::services::ServiceError;
 
 use crate::a20_ccu::{A20_CCU_BASE, A20_DRAMC_BASE};
-use crate::ccu_regs::{SunxiA20CcuRegs, MBUS_CLK, PLL5_CFG};
+use crate::ccu_regs::{MBUS_CLK, PLL5_CFG, SunxiA20CcuRegs};
 
 use fstart_arch::udelay;
 
@@ -877,7 +877,7 @@ impl A20Dramc {
         let density_idx = density.min(5) as usize;
         let trfc = (TRFC_DDR3[density_idx] as u32 * clk).div_ceil(1000);
         let trefi = (7987 * clk) >> 10; // <= 7.8µs
-                                        // DRR: tRFC in [7:0], tREFI in [23:8]
+        // DRR: tRFC in [7:0], tREFI in [23:8]
         self.regs.drr.set((trefi << 8) | (trfc & 0xFF));
     }
 

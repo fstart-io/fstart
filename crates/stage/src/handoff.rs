@@ -12,7 +12,7 @@
 //! changing the encode/decode calls; the struct and all surrounding code
 //! stay the same.
 
-use fstart_core::handoff::{StageHandoff, HANDOFF_MAGIC, HANDOFF_MAX_SIZE, HANDOFF_VERSION};
+use fstart_core::handoff::{HANDOFF_MAGIC, HANDOFF_MAX_SIZE, HANDOFF_VERSION, StageHandoff};
 
 /// Serialize a [`StageHandoff`] into the provided buffer.
 ///

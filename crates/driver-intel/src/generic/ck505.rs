@@ -8,8 +8,8 @@
 //! `(new_val & mask) | (read_val & !mask)` using byte-at-a-time
 //! SMBus read-modify-writes for each register.
 
-use fstart_core::services::device::DeviceError;
 use fstart_core::services::SmBus;
+use fstart_core::services::device::DeviceError;
 use heapless::Vec;
 use serde::{Deserialize, Serialize};
 

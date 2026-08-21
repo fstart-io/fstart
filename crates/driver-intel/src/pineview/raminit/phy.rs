@@ -8,7 +8,7 @@
 
 #![allow(clippy::needless_range_loop)]
 use super::{PllParam, SysInfo};
-use crate::pineview::regs::{mchbar, MchBar};
+use crate::pineview::regs::{MchBar, mchbar};
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
 
@@ -112,33 +112,21 @@ fn calibrate_pll(si: &SysInfo, mch: &MchBar, pidelay: u8) {
 
     let desktop = !si.is_sodimm();
     let pi_src = if desktop {
-        if f == 0 {
-            &PI_DT_667
-        } else {
-            &PI_DT_800
-        }
+        if f == 0 { &PI_DT_667 } else { &PI_DT_800 }
     } else if f == 0 {
         &PI_667
     } else {
         &PI_800
     };
     let dben_src = if desktop {
-        if f == 0 {
-            &DBEN_DT_667
-        } else {
-            &DBEN_DT_800
-        }
+        if f == 0 { &DBEN_DT_667 } else { &DBEN_DT_800 }
     } else if f == 0 {
         &DBEN_667
     } else {
         &DBEN_800
     };
     let dbsel_src = if desktop {
-        if f == 0 {
-            &DBSEL_DT_667
-        } else {
-            &DBSEL_DT_800
-        }
+        if f == 0 { &DBSEL_DT_667 } else { &DBSEL_DT_800 }
     } else if f == 0 {
         &DBSEL_667
     } else {
@@ -1018,11 +1006,7 @@ fn vref_pattern(addr: usize, inverse: bool) -> u8 {
     } else {
         pattern_a
     };
-    if inverse {
-        !pattern
-    } else {
-        pattern
-    }
+    if inverse { !pattern } else { pattern }
 }
 
 fn vref_write_pattern(addr: usize) {

@@ -72,9 +72,7 @@ pub fn find(workspace_root: &Path, board_name: &str) -> Result<BoardManifest, St
             let mut resolved = board.clone();
             resolved.board = variant.clone();
             resolved.variant_features = variant_features.clone();
-            resolved
-                .features
-                .extend(variant_features.iter().cloned());
+            resolved.features.extend(variant_features.iter().cloned());
             return Ok(resolved);
         }
     }
@@ -326,10 +324,7 @@ mod tests {
         assert_eq!(
             metadata_variants(text),
             vec![
-                (
-                    "lenovo-x61s".to_string(),
-                    vec!["variant-x61s".to_string()]
-                ),
+                ("lenovo-x61s".to_string(), vec!["variant-x61s".to_string()]),
                 (
                     "lenovo-x61t".to_string(),
                     vec!["variant-x61t".to_string(), "tablet".to_string()]
@@ -342,10 +337,8 @@ mod tests {
 
     #[test]
     fn finds_boards_and_variants_under_vendor_dirs() {
-        let root = std::env::temp_dir().join(format!(
-            "fstart-board-vendor-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("fstart-board-vendor-test-{}", std::process::id()));
         let board_dir = root.join("boards").join("lenovo").join("x61");
         fs::create_dir_all(&board_dir).unwrap();
         fs::write(

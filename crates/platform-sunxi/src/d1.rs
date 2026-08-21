@@ -98,13 +98,13 @@ const fn in_d1_dram(addr: u64) -> bool {
 mod stage {
     use super::*;
     use fstart_core::services::ServiceError;
-    use fstart_driver_sunxi::d1_ccu::{D1Ccu, D1_EGON_MMC_OFFSET, D1_SRAM_BASE};
+    use fstart_driver_sunxi::d1_ccu::{D1_EGON_MMC_OFFSET, D1_SRAM_BASE, D1Ccu};
     use fstart_driver_sunxi::d1_dramc::D1Dramc;
     use fstart_driver_sunxi::d1_mmc::D1Mmc;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::{StageBoard, StageEnvironment};
 
-    use crate::egon::{boot_device_at, next_stage_offset_at, next_stage_size_at, BootDevice};
+    use crate::egon::{BootDevice, boot_device_at, next_stage_offset_at, next_stage_size_at};
 
     /// Board contract for the fixed D1 flow.
     ///
@@ -261,4 +261,4 @@ mod stage {
 }
 
 #[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
-pub use stage::{run_d1_bootblock, run_d1_mainstage, D1Board, D1Mainstage, D1};
+pub use stage::{D1, D1Board, D1Mainstage, run_d1_bootblock, run_d1_mainstage};

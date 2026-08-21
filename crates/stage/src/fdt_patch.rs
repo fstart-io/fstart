@@ -301,7 +301,7 @@ pub unsafe fn fdt_set_bootargs(
                     bootargs.len(),
                 );
                 *dtb.add(val_start + bootargs.len()) = 0; // NUL
-                                                          // Zero leftover bytes from old value (keeps padding clean).
+                // Zero leftover bytes from old value (keeps padding clean).
                 for i in new_value_len..old_len {
                     *dtb.add(val_start + i) = 0;
                 }
@@ -367,7 +367,7 @@ pub unsafe fn fdt_set_bootargs(
             bootargs.len(),
         );
         *dtb.add(insert_off + 12 + bootargs.len()) = 0; // NUL
-                                                        // Zero alignment padding.
+        // Zero alignment padding.
         let pad_start = insert_off + 12 + new_value_len;
         let pad_end = insert_off + new_prop_total;
         for i in pad_start..pad_end {

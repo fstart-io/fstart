@@ -16,8 +16,8 @@
 
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
 
-use crate::ccu_regs::{SunxiD1CcuRegs, D1_CPUX_AXI_CFG, D1_PLL_CPUX, D1_PLL_PERIPH0};
-use crate::pio::{PioGen, Pull, SunxiPio, PORT_B};
+use crate::ccu_regs::{D1_CPUX_AXI_CFG, D1_PLL_CPUX, D1_PLL_PERIPH0, SunxiD1CcuRegs};
+use crate::pio::{PORT_B, PioGen, Pull, SunxiPio};
 use fstart_arch::udelay;
 use fstart_core::{mmio, mmio32};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};

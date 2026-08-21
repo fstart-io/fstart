@@ -1,6 +1,6 @@
 //! Reusable pieces for board-owned handwritten stage flows.
 
-use fstart_core::ffs::{FileType, ANCHOR_SIZE};
+use fstart_core::ffs::{ANCHOR_SIZE, FileType};
 use fstart_core::services::boot::BootLinuxParams;
 #[cfg(feature = "ffs")]
 use fstart_core::services::boot_media::BootMedia;

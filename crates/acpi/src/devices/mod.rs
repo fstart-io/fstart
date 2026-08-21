@@ -13,12 +13,12 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use acpi_tables::Aml;
 use acpi_tables::aml::{
-    AddressSpace, AddressSpaceCacheable, Device, Interrupt, Memory32Fixed, Name, ResourceTemplate,
-    IO,
+    AddressSpace, AddressSpaceCacheable, Device, IO, Interrupt, Memory32Fixed, Name,
+    ResourceTemplate,
 };
 use acpi_tables::mcfg::MCFG;
-use acpi_tables::Aml;
 
 use crate::serialize;
 

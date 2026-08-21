@@ -12,7 +12,7 @@
 //!
 //! Modeled on U-Boot `drivers/gpio/sunxi_gpio.c` (`SUNXI_NEW_PINCTRL`).
 
-use fstart_core::{mmio, Mmio32, MmioAddr};
+use fstart_core::{Mmio32, MmioAddr, mmio};
 
 /// PIO pin controller generation — determines bank stride and pull offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

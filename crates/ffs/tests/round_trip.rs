@@ -2,11 +2,11 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use fstart_core::ffs::{
-    AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind,
-    Signature, VerificationKey, ANCHOR_SIZE,
+    ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags,
+    SegmentKind, Signature, VerificationKey,
 };
 use fstart_ffs::builder::{
-    build_image, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
+    ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment, build_image,
 };
 use fstart_ffs::reader::FfsReader;
 use rand_core::OsRng;

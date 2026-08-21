@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use fstart_core::ffs::{
-    AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags, SegmentKind,
-    SignatureKind, ANCHOR_SIZE, FFS_MAGIC, FFS_VERSION,
+    ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FFS_MAGIC, FFS_VERSION, FileType,
+    RegionContent, SegmentFlags, SegmentKind, SignatureKind,
 };
 use fstart_ffs::FfsReader;
 

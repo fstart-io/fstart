@@ -3,7 +3,7 @@ use fstart_core::acpi::AcpiExtraDevice;
 use fstart_core::{BoardConfig, StageLayout};
 
 use crate::build_plan::ParsedBoard;
-use crate::payload::{apply_payload_override, PayloadChoice};
+use crate::payload::{PayloadChoice, apply_payload_override};
 
 #[derive(Clone, Copy)]
 pub struct BoardCallbacks {

@@ -154,11 +154,7 @@ pub struct MemoryDeviceDesc<'a> {
 /// Used for SMBIOS fields that have a 1-byte "legacy" field with a separate
 /// 2-byte extended field for values > 255 (e.g., core count, thread count).
 fn cap_u8(val: u16) -> u8 {
-    if val > 255 {
-        0xFF
-    } else {
-        val as u8
-    }
+    if val > 255 { 0xFF } else { val as u8 }
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +592,7 @@ impl SmbiosWriter {
         self.write_u8(cap_u8(thread_count)); // thread count (legacy)
         self.write_u16(0); // processor characteristics
         self.write_u16(processor_family); // processor family 2
-                                          // SMBIOS 3.0 extended fields
+        // SMBIOS 3.0 extended fields
         self.write_u16(core_count); // core count 2
         self.write_u16(core_count); // core enabled 2
         self.write_u16(thread_count); // thread count 2
@@ -626,7 +622,7 @@ impl SmbiosWriter {
         self.write_u8(0x03); // location: system board
         self.write_u8(0x03); // use: system memory
         self.write_u8(0x03); // error correction: none
-                             // Maximum capacity: if >2TB, set to 0x80000000 and use extended field.
+        // Maximum capacity: if >2TB, set to 0x80000000 and use extended field.
         let max_cap_field = if max_capacity_kb > 0x7FFF_FFFF {
             0x8000_0000u32
         } else {
@@ -668,8 +664,8 @@ impl SmbiosWriter {
         self.write_u16(0xFFFE); // memory error info handle: not provided
         self.write_u16(64); // total width (bits) — assume 64-bit
         self.write_u16(64); // data width (bits)
-                            // Size field: if size_mb fits in 15 bits, use directly.
-                            // Otherwise set 0x7FFF and use extended size.
+        // Size field: if size_mb fits in 15 bits, use directly.
+        // Otherwise set 0x7FFF and use extended size.
         if size_mb <= 0x7FFF {
             self.write_u16(size_mb as u16); // size in MB
         } else {
@@ -687,14 +683,14 @@ impl SmbiosWriter {
         self.write_u8(0); // asset tag (no string)
         self.write_u8(0); // part number (no string)
         self.write_u8(0); // attributes: unknown rank
-                          // Extended size (SMBIOS 2.7+, in MB) — always written
+        // Extended size (SMBIOS 2.7+, in MB) — always written
         self.write_u32(size_mb);
         self.write_u16(speed_mhz); // configured memory clock speed
-                                   // SMBIOS 2.8+ fields
+        // SMBIOS 2.8+ fields
         self.write_u16(0); // minimum voltage (unknown)
         self.write_u16(0); // maximum voltage (unknown)
         self.write_u16(0); // configured voltage (unknown)
-                           // SMBIOS 3.2+ fields
+        // SMBIOS 3.2+ fields
         self.write_u8(0); // memory technology: unknown
         self.write_u16(0); // memory operating mode capability
         self.write_u8(0); // firmware version (no string)
@@ -706,7 +702,7 @@ impl SmbiosWriter {
         self.write_u64(size_mb as u64 * 1024 * 1024); // volatile size (bytes)
         self.write_u64(0); // cache size (0)
         self.write_u64(0); // logical size (0)
-                           // SMBIOS 3.3+ fields
+        // SMBIOS 3.3+ fields
         self.write_u32(speed_mhz as u32); // extended speed (MT/s)
         self.write_u32(speed_mhz as u32); // extended configured memory speed
 
@@ -916,7 +912,7 @@ mod tests {
         let eot = &buf[ENTRY_POINT_SIZE..];
         assert_eq!(eot[0], TYPE_END_OF_TABLE); // type
         assert_eq!(eot[1], 4); // length
-                               // handle: u16 LE
+        // handle: u16 LE
         assert_eq!(u16::from_le_bytes([eot[2], eot[3]]), 1);
         // double-null terminator
         assert_eq!(eot[4], 0);
@@ -952,7 +948,7 @@ mod tests {
         let table = &buf[ENTRY_POINT_SIZE..];
         assert_eq!(table[0], TYPE_SYSTEM_INFO);
         assert_eq!(table[1], 0x1B); // struct length
-                                    // manufacturer = string 1, product = string 2, version = string 3, serial = string 4
+        // manufacturer = string 1, product = string 2, version = string 3, serial = string 4
         assert_eq!(table[4], 1);
         assert_eq!(table[5], 2);
         assert_eq!(table[6], 3);
@@ -969,7 +965,7 @@ mod tests {
         let table = &buf[ENTRY_POINT_SIZE..];
         assert_eq!(table[0], TYPE_PROCESSOR);
         assert_eq!(table[1], 0x30); // 48 bytes
-                                    // max speed at offset 0x14 (20-21)
+        // max speed at offset 0x14 (20-21)
         let max_speed = u16::from_le_bytes([table[0x14], table[0x15]]);
         assert_eq!(max_speed, 2000);
         // processor family 2 at offset 0x28 (40-41)

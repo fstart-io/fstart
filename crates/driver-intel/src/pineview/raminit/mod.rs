@@ -24,7 +24,7 @@ mod spd;
 mod timing;
 
 use crate::generic::spd::DimmInfo;
-use crate::pineview::regs::{mchbar, MchBar};
+use crate::pineview::regs::{MchBar, mchbar};
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
 

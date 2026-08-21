@@ -7,7 +7,7 @@ use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
 use fstart_stage::{StageBoard, StageEnvironment};
 
-use crate::virt::{enumerate_pci, phase, QemuAarch64VirtConfig};
+use crate::virt::{QemuAarch64VirtConfig, enumerate_pci, phase};
 
 pub const QEMU_AARCH64_UART_BASE: u64 = 0x0900_0000;
 

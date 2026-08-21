@@ -22,7 +22,7 @@ pub mod smm;
 
 use fstart_core::mmio::MmioReadWrite;
 use fstart_pci::ecam;
-use fstart_pci::{pci_type0_config, PciType0Config, PciType1Config, PCI_COMMAND_BITS};
+use fstart_pci::{PCI_COMMAND_BITS, PciType0Config, PciType1Config, pci_type0_config};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -230,11 +230,11 @@ pub mod ich7 {
     pub const GCS: u32 = 0x3410;
 }
 use crate::southbridge::smbus::I801SmBus;
+use fstart_core::ConstVec;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::{
     FirmwareImage, FirmwareImageProvider, ServiceError, SmBus, Southbridge,
 };
-use fstart_core::ConstVec;
 use fstart_driver_superio::LpcBaseProvider;
 use serde::Serialize;
 
@@ -1488,7 +1488,7 @@ impl IntelIch7 {
             // ICW1: begin init, ICW4 needed.
             outb(0x20, 0x11); // Master PIC
             outb(0xA0, 0x11); // Slave PIC
-                              // ICW2: vector offset (master=0x08, slave=0x70).
+            // ICW2: vector offset (master=0x08, slave=0x70).
             outb(0x21, 0x08);
             outb(0xA1, 0x70);
             // ICW3: master has slave on IRQ2, slave ID=2.
@@ -1916,7 +1916,7 @@ impl IntelIch7 {
             let reg_b = fstart_core::pio::inb(0x71);
             fstart_core::pio::outb(0x70, 0x0B);
             fstart_core::pio::outb(0x71, (reg_b | 0x02) & !0x40); // 24hr, update enabled
-                                                                  // Register C: clear interrupt flags (read-to-clear).
+            // Register C: clear interrupt flags (read-to-clear).
             fstart_core::pio::outb(0x70, 0x0C);
             let _ = fstart_core::pio::inb(0x71);
             // Register D: read-only, but reading clears VRT.

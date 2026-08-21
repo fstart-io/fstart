@@ -86,7 +86,7 @@ impl From<DeviceError> for ServiceError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ffs_context, FirmwareImage, FirmwareImageMap, FirmwareWindow, FlashMap, ServiceError,
+        FirmwareImage, FirmwareImageMap, FirmwareWindow, FlashMap, ServiceError, ffs_context,
     };
 
     #[test]

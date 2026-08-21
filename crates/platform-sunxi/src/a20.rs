@@ -128,15 +128,15 @@ const fn in_a20_dram_end(addr: u64, size: u64) -> bool {
 mod stage {
     use super::*;
     use fstart_core::services::ServiceError;
-    use fstart_driver_sunxi::a20_ccu::{A20Ccu, A20_EGON_MMC_OFFSET, A20_SRAM_BASE};
+    use fstart_driver_sunxi::a20_ccu::{A20_EGON_MMC_OFFSET, A20_SRAM_BASE, A20Ccu};
     use fstart_driver_sunxi::a20_dramc::A20Dramc;
     use fstart_driver_sunxi::a20_mmc::A20Mmc;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
+    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
     #[cfg(feature = "linux")]
     use crate::egon::ffs_total_size_at;
-    use crate::egon::{boot_device_at, next_stage_offset_at, next_stage_size_at, BootDevice};
+    use crate::egon::{BootDevice, boot_device_at, next_stage_offset_at, next_stage_size_at};
 
     /// BROM state retained so a Sunxi stage can return to FEL.
     #[repr(C)]
@@ -540,9 +540,9 @@ fstart_sunxi_fel_stash:
 
 #[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
 pub use stage::{
-    return_to_fel, run_a20_bootblock, run_a20_mainstage, A20Board, A20BuildSelectedPayload,
-    A20Mainstage, FelStash, SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx,
-    SunxiEarlyPlatform, SunxiPlatform, A20,
+    A20, A20Board, A20BuildSelectedPayload, A20Mainstage, FelStash, SunxiEarlyBoard,
+    SunxiEarlyBoardHooks, SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, return_to_fel,
+    run_a20_bootblock, run_a20_mainstage,
 };
 
 #[cfg(test)]

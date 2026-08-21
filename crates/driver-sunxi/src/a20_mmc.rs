@@ -19,8 +19,8 @@ use fstart_core::{
 };
 
 use crate::a20_ccu::{A20_CCU_BASE, A20_MMC0_BASE, A20_PIO_BASE};
-use crate::ccu_regs::{SunxiA20CcuRegs, MMC_CLK};
-use crate::pio::{PioGen, SunxiPio, PORT_F};
+use crate::ccu_regs::{MMC_CLK, SunxiA20CcuRegs};
+use crate::pio::{PORT_F, PioGen, SunxiPio};
 
 use fstart_arch::udelay;
 

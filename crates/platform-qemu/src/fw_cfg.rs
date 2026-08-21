@@ -2,8 +2,8 @@
 
 use core::convert::TryInto;
 
-use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_core::services::ServiceError;
+use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use serde::{Deserialize, Serialize};
 
 const FW_CFG_SIGNATURE: u16 = 0x0000;

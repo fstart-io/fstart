@@ -22,14 +22,14 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ptr;
 
-use self::regs::{hostbridge, mchbar, DmiBar, MchBar, Rcba};
+use self::regs::{DmiBar, MchBar, Rcba, hostbridge, mchbar};
 use crate::ich7::ich7;
 use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_arch::x86::mtrr;
 use fstart_core::mmio::MmioReadWrite;
+use fstart_core::services::MemoryController;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
-use fstart_core::services::MemoryController;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;

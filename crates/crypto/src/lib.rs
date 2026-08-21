@@ -25,8 +25,8 @@
 pub mod digest;
 pub mod verify;
 
-pub use digest::{hash_digest_set, DigestError};
-pub use verify::{verify_signature, VerifyError};
+pub use digest::{DigestError, hash_digest_set};
+pub use verify::{VerifyError, verify_signature};
 
 // Re-export individual hash functions when available.
 #[cfg(feature = "sha2-digest")]

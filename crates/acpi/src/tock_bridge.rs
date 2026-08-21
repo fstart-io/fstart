@@ -34,9 +34,9 @@ use acpi_tables::aml::{
     Path,
 };
 use acpi_tables::{Aml, AmlSink};
+use tock_registers::UIntLike;
 use tock_registers::debug::RegisterDebugInfo;
 use tock_registers::fields::Field as TockField;
-use tock_registers::UIntLike;
 
 /// Convert tock-registers [`RegisterDebugInfo`] metadata into ACPI
 /// [`FieldEntry`] values.

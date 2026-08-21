@@ -3,9 +3,9 @@
 //! These tests verify that the DSL produces correct AML bytecode
 //! by checking opcodes, structure, and round-trip properties.
 
+use fstart_acpi::Aml;
 use fstart_acpi::aml::{FieldAccessType, OpRegionSpace};
 use fstart_acpi::tock_bridge::{build_multi_register_field, tock_field_entries};
-use fstart_acpi::Aml;
 use fstart_acpi_macros::acpi_dsl;
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
@@ -698,7 +698,9 @@ fn test_x86_host_bridge_register_structs() {
         "MCHP",
         PCIConfig,
         DWord,
-        [epbar, mchbar, pxbar, dmibar, pam0, pam1, pam2, pam3, pam4, pam5, pam6, tolud, tom,]
+        [
+            epbar, mchbar, pxbar, dmibar, pam0, pam1, pam2, pam3, pam4, pam5, pam6, tolud, tom,
+        ]
     );
 
     let aml: Vec<u8> = acpi_dsl! {
@@ -735,7 +737,9 @@ fn test_x86_host_bridge_register_structs() {
         "MCHP",
         PCIConfig,
         DWord,
-        [epbar, mchbar, pxbar, dmibar, pam0, pam1, pam2, pam3, pam4, pam5, pam6, tolud, tom,]
+        [
+            epbar, mchbar, pxbar, dmibar, pam0, pam1, pam2, pam3, pam4, pam5, pam6, tolud, tom,
+        ]
     );
     let mchp_manual = build_multi_register_field(
         "MCHP",

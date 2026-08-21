@@ -2,8 +2,8 @@
 
 use fstart_core::services::{Console, DeviceError, ServiceError};
 use fstart_core::{Mmio32, MmioAddr};
-use tock_registers::register_bitfields;
 use tock_registers::LocalRegisterCopy;
+use tock_registers::register_bitfields;
 
 const REG_TXDATA: usize = 0x00;
 const REG_RXDATA: usize = 0x04;

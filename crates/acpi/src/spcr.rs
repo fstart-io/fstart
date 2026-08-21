@@ -44,7 +44,7 @@ pub fn build_spcr_pl011(base_addr: u64, gsiv: u32) -> Sdt {
 
     // Serial Port Info fields (offset 36..88).
     sdt.write_u8(36, subtype::ARM_PL011); // Interface Type
-                                          // 37..39: Reserved (already zero)
+    // 37..39: Reserved (already zero)
 
     // Generic Address Structure for base address (12 bytes at offset 40).
     sdt.write_u8(40, 0); // AddressSpaceId: SystemMemory
@@ -69,17 +69,17 @@ pub fn build_spcr_pl011(base_addr: u64, gsiv: u32) -> Sdt {
     // PCI identification (0xFFFF = not PCI).
     sdt.write_u16(64, 0xFFFF); // PciDeviceId
     sdt.write_u16(66, 0xFFFF); // PciVendorId
-                               // 68..70: PciBus/Device/Function (zero)
-                               // 71..74: PciFlags (zero)
-                               // 75: PciSegment (zero)
-                               // 76..79: ClockFrequency (zero, not specified)
-                               // 80..83: PreciseBaudRate (zero, not specified)
+    // 68..70: PciBus/Device/Function (zero)
+    // 71..74: PciFlags (zero)
+    // 75: PciSegment (zero)
+    // 76..79: ClockFrequency (zero, not specified)
+    // 80..83: PreciseBaudRate (zero, not specified)
 
     // Namespace string: ".\0" (minimal, meaning root namespace).
     sdt.write_u16(84, 2); // NamespaceStringLength
     sdt.write_u16(86, 52); // NamespaceStringOffset (from info start)
     sdt.write_u8(88, b'.'); // Namespace string
-                            // 89: NUL terminator (already zero)
+    // 89: NUL terminator (already zero)
 
     sdt.update_checksum();
     sdt

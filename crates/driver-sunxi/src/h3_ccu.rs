@@ -16,10 +16,10 @@
 
 #![allow(clippy::identity_op)] // Bit-field shifts like (x << 0) document register layout
 
-use crate::ccu_regs::{SunxiH3CcuRegs, H3_CCU_SEC_SWITCH};
+use crate::ccu_regs::{H3_CCU_SEC_SWITCH, SunxiH3CcuRegs};
 use fstart_arch::{sdelay, set_cntfrq};
 use fstart_core::services::ServiceError;
-use fstart_core::{mmio, mmio32, Mmio32, MmioAddr};
+use fstart_core::{Mmio32, MmioAddr, mmio, mmio32};
 use tock_registers::interfaces::{Readable, Writeable};
 
 // ---------------------------------------------------------------------------

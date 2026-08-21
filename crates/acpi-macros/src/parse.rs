@@ -838,7 +838,7 @@ impl Parser {
                 return Err(Error::new(
                     ser_tt.span(),
                     "expected `Serialized` or `NotSerialized`",
-                ))
+                ));
             }
         };
 
@@ -916,7 +916,7 @@ impl Parser {
         // Check for Else / ElseIf
         let else_body = if self.peek_ident_eq("Else") {
             self.advance(); // consume "Else"
-                            // Check for ElseIf: `Else If (...) { ... }`
+            // Check for ElseIf: `Else If (...) { ... }`
             if self.peek_ident_eq("If") {
                 // Parse as a nested If inside the else body
                 let nested_if = self.parse_if()?;
@@ -1387,7 +1387,7 @@ impl Parser {
                 return Err(Error::new(
                     rw_tt.span(),
                     "expected `ReadWrite` or `ReadOnly`",
-                ))
+                ));
             }
         };
         p.expect_punct(',')?;
@@ -1419,7 +1419,7 @@ impl Parser {
                 return Err(Error::new(
                     cons_tt.span(),
                     "expected `ResourceConsumer` or `ResourceProducer`",
-                ))
+                ));
             }
         };
         p.expect_punct(',')?;
@@ -1444,7 +1444,7 @@ impl Parser {
                 return Err(Error::new(
                     pol_tt.span(),
                     "expected `ActiveHigh` or `ActiveLow`",
-                ))
+                ));
             }
         };
         p.expect_punct(',')?;
@@ -1459,7 +1459,7 @@ impl Parser {
                 return Err(Error::new(
                     share_tt.span(),
                     "expected `Exclusive` or `Shared`",
-                ))
+                ));
             }
         };
         p.expect_punct(',')?;
@@ -1502,7 +1502,7 @@ impl Parser {
                 return Err(Error::new(
                     pol_tt.span(),
                     "expected `ActiveHigh` or `ActiveLow`",
-                ))
+                ));
             }
         };
         p.expect_punct(',')?;
@@ -1517,7 +1517,7 @@ impl Parser {
                 return Err(Error::new(
                     share_tt.span(),
                     "expected `Exclusive` or `Shared`",
-                ))
+                ));
             }
         };
         p.expect_punct(',')?;

@@ -4,7 +4,7 @@
 //! `sdram_zqcl()`.
 
 use super::SysInfo;
-use crate::pineview::regs::{mchbar, MchBar};
+use crate::pineview::regs::{MchBar, mchbar};
 
 // DDR2 JEDEC command encodings (for C0JEDEC register).
 const NOP_CMD: u8 = 1 << 1;

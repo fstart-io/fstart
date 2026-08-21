@@ -3,8 +3,8 @@
 use crate::virt::QemuPciRootConfig;
 #[cfg(feature = "host")]
 use fstart_core::{
-    hstr, hvec, BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryMap,
-    MemoryRegion, MonolithicConfig, RegionKind, StageBuildConfig, StageLayout,
+    BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryMap, MemoryRegion,
+    MonolithicConfig, RegionKind, StageBuildConfig, StageLayout, hstr, hvec,
 };
 use serde::Serialize;
 
@@ -131,7 +131,7 @@ mod stage {
     use crate::virt::enumerate_pci;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::pl011::{Pl011, Pl011Config};
-    use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
+    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
     pub trait QemuSbsaBoard: StageBoard {
         type Payload: MainstagePayload<QemuSbsaMainstage>;

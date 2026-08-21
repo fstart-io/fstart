@@ -12,7 +12,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use acpi_tables::fadt::{FADTBuilder, Flags, PmProfile, FADT};
+use acpi_tables::fadt::{FADT, FADTBuilder, Flags, PmProfile};
 use acpi_tables::madt::{
     EnabledStatus, GicIts, GicVersion, Gicc, Gicd, Gicr, LocalInterruptController, MADT,
 };
