@@ -13,6 +13,9 @@
 #![allow(clippy::modulo_one)]
 
 pub mod raminit;
+mod fields;
+
+use self::fields::*;
 
 #[cfg(feature = "ffs-vbt")]
 use alloc::vec::Vec;
@@ -888,15 +891,17 @@ impl IntelGm965 {
         ep.clrbits8(epbar::EPVC0RCTL, !1u8);
         ep.clrsetbits8(epbar::EPPVCCAP1, 7, 1);
         ep.write32(epbar::EPVC1MTS, 0x0a0a_0a0a);
-        ep.clrsetbits32(epbar::EPVC1RCAP, 127 << 16, 0x0a << 16);
-        ep.clrsetbits32(epbar::EPVC1RCTL, 7 << 24, 1 << 24);
+        ep.clrsetbits32(epbar::EPVC1RCAP, 127 << 16, EPVC1RCAP_REG::VC1_MTS.val(0x0a).value);
+        ep.clrsetbits32(epbar::EPVC1RCTL, 7 << 24, VC1RCTL_REG::VC_ID.val(1).value);
         ep.clrsetbits8(epbar::EPVC1RCTL, !1u8, 1 << 7);
         for idx in 0..7 {
             ep.write32(epbar::portarb(idx), 0x5555_5555);
         }
         ep.write32(epbar::portarb(7), 0x0000_5555);
-        ep.setbits32(epbar::EPVC1RCTL, 1 << 16);
-
+        ep.write32(
+            epbar::EPVC1RCTL,
+            ep.read32(epbar::EPVC1RCTL) | VC1RCTL_REG::ARB_LOAD::SET.value,
+        );
         let mut timeout = 0x7ffffu32;
         while (ep.read8(epbar::EPVC1RSTS) & 1) != 0 && timeout != 0 {
             timeout -= 1;
@@ -906,7 +911,10 @@ impl IntelGm965 {
             return Err(ServiceError::Timeout);
         }
 
-        ep.setbits32(epbar::EPVC1RCTL, 1 << 31);
+        ep.write32(
+            epbar::EPVC1RCTL,
+            ep.read32(epbar::EPVC1RCTL) | VC1RCTL_REG::VC_EN::SET.value,
+        );
         timeout = 0x7ffff;
         while (ep.read8(epbar::EPVC1RSTS) & 2) != 0 && timeout != 0 {
             timeout -= 1;
@@ -922,9 +930,12 @@ impl IntelGm965 {
         let dmi = self.dmibar();
         dmi.clrbits8(dmibar::DMIVC0RCTL, !1u8);
         dmi.clrsetbits8(dmibar::DMIPVCCAP1, 7, 1);
-        dmi.clrsetbits32(dmibar::DMIVC1RCTL, 7 << 24, 1 << 24);
+        dmi.clrsetbits32(dmibar::DMIVC1RCTL, 7 << 24, VC1RCTL_REG::VC_ID.val(1).value);
         dmi.clrsetbits8(dmibar::DMIVC1RCTL, !1u8, 1 << 7);
-        dmi.setbits32(dmibar::DMIVC1RCTL, 1 << 31);
+        dmi.write32(
+            dmibar::DMIVC1RCTL,
+            dmi.read32(dmibar::DMIVC1RCTL) | VC1RCTL_REG::VC_EN::SET.value,
+        );
 
         let mut timeout = 0x7ffffu32;
         while (dmi.read8(dmibar::DMIVC1RSTS) & dmibar::VC1NP) != 0 && timeout != 0 {
@@ -937,7 +948,7 @@ impl IntelGm965 {
 
         dmi.setbits32(0x0200, 3 << 13);
         dmi.clrbits32(0x0200, 1 << 21);
-        dmi.clrsetbits32(0x0200, 3 << 26, 2 << 26);
+        dmi.clrsetbits32(0x0200, 3 << 26, DMI200_REG::TOPO.val(2).value);
         dmi.write32(0x002c, 0x8600_0040);
         dmi.setbits32(0x00fc, (1 << 0) | (1 << 1) | (1 << 4));
         if self.stepping() < 0x02 {
@@ -989,8 +1000,8 @@ impl IntelGm965 {
         if self.stepping() >= 0x02 {
             dmi.write32(0x0e2c, 0x88d0_7333);
         }
-        dmi.setbits8(dmibar::DMILCTL, 3);
-        dmi.clrsetbits32(dmibar::DMILCAP, 63 << 12, (2 << 12) | (2 << 15));
+        dmi.setbits8(dmibar::DMILCTL, DMILCTL_REG::ASPM_CTRL.val(3).value);
+        dmi.clrsetbits32(dmibar::DMILCAP, 63 << 12, (DMILCAP_REG::L0S_EXIT_LAT.val(2) + DMILCAP_REG::L1_EXIT_LAT.val(2)).value);
         dmi.write8(0x0208 + 3, 0);
         dmi.clrbits32(0x0208, 3 << 20);
     }
