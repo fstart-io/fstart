@@ -17,6 +17,7 @@ pub mod raminit;
 #[cfg(feature = "ffs-vbt")]
 use alloc::vec::Vec;
 use core::{cell::UnsafeCell, ptr};
+use crate::MmioBar;
 
 use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_core::mmio::MmioReadWrite;
@@ -324,91 +325,16 @@ impl MchBar {
     }
 
     #[inline]
-    pub fn read8(&self, off: u32) -> u8 {
-        // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
-    }
-
-    #[inline]
-    pub fn write8(&self, off: u32, val: u8) {
-        // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
-    }
-
-    #[inline]
-    pub fn read16(&self, off: u32) -> u16 {
-        // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_core::mmio::read16((self.base + off as usize) as *const u16) }
-    }
-
-    #[inline]
-    pub fn write16(&self, off: u32, val: u16) {
-        // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_core::mmio::write16((self.base + off as usize) as *mut u16, val) }
-    }
-
-    #[inline]
-    pub fn read32(&self, off: u32) -> u32 {
-        // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
-    }
-
-    #[inline]
-    pub fn write32(&self, off: u32, val: u32) {
-        // SAFETY: off is a GM965 MCHBAR register offset.
-        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
-    }
-
-    #[inline]
-    pub fn setbits8(&self, off: u32, bits: u8) {
-        self.write8(off, self.read8(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits8(&self, off: u32, bits: u8) {
-        self.write8(off, self.read8(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits8(&self, off: u32, clear: u8, set: u8) {
-        self.write8(off, (self.read8(off) & !clear) | set);
-    }
-
-    #[inline]
-    pub fn setbits16(&self, off: u32, bits: u16) {
-        self.write16(off, self.read16(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits16(&self, off: u32, bits: u16) {
-        self.write16(off, self.read16(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits16(&self, off: u32, clear: u16, set: u16) {
-        self.write16(off, (self.read16(off) & !clear) | set);
-    }
-
-    #[inline]
-    pub fn setbits32(&self, off: u32, bits: u32) {
-        self.write32(off, self.read32(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits32(&self, off: u32, bits: u32) {
-        self.write32(off, self.read32(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits32(&self, off: u32, clear: u32, set: u32) {
-        self.write32(off, (self.read32(off) & !clear) | set);
-    }
-
-    #[inline]
     fn set_non_isoch_decode_mode_b(&self) {
         self.regs()
             .fsbpmc5
             .modify(FSBPMC5_REG::NON_ISOCH_DECODE.val(0b10));
+    }
+}
+
+impl crate::MmioBar for MchBar {
+    fn base(self) -> usize {
+        self.base
     }
 }
 
@@ -430,89 +356,14 @@ impl DmiBar {
     }
 
     #[inline]
-    pub fn read8(&self, off: u32) -> u8 {
-        // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
-    }
-
-    #[inline]
-    pub fn write8(&self, off: u32, val: u8) {
-        // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
-    }
-
-    #[inline]
-    pub fn read16(&self, off: u32) -> u16 {
-        // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_core::mmio::read16((self.base + off as usize) as *const u16) }
-    }
-
-    #[inline]
-    pub fn write16(&self, off: u32, val: u16) {
-        // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_core::mmio::write16((self.base + off as usize) as *mut u16, val) }
-    }
-
-    #[inline]
-    pub fn read32(&self, off: u32) -> u32 {
-        // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
-    }
-
-    #[inline]
-    pub fn write32(&self, off: u32, val: u32) {
-        // SAFETY: off is a GM965 DMIBAR register offset.
-        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
-    }
-
-    #[inline]
-    pub fn setbits8(&self, off: u32, bits: u8) {
-        self.write8(off, self.read8(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits8(&self, off: u32, bits: u8) {
-        self.write8(off, self.read8(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits8(&self, off: u32, clear: u8, set: u8) {
-        self.write8(off, (self.read8(off) & !clear) | set);
-    }
-
-    #[inline]
-    pub fn setbits16(&self, off: u32, bits: u16) {
-        self.write16(off, self.read16(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits16(&self, off: u32, bits: u16) {
-        self.write16(off, self.read16(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits16(&self, off: u32, clear: u16, set: u16) {
-        self.write16(off, (self.read16(off) & !clear) | set);
-    }
-
-    #[inline]
-    pub fn setbits32(&self, off: u32, bits: u32) {
-        self.write32(off, self.read32(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits32(&self, off: u32, bits: u32) {
-        self.write32(off, self.read32(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits32(&self, off: u32, clear: u32, set: u32) {
-        self.write32(off, (self.read32(off) & !clear) | set);
-    }
-
-    #[inline]
     fn clear_link_deemphasis_equalization(&self) {
         self.regs().dmilctl2.modify(DMILCTL2_REG::DEEMPH_EQ.val(0));
+    }
+}
+
+impl crate::MmioBar for DmiBar {
+    fn base(self) -> usize {
+        self.base
     }
 }
 
@@ -526,51 +377,11 @@ impl EpBar {
     pub const fn new(base: usize) -> Self {
         Self { base }
     }
+}
 
-    #[inline]
-    pub fn read8(&self, off: u32) -> u8 {
-        // SAFETY: off is a GM965 EPBAR register offset.
-        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
-    }
-
-    #[inline]
-    pub fn write32(&self, off: u32, val: u32) {
-        // SAFETY: off is a GM965 EPBAR register offset.
-        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
-    }
-
-    #[inline]
-    pub fn read32(&self, off: u32) -> u32 {
-        // SAFETY: off is a GM965 EPBAR register offset.
-        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
-    }
-
-    #[inline]
-    pub fn clrbits8(&self, off: u32, bits: u8) {
-        // SAFETY: off is a GM965 EPBAR register offset.
-        unsafe {
-            let ptr = (self.base + off as usize) as *mut u8;
-            fstart_core::mmio::write8(ptr, fstart_core::mmio::read8(ptr) & !bits);
-        }
-    }
-
-    #[inline]
-    pub fn clrsetbits8(&self, off: u32, clear: u8, set: u8) {
-        // SAFETY: off is a GM965 EPBAR register offset.
-        unsafe {
-            let ptr = (self.base + off as usize) as *mut u8;
-            fstart_core::mmio::write8(ptr, (fstart_core::mmio::read8(ptr) & !clear) | set);
-        }
-    }
-
-    #[inline]
-    pub fn setbits32(&self, off: u32, bits: u32) {
-        self.write32(off, self.read32(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits32(&self, off: u32, clear: u32, set: u32) {
-        self.write32(off, (self.read32(off) & !clear) | set);
+impl crate::MmioBar for EpBar {
+    fn base(self) -> usize {
+        self.base
     }
 }
 

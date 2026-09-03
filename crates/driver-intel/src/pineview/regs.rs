@@ -96,6 +96,7 @@ register_structs! {
 /// registers. The [`MchBarEarlyRegs`] tock-registers overlay covers
 /// the early-init subset; this wrapper provides raw offset-based access
 /// for the raminit code.
+#[derive(Clone, Copy)]
 pub struct MchBar {
     base: usize,
 }
@@ -105,65 +106,6 @@ impl MchBar {
         Self { base }
     }
 
-    #[inline]
-    pub fn read32(&self, off: u32) -> u32 {
-        // SAFETY: base is the programmed MCHBAR; off is a register offset.
-        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
-    }
-    #[inline]
-    pub fn write32(&self, off: u32, val: u32) {
-        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
-    }
-    #[inline]
-    pub fn read16(&self, off: u32) -> u16 {
-        unsafe { fstart_core::mmio::read16((self.base + off as usize) as *const u16) }
-    }
-    #[inline]
-    pub fn write16(&self, off: u32, val: u16) {
-        unsafe { fstart_core::mmio::write16((self.base + off as usize) as *mut u16, val) }
-    }
-    #[inline]
-    pub fn read8(&self, off: u32) -> u8 {
-        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
-    }
-    #[inline]
-    pub fn write8(&self, off: u32, val: u8) {
-        unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
-    }
-    #[inline]
-    pub fn setbits8(&self, off: u32, bits: u8) {
-        let v = self.read8(off);
-        self.write8(off, v | bits);
-    }
-    #[inline]
-    pub fn clrbits8(&self, off: u32, bits: u8) {
-        let v = self.read8(off);
-        self.write8(off, v & !bits);
-    }
-    #[inline]
-    pub fn setbits16(&self, off: u32, bits: u16) {
-        let v = self.read16(off);
-        self.write16(off, v | bits);
-    }
-    #[inline]
-    pub fn clrbits16(&self, off: u32, bits: u16) {
-        let v = self.read16(off);
-        self.write16(off, v & !bits);
-    }
-    /// `reg = (reg & mask) | set`.
-    #[inline]
-    pub fn modify32(&self, off: u32, mask: u32, set: u32) {
-        let v = self.read32(off);
-        self.write32(off, (v & mask) | set);
-    }
-    #[inline]
-    pub fn setbits32(&self, off: u32, bits: u32) {
-        self.modify32(off, !0, bits);
-    }
-    #[inline]
-    pub fn clrbits32(&self, off: u32, bits: u32) {
-        self.modify32(off, !bits, 0);
-    }
 
     /// Typed overlay for the early-init register subset.
     ///
@@ -174,7 +116,14 @@ impl MchBar {
     }
 }
 
+impl crate::MmioBar for MchBar {
+    fn base(self) -> usize {
+        self.base
+    }
+}
+
 /// DMIBAR MMIO accessor.
+#[derive(Clone, Copy)]
 pub struct DmiBar {
     base: usize,
 }
@@ -182,17 +131,16 @@ impl DmiBar {
     pub const fn new(base: usize) -> Self {
         Self { base }
     }
-    #[inline]
-    pub fn read32(&self, off: u32) -> u32 {
-        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
-    }
-    #[inline]
-    pub fn write32(&self, off: u32, val: u32) {
-        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
+}
+
+impl crate::MmioBar for DmiBar {
+    fn base(self) -> usize {
+        self.base
     }
 }
 
 /// RCBA (Root Complex Base Address) MMIO accessor.
+#[derive(Clone, Copy)]
 pub struct Rcba {
     base: usize,
 }
@@ -200,29 +148,11 @@ impl Rcba {
     pub const fn new(base: usize) -> Self {
         Self { base }
     }
-    #[inline]
-    pub fn read32(&self, off: u32) -> u32 {
-        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
-    }
-    #[inline]
-    pub fn write32(&self, off: u32, val: u32) {
-        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
-    }
-    #[inline]
-    pub fn read16(&self, off: u32) -> u16 {
-        unsafe { fstart_core::mmio::read16((self.base + off as usize) as *const u16) }
-    }
-    #[inline]
-    pub fn write16(&self, off: u32, val: u16) {
-        unsafe { fstart_core::mmio::write16((self.base + off as usize) as *mut u16, val) }
-    }
-    #[inline]
-    pub fn read8(&self, off: u32) -> u8 {
-        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
-    }
-    #[inline]
-    pub fn write8(&self, off: u32, val: u8) {
-        unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
+}
+
+impl crate::MmioBar for Rcba {
+    fn base(self) -> usize {
+        self.base
     }
 }
 

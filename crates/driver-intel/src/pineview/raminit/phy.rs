@@ -8,6 +8,7 @@
 
 #![allow(clippy::needless_range_loop)]
 use super::{PllParam, SysInfo};
+use crate::MmioBar;
 use crate::pineview::regs::{MchBar, mchbar};
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam;

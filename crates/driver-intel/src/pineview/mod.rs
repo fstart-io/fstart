@@ -23,6 +23,7 @@ use core::cell::UnsafeCell;
 use core::ptr;
 
 use self::regs::{DmiBar, MchBar, Rcba, hostbridge, mchbar};
+use crate::MmioBar;
 use crate::ich7::ich7;
 use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_arch::x86::mtrr;

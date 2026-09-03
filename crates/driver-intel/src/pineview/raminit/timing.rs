@@ -5,6 +5,7 @@
 //! `sdram_clkmode`, `sdram_timings`, `sdram_checkreset`.
 
 use super::SysInfo;
+use crate::MmioBar;
 use crate::ich7::ich7;
 use crate::pineview::regs::{MchBar, mchbar};
 use fstart_core::services::ServiceError;

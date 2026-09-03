@@ -22,6 +22,7 @@
 //!   (same policy as the GM965 port).
 
 use super::{MchBar, hostbridge, mchbar, IntelI945, I945Variant};
+use crate::MmioBar;
 use crate::generic::spd::ddr2;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam::EcamDevice;

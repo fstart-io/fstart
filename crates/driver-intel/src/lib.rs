@@ -28,6 +28,105 @@ pub enum BootPath {
     S3Resume,
 }
 
+/// Raw MMIO BAR accessor shared by northbridge BAR handles.
+///
+/// `MchBar`/`DmiBar`/`EpBar`/`Rcba` across the gm965, i945, and pineview
+/// drivers are distinct types over a plain base address; this trait owns
+/// the single copy of the read/write/set/clear suite so drivers only
+/// declare the handle (`new`) and the impl line. All operations are
+/// volatile MMIO with the same ordering as `fstart_core::mmio`.
+pub trait MmioBar: Copy {
+    /// MMIO base address of the BAR.
+    fn base(self) -> usize;
+
+    #[inline]
+    fn read8(self, off: u32) -> u8 {
+        // SAFETY: off is a register offset within this BAR.
+        unsafe { fstart_core::mmio::read8((self.base() + off as usize) as *const u8) }
+    }
+
+    #[inline]
+    fn write8(self, off: u32, val: u8) {
+        // SAFETY: off is a register offset within this BAR.
+        unsafe { fstart_core::mmio::write8((self.base() + off as usize) as *mut u8, val) }
+    }
+
+    #[inline]
+    fn read16(self, off: u32) -> u16 {
+        // SAFETY: off is a register offset within this BAR.
+        unsafe { fstart_core::mmio::read16((self.base() + off as usize) as *const u16) }
+    }
+
+    #[inline]
+    fn write16(self, off: u32, val: u16) {
+        // SAFETY: off is a register offset within this BAR.
+        unsafe { fstart_core::mmio::write16((self.base() + off as usize) as *mut u16, val) }
+    }
+
+    #[inline]
+    fn read32(self, off: u32) -> u32 {
+        // SAFETY: off is a register offset within this BAR.
+        unsafe { fstart_core::mmio::read32((self.base() + off as usize) as *const u32) }
+    }
+
+    #[inline]
+    fn write32(self, off: u32, val: u32) {
+        // SAFETY: off is a register offset within this BAR.
+        unsafe { fstart_core::mmio::write32((self.base() + off as usize) as *mut u32, val) }
+    }
+
+    #[inline]
+    fn setbits8(self, off: u32, bits: u8) {
+        self.write8(off, self.read8(off) | bits);
+    }
+
+    #[inline]
+    fn clrbits8(self, off: u32, bits: u8) {
+        self.write8(off, self.read8(off) & !bits);
+    }
+
+    #[inline]
+    fn clrsetbits8(self, off: u32, clear: u8, set: u8) {
+        self.write8(off, (self.read8(off) & !clear) | set);
+    }
+
+    #[inline]
+    fn setbits16(self, off: u32, bits: u16) {
+        self.write16(off, self.read16(off) | bits);
+    }
+
+    #[inline]
+    fn clrbits16(self, off: u32, bits: u16) {
+        self.write16(off, self.read16(off) & !bits);
+    }
+
+    #[inline]
+    fn clrsetbits16(self, off: u32, clear: u16, set: u16) {
+        self.write16(off, (self.read16(off) & !clear) | set);
+    }
+
+    #[inline]
+    fn setbits32(self, off: u32, bits: u32) {
+        self.write32(off, self.read32(off) | bits);
+    }
+
+    #[inline]
+    fn clrbits32(self, off: u32, bits: u32) {
+        self.write32(off, self.read32(off) & !bits);
+    }
+
+    #[inline]
+    fn clrsetbits32(self, off: u32, clear: u32, set: u32) {
+        self.write32(off, (self.read32(off) & !clear) | set);
+    }
+
+    /// Read-modify-write with keep-mask: `reg = (reg & mask) | set`.
+    #[inline]
+    fn modify32(self, off: u32, mask: u32, set: u32) {
+        self.write32(off, (self.read32(off) & mask) | set);
+    }
+}
+
 /// Intel northbridge contract consumed by Intel platform flows.
 pub trait IntelNorthbridgeDriver:
     fstart_core::services::memory_detect::MemoryDetector

@@ -25,6 +25,7 @@ use core::{cell::UnsafeCell, ptr};
 use fstart_arch::mp::{SmmError, SmmInfo};
 
 use fstart_core::mmio::MmioReadWrite;
+use crate::MmioBar;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
@@ -330,159 +331,67 @@ impl MchBar {
     pub const fn new(base: usize) -> Self {
         Self { base }
     }
+}
 
-    #[inline]
-    pub fn read8(&self, off: u32) -> u8 {
-        // SAFETY: off is an i945 MCHBAR register offset.
-        unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
-    }
-
-    #[inline]
-    pub fn write8(&self, off: u32, val: u8) {
-        // SAFETY: off is an i945 MCHBAR register offset.
-        unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
-    }
-
-    #[inline]
-    pub fn read16(&self, off: u32) -> u16 {
-        // SAFETY: off is an i945 MCHBAR register offset.
-        unsafe { fstart_core::mmio::read16((self.base + off as usize) as *const u16) }
-    }
-
-    #[inline]
-    pub fn write16(&self, off: u32, val: u16) {
-        // SAFETY: off is an i945 MCHBAR register offset.
-        unsafe { fstart_core::mmio::write16((self.base + off as usize) as *mut u16, val) }
-    }
-
-    #[inline]
-    pub fn read32(&self, off: u32) -> u32 {
-        // SAFETY: off is an i945 MCHBAR register offset.
-        unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
-    }
-
-    #[inline]
-    pub fn write32(&self, off: u32, val: u32) {
-        // SAFETY: off is an i945 MCHBAR register offset.
-        unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
-    }
-
-    #[inline]
-    pub fn setbits8(&self, off: u32, bits: u8) {
-        self.write8(off, self.read8(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits8(&self, off: u32, bits: u8) {
-        self.write8(off, self.read8(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits8(&self, off: u32, clear: u8, set: u8) {
-        self.write8(off, (self.read8(off) & !clear) | set);
-    }
-
-    #[inline]
-    pub fn setbits16(&self, off: u32, bits: u16) {
-        self.write16(off, self.read16(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits16(&self, off: u32, bits: u16) {
-        self.write16(off, self.read16(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits16(&self, off: u32, clear: u16, set: u16) {
-        self.write16(off, (self.read16(off) & !clear) | set);
-    }
-
-    #[inline]
-    pub fn setbits32(&self, off: u32, bits: u32) {
-        self.write32(off, self.read32(off) | bits);
-    }
-
-    #[inline]
-    pub fn clrbits32(&self, off: u32, bits: u32) {
-        self.write32(off, self.read32(off) & !bits);
-    }
-
-    #[inline]
-    pub fn clrsetbits32(&self, off: u32, clear: u32, set: u32) {
-        self.write32(off, (self.read32(off) & !clear) | set);
+impl crate::MmioBar for MchBar {
+    fn base(self) -> usize {
+        self.base
     }
 }
 
-macro_rules! bar_accessor {
-    ($name:ident, $doc:expr) => {
-        #[doc = $doc]
-        #[derive(Clone, Copy)]
-        pub struct $name {
-            base: usize,
-        }
-
-        impl $name {
-            pub const fn new(base: usize) -> Self {
-                Self { base }
-            }
-
-            #[inline]
-            pub fn read8(&self, off: u32) -> u8 {
-                // SAFETY: off is a register offset in this BAR.
-                unsafe { fstart_core::mmio::read8((self.base + off as usize) as *const u8) }
-            }
-
-            #[inline]
-            pub fn write8(&self, off: u32, val: u8) {
-                // SAFETY: off is a register offset in this BAR.
-                unsafe { fstart_core::mmio::write8((self.base + off as usize) as *mut u8, val) }
-            }
-
-            #[inline]
-            pub fn read16(&self, off: u32) -> u16 {
-                // SAFETY: off is a register offset in this BAR.
-                unsafe { fstart_core::mmio::read16((self.base + off as usize) as *const u16) }
-            }
-
-            #[inline]
-            pub fn write16(&self, off: u32, val: u16) {
-                // SAFETY: off is a register offset in this BAR.
-                unsafe { fstart_core::mmio::write16((self.base + off as usize) as *mut u16, val) }
-            }
-
-            #[inline]
-            pub fn read32(&self, off: u32) -> u32 {
-                // SAFETY: off is a register offset in this BAR.
-                unsafe { fstart_core::mmio::read32((self.base + off as usize) as *const u32) }
-            }
-
-            #[inline]
-            pub fn write32(&self, off: u32, val: u32) {
-                // SAFETY: off is a register offset in this BAR.
-                unsafe { fstart_core::mmio::write32((self.base + off as usize) as *mut u32, val) }
-            }
-
-            #[inline]
-            pub fn setbits32(&self, off: u32, bits: u32) {
-                self.write32(off, self.read32(off) | bits);
-            }
-
-            #[inline]
-            pub fn clrbits32(&self, off: u32, bits: u32) {
-                self.write32(off, self.read32(off) & !bits);
-            }
-
-            #[inline]
-            pub fn clrsetbits32(&self, off: u32, clear: u32, set: u32) {
-                self.write32(off, (self.read32(off) & !clear) | set);
-            }
-        }
-    };
+/// Thin EPBAR accessor.
+#[derive(Clone, Copy)]
+pub struct EpBar {
+    base: usize,
 }
 
-bar_accessor!(EpBar, "Thin EPBAR accessor.");
-bar_accessor!(DmiBar, "Thin DMIBAR accessor.");
-bar_accessor!(RcbaBar, "Thin RCBA accessor for the MCH-side DMI/topology setup.");
+impl EpBar {
+    pub const fn new(base: usize) -> Self {
+        Self { base }
+    }
+}
+
+impl crate::MmioBar for EpBar {
+    fn base(self) -> usize {
+        self.base
+    }
+}
+
+/// Thin DMIBAR accessor.
+#[derive(Clone, Copy)]
+pub struct DmiBar {
+    base: usize,
+}
+
+impl DmiBar {
+    pub const fn new(base: usize) -> Self {
+        Self { base }
+    }
+}
+
+impl crate::MmioBar for DmiBar {
+    fn base(self) -> usize {
+        self.base
+    }
+}
+
+/// Thin RCBA accessor for the MCH-side DMI/topology setup.
+#[derive(Clone, Copy)]
+pub struct RcbaBar {
+    base: usize,
+}
+
+impl RcbaBar {
+    pub const fn new(base: usize) -> Self {
+        Self { base }
+    }
+}
+
+impl crate::MmioBar for RcbaBar {
+    fn base(self) -> usize {
+        self.base
+    }
+}
 
 /// SMRAM control bits (shared with GM965; same register layout).
 const SMRAM_G_SMRAME: u8 = 1 << 3;

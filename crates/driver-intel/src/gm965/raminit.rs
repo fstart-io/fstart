@@ -9,6 +9,7 @@
 //! checked against coreboot's `gm965.h` and `raminit.c`.
 
 use crate::generic::spd::{ChipWidth, DimmInfo};
+use crate::MmioBar;
 use fstart_core::services::{ServiceError, SmBus};
 
 use super::{MchBar, hostbridge, mchbar};
