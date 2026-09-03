@@ -122,6 +122,69 @@ const RAM_EMRS_1: u32 = 0x0 << 21;
 const RAM_EMRS_2: u32 = 0x1 << 21;
 const RAM_EMRS_3: u32 = 0x2 << 21;
 
+/// Raminit failure reasons.
+///
+/// Converted to [`ServiceError::HardwareError`] at the `?` boundary after
+/// logging the variant, so a failed boot names the check instead of dying
+/// silent. ufmt has no `{:?}` for core `Debug`, hence the `as_str` match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaminitError {
+    EccUnsupported,
+    RegisteredUnsupported,
+    UnsupportedWidth,
+    NoBurstLength8,
+    RankTooSmall,
+    NoMemory,
+    NoCommonCas,
+    NoCommonFrequency,
+    BadTras,
+    BadTrp,
+    BadTrcd,
+    BadTwr,
+    BadRefresh,
+    BadRowsCols,
+    BadDrt3Frequency,
+    UnsupportedFsb,
+    BadMemClkFrequency,
+    BadOdtCas,
+    BadJedecCas,
+    BadJedecTwr,
+}
+
+impl RaminitError {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::EccUnsupported => "ECC memory not supported by this chipset",
+            Self::RegisteredUnsupported => "registered memory not supported by this chipset",
+            Self::UnsupportedWidth => "unsupported DDR2 memory width",
+            Self::NoBurstLength8 => "only DDR2 with burst length 8 is supported",
+            Self::RankTooSmall => "DDR2 rank smaller than 128MB is not supported",
+            Self::NoMemory => "no memory installed",
+            Self::NoCommonCas => "no common CAS latency",
+            Self::NoCommonFrequency => "no common memory frequency and CAS",
+            Self::BadTras => "tRAS error",
+            Self::BadTrp => "tRP error",
+            Self::BadTrcd => "tRCD error",
+            Self::BadTwr => "tWR error",
+            Self::BadRefresh => "unsupported refresh value",
+            Self::BadRowsCols => "unsupported rows/columns (DRA)",
+            Self::BadDrt3Frequency => "bad memory frequency",
+            Self::UnsupportedFsb => "unsupported FSB speed",
+            Self::BadMemClkFrequency => "target memory frequency error",
+            Self::BadOdtCas => "bad CAS for ODT",
+            Self::BadJedecCas => "JEDEC CAS error",
+            Self::BadJedecTwr => "JEDEC tWR error",
+        }
+    }
+}
+
+impl From<RaminitError> for ServiceError {
+    fn from(e: RaminitError) -> Self {
+        fstart_log::error!("i945: {}", e.as_str());
+        ServiceError::HardwareError
+    }
+}
+
 // tCK values in 1/256 ns (coreboot `device/dram/common.h`).
 const TCK_266MHZ: u32 = 960;
 const TCK_200MHZ: u32 = 1280;
@@ -702,20 +765,17 @@ fn gather_common_timing(
         };
 
         if raw[11] & 0x3 != 0 {
-            fstart_log::error!("i945: ECC memory not supported by this chipset");
-            return Err(ServiceError::HardwareError);
+            return Err(RaminitError::EccUnsupported.into());
         }
         if matches!(raw[20] & 0x3f, 0x01 | 0x07 | 0x10) {
-            fstart_log::error!("i945: registered memory not supported by this chipset");
-            return Err(ServiceError::HardwareError);
+            return Err(RaminitError::RegisteredUnsupported.into());
         }
 
         let width = match dimm.width {
             crate::generic::spd::ChipWidth::X8 => 8,
             crate::generic::spd::ChipWidth::X16 => 16,
             _ => {
-                fstart_log::error!("i945: unsupported DDR2 memory width");
-                return Err(ServiceError::HardwareError);
+                return Err(RaminitError::UnsupportedWidth.into());
             }
         };
         match (width, dimm.ranks) {
@@ -730,12 +790,10 @@ fn gather_common_timing(
             sys.package = PACKAGE_STACKED;
         }
         if raw[16] & 0x08 == 0 {
-            fstart_log::error!("i945: only DDR2 with burst length 8 is supported");
-            return Err(ServiceError::HardwareError);
+            return Err(RaminitError::NoBurstLength8.into());
         }
         if dimm.rank_capacity_mb < 128 {
-            fstart_log::error!("i945: DDR2 rank smaller than 128MB is not supported");
-            return Err(ServiceError::HardwareError);
+            return Err(RaminitError::RankTooSmall.into());
         }
 
         sys.banksize[i * 2] = dimm.rank_capacity_mb / 32;
@@ -768,8 +826,7 @@ fn gather_common_timing(
     }
 
     if dimm_mask == 0 {
-        fstart_log::error!("i945: no memory installed");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::NoMemory.into());
     }
     if dimm_mask & 0x03 == 0 {
         fstart_log::info!("i945: channel 0 has no memory populated");
@@ -783,8 +840,7 @@ fn choose_tclk(ctx: &Ctx<'_>, sys: &mut SysInfo, saved: &CommonTimings) -> Resul
     normalize_tck(&mut ctrl_min_tclk);
 
     let Some(mut try_cas) = ddr2::msb_index(saved.cas_mask) else {
-        fstart_log::error!("i945: no common CAS latency");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::NoCommonCas.into());
     };
     while saved.cas_mask & (1 << try_cas) != 0 && try_cas > 0 {
         sys.cas = try_cas;
@@ -800,8 +856,7 @@ fn choose_tclk(ctx: &Ctx<'_>, sys: &mut SysInfo, saved: &CommonTimings) -> Resul
     normalize_tck(&mut sys.tclk);
 
     if sys.cas < 3 || sys.tclk == 0 {
-        fstart_log::error!("i945: no common memory frequency and CAS");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::NoCommonFrequency.into());
     }
     if sys.tclk < ctrl_min_tclk {
         sys.tclk = ctrl_min_tclk;
@@ -829,30 +884,25 @@ fn div_round_up(n: u32, d: u32) -> u32 {
 fn derive_timings(sys: &mut SysInfo, saved: &CommonTimings) -> Result<(), ServiceError> {
     sys.tras = div_round_up(saved.min_tras, sys.tclk) as u8;
     if sys.tras > 0x18 {
-        fstart_log::error!("i945: tRAS error");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::BadTras.into());
     }
     sys.trp = div_round_up(saved.min_trp, sys.tclk) as u8;
     if sys.trp > 6 {
-        fstart_log::error!("i945: tRP error");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::BadTrp.into());
     }
     sys.trcd = div_round_up(saved.min_trcd, sys.tclk) as u8;
     if sys.trcd > 6 {
-        fstart_log::error!("i945: tRCD error");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::BadTrcd.into());
     }
     sys.twr = div_round_up(saved.min_twr, sys.tclk) as u8;
     if sys.twr > 5 {
-        fstart_log::error!("i945: tWR error");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::BadTwr.into());
     }
     sys.trfc = div_round_up(saved.min_trfc, sys.tclk);
 
     // tRR thresholds in 1/256 ns: 7.8us = 2000000, 15.6us = 4000000.
     if saved.max_trr < 2_000_000 {
-        fstart_log::error!("i945: unsupported refresh value");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::BadRefresh.into());
     } else if saved.max_trr < 4_000_000 {
         sys.refresh = REFRESH_7_8US;
     } else {
@@ -1179,8 +1229,7 @@ fn set_row_attributes(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceError> 
             0xad | 0xae => 3,
             0xbd | 0xbe => 4,
             _ => {
-                fstart_log::error!("i945: unsupported rows/columns (DRA)");
-                return Err(ServiceError::HardwareError);
+                return Err(RaminitError::BadRowsCols.into());
             }
         };
         if sys.banksize[2 * i + 1] != 0 {
@@ -1346,8 +1395,7 @@ fn set_timing_and_control(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceErr
         533 => (375, 0xba, 0x10),
         667 => (300, 0xe9, 0x14),
         _ => {
-            fstart_log::error!("i945: bad memory frequency");
-            return Err(ServiceError::HardwareError);
+            return Err(RaminitError::BadDrt3Frequency.into());
         }
     };
     temp_drt |= DRT3_REG::REF_MINUS_TRFC.val(((78800 / divisor) - old_trfc) & 0x1ff).value;
@@ -1395,8 +1443,7 @@ fn program_pll_settings(ctx: &mut Ctx<'_>, sys: &mut SysInfo) -> Result<(), Serv
     ctx.mch.write32(r::PLLMON, 0x8080_0000);
     sys.fsb_frequency = fsbclk(ctx);
     if sys.fsb_frequency == 0xffff {
-        fstart_log::error!("i945: unsupported FSB speed");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::UnsupportedFsb.into());
     }
     match sys.fsb_frequency {
         400 => ctx.mch.write8(r::CPCTL, 0x90),
@@ -1488,8 +1535,7 @@ fn program_memory_frequency(ctx: &mut Ctx<'_>, sys: &SysInfo) -> Result<(), Serv
         533 => (2 + offset) << 4,
         667 => (3 + offset) << 4,
         _ => {
-            fstart_log::error!("i945: target memory frequency error");
-            return Err(ServiceError::HardwareError);
+            return Err(RaminitError::BadMemClkFrequency.into());
         }
     };
 
@@ -1808,8 +1854,7 @@ fn on_die_termination(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceError> 
     }
 
     if !(3..=5).contains(&sys.cas) {
-        fstart_log::error!("i945: bad CAS for ODT");
-        return Err(ServiceError::HardwareError);
+        return Err(RaminitError::BadOdtCas.into());
     }
     let odt = (sys.cas - 3) as usize;
     for ch in [0u32, r::C1_BASE] {
@@ -1871,8 +1916,7 @@ fn jedec_enable(ctx: &mut Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceError> {
             4 => 4 << 7,
             3 => 3 << 7,
             _ => {
-                fstart_log::error!("i945: JEDEC CAS error");
-                return Err(ServiceError::HardwareError);
+                return Err(RaminitError::BadJedecCas.into());
             }
         };
         mrsaddr |= match sys.twr {
@@ -1880,8 +1924,7 @@ fn jedec_enable(ctx: &mut Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceError> {
             4 => 3 << 12,
             3 => 2 << 12,
             _ => {
-                fstart_log::error!("i945: JEDEC tWR error");
-                return Err(ServiceError::HardwareError);
+                return Err(RaminitError::BadJedecTwr.into());
             }
         };
         mrsaddr |= 1 << 6;
