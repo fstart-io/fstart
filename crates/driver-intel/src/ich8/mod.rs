@@ -96,24 +96,43 @@ pub mod ich8 {
     pub const DID_82801HBM_SATA_AHCI: u16 = 0x2829;
     pub const DID_82801HBM_SATA_RAID: u16 = 0x282a;
 
-    pub const FD_SAD2: u32 = 1 << 25;
-    pub const FD_TTD: u32 = 1 << 24;
-    pub const FD_PE6D: u32 = 1 << 21;
-    pub const FD_PE5D: u32 = 1 << 20;
-    pub const FD_PE4D: u32 = 1 << 19;
-    pub const FD_PE3D: u32 = 1 << 18;
-    pub const FD_PE2D: u32 = 1 << 17;
-    pub const FD_PE1D: u32 = 1 << 16;
-    pub const FD_EHCI1D: u32 = 1 << 15;
-    pub const FD_EHCI2D: u32 = 1 << 13;
-    pub const FD_U5D: u32 = 1 << 12;
-    pub const FD_U4D: u32 = 1 << 11;
-    pub const FD_U3D: u32 = 1 << 10;
-    pub const FD_U2D: u32 = 1 << 9;
-    pub const FD_U1D: u32 = 1 << 8;
-    pub const FD_HDAD: u32 = 1 << 4;
-    pub const FD_SD: u32 = 1 << 3;
-    pub const FD_SAD1: u32 = 1 << 2;
+    bitflags::bitflags! {
+        /// ICH8 Function Disable bits. Exported so board `inspect` output
+        /// and tests can decode the mask the driver programs.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct FunctionDisable: u32 {
+            const SAD1   = 1 << 2;
+            const SD     = 1 << 3;
+            const HDAD   = 1 << 4;
+            const U1D    = 1 << 8;
+            const U2D    = 1 << 9;
+            const U3D    = 1 << 10;
+            const U4D    = 1 << 11;
+            const U5D    = 1 << 12;
+            const EHCI2D = 1 << 13;
+            const EHCI1D = 1 << 15;
+            const PE1D   = 1 << 16;
+            const PE2D   = 1 << 17;
+            const PE3D   = 1 << 18;
+            const PE4D   = 1 << 19;
+            const PE5D   = 1 << 20;
+            const PE6D   = 1 << 21;
+            const TTD    = 1 << 24;
+            const SAD2   = 1 << 25;
+        }
+    }
+
+    impl FunctionDisable {
+        /// Indexed PCIe port bits for config-array mapping.
+        pub const PE: [Self; 6] = [
+            Self::PE1D,
+            Self::PE2D,
+            Self::PE3D,
+            Self::PE4D,
+            Self::PE5D,
+            Self::PE6D,
+        ];
+    }
 
     pub const IDE_TIM_PRI: u16 = 0x40;
     pub const IDE_TIM_SEC: u16 = 0x42;
@@ -1491,28 +1510,29 @@ impl IntelIch8 {
         self.enable_acpi_pm1();
     }
 
-    fn pcie_fd_bit(func: usize) -> u32 {
+    fn pcie_fd_bit(func: usize) -> ich8::FunctionDisable {
         match func {
-            0 => ich8::FD_PE1D,
-            1 => ich8::FD_PE2D,
-            2 => ich8::FD_PE3D,
-            3 => ich8::FD_PE4D,
-            4 => ich8::FD_PE5D,
-            5 => ich8::FD_PE6D,
-            _ => 0,
+            0 => ich8::FunctionDisable::PE1D,
+            1 => ich8::FunctionDisable::PE2D,
+            2 => ich8::FunctionDisable::PE3D,
+            3 => ich8::FunctionDisable::PE4D,
+            4 => ich8::FunctionDisable::PE5D,
+            5 => ich8::FunctionDisable::PE6D,
+            _ => ich8::FunctionDisable::empty(),
         }
     }
 
-    fn usb_fd_bit(dev: u8, func: u8) -> u32 {
+    fn usb_fd_bit(dev: u8, func: u8) -> ich8::FunctionDisable {
+        use ich8::FunctionDisable as Fd;
         match (dev, func) {
-            (ich8::UHCI1_DEV, 0) => ich8::FD_U1D,
-            (ich8::UHCI1_DEV, 1) => ich8::FD_U2D,
-            (ich8::UHCI1_DEV, 2) => ich8::FD_U3D,
-            (ich8::EHCI1_DEV, ich8::EHCI1_FUNC) => ich8::FD_EHCI1D,
-            (ich8::UHCI2_DEV, 0) => ich8::FD_U4D,
-            (ich8::UHCI2_DEV, 1) => ich8::FD_U5D,
-            (ich8::EHCI2_DEV, ich8::EHCI2_FUNC) => ich8::FD_EHCI2D,
-            _ => 0,
+            (ich8::UHCI1_DEV, 0) => Fd::U1D,
+            (ich8::UHCI1_DEV, 1) => Fd::U2D,
+            (ich8::UHCI1_DEV, 2) => Fd::U3D,
+            (ich8::EHCI1_DEV, ich8::EHCI1_FUNC) => Fd::EHCI1D,
+            (ich8::UHCI2_DEV, 0) => Fd::U4D,
+            (ich8::UHCI2_DEV, 1) => Fd::U5D,
+            (ich8::EHCI2_DEV, ich8::EHCI2_FUNC) => Fd::EHCI2D,
+            _ => Fd::empty(),
         }
     }
 
@@ -1816,9 +1836,9 @@ impl IntelIch8 {
                 .secondary_status_raw
                 .set(port_regs.secondary_status_raw.get());
         }
-        let fd = self.rcba().regs().fd.get();
+        let fd = ich8::FunctionDisable::from_bits_retain(self.rcba().regs().fd.get());
         for func in (0usize..6).rev() {
-            if (fd & Self::pcie_fd_bit(func)) == 0 {
+            if !fd.contains(Self::pcie_fd_bit(func)) {
                 break;
             }
             let port = ecam::EcamDevice::new(0, ich8::PCIE_DEV, func as u8);
@@ -1829,7 +1849,7 @@ impl IntelIch8 {
         let rcba = self.rcba();
         let mut rpfn = rcba.regs().rpfn.get();
         for func in 0usize..6 {
-            if (fd & Self::pcie_fd_bit(func)) != 0 {
+            if fd.contains(Self::pcie_fd_bit(func)) {
                 rpfn |= 1 << (func * 4 + 3);
             }
         }
@@ -1974,20 +1994,13 @@ impl IntelIch8 {
         self.pm().write32(pmio::PM1_CNT, pm1);
     }
 
-    fn function_disable_mask(&self) -> u32 {
-        let mut fd = 0u32;
-        if self.config.hda.is_none() {
-            fd |= ich8::FD_HDAD;
-        }
-        if self.config.sata.is_none() {
-            fd |= ich8::FD_SAD1;
-        }
-        if self.config.disable_sata2 {
-            fd |= ich8::FD_SAD2;
-        }
-        if self.config.disable_thermal {
-            fd |= ich8::FD_TTD;
-        }
+    fn function_disable_mask(&self) -> ich8::FunctionDisable {
+        use ich8::FunctionDisable as Fd;
+        let mut fd = Fd::empty();
+        fd.set(Fd::HDAD, self.config.hda.is_none());
+        fd.set(Fd::SAD1, self.config.sata.is_none());
+        fd.set(Fd::SAD2, self.config.disable_sata2);
+        fd.set(Fd::TTD, self.config.disable_thermal);
         match self.config.usb {
             Some(usb) => {
                 const UHCI: [(u8, u8); 5] = [(0x1d, 0), (0x1d, 1), (0x1d, 2), (0x1a, 0), (0x1a, 1)];
@@ -1996,26 +2009,16 @@ impl IntelIch8 {
                         fd |= Self::usb_fd_bit(dev, func);
                     }
                 }
-                if !usb.ehci[0] {
-                    fd |= ich8::FD_EHCI1D;
-                }
-                if !usb.ehci[1] {
-                    fd |= ich8::FD_EHCI2D;
-                }
+                fd.set(Fd::EHCI1D, !usb.ehci[0]);
+                fd.set(Fd::EHCI2D, !usb.ehci[1]);
             }
             None => {
-                fd |= ich8::FD_U1D
-                    | ich8::FD_U2D
-                    | ich8::FD_U3D
-                    | ich8::FD_U4D
-                    | ich8::FD_U5D
-                    | ich8::FD_EHCI1D
-                    | ich8::FD_EHCI2D;
+                fd |= Fd::U1D | Fd::U2D | Fd::U3D | Fd::U4D | Fd::U5D | Fd::EHCI1D | Fd::EHCI2D;
             }
         }
         for (idx, enabled) in self.config.pcie_ports.iter().enumerate() {
             if !*enabled {
-                fd |= ich8::FD_PE1D << idx;
+                fd |= Fd::PE[idx];
             }
         }
         fd
@@ -2212,7 +2215,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         self.clear_disabled_device_commands();
         let rcba = self.rcba();
         let fd = self.function_disable_mask();
-        rcba.regs().fd.set(fd);
+        rcba.regs().fd.set(fd.bits());
         if self.config.disable_lan {
             rcba.regs().fdsw.modify(FDSW::LAN_DISABLE::SET);
         }
@@ -2222,7 +2225,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         self.enable_hpet();
         self.setup_dmi();
         let _ = self.detect_s3_resume();
-        fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd);
+        fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd.bits());
         Ok(())
     }
 
