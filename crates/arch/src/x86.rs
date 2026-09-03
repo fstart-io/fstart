@@ -384,8 +384,13 @@ pub mod mtrr {
         unsafe {
             let cr0 = x86::controlregs::cr0() | x86::controlregs::Cr0::CR0_CACHE_DISABLE;
             x86::controlregs::cr0_write(cr0);
-            // x86 0.52 does not expose WBINVD, so keep the one instruction here.
-            core::arch::asm!("wbinvd", options(nostack));
+            // Deliberately no cache flush here. WBINVD must not execute
+            // out of CAR (coreboot arch/x86/cache.h), and it hangs with
+            // CD=1 on at least i945/Atom. INVD is not a substitute either:
+            // unlike exit_car.S (which INVDs where only a clflushed datum
+            // matters), this runs mid-ramstage with a live dirty stack and
+            // statics that INVD would discard. coreboot's ramstage MTRR
+            // path likewise emits no flush on self-snooping CPUs.
         }
     }
 
