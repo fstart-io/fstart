@@ -985,51 +985,65 @@ impl IntelIch7 {
     fn detect_s3_resume(&self) -> bool {
         false
     }
+}
 
-    /// Compute the Function Disable (FD) bitmask.
-    /// Function-disable mask (RCBA `FD` at 0x3418) derived from config.
+bitflags::bitflags! {
+    /// ICH7 Function Disable (RCBA `FD` at 0x3418) bits.
     ///
-    /// Mirrors coreboot `i82801gx` FD programming: every disable bit the
-    /// board's config expresses is set (`ICH_DISABLE_PCIE/UHCI`,
-    /// `FD_EHCI/INTLAN/ACMOD/ACAUD/HDAUD/SATA/PATA`). SMBus and LPC are
-    /// never disabled (SPD access and the SuperIO console need them).
-    fn function_disable_mask(&self) -> u32 {
-        let mut fd = 0u32;
+    /// Exported so board `inspect` output and tests can decode the mask the
+    /// driver programs. Mirrors coreboot `i82801gx.h` (`ICH_DISABLE_PCIE/UHCI`,
+    /// `FD_EHCI/INTLAN/ACMOD/ACAUD/HDAUD/SATA/PATA`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct FunctionDisable: u32 {
+        const PATA   = 1 << 1;
+        const SATA   = 1 << 2;
+        const HDAUD  = 1 << 4;
+        const ACAUD  = 1 << 5;
+        const ACMOD  = 1 << 6;
+        const INTLAN = 1 << 7;
+        const UHCI0  = 1 << 8;
+        const UHCI1  = 1 << 9;
+        const UHCI2  = 1 << 10;
+        const UHCI3  = 1 << 11;
+        const EHCI   = 1 << 15;
+        const PCIE0  = 1 << 16;
+        const PCIE1  = 1 << 17;
+        const PCIE2  = 1 << 18;
+        const PCIE3  = 1 << 19;
+    }
+}
+
+impl FunctionDisable {
+    /// Indexed PCIe port bits for config-array mapping.
+    pub const PCIE: [Self; 4] = [Self::PCIE0, Self::PCIE1, Self::PCIE2, Self::PCIE3];
+    /// Indexed UHCI bits for config-array mapping.
+    pub const UHCI: [Self; 4] = [Self::UHCI0, Self::UHCI1, Self::UHCI2, Self::UHCI3];
+}
+
+impl IntelIch7 {
+    /// Function-disable mask derived from config.
+    ///
+    /// SMBus and LPC are never disabled (SPD access and the SuperIO
+    /// console need them).
+    fn function_disable_mask(&self) -> FunctionDisable {
+        let mut fd = FunctionDisable::empty();
         for (idx, present) in self.config.pcie_ports.iter().copied().enumerate() {
-            if !present {
-                fd |= 1 << (16 + idx);
-            }
+            fd.set(FunctionDisable::PCIE[idx], !present);
         }
         let (ehci, uhci) = match self.config.usb {
             Some(usb) => (usb.ehci, usb.uhci),
             None => (false, [false; 4]),
         };
-        if !ehci {
-            fd |= 1 << 15;
-        }
+        fd.set(FunctionDisable::EHCI, !ehci);
         for (idx, present) in uhci.iter().copied().enumerate() {
-            if !present {
-                fd |= 1 << (8 + idx);
-            }
+            fd.set(FunctionDisable::UHCI[idx], !present);
         }
-        if !self.config.lan {
-            fd |= 1 << 7;
-        }
-        if !self.config.ac97_modem {
-            fd |= 1 << 6;
-        }
-        if !self.config.ac97_audio {
-            fd |= 1 << 5;
-        }
-        if self.config.hda.is_none() {
-            fd |= 1 << 4;
-        }
-        if self.config.sata.is_none() {
-            fd |= 1 << 2;
-        }
-        if !self.config.pata {
-            fd |= 1 << 1;
-        }
+        fd.set(FunctionDisable::INTLAN, !self.config.lan);
+        fd.set(FunctionDisable::ACMOD, !self.config.ac97_modem);
+        fd.set(FunctionDisable::ACAUD, !self.config.ac97_audio);
+        fd.set(FunctionDisable::HDAUD, self.config.hda.is_none());
+        fd.set(FunctionDisable::SATA, self.config.sata.is_none());
+        fd.set(FunctionDisable::PATA, !self.config.pata);
         fd
     }
 }
@@ -1172,7 +1186,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
 
         // ---- 12. Function disable mask ----
         let fd = self.function_disable_mask();
-        rcba.regs().fd.set(fd);
+        rcba.regs().fd.set(fd.bits());
 
         // ---- 13. GPIO pad programming ----
         self.setup_gpios();
@@ -1187,7 +1201,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         // ---- 14. Enable HPET (needed by raminit for hpet_udelay) ----
         self.enable_hpet(&rcba);
 
-        fstart_log::info!("intel-ich7: early init complete (fd_mask={:#x})", fd);
+        fstart_log::info!("intel-ich7: early init complete (fd_mask={:#x})", fd.bits());
         Ok(())
     }
 

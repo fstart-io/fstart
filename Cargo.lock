@@ -560,6 +560,7 @@ name = "fstart-driver-intel"
 version = "0.1.0"
 dependencies = [
  "acpi_tables",
+ "bitflags 2.10.0",
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch",

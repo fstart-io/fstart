@@ -21,6 +21,7 @@ pineview = []
 ich7 = []
 
 [dependencies]
+bitflags = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
 acpi_tables = { version = "0.2", optional = true }
