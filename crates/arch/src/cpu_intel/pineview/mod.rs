@@ -149,6 +149,12 @@ static PINEVIEW_IDS: &[CpuIdMatch] = &[
         signature: 0x106c0,
         mask: CpuIdMatch::EXACT_MASK,
     },
+    // Atom 230 stepping 2 (D945GCLF Socket 441 reports 0x106c2).
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x106c2,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
     CpuIdMatch {
         vendor: CpuVendor::Intel,
         signature: 0x106ca,
