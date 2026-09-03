@@ -19,6 +19,9 @@
 //! MMIO once [`IntelI945::pre_console_init`] has enabled PCIEXBAR.
 
 pub mod raminit;
+mod fields;
+
+use self::fields::*;
 
 use core::{cell::UnsafeCell, ptr};
 
@@ -26,6 +29,7 @@ use fstart_arch::mp::{SmmError, SmmInfo};
 
 use fstart_core::mmio::MmioReadWrite;
 use crate::MmioBar;
+use crate::ich7::Rcba;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
@@ -33,7 +37,7 @@ use fstart_core::services::{MemoryController, ServiceError};
 use fstart_pci::ecam;
 use fstart_pci::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind};
 use serde::Serialize;
-use tock_registers::interfaces::Readable;
+use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
 /// i945 host bridge (D0:F0) PCI configuration offsets.
@@ -147,32 +151,6 @@ pub mod dmibar {
     pub const DMI_MISC_2C: u32 = 0x02c;
     pub const DMI_MISC_32: u32 = 0x032;
     pub const DMIDRCCFG: u32 = 0xeb4;
-}
-
-/// ICH7 RCBA offsets touched by the i945 northbridge flow.
-///
-/// These live in `southbridge/intel/i82801gx/i82801gx.h`; they are repeated
-/// here because the DMI/topology setup in coreboot's `i945/early_init.c`
-/// programs both sides of the link from the northbridge flow.
-pub mod rcba {
-    pub const V0CTL: u32 = 0x0014;
-    pub const V1CAP: u32 = 0x001c;
-    pub const V1CTL: u32 = 0x0020;
-    pub const ESD: u32 = 0x0104;
-    pub const ULD: u32 = 0x0110;
-    pub const ULBA: u32 = 0x0118;
-    pub const RP1D: u32 = 0x0120;
-    pub const RP2D: u32 = 0x0130;
-    pub const RP3D: u32 = 0x0140;
-    pub const RP4D: u32 = 0x0150;
-    pub const HDD: u32 = 0x0160;
-    pub const RP5D: u32 = 0x0170;
-    pub const RP6D: u32 = 0x0180;
-    pub const LCAP: u32 = 0x01a4;
-    pub const LCTL: u32 = 0x01a8;
-    pub const MISC_2010: u32 = 0x2010;
-    pub const GCS: u32 = 0x3410;
-    pub const CG: u32 = 0x341c;
 }
 
 /// i945 silicon stepping target.
@@ -375,24 +353,6 @@ impl crate::MmioBar for DmiBar {
     }
 }
 
-/// Thin RCBA accessor for the MCH-side DMI/topology setup.
-#[derive(Clone, Copy)]
-pub struct RcbaBar {
-    base: usize,
-}
-
-impl RcbaBar {
-    pub const fn new(base: usize) -> Self {
-        Self { base }
-    }
-}
-
-impl crate::MmioBar for RcbaBar {
-    fn base(self) -> usize {
-        self.base
-    }
-}
-
 /// SMRAM control bits (shared with GM965; same register layout).
 const SMRAM_G_SMRAME: u8 = 1 << 3;
 const SMRAM_D_LCK: u8 = 1 << 4;
@@ -474,8 +434,8 @@ impl IntelI945 {
         EpBar::new(self.config.epbar as usize)
     }
 
-    fn rcba(&self) -> RcbaBar {
-        RcbaBar::new(self.config.rcba as usize)
+    fn rcba(&self) -> Rcba {
+        Rcba::new(self.config.rcba as usize)
     }
 
     fn pciexbar_length_bits(&self) -> u32 {
@@ -532,8 +492,9 @@ impl IntelI945 {
 
         // UMA size from board config (GMS field); TSEG 2M (covered by SMRR
         // MTRRs, which require TSEG_BASE aligned to TSEG_SIZE).
-        let gms = u16::from(self.config.gfx_gms & 7);
-        hb.write16(hostbridge::GGC, gms << 4);
+        Self::hostbridge_regs()
+            .ggc
+            .write(GGC_REG::GMS.val(u16::from(self.config.gfx_gms & 7)));
         hb.and8_or8(
             hostbridge::ESMRAMC,
             !0x07,
@@ -560,8 +521,12 @@ impl IntelI945 {
         let ep = self.epbar();
         let mch = self.mchbar();
 
-        ep.clrsetbits32(epbar::EPVC0RCTL, 0xffff_ff00, 0);
-        ep.clrsetbits32(epbar::EPPVCCAP1, 7, 1);
+        ep.clrsetbits32(epbar::EPVC0RCTL, 0xffff_ff00, EPVC1RCTL_REG::TC_VC_MAP.val(0).value);
+        ep.clrsetbits32(
+            epbar::EPPVCCAP1,
+            7,
+            EPPVCCAP1_REG::VC_COUNT.val(1).value,
+        );
 
         let clkcfg = mch.read32(mchbar::CLKCFG) & 7;
         let mut misc = ep.read32(epbar::VC1_MISC) & 0xffff_ff00;
@@ -578,7 +543,11 @@ impl IntelI945 {
         ep.write32(epbar::VC1_MISC, misc);
 
         ep.write32(epbar::EPVC1MTS, 0x0a0a_0a0a);
-        ep.clrsetbits32(epbar::EPVC1RCAP, 0x7f << 16, 0x0a << 16);
+        ep.clrsetbits32(
+            epbar::EPVC1RCAP,
+            0x7f << 16,
+            EPVC1RCAP_REG::VC1_MTS.val(0x0a).value,
+        );
 
         let ist = match (self.config.variant, clkcfg) {
             (I945Variant::DesktopGc, 0) => Some(0x0138_0138),
@@ -593,15 +562,19 @@ impl IntelI945 {
         }
 
         // Internal graphics enabled: allow isochronous traffic.
-        if Self::hb().read8(hostbridge::DEVEN)
-            & (hostbridge::DEVEN_D2F0 | hostbridge::DEVEN_D2F1) as u8
+        if Self::hostbridge_regs().deven.get()
+            & (DEVEN_REG::D2F0::SET + DEVEN_REG::D2F1::SET).value
             != 0
         {
             mch.setbits32(mchbar::MMARB1, 1 << 17);
         }
 
-        ep.clrsetbits32(epbar::EPVC1RCTL, 7 << 24, 1 << 24);
-        ep.clrsetbits32(epbar::EPVC1RCTL, 0xffff_ff00, 1 << 7);
+        ep.clrsetbits32(epbar::EPVC1RCTL, 7 << 24, EPVC1RCTL_REG::VC_ID.val(1).value);
+        ep.clrsetbits32(
+            epbar::EPVC1RCTL,
+            0xffff_ff00,
+            (EPVC1RCTL_REG::TC_VC_MAP.val(0) + EPVC1RCTL_REG::VC_ARB::SET).value,
+        );
 
         ep.write32(epbar::PORTARB, 0x0100_0001);
         ep.write32(epbar::PORTARB + 0x04, 0x0004_0000);
@@ -612,8 +585,14 @@ impl IntelI945 {
         ep.write32(epbar::PORTARB + 0x18, 0x0000_1000);
         ep.write32(epbar::PORTARB + 0x1c, 0x0000_0040);
 
-        ep.setbits32(epbar::EPVC1RCTL, 1 << 16);
-        ep.setbits32(epbar::EPVC1RCTL, 1 << 16);
+        ep.write32(
+            epbar::EPVC1RCTL,
+            ep.read32(epbar::EPVC1RCTL) | EPVC1RCTL_REG::ARB_LOAD::SET.value,
+        );
+        ep.write32(
+            epbar::EPVC1RCTL,
+            ep.read32(epbar::EPVC1RCTL) | EPVC1RCTL_REG::ARB_LOAD::SET.value,
+        );
 
         let mut timeout = 0x7fff_ffu32;
         while ep.read16(epbar::EPVC1RSTS) & 1 != 0 && timeout != 0 {
@@ -623,7 +602,10 @@ impl IntelI945 {
             fstart_log::error!("i945: port arbitration table load timeout");
         }
 
-        ep.setbits32(epbar::EPVC1RCTL, 1 << 31);
+        ep.write32(
+            epbar::EPVC1RCTL,
+            ep.read32(epbar::EPVC1RCTL) | EPVC1RCTL_REG::VC_EN::SET.value,
+        );
         timeout = 0x7fff;
         while ep.read16(epbar::EPVC1RSTS) & (1 << 1) != 0 && timeout != 0 {
             timeout -= 1;
@@ -635,11 +617,10 @@ impl IntelI945 {
 
     /// ICH7 side of the DMI RCRB setup (`ich7_setup_dmi_rcrb`).
     fn ich7_setup_dmi_rcrb(&self) {
-        let rcba = self.rcba();
-        let lctl = rcba.read16(rcba::LCTL);
-        rcba.write16(rcba::LCTL, (lctl & !3) | 3);
-        rcba.write32(rcba::V0CTL, 0x8000_0001);
-        rcba.write32(rcba::V1CAP, 0x0312_8010);
+        let r = self.rcba().regs();
+        r.lctl.set((r.lctl.get() & !3) | 3);
+        r.v0ctl.set(0x8000_0001);
+        r.v1cap.set(0x0312_8010);
 
         for (dev, func) in [(0x1c, 0), (0x1c, 4), (0x1c, 5)] {
             let rp = ecam::EcamDevice::new(0, dev, func);
@@ -648,11 +629,11 @@ impl IntelI945 {
         ecam::EcamDevice::new(0, 0x1c, 4).write32(0x54, 0x0048_0ce0);
         ecam::EcamDevice::new(0, 0x1c, 5).write32(0x54, 0x0050_0ce0);
 
-        let mut v1ctl = rcba.read32(rcba::V1CTL);
+        let mut v1ctl = r.v1ctl.get();
         v1ctl &= !((0x7f << 1) | (7 << 17) | (7 << 24));
         v1ctl |= (0x40 << 1) | (4 << 17) | (1 << 24) | (1 << 31);
-        rcba.write32(rcba::V1CTL, v1ctl);
-        rcba.setbits32(rcba::LCAP, 3 << 10);
+        r.v1ctl.set(v1ctl);
+        r.lcap.set(r.lcap.get() | (3 << 10));
     }
 
     /// MCH side of the DMI RCRB setup (`i945_setup_dmi_rcrb`).
@@ -660,12 +641,28 @@ impl IntelI945 {
         let dmi = self.dmibar();
         let mch = self.mchbar();
 
-        dmi.clrsetbits32(dmibar::DMIVC0RCTL0, 0xffff_ff00, 0);
-        dmi.clrsetbits32(dmibar::DMIPVCCAP1, 7, 1);
+        // VC0 accepts TC0 only; VC ID 1 must match the ICH7 side.
+        dmi.clrsetbits32(
+            dmibar::DMIVC0RCTL0,
+            0xffff_ff00,
+            DMIVC1RCTL_REG::TC_VC_MAP.val(0).value,
+        );
+        dmi.clrsetbits32(
+            dmibar::DMIPVCCAP1,
+            7,
+            DMIPVCCAP1_REG::VC_COUNT.val(1).value,
+        );
         // VC ID 1 must match the ICH7 side.
-        dmi.clrsetbits32(dmibar::DMIVC1RCTL, 7 << 24, 1 << 24);
-        dmi.clrsetbits32(dmibar::DMIVC1RCTL, 0xffff_ff00, 1 << 7);
-        dmi.setbits32(dmibar::DMIVC1RCTL, 1 << 31);
+        dmi.clrsetbits32(dmibar::DMIVC1RCTL, 7 << 24, DMIVC1RCTL_REG::VC_ID.val(1).value);
+        dmi.clrsetbits32(
+            dmibar::DMIVC1RCTL,
+            0xffff_ff00,
+            (DMIVC1RCTL_REG::TC_VC_MAP.val(0) + DMIVC1RCTL_REG::VC_ARB::SET).value,
+        );
+        dmi.write32(
+            dmibar::DMIVC1RCTL,
+            dmi.read32(dmibar::DMIVC1RCTL) | DMIVC1RCTL_REG::VC_EN::SET.value,
+        );
 
         let mut timeout = 0x7_ffffu32;
         while dmi.read16(dmibar::DMIVC1RSTS) & (1 << 1) != 0 && timeout != 0 {
@@ -675,25 +672,26 @@ impl IntelI945 {
             fstart_log::error!("i945: DMI VC1 negotiation timeout");
         }
 
-        // ASPM L0.
-        dmi.clrsetbits32(dmibar::DMILCAP, 7 << 12, 2 << 12);
-        dmi.clrsetbits32(dmibar::DMILCAP, 7 << 15, 2 << 15);
+        // ASPM L0 exit latencies.
+        dmi.clrsetbits32(dmibar::DMILCAP, 7 << 12, DMILCAP_REG::L0S_EXIT_LAT.val(2).value);
+        dmi.clrsetbits32(dmibar::DMILCAP, 7 << 15, DMILCAP_REG::L1_EXIT_LAT.val(2).value);
         let mut cc = dmi.read32(dmibar::DMICC) & 0x00ff_ffff;
         cc &= !3;
-        cc |= 1 << 0;
+        cc |= DMICC_REG::VC0_EN.val(1).value;
         cc &= !(3 << 20);
-        cc |= 1 << 20;
+        cc |= DMICC_REG::VC1_EN.val(1).value;
         dmi.write32(dmibar::DMICC, cc);
-        dmi.setbits32(dmibar::DMILCTL, 3);
+        dmi.setbits32(dmibar::DMILCTL, DMILCTL_REG::ASPM_CTRL.val(3).value);
 
-        let snp = (mch.read32(mchbar::FSBSNPCTL) & !(0xff << 2)) | (0xaa << 2);
+        let snp = (mch.read32(mchbar::FSBSNPCTL) & !(0xff << 2))
+            | FSBSNPCTL_REG::SNP_MODE.val(0xaa).value;
         mch.write32(mchbar::FSBSNPCTL, snp);
         dmi.write32(dmibar::DMI_MISC_2C, 0x8600_0040);
         // x4 DMI.
         dmi.clrsetbits32(dmibar::DMI_MISC_204, 0x3ff, 0x13f);
 
-        if Self::hb().read8(hostbridge::DEVEN)
-            & (hostbridge::DEVEN_D2F0 | hostbridge::DEVEN_D2F1) as u8
+        if Self::hostbridge_regs().deven.get()
+            & (DEVEN_REG::D2F0::SET + DEVEN_REG::D2F1::SET).value
             != 0
         {
             dmi.setbits32(dmibar::DMI_MISC_200, 1 << 21);
@@ -702,10 +700,10 @@ impl IntelI945 {
         }
         dmi.clrbits32(dmibar::DMI_MISC_204, (1 << 11) | (1 << 10));
         dmi.clrsetbits32(dmibar::DMI_MISC_204, 0xff << 12, 0x0d << 12);
-        dmi.setbits32(dmibar::DMICTL1, 3 << 24);
+        dmi.setbits32(dmibar::DMICTL1, DMICTL1_REG::MISC_CTRL.val(3).value);
         dmi.clrsetbits32(dmibar::DMI_MISC_200, 3 << 26, 2 << 26);
-        dmi.clrbits32(dmibar::DMIDRCCFG, 1 << 31);
-        dmi.setbits32(dmibar::DMICTL2, 1 << 31);
+        dmi.clrbits32(dmibar::DMIDRCCFG, DMIDRCCFG_REG::MISC_CTRL31::SET.value);
+        dmi.setbits32(dmibar::DMICTL2, DMICTL2_REG::MISC_CTRL31::SET.value);
 
         if Self::silicon_revision() >= 3 {
             for off in [0xec0, 0xed4, 0xee8, 0xefc] {
@@ -876,7 +874,7 @@ impl IntelI945 {
         let ep = self.epbar();
         let dmi = self.dmibar();
 
-        ep.clrsetbits32(epbar::EPESD, 0x00ff_0000, 1 << 16);
+        ep.clrsetbits32(epbar::EPESD, 0x00ff_0000, EPESD_REG::COMP_ID.val(1).value);
         ep.setbits32(epbar::EPLE1D, (1 << 16) | (1 << 0));
         ep.write32(epbar::EPLE1A, self.config.dmibar as u32);
         ep.setbits32(epbar::EPLE2D, (1 << 16) | (1 << 0));
@@ -897,35 +895,31 @@ impl IntelI945 {
 
     /// Root complex topology, ICH7 side (`ich7_setup_root_complex_topology`).
     fn ich7_setup_root_complex_topology(&self) {
-        let rcba = self.rcba();
-        rcba.clrsetbits32(rcba::ESD, 0, 2 << 16);
-        rcba.clrsetbits32(rcba::ULD, 0, (1 << 24) | (1 << 16));
+        let r = self.rcba().regs();
+        r.esd.set(r.esd.get() | (2 << 16));
+        r.uld.set(r.uld.get() | (1 << 24) | (1 << 16));
         // ULBA is 64-bit; coreboot writes the low 32 bits.
-        rcba.write32(rcba::ULBA, self.config.dmibar as u32);
-        for off in [
-            rcba::RP1D,
-            rcba::RP2D,
-            rcba::RP3D,
-            rcba::RP4D,
-            rcba::HDD,
-            rcba::RP5D,
-            rcba::RP6D,
-        ] {
-            rcba.clrsetbits32(off, 0, 2 << 16);
+        r.ulba_lo.set(self.config.dmibar as u32);
+        for reg in [&r.rp1d, &r.rp2d, &r.rp3d, &r.rp4d, &r.hdd, &r.rp5d, &r.rp6d] {
+            reg.set(reg.get() | (2 << 16));
         }
     }
 
     /// ICH7 PCIe root-port clocks and slot power (`ich7_setup_pci_express`).
     fn ich7_setup_pci_express(&self) {
-        self.rcba().setbits32(rcba::CG, 1 << 0);
+        let r = self.rcba().regs();
+        r.cg.set(r.cg.get() | (1 << 0));
         ecam::EcamDevice::new(0, 0x1c, 0).write32(0x54, 0x0000_0060);
         ecam::EcamDevice::new(0, 0x1c, 0).write32(0xd8, 0x0011_0000);
     }
 
     /// Mobile GM errata fixup (`fixup_i945gm_errata` from `errata.c`).
     fn fixup_mobile_errata(&self) {
-        self.mchbar()
-            .clrsetbits32(mchbar::FSBPMC3, (1 << 13) | (1 << 29), 0);
+        self.mchbar().clrsetbits32(
+            mchbar::FSBPMC3,
+            (FSBPMC3_REG::GM_ERRATA::SET + FSBPMC3_REG::DIS_QPML::SET).value,
+            0,
+        );
     }
 
     /// Early chipset init before DRAM (`i945_early_initialization`).
@@ -941,8 +935,9 @@ impl IntelI945 {
         self.setup_bars();
 
         // Change port80 to LPC; set the early-RCRB misc bit.
-        self.rcba().clrbits32(rcba::GCS, 0x04);
-        self.rcba().setbits32(rcba::MISC_2010, 1 << 10);
+        let r = self.rcba().regs();
+        r.gcs.set(r.gcs.get() & !0x04);
+        r.misc_2010.set(r.misc_2010.get() | (1 << 10));
     }
 
     /// Post-DRAM chipset init (`i945_late_initialization`).

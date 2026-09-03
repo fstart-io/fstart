@@ -21,6 +21,7 @@
 //!   MRC cache, so the CMOS receive-enable save/restore pair is omitted
 //!   (same policy as the GM965 port).
 
+use super::fields::*;
 use super::{MchBar, hostbridge, mchbar, IntelI945, I945Variant};
 use crate::MmioBar;
 use crate::generic::spd::ddr2;
@@ -110,7 +111,6 @@ mod r {
 // DRAM command encoding (`do_ram_command`)
 // ---------------------------------------------------------------------------
 
-const RAM_INITIALIZATION_COMPLETE: u32 = 1 << 19;
 const RAM_COMMAND_NOP: u32 = 0x1 << 16;
 const RAM_COMMAND_PRECHARGE: u32 = 0x2 << 16;
 const RAM_COMMAND_MRS: u32 = 0x3 << 16;
@@ -502,10 +502,10 @@ fn full_reset() -> ! {
 #[inline(never)]
 fn do_ram_command(mch: &MchBar, command: u32) {
     let mut reg = mch.read32(r::DCC);
-    reg &= !((3 << 21) | (1 << 20) | (1 << 19) | (7 << 16));
+    reg &= !DCC_CMD_MASK;
     reg |= command;
     if command == RAM_COMMAND_NORMAL {
-        reg |= RAM_INITIALIZATION_COMPLETE;
+        reg |= DCC_REG::INIT_COMPLETE::SET.value;
     }
     mch.write32(r::DCC, reg);
     udelay(1);
@@ -617,7 +617,10 @@ fn detect_errors(ctx: &mut Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceError> {
     ctx.lpc.or8(GEN_PMCON_2, 1 << 7);
 
     // Without resume support the self-refresh check always clears status.
-    ctx.mch.setbits8(mchbar::SLFRCS, 3);
+    ctx.mch.setbits8(
+        mchbar::SLFRCS,
+        (SLFRCS_REG::SR_CH1::SET + SLFRCS_REG::SR_CH0::SET).value,
+    );
 
     if do_reset {
         fstart_log::debug!("i945: reset required");
@@ -987,13 +990,23 @@ fn rcomp_buffer_strength_and_slew(ctx: &Ctx<'_>, sys: &SysInfo) {
 /// Enable periodic RCOMP (`sdram_enable_rcomp`).
 fn enable_rcomp(ctx: &Ctx<'_>) {
     udelay(300);
-    ctx.mch.clrbits32(r::GBRCOMPCTL, 1 << 23);
+    ctx.mch.clrbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::PERIODIC_DIS::SET.value);
 }
 
 /// Program DLL timings (`sdram_program_dll_timings`).
 fn program_dll_timings(ctx: &Ctx<'_>, sys: &SysInfo) {
-    ctx.mch.clrbits16(r::DQSMT, (3 << 12) | (1 << 10) | 0xf);
-    ctx.mch.setbits16(r::DQSMT, (1 << 13) | 0xc);
+    ctx.mch.clrbits16(
+        r::DQSMT,
+        (DQSMT_REG::DQSMT_B13::SET
+            + DQSMT_REG::DQSMT_B12::SET
+            + DQSMT_REG::DQSMT_B10::SET
+            + DQSMT_REG::DQSMT_LO.val(0xf))
+        .value,
+    );
+    ctx.mch.setbits16(
+        r::DQSMT,
+        (DQSMT_REG::DQSMT_B13::SET + DQSMT_REG::DQSMT_LO.val(0xc)).value,
+    );
 
     let channeldll = if ctx.mobile {
         match sys.memory_frequency {
@@ -1026,22 +1039,22 @@ fn program_dll_timings(ctx: &Ctx<'_>, sys: &SysInfo) {
 
 /// Force an RCOMP cycle (`sdram_force_rcomp`).
 fn force_rcomp(ctx: &Ctx<'_>) {
-    ctx.mch.setbits32(r::ODTC, 1 << 28);
-    ctx.mch.setbits32(r::SMSRCTL, 1 << 0);
-    ctx.mch.setbits32(r::GBRCOMPCTL, 1 << 8);
+    ctx.mch.setbits32(r::ODTC, ODTC_REG::RCOMP_FORCE_ODT::SET.value);
+    ctx.mch.setbits32(r::SMSRCTL, SMSRCTL_REG::SM_RCOMP_EN::SET.value);
+    // Start initial RCOMP.
+    ctx.mch.setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_FORCE::SET.value);
 
     let rev = IntelI945::silicon_revision();
     if (rev == 0 && ctx.mch.read32(r::DCC) & 3 == 0) || rev == 1 {
-        ctx.mch.setbits32(r::GBRCOMPCTL, 3 << 5);
+        ctx.mch.setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_ALT.val(3).value);
     }
 }
 
 /// System-memory IO init (`sdram_initialize_system_memory_io`).
 fn initialize_system_memory_io(ctx: &mut Ctx<'_>, sys: &SysInfo) {
+    ctx.mch.clrsetbits8(r::C0HCTC, 0x1f, HCTC_REG::HCTC_MODE.val(1).value);
     ctx.mch
-        .clrsetbits8(r::C0HCTC, 0x1f, 1 << 0);
-    ctx.mch
-        .clrsetbits8(r::C0HCTC + r::C1_BASE, 0x1f, 1 << 0);
+        .clrsetbits8(r::C0HCTC + r::C1_BASE, 0x1f, HCTC_REG::HCTC_MODE.val(1).value);
     ctx.mch.clrbits16(
         r::WDLLBYPMODE,
         (1 << 9) | (1 << 6) | (1 << 4) | (1 << 3) | (1 << 1),
@@ -1056,12 +1069,17 @@ fn initialize_system_memory_io(ctx: &mut Ctx<'_>, sys: &SysInfo) {
     program_dram_width(ctx, sys);
     rcomp_buffer_strength_and_slew(ctx, sys);
 
+    // Indicate that RCOMP programming is done.
     ctx.mch.clrsetbits32(
         r::GBRCOMPCTL,
-        (1 << 29) | (1 << 26) | (3 << 21) | (3 << 2),
-        (3 << 27) | 3,
+        (GBRCOMPCTL_REG::RCOMP_DONE::SET
+            + GBRCOMPCTL_REG::RCOMP_CFG26::SET
+            + GBRCOMPCTL_REG::RCOMP_CFG21.val(3)
+            + GBRCOMPCTL_REG::RCOMP_CFG2.val(3))
+        .value,
+        (GBRCOMPCTL_REG::RCOMP_CFG27.val(3) + GBRCOMPCTL_REG::RCOMP_EN.val(3)).value,
     );
-    ctx.mch.setbits32(r::GBRCOMPCTL, 1 << 10);
+    ctx.mch.setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_DONE_FLAG::SET.value);
 
     program_dll_timings(ctx, sys);
     force_rcomp(ctx);
@@ -1069,10 +1087,19 @@ fn initialize_system_memory_io(ctx: &mut Ctx<'_>, sys: &SysInfo) {
 
 /// System-memory IO buffer enable (`sdram_enable_system_memory_io`).
 fn enable_system_memory_io(ctx: &Ctx<'_>, sys: &SysInfo) {
-    ctx.mch.clrbits32(r::RCVENMT, 0x3f << 6);
-    ctx.mch.setbits32(r::RCVENMT, (1 << 11) | (1 << 9));
-    ctx.mch.setbits32(r::DRTST, (1 << 3) | (1 << 2));
-    ctx.mch.setbits32(r::DRTST, (1 << 6) | (1 << 4));
+    ctx.mch.clrbits32(r::RCVENMT, 0x3f << 6); // [11:6] = 0, see RCVENMT_REG
+    ctx.mch.setbits32(
+        r::RCVENMT,
+        (RCVENMT_REG::CH0_EN::SET + RCVENMT_REG::CH0_MED::SET).value,
+    );
+    ctx.mch.setbits32(
+        r::DRTST,
+        (DRTST_REG::IO_EN::SET + DRTST_REG::IO_MODE::SET).value,
+    );
+    ctx.mch.setbits32(
+        r::DRTST,
+        (DRTST_REG::TEST_EN::SET + DRTST_REG::TEST_MODE::SET).value,
+    );
 
     // NOP-ish barrier: two no-ops before sampling DRTST.
     #[cfg(target_arch = "x86_64")]
@@ -1081,21 +1108,27 @@ fn enable_system_memory_io(ctx: &Ctx<'_>, sys: &SysInfo) {
     }
 
     if sys.dimm[0] != DIMM_NOT_POPULATED || sys.dimm[1] != DIMM_NOT_POPULATED {
-        ctx.mch.setbits32(r::DRTST, (1 << 7) | (1 << 5));
+        ctx.mch.setbits32(
+            r::DRTST,
+            (DRTST_REG::CH0_IO0::SET + DRTST_REG::CH0_IO1::SET).value,
+        );
     } else {
-        ctx.mch.setbits32(r::DRTST, 1 << 31);
+        ctx.mch.setbits32(r::DRTST, DRTST_REG::CH0_EMPTY::SET.value);
     }
     if sys.dimm[2] != DIMM_NOT_POPULATED || sys.dimm[3] != DIMM_NOT_POPULATED {
-        ctx.mch.setbits32(r::DRTST, (1 << 9) | (1 << 8));
+        ctx.mch.setbits32(
+            r::DRTST,
+            (DRTST_REG::CH1_IO0::SET + DRTST_REG::CH1_IO1::SET).value,
+        );
     } else {
-        ctx.mch.setbits32(r::DRTST, 1 << 30);
+        ctx.mch.setbits32(r::DRTST, DRTST_REG::CH1_EMPTY::SET.value);
     }
 
     if sys.dimm[0] != DIMM_NOT_POPULATED || sys.dimm[1] != DIMM_NOT_POPULATED {
-        ctx.mch.setbits32(r::C0DRC1, 1 << 8);
+        ctx.mch.setbits32(r::C0DRC1, DRC1_REG::IO_BUF_EN::SET.value);
     }
     if sys.dimm[2] != DIMM_NOT_POPULATED || sys.dimm[3] != DIMM_NOT_POPULATED {
-        ctx.mch.setbits32(r::C0DRC1 + r::C1_BASE, 1 << 8);
+        ctx.mch.setbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::IO_BUF_EN::SET.value);
     }
 }
 
@@ -1183,14 +1216,11 @@ fn set_bank_architecture(ctx: &Ctx<'_>, sys: &SysInfo) {
 
 /// Program refresh rate (`sdram_program_refresh_rate`).
 fn program_refresh_rate(ctx: &Ctx<'_>, sys: &SysInfo) {
-    let reg = if sys.refresh == REFRESH_7_8US {
-        2 << 8
-    } else {
-        1 << 8
-    };
-    ctx.mch.clrsetbits32(r::C0DRC0, 7 << 8, reg);
+    let refresh = if sys.refresh == REFRESH_7_8US { 2 } else { 1 };
     ctx.mch
-        .clrsetbits32(r::C0DRC0 + r::C1_BASE, 7 << 8, reg);
+        .clrsetbits32(r::C0DRC0, 7 << 8, DRC0_REG::REFRESH.val(refresh).value);
+    ctx.mch
+        .clrsetbits32(r::C0DRC0 + r::C1_BASE, 7 << 8, DRC0_REG::REFRESH.val(refresh).value);
 }
 
 /// Program CKE tristate (`sdram_program_cke_tristate`).
@@ -1201,7 +1231,7 @@ fn program_cke_tristate(ctx: &Ctx<'_>, sys: &SysInfo) {
             reg |= 1 << (16 + i);
         }
     }
-    reg |= (1 << 12) | (1 << 11);
+    reg |= DRC1_REG::CKE.val(3).value;
     ctx.mch.write32(r::C0DRC1, reg);
 
     let mut reg = ctx.mch.read32(r::C0DRC1 + r::C1_BASE);
@@ -1210,7 +1240,7 @@ fn program_cke_tristate(ctx: &Ctx<'_>, sys: &SysInfo) {
             reg |= 1 << (12 + i);
         }
     }
-    reg |= (1 << 12) | (1 << 11);
+    reg |= DRC1_REG::CKE.val(3).value;
     ctx.mch.write32(r::C0DRC1 + r::C1_BASE, reg);
 }
 
@@ -1239,11 +1269,14 @@ const CAS_TABLE: [u32; 4] = [2, 1, 0, 3];
 /// Program DRAM timing and control (`sdram_set_timing_and_control`).
 fn set_timing_and_control(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceError> {
     for ch in [0u32, r::C1_BASE] {
-        ctx.mch
-            .clrsetbits32(r::C0DRC0 + ch, (1 << 13) | (1 << 12), 1 << 2);
+        ctx.mch.clrsetbits32(
+            r::C0DRC0 + ch,
+            (1 << 13) | (1 << 12),
+            DRC0_REG::BURST8::SET.value,
+        );
     }
     if !sys.dual_channel && sys.dimm[1] != DIMM_NOT_POPULATED {
-        ctx.mch.setbits32(r::C0DRC0, 1 << 15);
+        ctx.mch.setbits32(r::C0DRC0, DRC0_REG::SC1_SECOND_DIMM::SET.value);
     }
 
     program_refresh_rate(ctx, sys);
@@ -1251,14 +1284,8 @@ fn set_timing_and_control(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceErr
     program_odt_tristate(ctx, sys);
 
     // DRT0.
-    let mut temp_drt = 0u32;
     let w2r_same = (u32::from(sys.cas) - 1) + (8 / 2) + u32::from(sys.twr);
-    temp_drt |= w2r_same << 28;
-    temp_drt |= (w2r_same + u32::from(sys.trp)) << 4;
     let twtr = if sys.memory_frequency == 667 { 3 } else { 2 };
-    temp_drt |= ((u32::from(sys.cas) - 1) + (8 / 2) + twtr) << 24;
-    temp_drt |= (1 << 22) | (3 << 20) | (1 << 18);
-
     let mut trd_min = u32::from(sys.cas);
     match sys.fsb_frequency {
         667 => trd_min += 1,
@@ -1266,20 +1293,29 @@ fn set_timing_and_control(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceErr
         1066 => trd_min += 3,
         _ => {}
     }
-    temp_drt |= trd_min << 11;
-    temp_drt |= 8;
+    let temp_drt = (DRT0_REG::B2B_W_PCHG.val(w2r_same)
+        + DRT0_REG::W_AUTO_PCHG.val(w2r_same + u32::from(sys.trp))
+        + DRT0_REG::B2B_W2R.val((u32::from(sys.cas) - 1) + (8 / 2) + twtr)
+        + DRT0_REG::TRD.val(trd_min)
+        + DRT0_REG::R_AP_TO_ACT.val(8))
+    .value
+        // Fixed per coreboot: (1 << 22) | (3 << 20) | (1 << 18).
+        | 0x0074_0000;
     ctx.mch.write32(r::C0DRT0, temp_drt);
     ctx.mch.write32(r::C0DRT0 + r::C1_BASE, temp_drt);
 
     // DRT1.
     let mut temp_drt = ctx.mch.read32(r::C0DRT1) & 0x0002_0088;
-    temp_drt |= u32::from(sys.trp) - 2;
-    temp_drt |= (u32::from(sys.trcd) - 2) << 4;
-    temp_drt |= CAS_TABLE[(sys.cas - 3) as usize] << 8;
+    temp_drt |= (DRT1_REG::TRP.val(u32::from(sys.trp) - 2)
+        + DRT1_REG::TRCD.val(u32::from(sys.trcd) - 2)
+        + DRT1_REG::CAS.val(CAS_TABLE[(sys.cas - 3) as usize])
+        + DRT1_REG::TRAS.val(u32::from(sys.tras)))
+    .value;
+    // tRFC keeps its numeric shift: the DDR2 range can exceed the 6-bit
+    // hardware field, and coreboot writes the unmasked value through.
     temp_drt |= sys.trfc << 10;
-    temp_drt |= u32::from(sys.tras) << 19;
     if sys.memory_frequency == 667 {
-        temp_drt |= 1 << 28;
+        temp_drt |= DRT1_REG::TRTP_667::SET.value;
     }
     let mut page = 0u32;
     let mut page_size = 1u32;
@@ -1294,7 +1330,7 @@ fn set_timing_and_control(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceErr
     if sys.memory_frequency == 667 {
         page = page_size;
     }
-    temp_drt |= page << 30;
+    temp_drt |= DRT1_REG::PAGE.val(page).value;
     ctx.mch.write32(r::C0DRT1, temp_drt);
     ctx.mch.write32(r::C0DRT1 + r::C1_BASE, temp_drt);
 
@@ -1314,8 +1350,8 @@ fn set_timing_and_control(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceErr
             return Err(ServiceError::HardwareError);
         }
     };
-    temp_drt |= ((78800 / divisor) - old_trfc) & 0x1ff;
-    temp_drt |= (hi << 16) | (lo << 10);
+    temp_drt |= DRT3_REG::REF_MINUS_TRFC.val(((78800 / divisor) - old_trfc) & 0x1ff).value;
+    temp_drt |= (DRT3_REG::US_HI.val(hi) + DRT3_REG::US_LO.val(lo)).value;
     ctx.mch.write32(r::C0DRT3, temp_drt);
     ctx.mch.write32(r::C0DRT3 + r::C1_BASE, temp_drt);
     Ok(())
@@ -1532,8 +1568,13 @@ fn disable_fast_dispatch(ctx: &Ctx<'_>) {
 /// Pre-JEDEC init (`sdram_pre_jedec_initialization`).
 fn pre_jedec_initialization(ctx: &Ctx<'_>) {
     ctx.mch
-        .clrsetbits32(r::WCC, !0x113f_f3ff, (4 << 29) | (3 << 25) | (1 << 10));
-    ctx.mch.setbits32(r::SMVREFC, 1 << 6);
+        .clrsetbits32(
+            r::WCC,
+            !WCC_BASE_MASK,
+            (WCC_REG::WRITE_DIS.val(4) + WCC_REG::READ_DIS.val(3) + WCC_REG::POSTED_WRITE::SET)
+                .value,
+        );
+    ctx.mch.setbits32(r::SMVREFC, SMVREFC_REG::SMVREF_EN::SET.value);
     ctx.mch.clrsetbits32(r::MMARB0, 3 << 17, (1 << 21) | (1 << 16));
     ctx.mch.clrsetbits32(r::MMARB1, 7 << 8, 3 << 8);
     ctx.mch.write32(r::C0AIT_LO, 0x0000_06c4);
@@ -1629,8 +1670,11 @@ fn post_jedec_initialization(ctx: &Ctx<'_>, sys: &SysInfo) {
     enhanced_addressing_mode(ctx, sys);
     ctx.mch.clrbits32(mchbar::FSBPMC3, 1 << 1);
     ctx.mch.clrbits32(r::SBTEST, 1 << 2);
-    ctx.mch
-        .clrsetbits32(r::SBOCC, !0xffbd_b6ff, (0xbdb6 << 8) | (1 << 0));
+    ctx.mch.clrsetbits32(
+        r::SBOCC,
+        !SBOCC_BASE_MASK,
+        (SBOCC_REG::OCC_TIMER.val(0xbdb6) + SBOCC_REG::OCC_EN::SET).value,
+    );
 }
 
 /// Power management (`sdram_power_management`).
@@ -1640,9 +1684,12 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
         != 0;
 
     for ch in [0u32, r::C1_BASE] {
-        ctx.mch
-            .clrsetbits32(r::C0DRT2 + ch, 0xff, (1 << 5) | (1 << 4));
-        ctx.mch.setbits32(r::C0DRC1 + ch, (1 << 12) | (1 << 11));
+        ctx.mch.clrsetbits32(
+            r::C0DRT2 + ch,
+            0xff,
+            (DRT2_REG::CKE_IDLE.val(3) + DRT2_REG::TIMER_LO.val(0)).value,
+        );
+        ctx.mch.setbits32(r::C0DRC1 + ch, DRC1_REG::CKE.val(3).value);
     }
 
     if ctx.mobile {
@@ -1661,9 +1708,9 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
     }
     ctx.mch.write32(r::GIPMC1, 0x8000_000c);
     if IntelI945::silicon_revision() > 2 {
-        ctx.mch.clrsetbits16(r::CPCTL, 7 << 11, 6 << 11);
+        ctx.mch.clrsetbits16(r::CPCTL, 7 << 11, CPCTL_REG::PM_DIV.val(6).value);
     } else {
-        ctx.mch.clrsetbits16(r::CPCTL, 7 << 11, 4 << 11);
+        ctx.mch.clrsetbits16(r::CPCTL, 7 << 11, CPCTL_REG::PM_DIV.val(4).value);
     }
 
     if IntelI945::silicon_revision() != 0 {
@@ -1699,21 +1746,25 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
     }
 
     if IntelI945::silicon_revision() == 0 {
-        ctx.mch.clrbits32(r::ECO, 1 << 16);
+        ctx.mch.clrbits32(r::ECO, ECO_REG::ECO_BIT16::SET.value);
     } else {
-        ctx.mch.setbits32(r::ECO, 1 << 16);
+        ctx.mch.setbits32(r::ECO, ECO_REG::ECO_BIT16::SET.value);
     }
-    ctx.mch.clrbits32(mchbar::FSBPMC3, 1 << 29);
-    ctx.mch.setbits32(mchbar::FSBPMC3, 1 << 21);
-    ctx.mch.clrbits32(mchbar::FSBPMC3, 1 << 19);
-    ctx.mch.clrbits32(mchbar::FSBPMC3, 1 << 13);
-    ctx.mch.clrsetbits32(r::FSBPMC4, 3 << 24, 2 << 24);
-    ctx.mch.setbits32(r::FSBPMC4, 1 << 21);
-    ctx.mch.setbits32(r::FSBPMC4, 1 << 5);
+    ctx.mch.clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::DIS_QPML::SET.value);
+    ctx.mch.setbits32(mchbar::FSBPMC3, FSBPMC3_REG::PM_ENABLE::SET.value);
+    ctx.mch.clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::FAST_DISPATCH::SET.value);
+    ctx.mch.clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::GM_ERRATA::SET.value);
+    ctx.mch.clrsetbits32(
+        r::FSBPMC4,
+        3 << 24,
+        FSBPMC4_REG::PM_MODE.val(2).value,
+    );
+    ctx.mch.setbits32(r::FSBPMC4, FSBPMC4_REG::PM_EN21::SET.value);
+    ctx.mch.setbits32(r::FSBPMC4, FSBPMC4_REG::PM_EN5::SET.value);
     if IntelI945::silicon_revision() < 2 {
-        ctx.mch.clrbits32(r::FSBPMC4, 1 << 4);
+        ctx.mch.clrbits32(r::FSBPMC4, FSBPMC4_REG::PM_POLARITY::SET.value);
     } else {
-        ctx.mch.setbits32(r::FSBPMC4, 1 << 4);
+        ctx.mch.setbits32(r::FSBPMC4, FSBPMC4_REG::PM_POLARITY::SET.value);
     }
 
     ctx.hb.or8(0xfc, 1 << 4);
@@ -1727,10 +1778,10 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
     ctx.mch.write16(r::MIPMC4, mipmc4);
     ctx.mch.write16(r::MIPMC5, mipmc5);
     ctx.mch.write16(r::MIPMC6, mipmc6);
-    ctx.mch.clrsetbits32(r::PMCFG, 3 << 17, 2 << 17);
-    ctx.mch.setbits32(r::PMCFG, 1 << 4);
+    ctx.mch.clrsetbits32(r::PMCFG, 3 << 17, PMCFG_REG::PM_MODE.val(2).value);
+    ctx.mch.setbits32(r::PMCFG, PMCFG_REG::PM_EN::SET.value);
     ctx.mch.clrsetbits32(r::UPMC4, 0xff, 0x01);
-    ctx.mch.clrbits32(r::MISC_B18, 1 << 21);
+    ctx.mch.clrbits32(r::MISC_B18, MISC_B18_REG::MISC_CTRL21::SET.value);
 }
 
 /// Thermal management (`sdram_thermal_management`): DIMM sensors unimplemented.
@@ -1745,7 +1796,11 @@ const ODT_HI: [u32; 3] = [0xe001_0000, 0xe002_0000, 0xe003_0000];
 
 /// On-die termination (`sdram_on_die_termination`).
 fn on_die_termination(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceError> {
-    ctx.mch.clrsetbits32(r::ODTC, 3 << 16, (1 << 14) | (1 << 6) | (2 << 16));
+    ctx.mch.clrsetbits32(
+        r::ODTC,
+        3 << 16,
+        (ODTC_REG::ODT_MODE.val(2) + ODTC_REG::ODT_EN::SET + ODTC_REG::ODT_REF::SET).value,
+    );
 
     if sys.dimm[0] == DIMM_NOT_POPULATED || sys.dimm[1] == DIMM_NOT_POPULATED {
         ctx.mch.clrbits32(r::C0ODT_LO, 7 << 28);
@@ -1901,9 +1956,9 @@ fn setup_processor_side(ctx: &Ctx<'_>) {
     if IntelI945::silicon_revision() == 0 {
         ctx.mch.setbits32(mchbar::FSBPMC3, 1 << 2);
     }
-    ctx.mch.setbits8(r::MISC_B00, 1);
+    ctx.mch.setbits8(r::MISC_B00, MISC_B00_REG::PROC_SIDE_INIT::SET.value);
     if IntelI945::silicon_revision() == 0 {
-        ctx.mch.setbits32(r::SLPCTL, 1 << 8);
+        ctx.mch.setbits32(r::SLPCTL, SLPCTL_REG::SLPCTL_B8::SET.value);
     }
 }
 
@@ -1913,8 +1968,8 @@ fn setup_processor_side(ctx: &Ctx<'_>) {
 
 /// Sample the strobes (`sample_strobes`).
 fn sample_strobes(ctx: &Ctx<'_>, channel_offset: u32, sys: &SysInfo) -> u32 {
-    ctx.mch.setbits32(r::C0DRC1 + channel_offset, 1 << 6);
-    ctx.mch.clrbits32(r::C0DRC1 + channel_offset, 1 << 6);
+    ctx.mch.setbits32(r::C0DRC1 + channel_offset, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch.clrbits32(r::C0DRC1 + channel_offset, DRC1_REG::RCVEN_TOGGLE::SET.value);
 
     let mut addr = 0u32;
     if channel_offset != 0 {
@@ -1941,17 +1996,23 @@ fn set_receive_enable(ctx: &Ctx<'_>, channel_offset: u32, medium: u8, coarse: u8
     ctx.mch.clrsetbits32(
         r::C0DRT1 + channel_offset,
         0x0f00_0000,
-        (u32::from(coarse) & 0x0f) << 24,
+        DRT1_REG::RCVEN_COARSE.val(u32::from(coarse) & 0x0f).value,
     );
     if coarse > 0x0f {
         fstart_log::debug!("i945: coarse overflow {:#04x}", coarse);
     }
     if channel_offset == 0 {
-        ctx.mch
-            .clrsetbits32(r::RCVENMT, 3 << 2, u32::from(medium) << 2);
+        ctx.mch.clrsetbits32(
+            r::RCVENMT,
+            3 << 2,
+            RCVENMT_REG::CH0_MEDIUM.val(u32::from(medium)).value,
+        );
     } else {
-        ctx.mch
-            .clrsetbits32(r::RCVENMT, 3, u32::from(medium));
+        ctx.mch.clrsetbits32(
+            r::RCVENMT,
+            3,
+            RCVENMT_REG::CH1_MEDIUM.val(u32::from(medium)).value,
+        );
     }
 }
 
@@ -2168,12 +2229,13 @@ fn receive_enable_adjust(ctx: &Ctx<'_>, sys: &SysInfo) {
 ///
 /// Resume always reboots (no MRC cache), so only the training path exists.
 fn program_receive_enable(ctx: &Ctx<'_>, sys: &SysInfo) {
-    ctx.mch.setbits32(r::REPC, 1 << 0);
+    ctx.mch.setbits32(r::REPC, REPC_REG::RCVEN_EN::SET.value);
     receive_enable_adjust(ctx, sys);
-    ctx.mch.setbits32(r::C0DRC1, 1 << 6);
-    ctx.mch.setbits32(r::C0DRC1 + r::C1_BASE, 1 << 6);
-    ctx.mch.clrbits32(r::C0DRC1, 1 << 6);
-    ctx.mch.clrbits32(r::C0DRC1 + r::C1_BASE, 1 << 6);
+    ctx.mch.setbits32(r::C0DRC1, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch.setbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch.clrbits32(r::C0DRC1, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch.clrbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    // MIPMC3 receive-enable done bits (plain 0x0f per coreboot).
     ctx.mch.setbits32(r::MIPMC3, 0x0f);
 }
 
@@ -2224,8 +2286,8 @@ pub fn sdram_initialize(
     set_channel_mode(&ctx, &mut sys);
     program_clock_crossing(&ctx);
     disable_fast_dispatch(&ctx);
-    ctx.mch.setbits32(r::C0DMC, 1 << 24);
-    ctx.mch.setbits32(r::C0DMC + r::C1_BASE, 1 << 24);
+    ctx.mch.setbits32(r::C0DMC, DMC_REG::PWR_DOWN_ACPI::SET.value);
+    ctx.mch.setbits32(r::C0DMC + r::C1_BASE, DMC_REG::PWR_DOWN_ACPI::SET.value);
 
     program_row_boundaries(&ctx, &sys);
     set_row_attributes(&ctx, &sys)?;

@@ -123,12 +123,40 @@ register_bitfields! [u8,
 
 register_structs! {
     /// ICH7 Root Complex Base Address MMIO register block.
-    RcbaRegs {
+    pub(crate) RcbaRegs {
         (0x0000 => _reserved_start),
+        (0x0014 => pub v0ctl: MmioReadWrite<u32>),
+        (0x0018 => _reserved_dmi0),
+        (0x001c => pub v1cap: MmioReadWrite<u32>),
+        (0x0020 => pub v1ctl: MmioReadWrite<u32>),
+        (0x0024 => _reserved_dmi1),
         (0x0050 => pub fd2: MmioReadWrite<u32, FD2_REG::Register>),
         (0x0054 => _reserved0),
         (0x0088 => pub cir1: MmioReadWrite<u32>),
         (0x008c => _reserved1),
+        (0x0104 => pub esd: MmioReadWrite<u32>),
+        (0x0108 => _reserved_ul0),
+        (0x0110 => pub uld: MmioReadWrite<u32>),
+        (0x0114 => _reserved_ul1),
+        (0x0118 => pub ulba_lo: MmioReadWrite<u32>),
+        (0x011c => _reserved_ul2),
+        (0x0120 => pub rp1d: MmioReadWrite<u32>),
+        (0x0124 => _reserved_rp0),
+        (0x0130 => pub rp2d: MmioReadWrite<u32>),
+        (0x0134 => _reserved_rp1),
+        (0x0140 => pub rp3d: MmioReadWrite<u32>),
+        (0x0144 => _reserved_rp2),
+        (0x0150 => pub rp4d: MmioReadWrite<u32>),
+        (0x0154 => _reserved_rp3),
+        (0x0160 => pub hdd: MmioReadWrite<u32>),
+        (0x0164 => _reserved_rp4),
+        (0x0170 => pub rp5d: MmioReadWrite<u32>),
+        (0x0174 => _reserved_rp5),
+        (0x0180 => pub rp6d: MmioReadWrite<u32>),
+        (0x0184 => _reserved_rp6),
+        (0x01a4 => pub lcap: MmioReadWrite<u32>),
+        (0x01a8 => pub lctl: MmioReadWrite<u16>),
+        (0x01aa => _reserved_lctl),
         (0x01f4 => pub cir2: MmioReadWrite<u32>),
         (0x01f8 => _reserved2),
         (0x01fc => pub cir3: MmioReadWrite<u16>),
@@ -142,6 +170,8 @@ register_structs! {
         (0x0221 => _reserved6),
         (0x1d40 => pub sata_prefetch: MmioReadWrite<u32, SATA_PREFETCH_REG::Register>),
         (0x1d44 => _reserved7),
+        (0x2010 => pub misc_2010: MmioReadWrite<u32>),
+        (0x2014 => _reserved7b),
         (0x2027 => pub cir_2027: MmioReadWrite<u8>),
         (0x2028 => _reserved8),
         (0x2034 => pub cir_2034: MmioReadWrite<u32, CIR_2034_REG::Register>),
@@ -188,17 +218,17 @@ register_structs! {
 }
 
 /// Sparse RCBA (Root Complex Base Address) MMIO accessor.
-struct Rcba {
+pub(crate) struct Rcba {
     base: usize,
 }
 
 impl Rcba {
-    const fn new(base: usize) -> Self {
+    pub(crate) const fn new(base: usize) -> Self {
         Self { base }
     }
 
     #[inline]
-    fn regs(&self) -> &'static RcbaRegs {
+    pub(crate) fn regs(&self) -> &'static RcbaRegs {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
         unsafe { &*(self.base as *const RcbaRegs) }
     }
