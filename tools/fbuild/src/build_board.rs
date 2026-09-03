@@ -177,7 +177,7 @@ fn build_board_smm_stage(
         .arg("--release");
     cmd.env(
         "RUSTFLAGS",
-        "-C panic=abort -C opt-level=s -C relocation-model=pic -C no-redzone=yes -C linker-plugin-lto=no -C embed-bitcode=no",
+        "-C panic=abort -C opt-level=s -C relocation-model=pic -C no-redzone=yes -C linker-plugin-lto=no -C embed-bitcode=no -Z function-sections=yes",
     );
 
     eprintln!(

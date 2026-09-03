@@ -266,6 +266,13 @@ pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandler
         .arg("-Ttext=0")
         .arg("--oformat=elf64-x86-64")
         .arg("--unresolved-symbols=ignore-all")
+        // Drop unreachable sections: the SMM rlibs contain every driver in
+        // the tree (all platforms, raminit, formatting), but the handler
+        // root only needs the southbridge PMIO/TCO path plus install code.
+        // Objects are built with -Z function-sections (see
+        // build_board_smm_stage) so each function/data item lands in its own
+        // section.
+        .arg("--gc-sections")
         .arg("-o")
         .arg(&elf)
         .arg("-u")
