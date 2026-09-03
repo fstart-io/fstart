@@ -633,14 +633,6 @@ fn early_reset(mch: &MchBar) -> ! {
     full_reset();
 }
 
-fn ddr2_spd_has_ecc(spd: &[u8; 256]) -> bool {
-    (spd[11] & 0x03) != 0
-}
-
-fn ddr2_spd_is_registered(spd: &[u8; 256]) -> bool {
-    matches!(spd[20] & 0x3f, 0x01 | 0x07 | 0x10)
-}
-
 fn channel_populated(info: &RaminitInfo, ch: usize) -> bool {
     let first = ch * 2;
     info.dimms[first].present || info.dimms[first + 1].present
@@ -1604,11 +1596,11 @@ pub fn probe_dimms<B: SmBus>(
             fstart_log::error!("gm965 raminit: invalid/non-DDR2 SPD at {:#x}", addr);
             return Err(ServiceError::HardwareError);
         };
-        if ddr2_spd_has_ecc(&spd) {
+        if dimm.is_ecc {
             fstart_log::error!("gm965 raminit: ECC DDR2 DIMM at {:#x} is unsupported", addr);
             return Err(ServiceError::HardwareError);
         }
-        if ddr2_spd_is_registered(&spd) {
+        if dimm.is_registered {
             fstart_log::error!(
                 "gm965 raminit: registered DDR2 DIMM at {:#x} is unsupported",
                 addr,
@@ -1812,14 +1804,28 @@ mod tests {
     }
 
     #[test]
-    fn spd_reject_helpers_catch_ecc_and_registered_ddr2() {
+    fn spd_decode_flags_ecc_and_registered_ddr2() {
+        use crate::generic::spd::ddr2;
+        // Minimal valid DDR2 SPD so decode_dimm returns Some.
         let mut spd = [0u8; 256];
+        spd[2] = 0x08;
+        spd[62] = 0x12;
+        spd[3] = 12;
+        spd[4] = 10;
+        spd[17] = 8;
+        spd[13] = 8;
+        spd[6] = 64;
         spd[11] = 1;
-        assert!(ddr2_spd_has_ecc(&spd));
+        let dimm = ddr2::decode_dimm(&spd).expect("decodes");
+        assert!(dimm.is_ecc);
+        assert!(!dimm.is_registered);
         spd[11] = 0;
         spd[20] = 0x07;
-        assert!(ddr2_spd_is_registered(&spd));
+        let dimm = ddr2::decode_dimm(&spd).expect("decodes");
+        assert!(!dimm.is_ecc);
+        assert!(dimm.is_registered);
         spd[20] = 0x04;
-        assert!(!ddr2_spd_is_registered(&spd));
+        let dimm = ddr2::decode_dimm(&spd).expect("decodes");
+        assert!(!dimm.is_registered);
     }
 }

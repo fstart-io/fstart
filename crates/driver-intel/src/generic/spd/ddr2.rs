@@ -27,10 +27,15 @@ pub const SPD_ACCESS_TIME_FROM_CLOCK: u8 = 10;
 pub const SPD_DIMM_CONFIG_TYPE: u8 = 11;
 /// SPD byte 13: primary SDRAM width.
 pub const SPD_PRIMARY_SDRAM_WIDTH: u8 = 13;
+/// SPD byte 16: supported burst lengths (bit 3 = BL8).
+pub const SPD_BURST_LENGTHS: u8 = 16;
 /// SPD byte 17: number of banks per SDRAM device.
 pub const SPD_NUM_BANKS_PER_SDRAM: u8 = 17;
 /// SPD byte 18: supported CAS latencies (bitmask).
 pub const SPD_SUPPORTED_CAS_LATENCIES: u8 = 18;
+/// SPD byte 20: DIMM type (registered variants). Only the low 6 bits
+/// carry the type; see `is_registered_ddr2`.
+pub const SPD_DIMM_TYPE: u8 = 20;
 /// SPD byte 23: minimum cycle time at CAS-1.
 pub const SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_1: u8 = 23;
 /// SPD byte 24: access time at CAS-1.
@@ -64,6 +69,13 @@ pub const SPD_REVISION: u8 = 62;
 
 /// DDR2 memory type identifier (SPD byte 2).
 pub const DDR2: u8 = 0x08;
+
+/// Registered DDR2 DIMM types (SPD byte 20, low 6 bits), matching
+/// coreboot `spd_dimm_is_registered_ddr2`.
+#[must_use]
+pub const fn is_registered_ddr2(dimm_type: u8) -> bool {
+    matches!(dimm_type & 0x3f, 0x01 | 0x07 | 0x10)
+}
 
 /// Read the DDR2 SPD payload from `addr` into a 256-byte scratch buffer.
 ///
@@ -302,6 +314,10 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
         trrd_256ns: decode_quarter_256ns(spd_data[SPD_MIN_RAS_TO_RAS_DELAY as usize]),
         trtp_256ns: decode_quarter_256ns(spd_data[SPD_MIN_READ_TO_PRECHARGE as usize]),
         rank_capacity_mb,
+        is_ecc: spd_data[SPD_DIMM_CONFIG_TYPE as usize] & 0x3 != 0,
+        is_registered: is_registered_ddr2(spd_data[SPD_DIMM_TYPE as usize]),
+        is_stacked: spd_data[SPD_NUM_DIMM_BANKS as usize] & 0x10 != 0,
+        supports_bl8: spd_data[SPD_BURST_LENGTHS as usize] & 0x08 != 0,
         spd_data: *spd_data,
     })
 }

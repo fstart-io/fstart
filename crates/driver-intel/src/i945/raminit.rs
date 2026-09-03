@@ -764,10 +764,10 @@ fn gather_common_timing(
             continue;
         };
 
-        if raw[11] & 0x3 != 0 {
+        if dimm.is_ecc {
             return Err(RaminitError::EccUnsupported.into());
         }
-        if matches!(raw[20] & 0x3f, 0x01 | 0x07 | 0x10) {
+        if dimm.is_registered {
             return Err(RaminitError::RegisteredUnsupported.into());
         }
 
@@ -786,10 +786,10 @@ fn gather_common_timing(
             _ => fstart_log::debug!("i945: unsupported rank/width combo"),
         }
 
-        if raw[5] & 0x10 != 0 {
+        if dimm.is_stacked {
             sys.package = PACKAGE_STACKED;
         }
-        if raw[16] & 0x08 == 0 {
+        if !dimm.supports_bl8 {
             return Err(RaminitError::NoBurstLength8.into());
         }
         if dimm.rank_capacity_mb < 128 {

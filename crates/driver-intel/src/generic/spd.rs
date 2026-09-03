@@ -127,6 +127,14 @@ pub struct DimmInfo {
     pub trtp_256ns: u32,
     /// Rank capacity in MiB.
     pub rank_capacity_mb: u32,
+    /// ECC DIMM (SPD byte 11, any ECC bit set).
+    pub is_ecc: bool,
+    /// Registered DIMM (SPD byte 20 type, coreboot registered set).
+    pub is_registered: bool,
+    /// Stacked package (SPD byte 5, bit 4).
+    pub is_stacked: bool,
+    /// Burst length 8 supported (SPD byte 16, bit 3).
+    pub supports_bl8: bool,
     /// Raw 256-byte SPD data (kept for direct access to uncommonly-used bytes).
     pub spd_data: [u8; 256],
 }
