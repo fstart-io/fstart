@@ -488,7 +488,9 @@ impl CommonTimings {
             min_twr: 0,
             min_trfc: 0,
             max_trr: u32::MAX,
-            cas_mask: 0x1c,
+            // coreboot: SPD_CAS_LATENCY_DDR2_3 | _4 | _5 = bits 3,4,5
+            // (DDR2 SPD byte 18: bit n = CL n).
+            cas_mask: 0x38,
         }
     }
 }
