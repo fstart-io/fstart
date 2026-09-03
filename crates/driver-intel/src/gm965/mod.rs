@@ -12,15 +12,15 @@
 
 #![allow(clippy::modulo_one)]
 
-pub mod raminit;
 mod fields;
+pub mod raminit;
 
 use self::fields::*;
 
+use crate::MmioBar;
 #[cfg(feature = "ffs-vbt")]
 use alloc::vec::Vec;
 use core::{cell::UnsafeCell, ptr};
-use crate::MmioBar;
 
 use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_core::mmio::MmioReadWrite;
@@ -891,7 +891,11 @@ impl IntelGm965 {
         ep.clrbits8(epbar::EPVC0RCTL, !1u8);
         ep.clrsetbits8(epbar::EPPVCCAP1, 7, 1);
         ep.write32(epbar::EPVC1MTS, 0x0a0a_0a0a);
-        ep.clrsetbits32(epbar::EPVC1RCAP, 127 << 16, EPVC1RCAP_REG::VC1_MTS.val(0x0a).value);
+        ep.clrsetbits32(
+            epbar::EPVC1RCAP,
+            127 << 16,
+            EPVC1RCAP_REG::VC1_MTS.val(0x0a).value,
+        );
         ep.clrsetbits32(epbar::EPVC1RCTL, 7 << 24, VC1RCTL_REG::VC_ID.val(1).value);
         ep.clrsetbits8(epbar::EPVC1RCTL, !1u8, 1 << 7);
         for idx in 0..7 {
@@ -1001,7 +1005,11 @@ impl IntelGm965 {
             dmi.write32(0x0e2c, 0x88d0_7333);
         }
         dmi.setbits8(dmibar::DMILCTL, DMILCTL_REG::ASPM_CTRL.val(3).value);
-        dmi.clrsetbits32(dmibar::DMILCAP, 63 << 12, (DMILCAP_REG::L0S_EXIT_LAT.val(2) + DMILCAP_REG::L1_EXIT_LAT.val(2)).value);
+        dmi.clrsetbits32(
+            dmibar::DMILCAP,
+            63 << 12,
+            (DMILCAP_REG::L0S_EXIT_LAT.val(2) + DMILCAP_REG::L1_EXIT_LAT.val(2)).value,
+        );
         dmi.write8(0x0208 + 3, 0);
         dmi.clrbits32(0x0208, 3 << 20);
     }
@@ -1271,9 +1279,10 @@ impl IntelGm965 {
         while off + 4 < rom.len() {
             if u32::from_le_bytes([rom[off], rom[off + 1], rom[off + 2], rom[off + 3]])
                 == VBT_SIGNATURE
-                && let Some(size) = Self::vbt_size(&rom[off..]) {
-                    return Some(&rom[off..off + size]);
-                }
+                && let Some(size) = Self::vbt_size(&rom[off..])
+            {
+                return Some(&rom[off..off + size]);
+            }
             off += 16;
         }
         None

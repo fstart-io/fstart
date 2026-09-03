@@ -87,13 +87,12 @@ fn build_smm_artifacts(
 
     let smm_max_cpus = max_smm_cpus(&config.stages);
     let entry_count = smm.entry_points.or(smm_max_cpus).unwrap_or(1);
-    if let Some(max_cpus) = smm_max_cpus {
-        if entry_count < max_cpus {
-            return Err(
-                "board.smm.entry_points must be greater than or equal to stage MP max_cpus"
-                    .to_string(),
-            );
-        }
+    if let Some(max_cpus) = smm_max_cpus
+        && entry_count < max_cpus
+    {
+        return Err(
+            "board.smm.entry_points must be greater than or equal to stage MP max_cpus".to_string(),
+        );
     }
 
     let profile = if release { "release" } else { "debug" };

@@ -62,7 +62,11 @@ pub fn disable_boot_media_rom_cache_for_handoff() {
 //
 // Page tables: identity-mapped 2 MiB pages covering 4 GiB.
 // PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
-#[cfg(all(not(test), target_os = "none"))]
+//
+// Reset-vector entry only: postcar and ramstage enter via direct 64-bit
+// jumps (`_start_postcar` / `_start_ram`), so this block is compiled out of
+// those stages to keep postcar small.
+#[cfg(all(not(test), target_os = "none", not(fstart_stage_env = "postcar")))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is
     // the natural syntax for 16-bit / mixed-mode x86 assembly.
@@ -247,10 +251,12 @@ core::arch::global_asm!(
 
 // Very-early Intel microcode update for BSP.
 //
+// Pre-CAR bootblock only: postcar/ramstage get microcode through the FFS
+// blob (MP init), so this is compiled out of postcar to keep it small.
 // Entry/return convention matches coreboot's no-stack helpers: `%esp` contains
 // the absolute return address. The routine may clobber all general registers.
 #[cfg(feature = "early-ffs-anchor")]
-#[cfg(target_os = "none")]
+#[cfg(all(target_os = "none", not(fstart_stage_env = "postcar")))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",
@@ -798,17 +804,21 @@ core::arch::global_asm!(
 // RAM-stage entry (64-bit only — no 16-bit/32-bit transition)
 // ---------------------------------------------------------------------------
 
-// Entry point for non-first x86_64 stages that run from RAM.
+// Entry point for the x86_64 ramstage, entered from postcar after CAR
+// teardown with caching already enabled. This entry only sets up its own
+// stack, zeroes BSS, copies .data initializers (harmless no-op when
+// src == dst), sets up the IDT, then calls `fstart_main(0)`.
 //
-// The bootblock already transitioned to 64-bit long mode with identity-
-// mapped page tables. This entry zeros BSS, copies .data initializers
-// (harmless no-op when src == dst), sets up the IDT and stack, then
-// calls `fstart_main(0)`.
+// It must NOT tear down CAR: post-`INVD` execution belongs to fresh
+// programs only, and postcar already performed the noreturn transition.
 //
 // Placed in `.text.entry` so `KEEP(*(.text.entry))` in the linker script
-// ensures it's at the start of the binary (= the load address that the
-// bootblock's `jump_to()` targets).
-#[cfg(target_os = "none")]
+// ensures it's at the start of the binary (= the load address that
+// postcar's jump targets).
+//
+// Compiled out of the postcar stage (which carries `_start_postcar` in
+// `.text.entry` instead) so the flat image always starts at its own entry.
+#[cfg(all(target_os = "none", not(fstart_stage_env = "postcar")))]
 core::arch::global_asm!(
     ".section .text.entry, \"ax\"",
     ".code64",
@@ -817,17 +827,8 @@ core::arch::global_asm!(
     // POST 0x40: RAM-stage 64-bit entry reached.
     "movb $0x40, %al",
     "outb %al, $0x80",
-    // Set up the DRAM-backed stack first.  Non-first x86 stages are
-    // entered after DRAM training; if the previous stage used CAR, the
-    // teardown routine needs a real stack before it disables NEM/MTRR0.
+    // Caching is already on (postcar transition); claim the DRAM stack.
     "movabs $_stack_top, %rsp",
-    // Tear down Cache-as-RAM before touching BSS/data in the RAM stage.
-    // `_has_car` is a linker-provided absolute symbol (0 or 1).
-    "movl $_has_car, %eax",
-    "testl %eax, %eax",
-    "je 0f",
-    "call _car_teardown",
-    "0:",
     // Zero BSS (64-bit mode)
     "movabs $_bss_start, %rdi",
     "movabs $_bss_end, %rcx",
@@ -858,6 +859,128 @@ core::arch::global_asm!(
     "2:",
     "hlt",
     "jmp 2b",
+    options(att_syntax),
+);
+
+// ---------------------------------------------------------------------------
+// Postcar entry (64-bit; Cut-B CAR teardown + jump)
+// ---------------------------------------------------------------------------
+
+// Entry point for the x86_64 postcar stage, entered via direct jump from the
+// bootblock while Cache-as-RAM is still live, running on the inherited CAR
+// stack. Cut-B shape (coreboot `exit_car.S` + change 95145):
+//
+//  1. `call _car_teardown` — CR0.CD=1, MTRRs off, Atom NEM cleared.
+//     Only registers/MSRs/CR0 are touched; the pushed return address sits
+//     in still-live CAR. Noreturn past this point for any CAR-backed state.
+//  2. Program variable MTRRs from the UC-DRAM stash at `POSTCAR_STASH_ADDR`
+//     (written pre-transition by the bootblock, `INVD`-proof), enable MTRRs.
+//  3. Clear CR0.CD/NW, `INVD`, switch to the fresh DRAM stack (`_stack_top`
+//     is an immediate — never a stale memory read).
+//  4. Zero BSS / copy .data / set up IDT as a fresh program, then call
+//     `fstart_main(0)`, which dispatches to the postcar loader that FFS-loads
+//     and decompresses the ramstage cached.
+//
+// The pre-transition half is pure asm (~30 instructions); everything
+// substantive (FFS, LZ4, console) runs post-transition as a fresh program
+// naming only its own image/stack/ROM/hardware.
+//
+// The linker script selects this entry (`ENTRY(_start_postcar)`) for the
+// stage named "postcar"; it also lands first via `.text.entry`. The
+// `postcar` stage_env gate keeps `_start_ram` out of the postcar binary so
+// the flat image starts here, at the address the bootblock jumps to.
+#[cfg(all(target_os = "none", fstart_stage_env = "postcar"))]
+core::arch::global_asm!(
+    ".section .text.entry, \"ax\"",
+    ".code64",
+    ".global _start_postcar",
+    "_start_postcar:",
+    // POST 0x70: postcar entry reached (CAR still live, inherited stack).
+    "movb $0x70, %al",
+    "outb %al, $0x80",
+    // Step 1: tear down CAR (CD=1, MTRRs off, NEM cleared on Atom).
+    "call _car_teardown",
+    // Step 2: program variable MTRRs from the UC stash.
+    // Stash layout (car_teardown::PostcarMtrrStash): u32 magic, u32 count,
+    // then count x (u64 base_msr, u64 mask_msr) programmed as MTRR 0..n.
+    "movabs $0x2000, %rsi",
+    "cmpl $0x54534350, (%rsi)", // POSTCAR_STASH_MAGIC ("PCST")
+    "jne _postcar_stash_fail",
+    "movl 4(%rsi), %r15d",
+    // Cap the entry count: programming past the valid variable-MTRR pairs
+    // would hit reserved MSRs and #GP. The writer never emits more than 8.
+    "cmpl $8, %r15d",
+    "ja _postcar_stash_fail",
+    "addq $8, %rsi",
+    "movl $0x200, %ebx", // IA32_MTRR_PHYSBASE0; +2 per entry
+    "1:",
+    "testl %r15d, %r15d",
+    "jz 2f",
+    "movl %ebx, %ecx",
+    "movq (%rsi), %rax",
+    "movq %rax, %rdx",
+    "shrq $32, %rdx",
+    "wrmsr", // PHYSBASE
+    "incl %ebx",
+    "movl %ebx, %ecx",
+    "movq 8(%rsi), %rax",
+    "movq %rax, %rdx",
+    "shrq $32, %rdx",
+    "wrmsr", // PHYSMASK
+    "incl %ebx",
+    "addq $16, %rsi",
+    "decl %r15d",
+    "jmp 1b",
+    "2:",
+    // Enable MTRRs, preserving the default type (UC, FIX_EN off — matches
+    // the pre-transition CAR-phase layout; ramstage refines this later).
+    "movl $0x2ff, %ecx",
+    "rdmsr",
+    "orl $0x800, %eax", // MTRR_DEF_TYPE_EN
+    "wrmsr",
+    // Step 3: re-enable caching, flush stale CAR lines, take fresh stack.
+    "movq %cr0, %rax",
+    // Clear CD|NW. The mask is written as a sign-extended imm32
+    // (0x9FFFFFFF does not fit an unsigned imm32).
+    "andq $0xFFFFFFFF9FFFFFFF, %rax",
+    "movq %rax, %cr0",
+    "invd",
+    // POST 0x71: transition done; CAR stack abandoned, DRAM stack live.
+    "movb $0x71, %al",
+    "outb %al, $0x80",
+    "movabs $_stack_top, %rsp",
+    "andq $0xfffffffffffffff0, %rsp",
+    // Step 4: fresh-program init — BSS, .data, IDT, then Rust.
+    "movabs $_bss_start, %rdi",
+    "movabs $_bss_end, %rcx",
+    "subq %rdi, %rcx",
+    "shrq $3, %rcx",
+    "xorl %eax, %eax",
+    "rep stosq",
+    "movabs $_data_load, %rsi",
+    "movabs $_data_start, %rdi",
+    "movabs $_data_end, %rcx",
+    "subq %rdi, %rcx",
+    "cmpq %rsi, %rdi",
+    "je 3f",
+    "rep movsb",
+    "3:",
+    "call _setup_idt",
+    // POST 0x72: postcar runtime setup complete; entering Rust.
+    "movb $0x72, %al",
+    "outb %al, $0x80",
+    "xorl %edi, %edi",
+    "call fstart_main",
+    "4:",
+    "hlt",
+    "jmp 4b",
+    // Stash validation failed: POST 0xee and halt (no stack to trust).
+    "_postcar_stash_fail:",
+    "movb $0xee, %al",
+    "outb %al, $0x80",
+    "5:",
+    "hlt",
+    "jmp 5b",
     options(att_syntax),
 );
 

@@ -6,6 +6,9 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(rust_analyzer)");
+    // fbuild sets the per-stage environment via RUSTFLAGS; declaring the
+    // values here keeps `cfg(fstart_stage_env)` strict in this crate.
+    println!("cargo:rustc-check-cfg=cfg(fstart_stage_env, values(\"car\", \"ram\", \"postcar\"))");
     println!("cargo:rerun-if-changed=asm/sipi_trampoline.S");
 
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();

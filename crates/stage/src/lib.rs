@@ -788,6 +788,214 @@ pub fn load_ffs_file_by_name(
     verify_loaded_file_digests(&file)
 }
 
+/// Raw location of one single-segment stage file inside the FFS image.
+///
+/// Resolved by the bootblock from the signature-verified manifest and passed
+/// to postcar through the UC-DRAM stash, so postcar loads the ramstage
+/// without an FFS parser or crypto (see
+/// `fstart_arch::x86_64::car_teardown::PostcarMtrrStash`). Stage files are
+/// packaged as a single flat `Code` segment (`assemble.rs`), which is all
+/// this describes — multi-segment or BSS-carrying files are rejected.
+#[cfg(feature = "ffs")]
+#[derive(Debug, Clone, Copy)]
+pub struct RawFileExtent {
+    /// FFS-image-relative byte offset of the data segment.
+    pub file_offset: u64,
+    /// Stored (possibly compressed) size.
+    pub stored_size: u64,
+    /// Decompressed size at `load_addr`.
+    pub loaded_size: u64,
+    /// Builder-verified scratch size for in-place LZ4 (`0` = uncompressed).
+    pub in_place_size: u64,
+    /// DRAM load address (also the entry point).
+    pub load_addr: u64,
+    /// Segment compression.
+    pub compression: fstart_core::ffs::Compression,
+}
+
+/// Resolve a stage file to its raw extent from the verified manifest.
+///
+/// Bootblock side of the Cut-B handoff: parses the signature-verified
+/// manifest (same trust as [`load_ffs_file_by_name`]) but loads nothing —
+/// the extent goes into the postcar stash for a crypto-free raw load.
+/// Memory-mapped firmware windows only (all Intel boards).
+/// Returns `None` when the file is missing or not a single data segment.
+#[cfg(feature = "ffs")]
+pub fn ffs_file_extent_mmio(
+    anchor_data: &[u8],
+    base: u64,
+    size: usize,
+    name: &str,
+) -> Option<RawFileExtent> {
+    use fstart_core::services::boot_media::MemoryMapped;
+    if size == 0 || anchor_data.is_empty() {
+        return None;
+    }
+    // SAFETY: caller passes the board's readable firmware window.
+    let media = unsafe { MemoryMapped::from_raw_addr(base, size) };
+    ffs_file_extent(anchor_data, &media, name)
+}
+
+/// Resolve a stage file to its raw extent from the verified manifest.
+///
+/// Generic-media core of [`ffs_file_extent_mmio`].
+#[cfg(feature = "ffs")]
+pub fn ffs_file_extent(
+    anchor_data: &[u8],
+    media: &(impl BootMedia + ?Sized),
+    name: &str,
+) -> Option<RawFileExtent> {
+    if media.size() == 0 || anchor_data.is_empty() {
+        return None;
+    }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) }.ok()?;
+    let manifest = read_manifest_from_media(media, &anchor).ok()?;
+    let file = manifest.find_file_by_name(name).ok()?;
+
+    let segments = file.segments();
+    if segments.len() != 1 {
+        fstart_log::error!(
+            "raw extent '{}': expected 1 segment, found {}",
+            name,
+            segments.len()
+        );
+        return None;
+    }
+    let seg = &segments[0];
+    if seg.kind().ok()? != fstart_core::ffs::SegmentKind::Code {
+        fstart_log::error!("raw extent '{}': not a code segment", name);
+        return None;
+    }
+
+    let image_size = effective_image_size(media.size(), &anchor);
+    let file_offset =
+        u64::from(file.region_offset()) + u64::from(file.entry_offset()) + u64::from(seg.offset());
+    let stored_size = u64::from(seg.stored_size());
+    if file_offset.saturating_add(stored_size) > image_size as u64 {
+        fstart_log::error!("raw extent '{}': out of bounds", name);
+        return None;
+    }
+
+    Some(RawFileExtent {
+        file_offset,
+        stored_size,
+        loaded_size: u64::from(seg.loaded_size()),
+        in_place_size: u64::from(seg.in_place_size()),
+        load_addr: seg.load_addr(),
+        compression: seg.compression().ok()?,
+    })
+}
+
+/// Raw-load one extent from a memory-mapped image to its load address.
+///
+/// Postcar side of the Cut-B handoff: plain copy for uncompressed extents,
+/// builder-verified in-place tail decompression for LZ4 (same protocol as
+/// the manifest path, minus the manifest). No verification of any kind —
+/// the bytes come from ROM the bootblock already authenticated, and the
+/// ramstage re-verifies its own bytes before trusting them.
+/// Returns the entry address (`load_addr`) on success.
+///
+/// # Safety
+///
+/// `image_base`/`image_size` must describe the readable firmware window;
+/// `extent` must describe a writable DRAM target with `in_place_size` bytes
+/// available for compressed extents. Both are guaranteed by the bootblock's
+/// stash fill (verified manifest + board memory map).
+#[cfg(feature = "ffs")]
+pub unsafe fn load_raw_extent(
+    image_base: u64,
+    image_size: u64,
+    extent: &RawFileExtent,
+) -> Option<u64> {
+    let src_offset = extent.file_offset;
+    if src_offset.saturating_add(extent.stored_size) > image_size {
+        return None;
+    }
+    let stored = extent.stored_size as usize;
+    let dest = extent.load_addr as *mut u8;
+    // SAFETY: caller guarantees the image window is readable and the
+    // target is writable DRAM.
+    let src = unsafe { (image_base as *const u8).add(src_offset as usize) };
+
+    match extent.compression {
+        fstart_core::ffs::Compression::None => {
+            // Plain copy of the stored bytes (trailing mem-size padding, if
+            // any, is irrelevant: the stage entry zeroes its own BSS).
+            // SAFETY: non-overlapping (ROM source, DRAM target), sizes checked.
+            unsafe { core::ptr::copy_nonoverlapping(src, dest, stored) };
+        }
+        fstart_core::ffs::Compression::Lz4 => {
+            let buf_size = extent.in_place_size as usize;
+            let loaded_size = extent.loaded_size as usize;
+            if buf_size < loaded_size || buf_size < stored {
+                return None;
+            }
+            // SAFETY: same guarantees as the manifest path's in-place
+            // protocol: the builder verified this exact operation.
+            unsafe {
+                let buf = core::slice::from_raw_parts_mut(dest, buf_size);
+                let comp_offset = buf_size - stored;
+                core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr().add(comp_offset), stored);
+                let src_slice = core::slice::from_raw_parts(buf.as_ptr().add(comp_offset), stored);
+                let dst_slice = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), loaded_size);
+                fstart_ffs::lz4::decompress_block(src_slice, dst_slice).ok()?;
+            }
+        }
+    }
+
+    Some(extent.load_addr)
+}
+
+/// Verify a file's digests against the bytes at its packaged load addresses.
+///
+/// Read-only: hashes the loaded image in place without copying, zeroing, or
+/// touching BSS — safe to run on a live stage checking itself. The ramstage
+/// calls this on entry (postcar skips digest verification by design), so a
+/// DRAM-bitflip during the raw copy is caught before any table or payload
+/// trusts the bytes. Memory-mapped firmware windows only.
+#[cfg(feature = "ffs")]
+pub fn verify_file_digests_mmio(anchor_data: &[u8], base: u64, size: usize, name: &str) -> bool {
+    use fstart_core::services::boot_media::MemoryMapped;
+    if size == 0 || anchor_data.is_empty() {
+        return false;
+    }
+    // SAFETY: caller passes the board's readable firmware window.
+    let media = unsafe { MemoryMapped::from_raw_addr(base, size) };
+    verify_file_digests_by_name(anchor_data, &media, name)
+}
+
+/// Verify a file's digests against the bytes at its packaged load addresses.
+///
+/// Generic-media core of [`verify_file_digests_mmio`].
+#[cfg(feature = "ffs")]
+pub fn verify_file_digests_by_name(
+    anchor_data: &[u8],
+    media: &(impl BootMedia + ?Sized),
+    name: &str,
+) -> bool {
+    if media.size() == 0 || anchor_data.is_empty() {
+        return false;
+    }
+
+    // SAFETY: FSTART_ANCHOR is properly aligned and sized.
+    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let manifest = match read_manifest_from_media(media, &anchor) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let file = match manifest.find_file_by_name(name) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+
+    verify_loaded_file_digests(&file)
+}
+
 /// Find a file in FFS by its `FileType` and return a slice to its raw data.
 ///
 /// This is the zero-copy path for memory-mapped flash: the returned slice
@@ -1142,11 +1350,16 @@ pub enum StageEnvironment {
 
 impl StageEnvironment {
     /// Convert the optional `FSTART_STAGE_ENV` value passed by build glue.
+    ///
+    /// The Cut-B postcar loader builds with `FSTART_STAGE_ENV=postcar` but
+    /// runs as a DRAM-backed stage, so it maps to [`Self::Ram`]; the
+    /// postcar-vs-ramstage split inside `Ram` is a compile-time
+    /// `cfg(fstart_stage_env)` dispatch in each Intel platform flow.
     #[must_use]
     pub fn from_option(env: Option<&'static str>) -> Self {
         match env {
             Some("car") => Self::Car,
-            Some("ram") => Self::Ram,
+            Some("ram" | "postcar") => Self::Ram,
             _ => Self::Monolithic,
         }
     }

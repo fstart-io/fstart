@@ -106,7 +106,6 @@ impl MchBar {
         Self { base }
     }
 
-
     /// Typed overlay for the early-init register subset.
     ///
     /// # Safety

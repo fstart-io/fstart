@@ -512,7 +512,6 @@ version = "0.1.0"
 dependencies = [
  "acpi_tables",
  "fstart-core",
- "fstart-ffs",
  "fstart-log",
  "fstart-smm",
  "object 0.37.3",

@@ -540,15 +540,16 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     let mut page: usize = 0;
     for i in 0..super::TOTAL_DIMMS {
         if let Some(ref d) = si.dimms[i]
-            && d.card_type != 0 {
-                if d.banks >= 8 {
-                    trp_adj = 1;
-                    bank = 0;
-                }
-                if d.page_size == 2048 {
-                    page = 1;
-                }
+            && d.card_type != 0
+        {
+            if d.banks >= 8 {
+                trp_adj = 1;
+                bank = 0;
             }
+            if d.page_size == 2048 {
+                page = 1;
+            }
+        }
     }
 
     static PAGETAB: [[u8; 2]; 2] = [[0x0E, 0x12], [0x10, 0x14]];

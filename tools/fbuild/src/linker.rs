@@ -2,6 +2,7 @@ use std::fmt::Write;
 
 use fstart_core::board::MicrocodeConfig;
 use fstart_core::memory::FlashLayout;
+use fstart_core::stage::POSTCAR_STAGE_NAME;
 use fstart_core::{
     BoardConfig, FirmwareImagePolicy, Platform, RegionKind, SocImageFormat, StageBuildConfig,
     StageLayout, effective_stage_load_addr,
@@ -104,7 +105,13 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
     if needs_egon_header {
         writeln!(out, "ENTRY(_head_jump)\n").unwrap();
     } else if config.platform == Platform::X86_64 && !is_first_stage {
-        writeln!(out, "ENTRY(_start_ram)\n").unwrap();
+        // Intel Cut-B postcar runs its CAR-teardown entry; every other
+        // non-first x86_64 stage enters with caching already on.
+        if stage_name == Some(POSTCAR_STAGE_NAME) {
+            writeln!(out, "ENTRY(_start_postcar)\n").unwrap();
+        } else {
+            writeln!(out, "ENTRY(_start_ram)\n").unwrap();
+        }
     } else {
         writeln!(out, "ENTRY(_start)\n").unwrap();
     }

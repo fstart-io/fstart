@@ -817,11 +817,12 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         ));
     }
     if let Some(first_flash_load) = first_flash_load
-        && xip_offset != first_flash_load {
-            return Err(format!(
-                "top-aligned bootblock offset {xip_offset:#x} does not match first ELF load offset {first_flash_load:#x}"
-            ));
-        }
+        && xip_offset != first_flash_load
+    {
+        return Err(format!(
+            "top-aligned bootblock offset {xip_offset:#x} does not match first ELF load offset {first_flash_load:#x}"
+        ));
+    }
     image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
     eprintln!(
         "[fstart] full flash: bootblock flat binary -> offset={xip_offset:#x} size={:#x}",
@@ -967,11 +968,12 @@ fn create_intel_ifd_flash_image(
         ));
     }
     if let Some(first_flash_load) = first_flash_load
-        && xip_offset != first_flash_load {
-            return Err(format!(
-                "top-aligned bootblock offset {xip_offset:#x} does not match first ELF load offset {first_flash_load:#x}"
-            ));
-        }
+        && xip_offset != first_flash_load
+    {
+        return Err(format!(
+            "top-aligned bootblock offset {xip_offset:#x} does not match first ELF load offset {first_flash_load:#x}"
+        ));
+    }
     image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
     eprintln!(
         "[fstart] Intel IFD full flash: bootblock flat binary -> offset={xip_offset:#x} size={:#x}",
@@ -1219,54 +1221,56 @@ fn assemble_fit_payload(
             });
 
             if let Some(ref rd) = boot.ramdisk
-                && let Ok(rd_data) = rd.data() {
-                    let rd_load = rd.load_addr().unwrap_or(0);
-                    eprintln!(
-                        "[fstart] FIT ramdisk: '{}' ({} bytes, load={:#x})",
-                        rd.name(),
-                        rd_data.len(),
-                        rd_load,
-                    );
+                && let Ok(rd_data) = rd.data()
+            {
+                let rd_load = rd.load_addr().unwrap_or(0);
+                eprintln!(
+                    "[fstart] FIT ramdisk: '{}' ({} bytes, load={:#x})",
+                    rd.name(),
+                    rd_data.len(),
+                    rd_load,
+                );
 
-                    ro_files.push(InputFile {
-                        name: rd.name().to_string(),
-                        file_type: FileType::Data,
-                        segments: vec![InputSegment {
-                            name: ".data".to_string(),
-                            kind: SegmentKind::ReadOnlyData,
-                            data: rd_data.to_vec(),
-                            mem_size: None,
-                            load_addr: rd_load,
-                            compression: Compression::Lz4,
-                            flags: SegmentFlags::RODATA,
-                        }],
-                    });
-                }
+                ro_files.push(InputFile {
+                    name: rd.name().to_string(),
+                    file_type: FileType::Data,
+                    segments: vec![InputSegment {
+                        name: ".data".to_string(),
+                        kind: SegmentKind::ReadOnlyData,
+                        data: rd_data.to_vec(),
+                        mem_size: None,
+                        load_addr: rd_load,
+                        compression: Compression::Lz4,
+                        flags: SegmentFlags::RODATA,
+                    }],
+                });
+            }
 
             if let Some(ref fdt_img) = boot.fdt
-                && let Ok(fdt_data) = fdt_img.data() {
-                    let fdt_load = fdt_img.load_addr().unwrap_or(payload.dtb_addr.unwrap_or(0));
-                    eprintln!(
-                        "[fstart] FIT fdt: '{}' ({} bytes, load={:#x})",
-                        fdt_img.name(),
-                        fdt_data.len(),
-                        fdt_load,
-                    );
+                && let Ok(fdt_data) = fdt_img.data()
+            {
+                let fdt_load = fdt_img.load_addr().unwrap_or(payload.dtb_addr.unwrap_or(0));
+                eprintln!(
+                    "[fstart] FIT fdt: '{}' ({} bytes, load={:#x})",
+                    fdt_img.name(),
+                    fdt_data.len(),
+                    fdt_load,
+                );
 
-                    ro_files.push(InputFile {
-                        name: fdt_img.name().to_string(),
-                        file_type: FileType::Fdt,
-                        segments: vec![InputSegment {
-                            name: ".fdt".to_string(),
-                            kind: SegmentKind::ReadOnlyData,
-                            data: fdt_data.to_vec(),
-                            mem_size: None,
-                            load_addr: fdt_load,
-                            compression: Compression::None,
-                            flags: SegmentFlags::RODATA,
-                        }],
-                    });
-                }
+                ro_files.push(InputFile {
+                    name: fdt_img.name().to_string(),
+                    file_type: FileType::Fdt,
+                    segments: vec![InputSegment {
+                        name: ".fdt".to_string(),
+                        kind: SegmentKind::ReadOnlyData,
+                        data: fdt_data.to_vec(),
+                        mem_size: None,
+                        load_addr: fdt_load,
+                        compression: Compression::None,
+                        flags: SegmentFlags::RODATA,
+                    }],
+                });
+            }
         }
     }
 

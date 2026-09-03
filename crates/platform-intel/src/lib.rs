@@ -105,6 +105,7 @@ pub(crate) trait IntelMainstageFlow: MainstagePhases {
 #[cfg(feature = "stage")]
 pub(crate) fn run_intel_mainstage<M, Payload>(
     platform: &str,
+    own_stage_name: &'static str,
     halt: fn() -> !,
     mut mainstage: M,
 ) -> !
@@ -115,10 +116,26 @@ where
     let (firmware_base, firmware_size) = mainstage.firmware_region();
     let boot_media =
         fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
+    // Postcar raw-copies this stage without hashing it (no crypto in
+    // postcar by design), so re-verify our own loaded bytes against the
+    // manifest before trusting them. Read-only: hashes the live image in
+    // place, touching nothing. Catches a DRAM bitflip from the raw copy.
     // Publish the window before device init: drivers brought up during
     // init_devices (per-AP microcode, SMM install) read board assets through
     // the FFS services rather than open-coded flash mappings.
     run_mainstage_phase(platform, "publish_boot_media", halt, || boot_media.mount());
+    run_mainstage_phase(platform, "verify_own_stage", halt, || {
+        if fstart_stage::verify_file_digests_mmio(
+            fstart_stage::fstart_anchor_bytes(),
+            firmware_base,
+            firmware_size,
+            own_stage_name,
+        ) {
+            Ok(())
+        } else {
+            Err(ServiceError::HardwareError)
+        }
+    });
     run_mainstage_phase(platform, "pre_bus_scan", halt, || mainstage.pre_bus_scan());
     run_mainstage_phase(platform, "bus_scan", halt, || mainstage.bus_scan());
     run_mainstage_phase(platform, "init_devices", halt, || mainstage.init_devices());
@@ -136,12 +153,30 @@ where
     Payload::boot(mainstage)
 }
 
+/// Fixed stage name for the Intel CAR-teardown loader stage.
+///
+/// Canonical role name (see `fstart_core::stage::POSTCAR_STAGE_NAME`):
+/// all Intel CAR boards insert a stage with this name between bootblock and
+/// ramstage. `fbuild` selects the postcar entry and stage environment by it,
+/// and `run_stage` dispatches to the postcar loader by
+/// `cfg(fstart_stage_env = "postcar")`. It names a stage *role*,
+/// not a board registry.
+pub use fstart_core::stage::POSTCAR_STAGE_NAME;
+
 #[cfg(feature = "stage")]
-pub(crate) struct BootblockSpec<C: ConsoleDevice> {
+pub(crate) struct FfsLoadSpec<C: ConsoleDevice> {
     pub platform: &'static str,
     pub next_stage: &'static str,
-    pub ramstage_load_addr: u64,
+    pub next_load_addr: u64,
     pub flash_layout: fstart_core::FlashLayout,
+    /// End of the board's static low-DRAM window (ROM constant from the
+    /// platform memory map). The bootblock rounds it up to a single WB MTRR
+    /// in the postcar stash; postcar/ramstage never read this field.
+    pub dram_end: u64,
+    /// FFS name of the ramstage file. The bootblock resolves its raw extent
+    /// from the verified manifest into the stash; postcar loads it without
+    /// parsing FFS. Unused by the postcar spec itself.
+    pub ramstage_name: &'static str,
     pub console_config: C::Config,
     pub console_node: &'static str,
 }
@@ -423,9 +458,28 @@ where
     }
 }
 
+/// Shared Intel bootblock tail: load the next FFS stage and jump to it.
+///
+/// Mounts and verifies the memory-mapped firmware image, raw-copies (or
+/// decompresses, per the stage's packaged compression) the named file to its
+/// load address, verifies its digests, and jumps to `next_load_addr`.
+#[cfg(feature = "stage")]
+fn ffs_load_next(
+    platform: &'static str,
+    next_stage: &str,
+    ffs: fstart_stage::fixed_helpers::MemoryMappedFfs,
+) -> Result<(), ServiceError> {
+    fstart_arch::x86_64::enable_boot_media_rom_cache();
+    if ffs.mount().is_err() || ffs.verify().is_err() || ffs.load_file_by_name(next_stage).is_err() {
+        fstart_log::error!("{}: failed to load '{}'", platform, next_stage);
+        return Err(ServiceError::HardwareError);
+    }
+    Ok(())
+}
+
 #[cfg(feature = "stage")]
 pub(crate) fn run_intel_bootblock<P, NB, SB, Hooks, C>(
-    spec: BootblockSpec<C>,
+    spec: FfsLoadSpec<C>,
     hooks: &mut Hooks,
     mut northbridge: NB,
     mut southbridge: SB,
@@ -437,28 +491,38 @@ where
     Hooks: IntelEarlyBoardHooks<P>,
     C: ConsoleDevice,
 {
-    let (firmware_base, firmware_size) = firmware_window(spec.flash_layout)?;
+    let FfsLoadSpec {
+        platform,
+        next_stage,
+        next_load_addr,
+        flash_layout,
+        dram_end,
+        ramstage_name,
+        console_config,
+        console_node,
+    } = spec;
+    let (firmware_base, firmware_size) = firmware_window(flash_layout)?;
     let ffs = fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
 
     northbridge.pre_console_init()?;
     southbridge.pre_console_init()?;
     hooks.before_console(&mut IntelEarlyCtx::new(&mut southbridge))?;
 
-    let mut console = C::new(spec.console_config)?;
+    let mut console = C::new(console_config)?;
     console.init()?;
     // SAFETY: this function never returns after installing the stack-owned console.
     unsafe { fstart_log::init(&console) };
-    fstart_log::info!("{}: {} console ready", spec.console_node, C::NAME);
-    fstart_log::info!("{} bootblock console ready", spec.platform);
+    fstart_log::info!("{}: {} console ready", console_node, C::NAME);
+    fstart_log::info!("{} bootblock console ready", platform);
 
-    // Complete the pre-RAM chipset flow before touching the ramstage load
+    // Complete the pre-RAM chipset flow before touching the postcar load
     // address. The bootblock itself executes from ROM with its writable state
     // in CAR, but the next stage is loaded into ordinary DRAM.
     northbridge.early_init()?;
     southbridge.early_init()?;
     hooks.before_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
 
-    fstart_log::info!("{}: initializing DRAM", spec.platform);
+    fstart_log::info!("{}: initializing DRAM", platform);
     let boot_path = if southbridge.detect_s3_resume() {
         BootPath::S3Resume
     } else if northbridge.detect_warm_reset() {
@@ -471,20 +535,129 @@ where
     northbridge.early_post_dram_init()?;
     southbridge.early_post_dram_init()?;
     hooks.after_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
-    fstart_log::info!("{}: DRAM ready", spec.platform);
+    fstart_log::info!("{}: DRAM ready", platform);
 
-    fstart_arch::x86_64::enable_boot_media_rom_cache();
-    if ffs.mount().is_err()
-        || ffs.verify().is_err()
-        || ffs.load_file_by_name(spec.next_stage).is_err()
-    {
-        fstart_log::error!("{} bootblock failed", spec.platform);
+    // The bulk ramstage copy stays cached: the bootblock only raw-copies the
+    // tiny postcar binary (few KB, uncached stores) and stashes the precomputed
+    // post-CAR MTRR table plus the ramstage's raw file extent in UC-DRAM
+    // scratch. All stash stores are `INVD`-proof by construction; postcar
+    // performs the noreturn CAR teardown, then raw-loads the ramstage with
+    // caching on — no FFS parser or crypto in postcar.
+    ffs_load_next(platform, next_stage, ffs)?;
+
+    // Resolve the ramstage extent from the signature-verified manifest.
+    // The manifest was just verified by `ffs_load_next`; ROM is immutable,
+    // so postcar can trust this extent without re-verifying.
+    let extent = fstart_stage::ffs_file_extent_mmio(
+        fstart_stage::fstart_anchor_bytes(),
+        firmware_base,
+        firmware_size,
+        ramstage_name,
+    );
+    let Some(extent) = extent else {
+        fstart_log::error!("{}: failed to resolve '{}' extent", platform, ramstage_name);
         return Err(ServiceError::HardwareError);
+    };
+
+    // Publish the MTRR program postcar's entry consumes pre-transition.
+    // The stash writer rounds `dram_end` up to a single WB MTRR, then
+    // WP-chunks the firmware window.
+    // SAFETY: trained DRAM and the memory-mapped firmware window are live;
+    // low DRAM below the stash is writable conventional memory.
+    unsafe {
+        fstart_arch::x86_64::car_teardown::write_postcar_stash(
+            dram_end,
+            firmware_base,
+            firmware_size as u64,
+            fstart_arch::x86_64::car_teardown::PostcarFile {
+                file_offset: extent.file_offset,
+                stored_size: extent.stored_size,
+                loaded_size: extent.loaded_size,
+                in_place_size: extent.in_place_size,
+                load_addr: extent.load_addr,
+                compressed: extent.compression == fstart_core::ffs::Compression::Lz4,
+            },
+        );
     }
 
     hooks.before_handoff(&mut IntelEarlyCtx::new(&mut southbridge))?;
-    fstart_log::info!("jumping to ramstage at {:#x}", spec.ramstage_load_addr);
-    fstart_arch::x86_64::jump_to(spec.ramstage_load_addr)
+    fstart_log::info!("jumping to {} at {:#x}", next_stage, next_load_addr);
+    fstart_arch::x86_64::jump_to(next_load_addr)
+}
+
+/// Post-CAR loader: runs as a fresh program on a fresh DRAM stack with
+/// caching already enabled by the postcar entry.
+///
+/// Re-initializes the console from ROM constants (the bootblock's console
+/// object lived in CAR and is unreachable by design), then raw-loads the
+/// ramstage from the stash extent (plain copy or in-place LZ4) and jumps to
+/// it. No chipset drivers, no PCI, no tables, no FFS parser, no crypto —
+/// like coreboot's 95145 loader. Integrity: the extent comes from the
+/// bootblock-verified manifest via ROM-immutable stash, and the ramstage
+/// re-verifies its own bytes before trusting them.
+#[cfg(all(feature = "stage", fstart_stage_env = "postcar"))]
+pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
+    use fstart_arch::x86_64::car_teardown as postcar_abi;
+
+    let FfsLoadSpec {
+        platform,
+        next_stage: _,
+        next_load_addr: _,
+        flash_layout,
+        dram_end: _,
+        ramstage_name,
+        console_config,
+        console_node,
+    } = spec;
+    let mut console = match C::new(console_config) {
+        Ok(console) => console,
+        Err(_) => fstart_arch::x86_64::halt(),
+    };
+    if console.init().is_err() {
+        fstart_arch::x86_64::halt();
+    }
+    // SAFETY: postcar owns this console until it jumps to the ramstage.
+    unsafe { fstart_log::init(&console) };
+    fstart_log::info!("{}: {} console ready", console_node, C::NAME);
+    fstart_log::info!("{} postcar console ready", platform);
+
+    let (firmware_base, firmware_size) = match firmware_window(flash_layout) {
+        Ok(window) => window,
+        Err(_) => fstart_arch::x86_64::halt(),
+    };
+    // Read the stash the bootblock wrote pre-transition. Plain (cached)
+    // reads: caching is already on, and the stash is ordinary DRAM.
+    // SAFETY: the bootblock wrote a valid stash before jumping here; the
+    // entry validated its magic pre-transition.
+    let stash =
+        unsafe { &*(postcar_abi::POSTCAR_STASH_ADDR as *const postcar_abi::PostcarMtrrStash) };
+    if stash.magic != postcar_abi::POSTCAR_STASH_MAGIC || stash.compression > 1 {
+        fstart_log::error!("{} postcar: bad stash", platform);
+        fstart_arch::x86_64::halt();
+    }
+    let extent = fstart_stage::RawFileExtent {
+        file_offset: stash.file_offset,
+        stored_size: stash.stored_size,
+        loaded_size: stash.loaded_size,
+        in_place_size: stash.in_place_size,
+        load_addr: stash.load_addr,
+        compression: if stash.compression == 1 {
+            fstart_core::ffs::Compression::Lz4
+        } else {
+            fstart_core::ffs::Compression::None
+        },
+    };
+    // SAFETY: stash fields describe the board's firmware window and the
+    // ramstage's DRAM target (both validated pre-transition/in ROM).
+    let entry =
+        unsafe { fstart_stage::load_raw_extent(firmware_base, firmware_size as u64, &extent) };
+    let Some(entry) = entry else {
+        fstart_log::error!("{} postcar: failed to load '{}'", platform, ramstage_name);
+        fstart_arch::x86_64::halt();
+    };
+
+    fstart_log::info!("jumping to {} at {:#x}", ramstage_name, entry);
+    fstart_arch::x86_64::jump_to(entry)
 }
 
 #[cfg(feature = "stage")]

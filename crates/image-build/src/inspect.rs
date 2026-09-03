@@ -325,9 +325,10 @@ fn find_anchors(data: &[u8]) -> Vec<(usize, AnchorBlock)> {
     let mut offset = 0usize;
     while offset + ANCHOR_SIZE <= data.len() {
         if data[offset..offset + FFS_MAGIC.len()] == FFS_MAGIC
-            && let Ok(anchor) = reader.read_anchor(offset) {
-                anchors.push((offset, anchor));
-            }
+            && let Ok(anchor) = reader.read_anchor(offset)
+        {
+            anchors.push((offset, anchor));
+        }
         offset += 8;
     }
     anchors

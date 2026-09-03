@@ -10,7 +10,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fstart_intel_has_smm_image)");
     // Declaring any check-cfg makes rustc strict about every other cfg in
     // this crate; fbuild sets this one per stage via RUSTFLAGS.
-    println!("cargo:rustc-check-cfg=cfg(fstart_stage_env, values(\"car\", \"ram\"))");
+    println!("cargo:rustc-check-cfg=cfg(fstart_stage_env, values(\"car\", \"ram\", \"postcar\"))");
     if let Ok(smm_image) = env::var("FSTART_SMM_IMAGE") {
         println!("cargo:rerun-if-changed={smm_image}");
         println!("cargo:rustc-env=FSTART_SMM_IMAGE={smm_image}");

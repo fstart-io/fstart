@@ -87,7 +87,8 @@ unsafe impl GlobalAlloc for BumpAllocator {
                 return core::ptr::null_mut();
             }
 
-            // CAS loop handles the (unlikely) multi-hart race.
+            // CAS loop handles the (unlikely) multi-hart race. Requires
+            // caching enabled: locked RMW hangs with CR0.CD=1 on i945.
             if NEXT
                 .compare_exchange_weak(current, new_next, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()

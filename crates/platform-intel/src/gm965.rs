@@ -24,9 +24,14 @@ use serde::Serialize;
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const GM965_BOOTBLOCK_LOAD_ADDR: u64 = 0xffff_ffff;
+pub const GM965_POSTCAR_LOAD_ADDR: u64 = 0x0100_0000;
 pub const GM965_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
 pub const GM965_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
+pub const GM965_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
 pub const GM965_NEXT_STAGE_NAME: &str = "ramstage";
+/// End of the static low-DRAM window (`workram` base + size): the bootblock
+/// publishes it to the postcar MTRR stash (rounded up to one WB MTRR).
+pub const GM965_DRAM_END: u64 = 0x0010_0000 + 0x3FF0_0000;
 pub const GM965_MCHBAR: u64 = 0xFED1_4000;
 pub const GM965_DMIBAR: u64 = 0xFED1_8000;
 pub const GM965_EPBAR: u64 = 0xFED1_9000;
@@ -235,9 +240,10 @@ impl Gm965Ich8Config {
             panic!("ICH8 COMA and COMB decode the same port");
         }
         if let Some(sata) = self.sata
-            && sata.ports == 0 {
-                panic!("ICH8 SATA enabled with no ports");
-            }
+            && sata.ports == 0
+        {
+            panic!("ICH8 SATA enabled with no ports");
+        }
 
         validate_lpc_generic_io_decodes(&self.lpc_decode.generic_io);
         validate_io_traps(&self.io_traps);
@@ -321,13 +327,13 @@ impl Gm965Ich8AcpiContext {
 pub fn gm965_ich8_microcode() -> MicrocodeConfig {
     MicrocodeConfig::Intel(IntelMicrocodeConfig {
         files: hvec([
-            hstr("../../intel-microcode/intel-ucode/06-0f-02"),
-            hstr("../../intel-microcode/intel-ucode/06-0f-06"),
-            hstr("../../intel-microcode/intel-ucode/06-0f-07"),
-            hstr("../../intel-microcode/intel-ucode/06-0f-0a"),
-            hstr("../../intel-microcode/intel-ucode/06-0f-0b"),
-            hstr("../../intel-microcode/intel-ucode/06-0f-0d"),
-            hstr("../../intel-microcode/intel-ucode/06-16-01"),
+            hstr("../../../intel-microcode/intel-ucode/06-0f-02"),
+            hstr("../../../intel-microcode/intel-ucode/06-0f-06"),
+            hstr("../../../intel-microcode/intel-ucode/06-0f-07"),
+            hstr("../../../intel-microcode/intel-ucode/06-0f-0a"),
+            hstr("../../../intel-microcode/intel-ucode/06-0f-0b"),
+            hstr("../../../intel-microcode/intel-ucode/06-0f-0d"),
+            hstr("../../../intel-microcode/intel-ucode/06-16-01"),
         ]),
         early: true,
         mp: true,
@@ -358,13 +364,38 @@ pub fn gm965_ich8_stages(config: &Gm965Ich8Config) -> StageLayout {
                 firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: None,
                 }),
-                load_next_stage: Some(hstr(GM965_NEXT_STAGE_NAME)),
+                // Truthful: the bootblock verifies the manifest signature
+                // and the postcar file digests (drives ed25519/sha features).
+                verify_firmware: true,
+                load_next_stage: Some(hstr(GM965_POSTCAR_STAGE_NAME)),
                 ..StageBuildConfig::default()
             },
             load_addr: GM965_BOOTBLOCK_LOAD_ADDR,
             stack_size: 0x2000,
             heap_size: None,
             runs_from: RunsFrom::Rom,
+            compression: Compression::None,
+            data_addr: None,
+            page_table_addr: None,
+            page_size: Default::default(),
+        },
+        // Cut-B postcar: teardown + cached raw ramstage load, nothing else.
+        // Stored uncompressed; the bootblock raw-copies it with uncached
+        // stores. Postcar carries no FFS parser or crypto: the ramstage
+        // extent arrives via the UC stash, and `load_next_stage` keeps the
+        // lz4 feature (ramstage is Lz4) plus the assemble-time load chain.
+        StageConfig {
+            name: hstr(GM965_POSTCAR_STAGE_NAME),
+            build: StageBuildConfig {
+                load_next_stage: Some(hstr(GM965_NEXT_STAGE_NAME)),
+                ..StageBuildConfig::default()
+            },
+            load_addr: GM965_POSTCAR_LOAD_ADDR,
+            // No manifest parsing here anymore; 8 KiB covers the raw loader,
+            // LZ4 window (stack-resident), and console frames.
+            stack_size: 0x2000,
+            heap_size: None,
+            runs_from: RunsFrom::Ram,
             compression: Compression::None,
             data_addr: None,
             page_table_addr: None,
@@ -406,7 +437,7 @@ pub fn gm965_ich8_stages(config: &Gm965Ich8Config) -> StageLayout {
 mod stage {
     use super::*;
     use crate::{
-        BootblockSpec, IntelEarlyBoard, IntelEarlyPlatform, IntelNorthbridgeDriver, IntelPlatform,
+        FfsLoadSpec, IntelEarlyBoard, IntelEarlyPlatform, IntelNorthbridgeDriver, IntelPlatform,
         IntelSouthbridgeDriver, MainstageSpec,
     };
     use fstart_core::services::ServiceError;
@@ -452,12 +483,23 @@ mod stage {
                 fstart_arch::x86_64::halt()
             }
 
+            #[cfg(fstart_stage_env = "postcar")]
+            {
+                // Cut-B postcar loader: teardown already done by the entry;
+                // load and decompress the ramstage cached. Noreturn.
+                run_gm965_ich8_postcar::<B>()
+            }
+
             #[cfg(fstart_stage_env = "ram")]
             {
                 run_gm965_ich8_mainstage::<B>()
             }
 
-            #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
+            #[cfg(not(any(
+                fstart_stage_env = "car",
+                fstart_stage_env = "ram",
+                fstart_stage_env = "postcar"
+            )))]
             {
                 match env {
                     StageEnvironment::Car => {
@@ -526,6 +568,9 @@ mod stage {
     }
 
     /// Handwritten fixed GM965/ICH8 bootblock flow. Ordering is this function.
+    /// Ends by raw-copying postcar and publishing the MTRR stash (shared
+    /// `run_intel_bootblock` tail); the bulk ramstage copy stays cached in
+    /// postcar.
     fn run_gm965_ich8_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
     where
         B: Gm965Ich8Board,
@@ -533,11 +578,13 @@ mod stage {
         let northbridge = IntelGm965::new_from_config(B::NB_CONFIG)?;
         let southbridge = IntelIch8::new_from_config(B::SB_CONFIG)?;
         crate::run_intel_bootblock::<Gm965Ich8, _, _, _, B::Console>(
-            BootblockSpec {
+            FfsLoadSpec {
                 platform: "gm965/ich8",
-                next_stage: GM965_NEXT_STAGE_NAME,
-                ramstage_load_addr: GM965_RAMSTAGE_LOAD_ADDR,
+                next_stage: GM965_POSTCAR_STAGE_NAME,
+                next_load_addr: GM965_POSTCAR_LOAD_ADDR,
                 flash_layout: B::flash_layout(),
+                dram_end: GM965_DRAM_END,
+                ramstage_name: GM965_NEXT_STAGE_NAME,
                 console_config: B::console_config(),
                 console_node: B::console_node(),
             },
@@ -545,6 +592,26 @@ mod stage {
             northbridge,
             southbridge,
         )
+    }
+
+    /// Handwritten fixed GM965/ICH8 postcar flow: fresh program, fresh stack,
+    /// caching on. Re-inits the console from ROM constants, loads and
+    /// decompresses the ramstage cached, and jumps to it. Noreturn.
+    #[cfg(fstart_stage_env = "postcar")]
+    pub fn run_gm965_ich8_postcar<B>() -> !
+    where
+        B: Gm965Ich8Board,
+    {
+        crate::run_intel_postcar::<B::Console>(FfsLoadSpec {
+            platform: "gm965/ich8",
+            next_stage: GM965_NEXT_STAGE_NAME,
+            next_load_addr: GM965_RAMSTAGE_LOAD_ADDR,
+            flash_layout: B::flash_layout(),
+            dram_end: GM965_DRAM_END,
+            ramstage_name: GM965_NEXT_STAGE_NAME,
+            console_config: B::console_config(),
+            console_node: B::console_node(),
+        })
     }
 
     /// GM965/ICH8 mainstage: fixed platform devices bound from typed config and
@@ -597,6 +664,7 @@ mod stage {
         };
         crate::run_intel_mainstage::<_, B::Payload>(
             "gm965/ich8",
+            GM965_NEXT_STAGE_NAME,
             fstart_arch::x86_64::halt,
             mainstage,
         )

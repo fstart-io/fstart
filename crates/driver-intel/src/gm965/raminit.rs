@@ -8,8 +8,8 @@
 //! `raminit_receive_enable_calibration.c`; register constants and ordering are
 //! checked against coreboot's `gm965.h` and `raminit.c`.
 
-use crate::generic::spd::{ChipWidth, DimmInfo};
 use crate::MmioBar;
+use crate::generic::spd::{ChipWidth, DimmInfo};
 use fstart_core::services::{ServiceError, SmBus};
 
 use super::{MchBar, hostbridge, mchbar};

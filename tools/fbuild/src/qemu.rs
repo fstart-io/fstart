@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn find_qemu(name: &str) -> String {
-    if let Ok(output) = Command::new("which").arg(name).output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return path;
-            }
+    if let Ok(output) = Command::new("which").arg(name).output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return path;
         }
     }
 
@@ -207,10 +207,12 @@ pub fn run(
         args.push("-no-reboot".to_string());
     }
 
-    if !use_sbsa_ref && !use_sifive_u && !use_orangepi_pc {
-        if let Some(mem) = memory {
-            args.extend(["-m".to_string(), mem.to_string()]);
-        }
+    if !use_sbsa_ref
+        && !use_sifive_u
+        && !use_orangepi_pc
+        && let Some(mem) = memory
+    {
+        args.extend(["-m".to_string(), mem.to_string()]);
     }
 
     // Keep one backend-free PCI function present on architecture QEMU machines

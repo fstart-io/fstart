@@ -198,7 +198,13 @@ board code and use typed references, not string paths.
 
 Per family, decided by the family, stated explicitly:
 
-- Intel: split (CAR bootblock/early stage, then DRAM-backed mainstage).
+- Intel: three stages — CAR bootblock (raminit, then raw-copies postcar and
+  publishes the MTRR stash), postcar (noreturn CAR teardown from the UC
+  stash, then cached ramstage load/decompress), then DRAM-backed mainstage.
+  Postcar carries no FFS parser or crypto (~12 KB): the bootblock resolves
+  the ramstage's raw extent from the signature-verified manifest into the
+  stash (ROM-immutable, so trust carries over), and the ramstage re-verifies
+  its own bytes on entry before running tables or payloads.
 - Sunxi: SRAM early stage, DRAM mainstage.
 - QEMU virt: monolithic is fine.
 

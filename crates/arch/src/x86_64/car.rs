@@ -36,7 +36,10 @@
 //!   jmp _car_setup
 //! 1:                       // returns here, CAR + stack live
 //! ```
-
+//!
+//! Postcar never sets up CAR (it only tears it down), so this whole block
+//! is compiled out of the postcar stage to keep it small.
+#[cfg(not(fstart_stage_env = "postcar"))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",
     ".code32",

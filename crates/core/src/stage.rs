@@ -6,6 +6,16 @@
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
+/// Fixed stage name for the Intel CAR-teardown loader stage.
+///
+/// All Intel CAR boards insert a stage with this name between bootblock and
+/// ramstage. `fbuild` selects the postcar entry (`ENTRY(_start_postcar)`)
+/// and the `postcar` stage environment by this name, and Intel `run_stage`
+/// dispatches to the postcar loader by `cfg(fstart_stage_env = "postcar")`.
+/// It names a stage *role*, not a board — the same way coreboot names its
+/// postcar stage.
+pub const POSTCAR_STAGE_NAME: &str = "postcar";
+
 /// How stages are laid out for this board.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)] // no_std: can't Box heapless containers

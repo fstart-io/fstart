@@ -258,6 +258,18 @@ pub mod mtrr {
         unsafe { (rdmsr(IA32_MTRR_CAP) & (1 << 8)) != 0 }
     }
 
+    /// Encode one variable MTRR as raw `(base, mask)` MSR values.
+    ///
+    /// Pure computation behind [`set_variable`]; the bootblock uses it to
+    /// precompute the post-CAR MTRR table into the UC-DRAM stash that the
+    /// postcar entry programs before enabling caching.
+    pub fn encode_variable(base: u64, size: u64, ty: u64) -> (u64, u64) {
+        let phys_mask = crate::x86::physical_address_mask();
+        let base_val = (base & phys_mask) | ty;
+        let mask_val = ((!size.wrapping_sub(1)) & phys_mask) | MTRR_PHYSMASK_VALID;
+        (base_val, mask_val)
+    }
+
     /// Program one variable MTRR on the current CPU.
     ///
     /// `base` and `size` must be naturally aligned, and `size` must be a
@@ -269,11 +281,9 @@ pub mod mtrr {
     /// MTRR changes affect cacheability for physical memory. Caller must only
     /// use valid ranges and must arrange for all CPUs to use coherent MTRRs.
     pub unsafe fn set_variable(index: u32, base: u64, size: u64, ty: u64) {
-        let phys_mask = crate::x86::physical_address_mask();
         let base_msr = IA32_MTRR_PHYSBASE0 + index * 2;
         let mask_msr = IA32_MTRR_PHYSMASK0 + index * 2;
-        let base_val = (base & phys_mask) | ty;
-        let mask_val = ((!size.wrapping_sub(1)) & phys_mask) | MTRR_PHYSMASK_VALID;
+        let (base_val, mask_val) = encode_variable(base, size, ty);
         unsafe {
             wrmsr(base_msr, base_val);
             wrmsr(mask_msr, mask_val);

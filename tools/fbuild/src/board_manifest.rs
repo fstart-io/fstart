@@ -254,11 +254,11 @@ fn metadata_variants(text: &str) -> Vec<(String, Vec<String>)> {
             if let Some(name) = trimmed
                 .strip_prefix(PREFIX)
                 .and_then(|rest| rest.strip_suffix(']'))
+                && !name.is_empty()
+                && !name.contains('.')
             {
-                if !name.is_empty() && !name.contains('.') {
-                    variants.push((name.to_string(), Vec::new()));
-                    current = Some(variants.len() - 1);
-                }
+                variants.push((name.to_string(), Vec::new()));
+                current = Some(variants.len() - 1);
             }
             continue;
         }

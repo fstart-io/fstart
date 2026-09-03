@@ -19,7 +19,6 @@ x86-1g-pages = []
 x86-writable-page-tables = []
 x86-static-page-tables = []
 early-ffs-anchor = []
-postcar-stage-load = ["dep:fstart-ffs"]
 acpi = ["dep:acpi_tables"]
 
 [dependencies]
@@ -27,7 +26,6 @@ acpi_tables = { version = "0.2", optional = true }
 fstart-log = { workspace = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }
-fstart-ffs = { workspace = true, optional = true }
 ufmt = { workspace = true }
 
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]

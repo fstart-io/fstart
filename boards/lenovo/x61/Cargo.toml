@@ -61,6 +61,10 @@ fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["ffs-
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", optional = true }
 fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"], optional = true }
+fstart-log = { path = "../../../crates/log" }
+# Required at the crate root wherever fstart_log macros expand
+# (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
+ufmt = { workspace = true }
 fstart-smm = { path = "../../../crates/smm", optional = true }
 fstart-stage = { path = "../../../crates/stage", optional = true }
 fbuild = { path = "../../../tools/fbuild", optional = true }

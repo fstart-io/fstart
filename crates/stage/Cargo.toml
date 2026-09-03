@@ -26,7 +26,6 @@ ffs = [
   "dep:fstart-crypto",
   "dep:fstart-ffs",
   "fstart-arch/early-ffs-anchor",
-  "fstart-arch/postcar-stage-load",
 ]
 ed25519 = ["ffs", "fstart-ffs/ed25519"]
 sha2-digest = [

@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use fstart_core::acpi::AcpiExtraDevice;
-use fstart_core::stage::PageSize;
+use fstart_core::ffs::Compression;
+use fstart_core::stage::{POSTCAR_STAGE_NAME, PageSize};
 use fstart_core::{
     BoardConfig, Platform, RegionKind, SecurityConfig, SocImageFormat, StageBuildConfig,
     StageLayout, effective_stage_load_addr,
@@ -114,6 +115,17 @@ pub fn plan(
                 } else {
                     SocImageFormat::None
                 };
+                // idx 0 runs before DRAM (CAR/SRAM); the stage named
+                // "postcar" is the Cut-B CAR-teardown loader (its own
+                // stage_env so `--cfg` fingerprints stay sound across the
+                // per-stage rebuilds); everything else runs from DRAM.
+                let stage_env = if idx == 0 {
+                    "car"
+                } else if stage.name.as_str() == POSTCAR_STAGE_NAME {
+                    "postcar"
+                } else {
+                    "ram"
+                };
                 stage_plan(
                     config,
                     &StageContext {
@@ -122,7 +134,7 @@ pub fn plan(
                         page_size: stage.page_size,
                         page_table_addr: stage.page_table_addr,
                         stage_name: Some(stage.name.to_string()),
-                        stage_env: if idx == 0 { "car" } else { "ram" },
+                        stage_env,
                         display_name: stage.name.to_string(),
                         stage_idx: idx,
                         load_addr: effective_stage_load_addr(config, idx, stage),
@@ -150,13 +162,13 @@ fn validate_manifest(
         ));
     }
 
-    if let Some(manifest_target) = &manifest.target {
-        if manifest_target != target.triple {
-            return Err(format!(
-                "manifest target '{}' does not match platform-derived target '{}'",
-                manifest_target, target.triple
-            ));
-        }
+    if let Some(manifest_target) = &manifest.target
+        && manifest_target != target.triple
+    {
+        return Err(format!(
+            "manifest target '{}' does not match platform-derived target '{}'",
+            manifest_target, target.triple
+        ));
     }
 
     Ok(())
@@ -272,12 +284,16 @@ fn stage_plan(
     }
 
     let stage_has_crabefi = stage.build.payload && stage_uses_crabefi(config);
+    // Note: the lz4 raw-loader case is included: fstart-stage's allocator
+    // module rides on the ffs feature, which lz4 implies, so a stage with
+    // the decoder linked needs build-std alloc even without other alloc uses.
     let needs_alloc = stage_uses_ffs(stage.build)
         || stage.build.fdt
         || stage.build.acpi
         || stage_has_crabefi
         || stage.heap_size.is_some()
-        || stage.build.pci;
+        || stage.build.pci
+        || stage_loads_compressed_next_stage(stage.build, config);
     let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
     StageBuildPlan {
@@ -300,10 +316,12 @@ fn stage_features(
     let mut features = Vec::new();
 
     // Stages that read FFS (firmware-image stages, verification, payloads)
-    // pull in manifest parsing plus the signature/digest and lz4 stacks.
+    // pull in manifest parsing plus the signature/digest stacks.
     // Raw next-stage loading (e.g. sunxi SRAM bootblocks reading eGON images
     // from MMC with read_stage_to_addr) needs none of that; dragging it into
     // BROM-loaded SRAM windows tens of KiB in size overflows .text.
+    // Cut-B postcar is the same kind of raw loader (stash extent + LZ4),
+    // with its own feature rules below.
     if stage_uses_ffs(build) {
         features.push("ffs");
         if build.payload
@@ -317,17 +335,37 @@ fn stage_features(
         {
             features.push("fit");
         }
-        features.push("lz4");
-        match security.signing_algorithm {
-            fstart_core::SignatureAlgorithm::Ed25519 => features.push("ed25519"),
-            fstart_core::SignatureAlgorithm::EcdsaP256 => {}
-        }
-        for digest in &security.required_digests {
-            match digest {
-                fstart_core::DigestAlgorithm::Sha256 => features.push("sha2-digest"),
-                fstart_core::DigestAlgorithm::Sha3_256 => features.push("sha3-digest"),
+        // Signature/digest stacks ride only where verification happens:
+        // manifest-signature verification (bootblock, ramstage) or payload
+        // digest checks. Cut-B postcar verifies nothing — the bootblock
+        // authenticated the manifest before postcar ran (ROM-immutable), and
+        // the ramstage re-verifies its own bytes — so postcar skips ed25519
+        // (~8 KB with curve25519), sha512 (~15 KB, via dalek), the manifest
+        // verifier (~15 KB), and the anchor reader (~8 KB): ~46 KB total.
+        if stage_verifies(build) {
+            match security.signing_algorithm {
+                fstart_core::SignatureAlgorithm::Ed25519 => features.push("ed25519"),
+                fstart_core::SignatureAlgorithm::EcdsaP256 => {}
+            }
+            for digest in &security.required_digests {
+                match digest {
+                    fstart_core::DigestAlgorithm::Sha256 => features.push("sha2-digest"),
+                    fstart_core::DigestAlgorithm::Sha3_256 => features.push("sha3-digest"),
+                }
             }
         }
+    }
+
+    // LZ4 rides only where decompression happens, independent of the FFS
+    // gate above: payload stages keep it (conservative — kernels arrive
+    // uncompressed today), and a stage whose named next stage is packaged
+    // compressed (postcar loading an Lz4 ramstage). The CAR bootblock
+    // raw-copies the uncompressed postcar, so it drops the decoder and
+    // shrinks out of CAR pressure. "ffs" rides along: the decoder lives
+    // in fstart-ffs, and the board maps both strings into fstart-stage.
+    if build.payload || stage_loads_compressed_next_stage(build, config) {
+        features.push("ffs");
+        features.push("lz4");
     }
 
     if build.fdt {
@@ -359,6 +397,33 @@ fn stage_features(
 
 fn stage_uses_ffs(build: &StageBuildConfig) -> bool {
     build.firmware_image.is_some() || build.verify_firmware || build.payload
+}
+
+/// Whether this stage links the signature/digest stacks.
+///
+/// True for stages that verify the manifest signature or file digests
+/// (firmware-image readers, explicit verifiers, payload loaders). False for
+/// raw loaders that move bytes without authenticating them — Cut-B postcar
+/// (trusts the bootblock-verified manifest via the stash) and raw eGON/MMC
+/// loaders (no manifest at all).
+fn stage_verifies(build: &StageBuildConfig) -> bool {
+    build.firmware_image.is_some() || build.verify_firmware || build.payload
+}
+
+/// Whether this stage must decompress a named next stage packaged with
+/// compression (Cut-B postcar loading an Lz4 ramstage). Looks the
+/// `load_next_stage` name up in the board's stage layout.
+fn stage_loads_compressed_next_stage(build: &StageBuildConfig, config: &BoardConfig) -> bool {
+    let Some(next) = build.load_next_stage.as_ref() else {
+        return false;
+    };
+    let StageLayout::MultiStage(stages) = &config.stages else {
+        return false;
+    };
+    stages
+        .iter()
+        .find(|stage| stage.name.as_str() == next.as_str())
+        .is_some_and(|stage| stage.compression != Compression::None)
 }
 
 fn stage_uses_crabefi(config: &BoardConfig) -> bool {
@@ -589,9 +654,83 @@ mod tests {
         let plan = plan(&parsed(config), &manifest()).expect("firmware stage should plan");
         assert!(plan.stages[0].features.contains("ffs"));
         assert!(plan.stages[0].features.contains("ed25519"));
-        assert!(plan.stages[0].features.contains("lz4"));
+        // The bootblock raw-copies the uncompressed next stage, so the LZ4
+        // decoder stays out of the CAR footprint even with FFS enabled.
+        assert!(!plan.stages[0].features.contains("lz4"));
         assert!(plan.stages[0].features.contains("sha2-digest"));
         assert!(plan.stages[1].features.contains("ffs"));
+    }
+
+    #[test]
+    fn plan_stage_loading_compressed_next_stage_keeps_lz4() {
+        // Cut-B postcar shape: middle stage loads an Lz4-packaged ramstage.
+        let mut config = minimal_config();
+        config.stages = StageLayout::MultiStage(hvec([
+            StageConfig {
+                name: hstr("bootblock"),
+                build: StageBuildConfig {
+                    firmware_image: Some(FirmwareImageConfig {
+                        temp_ram_buffer: None,
+                    }),
+                    load_next_stage: Some(hstr("postcar")),
+                    ..StageBuildConfig::default()
+                },
+                load_addr: 0xfff0_0000,
+                stack_size: 0x2000,
+                heap_size: None,
+                runs_from: RunsFrom::Rom,
+                compression: Compression::None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            },
+            StageConfig {
+                name: hstr("postcar"),
+                build: StageBuildConfig {
+                    // No firmware_image / verify_firmware: postcar raw-loads
+                    // from the stash extent, no FFS parser or crypto.
+                    load_next_stage: Some(hstr("ramstage")),
+                    ..StageBuildConfig::default()
+                },
+                load_addr: 0x0100_0000,
+                stack_size: 0x2000,
+                heap_size: None,
+                runs_from: RunsFrom::Ram,
+                compression: Compression::None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            },
+            StageConfig {
+                name: hstr("ramstage"),
+                build: StageBuildConfig {
+                    verify_firmware: true,
+                    ..StageBuildConfig::default()
+                },
+                load_addr: 0x0400_0000,
+                stack_size: 0x10000,
+                heap_size: None,
+                runs_from: RunsFrom::Ram,
+                compression: Compression::Lz4,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            },
+        ]));
+
+        let plan = plan(&parsed(config), &manifest()).expect("postcar stages should plan");
+        assert_eq!(plan.stages.len(), 3);
+        // Bootblock: FFS yes, LZ4 no (raw-copies uncompressed postcar).
+        assert!(plan.stages[0].features.contains("ffs"));
+        assert!(!plan.stages[0].features.contains("lz4"));
+        // Postcar: decompresses the Lz4 ramstage, so it keeps the decoder
+        // (ffs rides along via lz4), but carries no signature/digest stack:
+        // the bootblock authenticated the manifest and the ramstage
+        // re-verifies its own bytes.
+        assert!(plan.stages[1].features.contains("ffs"));
+        assert!(plan.stages[1].features.contains("lz4"));
+        assert!(!plan.stages[1].features.contains("ed25519"));
+        assert!(!plan.stages[1].features.contains("sha2-digest"));
     }
 
     #[test]

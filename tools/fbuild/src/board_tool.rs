@@ -416,23 +416,23 @@ fn validate(
             manifest.package, manifest.board, config.name
         ));
     }
-    if let Some(platform) = &manifest.platform {
-        if config.platform.as_str() != platform {
-            return Err(format!(
-                "board platform mismatch for {}: manifest platform is '{}', board returned '{}'",
-                manifest.package, platform, config.platform
-            ));
-        }
+    if let Some(platform) = &manifest.platform
+        && config.platform.as_str() != platform
+    {
+        return Err(format!(
+            "board platform mismatch for {}: manifest platform is '{}', board returned '{}'",
+            manifest.package, platform, config.platform
+        ));
     }
-    if let Some(target) = &manifest.target {
-        if config.platform.target_triple() != target {
-            return Err(format!(
-                "board target mismatch for {}: manifest target is '{}', platform implies '{}'",
-                manifest.package,
-                target,
-                config.platform.target_triple()
-            ));
-        }
+    if let Some(target) = &manifest.target
+        && config.platform.target_triple() != target
+    {
+        return Err(format!(
+            "board target mismatch for {}: manifest target is '{}', platform implies '{}'",
+            manifest.package,
+            target,
+            config.platform.target_triple()
+        ));
     }
     Ok(())
 }

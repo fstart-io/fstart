@@ -22,7 +22,7 @@
 //!   (same policy as the GM965 port).
 
 use super::fields::*;
-use super::{MchBar, hostbridge, mchbar, IntelI945, I945Variant};
+use super::{I945Variant, IntelI945, MchBar, hostbridge, mchbar};
 use crate::MmioBar;
 use crate::generic::spd::ddr2;
 use fstart_core::services::{ServiceError, SmBus};
@@ -213,41 +213,119 @@ const GEN_PMCON_3: u16 = 0xa4;
 // ---------------------------------------------------------------------------
 
 const DQ2030: [u32; 16] = [
-    0x0807_0706, 0x0a09_0908, 0x0d0c_0b0a, 0x1210_0f0e, 0x1a18_1614, 0x2220_1e1c, 0x2a28_2624,
-    0x3934_302d, 0x0a09_0908, 0x0c0b_0b0a, 0x0e0d_0d0c, 0x1211_100f, 0x1917_1513, 0x211f_1d1b,
-    0x2d29_2623, 0x3f39_3531,
+    0x0807_0706,
+    0x0a09_0908,
+    0x0d0c_0b0a,
+    0x1210_0f0e,
+    0x1a18_1614,
+    0x2220_1e1c,
+    0x2a28_2624,
+    0x3934_302d,
+    0x0a09_0908,
+    0x0c0b_0b0a,
+    0x0e0d_0d0c,
+    0x1211_100f,
+    0x1917_1513,
+    0x211f_1d1b,
+    0x2d29_2623,
+    0x3f39_3531,
 ];
 
 const DQ2330: [u32; 16] = DQ2030;
 
 const CMD2710: [u32; 16] = [
-    0x0706_0605, 0x0f0d_0b09, 0x1917_1411, 0x1f1f_1d1b, 0x1f1f_1f1f, 0x1f1f_1f1f, 0x1f1f_1f1f,
-    0x1f1f_1f1f, 0x1110_100f, 0x0f0d_0b09, 0x1917_1411, 0x1f1f_1d1b, 0x1f1f_1f1f, 0x1f1f_1f1f,
-    0x1f1f_1f1f, 0x1f1f_1f1f,
+    0x0706_0605,
+    0x0f0d_0b09,
+    0x1917_1411,
+    0x1f1f_1d1b,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1110_100f,
+    0x0f0d_0b09,
+    0x1917_1411,
+    0x1f1f_1d1b,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
 ];
 
 const CMD3210: [u32; 16] = [
-    0x0f0d_0b0a, 0x1715_1311, 0x1f1d_1b19, 0x1f1f_1f1f, 0x1f1f_1f1f, 0x1f1f_1f1f, 0x1f1f_1f1f,
-    0x1f1f_1f1f, 0x1817_1615, 0x1f1f_1c1a, 0x1f1f_1f1f, 0x1f1f_1f1f, 0x1f1f_1f1f, 0x1f1f_1f1f,
-    0x1f1f_1f1f, 0x1f1f_1f1f,
+    0x0f0d_0b0a,
+    0x1715_1311,
+    0x1f1d_1b19,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1817_1615,
+    0x1f1f_1c1a,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
+    0x1f1f_1f1f,
 ];
 
 const CLK2030: [u32; 16] = [
-    0x0e0d_0d0c, 0x100f_0f0e, 0x100f_0e0d, 0x1513_1211, 0x1d1b_1917, 0x2523_211f, 0x2a28_2927,
-    0x3230_2e2c, 0x1716_1514, 0x1b1a_1918, 0x1f1e_1d1c, 0x2322_2120, 0x2726_2524, 0x2d2b_2928,
-    0x3533_312f, 0x3d3b_3937,
+    0x0e0d_0d0c,
+    0x100f_0f0e,
+    0x100f_0e0d,
+    0x1513_1211,
+    0x1d1b_1917,
+    0x2523_211f,
+    0x2a28_2927,
+    0x3230_2e2c,
+    0x1716_1514,
+    0x1b1a_1918,
+    0x1f1e_1d1c,
+    0x2322_2120,
+    0x2726_2524,
+    0x2d2b_2928,
+    0x3533_312f,
+    0x3d3b_3937,
 ];
 
 const CTL3215: [u32; 16] = [
-    0x0101_0000, 0x0302_0101, 0x0706_0504, 0x0b0a_0908, 0x100f_0e0d, 0x1413_1211, 0x1817_1615,
-    0x1c1b_1a19, 0x0504_0403, 0x0706_0605, 0x0a09_0807, 0x0f0d_0c0b, 0x1413_1211, 0x1817_1615,
-    0x1c1b_1a19, 0x201f_1e1d,
+    0x0101_0000,
+    0x0302_0101,
+    0x0706_0504,
+    0x0b0a_0908,
+    0x100f_0e0d,
+    0x1413_1211,
+    0x1817_1615,
+    0x1c1b_1a19,
+    0x0504_0403,
+    0x0706_0605,
+    0x0a09_0807,
+    0x0f0d_0c0b,
+    0x1413_1211,
+    0x1817_1615,
+    0x1c1b_1a19,
+    0x201f_1e1d,
 ];
 
 const CTL3220: [u32; 16] = [
-    0x0504_0403, 0x0706_0505, 0x0e0c_0a08, 0x1a17_1411, 0x2825_221f, 0x3532_2f2b, 0x3e3e_3b38,
-    0x3e3e_3e3e, 0x0908_0807, 0x0b0a_0a09, 0x0f0d_0c0b, 0x1b17_1311, 0x2825_221f, 0x3532_2f2b,
-    0x3e3e_3b38, 0x3e3e_3e3e,
+    0x0504_0403,
+    0x0706_0505,
+    0x0e0c_0a08,
+    0x1a17_1411,
+    0x2825_221f,
+    0x3532_2f2b,
+    0x3e3e_3b38,
+    0x3e3e_3e3e,
+    0x0908_0807,
+    0x0b0a_0a09,
+    0x0f0d_0c0b,
+    0x1b17_1311,
+    0x2825_221f,
+    0x3532_2f2b,
+    0x3e3e_3b38,
+    0x3e3e_3e3e,
 ];
 
 const NC: [u32; 16] = [0; 16];
@@ -263,33 +341,21 @@ const G_CTL3220: u8 = 6;
 const G_NC: u8 = 7;
 
 const DUAL_CHANNEL_SLEW_GROUP_LOOKUP: [u8; 192] = [
-    0, 3, 5, 5, 4, 4, 0, 3, 0, 3, 5, 5, 4, 4, 0, 3,
-    0, 3, 7, 5, 7, 4, 0, 3, 0, 3, 5, 5, 4, 4, 0, 2,
-    0, 3, 7, 5, 7, 4, 7, 7, 0, 3, 5, 5, 4, 4, 0, 3,
-    0, 3, 5, 7, 4, 7, 0, 3, 0, 3, 5, 5, 4, 4, 0, 3,
-    0, 3, 5, 7, 4, 7, 0, 2, 0, 3, 5, 7, 4, 7, 7, 7,
-    0, 3, 7, 5, 7, 4, 0, 3, 0, 3, 5, 5, 4, 4, 0, 3,
-    0, 3, 7, 5, 7, 4, 0, 3, 0, 3, 5, 5, 4, 4, 0, 2,
-    0, 3, 7, 5, 7, 4, 7, 7, 0, 2, 5, 5, 4, 4, 0, 3,
-    0, 2, 5, 7, 4, 7, 0, 3, 0, 2, 5, 5, 4, 4, 0, 3,
-    0, 2, 5, 7, 4, 7, 0, 2, 0, 2, 5, 7, 4, 7, 7, 7,
-    7, 7, 7, 5, 7, 4, 0, 3, 7, 7, 5, 7, 4, 7, 0, 3,
-    7, 7, 7, 5, 7, 4, 0, 3, 7, 7, 5, 7, 4, 4, 0, 2,
+    0, 3, 5, 5, 4, 4, 0, 3, 0, 3, 5, 5, 4, 4, 0, 3, 0, 3, 7, 5, 7, 4, 0, 3, 0, 3, 5, 5, 4, 4, 0, 2,
+    0, 3, 7, 5, 7, 4, 7, 7, 0, 3, 5, 5, 4, 4, 0, 3, 0, 3, 5, 7, 4, 7, 0, 3, 0, 3, 5, 5, 4, 4, 0, 3,
+    0, 3, 5, 7, 4, 7, 0, 2, 0, 3, 5, 7, 4, 7, 7, 7, 0, 3, 7, 5, 7, 4, 0, 3, 0, 3, 5, 5, 4, 4, 0, 3,
+    0, 3, 7, 5, 7, 4, 0, 3, 0, 3, 5, 5, 4, 4, 0, 2, 0, 3, 7, 5, 7, 4, 7, 7, 0, 2, 5, 5, 4, 4, 0, 3,
+    0, 2, 5, 7, 4, 7, 0, 3, 0, 2, 5, 5, 4, 4, 0, 3, 0, 2, 5, 7, 4, 7, 0, 2, 0, 2, 5, 7, 4, 7, 7, 7,
+    7, 7, 7, 5, 7, 4, 0, 3, 7, 7, 5, 7, 4, 7, 0, 3, 7, 7, 7, 5, 7, 4, 0, 3, 7, 7, 5, 7, 4, 4, 0, 2,
 ];
 
 const SINGLE_CHANNEL_SLEW_GROUP_LOOKUP: [u8; 192] = [
-    1, 3, 5, 5, 4, 4, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
-    1, 3, 7, 5, 7, 4, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
-    1, 3, 7, 5, 7, 4, 7, 7, 1, 3, 5, 5, 4, 4, 1, 3,
-    1, 3, 5, 7, 4, 7, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
-    1, 3, 5, 7, 4, 7, 1, 3, 1, 3, 5, 7, 4, 7, 7, 7,
-    1, 3, 7, 5, 7, 4, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
-    1, 3, 7, 5, 7, 4, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
-    1, 3, 7, 5, 7, 4, 7, 7, 1, 3, 5, 5, 4, 4, 1, 3,
-    1, 3, 5, 7, 4, 7, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
-    1, 3, 5, 7, 4, 7, 1, 3, 1, 3, 5, 7, 4, 7, 7, 7,
-    1, 7, 7, 5, 7, 4, 0, 3, 1, 7, 5, 7, 4, 7, 0, 3,
-    1, 7, 7, 5, 7, 4, 0, 3, 1, 7, 5, 7, 4, 4, 0, 3,
+    1, 3, 5, 5, 4, 4, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3, 1, 3, 7, 5, 7, 4, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
+    1, 3, 7, 5, 7, 4, 7, 7, 1, 3, 5, 5, 4, 4, 1, 3, 1, 3, 5, 7, 4, 7, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
+    1, 3, 5, 7, 4, 7, 1, 3, 1, 3, 5, 7, 4, 7, 7, 7, 1, 3, 7, 5, 7, 4, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3,
+    1, 3, 7, 5, 7, 4, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3, 1, 3, 7, 5, 7, 4, 7, 7, 1, 3, 5, 5, 4, 4, 1, 3,
+    1, 3, 5, 7, 4, 7, 1, 3, 1, 3, 5, 5, 4, 4, 1, 3, 1, 3, 5, 7, 4, 7, 1, 3, 1, 3, 5, 7, 4, 7, 7, 7,
+    1, 7, 7, 5, 7, 4, 0, 3, 1, 7, 5, 7, 4, 7, 0, 3, 1, 7, 7, 5, 7, 4, 0, 3, 1, 7, 5, 7, 4, 4, 0, 3,
 ];
 
 fn slew_group_lookup(dual_channel: bool, index: usize) -> &'static [u32; 16] {
@@ -376,38 +442,138 @@ const GM_SINGLE_STRENGTH: [u8; 192] = [
 
 /// GC (desktop G/P) data clock-crossing pairs, indexed by MEM/FSB.
 const GC_DATA_CROSSING: [u32; 30] = [
-    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x1008_0201,
-    0x0000_0000, 0x0010_0401, 0x0000_0000, 0x0001_0402, 0x0000_0000, 0xffff_ffff, 0xffff_ffff,
-    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x0402_0108, 0x0000_0000, 0x0002_0108,
-    0x0000_0000, 0x0008_0201, 0x0000_0000, 0x0001_0402, 0x0000_0000, 0x0402_0108, 0x0000_0000,
-    0x0804_0110, 0x0000_0000,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0x1008_0201,
+    0x0000_0000,
+    0x0010_0401,
+    0x0000_0000,
+    0x0001_0402,
+    0x0000_0000,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0x0402_0108,
+    0x0000_0000,
+    0x0002_0108,
+    0x0000_0000,
+    0x0008_0201,
+    0x0000_0000,
+    0x0001_0402,
+    0x0000_0000,
+    0x0402_0108,
+    0x0000_0000,
+    0x0804_0110,
+    0x0000_0000,
 ];
 
 /// GC (desktop G/P) command clock-crossing pairs, indexed by MEM/FSB.
 const GC_COMMAND_CROSSING: [u32; 30] = [
-    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x0001_0800,
-    0x0000_0402, 0x0100_0400, 0x0000_0200, 0x0002_0904, 0x0000_0000, 0xffff_ffff, 0xffff_ffff,
-    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x0201_0804, 0x0000_0000, 0x0001_0402,
-    0x0000_0000, 0x0402_0130, 0x0000_0008, 0x0002_0904, 0x0000_0000, 0x0201_0804, 0x0000_0000,
-    0x1806_01c0, 0x0000_0020,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0x0001_0800,
+    0x0000_0402,
+    0x0100_0400,
+    0x0000_0200,
+    0x0002_0904,
+    0x0000_0000,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0x0201_0804,
+    0x0000_0000,
+    0x0001_0402,
+    0x0000_0000,
+    0x0402_0130,
+    0x0000_0008,
+    0x0002_0904,
+    0x0000_0000,
+    0x0201_0804,
+    0x0000_0000,
+    0x1806_01c0,
+    0x0000_0020,
 ];
 
 /// GM (mobile) data clock-crossing pairs, indexed by MEM/FSB.
 const GM_DATA_CROSSING: [u32; 30] = [
-    0x0010_0401, 0x0000_0000, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x0804_0120,
-    0x0000_0000, 0x0010_0401, 0x0000_0000, 0x0001_0402, 0x0000_0000, 0x0402_0120, 0x0000_0010,
-    0x1004_0280, 0x0000_0040, 0x0010_0401, 0x0000_0000, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff,
-    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff,
-    0xffff_ffff, 0xffff_ffff,
+    0x0010_0401,
+    0x0000_0000,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0x0804_0120,
+    0x0000_0000,
+    0x0010_0401,
+    0x0000_0000,
+    0x0001_0402,
+    0x0000_0000,
+    0x0402_0120,
+    0x0000_0010,
+    0x1004_0280,
+    0x0000_0040,
+    0x0010_0401,
+    0x0000_0000,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
 ];
 
 /// GM (mobile) command clock-crossing pairs, indexed by MEM/FSB.
 const GM_COMMAND_CROSSING: [u32; 30] = [
-    0x0402_0208, 0x0000_0000, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x0006_0108,
-    0x0000_0000, 0x0402_0108, 0x0000_0000, 0xffff_ffff, 0xffff_ffff, 0x0004_0318, 0x0000_0000,
-    0x0402_0118, 0x0000_0000, 0x0201_0804, 0x0000_0000, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff,
-    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff,
-    0xffff_ffff, 0xffff_ffff,
+    0x0402_0208,
+    0x0000_0000,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0x0006_0108,
+    0x0000_0000,
+    0x0402_0108,
+    0x0000_0000,
+    0xffff_ffff,
+    0xffff_ffff,
+    0x0004_0318,
+    0x0000_0000,
+    0x0402_0118,
+    0x0000_0000,
+    0x0201_0804,
+    0x0000_0000,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
 ];
 
 // ---------------------------------------------------------------------------
@@ -740,10 +906,7 @@ fn gather_common_timing(
 
         // Prefer a block read; fall back to byte reads like coreboot.
         let mut raw = [0u8; 256];
-        let mut ok = matches!(
-            ctx.smbus.block_read(device, 0, &mut raw[..64]),
-            Ok(64)
-        );
+        let mut ok = matches!(ctx.smbus.block_read(device, 0, &mut raw[..64]), Ok(64));
         if !ok {
             ok = true;
             for j in 0..64 {
@@ -820,8 +983,7 @@ fn gather_common_timing(
             if saved.cas_mask & (1 << cas) == 0 {
                 saved.min_tclk_cas[cas] = 0;
             } else {
-                saved.min_tclk_cas[cas] =
-                    saved.min_tclk_cas[cas].max(dimm.cycle_time_256ns[cas]);
+                saved.min_tclk_cas[cas] = saved.min_tclk_cas[cas].max(dimm.cycle_time_256ns[cas]);
             }
         }
         dimm_mask |= 1 << i;
@@ -837,7 +999,11 @@ fn gather_common_timing(
 }
 
 /// Pick tCK and CAS (`choose_tclk`).
-fn choose_tclk(ctx: &Ctx<'_>, sys: &mut SysInfo, saved: &CommonTimings) -> Result<(), ServiceError> {
+fn choose_tclk(
+    ctx: &Ctx<'_>,
+    sys: &mut SysInfo,
+    saved: &CommonTimings,
+) -> Result<(), ServiceError> {
     let mut ctrl_min_tclk = 2 * 256 * 1000 / ctx.max_supported_frequency();
     normalize_tck(&mut ctrl_min_tclk);
 
@@ -848,8 +1014,7 @@ fn choose_tclk(ctx: &Ctx<'_>, sys: &mut SysInfo, saved: &CommonTimings) -> Resul
         sys.cas = try_cas;
         sys.tclk = saved.min_tclk_cas[try_cas as usize];
         if sys.tclk >= ctrl_min_tclk
-            && saved.min_tclk_cas[try_cas as usize]
-                != saved.min_tclk_cas[try_cas as usize - 1]
+            && saved.min_tclk_cas[try_cas as usize] != saved.min_tclk_cas[try_cas as usize - 1]
         {
             break;
         }
@@ -870,11 +1035,7 @@ fn choose_tclk(ctx: &Ctx<'_>, sys: &mut SysInfo, saved: &CommonTimings) -> Resul
         768 => 667,
         _ => 0,
     };
-    fstart_log::debug!(
-        "i945: memory at {}MT CAS={}",
-        sys.memory_frequency,
-        sys.cas
-    );
+    fstart_log::debug!("i945: memory at {}MT CAS={}", sys.memory_frequency, sys.cas);
     Ok(())
 }
 
@@ -926,10 +1087,7 @@ fn derive_timings(sys: &mut SysInfo, saved: &CommonTimings) -> Result<(), Servic
     Ok(())
 }
 
-fn get_dram_configuration(
-    ctx: &mut Ctx<'_>,
-    sys: &mut SysInfo,
-) -> Result<(), ServiceError> {
+fn get_dram_configuration(ctx: &mut Ctx<'_>, sys: &mut SysInfo) -> Result<(), ServiceError> {
     let mut saved = CommonTimings::new();
     gather_common_timing(ctx, sys, &mut saved)?;
     choose_tclk(ctx, sys, &saved)?;
@@ -999,7 +1157,11 @@ fn rcomp_buffer_strength_and_slew(ctx: &Ctx<'_>, sys: &SysInfo) {
         ctx.mch.write8(*off, strength[idx * 8 + k]);
     }
 
-    write_slew_rates(&ctx.mch, r::G1SRPUT, slew_group_lookup(dual_channel, idx * 8));
+    write_slew_rates(
+        &ctx.mch,
+        r::G1SRPUT,
+        slew_group_lookup(dual_channel, idx * 8),
+    );
     write_slew_rates(
         &ctx.mch,
         r::G2SRPUT,
@@ -1019,8 +1181,16 @@ fn rcomp_buffer_strength_and_slew(ctx: &Ctx<'_>, sys: &SysInfo) {
         r::G4SRPUT,
         slew_group_lookup(dual_channel, idx * 8 + 3),
     );
-    write_slew_rates(&ctx.mch, r::G5SRPUT, slew_group_lookup(dual_channel, idx * 8 + 4));
-    write_slew_rates(&ctx.mch, r::G6SRPUT, slew_group_lookup(dual_channel, idx * 8 + 5));
+    write_slew_rates(
+        &ctx.mch,
+        r::G5SRPUT,
+        slew_group_lookup(dual_channel, idx * 8 + 4),
+    );
+    write_slew_rates(
+        &ctx.mch,
+        r::G6SRPUT,
+        slew_group_lookup(dual_channel, idx * 8 + 5),
+    );
 
     if sys.dual_channel {
         write_slew_rates(
@@ -1042,7 +1212,8 @@ fn rcomp_buffer_strength_and_slew(ctx: &Ctx<'_>, sys: &SysInfo) {
 /// Enable periodic RCOMP (`sdram_enable_rcomp`).
 fn enable_rcomp(ctx: &Ctx<'_>) {
     udelay(300);
-    ctx.mch.clrbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::PERIODIC_DIS::SET.value);
+    ctx.mch
+        .clrbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::PERIODIC_DIS::SET.value);
 }
 
 /// Program DLL timings (`sdram_program_dll_timings`).
@@ -1091,22 +1262,30 @@ fn program_dll_timings(ctx: &Ctx<'_>, sys: &SysInfo) {
 
 /// Force an RCOMP cycle (`sdram_force_rcomp`).
 fn force_rcomp(ctx: &Ctx<'_>) {
-    ctx.mch.setbits32(r::ODTC, ODTC_REG::RCOMP_FORCE_ODT::SET.value);
-    ctx.mch.setbits32(r::SMSRCTL, SMSRCTL_REG::SM_RCOMP_EN::SET.value);
+    ctx.mch
+        .setbits32(r::ODTC, ODTC_REG::RCOMP_FORCE_ODT::SET.value);
+    ctx.mch
+        .setbits32(r::SMSRCTL, SMSRCTL_REG::SM_RCOMP_EN::SET.value);
     // Start initial RCOMP.
-    ctx.mch.setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_FORCE::SET.value);
+    ctx.mch
+        .setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_FORCE::SET.value);
 
     let rev = IntelI945::silicon_revision();
     if (rev == 0 && ctx.mch.read32(r::DCC) & 3 == 0) || rev == 1 {
-        ctx.mch.setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_ALT.val(3).value);
+        ctx.mch
+            .setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_ALT.val(3).value);
     }
 }
 
 /// System-memory IO init (`sdram_initialize_system_memory_io`).
 fn initialize_system_memory_io(ctx: &mut Ctx<'_>, sys: &SysInfo) {
-    ctx.mch.clrsetbits8(r::C0HCTC, 0x1f, HCTC_REG::HCTC_MODE.val(1).value);
     ctx.mch
-        .clrsetbits8(r::C0HCTC + r::C1_BASE, 0x1f, HCTC_REG::HCTC_MODE.val(1).value);
+        .clrsetbits8(r::C0HCTC, 0x1f, HCTC_REG::HCTC_MODE.val(1).value);
+    ctx.mch.clrsetbits8(
+        r::C0HCTC + r::C1_BASE,
+        0x1f,
+        HCTC_REG::HCTC_MODE.val(1).value,
+    );
     ctx.mch.clrbits16(
         r::WDLLBYPMODE,
         (1 << 9) | (1 << 6) | (1 << 4) | (1 << 3) | (1 << 1),
@@ -1131,7 +1310,8 @@ fn initialize_system_memory_io(ctx: &mut Ctx<'_>, sys: &SysInfo) {
         .value,
         (GBRCOMPCTL_REG::RCOMP_CFG27.val(3) + GBRCOMPCTL_REG::RCOMP_EN.val(3)).value,
     );
-    ctx.mch.setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_DONE_FLAG::SET.value);
+    ctx.mch
+        .setbits32(r::GBRCOMPCTL, GBRCOMPCTL_REG::RCOMP_DONE_FLAG::SET.value);
 
     program_dll_timings(ctx, sys);
     force_rcomp(ctx);
@@ -1180,7 +1360,8 @@ fn enable_system_memory_io(ctx: &Ctx<'_>, sys: &SysInfo) {
         ctx.mch.setbits32(r::C0DRC1, DRC1_REG::IO_BUF_EN::SET.value);
     }
     if sys.dimm[2] != DIMM_NOT_POPULATED || sys.dimm[3] != DIMM_NOT_POPULATED {
-        ctx.mch.setbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::IO_BUF_EN::SET.value);
+        ctx.mch
+            .setbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::IO_BUF_EN::SET.value);
     }
 }
 
@@ -1256,7 +1437,11 @@ fn set_bank_architecture(ctx: &Ctx<'_>, sys: &SysInfo) {
         if sys.dimm[i] == DIMM_NOT_POPULATED || *banks != 8 {
             continue;
         }
-        let off = if i < 2 { r::C0BNKARC } else { r::C0BNKARC + r::C1_BASE };
+        let off = if i < 2 {
+            r::C0BNKARC
+        } else {
+            r::C0BNKARC + r::C1_BASE
+        };
         if i & 1 != 0 {
             ctx.mch.setbits16(off, 5 << 4);
         } else {
@@ -1270,8 +1455,11 @@ fn program_refresh_rate(ctx: &Ctx<'_>, sys: &SysInfo) {
     let refresh = if sys.refresh == REFRESH_7_8US { 2 } else { 1 };
     ctx.mch
         .clrsetbits32(r::C0DRC0, 7 << 8, DRC0_REG::REFRESH.val(refresh).value);
-    ctx.mch
-        .clrsetbits32(r::C0DRC0 + r::C1_BASE, 7 << 8, DRC0_REG::REFRESH.val(refresh).value);
+    ctx.mch.clrsetbits32(
+        r::C0DRC0 + r::C1_BASE,
+        7 << 8,
+        DRC0_REG::REFRESH.val(refresh).value,
+    );
 }
 
 /// Program CKE tristate (`sdram_program_cke_tristate`).
@@ -1327,7 +1515,8 @@ fn set_timing_and_control(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceErr
         );
     }
     if !sys.dual_channel && sys.dimm[1] != DIMM_NOT_POPULATED {
-        ctx.mch.setbits32(r::C0DRC0, DRC0_REG::SC1_SECOND_DIMM::SET.value);
+        ctx.mch
+            .setbits32(r::C0DRC0, DRC0_REG::SC1_SECOND_DIMM::SET.value);
     }
 
     program_refresh_rate(ctx, sys);
@@ -1400,7 +1589,9 @@ fn set_timing_and_control(ctx: &Ctx<'_>, sys: &SysInfo) -> Result<(), ServiceErr
             return Err(RaminitError::BadDrt3Frequency.into());
         }
     };
-    temp_drt |= DRT3_REG::REF_MINUS_TRFC.val(((78800 / divisor) - old_trfc) & 0x1ff).value;
+    temp_drt |= DRT3_REG::REF_MINUS_TRFC
+        .val(((78800 / divisor) - old_trfc) & 0x1ff)
+        .value;
     temp_drt |= (DRT3_REG::US_HI.val(hi) + DRT3_REG::US_LO.val(lo)).value;
     ctx.mch.write32(r::C0DRT3, temp_drt);
     ctx.mch.write32(r::C0DRT3 + r::C1_BASE, temp_drt);
@@ -1495,8 +1686,7 @@ fn program_graphics_frequency(ctx: &mut Ctx<'_>, sys: &mut SysInfo) {
     let mut second_vco = voltage_1_50;
     if !voltage_1_50 && IntelI945::silicon_revision() > 0 && freq == CRCLK_250MHZ {
         let (fsb, mem) = (sys.fsb_frequency, sys.memory_frequency);
-        if (fsb == 667 && mem == 533) || (fsb == 533 && mem == 533) || (fsb == 533 && mem == 400)
-        {
+        if (fsb == 667 && mem == 533) || (fsb == 533 && mem == 533) || (fsb == 533 && mem == 400) {
             second_vco = true;
         }
         if fsb == 667 && mem == 533 {
@@ -1561,7 +1751,13 @@ fn program_memory_frequency(ctx: &mut Ctx<'_>, sys: &SysInfo) -> Result<(), Serv
     #[cfg(target_arch = "x86_64")]
     for _ in 0..0x100 {
         unsafe {
-            core::arch::asm!("nop", "nop", "nop", "nop", options(nomem, nostack, preserves_flags));
+            core::arch::asm!(
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                options(nomem, nostack, preserves_flags)
+            );
         }
     }
     ctx.mch.write32(mchbar::CLKCFG, clkcfg & !(1 << 10));
@@ -1601,8 +1797,7 @@ fn program_clock_crossing(ctx: &Ctx<'_>) {
     ctx.mch.write32(r::CCCFT_LO + 4, command[idx + 1]);
     ctx.mch.write32(r::C0DCCFT_LO, data[idx]);
     ctx.mch.write32(r::C0DCCFT_LO + 4, data[idx + 1]);
-    ctx.mch
-        .write32(r::C0DCCFT_LO + r::C1_BASE, data[idx]);
+    ctx.mch.write32(r::C0DCCFT_LO + r::C1_BASE, data[idx]);
     ctx.mch
         .write32(r::C0DCCFT_LO + r::C1_BASE + 4, data[idx + 1]);
 }
@@ -1615,21 +1810,20 @@ fn disable_fast_dispatch(ctx: &Ctx<'_>) {
 
 /// Pre-JEDEC init (`sdram_pre_jedec_initialization`).
 fn pre_jedec_initialization(ctx: &Ctx<'_>) {
+    ctx.mch.clrsetbits32(
+        r::WCC,
+        !WCC_BASE_MASK,
+        (WCC_REG::WRITE_DIS.val(4) + WCC_REG::READ_DIS.val(3) + WCC_REG::POSTED_WRITE::SET).value,
+    );
     ctx.mch
-        .clrsetbits32(
-            r::WCC,
-            !WCC_BASE_MASK,
-            (WCC_REG::WRITE_DIS.val(4) + WCC_REG::READ_DIS.val(3) + WCC_REG::POSTED_WRITE::SET)
-                .value,
-        );
-    ctx.mch.setbits32(r::SMVREFC, SMVREFC_REG::SMVREF_EN::SET.value);
-    ctx.mch.clrsetbits32(r::MMARB0, 3 << 17, (1 << 21) | (1 << 16));
+        .setbits32(r::SMVREFC, SMVREFC_REG::SMVREF_EN::SET.value);
+    ctx.mch
+        .clrsetbits32(r::MMARB0, 3 << 17, (1 << 21) | (1 << 16));
     ctx.mch.clrsetbits32(r::MMARB1, 7 << 8, 3 << 8);
     ctx.mch.write32(r::C0AIT_LO, 0x0000_06c4);
     ctx.mch.write32(r::C0AIT_LO + 4, 0x871a_066d);
     ctx.mch.write32(r::C0AIT_LO + r::C1_BASE, 0x0000_06c4);
-    ctx.mch
-        .write32(r::C0AIT_LO + r::C1_BASE + 4, 0x871a_066d);
+    ctx.mch.write32(r::C0AIT_LO + r::C1_BASE + 4, 0x871a_066d);
 }
 
 // Enhanced-addressing modes.
@@ -1737,7 +1931,8 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
             0xff,
             (DRT2_REG::CKE_IDLE.val(3) + DRT2_REG::TIMER_LO.val(0)).value,
         );
-        ctx.mch.setbits32(r::C0DRC1 + ch, DRC1_REG::CKE.val(3).value);
+        ctx.mch
+            .setbits32(r::C0DRC1 + ch, DRC1_REG::CKE.val(3).value);
     }
 
     if ctx.mobile {
@@ -1756,9 +1951,11 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
     }
     ctx.mch.write32(r::GIPMC1, 0x8000_000c);
     if IntelI945::silicon_revision() > 2 {
-        ctx.mch.clrsetbits16(r::CPCTL, 7 << 11, CPCTL_REG::PM_DIV.val(6).value);
+        ctx.mch
+            .clrsetbits16(r::CPCTL, 7 << 11, CPCTL_REG::PM_DIV.val(6).value);
     } else {
-        ctx.mch.clrsetbits16(r::CPCTL, 7 << 11, CPCTL_REG::PM_DIV.val(4).value);
+        ctx.mch
+            .clrsetbits16(r::CPCTL, 7 << 11, CPCTL_REG::PM_DIV.val(4).value);
     }
 
     if IntelI945::silicon_revision() != 0 {
@@ -1798,21 +1995,26 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
     } else {
         ctx.mch.setbits32(r::ECO, ECO_REG::ECO_BIT16::SET.value);
     }
-    ctx.mch.clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::DIS_QPML::SET.value);
-    ctx.mch.setbits32(mchbar::FSBPMC3, FSBPMC3_REG::PM_ENABLE::SET.value);
-    ctx.mch.clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::FAST_DISPATCH::SET.value);
-    ctx.mch.clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::GM_ERRATA::SET.value);
-    ctx.mch.clrsetbits32(
-        r::FSBPMC4,
-        3 << 24,
-        FSBPMC4_REG::PM_MODE.val(2).value,
-    );
-    ctx.mch.setbits32(r::FSBPMC4, FSBPMC4_REG::PM_EN21::SET.value);
-    ctx.mch.setbits32(r::FSBPMC4, FSBPMC4_REG::PM_EN5::SET.value);
+    ctx.mch
+        .clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::DIS_QPML::SET.value);
+    ctx.mch
+        .setbits32(mchbar::FSBPMC3, FSBPMC3_REG::PM_ENABLE::SET.value);
+    ctx.mch
+        .clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::FAST_DISPATCH::SET.value);
+    ctx.mch
+        .clrbits32(mchbar::FSBPMC3, FSBPMC3_REG::GM_ERRATA::SET.value);
+    ctx.mch
+        .clrsetbits32(r::FSBPMC4, 3 << 24, FSBPMC4_REG::PM_MODE.val(2).value);
+    ctx.mch
+        .setbits32(r::FSBPMC4, FSBPMC4_REG::PM_EN21::SET.value);
+    ctx.mch
+        .setbits32(r::FSBPMC4, FSBPMC4_REG::PM_EN5::SET.value);
     if IntelI945::silicon_revision() < 2 {
-        ctx.mch.clrbits32(r::FSBPMC4, FSBPMC4_REG::PM_POLARITY::SET.value);
+        ctx.mch
+            .clrbits32(r::FSBPMC4, FSBPMC4_REG::PM_POLARITY::SET.value);
     } else {
-        ctx.mch.setbits32(r::FSBPMC4, FSBPMC4_REG::PM_POLARITY::SET.value);
+        ctx.mch
+            .setbits32(r::FSBPMC4, FSBPMC4_REG::PM_POLARITY::SET.value);
     }
 
     ctx.hb.or8(0xfc, 1 << 4);
@@ -1826,10 +2028,12 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
     ctx.mch.write16(r::MIPMC4, mipmc4);
     ctx.mch.write16(r::MIPMC5, mipmc5);
     ctx.mch.write16(r::MIPMC6, mipmc6);
-    ctx.mch.clrsetbits32(r::PMCFG, 3 << 17, PMCFG_REG::PM_MODE.val(2).value);
+    ctx.mch
+        .clrsetbits32(r::PMCFG, 3 << 17, PMCFG_REG::PM_MODE.val(2).value);
     ctx.mch.setbits32(r::PMCFG, PMCFG_REG::PM_EN::SET.value);
     ctx.mch.clrsetbits32(r::UPMC4, 0xff, 0x01);
-    ctx.mch.clrbits32(r::MISC_B18, MISC_B18_REG::MISC_CTRL21::SET.value);
+    ctx.mch
+        .clrbits32(r::MISC_B18, MISC_B18_REG::MISC_CTRL21::SET.value);
 }
 
 /// Thermal management (`sdram_thermal_management`): DIMM sensors unimplemented.
@@ -2001,9 +2205,11 @@ fn setup_processor_side(ctx: &Ctx<'_>) {
     if IntelI945::silicon_revision() == 0 {
         ctx.mch.setbits32(mchbar::FSBPMC3, 1 << 2);
     }
-    ctx.mch.setbits8(r::MISC_B00, MISC_B00_REG::PROC_SIDE_INIT::SET.value);
+    ctx.mch
+        .setbits8(r::MISC_B00, MISC_B00_REG::PROC_SIDE_INIT::SET.value);
     if IntelI945::silicon_revision() == 0 {
-        ctx.mch.setbits32(r::SLPCTL, SLPCTL_REG::SLPCTL_B8::SET.value);
+        ctx.mch
+            .setbits32(r::SLPCTL, SLPCTL_REG::SLPCTL_B8::SET.value);
     }
 }
 
@@ -2013,8 +2219,14 @@ fn setup_processor_side(ctx: &Ctx<'_>) {
 
 /// Sample the strobes (`sample_strobes`).
 fn sample_strobes(ctx: &Ctx<'_>, channel_offset: u32, sys: &SysInfo) -> u32 {
-    ctx.mch.setbits32(r::C0DRC1 + channel_offset, DRC1_REG::RCVEN_TOGGLE::SET.value);
-    ctx.mch.clrbits32(r::C0DRC1 + channel_offset, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch.setbits32(
+        r::C0DRC1 + channel_offset,
+        DRC1_REG::RCVEN_TOGGLE::SET.value,
+    );
+    ctx.mch.clrbits32(
+        r::C0DRC1 + channel_offset,
+        DRC1_REG::RCVEN_TOGGLE::SET.value,
+    );
 
     let mut addr = 0u32;
     if channel_offset != 0 {
@@ -2076,12 +2288,7 @@ fn normalize(
         fstart_log::debug!("i945: normalize error");
         return Err(());
     }
-    set_receive_enable(
-        ctx,
-        channel_offset,
-        *mediumcoarse & 3,
-        *mediumcoarse >> 2,
-    );
+    set_receive_enable(ctx, channel_offset, *mediumcoarse & 3, *mediumcoarse >> 2);
     ctx.mch.write8(r::C0WL0REOST + channel_offset, *fine);
     Ok(())
 }
@@ -2098,12 +2305,7 @@ fn find_preamble(
             return Err(());
         }
         *mediumcoarse = mediumcoarse.wrapping_sub(4);
-        set_receive_enable(
-            ctx,
-            channel_offset,
-            *mediumcoarse & 3,
-            *mediumcoarse >> 2,
-        );
+        set_receive_enable(ctx, channel_offset, *mediumcoarse & 3, *mediumcoarse >> 2);
         let reg = sample_strobes(ctx, channel_offset, sys);
         if reg & (1 << 19) == 0 {
             break;
@@ -2130,12 +2332,7 @@ fn add_quarter_clock(
             fstart_log::debug!("i945: clocks at max");
             return Err(());
         }
-        set_receive_enable(
-            ctx,
-            channel_offset,
-            *mediumcoarse & 3,
-            *mediumcoarse >> 2,
-        );
+        set_receive_enable(ctx, channel_offset, *mediumcoarse & 3, *mediumcoarse >> 2);
     } else {
         *fine = fine.wrapping_add(0x80);
     }
@@ -2152,12 +2349,7 @@ fn find_strobes_low(
 ) {
     loop {
         ctx.mch.write8(r::C0WL0REOST + channel_offset, *fine);
-        set_receive_enable(
-            ctx,
-            channel_offset,
-            *mediumcoarse & 3,
-            *mediumcoarse >> 2,
-        );
+        set_receive_enable(ctx, channel_offset, *mediumcoarse & 3, *mediumcoarse >> 2);
         if sample_strobes(ctx, channel_offset, sys) & (1 << 18) != 0 {
             return;
         }
@@ -2182,12 +2374,7 @@ fn find_strobes_edge(
     sys: &SysInfo,
 ) -> Result<(), ()> {
     let mut counter = 8;
-    set_receive_enable(
-        ctx,
-        channel_offset,
-        *mediumcoarse & 3,
-        *mediumcoarse >> 2,
-    );
+    set_receive_enable(ctx, channel_offset, *mediumcoarse & 3, *mediumcoarse >> 2);
     loop {
         ctx.mch.write8(r::C0WL0REOST + channel_offset, *fine);
         if sample_strobes(ctx, channel_offset, sys) & (1 << 19) == 0 {
@@ -2209,12 +2396,7 @@ fn find_strobes_edge(
         *fine = 0;
         *mediumcoarse = mediumcoarse.wrapping_add(2);
         if *mediumcoarse <= 0x40 {
-            set_receive_enable(
-                ctx,
-                channel_offset,
-                *mediumcoarse & 3,
-                *mediumcoarse >> 2,
-            );
+            set_receive_enable(ctx, channel_offset, *mediumcoarse & 3, *mediumcoarse >> 2);
             continue;
         }
         fstart_log::debug!("i945: could not find rising edge");
@@ -2224,23 +2406,14 @@ fn find_strobes_edge(
     *fine = fine.wrapping_sub(7);
     if *fine >= 0xf9 {
         *mediumcoarse = mediumcoarse.wrapping_sub(2);
-        set_receive_enable(
-            ctx,
-            channel_offset,
-            *mediumcoarse & 3,
-            *mediumcoarse >> 2,
-        );
+        set_receive_enable(ctx, channel_offset, *mediumcoarse & 3, *mediumcoarse >> 2);
     }
     *fine &= !(1 << 3);
     ctx.mch.write8(r::C0WL0REOST + channel_offset, *fine);
     Ok(())
 }
 
-fn receive_enable_autoconfig(
-    ctx: &Ctx<'_>,
-    channel_offset: u32,
-    sys: &SysInfo,
-) -> Result<(), ()> {
+fn receive_enable_autoconfig(ctx: &Ctx<'_>, channel_offset: u32, sys: &SysInfo) -> Result<(), ()> {
     let mut mediumcoarse = (sys.cas << 2) | 3;
     let mut fine = 0u8;
 
@@ -2276,10 +2449,14 @@ fn receive_enable_adjust(ctx: &Ctx<'_>, sys: &SysInfo) {
 fn program_receive_enable(ctx: &Ctx<'_>, sys: &SysInfo) {
     ctx.mch.setbits32(r::REPC, REPC_REG::RCVEN_EN::SET.value);
     receive_enable_adjust(ctx, sys);
-    ctx.mch.setbits32(r::C0DRC1, DRC1_REG::RCVEN_TOGGLE::SET.value);
-    ctx.mch.setbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::RCVEN_TOGGLE::SET.value);
-    ctx.mch.clrbits32(r::C0DRC1, DRC1_REG::RCVEN_TOGGLE::SET.value);
-    ctx.mch.clrbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch
+        .setbits32(r::C0DRC1, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch
+        .setbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch
+        .clrbits32(r::C0DRC1, DRC1_REG::RCVEN_TOGGLE::SET.value);
+    ctx.mch
+        .clrbits32(r::C0DRC1 + r::C1_BASE, DRC1_REG::RCVEN_TOGGLE::SET.value);
     // MIPMC3 receive-enable done bits (plain 0x0f per coreboot).
     ctx.mch.setbits32(r::MIPMC3, 0x0f);
 }
@@ -2293,10 +2470,7 @@ fn program_receive_enable(ctx: &Ctx<'_>, sys: &SysInfo) {
 /// `boot_path` comes from the fixed platform flow. Anything but a cold
 /// normal boot reboots: without an MRC cache fstart cannot resume, matching
 /// the GM965 port's policy.
-pub fn sdram_initialize(
-    nb: &IntelI945,
-    smbus: &mut dyn SmBus,
-) -> Result<(), ServiceError> {
+pub fn sdram_initialize(nb: &IntelI945, smbus: &mut dyn SmBus) -> Result<(), ServiceError> {
     use crate::BootPath;
 
     if nb.boot_path != BootPath::Normal {
@@ -2331,8 +2505,10 @@ pub fn sdram_initialize(
     set_channel_mode(&ctx, &mut sys);
     program_clock_crossing(&ctx);
     disable_fast_dispatch(&ctx);
-    ctx.mch.setbits32(r::C0DMC, DMC_REG::PWR_DOWN_ACPI::SET.value);
-    ctx.mch.setbits32(r::C0DMC + r::C1_BASE, DMC_REG::PWR_DOWN_ACPI::SET.value);
+    ctx.mch
+        .setbits32(r::C0DMC, DMC_REG::PWR_DOWN_ACPI::SET.value);
+    ctx.mch
+        .setbits32(r::C0DMC + r::C1_BASE, DMC_REG::PWR_DOWN_ACPI::SET.value);
 
     program_row_boundaries(&ctx, &sys);
     set_row_attributes(&ctx, &sys)?;

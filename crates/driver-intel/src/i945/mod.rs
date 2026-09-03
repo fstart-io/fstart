@@ -18,8 +18,8 @@
 //! DRAM init lives in [`raminit`]. All PCI config access goes through ECAM
 //! MMIO once [`IntelI945::pre_console_init`] has enabled PCIEXBAR.
 
-pub mod raminit;
 mod fields;
+pub mod raminit;
 
 use self::fields::*;
 
@@ -27,15 +27,17 @@ use core::{cell::UnsafeCell, ptr};
 
 use fstart_arch::mp::{SmmError, SmmInfo};
 
-use fstart_core::mmio::MmioReadWrite;
 use crate::MmioBar;
 use crate::ich7::Rcba;
+use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_core::services::{MemoryController, ServiceError};
 use fstart_pci::ecam;
-use fstart_pci::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind};
+use fstart_pci::{
+    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
+};
 use serde::Serialize;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
@@ -495,11 +497,7 @@ impl IntelI945 {
         Self::hostbridge_regs()
             .ggc
             .write(GGC_REG::GMS.val(u16::from(self.config.gfx_gms & 7)));
-        hb.and8_or8(
-            hostbridge::ESMRAMC,
-            !0x07,
-            (1 << 1) | (1 << 0),
-        );
+        hb.and8_or8(hostbridge::ESMRAMC, !0x07, (1 << 1) | (1 << 0));
 
         // C0000-FFFFF RAM on both reads and writes.
         hb.write8(hostbridge::PAM0, 0x30);
@@ -521,12 +519,12 @@ impl IntelI945 {
         let ep = self.epbar();
         let mch = self.mchbar();
 
-        ep.clrsetbits32(epbar::EPVC0RCTL, 0xffff_ff00, EPVC1RCTL_REG::TC_VC_MAP.val(0).value);
         ep.clrsetbits32(
-            epbar::EPPVCCAP1,
-            7,
-            EPPVCCAP1_REG::VC_COUNT.val(1).value,
+            epbar::EPVC0RCTL,
+            0xffff_ff00,
+            EPVC1RCTL_REG::TC_VC_MAP.val(0).value,
         );
+        ep.clrsetbits32(epbar::EPPVCCAP1, 7, EPPVCCAP1_REG::VC_COUNT.val(1).value);
 
         let clkcfg = mch.read32(mchbar::CLKCFG) & 7;
         let mut misc = ep.read32(epbar::VC1_MISC) & 0xffff_ff00;
@@ -562,8 +560,7 @@ impl IntelI945 {
         }
 
         // Internal graphics enabled: allow isochronous traffic.
-        if Self::hostbridge_regs().deven.get()
-            & (DEVEN_REG::D2F0::SET + DEVEN_REG::D2F1::SET).value
+        if Self::hostbridge_regs().deven.get() & (DEVEN_REG::D2F0::SET + DEVEN_REG::D2F1::SET).value
             != 0
         {
             mch.setbits32(mchbar::MMARB1, 1 << 17);
@@ -647,13 +644,13 @@ impl IntelI945 {
             0xffff_ff00,
             DMIVC1RCTL_REG::TC_VC_MAP.val(0).value,
         );
-        dmi.clrsetbits32(
-            dmibar::DMIPVCCAP1,
-            7,
-            DMIPVCCAP1_REG::VC_COUNT.val(1).value,
-        );
+        dmi.clrsetbits32(dmibar::DMIPVCCAP1, 7, DMIPVCCAP1_REG::VC_COUNT.val(1).value);
         // VC ID 1 must match the ICH7 side.
-        dmi.clrsetbits32(dmibar::DMIVC1RCTL, 7 << 24, DMIVC1RCTL_REG::VC_ID.val(1).value);
+        dmi.clrsetbits32(
+            dmibar::DMIVC1RCTL,
+            7 << 24,
+            DMIVC1RCTL_REG::VC_ID.val(1).value,
+        );
         dmi.clrsetbits32(
             dmibar::DMIVC1RCTL,
             0xffff_ff00,
@@ -673,8 +670,16 @@ impl IntelI945 {
         }
 
         // ASPM L0 exit latencies.
-        dmi.clrsetbits32(dmibar::DMILCAP, 7 << 12, DMILCAP_REG::L0S_EXIT_LAT.val(2).value);
-        dmi.clrsetbits32(dmibar::DMILCAP, 7 << 15, DMILCAP_REG::L1_EXIT_LAT.val(2).value);
+        dmi.clrsetbits32(
+            dmibar::DMILCAP,
+            7 << 12,
+            DMILCAP_REG::L0S_EXIT_LAT.val(2).value,
+        );
+        dmi.clrsetbits32(
+            dmibar::DMILCAP,
+            7 << 15,
+            DMILCAP_REG::L1_EXIT_LAT.val(2).value,
+        );
         let mut cc = dmi.read32(dmibar::DMICC) & 0x00ff_ffff;
         cc &= !3;
         cc |= DMICC_REG::VC0_EN.val(1).value;
@@ -690,8 +695,7 @@ impl IntelI945 {
         // x4 DMI.
         dmi.clrsetbits32(dmibar::DMI_MISC_204, 0x3ff, 0x13f);
 
-        if Self::hostbridge_regs().deven.get()
-            & (DEVEN_REG::D2F0::SET + DEVEN_REG::D2F1::SET).value
+        if Self::hostbridge_regs().deven.get() & (DEVEN_REG::D2F0::SET + DEVEN_REG::D2F1::SET).value
             != 0
         {
             dmi.setbits32(dmibar::DMI_MISC_200, 1 << 21);
@@ -728,7 +732,8 @@ impl IntelI945 {
             dmi.setbits32(off, 0);
         }
 
-        if Self::silicon_revision() == 1 && mch.read8(mchbar::DFT_STRAP1) & (1 << 5) != 0
+        if Self::silicon_revision() == 1
+            && mch.read8(mchbar::DFT_STRAP1) & (1 << 5) != 0
             && mch.read32(0x214) & 0xf != 0x3
         {
             fstart_log::error!("i945: DMI link requires A1 stepping workaround; rebooting");
@@ -969,8 +974,7 @@ impl IntelI945 {
     }
 
     fn igd_stolen_base(&self) -> u32 {
-        if Self::hostbridge_regs().deven.get()
-            & (hostbridge::DEVEN_D2F0 | hostbridge::DEVEN_D2F1)
+        if Self::hostbridge_regs().deven.get() & (hostbridge::DEVEN_D2F0 | hostbridge::DEVEN_D2F1)
             == 0
         {
             return 0;
@@ -1128,8 +1132,7 @@ impl PciRootProvider for IntelI945 {
 
     fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
         let mut windows = PciRootWindows::new();
-        let (mmio32_base, mmio32_size) =
-            self.mmio32_window.unwrap_or((0xC000_0000, 0));
+        let (mmio32_base, mmio32_size) = self.mmio32_window.unwrap_or((0xC000_0000, 0));
 
         if mmio32_size != 0 {
             windows
@@ -1445,7 +1448,8 @@ impl MemoryDetector for IntelI945 {
             return Err(ServiceError::HardwareError);
         }
 
-        let count = build_pc_compatible_e820(entries, usable_top, tom, tolud)?;        fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
+        let count = build_pc_compatible_e820(entries, usable_top, tom, tolud)?;
+        fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
             entries[..count]
                 .iter()
                 .filter(|entry| entry.kind == E820Kind::Ram as u32)
@@ -1469,8 +1473,7 @@ impl MemoryDetector for IntelI945 {
 
 impl MemoryController for IntelI945 {
     fn dram_init(&mut self) -> Result<(), ServiceError> {
-        let mut smbus =
-            crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
+        let mut smbus = crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
         smbus.host_reset();
         let result = raminit::sdram_initialize(self, &mut smbus);
         if let Ok(size) = self.total_ram_bytes() {

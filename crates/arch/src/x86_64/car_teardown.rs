@@ -1,16 +1,25 @@
-//! Cache-as-RAM teardown and post-CAR stage loading for x86 platforms.
+//! Cache-as-RAM teardown and the postcar MTRR stash for x86 platforms.
 //!
-//! Mirrors coreboot's Intel post-CAR flow:
-//! 1. switch to a DRAM stack
-//! 2. disable cache and MTRRs
-//! 3. clear NEM RUN/SETUP only on Atom models that use the no-evict MSR
-//! 4. program post-CAR MTRRs while cache/MTRRs are disabled
-//! 5. re-enable MTRRs, re-enable cache, `invd`
-//! 6. load ramstage from FFS while DRAM and ROM are cacheable
+//! Cut-B stage model (see coreboot `postcar` + change 95145):
+//!
+//! 1. The bootblock (CAR) raw-copies the tiny postcar binary into DRAM with
+//!    uncached stores and writes the [`PostcarMtrrStash`] to fixed UC-DRAM
+//!    scratch. Both are `INVD`-proof by construction.
+//! 2. The postcar entry (fresh binary, still on the inherited CAR stack)
+//!    calls [`car_teardown`], programs variable MTRRs from the stash,
+//!    clears `CR0.CD`, executes `INVD`, switches to a fresh DRAM stack, and
+//!    jumps to its Rust main — which loads/decompresses the ramstage cached.
+//! 3. The ramstage entry never touches CAR teardown; it assumes caching is
+//!    already on.
+//!
+//! Post-`INVD` execution happens only in fresh programs (postcar, ramstage).
+//! No pre-transition program executes after the transition, so there is no
+//! stale stack/BSS/heap to audit — only the UC stash and ROM constants cross
+//! it.
 
-use core::arch::{asm, global_asm};
+use core::arch::global_asm;
 
-use crate::x86::{msr, mtrr};
+use crate::x86::mtrr;
 
 global_asm!(
     ".text",
@@ -21,10 +30,14 @@ global_asm!(
     //
     // Core2/X61 uses MTRR-backed CAR and must not touch the no-evict MSR.
     // Atom/NEM systems clear MSR 0x2e0 below after CPUID model gating.
+    //
+    // Callable from the postcar entry while still on the inherited CAR
+    // stack: it only touches registers, MSRs, and CR0 (plus one pushed
+    // return address in still-live CAR).
     // ------------------------------------------------------------------
     "_car_teardown:",
     // Preserve RBX for the x86_64 C ABI. CPUID below clobbers EBX, and this
-    // routine returns to Rust code that may keep live state in RBX.
+    // routine returns to code that may keep live state in RBX.
     "movq %rbx, %r8",
     // Disable cache: CR0.CD=1. Leave NW unchanged here, like coreboot.
     "movq %cr0, %rax",
@@ -72,50 +85,65 @@ unsafe extern "C" {
     fn _car_teardown();
 }
 
-/// One physical range from the board memory map.
-#[derive(Debug, Clone, Copy)]
+/// Fixed physical address of the post-CAR MTRR stash in low DRAM.
+///
+/// Written by the bootblock with uncached stores (default-UC under the
+/// CAR-phase MTRRs, hence `INVD`-proof) before jumping to postcar. Read by
+/// the postcar entry while still uncached, before it enables caching.
+///
+/// `0x2000` dodges the real-mode IVT/BDA (below `0x500`), stays clear of the
+/// SIPI trampoline page at `0x8000` and default SMRAM at `0x30000`, and sits
+/// far below every stage load address.
+pub const POSTCAR_STASH_ADDR: u64 = 0x2000;
+
+/// Magic at the start of [`PostcarMtrrStash`] (`"PCST"`).
+pub const POSTCAR_STASH_MAGIC: u32 = 0x5453_4350;
+
+/// Maximum variable-MTRR entries the stash can carry (Core2/Atom have 8;
+/// the table needs 1x low-DRAM WB + ROM WP chunks).
+pub const POSTCAR_STASH_MAX_ENTRIES: usize = 8;
+
+/// One precomputed variable MTRR as raw MSR values.
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
-pub struct PhysicalRange {
-    /// Physical base address.
+pub struct PostcarMtrrEntry {
+    /// Value for `IA32_MTRR_PHYSBASEn` (base + type).
     pub base: u64,
-    /// Range size in bytes.
-    pub size: u64,
+    /// Value for `IA32_MTRR_PHYSMASKn` (mask + VALID).
+    pub mask: u64,
 }
 
-/// Data block, stored in ROM by board-owned stage code, that describes post-CAR work.
-#[repr(C)]
+/// Precomputed post-CAR variable-MTRR table in UC-DRAM scratch.
+///
+/// The only data (besides ROM constants and hardware registers) that the
+/// postcar entry may depend on after `INVD`. The trailing file fields let
+/// postcar raw-load the ramstage without an FFS parser or crypto: the
+/// bootblock already signature-verified the manifest (ROM-immutable, so the
+/// parse is sound to trust), and the ramstage re-verifies its own bytes
+/// against the manifest before running tables or payloads.
 #[derive(Debug, Clone, Copy)]
-pub struct PostcarConfig {
-    /// Static RAM ranges from board configuration.
-    pub ram_ranges: &'static [PhysicalRange],
-    /// Memory-mapped boot media range, if any.
-    pub rom_range: Option<PhysicalRange>,
-}
-
-impl PostcarConfig {
-    /// Choose a temporary post-CAR stack in DRAM.
-    pub fn stack_top(&self) -> Option<usize> {
-        let ram = self.ram_ranges.first()?;
-        let end = ram.base.checked_add(ram.size)?;
-        let preferred = ram.base.saturating_add(0x0300_0000);
-        let top = if preferred > ram.base && preferred <= end {
-            preferred
-        } else {
-            end
-        };
-        Some((top & !0xf) as usize)
-    }
-
-    fn low_dram_mtrr_size(&self) -> Option<u64> {
-        Some(
-            self.ram_ranges
-                .iter()
-                .map(|r| r.base.saturating_add(r.size))
-                .max()?
-                .next_power_of_two()
-                .max(0x0010_0000),
-        )
-    }
+#[repr(C)]
+pub struct PostcarMtrrStash {
+    /// Must be [`POSTCAR_STASH_MAGIC`]; the postcar entry halts otherwise.
+    pub magic: u32,
+    /// Number of valid `entries` (rest are zero).
+    pub count: u32,
+    /// Raw `(base, mask)` MSR values, programmed in order as MTRR 0..n.
+    pub entries: [PostcarMtrrEntry; POSTCAR_STASH_MAX_ENTRIES],
+    /// FFS-image-relative byte offset of the ramstage file's data segment.
+    pub file_offset: u64,
+    /// Stored (possibly compressed) size of that segment.
+    pub stored_size: u64,
+    /// Decompressed size at `load_addr`.
+    pub loaded_size: u64,
+    /// Builder-verified scratch size for in-place LZ4 (`0` when uncompressed).
+    pub in_place_size: u64,
+    /// DRAM address the segment loads to (also the entry point).
+    pub load_addr: u64,
+    /// Compression tag: `0` = none, `1` = LZ4. Anything else halts postcar.
+    pub compression: u32,
+    /// Reserved, must be zero.
+    pub _reserved: u32,
 }
 
 /// Tear down Cache-as-RAM non-evict mode.
@@ -123,14 +151,96 @@ impl PostcarConfig {
 /// # Safety
 ///
 /// Caller must already be executing on a DRAM stack and must not return to
-/// CAR-backed data after this call.
+/// CAR-backed data after this call — or, for the postcar entry, must treat
+/// this as the noreturn transition (fresh stack + `INVD` immediately after).
 pub unsafe fn car_teardown() {
     unsafe { _car_teardown() }
 }
 
-unsafe fn invalidate_cache_after_reenable() {
+/// Raw ramstage location for the [`PostcarMtrrStash`] file fields.
+///
+/// Resolved by the bootblock from the signature-verified manifest; postcar
+/// copies/decompresses these bytes without parsing FFS itself.
+#[derive(Debug, Clone, Copy)]
+pub struct PostcarFile {
+    /// FFS-image-relative byte offset of the data segment.
+    pub file_offset: u64,
+    /// Stored (possibly compressed) size.
+    pub stored_size: u64,
+    /// Decompressed size at `load_addr`.
+    pub loaded_size: u64,
+    /// Builder-verified scratch size for in-place LZ4 (`0` = uncompressed).
+    pub in_place_size: u64,
+    /// DRAM load address (also the entry point).
+    pub load_addr: u64,
+    /// `true` when the segment is LZ4-compressed.
+    pub compressed: bool,
+}
+
+/// Write the post-CAR MTRR stash to [`POSTCAR_STASH_ADDR`].
+///
+/// Programs, as raw MSR values: one write-back MTRR covering low DRAM from
+/// 0 to the next power of two >= `ram_end`, plus write-protect MTRRs
+/// covering the memory-mapped firmware window (`rom_base`, `rom_size`).
+/// This mirrors the old `postcar_mtrr_setup` layout; the ramstage later
+/// refines MTRRs (fixed, per-CPU) via `setup_ram_wb`.
+///
+/// `file` carries the ramstage's raw location so postcar loads it without
+/// an FFS parser or crypto (see [`PostcarMtrrStash`] for the trust argument).
+///
+/// All stores are volatile so they reach DRAM even under CAR-phase MTRRs
+/// (UC), making the stash `INVD`-proof by construction.
+///
+/// # Safety
+///
+/// `ram_end` must be the end of trained low DRAM; `rom_base`/`rom_size` the
+/// CPU-visible firmware window. Low DRAM below [`POSTCAR_STASH_ADDR`] + table
+/// size must be writable (it always is — the stash sits in conventional
+/// memory).
+pub unsafe fn write_postcar_stash(ram_end: u64, rom_base: u64, rom_size: u64, file: PostcarFile) {
+    let stash = POSTCAR_STASH_ADDR as *mut PostcarMtrrStash;
+    let mut count = 0usize;
+    // Push one raw `(base, mask)` entry; silently drops overflow past the
+    // fixed array (the table needs 1x WB + ROM WP chunks — far below 8).
+    let push = |count: &mut usize, base: u64, mask: u64| {
+        if *count < POSTCAR_STASH_MAX_ENTRIES {
+            // SAFETY: `count` bounds the write into the fixed array.
+            unsafe {
+                core::ptr::addr_of_mut!((*stash).entries[*count])
+                    .write_volatile(PostcarMtrrEntry { base, mask });
+            }
+            *count += 1;
+        }
+    };
+
+    // Low DRAM: single WB MTRR, next power of two covering ram_end.
+    let size = ram_end.next_power_of_two().max(0x0010_0000);
+    let (base, mask) = mtrr::encode_variable(0, size, mtrr::MTRR_TYPE_WRITE_BACK);
+    push(&mut count, base, mask);
+
+    // Firmware window: WB would be wrong for flash; WP chunks it.
+    let mut base_addr = rom_base;
+    let mut remaining = rom_size;
+    while remaining != 0 && count < POSTCAR_STASH_MAX_ENTRIES {
+        let size = mtrr_chunk_size(base_addr, remaining);
+        let (base, mask) = mtrr::encode_variable(base_addr, size, mtrr::MTRR_TYPE_WRITE_PROTECT);
+        push(&mut count, base, mask);
+        base_addr += size;
+        remaining -= size;
+    }
+
+    // SAFETY: stash points at writable low DRAM per the caller's contract.
     unsafe {
-        asm!("invd", options(nostack, preserves_flags));
+        core::ptr::addr_of_mut!((*stash).count).write_volatile(count as u32);
+        core::ptr::addr_of_mut!((*stash).file_offset).write_volatile(file.file_offset);
+        core::ptr::addr_of_mut!((*stash).stored_size).write_volatile(file.stored_size);
+        core::ptr::addr_of_mut!((*stash).loaded_size).write_volatile(file.loaded_size);
+        core::ptr::addr_of_mut!((*stash).in_place_size).write_volatile(file.in_place_size);
+        core::ptr::addr_of_mut!((*stash).load_addr).write_volatile(file.load_addr);
+        core::ptr::addr_of_mut!((*stash).compression).write_volatile(u32::from(file.compressed));
+        core::ptr::addr_of_mut!((*stash)._reserved).write_volatile(0);
+        // Magic last: the postcar entry validates it before trusting anything.
+        core::ptr::addr_of_mut!((*stash).magic).write_volatile(POSTCAR_STASH_MAGIC);
     }
 }
 
@@ -149,209 +259,4 @@ fn mtrr_chunk_size(base: u64, remaining: u64) -> u64 {
         size >>= 1;
     }
     size
-}
-
-/// Re-enable normal caching and install post-CAR MTRRs.
-///
-/// # Safety
-///
-/// Must be called after [`car_teardown`] while still on a DRAM stack and before
-/// any large DRAM or memory-mapped flash copies. This function runs the MTRR
-/// update with cache and MTRRs still disabled by [`car_teardown`].
-pub unsafe fn postcar_mtrr_setup(config: &PostcarConfig) {
-    unsafe {
-        let count = mtrr::variable_count();
-        for index in 0..count {
-            mtrr::clear_variable(index);
-        }
-
-        let mut next_mtrr = 0;
-        if let (true, Some(size)) = (count > 0, config.low_dram_mtrr_size()) {
-            mtrr::set_variable(next_mtrr, 0, size, mtrr::MTRR_TYPE_WRITE_BACK);
-            next_mtrr += 1;
-        }
-
-        if let Some(rom) = config.rom_range {
-            let mut base = rom.base;
-            let mut remaining = rom.size;
-            while remaining != 0 && next_mtrr < count {
-                let size = mtrr_chunk_size(base, remaining);
-                mtrr::set_variable(next_mtrr, base, size, mtrr::MTRR_TYPE_WRITE_PROTECT);
-                base += size;
-                remaining -= size;
-                next_mtrr += 1;
-            }
-        }
-
-        let def_type = msr::rdmsr(mtrr::IA32_MTRR_DEF_TYPE);
-        msr::wrmsr(mtrr::IA32_MTRR_DEF_TYPE, (def_type & 0xff) | (1 << 11));
-        mtrr::enable_cache();
-        invalidate_cache_after_reenable();
-    }
-}
-
-/// Switch to a DRAM stack, tear down CAR, then load a stage from a
-/// memory-mapped FFS image.
-///
-/// # Safety
-///
-/// `config` must describe trained DRAM and memory-mapped boot media. `anchor`
-/// and `next_stage` must remain readable after the stack switch; board-owned
-/// stage code stores both in ROM. This function never returns.
-#[cfg(feature = "postcar-stage-load")]
-pub unsafe fn stage_load_mmio(
-    config: PostcarConfig,
-    next_stage: &str,
-    anchor: &'static [u8],
-    base: u64,
-    size: u64,
-) -> ! {
-    let Some(stack_top) = config.stack_top() else {
-        crate::halt();
-    };
-
-    unsafe {
-        asm!(
-            "mov rsp, {stack}",
-            "and rsp, -16",
-            "sub rsp, 8",
-            "mov qword ptr [rsp + 8], {image_size}",
-            "jmp {tramp}",
-            stack = in(reg) stack_top,
-            image_size = in(reg) size,
-            tramp = sym stage_load_mmio_trampoline,
-            in("rdi") &config as *const PostcarConfig,
-            in("rsi") next_stage.as_ptr(),
-            in("rdx") next_stage.len(),
-            in("rcx") anchor.as_ptr(),
-            in("r8") anchor.len(),
-            in("r9") base,
-            options(noreturn),
-        );
-    }
-}
-
-#[cfg(feature = "postcar-stage-load")]
-extern "C" fn stage_load_mmio_trampoline(
-    config: *const PostcarConfig,
-    next_ptr: *const u8,
-    next_len: usize,
-    anchor_ptr: *const u8,
-    anchor_len: usize,
-    base: u64,
-    size: u64,
-) -> ! {
-    // SAFETY: board-owned stage code passes pointers derived from ROM-resident strings
-    // and anchor bytes with their original lengths.
-    let next_stage =
-        unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(next_ptr, next_len)) };
-    // SAFETY: board-owned stage code passes the embedded anchor slice pointer/length.
-    let anchor = unsafe { core::slice::from_raw_parts(anchor_ptr, anchor_len) };
-    // SAFETY: `config` points at the caller's pre-switch stack. CAR is still
-    // live here, so copy the small scalar config onto the new DRAM stack before
-    // tearing CAR down.
-    let config = unsafe { *config };
-
-    // SAFETY: we are now on a DRAM stack and will never return to CAR-backed
-    // state. MTRRs are installed before the large FFS/ramstage copy.
-    unsafe {
-        car_teardown();
-        postcar_mtrr_setup(&config);
-    }
-
-    let entry = quiet_stage_load(next_stage, anchor, base, size);
-    // This x86 post-CAR loader does not serialize a StageHandoff payload, so
-    // enter the RAM-stage handoff-aware entry point with an explicit null
-    // handoff rather than leaking a scratch register value into `%rdi`.
-    super::jump_to_with_handoff(entry, 0)
-}
-
-#[cfg(feature = "postcar-stage-load")]
-fn quiet_stage_load(next_stage: &str, anchor_data: &[u8], base: u64, size: u64) -> u64 {
-    use fstart_core::ffs::{Compression, EntryContent, SegmentKind};
-
-    // SAFETY: board-owned stage code passes the effective memory-mapped FFS base/size
-    // from the Rust firmware-image provider or platform mapping.
-    let image = unsafe { core::slice::from_raw_parts(base as *const u8, size as usize) };
-    let anchor = match unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) } {
-        Ok(a) => a,
-        Err(_) => loop {},
-    };
-    let image_size = (anchor.total_image_size as usize).min(size as usize);
-    let reader = fstart_ffs::FfsReader::new(&image[..image_size]);
-    let manifest = match reader.read_manifest(&anchor) {
-        Ok(m) => m,
-        Err(_) => loop {},
-    };
-
-    for region in &manifest.regions {
-        let Ok(entry) = fstart_ffs::FfsReader::find_entry(region, next_stage) else {
-            continue;
-        };
-        let EntryContent::File { segments, .. } = &entry.content else {
-            continue;
-        };
-
-        let mut entry_addr = 0;
-        for seg in segments {
-            if entry_addr == 0 && seg.kind == SegmentKind::Code {
-                entry_addr = seg.load_addr;
-            }
-
-            if seg.kind == SegmentKind::Bss {
-                // SAFETY: the manifest segment declares a RAM destination that
-                // the next stage owns.
-                unsafe {
-                    core::ptr::write_bytes(seg.load_addr as *mut u8, 0, seg.loaded_size as usize)
-                };
-                continue;
-            }
-
-            let src_off = (region.offset + entry.offset + seg.offset) as usize;
-            let stored = seg.stored_size as usize;
-            if src_off.saturating_add(stored) > image_size {
-                loop {}
-            }
-
-            match seg.compression {
-                Compression::None => unsafe {
-                    core::ptr::copy(
-                        image.as_ptr().add(src_off),
-                        seg.load_addr as *mut u8,
-                        stored,
-                    );
-                },
-                Compression::Lz4 => {
-                    let buf_size = seg.in_place_size as usize;
-                    let loaded = seg.loaded_size as usize;
-                    if buf_size < loaded || buf_size < stored {
-                        loop {}
-                    }
-
-                    let dest = seg.load_addr as *mut u8;
-                    let comp_offset = buf_size - stored;
-                    unsafe {
-                        let buf = core::slice::from_raw_parts_mut(dest, buf_size);
-                        core::ptr::copy(
-                            image.as_ptr().add(src_off),
-                            buf.as_mut_ptr().add(comp_offset),
-                            stored,
-                        );
-                        let src =
-                            core::slice::from_raw_parts(buf.as_ptr().add(comp_offset), stored);
-                        let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), loaded);
-                        match fstart_ffs::lz4::decompress_block(src, dst) {
-                            Ok(_) => {}
-                            Err(_) => loop {},
-                        }
-                    }
-                }
-            }
-        }
-        if entry_addr != 0 {
-            return entry_addr;
-        }
-    }
-
-    loop {}
 }

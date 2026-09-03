@@ -50,7 +50,7 @@ pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
 pub use smm::{CorebootSmmCompat, SmmConfig};
 pub use stage::{
-    FirmwareImageConfig, MonolithicConfig, MpBuildConfig, RunsFrom, StageBuildConfig, StageConfig,
-    StageLayout, TempRamBuffer, effective_stage_load_addr,
+    FirmwareImageConfig, MonolithicConfig, MpBuildConfig, POSTCAR_STAGE_NAME, RunsFrom,
+    StageBuildConfig, StageConfig, StageLayout, TempRamBuffer, effective_stage_load_addr,
 };
 pub use typed::{Io8, Io16, IoAddr, Irq, Mmio8, Mmio16, Mmio32, Mmio64, MmioAddr, io16, mmio32};
