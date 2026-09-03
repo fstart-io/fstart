@@ -12,6 +12,7 @@ extern crate ufmt;
 pub mod tables;
 
 pub mod gm965;
+pub mod i945;
 pub mod pineview;
 
 #[cfg(feature = "stage")]

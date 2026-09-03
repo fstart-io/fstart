@@ -608,6 +608,25 @@ pub struct IntelIch7Config {
     pub rcba: u64,
     /// PIRQ routing (one byte per PIRQ A..H).
     pub pirq_routing: [u8; 8],
+    /// PCIe root ports 0-3 present. Absent ports are hidden with the FD
+    /// `ICH_DISABLE_PCIE` bits. Defaults to all present (reset behavior).
+    #[serde(default = "default_pcie_ports")]
+    pub pcie_ports: [bool; 4],
+    /// Internal LAN function present. `false` sets `FD_INTLAN`.
+    /// Defaults to present (reset behavior).
+    #[serde(default = "default_true")]
+    pub lan: bool,
+    /// AC97 audio (D30:F2) / modem (D30:F3) functions present.
+    /// Absent functions set `FD_ACAUD` / `FD_ACMOD`.
+    /// Defaults to present (reset behavior).
+    #[serde(default = "default_true")]
+    pub ac97_audio: bool,
+    #[serde(default = "default_true")]
+    pub ac97_modem: bool,
+    /// GPI routing (2 bits per GPI 0..15): 0 = none, 1 = SMI, 2 = SCI.
+    /// Programmed into LPC `GPIO_ROUT` (0xb8). Defaults to all-none.
+    #[serde(default)]
+    pub gpi_routing: [u8; 16],
     /// GPE0 enable bits.
     pub gpe0_en: u32,
     /// LPC fixed and generic I/O decode policy.
@@ -650,12 +669,25 @@ const fn default_smbus_base() -> u16 {
     ich7::DEFAULT_SMBUS_BASE
 }
 
+const fn default_pcie_ports() -> [bool; 4] {
+    [true; 4]
+}
+
+const fn default_true() -> bool {
+    true
+}
+
 impl IntelIch7Config {
     #[must_use]
     pub const fn new() -> Self {
         Self {
             rcba: 0xFED1_C000,
             pirq_routing: [0; 8],
+            pcie_ports: default_pcie_ports(),
+            lan: true,
+            ac97_audio: true,
+            ac97_modem: true,
+            gpi_routing: [0; 16],
             gpe0_en: 0,
             lpc_decode: LpcDecodeConfig::new(),
             hda: None,
@@ -700,8 +732,12 @@ pub const fn valid_pirq_route(route: u8) -> bool {
 }
 
 #[must_use]
-pub const fn valid_gpe0_en(gpe0_en: u32) -> bool {
-    gpe0_en & !0x0000_ffff == 0
+/// ICH7 implements a 32-bit GPE0 block (PMBASE+0x28/0x2C): bits 0-15 are
+/// the standard ACPI events (see `pmio_ich` `*_STS` consts) and bits 16-31
+/// are GPIO events. Any 32-bit value programs the register as-is; which
+/// events a board enables is board knowledge (e.g. D945GCLF sets bit 29).
+pub const fn valid_gpe0_en(_gpe0_en: u32) -> bool {
+    true
 }
 
 #[must_use]
@@ -951,8 +987,40 @@ impl IntelIch7 {
     }
 
     /// Compute the Function Disable (FD) bitmask.
+    /// Function-disable mask (RCBA `FD` at 0x3418) derived from config.
+    ///
+    /// Mirrors coreboot `i82801gx` FD programming: every disable bit the
+    /// board's config expresses is set (`ICH_DISABLE_PCIE/UHCI`,
+    /// `FD_EHCI/INTLAN/ACMOD/ACAUD/HDAUD/SATA/PATA`). SMBus and LPC are
+    /// never disabled (SPD access and the SuperIO console need them).
     fn function_disable_mask(&self) -> u32 {
         let mut fd = 0u32;
+        for (idx, present) in self.config.pcie_ports.iter().copied().enumerate() {
+            if !present {
+                fd |= 1 << (16 + idx);
+            }
+        }
+        let (ehci, uhci) = match self.config.usb {
+            Some(usb) => (usb.ehci, usb.uhci),
+            None => (false, [false; 4]),
+        };
+        if !ehci {
+            fd |= 1 << 15;
+        }
+        for (idx, present) in uhci.iter().copied().enumerate() {
+            if !present {
+                fd |= 1 << (8 + idx);
+            }
+        }
+        if !self.config.lan {
+            fd |= 1 << 7;
+        }
+        if !self.config.ac97_modem {
+            fd |= 1 << 6;
+        }
+        if !self.config.ac97_audio {
+            fd |= 1 << 5;
+        }
         if self.config.hda.is_none() {
             fd |= 1 << 4;
         }
@@ -1108,6 +1176,13 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
 
         // ---- 13. GPIO pad programming ----
         self.setup_gpios();
+
+        // ---- 13b. GPI routing (LPC GPIO_ROUT): SMI/SCI selection per GPI.
+        let mut rout = 0u32;
+        for (idx, route) in self.config.gpi_routing.iter().copied().enumerate() {
+            rout |= u32::from(route & 0x03) << (2 * idx);
+        }
+        ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).write32(0xb8, rout);
 
         // ---- 14. Enable HPET (needed by raminit for hpet_udelay) ----
         self.enable_hpet(&rcba);

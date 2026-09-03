@@ -9,6 +9,7 @@ mod cpu;
 
 pub mod generic;
 pub mod gm965;
+pub mod i945;
 pub mod ich7;
 pub mod ich8;
 pub mod pineview;

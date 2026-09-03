@@ -166,6 +166,15 @@ pub trait SuperIoChip: Send + Sync + 'static {
     /// LDN for the parallel port, if supported.
     const PARALLEL_LDN: Option<u8>;
 
+    /// Raw exit byte written straight to the index port instead of the
+    /// `EXIT_REG`/`EXIT_VAL` register/value pair.
+    ///
+    /// SMSC parts (LPC47M15x: `0xAA`) exit configuration mode with a
+    /// single write to the index port; a register write would land on an
+    /// unrelated data port after the exit. `None` (default) keeps the
+    /// register/value behavior used by ITE/Winbond/NSC parts.
+    const EXIT_RAW: Option<u8> = None;
+
     /// Optional chip-specific init hook, invoked inside config mode
     /// after the ID check and before any LDN is configured.
     fn chip_init(_base_port: u16) {}
@@ -365,8 +374,12 @@ impl<C: SuperIoChip> SuperIo<C> {
     fn exit_config(&self) {
         // SAFETY: chip-provided constants; base_port validated in new_on_bus.
         unsafe {
-            fstart_core::pio::outb(self.idx_port(), C::EXIT_REG);
-            fstart_core::pio::outb(self.data_port(), C::EXIT_VAL);
+            if let Some(byte) = C::EXIT_RAW {
+                fstart_core::pio::outb(self.idx_port(), byte);
+            } else {
+                fstart_core::pio::outb(self.idx_port(), C::EXIT_REG);
+                fstart_core::pio::outb(self.data_port(), C::EXIT_VAL);
+            }
         }
     }
 

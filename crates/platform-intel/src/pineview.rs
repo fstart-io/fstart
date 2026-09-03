@@ -93,6 +93,7 @@ impl PineviewIch7Config {
         let mut config = ich7::IntelIch7Config::new();
         config.rcba = ICH7_RCBA;
         config.pirq_routing = self.pirq_routing;
+        config.pcie_ports = self.pcie_ports;
         config.gpe0_en = self.gpe0_en;
         config.lpc_decode = self.lpc_decode;
         config.hda = self.hda;
@@ -179,11 +180,10 @@ impl PineviewIch7Config {
         if self.lpc_decode.fixed_io.com_a as u8 == self.lpc_decode.fixed_io.com_b as u8 {
             panic!("ICH7 COMA and COMB decode the same port");
         }
-        if let Some(sata) = self.sata {
-            if !ich7::valid_sata_ports(sata.ports) {
+        if let Some(sata) = self.sata
+            && !ich7::valid_sata_ports(sata.ports) {
                 panic!("ICH7 SATA enabled with invalid ports");
             }
-        }
         validate_lpc_generic_io_decodes(&self.lpc_decode.generic_io);
         validate_pirq_routing(&self.pirq_routing);
         if !ich7::valid_gpe0_en(self.gpe0_en) {
