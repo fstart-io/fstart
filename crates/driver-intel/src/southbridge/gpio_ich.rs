@@ -252,6 +252,29 @@ pub const fn input(pin: u8) -> GpioPin {
     }
 }
 
+impl GpioPin {
+    /// Enable input inversion (set 1 only, pins 0-31).
+    #[must_use]
+    pub const fn inverted(mut self) -> Self {
+        self.invert = true;
+        self
+    }
+
+    /// Enable blink (set 1 only, pins 0-31).
+    #[must_use]
+    pub const fn blink(mut self) -> Self {
+        self.blink = true;
+        self
+    }
+
+    /// Reset on RSMRST# instead of PWROK (survives S3/S4).
+    #[must_use]
+    pub const fn rsmrst(mut self) -> Self {
+        self.reset = GpioReset::Rsmrst;
+        self
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal: register-level representation
 // ---------------------------------------------------------------------------
