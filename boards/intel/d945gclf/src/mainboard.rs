@@ -53,6 +53,8 @@ impl IntelEarlyBoardHooks<I945Ich7> for D945GclfMainboard {
     ) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): PME first so
         // the 0x680 generic decode window has a live target, then COM/KBC.
+        // Verbose logging while first bring-up is still in flight.
+        unsafe { fstart_log::set_max_level(fstart_log::Level::Debug) };
         pme_init();
         let mut superio =
             SmscLpc47m15x::new_at_base(crate::d945gclf_superio_config().0, crate::SUPERIO_PNP_BASE)

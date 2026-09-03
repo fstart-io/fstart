@@ -67,6 +67,7 @@ fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["ffs-vbt"] }
 fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"], optional = true }
+fstart-log = { path = "../../../crates/log" }
 fstart-smm = { path = "../../../crates/smm", optional = true }
 fstart-stage = { path = "../../../crates/stage", optional = true }
 fbuild = { path = "../../../tools/fbuild", optional = true }

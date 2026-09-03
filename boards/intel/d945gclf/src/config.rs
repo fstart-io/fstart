@@ -35,7 +35,8 @@ pub const SUPERIO_PME_BASE: u16 = 0x0680;
 
 pub static D945GCLF_PLATFORM: I945Ich7Config = I945Ich7Config::new()
     .variant(I945Variant::DesktopGc)
-    .max_cpus(2)
+    // Atom 230: single core, no HT (coreboot socket_441 is model_106cx only).
+    .max_cpus(1)
     .gfx_gms(4)
     .pci_mmio_size(768)
     .pcie_port(0, true)
