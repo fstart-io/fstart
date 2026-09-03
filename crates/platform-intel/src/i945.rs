@@ -317,8 +317,8 @@ impl I945Ich7AcpiContext {
 pub fn i945_ich7_microcode() -> MicrocodeConfig {
     MicrocodeConfig::Intel(IntelMicrocodeConfig {
         files: hvec([
-            hstr("../../intel-microcode/intel-ucode/06-1c-02"),
-            hstr("../../intel-microcode/intel-ucode/06-1c-0a"),
+            hstr("../../../intel-microcode/intel-ucode/06-1c-02"),
+            hstr("../../../intel-microcode/intel-ucode/06-1c-0a"),
         ]),
         early: true,
         mp: true,
